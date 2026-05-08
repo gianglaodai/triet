@@ -1,0 +1,24 @@
+// Lập luận với missing data — minh họa sức mạnh Łukasiewicz Ł3
+//
+// Bệnh nhân có thể có hoặc không có dữ liệu về tiêm chủng.
+// Triết propagate `unknown` qua phép logic đến kết luận hợp lý:
+// nếu thiếu thông tin then kết luận cũng thiếu thông tin.
+
+fn risk_measles(fever: Bool3, rash: Bool3, vaccinated: Bool3) -> Bool3 {
+    let symptoms = fever && rash
+    symptoms && !vaccinated
+}
+
+fn main() -> Unit {
+    // Đầy đủ thông tin → kết luận chắc chắn
+    let p1 = risk_measles(true, true, false)         // → true (có triệu chứng, chưa tiêm)
+    std.io.println(f"P1 risk: {p1}")
+
+    // Thiếu thông tin tiêm chủng → unknown
+    let p2 = risk_measles(true, true, unknown)       // → unknown
+    std.io.println(f"P2 risk: {p2}")
+
+    // Không có triệu chứng → false (không cần biết tiêm chưa)
+    let p3 = risk_measles(false, false, unknown)     // → false
+    std.io.println(f"P3 risk: {p3}")
+}
