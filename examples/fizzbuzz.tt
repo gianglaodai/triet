@@ -1,11 +1,11 @@
 // FizzBuzz trong Triết — minh họa pattern matching trên tuple
 
-fn fizzbuzz(n: Tword) -> Text =
+fn fizzbuzz(n: Integer) -> Text =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
         (_, 0) => "Buzz",
-        _      => std.text.from_tword(n),
+        _      => std.text.from_integer(n),
     }
 
 fn main() -> Unit {

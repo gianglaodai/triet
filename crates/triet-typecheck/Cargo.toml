@@ -1,6 +1,6 @@
 [package]
-name = "triet-eval"
-description = "Tree-walking interpreter for Triết v0.1"
+name = "triet-typecheck"
+description = "Type checker for Triết"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

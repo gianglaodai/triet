@@ -18,16 +18,16 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ```triet
 // FizzBuzz
-fn fizzbuzz(n: Tword) -> Text =
+fn fizzbuzz(n: Integer) -> Text =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
         (_, 0) => "Buzz",
-        _      => std.text.from_tword(n),
+        _      => std.text.from_integer(n),
     }
 
 // Lập luận với missing data — sức mạnh của Łukasiewicz
-fn risk_measles(fever: Bool3, rash: Bool3, vaccinated: Bool3) -> Bool3 {
+fn risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
     let symptoms = fever && rash
     symptoms && !vaccinated
     // Nếu vaccinated = unknown → kết quả = unknown
@@ -40,13 +40,13 @@ fn risk_measles(fever: Bool3, rash: Bool3, vaccinated: Bool3) -> Bool3 {
 ```
 triet/
 ├── crates/
-│   ├── triet-core/      # Trit/Tryte/Tword/Tlong + arithmetic
-│   ├── triet-logic/     # Bool3 + Łukasiewicz Ł3 + Kleene K3
+│   ├── triet-core/      # Trit/Tryte/Integer/Long + arithmetic
+│   ├── triet-logic/     # Trilean + Łukasiewicz Ł3 + Kleene K3
 │   ├── triet-syntax/    # AST types
 │   ├── triet-lexer/     # Tokenizer
 │   ├── triet-parser/    # Parser → AST
-│   ├── triet-typeck/    # Type checker
-│   ├── triet-eval/      # Tree-walking interpreter
+│   ├── triet-typecheck/ # Type checker
+│   ├── triet-interpreter/ # Tree-walking interpreter
 │   └── triet-cli/       # Binary `triet`
 ├── examples/            # Sample .tt programs
 └── SPEC.md              # Đặc tả ngôn ngữ
@@ -65,7 +65,7 @@ cargo fmt                # format
 ## Roadmap
 
 - **v0.1** — interpreter tree-walking, semantics đầy đủ (đang làm)
-- **v0.2** — struct, enum, generics, `Maybe<T>`, Ł∞ (fuzzy continuous)
+- **v0.2** — struct, enum, generics, `Maybe<T>`, `BinaryInteger`/`BinaryLong` interop, Ł∞ (fuzzy continuous)
 - **v0.3** — bytecode VM với JIT (Cranelift)
 - **v0.4** — concurrency model
 - **v1.0** — production stability, AOT native compile (LLVM/Cranelift)

@@ -6,8 +6,8 @@ members = [
     "crates/triet-syntax",
     "crates/triet-lexer",
     "crates/triet-parser",
-    "crates/triet-typeck",
-    "crates/triet-eval",
+    "crates/triet-typecheck",
+    "crates/triet-interpreter",
     "crates/triet-cli",
 ]
 
@@ -26,8 +26,8 @@ triet-logic = { path = "crates/triet-logic", version = "0.1.0" }
 triet-syntax = { path = "crates/triet-syntax", version = "0.1.0" }
 triet-lexer = { path = "crates/triet-lexer", version = "0.1.0" }
 triet-parser = { path = "crates/triet-parser", version = "0.1.0" }
-triet-typeck = { path = "crates/triet-typeck", version = "0.1.0" }
-triet-eval = { path = "crates/triet-eval", version = "0.1.0" }
+triet-typecheck = { path = "crates/triet-typecheck", version = "0.1.0" }
+triet-interpreter = { path = "crates/triet-interpreter", version = "0.1.0" }
 
 # External deps — pinned at workspace level for consistency
 thiserror = "2"

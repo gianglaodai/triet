@@ -50,7 +50,7 @@ identifier = (letter | "_") (letter | digit | "_")*
 fn  let  mut  const  type  if  else  match  return
 true  false  unknown  not  and  or  xor  iff  implies
 kleene_implies  kleene_xor  kleene_iff
-Trit  Tryte  Tword  Tlong  Bool3  Text
+Trit  Tryte  Integer  Long  Trilean  Text
 import  module  pub
 ```
 
@@ -58,11 +58,11 @@ import  module  pub
 
 #### 1.5.1 Số nguyên
 
-Mặc định mọi literal số nguyên thuộc kiểu `Tword` (27 trit, ~±3.8 ngàn tỷ).
+Mặc định mọi literal số nguyên thuộc kiểu `Integer` (27 trit, ~±3.8 ngàn tỷ).
 
 ```triet
-42                  // Tword 42
--17                 // Tword -17
+42                  // Integer 42
+-17                 // Integer -17
 1_000_000           // dùng _ để nhóm
 0t+0-+              // balanced ternary literal — đọc trái sang phải, MSB trước
                     // = (+1)(0)(-1)(+1) base 3 = 27 + 0 - 3 + 1 = 25
@@ -72,13 +72,13 @@ Type suffix bắt buộc khi muốn kiểu khác:
 
 ```triet
 5_tryte             // Tryte (9 trit)
-1_000_000_000_tlong // Tlong (81 trit)
+1_000_000_000_long // Long (81 trit)
 1_trit              // Trit
 ```
 
-Literal balanced ternary `0t...` chỉ chấp nhận ký tự `+`, `0`, `-`, `_`. Không có biểu diễn `0b`, `0x`, `0o` (nhị phân, hex, bát phân) — Triết không hỗ trợ ngôn ngữ trung tâm là tam phân.
+Literal balanced ternary `0t...` chỉ chấp nhận ký tự `+`, `0`, `-`, `_`. Không có biểu diễn `0b`, `0x`, `0o` (nhị phân, hex, bát phân) — Triết là ngôn ngữ tam phân first, các hệ cơ số khác không phải nguyên thủy.
 
-#### 1.5.2 Bool3
+#### 1.5.2 Trilean
 
 ```triet
 true        // +1
@@ -104,7 +104,7 @@ Escape sequences: `\n`, `\t`, `\r`, `\\`, `\"`, `\u{XXXX}` (Unicode codepoint he
 Prefix `f` bật interpolation. String thường (không có `f`) là literal nguyên bản.
 
 ```triet
-let n: Tword = 42
+let n: Integer = 42
 let msg: Text = f"Câu trả lời là {n}"
 let calc: Text = f"Tổng: {a + b}, gấp đôi: {(a + b) * 2}"
 
@@ -126,13 +126,24 @@ Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 |---|---|---|---|
 | `Trit` | 1 | `{-1, 0, +1}` | Đơn vị thông tin tam phân cơ bản |
 | `Tryte` | 9 (= 3²) | `±9_841` | Số nguyên nhỏ |
-| `Tword` | 27 (= 3³) | `±3_812_798_742_493` | **Số nguyên mặc định** |
-| `Tlong` | 81 (= 3⁴) | rất lớn | Số nguyên lớn |
-| `Bool3` | 1 | `{false, unknown, true}` | Logic 3 giá trị |
+| `Integer` | 27 (= 3³) | `±3_812_798_742_493` | **Số nguyên mặc định** |
+| `Long` | 81 (= 3⁴) | rất lớn | Số nguyên lớn |
+| `Trilean` | 1 | `{false, unknown, true}` | Logic 3 giá trị |
 | `Text` | — | UTF-8 string | Chuỗi văn bản |
 | `Unit` | — | `()` | Không có giá trị (giống void) |
 
-`Trit` và `Bool3` đều là 1-trit về biểu diễn nhưng **khác kiểu** ở mức ngôn ngữ — `Trit` là số (`-1`, `0`, `+1`), `Bool3` là chân lý (`false`, `unknown`, `true`). Conversion phải explicit (xem §2.4).
+`Trit` và `Trilean` đều là 1-trit về biểu diễn nhưng **khác kiểu** ở mức ngôn ngữ — `Trit` là số (`-1`, `0`, `+1`), `Trilean` là chân lý (`false`, `unknown`, `true`). Conversion phải explicit (xem §2.4).
+
+#### Quy ước đặt tên: tam phân first
+
+Các kiểu trên đều **ngầm là tam phân**. Triết là ngôn ngữ tam phân first, nên `Integer` mặc nhiên có nghĩa "số nguyên 27 trit" — không cần prefix `Ternary`.
+
+Khi (v0.2+) cần interop với kiểu nhị phân, kiểu nhị phân phải mang prefix `Binary` rõ ràng:
+- `BinaryInteger` (32 bit, ánh xạ với i32)
+- `BinaryLong` (64 bit, i64)
+- `BinaryByte` (8 bit, u8)
+
+Đây là một statement triết học: trong Triết, **nhị phân là ngoại lệ phải đánh dấu**, ngược với phần còn lại của ngành lập trình hiện nay.
 
 ### 2.2 Đóng gói trong bộ nhớ
 
@@ -142,15 +153,15 @@ Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 |---|---|---|---|
 | `Trit` | 1 | 1 | 6 bit |
 | `Tryte` | 9 | 2 | 16 - 9·log₂3 ≈ 1.7 bit |
-| `Tword` | 27 | 6 | 6 bit |
-| `Tlong` | 81 | 17 | ~6 bit |
+| `Integer` | 27 | 6 | 6 bit |
+| `Long` | 81 | 17 | ~6 bit |
 
 Chi tiết encoding xem §3.4.
 
 ### 2.3 Type alias
 
 ```triet
-type Confidence = Tword
+type Confidence = Integer
 type Username = Text
 ```
 
@@ -162,11 +173,11 @@ Tất cả conversion giữa kiểu **explicit**. Không có implicit coercion.
 
 ```triet
 let x: Tryte = 5_tryte
-let y: Tword = x.to_tword()             // Tryte → Tword (không mất mát)
-let z: Tryte = (1000_tword).to_tryte()  // Tword → Tryte, có thể tràn → panic
-let w: Tryte = (1000_tword).to_tryte_saturating()  // hoặc bão hòa
-let v: Bool3 = Bool3.from_trit(t)       // Trit → Bool3
-let t: Trit  = b.to_trit()              // Bool3 → Trit (false→-1, unknown→0, true→+1)
+let y: Integer = x.to_integer()             // Tryte → Integer (không mất mát)
+let z: Tryte = (1000_integer).to_tryte()  // Integer → Tryte, có thể tràn → panic
+let w: Tryte = (1000_integer).to_tryte_saturating()  // hoặc bão hòa
+let v: Trilean = Trilean.from_trit(t)       // Trit → Trilean
+let t: Trit  = b.to_trit()              // Trilean → Trit (false→-1, unknown→0, true→+1)
 ```
 
 ### 2.5 Nullable types `T?`
@@ -175,13 +186,13 @@ Bất kỳ kiểu nào cũng có thể "có thể null" qua hậu tố `?`:
 
 ```triet
 let name: Text? = get_name()       // có thể là null
-let count: Tword? = parse_number(s) // null nếu parse fail
+let count: Integer? = parse_number(s) // null nếu parse fail
 ```
 
 `T?` là **kiểu khác** với `T`. Compiler ép xử lý null trước khi dùng giá trị:
 
 ```triet
-let n: Tword? = ...
+let n: Integer? = ...
 n + 1                       // ❌ lỗi compile: phải kiểm tra null trước
 ```
 
@@ -194,10 +205,10 @@ if name != null {
 }
 
 // Safe call: trả về null nếu chuỗi bị null ở đâu đó
-let len: Tword? = name?.length
+let len: Integer? = name?.length
 
 // Elvis: thay null bằng giá trị mặc định
-let len: Tword = name?.length ?: 0
+let len: Integer = name?.length ?: 0
 
 // Force unwrap: panic nếu null
 let must: Text = name!!
@@ -252,10 +263,10 @@ Inference thực hiện local, theo Hindley-Milner đơn giản hóa. Annotation
 - Tham số type của generic (chưa có ở v0.1)
 
 ```triet
-let x = 5                       // suy ra Tword
+let x = 5                       // suy ra Integer
 let y: Tryte = 5                // explicit, literal coerced tới Tryte (đặc biệt cho integer literal)
-fn double(n: Tword) = n * 2     // return type suy được = Tword
-fn id(n: Tword) -> Tword { n }  // explicit, bắt buộc khi block form
+fn double(n: Integer) = n * 2     // return type suy được = Integer
+fn id(n: Integer) -> Integer { n }  // explicit, bắt buộc khi block form
 ```
 
 ---
@@ -285,7 +296,7 @@ Những tính chất sau là *language-level guarantees*, không phải implemen
 
 | Operator | Tên | Kiểu áp dụng |
 |---|---|---|
-| `+` `-` `*` | cộng, trừ, nhân | `Tryte`, `Tword`, `Tlong` |
+| `+` `-` `*` | cộng, trừ, nhân | `Tryte`, `Integer`, `Long` |
 | `/` | chia (làm tròn về gần nhất, không bias) | như trên |
 | `%%` | mod (kết quả cùng dấu với chia balanced) | như trên |
 | `-` (unary) | đảo dấu (= đảo trit) | như trên + `Trit` |
@@ -296,7 +307,7 @@ Những tính chất sau là *language-level guarantees*, không phải implemen
 ```triet
 let x = a.wrapping_add(b)       // wraparound trong phạm vi
 let y = a.saturating_add(b)     // bão hòa tại biên
-let z = a.checked_add(b)        // trả về Bool3 + giá trị qua tuple
+let z = a.checked_add(b)        // trả về Trilean + giá trị qua tuple
 ```
 
 ### 3.4 Encoding nội bộ (informative)
@@ -311,9 +322,9 @@ Encoding chi tiết và kiểm thử cross-platform đặc tả trong tài liệ
 
 ## 4. Logic 3 giá trị
 
-### 4.1 Kiểu Bool3
+### 4.1 Kiểu Trilean
 
-`Bool3` có chính xác 3 giá trị: `false`, `unknown`, `true`. Ánh xạ với trit: `false → -1`, `unknown → 0`, `true → +1`.
+`Trilean` có chính xác 3 giá trị: `false`, `unknown`, `true`. Ánh xạ với trit: `false → -1`, `unknown → 0`, `true → +1`.
 
 Truth value mapping cho fuzzy reasoning (informative):
 - `false = 0.0`
@@ -407,13 +418,13 @@ Hữu ích cho fuzzy reasoning và biên xác suất Fréchet, nhưng trong Ł3 
 
 ### 4.5 Equality `==` và `!=`
 
-Toán tử `==` là **value equality** — kiểm tra hai giá trị có cùng nội dung không. Trả về `Bool3` nhưng **không bao giờ tạo ra `unknown`** (chỉ `true` hoặc `false`).
+Toán tử `==` là **value equality** — kiểm tra hai giá trị có cùng nội dung không. Trả về `Trilean` nhưng **không bao giờ tạo ra `unknown`** (chỉ `true` hoặc `false`).
 
 ```triet
 true == true              // → true
 unknown == unknown        // → true   (cùng giá trị, không phải biconditional)
 unknown == true           // → false  (khác giá trị)
-5_tword == 5_tword        // → true
+5_integer == 5_integer        // → true
 "abc" == "abc"            // → true
 ```
 
@@ -449,7 +460,7 @@ Implication, XOR, biconditional **không** short-circuit (cần cả hai operand
 let x = 5                   // immutable, type inferred
 let y: Tryte = 5_tryte      // immutable, type explicit
 let mut count = 0           // mutable
-const PI_TIMES_3: Tword = 9 // compile-time constant
+const PI_TIMES_3: Integer = 9 // compile-time constant
 ```
 
 `let` mặc định **immutable**. `let mut` cho phép gán lại. `const` cho hằng số biết tại compile time.
@@ -474,21 +485,21 @@ Hai dạng — block và single-expression:
 
 ```triet
 // Block form
-fn add(a: Tword, b: Tword) -> Tword {
+fn add(a: Integer, b: Integer) -> Integer {
     a + b
 }
 
 // Single-expression form (= thay {})
-fn double(n: Tword) -> Tword = n * 2
+fn double(n: Integer) -> Integer = n * 2
 
 // Return type inferred khi expression đơn
-fn triple(n: Tword) = n * 3
+fn triple(n: Integer) = n * 3
 ```
 
 Block form: giá trị cuối cùng (không có `;`) là return value. Có thể dùng `return` explicit:
 
 ```triet
-fn abs(n: Tword) -> Tword {
+fn abs(n: Integer) -> Integer {
     if n < 0 { return -n }
     n
 }
@@ -507,8 +518,8 @@ Tất cả tham số bắt buộc có type annotation. Triết v0.1 không có:
 ### 6.3 Closure (lambda)
 
 ```triet
-let inc = |n: Tword| -> Tword { n + 1 }
-let inc = |n: Tword| n + 1               // single-expression form
+let inc = |n: Integer| -> Integer { n + 1 }
+let inc = |n: Integer| n + 1               // single-expression form
 let inc = |n| n + 1                      // type inferred khi context cho phép
 ```
 
@@ -530,7 +541,7 @@ let category =
     else { "F" }
 ```
 
-Điều kiện phải là `Bool3`. Ngữ nghĩa của `if` với 3 giá trị:
+Điều kiện phải là `Trilean`. Ngữ nghĩa của `if` với 3 giá trị:
 
 | `cond` | Hành vi |
 |---|---|
@@ -543,7 +554,7 @@ let category =
 Đây là quyết định AI-first quan trọng. Triết **bắt buộc** xử lý explicit khi điều kiện có thể `unknown`:
 
 ```triet
-// Lỗi compile: cond là Bool3, có thể unknown — phải xử lý
+// Lỗi compile: cond là Trilean, có thể unknown — phải xử lý
 if cond { do_something() }
 
 // OK 1: dùng `if?` để đối xử unknown như false (giống boolean fallback)
@@ -581,8 +592,8 @@ for (idx, item) in items.enumerate() { ... }
 #### `while` — condition-driven
 
 ```triet
-while condition { ... }                    // condition: Bool3 known
-while? bool3_cond { ... }                  // condition: Bool3 có thể unknown
+while condition { ... }                    // condition: Trilean known
+while? bool3_cond { ... }                  // condition: Trilean có thể unknown
                                            // unknown đối xử như false
 ```
 
@@ -606,19 +617,19 @@ Cả ba dạng loop hỗ trợ:
 - `break expr` — chỉ trong `loop`, truyền giá trị ra
 - `continue` — sang lượt tiếp
 
-### 7.4 match
+### 7.3 match
 
 Pattern matching exhaustive, expression-oriented:
 
 ```triet
-fn classify(n: Tword) -> Text =
+fn classify(n: Integer) -> Text =
     match n {
         0 => "zero",
         n if n > 0 => "positive",
         _ => "negative",
     }
 
-fn describe(b: Bool3) -> Text =
+fn describe(b: Trilean) -> Text =
     match b {
         true => "có",
         false => "không",
@@ -641,7 +652,7 @@ Compiler bắt buộc match exhaustive. Nếu thiếu case → lỗi compile. AI
 ## 8. Tuple
 
 ```triet
-let pair: (Tword, Bool3) = (42, true)
+let pair: (Integer, Trilean) = (42, true)
 let (x, y) = pair                       // destructure
 let first = pair.0                      // index
 ```
@@ -661,14 +672,14 @@ fn read_line() -> Text
 
 Module `std.text`:
 ```triet
-fn len(s: Text) -> Tword
+fn len(s: Text) -> Integer
 fn concat(a: Text, b: Text) -> Text
-fn from_tword(n: Tword) -> Text
+fn from_integer(n: Integer) -> Text
 ```
 
 Module `std.assert`:
 ```triet
-fn assert(cond: Bool3, msg: Text) -> Unit
+fn assert(cond: Trilean, msg: Text) -> Unit
 ```
 
 Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: assertion phải chắc chắn, `unknown` không đủ.
@@ -691,12 +702,12 @@ V0.1 dùng interpreter tree-walking với:
 ### 11.1 FizzBuzz
 
 ```triet
-fn fizzbuzz(n: Tword) -> Text =
+fn fizzbuzz(n: Integer) -> Text =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
         (_, 0) => "Buzz",
-        _      => std.text.from_tword(n),
+        _      => std.text.from_integer(n),
     }
 
 fn main() -> Unit {
@@ -708,14 +719,12 @@ fn main() -> Unit {
 }
 ```
 
-> Lưu ý: `while` chưa đặc tả ở §7. Sẽ bổ sung — xem §13 Open issues.
-
 ### 11.2 Reasoning với missing data (showcase Łukasiewicz)
 
 ```triet
-type Patient = (Bool3, Bool3, Bool3)    // (có_sốt, có_phát_ban, đã_tiêm_vaccine)
+type Patient = (Trilean, Trilean, Trilean)    // (có_sốt, có_phát_ban, đã_tiêm_vaccine)
 
-fn risk_measles(p: Patient) -> Bool3 {
+fn risk_measles(p: Patient) -> Trilean {
     let (fever, rash, vaccinated) = p
     let symptoms = fever && rash
     let possibly_at_risk = symptoms && !vaccinated
@@ -733,7 +742,7 @@ fn risk_measles(p: Patient) -> Bool3 {
 ```triet
 // Dấu của số = trit MSB khác 0 đầu tiên
 // Một phép — không cần if
-fn sign(n: Tword) -> Trit = n.first_nonzero_trit_or(0_trit)
+fn sign(n: Integer) -> Trit = n.first_nonzero_trit_or(0_trit)
 ```
 
 ---

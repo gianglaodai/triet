@@ -4,7 +4,7 @@
 // Triết propagate `unknown` qua phép logic đến kết luận hợp lý:
 // nếu thiếu thông tin then kết luận cũng thiếu thông tin.
 
-fn risk_measles(fever: Bool3, rash: Bool3, vaccinated: Bool3) -> Bool3 {
+fn risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
     let symptoms = fever && rash
     symptoms && !vaccinated
 }
