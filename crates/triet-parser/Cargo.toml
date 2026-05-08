@@ -15,4 +15,3 @@ workspace = true
 triet-syntax.workspace = true
 triet-lexer.workspace = true
 thiserror.workspace = true
-miette.workspace = true
