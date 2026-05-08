@@ -18,7 +18,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ```triet
 // FizzBuzz
-fn fizzbuzz(n: Integer) -> Text =
+fn fizzbuzz(n: Integer) -> String =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
@@ -65,7 +65,7 @@ cargo fmt                # format
 ## Roadmap
 
 - **v0.1** — interpreter tree-walking, semantics đầy đủ (đang làm)
-- **v0.2** — struct, enum, generics, `Maybe<T>`, `BinaryInteger`/`BinaryLong` interop, Ł∞ (fuzzy continuous)
+- **v0.2** — struct, enum, generics, `Option<T>`, `BinaryInteger`/`BinaryLong` interop, Ł∞ (fuzzy continuous)
 - **v0.3** — bytecode VM với JIT (Cranelift)
 - **v0.4** — concurrency model
 - **v1.0** — production stability, AOT native compile (LLVM/Cranelift)

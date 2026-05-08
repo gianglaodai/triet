@@ -50,7 +50,7 @@ identifier = (letter | "_") (letter | digit | "_")*
 fn  let  mut  const  type  if  else  match  return
 true  false  unknown  not  and  or  xor  iff  implies
 kleene_implies  kleene_xor  kleene_iff
-Trit  Tryte  Integer  Long  Trilean  Text
+Trit  Tryte  Integer  Long  Trilean  String
 import  module  pub
 ```
 
@@ -86,7 +86,7 @@ false       // -1
 unknown     // 0
 ```
 
-#### 1.5.3 Text (string)
+#### 1.5.3 String (string)
 
 ```triet
 "Hello, thế giới!"
@@ -105,11 +105,11 @@ Prefix `f` bật interpolation. String thường (không có `f`) là literal ng
 
 ```triet
 let n: Integer = 42
-let msg: Text = f"Câu trả lời là {n}"
-let calc: Text = f"Tổng: {a + b}, gấp đôi: {(a + b) * 2}"
+let msg: String = f"Câu trả lời là {n}"
+let calc: String = f"Tổng: {a + b}, gấp đôi: {(a + b) * 2}"
 
 // Định dạng explicit (qua trait Display):
-let pretty: Text = f"Giá: {price:#.2}"     // số thập phân, 2 chữ số
+let pretty: String = f"Giá: {price:#.2}"     // số thập phân, 2 chữ số
 ```
 
 Quy tắc: chỉ string có prefix `f` mới interpret `{expr}`. Đảm bảo string không có `f` luôn nguyên bản — không hallucinate khi LLM gen code có chứa `{` `}` ngẫu nhiên.
@@ -129,12 +129,12 @@ Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 | `Integer` | 27 (= 3³) | `±3_812_798_742_493` | **Số nguyên mặc định** |
 | `Long` | 81 (= 3⁴) | `±2.21 × 10³⁸` | Số nguyên lớn — **deferred v0.2** |
 | `Trilean` | 1 | `{false, unknown, true}` | Logic 3 giá trị |
-| `Text` | — | UTF-8 string | Chuỗi văn bản |
+| `String` | — | UTF-8 string | Chuỗi văn bản |
 | `Unit` | — | `()` | Không có giá trị (giống void) |
 
 `Trit` và `Trilean` đều là 1-trit về biểu diễn nhưng **khác kiểu** ở mức ngôn ngữ — `Trit` là số (`-1`, `0`, `+1`), `Trilean` là chân lý (`false`, `unknown`, `true`). Conversion phải explicit (xem §2.4).
 
-> **Lưu ý implementation v0.1:** `Long` (81 trit) deferred sang v0.2. Phạm vi của Long vượt quá `i128::MAX` (~1.7×10³⁸) nên cần big-integer arithmetic — sẽ thêm khi mở rộng v0.2 (đồng thời với generics/enum cho `Maybe<T>`). v0.1 chỉ ship `Trit`, `Tryte`, `Integer`, `Trilean`.
+> **Lưu ý implementation v0.1:** `Long` (81 trit) deferred sang v0.2. Phạm vi của Long vượt quá `i128::MAX` (~1.7×10³⁸) nên cần big-integer arithmetic — sẽ thêm khi mở rộng v0.2 (đồng thời với generics/enum cho `Option<T>`). v0.1 chỉ ship `Trit`, `Tryte`, `Integer`, `Trilean`.
 
 #### Quy ước đặt tên: tam phân first
 
@@ -164,7 +164,7 @@ Chi tiết encoding xem §3.4.
 
 ```triet
 type Confidence = Integer
-type Username = Text
+type Username = String
 ```
 
 Alias không tạo kiểu mới, chỉ là tên thay thế (giống `type` của Rust, không như `newtype`).
@@ -177,7 +177,7 @@ Tất cả conversion giữa kiểu **explicit**. Không có implicit coercion.
 let x: Tryte = 5_tryte
 let y: Integer = x.to_integer()                       // Tryte → Integer (không mất mát)
 let z: Tryte = (1000).to_tryte()                      // Integer → Tryte, panic nếu tràn
-let w: Maybe<Tryte> = (1000).try_to_tryte()           // → Unknown nếu tràn
+let w: Option<Tryte> = (1000).try_to_tryte()           // → Unknown nếu tràn
 let v: Trilean = Trilean.from_trit(t)                 // Trit → Trilean
 let t: Trit = b.to_trit()                             // Trilean → Trit (false→-1, unknown→0, true→+1)
 ```
@@ -186,14 +186,14 @@ Khi cần chuyển đổi với hành vi overflow chuyên biệt (saturating, tr
 - `to_tryte()` — panic on overflow (default)
 - `to_tryte_and_saturate()` — kẹp tại biên Tryte
 - `to_tryte_and_truncate()` — cắt cụt trit cao
-- `try_to_tryte()` — trả về `Maybe<Tryte>`
+- `try_to_tryte()` — trả về `Option<Tryte>`
 
 ### 2.5 Nullable types `T?`
 
 Bất kỳ kiểu nào cũng có thể "có thể null" qua hậu tố `?`:
 
 ```triet
-let name: Text? = get_name()       // có thể là null
+let name: String? = get_name()       // có thể là null
 let count: Integer? = parse_number(s) // null nếu parse fail
 ```
 
@@ -209,7 +209,7 @@ n + 1                       // ❌ lỗi compile: phải kiểm tra null trướ
 ```triet
 // Smart cast qua kiểm tra
 if name != null {
-    std.io.println(name)    // name lúc này được narrow về Text
+    std.io.println(name)    // name lúc này được narrow về String
 }
 
 // Safe call: trả về null nếu chuỗi bị null ở đâu đó
@@ -219,7 +219,7 @@ let len: Integer? = name?.length
 let len: Integer = name?.length ?: 0
 
 // Force unwrap: panic nếu null
-let must: Text = name!!
+let must: String = name!!
 
 // match trên null
 match name {
@@ -228,11 +228,11 @@ match name {
 }
 ```
 
-#### `T?` KHÔNG đồng nhất với `Maybe<T>`
+#### `T?` KHÔNG đồng nhất với `Option<T>`
 
 Đây là một quyết định thiết kế quan trọng. Triết cung cấp **hai cơ chế song song** cho hai nhu cầu khác nhau:
 
-| Đặc điểm | `T?` (nullable) | `Maybe<T>` (wrapper, v0.2+) |
+| Đặc điểm | `T?` (nullable) | `Option<T>` (wrapper, v0.2+) |
 |---|---|---|
 | Triết lý | Đơn giản: có/không có | Monadic: pipeline biến đổi |
 | Verb-first naming | `?.`, `?:`, `!!` operators | `get`, `get_or(default)`, `get_or_else { compute() }` |
@@ -244,25 +244,25 @@ match name {
 Hai kiểu **không tự động convert** lẫn nhau. Dev chuyển explicit:
 
 ```triet
-let n: Text? = "hello"
-let m: Maybe<Text> = n.to_maybe()     // T? → Maybe<T>
-let n2: Text? = m.to_nullable()       // Maybe<T> → T?
+let n: String? = "hello"
+let m: Option<String> = n.to_maybe()     // T? → Option<T>
+let n2: String? = m.to_nullable()       // Option<T> → T?
 
 // Type khác nhau → compiler chặn nhầm lẫn
-fn takes_nullable(x: Text?) { ... }
-fn takes_maybe(x: Maybe<Text>) { ... }
+fn takes_nullable(x: String?) { ... }
+fn takes_maybe(x: Option<String>) { ... }
 
 takes_maybe(n)         // ❌ lỗi compile
 takes_maybe(n.to_maybe())  // ✓
 ```
 
 Lý do thiết kế:
-- **Intent rõ ở type signature.** Thấy `T?` = check-and-use. Thấy `Maybe<T>` = pipeline.
+- **Intent rõ ở type signature.** Thấy `T?` = check-and-use. Thấy `Option<T>` = pipeline.
 - **AI-first:** AI/dev đọc type biết ngay nên dùng API nào. Không có nhiều cách làm cùng một việc.
 - **Không Frankenstein:** Kotlin gắn `let`/`also`/`run` lên nullable đã chứng minh trộn hai paradigm vào một type tạo confusion.
 - **OOP devs không cần biết monadic.** FP devs không bị ràng buộc bởi nullable.
 
-V0.1 chỉ có `T?` (compiler primitive). `Maybe<T>` đặc tả ở v0.2 khi có generic + enum.
+V0.1 chỉ có `T?` (compiler primitive). `Option<T>` đặc tả ở v0.2 khi có generic + enum.
 
 ### 2.6 Type inference
 
@@ -316,7 +316,7 @@ Những tính chất sau là *language-level guarantees*, không phải implemen
 ```triet
 let x = a.add_and_truncate(b)   // wrap-around: cắt cụt trit cao, kết quả modular
 let y = a.add_and_saturate(b)   // kẹp tại biên (clamp): max nếu vượt, min nếu dưới
-let z = a.try_add(b)            // trả về Maybe<T>: Known(result) hoặc Unknown nếu overflow
+let z = a.try_add(b)            // trả về Option<T>: Known(result) hoặc Unknown nếu overflow
 ```
 
 Áp dụng tương tự cho `subtract`, `multiply`, `divide` — ví dụ `subtract_and_truncate`, `try_divide`.
@@ -327,7 +327,7 @@ let z = a.try_add(b)            // trả về Maybe<T>: Known(result) hoặc Unk
 - **default `+`** — strict logic, dev muốn biết overflow ngay (panic)
 - **`add_and_truncate`** — modular arithmetic cố ý: hash, crypto, circular buffer
 - **`add_and_saturate`** — DSP, audio/video, color clamping, progress bar
-- **`try_add`** — caller xử lý explicit, chuỗi pipeline với Maybe<T>
+- **`try_add`** — caller xử lý explicit, chuỗi pipeline với Option<T>
 
 ### 3.4 Encoding nội bộ (informative)
 
@@ -491,7 +491,7 @@ Block-scoped, lexical. Shadowing được phép trong cùng scope:
 ```triet
 let x = 5
 let x = x + 1           // x bây giờ là 6
-let x: Text = "hi"      // shadow, đổi cả type
+let x: String = "hi"      // shadow, đổi cả type
 ```
 
 ---
@@ -641,14 +641,14 @@ Cả ba dạng loop hỗ trợ:
 Pattern matching exhaustive, expression-oriented:
 
 ```triet
-fn classify(n: Integer) -> Text =
+fn classify(n: Integer) -> String =
     match n {
         0 => "zero",
         n if n > 0 => "positive",
         _ => "negative",
     }
 
-fn describe(b: Trilean) -> Text =
+fn describe(b: Trilean) -> String =
     match b {
         true => "có",
         false => "không",
@@ -684,35 +684,104 @@ Tuple là kiểu duy nhất composite tại v0.1. Struct và enum thuộc v0.2.
 
 Module `std.io`:
 ```triet
-fn print(text: Text) -> Unit
-fn println(text: Text) -> Unit
-fn read_line() -> Text
+fn print(text: String) -> Unit
+fn println(text: String) -> Unit
+fn read_line() -> String
 ```
 
 Module `std.text`:
 ```triet
-fn len(s: Text) -> Integer
-fn concat(a: Text, b: Text) -> Text
-fn from_integer(n: Integer) -> Text
+fn len(s: String) -> Integer
+fn concat(a: String, b: String) -> String
+fn from_integer(n: Integer) -> String
 ```
 
 Module `std.assert`:
 ```triet
-fn assert(cond: Trilean, msg: Text) -> Unit
+fn assert(cond: Trilean, msg: String) -> Unit
 ```
 
 Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: assertion phải chắc chắn, `unknown` không đủ.
 
 ---
 
-## 10. Memory model (informative)
+## 10. Memory model
 
-V0.1 dùng interpreter tree-walking với:
-- Tất cả giá trị copy theo trị (value semantics)
-- Không có reference, pointer, borrow checker
-- Garbage collection cho `Text` qua `Rc` của Rust runtime
+Triết theo **Mojo-style memory model** — mục tiêu: cú pháp đơn giản gần Java/Python, performance gần Rust, ít cognitive overhead.
 
-Điều này tạm thời đơn giản hóa — sẽ thiết kế lại memory model nghiêm túc khi tiến tới native compile (v0.3+). Có thể xem xét: ownership như Rust, hoặc reference counting với weak refs, hoặc tracing GC. Quyết định để mở.
+### 10.1 Triết lý
+
+| Aspect | Quyết định |
+|---|---|
+| Stack types | Value semantics — copy mặc định khi gán/truyền |
+| Heap types | ARC (Automatic Reference Counting) ngầm — không phải tracing GC, không phải explicit `Arc<T>` |
+| Lifetime annotations | **KHÔNG** trong source code — compiler infer cho 99% trường hợp |
+| Borrow checker | Đơn giản hóa: kiểm tra "no aliasing while mutable" tại scope-level |
+
+**KHÔNG** theo Rust: ownership/lifetime annotations explicit (`'a`), `&T` vs `&mut T` tỉ mỉ, `String/&str/Cow/Box<str>` zoo. Mojo đã chứng minh rằng 90% safety của Rust đạt được mà không cần phức tạp đó.
+
+### 10.2 Phân loại type
+
+Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**:
+
+**Stack-allocatable** (kích thước cố định, copy trị):
+- `Trit`, `Tryte`, `Integer`, `Long` (numeric)
+- `Trilean` (logic)
+- `Unit` (zero-sized)
+- Tuples `(T1, T2, ...)`
+- `T?` (nullable: T + 1-trit discriminator)
+
+**Heap-allocated** (ARC-managed):
+- `String` (UTF-8 owned, mutable qua `let mut`)
+- `Option<T>` (v0.2+, generic wrapper)
+- `List<T>`, `Set<T>`, `Map<K, V>` (v0.2+, collections)
+
+**Stack view** (composite, không sở hữu):
+- `StringSlice` (v0.2+ — view vào String, immutable, lifetime infer)
+
+### 10.3 Function parameter conventions (Mojo-style)
+
+```triet
+// Mặc định: borrowed (read-only reference, không annotation)
+fn print_name(name: String) { ... }
+
+// Mutable: từ khóa `mut` ở parameter (rare)
+fn append(mut buffer: String, suffix: String) { ... }
+
+// Owned (transfer ownership, hiếm dùng): từ khóa `owned`
+fn consume(owned data: String) -> String { ... }
+```
+
+So với Rust: viết ngắn 30%, ít cognitive overhead 70%.
+
+### 10.4 Implementation v0.1
+
+V0.1 là interpreter tree-walking đơn giản:
+- Tất cả giá trị copy theo trị
+- Heap types dùng `Rc<T>` của Rust runtime (≈ ARC simulation)
+- Borrow checker chưa cần — không có references trong language v0.1
+
+V0.3+ (native compile) sẽ implement đầy đủ ARC + simplified borrow check.
+
+### 10.5 Reserved cho v0.2+: SIMD/Tensor + DType
+
+Khi Triết tiến hóa cho ML/AI workload (phù hợp AI-first vision), sẽ thêm:
+- `SIMD<DType, N>` — vector operations
+- `Tensor<DType>` — multi-dim arrays cho ML
+- `DType` enum — meta-tag chỉ định element type
+
+Theo Mojo convention, **DType variants dùng lowercase** (chỉ ở scope DType enum):
+```triet
+// Hypothetical v0.2+
+enum DType {
+    trit, tryte, integer, long, trilean,
+    // sau này: float_27, complex, bfloat, ...
+}
+
+let vector: SIMD<DType.integer, 4> = ...
+```
+
+Lowercase **chỉ** xuất hiện trong DType variants — không lan ra type names thông thường (vẫn PascalCase).
 
 ---
 
@@ -721,7 +790,7 @@ V0.1 dùng interpreter tree-walking với:
 ### 11.1 FizzBuzz
 
 ```triet
-fn fizzbuzz(n: Integer) -> Text =
+fn fizzbuzz(n: Integer) -> String =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
