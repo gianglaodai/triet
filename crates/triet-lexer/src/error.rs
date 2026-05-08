@@ -63,4 +63,35 @@ pub enum LexError {
         /// The offending escape sequence (including backslash).
         sequence: String,
     },
+
+    /// A `}` appeared in an f-string body without a matching `{`. Use `}}`
+    /// for a literal `}`.
+    #[error("unexpected `}}` in f-string body at byte {span:?}; use `}}}}` for a literal `}}`")]
+    UnmatchedFStringBrace {
+        /// Byte range of the offending `}`.
+        span: Span,
+    },
+}
+
+impl LexError {
+    /// Shift every span field by `offset`. Used by the [`crate::Lexer`]
+    /// driver to convert errors emitted by an inner logos lexer (whose
+    /// spans are relative to a source slice) into absolute spans.
+    pub(crate) fn shift_span(mut self, offset: usize) -> Self {
+        let shift = |span: &mut Span| {
+            span.start += offset;
+            span.end += offset;
+        };
+        match &mut self {
+            Self::UnexpectedCharacter { span, .. }
+            | Self::NumericOverflow { span }
+            | Self::InvalidTernaryDigit { span, .. }
+            | Self::UnterminatedBlockComment { span }
+            | Self::UnterminatedString { span }
+            | Self::InvalidEscape { span, .. }
+            | Self::UnmatchedFStringBrace { span } => shift(span),
+            Self::Unrecognized => {}
+        }
+        self
+    }
 }

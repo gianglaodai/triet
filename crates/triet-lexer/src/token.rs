@@ -215,7 +215,10 @@ pub enum Token {
     #[token("::")]
     ColonColon,
 
-    // === Single-character operators ===
+    // === Single- and double-character operators ===
+    /// `**` — exponentiation (must precede `*` for longest-match).
+    #[token("**")]
+    StarStar,
     /// `+` — addition / positive trit.
     #[token("+")]
     Plus,
@@ -308,16 +311,30 @@ pub enum Token {
     #[regex(r#""([^"\\]|\\.)*""#, lex_string_literal)]
     StringLiteral(String),
 
-    /// F-string literal `f"..."` (raw content; interpolation parsed later).
-    #[regex(r#"f"([^"\\]|\\.)*""#, lex_f_string_literal)]
-    FStringLiteral(String),
-
     /// Identifier — letters, digits, underscores; must start with letter or `_`.
     ///
     /// V0.1 supports ASCII identifiers only. Unicode (Vietnamese diacritics)
     /// support is deferred to v0.2 — see SPEC §1.3.
     #[regex(r"[a-zA-Z][a-zA-Z0-9_]*", |lex| lex.slice().to_owned())]
     Identifier(String),
+
+    // === F-string mode tokens (emitted by the [`crate::Lexer`] driver, not by logos) ===
+    //
+    // The wrapper Lexer drives a stack-based mode machine: after seeing
+    // `f"`, it switches to FString mode and emits these tokens directly,
+    // bypassing logos. These variants intentionally have no `#[token]` /
+    // `#[regex]` attribute — logos will never produce them, only the
+    // wrapper does. See `crate::lexer` for the state machine.
+    /// `f"` — start of an f-string literal.
+    FStringStart,
+    /// A run of literal text inside an f-string (escapes already processed).
+    FStringText(String),
+    /// `{` opening an interpolation expression inside an f-string.
+    InterpolationStart,
+    /// `}` closing the matching interpolation expression.
+    InterpolationEnd,
+    /// `"` ending an f-string literal.
+    FStringEnd,
 }
 
 // ============================================================================
@@ -389,13 +406,7 @@ fn lex_string_literal(lex: &mut Lexer<'_, Token>) -> Result<String, LexError> {
     process_escapes(body, span.start + 1)
 }
 
-fn lex_f_string_literal(lex: &mut Lexer<'_, Token>) -> Result<String, LexError> {
-    let slice = lex.slice();
-    // Strip leading `f"` and trailing `"` — keep raw content for parser stage
-    let body = &slice[2..slice.len() - 1];
-    Ok(body.to_owned())
-}
-
+/// Process escape sequences inside a plain string body.
 fn process_escapes(body: &str, body_start: usize) -> Result<String, LexError> {
     let mut output = String::with_capacity(body.len());
     let mut chars = body.char_indices();

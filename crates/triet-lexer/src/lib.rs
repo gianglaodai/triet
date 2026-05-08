@@ -2,7 +2,8 @@
 //!
 //! Supports ternary literals (`0t+0-+`), type-suffixed numbers
 //! (`5_tryte`, `1_long`), Trilean keywords, identifiers, and the full
-//! operator set defined in SPEC.md §1.
+//! operator set defined in SPEC.md §1. F-strings are tokenized via a
+//! mode stack — see [`Lexer`] for details.
 //!
 //! # Example
 //!
@@ -17,60 +18,26 @@
 #![warn(missing_docs)]
 
 mod error;
+mod lexer;
 mod token;
 
-use logos::Logos;
-
 pub use error::{LexError, Span};
+pub use lexer::{Lexer, SpannedToken, lex};
 pub use token::{IntLiteral, NumericSuffix, Token};
-
-/// A token paired with its byte span in the source.
-pub type SpannedToken = (Token, Span);
-
-/// Tokenize the given source string into a vector of `(Token, Span)` pairs.
-///
-/// Whitespace and comments are skipped. The first lexical error encountered
-/// is returned; the lexer does not attempt recovery in v0.1.
-///
-/// # Errors
-///
-/// Returns the first [`LexError`] encountered while tokenizing. Common
-/// failures include unrecognized characters, numeric overflow, invalid
-/// ternary digits, unterminated strings, or invalid escape sequences.
-pub fn lex(source: &str) -> Result<Vec<SpannedToken>, LexError> {
-    let mut tokens = Vec::new();
-    let mut lexer = Token::lexer(source);
-    while let Some(result) = lexer.next() {
-        match result {
-            Ok(token) => tokens.push((token, lexer.span())),
-            // The `Unrecognized` variant is logos's "no rule matched"
-            // sentinel; replace it with a richer error including the
-            // failing snippet.
-            Err(LexError::Unrecognized) => {
-                let span = lexer.span();
-                let snippet = source[span.clone()].to_owned();
-                return Err(LexError::UnexpectedCharacter { span, snippet });
-            }
-            // All other errors come from token callbacks (escape,
-            // overflow, ternary digit) and already carry useful detail.
-            Err(other) => return Err(other),
-        }
-    }
-    Ok(tokens)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use Token::{
         And, AndAnd, Assign, Bang, BangBang, Break, Caret, Colon, ColonColon, Comma, Const,
-        Continue, Dot, DotDot, DotDotEq, Else, EqEq, FStringLiteral, False, FatArrow, Fn, For,
-        GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral, KleeneIff, KleeneImplies,
-        KleeneXor, LBrace, LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus,
-        Mut, Not, NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Pub, Question,
-        QuestionColon, QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star,
-        StringLiteral, TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore,
-        Unknown, While, WhileQ, Xor,
+        Continue, Dot, DotDot, DotDotEq, Else, EqEq, FStringEnd, FStringStart, FStringText, False,
+        FatArrow, Fn, For, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
+        InterpolationEnd, InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace,
+        LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mut, Not, NotEq,
+        Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Pub, Question, QuestionColon,
+        QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral,
+        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore, Unknown, While,
+        WhileQ, Xor,
     };
 
     fn lex_only(source: &str) -> Vec<Token> {
@@ -103,7 +70,6 @@ mod tests {
 
     #[test]
     fn keyword_is_distinct_from_identifier_starting_with_same_chars() {
-        // `iffy` should be one identifier, not `iff` + `y`
         let tokens = lex_only("iffy");
         match tokens.as_slice() {
             [Identifier(name)] if name == "iffy" => {}
@@ -115,7 +81,21 @@ mod tests {
 
     #[test]
     fn lexes_arithmetic_operators() {
-        assert_eq!(lex_only("+ - * / %%"), vec![Plus, Minus, Star, Slash, PercentPercent]);
+        assert_eq!(
+            lex_only("+ - * / %% **"),
+            vec![Plus, Minus, Star, Slash, PercentPercent, StarStar],
+        );
+    }
+
+    #[test]
+    fn star_star_beats_star_via_longest_match() {
+        assert_eq!(lex_only("**"), vec![StarStar]);
+        assert_eq!(lex_only("* *"), vec![Star, Star]);
+        assert_eq!(lex_only("a ** b"), vec![
+            Identifier("a".to_owned()),
+            StarStar,
+            Identifier("b".to_owned()),
+        ]);
     }
 
     #[test]
@@ -152,7 +132,6 @@ mod tests {
 
     #[test]
     fn lexes_function_arrow_distinct_from_minus_gt() {
-        // `->` must be a single token, not Minus followed by Gt
         assert_eq!(lex_only("->"), vec![ThinArrow]);
         assert_eq!(lex_only("- >"), vec![Minus, Token::Gt]);
     }
@@ -166,7 +145,6 @@ mod tests {
 
     #[test]
     fn lexes_range_operators_at_correct_length() {
-        // longest-match: `..=` beats `..` beats `.`
         assert_eq!(lex_only(".."), vec![DotDot]);
         assert_eq!(lex_only("..="), vec![DotDotEq]);
         assert_eq!(lex_only("."), vec![Dot]);
@@ -234,8 +212,6 @@ mod tests {
 
     #[test]
     fn integer_with_unknown_suffix_does_not_consume_trailing_chars() {
-        // `1_xyz` is not a known suffix → integer matches `1`, then the
-        // remaining `_xyz` is tokenized as wildcard `_` + identifier `xyz`.
         let tokens = lex_only("1_xyz");
         assert_eq!(
             tokens,
@@ -251,7 +227,6 @@ mod tests {
 
     #[test]
     fn lexes_ternary_literal_basic() {
-        // 0t+0-+ = (+1)*27 + 0*9 + (-1)*3 + (+1)*1 = 25
         assert_eq!(
             lex_only("0t+0-+"),
             vec![TernaryLiteral(IntLiteral { value: 25, suffix: None })],
@@ -268,7 +243,6 @@ mod tests {
 
     #[test]
     fn lexes_ternary_positive_only() {
-        // 0t+++ = 9 + 3 + 1 = 13
         assert_eq!(
             lex_only("0t+++"),
             vec![TernaryLiteral(IntLiteral { value: 13, suffix: None })],
@@ -277,7 +251,6 @@ mod tests {
 
     #[test]
     fn lexes_ternary_negative_only() {
-        // 0t--- = -9 - 3 - 1 = -13
         assert_eq!(
             lex_only("0t---"),
             vec![TernaryLiteral(IntLiteral { value: -13, suffix: None })],
@@ -286,7 +259,6 @@ mod tests {
 
     #[test]
     fn lexes_ternary_with_underscores() {
-        // 0t+_0_-_+ = same as 0t+0-+ = 25
         assert_eq!(
             lex_only("0t+_0_-_+"),
             vec![TernaryLiteral(IntLiteral { value: 25, suffix: None })],
@@ -333,14 +305,145 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // === F-strings ===
+    // === F-strings (mode stack) ===
 
     #[test]
-    fn lexes_f_string_with_raw_content() {
+    fn lexes_f_string_with_single_interpolation() {
+        let tokens = lex_only(r#"f"hello {name}""#);
         assert_eq!(
-            lex_only(r#"f"hello {name}""#),
-            vec![FStringLiteral("hello {name}".to_owned())],
+            tokens,
+            vec![
+                FStringStart,
+                FStringText("hello ".to_owned()),
+                InterpolationStart,
+                Identifier("name".to_owned()),
+                InterpolationEnd,
+                FStringEnd,
+            ],
         );
+    }
+
+    #[test]
+    fn lexes_f_string_with_no_interpolation_and_no_text() {
+        let tokens = lex_only(r#"f"""#);
+        assert_eq!(tokens, vec![FStringStart, FStringEnd]);
+    }
+
+    #[test]
+    fn lexes_f_string_with_only_text() {
+        let tokens = lex_only(r#"f"hello""#);
+        assert_eq!(
+            tokens,
+            vec![FStringStart, FStringText("hello".to_owned()), FStringEnd],
+        );
+    }
+
+    #[test]
+    fn lexes_f_string_with_only_interpolation_no_surrounding_text() {
+        let tokens = lex_only(r#"f"{x}""#);
+        assert_eq!(
+            tokens,
+            vec![
+                FStringStart,
+                InterpolationStart,
+                Identifier("x".to_owned()),
+                InterpolationEnd,
+                FStringEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn lexes_f_string_with_multiple_interpolations() {
+        let tokens = lex_only(r#"f"{a} + {b} = {c}""#);
+        assert_eq!(
+            tokens,
+            vec![
+                FStringStart,
+                InterpolationStart,
+                Identifier("a".to_owned()),
+                InterpolationEnd,
+                FStringText(" + ".to_owned()),
+                InterpolationStart,
+                Identifier("b".to_owned()),
+                InterpolationEnd,
+                FStringText(" = ".to_owned()),
+                InterpolationStart,
+                Identifier("c".to_owned()),
+                InterpolationEnd,
+                FStringEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn f_string_text_handles_escape_sequences() {
+        let tokens = lex_only(r#"f"line1\nline2""#);
+        assert_eq!(
+            tokens,
+            vec![
+                FStringStart,
+                FStringText("line1\nline2".to_owned()),
+                FStringEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn f_string_double_brace_is_literal_brace() {
+        let tokens = lex_only(r#"f"{{ literal }}""#);
+        assert_eq!(
+            tokens,
+            vec![
+                FStringStart,
+                FStringText("{ literal }".to_owned()),
+                FStringEnd,
+            ],
+        );
+    }
+
+    #[test]
+    fn f_string_can_contain_arbitrary_expression() {
+        // Critical: nested block `if true { 1 } else { 0 }` inside
+        // interpolation. Brace counter must let inner `{` and `}` pass
+        // through without closing the interpolation prematurely.
+        let tokens = lex_only(r#"f"r = { if x { 1 } else { 0 } }""#);
+        // Expect: FStringStart, FStringText("r = "), InterpolationStart,
+        // If, Ident(x), LBrace, Int(1), RBrace, Else, LBrace, Int(0),
+        // RBrace, InterpolationEnd, FStringEnd
+        assert!(matches!(tokens[0], FStringStart));
+        assert!(matches!(&tokens[1], FStringText(_)));
+        assert!(matches!(tokens[2], InterpolationStart));
+        assert!(tokens.contains(&LBrace));
+        assert!(tokens.contains(&RBrace));
+        assert!(matches!(tokens.last(), Some(FStringEnd)));
+        // Crucially: we must reach FStringEnd, proving the brace tracker
+        // did not consume an inner `}` as the interpolation terminator.
+    }
+
+    #[test]
+    fn f_string_interpolation_can_contain_string_with_braces() {
+        // String literal "}" inside interpolation must NOT close the
+        // outer interpolation: logos atomically lexes the string.
+        let tokens = lex_only(r#"f"x = { "}" }""#);
+        assert!(matches!(tokens[0], FStringStart));
+        assert!(matches!(tokens.last(), Some(FStringEnd)));
+        // Verify the inner string literal made it through.
+        let has_string = tokens.iter().any(|t| matches!(t, StringLiteral(s) if s == "}"));
+        assert!(has_string, "expected inner string \"}}\", got {tokens:?}");
+    }
+
+    #[test]
+    fn rejects_unmatched_closing_brace_in_f_string_text() {
+        // Single `}` in text without matching `{` is an error.
+        let result = lex(r#"f"oops}""#);
+        assert!(matches!(result, Err(LexError::UnmatchedFStringBrace { .. })));
+    }
+
+    #[test]
+    fn rejects_unterminated_f_string() {
+        let result = lex(r#"f"hello"#);
+        assert!(matches!(result, Err(LexError::UnterminatedString { .. })));
     }
 
     // === Identifiers ===
@@ -376,7 +479,7 @@ mod tests {
     fn skips_line_comments() {
         let source = "let x = 5  // assign\nlet y = 7";
         let tokens = lex_only(source);
-        assert_eq!(tokens.len(), 8); // let, x, =, 5, let, y, =, 7
+        assert_eq!(tokens.len(), 8);
     }
 
     #[test]
@@ -396,7 +499,27 @@ mod tests {
         assert_eq!(tokens[1].1, 3..6);
     }
 
-    // === Realistic sample ===
+    #[test]
+    fn f_string_spans_are_absolute() {
+        let source = r#"  f"hi {x}""#;
+        //              ^ ^  ^^   ^^
+        //              0 2  3 7  9 10
+        let tokens = lex(source).unwrap();
+        assert_eq!(tokens[0].0, FStringStart);
+        assert_eq!(tokens[0].1, 2..4);
+        assert!(matches!(&tokens[1].0, FStringText(s) if s == "hi "));
+        assert_eq!(tokens[1].1, 4..7);
+        assert_eq!(tokens[2].0, InterpolationStart);
+        assert_eq!(tokens[2].1, 7..8);
+        assert!(matches!(&tokens[3].0, Identifier(s) if s == "x"));
+        assert_eq!(tokens[3].1, 8..9);
+        assert_eq!(tokens[4].0, InterpolationEnd);
+        assert_eq!(tokens[4].1, 9..10);
+        assert_eq!(tokens[5].0, FStringEnd);
+        assert_eq!(tokens[5].1, 10..11);
+    }
+
+    // === Realistic samples ===
 
     #[test]
     fn lexes_fizzbuzz_signature() {
