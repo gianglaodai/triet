@@ -1,6 +1,340 @@
-//! Triết type checker: verify types và infer khi annotation thiếu.
+//! Triết type checker.
 //!
-//! Bidirectional type checking đơn giản hóa. Đặc biệt theo dõi nullable
-//! `T?` riêng biệt với plain `T` — bắt buộc dev xử lý null trước khi dùng.
+//! Walks a `Program` produced by `triet-parser` and accumulates
+//! `TypeError`s. The v0.1 checker is intentionally pragmatic:
+//!
+//! - All built-in scalar / Trilean / String / Unit types are known.
+//! - User-defined generics, traits, and structs are not yet supported.
+//! - The checker is recovery-friendly: on any error it substitutes
+//!   `Type::Unknown` and continues, so a single run can surface every
+//!   independent error.
+//!
+//! # Public API
+//!
+//! [`check`] takes a `&Program` and returns a `Vec<TypeError>` (empty
+//! on success).
 
 #![warn(missing_docs)]
+// The checker has many small case-analysis branches that share short
+// bodies, and several spots where moving from `if let` to `map_or`
+// would obscure the no-op vs error paths. The clippy warnings flagged
+// here are stylistic in this codebase, so we silence them at module
+// level and review the affected code holistically instead.
+#![allow(
+    clippy::redundant_pub_crate,
+    clippy::needless_pass_by_value,
+    clippy::module_name_repetitions,
+    clippy::match_same_arms,
+    clippy::option_if_let_else,
+    clippy::or_fun_call,
+    clippy::missing_panics_doc,
+)]
+
+mod check;
+mod env;
+mod error;
+mod types;
+
+pub use check::check;
+pub use env::TypeEnvironment;
+pub use error::TypeError;
+pub use types::Type;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use triet_parser::parse;
+
+    fn check_source(source: &str) -> Vec<TypeError> {
+        let (program, parse_errors) = parse(source);
+        assert!(
+            parse_errors.is_empty(),
+            "parse errors: {parse_errors:#?}",
+        );
+        check(&program)
+    }
+
+    fn assert_ok(source: &str) {
+        let errors = check_source(source);
+        assert!(errors.is_empty(), "type errors: {errors:#?}");
+    }
+
+    fn assert_has_error<F>(source: &str, predicate: F)
+    where
+        F: Fn(&TypeError) -> bool,
+    {
+        let errors = check_source(source);
+        assert!(
+            errors.iter().any(predicate),
+            "expected matching error, got: {errors:#?}",
+        );
+    }
+
+    // ===== Happy paths =====
+
+    #[test]
+    fn checks_identity_function() {
+        assert_ok("fn id(n: Integer) -> Integer = n");
+    }
+
+    #[test]
+    fn checks_simple_arithmetic() {
+        assert_ok("fn add(a: Integer, b: Integer) -> Integer = a + b");
+    }
+
+    #[test]
+    fn checks_call_to_prelude_function() {
+        assert_ok(r#"fn greet() -> Unit = print("hello")"#);
+    }
+
+    #[test]
+    fn checks_let_with_inferred_type() {
+        assert_ok(r"
+            fn main() {
+                let x = 5
+                let y = x + 1
+                println(to_string(y))
+            }
+        ");
+    }
+
+    #[test]
+    fn checks_let_with_matching_annotation() {
+        assert_ok("fn main() { let x: Integer = 5 }");
+    }
+
+    #[test]
+    fn checks_if_with_trilean_condition() {
+        assert_ok(r"
+            fn check(b: Trilean) -> Integer {
+                if b { 1 } else { 0 }
+            }
+        ");
+    }
+
+    #[test]
+    fn checks_match_with_consistent_arms() {
+        assert_ok(r#"
+            fn classify(n: Integer) -> String =
+                match n {
+                    0 => "zero",
+                    _ => "nonzero",
+                }
+        "#);
+    }
+
+    #[test]
+    fn checks_for_loop_over_range() {
+        assert_ok(r"
+            fn count() {
+                for i in 0..10 {
+                    print(to_string(i))
+                }
+            }
+        ");
+    }
+
+    #[test]
+    fn checks_method_call_on_integer() {
+        assert_ok("fn shrink(n: Integer) -> Tryte = n.to_tryte()");
+    }
+
+    #[test]
+    fn checks_logic_expression_with_trileans() {
+        assert_ok(r"
+            fn risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean =
+                fever and rash and not vaccinated
+        ");
+    }
+
+    #[test]
+    fn checks_implication_returns_trilean() {
+        assert_ok(r"
+            fn entail(p: Trilean, q: Trilean) -> Trilean = p implies q
+        ");
+    }
+
+    #[test]
+    fn checks_block_with_final_expression() {
+        assert_ok(r"
+            fn compute() -> Integer {
+                let a = 5
+                let b = 7
+                a + b
+            }
+        ");
+    }
+
+    #[test]
+    fn checks_force_unwrap_on_nullable() {
+        assert_ok("fn force(name: String?) -> String = name!!");
+    }
+
+    #[test]
+    fn checks_tuple_index_lookup() {
+        assert_ok(r"
+            fn first(pair: (Integer, Trilean)) -> Integer = pair.0
+        ");
+    }
+
+    // ===== Error cases =====
+
+    #[test]
+    fn flags_unknown_type_in_annotation() {
+        assert_has_error(
+            "fn bad(x: Foobar) -> Integer = 0",
+            |e| matches!(e, TypeError::UnknownType { name, .. } if name == "Foobar"),
+        );
+    }
+
+    #[test]
+    fn flags_undefined_name() {
+        assert_has_error(
+            "fn bad() -> Integer = does_not_exist",
+            |e| matches!(e, TypeError::UndefinedName { name, .. } if name == "does_not_exist"),
+        );
+    }
+
+    #[test]
+    fn flags_arithmetic_type_mismatch() {
+        assert_has_error(
+            r"fn bad(a: Integer, b: Tryte) -> Integer = a + b",
+            |e| matches!(e, TypeError::InvalidOperands { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_arithmetic_on_non_numeric() {
+        assert_has_error(
+            r"fn bad(a: String, b: String) -> String = a + b",
+            |e| matches!(e, TypeError::InvalidOperands { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_logic_op_on_non_trilean() {
+        assert_has_error(
+            "fn bad(a: Integer, b: Integer) -> Trilean = a and b",
+            |e| matches!(e, TypeError::InvalidOperands { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_let_annotation_mismatch() {
+        assert_has_error(
+            r#"fn bad() { let x: Integer = "hi" }"#,
+            |e| matches!(e, TypeError::Mismatch { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_function_return_mismatch() {
+        assert_has_error(
+            r#"fn bad() -> Integer = "hi""#,
+            |e| matches!(e, TypeError::Mismatch { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_call_arity_mismatch() {
+        assert_has_error(
+            r"fn main() { print() }",
+            |e| matches!(e, TypeError::WrongArity { expected: 1, found: 0, .. }),
+        );
+    }
+
+    #[test]
+    fn flags_call_argument_type_mismatch() {
+        assert_has_error(
+            r"fn main() { print(42) }",
+            |e| matches!(e, TypeError::Mismatch { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_if_with_non_trilean_condition() {
+        assert_has_error(
+            r"fn bad(n: Integer) -> Integer { if n { 1 } else { 0 } }",
+            |e| matches!(e, TypeError::NonTrileanCondition { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_if_branches_with_different_types() {
+        assert_has_error(
+            r#"fn bad(b: Trilean) -> Integer { if b { 1 } else { "two" } }"#,
+            |e| matches!(e, TypeError::Mismatch { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_force_unwrap_on_non_nullable() {
+        assert_has_error(
+            r"fn bad(s: String) -> String = s!!",
+            |e| matches!(e, TypeError::NotNullable { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_tuple_index_out_of_range() {
+        assert_has_error(
+            r"fn bad(pair: (Integer, Trilean)) -> Integer = pair.7",
+            |e| matches!(e, TypeError::TupleIndexOutOfRange { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_unknown_method() {
+        assert_has_error(
+            r"fn bad(n: Integer) -> Integer = n.no_such_method()",
+            |e| matches!(e, TypeError::UnknownMember { .. }),
+        );
+    }
+
+    #[test]
+    fn flags_duplicate_function_name() {
+        assert_has_error(
+            r"
+                fn dup() {}
+                fn dup() {}
+            ",
+            |e| matches!(e, TypeError::DuplicateName { name, .. } if name == "dup"),
+        );
+    }
+
+    // ===== Realistic samples =====
+
+    #[test]
+    fn checks_nested_if_else_chain() {
+        assert_ok(r#"
+            fn classify(score: Integer) -> String {
+                if score >= 90 { "A" }
+                else if score >= 80 { "B" }
+                else if score >= 70 { "C" }
+                else { "F" }
+            }
+        "#);
+    }
+
+    #[test]
+    fn checks_program_with_multiple_items() {
+        assert_ok(r"
+            const MAX: Integer = 100
+
+            fn double(n: Integer) -> Integer = n * 2
+
+            fn main() {
+                let x = double(MAX)
+                println(to_string(x))
+            }
+        ");
+    }
+
+    #[test]
+    fn forward_reference_to_later_function_resolves() {
+        assert_ok(r"
+            fn one() -> Integer = two()
+            fn two() -> Integer = 2
+        ");
+    }
+}
