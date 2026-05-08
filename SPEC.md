@@ -173,12 +173,18 @@ Tất cả conversion giữa kiểu **explicit**. Không có implicit coercion.
 
 ```triet
 let x: Tryte = 5_tryte
-let y: Integer = x.to_integer()             // Tryte → Integer (không mất mát)
-let z: Tryte = (1000_integer).to_tryte()  // Integer → Tryte, có thể tràn → panic
-let w: Tryte = (1000_integer).to_tryte_saturating()  // hoặc bão hòa
-let v: Trilean = Trilean.from_trit(t)       // Trit → Trilean
-let t: Trit  = b.to_trit()              // Trilean → Trit (false→-1, unknown→0, true→+1)
+let y: Integer = x.to_integer()                       // Tryte → Integer (không mất mát)
+let z: Tryte = (1000).to_tryte()                      // Integer → Tryte, panic nếu tràn
+let w: Maybe<Tryte> = (1000).try_to_tryte()           // → Unknown nếu tràn
+let v: Trilean = Trilean.from_trit(t)                 // Trit → Trilean
+let t: Trit = b.to_trit()                             // Trilean → Trit (false→-1, unknown→0, true→+1)
 ```
+
+Khi cần chuyển đổi với hành vi overflow chuyên biệt (saturating, truncating), dùng *narrowing conversion methods* tương tự arithmetic:
+- `to_tryte()` — panic on overflow (default)
+- `to_tryte_and_saturate()` — kẹp tại biên Tryte
+- `to_tryte_and_truncate()` — cắt cụt trit cao
+- `try_to_tryte()` — trả về `Maybe<Tryte>`
 
 ### 2.5 Nullable types `T?`
 
@@ -227,7 +233,8 @@ match name {
 | Đặc điểm | `T?` (nullable) | `Maybe<T>` (wrapper, v0.2+) |
 |---|---|---|
 | Triết lý | Đơn giản: có/không có | Monadic: pipeline biến đổi |
-| API | `?.`, `?:`, `!!`, smart cast | `map`, `and_then`, `filter`, `fold`, ... |
+| Verb-first naming | `?.`, `?:`, `!!` operators | `get`, `get_or(default)`, `get_or_else { compute() }` |
+| API | `?.`, `?:`, `!!`, smart cast | `map`, `flat_map`, `filter`, `fold`, `get`, `get_or`, `get_or_else` |
 | Đối tượng dev | OOP-friendly | FP-friendly |
 | Cú pháp ngắn? | Có (`?` operator) | Không (gọi method) |
 | Auto-convert? | **Không** | **Không** |
@@ -302,13 +309,23 @@ Những tính chất sau là *language-level guarantees*, không phải implemen
 | `-` (unary) | đảo dấu (= đảo trit) | như trên + `Trit` |
 | `<` `<=` `>` `>=` `==` `!=` | so sánh | như trên |
 
-**Tràn (overflow):** mặc định **panic**. Có biến thể `_wrapping`, `_saturating`, `_checked`:
+**Tràn (overflow):** mặc định **panic** — fail-fast, dễ phát hiện bug. Ba biến thể alternative cho hành vi chuyên biệt:
 
 ```triet
-let x = a.wrapping_add(b)       // wraparound trong phạm vi
-let y = a.saturating_add(b)     // bão hòa tại biên
-let z = a.checked_add(b)        // trả về Trilean + giá trị qua tuple
+let x = a.add_and_truncate(b)   // wrap-around: cắt cụt trit cao, kết quả modular
+let y = a.add_and_saturate(b)   // kẹp tại biên (clamp): max nếu vượt, min nếu dưới
+let z = a.try_add(b)            // trả về Maybe<T>: Known(result) hoặc Unknown nếu overflow
 ```
+
+Áp dụng tương tự cho `subtract`, `multiply`, `divide` — ví dụ `subtract_and_truncate`, `try_divide`.
+
+**Lưu ý:** phép `negate` (`-x`) **không cần** biến thể overflow — phạm vi balanced ternary đối xứng quanh 0, nên `negate` luôn thành công (khác với two's complement binary nơi `negate(MIN)` overflow). Đây là một trong các *guarantees* của balanced ternary đã liệt kê ở §3.2.
+
+**Use cases:**
+- **default `+`** — strict logic, dev muốn biết overflow ngay (panic)
+- **`add_and_truncate`** — modular arithmetic cố ý: hash, crypto, circular buffer
+- **`add_and_saturate`** — DSP, audio/video, color clamping, progress bar
+- **`try_add`** — caller xử lý explicit, chuỗi pipeline với Maybe<T>
 
 ### 3.4 Encoding nội bộ (informative)
 
