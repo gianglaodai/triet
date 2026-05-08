@@ -116,6 +116,10 @@ Quy tắc: chỉ string có prefix `f` mới interpret `{expr}`. Đảm bảo st
 
 Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 
+**Nested f-strings không được phép ở v0.1.** Một f-string không thể chứa f-string khác trong phần interpolation. Cần thiết: tách thành biến trung gian.
+
+**Implementation note (informative):** Lexer dùng *mode stack* (như rustc/Swift/Python 3.12+) để xử lý f-string. Khi gặp `f"`, lexer push mode `FString`; trong mode này, text được emit thành `FStringText` cho đến khi gặp `{` (push mode `Interpolation`) hoặc `"` (pop, end f-string). Trong mode `Interpolation`, lexer hoạt động bình thường, đếm độ sâu ngoặc nhọn; `}` ở depth 0 đóng interpolation. Cách này tránh được mọi vấn đề scan ngây ngô (string `"}"` bên trong, block `{ ... }` bên trong, span tracking sai lệch).
+
 ---
 
 ## 2. Hệ thống kiểu (Type system)
@@ -308,8 +312,11 @@ Những tính chất sau là *language-level guarantees*, không phải implemen
 | `+` `-` `*` | cộng, trừ, nhân | `Tryte`, `Integer`, `Long` |
 | `/` | chia (làm tròn về gần nhất, không bias) | như trên |
 | `%%` | mod (kết quả cùng dấu với chia balanced) | như trên |
-| `-` (unary) | đảo dấu (= đảo trit) | như trên + `Trit` |
+| `**` | lũy thừa (right-associative) | như trên |
+| `-` `!` `not` (unary) | đảo dấu / phủ định | như trên + `Trit` + `Trilean` |
 | `<` `<=` `>` `>=` `==` `!=` | so sánh | như trên |
+
+**Unary unification (đặc trưng tam phân):** Trong balanced ternary, "đảo dấu" số và "phủ định logic" là **cùng một phép toán** ở mức trit (đảo từng trit `+ ↔ -`, `0 → 0`). Triết hợp nhất: ba dạng `-x`, `!x`, `not x` đồng nghĩa và cùng map tới một AST node. Dev tự chọn theo ngữ cảnh: `-` cho số, `!` cho logic, `not` khi muốn dùng English keyword.
 
 **Tràn (overflow):** mặc định **panic** — fail-fast, dễ phát hiện bug. Ba biến thể alternative cho hành vi chuyên biệt:
 
@@ -856,7 +863,7 @@ return_stmt   = "return" expr? ";" ;
 expr          = literal | IDENT | binop | unop | call | if_expr | match_expr
               | block | tuple | "(" expr ")" ;
 binop         = expr OP expr ;
-unop          = ("!" | "-" | "not") expr ;
+unop          = ("!" | "-" | "not") expr ;  // tất cả 3 form đồng nghĩa
 call          = expr "(" args? ")" ;
 if_expr       = ("if" | "if?") expr block ("else" block)? ;
 match_expr    = "match" expr "{" arm ("," arm)* ","? "}" ;
@@ -867,6 +874,42 @@ pattern       = literal | IDENT | "_" | tuple_pat | or_pat ;
 ```
 
 (Đầy đủ ngữ pháp BNF sẽ ở `docs/grammar.ebnf` khi parser hoàn thành.)
+
+### 12.1 Operator precedence
+
+Bảng ưu tiên từ **cao đến thấp** (cao = bind chặt hơn, đánh giá trước). Mỗi level ghi rõ associativity.
+
+| Level | Operators | Associativity | Ghi chú |
+|---:|---|---|---|
+| 14 | Postfix: `?.` `.` `()` `[]` `!!` | left-chain | method call, field access, index, force-unwrap |
+| 13 | `**` (exponent) | **right** | `2 ** 3 ** 2` = `2 ** (3 ** 2)` |
+| 12 | Unary: `-` `!` `not` | prefix | (lower than `**`: `-2 ** 2` = `-(2 ** 2)` = -4) |
+| 11 | `*` `/` `%%` | left | |
+| 10 | `+` `-` (binary) | left | |
+| 9 | `..` `..=` | **no chain** | `1..10..20` lỗi compile |
+| 8 | `?:` (Elvis) | right | `a ?: b ?: c` = `a ?: (b ?: c)`; lower than arithmetic |
+| 7 | `<` `<=` `>` `>=` | **no chain** | `a < b < c` lỗi compile |
+| 6 | `==` `!=` | **no chain** | `a == b == c` lỗi compile |
+| 5 | `^` `~^` `xor` `kleene_xor` | left | XOR (Łukasiewicz / Kleene) |
+| 4 | `&&` `and` | left | |
+| 3 | `\|\|` `or` | left | |
+| 2 | `<=>` `<~>` `iff` `kleene_iff` | left | biconditional |
+| 1 | `=>` `~>` `implies` `kleene_implies` | **right** | implication (math convention) |
+
+**Biểu thức ví dụ:**
+
+```triet
+-2 ** 2                       // = -4 (math/Python convention)
+(-2) ** 2                     // = 4 (parens override)
+a + b * c ** 2                // = a + (b * (c ** 2))
+name?.length ?: 0 + count * 2 // = name?.length ?: (0 + (count * 2))
+a == b == c                   // ❌ comparison không chain
+a == b and c == d             // = (a == b) and (c == d) — OK
+flag and not other            // = flag and (not other)
+p implies q implies r         // = p implies (q implies r) (right-assoc)
+```
+
+**Quy tắc cấm chain (no chain):** comparison (`<` `<=` `>` `>=` `==` `!=`) và range (`..` `..=`) không chain để tránh ambiguity giống SQL/Python. AI-first: lỗi compile sớm tốt hơn semantics surprise.
 
 ---
 
