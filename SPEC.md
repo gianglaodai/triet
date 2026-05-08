@@ -127,12 +127,14 @@ Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 | `Trit` | 1 | `{-1, 0, +1}` | Đơn vị thông tin tam phân cơ bản |
 | `Tryte` | 9 (= 3²) | `±9_841` | Số nguyên nhỏ |
 | `Integer` | 27 (= 3³) | `±3_812_798_742_493` | **Số nguyên mặc định** |
-| `Long` | 81 (= 3⁴) | rất lớn | Số nguyên lớn |
+| `Long` | 81 (= 3⁴) | `±2.21 × 10³⁸` | Số nguyên lớn — **deferred v0.2** |
 | `Trilean` | 1 | `{false, unknown, true}` | Logic 3 giá trị |
 | `Text` | — | UTF-8 string | Chuỗi văn bản |
 | `Unit` | — | `()` | Không có giá trị (giống void) |
 
 `Trit` và `Trilean` đều là 1-trit về biểu diễn nhưng **khác kiểu** ở mức ngôn ngữ — `Trit` là số (`-1`, `0`, `+1`), `Trilean` là chân lý (`false`, `unknown`, `true`). Conversion phải explicit (xem §2.4).
+
+> **Lưu ý implementation v0.1:** `Long` (81 trit) deferred sang v0.2. Phạm vi của Long vượt quá `i128::MAX` (~1.7×10³⁸) nên cần big-integer arithmetic — sẽ thêm khi mở rộng v0.2 (đồng thời với generics/enum cho `Maybe<T>`). v0.1 chỉ ship `Trit`, `Tryte`, `Integer`, `Trilean`.
 
 #### Quy ước đặt tên: tam phân first
 
