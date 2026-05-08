@@ -24,3 +24,6 @@ triet-typecheck.workspace = true
 triet-interpreter.workspace = true
 clap.workspace = true
 miette.workspace = true
+
+[dev-dependencies]
+triet-syntax.workspace = true

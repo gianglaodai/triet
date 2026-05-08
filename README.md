@@ -6,7 +6,17 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🚧 **Tiền alpha (v0.1)** — đang scaffold, chưa chạy được. Đặc tả ngôn ngữ tại [`SPEC.md`](SPEC.md).
+🟢 **v0.1 (interpreter) — chạy được end-to-end.** Đặc tả ngôn ngữ tại [`SPEC.md`](SPEC.md).
+
+```bash
+cargo build --release
+./target/release/triet run examples/fizzbuzz.tt
+./target/release/triet run examples/measles_risk.tt
+./target/release/triet run examples/factorial.tt
+./target/release/triet run examples/lukasiewicz_vs_kleene.tt
+```
+
+Tổng 4 demo programs thực thi thành công. 424 tests pass workspace-wide.
 
 ## Triết lý thiết kế
 
@@ -57,9 +67,25 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test               # run all tests
+cargo test               # run all tests (424 in v0.1)
 cargo clippy             # lint
 cargo fmt                # format
+```
+
+## Chạy demo
+
+```bash
+# Build binary
+cargo build --release
+
+# Chạy chương trình .tt
+./target/release/triet run examples/fizzbuzz.tt
+
+# Type-check không thực thi
+./target/release/triet check examples/fizzbuzz.tt
+
+# Thông tin phiên bản
+./target/release/triet info
 ```
 
 ## Roadmap

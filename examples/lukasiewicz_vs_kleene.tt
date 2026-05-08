@@ -1,0 +1,27 @@
+// So sánh Łukasiewicz Ł3 và Kleene K3 ở phép kéo theo `=>`.
+//
+// Hai hệ logic chỉ khác nhau ở `unknown → unknown`:
+//   Łukasiewicz (default):  unknown → unknown = true   (vacuously)
+//   Kleene K3:              unknown → unknown = unknown (conservative)
+//
+// Triết default là Łukasiewicz (AI-first); Kleene biến thể qua
+// `kleene_implies` / `~>`.
+
+fn main() {
+    let u = unknown
+    let t = true
+    let f = false
+
+    println("=== Truth tables — Łukasiewicz (=>) vs Kleene (~>) ===")
+    println(f"  t  =>  t  = {t implies t}     |  t  ~> t  = {t kleene_implies t}")
+    println(f"  t  =>  f  = {t implies f}    |  t  ~> f  = {t kleene_implies f}")
+    println(f"  f  =>  t  = {f implies t}     |  f  ~> t  = {f kleene_implies t}")
+    println(f"  f  =>  f  = {f implies f}     |  f  ~> f  = {f kleene_implies f}")
+    println(f"  t  =>  u  = {t implies u}  |  t  ~> u  = {t kleene_implies u}")
+    println(f"  u  =>  t  = {u implies t}     |  u  ~> t  = {u kleene_implies t}")
+    println(f"  u  =>  f  = {u implies f}  |  u  ~> f  = {u kleene_implies f}")
+    println("")
+    println("Signature divergence:")
+    println(f"  u  =>  u  = {u implies u}     ← Łukasiewicz: vacuously TRUE")
+    println(f"  u  ~>  u  = {u kleene_implies u}  ← Kleene: conservative UNKNOWN")
+}

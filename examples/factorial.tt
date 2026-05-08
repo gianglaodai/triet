@@ -1,0 +1,14 @@
+// Recursive factorial — minh họa đệ quy + `if?` trên Trilean.
+//
+// `n <= 1` trả về Trilean; `if?` chấp nhận Trilean và xử lý
+// Unknown như False (an toàn cho biên `n == Integer::MIN`).
+
+fn factorial(n: Integer) -> Integer =
+    if? n <= 1 { 1 }
+    else { n * factorial(n - 1) }
+
+fn main() {
+    for i in 0..=10 {
+        println(f"{i}! = {factorial(i)}")
+    }
+}
