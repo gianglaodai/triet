@@ -221,6 +221,8 @@ pub enum BinaryOperator {
     Divide,
     /// `%%`
     Modulo,
+    /// `**` — exponentiation (right-associative).
+    Power,
 
     // Comparison — return Trilean (never produces Unknown for `==`/`!=`)
     /// `==`
@@ -260,12 +262,17 @@ pub enum BinaryOperator {
 }
 
 /// Unary (single-operand) operator.
+///
+/// Triết has a single unary operator because in balanced ternary,
+/// numeric negation and logical NOT are *the same operation*: both
+/// invert each trit (`+` ↔ `-`, `0` stays `0`). The lexer accepts three
+/// equivalent surface forms — `-x`, `!x`, and `not x` — and the parser
+/// maps all of them to `Negate` (see SPEC.md §3.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnaryOperator {
-    /// Numeric negation `-x` or trilean negation when operand is `Trilean`.
+    /// Per-trit inversion: numeric negation (on `Tryte`/`Integer`/...) or
+    /// logical NOT (on `Trilean`).
     Negate,
-    /// Logical NOT: `!x` or `not x`.
-    Not,
 }
 
 #[cfg(test)]
@@ -399,9 +406,18 @@ mod tests {
 
     #[test]
     fn unary_and_binary_operator_enums_are_distinct() {
-        // Smoke test that both enums coexist and exhaustive matching works.
+        // Smoke test that both enums coexist.
         let _ = BinaryOperator::Implies;
-        let _ = UnaryOperator::Not;
+        let _ = BinaryOperator::Power;
+        let _ = UnaryOperator::Negate;
+    }
+
+    #[test]
+    fn unary_has_single_variant_for_balanced_ternary_unification() {
+        // Balanced ternary: numeric negation = logical NOT, so AST has
+        // exactly one unary operator.
+        let all = [UnaryOperator::Negate];
+        assert_eq!(all.len(), 1);
     }
 
     #[test]
