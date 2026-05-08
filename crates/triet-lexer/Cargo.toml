@@ -12,6 +12,5 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-triet-syntax.workspace = true
 logos.workspace = true
 thiserror.workspace = true

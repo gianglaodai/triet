@@ -1,7 +1,469 @@
-//! Triết lexer: tokenize source code thành stream of tokens.
+//! Triết lexer: tokenize source code into a stream of tokens.
 //!
-//! Hỗ trợ ternary literal (`0t+0-+`), type-suffixed numbers (`5_tryte`),
-//! Bool3 keywords, identifier với Unicode (cho phép tiếng Việt), f-string,
-//! và toàn bộ operators của Triết. Tham chiếu [`SPEC.md`] §1.
+//! Supports ternary literals (`0t+0-+`), type-suffixed numbers
+//! (`5_tryte`, `1_long`), Trilean keywords, identifiers, and the full
+//! operator set defined in SPEC.md §1.
+//!
+//! # Example
+//!
+//! ```
+//! use triet_lexer::{lex, Token};
+//!
+//! let tokens = lex("let x = 42").unwrap();
+//! assert!(matches!(tokens[0].0, Token::Let));
+//! assert!(matches!(tokens[1].0, Token::Identifier(_)));
+//! ```
 
 #![warn(missing_docs)]
+
+mod error;
+mod token;
+
+use logos::Logos;
+
+pub use error::{LexError, Span};
+pub use token::{IntLiteral, NumericSuffix, Token};
+
+/// A token paired with its byte span in the source.
+pub type SpannedToken = (Token, Span);
+
+/// Tokenize the given source string into a vector of `(Token, Span)` pairs.
+///
+/// Whitespace and comments are skipped. The first lexical error encountered
+/// is returned; the lexer does not attempt recovery in v0.1.
+///
+/// # Errors
+///
+/// Returns the first [`LexError`] encountered while tokenizing. Common
+/// failures include unrecognized characters, numeric overflow, invalid
+/// ternary digits, unterminated strings, or invalid escape sequences.
+pub fn lex(source: &str) -> Result<Vec<SpannedToken>, LexError> {
+    let mut tokens = Vec::new();
+    let mut lexer = Token::lexer(source);
+    while let Some(result) = lexer.next() {
+        match result {
+            Ok(token) => tokens.push((token, lexer.span())),
+            // The `Unrecognized` variant is logos's "no rule matched"
+            // sentinel; replace it with a richer error including the
+            // failing snippet.
+            Err(LexError::Unrecognized) => {
+                let span = lexer.span();
+                let snippet = source[span.clone()].to_owned();
+                return Err(LexError::UnexpectedCharacter { span, snippet });
+            }
+            // All other errors come from token callbacks (escape,
+            // overflow, ternary digit) and already carry useful detail.
+            Err(other) => return Err(other),
+        }
+    }
+    Ok(tokens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Token::{
+        And, AndAnd, Assign, Bang, BangBang, Break, Caret, Colon, ColonColon, Comma, Const,
+        Continue, Dot, DotDot, DotDotEq, Else, EqEq, FStringLiteral, False, FatArrow, Fn, For,
+        GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral, KleeneIff, KleeneImplies,
+        KleeneXor, LBrace, LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus,
+        Mut, Not, NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Pub, Question,
+        QuestionColon, QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star,
+        StringLiteral, TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore,
+        Unknown, While, WhileQ, Xor,
+    };
+
+    fn lex_only(source: &str) -> Vec<Token> {
+        lex(source).unwrap().into_iter().map(|(t, _)| t).collect()
+    }
+
+    // === Keywords ===
+
+    #[test]
+    fn lexes_all_keywords() {
+        let source = "fn let mut const type if else match return for while loop break \
+                      continue in true false unknown null not and or xor iff implies \
+                      kleene_implies kleene_xor kleene_iff import module pub owned";
+        let tokens = lex_only(source);
+        assert_eq!(
+            tokens,
+            vec![
+                Fn, Let, Mut, Const, Type, If, Else, Match, Return, For, While, Loop, Break,
+                Continue, In, True, False, Unknown, Null, Not, And, Or, Xor, Iff, Implies,
+                KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Module, Pub, Owned,
+            ],
+        );
+    }
+
+    #[test]
+    fn lexes_question_modified_keywords() {
+        assert_eq!(lex_only("if?"), vec![IfQ]);
+        assert_eq!(lex_only("while?"), vec![WhileQ]);
+    }
+
+    #[test]
+    fn keyword_is_distinct_from_identifier_starting_with_same_chars() {
+        // `iffy` should be one identifier, not `iff` + `y`
+        let tokens = lex_only("iffy");
+        match tokens.as_slice() {
+            [Identifier(name)] if name == "iffy" => {}
+            other => panic!("expected single identifier 'iffy', got {other:?}"),
+        }
+    }
+
+    // === Operators ===
+
+    #[test]
+    fn lexes_arithmetic_operators() {
+        assert_eq!(lex_only("+ - * / %%"), vec![Plus, Minus, Star, Slash, PercentPercent]);
+    }
+
+    #[test]
+    fn lexes_comparison_operators() {
+        assert_eq!(
+            lex_only("< > <= >= == !="),
+            vec![Lt, Token::Gt, LtEq, GtEq, EqEq, NotEq],
+        );
+    }
+
+    #[test]
+    fn lexes_logic_operators() {
+        assert_eq!(
+            lex_only("&& || ! ^ ~^"),
+            vec![AndAnd, OrOr, Bang, Caret, TildeCaret],
+        );
+    }
+
+    #[test]
+    fn lexes_implication_operators() {
+        assert_eq!(
+            lex_only("=> ~> <=> <~>"),
+            vec![FatArrow, TildeArrow, LtEqGt, LtTildeGt],
+        );
+    }
+
+    #[test]
+    fn lexes_nullable_operators() {
+        assert_eq!(
+            lex_only("? ?. ?: !!"),
+            vec![Question, QuestionDot, QuestionColon, BangBang],
+        );
+    }
+
+    #[test]
+    fn lexes_function_arrow_distinct_from_minus_gt() {
+        // `->` must be a single token, not Minus followed by Gt
+        assert_eq!(lex_only("->"), vec![ThinArrow]);
+        assert_eq!(lex_only("- >"), vec![Minus, Token::Gt]);
+    }
+
+    #[test]
+    fn lexes_assignment_distinct_from_eq_eq_and_fat_arrow() {
+        assert_eq!(lex_only("="), vec![Assign]);
+        assert_eq!(lex_only("=="), vec![EqEq]);
+        assert_eq!(lex_only("=>"), vec![FatArrow]);
+    }
+
+    #[test]
+    fn lexes_range_operators_at_correct_length() {
+        // longest-match: `..=` beats `..` beats `.`
+        assert_eq!(lex_only(".."), vec![DotDot]);
+        assert_eq!(lex_only("..="), vec![DotDotEq]);
+        assert_eq!(lex_only("."), vec![Dot]);
+        assert_eq!(lex_only("0..100"), vec![
+            IntegerLiteral(IntLiteral { value: 0, suffix: None }),
+            DotDot,
+            IntegerLiteral(IntLiteral { value: 100, suffix: None }),
+        ]);
+    }
+
+    // === Punctuation ===
+
+    #[test]
+    fn lexes_punctuation() {
+        assert_eq!(
+            lex_only("{ } [ ] ( ) : ; , . | _ ::"),
+            vec![
+                LBrace, RBrace, LBracket, RBracket, LParen, RParen, Colon, Semi, Comma, Dot, Pipe,
+                Underscore, ColonColon,
+            ],
+        );
+    }
+
+    // === Integer literals ===
+
+    #[test]
+    fn lexes_plain_integer() {
+        assert_eq!(
+            lex_only("42"),
+            vec![IntegerLiteral(IntLiteral { value: 42, suffix: None })],
+        );
+    }
+
+    #[test]
+    fn lexes_integer_with_underscores() {
+        assert_eq!(
+            lex_only("1_000_000"),
+            vec![IntegerLiteral(IntLiteral { value: 1_000_000, suffix: None })],
+        );
+    }
+
+    #[test]
+    fn lexes_integer_with_each_suffix() {
+        assert_eq!(
+            lex_only("1_trit 5_tryte 42_integer 1000_long"),
+            vec![
+                IntegerLiteral(IntLiteral { value: 1, suffix: Some(NumericSuffix::Trit) }),
+                IntegerLiteral(IntLiteral { value: 5, suffix: Some(NumericSuffix::Tryte) }),
+                IntegerLiteral(IntLiteral { value: 42, suffix: Some(NumericSuffix::Integer) }),
+                IntegerLiteral(IntLiteral { value: 1000, suffix: Some(NumericSuffix::Long) }),
+            ],
+        );
+    }
+
+    #[test]
+    fn lexes_integer_with_underscores_and_suffix() {
+        assert_eq!(
+            lex_only("1_000_long"),
+            vec![IntegerLiteral(IntLiteral {
+                value: 1_000,
+                suffix: Some(NumericSuffix::Long),
+            })],
+        );
+    }
+
+    #[test]
+    fn integer_with_unknown_suffix_does_not_consume_trailing_chars() {
+        // `1_xyz` is not a known suffix → integer matches `1`, then the
+        // remaining `_xyz` is tokenized as wildcard `_` + identifier `xyz`.
+        let tokens = lex_only("1_xyz");
+        assert_eq!(
+            tokens,
+            vec![
+                IntegerLiteral(IntLiteral { value: 1, suffix: None }),
+                Underscore,
+                Identifier("xyz".to_owned()),
+            ],
+        );
+    }
+
+    // === Ternary literals ===
+
+    #[test]
+    fn lexes_ternary_literal_basic() {
+        // 0t+0-+ = (+1)*27 + 0*9 + (-1)*3 + (+1)*1 = 25
+        assert_eq!(
+            lex_only("0t+0-+"),
+            vec![TernaryLiteral(IntLiteral { value: 25, suffix: None })],
+        );
+    }
+
+    #[test]
+    fn lexes_ternary_zero() {
+        assert_eq!(
+            lex_only("0t0"),
+            vec![TernaryLiteral(IntLiteral { value: 0, suffix: None })],
+        );
+    }
+
+    #[test]
+    fn lexes_ternary_positive_only() {
+        // 0t+++ = 9 + 3 + 1 = 13
+        assert_eq!(
+            lex_only("0t+++"),
+            vec![TernaryLiteral(IntLiteral { value: 13, suffix: None })],
+        );
+    }
+
+    #[test]
+    fn lexes_ternary_negative_only() {
+        // 0t--- = -9 - 3 - 1 = -13
+        assert_eq!(
+            lex_only("0t---"),
+            vec![TernaryLiteral(IntLiteral { value: -13, suffix: None })],
+        );
+    }
+
+    #[test]
+    fn lexes_ternary_with_underscores() {
+        // 0t+_0_-_+ = same as 0t+0-+ = 25
+        assert_eq!(
+            lex_only("0t+_0_-_+"),
+            vec![TernaryLiteral(IntLiteral { value: 25, suffix: None })],
+        );
+    }
+
+    // === String literals ===
+
+    #[test]
+    fn lexes_simple_string() {
+        assert_eq!(lex_only(r#""hello""#), vec![StringLiteral("hello".to_owned())]);
+    }
+
+    #[test]
+    fn lexes_string_with_escape_sequences() {
+        assert_eq!(
+            lex_only(r#""line1\nline2\t\\done""#),
+            vec![StringLiteral("line1\nline2\t\\done".to_owned())],
+        );
+    }
+
+    #[test]
+    fn lexes_string_with_escaped_quote() {
+        assert_eq!(
+            lex_only(r#""she said \"hi\"""#),
+            vec![StringLiteral(r#"she said "hi""#.to_owned())],
+        );
+    }
+
+    #[test]
+    fn lexes_empty_string() {
+        assert_eq!(lex_only(r#""""#), vec![StringLiteral(String::new())]);
+    }
+
+    #[test]
+    fn rejects_invalid_escape() {
+        let result = lex(r#""\q""#);
+        assert!(matches!(result, Err(LexError::InvalidEscape { .. })));
+    }
+
+    #[test]
+    fn rejects_unterminated_string() {
+        let result = lex(r#""hello"#);
+        assert!(result.is_err());
+    }
+
+    // === F-strings ===
+
+    #[test]
+    fn lexes_f_string_with_raw_content() {
+        assert_eq!(
+            lex_only(r#"f"hello {name}""#),
+            vec![FStringLiteral("hello {name}".to_owned())],
+        );
+    }
+
+    // === Identifiers ===
+
+    #[test]
+    fn lexes_simple_identifier() {
+        assert_eq!(lex_only("foo"), vec![Identifier("foo".to_owned())]);
+    }
+
+    #[test]
+    fn lexes_identifier_with_underscore_and_digits() {
+        assert_eq!(
+            lex_only("foo_bar_42"),
+            vec![Identifier("foo_bar_42".to_owned())],
+        );
+    }
+
+    #[test]
+    fn lexes_pascal_case_type_names() {
+        assert_eq!(lex_only("Trit"), vec![Identifier("Trit".to_owned())]);
+        assert_eq!(lex_only("Integer"), vec![Identifier("Integer".to_owned())]);
+        assert_eq!(lex_only("Trilean"), vec![Identifier("Trilean".to_owned())]);
+    }
+
+    #[test]
+    fn underscore_alone_is_wildcard_not_identifier() {
+        assert_eq!(lex_only("_"), vec![Underscore]);
+    }
+
+    // === Comments ===
+
+    #[test]
+    fn skips_line_comments() {
+        let source = "let x = 5  // assign\nlet y = 7";
+        let tokens = lex_only(source);
+        assert_eq!(tokens.len(), 8); // let, x, =, 5, let, y, =, 7
+    }
+
+    #[test]
+    fn skips_whitespace() {
+        let source = "  let \t x  \n=  5  ";
+        let tokens = lex_only(source);
+        assert_eq!(tokens.len(), 4);
+    }
+
+    // === Spans ===
+
+    #[test]
+    fn tracks_byte_spans() {
+        let source = "fn add";
+        let tokens = lex(source).unwrap();
+        assert_eq!(tokens[0].1, 0..2);
+        assert_eq!(tokens[1].1, 3..6);
+    }
+
+    // === Realistic sample ===
+
+    #[test]
+    fn lexes_fizzbuzz_signature() {
+        let source = "fn fizzbuzz(n: Integer) -> String =";
+        let tokens = lex_only(source);
+        assert_eq!(
+            tokens,
+            vec![
+                Fn,
+                Identifier("fizzbuzz".to_owned()),
+                LParen,
+                Identifier("n".to_owned()),
+                Colon,
+                Identifier("Integer".to_owned()),
+                RParen,
+                ThinArrow,
+                Identifier("String".to_owned()),
+                Assign,
+            ],
+        );
+    }
+
+    #[test]
+    fn lexes_match_arm_with_tuple_pattern() {
+        let source = "(0, 0) => \"FizzBuzz\",";
+        let tokens = lex_only(source);
+        assert_eq!(
+            tokens,
+            vec![
+                LParen,
+                IntegerLiteral(IntLiteral { value: 0, suffix: None }),
+                Comma,
+                IntegerLiteral(IntLiteral { value: 0, suffix: None }),
+                RParen,
+                FatArrow,
+                StringLiteral("FizzBuzz".to_owned()),
+                Comma,
+            ],
+        );
+    }
+
+    #[test]
+    fn lexes_logic_expression_with_keywords_and_symbols() {
+        let source = "fever and rash and not vaccinated";
+        let tokens = lex_only(source);
+        assert_eq!(
+            tokens,
+            vec![
+                Identifier("fever".to_owned()),
+                And,
+                Identifier("rash".to_owned()),
+                And,
+                Not,
+                Identifier("vaccinated".to_owned()),
+            ],
+        );
+    }
+
+    #[test]
+    fn lexes_kleene_implication() {
+        assert_eq!(
+            lex_only("a kleene_implies b"),
+            vec![
+                Identifier("a".to_owned()),
+                KleeneImplies,
+                Identifier("b".to_owned()),
+            ],
+        );
+    }
+}
