@@ -1,14 +1,15 @@
 //! Expressions — the part of the AST that has a value.
 
 use crate::{
+    arena::{ExprId, PatternId, TypeId},
     numeric::{NumericSuffix, TrileanValue},
-    pattern::Pattern,
-    span::Spanned,
     stmt::Block,
-    type_ast::TypeExpr,
 };
 
 /// An expression — anything that evaluates to a value.
+///
+/// Recursive children are stored as `*Id` handles into the `Arena`
+/// owning this AST. To traverse, look up the handle via the arena.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     // === Literals ===
@@ -39,14 +40,14 @@ pub enum Expr {
     /// Field access: `point.x` (v0.2 with structs; AST is ready).
     FieldAccess {
         /// Object whose field is accessed.
-        object: Box<Spanned<Self>>,
+        object: ExprId,
         /// Field name.
         field: String,
     },
     /// Tuple index: `pair.0`, `triple.2`.
     TupleIndex {
         /// Tuple expression.
-        tuple: Box<Spanned<Self>>,
+        tuple: ExprId,
         /// Zero-based index.
         index: usize,
     },
@@ -55,18 +56,18 @@ pub enum Expr {
     /// Function call: `add(1, 2)`.
     Call {
         /// Function expression (often an `Identifier`).
-        callee: Box<Spanned<Self>>,
+        callee: ExprId,
         /// Positional arguments.
-        arguments: Vec<Spanned<Self>>,
+        arguments: Vec<ExprId>,
     },
     /// Method call with explicit receiver: `n.to_tryte()`.
     MethodCall {
         /// Receiver expression.
-        receiver: Box<Spanned<Self>>,
+        receiver: ExprId,
         /// Method name.
         method: String,
         /// Positional arguments.
-        arguments: Vec<Spanned<Self>>,
+        arguments: Vec<ExprId>,
     },
 
     // === Operators ===
@@ -75,50 +76,50 @@ pub enum Expr {
         /// The operator.
         operator: BinaryOperator,
         /// Left operand.
-        left: Box<Spanned<Self>>,
+        left: ExprId,
         /// Right operand.
-        right: Box<Spanned<Self>>,
+        right: ExprId,
     },
     /// Unary operator: `-x`, `!flag`, `not cond`.
     UnaryOp {
         /// The operator.
         operator: UnaryOperator,
         /// Operand.
-        operand: Box<Spanned<Self>>,
+        operand: ExprId,
     },
 
     // === Nullable-specific operators (sugar over T?) ===
-    /// Safe call: `name?.length` — yields null if the receiver is null.
+    /// Safe field access: `point?.x` — yields null if the object is null.
     SafeFieldAccess {
         /// Receiver, possibly null.
-        object: Box<Spanned<Self>>,
+        object: ExprId,
         /// Field name.
         field: String,
     },
     /// Safe method call: `name?.to_upper()`.
     SafeMethodCall {
         /// Receiver, possibly null.
-        receiver: Box<Spanned<Self>>,
+        receiver: ExprId,
         /// Method name.
         method: String,
         /// Positional arguments.
-        arguments: Vec<Spanned<Self>>,
+        arguments: Vec<ExprId>,
     },
     /// Elvis operator `?:` — replace null with default.
     ElvisOp {
         /// Possibly-null value.
-        object: Box<Spanned<Self>>,
+        object: ExprId,
         /// Fallback value evaluated only if `object` is null.
-        default: Box<Spanned<Self>>,
+        default: ExprId,
     },
     /// Force unwrap `!!` — panic if null.
-    ForceUnwrap(Box<Spanned<Self>>),
+    ForceUnwrap(ExprId),
 
     // === Control flow as expressions ===
     /// Conditional with `if` (and `if?` via `treat_unknown_as_false`).
     If {
         /// Condition expression. Must yield `Trilean`.
-        condition: Box<Spanned<Self>>,
+        condition: ExprId,
         /// Branch taken when condition is `True`.
         then_branch: Block,
         /// Optional `else` branch; when condition is `False` (or
@@ -131,7 +132,7 @@ pub enum Expr {
     /// Pattern matching expression.
     Match {
         /// Value being matched.
-        scrutinee: Box<Spanned<Self>>,
+        scrutinee: ExprId,
         /// Match arms in order.
         arms: Vec<MatchArm>,
     },
@@ -140,22 +141,22 @@ pub enum Expr {
 
     // === Composite ===
     /// Tuple literal: `(1, true)`, `(a, b, c)`.
-    Tuple(Vec<Spanned<Self>>),
+    Tuple(Vec<ExprId>),
     /// Closure / lambda: `|x| x + 1`, `|x: Integer| -> Integer { ... }`.
     Lambda {
         /// Closure parameters.
         parameters: Vec<LambdaParam>,
         /// Optional return type annotation.
-        return_type: Option<Spanned<TypeExpr>>,
+        return_type: Option<TypeId>,
         /// Body expression.
-        body: Box<Spanned<Self>>,
+        body: ExprId,
     },
     /// Range expression: `0..100` (exclusive), `0..=100` (inclusive).
     Range {
         /// Lower bound.
-        start: Box<Spanned<Self>>,
+        start: ExprId,
         /// Upper bound.
-        end: Box<Spanned<Self>>,
+        end: ExprId,
         /// Whether `..=` (true) or `..` (false).
         inclusive: bool,
     },
@@ -165,11 +166,11 @@ pub enum Expr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchArm {
     /// Pattern matched.
-    pub pattern: Spanned<Pattern>,
+    pub pattern: PatternId,
     /// Optional `if` guard (extra boolean condition).
-    pub guard: Option<Spanned<Expr>>,
+    pub guard: Option<ExprId>,
     /// Expression evaluated when this arm matches.
-    pub body: Spanned<Expr>,
+    pub body: ExprId,
 }
 
 /// A parameter of a closure/lambda.
@@ -178,7 +179,7 @@ pub struct LambdaParam {
     /// Parameter name.
     pub name: String,
     /// Optional explicit type — closures often elide this for inference.
-    pub type_annotation: Option<Spanned<TypeExpr>>,
+    pub type_annotation: Option<TypeId>,
 }
 
 /// Parsed segments of an f-string body.
@@ -200,7 +201,7 @@ pub enum FStringPart {
     /// Interpolated expression `{expr}` or `{expr:format_spec}`.
     Interpolation {
         /// Expression to evaluate and stringify.
-        expression: Spanned<Expr>,
+        expression: ExprId,
         /// Optional format spec after `:` — stored raw, parsed later.
         format_spec: Option<String>,
     },
@@ -270,65 +271,73 @@ pub enum UnaryOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        arena::Arena,
+        pattern::Pattern,
+        span::{Span, Spanned},
+    };
 
-    fn span(start: usize, end: usize) -> crate::span::Span {
+    fn span(start: usize, end: usize) -> Span {
         start..end
     }
 
-    #[test]
-    fn integer_literal_construction() {
-        let expr = Expr::IntegerLiteral { value: 42, suffix: None };
-        if let Expr::IntegerLiteral { value, suffix } = expr {
-            assert_eq!(value, 42);
-            assert!(suffix.is_none());
-        } else {
-            panic!();
-        }
+    fn lit_int(arena: &mut Arena, value: i128, range: Span) -> ExprId {
+        arena.alloc_expression(Spanned::new(
+            Expr::IntegerLiteral { value, suffix: None },
+            range,
+        ))
     }
 
     #[test]
     fn binary_op_holds_two_operands() {
-        let left = Box::new(Spanned::new(
-            Expr::IntegerLiteral { value: 1, suffix: None },
-            span(0, 1),
+        let mut arena = Arena::new();
+        let left = lit_int(&mut arena, 1, span(0, 1));
+        let right = lit_int(&mut arena, 2, span(4, 5));
+        let plus = arena.alloc_expression(Spanned::new(
+            Expr::BinaryOp {
+                operator: BinaryOperator::Add,
+                left,
+                right,
+            },
+            span(0, 5),
         ));
-        let right = Box::new(Spanned::new(
-            Expr::IntegerLiteral { value: 2, suffix: None },
-            span(4, 5),
-        ));
-        let expr = Expr::BinaryOp {
-            operator: BinaryOperator::Add,
-            left,
-            right,
-        };
-        if let Expr::BinaryOp { operator, .. } = expr {
-            assert_eq!(operator, BinaryOperator::Add);
+        if let Expr::BinaryOp {
+            operator,
+            left: lid,
+            right: rid,
+        } = &arena.expression(plus).node
+        {
+            assert_eq!(*operator, BinaryOperator::Add);
+            assert_eq!(*lid, left);
+            assert_eq!(*rid, right);
         } else {
-            panic!();
+            panic!("expected BinaryOp");
         }
     }
 
     #[test]
     fn if_expr_distinguishes_normal_from_question_variant() {
+        let mut arena = Arena::new();
+        let true_cond = arena.alloc_expression(Spanned::new(
+            Expr::TrileanLiteral(TrileanValue::True),
+            span(3, 7),
+        ));
+        let unknown_cond = arena.alloc_expression(Spanned::new(
+            Expr::TrileanLiteral(TrileanValue::Unknown),
+            span(4, 11),
+        ));
         let normal = Expr::If {
-            condition: Box::new(Spanned::new(
-                Expr::TrileanLiteral(TrileanValue::True),
-                span(3, 7),
-            )),
+            condition: true_cond,
             then_branch: Block::empty(),
             else_branch: None,
             treat_unknown_as_false: false,
         };
         let question = Expr::If {
-            condition: Box::new(Spanned::new(
-                Expr::TrileanLiteral(TrileanValue::Unknown),
-                span(4, 11),
-            )),
+            condition: unknown_cond,
             then_branch: Block::empty(),
             else_branch: None,
             treat_unknown_as_false: true,
         };
-
         match (&normal, &question) {
             (
                 Expr::If { treat_unknown_as_false: false, .. },
@@ -340,20 +349,52 @@ mod tests {
 
     #[test]
     fn fstring_segments_can_mix_text_and_interpolation() {
+        let mut arena = Arena::new();
+        let name = arena.alloc_expression(Spanned::new(
+            Expr::Identifier("name".to_owned()),
+            span(9, 13),
+        ));
         let segments = FStringSegments {
             parts: vec![
                 FStringPart::Text("hello, ".to_owned()),
                 FStringPart::Interpolation {
-                    expression: Spanned::new(
-                        Expr::Identifier("name".to_owned()),
-                        span(9, 13),
-                    ),
+                    expression: name,
                     format_spec: None,
                 },
                 FStringPart::Text("!".to_owned()),
             ],
         };
         assert_eq!(segments.parts.len(), 3);
+    }
+
+    #[test]
+    fn match_arm_guard_is_optional() {
+        let mut arena = Arena::new();
+        let true_body = arena.alloc_expression(Spanned::new(
+            Expr::TrileanLiteral(TrileanValue::True),
+            span(5, 9),
+        ));
+        let wildcard = arena.alloc_pattern(Spanned::new(Pattern::Wildcard, span(0, 1)));
+        let arm_no_guard = MatchArm {
+            pattern: wildcard,
+            guard: None,
+            body: true_body,
+        };
+        let var_pat = arena.alloc_pattern(Spanned::new(
+            Pattern::Variable("x".to_owned()),
+            span(0, 1),
+        ));
+        let guard_expr = arena.alloc_expression(Spanned::new(
+            Expr::Identifier("ok".to_owned()),
+            span(8, 10),
+        ));
+        let arm_with_guard = MatchArm {
+            pattern: var_pat,
+            guard: Some(guard_expr),
+            body: true_body,
+        };
+        assert!(arm_no_guard.guard.is_none());
+        assert!(arm_with_guard.guard.is_some());
     }
 
     #[test]
@@ -364,22 +405,17 @@ mod tests {
     }
 
     #[test]
-    fn match_arm_guard_is_optional() {
-        let arm_no_guard = MatchArm {
-            pattern: Spanned::new(Pattern::Wildcard, span(0, 1)),
-            guard: None,
-            body: Spanned::new(Expr::TrileanLiteral(TrileanValue::True), span(5, 9)),
-        };
-        let arm_with_guard = MatchArm {
-            pattern: Spanned::new(Pattern::Variable("x".to_owned()), span(0, 1)),
-            guard: Some(Spanned::new(
-                Expr::Identifier("ok".to_owned()),
-                span(8, 10),
-            )),
-            body: Spanned::new(Expr::TrileanLiteral(TrileanValue::True), span(14, 18)),
-        };
-        assert!(arm_no_guard.guard.is_none());
-        assert!(arm_with_guard.guard.is_some());
+    fn integer_literal_construction() {
+        let mut arena = Arena::new();
+        let id = arena.alloc_expression(Spanned::new(
+            Expr::IntegerLiteral { value: 42, suffix: Some(NumericSuffix::Tryte) },
+            span(0, 8),
+        ));
+        if let Expr::IntegerLiteral { value, suffix } = &arena.expression(id).node {
+            assert_eq!(*value, 42);
+            assert_eq!(*suffix, Some(NumericSuffix::Tryte));
+        } else {
+            panic!();
+        }
     }
-
 }

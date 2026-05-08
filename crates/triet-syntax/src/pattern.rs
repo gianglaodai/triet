@@ -1,11 +1,14 @@
 //! Patterns used in `match` arms, `let` destructuring, and `for` loops.
 
 use crate::{
+    arena::PatternId,
     numeric::{NumericSuffix, TrileanValue},
-    span::Spanned,
 };
 
 /// A pattern matched against a value.
+///
+/// Recursive children (sub-patterns of tuples / or-patterns) are stored
+/// as `PatternId` handles into the AST `Arena`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pattern {
     /// Concrete literal: `0`, `5_tryte`, `"hi"`, `true`.
@@ -18,10 +21,10 @@ pub enum Pattern {
     Wildcard,
 
     /// Tuple destructuring: `(a, b, _)`.
-    Tuple(Vec<Spanned<Self>>),
+    Tuple(Vec<PatternId>),
 
     /// Or-pattern: `1 | 2 | 3`. Matches if any sub-pattern matches.
-    Or(Vec<Spanned<Self>>),
+    Or(Vec<PatternId>),
 
     /// Range pattern: `0..=9` (inclusive) or `0..9` (exclusive).
     Range {
@@ -39,7 +42,7 @@ pub enum Pattern {
 
 /// Literal forms allowed inside patterns.
 ///
-/// A subset of expression literals (no `f-string`, no `null` here — `null`
+/// A subset of expression literals (no f-string, no `null` here — `null`
 /// has its own pattern variant for clarity).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LiteralPattern {

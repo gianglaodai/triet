@@ -4,13 +4,13 @@
 //! parser reads. The type checker resolves them against actual type
 //! definitions.
 
-use crate::span::Spanned;
+use crate::arena::TypeId;
 
 /// A type expression as written in source code.
 ///
 /// V0.1 supports: named types, single-level generics (parsed but not yet
 /// resolved), tuple types, nullable wrapper `T?`, and function types for
-/// closures.
+/// closures. Recursive children are stored as `TypeId` handles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeExpr {
     /// A named type: `Integer`, `String`, `Trilean`, `MyAlias`.
@@ -24,20 +24,20 @@ pub enum TypeExpr {
         /// Type constructor name (e.g. `Option`).
         name: String,
         /// Type arguments inside `<...>`.
-        arguments: Vec<Spanned<Self>>,
+        arguments: Vec<TypeId>,
     },
 
     /// Tuple type: `(Integer, Trilean)`, `(String, String, Integer)`.
-    Tuple(Vec<Spanned<Self>>),
+    Tuple(Vec<TypeId>),
 
     /// Nullable type: `Integer?`. Wraps any inner type.
-    Nullable(Box<Spanned<Self>>),
+    Nullable(TypeId),
 
     /// Function type used in closure annotations: `(Integer) -> String`.
     Function {
         /// Parameter types (positional).
-        parameters: Vec<Spanned<Self>>,
+        parameters: Vec<TypeId>,
         /// Return type.
-        return_type: Box<Spanned<Self>>,
+        return_type: TypeId,
     },
 }

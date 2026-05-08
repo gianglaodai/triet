@@ -1,10 +1,9 @@
-//! Top-level items appearing at module/file scope.
+//! Top-level items and the `Program` root.
 
 use crate::{
-    expr::Expr,
+    arena::{Arena, ExprId, TypeId},
     span::Spanned,
     stmt::Block,
-    type_ast::TypeExpr,
 };
 
 /// A top-level item in a `.tt` file.
@@ -18,9 +17,9 @@ pub enum Item {
         /// Constant name.
         name: String,
         /// Optional type annotation.
-        type_annotation: Option<Spanned<TypeExpr>>,
+        type_annotation: Option<TypeId>,
         /// Initializer expression (must be constant — checked later).
-        value: Spanned<Expr>,
+        value: ExprId,
     },
 
     /// Type alias: `type Username = String`.
@@ -28,7 +27,7 @@ pub enum Item {
         /// Alias name (the new identifier).
         name: String,
         /// The type this alias resolves to.
-        target: Spanned<TypeExpr>,
+        target: TypeId,
     },
 
     /// Module import: `import std.io`. Minimal v0.1 form — full module
@@ -45,7 +44,7 @@ pub struct FunctionDef {
     pub parameters: Vec<FunctionParam>,
     /// Optional return type annotation. Required for block bodies; may
     /// be inferred for single-expression bodies.
-    pub return_type: Option<Spanned<TypeExpr>>,
+    pub return_type: Option<TypeId>,
     /// Body — either a block or a single expression.
     pub body: FunctionBody,
 }
@@ -56,7 +55,7 @@ pub struct FunctionParam {
     /// Parameter name.
     pub name: String,
     /// Required type annotation (Triết does not infer parameter types).
-    pub type_annotation: Spanned<TypeExpr>,
+    pub type_annotation: TypeId,
     /// How the caller's value reaches the function (Mojo-style).
     pub passing: ParameterPassing,
 }
@@ -80,7 +79,7 @@ pub enum FunctionBody {
     /// `{ ... }` form.
     Block(Block),
     /// `= expr` form (single expression).
-    Expression(Spanned<Expr>),
+    Expression(ExprId),
 }
 
 /// A dotted import path: `import std.io.println` → `["std", "io", "println"]`.
@@ -91,32 +90,41 @@ pub struct ImportPath {
 }
 
 /// Root of the AST — a parsed `.tt` source file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// A `Program` owns its `Arena` so all `*Id` handles in items remain
+/// valid for the program's lifetime.
+#[derive(Clone, Debug, Default)]
 pub struct Program {
+    /// Arena holding every recursive AST node referenced by `items`.
+    pub arena: Arena,
     /// Top-level items in source order.
     pub items: Vec<Spanned<Item>>,
 }
 
 impl Program {
-    /// Construct an empty program.
+    /// Construct an empty program (no items, empty arena).
     #[must_use]
     pub const fn empty() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            arena: Arena::new(),
+            items: Vec::new(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn span(start: usize, end: usize) -> crate::span::Span {
-        start..end
-    }
+    use crate::{
+        expr::Expr,
+        type_ast::TypeExpr,
+    };
 
     #[test]
     fn empty_program_has_no_items() {
         let program = Program::empty();
         assert!(program.items.is_empty());
+        assert_eq!(program.arena.expression_count(), 0);
     }
 
     #[test]
@@ -133,21 +141,24 @@ mod tests {
 
     #[test]
     fn function_with_expression_body() {
+        let mut arena = Arena::new();
+        let integer_type = arena.alloc_type(Spanned::new(
+            TypeExpr::Named("Integer".to_owned()),
+            11..18,
+        ));
+        let body = arena.alloc_expression(Spanned::new(
+            Expr::Identifier("n".to_owned()),
+            22..23,
+        ));
         let function = FunctionDef {
             name: "double".to_owned(),
             parameters: vec![FunctionParam {
                 name: "n".to_owned(),
-                type_annotation: Spanned::new(
-                    TypeExpr::Named("Integer".to_owned()),
-                    span(11, 18),
-                ),
+                type_annotation: integer_type,
                 passing: ParameterPassing::Borrowed,
             }],
             return_type: None,
-            body: FunctionBody::Expression(Spanned::new(
-                Expr::Identifier("n".to_owned()),
-                span(22, 23),
-            )),
+            body: FunctionBody::Expression(body),
         };
         assert!(matches!(function.body, FunctionBody::Expression(_)));
         assert_eq!(function.parameters.len(), 1);
@@ -160,7 +171,7 @@ mod tests {
             ParameterPassing::Mutable,
             ParameterPassing::Owned,
         ];
-        let unique = std::collections::HashSet::<_>::from_iter(modes);
+        let unique: std::collections::HashSet<_> = modes.into_iter().collect();
         assert_eq!(unique.len(), 3);
     }
 
