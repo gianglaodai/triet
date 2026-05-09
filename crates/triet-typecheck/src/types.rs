@@ -54,9 +54,27 @@ impl Type {
     /// Returns true if `self` and `other` are the same type, treating
     /// `Unknown` as compatible with everything (so an earlier error
     /// doesn't trigger a chain of follow-up errors).
+    ///
+    /// Also allows **widening** `T → T?`: in balanced ternary, `T` is a
+    /// strict subset of `T?` (every trit of `T` maps to a non-null
+    /// discriminator in `T?`), so a known value can always be used where
+    /// a nullable is expected. This is subtyping, not coercion — zero
+    /// information loss, zero runtime cost.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
         if matches!(self, Self::Unknown) || matches!(other, Self::Unknown) {
+            return true;
+        }
+        // Recurse through Nullable so Nullable(Unknown) matches any
+        // Nullable(T) — needed for `if { x } else { null }` branch
+        // unification where `null` infers as Nullable(Unknown).
+        if let (Self::Nullable(a), Self::Nullable(b)) = (self, other) {
+            return a.matches(b);
+        }
+        // Widening: Nullable(T) accepts T (e.g. Integer ⊂ Integer?)
+        if let Self::Nullable(inner) = self
+            && inner.as_ref() == other
+        {
             return true;
         }
         self == other
@@ -90,7 +108,13 @@ impl fmt::Display for Type {
             Self::Trilean => formatter.write_str("Trilean"),
             Self::String => formatter.write_str("String"),
             Self::Unit => formatter.write_str("Unit"),
-            Self::Nullable(inner) => write!(formatter, "{inner}?"),
+            Self::Nullable(inner) => {
+                if matches!(inner.as_ref(), Self::Unknown) {
+                    formatter.write_str("null")
+                } else {
+                    write!(formatter, "{inner}?")
+                }
+            }
             Self::Tuple(elements) => {
                 formatter.write_str("(")?;
                 for (i, element) in elements.iter().enumerate() {

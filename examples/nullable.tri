@@ -1,44 +1,46 @@
 // Nullable operators — minh họa SPEC §2.5.
 //
 // Triết phân biệt rõ `T?` (nullable primitive) khỏi `Option<T>` (v0.2).
-// `T?` đi với 3 operator gọn:
-//   `?.`  safe-call: trả null nếu receiver null, nếu không thì gọi method
-//   `?:`  Elvis:     thay null bằng giá trị mặc định (right-associative)
-//   `!!`  force unwrap: panic nếu null
+// Trong balanced ternary, `T ⊂ T?` tự nhiên — một giá trị xác định luôn
+// dùng được ở vị trí yêu cầu nullable. Compiler tự widen, không cần
+// gọi `.nullable()` thủ công.
 //
-// Phương thức `try_*` của số học trả về `T?` — caller xử lý overflow
-// explicit. Đây là nguồn nullable values phổ biến nhất ở v0.1
-// (v0.2 sẽ thêm parse_*, lookup_*, v.v.).
+// Ba operator:
+//   `?.`  safe-call: trả null nếu receiver null
+//   `?:`  Elvis:     thay null bằng giá trị mặc định
+//   `!!`  force unwrap: panic nếu null
 
-// Nhân đôi với try_*: trả null nếu overflow.
-fn try_double(n: Integer) -> Integer? = n.try_add(n)
+// ── Widening: let annotation + return type ───────────────────────────
 
-// Elvis: thay null bằng 0.
-fn double_or_zero(n: Integer) -> Integer = try_double(n) ?: 0
+// `let x: T? = known_value` — compiler tự widen T → T?
+fn greet_or_default(name: String?) -> String {
+    let display: String? = name       // widen: String → String?
+    display ?: "<khuyết danh>"
+}
 
-// Safe-call: nếu try_double trả null thì kết quả null, nếu không thì
-// chuyển sang Long (lossless). Pipeline kết quả `Long?`.
-fn double_as_long(n: Integer) -> Long? = try_double(n)?.to_long()
+// ── Widening: if/else với null literal ───────────────────────────────
 
-// Force-unwrap: panic nếu overflow.
-fn double_must_succeed(n: Integer) -> Integer = try_double(n)!!
+fn lookup_name(id: Integer) -> String? =
+    if? id == 1 { "Alice" }
+    else if? id == 2 { "Bob" }
+    else if? id == 3 { "Carol" }
+    else { null }                    // widen: String → String? cho các nhánh
+
+// ── Safe-call + Elvis pipeline ───────────────────────────────────────
+
+fn name_length_or_zero(id: Integer) -> Integer =
+    lookup_name(id)?.length() ?: 0
+
+// ── Force-unwrap cho caller chắc chắn ────────────────────────────────
+
+fn must_have_name(id: Integer) -> String = lookup_name(id)!!
 
 fn main() {
-    let small = 1000
-    let big = 3812798742000   // sát Integer::MAX (~3.81×10¹²)
+    // lookup → String? → Elvis fallback
+    for id in 1..=4 {
+        println(f"id={id}: xin chào, {greet_or_default(lookup_name(id))}! (len={name_length_or_zero(id)})")
+    }
 
-    println(f"double_or_zero({small}) = {double_or_zero(small)}")
-    println(f"double_or_zero({big})   = {double_or_zero(big)}")
-    // ↑ overflow → null → Elvis → 0
-
-    // Safe-call + Elvis: chain qua nullable, fallback ở cuối.
-    let big_as_long = double_as_long(big) ?: 0_long
-    println(f"double_as_long({big}) ?: 0 = {big_as_long}")
-
-    let small_as_long = double_as_long(small) ?: 0_long
-    println(f"double_as_long({small}) ?: 0 = {small_as_long}")
-
-    // Force-unwrap chỉ an toàn khi caller chắc không overflow.
-    println(f"must_succeed({small}) = {double_must_succeed(small)}")
-    // double_must_succeed(big) sẽ panic — không gọi để demo chạy hết.
+    // Force-unwrap an toàn vì id=3 chắc chắn có "Carol"
+    println(f"must_have_name(3) = {must_have_name(3)}")
 }

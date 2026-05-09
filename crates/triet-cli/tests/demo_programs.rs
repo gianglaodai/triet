@@ -262,18 +262,31 @@ fn nullable_demo_parses_and_type_checks() {
 }
 
 #[test]
-fn nullable_double_or_zero_handles_overflow_via_elvis() {
+fn nullable_lookup_returns_name_for_valid_ids() {
     let program = load_program(NULLABLE);
-    // Small input: try_add succeeds → 2*1000 = 2000.
+    let cases = &[(1, "Alice"), (2, "Bob"), (3, "Carol")];
+    for &(id, expected) in cases {
+        let value = call_function(&program, "lookup_name", vec![integer(id)])
+            .unwrap();
+        assert_eq!(value.to_string(), expected, "lookup_name({id})");
+    }
+}
+
+#[test]
+fn nullable_lookup_returns_null_for_unknown_id_then_elvis_kicks_in() {
+    let program = load_program(NULLABLE);
+    // lookup_name(99) returns null → greet_or_default applies Elvis → "<khuyết danh>"
+    let name = call_function(&program, "lookup_name", vec![integer(99)]).unwrap();
+    let value = call_function(&program, "greet_or_default", vec![name]).unwrap();
+    assert_eq!(value.to_string(), "<khuyết danh>");
+}
+
+#[test]
+fn nullable_safe_call_length_on_null_returns_zero() {
+    let program = load_program(NULLABLE);
+    // lookup_name(99) returns null → name_length_or_zero → safe-call + Elvis → 0
     assert_eq!(
-        call_function(&program, "double_or_zero", vec![integer(1000)])
-            .unwrap()
-            .to_string(),
-        "2000",
-    );
-    // Near Integer::MAX: try_add returns null → Elvis falls back to 0.
-    assert_eq!(
-        call_function(&program, "double_or_zero", vec![integer(3_812_798_742_000)])
+        call_function(&program, "name_length_or_zero", vec![integer(99)])
             .unwrap()
             .to_string(),
         "0",
@@ -281,15 +294,32 @@ fn nullable_double_or_zero_handles_overflow_via_elvis() {
 }
 
 #[test]
-fn nullable_force_unwrap_panics_on_overflow() {
+fn nullable_force_unwrap_panics_on_null() {
     let program = load_program(NULLABLE);
-    // double_must_succeed near MAX should panic via `!!` on null.
-    let result = call_function(
+    // must_have_name(99) — lookup_name returns null, `!!` panics.
+    let result = call_function(&program, "must_have_name", vec![integer(99)]);
+    assert!(result.is_err(), "expected panic on null !!, got {result:?}");
+}
+
+#[test]
+fn nullable_force_unwrap_succeeds_for_valid_id() {
+    let program = load_program(NULLABLE);
+    let value = call_function(&program, "must_have_name", vec![integer(3)])
+        .unwrap();
+    assert_eq!(value.to_string(), "Carol");
+}
+
+#[test]
+fn nullable_let_annotation_widening_works() {
+    // `greet_or_default` does `let display: String? = name` — T ⊂ T? widening.
+    let program = load_program(NULLABLE);
+    let value = call_function(
         &program,
-        "double_must_succeed",
-        vec![integer(3_812_798_742_000)],
-    );
-    assert!(result.is_err(), "expected panic, got {result:?}");
+        "greet_or_default",
+        vec![Value::from_string("Alice".to_owned())],
+    )
+    .unwrap();
+    assert_eq!(value.to_string(), "Alice");
 }
 
 #[test]

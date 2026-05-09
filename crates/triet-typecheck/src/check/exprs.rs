@@ -46,8 +46,11 @@ impl Checker<'_> {
                 Type::String
             }
             Expr::NullLiteral => {
-                self.errors.push(TypeError::NullLiteralInNonNullableContext { span });
-                Type::Unknown
+                // In balanced ternary, `null` is a legitimate value for
+                // any `T?` type. It infers as `?(?)` and is narrowed by
+                // context — e.g., `if { "x" } else { null }` resolves
+                // to `String` via branch unification + widening.
+                Type::Nullable(Box::new(Type::Unknown))
             }
             Expr::Identifier(name) => self.env.lookup(&name).cloned().unwrap_or_else(|| {
                 self.errors.push(TypeError::UndefinedName { name, span });
@@ -447,14 +450,14 @@ impl Checker<'_> {
             None => Type::Unit,
             Some(block) => {
                 let else_ty = self.check_block(block);
-                if !then_ty.matches(&else_ty) {
+                if let Ok(unified) = try_unify(&then_ty, &else_ty) { unified } else {
                     self.errors.push(TypeError::Mismatch {
                         expected: then_ty.clone(),
                         found: else_ty,
                         span,
                     });
+                    then_ty
                 }
-                then_ty
             }
         }
     }
@@ -477,12 +480,15 @@ impl Checker<'_> {
             match &arm_type {
                 None => arm_type = Some(body_ty),
                 Some(expected) => {
-                    if !expected.matches(&body_ty) {
-                        self.errors.push(TypeError::MatchArmMismatch {
-                            expected: expected.clone(),
-                            found: body_ty,
-                            span: self.arena.expression(arm.body).span.clone(),
-                        });
+                    match try_unify(expected, &body_ty) {
+                        Ok(unified) => arm_type = Some(unified),
+                        Err(()) => {
+                            self.errors.push(TypeError::MatchArmMismatch {
+                                expected: expected.clone(),
+                                found: body_ty,
+                                span: self.arena.expression(arm.body).span.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -498,6 +504,36 @@ impl Checker<'_> {
             Type::Unknown
         })
     }
+}
+
+/// Attempt to unify two branch types (for `if`/`else` and `match` arms).
+///
+/// Direct match: if `a.matches(b)`, return `a`.
+/// Reverse match: if `b.matches(a)`, return `b`.
+/// Null-widening: if one side is `Nullable(X)` and the other is `T`,
+///   wrap in `Nullable(T)` and return it. Handles `if { "x" } else { null }`
+///   where then=String, else=Nullable(Unknown) → Nullable(String)=String?.
+fn try_unify(a: &Type, b: &Type) -> Result<Type, ()> {
+    if a.matches(b) {
+        return Ok(a.clone());
+    }
+    if b.matches(a) {
+        return Ok(b.clone());
+    }
+    // Null-widening: if one side is a nullable, wrap the other side.
+    if a.is_nullable() {
+        let wrapped = Type::Nullable(Box::new(b.clone()));
+        if wrapped.matches(a) {
+            return Ok(wrapped);
+        }
+    }
+    if b.is_nullable() {
+        let wrapped = Type::Nullable(Box::new(a.clone()));
+        if wrapped.matches(b) {
+            return Ok(wrapped);
+        }
+    }
+    Err(())
 }
 
 /// Map a `BinaryOperator` to its source-code symbol for diagnostics.
