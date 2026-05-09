@@ -39,6 +39,18 @@ impl<'tokens> Parser<'tokens> {
         self.peek().map(|(t, _)| t)
     }
 
+    /// Save the current cursor position for backtracking.
+    pub(crate) fn save_position(&self) -> usize {
+        self.cursor
+    }
+
+    /// Restore cursor to a previously saved position. Used to
+    /// backtrack after a speculative parse attempt (e.g., trying
+    /// struct-literal `{ ... }` syntax).
+    pub(crate) fn restore_position(&mut self, position: usize) {
+        self.cursor = position;
+    }
+
     /// Look ahead up to `n` tokens without consuming them. Returns a
     /// slice (possibly shorter if EOF is reached first). Used for
     /// bounded lookahead (e.g. disambiguating struct literals).
