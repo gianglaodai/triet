@@ -471,4 +471,64 @@ mod tests {
         let result = call_function(&program, "overflow", vec![]);
         assert!(matches!(result, Err(RuntimeError::Panic { .. })));
     }
+
+    // ===== Assignment (SPEC §5) =====
+
+    #[test]
+    fn assignment_updates_mut_binding() {
+        let source = r"
+            fn final_value() -> Integer {
+                let mut x = 0
+                x = 5
+                x
+            }
+        ";
+        let value = run_function(source, "final_value", vec![]);
+        assert_eq!(value, integer(5));
+    }
+
+    #[test]
+    fn assignment_uses_old_value_in_rhs() {
+        let source = r"
+            fn final_value() -> Integer {
+                let mut x = 10
+                x = x + 1
+                x
+            }
+        ";
+        let value = run_function(source, "final_value", vec![]);
+        assert_eq!(value, integer(11));
+    }
+
+    #[test]
+    fn assignment_in_inner_block_updates_outer_binding() {
+        let source = r"
+            fn count_one() -> Integer {
+                let mut count = 0
+                if? true {
+                    count = count + 1
+                }
+                count
+            }
+        ";
+        let value = run_function(source, "count_one", vec![]);
+        assert_eq!(value, integer(1));
+    }
+
+    #[test]
+    fn counter_loop_with_while() {
+        let source = r"
+            fn sum_to_five() -> Integer {
+                let mut i = 1
+                let mut total = 0
+                while? i <= 5 {
+                    total = total + i
+                    i = i + 1
+                }
+                total
+            }
+        ";
+        let value = run_function(source, "sum_to_five", vec![]);
+        assert_eq!(value, integer(15));
+    }
 }

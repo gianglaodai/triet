@@ -4,16 +4,25 @@ use std::collections::HashMap;
 
 use crate::types::Type;
 
-/// A stack of name → type frames. Entering a block / function pushes a
-/// frame; leaving pops it. Lookup walks from innermost to outermost.
+/// A stack of name → binding frames. Entering a block / function pushes
+/// a frame; leaving pops it. Lookup walks from innermost to outermost.
 #[derive(Clone, Debug, Default)]
 pub struct TypeEnvironment {
     frames: Vec<Frame>,
 }
 
+/// A type-level binding: the type plus whether reassignment is allowed.
+#[derive(Clone, Debug)]
+pub struct Binding {
+    /// Bound type.
+    pub ty: Type,
+    /// `true` for `let mut`, `false` for `let`/`const`/function/pattern.
+    pub mutable: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Frame {
-    names: HashMap<String, Type>,
+    names: HashMap<String, Binding>,
 }
 
 impl TypeEnvironment {
@@ -42,13 +51,18 @@ impl TypeEnvironment {
         self.frames.pop();
     }
 
-    /// Bind `name` to `ty` in the current top frame. Returns `true` if
-    /// the name was newly inserted, `false` if it shadowed an existing
-    /// binding in the same frame.
+    /// Bind `name` to `ty` in the current top frame as immutable. Returns
+    /// `true` if the name was newly inserted, `false` if it shadowed an
+    /// existing binding in the same frame.
     pub fn declare(&mut self, name: &str, ty: Type) -> bool {
+        self.declare_with_mut(name, ty, false)
+    }
+
+    /// Bind `name` to `ty` with explicit mutability.
+    pub fn declare_with_mut(&mut self, name: &str, ty: Type, mutable: bool) -> bool {
         let top = self.frames.last_mut().expect("at least one frame");
         let was_absent = !top.names.contains_key(name);
-        top.names.insert(name.to_owned(), ty);
+        top.names.insert(name.to_owned(), Binding { ty, mutable });
         was_absent
     }
 
@@ -56,9 +70,15 @@ impl TypeEnvironment {
     /// bound type, or `None` if not found.
     #[must_use]
     pub fn lookup(&self, name: &str) -> Option<&Type> {
+        self.lookup_binding(name).map(|b| &b.ty)
+    }
+
+    /// Look up the full binding (type + mutability) for `name`.
+    #[must_use]
+    pub fn lookup_binding(&self, name: &str) -> Option<&Binding> {
         for frame in self.frames.iter().rev() {
-            if let Some(ty) = frame.names.get(name) {
-                return Some(ty);
+            if let Some(binding) = frame.names.get(name) {
+                return Some(binding);
             }
         }
         None
@@ -152,6 +172,16 @@ mod tests {
         assert_eq!(env.lookup("x"), Some(&Type::Tryte));
         env.pop_frame();
         assert_eq!(env.lookup("x"), Some(&Type::Integer));
+    }
+
+    #[test]
+    fn declare_with_mut_records_mutability_flag() {
+        let mut env = TypeEnvironment::default();
+        env.frames.push(Frame::default());
+        env.declare_with_mut("a", Type::Integer, true);
+        env.declare("b", Type::Integer);
+        assert!(env.lookup_binding("a").unwrap().mutable);
+        assert!(!env.lookup_binding("b").unwrap().mutable);
     }
 
     #[test]

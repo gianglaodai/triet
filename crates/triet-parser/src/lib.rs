@@ -356,10 +356,9 @@ mod integration_tests {
         assert!(matches!(main_fn.body, FunctionBody::Block(_)));
     }
 
-    // Reassignment (`x = expr`) is out of scope for v0.1 — the AST has
-    // no Assign statement variant. SPEC §5 documents `let mut` for
-    // future mutation; the `Assign` token is reserved but only used in
-    // `let`/`const`/`type` initializers in v0.1.
+    // Reassignment (`x = expr`) is implemented as `Stmt::Assign` —
+    // statement-level only, lvalue restricted to identifier targets in
+    // v0.1. Tuple/field/index assignment arrives with structs in v0.2.
 
     #[test]
     fn span_is_preserved_for_top_level_item() {

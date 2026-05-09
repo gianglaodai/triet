@@ -337,4 +337,66 @@ mod tests {
             fn two() -> Integer = 2
         ");
     }
+
+    // ===== Assignment (SPEC §5) =====
+
+    #[test]
+    fn checks_assignment_to_mut_binding() {
+        assert_ok(r"
+            fn main() {
+                let mut count = 0
+                count = count + 1
+            }
+        ");
+    }
+
+    #[test]
+    fn flags_assignment_to_immutable_binding() {
+        assert_has_error(
+            r"
+                fn main() {
+                    let x = 0
+                    x = 1
+                }
+            ",
+            |e| matches!(e, TypeError::AssignToImmutable { name, .. } if name == "x"),
+        );
+    }
+
+    #[test]
+    fn flags_assignment_to_undefined_name() {
+        assert_has_error(
+            r"
+                fn main() {
+                    nope = 1
+                }
+            ",
+            |e| matches!(e, TypeError::UndefinedName { name, .. } if name == "nope"),
+        );
+    }
+
+    #[test]
+    fn flags_assignment_with_type_mismatch() {
+        assert_has_error(
+            r#"
+                fn main() {
+                    let mut x: Integer = 0
+                    x = "hi"
+                }
+            "#,
+            |e| matches!(e, TypeError::Mismatch { .. }),
+        );
+    }
+
+    #[test]
+    fn checks_assignment_in_inner_scope_to_outer_mut_binding() {
+        assert_ok(r"
+            fn main() {
+                let mut count = 0
+                if? true {
+                    count = count + 1
+                }
+            }
+        ");
+    }
 }

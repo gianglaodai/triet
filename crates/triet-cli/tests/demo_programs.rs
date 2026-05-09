@@ -25,6 +25,7 @@ const FIZZBUZZ: &str = "fizzbuzz.tt";
 const MEASLES: &str = "measles_risk.tt";
 const FACTORIAL: &str = "factorial.tt";
 const LK: &str = "lukasiewicz_vs_kleene.tt";
+const COUNTER: &str = "counter.tt";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live
@@ -169,4 +170,32 @@ fn lukasiewicz_vs_kleene_main_runs_without_error() {
     let program = load_program(LK);
     let result = run(&program);
     assert!(result.is_ok(), "lukasiewicz_vs_kleene main failed: {result:?}");
+}
+
+#[test]
+fn counter_demo_parses_and_type_checks() {
+    let _ = load_program(COUNTER);
+}
+
+#[test]
+fn counter_sum_to_n_returns_arithmetic_series() {
+    let program = load_program(COUNTER);
+    let cases = &[
+        (0_i64, 0_i64),
+        (1, 1),
+        (5, 15),
+        (10, 55),
+        (100, 5050),
+    ];
+    for &(input, expected) in cases {
+        let value = call_function(&program, "sum_to", vec![integer(input)]).unwrap();
+        assert_eq!(value, integer(expected), "sum_to({input})");
+    }
+}
+
+#[test]
+fn counter_main_runs_without_error() {
+    let program = load_program(COUNTER);
+    let result = run(&program);
+    assert!(result.is_ok(), "counter main failed: {result:?}");
 }

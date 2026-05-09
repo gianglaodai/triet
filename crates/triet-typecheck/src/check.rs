@@ -177,47 +177,22 @@ impl<'p> Checker<'p> {
         match stmt.node {
             Stmt::Let {
                 name,
+                mutable,
                 type_annotation,
                 value,
-                ..
             } => {
-                let declared = type_annotation.map(|tid| self.resolve_type(tid));
-                let inferred = self.infer_expression(value);
-                let ty = match declared {
-                    Some(annotated) => {
-                        if !annotated.matches(&inferred) {
-                            self.errors.push(TypeError::Mismatch {
-                                expected: annotated.clone(),
-                                found: inferred,
-                                span: self.arena.expression(value).span.clone(),
-                            });
-                        }
-                        annotated
-                    }
-                    None => inferred,
-                };
-                self.env.declare(&name, ty);
+                let ty = self.check_initializer(type_annotation, value);
+                self.env.declare_with_mut(&name, ty, mutable);
+            }
+            Stmt::Assign { target, value } => {
+                self.check_assignment(&target, value, stmt.span.clone());
             }
             Stmt::Const {
                 name,
                 type_annotation,
                 value,
             } => {
-                let declared = type_annotation.map(|tid| self.resolve_type(tid));
-                let inferred = self.infer_expression(value);
-                let ty = match declared {
-                    Some(annotated) => {
-                        if !annotated.matches(&inferred) {
-                            self.errors.push(TypeError::Mismatch {
-                                expected: annotated.clone(),
-                                found: inferred,
-                                span: self.arena.expression(value).span.clone(),
-                            });
-                        }
-                        annotated
-                    }
-                    None => inferred,
-                };
+                let ty = self.check_initializer(type_annotation, value);
                 self.env.declare(&name, ty);
             }
             Stmt::Return(value) => {
@@ -274,6 +249,54 @@ impl<'p> Checker<'p> {
             Stmt::ExprStmt(expr) => {
                 let _ = self.infer_expression(expr);
             }
+        }
+    }
+
+    /// Shared logic for `let` / `const` initializers: resolve the
+    /// optional annotation, infer the value, and verify they agree.
+    /// Returns the binding's final type (annotation if present, else
+    /// inferred). On mismatch, records a `Mismatch` error and falls
+    /// back to the annotated type for downstream checking.
+    fn check_initializer(&mut self, type_annotation: Option<TypeId>, value: ExprId) -> Type {
+        let declared = type_annotation.map(|tid| self.resolve_type(tid));
+        let inferred = self.infer_expression(value);
+        match declared {
+            Some(annotated) => {
+                if !annotated.matches(&inferred) {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: annotated.clone(),
+                        found: inferred,
+                        span: self.arena.expression(value).span.clone(),
+                    });
+                }
+                annotated
+            }
+            None => inferred,
+        }
+    }
+
+    fn check_assignment(&mut self, target: &str, value: ExprId, stmt_span: Span) {
+        let value_ty = self.infer_expression(value);
+        let value_span = self.arena.expression(value).span.clone();
+        let Some(binding) = self.env.lookup_binding(target).cloned() else {
+            self.errors.push(TypeError::UndefinedName {
+                name: target.to_owned(),
+                span: stmt_span,
+            });
+            return;
+        };
+        if !binding.mutable {
+            self.errors.push(TypeError::AssignToImmutable {
+                name: target.to_owned(),
+                span: stmt_span,
+            });
+        }
+        if !binding.ty.matches(&value_ty) {
+            self.errors.push(TypeError::Mismatch {
+                expected: binding.ty,
+                found: value_ty,
+                span: value_span,
+            });
         }
     }
 

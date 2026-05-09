@@ -14,9 +14,10 @@ cargo build --release
 ./target/release/triet run examples/measles_risk.tt
 ./target/release/triet run examples/factorial.tt
 ./target/release/triet run examples/lukasiewicz_vs_kleene.tt
+./target/release/triet run examples/counter.tt
 ```
 
-Tổng 4 demo programs thực thi thành công. 424 tests pass workspace-wide.
+Tổng 5 demo programs thực thi thành công. 446 tests pass workspace-wide.
 
 ## Triết lý thiết kế
 
@@ -67,7 +68,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test               # run all tests (424 in v0.1)
+cargo test               # run all tests (446 in v0.1)
 cargo clippy             # lint
 cargo fmt                # format
 ```

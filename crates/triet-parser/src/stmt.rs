@@ -2,7 +2,7 @@
 //! `for`, `while`, `while?`, `loop`, plus expression-statements.
 
 use triet_lexer::{Span, Token};
-use triet_syntax::{Block, ExprId, Spanned, Stmt, StmtId};
+use triet_syntax::{Block, Expr, ExprId, Spanned, Stmt, StmtId};
 
 use crate::{
     error::ParseError,
@@ -215,12 +215,20 @@ fn parse_loop(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseE
 }
 
 /// Parse what looks like an expression and decide whether it is a
-/// statement (terminated by `;`) or the block's final expression
-/// (followed by `}`).
+/// statement (terminated by `;`), the block's final expression
+/// (followed by `}`), or an assignment statement (`name = expr`).
 fn parse_expression_or_final(
     parser: &mut Parser<'_>,
 ) -> Result<StatementOrFinal, ParseError> {
     let expr = parse_expression(parser)?;
+
+    // Assignment: `target = value`. SPEC §5 — `let mut` declares mutable
+    // bindings; `=` (in statement position, after a parsed expression)
+    // reassigns. Only identifier targets are accepted in v0.1.
+    if matches!(parser.peek_token(), Some(Token::Assign)) {
+        return parse_assignment_after_target(parser, expr);
+    }
+
     if parser.eat(&Token::Semi) {
         let span = parser.arena.expression(expr).span.clone();
         let stmt = parser
@@ -240,6 +248,41 @@ fn parse_expression_or_final(
         .arena
         .alloc_statement(Spanned::new(Stmt::ExprStmt(expr), span));
     Ok(StatementOrFinal::Statement(stmt))
+}
+
+/// Continuation of `parse_expression_or_final` once `=` is observed
+/// after a parsed expression. Validates the lvalue, then builds an
+/// `Stmt::Assign`.
+fn parse_assignment_after_target(
+    parser: &mut Parser<'_>,
+    target_expr: ExprId,
+) -> Result<StatementOrFinal, ParseError> {
+    let target_span = parser.arena.expression(target_expr).span.clone();
+    let target_node = parser.arena.expression(target_expr).node.clone();
+
+    parser.expect(&Token::Assign, "`=`")?;
+    let value = parse_expression(parser)?;
+    let _ = parser.eat(&Token::Semi);
+
+    let value_span = parser.arena.expression(value).span.clone();
+
+    let Expr::Identifier(target) = target_node else {
+        // Recovery: emit an error and degrade to an expr-stmt of the
+        // RHS so parsing can continue.
+        parser.record_error(ParseError::InvalidAssignmentTarget {
+            description: "only identifier targets are assignable in v0.1".to_owned(),
+            span: target_span,
+        });
+        let stmt = parser
+            .arena
+            .alloc_statement(Spanned::new(Stmt::ExprStmt(value), value_span));
+        return Ok(StatementOrFinal::Statement(stmt));
+    };
+
+    let span = target_span.start..value_span.end;
+    Ok(StatementOrFinal::Statement(parser.arena.alloc_statement(
+        Spanned::new(Stmt::Assign { target, value }, span),
+    )))
 }
 
 /// Parse a brace-less function body (the `= expr` form). Used by item.rs.
@@ -412,5 +455,56 @@ mod tests {
     fn expression_with_semi_is_statement() {
         let (_, result) = try_parse_stmt("42;").unwrap();
         assert!(matches!(result, StatementOrFinal::Statement(_)));
+    }
+
+    #[test]
+    fn parses_assignment_with_identifier_target() {
+        let (parser, id) = parse_stmt("count = 5");
+        match &parser.arena.statement(id).node {
+            Stmt::Assign { target, value } => {
+                assert_eq!(target, "count");
+                let val_expr = &parser.arena.expression(*value).node;
+                assert!(matches!(val_expr, Expr::IntegerLiteral { value: 5, .. }));
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_assignment_with_complex_rhs() {
+        let (parser, id) = parse_stmt("count = count + 1");
+        match &parser.arena.statement(id).node {
+            Stmt::Assign { target, value } => {
+                assert_eq!(target, "count");
+                assert!(matches!(
+                    parser.arena.expression(*value).node,
+                    Expr::BinaryOp { .. }
+                ));
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assignment_with_trailing_semicolon_is_a_statement() {
+        let (_, result) = try_parse_stmt("count = 5;").unwrap();
+        assert!(matches!(result, StatementOrFinal::Statement(_)));
+    }
+
+    #[test]
+    fn assignment_to_non_identifier_emits_error_and_recovers() {
+        // Try `(a, b) = pair` — tuple LHS not allowed in v0.1.
+        let tokens: Vec<_> = lex("(a, b) = pair").unwrap();
+        let leaked: &'static [_] = Box::leak(tokens.into_boxed_slice());
+        let mut parser = Parser::new(leaked);
+        let _ = parse_statement_or_final_expr(&mut parser).unwrap();
+        let (_, errors) = parser.finish();
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                ParseError::InvalidAssignmentTarget { .. }
+            )),
+            "expected InvalidAssignmentTarget, got {errors:?}",
+        );
     }
 }

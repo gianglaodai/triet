@@ -71,6 +71,17 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// Left-hand side of `=` is not an assignable target. V0.1 only
+    /// allows simple identifier targets; tuple/field/index assignment
+    /// arrives with structs (v0.2).
+    #[error("invalid assignment target at byte {span:?}: {description}")]
+    InvalidAssignmentTarget {
+        /// Why the LHS is not assignable (e.g. "expression is not a name").
+        description: String,
+        /// Span of the offending target expression.
+        span: Span,
+    },
+
     /// Underlying lexer error encountered before parsing finished.
     #[error(transparent)]
     Lex(#[from] LexError),
@@ -86,7 +97,8 @@ impl ParseError {
             | Self::ChainedNoChainOperator { span, .. }
             | Self::InvalidInterpolation { span, .. }
             | Self::InvalidLiteral { span, .. }
-            | Self::BreakValueOutsideLoop { span } => span.clone(),
+            | Self::BreakValueOutsideLoop { span }
+            | Self::InvalidAssignmentTarget { span, .. } => span.clone(),
             Self::Lex(_) => 0..0,
         }
     }

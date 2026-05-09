@@ -181,6 +181,19 @@ pub enum TypeError {
         /// Source location.
         span: Span,
     },
+
+    /// Assignment target is bound `let` (immutable). SPEC §5 — only
+    /// `let mut` bindings can be reassigned.
+    #[error(
+        "cannot assign to immutable binding `{name}` at byte {span:?}; \
+         declare it with `let mut` to allow reassignment"
+    )]
+    AssignToImmutable {
+        /// Target binding name.
+        name: String,
+        /// Source location of the assignment statement.
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -202,7 +215,8 @@ impl TypeError {
             | Self::NotNullable { span, .. }
             | Self::MatchArmMismatch { span, .. }
             | Self::TupleIndexOutOfRange { span, .. }
-            | Self::UnknownMember { span, .. } => span.clone(),
+            | Self::UnknownMember { span, .. }
+            | Self::AssignToImmutable { span, .. } => span.clone(),
         }
     }
 }

@@ -144,6 +144,16 @@ impl<'p> Interpreter<'p> {
                 self.env.declare(&name, computed);
                 Ok(Outcome::Value(Value::Unit))
             }
+            Stmt::Assign { target, value } => {
+                let computed = self.evaluate_expression(value)?;
+                if !self.env.assign(&target, computed) {
+                    return Err(RuntimeError::UndefinedName {
+                        name: target,
+                        span: stmt.span,
+                    });
+                }
+                Ok(Outcome::Value(Value::Unit))
+            }
             Stmt::Return(value) => {
                 let result = match value {
                     Some(id) => self.evaluate_expression(id)?,

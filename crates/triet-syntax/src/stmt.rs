@@ -21,6 +21,21 @@ pub enum Stmt {
         value: ExprId,
     },
 
+    /// `name = value` — reassignment of a `let mut` binding.
+    ///
+    /// V0.1 only allows simple identifier targets; tuple destructuring
+    /// (`(a, b) = ...`) and field/index targets are deferred to v0.2 (struct).
+    /// The parser enforces the lvalue restriction; the type checker then
+    /// verifies the binding exists and was declared `mut`.
+    Assign {
+        /// Target binding name. Stored as a string (not `ExprId`) because
+        /// only identifier targets are valid in v0.1; promoting to a
+        /// general lvalue expression is a v0.2 concern.
+        target: String,
+        /// New value.
+        value: ExprId,
+    },
+
     /// `const NAME = value` or `const NAME: T = value`. Compile-time constant.
     Const {
         /// Constant name (uppercase by convention, not enforced syntactically).
@@ -135,6 +150,20 @@ mod tests {
         match (&immutable, &mutable) {
             (Stmt::Let { mutable: false, .. }, Stmt::Let { mutable: true, .. }) => {}
             _ => panic!("mutability flag did not roundtrip"),
+        }
+    }
+
+    #[test]
+    fn assign_records_target_name_and_value() {
+        let mut arena = Arena::new();
+        let value = arena.alloc_expression(Spanned::new(
+            Expr::IntegerLiteral { value: 42, suffix: None },
+            4..6,
+        ));
+        let stmt = Stmt::Assign { target: "count".to_owned(), value };
+        match &stmt {
+            Stmt::Assign { target, .. } => assert_eq!(target, "count"),
+            other => panic!("expected Assign, got {other:?}"),
         }
     }
 
