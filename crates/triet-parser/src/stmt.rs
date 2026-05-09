@@ -222,9 +222,9 @@ fn parse_expression_or_final(
 ) -> Result<StatementOrFinal, ParseError> {
     let expr = parse_expression(parser)?;
 
-    // Assignment: `target = value`. SPEC §5 — `let mut` declares mutable
-    // bindings; `=` (in statement position, after a parsed expression)
-    // reassigns. Only identifier targets are accepted in v0.1.
+    // Assignment: `target = value`. SPEC §5 — `let mutable` declares
+    // mutable bindings; `=` (in statement position, after a parsed
+    // expression) reassigns. Only identifier targets are accepted.
     if matches!(parser.peek_token(), Some(Token::Assign)) {
         return parse_assignment_after_target(parser, expr);
     }
@@ -270,7 +270,7 @@ fn parse_assignment_after_target(
         // Recovery: emit an error and degrade to an expr-stmt of the
         // RHS so parsing can continue.
         parser.record_error(ParseError::InvalidAssignmentTarget {
-            description: "only identifier targets are assignable in v0.1".to_owned(),
+            description: "only identifier targets are assignable".to_owned(),
             span: target_span,
         });
         let stmt = parser
@@ -291,7 +291,7 @@ pub(crate) fn parse_assignment_body(parser: &mut Parser<'_>) -> Result<ExprId, P
     parse_expression(parser)
 }
 
-/// Parse a top-level block (used by `fn name(...) { body }`).
+/// Parse a top-level block (used by `function name(...) { body }`).
 pub(crate) fn parse_top_block(parser: &mut Parser<'_>) -> Result<Block, ParseError> {
     let span = parser.current_span();
     parse_block(parser, span)
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn assignment_to_non_identifier_emits_error_and_recovers() {
-        // Try `(a, b) = pair` — tuple LHS not allowed in v0.1.
+        // Try `(a, b) = pair` — tuple LHS not allowed.
         let tokens: Vec<_> = lex("(a, b) = pair").unwrap();
         let leaked: &'static [_] = Box::leak(tokens.into_boxed_slice());
         let mut parser = Parser::new(leaked);

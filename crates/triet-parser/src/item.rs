@@ -1,4 +1,4 @@
-//! Top-level item parser — `fn`, `const`, `type`, `import`.
+//! Top-level item parser — `function`, `constant`, `type`, `import`.
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
@@ -16,11 +16,11 @@ use crate::{
 
 /// Parse a top-level item.
 ///
-/// Items may be prefixed with a visibility modifier (`pub`, `pub(pkg)`).
+/// Items may be prefixed with a visibility modifier (`public`, `public(package)`).
 /// The captured [`Visibility`] is stored on the resulting AST node;
 /// downstream passes (name resolver, ABI extractor) read it from there.
 pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, ParseError> {
-    // Capture span start before optional `pub` prefix so the item's
+    // Capture span start before optional visibility prefix so the item's
     // overall span includes the visibility keyword.
     let head_span_start = parser
         .peek()
@@ -50,11 +50,11 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
         Token::Enum => parse_enum(parser, head_span, visibility),
         Token::Import => {
             if visibility != Visibility::Private {
-                // `pub use` re-exports are a post-v0.2.x feature (ADR-0005).
+                // Re-exports are a post-v0.2.x feature (ADR-0005).
                 return Err(ParseError::UnexpectedToken {
-                    expected: "`function`, `constant`, `type`, `struct`, or `enum` after `pub`"
+                    expected: "`function`, `constant`, `type`, `struct`, or `enum` after `public`"
                         .to_owned(),
-                    found: "`import` (re-exports use `public use`, not yet implemented)"
+                    found: "`import` (re-exports of imported names are not yet implemented)"
                         .to_owned(),
                     span: head_span,
                 });
@@ -62,7 +62,7 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
             parse_import(parser, kw_span)
         }
         other => Err(ParseError::UnexpectedToken {
-            expected: "`function`, `constant`, `type`, `struct`, `enum`, `import`, or `pub`".to_owned(),
+            expected: "`function`, `constant`, `type`, `struct`, `enum`, `import`, or `public`".to_owned(),
             found: format!("{other:?}"),
             span: kw_span,
         }),
@@ -175,7 +175,7 @@ fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParam>, P
 }
 
 fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError> {
-    // Optional passing mode prefix: `mut` or `owned`.
+    // Optional passing mode prefix: `mutable` or `owned`.
     let passing = if parser.eat(&Token::Mutable) {
         ParameterPassing::Mutable
     } else if parser.eat(&Token::Owned) {
@@ -702,30 +702,30 @@ mod tests {
     }
 
     #[test]
-    fn pub_on_import_is_rejected() {
-        // Re-exports are post-v0.2.x — `pub use` will land later.
+    fn public_on_import_is_rejected() {
+        // Re-exports of imported names are post-v0.2.x.
         let result = try_parse("public import std.io");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
     #[test]
-    fn pub_with_invalid_restriction_is_rejected() {
-        // Only `pub(pkg)` is accepted; `pub(crate)` / `pub(super)` are not.
+    fn public_with_invalid_restriction_is_rejected() {
+        // Only `public(package)` is accepted; `public(crate)` / `public(super)` are not.
         let result = try_parse("public(crate) function foo() { }");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
     #[test]
-    fn pub_at_eof_errors() {
+    fn public_at_eof_errors() {
         let result = try_parse("public");
         assert!(matches!(result, Err(ParseError::UnexpectedEof { .. })));
     }
 
     #[test]
-    fn item_span_includes_pub_keyword() {
-        // Span should start at `pub`, not at the inner keyword.
+    fn item_span_includes_public_keyword() {
+        // Span should start at `public`, not at the inner keyword.
         let (_, item) = parse("public function greet() { }");
-        // `pub` starts at byte 0, so the item span must too.
+        // `public` starts at byte 0, so the item span must too.
         assert_eq!(item.span.start, 0);
     }
 

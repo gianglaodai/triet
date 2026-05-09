@@ -485,7 +485,7 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
             let span = parser.current_span();
             Err(ParseError::UnexpectedToken {
                 expected: "operator".to_owned(),
-                found: "`[` (indexing not supported in v0.1)".to_owned(),
+                found: "`[` (indexing is not yet supported)".to_owned(),
                 span,
             })
         }

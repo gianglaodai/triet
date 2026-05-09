@@ -146,9 +146,8 @@ pub enum Token {
     /// `kleene_iff` — Kleene K3 biconditional.
     #[token("kleene_iff")]
     KleeneIff,
-    /// `import` — module import. Dot-path form (`import std.io`) is
-    /// the v0.2 syntax; v0.2.x adds `use` with `::` path syntax per
-    /// ADR-0005.
+    /// `import` — module import. Dot-path form (`import std.io`) is the
+    /// baseline; v0.2.x adds Python-style `from ... import ...` per ADR-0005.
     #[token("import")]
     Import,
     /// `module` — module declaration. Per ADR-0005, Java JPMS-aligned.

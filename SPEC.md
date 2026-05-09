@@ -13,17 +13,17 @@
 Triết được thiết kế quanh **năm trụ cột** (chi tiết: [VISION.md](VISION.md)):
 
 1. **CAS Packaging** — hash-based module identity (Unison-inspired). Phase v0.5.
-2. **Module System** — hierarchical, explicit `pub` export, không bind filesystem. Phase v0.2.x ([ADR-0005](docs/decisions/0005-module-system.md)).
+2. **Module System** — hierarchical, explicit `public` export, không bind filesystem. Phase v0.2.x ([ADR-0005](docs/decisions/0005-module-system.md)).
 3. **Stable ABI** — witness tables cho cross-package generics, refuse-to-link với diff rõ ràng. Phase v0.4.
 4. **Crate-Pack & Hybrid Linking** — binary distribution với metadata, static + dynamic linking. Phase v0.4.
-5. **OS-Native Capability Namespaces** — `sys::`/`dev::`/`usr::` enforce ở compiler. Trit-level capability + Łukasiewicz `Unknown` runtime policy. Phase v0.6.
+5. **OS-Native Capability Namespaces** — `sys.*`/`dev.*`/`usr.*` enforce ở compiler. Trit-level capability + Łukasiewicz `Unknown` runtime policy. Phase v0.6.
 
 ### 0.2 Bản sắc Triết
 
 Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn ngữ khác:
 
 - **Trit-level capability** — 3-state native (`-1` deny / `0` ambient / `+1` grant), không emulate qua boolean.
-- **Łukasiewicz capability checking** — `Trilean::Unknown` resolved bởi runtime policy, không cần bolt-on policy engine.
+- **Łukasiewicz capability checking** — `Trilean.Unknown` resolved bởi runtime policy, không cần bolt-on policy engine.
 - **Tam phân ABI ổn định bẩm sinh** — Trit/Tryte/Integer/Long fixed-size, không struct padding, không endianness ambiguity.
 
 ### 0.3 Nguyên tắc thiết kế (commit hard)
@@ -49,7 +49,7 @@ Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn 
 
 ### 0.5 Đang triển khai (v0.2.x)
 
-Module system theo [ADR-0005](docs/decisions/0005-module-system.md). Khi v0.2.x ship, SPEC này sẽ được cập nhật với cú pháp `::` paths, `mod` declarations, `use` imports, và visibility modifiers (`pub`, `pub(pkg)`).
+Module system theo [ADR-0005](docs/decisions/0005-module-system.md). Khi v0.2.x ship, SPEC này sẽ được cập nhật với cú pháp dot-path (`crate.foo.bar`), `module` declarations, Python-style imports (`from X import Y`), và visibility modifiers (`public`, `public(package)`).
 
 ### 0.6 Non-goals của v0.2
 
@@ -91,16 +91,17 @@ identifier = (letter | "_") (letter | digit | "_")*
 ### 1.4 Keyword (đã reserve)
 
 ```
-fn  let  mut  const  type  if  else  match  return
+function  let  mutable  constant  type  if  else  match  return
 true  false  unknown  not  and  or  xor  iff  implies
 kleene_implies  kleene_xor  kleene_iff
 Trit  Tryte  Integer  Long  Trilean  String
-import  mod  pub  owned
+import  module  public  owned
 struct  enum
 ```
 
 > **v0.2.x reserves** (per [ADR-0005](docs/decisions/0005-module-system.md), enforcement landing incrementally):
-> - Path keywords: `crate`, `self`, `super`, `use`
+> - Path keywords: `crate`, `self`, `super`
+> - Import keywords: `from`, `as` (Python-style imports, ADR-0005)
 > - Reserved namespace roots: `std`, `sys`, `dev`, `usr`, `core`
 
 ### 1.5 Literal
@@ -302,8 +303,8 @@ let m: Option<String> = n.to_maybe()     // T? → Option<T>
 let n2: String? = m.to_nullable()       // Option<T> → T?
 
 // Type khác nhau → compiler chặn nhầm lẫn
-fn takes_nullable(x: String?) { ... }
-fn takes_maybe(x: Option<String>) { ... }
+function takes_nullable(x: String?) { ... }
+function takes_maybe(x: Option<String>) { ... }
 
 takes_maybe(n)         // ❌ lỗi compile
 takes_maybe(n.to_maybe())  // ✓
@@ -327,8 +328,8 @@ Inference thực hiện local, theo Hindley-Milner đơn giản hóa. Annotation
 ```triet
 let x = 5                       // suy ra Integer
 let y: Tryte = 5                // explicit, literal coerced tới Tryte (đặc biệt cho integer literal)
-fn double(n: Integer) = n * 2     // return type suy được = Integer
-fn id(n: Integer) -> Integer { n }  // explicit, bắt buộc khi block form
+function double(n: Integer) = n * 2     // return type suy được = Integer
+function id(n: Integer) -> Integer { n }  // explicit, bắt buộc khi block form
 ```
 
 ---
@@ -532,13 +533,13 @@ Implication, XOR, biconditional **không** short-circuit (cần cả hai operand
 ### 5.1 Khai báo
 
 ```triet
-let x = 5                   // immutable, type inferred
-let y: Tryte = 5_tryte      // immutable, type explicit
-let mut count = 0           // mutable
-const PI_TIMES_3: Integer = 9 // compile-time constant
+let x = 5                       // immutable, type inferred
+let y: Tryte = 5_tryte          // immutable, type explicit
+let mutable count = 0           // mutable
+constant PI_TIMES_3: Integer = 9 // compile-time constant
 ```
 
-`let` mặc định **immutable**. `let mut` cho phép gán lại. `const` cho hằng số biết tại compile time.
+`let` mặc định **immutable**. `let mutable` cho phép gán lại. `constant` cho hằng số biết tại compile time.
 
 ### 5.2 Phạm vi (scope)
 
@@ -560,21 +561,21 @@ Hai dạng — block và single-expression:
 
 ```triet
 // Block form
-fn add(a: Integer, b: Integer) -> Integer {
+function add(a: Integer, b: Integer) -> Integer {
     a + b
 }
 
 // Single-expression form (= thay {})
-fn double(n: Integer) -> Integer = n * 2
+function double(n: Integer) -> Integer = n * 2
 
 // Return type inferred khi expression đơn
-fn triple(n: Integer) = n * 3
+function triple(n: Integer) = n * 3
 ```
 
 Block form: giá trị cuối cùng (không có `;`) là return value. Có thể dùng `return` explicit:
 
 ```triet
-fn abs(n: Integer) -> Integer {
+function abs(n: Integer) -> Integer {
     if n < 0 { return -n }
     n
 }
@@ -586,7 +587,7 @@ Tất cả tham số bắt buộc có type annotation. v0.2 không có (sẽ pha
 - Default values — defer
 - Named arguments — defer
 - Variadic — defer
-- Generic functions (`fn id<T>(x: T) -> T`) — phase G.2 sau module system. Generic type *definitions* (struct/enum) đã có ở v0.2.
+- Generic functions (`function id<T>(x: T) -> T`) — phase G.2 sau module system. Generic type *definitions* (struct/enum) đã có ở v0.2.
 
 ### 6.3 Closure (lambda)
 
@@ -695,14 +696,14 @@ Cả ba dạng loop hỗ trợ:
 Pattern matching exhaustive, expression-oriented:
 
 ```triet
-fn classify(n: Integer) -> String =
+function classify(n: Integer) -> String =
     match n {
         0 => "zero",
         n if n > 0 => "positive",
         _ => "negative",
     }
 
-fn describe(b: Trilean) -> String =
+function describe(b: Trilean) -> String =
     match b {
         true => "có",
         false => "không",
@@ -737,25 +738,25 @@ Tuple là composite anonymous (kiểu được suy ra từ thành phần). Struc
 
 ## 9. Standard library tối thiểu (v0.2)
 
-> **Migration note (v0.2.x):** Cú pháp dot-path `std.io.println` đang được thay bằng `std::io::println` theo [ADR-0005](docs/decisions/0005-module-system.md). v0.2.x parse cả hai với deprecation warning cho dot-path; v0.3 chỉ chấp nhận `::`.
+> **Module migration (v0.2.x):** Cú pháp `import std.io.println` (v0.2 baseline, dot-path) sẽ được bổ sung Python-style `from std.io import println` theo [ADR-0005](docs/decisions/0005-module-system.md). Path separator vẫn là `.`. Verbose keyword `function` thay cho `fn` đã chốt.
 
 Module `std.io`:
 ```triet
-fn print(text: String) -> Unit
-fn println(text: String) -> Unit
-fn read_line() -> String
+function print(text: String) -> Unit
+function println(text: String) -> Unit
+function read_line() -> String
 ```
 
 Module `std.text`:
 ```triet
-fn len(s: String) -> Integer
-fn concat(a: String, b: String) -> String
-fn from_integer(n: Integer) -> String
+function len(s: String) -> Integer
+function concat(a: String, b: String) -> String
+function from_integer(n: Integer) -> String
 ```
 
 Module `std.assert`:
 ```triet
-fn assert(cond: Trilean, msg: String) -> Unit
+function assert(cond: Trilean, msg: String) -> Unit
 ```
 
 Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: assertion phải chắc chắn, `unknown` không đủ.
@@ -789,7 +790,7 @@ Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**
 - `T?` (nullable: T + 1-trit discriminator)
 
 **Heap-allocated** (ARC-managed):
-- `String` (UTF-8 owned, mutable qua `let mut`)
+- `String` (UTF-8 owned, mutable qua `let mutable`)
 - `Option<T>` (v0.2 — user-defined enum hiện tại; stdlib version ở v0.4 cùng Crate-Pack)
 - `Result<T, E>` (v0.4 — cùng stable ABI phase)
 - `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections)
@@ -801,13 +802,13 @@ Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**
 
 ```triet
 // Mặc định: borrowed (read-only reference, không annotation)
-fn print_name(name: String) { ... }
+function print_name(name: String) { ... }
 
-// Mutable: từ khóa `mut` ở parameter (rare)
-fn append(mut buffer: String, suffix: String) { ... }
+// Mutable: từ khóa `mutable` ở parameter (rare)
+function append(mutable buffer: String, suffix: String) { ... }
 
 // Owned (transfer ownership, hiếm dùng): từ khóa `owned`
-fn consume(owned data: String) -> String { ... }
+function consume(owned data: String) -> String { ... }
 ```
 
 So với Rust: viết ngắn 30%, ít cognitive overhead 70%.
@@ -828,7 +829,7 @@ Bytecode VM (v0.3) và native compile (v2.0) sẽ implement đầy đủ ARC + s
 ### 11.1 FizzBuzz
 
 ```triet
-fn fizzbuzz(n: Integer) -> String =
+function fizzbuzz(n: Integer) -> String =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
@@ -836,8 +837,8 @@ fn fizzbuzz(n: Integer) -> String =
         _      => std.text.from_integer(n),
     }
 
-fn main() -> Unit {
-    let mut i = 1
+function main() -> Unit {
+    let mutable i = 1
     while? i <= 100 {           // while? giống if? — xử lý unknown như false
         std.io.println(fizzbuzz(i))
         i = i + 1
@@ -850,7 +851,7 @@ fn main() -> Unit {
 ```triet
 type Patient = (Trilean, Trilean, Trilean)    // (có_sốt, có_phát_ban, đã_tiêm_vaccine)
 
-fn risk_measles(p: Patient) -> Trilean {
+function risk_measles(p: Patient) -> Trilean {
     let (fever, rash, vaccinated) = p
     let symptoms = fever && rash
     let possibly_at_risk = symptoms && !vaccinated
@@ -868,7 +869,7 @@ fn risk_measles(p: Patient) -> Trilean {
 ```triet
 // Dấu của số = trit MSB khác 0 đầu tiên
 // Một phép — không cần if
-fn sign(n: Integer) -> Trit = n.first_nonzero_trit_or(0_trit)
+function sign(n: Integer) -> Trit = n.first_nonzero_trit_or(0_trit)
 ```
 
 ---
@@ -879,7 +880,7 @@ fn sign(n: Integer) -> Trit = n.first_nonzero_trit_or(0_trit)
 program       = item* ;
 item          = function | const_decl | type_alias | import ;
 
-function      = "fn" IDENT "(" params? ")" return_type? body ;
+function      = "function" IDENT "(" params? ")" return_type? body ;
 params        = param ("," param)* ","? ;
 param         = IDENT ":" type ;
 return_type   = "->" type ;
@@ -887,7 +888,7 @@ body          = "=" expr | block ;
 block         = "{" stmt* expr? "}" ;
 
 stmt          = let_stmt | expr_stmt | return_stmt ;
-let_stmt      = "let" "mut"? IDENT (":" type)? "=" expr ;
+let_stmt      = "let" "mutable"? IDENT (":" type)? "=" expr ;
 expr_stmt     = expr ";" ;
 return_stmt   = "return" expr? ";" ;
 
@@ -968,7 +969,7 @@ Tóm tắt phasing dài hạn:
 - **v0.3** — bytecode VM + stable IR
 - **v0.4** — Crate-Pack + stable ABI
 - **v0.5** — CAS packaging (hash-based identity)
-- **v0.6** — capability namespaces (`sys::` / `dev::` / `usr::`)
+- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
 - **v0.7** — self-hosting compiler
 - **v0.8** — concurrency model
 - **v0.9** — JIT (Cranelift)

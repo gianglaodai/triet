@@ -3,7 +3,7 @@
 //! Triết uses three visibility levels (intentionally simpler than Rust's
 //! five), per ADR-0005:
 //!
-//! - `Public` (`pub`) — visible from any module that can name this item.
+//! - `Public` (`public`) — visible from any module that can name this item.
 //! - `PublicPackage` (`public(package)`) — visible within the same crate-pack only.
 //! - `Private` — visible only within the defining module (default).
 //!

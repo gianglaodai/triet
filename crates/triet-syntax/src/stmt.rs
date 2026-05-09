@@ -9,11 +9,11 @@ use crate::arena::{ExprId, PatternId, StmtId, TypeId};
 /// [`Stmt::ExprStmt`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stmt {
-    /// `let name = value` or `let mut name: T = value`.
+    /// `let name = value` or `let mutable name: T = value`.
     Let {
         /// Variable name.
         name: String,
-        /// Whether the binding is mutable (`let mut`).
+        /// Whether the binding is mutable (`let mutable`).
         mutable: bool,
         /// Optional type annotation.
         type_annotation: Option<TypeId>,
@@ -21,22 +21,22 @@ pub enum Stmt {
         value: ExprId,
     },
 
-    /// `name = value` — reassignment of a `let mut` binding.
+    /// `name = value` — reassignment of a `let mutable` binding.
     ///
-    /// V0.1 only allows simple identifier targets; tuple destructuring
-    /// (`(a, b) = ...`) and field/index targets are deferred to v0.2 (struct).
-    /// The parser enforces the lvalue restriction; the type checker then
-    /// verifies the binding exists and was declared `mut`.
+    /// Only simple identifier targets are allowed; tuple destructuring
+    /// (`(a, b) = ...`) and field/index targets are deferred. The parser
+    /// enforces the lvalue restriction; the type checker then verifies
+    /// the binding exists and was declared `mutable`.
     Assign {
         /// Target binding name. Stored as a string (not `ExprId`) because
-        /// only identifier targets are valid in v0.1; promoting to a
-        /// general lvalue expression is a v0.2 concern.
+        /// only identifier targets are valid; promoting to a general
+        /// lvalue expression is a future concern.
         target: String,
         /// New value.
         value: ExprId,
     },
 
-    /// `const NAME = value` or `const NAME: T = value`. Compile-time constant.
+    /// `constant NAME = value` or `constant NAME: T = value`. Compile-time constant.
     Const {
         /// Constant name (uppercase by convention, not enforced syntactically).
         name: String,

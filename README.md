@@ -42,7 +42,7 @@ Tổng 10 demo programs thực thi thành công. 522 tests pass workspace-wide.
 
 ```triet
 // FizzBuzz
-fn fizzbuzz(n: Integer) -> String =
+function fizzbuzz(n: Integer) -> String =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
@@ -51,7 +51,7 @@ fn fizzbuzz(n: Integer) -> String =
     }
 
 // Lập luận với missing data — sức mạnh của Łukasiewicz
-fn risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
+function risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
     let symptoms = fever && rash
     symptoms && !vaccinated
     // Nếu vaccinated = unknown → kết quả = unknown
@@ -111,7 +111,7 @@ Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first +
 - **v0.3** — bytecode VM + stable IR
 - **v0.4** — Crate-Pack + stable ABI
 - **v0.5** — CAS packaging (hash-based identity)
-- **v0.6** — capability namespaces (`sys::` / `dev::` / `usr::`)
+- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
 - **v0.7** — self-hosting compiler
 - **v0.8** — concurrency model
 - **v0.9** — JIT (Cranelift)

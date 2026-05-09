@@ -91,7 +91,7 @@ pub enum ParseError {
     #[error("invalid assignment target: {description}")]
     #[diagnostic(
         code(triet::parse::E0007),
-        help("v0.1 only allows simple identifiers as assignment targets, e.g. `count = 1`")
+        help("only simple identifiers are allowed as assignment targets, e.g. `count = 1`")
     )]
     InvalidAssignmentTarget {
         /// Why the LHS is not assignable.

@@ -2,7 +2,7 @@
 //
 // `let mutable` cho phép gán lại; `let` không. Triết phân biệt rõ giữa
 // "shadowing" (khai báo `let` mới trùng tên) và "reassignment" (gán
-// vào binding mut đã khai báo).
+// vào binding mutable đã khai báo).
 
 function sum_to(n: Integer) -> Integer {
     let mutable total = 0

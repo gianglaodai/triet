@@ -24,7 +24,7 @@ pub enum TypeError {
     #[error("undefined name `{name}`")]
     #[diagnostic(
         code(triet::typecheck::E1002),
-        help("did you forget to declare this variable with `let`, or define this function with `fn`?")
+        help("did you forget to declare this variable with `let`, or define this function with `function`?")
     )]
     UndefinedName {
         /// The unbound identifier.

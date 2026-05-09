@@ -15,7 +15,7 @@ pub enum Item {
 
     /// Module-level constant: `const PI = 3`.
     Const {
-        /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+        /// Visibility (`public`, `public(package)`, or default `Private`).
         visibility: Visibility,
         /// Constant name.
         name: String,
@@ -27,7 +27,7 @@ pub enum Item {
 
     /// Type alias: `type Username = String`.
     TypeAlias {
-        /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+        /// Visibility (`public`, `public(package)`, or default `Private`).
         visibility: Visibility,
         /// Alias name (the new identifier).
         name: String,
@@ -42,14 +42,14 @@ pub enum Item {
     Enum(EnumDef),
 
     /// Module import: `import std.io`. Imports do not carry visibility —
-    /// re-exports use `pub use ...` (post-v0.2.x feature, ADR-0005).
+    /// re-exports of imported names are a post-v0.2.x feature (ADR-0005).
     Import(ImportPath),
 }
 
 /// A struct definition with named fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructDef {
-    /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+    /// Visibility (`public`, `public(package)`, or default `Private`).
     pub visibility: Visibility,
     /// Struct name.
     pub name: String,
@@ -71,7 +71,7 @@ pub struct StructField {
 /// An enum definition with named variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnumDef {
-    /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+    /// Visibility (`public`, `public(package)`, or default `Private`).
     pub visibility: Visibility,
     /// Enum name.
     pub name: String,
@@ -91,10 +91,10 @@ pub struct EnumVariant {
     pub payload: Option<TypeId>,
 }
 
-/// A function definition: `fn name(params) -> Return { body }` or with `=`.
+/// A function definition: `function name(params) -> Return { body }` or with `=`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionDef {
-    /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+    /// Visibility (`public`, `public(package)`, or default `Private`).
     pub visibility: Visibility,
     /// Function name.
     pub name: String,
@@ -123,7 +123,7 @@ pub struct FunctionParam {
 pub enum ParameterPassing {
     /// Default — read-only borrow. No keyword in source.
     Borrowed,
-    /// `mut` keyword — caller's value can be mutated.
+    /// `mutable` keyword — caller's value can be mutated.
     Mutable,
     /// `owned` keyword — ownership transfers into the function (rare).
     Owned,
@@ -131,7 +131,7 @@ pub enum ParameterPassing {
 
 /// A function body — either a brace-delimited block or a single expression.
 ///
-/// Triết supports both `fn foo() -> T { stmt; expr }` and `fn foo() -> T = expr`.
+/// Triết supports both `function foo() -> T { stmt; expr }` and `function foo() -> T = expr`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FunctionBody {
     /// `{ ... }` form.
