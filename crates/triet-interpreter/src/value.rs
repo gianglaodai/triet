@@ -66,7 +66,7 @@ pub enum Value {
         /// Struct type name (for Display).
         name: String,
         /// Field values by name.
-        fields: HashMap<String, Value>,
+        fields: HashMap<String, Self>,
     },
     /// Enum variant instance: `Some(5)` or `None`.
     EnumVariant {
@@ -75,7 +75,7 @@ pub enum Value {
         /// Variant name.
         variant: String,
         /// Optional payload.
-        payload: Option<Box<Value>>,
+        payload: Option<Box<Self>>,
     },
 }
 
@@ -85,6 +85,8 @@ pub struct FunctionRef {
     /// The parsed function (cloned from the AST so we don't keep a
     /// borrow on the `Program`; cheap because `Rc<FunctionRef>` shares).
     pub def: FunctionDef,
+    /// The module this function belongs to, if running a resolved program.
+    pub module_id: Option<triet_modules::ModuleId>,
 }
 
 /// A closure: lambda parameters + body + captured environment.

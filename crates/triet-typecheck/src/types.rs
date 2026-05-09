@@ -110,11 +110,9 @@ impl Type {
             Self::UserEnum { name: n1, .. },
             Self::UserEnum { name: n2, .. },
         ) = (self, other)
-        {
-            if n1 == n2 {
+            && n1 == n2 {
                 return true;
             }
-        }
         self == other
     }
 
@@ -139,7 +137,7 @@ impl Type {
     /// Used during monomorphization: `Box<T>` with `T→Integer` becomes
     /// the concrete struct type.
     #[must_use]
-    pub fn substitute(&self, map: &std::collections::HashMap<String, Type>) -> Type {
+    pub fn substitute(&self, map: &std::collections::HashMap<String, Self>) -> Self {
         match self {
             Self::TypeParam(name) => map.get(name).cloned().unwrap_or_else(|| self.clone()),
             Self::Nullable(inner) => {
@@ -158,7 +156,7 @@ impl Type {
                 // monomorphized type has no type params.
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
-                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Type::Unknown)))
+                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Self::Unknown)))
                     .collect();
                 let merged = {
                     let mut m = map.clone();
@@ -177,7 +175,7 @@ impl Type {
             Self::UserEnum { name, type_params, variants } => {
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
-                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Type::Unknown)))
+                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Self::Unknown)))
                     .collect();
                 let merged = {
                     let mut m = map.clone();

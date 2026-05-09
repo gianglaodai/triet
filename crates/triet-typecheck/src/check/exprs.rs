@@ -282,8 +282,7 @@ impl Checker<'_> {
         // Try enum variant construction: `Some(5)`, `None`.
         if let Expr::Identifier(ref callee_name) =
             self.arena.expression(callee).node
-        {
-            if let Some(enum_ty) = self.lookup_enum_variant(callee_name) {
+            && let Some(enum_ty) = self.lookup_enum_variant(callee_name) {
                 let Type::UserEnum { name: _enum_name, type_params, variants } = &enum_ty
                 else {
                     unreachable!()
@@ -301,7 +300,7 @@ impl Checker<'_> {
                         let arg_ty = self.infer_expression(arguments[0]);
                         // If the payload type is a TypeParam, infer from arg.
                         if let Type::TypeParam(tp) = expected_ty.as_ref() {
-                            sub_map.insert(tp.clone(), arg_ty.clone());
+                            sub_map.insert(tp.clone(), arg_ty);
                         } else if !expected_ty.matches(&arg_ty) {
                             self.errors.push(TypeError::Mismatch {
                                 expected: (**expected_ty).clone(),
@@ -333,7 +332,6 @@ impl Checker<'_> {
                 }
                 return enum_ty.clone();
             }
-        }
 
         if !matches!(callee_ty, Type::Unknown) {
             self.errors.push(TypeError::NotCallable {
@@ -353,11 +351,10 @@ impl Checker<'_> {
         // UserEnum as their type and would shadow the generic
         // definition if we scanned inner frames.
         for binding in self.env.frames.first()?.names.values() {
-            if let Type::UserEnum { variants, .. } = &binding.ty {
-                if variants.iter().any(|(n, _)| n == name) {
+            if let Type::UserEnum { variants, .. } = &binding.ty
+                && variants.iter().any(|(n, _)| n == name) {
                     return Some(binding.ty.clone());
                 }
-            }
         }
         None
     }
@@ -459,7 +456,7 @@ impl Checker<'_> {
             self.errors.push(TypeError::UnknownMember {
                 member: variant_name.to_owned(),
                 found: ty.clone(),
-                span: span.clone(),
+                span: span,
             });
             return Type::Unknown;
         };
@@ -479,7 +476,7 @@ impl Checker<'_> {
                 self.errors.push(TypeError::WrongArity {
                     expected: 0,
                     found: 1,
-                    span: span.clone(),
+                    span: span,
                 });
             }
             (None, Some(_)) => {

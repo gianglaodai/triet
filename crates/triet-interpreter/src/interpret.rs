@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, rc::Rc};
 
-use triet_core::{Integer, Long, Trit, Tryte};
+use triet_core::{Integer, Long, Tryte};
 use triet_logic::Trilean;
 use triet_syntax::{
     Arena, BinaryOperator, Block, Expr, ExprId, FStringPart, FunctionBody, Item, MatchArm, PatternId, Program, Span, Stmt, StmtId,
@@ -43,6 +43,20 @@ pub fn run(program: &Program) -> Result<Value, RuntimeError> {
     interpreter.invoke(&main, Vec::new(), 0..0)
 }
 
+/// Internal entry point for `interpret_resolved.rs`.
+pub(crate) fn run_resolved_internal(
+    program: &triet_modules::ResolvedProgram,
+    globals: std::collections::HashMap<triet_modules::AbsolutePath, Value>,
+) -> Result<Value, RuntimeError> {
+    let mut interpreter = Interpreter::new_for_module(program, program.root, &globals);
+    let main = interpreter
+        .env
+        .lookup("main")
+        .cloned()
+        .ok_or(RuntimeError::NoMainFunction)?;
+    interpreter.invoke(&main, Vec::new(), 0..0)
+}
+
 /// Call a top-level function by name, passing positional arguments.
 ///
 /// Useful for tests that exercise specific functions without needing
@@ -69,21 +83,81 @@ pub fn call_function(
     interpreter.invoke(&function, arguments, 0..0)
 }
 
-struct Interpreter<'p> {
+pub(crate) struct Interpreter<'p> {
     arena: &'p Arena,
     items: &'p [triet_syntax::Spanned<Item>],
     env: ValueEnvironment,
+    resolved_program: Option<&'p triet_modules::ResolvedProgram>,
+    resolved_globals: Option<&'p std::collections::HashMap<triet_modules::AbsolutePath, Value>>,
 }
 
 impl<'p> Interpreter<'p> {
-    fn new(program: &'p Program) -> Self {
+    pub(crate) fn new(program: &'p Program) -> Self {
         let mut env = ValueEnvironment::new();
         crate::builtins::install(&mut env);
         Self {
             arena: &program.arena,
             items: &program.items,
             env,
+            resolved_program: None,
+            resolved_globals: None,
         }
+    }
+
+    pub(crate) fn new_for_module(
+        program: &'p triet_modules::ResolvedProgram,
+        module_id: triet_modules::ModuleId,
+        globals: &'p std::collections::HashMap<triet_modules::AbsolutePath, Value>,
+    ) -> Self {
+        let module = program.module(module_id);
+        let mut env = ValueEnvironment::new();
+        crate::builtins::install(&mut env);
+        
+        // Seed environment with globals available to this module.
+        // 1. Module's own items.
+        for item in &module.items {
+            if let Item::Function(def) = &item.node {
+                let path = triet_modules::AbsolutePath::new(module.path.clone(), def.name.clone());
+                if let Some(val) = globals.get(&path) {
+                    env.declare(&def.name, val.clone());
+                }
+            } else if let Item::Const { name, .. } = &item.node {
+                let path = triet_modules::AbsolutePath::new(module.path.clone(), name.clone());
+                if let Some(val) = globals.get(&path) {
+                    env.declare(name, val.clone());
+                }
+            }
+        }
+        
+        // 2. Imported bindings.
+        for (local_name, abs_path) in &module.bindings {
+            // Stdlib has no AbsolutePath in `globals` yet, we use builtins.
+            if abs_path.module_path().root() == Some("std") {
+                // Stdlib functions are handled by `builtins::install()`, 
+                // but if we aliased them (`from std.io import println as p`),
+                // we should map them here. We can just lookup `abs_path.name()`
+                // in the `env` if it's already installed by builtins.
+                if let Some(val) = env.lookup(abs_path.name()).cloned() {
+                    env.declare(local_name, val);
+                }
+                continue;
+            }
+            if let Some(val) = globals.get(abs_path) {
+                env.declare(local_name, val.clone());
+            }
+        }
+
+        Self {
+            arena: program.arena(module),
+            items: &module.items,
+            env,
+            resolved_program: Some(program),
+            resolved_globals: Some(globals),
+        }
+    }
+
+    pub(crate) fn evaluate_expression_public(&mut self, id: ExprId) -> Result<Value, RuntimeError> {
+        self.evaluate_expression(id)
     }
 
     /// Bind every top-level item into the environment so that calls to
@@ -94,6 +168,7 @@ impl<'p> Interpreter<'p> {
                 Item::Function(def) => {
                     let function = Value::Function(Rc::new(FunctionRef {
                         def: def.clone(),
+                        module_id: None,
                     }));
                     self.env.declare(&def.name, function);
                 }
@@ -331,7 +406,7 @@ impl<'p> Interpreter<'p> {
                         })
                     }
                     _ => Err(RuntimeError::TypeError {
-                        message: format!("field access on non-struct value"),
+                        message: "field access on non-struct value".to_string(),
                         span,
                     }),
                 }
@@ -437,7 +512,7 @@ impl<'p> Interpreter<'p> {
                     let val = self.evaluate_expression(value_expr)?;
                     field_values.insert(field_name.clone(), val);
                 }
-                Ok(Value::Struct { name: name.clone(), fields: field_values })
+                Ok(Value::Struct { name: name, fields: field_values })
             }
             Expr::EnumLiteral { name, variant_name, payload } => {
                 let payload_value = match payload {
@@ -445,8 +520,8 @@ impl<'p> Interpreter<'p> {
                     None => None,
                 };
                 Ok(Value::EnumVariant {
-                    name: name.clone(),
-                    variant: variant_name.clone(),
+                    name: name,
+                    variant: variant_name,
                     payload: payload_value,
                 })
             }
@@ -488,12 +563,11 @@ impl<'p> Interpreter<'p> {
     ) -> Result<Value, RuntimeError> {
         // Enum variant construction: `Some(5)`, `None`.
         if let Expr::Identifier(ref name) = self.arena.expression(callee).node {
-            if let Some(enum_ty) = self.env.lookup(name).cloned() {
-                if let Value::EnumVariant { .. } = &enum_ty {
+            if let Some(enum_ty) = self.env.lookup(name).cloned()
+                && let Value::EnumVariant { .. } = &enum_ty {
                     // The name resolves to an enum variant value — this
                     // shouldn't happen (variants aren't stored as values).
                 }
-            }
             // Check if `name` is a variant of any registered enum.
             if let Some((enum_name, variant_name)) =
                 self.find_enum_variant_for_construction(name)
@@ -744,31 +818,68 @@ impl<'p> Interpreter<'p> {
             });
         }
 
-        // Save and replace env: top-level functions see only the
-        // module-level bindings (functions/consts), not the caller's
-        // locals. We achieve this by saving the current env and
-        // restoring it after the call; the call itself runs in a fresh
-        // frame stack containing globals.
+        // Save current context
         let saved_env = std::mem::replace(&mut self.env, ValueEnvironment::new());
-        // Re-install builtins + program items into the fresh env. We
-        // share the actual Function/Builtin Values from the saved env
-        // by walking it and copying every binding flagged as "global".
-        // For simplicity, we directly re-install builtins and items.
-        crate::builtins::install(&mut self.env);
-        for item in self.items {
-            match &item.node {
-                Item::Function(def) => {
-                    self.env.declare(
-                        &def.name,
-                        Value::Function(Rc::new(FunctionRef { def: def.clone() })),
-                    );
-                }
-                Item::Const { name, .. } => {
-                    if let Some(constant) = saved_env.lookup(name).cloned() {
-                        self.env.declare(name, constant);
+        let saved_arena = self.arena;
+        let saved_items = self.items;
+
+        if let (Some(resolved), Some(globals), Some(mod_id)) = (
+            self.resolved_program,
+            self.resolved_globals,
+            reference.module_id,
+        ) {
+            // Module-aware call: switch arena, items, and populate env from globals.
+            let module = resolved.module(mod_id);
+            self.arena = resolved.arena(module);
+            self.items = &module.items;
+            crate::builtins::install(&mut self.env);
+
+            for item in self.items {
+                if let Item::Function(def) = &item.node {
+                    let path = triet_modules::AbsolutePath::new(module.path.clone(), def.name.clone());
+                    if let Some(val) = globals.get(&path) {
+                        self.env.declare(&def.name, val.clone());
+                    }
+                } else if let Item::Const { name, .. } = &item.node {
+                    let path = triet_modules::AbsolutePath::new(module.path.clone(), name.clone());
+                    if let Some(val) = globals.get(&path) {
+                        self.env.declare(name, val.clone());
                     }
                 }
-                _ => {}
+            }
+
+            for (local_name, abs_path) in &module.bindings {
+                if abs_path.module_path().root() == Some("std") {
+                    if let Some(val) = self.env.lookup(abs_path.name()).cloned() {
+                        self.env.declare(local_name, val);
+                    }
+                    continue;
+                }
+                if let Some(val) = globals.get(abs_path) {
+                    self.env.declare(local_name, val.clone());
+                }
+            }
+        } else {
+            // Single-file legacy call: populate from current items.
+            crate::builtins::install(&mut self.env);
+            for item in self.items {
+                match &item.node {
+                    Item::Function(def) => {
+                        self.env.declare(
+                            &def.name,
+                            Value::Function(Rc::new(FunctionRef {
+                                def: def.clone(),
+                                module_id: None,
+                            })),
+                        );
+                    }
+                    Item::Const { name, .. } => {
+                        if let Some(constant) = saved_env.lookup(name).cloned() {
+                            self.env.declare(name, constant);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -798,6 +909,8 @@ impl<'p> Interpreter<'p> {
 
         self.env.pop_frame();
         self.env = saved_env;
+        self.arena = saved_arena;
+        self.items = saved_items;
         Ok(result)
     }
 

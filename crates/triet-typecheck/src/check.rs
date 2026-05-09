@@ -433,17 +433,14 @@ impl<'p> Checker<'p> {
             }
             Pattern::Range { .. } | Pattern::Literal(_) => {}
             Pattern::EnumVariant { variant_name, payload, .. } => {
-                if let Type::UserEnum { variants, .. } = scrutinee {
-                    if let Some((_, def_payload)) =
+                if let Type::UserEnum { variants, .. } = scrutinee
+                    && let Some((_, def_payload)) =
                         variants.iter().find(|(n, _)| n.as_str() == variant_name.as_str())
-                    {
-                        if let (Some(sub_pattern), Some(payload_ty)) =
+                        && let (Some(sub_pattern), Some(payload_ty)) =
                             (payload, def_payload)
                         {
                             self.bind_pattern(sub_pattern, payload_ty);
                         }
-                    }
-                }
             }
         }
     }

@@ -40,14 +40,14 @@ impl<'tokens> Parser<'tokens> {
     }
 
     /// Save the current cursor position for backtracking.
-    pub(crate) fn save_position(&self) -> usize {
+    pub(crate) const fn save_position(&self) -> usize {
         self.cursor
     }
 
     /// Restore cursor to a previously saved position. Used to
     /// backtrack after a speculative parse attempt (e.g., trying
     /// struct-literal `{ ... }` syntax).
-    pub(crate) fn restore_position(&mut self, position: usize) {
+    pub(crate) const fn restore_position(&mut self, position: usize) {
         self.cursor = position;
     }
 

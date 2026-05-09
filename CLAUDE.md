@@ -1,0 +1,121 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → typecheck → interpret` pipeline plus a (currently in-progress) module system. Long-term aim is OS-capable; current state is a tree-walking interpreter for v0.2.
+
+Source-of-truth docs:
+- `SPEC.md` — language semantics (authoritative)
+- `VISION.md` — 5 architectural pillars + OS-capable trajectory
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates
+- `TODO.md` — short-term sub-task tracker with commit hashes
+- `docs/decisions/` — ADRs for architectural decisions
+
+## Common commands
+
+```bash
+cargo build                              # debug
+cargo build --release                    # release
+cargo test --workspace                   # all tests across crates
+cargo test -p triet-parser               # one crate
+cargo test -p triet-parser test_name     # one test
+cargo clippy --workspace --all-targets   # lint (workspace lints are strict — fix every new warning)
+cargo fmt --all                          # format
+
+# Run a .tri program (build the binary first)
+cargo build --release
+./target/release/triet run examples/fizzbuzz.tri
+./target/release/triet check examples/fizzbuzz.tri    # parse+typecheck only
+./target/release/triet --json run examples/foo.tri    # machine-readable diagnostics
+```
+
+Tests must be **green before any commit**. The user's "stability over speed" principle is non-negotiable — do not bypass failing checks with `--no-verify`, `#[allow]`, or `#[ignore]`.
+
+## Architecture
+
+Compilation pipeline (each stage = one crate):
+
+```
+.tri source
+    │
+    ▼  triet-lexer        tokens (logos-based)
+    ▼  triet-parser       AST (recursive descent + Pratt)
+    ▼  triet-modules      ResolvedProgram (loader + resolver)   ← v0.2.x.6 in progress
+    ▼  triet-typecheck    type errors
+    ▼  triet-interpreter  runtime values
+    ▼  triet-cli          binary, miette diagnostics, JSON output
+```
+
+Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-logic` (Trilean Łukasiewicz Ł3 / Kleene K3), `triet-syntax` (AST types + arena).
+
+### Arena-based AST
+`triet-syntax` allocates recursive nodes (`Expr`, `Stmt`, `Pattern`, `TypeExpr`) in typed sub-arenas inside `Arena`. AST nodes hold `*Id` handles (`u32`-sized) instead of `Box<T>`. Always go through `arena.expression(id)` etc. — never fabricate IDs.
+
+### Module system (v0.2.x.6, partially landed)
+`triet-modules` produces `ResolvedProgram` instead of a bare `Program`:
+- **Multi-arena**: `Vec<Arena>` — one arena per parsed source file. Inline `module foo { … }` shares the parent's arena via `arena_id`; file-bound `module foo` gets a fresh arena. This sidesteps cross-file ID remapping.
+- **Flat module list**: `Vec<Module>` indexed by `ModuleId`. Each `Module` has `bindings: HashMap<String, AbsolutePath>` populated by name resolution.
+- **Synthetic stdlib**: `std.*` is treated as virtual modules via `stdlib.rs` registry — same code path as user modules. v0.2.x.7 will swap to real files.
+- **Locked architecture decisions** (per ADR-0005, do not change):
+  - Single-file = crate root (Python/Go pattern)
+  - Inline ≡ file-bound for path resolution (Rust/OCaml precedent)
+  - Stdlib goes through synthetic registry, not bypass
+
+### Error code namespace
+- `triet::lex::E0000` — lexer
+- `triet::parse::E000X` — parser
+- `triet::typecheck::E10XX` — type checker
+- `triet::runtime::E20XX` — interpreter
+- `triet::modules::E21XX` — loader / resolver (E2100 = cyclic, E2101 = file-not-found, etc.)
+
+All errors implement `miette::Diagnostic`. The CLI's `--json` flag also needs each variant in `parse_error_code` / `type_error_code` / `runtime_error_code` mappers in `crates/triet-cli/src/main.rs` — keep them in sync when adding variants.
+
+## Language conventions (don't get these wrong)
+
+These are decisions locked by ADRs. Code generation, examples, error messages, and doc comments must match.
+
+| Use | Don't use | ADR |
+|---|---|---|
+| `function` | `fn` | ADR-0005 (verbose keywords) |
+| `public` / `public(package)` | `pub` / `pub(crate)` | ADR-0005 |
+| `mutable` | `mut` | ADR-0005 |
+| `constant` | `const` | ADR-0005 |
+| `module` | `mod` | ADR-0005 |
+| `crate.foo.bar` | `crate::foo::bar` | ADR-0005 (dot paths) |
+| `from std.io import println` | `use std::io::println` | ADR-0005 |
+
+Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr`, `core`, `crate`, `self`, `super`.
+
+`Trilean` defaults to **Łukasiewicz Ł3** semantics (not Kleene). Don't substitute Boolean reasoning when working on logic ops.
+
+## Workspace conventions
+
+- Rust 2024 edition, stable channel (`rust-toolchain.toml`).
+- Workspace lints are strict: `unsafe_code = forbid`, `missing_docs = warn`, clippy `pedantic` + `nursery` at `warn`. Internal crates have `#![allow(clippy::redundant_pub_crate)]` at `lib.rs` to balance with `unreachable_pub`.
+- All public items need a doc comment (rustdoc-rendered).
+- Miette diagnostics: every error variant gets `#[diagnostic(code(triet::<area>::E<code>))]` plus a `#[label]`-bearing `Span`.
+
+## Development cadence
+
+The user follows a per-step commit pattern:
+1. Pick the next sub-task from `TODO.md`.
+2. Implement, run `cargo test --workspace` and `cargo clippy --workspace`.
+3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.2.x.6): …`.
+4. Push.
+5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
+
+Do not commit, push, or run `gh` commands without an explicit ask. The user reviews each step. Only the user runs `cargo run` against examples in interactive sessions — don't auto-run.
+
+When a decision affects future architecture (module shape, ABI, type system), write an ADR in `docs/decisions/000N-<topic>.md` instead of "ship and fix later".
+
+## Examples
+
+Sample programs in `examples/*.tri` exercise specific features. Useful as smoke tests when changing parser/typecheck/interpreter:
+
+```bash
+for f in examples/*.tri; do ./target/release/triet run "$f" || echo "FAILED: $f"; done
+```
+
+Demos as of v0.2: fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic.

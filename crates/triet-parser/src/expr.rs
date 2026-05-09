@@ -54,8 +54,8 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                 Expr::Identifier(n) => Some(n.clone()),
                 _ => None,
             };
-            if let Some(name) = struct_name {
-                if let Some(fields) = try_parse_struct_literal(parser) {
+            if let Some(name) = struct_name
+                && let Some(fields) = try_parse_struct_literal(parser) {
                     let lhs_span = arena_span(parser, lhs);
                     let end = parser.previous_token_end(lhs_span.end);
                     let span = lhs_span.start..end;
@@ -65,7 +65,6 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                     ));
                     continue;
                 }
-            }
             // Not an identifier LHS or struct parse failed — `{` is
             // not part of this expression. Stop the Pratt loop so the
             // `{` stays available for the enclosing context (e.g.,
@@ -840,15 +839,12 @@ fn try_parse_struct_literal(
 
     loop {
         // Field name must be an identifier.
-        let name = match parser.peek_token().cloned() {
-            Some(Token::Identifier(n)) => {
-                parser.advance();
-                n
-            }
-            _ => {
-                parser.restore_position(saved);
-                return None;
-            }
+        let name = if let Some(Token::Identifier(n)) = parser.peek_token().cloned() {
+            parser.advance();
+            n
+        } else {
+            parser.restore_position(saved);
+            return None;
         };
 
         // Must have `:` after field name.
@@ -858,12 +854,9 @@ fn try_parse_struct_literal(
         }
 
         // Parse the field value expression.
-        let value = match parse_expression(parser) {
-            Ok(v) => v,
-            Err(_) => {
-                parser.restore_position(saved);
-                return None;
-            }
+        let value = if let Ok(v) = parse_expression(parser) { v } else {
+            parser.restore_position(saved);
+            return None;
         };
         fields.push((name, value));
 

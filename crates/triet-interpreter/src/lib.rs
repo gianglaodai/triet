@@ -41,11 +41,13 @@ mod builtins;
 mod env;
 mod error;
 mod interpret;
+mod interpret_resolved;
 mod value;
 
 pub use env::ValueEnvironment;
 pub use error::RuntimeError;
 pub use interpret::{call_function, run};
+pub use interpret_resolved::run_resolved;
 pub use value::Value;
 
 #[cfg(test)]

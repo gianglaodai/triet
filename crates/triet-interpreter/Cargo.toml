@@ -14,9 +14,11 @@ workspace = true
 [dependencies]
 triet-core.workspace = true
 triet-logic.workspace = true
+triet-modules.workspace = true
 triet-syntax.workspace = true
 thiserror.workspace = true
 miette.workspace = true
 
 [dev-dependencies]
 triet-parser.workspace = true
+tempfile = "3"
