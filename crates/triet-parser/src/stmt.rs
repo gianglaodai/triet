@@ -34,7 +34,7 @@ pub(crate) fn parse_statement_or_final_expr(
 
     match token {
         Token::Let => Ok(StatementOrFinal::Statement(parse_let(parser, span)?)),
-        Token::Const => Ok(StatementOrFinal::Statement(parse_const(parser, span)?)),
+        Token::Constant => Ok(StatementOrFinal::Statement(parse_const(parser, span)?)),
         Token::Return => Ok(StatementOrFinal::Statement(parse_return(parser, span)?)),
         Token::Break => Ok(StatementOrFinal::Statement(parse_break(parser, span)?)),
         Token::Continue => {
@@ -56,7 +56,7 @@ pub(crate) fn parse_statement_or_final_expr(
 
 fn parse_let(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseError> {
     parser.expect(&Token::Let, "`let`")?;
-    let mutable = parser.eat(&Token::Mut);
+    let mutable = parser.eat(&Token::Mutable);
 
     let (name_token, _name_span) = parser.peek().cloned().ok_or_else(|| {
         ParseError::UnexpectedEof {
@@ -97,10 +97,10 @@ fn parse_let(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseEr
 }
 
 fn parse_const(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseError> {
-    parser.expect(&Token::Const, "`const`")?;
+    parser.expect(&Token::Constant, "`constant`")?;
     let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
         ParseError::UnexpectedEof {
-            expected: "identifier after `const`".to_owned(),
+            expected: "identifier after `constant`".to_owned(),
             span: parser.eof_span(),
         }
     })?;
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn parses_let_mut() {
-        let (parser, id) = parse_stmt("let mut count = 0");
+        let (parser, id) = parse_stmt("let mutable count = 0");
         match &parser.arena.statement(id).node {
             Stmt::Let { mutable, .. } => assert!(*mutable),
             other => panic!("expected Let, got {other:?}"),
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn parses_const() {
-        let (parser, id) = parse_stmt("const PI = 3");
+        let (parser, id) = parse_stmt("constant PI = 3");
         match &parser.arena.statement(id).node {
             Stmt::Const { name, .. } => assert_eq!(name, "PI"),
             other => panic!("expected Const, got {other:?}"),

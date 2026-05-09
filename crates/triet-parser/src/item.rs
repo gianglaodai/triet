@@ -43,8 +43,8 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
     let head_span = head_span_start..kw_span.end;
 
     match token {
-        Token::Fn => parse_function(parser, head_span, visibility),
-        Token::Const => parse_const_item(parser, head_span, visibility),
+        Token::Function => parse_function(parser, head_span, visibility),
+        Token::Constant => parse_const_item(parser, head_span, visibility),
         Token::Type => parse_type_alias(parser, head_span, visibility),
         Token::Struct => parse_struct(parser, head_span, visibility),
         Token::Enum => parse_enum(parser, head_span, visibility),
@@ -52,9 +52,9 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
             if visibility != Visibility::Private {
                 // `pub use` re-exports are a post-v0.2.x feature (ADR-0005).
                 return Err(ParseError::UnexpectedToken {
-                    expected: "`fn`, `const`, `type`, `struct`, or `enum` after `pub`"
+                    expected: "`function`, `constant`, `type`, `struct`, or `enum` after `pub`"
                         .to_owned(),
-                    found: "`import` (re-exports use `pub use`, not yet implemented)"
+                    found: "`import` (re-exports use `public use`, not yet implemented)"
                         .to_owned(),
                     span: head_span,
                 });
@@ -62,7 +62,7 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
             parse_import(parser, kw_span)
         }
         other => Err(ParseError::UnexpectedToken {
-            expected: "`fn`, `const`, `type`, `struct`, `enum`, `import`, or `pub`".to_owned(),
+            expected: "`function`, `constant`, `type`, `struct`, `enum`, `import`, or `pub`".to_owned(),
             found: format!("{other:?}"),
             span: kw_span,
         }),
@@ -73,16 +73,17 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
 ///
 /// Recognized forms (per ADR-0005):
 /// - (nothing) → `Visibility::Private`
-/// - `pub` → `Visibility::Public`
-/// - `pub(pkg)` → `Visibility::PublicPkg`
+/// - `public` → `Visibility::Public`
+/// - `public(package)` → `Visibility::PublicPackage`
 ///
-/// Anything else after `pub(` is rejected. Triết deliberately omits
-/// `pub(super)` / `pub(in path)` to keep the ABI surface model simple.
+/// Anything else after `public(` is rejected. Triết deliberately omits
+/// `public(super)` / `public(in path)` to keep the ABI surface model
+/// simple.
 fn parse_visibility(parser: &mut Parser<'_>) -> Result<Visibility, ParseError> {
-    if !matches!(parser.peek_token(), Some(Token::Pub)) {
+    if !matches!(parser.peek_token(), Some(Token::Public)) {
         return Ok(Visibility::Private);
     }
-    parser.advance(); // consume `pub`
+    parser.advance(); // consume `public`
 
     if !matches!(parser.peek_token(), Some(Token::LParen)) {
         return Ok(Visibility::Public);
@@ -91,18 +92,19 @@ fn parse_visibility(parser: &mut Parser<'_>) -> Result<Visibility, ParseError> {
 
     let (token, span) = parser.peek().cloned().ok_or_else(|| {
         ParseError::UnexpectedEof {
-            expected: "`pkg` after `pub(`".to_owned(),
+            expected: "`package` after `public(`".to_owned(),
             span: parser.eof_span(),
         }
     })?;
     match token {
-        Token::Identifier(ref name) if name == "pkg" => {
+        Token::Identifier(ref name) if name == "package" => {
             parser.advance();
             parser.expect(&Token::RParen, "`)`")?;
-            Ok(Visibility::PublicPkg)
+            Ok(Visibility::PublicPackage)
         }
         other => Err(ParseError::UnexpectedToken {
-            expected: "`pkg` (the only restriction allowed in `pub(...)`)".to_owned(),
+            expected:
+                "`package` (the only restriction allowed in `public(...)`)".to_owned(),
             found: format!("{other:?}"),
             span,
         }),
@@ -114,7 +116,7 @@ fn parse_function(
     head_span: Span,
     visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
-    parser.expect(&Token::Fn, "`fn`")?;
+    parser.expect(&Token::Function, "`function`")?;
 
     let (name, _) = parse_item_name(parser, "function name")?;
 
@@ -174,7 +176,7 @@ fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParam>, P
 
 fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError> {
     // Optional passing mode prefix: `mut` or `owned`.
-    let passing = if parser.eat(&Token::Mut) {
+    let passing = if parser.eat(&Token::Mutable) {
         ParameterPassing::Mutable
     } else if parser.eat(&Token::Owned) {
         ParameterPassing::Owned
@@ -217,8 +219,8 @@ fn parse_const_item(
     head_span: Span,
     visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
-    parser.expect(&Token::Const, "`const`")?;
-    let (name, _) = parse_item_name(parser, "const name")?;
+    parser.expect(&Token::Constant, "`constant`")?;
+    let (name, _) = parse_item_name(parser, "constant name")?;
 
     let type_annotation = if parser.eat(&Token::Colon) {
         Some(parse_type(parser)?)
@@ -529,7 +531,7 @@ mod tests {
 
     #[test]
     fn parses_no_arg_function_with_block_body() {
-        let (_, item) = parse("fn main() { }");
+        let (_, item) = parse("function main() { }");
         match &item.node {
             Item::Function(def) => {
                 assert_eq!(def.name, "main");
@@ -542,7 +544,7 @@ mod tests {
 
     #[test]
     fn parses_function_with_expression_body() {
-        let (_, item) = parse("fn double(n: Integer) -> Integer = n * 2");
+        let (_, item) = parse("function double(n: Integer) -> Integer = n * 2");
         match &item.node {
             Item::Function(def) => {
                 assert_eq!(def.parameters.len(), 1);
@@ -555,7 +557,7 @@ mod tests {
 
     #[test]
     fn parses_function_with_multiple_params() {
-        let (_, item) = parse("fn add(a: Integer, b: Integer) -> Integer = a + b");
+        let (_, item) = parse("function add(a: Integer, b: Integer) -> Integer = a + b");
         match &item.node {
             Item::Function(def) => assert_eq!(def.parameters.len(), 2),
             other => panic!("got {other:?}"),
@@ -564,7 +566,7 @@ mod tests {
 
     #[test]
     fn parses_function_with_mut_parameter() {
-        let (_, item) = parse("fn append(mut buffer: String, suffix: String) { }");
+        let (_, item) = parse("function append(mutable buffer: String, suffix: String) { }");
         match &item.node {
             Item::Function(def) => {
                 assert_eq!(def.parameters[0].passing, ParameterPassing::Mutable);
@@ -576,7 +578,7 @@ mod tests {
 
     #[test]
     fn parses_function_with_owned_parameter() {
-        let (_, item) = parse("fn consume(owned data: String) -> String = data");
+        let (_, item) = parse("function consume(owned data: String) -> String = data");
         match &item.node {
             Item::Function(def) => {
                 assert_eq!(def.parameters[0].passing, ParameterPassing::Owned);
@@ -587,7 +589,7 @@ mod tests {
 
     #[test]
     fn parses_const_with_annotation() {
-        let (_, item) = parse("const PI: Integer = 3");
+        let (_, item) = parse("constant PI: Integer = 3");
         match &item.node {
             Item::Const { name, type_annotation, .. } => {
                 assert_eq!(name, "PI");
@@ -599,7 +601,7 @@ mod tests {
 
     #[test]
     fn parses_const_without_annotation() {
-        let (_, item) = parse("const ANSWER = 42");
+        let (_, item) = parse("constant ANSWER = 42");
         match &item.node {
             Item::Const { name, .. } => assert_eq!(name, "ANSWER"),
             other => panic!("got {other:?}"),
@@ -644,14 +646,14 @@ mod tests {
 
     #[test]
     fn default_function_visibility_is_private() {
-        let (_, item) = parse("fn greet() { }");
+        let (_, item) = parse("function greet() { }");
         let Item::Function(def) = &item.node else { panic!("expected function") };
         assert_eq!(def.visibility, Visibility::Private);
     }
 
     #[test]
     fn pub_function_captures_public_visibility() {
-        let (_, item) = parse("pub fn greet() { }");
+        let (_, item) = parse("public function greet() { }");
         let Item::Function(def) = &item.node else { panic!("expected function") };
         assert_eq!(def.visibility, Visibility::Public);
         assert_eq!(def.name, "greet");
@@ -659,14 +661,14 @@ mod tests {
 
     #[test]
     fn pub_pkg_function_captures_publicpkg_visibility() {
-        let (_, item) = parse("pub(pkg) fn helper() { }");
+        let (_, item) = parse("public(package) function helper() { }");
         let Item::Function(def) = &item.node else { panic!("expected function") };
-        assert_eq!(def.visibility, Visibility::PublicPkg);
+        assert_eq!(def.visibility, Visibility::PublicPackage);
     }
 
     #[test]
     fn pub_struct_captures_visibility() {
-        let (_, item) = parse("pub struct Point { x: Integer, y: Integer }");
+        let (_, item) = parse("public struct Point { x: Integer, y: Integer }");
         let Item::Struct(def) = &item.node else { panic!("expected struct") };
         assert_eq!(def.visibility, Visibility::Public);
         assert_eq!(def.name, "Point");
@@ -674,16 +676,16 @@ mod tests {
 
     #[test]
     fn pub_enum_captures_visibility() {
-        let (_, item) = parse("pub enum Option<T> { Some(T), None }");
+        let (_, item) = parse("public enum Option<T> { Some(T), None }");
         let Item::Enum(def) = &item.node else { panic!("expected enum") };
         assert_eq!(def.visibility, Visibility::Public);
     }
 
     #[test]
     fn pub_const_captures_visibility() {
-        let (_, item) = parse("pub const PI: Integer = 3");
+        let (_, item) = parse("public constant PI: Integer = 3");
         let Item::Const { visibility, name, .. } = &item.node else {
-            panic!("expected const")
+            panic!("expected constant")
         };
         assert_eq!(*visibility, Visibility::Public);
         assert_eq!(name, "PI");
@@ -691,38 +693,38 @@ mod tests {
 
     #[test]
     fn pub_pkg_type_alias_captures_visibility() {
-        let (_, item) = parse("pub(pkg) type Username = String");
+        let (_, item) = parse("public(package) type Username = String");
         let Item::TypeAlias { visibility, name, .. } = &item.node else {
             panic!("expected type alias")
         };
-        assert_eq!(*visibility, Visibility::PublicPkg);
+        assert_eq!(*visibility, Visibility::PublicPackage);
         assert_eq!(name, "Username");
     }
 
     #[test]
     fn pub_on_import_is_rejected() {
         // Re-exports are post-v0.2.x — `pub use` will land later.
-        let result = try_parse("pub import std.io");
+        let result = try_parse("public import std.io");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
     #[test]
     fn pub_with_invalid_restriction_is_rejected() {
         // Only `pub(pkg)` is accepted; `pub(crate)` / `pub(super)` are not.
-        let result = try_parse("pub(crate) fn foo() { }");
+        let result = try_parse("public(crate) function foo() { }");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
     #[test]
     fn pub_at_eof_errors() {
-        let result = try_parse("pub");
+        let result = try_parse("public");
         assert!(matches!(result, Err(ParseError::UnexpectedEof { .. })));
     }
 
     #[test]
     fn item_span_includes_pub_keyword() {
         // Span should start at `pub`, not at the inner keyword.
-        let (_, item) = parse("pub fn greet() { }");
+        let (_, item) = parse("public function greet() { }");
         // `pub` starts at byte 0, so the item span must too.
         assert_eq!(item.span.start, 0);
     }
@@ -740,7 +742,7 @@ mod tests {
 
     #[test]
     fn fn_named_sys_is_rejected() {
-        let result = try_parse("fn sys() { }");
+        let result = try_parse("function sys() { }");
         assert!(matches!(
             result,
             Err(ParseError::ReservedItemName { name, .. }) if name == "sys"
@@ -758,7 +760,7 @@ mod tests {
 
     #[test]
     fn const_named_usr_is_rejected() {
-        let result = try_parse("const usr: Integer = 5");
+        let result = try_parse("constant usr: Integer = 5");
         assert!(matches!(
             result,
             Err(ParseError::ReservedItemName { name, .. }) if name == "usr"
@@ -777,7 +779,7 @@ mod tests {
     #[test]
     fn fn_named_crate_is_rejected_via_unexpected_token() {
         // `crate` lexes as Token::Crate, not Token::Identifier.
-        let result = try_parse("fn crate() { }");
+        let result = try_parse("function crate() { }");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
@@ -798,7 +800,7 @@ mod tests {
         // `crater`, `stderr`, `system` start with a reserved prefix but
         // are themselves valid identifiers — keyword matching is not
         // greedy, and reserved-name comparison is exact.
-        let (_, item) = parse("fn crater() { }");
+        let (_, item) = parse("function crater() { }");
         let Item::Function(def) = &item.node else { panic!("expected function") };
         assert_eq!(def.name, "crater");
 
@@ -810,7 +812,7 @@ mod tests {
     #[test]
     fn pub_reserved_name_still_rejected() {
         // Visibility prefix doesn't bypass reservation.
-        let result = try_parse("pub struct std { }");
+        let result = try_parse("public struct std { }");
         assert!(matches!(
             result,
             Err(ParseError::ReservedItemName { name, .. }) if name == "std"
@@ -831,7 +833,7 @@ mod tests {
 
     #[test]
     fn errors_on_function_missing_body() {
-        let result = try_parse("fn foo()");
+        let result = try_parse("function foo()");
         assert!(matches!(
             result,
             Err(ParseError::UnexpectedToken { .. } | ParseError::UnexpectedEof { .. })
@@ -840,7 +842,7 @@ mod tests {
 
     #[test]
     fn errors_on_function_missing_param_name() {
-        let result = try_parse("fn foo(: Integer) { }");
+        let result = try_parse("function foo(: Integer) { }");
         assert!(result.is_err());
     }
 

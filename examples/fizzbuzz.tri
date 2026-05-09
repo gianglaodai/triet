@@ -1,7 +1,7 @@
 // FizzBuzz trong Triết — minh họa pattern matching trên tuple
 // và phép modulo balanced ternary `%%`.
 
-fn fizzbuzz(n: Integer) -> String =
+function fizzbuzz(n: Integer) -> String =
     match (n %% 3, n %% 5) {
         (0, 0) => "FizzBuzz",
         (0, _) => "Fizz",
@@ -9,7 +9,7 @@ fn fizzbuzz(n: Integer) -> String =
         _      => to_string(n),
     }
 
-fn main() {
+function main() {
     for i in 1..=15 {
         println(fizzbuzz(i))
     }

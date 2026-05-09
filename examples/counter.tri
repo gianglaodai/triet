@@ -1,12 +1,12 @@
-// Reassignment với `let mut` — minh họa SPEC §5.
+// Reassignment với `let mutable` — minh họa SPEC §5.
 //
-// `let mut` cho phép gán lại; `let` không. Triết phân biệt rõ giữa
+// `let mutable` cho phép gán lại; `let` không. Triết phân biệt rõ giữa
 // "shadowing" (khai báo `let` mới trùng tên) và "reassignment" (gán
 // vào binding mut đã khai báo).
 
-fn sum_to(n: Integer) -> Integer {
-    let mut total = 0
-    let mut i = 1
+function sum_to(n: Integer) -> Integer {
+    let mutable total = 0
+    let mutable i = 1
     while? i <= n {
         total = total + i
         i = i + 1
@@ -14,7 +14,7 @@ fn sum_to(n: Integer) -> Integer {
     total
 }
 
-fn main() {
+function main() {
     println(f"sum 1..=5  = {sum_to(5)}")
     println(f"sum 1..=10 = {sum_to(10)}")
     println(f"sum 1..=100 = {sum_to(100)}")

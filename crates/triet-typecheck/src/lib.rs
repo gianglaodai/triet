@@ -74,23 +74,23 @@ mod tests {
 
     #[test]
     fn checks_identity_function() {
-        assert_ok("fn id(n: Integer) -> Integer = n");
+        assert_ok("function id(n: Integer) -> Integer = n");
     }
 
     #[test]
     fn checks_simple_arithmetic() {
-        assert_ok("fn add(a: Integer, b: Integer) -> Integer = a + b");
+        assert_ok("function add(a: Integer, b: Integer) -> Integer = a + b");
     }
 
     #[test]
     fn checks_call_to_prelude_function() {
-        assert_ok(r#"fn greet() -> Unit = print("hello")"#);
+        assert_ok(r#"function greet() -> Unit = print("hello")"#);
     }
 
     #[test]
     fn checks_let_with_inferred_type() {
         assert_ok(r"
-            fn main() {
+            function main() {
                 let x = 5
                 let y = x + 1
                 println(to_string(y))
@@ -100,13 +100,13 @@ mod tests {
 
     #[test]
     fn checks_let_with_matching_annotation() {
-        assert_ok("fn main() { let x: Integer = 5 }");
+        assert_ok("function main() { let x: Integer = 5 }");
     }
 
     #[test]
     fn checks_if_with_trilean_condition() {
         assert_ok(r"
-            fn check(b: Trilean) -> Integer {
+            function check(b: Trilean) -> Integer {
                 if b { 1 } else { 0 }
             }
         ");
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn checks_match_with_consistent_arms() {
         assert_ok(r#"
-            fn classify(n: Integer) -> String =
+            function classify(n: Integer) -> String =
                 match n {
                     0 => "zero",
                     _ => "nonzero",
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn checks_for_loop_over_range() {
         assert_ok(r"
-            fn count() {
+            function count() {
                 for i in 0..10 {
                     print(to_string(i))
                 }
@@ -136,13 +136,13 @@ mod tests {
 
     #[test]
     fn checks_method_call_on_integer() {
-        assert_ok("fn shrink(n: Integer) -> Tryte = n.to_tryte()");
+        assert_ok("function shrink(n: Integer) -> Tryte = n.to_tryte()");
     }
 
     #[test]
     fn checks_logic_expression_with_trileans() {
         assert_ok(r"
-            fn risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean =
+            function risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean =
                 fever and rash and not vaccinated
         ");
     }
@@ -150,14 +150,14 @@ mod tests {
     #[test]
     fn checks_implication_returns_trilean() {
         assert_ok(r"
-            fn entail(p: Trilean, q: Trilean) -> Trilean = p implies q
+            function entail(p: Trilean, q: Trilean) -> Trilean = p implies q
         ");
     }
 
     #[test]
     fn checks_block_with_final_expression() {
         assert_ok(r"
-            fn compute() -> Integer {
+            function compute() -> Integer {
                 let a = 5
                 let b = 7
                 a + b
@@ -167,13 +167,13 @@ mod tests {
 
     #[test]
     fn checks_force_unwrap_on_nullable() {
-        assert_ok("fn force(name: String?) -> String = name!!");
+        assert_ok("function force(name: String?) -> String = name!!");
     }
 
     #[test]
     fn checks_tuple_index_lookup() {
         assert_ok(r"
-            fn first(pair: (Integer, Trilean)) -> Integer = pair.0
+            function first(pair: (Integer, Trilean)) -> Integer = pair.0
         ");
     }
 
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn flags_unknown_type_in_annotation() {
         assert_has_error(
-            "fn bad(x: Foobar) -> Integer = 0",
+            "function bad(x: Foobar) -> Integer = 0",
             |e| matches!(e, TypeError::UnknownType { name, .. } if name == "Foobar"),
         );
     }
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn flags_undefined_name() {
         assert_has_error(
-            "fn bad() -> Integer = does_not_exist",
+            "function bad() -> Integer = does_not_exist",
             |e| matches!(e, TypeError::UndefinedName { name, .. } if name == "does_not_exist"),
         );
     }
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn flags_arithmetic_type_mismatch() {
         assert_has_error(
-            r"fn bad(a: Integer, b: Tryte) -> Integer = a + b",
+            r"function bad(a: Integer, b: Tryte) -> Integer = a + b",
             |e| matches!(e, TypeError::InvalidOperands { .. }),
         );
     }
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn flags_arithmetic_on_non_numeric() {
         assert_has_error(
-            r"fn bad(a: String, b: String) -> String = a + b",
+            r"function bad(a: String, b: String) -> String = a + b",
             |e| matches!(e, TypeError::InvalidOperands { .. }),
         );
     }
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn flags_logic_op_on_non_trilean() {
         assert_has_error(
-            "fn bad(a: Integer, b: Integer) -> Trilean = a and b",
+            "function bad(a: Integer, b: Integer) -> Trilean = a and b",
             |e| matches!(e, TypeError::InvalidOperands { .. }),
         );
     }
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn flags_let_annotation_mismatch() {
         assert_has_error(
-            r#"fn bad() { let x: Integer = "hi" }"#,
+            r#"function bad() { let x: Integer = "hi" }"#,
             |e| matches!(e, TypeError::Mismatch { .. }),
         );
     }
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn flags_function_return_mismatch() {
         assert_has_error(
-            r#"fn bad() -> Integer = "hi""#,
+            r#"function bad() -> Integer = "hi""#,
             |e| matches!(e, TypeError::Mismatch { .. }),
         );
     }
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn flags_call_arity_mismatch() {
         assert_has_error(
-            r"fn main() { print() }",
+            r"function main() { print() }",
             |e| matches!(e, TypeError::WrongArity { expected: 1, found: 0, .. }),
         );
     }
@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn flags_call_argument_type_mismatch() {
         assert_has_error(
-            r"fn main() { print(42) }",
+            r"function main() { print(42) }",
             |e| matches!(e, TypeError::Mismatch { .. }),
         );
     }
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn flags_if_with_non_trilean_condition() {
         assert_has_error(
-            r"fn bad(n: Integer) -> Integer { if n { 1 } else { 0 } }",
+            r"function bad(n: Integer) -> Integer { if n { 1 } else { 0 } }",
             |e| matches!(e, TypeError::NonTrileanCondition { .. }),
         );
     }
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn flags_if_branches_with_different_types() {
         assert_has_error(
-            r#"fn bad(b: Trilean) -> Integer { if b { 1 } else { "two" } }"#,
+            r#"function bad(b: Trilean) -> Integer { if b { 1 } else { "two" } }"#,
             |e| matches!(e, TypeError::Mismatch { .. }),
         );
     }
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn flags_force_unwrap_on_non_nullable() {
         assert_has_error(
-            r"fn bad(s: String) -> String = s!!",
+            r"function bad(s: String) -> String = s!!",
             |e| matches!(e, TypeError::NotNullable { .. }),
         );
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn flags_tuple_index_out_of_range() {
         assert_has_error(
-            r"fn bad(pair: (Integer, Trilean)) -> Integer = pair.7",
+            r"function bad(pair: (Integer, Trilean)) -> Integer = pair.7",
             |e| matches!(e, TypeError::TupleIndexOutOfRange { .. }),
         );
     }
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn flags_unknown_method() {
         assert_has_error(
-            r"fn bad(n: Integer) -> Integer = n.no_such_method()",
+            r"function bad(n: Integer) -> Integer = n.no_such_method()",
             |e| matches!(e, TypeError::UnknownMember { .. }),
         );
     }
@@ -295,8 +295,8 @@ mod tests {
     fn flags_duplicate_function_name() {
         assert_has_error(
             r"
-                fn dup() {}
-                fn dup() {}
+                function dup() {}
+                function dup() {}
             ",
             |e| matches!(e, TypeError::DuplicateName { name, .. } if name == "dup"),
         );
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn checks_nested_if_else_chain() {
         assert_ok(r#"
-            fn classify(score: Integer) -> String {
+            function classify(score: Integer) -> String {
                 if score >= 90 { "A" }
                 else if score >= 80 { "B" }
                 else if score >= 70 { "C" }
@@ -319,11 +319,11 @@ mod tests {
     #[test]
     fn checks_program_with_multiple_items() {
         assert_ok(r"
-            const MAX: Integer = 100
+            constant MAX: Integer = 100
 
-            fn double(n: Integer) -> Integer = n * 2
+            function double(n: Integer) -> Integer = n * 2
 
-            fn main() {
+            function main() {
                 let x = double(MAX)
                 println(to_string(x))
             }
@@ -333,8 +333,8 @@ mod tests {
     #[test]
     fn forward_reference_to_later_function_resolves() {
         assert_ok(r"
-            fn one() -> Integer = two()
-            fn two() -> Integer = 2
+            function one() -> Integer = two()
+            function two() -> Integer = 2
         ");
     }
 
@@ -343,8 +343,8 @@ mod tests {
     #[test]
     fn checks_assignment_to_mut_binding() {
         assert_ok(r"
-            fn main() {
-                let mut count = 0
+            function main() {
+                let mutable count = 0
                 count = count + 1
             }
         ");
@@ -354,7 +354,7 @@ mod tests {
     fn flags_assignment_to_immutable_binding() {
         assert_has_error(
             r"
-                fn main() {
+                function main() {
                     let x = 0
                     x = 1
                 }
@@ -367,7 +367,7 @@ mod tests {
     fn flags_assignment_to_undefined_name() {
         assert_has_error(
             r"
-                fn main() {
+                function main() {
                     nope = 1
                 }
             ",
@@ -379,8 +379,8 @@ mod tests {
     fn flags_assignment_with_type_mismatch() {
         assert_has_error(
             r#"
-                fn main() {
-                    let mut x: Integer = 0
+                function main() {
+                    let mutable x: Integer = 0
                     x = "hi"
                 }
             "#,
@@ -391,8 +391,8 @@ mod tests {
     #[test]
     fn checks_assignment_in_inner_scope_to_outer_mut_binding() {
         assert_ok(r"
-            fn main() {
-                let mut count = 0
+            function main() {
+                let mutable count = 0
                 if? true {
                     count = count + 1
                 }
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn checks_enumerate_on_range_with_tuple_destructuring() {
         assert_ok(r"
-            fn main() {
+            function main() {
                 for (i, v) in (0..5).enumerate() {
                     println(to_string(i + v))
                 }
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn flags_enumerate_on_non_iterable_receiver() {
         assert_has_error(
-            r"fn bad(n: Integer) -> Integer = n.enumerate()",
+            r"function bad(n: Integer) -> Integer = n.enumerate()",
             |e| matches!(e, TypeError::UnknownMember { .. }),
         );
     }

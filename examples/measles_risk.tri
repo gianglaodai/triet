@@ -5,12 +5,12 @@
 // thông tin thì kết luận cũng thiếu thông tin. Ngược lại, khi không
 // có triệu chứng, kết luận `false` chắc chắn — không cần biết tiêm.
 
-fn risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
+function risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
     let symptoms = fever and rash
     symptoms and not vaccinated
 }
 
-fn main() {
+function main() {
     // Đầy đủ thông tin → kết luận chắc chắn.
     println(f"P1 (sốt, phát ban, chưa tiêm): {risk_measles(true, true, false)}")
 

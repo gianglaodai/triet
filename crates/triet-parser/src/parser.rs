@@ -135,9 +135,9 @@ impl<'tokens> Parser<'tokens> {
         while let Some(token) = self.peek_token() {
             match token {
                 // Stop *before* these — they begin a new construct.
-                Token::Fn
+                Token::Function
                 | Token::Let
-                | Token::Const
+                | Token::Constant
                 | Token::Type
                 | Token::If
                 | Token::IfQ
@@ -150,8 +150,8 @@ impl<'tokens> Parser<'tokens> {
                 | Token::Break
                 | Token::Continue
                 | Token::Import
-                | Token::Mod
-                | Token::Pub
+                | Token::Module
+                | Token::Public
                 | Token::RBrace => return,
 
                 // Consume `;` and stop *after* — it ends the bad statement.
@@ -209,9 +209,9 @@ mod tests {
 
     #[test]
     fn peek_advance_cursor() {
-        let (tokens, ()) = parser_for("fn x");
+        let (tokens, ()) = parser_for("function x");
         let mut parser = Parser::new(&tokens);
-        assert!(matches!(parser.peek_token(), Some(Token::Fn)));
+        assert!(matches!(parser.peek_token(), Some(Token::Function)));
         parser.advance();
         assert!(matches!(
             parser.peek_token(),
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn at_end_returns_true_when_exhausted() {
-        let (tokens, ()) = parser_for("fn");
+        let (tokens, ()) = parser_for("function");
         let mut parser = Parser::new(&tokens);
         assert!(!parser.at_end());
         parser.advance();
@@ -230,24 +230,24 @@ mod tests {
 
     #[test]
     fn eat_returns_false_on_mismatch() {
-        let (tokens, ()) = parser_for("fn");
+        let (tokens, ()) = parser_for("function");
         let mut parser = Parser::new(&tokens);
         assert!(!parser.eat(&Token::Let));
-        assert!(parser.eat(&Token::Fn));
+        assert!(parser.eat(&Token::Function));
         assert!(parser.at_end());
     }
 
     #[test]
     fn expect_returns_span_on_match() {
-        let (tokens, ()) = parser_for("fn");
+        let (tokens, ()) = parser_for("function");
         let mut parser = Parser::new(&tokens);
-        let span = parser.expect(&Token::Fn, "`fn`").unwrap();
-        assert_eq!(span, 0..2);
+        let span = parser.expect(&Token::Function, "`function`").unwrap();
+        assert_eq!(span, 0..8);
     }
 
     #[test]
     fn expect_returns_error_on_mismatch() {
-        let (tokens, ()) = parser_for("fn");
+        let (tokens, ()) = parser_for("function");
         let mut parser = Parser::new(&tokens);
         let error = parser.expect(&Token::Let, "`let`").unwrap_err();
         assert!(matches!(error, ParseError::UnexpectedToken { .. }));
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn expect_returns_eof_at_end() {
-        let (tokens, ()) = parser_for("fn");
+        let (tokens, ()) = parser_for("function");
         let mut parser = Parser::new(&tokens);
         parser.advance();
         let error = parser.expect(&Token::LParen, "`(`").unwrap_err();
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn record_error_accumulates() {
-        let (tokens, ()) = parser_for("fn");
+        let (tokens, ()) = parser_for("function");
         let mut parser = Parser::new(&tokens);
         parser.record_error(ParseError::UnexpectedEof {
             expected: "x".to_owned(),

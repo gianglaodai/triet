@@ -13,14 +13,14 @@
 // ── Widening: let annotation + return type ───────────────────────────
 
 // `let x: T? = known_value` — compiler tự widen T → T?
-fn greet_or_default(name: String?) -> String {
+function greet_or_default(name: String?) -> String {
     let display: String? = name       // widen: String → String?
     display ?: "<khuyết danh>"
 }
 
 // ── Widening: if/else với null literal ───────────────────────────────
 
-fn lookup_name(id: Integer) -> String? =
+function lookup_name(id: Integer) -> String? =
     if? id == 1 { "Alice" }
     else if? id == 2 { "Bob" }
     else if? id == 3 { "Carol" }
@@ -28,14 +28,14 @@ fn lookup_name(id: Integer) -> String? =
 
 // ── Safe-call + Elvis pipeline ───────────────────────────────────────
 
-fn name_length_or_zero(id: Integer) -> Integer =
+function name_length_or_zero(id: Integer) -> Integer =
     lookup_name(id)?.length() ?: 0
 
 // ── Force-unwrap cho caller chắc chắn ────────────────────────────────
 
-fn must_have_name(id: Integer) -> String = lookup_name(id)!!
+function must_have_name(id: Integer) -> String = lookup_name(id)!!
 
-fn main() {
+function main() {
     // lookup → String? → Elvis fallback
     for id in 1..=4 {
         println(f"id={id}: xin chào, {greet_or_default(lookup_name(id))}! (len={name_length_or_zero(id)})")

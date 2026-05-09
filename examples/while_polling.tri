@@ -9,9 +9,9 @@
 // chưa về). `while?` thoát an toàn thay vì panic.
 
 // Mô phỏng monitor: chạy đến khi `active` thành false hoặc đủ 5 lần.
-fn count_cycles(initial_active: Trilean) -> Integer {
-    let mut iterations = 0
-    let mut active = initial_active
+function count_cycles(initial_active: Trilean) -> Integer {
+    let mutable iterations = 0
+    let mutable active = initial_active
     while? active {
         iterations = iterations + 1
         if? iterations >= 5 { active = false }
@@ -22,9 +22,9 @@ fn count_cycles(initial_active: Trilean) -> Integer {
 // Newton-style iterate cho căn nguyên: lặp đến hội tụ hoặc đủ max bước.
 // Điều kiện ghép từ comparison (luôn xác định) → while/while? đều OK,
 // chọn `while?` cho nhất quán với polling style.
-fn isqrt(target: Integer, max_iter: Integer) -> Integer {
-    let mut x = target
-    let mut iter = 0
+function isqrt(target: Integer, max_iter: Integer) -> Integer {
+    let mutable x = target
+    let mutable iter = 0
     while? iter < max_iter and x * x > target {
         x = (x + target / x) / 2
         iter = iter + 1
@@ -32,7 +32,7 @@ fn isqrt(target: Integer, max_iter: Integer) -> Integer {
     x
 }
 
-fn main() {
+function main() {
     println("=== while? polling với Trilean unknown ===")
     println(f"  active=true     → {count_cycles(true)} cycles")
     println(f"  active=false    → {count_cycles(false)} cycles")

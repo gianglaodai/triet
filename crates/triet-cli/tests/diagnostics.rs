@@ -13,7 +13,7 @@ use triet_typecheck::{TypeError, check};
 
 #[test]
 fn parse_error_has_correct_span() {
-    let (_, errors) = parse("fn main() { a == b == c }");
+    let (_, errors) = parse("function main() { a == b == c }");
     assert_eq!(errors.len(), 1);
     match &errors[0] {
         ParseError::ChainedNoChainOperator { class, span } => {
@@ -34,7 +34,7 @@ fn parse_error_has_correct_span() {
 
 #[test]
 fn parse_error_missing_token_has_meaningful_span() {
-    let (_, errors) = parse("fn main( { }");
+    let (_, errors) = parse("function main( { }");
     assert!(!errors.is_empty());
     let msg = errors[0].to_string();
     assert!(msg.contains("expected"));
@@ -42,7 +42,7 @@ fn parse_error_missing_token_has_meaningful_span() {
 
 #[test]
 fn type_error_undefined_name_points_to_usage_site() {
-    let (program, parse_errors) = parse("fn main() { unknown_var }");
+    let (program, parse_errors) = parse("function main() { unknown_var }");
     assert!(parse_errors.is_empty());
     let type_errors = check(&program);
     assert_eq!(type_errors.len(), 1);
@@ -52,7 +52,7 @@ fn type_error_undefined_name_points_to_usage_site() {
             // Span should cover the identifier inside the block.
             assert!(
                 span.start >= 12,
-                "expected span after `fn main() {{`, got {span:?}",
+                "expected span after `function main() {{`, got {span:?}",
             );
         }
         other => panic!("expected UndefinedName, got {other:?}"),
@@ -61,7 +61,7 @@ fn type_error_undefined_name_points_to_usage_site() {
 
 #[test]
 fn type_error_mismatch_carries_both_types() {
-    let (program, parse_errors) = parse(r#"fn main() -> Integer { "oops" }"#);
+    let (program, parse_errors) = parse(r#"function main() -> Integer { "oops" }"#);
     assert!(parse_errors.is_empty());
     let type_errors = check(&program);
     assert_eq!(type_errors.len(), 1);
@@ -77,7 +77,7 @@ fn type_error_mismatch_carries_both_types() {
 #[test]
 fn type_error_assign_to_immutable_mentions_name() {
     let source = r"
-        fn main() {
+        function main() {
             let x = 0
             x = 1
         }
@@ -96,7 +96,7 @@ fn type_error_assign_to_immutable_mentions_name() {
 
 #[test]
 fn runtime_error_no_main_function_has_code() {
-    let (program, parse_errors) = parse("fn helper() {}");
+    let (program, parse_errors) = parse("function helper() {}");
     assert!(parse_errors.is_empty());
     let type_errors = check(&program);
     assert!(type_errors.is_empty());
@@ -113,7 +113,7 @@ fn runtime_error_no_main_function_has_code() {
 
 #[test]
 fn type_error_invalid_operands_mentions_operator() {
-    let source = "fn bad() -> Trilean = 5 and true";
+    let source = "function bad() -> Trilean = 5 and true";
     let (program, parse_errors) = parse(source);
     assert!(parse_errors.is_empty());
     let type_errors = check(&program);

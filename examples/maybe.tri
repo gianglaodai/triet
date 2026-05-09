@@ -12,19 +12,19 @@
 enum MaybeInt { Some(Integer), None }
 
 // Unwrap với giá trị mặc định — giống `Option::unwrap_or` trong Rust.
-fn unwrap_or(value: MaybeInt, default: Integer) -> Integer =
+function unwrap_or(value: MaybeInt, default: Integer) -> Integer =
     match value {
         Some(v) => v,
         None => default,
     }
 
-fn describe(value: MaybeInt) -> String =
+function describe(value: MaybeInt) -> String =
     match value {
         Some(v) => f"có giá trị {v}",
         None => "rỗng",
     }
 
-fn main() {
+function main() {
     let a = Some(42)
     let b = None
 

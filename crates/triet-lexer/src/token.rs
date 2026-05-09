@@ -56,18 +56,18 @@ pub struct IntLiteral {
 #[logos(skip r"[ \t\r\n]+", skip r"//[^\n]*", error = LexError)]
 pub enum Token {
     // === Keywords ===
-    /// `fn` — function definition.
-    #[token("fn")]
-    Fn,
+    /// `function` — function definition.
+    #[token("function")]
+    Function,
     /// `let` — variable binding.
     #[token("let")]
     Let,
-    /// `mut` — mutable binding modifier.
-    #[token("mut")]
-    Mut,
-    /// `const` — compile-time constant.
-    #[token("const")]
-    Const,
+    /// `mutable` — mutable binding modifier.
+    #[token("mutable")]
+    Mutable,
+    /// `constant` — compile-time constant.
+    #[token("constant")]
+    Constant,
     /// `type` — type alias.
     #[token("type")]
     Type,
@@ -151,13 +151,12 @@ pub enum Token {
     /// ADR-0005.
     #[token("import")]
     Import,
-    /// `mod` — module declaration: `mod foo;` (file-bound) or
-    /// `mod foo { ... }` (inline). Per ADR-0005.
-    #[token("mod")]
-    Mod,
-    /// `pub` — public visibility modifier on items (`pub`, `pub(pkg)`).
-    #[token("pub")]
-    Pub,
+    /// `module` — module declaration. Per ADR-0005, Java JPMS-aligned.
+    #[token("module")]
+    Module,
+    /// `public` — visibility modifier (`public`, `public(package)`).
+    #[token("public")]
+    Public,
     /// `owned` — parameter takes ownership (Mojo-style).
     #[token("owned")]
     Owned,
@@ -232,10 +231,6 @@ pub enum Token {
     /// `!!` — force unwrap (panic on null).
     #[token("!!")]
     BangBang,
-    /// `::` — path separator (v0.2+ modules).
-    #[token("::")]
-    ColonColon,
-
     // === Single- and double-character operators ===
     /// `**` — exponentiation (must precede `*` for longest-match).
     #[token("**")]

@@ -18,7 +18,7 @@
 //! ```
 //! use triet_parser::parse;
 //!
-//! let (program, errors) = parse("fn id(n: Integer) -> Integer = n");
+//! let (program, errors) = parse("function id(n: Integer) -> Integer = n");
 //! assert!(errors.is_empty());
 //! assert_eq!(program.items.len(), 1);
 //! ```
@@ -131,7 +131,7 @@ mod integration_tests {
 
     #[test]
     fn parses_simple_main_function() {
-        let (program, errors) = parse("fn main() { }");
+        let (program, errors) = parse("function main() { }");
         assert_no_errors(&errors);
         assert_eq!(program.items.len(), 1);
         assert!(matches!(program.items[0].node, Item::Function(_)));
@@ -140,10 +140,10 @@ mod integration_tests {
     #[test]
     fn parses_multiple_top_level_items() {
         let source = r"
-            const PI = 3
+            constant PI = 3
             type Username = String
-            fn add(a: Integer, b: Integer) -> Integer = a + b
-            fn main() { }
+            function add(a: Integer, b: Integer) -> Integer = a + b
+            function main() { }
         ";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
@@ -153,7 +153,7 @@ mod integration_tests {
     #[test]
     fn parses_fizzbuzz_program() {
         let source = r#"
-            fn fizzbuzz(n: Integer) -> String =
+            function fizzbuzz(n: Integer) -> String =
                 match (n %% 3, n %% 5) {
                     (0, 0) => "FizzBuzz",
                     (0, _) => "Fizz",
@@ -182,7 +182,7 @@ mod integration_tests {
     #[test]
     fn parses_measles_demo_function() {
         let source = r"
-            fn risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
+            function risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
                 let symptoms = fever and rash
                 symptoms and not vaccinated
             }
@@ -200,7 +200,7 @@ mod integration_tests {
     #[test]
     fn parses_for_loop_with_range_iteration() {
         let source = r"
-            fn count_to(n: Integer) {
+            function count_to(n: Integer) {
                 for i in 0..=n {
                     print(i)
                 }
@@ -213,7 +213,7 @@ mod integration_tests {
     #[test]
     fn parses_if_question_for_trilean_condition() {
         let source = r"
-            fn maybe_run(condition: Trilean) {
+            function maybe_run(condition: Trilean) {
                 if? condition {
                     do_action()
                 }
@@ -226,7 +226,7 @@ mod integration_tests {
     #[test]
     fn parses_logic_with_implication_keyword_chain() {
         let source = r"
-            fn entailment(p: Trilean, q: Trilean, r: Trilean) -> Trilean =
+            function entailment(p: Trilean, q: Trilean, r: Trilean) -> Trilean =
                 p implies q implies r
         ";
         let (_program, errors) = parse(source);
@@ -236,7 +236,7 @@ mod integration_tests {
     #[test]
     fn parses_match_with_or_pattern() {
         let source = r#"
-            fn classify(n: Integer) -> String =
+            function classify(n: Integer) -> String =
                 match n {
                     1 | 2 | 3 => "small",
                     _ => "other",
@@ -263,7 +263,7 @@ mod integration_tests {
     #[test]
     fn parses_block_with_let_and_final_expr() {
         let source = r"
-            fn compute() -> Integer {
+            function compute() -> Integer {
                 let x = 5
                 let y = 7
                 x + y
@@ -280,7 +280,7 @@ mod integration_tests {
     #[test]
     fn parses_nullable_with_safe_call_chain() {
         let source = r"
-            fn name_length(name: String?) -> Integer = name?.length ?: 0
+            function name_length(name: String?) -> Integer = name?.length ?: 0
         ";
         let (_program, errors) = parse(source);
         assert_no_errors(&errors);
@@ -289,7 +289,7 @@ mod integration_tests {
     #[test]
     fn parses_f_string_with_interpolation() {
         let source = r#"
-            fn greet(name: String) -> String = f"Xin chào, {name}!"
+            function greet(name: String) -> String = f"Xin chào, {name}!"
         "#;
         let (_program, errors) = parse(source);
         assert_no_errors(&errors);
@@ -298,7 +298,7 @@ mod integration_tests {
     #[test]
     fn parses_complex_arithmetic_expression() {
         // Tests precedence: -2 ** 2 + 3 * 4 = -4 + 12 = 8
-        let source = "fn answer() -> Integer = -2 ** 2 + 3 * 4";
+        let source = "function answer() -> Integer = -2 ** 2 + 3 * 4";
         let (_program, errors) = parse(source);
         assert_no_errors(&errors);
     }
@@ -308,8 +308,8 @@ mod integration_tests {
     #[test]
     fn recovers_from_first_item_error_to_parse_second() {
         let source = r"
-            fn broken( oops { }
-            fn good() { }
+            function broken( oops { }
+            function good() { }
         ";
         let (program, errors) = parse(source);
         assert!(!errors.is_empty(), "expected errors");
@@ -321,7 +321,7 @@ mod integration_tests {
     #[test]
     fn lex_error_is_wrapped_into_parse_error() {
         // `\q` triggers an InvalidEscape lex error.
-        let (_, errors) = parse(r#"fn foo() = "\q""#);
+        let (_, errors) = parse(r#"function foo() = "\q""#);
         assert!(errors.iter().any(|e| matches!(e, ParseError::Lex(_))));
     }
 
@@ -330,7 +330,7 @@ mod integration_tests {
     #[test]
     fn parses_full_fizzbuzz_with_main() {
         let source = r#"
-            fn fizzbuzz(n: Integer) -> String =
+            function fizzbuzz(n: Integer) -> String =
                 match (n %% 3, n %% 5) {
                     (0, 0) => "FizzBuzz",
                     (0, _) => "Fizz",
@@ -338,7 +338,7 @@ mod integration_tests {
                     _ => to_string(n),
                 }
 
-            fn main() {
+            function main() {
                 for i in 1..=100 {
                     println(fizzbuzz(i))
                 }
@@ -362,7 +362,7 @@ mod integration_tests {
 
     #[test]
     fn span_is_preserved_for_top_level_item() {
-        let source = "fn main() { }";
+        let source = "function main() { }";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
         let span = &program.items[0].span;
@@ -380,7 +380,7 @@ mod integration_tests {
 
     #[test]
     fn statement_ordering_in_block_is_preserved() {
-        let source = "fn ord() { let a = 1 let b = 2 let c = 3 }";
+        let source = "function ord() { let a = 1 let b = 2 let c = 3 }";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
         let Item::Function(def) = &program.items[0].node else { panic!() };

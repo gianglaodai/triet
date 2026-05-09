@@ -78,14 +78,14 @@ mod tests {
 
     #[test]
     fn evaluates_integer_literal() {
-        let value = run_function("fn answer() -> Integer = 42", "answer", vec![]);
+        let value = run_function("function answer() -> Integer = 42", "answer", vec![]);
         assert_eq!(value, integer(42));
     }
 
     #[test]
     fn evaluates_simple_addition() {
         let value = run_function(
-            "fn sum(a: Integer, b: Integer) -> Integer = a + b",
+            "function sum(a: Integer, b: Integer) -> Integer = a + b",
             "sum",
             vec![integer(3), integer(5)],
         );
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn evaluates_arithmetic_precedence() {
         let value = run_function(
-            "fn calc() -> Integer = 2 + 3 * 4",
+            "function calc() -> Integer = 2 + 3 * 4",
             "calc",
             vec![],
         );
@@ -106,7 +106,7 @@ mod tests {
     fn evaluates_power_right_associative() {
         // 2 ** 3 ** 2 = 2 ** (3 ** 2) = 2 ** 9 = 512
         let value = run_function(
-            "fn calc() -> Integer = 2 ** 3 ** 2",
+            "function calc() -> Integer = 2 ** 3 ** 2",
             "calc",
             vec![],
         );
@@ -115,14 +115,14 @@ mod tests {
 
     #[test]
     fn evaluates_unary_negation() {
-        let value = run_function("fn neg(n: Integer) -> Integer = -n", "neg", vec![integer(7)]);
+        let value = run_function("function neg(n: Integer) -> Integer = -n", "neg", vec![integer(7)]);
         assert_eq!(value, integer(-7));
     }
 
     #[test]
     fn evaluates_modulo() {
         let value = run_function(
-            "fn rem(a: Integer, b: Integer) -> Integer = a %% b",
+            "function rem(a: Integer, b: Integer) -> Integer = a %% b",
             "rem",
             vec![integer(10), integer(3)],
         );
@@ -133,17 +133,17 @@ mod tests {
 
     #[test]
     fn evaluates_trilean_literals() {
-        assert_eq!(run_function("fn t() -> Trilean = true", "t", vec![]), trilean(Trilean::True));
-        assert_eq!(run_function("fn f() -> Trilean = false", "f", vec![]), trilean(Trilean::False));
+        assert_eq!(run_function("function t() -> Trilean = true", "t", vec![]), trilean(Trilean::True));
+        assert_eq!(run_function("function f() -> Trilean = false", "f", vec![]), trilean(Trilean::False));
         assert_eq!(
-            run_function("fn u() -> Trilean = unknown", "u", vec![]),
+            run_function("function u() -> Trilean = unknown", "u", vec![]),
             trilean(Trilean::Unknown),
         );
     }
 
     #[test]
     fn evaluates_logic_and() {
-        let source = "fn ann(a: Trilean, b: Trilean) -> Trilean = a and b";
+        let source = "function ann(a: Trilean, b: Trilean) -> Trilean = a and b";
         assert_eq!(
             run_function(source, "ann", vec![trilean(Trilean::True), trilean(Trilean::True)]),
             trilean(Trilean::True),
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn evaluates_lukasiewicz_implies_distinguishes_unknown_unknown() {
-        let source = "fn imp(a: Trilean, b: Trilean) -> Trilean = a implies b";
+        let source = "function imp(a: Trilean, b: Trilean) -> Trilean = a implies b";
         assert_eq!(
             run_function(source, "imp", vec![trilean(Trilean::Unknown), trilean(Trilean::Unknown)]),
             trilean(Trilean::True),
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn evaluates_kleene_implies_distinguishes_unknown_unknown() {
-        let source = "fn imp(a: Trilean, b: Trilean) -> Trilean = a kleene_implies b";
+        let source = "function imp(a: Trilean, b: Trilean) -> Trilean = a kleene_implies b";
         assert_eq!(
             run_function(source, "imp", vec![trilean(Trilean::Unknown), trilean(Trilean::Unknown)]),
             trilean(Trilean::Unknown),
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn evaluates_unary_not_on_trilean() {
-        let source = "fn nott(a: Trilean) -> Trilean = !a";
+        let source = "function nott(a: Trilean) -> Trilean = !a";
         assert_eq!(
             run_function(source, "nott", vec![trilean(Trilean::True)]),
             trilean(Trilean::False),
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn evaluates_less_than() {
-        let source = "fn lt(a: Integer, b: Integer) -> Trilean = a < b";
+        let source = "function lt(a: Integer, b: Integer) -> Trilean = a < b";
         assert_eq!(
             run_function(source, "lt", vec![integer(1), integer(2)]),
             trilean(Trilean::True),
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn evaluates_equality_returns_trilean_true_or_false() {
-        let source = "fn eq(a: Integer, b: Integer) -> Trilean = a == b";
+        let source = "function eq(a: Integer, b: Integer) -> Trilean = a == b";
         assert_eq!(
             run_function(source, "eq", vec![integer(5), integer(5)]),
             trilean(Trilean::True),
@@ -217,20 +217,20 @@ mod tests {
 
     #[test]
     fn evaluates_if_taking_then_branch() {
-        let source = r"fn pick(b: Trilean) -> Integer { if b { 1 } else { 0 } }";
+        let source = r"function pick(b: Trilean) -> Integer { if b { 1 } else { 0 } }";
         assert_eq!(run_function(source, "pick", vec![trilean(Trilean::True)]), integer(1));
         assert_eq!(run_function(source, "pick", vec![trilean(Trilean::False)]), integer(0));
     }
 
     #[test]
     fn evaluates_if_question_treats_unknown_as_false() {
-        let source = r"fn pick(b: Trilean) -> Integer { if? b { 1 } else { 0 } }";
+        let source = r"function pick(b: Trilean) -> Integer { if? b { 1 } else { 0 } }";
         assert_eq!(run_function(source, "pick", vec![trilean(Trilean::Unknown)]), integer(0));
     }
 
     #[test]
     fn plain_if_with_unknown_is_runtime_error() {
-        let source = r"fn pick(b: Trilean) -> Integer { if b { 1 } else { 0 } }";
+        let source = r"function pick(b: Trilean) -> Integer { if b { 1 } else { 0 } }";
         let program = parse_ok(source);
         let result = call_function(&program, "pick", vec![trilean(Trilean::Unknown)]);
         assert!(matches!(result, Err(RuntimeError::UnknownCondition { .. })));
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn evaluates_match_picks_first_matching_arm() {
         let source = r#"
-            fn classify(n: Integer) -> String =
+            function classify(n: Integer) -> String =
                 match n {
                     0 => "zero",
                     _ => "other",
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn evaluates_assume_known_passes_through_known_trilean() {
-        let source = "fn force(t: Trilean) -> Trilean = t.assume_known()";
+        let source = "function force(t: Trilean) -> Trilean = t.assume_known()";
         assert_eq!(
             run_function(source, "force", vec![trilean(Trilean::True)]),
             trilean(Trilean::True),
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn assume_known_panics_on_unknown() {
-        let source = "fn force(t: Trilean) -> Trilean = t.assume_known()";
+        let source = "function force(t: Trilean) -> Trilean = t.assume_known()";
         let program = parse_ok(source);
         let result = call_function(&program, "force", vec![trilean(Trilean::Unknown)]);
         assert!(matches!(result, Err(RuntimeError::Panic { .. })));
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn evaluates_string_length_method() {
-        let source = r"fn len(s: String) -> Integer = s.length()";
+        let source = r"function len(s: String) -> Integer = s.length()";
         let value = run_function(
             source,
             "len",
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn evaluates_elvis_returns_default_for_null() {
         let source = r#"
-            fn pick(s: String?) -> String = s ?: "fallback"
+            function pick(s: String?) -> String = s ?: "fallback"
         "#;
         let value = run_function(source, "pick", vec![Value::Null]);
         assert_eq!(value.to_string(), "fallback");
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn evaluates_elvis_returns_unwrapped_for_non_null() {
-        let source = r#"fn pick(s: String?) -> String = s ?: "fallback""#;
+        let source = r#"function pick(s: String?) -> String = s ?: "fallback""#;
         let value = run_function(
             source,
             "pick",
@@ -306,14 +306,14 @@ mod tests {
 
     #[test]
     fn force_unwrap_returns_value_for_non_null() {
-        let source = "fn force(s: String?) -> String = s!!";
+        let source = "function force(s: String?) -> String = s!!";
         let value = run_function(source, "force", vec![Value::from_string("x".to_owned())]);
         assert_eq!(value.to_string(), "x");
     }
 
     #[test]
     fn force_unwrap_panics_on_null() {
-        let source = "fn force(s: String?) -> String = s!!";
+        let source = "function force(s: String?) -> String = s!!";
         let program = parse_ok(source);
         let result = call_function(&program, "force", vec![Value::Null]);
         assert!(matches!(result, Err(RuntimeError::Panic { .. })));
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn evaluates_tuple_construction_and_index() {
         let source = r"
-            fn make() -> Integer {
+            function make() -> Integer {
                 let pair = (10, 20)
                 pair.0
             }
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn evaluates_tuple_destructuring_in_match() {
         let source = r#"
-            fn diag(pair: (Integer, Integer)) -> String =
+            function diag(pair: (Integer, Integer)) -> String =
                 match pair {
                     (0, 0) => "origin",
                     _ => "elsewhere",
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn evaluates_f_string_with_interpolation() {
-        let source = r#"fn greet(name: String) -> String = f"Xin chào, {name}!""#;
+        let source = r#"function greet(name: String) -> String = f"Xin chào, {name}!""#;
         let value = run_function(
             source,
             "greet",
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn evaluates_recursive_factorial() {
         let source = r"
-            fn fact(n: Integer) -> Integer =
+            function fact(n: Integer) -> Integer =
                 if? n <= 1 { 1 } else { n * fact(n - 1) }
         ";
         let value = run_function(source, "fact", vec![integer(5)]);
@@ -376,10 +376,10 @@ mod tests {
     #[test]
     fn evaluates_mutual_recursion_via_forward_reference() {
         let source = r"
-            fn even_q(n: Integer) -> Trilean =
+            function even_q(n: Integer) -> Trilean =
                 if? n == 0 { true } else { odd_q(n - 1) }
 
-            fn odd_q(n: Integer) -> Trilean =
+            function odd_q(n: Integer) -> Trilean =
                 if? n == 0 { false } else { even_q(n - 1) }
         ";
         assert_eq!(run_function(source, "even_q", vec![integer(4)]), trilean(Trilean::True));
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn fizzbuzz_classifies_correctly() {
         let source = r#"
-            fn fizzbuzz(n: Integer) -> String =
+            function fizzbuzz(n: Integer) -> String =
                 match (n %% 3, n %% 5) {
                     (0, 0) => "FizzBuzz",
                     (0, _) => "Fizz",
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn measles_demo_propagates_unknown() {
         let source = r"
-            fn risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean =
+            function risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean =
                 fever and rash and not vaccinated
         ";
         assert_eq!(
@@ -451,14 +451,14 @@ mod tests {
 
     #[test]
     fn missing_main_returns_error() {
-        let program = parse_ok("fn helper() -> Integer = 1");
+        let program = parse_ok("function helper() -> Integer = 1");
         let result = run(&program);
         assert!(matches!(result, Err(RuntimeError::NoMainFunction)));
     }
 
     #[test]
     fn division_by_zero_panics() {
-        let source = "fn div(a: Integer, b: Integer) -> Integer = a / b";
+        let source = "function div(a: Integer, b: Integer) -> Integer = a / b";
         let program = parse_ok(source);
         let result = call_function(&program, "div", vec![integer(10), integer(0)]);
         assert!(matches!(result, Err(RuntimeError::Panic { .. })));
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn arithmetic_overflow_panics() {
-        let source = "fn overflow() -> Integer = 3812798742493 + 1";
+        let source = "function overflow() -> Integer = 3812798742493 + 1";
         let program = parse_ok(source);
         let result = call_function(&program, "overflow", vec![]);
         assert!(matches!(result, Err(RuntimeError::Panic { .. })));
@@ -477,8 +477,8 @@ mod tests {
     #[test]
     fn assignment_updates_mut_binding() {
         let source = r"
-            fn final_value() -> Integer {
-                let mut x = 0
+            function final_value() -> Integer {
+                let mutable x = 0
                 x = 5
                 x
             }
@@ -490,8 +490,8 @@ mod tests {
     #[test]
     fn assignment_uses_old_value_in_rhs() {
         let source = r"
-            fn final_value() -> Integer {
-                let mut x = 10
+            function final_value() -> Integer {
+                let mutable x = 10
                 x = x + 1
                 x
             }
@@ -503,8 +503,8 @@ mod tests {
     #[test]
     fn assignment_in_inner_block_updates_outer_binding() {
         let source = r"
-            fn count_one() -> Integer {
-                let mut count = 0
+            function count_one() -> Integer {
+                let mutable count = 0
                 if? true {
                     count = count + 1
                 }
@@ -518,9 +518,9 @@ mod tests {
     #[test]
     fn counter_loop_with_while() {
         let source = r"
-            fn sum_to_five() -> Integer {
-                let mut i = 1
-                let mut total = 0
+            function sum_to_five() -> Integer {
+                let mutable i = 1
+                let mutable total = 0
                 while? i <= 5 {
                     total = total + i
                     i = i + 1
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn long_literal_evaluates_to_long_value() {
-        let source = "fn answer() -> Long = 42_long";
+        let source = "function answer() -> Long = 42_long";
         let value = run_function(source, "answer", vec![]);
         match value {
             Value::Long(l) => assert_eq!(l.to_i128(), 42),
@@ -548,7 +548,7 @@ mod tests {
     fn long_addition_at_scale_beyond_integer() {
         // Two Integer-MAX values added in Long range, summing to ~7.6·10¹².
         let source = r"
-            fn beyond_integer() -> Long {
+            function beyond_integer() -> Long {
                 let a = 3812798742493_long
                 let b = 3812798742493_long
                 a + b
@@ -565,7 +565,7 @@ mod tests {
     fn long_multiplication_can_exceed_i128_range() {
         // 10¹⁹ × 10¹⁹ = 10³⁸ — fits in Long (~2.2·10³⁸) but not i128.
         let source = r"
-            fn big_product() -> Long {
+            function big_product() -> Long {
                 let a = 10000000000000000000_long
                 a * a
             }
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn integer_to_long_widening_is_lossless() {
-        let source = "fn widen(n: Integer) -> Long = n.to_long()";
+        let source = "function widen(n: Integer) -> Long = n.to_long()";
         let value = run_function(source, "widen", vec![integer(123)]);
         match value {
             Value::Long(l) => assert_eq!(l.to_i128(), 123),
@@ -593,7 +593,7 @@ mod tests {
     fn long_to_integer_panics_when_out_of_range() {
         // 10²⁰ exceeds Integer::MAX (~3.8·10¹²) but fits in i128 (~1.7·10³⁸).
         let source = r"
-            fn narrow() -> Integer {
+            function narrow() -> Integer {
                 let big = 100000000000000000000_long
                 big.to_integer()
             }
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn long_comparison_orders_by_magnitude() {
         let source = r"
-            fn compare() -> Trilean {
+            function compare() -> Trilean {
                 let a = 100000000000000000000_long
                 let b = 99999999999999999999_long
                 a > b
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn long_negation_round_trips() {
         let source = r"
-            fn double_neg() -> Long {
+            function double_neg() -> Long {
                 let n = 12345_long;
                 -(-n)
             }
@@ -636,8 +636,8 @@ mod tests {
     #[test]
     fn enumerate_pairs_index_with_element() {
         let source = r"
-            fn sum_indexed() -> Integer {
-                let mut total = 0
+            function sum_indexed() -> Integer {
+                let mutable total = 0
                 for (idx, item) in (10..13).enumerate() {
                     total = total + idx * 100 + item
                 }
@@ -655,8 +655,8 @@ mod tests {
     #[test]
     fn enumerate_over_inclusive_range_works() {
         let source = r"
-            fn last_index() -> Integer {
-                let mut last = 0
+            function last_index() -> Integer {
+                let mutable last = 0
                 for (idx, _) in (1..=5).enumerate() {
                     last = idx
                 }
@@ -671,8 +671,8 @@ mod tests {
     #[test]
     fn enumerate_over_empty_range_does_not_iterate() {
         let source = r"
-            fn count() -> Integer {
-                let mut n = 0
+            function count() -> Integer {
+                let mutable n = 0
                 for (_, _) in (5..5).enumerate() {
                     n = n + 1
                 }
@@ -688,8 +688,8 @@ mod tests {
         // Smoke: ensure the refactor of `execute_for` to use the
         // `advance_iterator` abstraction didn't regress plain ranges.
         let source = r"
-            fn sum() -> Integer {
-                let mut total = 0
+            function sum() -> Integer {
+                let mutable total = 0
                 for i in 1..=10 {
                     total = total + i
                 }

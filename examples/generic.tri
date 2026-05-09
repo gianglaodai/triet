@@ -8,19 +8,19 @@
 
 enum Option<T> { Some(T), None }
 
-fn describe_int(opt: Option<Integer>) -> String =
+function describe_int(opt: Option<Integer>) -> String =
     match opt {
         Some(v) => f"có giá trị {v}",
         None => "rỗng",
     }
 
-fn describe_str(opt: Option<String>) -> String =
+function describe_str(opt: Option<String>) -> String =
     match opt {
         Some(s) => f"chuỗi: {s}",
         None => "rỗng",
     }
 
-fn main() {
+function main() {
     // Inference từ argument: Some(42) → T = Integer.
     let a: Option<Integer> = Some(42)
     let b: Option<Integer> = None

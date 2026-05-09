@@ -7,7 +7,7 @@
 // Triết default là Łukasiewicz (AI-first); Kleene biến thể qua
 // `kleene_implies` / `~>`.
 
-fn main() {
+function main() {
     let u = unknown
     let t = true
     let f = false

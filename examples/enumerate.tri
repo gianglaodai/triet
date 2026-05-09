@@ -4,13 +4,13 @@
 // iterator của tuple `(Integer, T)`. Pattern destructuring trong `for`
 // đã có sẵn từ v0.1.
 
-fn rank(score: Integer) -> String =
+function rank(score: Integer) -> String =
     if? score >= 90 { "A" }
     else if? score >= 80 { "B" }
     else if? score >= 70 { "C" }
     else { "F" }
 
-fn main() {
+function main() {
     // Bảng điểm — index hiện thứ tự, value là điểm.
     println("Bảng điểm sinh viên:")
     for (idx, score) in (60..=95).enumerate() {

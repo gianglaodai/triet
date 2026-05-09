@@ -29,15 +29,15 @@ pub use token::{IntLiteral, NumericSuffix, Token};
 mod tests {
     use super::*;
     use Token::{
-        And, AndAnd, Assign, Bang, BangBang, Break, Caret, Colon, ColonColon, Comma, Const,
+        And, AndAnd, Assign, Bang, BangBang, Break, Caret, Colon, Comma, Constant,
         Continue, Dot, DotDot, DotDotEq, Else, EqEq, FStringEnd, FStringStart, FStringText, False,
-        FatArrow, Fn, For, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
+        FatArrow, For, Function, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
         InterpolationEnd, InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace,
-        LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mut, Not, NotEq,
-        Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Pub, Question, QuestionColon,
-        QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral,
-        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore, Unknown, While,
-        WhileQ, Xor,
+        LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not,
+        NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Public, Question,
+        QuestionColon, QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star,
+        StarStar, StringLiteral, TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type,
+        Underscore, Unknown, While, WhileQ, Xor,
     };
 
     fn lex_only(source: &str) -> Vec<Token> {
@@ -48,17 +48,17 @@ mod tests {
 
     #[test]
     fn lexes_all_keywords() {
-        let source = "fn let mut const type if else match return for while loop break \
+        let source = "function let mutable constant type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
-                      kleene_implies kleene_xor kleene_iff import mod pub owned \
+                      kleene_implies kleene_xor kleene_iff import module public owned \
                       struct enum crate self super";
         let tokens = lex_only(source);
         assert_eq!(
             tokens,
             vec![
-                Fn, Let, Mut, Const, Type, If, Else, Match, Return, For, While, Loop, Break,
+                Function, Let, Mutable, Constant, Type, If, Else, Match, Return, For, While, Loop, Break,
                 Continue, In, True, False, Unknown, Null, Not, And, Or, Xor, Iff, Implies,
-                KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Mod, Pub, Owned,
+                KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Module, Public, Owned,
                 Token::Struct, Token::Enum, Token::Crate, Token::SelfKw, Token::Super,
             ],
         );
@@ -180,10 +180,10 @@ mod tests {
     #[test]
     fn lexes_punctuation() {
         assert_eq!(
-            lex_only("{ } [ ] ( ) : ; , . | _ ::"),
+            lex_only("{ } [ ] ( ) : ; , . | _"),
             vec![
                 LBrace, RBrace, LBracket, RBracket, LParen, RParen, Colon, Semi, Comma, Dot, Pipe,
-                Underscore, ColonColon,
+                Underscore,
             ],
         );
     }
@@ -513,10 +513,10 @@ mod tests {
 
     #[test]
     fn tracks_byte_spans() {
-        let source = "fn add";
+        let source = "function add";
         let tokens = lex(source).unwrap();
-        assert_eq!(tokens[0].1, 0..2);
-        assert_eq!(tokens[1].1, 3..6);
+        assert_eq!(tokens[0].1, 0..8);
+        assert_eq!(tokens[1].1, 9..12);
     }
 
     #[test]
@@ -543,12 +543,12 @@ mod tests {
 
     #[test]
     fn lexes_fizzbuzz_signature() {
-        let source = "fn fizzbuzz(n: Integer) -> String =";
+        let source = "function fizzbuzz(n: Integer) -> String =";
         let tokens = lex_only(source);
         assert_eq!(
             tokens,
             vec![
-                Fn,
+                Function,
                 Identifier("fizzbuzz".to_owned()),
                 LParen,
                 Identifier("n".to_owned()),

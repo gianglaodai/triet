@@ -4,7 +4,7 @@
 //! five), per ADR-0005:
 //!
 //! - `Public` (`pub`) — visible from any module that can name this item.
-//! - `PublicPkg` (`pub(pkg)`) — visible within the same crate-pack only.
+//! - `PublicPackage` (`public(package)`) — visible within the same crate-pack only.
 //! - `Private` — visible only within the defining module (default).
 //!
 //! Items without an explicit modifier are `Private`. Visibility is
@@ -16,10 +16,10 @@ use std::fmt;
 /// Visibility level for a top-level item.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Visibility {
-    /// `pub` — exported from the defining module.
+    /// `public` — exported from the defining module.
     Public,
-    /// `pub(pkg)` — visible within the same crate-pack only.
-    PublicPkg,
+    /// `public(package)` — visible within the same crate-pack only.
+    PublicPackage,
     /// Default — visible only within the defining module.
     #[default]
     Private,
@@ -28,8 +28,8 @@ pub enum Visibility {
 impl fmt::Display for Visibility {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Public => formatter.write_str("pub"),
-            Self::PublicPkg => formatter.write_str("pub(pkg)"),
+            Self::Public => formatter.write_str("public"),
+            Self::PublicPackage => formatter.write_str("public(package)"),
             Self::Private => formatter.write_str("(private)"),
         }
     }
@@ -46,15 +46,15 @@ mod tests {
 
     #[test]
     fn display_is_readable() {
-        assert_eq!(Visibility::Public.to_string(), "pub");
-        assert_eq!(Visibility::PublicPkg.to_string(), "pub(pkg)");
+        assert_eq!(Visibility::Public.to_string(), "public");
+        assert_eq!(Visibility::PublicPackage.to_string(), "public(package)");
         assert_eq!(Visibility::Private.to_string(), "(private)");
     }
 
     #[test]
     fn variants_distinct() {
-        assert_ne!(Visibility::Public, Visibility::PublicPkg);
+        assert_ne!(Visibility::Public, Visibility::PublicPackage);
         assert_ne!(Visibility::Public, Visibility::Private);
-        assert_ne!(Visibility::PublicPkg, Visibility::Private);
+        assert_ne!(Visibility::PublicPackage, Visibility::Private);
     }
 }

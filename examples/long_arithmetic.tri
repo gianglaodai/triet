@@ -3,13 +3,13 @@
 // Integer giới hạn ±3.81×10¹². Long giới hạn ±2.21×10³⁸ (lớn hơn i128).
 // Mọi số học Long thực hiện trên big-int 256-bit (bnum) trong runtime.
 
-fn factorial_long(n: Long) -> Long =
+function factorial_long(n: Long) -> Long =
     if? n <= 1_long { 1_long }
     else { n * factorial_long(n - 1_long) }
 
-fn power_of_ten(exponent: Long) -> Long {
-    let mut result = 1_long;
-    let mut count = exponent;
+function power_of_ten(exponent: Long) -> Long {
+    let mutable result = 1_long;
+    let mutable count = exponent;
     while? count > 0_long {
         result = result * 10_long
         count = count - 1_long
@@ -17,7 +17,7 @@ fn power_of_ten(exponent: Long) -> Long {
     result
 }
 
-fn main() {
+function main() {
     // Factorial(20) = 2_432_902_008_176_640_000 — vượt Integer (~3.8×10¹²) nhưng vừa Long.
     println(f"20! = {factorial_long(20_long)}")
 
