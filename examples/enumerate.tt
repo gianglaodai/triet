@@ -1,0 +1,22 @@
+// `enumerate()` — minh họa SPEC §7.2.
+//
+// Adapter `.enumerate()` ghép mỗi phần tử với index 0-based, trả về
+// iterator của tuple `(Integer, T)`. Pattern destructuring trong `for`
+// đã có sẵn từ v0.1.
+
+fn rank(score: Integer) -> String =
+    if? score >= 90 { "A" }
+    else if? score >= 80 { "B" }
+    else if? score >= 70 { "C" }
+    else { "F" }
+
+fn main() {
+    // Bảng điểm — index hiện thứ tự, value là điểm.
+    println("Bảng điểm sinh viên:")
+    for (idx, score) in (60..=95).enumerate() {
+        // Chỉ in mỗi 5 step để output gọn.
+        if? idx %% 5 == 0 {
+            println(f"  #{idx}: {score} → {rank(score)}")
+        }
+    }
+}

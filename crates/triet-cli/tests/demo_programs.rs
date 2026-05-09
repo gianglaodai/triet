@@ -27,6 +27,7 @@ const FACTORIAL: &str = "factorial.tt";
 const LK: &str = "lukasiewicz_vs_kleene.tt";
 const COUNTER: &str = "counter.tt";
 const LONG_ARITHMETIC: &str = "long_arithmetic.tt";
+const ENUMERATE: &str = "enumerate.tt";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live
@@ -224,4 +225,31 @@ fn long_arithmetic_main_runs_without_error() {
     let program = load_program(LONG_ARITHMETIC);
     let result = run(&program);
     assert!(result.is_ok(), "long_arithmetic main failed: {result:?}");
+}
+
+#[test]
+fn enumerate_demo_parses_and_type_checks() {
+    let _ = load_program(ENUMERATE);
+}
+
+#[test]
+fn enumerate_main_runs_without_error() {
+    let program = load_program(ENUMERATE);
+    let result = run(&program);
+    assert!(result.is_ok(), "enumerate main failed: {result:?}");
+}
+
+#[test]
+fn enumerate_rank_assigns_correct_grades() {
+    let program = load_program(ENUMERATE);
+    let cases: &[(i64, &str)] = &[
+        (95, "A"),
+        (85, "B"),
+        (75, "C"),
+        (60, "F"),
+    ];
+    for &(score, expected) in cases {
+        let value = call_function(&program, "rank", vec![integer(score)]).unwrap();
+        assert_eq!(value.to_string(), expected, "rank({score})");
+    }
 }

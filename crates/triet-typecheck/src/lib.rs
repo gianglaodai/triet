@@ -399,4 +399,25 @@ mod tests {
             }
         ");
     }
+
+    // ===== Iterator: enumerate (SPEC §7.2) =====
+
+    #[test]
+    fn checks_enumerate_on_range_with_tuple_destructuring() {
+        assert_ok(r"
+            fn main() {
+                for (i, v) in (0..5).enumerate() {
+                    println(to_string(i + v))
+                }
+            }
+        ");
+    }
+
+    #[test]
+    fn flags_enumerate_on_non_iterable_receiver() {
+        assert_has_error(
+            r"fn bad(n: Integer) -> Integer = n.enumerate()",
+            |e| matches!(e, TypeError::UnknownMember { .. }),
+        );
+    }
 }

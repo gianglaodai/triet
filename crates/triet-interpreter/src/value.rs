@@ -42,6 +42,18 @@ pub enum Value {
         /// Whether the upper bound is inclusive.
         inclusive: bool,
     },
+    /// Result of `.enumerate()` on an iterable — yields `(index, item)`
+    /// tuples where `index` starts at 0 and increments per element.
+    /// V0.1 only supports enumerating ranges; v0.2 will surface a real
+    /// `Iterator` trait once generics land.
+    Enumerate {
+        /// Inner iterable. Currently only `Range`-shaped values are
+        /// produced by the typechecker, but the interpreter just
+        /// recursively advances any iterable it knows how to advance.
+        inner: Box<Self>,
+        /// 0-based index returned with the *next* element produced.
+        next_index: i64,
+    },
     /// A function defined at module level. Stored by reference into the
     /// program's `items` slice so we don't clone the body each call.
     Function(Rc<FunctionRef>),
@@ -91,6 +103,10 @@ impl PartialEq for Value {
                 Self::Range { start: s1, end: e1, inclusive: i1 },
                 Self::Range { start: s2, end: e2, inclusive: i2 },
             ) => s1 == s2 && e1 == e2 && i1 == i2,
+            (
+                Self::Enumerate { inner: i1, next_index: n1 },
+                Self::Enumerate { inner: i2, next_index: n2 },
+            ) => i1 == i2 && n1 == n2,
             // Functions / lambdas / builtins compare by identity (Rc
             // pointer); comparing them in source code is rare.
             (Self::Function(a), Self::Function(b)) => Rc::ptr_eq(a, b),
@@ -128,6 +144,7 @@ impl fmt::Display for Value {
                 let separator = if *inclusive { "..=" } else { ".." };
                 write!(formatter, "{start}{separator}{end}")
             }
+            Self::Enumerate { inner, .. } => write!(formatter, "{inner}.enumerate()"),
             Self::Function(_) => formatter.write_str("<function>"),
             Self::Lambda(_) => formatter.write_str("<lambda>"),
             Self::Builtin(_) => formatter.write_str("<builtin>"),

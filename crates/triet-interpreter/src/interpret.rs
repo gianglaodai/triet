@@ -190,26 +190,10 @@ impl<'p> Interpreter<'p> {
         body: &Block,
         span: Span,
     ) -> Result<Outcome, RuntimeError> {
-        let iter_value = self.evaluate_expression(iterable)?;
-        let Value::Range { start, end, inclusive } = iter_value else {
-            return Err(RuntimeError::TypeError {
-                message: format!("`for` expects a Range, found {iter_value}"),
-                span,
-            });
-        };
-
-        let mut current = start;
-        loop {
-            let stop = if inclusive {
-                current.to_i64() > end.to_i64()
-            } else {
-                current.to_i64() >= end.to_i64()
-            };
-            if stop {
-                break;
-            }
+        let mut iter_value = self.evaluate_expression(iterable)?;
+        while let Some(element) = advance_iterator(&mut iter_value, &span)? {
             self.env.push_frame();
-            self.bind_pattern(variable, &Value::Integer(current));
+            self.bind_pattern(variable, &element);
             let outcome = self.execute_block(body)?;
             self.env.pop_frame();
             match outcome {
@@ -217,9 +201,6 @@ impl<'p> Interpreter<'p> {
                 Outcome::Break(_) => break,
                 ret @ Outcome::Return(_) => return Ok(ret),
             }
-            // current += 1 — saturate at MAX to avoid panic in
-            // pathological loops; in normal use, `end` is reachable.
-            current = current.add_and_saturate(Integer::ONE);
         }
         Ok(Outcome::Value(Value::Unit))
     }
@@ -602,6 +583,16 @@ impl<'p> Interpreter<'p> {
                 known => Ok(Value::Trilean(*known)),
             },
             (Value::Trilean(t), "to_trit") => Ok(Value::Trit(t.to_trit())),
+
+            // Iterable adapters — `.enumerate()` produces `(index, item)`
+            // tuples. V0.1 only enumerates ranges; nesting works because
+            // the runtime advances iterators recursively.
+            (Value::Range { .. } | Value::Enumerate { .. }, "enumerate") => {
+                Ok(Value::Enumerate {
+                    inner: Box::new(receiver.clone()),
+                    next_index: 0,
+                })
+            }
 
             // String
             (Value::String(text), "length") => {
@@ -1086,6 +1077,54 @@ fn binary_long_method(
         });
     };
     Ok(Value::Long(op(*receiver, other)))
+}
+
+/// Advance any iterable `Value` by one step. Returns `Ok(None)` when the
+/// iterator is exhausted, `Ok(Some(elem))` for the next element, or an
+/// error if the value isn't iterable.
+///
+/// Internal counterpart to a future user-facing `Iterator` trait
+/// (planned for v0.2 with generics). Today the dispatch is a `match`
+/// over the small set of iterable `Value` shapes — Range and Enumerate.
+fn advance_iterator(
+    value: &mut Value,
+    span: &Span,
+) -> Result<Option<Value>, RuntimeError> {
+    match value {
+        Value::Range { start, end, inclusive } => {
+            let stop = if *inclusive {
+                start.to_i64() > end.to_i64()
+            } else {
+                start.to_i64() >= end.to_i64()
+            };
+            if stop {
+                return Ok(None);
+            }
+            let current = *start;
+            // Advance by one. Saturating — in pathological loops where
+            // start ≈ MAX this prevents a panic; the bound check above
+            // still stops the loop the next iteration.
+            *start = start.add_and_saturate(Integer::ONE);
+            Ok(Some(Value::Integer(current)))
+        }
+        Value::Enumerate { inner, next_index } => {
+            match advance_iterator(inner, span)? {
+                None => Ok(None),
+                Some(elem) => {
+                    let idx = *next_index;
+                    *next_index = next_index.saturating_add(1);
+                    let index_value = Value::Integer(
+                        Integer::new(idx).unwrap_or(Integer::MAX),
+                    );
+                    Ok(Some(Value::from_tuple(vec![index_value, elem])))
+                }
+            }
+        }
+        other => Err(RuntimeError::TypeError {
+            message: format!("`for` expects an iterable, found {other}"),
+            span: span.clone(),
+        }),
+    }
 }
 
 fn binary_long_try_method(

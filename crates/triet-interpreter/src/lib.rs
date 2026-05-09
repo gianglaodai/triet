@@ -630,4 +630,73 @@ mod tests {
             other => panic!("expected Long, got {other:?}"),
         }
     }
+
+    // ===== Iterator: enumerate (SPEC §7.2) =====
+
+    #[test]
+    fn enumerate_pairs_index_with_element() {
+        let source = r"
+            fn sum_indexed() -> Integer {
+                let mut total = 0
+                for (idx, item) in (10..13).enumerate() {
+                    total = total + idx * 100 + item
+                }
+                total
+            }
+        ";
+        // (0, 10) → 0·100 + 10 = 10
+        // (1, 11) → 1·100 + 11 = 111
+        // (2, 12) → 2·100 + 12 = 212
+        // sum = 333
+        let value = run_function(source, "sum_indexed", vec![]);
+        assert_eq!(value, integer(333));
+    }
+
+    #[test]
+    fn enumerate_over_inclusive_range_works() {
+        let source = r"
+            fn last_index() -> Integer {
+                let mut last = 0
+                for (idx, _) in (1..=5).enumerate() {
+                    last = idx
+                }
+                last
+            }
+        ";
+        let value = run_function(source, "last_index", vec![]);
+        // 5 elements → indices 0..5 → last index = 4
+        assert_eq!(value, integer(4));
+    }
+
+    #[test]
+    fn enumerate_over_empty_range_does_not_iterate() {
+        let source = r"
+            fn count() -> Integer {
+                let mut n = 0
+                for (_, _) in (5..5).enumerate() {
+                    n = n + 1
+                }
+                n
+            }
+        ";
+        let value = run_function(source, "count", vec![]);
+        assert_eq!(value, integer(0));
+    }
+
+    #[test]
+    fn for_over_range_still_works_after_iterator_refactor() {
+        // Smoke: ensure the refactor of `execute_for` to use the
+        // `advance_iterator` abstraction didn't regress plain ranges.
+        let source = r"
+            fn sum() -> Integer {
+                let mut total = 0
+                for i in 1..=10 {
+                    total = total + i
+                }
+                total
+            }
+        ";
+        let value = run_function(source, "sum", vec![]);
+        assert_eq!(value, integer(55));
+    }
 }

@@ -966,7 +966,18 @@ fn builtin_method_type(receiver: &Type, method: &str, arity: usize) -> Option<Ty
         // String
         (String, "length", 0) => Some(Integer),
 
-        // Range — no methods in v0.1 yet; iteration handled by `for`.
+        // Iterables — `.enumerate()` pairs each element with a 0-based
+        // Integer index. Result is `Range<(Integer, T)>` so the existing
+        // `for` typing path handles destructuring.
+        (Type::Range(inner), "enumerate", 0) => {
+            Some(Type::Range(Box::new(Type::Tuple(vec![
+                Integer,
+                (**inner).clone(),
+            ]))))
+        }
+
+        // Range — only `.enumerate()` for now; other adapters arrive
+        // with v0.2 generics + Iterator trait.
         _ => None,
     }
 }
