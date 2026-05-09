@@ -3,7 +3,7 @@
 use triet_lexer::{Span, Token};
 use triet_syntax::{
     EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportPath, Item,
-    ParameterPassing, Spanned, StructDef, StructField,
+    ParameterPassing, Spanned, StructDef, StructField, Visibility,
 };
 
 use crate::{
@@ -15,28 +15,94 @@ use crate::{
 };
 
 /// Parse a top-level item.
+///
+/// Items may be prefixed with a visibility modifier (`pub`, `pub(pkg)`).
+/// The captured [`Visibility`] is stored on the resulting AST node;
+/// downstream passes (name resolver, ABI extractor) read it from there.
 pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, ParseError> {
-    let Some((token, span)) = parser.peek().cloned() else {
+    // Capture span start before optional `pub` prefix so the item's
+    // overall span includes the visibility keyword.
+    let head_span_start = parser
+        .peek()
+        .map_or_else(|| parser.eof_span().start, |(_, span)| span.start);
+
+    let visibility = parse_visibility(parser)?;
+
+    let Some((token, kw_span)) = parser.peek().cloned() else {
+        let expected = if visibility == Visibility::Private {
+            "item".to_owned()
+        } else {
+            format!("item after `{visibility}`")
+        };
         return Err(ParseError::UnexpectedEof {
-            expected: "item".to_owned(),
+            expected,
             span: parser.eof_span(),
         });
     };
 
+    let head_span = head_span_start..kw_span.end;
+
     match token {
-        Token::Fn => parse_function(parser, span),
-        Token::Const => parse_const_item(parser, span),
-        Token::Type => parse_type_alias(parser, span),
-        Token::Struct => parse_struct(parser, span),
-        Token::Enum => parse_enum(parser, span),
-        Token::Import => parse_import(parser, span),
-        Token::Pub => {
-            // v0.1: accept `pub` as a no-op modifier prefix.
-            parser.advance();
-            parse_item(parser)
+        Token::Fn => parse_function(parser, head_span, visibility),
+        Token::Const => parse_const_item(parser, head_span, visibility),
+        Token::Type => parse_type_alias(parser, head_span, visibility),
+        Token::Struct => parse_struct(parser, head_span, visibility),
+        Token::Enum => parse_enum(parser, head_span, visibility),
+        Token::Import => {
+            if visibility != Visibility::Private {
+                // `pub use` re-exports are a post-v0.2.x feature (ADR-0005).
+                return Err(ParseError::UnexpectedToken {
+                    expected: "`fn`, `const`, `type`, `struct`, or `enum` after `pub`"
+                        .to_owned(),
+                    found: "`import` (re-exports use `pub use`, not yet implemented)"
+                        .to_owned(),
+                    span: head_span,
+                });
+            }
+            parse_import(parser, kw_span)
         }
         other => Err(ParseError::UnexpectedToken {
-            expected: "`fn`, `const`, `type`, `struct`, `enum`, or `import`".to_owned(),
+            expected: "`fn`, `const`, `type`, `struct`, `enum`, `import`, or `pub`".to_owned(),
+            found: format!("{other:?}"),
+            span: kw_span,
+        }),
+    }
+}
+
+/// Parse an optional visibility prefix.
+///
+/// Recognized forms (per ADR-0005):
+/// - (nothing) → `Visibility::Private`
+/// - `pub` → `Visibility::Public`
+/// - `pub(pkg)` → `Visibility::PublicPkg`
+///
+/// Anything else after `pub(` is rejected. Triết deliberately omits
+/// `pub(super)` / `pub(in path)` to keep the ABI surface model simple.
+fn parse_visibility(parser: &mut Parser<'_>) -> Result<Visibility, ParseError> {
+    if !matches!(parser.peek_token(), Some(Token::Pub)) {
+        return Ok(Visibility::Private);
+    }
+    parser.advance(); // consume `pub`
+
+    if !matches!(parser.peek_token(), Some(Token::LParen)) {
+        return Ok(Visibility::Public);
+    }
+    parser.advance(); // consume `(`
+
+    let (token, span) = parser.peek().cloned().ok_or_else(|| {
+        ParseError::UnexpectedEof {
+            expected: "`pkg` after `pub(`".to_owned(),
+            span: parser.eof_span(),
+        }
+    })?;
+    match token {
+        Token::Identifier(ref name) if name == "pkg" => {
+            parser.advance();
+            parser.expect(&Token::RParen, "`)`")?;
+            Ok(Visibility::PublicPkg)
+        }
+        other => Err(ParseError::UnexpectedToken {
+            expected: "`pkg` (the only restriction allowed in `pub(...)`)".to_owned(),
             found: format!("{other:?}"),
             span,
         }),
@@ -46,6 +112,7 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
 fn parse_function(
     parser: &mut Parser<'_>,
     head_span: Span,
+    visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Fn, "`fn`")?;
 
@@ -96,6 +163,7 @@ fn parse_function(
     let span = head_span.start..end;
     Ok(Spanned::new(
         Item::Function(FunctionDef {
+            visibility,
             name,
             parameters,
             return_type,
@@ -165,6 +233,7 @@ fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError>
 fn parse_const_item(
     parser: &mut Parser<'_>,
     head_span: Span,
+    visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Const, "`const`")?;
     let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
@@ -201,6 +270,7 @@ fn parse_const_item(
     let span = head_span.start..end;
     Ok(Spanned::new(
         Item::Const {
+            visibility,
             name,
             type_annotation,
             value,
@@ -212,6 +282,7 @@ fn parse_const_item(
 fn parse_type_alias(
     parser: &mut Parser<'_>,
     head_span: Span,
+    visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Type, "`type`")?;
     let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
@@ -240,7 +311,14 @@ fn parse_type_alias(
 
     let end = parser.arena.type_expression(target).span.end;
     let span = head_span.start..end;
-    Ok(Spanned::new(Item::TypeAlias { name, target }, span))
+    Ok(Spanned::new(
+        Item::TypeAlias {
+            visibility,
+            name,
+            target,
+        },
+        span,
+    ))
 }
 
 fn parse_import(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item>, ParseError> {
@@ -298,6 +376,7 @@ fn parse_import(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item
 fn parse_struct(
     parser: &mut Parser<'_>,
     head_span: Span,
+    visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Struct, "`struct`")?;
 
@@ -311,7 +390,12 @@ fn parse_struct(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Struct(StructDef { name, type_params, fields }),
+        Item::Struct(StructDef {
+            visibility,
+            name,
+            type_params,
+            fields,
+        }),
         span,
     ))
 }
@@ -342,6 +426,7 @@ fn parse_struct_fields(
 fn parse_enum(
     parser: &mut Parser<'_>,
     head_span: Span,
+    visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Enum, "`enum`")?;
 
@@ -355,7 +440,12 @@ fn parse_enum(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Enum(EnumDef { name, type_params, variants }),
+        Item::Enum(EnumDef {
+            visibility,
+            name,
+            type_params,
+            variants,
+        }),
         span,
     ))
 }
@@ -564,9 +654,88 @@ mod tests {
     }
 
     #[test]
-    fn pub_is_consumed_as_modifier() {
+    fn default_function_visibility_is_private() {
+        let (_, item) = parse("fn greet() { }");
+        let Item::Function(def) = &item.node else { panic!("expected function") };
+        assert_eq!(def.visibility, Visibility::Private);
+    }
+
+    #[test]
+    fn pub_function_captures_public_visibility() {
         let (_, item) = parse("pub fn greet() { }");
-        assert!(matches!(item.node, Item::Function(_)));
+        let Item::Function(def) = &item.node else { panic!("expected function") };
+        assert_eq!(def.visibility, Visibility::Public);
+        assert_eq!(def.name, "greet");
+    }
+
+    #[test]
+    fn pub_pkg_function_captures_publicpkg_visibility() {
+        let (_, item) = parse("pub(pkg) fn helper() { }");
+        let Item::Function(def) = &item.node else { panic!("expected function") };
+        assert_eq!(def.visibility, Visibility::PublicPkg);
+    }
+
+    #[test]
+    fn pub_struct_captures_visibility() {
+        let (_, item) = parse("pub struct Point { x: Integer, y: Integer }");
+        let Item::Struct(def) = &item.node else { panic!("expected struct") };
+        assert_eq!(def.visibility, Visibility::Public);
+        assert_eq!(def.name, "Point");
+    }
+
+    #[test]
+    fn pub_enum_captures_visibility() {
+        let (_, item) = parse("pub enum Option<T> { Some(T), None }");
+        let Item::Enum(def) = &item.node else { panic!("expected enum") };
+        assert_eq!(def.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn pub_const_captures_visibility() {
+        let (_, item) = parse("pub const PI: Integer = 3");
+        let Item::Const { visibility, name, .. } = &item.node else {
+            panic!("expected const")
+        };
+        assert_eq!(*visibility, Visibility::Public);
+        assert_eq!(name, "PI");
+    }
+
+    #[test]
+    fn pub_pkg_type_alias_captures_visibility() {
+        let (_, item) = parse("pub(pkg) type Username = String");
+        let Item::TypeAlias { visibility, name, .. } = &item.node else {
+            panic!("expected type alias")
+        };
+        assert_eq!(*visibility, Visibility::PublicPkg);
+        assert_eq!(name, "Username");
+    }
+
+    #[test]
+    fn pub_on_import_is_rejected() {
+        // Re-exports are post-v0.2.x — `pub use` will land later.
+        let result = try_parse("pub import std.io");
+        assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
+    }
+
+    #[test]
+    fn pub_with_invalid_restriction_is_rejected() {
+        // Only `pub(pkg)` is accepted; `pub(crate)` / `pub(super)` are not.
+        let result = try_parse("pub(crate) fn foo() { }");
+        assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
+    }
+
+    #[test]
+    fn pub_at_eof_errors() {
+        let result = try_parse("pub");
+        assert!(matches!(result, Err(ParseError::UnexpectedEof { .. })));
+    }
+
+    #[test]
+    fn item_span_includes_pub_keyword() {
+        // Span should start at `pub`, not at the inner keyword.
+        let (_, item) = parse("pub fn greet() { }");
+        // `pub` starts at byte 0, so the item span must too.
+        assert_eq!(item.span.start, 0);
     }
 
     #[test]

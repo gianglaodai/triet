@@ -4,6 +4,7 @@ use crate::{
     arena::{Arena, ExprId, TypeId},
     span::Spanned,
     stmt::Block,
+    visibility::Visibility,
 };
 
 /// A top-level item in a `.tri` file.
@@ -14,6 +15,8 @@ pub enum Item {
 
     /// Module-level constant: `const PI = 3`.
     Const {
+        /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+        visibility: Visibility,
         /// Constant name.
         name: String,
         /// Optional type annotation.
@@ -24,6 +27,8 @@ pub enum Item {
 
     /// Type alias: `type Username = String`.
     TypeAlias {
+        /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+        visibility: Visibility,
         /// Alias name (the new identifier).
         name: String,
         /// The type this alias resolves to.
@@ -36,14 +41,16 @@ pub enum Item {
     /// Enum definition: `enum Option { Some(Integer), None }`.
     Enum(EnumDef),
 
-    /// Module import: `import std.io`. Minimal v0.1 form — full module
-    /// system is v0.2+.
+    /// Module import: `import std.io`. Imports do not carry visibility —
+    /// re-exports use `pub use ...` (post-v0.2.x feature, ADR-0005).
     Import(ImportPath),
 }
 
 /// A struct definition with named fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructDef {
+    /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+    pub visibility: Visibility,
     /// Struct name.
     pub name: String,
     /// Generic type parameters (e.g., `T` in `struct Box<T>`).
@@ -64,6 +71,8 @@ pub struct StructField {
 /// An enum definition with named variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnumDef {
+    /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+    pub visibility: Visibility,
     /// Enum name.
     pub name: String,
     /// Generic type parameters (e.g., `T` in `enum Option<T>`).
@@ -85,6 +94,8 @@ pub struct EnumVariant {
 /// A function definition: `fn name(params) -> Return { body }` or with `=`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionDef {
+    /// Visibility (`pub`, `pub(pkg)`, or default `Private`).
+    pub visibility: Visibility,
     /// Function name.
     pub name: String,
     /// Parameters in declaration order.
@@ -177,6 +188,7 @@ mod tests {
     #[test]
     fn function_with_block_body() {
         let function = FunctionDef {
+            visibility: Visibility::Private,
             name: "main".to_owned(),
             parameters: Vec::new(),
             return_type: None,
@@ -184,6 +196,7 @@ mod tests {
         };
         assert_eq!(function.name, "main");
         assert!(matches!(function.body, FunctionBody::Block(_)));
+        assert_eq!(function.visibility, Visibility::Private);
     }
 
     #[test]
@@ -198,6 +211,7 @@ mod tests {
             22..23,
         ));
         let function = FunctionDef {
+            visibility: Visibility::Public,
             name: "double".to_owned(),
             parameters: vec![FunctionParam {
                 name: "n".to_owned(),
@@ -209,6 +223,7 @@ mod tests {
         };
         assert!(matches!(function.body, FunctionBody::Expression(_)));
         assert_eq!(function.parameters.len(), 1);
+        assert_eq!(function.visibility, Visibility::Public);
     }
 
     #[test]

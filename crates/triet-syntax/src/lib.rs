@@ -39,6 +39,7 @@ pub mod pattern;
 pub mod span;
 pub mod stmt;
 pub mod type_ast;
+pub mod visibility;
 
 pub use arena::{Arena, ExprId, PatternId, StmtId, TypeId};
 pub use expr::{
@@ -53,3 +54,4 @@ pub use pattern::{LiteralPattern, Pattern};
 pub use span::{Span, Spanned};
 pub use stmt::{Block, Stmt};
 pub use type_ast::TypeExpr;
+pub use visibility::Visibility;
