@@ -8,10 +8,9 @@
 //! produces one [`Module`] per declared scope. Inline submodules share
 //! their parent's arena; file-bound submodules each get a fresh one.
 //!
-//! Cycle detection happens later (#36.3); name resolution + visibility
-//! checking happen later still (#36.4). At this stage the loader's
-//! responsibilities end at "every module has been parsed and slotted
-//! into [`ResolvedProgram`]".
+//! After all modules are loaded, the loader runs cycle detection
+//! (#36.3) on the import graph. Name resolution + visibility checking
+//! happen later (#36.4).
 
 use std::{
     collections::HashMap,
@@ -23,6 +22,7 @@ use triet_parser::parse;
 use triet_syntax::{Item, ModuleContent, ModuleDecl, Span, Spanned};
 
 use crate::{
+    cycle::detect_cycles,
     error::LoaderError,
     module::{ArenaId, Module, ModuleId, ResolvedProgram},
     path::ModulePath,
@@ -87,7 +87,13 @@ impl LoaderState {
         }
     }
 
-    fn finish(self) -> Result<ResolvedProgram, Vec<LoaderError>> {
+    fn finish(mut self) -> Result<ResolvedProgram, Vec<LoaderError>> {
+        // Run cycle detection on the import graph before returning.
+        // This catches cyclic imports (E2100) even if loading itself
+        // succeeded. Cycle errors are appended to any existing errors.
+        let cycle_errors = detect_cycles(&self.program);
+        self.errors.extend(cycle_errors);
+
         if self.errors.is_empty() {
             Ok(self.program)
         } else {

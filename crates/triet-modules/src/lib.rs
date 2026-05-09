@@ -29,6 +29,7 @@
 // (matches `triet-parser`, `triet-typecheck`, `triet-interpreter`).
 #![allow(clippy::redundant_pub_crate)]
 
+mod cycle;
 mod error;
 mod loader;
 mod module;
