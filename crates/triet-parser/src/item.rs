@@ -2,7 +2,8 @@
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
-    FunctionBody, FunctionDef, FunctionParam, ImportPath, Item, ParameterPassing, Spanned,
+    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportPath, Item,
+    ParameterPassing, Spanned, StructDef, StructField,
 };
 
 use crate::{
@@ -26,6 +27,8 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
         Token::Fn => parse_function(parser, span),
         Token::Const => parse_const_item(parser, span),
         Token::Type => parse_type_alias(parser, span),
+        Token::Struct => parse_struct(parser, span),
+        Token::Enum => parse_enum(parser, span),
         Token::Import => parse_import(parser, span),
         Token::Pub => {
             // v0.1: accept `pub` as a no-op modifier prefix.
@@ -33,7 +36,7 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
             parse_item(parser)
         }
         other => Err(ParseError::UnexpectedToken {
-            expected: "`fn`, `const`, `type`, or `import`".to_owned(),
+            expected: "`fn`, `const`, `type`, `struct`, `enum`, or `import`".to_owned(),
             found: format!("{other:?}"),
             span,
         }),
@@ -292,6 +295,117 @@ fn parse_import(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item
     Ok(Spanned::new(Item::Import(ImportPath { segments }), span))
 }
 
+fn parse_struct(
+    parser: &mut Parser<'_>,
+    head_span: Span,
+) -> Result<Spanned<Item>, ParseError> {
+    parser.expect(&Token::Struct, "`struct`")?;
+
+    let name = parse_ident(parser, "struct name")?;
+
+    parser.expect(&Token::LBrace, "`{`")?;
+    let fields = parse_struct_fields(parser)?;
+    parser.expect(&Token::RBrace, "`}`")?;
+
+    let end = parser.previous_token_end(head_span.end);
+    let span = head_span.start..end;
+    Ok(Spanned::new(
+        Item::Struct(StructDef { name, fields }),
+        span,
+    ))
+}
+
+fn parse_struct_fields(
+    parser: &mut Parser<'_>,
+) -> Result<Vec<StructField>, ParseError> {
+    let mut fields = Vec::new();
+    if matches!(parser.peek_token(), Some(Token::RBrace)) {
+        return Ok(fields);
+    }
+    loop {
+        let name = parse_ident(parser, "field name")?;
+        parser.expect(&Token::Colon, "`:`")?;
+        let type_annotation = parse_type(parser)?;
+        fields.push(StructField { name, type_annotation });
+
+        if !parser.eat(&Token::Comma) {
+            break;
+        }
+        if matches!(parser.peek_token(), Some(Token::RBrace)) {
+            break;
+        }
+    }
+    Ok(fields)
+}
+
+fn parse_enum(
+    parser: &mut Parser<'_>,
+    head_span: Span,
+) -> Result<Spanned<Item>, ParseError> {
+    parser.expect(&Token::Enum, "`enum`")?;
+
+    let name = parse_ident(parser, "enum name")?;
+
+    parser.expect(&Token::LBrace, "`{`")?;
+    let variants = parse_enum_variants(parser)?;
+    parser.expect(&Token::RBrace, "`}`")?;
+
+    let end = parser.previous_token_end(head_span.end);
+    let span = head_span.start..end;
+    Ok(Spanned::new(
+        Item::Enum(EnumDef { name, variants }),
+        span,
+    ))
+}
+
+fn parse_enum_variants(
+    parser: &mut Parser<'_>,
+) -> Result<Vec<EnumVariant>, ParseError> {
+    let mut variants = Vec::new();
+    if matches!(parser.peek_token(), Some(Token::RBrace)) {
+        return Ok(variants);
+    }
+    loop {
+        let name = parse_ident(parser, "variant name")?;
+        let payload = if parser.eat(&Token::LParen) {
+            let ty = parse_type(parser)?;
+            parser.expect(&Token::RParen, "`)`")?;
+            Some(ty)
+        } else {
+            None
+        };
+        variants.push(EnumVariant { name, payload });
+
+        if !parser.eat(&Token::Comma) {
+            break;
+        }
+        if matches!(parser.peek_token(), Some(Token::RBrace)) {
+            break;
+        }
+    }
+    Ok(variants)
+}
+
+fn parse_ident(parser: &mut Parser<'_>, expected: &str) -> Result<String, ParseError> {
+    let (token, _) = parser.peek().cloned().ok_or_else(|| {
+        ParseError::UnexpectedEof {
+            expected: expected.to_owned(),
+            span: parser.eof_span(),
+        }
+    })?;
+    match token {
+        Token::Identifier(name) => {
+            parser.advance();
+            Ok(name)
+        }
+        other => Err(ParseError::UnexpectedToken {
+            expected: expected.to_owned(),
+            found: format!("{other:?}"),
+            span: parser.current_span(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,5 +573,53 @@ mod tests {
     fn errors_on_function_missing_param_name() {
         let result = try_parse("fn foo(: Integer) { }");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_empty_struct() {
+        let (_, item) = parse("struct Empty { }");
+        assert!(matches!(item.node, Item::Struct(_)));
+        if let Item::Struct(def) = &item.node {
+            assert_eq!(def.name, "Empty");
+            assert!(def.fields.is_empty());
+        }
+    }
+
+    #[test]
+    fn parses_struct_with_fields() {
+        let (_, item) = parse("struct Point { x: Integer, y: Integer }");
+        assert!(matches!(item.node, Item::Struct(_)));
+        if let Item::Struct(def) = &item.node {
+            assert_eq!(def.name, "Point");
+            assert_eq!(def.fields.len(), 2);
+            assert_eq!(def.fields[0].name, "x");
+            assert_eq!(def.fields[1].name, "y");
+        }
+    }
+
+    #[test]
+    fn parses_enum_with_unit_variants() {
+        let (_, item) = parse("enum Color { Red, Green, Blue }");
+        assert!(matches!(item.node, Item::Enum(_)));
+        if let Item::Enum(def) = &item.node {
+            assert_eq!(def.name, "Color");
+            assert_eq!(def.variants.len(), 3);
+            assert_eq!(def.variants[0].name, "Red");
+            assert!(def.variants[0].payload.is_none());
+        }
+    }
+
+    #[test]
+    fn parses_enum_with_payload_variants() {
+        let (_, item) = parse("enum Maybe { Some(Integer), None }");
+        assert!(matches!(item.node, Item::Enum(_)));
+        if let Item::Enum(def) = &item.node {
+            assert_eq!(def.name, "Maybe");
+            assert_eq!(def.variants.len(), 2);
+            assert_eq!(def.variants[0].name, "Some");
+            assert!(def.variants[0].payload.is_some());
+            assert_eq!(def.variants[1].name, "None");
+            assert!(def.variants[1].payload.is_none());
+        }
     }
 }
