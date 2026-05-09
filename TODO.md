@@ -35,25 +35,31 @@ imports, Java JPMS-aligned `module` declarations.
 
 ### In progress
 
-(none)
+- [ ] **v0.2.x.6** — Module loader + name resolver + cyclic detection
+
+  Architecture (chốt 2026-05-09): new `triet-modules` crate sits between
+  parse and typecheck. Output is `ResolvedProgram` = flat list of
+  `Module`s, each with own AST + `bindings: HashMap<String, AbsolutePath>`.
+  Stdlib (`std.*`) handled as synthetic modules at v0.2.x.6; v0.2.x.7
+  swaps source to real files. CLI: file passed to `triet run` is crate
+  root (Python/Go pattern). Inline `module foo { … }` ≡ file-bound
+  `module foo` for path resolution (Rust/OCaml pattern).
+
+  **Sub-tasks (per-step commits):**
+
+  - [x] **#36.1** — Scaffold `triet-modules` crate _(uncommitted; staged on working tree)_
+    - Types: `ModulePath`, `AbsolutePath`, `ModuleId`, `Module`, `ResolvedProgram`
+    - `LoaderError` enum with E2100–E2106 + miette diagnostics
+    - Synthetic stdlib registry (crate-private, used by #36.4)
+    - 19 unit tests, clippy clean
+  - [ ] **#36.2** — File loader: walk `module foo` decls, resolve `foo.tri`/`foo/foo.tri`, recurse inline; backward-compat single-file mode; `load_program_from_source` for tests/REPL
+  - [ ] **#36.3** — Cycle detection (E2100): DFS coloring on import graph, emit cycle trace `foo → bar → baz → foo` per ADR-0005
+  - [ ] **#36.4** — Name resolution + visibility check: rewrite `from X import Y` to absolute, bind into module scope, validate `public`/`public(package)`/private; bind synthetic stdlib exports
+  - [ ] **#36.5** — Typecheck integration: `check(&ResolvedProgram)` per-module with bindings, cross-module type lookup via absolute path
+  - [ ] **#36.6** — Interpreter integration: `run(&ResolvedProgram)`, main lookup at root, cross-module call via per-module bindings
+  - [ ] **#36.7** — CLI rewire (`triet run`/`check` through loader, single-file backward-compat) + integration tests (multi-file, cycle, visibility violation, file not found, reserved namespace)
 
 ### Pending
-
-- [ ] **v0.2.x.6** — Module loader + name resolver + cyclic detection
-  - New pass between parse and typecheck.
-  - **Loader:** walk `module foo` declarations from root file; resolve
-    each to `foo.tri` or `foo/foo.tri`; recurse into inline `module foo { ... }`.
-  - **Resolver:** rewrite `from X import Y` and `import X` paths to
-    absolute module paths; bind imported names into per-module scope;
-    enforce visibility (`public` / `public(package)` / private).
-  - **Cycle detection:** depth-first walk; emit E2100 diagnostic with
-    cycle trace per ADR-0005 example.
-  - **Typecheck integration:** typecheck runs per-module with resolved
-    names instead of the flat symbol table.
-  - **Interpreter integration:** runtime symbol table becomes module-aware
-    (path-based lookup).
-  - Affected crates: `triet-parser` (driver), new `triet-modules` crate
-    (loader + resolver), `triet-typecheck`, `triet-interpreter`, `triet-cli`.
 
 - [ ] **v0.2.x.7** — Stdlib reorganize as nested module structure
   - Convert flat `std.io.println` baseline into proper modules with

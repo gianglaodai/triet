@@ -6,6 +6,7 @@ members = [
     "crates/triet-syntax",
     "crates/triet-lexer",
     "crates/triet-parser",
+    "crates/triet-modules",
     "crates/triet-typecheck",
     "crates/triet-interpreter",
     "crates/triet-cli",
@@ -26,6 +27,7 @@ triet-logic = { path = "crates/triet-logic", version = "0.1.0" }
 triet-syntax = { path = "crates/triet-syntax", version = "0.1.0" }
 triet-lexer = { path = "crates/triet-lexer", version = "0.1.0" }
 triet-parser = { path = "crates/triet-parser", version = "0.1.0" }
+triet-modules = { path = "crates/triet-modules", version = "0.1.0" }
 triet-typecheck = { path = "crates/triet-typecheck", version = "0.1.0" }
 triet-interpreter = { path = "crates/triet-interpreter", version = "0.1.0" }
 
