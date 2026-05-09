@@ -10,13 +10,13 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ```bash
 cargo build --release
-./target/release/triet run examples/fizzbuzz.tt
-./target/release/triet run examples/measles_risk.tt
-./target/release/triet run examples/factorial.tt
-./target/release/triet run examples/lukasiewicz_vs_kleene.tt
-./target/release/triet run examples/counter.tt
-./target/release/triet run examples/long_arithmetic.tt
-./target/release/triet run examples/enumerate.tt
+./target/release/triet run examples/fizzbuzz.tri
+./target/release/triet run examples/measles_risk.tri
+./target/release/triet run examples/factorial.tri
+./target/release/triet run examples/lukasiewicz_vs_kleene.tri
+./target/release/triet run examples/counter.tri
+./target/release/triet run examples/long_arithmetic.tri
+./target/release/triet run examples/enumerate.tri
 ```
 
 Tổng 7 demo programs thực thi thành công. 498 tests pass workspace-wide.
@@ -61,7 +61,7 @@ triet/
 │   ├── triet-typecheck/ # Type checker
 │   ├── triet-interpreter/ # Tree-walking interpreter
 │   └── triet-cli/       # Binary `triet`
-├── examples/            # Sample .tt programs
+├── examples/            # Sample .tri programs
 └── SPEC.md              # Đặc tả ngôn ngữ
 ```
 
@@ -81,11 +81,11 @@ cargo fmt                # format
 # Build binary
 cargo build --release
 
-# Chạy chương trình .tt
-./target/release/triet run examples/fizzbuzz.tt
+# Chạy chương trình .tri
+./target/release/triet run examples/fizzbuzz.tri
 
 # Type-check không thực thi
-./target/release/triet check examples/fizzbuzz.tt
+./target/release/triet check examples/fizzbuzz.tri
 
 # Thông tin phiên bản
 ./target/release/triet info

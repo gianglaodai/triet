@@ -1,8 +1,8 @@
 //! Triết CLI — entry point for the `triet` binary.
 //!
 //! Subcommands:
-//! - `triet run <path.tt>` — parse, type-check, and run the program.
-//! - `triet check <path.tt>` — parse + type-check only, no execution.
+//! - `triet run <path.tri>` — parse, type-check, and run the program.
+//! - `triet check <path.tri>` — parse + type-check only, no execution.
 //! - `triet info` — version and project info.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
@@ -23,14 +23,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a Triết program (.tt file).
+    /// Run a Triết program (.tri file).
     Run {
-        /// Path to .tt source file.
+        /// Path to .tri source file.
         path: String,
     },
     /// Parse and type-check a Triết program without running it.
     Check {
-        /// Path to .tt source file.
+        /// Path to .tri source file.
         path: String,
     },
     /// Print version and build info.

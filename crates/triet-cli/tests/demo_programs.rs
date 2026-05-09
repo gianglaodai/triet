@@ -1,4 +1,4 @@
-//! End-to-end tests covering every demo `.tt` file under `examples/`.
+//! End-to-end tests covering every demo `.tri` file under `examples/`.
 //!
 //! Each test runs the full pipeline (parse → type-check → interpret)
 //! against the actual file shipped in the repo, asserting that:
@@ -21,13 +21,13 @@ use triet_logic::Trilean;
 use triet_parser::parse;
 use triet_typecheck::check;
 
-const FIZZBUZZ: &str = "fizzbuzz.tt";
-const MEASLES: &str = "measles_risk.tt";
-const FACTORIAL: &str = "factorial.tt";
-const LK: &str = "lukasiewicz_vs_kleene.tt";
-const COUNTER: &str = "counter.tt";
-const LONG_ARITHMETIC: &str = "long_arithmetic.tt";
-const ENUMERATE: &str = "enumerate.tt";
+const FIZZBUZZ: &str = "fizzbuzz.tri";
+const MEASLES: &str = "measles_risk.tri";
+const FACTORIAL: &str = "factorial.tri";
+const LK: &str = "lukasiewicz_vs_kleene.tri";
+const COUNTER: &str = "counter.tri";
+const LONG_ARITHMETIC: &str = "long_arithmetic.tri";
+const ENUMERATE: &str = "enumerate.tri";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live

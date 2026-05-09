@@ -6,7 +6,7 @@ use crate::{
     stmt::Block,
 };
 
-/// A top-level item in a `.tt` file.
+/// A top-level item in a `.tri` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
     /// Function definition.
@@ -89,7 +89,7 @@ pub struct ImportPath {
     pub segments: Vec<String>,
 }
 
-/// Root of the AST — a parsed `.tt` source file.
+/// Root of the AST — a parsed `.tri` source file.
 ///
 /// A `Program` owns its `Arena` so all `*Id` handles in items remain
 /// valid for the program's lifetime.
