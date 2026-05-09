@@ -75,17 +75,16 @@ imports, Java JPMS-aligned `module` declarations.
     - Convert flat `std.io.println` baseline into proper modules with `module` declarations under a `std/` directory.
     - Targets: `std.io`, `std.text`, `std.assert`.
     - Update prelude binding in `triet-typecheck` and `triet-interpreter`.
+  - [x] **v0.2.x.8** — Demo lớn + snapshot tests for module system — commit `b9d1d0c`
+    - 704-line ternary ALU simulator across 6 modules (file-bound, nested
+      file-bound, inline) exercising all module system features.
+    - insta snapshot tests for E2100, E2101, E2102, E2103 diagnostics.
+    - Fix prelude injection: root module only (not stdlib modules).
+    - Fix builtins installer: add missing `assert` and `assert_eq`.
 
 ### Pending
 
 
-- [ ] **v0.2.x.8** — Demo lớn + snapshot tests for module system
-  - One demo program (~500 lines) split across 5+ modules — exercises
-    `module`, `from X import Y`, `import X`, visibility, nested submodules.
-  - Snapshot tests for diagnostics: cyclic import (E2100), visibility
-    violation, unresolved path, reserved namespace abuse.
-  - Acceptance gate: all existing demos still pass, large demo runs
-    correctly, all snapshot tests stable.
 
 ---
 
