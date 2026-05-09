@@ -31,11 +31,13 @@
 )]
 
 mod check;
+mod check_resolved;
 mod env;
 mod error;
 mod types;
 
 pub use check::check;
+pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
 pub use error::TypeError;
 pub use types::Type;

@@ -23,6 +23,17 @@ pub fn check(program: &Program) -> Vec<TypeError> {
     checker.errors
 }
 
+/// Type-check a `Program` with a pre-seeded [`TypeEnvironment`].
+///
+/// Import bindings from other modules are injected into the environment
+/// before the declare/check passes. Used by `check_resolved` for
+/// cross-module type checking.
+pub(crate) fn check_with_env(program: &Program, env: TypeEnvironment) -> Vec<TypeError> {
+    let mut checker = Checker::with_env(program, env);
+    checker.check_program();
+    checker.errors
+}
+
 /// Type-checker state.
 struct Checker<'p> {
     arena: &'p Arena,
@@ -40,6 +51,18 @@ impl<'p> Checker<'p> {
             arena: &program.arena,
             items: &program.items,
             env: TypeEnvironment::with_prelude(),
+            current_return_type: None,
+            errors: Vec::new(),
+        }
+    }
+
+    /// Create a checker with a pre-built environment. Imported names
+    /// are already declared in `env` before the declare pass runs.
+    fn with_env(program: &'p Program, env: TypeEnvironment) -> Self {
+        Self {
+            arena: &program.arena,
+            items: &program.items,
+            env,
             current_return_type: None,
             errors: Vec::new(),
         }

@@ -125,6 +125,18 @@ impl AbsolutePath {
     pub const fn new(module: ModulePath, name: String) -> Self {
         Self { module, name }
     }
+
+    /// The module containing the item.
+    #[must_use]
+    pub const fn module_path(&self) -> &ModulePath {
+        &self.module
+    }
+
+    /// The item's name within its module.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl fmt::Display for AbsolutePath {
