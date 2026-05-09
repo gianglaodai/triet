@@ -146,13 +146,16 @@ pub enum Token {
     /// `kleene_iff` — Kleene K3 biconditional.
     #[token("kleene_iff")]
     KleeneIff,
-    /// `import` — module import (v0.2+).
+    /// `import` — module import. Dot-path form (`import std.io`) is
+    /// the v0.2 syntax; v0.2.x adds `use` with `::` path syntax per
+    /// ADR-0005.
     #[token("import")]
     Import,
-    /// `module` — module declaration (v0.2+).
-    #[token("module")]
-    Module,
-    /// `pub` — public visibility (v0.2+).
+    /// `mod` — module declaration: `mod foo;` (file-bound) or
+    /// `mod foo { ... }` (inline). Per ADR-0005.
+    #[token("mod")]
+    Mod,
+    /// `pub` — public visibility modifier on items (`pub`, `pub(pkg)`).
     #[token("pub")]
     Pub,
     /// `owned` — parameter takes ownership (Mojo-style).

@@ -50,14 +50,14 @@ mod tests {
     fn lexes_all_keywords() {
         let source = "fn let mut const type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
-                      kleene_implies kleene_xor kleene_iff import module pub owned";
+                      kleene_implies kleene_xor kleene_iff import mod pub owned";
         let tokens = lex_only(source);
         assert_eq!(
             tokens,
             vec![
                 Fn, Let, Mut, Const, Type, If, Else, Match, Return, For, While, Loop, Break,
                 Continue, In, True, False, Unknown, Null, Not, And, Or, Xor, Iff, Implies,
-                KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Module, Pub, Owned,
+                KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Mod, Pub, Owned,
             ],
         );
     }

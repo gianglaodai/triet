@@ -150,7 +150,7 @@ impl<'tokens> Parser<'tokens> {
                 | Token::Break
                 | Token::Continue
                 | Token::Import
-                | Token::Module
+                | Token::Mod
                 | Token::Pub
                 | Token::RBrace => return,
 

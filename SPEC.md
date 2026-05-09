@@ -95,8 +95,13 @@ fn  let  mut  const  type  if  else  match  return
 true  false  unknown  not  and  or  xor  iff  implies
 kleene_implies  kleene_xor  kleene_iff
 Trit  Tryte  Integer  Long  Trilean  String
-import  module  pub
+import  mod  pub  owned
+struct  enum
 ```
+
+> **v0.2.x reserves** (per [ADR-0005](docs/decisions/0005-module-system.md), enforcement landing incrementally):
+> - Path keywords: `crate`, `self`, `super`, `use`
+> - Reserved namespace roots: `std`, `sys`, `dev`, `usr`, `core`
 
 ### 1.5 Literal
 
