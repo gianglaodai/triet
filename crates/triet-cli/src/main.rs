@@ -11,12 +11,11 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::{fs, process::ExitCode};
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use miette::{NamedSource, Report};
+use miette::Report;
 use triet_interpreter::RuntimeError;
-use triet_parser::ParseError;
 use triet_typecheck::TypeError;
 
 #[derive(Parser)]
@@ -89,26 +88,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn read_source(path: &str) -> Result<(String, String), ExitCode> {
-    fs::read_to_string(path)
-        .map(|src| (src, path.to_owned()))
-        .map_err(|error| {
-            eprintln!("could not read {path}: {error}");
-            ExitCode::from(1)
-        })
-}
+// read_source removed
 
 // ── Diagnostic rendering ─────────────────────────────────────────────
 
-fn render<E: miette::Diagnostic + Send + Sync + 'static>(
-    error: E,
-    source: &str,
-    path: &str,
-) {
-    let src = NamedSource::new(path, source.to_owned());
-    let report = Report::new(error).with_source_code(src);
-    eprintln!("{report:?}");
-}
+// render removed
 
 // ── JSON output ──────────────────────────────────────────────────────
 
@@ -149,51 +133,54 @@ impl JsonEmitter {
     }
 }
 
-// ── run ──────────────────────────────────────────────────────────────
-
 fn run_program(path: &str, json: bool) -> ExitCode {
-    let (source, display_path) = match read_source(path) {
-        Ok(s) => s,
-        Err(code) => return code,
+    let display_path = path;
+    
+    let resolved_program = match triet_modules::load_program(std::path::Path::new(path)) {
+        Ok(p) => p,
+        Err(loader_errors) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                for error in &loader_errors {
+                    let msg = error.to_string();
+                    let code = error.code();
+                    emitter.emit(&msg, code, &error.span(), display_path);
+                }
+                emitter.finish();
+            } else {
+                for error in loader_errors {
+                    // We don't have the source for each child file easily accessible here,
+                    // so we render the loader error without source code snippets using miette.
+                    let report = Report::new(error);
+                    eprintln!("{report:?}");
+                }
+            }
+            return ExitCode::from(2);
+        }
     };
 
-    let (program, parse_errors) = triet_parser::parse(&source);
-    if !parse_errors.is_empty() {
-        if json {
-            let mut emitter = JsonEmitter::new();
-            for error in &parse_errors {
-                let msg = error.to_string();
-                let code = parse_error_code(error);
-                emitter.emit(&msg, &code, &error.span(), &display_path);
-            }
-            emitter.finish();
-        } else {
-            for error in parse_errors {
-                render(error, &source, &display_path);
-            }
-        }
-        return ExitCode::from(2);
-    }
-
-    let type_errors = triet_typecheck::check(&program);
+    let type_errors = triet_typecheck::check_resolved(&resolved_program);
     if !type_errors.is_empty() {
         if json {
             let mut emitter = JsonEmitter::new();
             for error in &type_errors {
                 let msg = error.to_string();
                 let code = type_error_code(error);
-                emitter.emit(&msg, &code, &error.span(), &display_path);
+                // The span is in some file, but JSON emitter just takes display_path.
+                // For a proper multi-file JSON, we should extract the file from the module.
+                emitter.emit(&msg, &code, &error.span(), display_path);
             }
             emitter.finish();
         } else {
             for error in type_errors {
-                render(error, &source, &display_path);
+                let report = Report::new(error);
+                eprintln!("{report:?}");
             }
         }
         return ExitCode::from(3);
     }
 
-    match triet_interpreter::run(&program) {
+    match triet_interpreter::run_resolved(&resolved_program) {
         Ok(value) => {
             if !json
                 && !matches!(
@@ -210,10 +197,11 @@ fn run_program(path: &str, json: bool) -> ExitCode {
                 let msg = error.to_string();
                 let code = runtime_error_code(&error);
                 let span = runtime_error_span(&error);
-                emitter.emit(&msg, &code, &span, &display_path);
+                emitter.emit(&msg, &code, &span, display_path);
                 emitter.finish();
             } else {
-                render(error, &source, &display_path);
+                let report = Report::new(error);
+                eprintln!("{report:?}");
             }
             ExitCode::from(4)
         }
@@ -223,42 +211,43 @@ fn run_program(path: &str, json: bool) -> ExitCode {
 // ── check ────────────────────────────────────────────────────────────
 
 fn check_program(path: &str, json: bool) -> ExitCode {
-    let (source, display_path) = match read_source(path) {
-        Ok(s) => s,
-        Err(code) => return code,
+    let display_path = path;
+
+    let resolved_program = match triet_modules::load_program(std::path::Path::new(path)) {
+        Ok(p) => p,
+        Err(loader_errors) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                for error in &loader_errors {
+                    let msg = error.to_string();
+                    let code = error.code();
+                    emitter.emit(&msg, code, &error.span(), display_path);
+                }
+                emitter.finish();
+            } else {
+                for error in loader_errors {
+                    let report = Report::new(error);
+                    eprintln!("{report:?}");
+                }
+            }
+            return ExitCode::from(2);
+        }
     };
 
-    let (program, parse_errors) = triet_parser::parse(&source);
-    if !parse_errors.is_empty() {
-        if json {
-            let mut emitter = JsonEmitter::new();
-            for error in &parse_errors {
-                let msg = error.to_string();
-                let code = parse_error_code(error);
-                emitter.emit(&msg, &code, &error.span(), &display_path);
-            }
-            emitter.finish();
-        } else {
-            for error in parse_errors {
-                render(error, &source, &display_path);
-            }
-        }
-        return ExitCode::from(2);
-    }
-
-    let type_errors = triet_typecheck::check(&program);
+    let type_errors = triet_typecheck::check_resolved(&resolved_program);
     if !type_errors.is_empty() {
         if json {
             let mut emitter = JsonEmitter::new();
             for error in &type_errors {
                 let msg = error.to_string();
                 let code = type_error_code(error);
-                emitter.emit(&msg, &code, &error.span(), &display_path);
+                emitter.emit(&msg, &code, &error.span(), display_path);
             }
             emitter.finish();
         } else {
             for error in type_errors {
-                render(error, &source, &display_path);
+                let report = Report::new(error);
+                eprintln!("{report:?}");
             }
         }
         return ExitCode::from(3);
@@ -272,20 +261,7 @@ fn check_program(path: &str, json: bool) -> ExitCode {
 
 // ── Error code extractors ────────────────────────────────────────────
 
-fn parse_error_code(error: &ParseError) -> String {
-    match error {
-        ParseError::UnexpectedToken { .. } => "triet::parse::E0001",
-        ParseError::UnexpectedEof { .. } => "triet::parse::E0002",
-        ParseError::ChainedNoChainOperator { .. } => "triet::parse::E0003",
-        ParseError::InvalidInterpolation { .. } => "triet::parse::E0004",
-        ParseError::InvalidLiteral { .. } => "triet::parse::E0005",
-        ParseError::BreakValueOutsideLoop { .. } => "triet::parse::E0006",
-        ParseError::InvalidAssignmentTarget { .. } => "triet::parse::E0007",
-        ParseError::ReservedItemName { .. } => "triet::parse::E0008",
-        ParseError::Lex(_) => "triet::lex::E0000",
-    }
-    .to_owned()
-}
+// parse_error_code removed
 
 fn type_error_code(error: &TypeError) -> String {
     match error {

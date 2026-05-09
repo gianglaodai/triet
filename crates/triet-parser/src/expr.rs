@@ -854,7 +854,7 @@ fn try_parse_struct_literal(
         }
 
         // Parse the field value expression.
-        let value = if let Ok(v) = parse_expression(parser) { v } else {
+        let Ok(value) = parse_expression(parser) else {
             parser.restore_position(saved);
             return None;
         };

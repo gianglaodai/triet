@@ -22,8 +22,10 @@ triet-lexer.workspace = true
 triet-parser.workspace = true
 triet-typecheck.workspace = true
 triet-interpreter.workspace = true
+triet-modules.workspace = true
 clap.workspace = true
 miette.workspace = true
 
 [dev-dependencies]
 triet-syntax.workspace = true
+tempfile = "3"

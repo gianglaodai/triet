@@ -512,7 +512,7 @@ impl<'p> Interpreter<'p> {
                     let val = self.evaluate_expression(value_expr)?;
                     field_values.insert(field_name.clone(), val);
                 }
-                Ok(Value::Struct { name: name, fields: field_values })
+                Ok(Value::Struct { name, fields: field_values })
             }
             Expr::EnumLiteral { name, variant_name, payload } => {
                 let payload_value = match payload {
@@ -520,7 +520,7 @@ impl<'p> Interpreter<'p> {
                     None => None,
                 };
                 Ok(Value::EnumVariant {
-                    name: name,
+                    name,
                     variant: variant_name,
                     payload: payload_value,
                 })

@@ -21,6 +21,7 @@ impl Checker<'_> {
     /// Infer the type of an expression. Records errors for malformed
     /// shapes; returns `Type::Unknown` as a recovery placeholder so a
     /// single mismatch doesn't trigger a cascade.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn infer_expression(&mut self, id: ExprId) -> Type {
         let span = self.arena.expression(id).span.clone();
         let node = self.arena.expression(id).node.clone();
@@ -456,7 +457,7 @@ impl Checker<'_> {
             self.errors.push(TypeError::UnknownMember {
                 member: variant_name.to_owned(),
                 found: ty.clone(),
-                span: span,
+                span,
             });
             return Type::Unknown;
         };
@@ -476,7 +477,7 @@ impl Checker<'_> {
                 self.errors.push(TypeError::WrongArity {
                     expected: 0,
                     found: 1,
-                    span: span,
+                    span,
                 });
             }
             (None, Some(_)) => {

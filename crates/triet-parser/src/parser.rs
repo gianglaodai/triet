@@ -54,6 +54,7 @@ impl<'tokens> Parser<'tokens> {
     /// Look ahead up to `n` tokens without consuming them. Returns a
     /// slice (possibly shorter if EOF is reached first). Used for
     /// bounded lookahead (e.g. disambiguating struct literals).
+    #[allow(dead_code)]
     pub(crate) fn peek_tokens(&self, n: usize) -> Vec<Token> {
         self.tokens[self.cursor..]
             .iter()

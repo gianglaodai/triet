@@ -1097,7 +1097,7 @@ mod tests {
         let Item::Module(decl) = &item.node else { panic!("expected module") };
         match &decl.content {
             ModuleContent::Inline(items) => assert!(items.is_empty()),
-            other => panic!("expected inline, got {other:?}"),
+            other @ ModuleContent::External => panic!("expected inline, got {other:?}"),
         }
     }
 
@@ -1113,7 +1113,7 @@ mod tests {
                 assert!(matches!(items[0].node, Item::Function(_)));
                 assert!(matches!(items[1].node, Item::Const { .. }));
             }
-            other => panic!("expected inline, got {other:?}"),
+            other @ ModuleContent::External => panic!("expected inline, got {other:?}"),
         }
     }
 
@@ -1144,7 +1144,7 @@ mod tests {
                 };
                 assert_eq!(inner.name, "inner");
             }
-            other => panic!("expected inline, got {other:?}"),
+            other @ ModuleContent::External => panic!("expected inline, got {other:?}"),
         }
     }
 
