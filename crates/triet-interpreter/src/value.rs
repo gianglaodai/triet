@@ -1,6 +1,6 @@
 //! Runtime value type produced by evaluating Triết expressions.
 
-use std::{fmt, rc::Rc};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
@@ -61,6 +61,22 @@ pub enum Value {
     Lambda(Rc<Closure>),
     /// A built-in function callable from Triết (print, `to_string`, ...).
     Builtin(BuiltinFn),
+    /// Struct instance: `Point { x: 1, y: 2 }`.
+    Struct {
+        /// Struct type name (for Display).
+        name: String,
+        /// Field values by name.
+        fields: HashMap<String, Value>,
+    },
+    /// Enum variant instance: `Some(5)` or `None`.
+    EnumVariant {
+        /// Enum type name.
+        name: String,
+        /// Variant name.
+        variant: String,
+        /// Optional payload.
+        payload: Option<Box<Value>>,
+    },
 }
 
 /// Reference into the program for a top-level function.
@@ -112,6 +128,13 @@ impl PartialEq for Value {
             (Self::Function(a), Self::Function(b)) => Rc::ptr_eq(a, b),
             (Self::Lambda(a), Self::Lambda(b)) => Rc::ptr_eq(a, b),
             (Self::Builtin(a), Self::Builtin(b)) => std::ptr::fn_addr_eq(*a, *b),
+            (Self::Struct { name: n1, fields: f1 }, Self::Struct { name: n2, fields: f2 }) => {
+                n1 == n2 && f1.len() == f2.len() && f1.iter().all(|(k, v)| f2.get(k) == Some(v))
+            }
+            (Self::EnumVariant { name: n1, variant: v1, payload: p1 },
+             Self::EnumVariant { name: n2, variant: v2, payload: p2 }) => {
+                n1 == n2 && v1 == v2 && p1 == p2
+            }
             _ => false,
         }
     }
@@ -148,6 +171,25 @@ impl fmt::Display for Value {
             Self::Function(_) => formatter.write_str("<function>"),
             Self::Lambda(_) => formatter.write_str("<lambda>"),
             Self::Builtin(_) => formatter.write_str("<builtin>"),
+            Self::Struct { name, fields } => {
+                write!(formatter, "{name} {{ ")?;
+                let mut sorted: Vec<_> = fields.iter().collect();
+                sorted.sort_by_key(|(k, _)| *k);
+                for (i, (key, val)) in sorted.iter().enumerate() {
+                    if i > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{key}: {val}")?;
+                }
+                formatter.write_str(" }")
+            }
+            Self::EnumVariant { name, variant, payload } => {
+                write!(formatter, "{name}::{variant}")?;
+                if let Some(p) = payload {
+                    write!(formatter, "({p})")?;
+                }
+                Ok(())
+            }
         }
     }
 }

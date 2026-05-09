@@ -39,6 +39,17 @@ impl<'tokens> Parser<'tokens> {
         self.peek().map(|(t, _)| t)
     }
 
+    /// Look ahead up to `n` tokens without consuming them. Returns a
+    /// slice (possibly shorter if EOF is reached first). Used for
+    /// bounded lookahead (e.g. disambiguating struct literals).
+    pub(crate) fn peek_tokens(&self, n: usize) -> Vec<Token> {
+        self.tokens[self.cursor..]
+            .iter()
+            .take(n)
+            .map(|(t, _)| t.clone())
+            .collect()
+    }
+
     /// Span of the current token, or an empty span at end-of-input.
     pub(crate) fn current_span(&self) -> Span {
         self.peek()

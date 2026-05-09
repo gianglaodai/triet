@@ -38,6 +38,22 @@ pub enum Type {
     /// `Range<T>` produced by `a..b` or `a..=b`. The element type is
     /// the operand type (e.g. `Integer` for `0..100`).
     Range(Box<Self>),
+    /// User-defined struct type: `struct Point { x: Integer, y: Integer }`.
+    /// Carries field name → type pairs inline so the checker can resolve
+    /// field access without a separate type registry lookup.
+    UserStruct {
+        /// Struct name (for Display and error messages).
+        name: String,
+        /// Fields in declaration order. Stored as `(name, type)` pairs.
+        fields: Vec<(String, Self)>,
+    },
+    /// User-defined enum type: `enum Option { Some(Integer), None }`.
+    UserEnum {
+        /// Enum name.
+        name: String,
+        /// Variants in declaration order. Stored as `(name, optional_payload)`.
+        variants: Vec<(String, Option<Box<Self>>)>,
+    },
     /// A type the checker could not determine — used as a recovery
     /// placeholder so cascading errors don't compound.
     Unknown,
@@ -139,6 +155,8 @@ impl fmt::Display for Type {
                 write!(formatter, ") -> {return_type}")
             }
             Self::Range(element) => write!(formatter, "Range<{element}>"),
+            Self::UserStruct { name, .. } => formatter.write_str(name),
+            Self::UserEnum { name, .. } => formatter.write_str(name),
             Self::Unknown => formatter.write_str("?"),
         }
     }

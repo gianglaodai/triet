@@ -126,13 +126,11 @@ impl Checker<'_> {
                 }
                 Type::Range(Box::new(start_ty))
             }
-            Expr::StructLiteral { name: _, .. } => {
-                // v0.2: resolve struct type, check fields. For now, accept
-                // any struct name as a placeholder.
-                Type::Unknown
+            Expr::StructLiteral { name, fields } => {
+                self.check_struct_literal(&name, &fields, span)
             }
-            Expr::EnumLiteral { name: _, .. } => {
-                // v0.2: resolve enum type, check variant. Placeholder.
+            Expr::EnumLiteral { name, .. } => {
+                // v0.2: enum literals deferred.
                 Type::Unknown
             }
         }
@@ -311,9 +309,65 @@ impl Checker<'_> {
         Type::Unknown
     }
 
+    fn check_struct_literal(
+        &mut self,
+        name: &str,
+        fields: &[(String, ExprId)],
+        span: Span,
+    ) -> Type {
+        let ty = self.env.lookup(name).cloned().unwrap_or_else(|| {
+            self.errors.push(TypeError::UndefinedName {
+                name: name.to_owned(),
+                span: span.clone(),
+            });
+            Type::Unknown
+        });
+        let Type::UserStruct { name: _, fields: def_fields } = &ty else {
+            self.errors.push(TypeError::Mismatch {
+                expected: Type::Unknown,
+                found: ty,
+                span,
+            });
+            return Type::Unknown;
+        };
+        // Check field names and types.
+        for (field_name, value) in fields {
+            let def = def_fields.iter().find(|(n, _)| n == field_name);
+            let Some((_, expected_ty)) = def else {
+                self.errors.push(TypeError::UnknownMember {
+                    member: field_name.clone(),
+                    found: ty.clone(),
+                    span: self.arena.expression(*value).span.clone(),
+                });
+                continue;
+            };
+            let value_ty = self.infer_expression(*value);
+            if !expected_ty.matches(&value_ty) {
+                self.errors.push(TypeError::Mismatch {
+                    expected: expected_ty.clone(),
+                    found: value_ty,
+                    span: self.arena.expression(*value).span.clone(),
+                });
+            }
+        }
+        ty.clone()
+    }
+
     fn check_field_access(&mut self, object: ExprId, field: &str, span: Span) -> Type {
         let object_ty = self.infer_expression(object);
         if matches!(object_ty, Type::Unknown) {
+            return Type::Unknown;
+        }
+        // Struct field access.
+        if let Type::UserStruct { fields, .. } = &object_ty {
+            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field) {
+                return field_ty.clone();
+            }
+            self.errors.push(TypeError::UnknownMember {
+                member: field.to_owned(),
+                found: object_ty,
+                span,
+            });
             return Type::Unknown;
         }
         self.errors.push(TypeError::UnknownMember {

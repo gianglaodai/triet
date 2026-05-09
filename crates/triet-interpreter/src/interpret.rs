@@ -1,8 +1,8 @@
 //! Tree-walking interpreter.
 
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
-use triet_core::{Integer, Long, Tryte};
+use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
 use triet_syntax::{
     Arena, BinaryOperator, Block, Expr, ExprId, FStringPart, FunctionBody, Item, MatchArm, PatternId, Program, Span, Stmt, StmtId,
@@ -293,10 +293,23 @@ impl<'p> Interpreter<'p> {
             Expr::MethodCall { receiver, method, arguments } => {
                 self.evaluate_method_call(receiver, &method, &arguments, span)
             }
-            Expr::FieldAccess { object: _, field } => Err(RuntimeError::TypeError {
-                message: format!("no field `{field}` on value"),
-                span,
-            }),
+            Expr::FieldAccess { object, field } => {
+                let value = self.evaluate_expression(object)?;
+                match value {
+                    Value::Struct { fields, .. } => {
+                        fields.get(&field).cloned().ok_or_else(|| {
+                            RuntimeError::TypeError {
+                                message: format!("no field `{field}`"),
+                                span: span.clone(),
+                            }
+                        })
+                    }
+                    _ => Err(RuntimeError::TypeError {
+                        message: format!("field access on non-struct value"),
+                        span,
+                    }),
+                }
+            }
             Expr::TupleIndex { tuple, index } => {
                 let value = self.evaluate_expression(tuple)?;
                 let Value::Tuple(elements) = value else {
@@ -392,9 +405,17 @@ impl<'p> Interpreter<'p> {
                 };
                 Ok(Value::Range { start: s, end: e, inclusive })
             }
-            Expr::StructLiteral { .. } | Expr::EnumLiteral { .. } => {
+            Expr::StructLiteral { name, fields } => {
+                let mut field_values = HashMap::new();
+                for (field_name, value_expr) in fields {
+                    let val = self.evaluate_expression(value_expr)?;
+                    field_values.insert(field_name.clone(), val);
+                }
+                Ok(Value::Struct { name: name.clone(), fields: field_values })
+            }
+            Expr::EnumLiteral { .. } => {
                 Err(RuntimeError::TypeError {
-                    message: "struct/enum literals — v0.2 (not yet implemented)".to_owned(),
+                    message: "enum literals — v0.2 (not yet implemented)".to_owned(),
                     span,
                 })
             }

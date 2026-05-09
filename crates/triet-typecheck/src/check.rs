@@ -109,8 +109,26 @@ impl<'p> Checker<'p> {
             Item::Import(_) => {
                 // V0.1 imports are syntactic placeholders.
             }
-            Item::Struct(_) | Item::Enum(_) => {
-                // v0.2: registered in the type registry (D.4).
+            Item::Struct(def) => {
+                let fields: Vec<(String, Type)> = def
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.clone(), self.resolve_type(f.type_annotation)))
+                    .collect();
+                let ty = Type::UserStruct { name: def.name.clone(), fields };
+                self.declare_or_record_dup(&def.name, ty, item.span.clone());
+            }
+            Item::Enum(def) => {
+                let variants: Vec<(String, Option<Box<Type>>)> = def
+                    .variants
+                    .iter()
+                    .map(|v| {
+                        let payload = v.payload.map(|tid| Box::new(self.resolve_type(tid)));
+                        (v.name.clone(), payload)
+                    })
+                    .collect();
+                let ty = Type::UserEnum { name: def.name.clone(), variants };
+                self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
         }
     }
@@ -383,8 +401,18 @@ impl<'p> Checker<'p> {
                 "String" => Type::String,
                 "Unit" => Type::Unit,
                 _ => {
-                    self.errors.push(TypeError::UnknownType { name, span });
-                    Type::Unknown
+                    // Look up user-defined types (struct, enum, alias).
+                    if let Some(ty) = self.env.lookup(&name).cloned() {
+                        if matches!(ty, Type::UserStruct { .. } | Type::UserEnum { .. }) {
+                            ty
+                        } else {
+                            self.errors.push(TypeError::UnknownType { name, span });
+                            Type::Unknown
+                        }
+                    } else {
+                        self.errors.push(TypeError::UnknownType { name, span });
+                        Type::Unknown
+                    }
                 }
             },
             TypeExpr::Generic { name, .. } => {

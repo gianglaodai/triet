@@ -167,9 +167,22 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         }
         Token::Identifier(name) => {
             parser.advance();
-            Ok(parser
-                .arena
-                .alloc_expression(Spanned::new(Expr::Identifier(name), span)))
+            // Peek: `Name { field: value, ... }` is a struct literal.
+            // We check for `{` followed by `ident :` to disambiguate
+            // from blocks (`n { ... }` after condition expressions).
+            if looks_like_struct_literal(parser) {
+                let fields = parse_struct_literal_fields(parser)?;
+                let end = parser.previous_token_end(span.end);
+                let span = span.start..end;
+                Ok(parser.arena.alloc_expression(Spanned::new(
+                    Expr::StructLiteral { name, fields },
+                    span,
+                )))
+            } else {
+                Ok(parser
+                    .arena
+                    .alloc_expression(Spanned::new(Expr::Identifier(name), span)))
+            }
         }
         Token::FStringStart => parse_f_string(parser),
         Token::LParen => parse_paren_or_tuple(parser, span),
@@ -783,6 +796,96 @@ const POSTFIX_LEFT_BP: u8 = 28;
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Parse `{ field: expr, ... }` inside a struct literal expression.
+/// Check whether the token stream looks like a struct literal
+/// (`Name { field: value, ... }`) as opposed to a block following an
+/// identifier expression (`n { ... }` in `while? i <= n { ... }`).
+///
+/// Peek-ahead: after `LBrace`, a struct literal must have
+/// `identifier :` (field name followed by colon). If the `{` is empty
+/// (`{}`) or starts with a non-identifier token, it's a block/control-
+/// flow brace, not a struct literal.
+fn looks_like_struct_literal(parser: &Parser<'_>) -> bool {
+    if !matches!(parser.peek_token(), Some(Token::LBrace)) {
+        return false;
+    }
+    // Look past the `{` (we can't consume, so we inspect the token
+    // stream directly from the parser's position).
+    let tokens = parser.peek_tokens(3); // at most 3: `{`, ident, `:`
+    match tokens.as_slice() {
+        [Token::LBrace, Token::RBrace, ..] => {
+            // `{}` — ambiguous: could be empty struct or empty block.
+            // Conservative: treat as block. Empty struct literals are
+            // rare and can be explicitly annotated if needed.
+            false
+        }
+        [Token::LBrace, Token::Identifier(_), Token::Colon, ..] => {
+            // `{ name:` — struct literal.
+            true
+        }
+        [Token::LBrace, Token::Identifier(_), Token::Comma, ..] => {
+            // `{ name,` — could be struct with trailing comma. Heuristic:
+            // struct fields always have `:`, so this is likely NOT a
+            // struct literal. We'll be conservative and say no.
+            false
+        }
+        [Token::LBrace, Token::Identifier(_), Token::RBrace, ..] => {
+            // `{ name }` — single field without value? Probably not a
+            // struct literal. Conservative: no.
+            false
+        }
+        _ => {
+            // Anything else: `{`, followed by keyword, literal, operator,
+            // etc. — not a struct literal.
+            false
+        }
+    }
+}
+
+fn parse_struct_literal_fields(
+    parser: &mut Parser<'_>,
+) -> Result<Vec<(String, ExprId)>, ParseError> {
+    parser.expect(&Token::LBrace, "`{`")?;
+    let mut fields = Vec::new();
+    if matches!(parser.peek_token(), Some(Token::RBrace)) {
+        parser.advance();
+        return Ok(fields);
+    }
+    loop {
+        let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
+            ParseError::UnexpectedEof {
+                expected: "field name".to_owned(),
+                span: parser.eof_span(),
+            }
+        })?;
+        let name = match name_token {
+            Token::Identifier(n) => {
+                parser.advance();
+                n
+            }
+            other => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "field name".to_owned(),
+                    found: format!("{other:?}"),
+                    span: parser.current_span(),
+                });
+            }
+        };
+        parser.expect(&Token::Colon, "`:`")?;
+        let value = parse_expression(parser)?;
+        fields.push((name, value));
+
+        if !parser.eat(&Token::Comma) {
+            break;
+        }
+        if matches!(parser.peek_token(), Some(Token::RBrace)) {
+            break;
+        }
+    }
+    parser.expect(&Token::RBrace, "`}`")?;
+    Ok(fields)
+}
 
 fn arena_span(parser: &Parser<'_>, id: ExprId) -> Span {
     parser.arena.expression(id).span.clone()
