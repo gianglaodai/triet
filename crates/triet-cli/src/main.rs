@@ -281,6 +281,7 @@ fn parse_error_code(error: &ParseError) -> String {
         ParseError::InvalidLiteral { .. } => "triet::parse::E0005",
         ParseError::BreakValueOutsideLoop { .. } => "triet::parse::E0006",
         ParseError::InvalidAssignmentTarget { .. } => "triet::parse::E0007",
+        ParseError::ReservedItemName { .. } => "triet::parse::E0008",
         ParseError::Lex(_) => "triet::lex::E0000",
     }
     .to_owned()

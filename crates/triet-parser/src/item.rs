@@ -116,25 +116,7 @@ fn parse_function(
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Fn, "`fn`")?;
 
-    let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
-        ParseError::UnexpectedEof {
-            expected: "function name".to_owned(),
-            span: parser.eof_span(),
-        }
-    })?;
-    let name = match name_token {
-        Token::Identifier(name) => {
-            parser.advance();
-            name
-        }
-        other => {
-            return Err(ParseError::UnexpectedToken {
-                expected: "function name".to_owned(),
-                found: format!("{other:?}"),
-                span: parser.current_span(),
-            });
-        }
-    };
+    let (name, _) = parse_item_name(parser, "function name")?;
 
     parser.expect(&Token::LParen, "`(`")?;
     let parameters = parse_parameter_list(parser)?;
@@ -236,25 +218,7 @@ fn parse_const_item(
     visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Const, "`const`")?;
-    let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
-        ParseError::UnexpectedEof {
-            expected: "const name".to_owned(),
-            span: parser.eof_span(),
-        }
-    })?;
-    let name = match name_token {
-        Token::Identifier(name) => {
-            parser.advance();
-            name
-        }
-        other => {
-            return Err(ParseError::UnexpectedToken {
-                expected: "const name".to_owned(),
-                found: format!("{other:?}"),
-                span: parser.current_span(),
-            });
-        }
-    };
+    let (name, _) = parse_item_name(parser, "const name")?;
 
     let type_annotation = if parser.eat(&Token::Colon) {
         Some(parse_type(parser)?)
@@ -285,25 +249,7 @@ fn parse_type_alias(
     visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Type, "`type`")?;
-    let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
-        ParseError::UnexpectedEof {
-            expected: "type alias name".to_owned(),
-            span: parser.eof_span(),
-        }
-    })?;
-    let name = match name_token {
-        Token::Identifier(name) => {
-            parser.advance();
-            name
-        }
-        other => {
-            return Err(ParseError::UnexpectedToken {
-                expected: "type alias name".to_owned(),
-                found: format!("{other:?}"),
-                span: parser.current_span(),
-            });
-        }
-    };
+    let (name, _) = parse_item_name(parser, "type alias name")?;
 
     parser.expect(&Token::Assign, "`=`")?;
     let target = parse_type(parser)?;
@@ -380,7 +326,7 @@ fn parse_struct(
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Struct, "`struct`")?;
 
-    let name = parse_ident(parser, "struct name")?;
+    let (name, _) = parse_item_name(parser, "struct name")?;
     let type_params = parse_generic_params(parser)?;
 
     parser.expect(&Token::LBrace, "`{`")?;
@@ -430,7 +376,7 @@ fn parse_enum(
 ) -> Result<Spanned<Item>, ParseError> {
     parser.expect(&Token::Enum, "`enum`")?;
 
-    let name = parse_ident(parser, "enum name")?;
+    let (name, _) = parse_item_name(parser, "enum name")?;
     let type_params = parse_generic_params(parser)?;
 
     parser.expect(&Token::LBrace, "`{`")?;
@@ -515,6 +461,49 @@ fn parse_ident(parser: &mut Parser<'_>, expected: &str) -> Result<String, ParseE
             span: parser.current_span(),
         }),
     }
+}
+
+/// Reserved namespace roots — top-level items cannot be defined with
+/// these names. They're kept for the standard library and OS-native
+/// namespaces (ADR-0005, trụ cột #5).
+///
+/// Path keywords (`crate`, `self`, `super`) are reserved at the lexer
+/// level and surface as `UnexpectedToken` if used in identifier position.
+const RESERVED_ITEM_NAMES: &[&str] = &["std", "sys", "dev", "usr", "core"];
+
+/// Parse an identifier intended as a top-level item name (function,
+/// const, type alias, struct, enum). Rejects reserved namespace roots
+/// per ADR-0005.
+///
+/// Returns `(name, span_of_identifier)` so callers can re-use the span
+/// for error reporting downstream.
+fn parse_item_name(
+    parser: &mut Parser<'_>,
+    expected: &str,
+) -> Result<(String, Span), ParseError> {
+    let (token, span) = parser.peek().cloned().ok_or_else(|| {
+        ParseError::UnexpectedEof {
+            expected: expected.to_owned(),
+            span: parser.eof_span(),
+        }
+    })?;
+    let name = match token {
+        Token::Identifier(name) => {
+            parser.advance();
+            name
+        }
+        other => {
+            return Err(ParseError::UnexpectedToken {
+                expected: expected.to_owned(),
+                found: format!("{other:?}"),
+                span,
+            });
+        }
+    };
+    if RESERVED_ITEM_NAMES.contains(&name.as_str()) {
+        return Err(ParseError::ReservedItemName { name, span });
+    }
+    Ok((name, span))
 }
 
 #[cfg(test)]
@@ -736,6 +725,96 @@ mod tests {
         let (_, item) = parse("pub fn greet() { }");
         // `pub` starts at byte 0, so the item span must too.
         assert_eq!(item.span.start, 0);
+    }
+
+    // === Reserved-name validation (ADR-0005, task v0.2.x.4) ===
+
+    #[test]
+    fn struct_named_std_is_rejected() {
+        let result = try_parse("struct std { x: Integer }");
+        assert!(matches!(
+            result,
+            Err(ParseError::ReservedItemName { name, .. }) if name == "std"
+        ));
+    }
+
+    #[test]
+    fn fn_named_sys_is_rejected() {
+        let result = try_parse("fn sys() { }");
+        assert!(matches!(
+            result,
+            Err(ParseError::ReservedItemName { name, .. }) if name == "sys"
+        ));
+    }
+
+    #[test]
+    fn enum_named_dev_is_rejected() {
+        let result = try_parse("enum dev { A, B }");
+        assert!(matches!(
+            result,
+            Err(ParseError::ReservedItemName { name, .. }) if name == "dev"
+        ));
+    }
+
+    #[test]
+    fn const_named_usr_is_rejected() {
+        let result = try_parse("const usr: Integer = 5");
+        assert!(matches!(
+            result,
+            Err(ParseError::ReservedItemName { name, .. }) if name == "usr"
+        ));
+    }
+
+    #[test]
+    fn type_alias_named_core_is_rejected() {
+        let result = try_parse("type core = Integer");
+        assert!(matches!(
+            result,
+            Err(ParseError::ReservedItemName { name, .. }) if name == "core"
+        ));
+    }
+
+    #[test]
+    fn fn_named_crate_is_rejected_via_unexpected_token() {
+        // `crate` lexes as Token::Crate, not Token::Identifier.
+        let result = try_parse("fn crate() { }");
+        assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
+    }
+
+    #[test]
+    fn struct_named_self_is_rejected_via_unexpected_token() {
+        let result = try_parse("struct self { }");
+        assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
+    }
+
+    #[test]
+    fn enum_named_super_is_rejected_via_unexpected_token() {
+        let result = try_parse("enum super { A }");
+        assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
+    }
+
+    #[test]
+    fn substring_of_reserved_name_is_allowed() {
+        // `crater`, `stderr`, `system` start with a reserved prefix but
+        // are themselves valid identifiers — keyword matching is not
+        // greedy, and reserved-name comparison is exact.
+        let (_, item) = parse("fn crater() { }");
+        let Item::Function(def) = &item.node else { panic!("expected function") };
+        assert_eq!(def.name, "crater");
+
+        let (_, item) = parse("struct Stderr { }");
+        let Item::Struct(def) = &item.node else { panic!("expected struct") };
+        assert_eq!(def.name, "Stderr");
+    }
+
+    #[test]
+    fn pub_reserved_name_still_rejected() {
+        // Visibility prefix doesn't bypass reservation.
+        let result = try_parse("pub struct std { }");
+        assert!(matches!(
+            result,
+            Err(ParseError::ReservedItemName { name, .. }) if name == "std"
+        ));
     }
 
     #[test]

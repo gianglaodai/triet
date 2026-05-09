@@ -50,7 +50,8 @@ mod tests {
     fn lexes_all_keywords() {
         let source = "fn let mut const type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
-                      kleene_implies kleene_xor kleene_iff import mod pub owned";
+                      kleene_implies kleene_xor kleene_iff import mod pub owned \
+                      struct enum crate self super";
         let tokens = lex_only(source);
         assert_eq!(
             tokens,
@@ -58,8 +59,27 @@ mod tests {
                 Fn, Let, Mut, Const, Type, If, Else, Match, Return, For, While, Loop, Break,
                 Continue, In, True, False, Unknown, Null, Not, And, Or, Xor, Iff, Implies,
                 KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Mod, Pub, Owned,
+                Token::Struct, Token::Enum, Token::Crate, Token::SelfKw, Token::Super,
             ],
         );
+    }
+
+    #[test]
+    fn path_keywords_are_distinct_from_identifiers() {
+        // `crate`/`self`/`super` are reserved path keywords (ADR-0005).
+        assert_eq!(lex_only("crate"), vec![Token::Crate]);
+        assert_eq!(lex_only("self"), vec![Token::SelfKw]);
+        assert_eq!(lex_only("super"), vec![Token::Super]);
+        // But identifiers that *contain* these as substrings stay
+        // identifiers (no greedy keyword matching).
+        assert!(matches!(
+            lex_only("crater").as_slice(),
+            [Token::Identifier(name)] if name == "crater"
+        ));
+        assert!(matches!(
+            lex_only("selfish").as_slice(),
+            [Token::Identifier(name)] if name == "selfish"
+        ));
     }
 
     #[test]

@@ -167,6 +167,18 @@ pub enum Token {
     /// `enum` — enum definition (v0.2+).
     #[token("enum")]
     Enum,
+    /// `crate` — path keyword: refers to the current crate root.
+    /// Reserved per ADR-0005; path syntax usage lands in v0.2.x.5.
+    #[token("crate")]
+    Crate,
+    /// `self` — path keyword: refers to the current module.
+    /// Reserved per ADR-0005; path syntax usage lands in v0.2.x.5.
+    #[token("self")]
+    SelfKw,
+    /// `super` — path keyword: refers to the parent module.
+    /// Reserved per ADR-0005; path syntax usage lands in v0.2.x.5.
+    #[token("super")]
+    Super,
 
     // === Multi-character operators (longest-match ordering matters) ===
     /// `<=>` — Łukasiewicz biconditional.

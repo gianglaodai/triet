@@ -101,6 +101,27 @@ pub enum ParseError {
         span: Span,
     },
 
+    /// An item is being defined with a name that is reserved per
+    /// ADR-0005 — currently the OS-namespace roots `std`, `sys`, `dev`,
+    /// `usr`, `core`. Path keywords (`crate`, `self`, `super`) are
+    /// reserved at the lexer level and surface as [`Self::UnexpectedToken`].
+    #[error("`{name}` is a reserved name and cannot be used for an item")]
+    #[diagnostic(
+        code(triet::parse::E0008),
+        help(
+            "`std`, `sys`, `dev`, `usr`, `core` are kept for the standard \
+             library and OS-native namespaces (ADR-0005). Choose a different \
+             name."
+        )
+    )]
+    ReservedItemName {
+        /// The reserved name the user tried to define.
+        name: String,
+        /// Where the offending identifier sits.
+        #[label("reserved name")]
+        span: Span,
+    },
+
     /// Underlying lexer error encountered before parsing finished.
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -118,7 +139,8 @@ impl ParseError {
             | Self::InvalidInterpolation { span, .. }
             | Self::InvalidLiteral { span, .. }
             | Self::BreakValueOutsideLoop { span }
-            | Self::InvalidAssignmentTarget { span, .. } => span.clone(),
+            | Self::InvalidAssignmentTarget { span, .. }
+            | Self::ReservedItemName { span, .. } => span.clone(),
             Self::Lex(_) => 0..0,
         }
     }
