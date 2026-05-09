@@ -28,6 +28,8 @@ const LK: &str = "lukasiewicz_vs_kleene.tri";
 const COUNTER: &str = "counter.tri";
 const LONG_ARITHMETIC: &str = "long_arithmetic.tri";
 const ENUMERATE: &str = "enumerate.tri";
+const NULLABLE: &str = "nullable.tri";
+const WHILE_POLLING: &str = "while_polling.tri";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live
@@ -252,4 +254,101 @@ fn enumerate_rank_assigns_correct_grades() {
         let value = call_function(&program, "rank", vec![integer(score)]).unwrap();
         assert_eq!(value.to_string(), expected, "rank({score})");
     }
+}
+
+#[test]
+fn nullable_demo_parses_and_type_checks() {
+    let _ = load_program(NULLABLE);
+}
+
+#[test]
+fn nullable_double_or_zero_handles_overflow_via_elvis() {
+    let program = load_program(NULLABLE);
+    // Small input: try_add succeeds → 2*1000 = 2000.
+    assert_eq!(
+        call_function(&program, "double_or_zero", vec![integer(1000)])
+            .unwrap()
+            .to_string(),
+        "2000",
+    );
+    // Near Integer::MAX: try_add returns null → Elvis falls back to 0.
+    assert_eq!(
+        call_function(&program, "double_or_zero", vec![integer(3_812_798_742_000)])
+            .unwrap()
+            .to_string(),
+        "0",
+    );
+}
+
+#[test]
+fn nullable_force_unwrap_panics_on_overflow() {
+    let program = load_program(NULLABLE);
+    // double_must_succeed near MAX should panic via `!!` on null.
+    let result = call_function(
+        &program,
+        "double_must_succeed",
+        vec![integer(3_812_798_742_000)],
+    );
+    assert!(result.is_err(), "expected panic, got {result:?}");
+}
+
+#[test]
+fn nullable_main_runs_without_error() {
+    let program = load_program(NULLABLE);
+    let result = run(&program);
+    assert!(result.is_ok(), "nullable main failed: {result:?}");
+}
+
+#[test]
+fn while_polling_demo_parses_and_type_checks() {
+    let _ = load_program(WHILE_POLLING);
+}
+
+#[test]
+fn while_polling_count_cycles_handles_unknown_safely() {
+    let program = load_program(WHILE_POLLING);
+    // active=true → loop runs until iterations==5 sets active=false.
+    assert_eq!(
+        call_function(&program, "count_cycles", vec![trilean(Trilean::True)])
+            .unwrap()
+            .to_string(),
+        "5",
+    );
+    // active=false → loop never enters.
+    assert_eq!(
+        call_function(&program, "count_cycles", vec![trilean(Trilean::False)])
+            .unwrap()
+            .to_string(),
+        "0",
+    );
+    // active=unknown → `while?` treats unknown as false → loop never enters.
+    // This is the load-bearing case for SPEC §7.1.1.
+    assert_eq!(
+        call_function(&program, "count_cycles", vec![trilean(Trilean::Unknown)])
+            .unwrap()
+            .to_string(),
+        "0",
+    );
+}
+
+#[test]
+fn while_polling_isqrt_converges() {
+    let program = load_program(WHILE_POLLING);
+    let cases: &[(i64, i64)] = &[(1, 1), (4, 2), (9, 3), (16, 4), (100, 10)];
+    for &(target, expected) in cases {
+        let value = call_function(
+            &program,
+            "isqrt",
+            vec![integer(target), integer(20)],
+        )
+        .unwrap();
+        assert_eq!(value, integer(expected), "isqrt({target})");
+    }
+}
+
+#[test]
+fn while_polling_main_runs_without_error() {
+    let program = load_program(WHILE_POLLING);
+    let result = run(&program);
+    assert!(result.is_ok(), "while_polling main failed: {result:?}");
 }

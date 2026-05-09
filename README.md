@@ -17,9 +17,11 @@ cargo build --release
 ./target/release/triet run examples/counter.tri
 ./target/release/triet run examples/long_arithmetic.tri
 ./target/release/triet run examples/enumerate.tri
+./target/release/triet run examples/nullable.tri
+./target/release/triet run examples/while_polling.tri
 ```
 
-Tổng 7 demo programs thực thi thành công. 498 tests pass workspace-wide.
+Tổng 9 demo programs thực thi thành công. 506 tests pass workspace-wide.
 
 ## Triết lý thiết kế
 
@@ -70,7 +72,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test               # run all tests (498 in v0.1)
+cargo test               # run all tests (506 in v0.1)
 cargo clippy             # lint
 cargo fmt                # format
 ```
