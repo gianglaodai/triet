@@ -913,14 +913,16 @@ p implies q implies r         // = p implies (q implies r) (right-assoc)
 
 ---
 
-## 13. Open issues (cần quyết trước khi implement)
+## 13. Open issues — đã quyết định
 
-Tất cả 5 open issues của bản trước đã được giải quyết. Open issues mới phát sinh ở v0.1:
+Cả 4 open issue của bản trước đã có ADR riêng trong `docs/decisions/`. Tóm tắt:
 
-1. **Memory layout của `T?`** — dùng discriminator trit/byte riêng (đơn giản, +1 trit/value) hay sentinel value (compact nhưng phức tạp với type không có "unused" representation)? Hiện thiên về discriminator.
-2. **F-string format spec** — cú pháp `{val:#.2}` lấy từ Python/Rust hay đơn giản hóa? Cần đặc tả khi implement.
-3. **Iterator protocol** — trait `Iterator` cần thiết kế cho `for` loop. v0.1 có thể hardcode cho range và một số collection cơ bản.
-4. **String multi-line indent stripping** — `"""...."""` có nên strip indentation chung như Java text blocks không?
+1. **Memory layout của `T?`** — discriminator 1 trit (không sentinel). [ADR 0001](docs/decisions/0001-nullable-memory-layout.md)
+2. **F-string format spec** — subset của Rust format spec (`{}`, `{:width}`, `{:0width}`, `{:.precision}`); không alignment chars / hex / oct / bin / locale. [ADR 0002](docs/decisions/0002-fstring-format-spec.md)
+3. **Iterator protocol** — trait `Iterator<T>` Rust/Mojo-style với `next() -> T?`; user-extensible từ v0.2. [ADR 0003](docs/decisions/0003-iterator-protocol.md)
+4. **String multi-line indent** — strip common leading whitespace Java/Kotlin-style, closing-quote quyết định strip depth, tab+space mix là lỗi. [ADR 0004](docs/decisions/0004-multiline-string-indent.md)
+
+Open issues mới sẽ append phía dưới. Hiện tại: trống.
 
 ---
 
