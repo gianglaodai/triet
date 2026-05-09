@@ -47,12 +47,25 @@ imports, Java JPMS-aligned `module` declarations.
 
   **Sub-tasks (per-step commits):**
 
-  - [x] **#36.1** — Scaffold `triet-modules` crate _(uncommitted; staged on working tree)_
+  - [x] **#36.1** — Scaffold `triet-modules` crate — commit `35dc88f`
     - Types: `ModulePath`, `AbsolutePath`, `ModuleId`, `Module`, `ResolvedProgram`
     - `LoaderError` enum with E2100–E2106 + miette diagnostics
     - Synthetic stdlib registry (crate-private, used by #36.4)
     - 19 unit tests, clippy clean
-  - [ ] **#36.2** — File loader: walk `module foo` decls, resolve `foo.tri`/`foo/foo.tri`, recurse inline; backward-compat single-file mode; `load_program_from_source` for tests/REPL
+  - [x] **#36.2** — File loader _(uncommitted)_
+    - Refactored `Module` / `ResolvedProgram` to multi-arena shape: one
+      arena per parsed file, inline submodules share parent arena
+      (avoids cross-file ID remapping)
+    - `load_program(&Path)`: read root, recurse on `module foo` decls,
+      resolve `foo.tri` (flat) → `foo/foo.tri` (nested fallback);
+      children of `foo` searched in `<dir>/foo/` regardless of layout
+    - `load_program_from_source(&str)`: in-memory mode; rejects external
+      `module` decls with `FileNotFound` (no filesystem context)
+    - Inline modules nested arbitrarily; external children of inline
+      parents work iff parent has filesystem context
+    - 15 new tests (in-memory + tempfile-driven filesystem) — covers
+      empty root, function-only, single inline, nested inline, deep
+      filesystem tree, missing file, parse error attribution, IO error
   - [ ] **#36.3** — Cycle detection (E2100): DFS coloring on import graph, emit cycle trace `foo → bar → baz → foo` per ADR-0005
   - [ ] **#36.4** — Name resolution + visibility check: rewrite `from X import Y` to absolute, bind into module scope, validate `public`/`public(package)`/private; bind synthetic stdlib exports
   - [ ] **#36.5** — Typecheck integration: `check(&ResolvedProgram)` per-module with bindings, cross-module type lookup via absolute path

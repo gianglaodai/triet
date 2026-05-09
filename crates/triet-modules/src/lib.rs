@@ -30,6 +30,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 mod error;
+mod loader;
 mod module;
 mod path;
 mod stdlib;
@@ -37,7 +38,7 @@ mod stdlib;
 use std::path::Path;
 
 pub use error::LoaderError;
-pub use module::{Module, ModuleId, ResolvedProgram};
+pub use module::{ArenaId, Module, ModuleId, ResolvedProgram};
 pub use path::{AbsolutePath, ModulePath};
 
 /// Load a Triết program starting from `root_path`.
@@ -54,8 +55,7 @@ pub use path::{AbsolutePath, ModulePath};
 /// loader accumulates errors across modules where possible so the user
 /// sees the full failure surface in one run.
 pub fn load_program(root_path: &Path) -> Result<ResolvedProgram, Vec<LoaderError>> {
-    let _ = root_path;
-    todo!("file loader — implemented in v0.2.x.6 step #36.2")
+    loader::load_filesystem(root_path)
 }
 
 /// Load a single-file program directly from source text — no
@@ -70,6 +70,5 @@ pub fn load_program(root_path: &Path) -> Result<ResolvedProgram, Vec<LoaderError
 ///
 /// Same error semantics as [`load_program`].
 pub fn load_program_from_source(source: &str) -> Result<ResolvedProgram, Vec<LoaderError>> {
-    let _ = source;
-    todo!("file loader — implemented in v0.2.x.6 step #36.2")
+    loader::load_in_memory(source)
 }

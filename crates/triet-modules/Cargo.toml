@@ -17,3 +17,6 @@ triet-parser.workspace = true
 triet-lexer.workspace = true
 thiserror.workspace = true
 miette.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
