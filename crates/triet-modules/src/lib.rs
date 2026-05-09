@@ -34,6 +34,7 @@ mod error;
 mod loader;
 mod module;
 mod path;
+mod resolver;
 mod stdlib;
 
 use std::path::Path;

@@ -26,6 +26,7 @@ use crate::{
     error::LoaderError,
     module::{ArenaId, Module, ModuleId, ResolvedProgram},
     path::ModulePath,
+    resolver::resolve_names,
 };
 
 /// Filesystem-driven entry point. See [`crate::load_program`].
@@ -93,6 +94,17 @@ impl LoaderState {
         // succeeded. Cycle errors are appended to any existing errors.
         let cycle_errors = detect_cycles(&self.program);
         self.errors.extend(cycle_errors);
+
+        // If there are load/cycle errors, bail before name resolution
+        // — resolving imports in a broken program is meaningless.
+        if !self.errors.is_empty() {
+            return Err(self.errors);
+        }
+
+        // Phase 3: Name resolution — bind definitions, resolve imports,
+        // validate visibility. Runs only on cycle-free programs.
+        let resolve_errors = resolve_names(&mut self.program);
+        self.errors.extend(resolve_errors);
 
         if self.errors.is_empty() {
             Ok(self.program)

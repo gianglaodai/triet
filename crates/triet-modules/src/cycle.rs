@@ -173,8 +173,18 @@ fn dfs(
                 if edge.target.len() > 1 {
                     if let Some(parent) = edge.target.parent() {
                         match path_index.get(&parent) {
-                            Some(&id) => id,
-                            None => continue, // unresolved — #36.4 catches this
+                            Some(&id) => {
+                                // If fallback resolves to the same
+                                // module, it's not a real dependency
+                                // edge — skip. E.g. `from crate.X
+                                // import Y` in root falls back to
+                                // `crate` = self.
+                                if id == node {
+                                    continue;
+                                }
+                                id
+                            }
+                            None => continue, // unresolved — resolver catches this
                         }
                     } else {
                         continue;
@@ -379,10 +389,10 @@ mod tests {
                 "main.tri",
                 "module a\nmodule b\nmodule c\nmodule d",
             ),
-            ("a.tri", "from crate.b import x\nfrom crate.c import y"),
-            ("b.tri", "from crate.d import z"),
-            ("c.tri", "from crate.d import w"),
-            ("d.tri", "function leaf() = 0"),
+            ("a.tri", "from crate.b import fb\nfrom crate.c import fc"),
+            ("b.tri", "public function fb() = 1\nfrom crate.d import fd"),
+            ("c.tri", "public function fc() = 2\nfrom crate.d import fd"),
+            ("d.tri", "public function fd() = 0"),
         ]);
         assert!(
             errors.is_empty(),
