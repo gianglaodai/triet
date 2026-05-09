@@ -66,7 +66,7 @@ imports, Java JPMS-aligned `module` declarations.
     - 15 new tests (in-memory + tempfile-driven filesystem) — covers
       empty root, function-only, single inline, nested inline, deep
       filesystem tree, missing file, parse error attribution, IO error
-  - [ ] **#36.3** — Cycle detection (E2100): DFS coloring on import graph, emit cycle trace `foo → bar → baz → foo` per ADR-0005
+  - [x] **#36.3** — Cycle detection (E2100): DFS coloring on import graph, emit cycle trace `foo → bar → baz → foo` per ADR-0005 — commit `28b0ca3`
   - [ ] **#36.4** — Name resolution + visibility check: rewrite `from X import Y` to absolute, bind into module scope, validate `public`/`public(package)`/private; bind synthetic stdlib exports
   - [ ] **#36.5** — Typecheck integration: `check(&ResolvedProgram)` per-module with bindings, cross-module type lookup via absolute path
   - [ ] **#36.6** — Interpreter integration: `run(&ResolvedProgram)`, main lookup at root, cross-module call via per-module bindings
