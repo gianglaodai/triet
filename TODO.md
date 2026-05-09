@@ -70,7 +70,7 @@ imports, Java JPMS-aligned `module` declarations.
   - [x] **#36.4** — Name resolution + visibility check: rewrite `from X import Y` to absolute, bind into module scope, validate `public`/`public(package)`/private; bind synthetic stdlib exports — commit `135342c`
   - [x] **#36.5** — Typecheck integration: `check_resolved(&ResolvedProgram)` per-module with bindings, cross-module type lookup via absolute path — commit `075db7d`
   - [x] **#36.6** — Interpreter integration: `run(&ResolvedProgram)`, main lookup at root, cross-module call via per-module bindings — commit `9b0687c`
-  - [ ] **#36.7** — CLI rewire (`triet run`/`check` through loader, single-file backward-compat) + integration tests (multi-file, cycle, visibility violation, file not found, reserved namespace)
+  - [x] **#36.7** — CLI rewire (`triet run`/`check` through loader, single-file backward-compat) + integration tests (multi-file, cycle, visibility violation, file not found, reserved namespace) — commit `5634613`
 
 ### Pending
 
