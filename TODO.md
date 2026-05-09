@@ -71,14 +71,13 @@ imports, Java JPMS-aligned `module` declarations.
   - [x] **#36.5** — Typecheck integration: `check_resolved(&ResolvedProgram)` per-module with bindings, cross-module type lookup via absolute path — commit `075db7d`
   - [x] **#36.6** — Interpreter integration: `run(&ResolvedProgram)`, main lookup at root, cross-module call via per-module bindings — commit `9b0687c`
   - [x] **#36.7** — CLI rewire (`triet run`/`check` through loader, single-file backward-compat) + integration tests (multi-file, cycle, visibility violation, file not found, reserved namespace) — commit `5634613`
+  - [x] **v0.2.x.7** — Stdlib reorganize as nested module structure — commit `8c115e0`
+    - Convert flat `std.io.println` baseline into proper modules with `module` declarations under a `std/` directory.
+    - Targets: `std.io`, `std.text`, `std.assert`.
+    - Update prelude binding in `triet-typecheck` and `triet-interpreter`.
 
 ### Pending
 
-- [ ] **v0.2.x.7** — Stdlib reorganize as nested module structure
-  - Convert flat `std.io.println` baseline into proper modules with
-    `module` declarations under a `std/` directory.
-  - Targets: `std.io` (print/println/read_line), `std.text` (len/concat/from_integer), `std.assert` (assert).
-  - Update prelude binding in `triet-typecheck` and `triet-interpreter`.
 
 - [ ] **v0.2.x.8** — Demo lớn + snapshot tests for module system
   - One demo program (~500 lines) split across 5+ modules — exercises

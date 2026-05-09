@@ -6,11 +6,19 @@ use crate::types::Type;
 
 /// A stack of name → binding frames. Entering a block / function pushes
 /// a frame; leaving pops it. Lookup walks from innermost to outermost.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TypeEnvironment {
     /// The frame stack. Accessible to the checker for enum-variant
     /// scanning; prefer `lookup()` / `declare()` for normal use.
     pub(crate) frames: Vec<Frame>,
+}
+
+impl Default for TypeEnvironment {
+    fn default() -> Self {
+        Self {
+            frames: vec![Frame::default()],
+        }
+    }
 }
 
 /// A type-level binding: the type plus whether reassignment is allowed.
@@ -33,9 +41,7 @@ impl TypeEnvironment {
     /// Triết prelude (`print`, `println`, `to_string`, ...) pre-bound.
     #[must_use]
     pub fn with_prelude() -> Self {
-        let mut env = Self {
-            frames: vec![Frame::default()],
-        };
+        let mut env = Self::default();
         bind_prelude(&mut env);
         env
     }

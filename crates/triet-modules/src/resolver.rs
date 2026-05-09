@@ -33,7 +33,6 @@ use crate::{
     error::LoaderError,
     module::{ModuleId, ResolvedProgram},
     path::{AbsolutePath, ModulePath},
-    stdlib,
 };
 
 /// Run name resolution on every module in the program.
@@ -223,16 +222,7 @@ fn resolve_whole_import(
         let item_name = resolved.last().unwrap();
         let module_path = ModulePath::new(module_segments.to_vec());
 
-        // Check stdlib first.
-        if module_path.is_reserved_root()
-            && module_path.root() == Some("std")
-            && stdlib::stdlib_has_export(&module_path, item_name)
-        {
-            let abs_path = AbsolutePath::new(module_path, item_name.clone());
-            let bind_name = segments.last().unwrap().clone();
-            program.modules[importer_id.raw()].bindings.insert(bind_name, abs_path);
-            return;
-        }
+
 
         // Check user module.
         if let Some(target_mod_id) = program.find_module(&module_path) {
@@ -289,24 +279,7 @@ fn resolve_from_import(
 
     let target_path = ModulePath::new(resolved);
 
-    // Stdlib path?
-    if target_path.root() == Some("std")
-        && stdlib::is_known_stdlib_module(&target_path)
-    {
-        for (name, alias) in names {
-            if stdlib::stdlib_has_export(&target_path, name) {
-                let abs_path = AbsolutePath::new(target_path.clone(), name.clone());
-                let bind_name = alias.as_ref().unwrap_or(name).clone();
-                program.modules[importer_id.raw()].bindings.insert(bind_name, abs_path);
-            } else {
-                errors.push(LoaderError::UnresolvedImport {
-                    path: format!("{}.{}", source.join("."), name),
-                    span: span.clone(),
-                });
-            }
-        }
-        return;
-    }
+
 
     // User module.
     let Some(target_mod_id) = program.find_module(&target_path) else {

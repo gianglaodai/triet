@@ -9,7 +9,22 @@ use std::io::{self, BufRead, Write};
 
 use crate::{error::RuntimeError, value::Value};
 
-/// Register every built-in into the value environment.
+/// Map a stdlib module path and function name to its builtin implementation.
+pub(crate) fn get_builtin(module: &triet_modules::ModulePath, name: &str) -> Option<crate::value::BuiltinFn> {
+    let module_str = module.to_string();
+    match (module_str.as_str(), name) {
+        ("std.io", "print") => Some(builtin_print),
+        ("std.io", "println") => Some(builtin_println),
+        ("std.io", "read_line") => Some(builtin_read_line),
+        ("std.text", "len") => Some(builtin_length),
+        // other to_string conversions if needed in std.text
+        ("std.assert", "assert") => Some(builtin_assert),
+        ("std.assert", "assert_eq") => Some(builtin_assert_eq),
+        _ => None,
+    }
+}
+
+/// Legacy installer for the single-file runtime (v0.1.x fallback).
 pub(crate) fn install(env: &mut crate::env::ValueEnvironment) {
     env.declare("print", Value::Builtin(builtin_print));
     env.declare("println", Value::Builtin(builtin_println));
@@ -82,5 +97,44 @@ fn builtin_length(args: &[Value]) -> Result<Value, RuntimeError> {
             message: format!("length expected String, found {other}"),
             span: 0..0,
         }),
+    }
+}
+
+fn builtin_assert(args: &[Value]) -> Result<Value, RuntimeError> {
+    let value = args.first().ok_or(RuntimeError::WrongArity {
+        expected: 1,
+        found: 0,
+        span: 0..0,
+    })?;
+    
+    if let Value::Trilean(triet_logic::Trilean::True) = value {
+        Ok(Value::Unit)
+    } else {
+        Err(RuntimeError::Panic {
+            message: format!("assertion failed: expected True, got {value}"),
+            span: 0..0,
+        })
+    }
+}
+
+fn builtin_assert_eq(args: &[Value]) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(RuntimeError::WrongArity {
+            expected: 2,
+            found: args.len(),
+            span: 0..0,
+        });
+    }
+    
+    let left = &args[0];
+    let right = &args[1];
+    
+    if left == right {
+        Ok(Value::Unit)
+    } else {
+        Err(RuntimeError::Panic {
+            message: format!("assertion failed: {left} != {right}"),
+            span: 0..0,
+        })
     }
 }

@@ -53,10 +53,23 @@ fn evaluate_all_globals(
         for item in &module.items {
             if let Item::Function(def) = &item.node {
                 let path = AbsolutePath::new(module.path.clone(), def.name.clone());
-                let value = Value::Function(Rc::new(FunctionRef {
-                    def: def.clone(),
-                    module_id: Some(mod_id),
-                }));
+                
+                let value = if path.module_path().root() == Some("std") {
+                    if let Some(builtin) = crate::builtins::get_builtin(&module.path, &def.name) {
+                        Value::Builtin(builtin)
+                    } else {
+                        Value::Function(Rc::new(FunctionRef {
+                            def: def.clone(),
+                            module_id: Some(mod_id),
+                        }))
+                    }
+                } else {
+                    Value::Function(Rc::new(FunctionRef {
+                        def: def.clone(),
+                        module_id: Some(mod_id),
+                    }))
+                };
+                
                 globals.insert(path, value);
             }
         }

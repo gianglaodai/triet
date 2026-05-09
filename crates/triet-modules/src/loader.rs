@@ -47,6 +47,7 @@ pub(crate) fn load_filesystem(root_path: &Path) -> Result<ResolvedProgram, Vec<L
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
 
     let mut state = LoaderState::new();
+    state.load_stdlib();
     state.load_from_source(
         &ModulePath::crate_root(),
         Some(root_path.to_path_buf()),
@@ -60,6 +61,7 @@ pub(crate) fn load_filesystem(root_path: &Path) -> Result<ResolvedProgram, Vec<L
 /// In-memory entry point. See [`crate::load_program_from_source`].
 pub(crate) fn load_in_memory(source: &str) -> Result<ResolvedProgram, Vec<LoaderError>> {
     let mut state = LoaderState::new();
+    state.load_stdlib();
     state.load_from_source(
         &ModulePath::crate_root(),
         None,
@@ -111,6 +113,13 @@ impl LoaderState {
         } else {
             Err(self.errors)
         }
+    }
+
+    /// Load the synthetic stdlib tree into the program.
+    fn load_stdlib(&mut self) {
+        let std_path = ModulePath::new(vec!["std".to_owned()]);
+        let source = "module io\nmodule text\nmodule assert";
+        self.load_from_source(&std_path, None, None, source, None);
     }
 
     /// Parse `source`, allocate a fresh arena, slot a [`Module`] into
@@ -280,7 +289,29 @@ impl LoaderState {
                 inline_items,
             )),
             ModuleContent::External => {
-                if let Some(directory) = parent_search_dir {
+                if child_path.root() == Some("std") {
+                    let source = match decl.name.as_str() {
+                        "io" => include_str!("std/io.tri"),
+                        "text" => include_str!("std/text.tri"),
+                        "assert" => include_str!("std/assert.tri"),
+                        _ => {
+                            self.errors.push(LoaderError::FileNotFound {
+                                module_name: decl.name,
+                                searched_primary: format!("(embedded stdlib {child_path})"),
+                                searched_nested: String::new(),
+                                span: decl_span,
+                            });
+                            return None;
+                        }
+                    };
+                    self.load_from_source(
+                        &child_path,
+                        None,
+                        None, // stdlib has no filesystem children
+                        source,
+                        Some(parent_id),
+                    )
+                } else if let Some(directory) = parent_search_dir {
                     self.resolve_external(
                         &child_path,
                         &decl.name,
@@ -365,7 +396,7 @@ mod tests {
     #[test]
     fn empty_root_creates_one_module() {
         let result = load_in_memory("").unwrap();
-        assert_eq!(result.modules.len(), 1);
+        assert_eq!(result.modules.len(), 5);
         assert_eq!(result.root_module().path, ModulePath::crate_root());
         assert!(result.root_module().items.is_empty());
         assert!(result.root_module().children.is_empty());
@@ -375,7 +406,7 @@ mod tests {
     fn root_with_function_only_keeps_item() {
         let source = "function main() { }";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), 1);
+        assert_eq!(result.modules.len(), 5);
         assert_eq!(result.root_module().items.len(), 1);
         assert!(result.root_module().children.is_empty());
     }
@@ -388,7 +419,7 @@ mod tests {
             }
         ";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), 2);
+        assert_eq!(result.modules.len(), 6);
 
         let root = result.root_module();
         assert!(root.items.is_empty(), "module decl should be lifted out");
@@ -413,7 +444,7 @@ mod tests {
             }
         ";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), 3);
+        assert_eq!(result.modules.len(), 7);
 
         let outer_id = result.root_module().children[0];
         let outer = result.module(outer_id);
@@ -463,7 +494,7 @@ mod tests {
         let helper = result.module(root.children[0]);
         assert_eq!(root.arena_id, helper.arena_id);
         // Single arena allocated for the whole inline tree.
-        assert_eq!(result.arenas.len(), 1);
+        assert_eq!(result.arenas.len(), 5);
     }
 
     // ── Filesystem tests ───────────────────────────────────────────
@@ -496,7 +527,7 @@ mod tests {
     #[test]
     fn filesystem_root_with_no_modules() {
         let result = load_files(&[("main.tri", "function main() { }")]).unwrap();
-        assert_eq!(result.modules.len(), 1);
+        assert_eq!(result.modules.len(), 5);
         assert_eq!(result.root_module().items.len(), 1);
         assert!(result.root_module().source_path.is_some());
     }
@@ -508,13 +539,13 @@ mod tests {
             ("helper.tri", "public function aid() = 7"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), 2);
+        assert_eq!(result.modules.len(), 6);
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.path.to_string(), "crate.helper");
         assert_eq!(helper.items.len(), 1);
         // External child gets its own arena.
         assert_ne!(helper.arena_id, result.root_module().arena_id);
-        assert_eq!(result.arenas.len(), 2);
+        assert_eq!(result.arenas.len(), 6);
     }
 
     #[test]
@@ -525,7 +556,7 @@ mod tests {
             ("helper/inner.tri", "public function ping() = 1"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), 3);
+        assert_eq!(result.modules.len(), 7);
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.children.len(), 1);
         let inner = result.module(helper.children[0]);
@@ -563,7 +594,7 @@ mod tests {
             ("a/b/c/c.tri", "function leaf() = 0"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), 4);
+        assert_eq!(result.modules.len(), 8);
         let leaf = result
             .find_module(&ModulePath::new(
                 ["crate", "a", "b", "c"]

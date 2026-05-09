@@ -57,7 +57,7 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
         };
 
         // Pre-seed environment with imported types.
-        let mut env = TypeEnvironment::with_prelude();
+        let mut env = TypeEnvironment::default();
         for (local_name, abs_path) in &module.bindings {
             let source_path = abs_path.module_path();
             let item_name = abs_path.name();
@@ -77,13 +77,6 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
                     env.declare(local_name, ty.clone());
                     continue;
                 }
-            }
-
-            // Try stdlib.
-            if source_path.root() == Some("std")
-                && let Some(ty) = stdlib_type_for(source_path, item_name)
-            {
-                env.declare(local_name, ty);
             }
         }
 
@@ -203,36 +196,6 @@ fn resolve_type_expr(arena: &triet_syntax::Arena, id: triet_syntax::TypeId) -> T
     }
 }
 
-/// Map stdlib module + item name to a function type.
-fn stdlib_type_for(
-    module_path: &triet_modules::ModulePath,
-    item_name: &str,
-) -> Option<Type> {
-    let module_str = module_path.to_string();
-    match (module_str.as_str(), item_name) {
-        ("std.io", "print" | "println") => Some(Type::Function {
-            parameters: vec![Type::String],
-            return_type: Box::new(Type::Unit),
-        }),
-        ("std.io", "read_line") => Some(Type::Function {
-            parameters: Vec::new(),
-            return_type: Box::new(Type::String),
-        }),
-        ("std.text", "len") => Some(Type::Function {
-            parameters: vec![Type::String],
-            return_type: Box::new(Type::Integer),
-        }),
-        ("std.text", "to_upper" | "to_lower") => Some(Type::Function {
-            parameters: vec![Type::String],
-            return_type: Box::new(Type::String),
-        }),
-        ("std.assert", "assert_eq") => Some(Type::Function {
-            parameters: vec![Type::Unknown, Type::Unknown],
-            return_type: Box::new(Type::Unit),
-        }),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {

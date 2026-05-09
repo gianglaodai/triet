@@ -1,0 +1,3 @@
+public function len(text: String) -> Integer = 0
+public function concat(a: String, b: String) -> String = ""
+public function from_integer(value: Integer) -> String = ""
