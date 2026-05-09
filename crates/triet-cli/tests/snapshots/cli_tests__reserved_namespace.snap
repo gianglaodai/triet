@@ -1,0 +1,9 @@
+---
+source: crates/triet-cli/tests/cli_tests.rs
+expression: stderr
+---
+triet::modules::E2102
+
+  × namespace `sys` is reserved and not yet usable
+  help: `sys`, `dev`, `usr` are reserved per ADR-0005 for v0.6 capability
+        namespaces; use `std` for stdlib in v0.2.x

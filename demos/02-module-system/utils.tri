@@ -1,0 +1,56 @@
+// Utility functions and nested inline module.
+// Demonstrates inline module declarations and `public` / private
+// visibility within the same file.
+
+module print;
+
+// ── Inline submodule: advanced helpers ─────────────────────────────
+
+module advanced {
+    // Cube function: x³
+    public function cube(x: Integer) -> Integer = x * x * x
+
+    // Absolute value for Trilean: maps true→true, false→true, unknown→unknown.
+    public function trilean_abs(a: Trilean) -> Trilean =
+        if a == unknown {
+            unknown
+        } else {
+            true
+        }
+
+    // Check if a Trilean value is "definite" (not unknown).
+    public function is_definite(a: Trilean) -> Trilean =
+        if a == unknown {
+            false
+        } else {
+            true
+        }
+
+    // Safe division: returns 0 if divisor is 0 (ternary null-guard).
+    public function safe_divide(dividend: Integer, divisor: Integer) -> Integer =
+        if divisor == 0 {
+            0
+        } else {
+            dividend / divisor
+        }
+}
+
+// ── Module-level utility functions ─────────────────────────────────
+
+// Identity on Trilean — useful as a pass-through default.
+public function identity(a: Trilean) -> Trilean = a
+
+// Repeat a Trilean value N times via the ring counter pattern.
+// Advances `start` by `steps` steps in the false→unknown→true ring.
+public function step_ring(start: Trilean, steps: Integer) -> Trilean = {
+    let remainder = steps %% 3
+    if remainder == 0 {
+        start
+    } else if start == false {
+        if remainder == 1 { unknown } else { true }
+    } else if start == unknown {
+        if remainder == 1 { true } else { false }
+    } else {
+        if remainder == 1 { false } else { unknown }
+    }
+}

@@ -56,8 +56,16 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
             items: module.items.clone(),
         };
 
-        // Pre-seed environment with imported types.
-        let mut env = TypeEnvironment::default();
+        // Pre-seed the root module's environment with the standard
+        // prelude (print, println, to_string, etc.) for backward-
+        // compat with v0.1.x single-file programs. Child modules and
+        // stdlib modules do not get the prelude — they must use
+        // explicit `from std.io import …` declarations.
+        let mut env = if idx == program.root.raw() {
+            TypeEnvironment::with_prelude()
+        } else {
+            TypeEnvironment::default()
+        };
         for (local_name, abs_path) in &module.bindings {
             let source_path = abs_path.module_path();
             let item_name = abs_path.name();
@@ -75,7 +83,6 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
                 let source_types = &module_types[source_id.raw()];
                 if let Some((_, ty)) = source_types.iter().find(|(n, _)| n == item_name) {
                     env.declare(local_name, ty.clone());
-                    continue;
                 }
             }
         }

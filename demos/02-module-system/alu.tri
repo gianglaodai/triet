@@ -1,0 +1,83 @@
+// Ternary ALU operations built on top of the logic gate library.
+// Implements half-adder, full-adder, comparator, multiplexer,
+// increment/decrement (ring counter), and a 3-trit ripple-carry adder.
+
+from crate.gates import and_gate, or_gate, xor_gate, not_gate, majority
+
+// ── Half adder ────────────────────────────────────────────────────
+
+public function half_sum(a: Trilean, b: Trilean) -> Trilean = xor_gate(a, b)
+
+public function half_carry(a: Trilean, b: Trilean) -> Trilean = and_gate(a, b)
+
+// ── Full adder ────────────────────────────────────────────────────
+
+public function full_sum(a: Trilean, b: Trilean, carry_in: Trilean) -> Trilean =
+    xor_gate(xor_gate(a, b), carry_in)
+
+public function full_carry(a: Trilean, b: Trilean, carry_in: Trilean) -> Trilean =
+    majority(a, b, carry_in)
+
+// ── Ternary ring counter (increment / decrement) ──────────────────
+// In balanced ternary, the ordering is: false → unknown → true
+
+public function increment(a: Trilean) -> Trilean =
+    if a == false {
+        unknown
+    } else if a == unknown {
+        true
+    } else {
+        false
+    }
+
+public function decrement(a: Trilean) -> Trilean =
+    if a == true {
+        unknown
+    } else if a == unknown {
+        false
+    } else {
+        true
+    }
+
+// ── Comparator ────────────────────────────────────────────────────
+
+// Returns true when a and b are logically equivalent.
+public function tri_eq(a: Trilean, b: Trilean) -> Trilean = not (a xor b)
+
+// Returns true when a > b in the truth ordering (false < unknown < true).
+public function tri_gt(a: Trilean, b: Trilean) -> Trilean =
+    if a == b {
+        false
+    } else if a == true {
+        true
+    } else if b == true {
+        false
+    } else if a == unknown {
+        true
+    } else {
+        false
+    }
+
+// ── 4-to-1 multiplexer ────────────────────────────────────────────
+
+// Select one of four inputs using two select signals.
+public function mux4(
+    s1: Trilean, s0: Trilean,
+    i00: Trilean, i01: Trilean, i10: Trilean, i11: Trilean
+) -> Trilean =
+    if s1 == false {
+        if s0 == false { i00 } else { i01 }
+    } else if s1 == unknown {
+        unknown
+    } else {
+        if s0 == false { i10 } else { i11 }
+    }
+
+// ── 3-trit ripple-carry adder ─────────────────────────────────────
+// Adds two 3-trit arrays (low, mid, high) with carry propagation.
+// Returns (sum_low, sum_mid, sum_high, carry_out).
+
+public function ripple_add3(
+    a0: Trilean, a1: Trilean, a2: Trilean,
+    b0: Trilean, b1: Trilean, b2: Trilean
+) -> Trilean = full_sum(a0, b0, full_carry(a1, b1, full_carry(a2, b2, false)))

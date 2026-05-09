@@ -1,0 +1,51 @@
+// Ternary logic gate library — building blocks for a balanced-ternary
+// ALU. All gates operate on Trilean with Łukasiewicz Ł3 semantics
+// by default; Kleene K3 variants are provided where they differ.
+
+// ── Basic Łukasiewicz gates ───────────────────────────────────────
+
+public function and_gate(a: Trilean, b: Trilean) -> Trilean = a and b
+
+public function or_gate(a: Trilean, b: Trilean) -> Trilean = a or b
+
+public function xor_gate(a: Trilean, b: Trilean) -> Trilean = a xor b
+
+public function not_gate(a: Trilean) -> Trilean = not a
+
+public function implies_gate(a: Trilean, b: Trilean) -> Trilean = a implies b
+
+// ── Compound gates ────────────────────────────────────────────────
+
+public function nand_gate(a: Trilean, b: Trilean) -> Trilean = not (a and b)
+
+public function nor_gate(a: Trilean, b: Trilean) -> Trilean = not (a or b)
+
+public function xnor_gate(a: Trilean, b: Trilean) -> Trilean = not (a xor b)
+
+// ── Kleene K3 variants ────────────────────────────────────────────
+
+public function kleene_implies_gate(a: Trilean, b: Trilean) -> Trilean = a kleene_implies b
+
+public function kleene_xor_gate(a: Trilean, b: Trilean) -> Trilean = a kleene_xor b
+
+public function kleene_iff_gate(a: Trilean, b: Trilean) -> Trilean = a kleene_iff b
+
+// ── Multi-input gates ─────────────────────────────────────────────
+
+// Majority gate: true when at least two of three inputs are true.
+// In Łukasiewicz Ł3, the result resolves toward the majority of
+// known inputs.
+public function majority(a: Trilean, b: Trilean, c: Trilean) -> Trilean =
+    (a and b) or (b and c) or (a and c)
+
+// Consensus gate: returns the value that at least two inputs agree
+// on. This matches majority for Trilean and is the standard
+// ternary consensus operation.
+public function consensus(a: Trilean, b: Trilean, c: Trilean) -> Trilean =
+    (a and b) or (b and c) or (a and c)
+
+// 2-to-1 multiplexer: selects `then_branch` when `condition` is true,
+// `else_branch` when false. When `condition` is unknown, the output
+// is the conservative meet of both branches (their AND).
+public function mux2(condition: Trilean, then_branch: Trilean, else_branch: Trilean) -> Trilean =
+    (condition and then_branch) or (not condition and else_branch)

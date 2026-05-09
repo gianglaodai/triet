@@ -1,0 +1,105 @@
+// Memory elements for the ternary ALU. Implements:
+// - Register: single-Trilean storage
+// - Latch: register with enable signal
+// - Counter: ring counter with configurable step direction
+// - Bank: a 3-register file indexed by integer
+
+// ── Register ──────────────────────────────────────────────────────
+
+public struct Register {
+    value: Trilean
+}
+
+public function new_register(init: Trilean) -> Register = Register { value: init }
+
+public function read(reg: Register) -> Trilean = reg.value
+
+public function write(reg: Register, new_value: Trilean) -> Register =
+    Register { value: new_value }
+
+// ── Latch (register with enable) ──────────────────────────────────
+
+public struct Latch {
+    stored: Trilean,
+    enabled: Trilean
+}
+
+public function new_latch(init: Trilean) -> Latch =
+    Latch { stored: init, enabled: false }
+
+public function latch_read(lt: Latch) -> Trilean = lt.stored
+
+// When enabled, latch captures the input value; otherwise holds.
+public function latch_write(lt: Latch, input: Trilean, enable: Trilean) -> Latch =
+    if enable == true {
+        Latch { stored: input, enabled: true }
+    } else if enable == false {
+        Latch { stored: lt.stored, enabled: false }
+    } else {
+        Latch { stored: lt.stored, enabled: false }
+    }
+
+public function latch_enable(lt: Latch) -> Latch =
+    Latch { stored: lt.stored, enabled: true }
+
+public function latch_disable(lt: Latch) -> Latch =
+    Latch { stored: lt.stored, enabled: false }
+
+// ── Counter (ring counter through Trilean values) ─────────────────
+
+public struct Counter {
+    value: Trilean,
+    max: Integer,
+    count: Integer
+}
+
+public function new_counter(init: Trilean, max: Integer) -> Counter =
+    Counter { value: init, max: max, count: 0 }
+
+public function counter_value(c: Counter) -> Trilean = c.value
+
+// Advance the counter to the next Trilean value in ring order.
+public function tick(c: Counter) -> Counter = {
+    let next = if c.value == false {
+        unknown
+    } else if c.value == unknown {
+        true
+    } else {
+        false
+    }
+    let next_count = c.count + 1
+    Counter { value: next, max: c.max, count: next_count }
+}
+
+// ── Register bank (3-register file) ───────────────────────────────
+
+public struct Bank {
+    reg0: Register,
+    reg1: Register,
+    reg2: Register
+}
+
+public function new_bank() -> Bank =
+    Bank {
+        reg0: new_register(false),
+        reg1: new_register(unknown),
+        reg2: new_register(true)
+    }
+
+public function bank_read(b: Bank, index: Integer) -> Trilean =
+    if index == 0 {
+        read(b.reg0)
+    } else if index == 1 {
+        read(b.reg1)
+    } else {
+        read(b.reg2)
+    }
+
+public function bank_write(b: Bank, index: Integer, value: Trilean) -> Bank =
+    if index == 0 {
+        Bank { reg0: write(b.reg0, value), reg1: b.reg1, reg2: b.reg2 }
+    } else if index == 1 {
+        Bank { reg0: b.reg0, reg1: write(b.reg1, value), reg2: b.reg2 }
+    } else {
+        Bank { reg0: b.reg0, reg1: b.reg1, reg2: write(b.reg2, value) }
+    }

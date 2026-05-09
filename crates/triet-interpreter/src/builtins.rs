@@ -34,6 +34,8 @@ pub(crate) fn install(env: &mut crate::env::ValueEnvironment) {
     env.declare("long_to_string", Value::Builtin(builtin_to_string));
     env.declare("trilean_to_string", Value::Builtin(builtin_to_string));
     env.declare("length", Value::Builtin(builtin_length));
+    env.declare("assert", Value::Builtin(builtin_assert));
+    env.declare("assert_eq", Value::Builtin(builtin_assert_eq));
 }
 
 fn builtin_print(args: &[Value]) -> Result<Value, RuntimeError> {

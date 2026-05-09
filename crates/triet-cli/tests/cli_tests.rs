@@ -14,6 +14,20 @@ fn run_cli(args: &[&str], cwd: &std::path::Path) -> Output {
     cmd.output().expect("failed to execute CLI")
 }
 
+fn run_cli_snapshot(args: &[&str], cwd: &std::path::Path) -> String {
+    let output = run_cli(args, cwd);
+    let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    // Replace the random temp directory path with a stable string
+    let cwd_str = cwd.to_str().unwrap();
+    stderr = stderr.replace(cwd_str, "<TEMP_DIR>");
+    
+    // Replace backslashes with forward slashes for Windows compatibility
+    stderr = stderr.replace('\\', "/");
+    
+    stderr
+}
+
 #[test]
 fn single_file_backward_compat() {
     let temp = TempDir::new().unwrap();
@@ -63,11 +77,8 @@ fn cyclic_import_error() {
         "module a\nfrom crate.a import VALUE\npublic constant VALUE: Integer = 2",
     ).unwrap();
 
-    let output = run_cli(&["check", "a.tri"], temp.path());
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cyclic module dependency"));
-    assert!(stderr.contains("triet::modules::E2100"));
+    let stderr = run_cli_snapshot(&["check", "a.tri"], temp.path());
+    insta::assert_snapshot!(stderr);
 }
 
 #[test]
@@ -79,12 +90,8 @@ fn file_not_found_error() {
         "module missing\nfunction main() -> Integer = 0",
     ).unwrap();
 
-    let output = run_cli(&["check", "main.tri"], temp.path());
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("module file not found"));
-    assert!(stderr.contains("missing.tri"));
-    assert!(stderr.contains("triet::modules::E2101"));
+    let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
+    insta::assert_snapshot!(stderr);
 }
 
 #[test]
@@ -101,11 +108,8 @@ fn visibility_violation() {
         "module secret\nfrom crate.secret import HIDDEN\nfunction main() -> Integer = HIDDEN",
     ).unwrap();
 
-    let output = run_cli(&["check", "main.tri"], temp.path());
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("is not visible from this module"));
-    assert!(stderr.contains("triet::modules::E2103"));
+    let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
+    insta::assert_snapshot!(stderr);
 }
 
 #[test]
@@ -117,10 +121,6 @@ fn reserved_namespace() {
         "from sys.core import system\nfunction main() -> Integer = 0",
     ).unwrap();
 
-    let output = run_cli(&["check", "main.tri"], temp.path());
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("reserved and not yet usable"));
-    assert!(stderr.contains("sys"));
-    assert!(stderr.contains("triet::modules::E2102"));
+    let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
+    insta::assert_snapshot!(stderr);
 }

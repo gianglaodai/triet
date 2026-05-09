@@ -1,0 +1,50 @@
+// Formatting helpers for the ternary ALU demo.
+// Lives in its own file so the module system exercise covers
+// file-bound children of file-bound parents (utils/print.tri).
+
+from std.io import println
+
+// ── Trilean formatting ────────────────────────────────────────────
+
+public function format_trilean(t: Trilean) -> String =
+    if t == true {
+        "T"
+    } else if t == false {
+        "F"
+    } else {
+        "U"
+    }
+
+// Full-word form of a Trilean value.
+public function format_trilean_word(t: Trilean) -> String =
+    if t == true {
+        "true"
+    } else if t == false {
+        "false"
+    } else {
+        "unknown"
+    }
+
+// ── Separators and banners ────────────────────────────────────────
+
+public function separator() = println("----------------------------------------")
+
+public function banner(title: String) = {
+    separator()
+    println(title)
+    separator()
+}
+
+// ── Truth table display ───────────────────────────────────────────
+
+// Print a single truth-table row: | a | b | result |
+public function print_row(a: Trilean, b: Trilean, result: Trilean) =
+    println(f"{format_trilean(a)} {format_trilean(b)} -> {format_trilean(result)}")
+
+// Header for truth table sections.
+public function print_table_header(op_name: String) = {
+    separator()
+    println(op_name)
+    println("a b → out")
+    println("---------")
+}

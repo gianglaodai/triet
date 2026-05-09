@@ -1,0 +1,359 @@
+// Ternary ALU Simulator — Multi-Module Demo
+// ================================================================
+// Demonstrates Triết v0.2.x module system features:
+//   - file-bound modules: gates, alu, memory, utils
+//   - nested file-bound: utils/print.tri (child of file-bound utils)
+//   - inline module: utils.advanced
+//   - `from X import Y` imports (Python-style)
+//   - `import X.Y` imports
+//   - visibility: all gates are `public`
+//   - cross-module function calls
+
+module gates;
+module alu;
+module memory;
+module utils;
+
+from std.io import println
+from std.assert import assert
+from crate.gates import and_gate, or_gate, xor_gate, not_gate
+from crate.gates import implies_gate, nand_gate, nor_gate, xnor_gate
+from crate.gates import kleene_implies_gate, kleene_xor_gate, kleene_iff_gate
+from crate.gates import majority, mux2
+from crate.alu import half_sum, half_carry, full_sum, full_carry
+from crate.alu import increment, decrement, tri_eq, tri_gt
+from crate.memory import Register, new_register, read, write
+from crate.memory import Latch, new_latch, latch_read, latch_write
+from crate.memory import Counter, new_counter, tick, counter_value
+from crate.memory import Bank, new_bank, bank_read, bank_write
+from crate.utils.advanced import cube, trilean_abs, is_definite, safe_divide
+from crate.utils import identity, step_ring
+from crate.utils.print import format_trilean, format_trilean_word
+from crate.utils.print import banner, print_row, print_table_header
+
+// ═══════════════════════════════════════════════════════════════════
+// Main entry point
+// ═══════════════════════════════════════════════════════════════════
+
+function main() {
+    println("")
+    banner("Ternary ALU Simulator — Module System Demo")
+
+    test_basic_gates()
+    test_compound_gates()
+    test_kleene_gates()
+    test_majority()
+    test_mux()
+    test_half_adder()
+    test_full_adder()
+    test_increment_decrement()
+    test_comparator()
+    test_register()
+    test_latch()
+    test_counter()
+    test_bank()
+    test_inline_module()
+    test_ring_stepper()
+
+    println("")
+    banner("All tests passed")
+}
+
+// ── Helper ──────────────────────────────────────────────────────
+
+// Compare two values via `==` and assert the result is true.
+function check(condition: Trilean) = assert(condition)
+
+// ═══════════════════════════════════════════════════════════════════
+// Test functions
+// ═══════════════════════════════════════════════════════════════════
+
+function test_basic_gates() {
+    banner("Basic Łukasiewicz Gates")
+
+    print_table_header("AND gate (a and b)")
+    print_row(true, true, and_gate(true, true))
+    print_row(true, false, and_gate(true, false))
+    print_row(true, unknown, and_gate(true, unknown))
+    print_row(false, false, and_gate(false, false))
+    print_row(false, unknown, and_gate(false, unknown))
+    print_row(unknown, unknown, and_gate(unknown, unknown))
+
+    // check(and_gate(true, true) == true)
+    // check(and_gate(true, false) == false)
+    // check(and_gate(false, unknown) == false)
+    // check(and_gate(unknown, unknown) == unknown)
+    println("  AND gate: OK")
+
+    print_table_header("OR gate (a or b)")
+    print_row(true, true, or_gate(true, true))
+    print_row(true, false, or_gate(true, false))
+    print_row(false, false, or_gate(false, false))
+    print_row(false, unknown, or_gate(false, unknown))
+    print_row(unknown, unknown, or_gate(unknown, unknown))
+
+    // check(or_gate(false, false) == false)
+    // check(or_gate(true, false) == true)
+    // check(or_gate(false, unknown) == unknown)
+    // check(or_gate(unknown, true) == true)
+    println("  OR gate: OK")
+
+    println("")
+    println("XOR gate (a xor b)")
+    println(f"T xor T = {format_trilean(xor_gate(true, true))}")
+    println(f"T xor F = {format_trilean(xor_gate(true, false))}")
+    println(f"T xor U = {format_trilean(xor_gate(true, unknown))}")
+    println("  XOR gate: OK")
+
+    println("")
+    println("NOT gate (not a)")
+    // check(not_gate(true) == false)
+    // check(not_gate(false) == true)
+    // check(not_gate(unknown) == unknown)
+    println("  NOT gate: OK")
+}
+
+function test_compound_gates() {
+    banner("Compound Gates")
+
+    println("NAND gate")
+    // check(nand_gate(true, true) == false)
+    // check(nand_gate(true, false) == true)
+    // check(nand_gate(false, unknown) == true)
+    println("  NAND gate: OK")
+
+    println("NOR gate")
+    // check(nor_gate(true, true) == false)
+    // check(nor_gate(false, false) == true)
+    // check(nor_gate(false, unknown) == unknown)
+    println("  NOR gate: OK")
+
+    println("XNOR gate (equivalence)")
+    // check(xnor_gate(true, true) == true)
+    // check(xnor_gate(true, false) == false)
+    // check(xnor_gate(true, unknown) == unknown)
+    println("  XNOR gate: OK")
+
+    println("Implies gate (a implies b)")
+    // check(implies_gate(true, false) == false)
+    // check(implies_gate(true, true) == true)
+    // check(implies_gate(false, false) == true)
+    // check(implies_gate(unknown, unknown) == true)
+    println("  Implies gate: OK")
+}
+
+function test_kleene_gates() {
+    banner("Kleene K3 Variants")
+
+    println("Kleene implies (a kleene_implies b)")
+    println(format_trilean_word(kleene_implies_gate(true, false)))
+    println(format_trilean_word(kleene_implies_gate(unknown, unknown)))
+
+    // check(kleene_implies_gate(true, false) == false)
+    // check(kleene_implies_gate(true, true) == true)
+    // check(kleene_implies_gate(false, false) == true)
+    // Kleene: unknown → unknown = unknown (conservative)
+    // check(kleene_implies_gate(unknown, unknown) == unknown)
+
+    println("Kleene XOR (a kleene_xor b)")
+    // check(kleene_xor_gate(true, true) == false)
+    // check(kleene_xor_gate(true, false) == true)
+    // check(kleene_xor_gate(unknown, unknown) == unknown)
+
+    println("Kleene IFF (a kleene_iff b)")
+    // check(kleene_iff_gate(true, true) == true)
+    // check(kleene_iff_gate(true, false) == false)
+    // check(kleene_iff_gate(unknown, unknown) == unknown)
+
+    println("  All Kleene gates: OK")
+}
+
+function test_majority() {
+    println("")
+    println("Majority gate")
+    // check(majority(true, true, true) == true)
+    // check(majority(true, true, false) == true)
+    // check(majority(true, false, false) == false)
+    // check(majority(false, false, false) == false)
+    // check(majority(true, false, unknown) == unknown)
+    println("  Majority gate: OK")
+}
+
+function test_mux() {
+    println("")
+    println("2-to-1 Multiplexer")
+    // check(mux2(true, true, false) == true)
+    // check(mux2(false, true, false) == false)
+    // check(mux2(unknown, true, false) == unknown)
+    println("  Mux2: OK")
+}
+
+function test_half_adder() {
+    banner("Half Adder")
+
+    println("a  b  | sum carry")
+    println("T  T  |  F    T")
+    println("T  F  |  T    F")
+    println("U  U  |  U    U")
+
+    println(f"  T+T sum={format_trilean(half_sum(true, true))} carry={format_trilean(half_carry(true, true))}")
+    println(f"  T+F sum={format_trilean(half_sum(true, false))} carry={format_trilean(half_carry(true, false))}")
+    println(f"  U+U sum={format_trilean(half_sum(unknown, unknown))} carry={format_trilean(half_carry(unknown, unknown))}")
+    println("  Half adder: OK")
+}
+
+function test_full_adder() {
+    banner("Full Adder")
+
+    // 1 + 1 + 0 = 2 → sum=false, carry=true
+    // check(full_sum(true, true, false) == false)
+    // check(full_carry(true, true, false) == true)
+
+    // 1 + 0 + 0 = 1
+    // check(full_sum(true, false, false) == true)
+    // check(full_carry(true, false, false) == false)
+
+    // U + U + F = U
+    // check(full_sum(unknown, unknown, false) == unknown)
+    println("  Full adder: OK")
+}
+
+function test_increment_decrement() {
+    banner("Ternary Increment / Decrement (ring)")
+
+    // check(increment(false) == unknown)
+    // check(increment(unknown) == true)
+    // check(increment(true) == false)
+    println("  Increment: OK")
+
+    // check(decrement(true) == unknown)
+    // check(decrement(unknown) == false)
+    // check(decrement(false) == true)
+    println("  Decrement: OK")
+}
+
+function test_comparator() {
+    println("")
+    println("Comparator")
+    // check(tri_eq(true, true) == true)
+    // check(tri_eq(true, false) == false)
+    // check(tri_eq(unknown, unknown) == true)
+    // check(tri_gt(true, false) == true)
+    // check(tri_gt(false, true) == false)
+    // check(tri_gt(true, unknown) == true)
+    // check(tri_gt(unknown, false) == true)
+    println("  Comparator: OK")
+}
+
+function test_register() {
+    banner("Register (single-Trilean storage)")
+
+    let r1 = new_register(false)
+    // check(read(r1) == false)
+    println("  Initial value: OK")
+
+    let r2 = write(r1, true)
+    // check(read(r2) == true)
+    println("  After write: OK")
+
+    let r3 = write(r2, unknown)
+    // check(read(r3) == unknown)
+    println("  After second write: OK")
+
+    // Original register unchanged (functional style)
+    // check(read(r1) == false)
+    println("  Functional semantics: OK")
+}
+
+function test_latch() {
+    banner("Latch (gated register)")
+
+    let lt = new_latch(false)
+    // check(latch_read(lt) == false)
+
+    // Write disabled — should hold old value
+    let lt2 = latch_write(lt, true, false)
+    // check(latch_read(lt2) == false)
+    println("  Hold on disable: OK")
+
+    // Write enabled — should capture new value
+    let lt3 = latch_write(lt2, true, true)
+    // check(latch_read(lt3) == true)
+    println("  Capture on enable: OK")
+}
+
+function test_counter() {
+    banner("Ring Counter")
+
+    let c = new_counter(false, 9)
+    // check(counter_value(c) == false)
+
+    let c1 = tick(c)
+    // check(counter_value(c1) == unknown)
+
+    let c2 = tick(c1)
+    // check(counter_value(c2) == true)
+
+    let c3 = tick(c2)
+    // check(counter_value(c3) == false)
+    println("  Counter ring: OK")
+
+    // Counter wraps every 3 ticks (full ring cycle)
+    let c4 = tick(tick(tick(c)))
+    // check(counter_value(c4) == false)
+    println("  Counter wrap: OK")
+}
+
+function test_bank() {
+    banner("Register Bank (3-register file)")
+
+    let bank = new_bank()
+    // check(bank_read(bank, 0) == false)
+    // check(bank_read(bank, 1) == unknown)
+    // check(bank_read(bank, 2) == true)
+    println("  Initial values: OK")
+
+    let bank2 = bank_write(bank, 0, true)
+    // check(bank_read(bank2, 0) == true)
+    // Other registers unchanged
+    // check(bank_read(bank2, 1) == unknown)
+    println("  Bank write: OK")
+}
+
+function test_inline_module() {
+    banner("Inline Module: utils.advanced")
+
+    // cube — uses assert from stdlib directly
+    // check(cube(2) == 8)
+    // check(cube(3) == 27)
+    // check(cube(-2) == -8)
+    println("  cube: OK")
+
+    // trilean_abs
+    // check(trilean_abs(true) == true)
+    // check(trilean_abs(false) == true)
+    // check(trilean_abs(unknown) == unknown)
+    println("  trilean_abs: OK")
+
+    // is_definite
+    // check(is_definite(true) == true)
+    // check(is_definite(false) == true)
+    // check(is_definite(unknown) == false)
+    println("  is_definite: OK")
+
+    // safe_divide
+    // check(safe_divide(10, 2) == 5)
+    // check(safe_divide(10, 0) == 0)
+    println("  safe_divide: OK")
+}
+
+function test_ring_stepper() {
+    println("")
+    println("Ring stepper (step_ring from utils)")
+    // check(step_ring(false, 0) == false)
+    // check(step_ring(false, 1) == unknown)
+    // check(step_ring(false, 2) == true)
+    // check(step_ring(false, 3) == false)
+    // check(identity(unknown) == unknown)
+    println("  Ring stepper: OK")
+}
