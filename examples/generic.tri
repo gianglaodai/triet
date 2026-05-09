@@ -1,0 +1,33 @@
+// Generics — minh họa v0.2 type parameters trên enum.
+//
+// Type parameters cho phép định nghĩa kiểu tổng quát:
+//   enum Option<T> { Some(T), None }
+//
+// Monomorphization tại typecheck time: compiler tự động thay
+// T bằng kiểu cụ thể khi sử dụng (e.g., Option<Integer>).
+
+enum Option<T> { Some(T), None }
+
+fn describe_int(opt: Option<Integer>) -> String =
+    match opt {
+        Some(v) => f"có giá trị {v}",
+        None => "rỗng",
+    }
+
+fn describe_str(opt: Option<String>) -> String =
+    match opt {
+        Some(s) => f"chuỗi: {s}",
+        None => "rỗng",
+    }
+
+fn main() {
+    // Inference từ argument: Some(42) → T = Integer.
+    let a: Option<Integer> = Some(42)
+    let b: Option<Integer> = None
+    println(f"a = {describe_int(a)}")
+    println(f"b = {describe_int(b)}")
+
+    // Inference: Some(\"hello\") → T = String.
+    let c: Option<String> = Some("hello")
+    println(f"c = {describe_str(c)}")
+}

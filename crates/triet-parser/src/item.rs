@@ -302,6 +302,7 @@ fn parse_struct(
     parser.expect(&Token::Struct, "`struct`")?;
 
     let name = parse_ident(parser, "struct name")?;
+    let type_params = parse_generic_params(parser)?;
 
     parser.expect(&Token::LBrace, "`{`")?;
     let fields = parse_struct_fields(parser)?;
@@ -310,7 +311,7 @@ fn parse_struct(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Struct(StructDef { name, fields }),
+        Item::Struct(StructDef { name, type_params, fields }),
         span,
     ))
 }
@@ -345,6 +346,7 @@ fn parse_enum(
     parser.expect(&Token::Enum, "`enum`")?;
 
     let name = parse_ident(parser, "enum name")?;
+    let type_params = parse_generic_params(parser)?;
 
     parser.expect(&Token::LBrace, "`{`")?;
     let variants = parse_enum_variants(parser)?;
@@ -353,7 +355,7 @@ fn parse_enum(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Enum(EnumDef { name, variants }),
+        Item::Enum(EnumDef { name, type_params, variants }),
         span,
     ))
 }
@@ -384,6 +386,25 @@ fn parse_enum_variants(
         }
     }
     Ok(variants)
+}
+
+/// Parse optional generic type parameters: `<T, U>`. Returns an empty
+/// vec if the next token is not `<`.
+fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<String>, ParseError> {
+    if !matches!(parser.peek_token(), Some(Token::Lt)) {
+        return Ok(Vec::new());
+    }
+    parser.advance(); // consume `<`
+    let mut params = Vec::new();
+    loop {
+        let name = parse_ident(parser, "type parameter")?;
+        params.push(name);
+        if !parser.eat(&Token::Comma) {
+            break;
+        }
+    }
+    parser.expect(&Token::Gt, "`>`")?;
+    Ok(params)
 }
 
 fn parse_ident(parser: &mut Parser<'_>, expected: &str) -> Result<String, ParseError> {

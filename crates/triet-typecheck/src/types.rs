@@ -44,6 +44,8 @@ pub enum Type {
     UserStruct {
         /// Struct name (for Display and error messages).
         name: String,
+        /// Generic type parameters (empty for non-generic structs).
+        type_params: Vec<String>,
         /// Fields in declaration order. Stored as `(name, type)` pairs.
         fields: Vec<(String, Self)>,
     },
@@ -51,9 +53,13 @@ pub enum Type {
     UserEnum {
         /// Enum name.
         name: String,
+        /// Generic type parameters (empty for non-generic enums).
+        type_params: Vec<String>,
         /// Variants in declaration order. Stored as `(name, optional_payload)`.
         variants: Vec<(String, Option<Box<Self>>)>,
     },
+    /// A generic type parameter: `T` in `struct Box<T> { value: T }`.
+    TypeParam(String),
     /// A type the checker could not determine — used as a recovery
     /// placeholder so cascading errors don't compound.
     Unknown,
@@ -93,6 +99,22 @@ impl Type {
         {
             return true;
         }
+        // Same-name user types match even with different type params
+        // (e.g., `Option<T>` vs `Option<Integer>`). Structural
+        // comparison of variants/fields catches actual mismatches.
+        if let (
+            Self::UserStruct { name: n1, .. },
+            Self::UserStruct { name: n2, .. },
+        )
+        | (
+            Self::UserEnum { name: n1, .. },
+            Self::UserEnum { name: n2, .. },
+        ) = (self, other)
+        {
+            if n1 == n2 {
+                return true;
+            }
+        }
         self == other
     }
 
@@ -111,6 +133,74 @@ impl Type {
     #[must_use]
     pub const fn is_nullable(&self) -> bool {
         matches!(self, Self::Nullable(_))
+    }
+
+    /// Replace every `TypeParam(name)` with `map[name]` if present.
+    /// Used during monomorphization: `Box<T>` with `T→Integer` becomes
+    /// the concrete struct type.
+    #[must_use]
+    pub fn substitute(&self, map: &std::collections::HashMap<String, Type>) -> Type {
+        match self {
+            Self::TypeParam(name) => map.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Self::Nullable(inner) => {
+                Self::Nullable(Box::new(inner.substitute(map)))
+            }
+            Self::Tuple(elements) => {
+                Self::Tuple(elements.iter().map(|e| e.substitute(map)).collect())
+            }
+            Self::Function { parameters, return_type } => Self::Function {
+                parameters: parameters.iter().map(|p| p.substitute(map)).collect(),
+                return_type: Box::new(return_type.substitute(map)),
+            },
+            Self::Range(inner) => Self::Range(Box::new(inner.substitute(map))),
+            Self::UserStruct { name, type_params, fields } => {
+                // Type params are replaced with empty vec — the
+                // monomorphized type has no type params.
+                let local_map: std::collections::HashMap<_, _> = type_params
+                    .iter()
+                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Type::Unknown)))
+                    .collect();
+                let merged = {
+                    let mut m = map.clone();
+                    m.extend(local_map);
+                    m
+                };
+                Self::UserStruct {
+                    name: name.clone(),
+                    type_params: Vec::new(),
+                    fields: fields
+                        .iter()
+                        .map(|(n, t)| (n.clone(), t.substitute(&merged)))
+                        .collect(),
+                }
+            }
+            Self::UserEnum { name, type_params, variants } => {
+                let local_map: std::collections::HashMap<_, _> = type_params
+                    .iter()
+                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Type::Unknown)))
+                    .collect();
+                let merged = {
+                    let mut m = map.clone();
+                    m.extend(local_map);
+                    m
+                };
+                Self::UserEnum {
+                    name: name.clone(),
+                    type_params: Vec::new(),
+                    variants: variants
+                        .iter()
+                        .map(|(n, p)| {
+                            (
+                                n.clone(),
+                                p.as_ref().map(|t| Box::new(t.substitute(&merged))),
+                            )
+                        })
+                        .collect(),
+                }
+            }
+            // Primitives and Unknown are unchanged.
+            other => other.clone(),
+        }
     }
 }
 
@@ -157,6 +247,7 @@ impl fmt::Display for Type {
             Self::Range(element) => write!(formatter, "Range<{element}>"),
             Self::UserStruct { name, .. } => formatter.write_str(name),
             Self::UserEnum { name, .. } => formatter.write_str(name),
+            Self::TypeParam(name) => formatter.write_str(name),
             Self::Unknown => formatter.write_str("?"),
         }
     }

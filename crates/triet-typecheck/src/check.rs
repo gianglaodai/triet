@@ -110,15 +110,30 @@ impl<'p> Checker<'p> {
                 // V0.1 imports are syntactic placeholders.
             }
             Item::Struct(def) => {
+                // Push a frame where type params are visible during
+                // field type resolution.
+                self.env.push_frame();
+                for param in &def.type_params {
+                    self.env.declare(param, Type::TypeParam(param.clone()));
+                }
                 let fields: Vec<(String, Type)> = def
                     .fields
                     .iter()
                     .map(|f| (f.name.clone(), self.resolve_type(f.type_annotation)))
                     .collect();
-                let ty = Type::UserStruct { name: def.name.clone(), fields };
+                self.env.pop_frame();
+                let ty = Type::UserStruct {
+                    name: def.name.clone(),
+                    type_params: def.type_params.clone(),
+                    fields,
+                };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
             Item::Enum(def) => {
+                self.env.push_frame();
+                for param in &def.type_params {
+                    self.env.declare(param, Type::TypeParam(param.clone()));
+                }
                 let variants: Vec<(String, Option<Box<Type>>)> = def
                     .variants
                     .iter()
@@ -127,7 +142,12 @@ impl<'p> Checker<'p> {
                         (v.name.clone(), payload)
                     })
                     .collect();
-                let ty = Type::UserEnum { name: def.name.clone(), variants };
+                self.env.pop_frame();
+                let ty = Type::UserEnum {
+                    name: def.name.clone(),
+                    type_params: def.type_params.clone(),
+                    variants,
+                };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
         }
@@ -414,13 +434,16 @@ impl<'p> Checker<'p> {
                 "String" => Type::String,
                 "Unit" => Type::Unit,
                 _ => {
-                    // Look up user-defined types (struct, enum, alias).
+                    // Look up user-defined types, type params, or aliases.
                     if let Some(ty) = self.env.lookup(&name).cloned() {
-                        if matches!(ty, Type::UserStruct { .. } | Type::UserEnum { .. }) {
-                            ty
-                        } else {
-                            self.errors.push(TypeError::UnknownType { name, span });
-                            Type::Unknown
+                        match &ty {
+                            Type::UserStruct { .. }
+                            | Type::UserEnum { .. }
+                            | Type::TypeParam(_) => ty,
+                            _ => {
+                                self.errors.push(TypeError::UnknownType { name, span });
+                                Type::Unknown
+                            }
                         }
                     } else {
                         self.errors.push(TypeError::UnknownType { name, span });
@@ -428,9 +451,34 @@ impl<'p> Checker<'p> {
                     }
                 }
             },
-            TypeExpr::Generic { name, .. } => {
-                // V0.1 has no user-defined generics; flag as unknown
-                // unless we add a built-in like Option<T> later.
+            TypeExpr::Generic { name, arguments } => {
+                // Monomorphize: `Option<Integer>` → substitute `T→Integer`.
+                let args: Vec<Type> = arguments
+                    .iter()
+                    .map(|t| self.resolve_type(*t))
+                    .collect();
+                if let Some(ty) = self.env.lookup(&name).cloned() {
+                    match &ty {
+                        Type::UserStruct { type_params, .. }
+                        | Type::UserEnum { type_params, .. } => {
+                            if type_params.len() != args.len() {
+                                self.errors.push(TypeError::WrongArity {
+                                    expected: type_params.len(),
+                                    found: args.len(),
+                                    span,
+                                });
+                                return Type::Unknown;
+                            }
+                            let map: std::collections::HashMap<_, _> = type_params
+                                .iter()
+                                .cloned()
+                                .zip(args)
+                                .collect();
+                            return ty.substitute(&map);
+                        }
+                        _ => {}
+                    }
+                }
                 self.errors.push(TypeError::UnknownType { name, span });
                 Type::Unknown
             }

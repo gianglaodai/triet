@@ -46,6 +46,8 @@ pub enum Item {
 pub struct StructDef {
     /// Struct name.
     pub name: String,
+    /// Generic type parameters (e.g., `T` in `struct Box<T>`).
+    pub type_params: Vec<String>,
     /// Fields in declaration order.
     pub fields: Vec<StructField>,
 }
@@ -64,6 +66,8 @@ pub struct StructField {
 pub struct EnumDef {
     /// Enum name.
     pub name: String,
+    /// Generic type parameters (e.g., `T` in `enum Option<T>`).
+    pub type_params: Vec<String>,
     /// Variants in declaration order.
     pub variants: Vec<EnumVariant>,
 }

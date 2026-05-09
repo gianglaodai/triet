@@ -284,17 +284,25 @@ impl Checker<'_> {
             self.arena.expression(callee).node
         {
             if let Some(enum_ty) = self.lookup_enum_variant(callee_name) {
-                let Type::UserEnum { name: enum_name, variants } = &enum_ty else {
+                let Type::UserEnum { name: _enum_name, type_params, variants } = &enum_ty
+                else {
                     unreachable!()
                 };
                 let (_, payload) = variants
                     .iter()
                     .find(|(n, _)| n == callee_name)
                     .expect("lookup_enum_variant guarantees this");
+                // Infer type arguments from the call arguments when
+                // the variant payload uses type params.
+                let mut sub_map: std::collections::HashMap<String, Type> =
+                    std::collections::HashMap::new();
                 match (arguments.len(), payload) {
                     (1, Some(expected_ty)) => {
                         let arg_ty = self.infer_expression(arguments[0]);
-                        if !expected_ty.matches(&arg_ty) {
+                        // If the payload type is a TypeParam, infer from arg.
+                        if let Type::TypeParam(tp) = expected_ty.as_ref() {
+                            sub_map.insert(tp.clone(), arg_ty.clone());
+                        } else if !expected_ty.matches(&arg_ty) {
                             self.errors.push(TypeError::Mismatch {
                                 expected: (**expected_ty).clone(),
                                 found: arg_ty,
@@ -302,7 +310,7 @@ impl Checker<'_> {
                             });
                         }
                     }
-                    (0, None) => {} // unit variant
+                    (0, None) => {} // unit variant — no inference needed
                     (n, Some(_)) => {
                         self.errors.push(TypeError::WrongArity {
                             expected: 1,
@@ -317,6 +325,11 @@ impl Checker<'_> {
                             span,
                         });
                     }
+                }
+                // If we have type params without inferred concrete types,
+                // leave them as TypeParam (will be caught by context).
+                if !sub_map.is_empty() || type_params.is_empty() {
+                    return enum_ty.substitute(&sub_map);
                 }
                 return enum_ty.clone();
             }
@@ -334,13 +347,15 @@ impl Checker<'_> {
     /// Scan the type environment for an enum variant with the given
     /// name. Returns the enum type that owns the variant.
     fn lookup_enum_variant(&self, name: &str) -> Option<Type> {
-        // Walk frames to find any UserEnum whose variants contain `name`.
-        for frame in self.env.frames.iter().rev() {
-            for binding in frame.names.values() {
-                if let Type::UserEnum { variants, .. } = &binding.ty {
-                    if variants.iter().any(|(n, _)| n == name) {
-                        return Some(binding.ty.clone());
-                    }
+        // Scan the root frame only — enum type definitions live at
+        // module scope, not inside function/block scopes. Variable
+        // bindings (like `let c: Option<Integer> = ...`) have
+        // UserEnum as their type and would shadow the generic
+        // definition if we scanned inner frames.
+        for binding in self.env.frames.first()?.names.values() {
+            if let Type::UserEnum { variants, .. } = &binding.ty {
+                if variants.iter().any(|(n, _)| n == name) {
+                    return Some(binding.ty.clone());
                 }
             }
         }
@@ -387,7 +402,7 @@ impl Checker<'_> {
             });
             Type::Unknown
         });
-        let Type::UserStruct { name: _, fields: def_fields } = &ty else {
+        let Type::UserStruct { name: _, fields: def_fields, .. } = &ty else {
             self.errors.push(TypeError::Mismatch {
                 expected: Type::Unknown,
                 found: ty,
@@ -432,7 +447,7 @@ impl Checker<'_> {
             });
             Type::Unknown
         });
-        let Type::UserEnum { name: _, variants } = &ty else {
+        let Type::UserEnum { name: _, variants, .. } = &ty else {
             self.errors.push(TypeError::Mismatch {
                 expected: Type::Unknown,
                 found: ty,

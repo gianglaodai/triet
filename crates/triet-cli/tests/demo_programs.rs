@@ -31,6 +31,7 @@ const ENUMERATE: &str = "enumerate.tri";
 const NULLABLE: &str = "nullable.tri";
 const WHILE_POLLING: &str = "while_polling.tri";
 const MAYBE: &str = "maybe.tri";
+const GENERIC: &str = "generic.tri";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live
@@ -396,4 +397,16 @@ fn maybe_unwrap_or_returns_value_for_some() {
     // Can't construct Some(42) directly from Rust — use run + main instead.
     let result = run(&program);
     assert!(result.is_ok(), "maybe main failed: {result:?}");
+}
+
+#[test]
+fn generic_demo_parses_and_type_checks() {
+    let _ = load_program(GENERIC);
+}
+
+#[test]
+fn generic_main_runs_without_error() {
+    let program = load_program(GENERIC);
+    let result = run(&program);
+    assert!(result.is_ok(), "generic main failed: {result:?}");
 }
