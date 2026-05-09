@@ -8,10 +8,12 @@ use thiserror::Error;
 pub struct OverflowError {
     /// Name of the type that overflowed (e.g. `"Tryte"`, `"Integer"`).
     pub type_name: &'static str,
-    /// Inclusive minimum of the type's range.
-    pub min: i128,
-    /// Inclusive maximum of the type's range.
-    pub max: i128,
+    /// Inclusive minimum of the type's range, as a decimal string. Stored
+    /// as `&'static str` so `Long` (range > `i128`) can also report bounds
+    /// without dragging the big-int representation into error types.
+    pub min: &'static str,
+    /// Inclusive maximum of the type's range, as a decimal string.
+    pub max: &'static str,
 }
 
 /// Error returned when parsing a value into a ternary type fails.

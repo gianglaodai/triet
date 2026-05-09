@@ -51,6 +51,8 @@ impl Integer {
     pub const MINUS_ONE: Self = Self(-1);
 
     const TYPE_NAME: &'static str = "Integer";
+    const MIN_STR: &'static str = "-3812798742493";
+    const MAX_STR: &'static str = "3812798742493";
 
     /// Constructs an `Integer` from a signed 64-bit integer.
     ///
@@ -291,8 +293,8 @@ impl TryFrom<i128> for Integer {
     fn try_from(value: i128) -> Result<Self, Self::Error> {
         i64::try_from(value).ok().and_then(Self::new).ok_or(OverflowError {
             type_name: Self::TYPE_NAME,
-            min: Self::MIN.0 as i128,
-            max: Self::MAX.0 as i128,
+            min: Self::MIN_STR,
+            max: Self::MAX_STR,
         })
     }
 }

@@ -531,4 +531,103 @@ mod tests {
         let value = run_function(source, "sum_to_five", vec![]);
         assert_eq!(value, integer(15));
     }
+
+    // ===== Long (SPEC §2.1, §3.3) =====
+
+    #[test]
+    fn long_literal_evaluates_to_long_value() {
+        let source = "fn answer() -> Long = 42_long";
+        let value = run_function(source, "answer", vec![]);
+        match value {
+            Value::Long(l) => assert_eq!(l.to_i128(), 42),
+            other => panic!("expected Long, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn long_addition_at_scale_beyond_integer() {
+        // Two Integer-MAX values added in Long range, summing to ~7.6·10¹².
+        let source = r"
+            fn beyond_integer() -> Long {
+                let a = 3812798742493_long
+                let b = 3812798742493_long
+                a + b
+            }
+        ";
+        let value = run_function(source, "beyond_integer", vec![]);
+        match value {
+            Value::Long(l) => assert_eq!(l.to_i128(), 7_625_597_484_986),
+            other => panic!("expected Long, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn long_multiplication_can_exceed_i128_range() {
+        // 10¹⁹ × 10¹⁹ = 10³⁸ — fits in Long (~2.2·10³⁸) but not i128.
+        let source = r"
+            fn big_product() -> Long {
+                let a = 10000000000000000000_long
+                a * a
+            }
+        ";
+        let value = run_function(source, "big_product", vec![]);
+        match value {
+            Value::Long(l) => {
+                assert_eq!(l.to_string(), "100000000000000000000000000000000000000");
+            }
+            other => panic!("expected Long, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integer_to_long_widening_is_lossless() {
+        let source = "fn widen(n: Integer) -> Long = n.to_long()";
+        let value = run_function(source, "widen", vec![integer(123)]);
+        match value {
+            Value::Long(l) => assert_eq!(l.to_i128(), 123),
+            other => panic!("expected Long, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn long_to_integer_panics_when_out_of_range() {
+        // 10²⁰ exceeds Integer::MAX (~3.8·10¹²) but fits in i128 (~1.7·10³⁸).
+        let source = r"
+            fn narrow() -> Integer {
+                let big = 100000000000000000000_long
+                big.to_integer()
+            }
+        ";
+        let program = parse_ok(source);
+        let result = call_function(&program, "narrow", vec![]);
+        assert!(matches!(result, Err(RuntimeError::Panic { .. })));
+    }
+
+    #[test]
+    fn long_comparison_orders_by_magnitude() {
+        let source = r"
+            fn compare() -> Trilean {
+                let a = 100000000000000000000_long
+                let b = 99999999999999999999_long
+                a > b
+            }
+        ";
+        let value = run_function(source, "compare", vec![]);
+        assert_eq!(value, trilean(Trilean::True));
+    }
+
+    #[test]
+    fn long_negation_round_trips() {
+        let source = r"
+            fn double_neg() -> Long {
+                let n = 12345_long;
+                -(-n)
+            }
+        ";
+        let value = run_function(source, "double_neg", vec![]);
+        match value {
+            Value::Long(l) => assert_eq!(l.to_i128(), 12345),
+            other => panic!("expected Long, got {other:?}"),
+        }
+    }
 }

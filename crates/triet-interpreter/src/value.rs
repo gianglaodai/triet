@@ -2,7 +2,7 @@
 
 use std::{fmt, rc::Rc};
 
-use triet_core::{Integer, Trit, Tryte};
+use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
 use triet_syntax::{ExprId, FunctionDef, LambdaParam, TypeId};
 
@@ -21,6 +21,8 @@ pub enum Value {
     Tryte(Tryte),
     /// 27-trit integer (Triết default).
     Integer(Integer),
+    /// 81-trit integer (big range, ≈ ±2.21 × 10³⁸).
+    Long(Long),
     /// 3-valued truth.
     Trilean(Trilean),
     /// UTF-8 owned text (cheap to clone via `Rc`).
@@ -80,6 +82,7 @@ impl PartialEq for Value {
             (Self::Trit(a), Self::Trit(b)) => a == b,
             (Self::Tryte(a), Self::Tryte(b)) => a == b,
             (Self::Integer(a), Self::Integer(b)) => a == b,
+            (Self::Long(a), Self::Long(b)) => a == b,
             (Self::Trilean(a), Self::Trilean(b)) => a == b,
             (Self::String(a), Self::String(b)) => **a == **b,
             (Self::Unit, Self::Unit) | (Self::Null, Self::Null) => true,
@@ -106,6 +109,7 @@ impl fmt::Display for Value {
             Self::Trit(t) => write!(formatter, "{t}"),
             Self::Tryte(t) => write!(formatter, "{t}"),
             Self::Integer(i) => write!(formatter, "{i}"),
+            Self::Long(l) => write!(formatter, "{l}"),
             Self::Trilean(t) => write!(formatter, "{t}"),
             Self::String(s) => formatter.write_str(s),
             Self::Unit => formatter.write_str("()"),

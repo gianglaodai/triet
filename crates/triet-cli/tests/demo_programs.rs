@@ -26,6 +26,7 @@ const MEASLES: &str = "measles_risk.tt";
 const FACTORIAL: &str = "factorial.tt";
 const LK: &str = "lukasiewicz_vs_kleene.tt";
 const COUNTER: &str = "counter.tt";
+const LONG_ARITHMETIC: &str = "long_arithmetic.tt";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live
@@ -198,4 +199,29 @@ fn counter_main_runs_without_error() {
     let program = load_program(COUNTER);
     let result = run(&program);
     assert!(result.is_ok(), "counter main failed: {result:?}");
+}
+
+#[test]
+fn long_arithmetic_demo_parses_and_type_checks() {
+    let _ = load_program(LONG_ARITHMETIC);
+}
+
+#[test]
+fn long_arithmetic_factorial_20_matches_known_value() {
+    let program = load_program(LONG_ARITHMETIC);
+    let value = call_function(
+        &program,
+        "factorial_long",
+        vec![Value::Long(triet_core::Long::from_i64(20))],
+    )
+    .unwrap();
+    // 20! = 2_432_902_008_176_640_000 — exceeds Integer's range.
+    assert_eq!(value.to_string(), "2432902008176640000");
+}
+
+#[test]
+fn long_arithmetic_main_runs_without_error() {
+    let program = load_program(LONG_ARITHMETIC);
+    let result = run(&program);
+    assert!(result.is_ok(), "long_arithmetic main failed: {result:?}");
 }

@@ -1,0 +1,30 @@
+// Long (81-trit) — minh họa số học vượt phạm vi Integer.
+//
+// Integer giới hạn ±3.81×10¹². Long giới hạn ±2.21×10³⁸ (lớn hơn i128).
+// Mọi số học Long thực hiện trên big-int 256-bit (bnum) trong runtime.
+
+fn factorial_long(n: Long) -> Long =
+    if? n <= 1_long { 1_long }
+    else { n * factorial_long(n - 1_long) }
+
+fn power_of_ten(exponent: Long) -> Long {
+    let mut result = 1_long;
+    let mut count = exponent;
+    while? count > 0_long {
+        result = result * 10_long
+        count = count - 1_long
+    }
+    result
+}
+
+fn main() {
+    // Factorial(20) = 2_432_902_008_176_640_000 — vượt Integer (~3.8×10¹²) nhưng vừa Long.
+    println(f"20! = {factorial_long(20_long)}")
+
+    // 10³⁵ — vượt i128 (~1.7×10³⁸) ban đầu, và vẫn fit Long.
+    println(f"10^35 = {power_of_ten(35_long)}")
+
+    // Tổng hai số 10³⁵ → 2×10³⁵, vẫn fit Long (≈2.2×10³⁸).
+    let big = power_of_ten(35_long)
+    println(f"2 × 10^35 = {big + big}")
+}

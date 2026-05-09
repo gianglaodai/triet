@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use triet_core::{Integer, Trit, Tryte};
+use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
 use triet_syntax::{
     Arena, BinaryOperator, Block, Expr, ExprId, FStringPart, FunctionBody, Item,
@@ -433,6 +433,7 @@ impl<'p> Interpreter<'p> {
             Value::Trit(t) => Ok(Value::Trit(-t)),
             Value::Tryte(t) => Ok(Value::Tryte(-t)),
             Value::Integer(i) => Ok(Value::Integer(-i)),
+            Value::Long(l) => Ok(Value::Long(-l)),
             Value::Trilean(t) => Ok(Value::Trilean(t.not())),
             other => Err(RuntimeError::TypeError {
                 message: format!("cannot negate {other}"),
@@ -494,6 +495,71 @@ impl<'p> Interpreter<'p> {
                     message: "Tryte → Integer overflow".to_owned(),
                     span,
                 }),
+
+            // Long widening (always lossless)
+            (Value::Tryte(t), "to_long") => Ok(Value::Long(Long::from(*t))),
+            (Value::Integer(i), "to_long") => Ok(Value::Long(Long::from(*i))),
+
+            // Long narrowing (panic on overflow, with try / saturate variants)
+            (Value::Long(l), "to_integer") => {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.to_integer()))
+                    .map(Value::Integer)
+                    .map_err(|_| RuntimeError::Panic {
+                        message: "Long → Integer overflow".to_owned(),
+                        span: span.clone(),
+                    })
+            }
+            (Value::Long(l), "to_tryte") => {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.to_tryte()))
+                    .map(Value::Tryte)
+                    .map_err(|_| RuntimeError::Panic {
+                        message: "Long → Tryte overflow".to_owned(),
+                        span: span.clone(),
+                    })
+            }
+            (Value::Long(l), "to_integer_and_saturate") => {
+                Ok(Value::Integer(l.to_integer_and_saturate()))
+            }
+            (Value::Long(l), "try_to_integer") => Ok(l
+                .try_to_integer()
+                .map_or(Value::Null, Value::Integer)),
+            (Value::Long(l), "try_to_tryte") => Ok(l
+                .try_to_tryte()
+                .map_or(Value::Null, Value::Tryte)),
+
+            // Tryte/Integer → Long with try_* (always Some, but exposed
+            // for API symmetry with `try_to_*` narrowing methods).
+            (Value::Tryte(t), "try_to_long") => Ok(Value::Long(Long::from(*t))),
+            (Value::Integer(i), "try_to_long") => Ok(Value::Long(Long::from(*i))),
+
+            // Long overflow-aware arithmetic — mirrors Integer's surface.
+            (Value::Long(l), "add_and_truncate") => {
+                binary_long_method(l, arguments, Long::add_and_truncate, span)
+            }
+            (Value::Long(l), "add_and_saturate") => {
+                binary_long_method(l, arguments, Long::add_and_saturate, span)
+            }
+            (Value::Long(l), "try_add") => {
+                binary_long_try_method(l, arguments, Long::try_add, span)
+            }
+            (Value::Long(l), "subtract_and_truncate") => {
+                binary_long_method(l, arguments, Long::subtract_and_truncate, span)
+            }
+            (Value::Long(l), "subtract_and_saturate") => {
+                binary_long_method(l, arguments, Long::subtract_and_saturate, span)
+            }
+            (Value::Long(l), "try_subtract") => {
+                binary_long_try_method(l, arguments, Long::try_subtract, span)
+            }
+            (Value::Long(l), "multiply_and_truncate") => {
+                binary_long_method(l, arguments, Long::multiply_and_truncate, span)
+            }
+            (Value::Long(l), "multiply_and_saturate") => {
+                binary_long_method(l, arguments, Long::multiply_and_saturate, span)
+            }
+            (Value::Long(l), "try_multiply") => {
+                binary_long_try_method(l, arguments, Long::try_multiply, span)
+            }
 
             // Integer overflow-aware arithmetic
             (Value::Integer(i), "add_and_truncate") => binary_int_method(
@@ -776,14 +842,9 @@ fn integer_literal_value(
                 span: span.clone(),
             }),
         Some(NumericSuffix::Long) => {
-            // Long is deferred; accept by truncating into Integer for v0.1
-            // demos that don't actually use Long.
-            Integer::new(value as i64)
-                .map(Value::Integer)
-                .ok_or_else(|| RuntimeError::Panic {
-                    message: format!("integer literal {value} out of Integer range (Long deferred)"),
-                    span: span.clone(),
-                })
+            // Long range strictly contains i128; the lexer produces an
+            // i128 value, so this is always lossless.
+            Ok(Value::Long(Long::from_i128(value)))
         }
         Some(NumericSuffix::Integer) | None => Integer::new(value as i64)
             .map(Value::Integer)
@@ -833,11 +894,48 @@ fn execute_arithmetic(
         (Value::Integer(a), Value::Integer(b)) => {
             apply_integer_arithmetic(operator, a, b, span).map(Value::Integer)
         }
+        (Value::Long(a), Value::Long(b)) => {
+            apply_long_arithmetic(operator, a, b, span).map(Value::Long)
+        }
         (left, right) => Err(RuntimeError::TypeError {
             message: format!("arithmetic on incompatible types {left} and {right}"),
             span,
         }),
     }
+}
+
+fn apply_long_arithmetic(
+    operator: BinaryOperator,
+    a: Long,
+    b: Long,
+    span: Span,
+) -> Result<Long, RuntimeError> {
+    use std::panic::{self, AssertUnwindSafe};
+    let result = panic::catch_unwind(AssertUnwindSafe(|| match operator {
+        BinaryOperator::Add => a + b,
+        BinaryOperator::Subtract => a - b,
+        BinaryOperator::Multiply => a * b,
+        BinaryOperator::Divide => a / b,
+        BinaryOperator::Modulo => a % b,
+        BinaryOperator::Power => long_power(a, b),
+        _ => unreachable!(),
+    }));
+    result.map_err(|_| RuntimeError::Panic {
+        message: format!("arithmetic panic on Long ({a} {operator:?} {b})"),
+        span,
+    })
+}
+
+fn long_power(base: Long, exponent: Long) -> Long {
+    let mut result = Long::ONE;
+    let count = exponent.try_to_i128().unwrap_or(0);
+    if count < 0 {
+        return Long::ZERO;
+    }
+    for _ in 0..count {
+        result = result * base;
+    }
+    result
 }
 
 fn apply_tryte_arithmetic(
@@ -906,6 +1004,7 @@ fn execute_comparison(
     let ordering = match (&left, &right) {
         (Value::Tryte(a), Value::Tryte(b)) => a.to_i64().cmp(&b.to_i64()),
         (Value::Integer(a), Value::Integer(b)) => a.to_i64().cmp(&b.to_i64()),
+        (Value::Long(a), Value::Long(b)) => a.cmp(b),
         _ => {
             return Err(RuntimeError::TypeError {
                 message: format!("comparison on incompatible types {left} and {right}"),
@@ -969,6 +1068,41 @@ fn binary_int_try_method(
     };
     Ok(match op(*receiver, other) {
         Some(integer) => Value::Integer(integer),
+        None => Value::Null,
+    })
+}
+
+fn binary_long_method(
+    receiver: &Long,
+    arguments: Vec<Value>,
+    op: impl Fn(Long, Long) -> Long,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    let mut iter = arguments.into_iter();
+    let Some(Value::Long(other)) = iter.next() else {
+        return Err(RuntimeError::TypeError {
+            message: "method expects a Long argument".to_owned(),
+            span,
+        });
+    };
+    Ok(Value::Long(op(*receiver, other)))
+}
+
+fn binary_long_try_method(
+    receiver: &Long,
+    arguments: Vec<Value>,
+    op: impl Fn(Long, Long) -> Option<Long>,
+    span: Span,
+) -> Result<Value, RuntimeError> {
+    let mut iter = arguments.into_iter();
+    let Some(Value::Long(other)) = iter.next() else {
+        return Err(RuntimeError::TypeError {
+            message: "method expects a Long argument".to_owned(),
+            span,
+        });
+    };
+    Ok(match op(*receiver, other) {
+        Some(value) => Value::Long(value),
         None => Value::Null,
     })
 }

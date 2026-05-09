@@ -51,6 +51,8 @@ impl Tryte {
     pub const MINUS_ONE: Self = Self(-1);
 
     const TYPE_NAME: &'static str = "Tryte";
+    const MIN_STR: &'static str = "-9841";
+    const MAX_STR: &'static str = "9841";
 
     /// Constructs a `Tryte` from a signed integer.
     ///
@@ -303,8 +305,8 @@ impl TryFrom<i64> for Tryte {
     fn try_from(value: i64) -> Result<Self, Self::Error> {
         i16::try_from(value).ok().and_then(Self::new).ok_or(OverflowError {
             type_name: Self::TYPE_NAME,
-            min: Self::MIN.0 as i128,
-            max: Self::MAX.0 as i128,
+            min: Self::MIN_STR,
+            max: Self::MAX_STR,
         })
     }
 }
