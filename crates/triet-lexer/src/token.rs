@@ -158,6 +158,12 @@ pub enum Token {
     /// `owned` — parameter takes ownership (Mojo-style).
     #[token("owned")]
     Owned,
+    /// `struct` — struct definition (v0.2+).
+    #[token("struct")]
+    Struct,
+    /// `enum` — enum definition (v0.2+).
+    #[token("enum")]
+    Enum,
 
     // === Multi-character operators (longest-match ordering matters) ===
     /// `<=>` — Łukasiewicz biconditional.

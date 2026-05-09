@@ -30,9 +30,52 @@ pub enum Item {
         target: TypeId,
     },
 
+    /// Struct definition: `struct Point { x: Integer, y: Integer }`.
+    Struct(StructDef),
+
+    /// Enum definition: `enum Option { Some(Integer), None }`.
+    Enum(EnumDef),
+
     /// Module import: `import std.io`. Minimal v0.1 form — full module
     /// system is v0.2+.
     Import(ImportPath),
+}
+
+/// A struct definition with named fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructDef {
+    /// Struct name.
+    pub name: String,
+    /// Fields in declaration order.
+    pub fields: Vec<StructField>,
+}
+
+/// A single field in a struct definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructField {
+    /// Field name.
+    pub name: String,
+    /// Field type annotation.
+    pub type_annotation: TypeId,
+}
+
+/// An enum definition with named variants.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumDef {
+    /// Enum name.
+    pub name: String,
+    /// Variants in declaration order.
+    pub variants: Vec<EnumVariant>,
+}
+
+/// A single variant in an enum definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumVariant {
+    /// Variant name.
+    pub name: String,
+    /// Optional payload type. `None` = unit variant (`None`),
+    /// `Some(TypeId)` = tuple variant (`Some(Integer)`).
+    pub payload: Option<TypeId>,
 }
 
 /// A function definition: `fn name(params) -> Return { body }` or with `=`.

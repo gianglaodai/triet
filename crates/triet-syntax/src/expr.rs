@@ -160,6 +160,24 @@ pub enum Expr {
         /// Whether `..=` (true) or `..` (false).
         inclusive: bool,
     },
+
+    /// Struct literal: `Point { x: 1, y: 2 }`.
+    StructLiteral {
+        /// Struct type name.
+        name: String,
+        /// Field initializers in source order.
+        fields: Vec<(String, ExprId)>,
+    },
+
+    /// Enum variant literal: `Some(5)`, `None`.
+    EnumLiteral {
+        /// Enum type name.
+        name: String,
+        /// Variant name.
+        variant_name: String,
+        /// Optional payload value. `None` = unit variant.
+        payload: Option<ExprId>,
+    },
 }
 
 /// A single arm of a `match` expression.

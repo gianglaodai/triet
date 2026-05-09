@@ -409,6 +409,10 @@ where
             _ => false,
         },
         Pattern::Literal(literal) => literal_matches(literal, value),
+        Pattern::EnumVariant { .. } => {
+            // v0.2: enum pattern matching — not yet implemented.
+            false
+        }
     }
 }
 

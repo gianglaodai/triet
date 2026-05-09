@@ -126,6 +126,15 @@ impl Checker<'_> {
                 }
                 Type::Range(Box::new(start_ty))
             }
+            Expr::StructLiteral { name: _, .. } => {
+                // v0.2: resolve struct type, check fields. For now, accept
+                // any struct name as a placeholder.
+                Type::Unknown
+            }
+            Expr::EnumLiteral { name: _, .. } => {
+                // v0.2: resolve enum type, check variant. Placeholder.
+                Type::Unknown
+            }
         }
     }
 

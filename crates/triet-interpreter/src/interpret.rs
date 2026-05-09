@@ -105,7 +105,7 @@ impl<'p> Interpreter<'p> {
                         self.env.declare(name, constant);
                     }
                 }
-                Item::TypeAlias { .. } | Item::Import(_) => {
+                Item::TypeAlias { .. } | Item::Import(_) | Item::Struct(_) | Item::Enum(_) => {
                     // No runtime effect in v0.1.
                 }
             }
@@ -391,6 +391,12 @@ impl<'p> Interpreter<'p> {
                     });
                 };
                 Ok(Value::Range { start: s, end: e, inclusive })
+            }
+            Expr::StructLiteral { .. } | Expr::EnumLiteral { .. } => {
+                Err(RuntimeError::TypeError {
+                    message: "struct/enum literals — v0.2 (not yet implemented)".to_owned(),
+                    span,
+                })
             }
         }
     }

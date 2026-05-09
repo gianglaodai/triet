@@ -109,6 +109,9 @@ impl<'p> Checker<'p> {
             Item::Import(_) => {
                 // V0.1 imports are syntactic placeholders.
             }
+            Item::Struct(_) | Item::Enum(_) => {
+                // v0.2: registered in the type registry (D.4).
+            }
         }
     }
 
@@ -116,6 +119,8 @@ impl<'p> Checker<'p> {
         if let Item::Function(def) = &item.node {
             self.check_function(def);
         }
+        // Struct / Enum definitions have no runtime body to check
+        // (field types are resolved during declaration).
     }
 
     fn check_function(&mut self, def: &FunctionDef) {
@@ -358,7 +363,7 @@ impl<'p> Checker<'p> {
                     self.bind_pattern(*first, scrutinee);
                 }
             }
-            Pattern::Range { .. } | Pattern::Literal(_) => {}
+            Pattern::Range { .. } | Pattern::Literal(_) | Pattern::EnumVariant { .. } => {}
         }
     }
 

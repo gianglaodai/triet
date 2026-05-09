@@ -38,6 +38,16 @@ pub enum Pattern {
 
     /// `null` pattern — matches the null marker of a nullable type.
     Null,
+
+    /// Enum variant pattern: `Some(x)`, `None`.
+    EnumVariant {
+        /// Enum type name (may be absent in simple contexts).
+        name: Option<String>,
+        /// Variant name.
+        variant_name: String,
+        /// Optional sub-pattern for the payload.
+        payload: Option<PatternId>,
+    },
 }
 
 /// Literal forms allowed inside patterns.
