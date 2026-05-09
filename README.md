@@ -4,9 +4,16 @@
 
 Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình production-grade dùng hệ tam phân cân bằng `{-1, 0, +1}` làm nền tảng số học, kết hợp logic 3 giá trị Łukasiewicz Ł3 cho khả năng lập luận với thông tin không chắc chắn — tối ưu cho thời đại AI lập trình.
 
+## Tài liệu
+
+- [`VISION.md`](VISION.md) — Tầm nhìn dài hạn: 5 trụ cột kiến trúc, mục tiêu OS-capable.
+- [`ROADMAP.md`](ROADMAP.md) — Lộ trình từ v0.2 tới v3.0+ với gate cho từng phase.
+- [`SPEC.md`](SPEC.md) — Đặc tả ngôn ngữ (source of truth cho semantics).
+- [`docs/decisions/`](docs/decisions/) — ADRs cho các quyết định kiến trúc.
+
 ## Trạng thái
 
-🟢 **v0.1 (interpreter) — chạy được end-to-end.** Đặc tả ngôn ngữ tại [`SPEC.md`](SPEC.md).
+🟢 **v0.2 (interpreter + struct/enum/generics) — chạy được end-to-end.** Đặc tả ngôn ngữ tại [`SPEC.md`](SPEC.md).
 
 ```bash
 cargo build --release
@@ -95,14 +102,25 @@ cargo build --release
 ./target/release/triet info
 ```
 
-## Roadmap
+## Roadmap (tóm tắt)
 
-- **v0.1** — interpreter tree-walking, semantics đầy đủ (đang làm)
-- **v0.2** — struct, enum, generics, `Option<T>`, `BinaryInteger`/`BinaryLong` interop, Ł∞ (fuzzy continuous)
-- **v0.3** — bytecode VM với JIT (Cranelift)
-- **v0.4** — concurrency model
-- **v1.0** — production stability, AOT native compile (LLVM/Cranelift)
-- **v2.0+** — backend cho phần cứng tam phân giả định
+Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first + capability-secure, đủ năng lực viết microkernel khi phần cứng tam phân xuất hiện. Pace: stability over speed (5–10 năm).
+
+- **v0.2** — struct, enum, generics ✅ (đang ở đây)
+- **v0.2.x** — module system ([ADR-0005](docs/decisions/0005-module-system.md))
+- **v0.3** — bytecode VM + stable IR
+- **v0.4** — Crate-Pack + stable ABI
+- **v0.5** — CAS packaging (hash-based identity)
+- **v0.6** — capability namespaces (`sys::` / `dev::` / `usr::`)
+- **v0.7** — self-hosting compiler
+- **v0.8** — concurrency model
+- **v0.9** — JIT (Cranelift)
+- **v1.0** — production stability
+- **v2.0** — AOT native compile (LLVM)
+- **v3.0** — microkernel POC
+- **v∞** — backend cho phần cứng tam phân
+
+Chi tiết với gates và ADRs: [`ROADMAP.md`](ROADMAP.md).
 
 ## License
 

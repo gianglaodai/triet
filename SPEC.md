@@ -1,23 +1,67 @@
-# Triết — Đặc tả ngôn ngữ v0.1
+# Triết — Đặc tả ngôn ngữ v0.2
 
-> Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, lấy cảm hứng từ Setun (Liên Xô, 1958). Phiên bản v0.1 đặc tả semantics cốt lõi cho một interpreter tree-walking. Hiệu năng và bytecode/native compile thuộc v0.2+.
+> Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, với tham vọng **đủ năng lực viết hệ điều hành** khi phần cứng tam phân xuất hiện. Lấy cảm hứng từ Setun (Liên Xô, 1958) và logic Łukasiewicz Ł3 (1920).
+>
+> Tài liệu này đặc tả semantics ngôn ngữ. Tầm nhìn dài hạn ở [VISION.md](VISION.md), lộ trình triển khai phasing ở [ROADMAP.md](ROADMAP.md), quyết định kiến trúc ở [docs/decisions/](docs/decisions/).
 
 ---
 
 ## 0. Triết lý thiết kế
 
-Mọi quyết định trong tài liệu này phục vụ ba mục tiêu, theo thứ tự ưu tiên:
+### 0.1 Năm trụ cột kiến trúc
+
+Triết được thiết kế quanh **năm trụ cột** (chi tiết: [VISION.md](VISION.md)):
+
+1. **CAS Packaging** — hash-based module identity (Unison-inspired). Phase v0.5.
+2. **Module System** — hierarchical, explicit `pub` export, không bind filesystem. Phase v0.2.x ([ADR-0005](docs/decisions/0005-module-system.md)).
+3. **Stable ABI** — witness tables cho cross-package generics, refuse-to-link với diff rõ ràng. Phase v0.4.
+4. **Crate-Pack & Hybrid Linking** — binary distribution với metadata, static + dynamic linking. Phase v0.4.
+5. **OS-Native Capability Namespaces** — `sys::`/`dev::`/`usr::` enforce ở compiler. Trit-level capability + Łukasiewicz `Unknown` runtime policy. Phase v0.6.
+
+### 0.2 Bản sắc Triết
+
+Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn ngữ khác:
+
+- **Trit-level capability** — 3-state native (`-1` deny / `0` ambient / `+1` grant), không emulate qua boolean.
+- **Łukasiewicz capability checking** — `Trilean::Unknown` resolved bởi runtime policy, không cần bolt-on policy engine.
+- **Tam phân ABI ổn định bẩm sinh** — Trit/Tryte/Integer/Long fixed-size, không struct padding, không endianness ambiguity.
+
+### 0.3 Nguyên tắc thiết kế (commit hard)
 
 1. **AI-first.** Cú pháp và semantics tối ưu cho việc LLM sinh code đúng ngay lần đầu. Ưu tiên: explicit > implicit, regular > exception, keyword > ký hiệu khi mơ hồ, low ambiguity > terseness.
 2. **Tam phân là first-class.** Trit, balanced ternary arithmetic, và logic 3 giá trị Łukasiewicz là kiểu/phép toán nguyên thủy — không phải library bên trên hệ nhị phân.
-3. **Production-grade ở Ł3, mở rộng được tới Ł∞.** v0.1 dùng giá trị rời rạc 3 mức {-1, 0, +1}. Đường tiến hóa tới logic vô hạn giá trị (fuzzy/probabilistic) phải không đập bỏ semantics hiện tại.
+3. **Production-grade ở Ł3, mở rộng được tới Ł∞.** v0.2 dùng giá trị rời rạc 3 mức {-1, 0, +1}. Đường tiến hóa tới logic vô hạn giá trị (fuzzy/probabilistic) phải không đập bỏ semantics hiện tại.
+4. **Stability over speed.** Quyết định kiến trúc có ADR. Không "ship đại rồi sửa". Pace dài hạn 5–10 năm cho v3.0 (microkernel POC).
+5. **Refuse over guess.** Khi compiler không chắc → error rõ ràng, không suy luận im lặng.
+6. **Explicit > implicit.** Export, capability, dependency, ABI surface — tất cả tường minh. Glob imports, default-public, ambient capabilities — bị cấm.
 
-Không phải mục tiêu (non-goals) cho v0.1:
-- Hiệu năng tối ưu (interpreter tree-walking, OK chậm)
-- Concurrency/async
-- FFI với C/Rust runtime
-- Module system phức tạp (đơn module phẳng)
-- Generics đầy đủ (chỉ type alias đơn giản)
+### 0.4 Phạm vi v0.2 (đã ship)
+
+- Pipeline lexer → parser → typecheck → tree-walking interpreter end-to-end.
+- Kiểu nguyên thủy: `Trit`, `Tryte`, `Integer` (27 trit), `Long` (81 trit), `Trilean`, `String`, `Unit`.
+- Logic Łukasiewicz Ł3 (default) + Kleene K3 (alternative).
+- Struct, enum + generics (type parameters trên type definitions).
+- Nullable subtyping `T ⊂ T?` bẩm sinh tam phân (1-trit discriminator, [ADR-0001](docs/decisions/0001-nullable-memory-layout.md)).
+- F-string interpolation ([ADR-0002](docs/decisions/0002-fstring-format-spec.md)).
+- Iterator protocol ([ADR-0003](docs/decisions/0003-iterator-protocol.md)).
+- Multi-line string indent ([ADR-0004](docs/decisions/0004-multiline-string-indent.md)).
+- Diagnostic format (miette, error codes E0000–E2007).
+
+### 0.5 Đang triển khai (v0.2.x)
+
+Module system theo [ADR-0005](docs/decisions/0005-module-system.md). Khi v0.2.x ship, SPEC này sẽ được cập nhật với cú pháp `::` paths, `mod` declarations, `use` imports, và visibility modifiers (`pub`, `pub(pkg)`).
+
+### 0.6 Non-goals của v0.2
+
+Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** phải v0.2:
+
+- **Hiệu năng tối ưu** — interpreter tree-walking. Bytecode VM ở phase v0.3.
+- **Concurrency/async** — phase v0.8.
+- **FFI với C/Rust runtime** — phase v0.4 (cùng stable ABI).
+- **CAS packaging** — phase v0.5.
+- **Capability enforcement runtime** — phase v0.6.
+- **Self-hosting compiler** — phase v0.7.
+- **JIT** — phase v0.9. **Native AOT compile** — phase v2.0.
 
 ---
 
@@ -116,7 +160,7 @@ Quy tắc: chỉ string có prefix `f` mới interpret `{expr}`. Đảm bảo st
 
 Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 
-**Nested f-strings không được phép ở v0.1.** Một f-string không thể chứa f-string khác trong phần interpolation. Cần thiết: tách thành biến trung gian.
+**Nested f-strings không được phép.** Một f-string không thể chứa f-string khác trong phần interpolation. Cần thiết: tách thành biến trung gian. (Quyết định cứng — không có plan cho phép trong tương lai gần; xem [ADR-0002](docs/decisions/0002-fstring-format-spec.md).)
 
 **Implementation note (informative):** Lexer dùng *mode stack* (như rustc/Swift/Python 3.12+) để xử lý f-string. Khi gặp `f"`, lexer push mode `FString`; trong mode này, text được emit thành `FStringText` cho đến khi gặp `{` (push mode `Interpolation`) hoặc `"` (pop, end f-string). Trong mode `Interpolation`, lexer hoạt động bình thường, đếm độ sâu ngoặc nhọn; `}` ở depth 0 đóng interpolation. Cách này tránh được mọi vấn đề scan ngây ngô (string `"}"` bên trong, block `{ ... }` bên trong, span tracking sai lệch).
 
@@ -138,7 +182,7 @@ Escape `{` và `}` trong f-string: dùng `{{` và `}}`.
 
 `Trit` và `Trilean` đều là 1-trit về biểu diễn nhưng **khác kiểu** ở mức ngôn ngữ — `Trit` là số (`-1`, `0`, `+1`), `Trilean` là chân lý (`false`, `unknown`, `true`). Conversion phải explicit (xem §2.4).
 
-> **Lưu ý implementation v0.1:** `Long` (81 trit) deferred sang v0.2. Phạm vi của Long vượt quá `i128::MAX` (~1.7×10³⁸) nên cần big-integer arithmetic — sẽ thêm khi mở rộng v0.2 (đồng thời với generics/enum cho `Option<T>`). v0.1 chỉ ship `Trit`, `Tryte`, `Integer`, `Trilean`.
+> **Note:** `Long` dùng big-integer backing (`bnum::I256`) trong interpreter v0.2 vì phạm vi vượt quá `i128::MAX` (~1.7×10³⁸). Backend tam phân native (v2.0+) sẽ map trực tiếp sang 81 trit hardware.
 
 #### Quy ước đặt tên: tam phân first
 
@@ -273,7 +317,7 @@ V0.1 chỉ có `T?` (compiler primitive). `Option<T>` đặc tả ở v0.2 khi c
 Inference thực hiện local, theo Hindley-Milner đơn giản hóa. Annotation bắt buộc tại:
 - Tham số function
 - Return type của function (trừ khi function có thân là expression đơn và type suy được dễ)
-- Tham số type của generic (chưa có ở v0.1)
+- Tham số type của generic struct/enum khi context không suy được (v0.2 hỗ trợ inference từ argument: `Some(42)` → `Option<Integer>`)
 
 ```triet
 let x = 5                       // suy ra Integer
@@ -440,7 +484,7 @@ Khác biệt vẫn chỉ ở `unknown`-`unknown`:
 - `a ⊗ b = max(0, a + b - 1)`
 - `a ⊕ b = min(1, a + b)`
 
-Hữu ích cho fuzzy reasoning và biên xác suất Fréchet, nhưng trong Ł3 (3 giá trị rời rạc) chúng cộng ít giá trị thực dụng. Triết v0.1 **không expose**. Sẽ đưa vào khi mở rộng tới Ł∞ (continuous-valued, v0.2+).
+Hữu ích cho fuzzy reasoning và biên xác suất Fréchet, nhưng trong Ł3 (3 giá trị rời rạc) chúng cộng ít giá trị thực dụng. Triết hiện tại **không expose**. Sẽ đưa vào khi mở rộng tới Ł∞ (continuous-valued).
 
 ### 4.5 Equality `==` và `!=`
 
@@ -533,13 +577,11 @@ fn abs(n: Integer) -> Integer {
 
 ### 6.2 Tham số
 
-Tất cả tham số bắt buộc có type annotation. Triết v0.1 không có:
-- Default values
-- Named arguments
-- Variadic
-- Generics
-
-(Sẽ thêm dần ở v0.2+.)
+Tất cả tham số bắt buộc có type annotation. v0.2 không có (sẽ phasing dần):
+- Default values — defer
+- Named arguments — defer
+- Variadic — defer
+- Generic functions (`fn id<T>(x: T) -> T`) — phase G.2 sau module system. Generic type *definitions* (struct/enum) đã có ở v0.2.
 
 ### 6.3 Closure (lambda)
 
@@ -663,11 +705,12 @@ fn describe(b: Trilean) -> String =
     }
 ```
 
-Pattern khả dụng v0.1:
+Pattern khả dụng (v0.2):
 - Literal: `0`, `5_tryte`, `true`, `"hello"`, `0t+0-+`
 - Variable binding: `x` (capture giá trị)
 - Wildcard: `_`
 - Tuple: `(a, b, _)`
+- Enum variant: `Some(x)`, `None` (v0.2)
 - Guard: `pattern if condition`
 - Or-pattern: `1 | 2 | 3`
 
@@ -683,11 +726,13 @@ let (x, y) = pair                       // destructure
 let first = pair.0                      // index
 ```
 
-Tuple là kiểu duy nhất composite tại v0.1. Struct và enum thuộc v0.2.
+Tuple là composite anonymous (kiểu được suy ra từ thành phần). Struct (named fields) và enum (named variants) là composite có tên — xem định nghĩa ở §6+.
 
 ---
 
-## 9. Standard library tối thiểu (v0.1)
+## 9. Standard library tối thiểu (v0.2)
+
+> **Migration note (v0.2.x):** Cú pháp dot-path `std.io.println` đang được thay bằng `std::io::println` theo [ADR-0005](docs/decisions/0005-module-system.md). v0.2.x parse cả hai với deprecation warning cho dot-path; v0.3 chỉ chấp nhận `::`.
 
 Module `std.io`:
 ```triet
@@ -740,11 +785,12 @@ Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**
 
 **Heap-allocated** (ARC-managed):
 - `String` (UTF-8 owned, mutable qua `let mut`)
-- `Option<T>` (v0.2+, generic wrapper)
-- `List<T>`, `Set<T>`, `Map<K, V>` (v0.2+, collections)
+- `Option<T>` (v0.2 — user-defined enum hiện tại; stdlib version ở v0.4 cùng Crate-Pack)
+- `Result<T, E>` (v0.4 — cùng stable ABI phase)
+- `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections)
 
 **Stack view** (composite, không sở hữu):
-- `StringSlice` (v0.2+ — view vào String, immutable, lifetime infer)
+- `StringSlice` (post-v0.4 — view vào String, immutable, lifetime infer)
 
 ### 10.3 Function parameter conventions (Mojo-style)
 
@@ -761,34 +807,14 @@ fn consume(owned data: String) -> String { ... }
 
 So với Rust: viết ngắn 30%, ít cognitive overhead 70%.
 
-### 10.4 Implementation v0.1
+### 10.4 Implementation hiện tại (v0.2)
 
-V0.1 là interpreter tree-walking đơn giản:
-- Tất cả giá trị copy theo trị
-- Heap types dùng `Rc<T>` của Rust runtime (≈ ARC simulation)
-- Borrow checker chưa cần — không có references trong language v0.1
+v0.2 là interpreter tree-walking đơn giản:
+- Tất cả giá trị copy theo trị.
+- Heap types dùng `Rc<T>` của Rust runtime (≈ ARC simulation).
+- Borrow checker chưa cần — language hiện tại chưa expose references.
 
-V0.3+ (native compile) sẽ implement đầy đủ ARC + simplified borrow check.
-
-### 10.5 Reserved cho v0.2+: SIMD/Tensor + DType
-
-Khi Triết tiến hóa cho ML/AI workload (phù hợp AI-first vision), sẽ thêm:
-- `SIMD<DType, N>` — vector operations
-- `Tensor<DType>` — multi-dim arrays cho ML
-- `DType` enum — meta-tag chỉ định element type
-
-Theo Mojo convention, **DType variants dùng lowercase** (chỉ ở scope DType enum):
-```triet
-// Hypothetical v0.2+
-enum DType {
-    trit, tryte, integer, long, trilean,
-    // sau này: float_27, complex, bfloat, ...
-}
-
-let vector: SIMD<DType.integer, 4> = ...
-```
-
-Lowercase **chỉ** xuất hiện trong DType variants — không lan ra type names thông thường (vẫn PascalCase).
+Bytecode VM (v0.3) và native compile (v2.0) sẽ implement đầy đủ ARC + simplified borrow check. Memory model nailed-down ở phase v0.4 (ABI) qua ADR riêng.
 
 ---
 
@@ -842,7 +868,7 @@ fn sign(n: Integer) -> Trit = n.first_nonzero_trit_or(0_trit)
 
 ---
 
-## 12. Ngữ pháp (EBNF, không hoàn chỉnh, v0.1)
+## 12. Ngữ pháp (EBNF, không hoàn chỉnh, v0.2)
 
 ```ebnf
 program       = item* ;
@@ -928,9 +954,21 @@ Open issues mới sẽ append phía dưới. Hiện tại: trống.
 
 ## 14. Lộ trình các phiên bản tiếp theo (informative)
 
-- **v0.1** (đặc tả này) — interpreter tree-walking, semantics đầy đủ
-- **v0.2** — struct, enum, generics, module system, Ł∞ (fuzzy continuous)
-- **v0.3** — bytecode VM với JIT (Cranelift)
-- **v0.4** — concurrency model (cần thiết kế)
-- **v1.0** — production stability commitment, AOT native compile (LLVM/Cranelift)
+Lộ trình chi tiết với gates, deliverables, và ADRs: [`ROADMAP.md`](ROADMAP.md).
+
+Tóm tắt phasing dài hạn:
+
+- **v0.2** — struct, enum, generics ✅ (hiện tại)
+- **v0.2.x** — module system ([ADR-0005](docs/decisions/0005-module-system.md))
+- **v0.3** — bytecode VM + stable IR
+- **v0.4** — Crate-Pack + stable ABI
+- **v0.5** — CAS packaging (hash-based identity)
+- **v0.6** — capability namespaces (`sys::` / `dev::` / `usr::`)
+- **v0.7** — self-hosting compiler
+- **v0.8** — concurrency model
+- **v0.9** — JIT (Cranelift)
+- **v1.0** — production stability
+- **v2.0** — AOT native compile (LLVM)
+- **v3.0** — microkernel POC
+- **v∞** — backend cho phần cứng tam phân
 - **v2.0+** — backend cho phần cứng tam phân giả định, nếu/khi có
