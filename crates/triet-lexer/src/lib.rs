@@ -29,9 +29,9 @@ pub use token::{IntLiteral, NumericSuffix, Token};
 mod tests {
     use super::*;
     use Token::{
-        And, AndAnd, Assign, Bang, BangBang, Break, Caret, Colon, Comma, Constant,
+        And, AndAnd, As, Assign, Bang, BangBang, Break, Caret, Colon, Comma, Constant,
         Continue, Dot, DotDot, DotDotEq, Else, EqEq, FStringEnd, FStringStart, FStringText, False,
-        FatArrow, For, Function, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
+        FatArrow, For, From, Function, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
         InterpolationEnd, InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace,
         LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not,
         NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Public, Question,
@@ -50,7 +50,7 @@ mod tests {
     fn lexes_all_keywords() {
         let source = "function let mutable constant type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
-                      kleene_implies kleene_xor kleene_iff import module public owned \
+                      kleene_implies kleene_xor kleene_iff import from as module public owned \
                       struct enum crate self super";
         let tokens = lex_only(source);
         assert_eq!(
@@ -58,8 +58,8 @@ mod tests {
             vec![
                 Function, Let, Mutable, Constant, Type, If, Else, Match, Return, For, While, Loop, Break,
                 Continue, In, True, False, Unknown, Null, Not, And, Or, Xor, Iff, Implies,
-                KleeneImplies, KleeneXor, KleeneIff, Token::Import, Token::Module, Public, Owned,
-                Token::Struct, Token::Enum, Token::Crate, Token::SelfKw, Token::Super,
+                KleeneImplies, KleeneXor, KleeneIff, Token::Import, From, As, Token::Module,
+                Public, Owned, Token::Struct, Token::Enum, Token::Crate, Token::SelfKw, Token::Super,
             ],
         );
     }

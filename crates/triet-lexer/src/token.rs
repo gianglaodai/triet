@@ -150,6 +150,14 @@ pub enum Token {
     /// baseline; v0.2.x adds Python-style `from ... import ...` per ADR-0005.
     #[token("import")]
     Import,
+    /// `from` — Python-style import source, paired with `import`:
+    /// `from std.io import println, print`. Per ADR-0005.
+    #[token("from")]
+    From,
+    /// `as` — import rename, paired with `import`:
+    /// `from std.io import println as out`. Per ADR-0005.
+    #[token("as")]
+    As,
     /// `module` — module declaration. Per ADR-0005, Java JPMS-aligned.
     #[token("module")]
     Module,

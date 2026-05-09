@@ -41,9 +41,20 @@ pub enum Item {
     /// Enum definition: `enum Option { Some(Integer), None }`.
     Enum(EnumDef),
 
-    /// Module import: `import std.io`. Imports do not carry visibility —
-    /// re-exports of imported names are a post-v0.2.x feature (ADR-0005).
+    /// Whole-module import: `import std.io` (or terminal-name form
+    /// `import std.io.println`, retained from v0.2 baseline). Imports do
+    /// not carry visibility — re-exports of imported names are a
+    /// post-v0.2.x feature (ADR-0005).
     Import(ImportPath),
+
+    /// Python-style selective import: `from std.io import println, print`.
+    /// Per ADR-0005 §"Imports — Python style". Imports do not carry
+    /// visibility (see [`Item::Import`]).
+    ImportFrom(ImportFrom),
+
+    /// Module declaration: `module foo` (file-bound) or
+    /// `module foo { ... }` (inline). Per ADR-0005 §"Cú pháp".
+    Module(ModuleDecl),
 }
 
 /// A struct definition with named fields.
@@ -145,6 +156,57 @@ pub enum FunctionBody {
 pub struct ImportPath {
     /// Dot-separated segments, in order.
     pub segments: Vec<String>,
+}
+
+/// A Python-style selective import: `from std.io import println, print as p`.
+///
+/// Imports do not carry visibility — re-exporting imported names is a
+/// post-v0.2.x feature (ADR-0005). The name resolver normalizes the
+/// `source` path against the current module before resolving each name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportFrom {
+    /// Dot-separated source path: `from std.io import …` → `["std", "io"]`.
+    pub source: Vec<String>,
+    /// One or more imported names with optional rename.
+    /// `import a, b as c` → `[("a", None), ("b", Some("c"))]`.
+    pub names: Vec<ImportName>,
+}
+
+/// A single name in an `ImportFrom`'s name list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportName {
+    /// Imported symbol name (as it appears in the source module).
+    pub name: String,
+    /// Optional alias introduced by `as` — when present, the binding
+    /// in the importing module uses this name instead of `name`.
+    pub alias: Option<String>,
+}
+
+/// A module declaration — `module foo` or `module foo { items }`.
+///
+/// Per ADR-0005, declarations are first-class (Java JPMS-aligned):
+/// filesystem layout is *convention*, not semantics. `module foo` asks
+/// the loader to resolve `foo.tri` (or `foo/foo.tri`); inline form
+/// nests items lexically.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleDecl {
+    /// Visibility (`public`, `public(package)`, or default `Private`).
+    pub visibility: Visibility,
+    /// Module name (single identifier — nested paths use nested
+    /// declarations, not dot-separated names).
+    pub name: String,
+    /// Either external (loader resolves a file) or inline (items here).
+    pub content: ModuleContent,
+}
+
+/// Content of a [`ModuleDecl`] — file-bound or inline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModuleContent {
+    /// `module foo` — body lives in `foo.tri` or `foo/foo.tri`. The
+    /// module loader (v0.2.x.6) resolves the file.
+    External,
+    /// `module foo { items }` — body inlined at the declaration site.
+    Inline(Vec<Spanned<Item>>),
 }
 
 /// Root of the AST — a parsed `.tri` source file.

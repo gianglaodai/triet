@@ -105,8 +105,20 @@ impl<'p> Interpreter<'p> {
                         self.env.declare(name, constant);
                     }
                 }
-                Item::TypeAlias { .. } | Item::Import(_) | Item::Struct(_) | Item::Enum(_) => {
-                    // No runtime effect in v0.1.
+                Item::TypeAlias { .. }
+                | Item::Import(_)
+                | Item::ImportFrom(_)
+                | Item::Struct(_)
+                | Item::Enum(_) => {
+                    // No runtime effect at this stage. The module loader
+                    // (v0.2.x.6) will materialize import bindings; for now
+                    // they're parser-only AST.
+                }
+                Item::Module(_) => {
+                    // Module declarations are parser-level only until the
+                    // module loader (v0.2.x.6) lands. Inline submodules
+                    // are not yet recursed into; file-bound modules are
+                    // not yet resolved.
                 }
             }
         }

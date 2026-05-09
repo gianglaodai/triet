@@ -106,8 +106,15 @@ impl<'p> Checker<'p> {
                 // checker does not yet expand them. Names registered in
                 // declare_or_record_dup are not used as type names.
             }
-            Item::Import(_) => {
-                // V0.1 imports are syntactic placeholders.
+            Item::Import(_) | Item::ImportFrom(_) => {
+                // Imports are syntactic placeholders until the module
+                // loader (v0.2.x.6) ships. Names introduced by `import`
+                // / `from … import …` are not yet bound here.
+            }
+            Item::Module(_) => {
+                // Module declarations are not yet checked; the module
+                // loader (v0.2.x.6) will recurse into inline content
+                // and resolve external file-bound modules.
             }
             Item::Struct(def) => {
                 // Push a frame where type params are visible during

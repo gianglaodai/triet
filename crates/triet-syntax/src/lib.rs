@@ -46,8 +46,9 @@ pub use expr::{
     BinaryOperator, Expr, FStringPart, FStringSegments, LambdaParam, MatchArm, UnaryOperator,
 };
 pub use item::{
-    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportPath, Item,
-    ParameterPassing, Program, StructDef, StructField,
+    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportFrom, ImportName,
+    ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Program, StructDef,
+    StructField,
 };
 pub use numeric::{NumericSuffix, TrileanValue};
 pub use pattern::{LiteralPattern, Pattern};
