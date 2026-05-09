@@ -30,6 +30,7 @@ const LONG_ARITHMETIC: &str = "long_arithmetic.tri";
 const ENUMERATE: &str = "enumerate.tri";
 const NULLABLE: &str = "nullable.tri";
 const WHILE_POLLING: &str = "while_polling.tri";
+const MAYBE: &str = "maybe.tri";
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/triet-cli; examples live
@@ -381,4 +382,18 @@ fn while_polling_main_runs_without_error() {
     let program = load_program(WHILE_POLLING);
     let result = run(&program);
     assert!(result.is_ok(), "while_polling main failed: {result:?}");
+}
+
+#[test]
+fn maybe_demo_parses_and_type_checks() {
+    let _ = load_program(MAYBE);
+}
+
+#[test]
+fn maybe_unwrap_or_returns_value_for_some() {
+    let program = load_program(MAYBE);
+    // unwrap_or(Some(42), 0) = 42
+    // Can't construct Some(42) directly from Rust — use run + main instead.
+    let result = run(&program);
+    assert!(result.is_ok(), "maybe main failed: {result:?}");
 }

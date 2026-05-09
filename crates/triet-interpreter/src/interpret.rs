@@ -282,11 +282,25 @@ impl<'p> Interpreter<'p> {
                 Ok(Value::from_string(output))
             }
             Expr::NullLiteral => Ok(Value::Null),
-            Expr::Identifier(name) => self
-                .env
-                .lookup(&name)
-                .cloned()
-                .ok_or(RuntimeError::UndefinedName { name, span }),
+            Expr::Identifier(name) => {
+                match self.env.lookup(&name).cloned() {
+                    Some(value) => Ok(value),
+                    None => {
+                        // Try enum unit variant: `None`.
+                        if let Some((enum_name, variant_name)) =
+                            self.find_enum_variant_for_construction(&name)
+                        {
+                            Ok(Value::EnumVariant {
+                                name: enum_name,
+                                variant: variant_name,
+                                payload: None,
+                            })
+                        } else {
+                            Err(RuntimeError::UndefinedName { name, span })
+                        }
+                    }
+                }
+            }
             Expr::BinaryOp { operator, left, right } => self.evaluate_binary(operator, left, right, span),
             Expr::UnaryOp { operator: UnaryOperator::Negate, operand } => self.evaluate_negate(operand, span),
             Expr::Call { callee, arguments } => self.evaluate_call(callee, &arguments, span),
@@ -413,10 +427,15 @@ impl<'p> Interpreter<'p> {
                 }
                 Ok(Value::Struct { name: name.clone(), fields: field_values })
             }
-            Expr::EnumLiteral { .. } => {
-                Err(RuntimeError::TypeError {
-                    message: "enum literals — v0.2 (not yet implemented)".to_owned(),
-                    span,
+            Expr::EnumLiteral { name, variant_name, payload } => {
+                let payload_value = match payload {
+                    Some(expr) => Some(Box::new(self.evaluate_expression(expr)?)),
+                    None => None,
+                };
+                Ok(Value::EnumVariant {
+                    name: name.clone(),
+                    variant: variant_name.clone(),
+                    payload: payload_value,
                 })
             }
         }
@@ -455,12 +474,55 @@ impl<'p> Interpreter<'p> {
         arguments: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        // Enum variant construction: `Some(5)`, `None`.
+        if let Expr::Identifier(ref name) = self.arena.expression(callee).node {
+            if let Some(enum_ty) = self.env.lookup(name).cloned() {
+                if let Value::EnumVariant { .. } = &enum_ty {
+                    // The name resolves to an enum variant value — this
+                    // shouldn't happen (variants aren't stored as values).
+                }
+            }
+            // Check if `name` is a variant of any registered enum.
+            if let Some((enum_name, variant_name)) =
+                self.find_enum_variant_for_construction(name)
+            {
+                let payload = if arguments.is_empty() {
+                    None
+                } else {
+                    Some(Box::new(self.evaluate_expression(arguments[0])?))
+                };
+                return Ok(Value::EnumVariant {
+                    name: enum_name,
+                    variant: variant_name,
+                    payload,
+                });
+            }
+        }
+
         let function = self.evaluate_expression(callee)?;
         let mut arg_values = Vec::with_capacity(arguments.len());
         for &arg in arguments {
             arg_values.push(self.evaluate_expression(arg)?);
         }
         self.invoke(&function, arg_values, span)
+    }
+
+    /// Scan registered enum types for a variant named `name`. Returns
+    /// `(enum_type_name, variant_name)` if found.
+    fn find_enum_variant_for_construction(
+        &self,
+        name: &str,
+    ) -> Option<(String, String)> {
+        for item in self.items {
+            if let Item::Enum(def) = &item.node {
+                for variant in &def.variants {
+                    if variant.name == name {
+                        return Some((def.name.clone(), variant.name.clone()));
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn evaluate_method_call(

@@ -409,9 +409,22 @@ where
             _ => false,
         },
         Pattern::Literal(literal) => literal_matches(literal, value),
-        Pattern::EnumVariant { .. } => {
-            // v0.2: enum pattern matching — not yet implemented.
-            false
+        Pattern::EnumVariant { variant_name, payload: sub_pattern, .. } => {
+            match value {
+                Value::EnumVariant { variant, payload, .. } => {
+                    if variant != variant_name {
+                        return false;
+                    }
+                    match (sub_pattern, payload) {
+                        (None, None) => true,
+                        (Some(pat), Some(val)) => {
+                            pattern_matches(arena, *pat, val, bind)
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
         }
     }
 }

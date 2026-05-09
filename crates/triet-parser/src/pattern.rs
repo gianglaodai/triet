@@ -57,9 +57,26 @@ fn parse_pattern_no_or(parser: &mut Parser<'_>) -> Result<PatternId, ParseError>
         }
         Token::Identifier(name) => {
             parser.advance();
-            Ok(parser
-                .arena
-                .alloc_pattern(Spanned::new(Pattern::Variable(name), span)))
+            // Peek: `Variant(subpattern)` is an enum pattern.
+            if matches!(parser.peek_token(), Some(Token::LParen)) {
+                parser.advance(); // consume `(`
+                let payload = parse_pattern(parser)?;
+                parser.expect(&Token::RParen, "`)`")?;
+                let end = parser.previous_token_end(span.end);
+                let span = span.start..end;
+                Ok(parser.arena.alloc_pattern(Spanned::new(
+                    Pattern::EnumVariant {
+                        name: None,
+                        variant_name: name,
+                        payload: Some(payload),
+                    },
+                    span,
+                )))
+            } else {
+                Ok(parser
+                    .arena
+                    .alloc_pattern(Spanned::new(Pattern::Variable(name), span)))
+            }
         }
         Token::LParen => parse_tuple_pattern(parser, span),
         Token::True | Token::False | Token::Unknown => {

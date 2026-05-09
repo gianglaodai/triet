@@ -8,7 +8,9 @@ use crate::types::Type;
 /// a frame; leaving pops it. Lookup walks from innermost to outermost.
 #[derive(Clone, Debug, Default)]
 pub struct TypeEnvironment {
-    frames: Vec<Frame>,
+    /// The frame stack. Accessible to the checker for enum-variant
+    /// scanning; prefer `lookup()` / `declare()` for normal use.
+    pub(crate) frames: Vec<Frame>,
 }
 
 /// A type-level binding: the type plus whether reassignment is allowed.
@@ -21,8 +23,9 @@ pub struct Binding {
 }
 
 #[derive(Clone, Debug, Default)]
-struct Frame {
-    names: HashMap<String, Binding>,
+pub(crate) struct Frame {
+    /// Bindings in this frame.
+    pub names: HashMap<String, Binding>,
 }
 
 impl TypeEnvironment {

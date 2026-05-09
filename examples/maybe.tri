@@ -1,0 +1,33 @@
+// Enum + match — minh họa v0.2 user-defined sum types.
+//
+// Enum cho phép định nghĩa kiểu dữ liệu với nhiều variant:
+//   enum MaybeInt { Some(Integer), None }
+//
+// Match cho phép pattern matching exhaustively trên tất cả variant:
+//   match value {
+//       Some(v) => ...,
+//       None => ...,
+//   }
+
+enum MaybeInt { Some(Integer), None }
+
+// Unwrap với giá trị mặc định — giống `Option::unwrap_or` trong Rust.
+fn unwrap_or(value: MaybeInt, default: Integer) -> Integer =
+    match value {
+        Some(v) => v,
+        None => default,
+    }
+
+fn describe(value: MaybeInt) -> String =
+    match value {
+        Some(v) => f"có giá trị {v}",
+        None => "rỗng",
+    }
+
+fn main() {
+    let a = Some(42)
+    let b = None
+
+    println(f"a = {describe(a)}, unwrap_or = {unwrap_or(a, 0)}")
+    println(f"b = {describe(b)}, unwrap_or = {unwrap_or(b, 100)}")
+}

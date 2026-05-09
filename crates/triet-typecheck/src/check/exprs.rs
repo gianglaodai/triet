@@ -52,10 +52,17 @@ impl Checker<'_> {
                 // to `String` via branch unification + widening.
                 Type::Nullable(Box::new(Type::Unknown))
             }
-            Expr::Identifier(name) => self.env.lookup(&name).cloned().unwrap_or_else(|| {
-                self.errors.push(TypeError::UndefinedName { name, span });
-                Type::Unknown
-            }),
+            Expr::Identifier(name) => {
+                // Try variable/function binding first, then enum variant.
+                if let Some(ty) = self.env.lookup(&name).cloned() {
+                    ty
+                } else if let Some(enum_ty) = self.lookup_enum_variant(&name) {
+                    enum_ty
+                } else {
+                    self.errors.push(TypeError::UndefinedName { name, span });
+                    Type::Unknown
+                }
+            }
             Expr::BinaryOp { operator, left, right } => {
                 self.check_binary_op(operator, left, right, span)
             }
@@ -129,9 +136,8 @@ impl Checker<'_> {
             Expr::StructLiteral { name, fields } => {
                 self.check_struct_literal(&name, &fields, span)
             }
-            Expr::EnumLiteral { name, .. } => {
-                // v0.2: enum literals deferred.
-                Type::Unknown
+            Expr::EnumLiteral { name, variant_name, payload } => {
+                self.check_enum_literal(&name, &variant_name, payload.as_ref(), span)
             }
         }
     }
@@ -244,42 +250,101 @@ impl Checker<'_> {
 
     fn check_call(&mut self, callee: ExprId, arguments: &[ExprId], span: Span) -> Type {
         let callee_ty = self.infer_expression(callee);
-        let Type::Function {
+
+        // Try function call first.
+        if let Type::Function {
             parameters,
             return_type,
         } = callee_ty.clone()
-        else {
-            if !matches!(callee_ty, Type::Unknown) {
-                self.errors.push(TypeError::NotCallable {
-                    found: callee_ty,
+        {
+            if arguments.len() != parameters.len() {
+                self.errors.push(TypeError::WrongArity {
+                    expected: parameters.len(),
+                    found: arguments.len(),
                     span,
                 });
             }
-            return Type::Unknown;
-        };
-
-        if arguments.len() != parameters.len() {
-            self.errors.push(TypeError::WrongArity {
-                expected: parameters.len(),
-                found: arguments.len(),
-                span,
-            });
+            for (i, argument) in arguments.iter().enumerate() {
+                let arg_ty = self.infer_expression(*argument);
+                if let Some(expected) = parameters.get(i)
+                    && !expected.matches(&arg_ty)
+                {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: expected.clone(),
+                        found: arg_ty,
+                        span: self.arena.expression(*argument).span.clone(),
+                    });
+                }
+            }
+            return *return_type;
         }
 
-        for (i, argument) in arguments.iter().enumerate() {
-            let arg_ty = self.infer_expression(*argument);
-            if let Some(expected) = parameters.get(i)
-                && !expected.matches(&arg_ty)
-            {
-                self.errors.push(TypeError::Mismatch {
-                    expected: expected.clone(),
-                    found: arg_ty,
-                    span: self.arena.expression(*argument).span.clone(),
-                });
+        // Try enum variant construction: `Some(5)`, `None`.
+        if let Expr::Identifier(ref callee_name) =
+            self.arena.expression(callee).node
+        {
+            if let Some(enum_ty) = self.lookup_enum_variant(callee_name) {
+                let Type::UserEnum { name: enum_name, variants } = &enum_ty else {
+                    unreachable!()
+                };
+                let (_, payload) = variants
+                    .iter()
+                    .find(|(n, _)| n == callee_name)
+                    .expect("lookup_enum_variant guarantees this");
+                match (arguments.len(), payload) {
+                    (1, Some(expected_ty)) => {
+                        let arg_ty = self.infer_expression(arguments[0]);
+                        if !expected_ty.matches(&arg_ty) {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: (**expected_ty).clone(),
+                                found: arg_ty,
+                                span: self.arena.expression(arguments[0]).span.clone(),
+                            });
+                        }
+                    }
+                    (0, None) => {} // unit variant
+                    (n, Some(_)) => {
+                        self.errors.push(TypeError::WrongArity {
+                            expected: 1,
+                            found: n,
+                            span,
+                        });
+                    }
+                    (n, None) => {
+                        self.errors.push(TypeError::WrongArity {
+                            expected: 0,
+                            found: n,
+                            span,
+                        });
+                    }
+                }
+                return enum_ty.clone();
             }
         }
 
-        *return_type
+        if !matches!(callee_ty, Type::Unknown) {
+            self.errors.push(TypeError::NotCallable {
+                found: callee_ty,
+                span,
+            });
+        }
+        Type::Unknown
+    }
+
+    /// Scan the type environment for an enum variant with the given
+    /// name. Returns the enum type that owns the variant.
+    fn lookup_enum_variant(&self, name: &str) -> Option<Type> {
+        // Walk frames to find any UserEnum whose variants contain `name`.
+        for frame in self.env.frames.iter().rev() {
+            for binding in frame.names.values() {
+                if let Type::UserEnum { variants, .. } = &binding.ty {
+                    if variants.iter().any(|(n, _)| n == name) {
+                        return Some(binding.ty.clone());
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn check_method_call(
@@ -347,6 +412,66 @@ impl Checker<'_> {
                     expected: expected_ty.clone(),
                     found: value_ty,
                     span: self.arena.expression(*value).span.clone(),
+                });
+            }
+        }
+        ty.clone()
+    }
+
+    fn check_enum_literal(
+        &mut self,
+        name: &str,
+        variant_name: &str,
+        payload: Option<&ExprId>,
+        span: Span,
+    ) -> Type {
+        let ty = self.env.lookup(name).cloned().unwrap_or_else(|| {
+            self.errors.push(TypeError::UndefinedName {
+                name: name.to_owned(),
+                span: span.clone(),
+            });
+            Type::Unknown
+        });
+        let Type::UserEnum { name: _, variants } = &ty else {
+            self.errors.push(TypeError::Mismatch {
+                expected: Type::Unknown,
+                found: ty,
+                span,
+            });
+            return Type::Unknown;
+        };
+        let Some((_, def_payload)) = variants.iter().find(|(n, _)| n == variant_name) else {
+            self.errors.push(TypeError::UnknownMember {
+                member: variant_name.to_owned(),
+                found: ty.clone(),
+                span: span.clone(),
+            });
+            return Type::Unknown;
+        };
+        match (payload, def_payload) {
+            (Some(val_expr), Some(expected_ty)) => {
+                let val_ty = self.infer_expression(*val_expr);
+                if !expected_ty.matches(&val_ty) {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: (**expected_ty).clone(),
+                        found: val_ty,
+                        span: self.arena.expression(*val_expr).span.clone(),
+                    });
+                }
+            }
+            (None, None) => {} // unit variant — OK
+            (Some(_), None) => {
+                self.errors.push(TypeError::WrongArity {
+                    expected: 0,
+                    found: 1,
+                    span: span.clone(),
+                });
+            }
+            (None, Some(_)) => {
+                self.errors.push(TypeError::WrongArity {
+                    expected: 1,
+                    found: 0,
+                    span,
                 });
             }
         }
