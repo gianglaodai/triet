@@ -1,5 +1,6 @@
 //! Parser error types.
 
+use miette::Diagnostic;
 use thiserror::Error;
 use triet_lexer::{LexError, Span};
 
@@ -8,82 +9,101 @@ use triet_lexer::{LexError, Span};
 /// The parser accumulates errors in a `Vec<ParseError>` (with recovery)
 /// and returns them all at once when `parse()` finishes. Each error
 /// carries a precise [`Span`] for diagnostics.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
 pub enum ParseError {
     /// A specific token was expected but a different one (or end-of-input)
     /// was found.
-    #[error("expected {expected}, found {found} at byte {span:?}")]
+    #[error("expected {expected}, found {found}")]
+    #[diagnostic(code(triet::parse::E0001))]
     UnexpectedToken {
         /// What the parser was looking for (e.g. `"`)`"`).
         expected: String,
         /// What was actually found (debug-formatted).
         found: String,
         /// Where the unexpected token sits in source.
+        #[label("expected {expected} here")]
         span: Span,
     },
 
     /// End of input reached while still expecting more tokens.
-    #[error("unexpected end of input; expected {expected} at byte {span:?}")]
+    #[error("unexpected end of input; expected {expected}")]
+    #[diagnostic(
+        code(triet::parse::E0002),
+        help("the file ended before the parser could finish — check for missing `}}` or `)`")
+    )]
     UnexpectedEof {
         /// Description of what was expected.
         expected: String,
         /// Empty span at end-of-input, useful for diagnostic anchoring.
+        #[label("end of file")]
         span: Span,
     },
 
     /// Two same-class no-chain operators appeared in sequence.
-    ///
-    /// Triết forbids chaining comparison (`<`, `<=`, `>`, `>=`),
-    /// equality (`==`, `!=`), and range (`..`, `..=`) operators within
-    /// the same level. Wrap subexpressions in parentheses to disambiguate.
-    #[error("operators of class {class} cannot be chained at byte {span:?}")]
+    #[error("operators of class {class} cannot be chained")]
+    #[diagnostic(
+        code(triet::parse::E0003),
+        help("wrap each comparison in parentheses, e.g. `(a < b) and (b < c)`")
+    )]
     ChainedNoChainOperator {
         /// Description of the operator class (e.g. `"comparison"`).
         class: String,
         /// Span of the second offending operator.
+        #[label("second `{class}` operator")]
         span: Span,
     },
 
-    /// An f-string interpolation `{...}` was opened but its contents did
-    /// not parse as a valid expression.
-    #[error("invalid expression inside f-string interpolation at byte {span:?}: {message}")]
+    /// An f-string interpolation `{...}` parsed an invalid expression.
+    #[error("invalid expression inside f-string interpolation: {message}")]
+    #[diagnostic(code(triet::parse::E0004))]
     InvalidInterpolation {
         /// Description of the underlying issue.
         message: String,
         /// Span of the interpolation block.
+        #[label("inside this interpolation")]
         span: Span,
     },
 
-    /// A literal value (e.g. integer with suffix mismatch) is malformed.
-    #[error("invalid literal at byte {span:?}: {message}")]
+    /// A literal value is malformed.
+    #[error("invalid literal: {message}")]
+    #[diagnostic(code(triet::parse::E0005))]
     InvalidLiteral {
         /// What is wrong with the literal.
         message: String,
         /// Where the literal is in source.
+        #[label("invalid literal")]
         span: Span,
     },
 
-    /// A `break expr` appeared outside a `loop` — only `loop` allows
-    /// break-with-value.
-    #[error("`break` with a value is only allowed inside `loop`, found at byte {span:?}")]
+    /// `break expr` appeared outside a `loop`.
+    #[error("`break` with a value is only allowed inside `loop`")]
+    #[diagnostic(
+        code(triet::parse::E0006),
+        help("`break expr` (break-with-value) is only valid inside a `loop {{ }}` block; use plain `break` in `for`/`while`")
+    )]
     BreakValueOutsideLoop {
         /// Span of the `break` keyword.
+        #[label("`break` used here")]
         span: Span,
     },
 
-    /// Left-hand side of `=` is not an assignable target. V0.1 only
-    /// allows simple identifier targets; tuple/field/index assignment
-    /// arrives with structs (v0.2).
-    #[error("invalid assignment target at byte {span:?}: {description}")]
+    /// Left-hand side of `=` is not an assignable target.
+    #[error("invalid assignment target: {description}")]
+    #[diagnostic(
+        code(triet::parse::E0007),
+        help("v0.1 only allows simple identifiers as assignment targets, e.g. `count = 1`")
+    )]
     InvalidAssignmentTarget {
-        /// Why the LHS is not assignable (e.g. "expression is not a name").
+        /// Why the LHS is not assignable.
         description: String,
         /// Span of the offending target expression.
+        #[label("not a valid assignment target")]
         span: Span,
     },
 
     /// Underlying lexer error encountered before parsing finished.
     #[error(transparent)]
+    #[diagnostic(transparent)]
     Lex(#[from] LexError),
 }
 
