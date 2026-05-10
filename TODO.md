@@ -111,7 +111,7 @@ chưa có.
 
 ### Pending
 
-- [x] **v0.3.7** — Differential tests: VM ≡ tree-walking interpreter _(uncommitted)_
+- [x] **v0.3.7** — Differential tests: VM ≡ tree-walking interpreter `2c57a50`
   - Differential test harness in `crates/triet-cli/tests/differential_tests.rs` ✓
   - 3/11 examples pass byte-identically (lukasiewicz_vs_kleene, measles_risk,
     factorial) ✓
