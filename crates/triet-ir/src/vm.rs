@@ -356,6 +356,8 @@ pub struct Vm {
     functions: Vec<Function>,
     /// Block map for each function: FuncId → Vec<&BasicBlock> (indexed by BlockId).
     block_maps: HashMap<FuncId, HashMap<BlockId, BasicBlock>>,
+    /// Path index: absolute path string → FuncId for cross-module call dispatch.
+    path_index: HashMap<String, FuncId>,
 }
 
 impl Vm {
@@ -378,11 +380,24 @@ impl Vm {
             block_maps.insert(func.id, map);
         }
 
+        // Build a path → FuncId index for cross-module call dispatch.
+        let mut path_index: HashMap<String, FuncId> = HashMap::new();
+        for module in &program.modules {
+            let module_path = module.path.to_string();
+            for func in &module.functions {
+                if let Some(ref name) = func.name {
+                    let full_path = format!("{module_path}.{name}");
+                    path_index.insert(full_path, func.id);
+                }
+            }
+        }
+
         Self {
             frames: Vec::new(),
             program,
             functions,
             block_maps,
+            path_index,
         }
     }
 
@@ -829,13 +844,45 @@ impl Vm {
             }
             Instruction::CallCrossModule {
                 dest,
-                path: _path,
-                args: _args,
+                path,
+                args,
             } => {
-                // Cross-module calls require the full program context.
-                // For now, stub: treat as error.
-                if let Some(d) = dest {
-                    frame.write(d, RuntimeValue::Unit);
+                let arg_vals: Vec<RuntimeValue> = args
+                    .iter()
+                    .map(|a| read_operand(&self.program.constants, &frame, a))
+                    .collect();
+                let func_name = frame.func_name.clone();
+
+                // Check for builtin by path suffix.
+                if let Some(builtin) = path_to_builtin(&path.to_string()) {
+                    let result = execute_builtin(&builtin, &arg_vals, &func_name)?;
+                    if let Some(d) = dest {
+                        frame.write(d, result);
+                    }
+                } else if let Some(func_id) = self.path_index.get(&path.to_string()).copied() {
+                    // Cross-module call to a known function.
+                    let target = self
+                        .functions
+                        .iter()
+                        .find(|f| f.id == func_id)
+                        .cloned()
+                        .ok_or_else(|| VmError::FunctionNotFound {
+                            name: format!("@f{}", func_id.0),
+                        })?;
+
+                    // Set up return info on the new frame.
+                    let mut new_frame = Frame::new(&target, arg_vals.len());
+                    for (i, arg) in arg_vals.into_iter().enumerate() {
+                        new_frame.write(ValueId(i as u32), arg);
+                    }
+                    new_frame.return_block = Some(frame.block);
+                    new_frame.return_dest = dest;
+                    self.frames.push(new_frame);
+                    return Ok(StepResult::Continue);
+                } else {
+                    return Err(VmError::FunctionNotFound {
+                        name: path.to_string(),
+                    });
                 }
             }
 
@@ -1177,6 +1224,17 @@ fn runtime_cmp(l: &RuntimeValue, r: &RuntimeValue) -> std::cmp::Ordering {
 }
 
 // ── Builtins ───────────────────────────────────────────────────────
+
+/// Map an absolute path to a builtin, if the path refers to a known stdlib builtin.
+fn path_to_builtin(path: &str) -> Option<BuiltinName> {
+    match path {
+        "std.io.println" => Some(BuiltinName::Println),
+        "std.io.print" => Some(BuiltinName::Print),
+        "std.assert.assert" => Some(BuiltinName::Assert),
+        "std.assert.assert_eq" => Some(BuiltinName::AssertEq),
+        _ => None,
+    }
+}
 
 fn execute_builtin(
     name: &BuiltinName,

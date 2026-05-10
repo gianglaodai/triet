@@ -1,8 +1,9 @@
 //! Triết CLI — entry point for the `triet` binary.
 //!
 //! Subcommands:
-//! - `triet run <path>` — parse, type-check, and run the program.
+//! - `triet run <path>` — run a .tri source or .triv bytecode file.
 //! - `triet check <path>` — parse + type-check only, no execution.
+//! - `triet build <path>` — compile .tri source to .triv bytecode.
 //! - `triet info` — version and project info.
 //!
 //! Global flags:
@@ -11,6 +12,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -42,15 +44,23 @@ enum ColorArg {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a Triết program (.tri file).
+    /// Run a Triết program (.tri source or .triv bytecode).
     Run {
-        /// Path to .tri source file.
+        /// Path to .tri or .triv file.
         path: String,
     },
     /// Parse and type-check a Triết program without running it.
     Check {
         /// Path to .tri source file.
         path: String,
+    },
+    /// Compile a .tri source file to .triv bytecode.
+    Build {
+        /// Path to .tri source file.
+        path: String,
+        /// Output path for .triv bytecode (default: <input>.triv).
+        #[arg(short = 'o', long)]
+        output: Option<String>,
     },
     /// Print version and build info.
     Info,
@@ -77,8 +87,15 @@ fn main() -> ExitCode {
     }
 
     match cli.command {
-        Command::Run { path } => run_program(&path, cli.json),
+        Command::Run { path } => {
+            if path.ends_with(".triv") {
+                run_bytecode(&path, cli.json)
+            } else {
+                run_program(&path, cli.json)
+            }
+        }
         Command::Check { path } => check_program(&path, cli.json),
+        Command::Build { path, output } => build_program(&path, output, cli.json),
         Command::Info => {
             println!("Triết v{}", env!("CARGO_PKG_VERSION"));
             println!("Balanced ternary, AI-first programming language");
@@ -308,4 +325,153 @@ fn runtime_error_span(error: &RuntimeError) -> std::ops::Range<usize> {
         | RuntimeError::WrongArity { span, .. }
         | RuntimeError::TypeError { span, .. } => span.clone(),
     }
+}
+
+// ── build ──────────────────────────────────────────────────────────────
+
+fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
+    let display_path = path;
+
+    let resolved = match triet_modules::load_program(Path::new(path)) {
+        Ok(p) => p,
+        Err(errors) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                for error in &errors {
+                    emitter.emit(
+                        &error.to_string(),
+                        error.code(),
+                        &error.span(),
+                        display_path,
+                    );
+                }
+                emitter.finish();
+            } else {
+                for error in errors {
+                    let report = Report::new(error);
+                    eprintln!("{report:?}");
+                }
+            }
+            return ExitCode::from(2);
+        }
+    };
+
+    let type_errors = triet_typecheck::check_resolved(&resolved);
+    if !type_errors.is_empty() {
+        if json {
+            let mut emitter = JsonEmitter::new();
+            for error in &type_errors {
+                emitter.emit(
+                    &error.to_string(),
+                    &type_error_code(error),
+                    &error.span(),
+                    display_path,
+                );
+            }
+            emitter.finish();
+        } else {
+            for error in type_errors {
+                let report = Report::new(error);
+                eprintln!("{report:?}");
+            }
+        }
+        return ExitCode::from(3);
+    }
+
+    let ir = triet_ir::lower_program(&resolved);
+    let bytes = triet_ir::write_program(&ir);
+
+    let output_path = output.unwrap_or_else(|| {
+        let p = path.to_string();
+        if p.ends_with(".tri") {
+            p.replace(".tri", ".triv")
+        } else {
+            format!("{p}.triv")
+        }
+    });
+
+    match std::fs::write(&output_path, &bytes) {
+        Ok(()) => {
+            if !json {
+                let funcs = ir.function_count();
+                let size = bytes.len();
+                eprintln!("Compiled {path} → {output_path} ({funcs} functions, {size} bytes)");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: could not write {output_path}: {e}");
+            ExitCode::from(5)
+        }
+    }
+}
+
+// ── run bytecode (.triv) ───────────────────────────────────────────────
+
+fn run_bytecode(path: &str, json: bool) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Error: cannot read {path}: {e}");
+            return ExitCode::from(5);
+        }
+    };
+
+    let ir = match triet_ir::read_program(&bytes) {
+        Ok(program) => program,
+        Err(e) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                emitter.emit(&e.to_string(), "triet::modules::E2103", &(0..0), path);
+                emitter.finish();
+            } else {
+                eprintln!("Error: {e}");
+            }
+            return ExitCode::from(5);
+        }
+    };
+
+    let func_to_run = find_entry_function(&ir);
+
+    let mut vm = triet_ir::Vm::new(ir);
+    match vm.execute(func_to_run, vec![]) {
+        Ok(value) => {
+            if !json
+                && !matches!(value, triet_ir::RuntimeValue::Unit)
+            {
+                println!("{value}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                let msg = error.to_string();
+                emitter.emit(&msg, "triet::runtime::E2200", &(0..0), path);
+                emitter.finish();
+            } else {
+                eprintln!("Error: {error}");
+            }
+            ExitCode::from(4)
+        }
+    }
+}
+
+/// Find the best entry function in the IR program.
+/// Prefers a function named "main". Falls back to the first function.
+fn find_entry_function(ir: &triet_ir::IrProgram) -> triet_ir::FuncId {
+    let mut first: Option<triet_ir::FuncId> = None;
+
+    for module in &ir.modules {
+        for func in &module.functions {
+            if first.is_none() {
+                first = Some(func.id);
+            }
+            if func.name.as_deref() == Some("main") {
+                return func.id;
+            }
+        }
+    }
+
+    first.unwrap_or(triet_ir::FuncId(0))
 }

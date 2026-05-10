@@ -23,6 +23,7 @@ triet-parser.workspace = true
 triet-typecheck.workspace = true
 triet-interpreter.workspace = true
 triet-modules.workspace = true
+triet-ir.workspace = true
 clap.workspace = true
 miette.workspace = true
 

@@ -145,10 +145,15 @@ chưa có.
     unknown opcode ✓
   - Determinism test: same input → same bytes ✓
 
-- [ ] **v0.3.10** — CLI: `triet build` subcommand + `.triv` execution
-  - `triet build foo.tri -o foo.triv` — parse + typecheck + lower + serialize.
-  - `triet run foo.triv` — auto-detect bytecode vs source theo extension.
-  - Backward-compat: `triet run foo.tri` vẫn work (lower + run in-memory).
+- [x] **v0.3.10** — CLI: `triet build` subcommand + `.triv` execution _(uncommitted)_
+  - `triet build foo.tri -o foo.triv` — parse + typecheck + lower + serialize ✓
+  - `triet run foo.triv` — auto-detect bytecode vs source theo extension ✓
+  - Backward-compat: `triet run foo.tri` vẫn work (lower + run in-memory) ✓
+  - VM `CallCrossModule` implemented with path→FuncId index + builtin fallback ✓
+  - VM `path_index: HashMap<String, FuncId>` for cross-module dispatch ✓
+  - End-to-end verified: `println("Hello from VM!")` → build → .triv → VM ✓
+  - Known limitation: f-string lowering deferred to v0.3.4, complex programs
+    may not run correctly through VM yet ✓
 
 - [ ] **v0.3.11** — Benchmark harness (criterion) + gate verification
   - Bench cho 11 demo programs: bytecode VM vs tree-walking interpreter.
