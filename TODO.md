@@ -132,7 +132,7 @@ chưa có.
     unknown discriminant/opcode, section mismatch ✓
   - Output: [`docs/decisions/0008-triv-binary-format.md`](docs/decisions/0008-triv-binary-format.md) ✓
 
-- [x] **v0.3.9** — Serialize/deserialize: `.triv` reader/writer _(uncommitted)_
+- [x] **v0.3.9** — Serialize/deserialize: `.triv` reader/writer `52cee51`
   - `write_program(&IrProgram) -> Vec<u8>` — serialize to `.triv` binary ✓
   - `read_program(&[u8]) -> Result<IrProgram, TrivError>` — deserialize with
     version check + corruption detection ✓
