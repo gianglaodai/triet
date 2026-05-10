@@ -255,9 +255,10 @@ Diagnostic chỉ rõ chu trình giúp dev fix nhanh.
 
 ## Liên quan
 
-- ADR-0008 (sắp viết, v0.4): ABI metadata format — module visibility là input.
-- ADR-0011 (sắp viết, v0.5): Hash scheme — module structure ảnh hưởng `iface_hash`.
-- ADR-0013 (sắp viết, v0.6): Capability type system — top-level namespace là anchor.
+- [ADR-0007](0007-ir-design.md) (đã viết, v0.3): IR design — `AbsolutePath` từ module loader là input cho cross-module call ở IR.
+- ADR-0009 (sắp viết, v0.4): ABI metadata format — module visibility là input.
+- ADR-0012 (sắp viết, v0.5): Hash scheme — module structure ảnh hưởng `iface_hash`.
+- ADR-0014 (sắp viết, v0.6): Capability type system — top-level namespace là anchor.
 
 ---
 

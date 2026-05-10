@@ -16,68 +16,105 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.2
+## Trạng thái hiện tại — v0.2.x đã ship ✅
 
 ✅ Tree-walking interpreter end-to-end
 ✅ Type checker với inference + monomorphization
 ✅ Struct, enum + generics (G.1)
 ✅ Łukasiewicz Ł3 + Kleene K3
 ✅ Nullable subtyping `T ⊂ T?` (bẩm sinh tam phân, không bolt-on)
-✅ Diagnostic format (miette, error codes E0000–E2007)
-✅ 11 demo `.tri` programs pass, 522 tests workspace-wide
-🔄 Đang chuẩn bị: module system (v0.2.x)
+✅ Diagnostic format (miette, error codes E0000–E2106)
+✅ Module system: hierarchical namespace, explicit `public` export, dot paths, Python-style imports
+✅ Demo `.tri` programs pass, snapshot tests cho diagnostics, 700+ tests workspace-wide
+🔜 Tiếp theo: v0.3 — bytecode VM + stable IR
 
-**Gate đã đạt:** Pipeline hoàn chỉnh, semantics ổn, có thể viết library nội bộ.
+**Gate đã đạt:** Pipeline hoàn chỉnh, module system production-ready, có thể viết library nội bộ tách file.
 
 ---
 
-## v0.2.x — Module system cơ bản
+## v0.2.x — Module system cơ bản ✅ SHIPPED
 
 **Mục tiêu:** Cho phép tách codebase thành nhiều file/module với hierarchical namespace, explicit export.
 
 **Quyết định kiến trúc:** [`docs/decisions/0005-module-system.md`](docs/decisions/0005-module-system.md)
 
-**Deliverables:**
-- `mod foo;` declaration + file resolution (`foo.tri` hoặc `foo/`).
-- `pub`, `pub(pkg)`, default private.
-- Path: `crate::`, `self::`, `super::`.
-- `use` import: explicit list, `as` rename, **không glob**.
-- Reserve top-level namespaces: `std`, `sys`, `dev`, `usr` (chưa enforce capability).
-- Cyclic import = compile error.
-- Cập nhật stdlib hiện tại (`std.io.println`, `std.text.from_integer`) thành proper module.
+**Đã ship:**
+- Verbose keywords: `function`, `public`, `public(package)`, `mutable`, `constant`, `module` (ADR-0005).
+- Dot path syntax: `crate.foo.bar`, `self.x`, `super.y` (không `::`).
+- Python-style imports: `from std.io import println, print as p` + `import std.io.println`; glob bị reject.
+- 3-level visibility: `public`, `public(package)`, default private — enforced ở name resolver.
+- File resolution: flat (`foo.tri`) → nested fallback (`foo/foo.tri`); inline `module foo { … }` ≡ file-bound cho path resolution.
+- Multi-arena `ResolvedProgram`: một arena per parsed file, tránh cross-file ID remapping.
+- Cyclic import detection (E2100) với cycle trace `foo → bar → baz → foo`.
+- Diagnostic codes E2100–E2106 cho loader/resolver, tất cả implement `miette::Diagnostic`.
+- Reserved namespace roots: `std`, `sys`, `dev`, `usr`, `core`, `crate`, `self`, `super` (chưa enforce capability).
+- Stdlib reorganized as nested module tree: `std.io`, `std.text`, `std.assert`.
+- 704-dòng ternary ALU demo across 6 modules (file-bound + nested + inline) — exercises every feature.
+- Symbolic operators preferred convention (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`); keyword forms vẫn valid.
 
-**Không làm:**
+**Sub-task changelog (per-step commits):**
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.2.x.0 | SPEC.md align với VISION (5 pillars + OS-capable) | — |
+| v0.2.x.1 | Drop SIMD/Tensor/DType §10.5 từ SPEC | — |
+| v0.2.x.2 | Visibility AST + parser capture (3 levels) | — |
+| v0.2.x.3 | Verbose keyword sweep + dot path commitment | — |
+| v0.2.x.3.1 | Post-sweep drift cleanup (ADR-0005, SPEC, README) | `fa89622` |
+| v0.2.x.4 | Reserved namespace roots validation | — |
+| v0.2.x.5 | Module decls + Python import syntax (parser-only) | `e6e7e51` |
+| v0.2.x.6 #36.1 | Scaffold `triet-modules` crate | `35dc88f` |
+| v0.2.x.6 #36.2 | File loader + multi-arena `ResolvedProgram` | (bundled) |
+| v0.2.x.6 #36.3 | Cycle detection (E2100) | `28b0ca3` |
+| v0.2.x.6 #36.4 | Name resolution + visibility check | `135342c` |
+| v0.2.x.6 #36.5 | Typecheck integration | `075db7d` |
+| v0.2.x.6 #36.6 | Interpreter integration | `9b0687c` |
+| v0.2.x.6 #36.7 | CLI rewire through loader + integration tests | `5634613` |
+| v0.2.x.7 | Stdlib embedded module tree | `d1f1698` |
+| v0.2.x.8 | Demo lớn (ALU) + snapshot tests cho E2100–E2103 | `b9d1d0c` |
+
+**Không làm (deferred theo phase sau):**
 - Capability enforcement (đợi v0.6).
 - Cross-package linking (đợi v0.4).
 - Signature files riêng (compiler tự suy ra từ source).
 
-**Gate:** Demo lớn (>500 dòng) chia thành 5+ module, type-check qua biên module đúng, error message chỉ rõ visibility/path mismatch.
+**Gate đã đạt:** Demo 704-dòng chia thành 6 module type-check + run đúng; visibility/cycle/file-not-found diagnostics chỉ rõ vị trí lỗi; 700+ tests xanh.
 
 ---
 
 ## v0.3 — Bytecode VM + Stable IR
 
-**Mục tiêu:** Tách "ngôn ngữ Triết" khỏi "implementation Rust hiện tại". Mở khóa CAS, ABI, JIT về sau.
+**Mục tiêu:** Thiết kế và lock **Triết IR** — biên giới ngôn ngữ ↔ phần cứng. Bytecode VM ở phase này là **development tier scaffolding**, không phải production runtime. Production target nhị phân là AOT native (LLVM, v2.0); production target tam phân là trytecode native (v∞). Xem [VISION §4](VISION.md) cho execution model multi-backend.
+
+**IR là cốt lõi.** VM v0.3 chỉ tồn tại để: (1) validate IR design qua thực thi trước khi commit IR vĩnh viễn, (2) cho self-hosting compiler (v0.7) một platform chạy trước khi LLVM landing, (3) differential test oracle so sánh với tree-walker (v0.2), (4) phát triển ecosystem trong khi backend production chưa có.
+
+**Quyết định kiến trúc:** [`docs/decisions/0007-ir-design.md`](docs/decisions/0007-ir-design.md) — IR là **register-based, SSA form, virtual register vô hạn, type-tagged per register**. Map 1:1 sang LLVM IR (v2.0), Cranelift IR (v0.9), trytecode (v∞).
 
 **Deliverables:**
-- IR thiết kế lần đầu: stack-based hoặc register-based (sẽ quyết ở ADR-0006).
-- Bytecode format đặc tả binary stable.
-- VM thực thi bytecode (không còn AST tree-walking ở runtime).
-- Compiler `triet build → .triv` (Triết bytecode).
-- Bench cho 11 demo programs: bytecode VM nhanh hơn tree-walking ≥3×.
-- Snapshot tests cho IR output (regression detection).
+- Triết IR spec đầy đủ (ADR-0007) ✓ — register SSA decided.
+- `triet-ir` crate: instruction set, constant pool, basic blocks, IR verifier.
+- Lowerer AST → IR cho mọi feature v0.2 (literals, arith, logic Ł3/K3, control flow, generics monomorphization, struct/enum/closure, nullable, cross-module call).
+- Bytecode VM: interpret IR thẳng, type-tagged dispatch.
+- Bytecode binary format `.triv` (ADR-0008, sẽ viết ở v0.3.8 sau khi IR validate qua VM).
+- CLI `triet build foo.tri -o foo.triv` + `triet run foo.triv`.
+- Snapshot tests cho IR output mỗi example.
+- Differential tests: VM ≡ tree-walker byte-by-byte.
+- Bench cho 11 demo: VM ≥3× tree-walker.
 
 **Không làm:**
-- JIT (đợi v0.9).
-- Native compile (đợi v2.0).
-- ABI metadata (đợi v0.4 — cần IR ổn trước).
+- JIT (đợi v0.9, Cranelift backend đọc cùng IR).
+- Native AOT compile (đợi v2.0, LLVM backend đọc cùng IR).
+- Trytecode backend (đợi v∞ + ternary hardware).
+- ABI metadata in `.triv` (đợi v0.4 — cần IR ổn trước).
+- Cross-package linking (đợi v0.4).
 
 **Gate:**
-- IR spec written + frozen format số phiên bản.
-- Tất cả demo `.tri` chạy qua bytecode VM với output identical interpreter.
-- Bench ≥3× speedup.
+- IR spec đã ADR (✓) + bytecode format `.triv` có version field (ADR-0008).
+- Mọi `examples/*.tri` chạy qua bytecode VM với output **byte-identical** tree-walking interpreter (incl. diagnostics — cùng error code, cùng span, cùng message).
+- Bench ≥3× speedup vs tree-walker trên 11 demo programs.
+- IR snapshot tests detect regression khi đổi lowerer.
 
-**ADR cần viết:** ADR-0006 (IR design — stack vs register), ADR-0007 (bytecode format).
+**ADR cần viết:** ADR-0007 (IR design — register SSA) ✓ đã viết, ADR-0008 (bytecode binary format) sẽ viết ở v0.3.8.
 
 ---
 
@@ -104,7 +141,7 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 - Sửa minor version của lib không cần rebuild app.
 - Sửa major version mà không update app → linker error rõ ràng.
 
-**ADR cần viết:** ADR-0008 (ABI metadata format), ADR-0009 (witness table dispatch), ADR-0010 (semver linking policy).
+**ADR cần viết:** ADR-0009 (ABI metadata format), ADR-0010 (witness table dispatch), ADR-0011 (semver linking policy).
 
 ---
 
@@ -128,7 +165,7 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 - Chạy song song 2 phiên bản incompatible của cùng package trong cùng app, không xung đột.
 - Sửa internal của lib không invalidate `iface_hash` → app không rebuild.
 
-**ADR cần viết:** ADR-0011 (hash scheme), ADR-0012 (package store layout).
+**ADR cần viết:** ADR-0012 (hash scheme), ADR-0013 (package store layout).
 
 ---
 
@@ -158,7 +195,7 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 - Runtime policy hook hoạt động cho `Trilean::Unknown`.
 - Demo capability-restricted program chạy được + bị reject khi capability sai.
 
-**ADR cần viết:** ADR-0013 (capability type system), ADR-0014 (Trilean policy hook), ADR-0015 (loader semantics).
+**ADR cần viết:** ADR-0014 (capability type system), ADR-0015 (Trilean policy hook), ADR-0016 (loader semantics).
 
 ---
 
@@ -188,7 +225,7 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 - CSP / channels (Go) — đơn giản.
 - Structured concurrency (Trio, Project Loom) — modern.
 
-**Quyết định:** ADR-0016 ở giai đoạn vào v0.8. Hiện tại favor **Actor + structured concurrency** vì alignment với capability model.
+**Quyết định:** ADR-0017 ở giai đoạn vào v0.8. Hiện tại favor **Actor + structured concurrency** vì alignment với capability model.
 
 **Gate:** Demo concurrent program chạy đúng dưới load + race detector pass.
 

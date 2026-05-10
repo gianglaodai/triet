@@ -7,84 +7,153 @@ Sub-task tracking — short-term work in progress.
 - Language semantics: [`SPEC.md`](SPEC.md), [`VISION.md`](VISION.md)
 
 This file is updated as tasks complete. When a phase finishes (e.g. v0.2.x),
-the summary is archived into `ROADMAP.md` and the detailed checkboxes
+the summary is archived into `ROADMAP.md` và detailed checkboxes
 removed from here.
 
 ---
 
-## v0.2.x — Module system (in progress)
+## v0.3 — Bytecode VM + Stable IR (in progress)
 
-Per [ADR-0005](docs/decisions/0005-module-system.md). Goal: hierarchical
-module tree with explicit `public` export, dot paths, Python-style
-imports, Java JPMS-aligned `module` declarations.
+Per [ROADMAP.md § v0.3](ROADMAP.md). Mục tiêu: thiết kế và lock **Triết IR** —
+biên giới ngôn ngữ ↔ phần cứng. Bytecode VM ở phase này là **development
+tier scaffolding**, không phải production runtime. Production target nhị
+phân là AOT native (LLVM, v2.0); production target tam phân là trytecode
+native (v∞). Xem [VISION §4](VISION.md).
+
+VM v0.3 tồn tại để: (1) validate IR design qua thực thi trước khi commit
+IR vĩnh viễn, (2) cho self-hosting compiler (v0.7) một platform chạy
+trước khi LLVM landing, (3) differential test oracle so sánh với
+tree-walker (v0.2), (4) phát triển ecosystem trong khi backend production
+chưa có.
+
+**Architecture decisions:**
+
+- **[ADR-0007](docs/decisions/0007-ir-design.md)** ✓ — IR là **register-based,
+  SSA form, virtual register vô hạn, type-tagged per register**. Map 1:1
+  sang LLVM IR (v2.0), Cranelift IR (v0.9), trytecode (v∞).
+- **ADR-0008** (sẽ viết ở v0.3.8) — Bytecode binary format `.triv`: magic +
+  version, section layout (header / constant pool / function table /
+  code), endianness, varint encoding, stable cho v1.0 freeze.
+
+**Gate cho phase (per ROADMAP):**
+1. IR spec written (✓) + bytecode format có version field (ADR-0008).
+2. Mọi `examples/*.tri` chạy qua bytecode VM với output **byte-identical**
+   tree-walking interpreter (incl. diagnostics).
+3. Bench ≥3× speedup vs interpreter trên 11 demo programs.
+4. IR snapshot tests detect regression khi đổi lowerer.
+
+**Không làm trong v0.3 (deferred):**
+- JIT (v0.9, Cranelift backend đọc cùng IR).
+- Native AOT compile (v2.0, LLVM backend đọc cùng IR).
+- Trytecode backend (v∞ + ternary hardware).
+- ABI metadata trong `.triv` (v0.4 — cần IR ổn trước).
+- Cross-package linking (v0.4).
 
 ### Done
 
-- [x] **v0.2.x.0** — SPEC.md align with VISION (5 pillars + OS-capable)
-- [x] **v0.2.x.1** — Drop SIMD/Tensor/DType §10.5 from SPEC
-- [x] **v0.2.x.2** — Visibility AST + parser capture (3 levels: `public`, `public(package)`, private)
-- [x] **v0.2.x.3** — Verbose keyword sweep (`fn`→`function`, `pub`→`public`, `mut`→`mutable`, `const`→`constant`, `mod`→`module`) + dot path commitment
-- [x] **v0.2.x.3.1** — Post-sweep drift cleanup (ADR-0005 rewrite, SPEC, README, doc-comments) — commit `fa89622`
-- [x] **v0.2.x.4** — Reserved keywords validation (`std`/`sys`/`dev`/`usr`/`core` cannot be user-declared item names)
-- [x] **v0.2.x.5** — Module declarations + Python import syntax (parser-only) — commit `e6e7e51`
-  - `module foo` (file-bound) and `module foo { items }` (inline)
-  - `from std.io import println, print as p`
-  - `import std.io.println` (existing form retained)
-  - Path keywords `crate.`, `self.`, `super.` accepted as roots
-  - Glob `from X import *` rejected with ADR-0005 citation
+- [x] **v0.3.0** — ADR-0007: IR design — register-based SSA decided
+  - Survey prior art: LLVM IR, Rust MIR, Swift SIL, Cranelift IR
+    (register SSA — adopted); JVM, Wasm, CPython 3.x (stack — rejected).
+  - Tradeoff matrix mapped to SPEC §0.3 principles: AI-first, Stability,
+    Refuse over guess, Tam phân first-class, multi-backend trajectory.
+  - Decision rationale: VM v0.3 là dev tier; production targets là AOT
+    native (LLVM v2.0) + trytecode (v∞); IR phải map 1:1 sang LLVM/
+    Cranelift/ternary CPU register.
+  - Output: [`docs/decisions/0007-ir-design.md`](docs/decisions/0007-ir-design.md)
+    (full ADR with alternatives, hậu quả, implementation roadmap).
+  - Companion docs updates: VISION §4 (execution model multi-backend),
+    SPEC §0.6 (VM as dev tier), ROADMAP § v0.3 (clarify VM is scaffolding).
 
 ### In progress
 
-- [ ] **v0.2.x.6** — Module loader + name resolver + cyclic detection
-
-  Architecture (chốt 2026-05-09): new `triet-modules` crate sits between
-  parse and typecheck. Output is `ResolvedProgram` = flat list of
-  `Module`s, each with own AST + `bindings: HashMap<String, AbsolutePath>`.
-  Stdlib (`std.*`) handled as synthetic modules at v0.2.x.6; v0.2.x.7
-  swaps source to real files. CLI: file passed to `triet run` is crate
-  root (Python/Go pattern). Inline `module foo { … }` ≡ file-bound
-  `module foo` for path resolution (Rust/OCaml pattern).
-
-  **Sub-tasks (per-step commits):**
-
-  - [x] **#36.1** — Scaffold `triet-modules` crate — commit `35dc88f`
-    - Types: `ModulePath`, `AbsolutePath`, `ModuleId`, `Module`, `ResolvedProgram`
-    - `LoaderError` enum with E2100–E2106 + miette diagnostics
-    - Synthetic stdlib registry (crate-private, used by #36.4)
-    - 19 unit tests, clippy clean
-  - [x] **#36.2** — File loader _(uncommitted)_
-    - Refactored `Module` / `ResolvedProgram` to multi-arena shape: one
-      arena per parsed file, inline submodules share parent arena
-      (avoids cross-file ID remapping)
-    - `load_program(&Path)`: read root, recurse on `module foo` decls,
-      resolve `foo.tri` (flat) → `foo/foo.tri` (nested fallback);
-      children of `foo` searched in `<dir>/foo/` regardless of layout
-    - `load_program_from_source(&str)`: in-memory mode; rejects external
-      `module` decls with `FileNotFound` (no filesystem context)
-    - Inline modules nested arbitrarily; external children of inline
-      parents work iff parent has filesystem context
-    - 15 new tests (in-memory + tempfile-driven filesystem) — covers
-      empty root, function-only, single inline, nested inline, deep
-      filesystem tree, missing file, parse error attribution, IO error
-  - [x] **#36.3** — Cycle detection (E2100): DFS coloring on import graph, emit cycle trace `foo → bar → baz → foo` per ADR-0005 — commit `28b0ca3`
-  - [x] **#36.4** — Name resolution + visibility check: rewrite `from X import Y` to absolute, bind into module scope, validate `public`/`public(package)`/private; bind synthetic stdlib exports — commit `135342c`
-  - [x] **#36.5** — Typecheck integration: `check_resolved(&ResolvedProgram)` per-module with bindings, cross-module type lookup via absolute path — commit `075db7d`
-  - [x] **#36.6** — Interpreter integration: `run(&ResolvedProgram)`, main lookup at root, cross-module call via per-module bindings — commit `9b0687c`
-  - [x] **#36.7** — CLI rewire (`triet run`/`check` through loader, single-file backward-compat) + integration tests (multi-file, cycle, visibility violation, file not found, reserved namespace) — commit `5634613`
-  - [x] **v0.2.x.7** — Stdlib reorganize as nested module structure — commit `8c115e0`
-    - Convert flat `std.io.println` baseline into proper modules with `module` declarations under a `std/` directory.
-    - Targets: `std.io`, `std.text`, `std.assert`.
-    - Update prelude binding in `triet-typecheck` and `triet-interpreter`.
-  - [x] **v0.2.x.8** — Demo lớn + snapshot tests for module system — commit `b9d1d0c`
-    - 704-line ternary ALU simulator across 6 modules (file-bound, nested
-      file-bound, inline) exercising all module system features.
-    - insta snapshot tests for E2100, E2101, E2102, E2103 diagnostics.
-    - Fix prelude injection: root module only (not stdlib modules).
-    - Fix builtins installer: add missing `assert` and `assert_eq`.
+_(empty)_
 
 ### Pending
 
+- [ ] **v0.3.1** — Scaffold `triet-ir` crate
+  - Concrete instruction set per ADR-0007 (groups: const, arith, logic
+    Ł3/K3, comparison, conversion, control flow, function, aggregate,
+    nullable, closure, builtin).
+  - Types: `Instr`, `BasicBlock`, `Function`, `IrModule`, `IrProgram`.
+  - Constant pool: `Integer`, `Long`, `String`, type metadata, function refs.
+  - Type tag per register (`Trit`/`Tryte`/`Integer`/`Long`/`Trilean`/
+    `String`/`Unit`/`T?`/user-defined).
+  - IR verifier: SSA invariant ("each register defined exactly once"),
+    type-tag consistency, basic block terminator presence.
+  - Display/Debug formatting cho disassembly view (`triet disasm` future).
+  - Unit tests cho IR construction + verifier.
 
+- [ ] **v0.3.2** — Lowerer: AST → IR (core expressions + statements)
+  - Literals (Trit, Integer, Long, String, Trilean, Boolean, prefix
+    trit `0t+0-+`).
+  - Arithmetic (`+`, `-`, `*`, `/`, `%%`, `**`), comparison, symbolic
+    logic ops (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`).
+  - Variable bindings, assignment, scope tracking.
+  - Control flow: `if/else`, `while`, `for`, `loop`, `break`, `continue`,
+    `if?`, `while?` (unknown-as-false handling).
+  - Phi nodes ở basic block convergence (loop, if-else merge).
+
+- [ ] **v0.3.3** — Lowerer: items + functions + modules
+  - Function definitions + signatures + parameter binding.
+  - Generics monomorphization (cùng pattern typecheck đã làm trong G.1c).
+  - Cross-module calls qua `AbsolutePath` từ `triet-modules` (capability
+    namespace preserved cho v0.6).
+  - Function table indexing strategy.
+
+- [ ] **v0.3.4** — Lowerer: aggregates + match + closures
+  - Struct literal + field access + field assignment.
+  - Enum literal + pattern destructuring (`match`, `if let`).
+  - Match exhaustiveness verifier check at IR level.
+  - Closure capture (by-value cho v0.3; mutable capture defer).
+  - Builtin call dispatch (`println`, `assert`, `assert_eq`, ...).
+  - Nullable ops (`?.`, `?:`, `!!`) → `null_check`/`null_unwrap`/`null_wrap`.
+
+- [ ] **v0.3.5** — VM: execute IR (`triet-vm` crate hoặc trong `triet-ir`)
+  - Opcode dispatch loop với type-tag aware operations.
+  - Trilean Ł3/K3 dispatch (separate opcodes, không cào).
+  - Long arithmetic dùng heap-allocated big-int (như v0.2 `bnum::I256`).
+  - Function call/return, frame allocation.
+  - Pattern match evaluator.
+  - Builtin call dispatch.
+  - Diagnostic codes E22XX cho VM runtime errors (out of bounds, type
+    tag mismatch, unwrap of null, etc.).
+
+- [ ] **v0.3.6** — Snapshot tests: IR output cho `examples/*.tri`
+  - Insta snapshots cho lowered IR mỗi example file.
+  - Regression detection khi đổi lowerer hoặc instruction set.
+
+- [ ] **v0.3.7** — Differential tests: VM ≡ tree-walking interpreter
+  - Mỗi `examples/*.tri`: run qua cả hai, so sánh stdout + exit code
+    byte-by-byte.
+  - Diagnostics cho program lỗi: phải identical (cùng error code, cùng
+    span, cùng message).
+  - Cover cả demo `demos/02-module-system/main.tri` (704-line ALU).
+
+- [ ] **v0.3.8** — ADR-0008: bytecode binary format `.triv`
+  - Magic bytes (`0x74 0x72 0x69 0x76` = "triv"?), version field.
+  - Section layout: header / constant pool / function table / code.
+  - Endianness (little-endian giả định), alignment, varint cho
+    instruction operands.
+  - Stable cho v1.0 freeze (additive-only sau v1.0).
+  - Companion ADR cho ADR-0007 — chia tách "IR shape" và "wire format".
+
+- [ ] **v0.3.9** — Serialize/deserialize: `.triv` reader/writer
+  - Writer: `IrProgram → Vec<u8>`.
+  - Reader: `&[u8] → IrProgram` với version check + corruption detection.
+  - Round-trip tests cho mọi example: parse → lower → serialize →
+    deserialize → run → so sánh output.
+
+- [ ] **v0.3.10** — CLI: `triet build` subcommand + `.triv` execution
+  - `triet build foo.tri -o foo.triv` — parse + typecheck + lower + serialize.
+  - `triet run foo.triv` — auto-detect bytecode vs source theo extension.
+  - Backward-compat: `triet run foo.tri` vẫn work (lower + run in-memory).
+
+- [ ] **v0.3.11** — Benchmark harness (criterion) + gate verification
+  - Bench cho 11 demo programs: bytecode VM vs tree-walking interpreter.
+  - Gate: ≥3× speedup theo ROADMAP.
+  - Document baseline numbers in `BENCHMARKS.md` (mới).
+  - Nếu không đạt 3×: profile, optimize (instruction dispatch, value
+    representation), iterate trước khi đóng phase.
 
 ---
 

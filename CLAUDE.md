@@ -85,10 +85,16 @@ These are decisions locked by ADRs. Code generation, examples, error messages, a
 | `module` | `mod` | ADR-0005 |
 | `crate.foo.bar` | `crate::foo::bar` | ADR-0005 (dot paths) |
 | `from std.io import println` | `use std::io::println` | ADR-0005 |
+| `!a`, `a && b`, `a \|\| b`, `a ^ b`, `a => b` | — | SPEC §4.2 (symbolic preferred) |
+| `a ~> b`, `a ~^ b`, `a <=> b`, `a <~> b` | — | SPEC §4.2 (Kleene variants) |
+| `0t+`, `0t-`, `0t0` (prefix trit literal) | `0T` (capital T), suffix `_trit` | SPEC §1.5.1 |
+| `unknown` (third Trilean value) | `null` | SPEC §1.5.2 |
 
 Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr`, `core`, `crate`, `self`, `super`.
 
 `Trilean` defaults to **Łukasiewicz Ł3** semantics (not Kleene). Don't substitute Boolean reasoning when working on logic ops.
+
+**Logic operators:** Both symbolic (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`) and keyword (`not`, `and`, `or`, `xor`, `implies`, `kleene_implies`, `kleene_xor`, `iff`, `kleene_iff`) forms are valid. Symbolic form is preferred per user convention. The `~` prefix consistently marks Kleene K3 variants.
 
 ## Workspace conventions
 

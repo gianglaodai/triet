@@ -45,7 +45,7 @@ Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn 
 - F-string interpolation ([ADR-0002](docs/decisions/0002-fstring-format-spec.md)).
 - Iterator protocol ([ADR-0003](docs/decisions/0003-iterator-protocol.md)).
 - Multi-line string indent ([ADR-0004](docs/decisions/0004-multiline-string-indent.md)).
-- Diagnostic format (miette, error codes E0000–E2007).
+- Diagnostic format (miette, error codes E0000–E2106).
 
 ### 0.5 Đang triển khai (v0.2.x)
 
@@ -55,13 +55,13 @@ Module system theo [ADR-0005](docs/decisions/0005-module-system.md). Khi v0.2.x 
 
 Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** phải v0.2:
 
-- **Hiệu năng tối ưu** — interpreter tree-walking. Bytecode VM ở phase v0.3.
+- **Hiệu năng tối ưu** — interpreter tree-walking. Bytecode VM (development tier) ở phase v0.3 ([ADR-0007](docs/decisions/0007-ir-design.md)). Production runtime đến v2.0 mới có; trước đó VM là tier phát triển dùng để validate IR + làm differential test oracle. Xem [VISION §4](VISION.md) cho execution model multi-backend.
 - **Concurrency/async** — phase v0.8.
 - **FFI với C/Rust runtime** — phase v0.4 (cùng stable ABI).
 - **CAS packaging** — phase v0.5.
 - **Capability enforcement runtime** — phase v0.6.
 - **Self-hosting compiler** — phase v0.7.
-- **JIT** — phase v0.9. **Native AOT compile** — phase v2.0.
+- **JIT** — phase v0.9 (Cranelift backend đọc cùng Triết IR). **Native AOT compile** — phase v2.0 (LLVM backend đọc cùng Triết IR). **Trytecode native** — phase v∞ khi phần cứng tam phân xuất hiện. Cả ba backend đều share IR ADR-0007 — không re-design ngôn ngữ.
 
 ---
 

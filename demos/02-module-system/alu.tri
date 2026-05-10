@@ -42,7 +42,7 @@ public function decrement(a: Trilean) -> Trilean =
 // ── Comparator ────────────────────────────────────────────────────
 
 // Returns true when a and b are logically equivalent.
-public function tri_eq(a: Trilean, b: Trilean) -> Trilean = not (a xor b)
+public function tri_eq(a: Trilean, b: Trilean) -> Trilean = !(a ^ b)
 
 // Returns true when a > b in the truth ordering (false < unknown < true).
 public function tri_gt(a: Trilean, b: Trilean) -> Trilean =
