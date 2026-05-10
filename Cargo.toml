@@ -41,6 +41,8 @@ clap = { version = "4", features = ["derive"] }
 # Fixed-size big-int backing for `Long` (81-trit, range > i128). Uses
 # `BInt<3>` = 192-bit signed integer; no_std + no heap allocation.
 bnum = "0.14"
+# Snapshot testing for IR output regression detection.
+insta = { version = "1", features = ["yaml"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

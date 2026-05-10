@@ -1,0 +1,6 @@
+---
+source: crates/triet-ir/tests/ir_snapshots.rs
+assertion_line: 255
+expression: ir.to_string()
+---
+";; ── Constant pool (2) ──\n;; c0 = 1\n;; c1 = 0\n\n;; module crate.test\nfunction choose(%cond: Trilean) -> Integer {\nentry:\n    br_if %0, b1, b2\nthen:\n    %1 = const c0\n    br b3\nelse:\n    %2 = const c1\n    br b3\nmerge:\n    %3 = φ [%1 from b1, %2 from b2]\n    ret %3\n}\n"

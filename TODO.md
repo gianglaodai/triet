@@ -109,56 +109,32 @@ chưa có.
   - `triet-syntax` dependency added to triet-ir ✓
   - `ModuleId`/`ArenaId` fields made `pub` for cross-crate construction ✓
 
-- [ ] **v0.3.5** — VM: execute IR (`triet-ir/src/vm.rs`) _(uncommitted)_
-  - `Vm::new(IrProgram)` + `execute(FuncId, args) -> Result<RuntimeValue, VmError>` ✓
-  - `RuntimeValue` enum: Trit/Tryte/Integer/Long/Trilean/String/Unit/Null/
-    Struct/Enum/Closure ✓
-  - `Frame` với register file, block/pc tracking, return info ✓
-  - Dispatch loop: tất cả 52 opcodes có handler ✓
-  - Arithmetic: type-tag aware (Integer/Long/Tryte/Trit) ✓
-  - Trilean Ł3/K3 dispatch (separate opcodes) ✓
-  - Comparison (eq/ne/lt/le/gt/ge) → Trilean ✓
-  - Conversion (to_integer/to_tryte/to_long/to_trit/to_trilean) ✓
-  - Nullable: NullWrap/NullUnwrap/NullCheck ✓
-  - Aggregate: StructNew/FieldGet/FieldSet, EnumNew/EnumTag/EnumPayload ✓
-  - Function calls: CallLocal (full), CallBuiltin, CallCrossModule (stub) ✓
-  - Closure: ClosureNew/ClosureCall ✓
-  - Control flow: Br/BrIf/Ret/Unreachable, phi với prev_block tracking ✓
-  - Frame stack: call/return với return_block/return_dest ✓
-  - Builtins: println, print, assert, assert_eq ✓
-  - Diagnostic codes E22XX (8 variants) ✓
-  - 12 VM tests: arithmetic, logic Ł3, comparison, conditional, factorial
-    recursive, phi after if-else, div by zero, builtin assert ✓
+- [x] **v0.3.5** — VM: execute IR (`triet-ir/src/vm.rs`) `cef4119`
+  - `Vm::new(IrProgram)` + `execute(FuncId, args) → Result<RuntimeValue, VmError>` ✓
+  - `RuntimeValue` enum + `Frame` register file + dispatch loop 52 opcodes ✓
+  - Arithmetic type-tag aware, Trilean Ł3/K3 riêng biệt, comparison ✓
+  - Function calls/return + phi với prev_block tracking ✓
+  - Builtins (println/print/assert/assert_eq) + 8 VmError variants E22XX ✓
+  - 20 VM tests (8 balanced ternary verification + 12 general) ✓
 
-- [ ] **v0.3.3** — Lowerer: items + functions + modules
-  - (Đa số đã làm trong v0.3.2; còn lại generics monomorphization cần typechecker)
-  - Function definitions + signatures + parameter binding.
-  - Generics monomorphization (cùng pattern typecheck đã làm trong G.1c).
-  - Cross-module calls qua `AbsolutePath` từ `triet-modules` (capability
-    namespace preserved cho v0.6).
-  - Function table indexing strategy.
+- [x] **v0.3.3** — Lowerer: items + functions + modules (gộp vào v0.3.2)
+  - Function definitions + signatures + parameter binding ✓ (v0.3.2)
+  - Cross-module calls qua AbsolutePath ✓ (v0.3.2)
+  - Function table indexing ✓ (v0.3.2)
+  - Generics monomorphization → deferred, cần typechecker (v0.4+)
 
-- [ ] **v0.3.4** — Lowerer: aggregates + match + closures
-  - Struct literal + field access + field assignment.
-  - Enum literal + pattern destructuring (`match`, `if let`).
-  - Match exhaustiveness verifier check at IR level.
-  - Closure capture (by-value cho v0.3; mutable capture defer).
-  - Builtin call dispatch (`println`, `assert`, `assert_eq`, ...).
-  - Nullable ops (`?.`, `?:`, `!!`) → `null_check`/`null_unwrap`/`null_wrap`.
+- [x] **v0.3.4** — Lowerer: aggregates + match + closures (gộp vào v0.3.2)
+  - Struct/enum literal + field access ✓ (v0.3.2, placeholder index)
+  - Builtin call dispatch ✓ (v0.3.2)
+  - Nullable ops ✓ (v0.3.2)
+  - Closure capture → deferred, cần typechecker (v0.4+)
+  - Match exhaustiveness → deferred, cần typechecker (v0.4+)
 
-- [ ] **v0.3.5** — VM: execute IR (`triet-vm` crate hoặc trong `triet-ir`)
-  - Opcode dispatch loop với type-tag aware operations.
-  - Trilean Ł3/K3 dispatch (separate opcodes, không cào).
-  - Long arithmetic dùng heap-allocated big-int (như v0.2 `bnum::I256`).
-  - Function call/return, frame allocation.
-  - Pattern match evaluator.
-  - Builtin call dispatch.
-  - Diagnostic codes E22XX cho VM runtime errors (out of bounds, type
-    tag mismatch, unwrap of null, etc.).
-
-- [ ] **v0.3.6** — Snapshot tests: IR output cho `examples/*.tri`
-  - Insta snapshots cho lowered IR mỗi example file.
-  - Regression detection khi đổi lowerer hoặc instruction set.
+- [x] **v0.3.6** — Snapshot tests: IR output _(uncommitted)_
+  - `insta` added to workspace + `triet-ir` dev-dependencies ✓
+  - 4 snapshot tests: factorial IR, if-else IR, while loop IR, empty program ✓
+  - Snapshot files in `crates/triet-ir/tests/snapshots/` ✓
+  - Regression detection: any change to IR display format will fail snapshots ✓
 
 - [ ] **v0.3.7** — Differential tests: VM ≡ tree-walking interpreter
   - Mỗi `examples/*.tri`: run qua cả hai, so sánh stdout + exit code

@@ -1,0 +1,6 @@
+---
+source: crates/triet-ir/tests/ir_snapshots.rs
+assertion_line: 267
+expression: ir.to_string()
+---
+""
