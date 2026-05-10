@@ -43,6 +43,8 @@ clap = { version = "4", features = ["derive"] }
 bnum = "0.14"
 # Snapshot testing for IR output regression detection.
 insta = { version = "1", features = ["yaml"] }
+# Benchmarking framework for VM vs interpreter performance.
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

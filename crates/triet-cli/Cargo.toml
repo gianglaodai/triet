@@ -31,3 +31,8 @@ miette.workspace = true
 triet-syntax.workspace = true
 tempfile = "3"
 insta = "1.47.2"
+criterion.workspace = true
+
+[[bench]]
+name = "vm_vs_interpreter"
+harness = false
