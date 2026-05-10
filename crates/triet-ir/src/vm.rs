@@ -1266,6 +1266,14 @@ fn execute_builtin(
             }
             Ok(RuntimeValue::Unit)
         }
+        BuiltinName::FStringConcat => {
+            let mut result = String::new();
+            for a in args {
+                let s = format!("{a}");
+                result.push_str(&s);
+            }
+            Ok(RuntimeValue::String(result))
+        }
         BuiltinName::AssertEq => {
             let a = args.first().cloned().unwrap_or(RuntimeValue::Unit);
             let b = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);

@@ -385,11 +385,12 @@ impl<'a> LowerCtx<'a> {
             }
 
             Stmt::For {
-                variable: _pat,
+                variable: pat,
                 iterable,
                 body,
             } => {
-                self.lower_for_loop(iterable, body);
+                let pattern = &self.arena().pattern(*pat).node;
+                self.lower_for_loop(pattern, iterable, body);
             }
 
             Stmt::While {
@@ -500,10 +501,10 @@ impl<'a> LowerCtx<'a> {
             }
 
             Expr::FStringLiteral(fstr) => {
-                // For now, lower f-string as a series of concatenations
-                // (simplified: produce the first string part).
-                // Full f-string IR lowering deferred to v0.3.4.
-                let mut last: Option<ValueId> = None;
+                // Lower f-string by collecting all parts (text as Const String,
+                // interpolations as lowered expressions) and concatenating via
+                // the FStringConcat builtin.
+                let mut parts: Vec<Operand> = Vec::new();
                 for part in &fstr.parts {
                     match part {
                         triet_syntax::expr::FStringPart::Text(s) => {
@@ -513,25 +514,24 @@ impl<'a> LowerCtx<'a> {
                                 dest: d,
                                 constant: c,
                             });
-                            last = Some(d);
+                            parts.push(Operand::Value(d));
                         }
                         triet_syntax::expr::FStringPart::Interpolation {
                             expression,
                             format_spec: _fs,
                         } => {
-                            last = Some(self.lower_expr(*expression));
+                            let val = self.lower_expr(*expression);
+                            parts.push(Operand::Value(val));
                         }
                     }
                 }
-                last.unwrap_or_else(|| {
-                    let c = self.intern_constant(Constant::String(String::new()));
-                    let d = self.fresh_value();
-                    self.emit(Instruction::Const {
-                        dest: d,
-                        constant: c,
-                    });
-                    d
-                })
+                let dest = self.fresh_value();
+                self.emit(Instruction::CallBuiltin {
+                    dest: Some(dest),
+                    name: BuiltinName::FStringConcat,
+                    args: parts,
+                });
+                dest
             }
 
             // ── Variables ─────────────────────────────────────────
@@ -1065,62 +1065,136 @@ impl<'a> LowerCtx<'a> {
 
     fn lower_for_loop(
         &mut self,
+        pattern: &triet_syntax::pattern::Pattern,
         iterable: &triet_syntax::arena::ExprId,
         body: &Block,
     ) {
-        // For loops lower to iterator-based while:
-        //   %iter = call enumerate(%range)
-        //   br for_header
-        // for_header:
-        //   %next = call next(%iter)
-        //   %tag = enum_tag %next
-        //   %has = eq %tag, const 0t+  (Some variant = 0)
-        //   br_if %has, for_body, for_exit
-        // for_body:
-        //   %item = enum_payload %next
-        //   <body>
-        //   br for_header
-        // for_exit:
-
-        let iter_val = self.lower_expr(*iterable);
-
         let header_id = self.fresh_block();
         let body_id = self.fresh_block();
         let exit_id = self.fresh_block();
 
-        self.emit(Instruction::Br {
-            target: header_id,
-        });
+        // Check if the iterable is a Range expression for proper counted loop.
+        let spanned = &self.arena().expression(*iterable);
+        let is_range = matches!(&spanned.node, Expr::Range { .. });
 
-        // Header: check for next item.
-        self.start_block(header_id, Some("for_header".into()));
-        // For now, we assume the iterable is a range; full iterator protocol
-        // will be wired in v0.3.4.  For now, the body just consumes the value.
-        // Minimal viable: just execute body once.
-        // TODO(v0.3.4): wire enumerate() + next() iterator protocol.
-        self.emit(Instruction::BrIf {
-            cond: Operand::Value(iter_val),
-            then_block: body_id,
-            else_block: exit_id,
-        });
+        if is_range {
+            if let Expr::Range {
+                start,
+                end,
+                inclusive: _,
+            } = &spanned.node
+            {
+                let start_val = self.lower_expr(*start);
+                let end_val = self.lower_expr(*end);
+                let phi_val = self.fresh_value();
 
-        // Body.
-        self.start_block(body_id, Some("for_body".into()));
-        self.loop_stack.push(LoopContext {
-            break_target: exit_id,
-            continue_target: header_id,
-        });
-        self.push_scope();
-        self.lower_block(body);
-        self.pop_scope();
-        self.loop_stack.pop();
-        if self.blocks[&self.current_block]
-            .terminator()
-            .is_none()
-        {
+                // Bind the loop variable to the phi value.
+                if let triet_syntax::pattern::Pattern::Variable(var_name) = pattern {
+                    self.bind_var(var_name.clone(), phi_val);
+                }
+                self.emit(Instruction::Br {
+                    target: header_id,
+                });
+
+                // Header: phi merges start (entry) and incremented (body).
+                let pre_header_id = self.current_block;
+                self.start_block(header_id, Some("for_header".into()));
+                self.emit(Instruction::Phi {
+                    dest: phi_val,
+                    incoming: vec![
+                        PhiIncoming {
+                            value: start_val,
+                            block: pre_header_id,
+                        },
+                        // Second incoming will be patched after body lowering.
+                    ],
+                });
+                let cmp_dest = self.fresh_value();
+                self.emit(Instruction::Le {
+                    dest: cmp_dest,
+                    lhs: Operand::Value(phi_val),
+                    rhs: Operand::Value(end_val),
+                });
+                self.emit(Instruction::BrIf {
+                    cond: Operand::Value(cmp_dest),
+                    then_block: body_id,
+                    else_block: exit_id,
+                });
+
+                // Body.
+                self.start_block(body_id, Some("for_body".into()));
+                self.loop_stack.push(LoopContext {
+                    break_target: exit_id,
+                    continue_target: header_id,
+                });
+                self.push_scope();
+                self.lower_block(body);
+                self.pop_scope();
+                self.loop_stack.pop();
+                if self.blocks[&self.current_block]
+                    .terminator()
+                    .is_none()
+                {
+                    // Increment loop var.
+                    let inc_dest = self.fresh_value();
+                    let c1 = self.intern_constant(Constant::Integer(triet_core::Integer::new(1).unwrap()));
+                    self.emit(Instruction::Add {
+                        dest: inc_dest,
+                        lhs: Operand::Value(phi_val),
+                        rhs: Operand::Const(c1),
+                    });
+                    self.emit(Instruction::Br {
+                        target: header_id,
+                    });
+                    // Patch the phi: add the second incoming edge from body block.
+                    let body_block_id = self.current_block;
+                    // Go back and patch the phi in the header block.
+                    if let Some(header_block) = self.blocks.get_mut(&header_id) {
+                        for instr in &mut header_block.instructions {
+                            if let Instruction::Phi { incoming, .. } = instr {
+                                incoming.push(PhiIncoming {
+                                    value: inc_dest,
+                                    block: body_block_id,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Non-range iterable: execute body once (minimal viable).
+            let iter_val = self.lower_expr(*iterable);
             self.emit(Instruction::Br {
                 target: header_id,
             });
+
+            self.start_block(header_id, Some("for_header".into()));
+            // Always enter body once.
+            self.emit(Instruction::Br {
+                target: body_id,
+            });
+
+            self.start_block(body_id, Some("for_body".into()));
+            self.loop_stack.push(LoopContext {
+                break_target: exit_id,
+                continue_target: header_id,
+            });
+            self.push_scope();
+            if let triet_syntax::pattern::Pattern::Variable(var_name) = pattern {
+                self.bind_var(var_name.clone(), iter_val);
+            }
+            self.lower_block(body);
+            self.pop_scope();
+            self.loop_stack.pop();
+            if self.blocks[&self.current_block]
+                .terminator()
+                .is_none()
+            {
+                self.emit(Instruction::Br {
+                    target: exit_id,
+                });
+            }
         }
 
         self.start_block(exit_id, Some("for_exit".into()));

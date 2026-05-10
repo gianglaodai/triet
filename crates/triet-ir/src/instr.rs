@@ -369,4 +369,7 @@ pub enum BuiltinName {
     Assert,
     /// `assert_eq(a, b)` — panic if not equal.
     AssertEq,
+    /// F-string concatenation: convert all args to string and join.
+    /// Internal builtin — not user-callable.
+    FStringConcat,
 }

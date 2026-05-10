@@ -419,6 +419,7 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::Print => 1,
         BuiltinName::Assert => 2,
         BuiltinName::AssertEq => 3,
+        BuiltinName::FStringConcat => 4,
     };
     write_u8(buf, id);
 }
@@ -430,6 +431,7 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         1 => Ok(BuiltinName::Print),
         2 => Ok(BuiltinName::Assert),
         3 => Ok(BuiltinName::AssertEq),
+        4 => Ok(BuiltinName::FStringConcat),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }

@@ -269,6 +269,7 @@ impl fmt::Display for BuiltinName {
             Self::Print => write!(f, "print"),
             Self::Assert => write!(f, "assert"),
             Self::AssertEq => write!(f, "assert_eq"),
+            Self::FStringConcat => write!(f, "fstring_concat"),
         }
     }
 }
