@@ -410,3 +410,73 @@ fn generic_main_runs_without_error() {
     let result = run(&program);
     assert!(result.is_ok(), "generic main failed: {result:?}");
 }
+
+// ── Module system demo (v0.2.x.8) ─────────────────────────────────
+
+#[test]
+fn module_system_demo_loads_and_typechecks() {
+    let path = std::path::Path::new(
+        env!("CARGO_MANIFEST_DIR"),
+    )
+    .join("..")
+    .join("..")
+    .join("demos")
+    .join("02-module-system")
+    .join("main.tri");
+    let resolved = triet_modules::load_program(&path).unwrap();
+    let type_errors = triet_typecheck::check_resolved(&resolved);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:#?}");
+}
+
+#[test]
+fn module_system_demo_runs_all_tests_pass() {
+    let path = std::path::Path::new(
+        env!("CARGO_MANIFEST_DIR"),
+    )
+    .join("..")
+    .join("..")
+    .join("demos")
+    .join("02-module-system")
+    .join("main.tri");
+    let resolved = triet_modules::load_program(&path).unwrap();
+    let type_errors = triet_typecheck::check_resolved(&resolved);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:#?}");
+    let result = triet_interpreter::run_resolved(&resolved);
+    assert!(result.is_ok(), "module system demo failed: {result:?}");
+}
+
+#[test]
+fn module_system_demo_output_snapshot() {
+    let path = std::path::Path::new(
+        env!("CARGO_MANIFEST_DIR"),
+    )
+    .join("..")
+    .join("..")
+    .join("demos")
+    .join("02-module-system")
+    .join("main.tri");
+    let resolved = triet_modules::load_program(&path).unwrap();
+    let type_errors = triet_typecheck::check_resolved(&resolved);
+    assert!(type_errors.is_empty());
+
+    // Capture the demo's module structure.
+    let mut summary = String::new();
+    for module in &resolved.modules {
+        let path = module.path.to_string();
+        let item_count = module.items.len();
+        let child_count = module.children.len();
+        summary.push_str(&format!("{path}: {item_count} items, {child_count} children\n"));
+    }
+    summary.push_str(&format!(
+        "total: {} modules, {} arenas\n",
+        resolved.modules.len(),
+        resolved.arenas.len(),
+    ));
+
+    // Run the demo and verify it completes successfully.
+    let result = triet_interpreter::run_resolved(&resolved);
+    assert!(result.is_ok(), "demo failed: {result:?}");
+    summary.push_str("result: OK\n");
+
+    insta::assert_snapshot!("module_system_demo", summary);
+}

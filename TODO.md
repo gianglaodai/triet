@@ -115,6 +115,12 @@ chưa có.
   - Stdlib path via `CARGO_MANIFEST_DIR` with CWD fallback ✓
   - Removed `crates/triet-modules/src/std/` embedded files ✓
 
+- [x] **v0.2.x.8** — Demo lớn + snapshot tests cho module system _(uncommitted)_
+  - 3 new tests in `demo_programs.rs`: loads+typechecks, runs all tests pass,
+    snapshot of module structure (11 modules, 97 items, 6 arenas) ✓
+  - Demo verified: 6 files, nested inline + file-bound modules, cross-module
+    imports, 13 test functions — all passing ✓
+
 ### Pending
 
 - [x] **v0.3.7** — Differential tests: VM ≡ tree-walking interpreter `2c57a50`
