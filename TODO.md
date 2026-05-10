@@ -109,7 +109,29 @@ chưa có.
   - `triet-syntax` dependency added to triet-ir ✓
   - `ModuleId`/`ArenaId` fields made `pub` for cross-crate construction ✓
 
+- [ ] **v0.3.5** — VM: execute IR (`triet-ir/src/vm.rs`) _(uncommitted)_
+  - `Vm::new(IrProgram)` + `execute(FuncId, args) -> Result<RuntimeValue, VmError>` ✓
+  - `RuntimeValue` enum: Trit/Tryte/Integer/Long/Trilean/String/Unit/Null/
+    Struct/Enum/Closure ✓
+  - `Frame` với register file, block/pc tracking, return info ✓
+  - Dispatch loop: tất cả 52 opcodes có handler ✓
+  - Arithmetic: type-tag aware (Integer/Long/Tryte/Trit) ✓
+  - Trilean Ł3/K3 dispatch (separate opcodes) ✓
+  - Comparison (eq/ne/lt/le/gt/ge) → Trilean ✓
+  - Conversion (to_integer/to_tryte/to_long/to_trit/to_trilean) ✓
+  - Nullable: NullWrap/NullUnwrap/NullCheck ✓
+  - Aggregate: StructNew/FieldGet/FieldSet, EnumNew/EnumTag/EnumPayload ✓
+  - Function calls: CallLocal (full), CallBuiltin, CallCrossModule (stub) ✓
+  - Closure: ClosureNew/ClosureCall ✓
+  - Control flow: Br/BrIf/Ret/Unreachable, phi với prev_block tracking ✓
+  - Frame stack: call/return với return_block/return_dest ✓
+  - Builtins: println, print, assert, assert_eq ✓
+  - Diagnostic codes E22XX (8 variants) ✓
+  - 12 VM tests: arithmetic, logic Ł3, comparison, conditional, factorial
+    recursive, phi after if-else, div by zero, builtin assert ✓
+
 - [ ] **v0.3.3** — Lowerer: items + functions + modules
+  - (Đa số đã làm trong v0.3.2; còn lại generics monomorphization cần typechecker)
   - Function definitions + signatures + parameter binding.
   - Generics monomorphization (cùng pattern typecheck đã làm trong G.1c).
   - Cross-module calls qua `AbsolutePath` từ `triet-modules` (capability

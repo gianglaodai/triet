@@ -24,6 +24,7 @@
 //! | [`verify`] | SSA invariant verifier (`verify_function`, `verify_program`) |
 //! | [`display`] | `Display` impls for disassembly output |
 //! | [`lowerer`] | AST → IR lowerer (`lower_program`) |
+//! | [`vm`] | Bytecode VM (`Vm`, `RuntimeValue`, `VmError`) |
 //!
 //! [ADR-0007]: ../../../docs/decisions/0007-ir-design.md
 //!
@@ -59,6 +60,7 @@ mod lowerer;
 mod module;
 mod types;
 mod verify;
+mod vm;
 
 // Re-export everything needed by consumers (lowerer, VM, backends).
 pub use constant::{Constant, ConstantPool};
@@ -67,6 +69,7 @@ pub use lowerer::lower_program;
 pub use module::{BasicBlock, Function, IrModule, IrProgram};
 pub use types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 pub use verify::{verify_function, verify_program, VerifierResult, VerifierViolation};
+pub use vm::{RuntimeValue, Vm, VmError};
 
 #[cfg(test)]
 mod tests {
