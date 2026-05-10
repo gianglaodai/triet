@@ -145,7 +145,7 @@ chưa có.
     unknown opcode ✓
   - Determinism test: same input → same bytes ✓
 
-- [x] **v0.3.10** — CLI: `triet build` subcommand + `.triv` execution _(uncommitted)_
+- [x] **v0.3.10** — CLI: `triet build` subcommand + `.triv` execution `3b94bbf`
   - `triet build foo.tri -o foo.triv` — parse + typecheck + lower + serialize ✓
   - `triet run foo.triv` — auto-detect bytecode vs source theo extension ✓
   - Backward-compat: `triet run foo.tri` vẫn work (lower + run in-memory) ✓
