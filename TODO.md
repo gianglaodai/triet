@@ -66,22 +66,25 @@ chưa có.
 
 ### In progress
 
-_(empty)_
+- [ ] **v0.3.1** — Scaffold `triet-ir` crate _(uncommitted)_
+  - Crate `triet-ir` created + added to workspace ✓.
+  - Types: `ValueId`, `BlockId`, `FuncId`, `ConstId`, `TypeTag` ✓ (types.rs).
+  - Constant pool: `Constant` enum + `ConstantPool` với dedup ✓ (constant.rs).
+  - Instruction set: 50+ opcodes grouped per ADR-0007 — const, arith, logic
+    Ł3/K3, comparison, conversion, aggregate (struct/enum), nullable,
+    function calls (local/cross-module/builtin), closure, control flow
+    (br/br_if/ret/unreachable), phi ✓ (instr.rs).
+  - Module types: `BasicBlock`, `Function`, `IrModule`, `IrProgram` ✓
+    (module.rs).
+  - Display formatting cho disassembly ✓ (display.rs).
+  - SSA verifier: duplicate definition, undefined value, missing terminator,
+    phi order, empty function, invalid phi predecessor ✓ (verify.rs).
+  - 21 unit tests: constant pool intern/dedup/types, factorial IR construction,
+    function well-formedness, verifier SSA checks, display formatting,
+    operand/value extraction, IrProgram ✓ (lib.rs tests).
+  - Clippy auto-fix ✓. Workspace tests xanh ✓.
 
 ### Pending
-
-- [ ] **v0.3.1** — Scaffold `triet-ir` crate
-  - Concrete instruction set per ADR-0007 (groups: const, arith, logic
-    Ł3/K3, comparison, conversion, control flow, function, aggregate,
-    nullable, closure, builtin).
-  - Types: `Instr`, `BasicBlock`, `Function`, `IrModule`, `IrProgram`.
-  - Constant pool: `Integer`, `Long`, `String`, type metadata, function refs.
-  - Type tag per register (`Trit`/`Tryte`/`Integer`/`Long`/`Trilean`/
-    `String`/`Unit`/`T?`/user-defined).
-  - IR verifier: SSA invariant ("each register defined exactly once"),
-    type-tag consistency, basic block terminator presence.
-  - Display/Debug formatting cho disassembly view (`triet disasm` future).
-  - Unit tests cho IR construction + verifier.
 
 - [ ] **v0.3.2** — Lowerer: AST → IR (core expressions + statements)
   - Literals (Trit, Integer, Long, String, Trilean, Boolean, prefix
