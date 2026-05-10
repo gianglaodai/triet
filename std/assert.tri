@@ -1,2 +1,4 @@
+// Triết standard library — std.assert
+// Assertion operations for testing and validation.
 public function assert(condition: Trilean) {}
 public function assert_eq(a: Integer, b: Integer) {}

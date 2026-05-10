@@ -115,11 +115,34 @@ impl LoaderState {
         }
     }
 
-    /// Load the synthetic stdlib tree into the program.
+    /// Load the stdlib tree into the program.
+    ///
+    /// v0.2.x.7: stdlib children are resolved from real `.tri` files in the
+    /// `std/` directory via the normal filesystem path (replacing the v0.2.x.6
+    /// `include_str!` hack). The `std` container module itself is still
+    /// synthetic — it declares `module io`, `module text`, `module assert` as
+    /// external children.
+    ///
+    /// The stdlib directory is resolved relative to the workspace root (via
+    /// `CARGO_MANIFEST_DIR` at compile time) and also checked relative to the
+    /// current working directory at runtime.
     fn load_stdlib(&mut self) {
         let std_path = ModulePath::new(vec!["std".to_owned()]);
         let source = "module io\nmodule text\nmodule assert";
-        self.load_from_source(&std_path, None, None, source, None);
+
+        // Resolve std/ relative to the workspace root (for dev/production).
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        // triet-modules crate is at <workspace>/crates/triet-modules
+        let workspace_std = manifest_dir.join("..").join("..").join("std");
+
+        let std_dir = if workspace_std.is_dir() {
+            workspace_std
+        } else {
+            // Fall back to CWD-relative (for installed toolchains).
+            PathBuf::from("std")
+        };
+
+        self.load_from_source(&std_path, None, Some(&std_dir), source, None);
     }
 
     /// Parse `source`, allocate a fresh arena, slot a [`Module`] into
@@ -289,29 +312,7 @@ impl LoaderState {
                 inline_items,
             )),
             ModuleContent::External => {
-                if child_path.root() == Some("std") {
-                    let source = match decl.name.as_str() {
-                        "io" => include_str!("std/io.tri"),
-                        "text" => include_str!("std/text.tri"),
-                        "assert" => include_str!("std/assert.tri"),
-                        _ => {
-                            self.errors.push(LoaderError::FileNotFound {
-                                module_name: decl.name,
-                                searched_primary: format!("(embedded stdlib {child_path})"),
-                                searched_nested: String::new(),
-                                span: decl_span,
-                            });
-                            return None;
-                        }
-                    };
-                    self.load_from_source(
-                        &child_path,
-                        None,
-                        None, // stdlib has no filesystem children
-                        source,
-                        Some(parent_id),
-                    )
-                } else if let Some(directory) = parent_search_dir {
+                if let Some(directory) = parent_search_dir {
                     self.resolve_external(
                         &child_path,
                         &decl.name,

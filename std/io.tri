@@ -1,3 +1,5 @@
+// Triết standard library — std.io
+// Input/output operations.
 public function print(text: String) {}
 public function println(text: String) {}
 public function read_line() -> String = ""
