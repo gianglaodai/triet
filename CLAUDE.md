@@ -2,6 +2,29 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Author–AI collaboration model
+
+The author (**Giang Hoàng**) owns the **goals, vision, direction, and final
+technical decisions**. He is not a compiler engineer — he drives the project
+as a product owner with a clear philosophical direction (balanced ternary,
+AI-first, stability over speed). Technical implementation is delegated to the AI.
+
+**When you propose any technical recommendation:**
+1. **Read the source-of-truth docs first** — `SPEC.md` (semantics) and
+   `VISION.md` (architectural pillars). The author's intent is recorded there.
+   Your recommendations must align with the design philosophy already decided.
+2. **Present tradeoffs in terms the author cares about** — not compiler-theory
+   jargon, but: "this makes the language simpler for users", "this preserves
+   the ternary identity", "this defers risk to a later phase".
+3. **Surface which ADR or SPEC section supports your choice.** If none exists,
+   propose writing one before implementing.
+4. **The author decides.** Present options clearly, recommend one, explain why.
+   Don't proceed with architecturally significant changes without alignment.
+
+The author has explicitly stated: *"Tôi không có kiến thức gì về lập trình
+1 ngôn ngữ cả"* — but he knows what he wants the language to BE. Bridge
+that gap by grounding every recommendation in the project's own documents.
+
 ## What this is
 
 Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → typecheck → interpret` pipeline plus a (currently in-progress) module system. Long-term aim is OS-capable; current state is a tree-walking interpreter for v0.2.
