@@ -51,7 +51,7 @@ chưa có.
 
 ### Done
 
-- [x] **v0.3.0** — ADR-0007: IR design — register-based SSA decided
+- [x] **v0.3.0** — ADR-0007: IR design — register-based SSA decided `abbd1d9`
   - Survey prior art: LLVM IR, Rust MIR, Swift SIL, Cranelift IR
     (register SSA — adopted); JVM, Wasm, CPython 3.x (stack — rejected).
   - Tradeoff matrix mapped to SPEC §0.3 principles: AI-first, Stability,
@@ -64,9 +64,7 @@ chưa có.
   - Companion docs updates: VISION §4 (execution model multi-backend),
     SPEC §0.6 (VM as dev tier), ROADMAP § v0.3 (clarify VM is scaffolding).
 
-### In progress
-
-- [ ] **v0.3.1** — Scaffold `triet-ir` crate _(uncommitted)_
+- [x] **v0.3.1** — Scaffold `triet-ir` crate `abbd1d9`
   - Crate `triet-ir` created + added to workspace ✓.
   - Types: `ValueId`, `BlockId`, `FuncId`, `ConstId`, `TypeTag` ✓ (types.rs).
   - Constant pool: `Constant` enum + `ConstantPool` với dedup ✓ (constant.rs).
@@ -86,15 +84,30 @@ chưa có.
 
 ### Pending
 
-- [ ] **v0.3.2** — Lowerer: AST → IR (core expressions + statements)
-  - Literals (Trit, Integer, Long, String, Trilean, Boolean, prefix
-    trit `0t+0-+`).
+- [ ] **v0.3.2** — Lowerer: AST → IR (core expressions + statements) _(uncommitted)_
+  - `lower_program(&ResolvedProgram) -> IrProgram` entry point ✓
+  - Literals (Integer, Ternary, Trilean, String, Null, FString) ✓
   - Arithmetic (`+`, `-`, `*`, `/`, `%%`, `**`), comparison, symbolic
-    logic ops (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`).
-  - Variable bindings, assignment, scope tracking.
-  - Control flow: `if/else`, `while`, `for`, `loop`, `break`, `continue`,
-    `if?`, `while?` (unknown-as-false handling).
-  - Phi nodes ở basic block convergence (loop, if-else merge).
+    logic ops (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`) ✓
+  - Variable bindings (`let`), assignment, lexical scope tracking ✓
+  - Control flow: `if/else`, `while`, `loop`, `break`, `continue`,
+    `if?`, `while?` (unknown-as-false handling) ✓
+  - Phi nodes ở if-else merge ✓
+  - For loop (scaffold, full iterator protocol deferred to v0.3.4) ✓
+  - Match expression (simplified, tag checks deferred to v0.3.4) ✓
+  - Function calls (local, cross-module, builtin) ✓
+  - 51 unit tests (31 lowerer + 13 verifier/IR type + 7 pre-existing) ✓
+  - Edge cases: nested blocks/shadowing, nested if/else, nested loops, early
+    return, multi-param, forward ref, null ops, struct/enum/tuple literals,
+    while?, break with value, cross-module call, empty program, multi-module,
+    large/negative integers, all Ł3 ops (9×真理値組み合わせ), all comparison
+    ops with equal values, safe field access, elvis, const, method call,
+    range, field access, block without final expr, if without else ✓
+  - Bug fix: `BlockId` → `BTreeMap` thay vì `Vec` để fix index out of bounds
+    khi nested control flow ✓
+  - Bug fix: verifier treats function params as implicitly defined ✓
+  - `triet-syntax` dependency added to triet-ir ✓
+  - `ModuleId`/`ArenaId` fields made `pub` for cross-crate construction ✓
 
 - [ ] **v0.3.3** — Lowerer: items + functions + modules
   - Function definitions + signatures + parameter binding.

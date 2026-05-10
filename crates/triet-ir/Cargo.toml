@@ -15,3 +15,4 @@ workspace = true
 triet-core.workspace = true
 triet-logic.workspace = true
 triet-modules.workspace = true
+triet-syntax.workspace = true

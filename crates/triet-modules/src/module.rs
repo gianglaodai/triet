@@ -22,7 +22,7 @@ use crate::path::{AbsolutePath, ModulePath};
 /// Stable for the lifetime of the program. The crate root sits at the
 /// reserved index returned by [`ResolvedProgram::root`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ModuleId(pub(crate) usize);
+pub struct ModuleId(pub usize);
 
 impl ModuleId {
     /// Internal index. Exposed for diagnostics, not for arithmetic.
@@ -37,7 +37,7 @@ impl ModuleId {
 /// One arena per parsed source file. Inline submodules share their
 /// parent's `ArenaId`; file-bound submodules each have a unique one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ArenaId(pub(crate) usize);
+pub struct ArenaId(pub usize);
 
 impl ArenaId {
     /// Internal index. Exposed for diagnostics.

@@ -36,7 +36,7 @@ impl VerifierResult {
 
     /// True if verification found violations.
     #[must_use]
-    pub fn is_err(&self) -> bool {
+    pub const fn is_err(&self) -> bool {
         !self.is_ok()
     }
 }
@@ -108,6 +108,13 @@ pub fn verify_function(func: &Function) -> VerifierResult {
 
     // Collect all value definitions and their source instructions.
     let mut defs: BTreeMap<ValueId, Vec<&Instruction>> = BTreeMap::new();
+
+    // Function parameters are implicitly defined (ValueId 0..params.len()-1).
+    let param_count = func.params.len() as u32;
+    for i in 0..param_count {
+        defs.entry(ValueId(i)).or_default();
+    }
+
     for block in &func.blocks {
         for instr in &block.instructions {
             if let Some(dest) = instr.destination() {

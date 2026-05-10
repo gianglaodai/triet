@@ -23,6 +23,7 @@
 //! | [`module`] | `BasicBlock`, `Function`, `IrModule`, `IrProgram` |
 //! | [`verify`] | SSA invariant verifier (`verify_function`, `verify_program`) |
 //! | [`display`] | `Display` impls for disassembly output |
+//! | [`lowerer`] | AST → IR lowerer (`lower_program`) |
 //!
 //! [ADR-0007]: ../../../docs/decisions/0007-ir-design.md
 //!
@@ -54,6 +55,7 @@
 mod constant;
 mod display;
 mod instr;
+mod lowerer;
 mod module;
 mod types;
 mod verify;
@@ -61,6 +63,7 @@ mod verify;
 // Re-export everything needed by consumers (lowerer, VM, backends).
 pub use constant::{Constant, ConstantPool};
 pub use instr::{BuiltinName, Instruction, Operand, PhiIncoming};
+pub use lowerer::lower_program;
 pub use module::{BasicBlock, Function, IrModule, IrProgram};
 pub use types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 pub use verify::{verify_function, verify_program, VerifierResult, VerifierViolation};
@@ -93,7 +96,8 @@ mod tests {
         let recurse = BlockId(2);
         let merge = BlockId(3);
 
-        let func = Function {
+        
+        Function {
             id,
             name: Some("factorial".into()),
             params: vec![("%n".into(), TypeTag::Integer)],
@@ -167,8 +171,7 @@ mod tests {
                     ],
                 },
             ],
-        };
-        func
+        }
     }
 
     // ── Constant pool ────────────────────────────────────────────
@@ -482,5 +485,372 @@ mod tests {
         };
         assert!(!program.is_empty());
         assert_eq!(program.function_count(), 1);
+    }
+
+    // ── Verifier: mixed valid/invalid ──────────────────────────────
+
+    #[test]
+    fn verifier_accumulates_errors_across_functions() {
+        // Valid function
+        let mut pool = ConstantPool::new();
+        let c0 = pool.intern(Constant::Integer(int(0)));
+        let c1 = pool.intern(Constant::Integer(int(1)));
+        let valid = make_factorial_func(FuncId(0), c0, c1);
+
+        // Invalid function: missing terminator
+        let invalid = Function {
+            id: FuncId(1),
+            name: Some("broken".into()),
+            params: vec![],
+            return_type: TypeTag::Unit,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![Instruction::Const {
+                    dest: ValueId(0),
+                    constant: c0,
+                }],
+            }],
+        };
+
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::crate_root(),
+                    "test".into(),
+                ),
+                functions: vec![valid, invalid],
+            }],
+            constants: pool,
+        };
+
+        let result = verify_program(&program);
+        assert!(result.is_err());
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| matches!(v, VerifierViolation::MissingTerminator { .. })));
+    }
+
+    #[test]
+    fn verifier_detects_multiple_violations_in_one_function() {
+        let mut pool = ConstantPool::new();
+        let c0 = pool.intern(Constant::Integer(int(0)));
+        // Function with: missing terminator AND undefined value use
+        let func = Function {
+            id: FuncId(0),
+            name: Some("multi_bad".into()),
+            params: vec![],
+            return_type: TypeTag::Unit,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::Eq {
+                        dest: ValueId(0),
+                        lhs: Operand::Value(ValueId(99)), // undefined
+                        rhs: Operand::Const(c0),
+                    },
+                    // No terminator
+                ],
+            }],
+        };
+        let result = verify_function(&func);
+        assert!(result.is_err());
+        let has_undef = result
+            .violations
+            .iter()
+            .any(|v| matches!(v, VerifierViolation::UndefinedValue { .. }));
+        let has_missing_term = result
+            .violations
+            .iter()
+            .any(|v| matches!(v, VerifierViolation::MissingTerminator { .. }));
+        assert!(has_undef, "should detect undefined value");
+        assert!(has_missing_term, "should detect missing terminator");
+    }
+
+    #[test]
+    fn verifier_function_with_params_treats_params_as_defined() {
+        let func = Function {
+            id: FuncId(0),
+            name: Some("add".into()),
+            params: vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::Add {
+                        dest: ValueId(2),
+                        lhs: Operand::Value(ValueId(0)), // param a
+                        rhs: Operand::Value(ValueId(1)), // param b
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(2))),
+                    },
+                ],
+            }],
+        };
+        let result = verify_function(&func);
+        assert!(result.is_ok(), "violations: {:?}", result.violations);
+    }
+
+    // ── Verifier: phi predecessor validation ───────────────────────
+
+    #[test]
+    fn verifier_rejects_phi_predecessor_from_nonexistent_block() {
+        let func = Function {
+            id: FuncId(0),
+            name: Some("bad_phi".into()),
+            params: vec![],
+            return_type: TypeTag::Unit,
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId(0),
+                    name: Some("entry".into()),
+                    instructions: vec![Instruction::Br {
+                        target: BlockId(1),
+                    }],
+                },
+                BasicBlock {
+                    id: BlockId(1),
+                    name: Some("merge".into()),
+                    instructions: vec![
+                        Instruction::Phi {
+                            dest: ValueId(0),
+                            incoming: vec![PhiIncoming {
+                                value: ValueId(0),
+                                block: BlockId(99), // nonexistent!
+                            }],
+                        },
+                        Instruction::Ret { value: None },
+                    ],
+                },
+            ],
+        };
+        let result = verify_function(&func);
+        assert!(result.is_err());
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| matches!(v, VerifierViolation::InvalidPhiPredecessor { .. })));
+    }
+
+    // ── IR types: BasicBlock edge cases ────────────────────────────
+
+    #[test]
+    fn basic_block_phis_returns_only_phi_instructions() {
+        let block = BasicBlock {
+            id: BlockId(0),
+            name: Some("test".into()),
+            instructions: vec![
+                Instruction::Phi {
+                    dest: ValueId(0),
+                    incoming: vec![],
+                },
+                Instruction::Phi {
+                    dest: ValueId(1),
+                    incoming: vec![],
+                },
+                Instruction::Add {
+                    dest: ValueId(2),
+                    lhs: Operand::Value(ValueId(0)),
+                    rhs: Operand::Value(ValueId(1)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        };
+        let phis: Vec<_> = block.phis().collect();
+        assert_eq!(phis.len(), 2);
+        assert!(phis[0].is_phi());
+        assert!(phis[1].is_phi());
+    }
+
+    #[test]
+    fn basic_block_body_skips_phis_and_terminator() {
+        let block = BasicBlock {
+            id: BlockId(0),
+            name: Some("test".into()),
+            instructions: vec![
+                Instruction::Phi {
+                    dest: ValueId(0),
+                    incoming: vec![],
+                },
+                Instruction::Const {
+                    dest: ValueId(1),
+                    constant: ConstId(0),
+                },
+                Instruction::Ret { value: None },
+            ],
+        };
+        let body: Vec<_> = block.body().collect();
+        assert_eq!(body.len(), 1);
+        assert!(matches!(body[0], Instruction::Const { .. }));
+    }
+
+    #[test]
+    fn basic_block_incoming_edges_collects_predecessors() {
+        let b0 = BlockId(0);
+        let b1 = BlockId(1);
+        let block = BasicBlock {
+            id: BlockId(2),
+            name: Some("merge".into()),
+            instructions: vec![
+                Instruction::Phi {
+                    dest: ValueId(0),
+                    incoming: vec![
+                        PhiIncoming { value: ValueId(1), block: b0 },
+                        PhiIncoming { value: ValueId(2), block: b1 },
+                    ],
+                },
+                Instruction::Ret { value: None },
+            ],
+        };
+        let edges = block.incoming_edges();
+        assert_eq!(edges.len(), 2);
+    }
+
+    // ── IR types: Function edge cases ──────────────────────────────
+
+    #[test]
+    fn function_all_value_dests_with_multiple_blocks() {
+        let func = Function {
+            id: FuncId(0),
+            name: Some("multi".into()),
+            params: vec![("x".into(), TypeTag::Integer)],
+            return_type: TypeTag::Integer,
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId(0),
+                    name: Some("entry".into()),
+                    instructions: vec![
+                        Instruction::Eq {
+                            dest: ValueId(1),
+                            lhs: Operand::Value(ValueId(0)),
+                            rhs: Operand::Const(ConstId(0)),
+                        },
+                        Instruction::BrIf {
+                            cond: Operand::Value(ValueId(1)),
+                            then_block: BlockId(1),
+                            else_block: BlockId(2),
+                        },
+                    ],
+                },
+                BasicBlock {
+                    id: BlockId(1),
+                    name: Some("zero".into()),
+                    instructions: vec![Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    }],
+                },
+                BasicBlock {
+                    id: BlockId(2),
+                    name: Some("non_zero".into()),
+                    instructions: vec![
+                        Instruction::Add {
+                            dest: ValueId(2),
+                            lhs: Operand::Value(ValueId(0)),
+                            rhs: Operand::Const(ConstId(1)),
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(2))),
+                        },
+                    ],
+                },
+            ],
+        };
+        let dests = func.all_value_dests();
+        // ValueId(0) is param (not from instruction). Values 1 and 2 are dests.
+        assert_eq!(dests.len(), 2);
+    }
+
+    // ── IR types: multi-module program ─────────────────────────────
+
+    #[test]
+    fn ir_program_with_multiple_modules_counts_functions() {
+        let program = IrProgram {
+            modules: vec![
+                IrModule {
+                    path: triet_modules::AbsolutePath::new(
+                        triet_modules::ModulePath::crate_root(),
+                        "root".into(),
+                    ),
+                    functions: vec![
+                        Function::new(FuncId(0), Some("main".into()), vec![], TypeTag::Unit),
+                    ],
+                },
+                IrModule {
+                    path: triet_modules::AbsolutePath::new(
+                        triet_modules::ModulePath::crate_root().child("utils"),
+                        "utils".into(),
+                    ),
+                    functions: vec![
+                        Function::new(FuncId(1), Some("helper".into()), vec![], TypeTag::Integer),
+                        Function::new(
+                            FuncId(2),
+                            Some("another".into()),
+                            vec![],
+                            TypeTag::Trilean,
+                        ),
+                    ],
+                },
+            ],
+            constants: ConstantPool::new(),
+        };
+        assert!(!program.is_empty());
+        assert_eq!(program.function_count(), 3);
+    }
+
+    // ── Operand: edge cases ────────────────────────────────────────
+
+    #[test]
+    fn operand_from_value_id() {
+        let v = ValueId(5);
+        let op: Operand = v.into();
+        assert_eq!(op, Operand::Value(ValueId(5)));
+    }
+
+    #[test]
+    fn operand_from_const_id() {
+        let c = ConstId(3);
+        let op: Operand = c.into();
+        assert_eq!(op, Operand::Const(ConstId(3)));
+    }
+
+    #[test]
+    fn instruction_destinations_for_all_variants() {
+        // Ensure destination() returns Some for value-producing instructions
+        let instrs: Vec<(Instruction, bool)> = vec![
+            (Instruction::Const { dest: ValueId(0), constant: ConstId(0) }, true),
+            (Instruction::Add { dest: ValueId(1), lhs: Operand::Value(ValueId(0)), rhs: Operand::Const(ConstId(0)) }, true),
+            (Instruction::Br { target: BlockId(0) }, false),
+            (Instruction::BrIf { cond: Operand::Value(ValueId(0)), then_block: BlockId(0), else_block: BlockId(1) }, false),
+            (Instruction::Ret { value: None }, false),
+            (Instruction::Unreachable, false),
+        ];
+        for (instr, should_have_dest) in &instrs {
+            assert_eq!(instr.destination().is_some(), *should_have_dest, "mismatch for {instr:?}");
+        }
+    }
+
+    // ── Phi edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn phi_with_multiple_incoming_edges_collects_value_operands() {
+        let phi = Instruction::Phi {
+            dest: ValueId(0),
+            incoming: vec![
+                PhiIncoming { value: ValueId(10), block: BlockId(0) },
+                PhiIncoming { value: ValueId(11), block: BlockId(1) },
+                PhiIncoming { value: ValueId(12), block: BlockId(2) },
+            ],
+        };
+        let operands = phi.value_operands();
+        assert_eq!(operands, vec![ValueId(10), ValueId(11), ValueId(12)]);
     }
 }
