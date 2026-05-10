@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo run *)",
+      "Bash(cargo fix *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo add *)",
+      "Bash(rustc --version)",
+      "Bash(git add *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git branch *)",
+      "Bash(git remote *)",
+      "Bash(./target/release/triet *)",
+      "Bash(./target/debug/triet *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(wc *)",
+      "Bash(for f in *)",
+      "Bash(head *)",
+      "Bash(tail *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat <<'HOOK'\n[33m[1m  TRACKING: Source files modified. When done editing, run `/check` or `cargo test --workspace && cargo clippy --workspace --all-targets` before committing.[0m\nHOOK"
+          }
+        ]
+      }
+    ]
+  }
+}
