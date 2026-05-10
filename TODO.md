@@ -82,59 +82,34 @@ chưa có.
     operand/value extraction, IrProgram ✓ (lib.rs tests).
   - Clippy auto-fix ✓. Workspace tests xanh ✓.
 
-### Pending
-
-- [ ] **v0.3.2** — Lowerer: AST → IR (core expressions + statements) _(uncommitted)_
+- [x] **v0.3.2** — Lowerer: AST → IR (core expressions + statements) `2c80c2d`
   - `lower_program(&ResolvedProgram) -> IrProgram` entry point ✓
   - Literals (Integer, Ternary, Trilean, String, Null, FString) ✓
-  - Arithmetic (`+`, `-`, `*`, `/`, `%%`, `**`), comparison, symbolic
-    logic ops (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`) ✓
-  - Variable bindings (`let`), assignment, lexical scope tracking ✓
-  - Control flow: `if/else`, `while`, `loop`, `break`, `continue`,
-    `if?`, `while?` (unknown-as-false handling) ✓
-  - Phi nodes ở if-else merge ✓
-  - For loop (scaffold, full iterator protocol deferred to v0.3.4) ✓
-  - Match expression (simplified, tag checks deferred to v0.3.4) ✓
+  - Arithmetic, comparison, symbolic logic ops (Ł3/K3) ✓
+  - Variable bindings, assignment, lexical scope tracking ✓
+  - Control flow: if/else, while, loop, break, continue, if?, while? ✓
+  - Phi nodes, for loop (scaffold), match (simplified) ✓
   - Function calls (local, cross-module, builtin) ✓
-  - 51 unit tests (31 lowerer + 13 verifier/IR type + 7 pre-existing) ✓
-  - Edge cases: nested blocks/shadowing, nested if/else, nested loops, early
-    return, multi-param, forward ref, null ops, struct/enum/tuple literals,
-    while?, break with value, cross-module call, empty program, multi-module,
-    large/negative integers, all Ł3 ops (9×真理値組み合わせ), all comparison
-    ops with equal values, safe field access, elvis, const, method call,
-    range, field access, block without final expr, if without else ✓
-  - Bug fix: `BlockId` → `BTreeMap` thay vì `Vec` để fix index out of bounds
-    khi nested control flow ✓
-  - Bug fix: verifier treats function params as implicitly defined ✓
-  - `triet-syntax` dependency added to triet-ir ✓
-  - `ModuleId`/`ArenaId` fields made `pub` for cross-crate construction ✓
-
-- [x] **v0.3.5** — VM: execute IR (`triet-ir/src/vm.rs`) `cef4119`
-  - `Vm::new(IrProgram)` + `execute(FuncId, args) → Result<RuntimeValue, VmError>` ✓
-  - `RuntimeValue` enum + `Frame` register file + dispatch loop 52 opcodes ✓
-  - Arithmetic type-tag aware, Trilean Ł3/K3 riêng biệt, comparison ✓
-  - Function calls/return + phi với prev_block tracking ✓
-  - Builtins (println/print/assert/assert_eq) + 8 VmError variants E22XX ✓
-  - 20 VM tests (8 balanced ternary verification + 12 general) ✓
+  - 51 tests + 2 bug fixes (BTreeMap cho nested CFG, verifier params) ✓
 
 - [x] **v0.3.3** — Lowerer: items + functions + modules (gộp vào v0.3.2)
-  - Function definitions + signatures + parameter binding ✓ (v0.3.2)
-  - Cross-module calls qua AbsolutePath ✓ (v0.3.2)
-  - Function table indexing ✓ (v0.3.2)
-  - Generics monomorphization → deferred, cần typechecker (v0.4+)
+  - Function definitions, cross-module calls, function table ✓
+  - Generics monomorphization → deferred (v0.4+)
 
 - [x] **v0.3.4** — Lowerer: aggregates + match + closures (gộp vào v0.3.2)
-  - Struct/enum literal + field access ✓ (v0.3.2, placeholder index)
-  - Builtin call dispatch ✓ (v0.3.2)
-  - Nullable ops ✓ (v0.3.2)
-  - Closure capture → deferred, cần typechecker (v0.4+)
-  - Match exhaustiveness → deferred, cần typechecker (v0.4+)
+  - Struct/enum literal, field access, builtin dispatch, nullable ops ✓
+  - Closure capture → deferred, match exhaustiveness → deferred (v0.4+)
 
-- [x] **v0.3.6** — Snapshot tests: IR output _(uncommitted)_
-  - `insta` added to workspace + `triet-ir` dev-dependencies ✓
-  - 4 snapshot tests: factorial IR, if-else IR, while loop IR, empty program ✓
-  - Snapshot files in `crates/triet-ir/tests/snapshots/` ✓
-  - Regression detection: any change to IR display format will fail snapshots ✓
+- [x] **v0.3.5** — VM: execute IR (`triet-ir/src/vm.rs`) `cef4119`
+  - Dispatch loop 52 opcodes, RuntimeValue + Frame register file ✓
+  - Arithmetic type-tag aware, Ł3/K3 riêng biệt, comparison ✓
+  - Function calls/return + phi prev_block tracking ✓
+  - Builtins + 8 VmError variants E22XX, 20 VM tests ✓
+
+- [x] **v0.3.6** — Snapshot tests: IR output `0ee2bb9`
+  - `insta` added, 4 snapshot tests (factorial, if-else, while, empty) ✓
+
+### Pending
 
 - [ ] **v0.3.7** — Differential tests: VM ≡ tree-walking interpreter
   - Mỗi `examples/*.tri`: run qua cả hai, so sánh stdout + exit code
@@ -143,13 +118,19 @@ chưa có.
     span, cùng message).
   - Cover cả demo `demos/02-module-system/main.tri` (704-line ALU).
 
-- [ ] **v0.3.8** — ADR-0008: bytecode binary format `.triv`
-  - Magic bytes (`0x74 0x72 0x69 0x76` = "triv"?), version field.
-  - Section layout: header / constant pool / function table / code.
-  - Endianness (little-endian giả định), alignment, varint cho
-    instruction operands.
-  - Stable cho v1.0 freeze (additive-only sau v1.0).
-  - Companion ADR cho ADR-0007 — chia tách "IR shape" và "wire format".
+- [x] **v0.3.8** — ADR-0008: bytecode binary format `.triv` _(uncommitted)_
+  - Magic bytes `0x74 0x72 0x69 0x76` ("triv"), 32-bit version LE (bắt đầu = 1) ✓
+  - Section layout: types / constants / functions / code, mỗi section có
+    id (1 byte) + size (u32 LE) để forward compatibility ✓
+  - Little-endian cho multi-byte integers ✓
+  - LEB128 unsigned varint cho tất cả small integers (ValueId, BlockId,
+    FuncId, ConstId, counts, field indices) ✓
+  - Length-prefixed UTF-8 cho strings ✓
+  - Opcode table: 52 opcodes chia 12 nhóm (0x00–0xC0), mỗi opcode 1 byte ✓
+  - Version compatibility: additive-only sau v1.0, major bump = breaking ✓
+  - Error codes: E2102–E2106 cho unsupported version, corrupted file,
+    unknown discriminant/opcode, section mismatch ✓
+  - Output: [`docs/decisions/0008-triv-binary-format.md`](docs/decisions/0008-triv-binary-format.md) ✓
 
 - [ ] **v0.3.9** — Serialize/deserialize: `.triv` reader/writer
   - Writer: `IrProgram → Vec<u8>`.
