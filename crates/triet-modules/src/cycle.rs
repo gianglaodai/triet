@@ -110,7 +110,13 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
                         });
                     }
                 }
-                _ => {}
+                // Items that never create import edges.
+                Item::Function { .. }
+                | Item::Struct { .. }
+                | Item::Enum { .. }
+                | Item::Const { .. }
+                | Item::Module { .. }
+                | Item::TypeAlias { .. } => {}
             }
         }
 

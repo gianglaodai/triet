@@ -155,7 +155,13 @@ fn collect_imports(
                     span: item.span.clone(),
                 });
             }
-            _ => {}
+            // Items that don't produce import statements.
+            Item::Function { .. }
+            | Item::Struct { .. }
+            | Item::Enum { .. }
+            | Item::Const { .. }
+            | Item::Module { .. }
+            | Item::TypeAlias { .. } => {}
         }
     }
     imports

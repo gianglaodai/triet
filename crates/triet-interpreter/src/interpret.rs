@@ -878,7 +878,13 @@ impl<'p> Interpreter<'p> {
                             self.env.declare(name, constant);
                         }
                     }
-                    _ => {}
+                    // Items that don't need pre-declaration in the environment.
+                    Item::Struct { .. }
+                    | Item::Enum { .. }
+                    | Item::TypeAlias { .. }
+                    | Item::Module { .. }
+                    | Item::Import { .. }
+                    | Item::ImportFrom { .. } => {}
                 }
             }
         }

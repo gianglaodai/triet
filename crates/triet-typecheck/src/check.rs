@@ -503,6 +503,7 @@ impl<'p> Checker<'p> {
                                 .collect();
                             return ty.substitute(&map);
                         }
+                        // Non-struct types cannot have type params — fall through to UnknownType.
                         _ => {}
                     }
                 }

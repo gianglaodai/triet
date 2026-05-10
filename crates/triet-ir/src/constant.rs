@@ -116,3 +116,121 @@ impl ConstantPool {
             .map(|(i, c)| (ConstId(i as u32), c))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TypeTag;
+
+    // ── Constant type tags ──────────────────────────────────────
+
+    #[test]
+    fn trit_constant_type_tag() {
+        let c = Constant::Trit(triet_core::Trit::Positive);
+        assert_eq!(c.type_tag(), TypeTag::Trit);
+    }
+
+    #[test]
+    fn tryte_constant_type_tag() {
+        let c = Constant::Tryte(triet_core::Tryte::new(42).unwrap());
+        assert_eq!(c.type_tag(), TypeTag::Tryte);
+    }
+
+    #[test]
+    fn integer_constant_type_tag() {
+        let c = Constant::Integer(triet_core::Integer::new(100).unwrap());
+        assert_eq!(c.type_tag(), TypeTag::Integer);
+    }
+
+    #[test]
+    fn long_constant_type_tag() {
+        let c = Constant::Long(triet_core::Long::from_i64(1000));
+        assert_eq!(c.type_tag(), TypeTag::Long);
+    }
+
+    #[test]
+    fn trilean_constant_type_tag() {
+        let c = Constant::Trilean(triet_logic::Trilean::True);
+        assert_eq!(c.type_tag(), TypeTag::Trilean);
+    }
+
+    #[test]
+    fn string_constant_type_tag() {
+        let c = Constant::String("hello".into());
+        assert_eq!(c.type_tag(), TypeTag::String);
+    }
+
+    #[test]
+    fn unit_constant_type_tag() {
+        assert_eq!(Constant::Unit.type_tag(), TypeTag::Unit);
+    }
+
+    // ── ConstantPool ────────────────────────────────────────────
+
+    #[test]
+    fn empty_pool_is_empty() {
+        let pool = ConstantPool::new();
+        assert!(pool.is_empty());
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn intern_increments_len() {
+        let mut pool = ConstantPool::new();
+        pool.intern(Constant::Unit);
+        assert_eq!(pool.len(), 1);
+        pool.intern(Constant::Integer(triet_core::Integer::new(42).unwrap()));
+        assert_eq!(pool.len(), 2);
+    }
+
+    #[test]
+    fn intern_deduplicates_by_value() {
+        let mut pool = ConstantPool::new();
+        let a = pool.intern(Constant::String("same".into()));
+        let b = pool.intern(Constant::String("same".into()));
+        assert_eq!(a, b);
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn get_returns_correct_constant() {
+        let mut pool = ConstantPool::new();
+        let id = pool.intern(Constant::Integer(triet_core::Integer::new(-5).unwrap()));
+        assert_eq!(pool.get(id), Some(&Constant::Integer(triet_core::Integer::new(-5).unwrap())));
+    }
+
+    #[test]
+    fn get_out_of_bounds_returns_none() {
+        let pool = ConstantPool::new();
+        assert_eq!(pool.get(ConstId(999)), None);
+    }
+
+    #[test]
+    fn iter_yields_all_entries_in_order() {
+        let mut pool = ConstantPool::new();
+        pool.intern(Constant::Unit);
+        pool.intern(Constant::Trit(triet_core::Trit::Zero));
+        let entries: Vec<_> = pool.iter().collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, ConstId(0));
+        assert_eq!(entries[1].0, ConstId(1));
+    }
+
+    #[test]
+    fn pool_equality_ignores_dedup_index() {
+        let mut a = ConstantPool::new();
+        let mut b = ConstantPool::new();
+        a.intern(Constant::Unit);
+        a.intern(Constant::Unit); // deduplicated
+        b.intern(Constant::Unit);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn large_integer_edge_values() {
+        let mut pool = ConstantPool::new();
+        pool.intern(Constant::Integer(triet_core::Integer::MAX));
+        pool.intern(Constant::Integer(triet_core::Integer::MIN));
+        assert_eq!(pool.len(), 2);
+    }
+}

@@ -145,6 +145,7 @@ impl<'source> Lexer<'source> {
                             self.modes.pop();
                             return Some(Ok((Token::InterpolationEnd, absolute)));
                         }
+                        // All other tokens inside an interpolation are literal f-string text.
                         _ => {}
                     }
                 }
