@@ -109,7 +109,7 @@ chưa có.
 - [x] **v0.3.6** — Snapshot tests: IR output `0ee2bb9`
   - `insta` added, 4 snapshot tests (factorial, if-else, while, empty) ✓
 
-- [x] **v0.2.x.7** — Stdlib reorganize as nested module structure _(uncommitted)_
+- [x] **v0.2.x.7** — Stdlib reorganize as nested module structure `befc59c`
   - Real `.tri` files in `std/` repo root: io.tri, text.tri, assert.tri ✓
   - Loader resolves stdlib children via filesystem instead of `include_str!` ✓
   - Stdlib path via `CARGO_MANIFEST_DIR` with CWD fallback ✓
