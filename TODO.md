@@ -159,7 +159,7 @@ chưa có.
   - Known limitation: f-string lowering deferred to v0.3.4, complex programs
     may not run correctly through VM yet ✓
 
-- [x] **v0.3.11** — Benchmark harness (criterion) + gate verification _(uncommitted)_
+- [x] **v0.3.11** — Benchmark harness (criterion) + gate verification `4dab69a`
   - `criterion` added to workspace dependencies for benchmarking ✓
   - `crates/triet-cli/benches/vm_vs_interpreter.rs`: 11 benchmarks comparing
     interpreter vs VM execution (load/typecheck/lower excluded from timing) ✓
