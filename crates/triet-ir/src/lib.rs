@@ -24,6 +24,7 @@
 //! | [`verify`] | SSA invariant verifier (`verify_function`, `verify_program`) |
 //! | [`display`] | `Display` impls for disassembly output |
 //! | [`lowerer`] | AST → IR lowerer (`lower_program`) |
+//! | [`serde`] | `.triv` binary format serializer/deserializer |
 //! | [`vm`] | Bytecode VM (`Vm`, `RuntimeValue`, `VmError`) |
 //!
 //! [ADR-0007]: ../../../docs/decisions/0007-ir-design.md
@@ -58,6 +59,7 @@ mod display;
 mod instr;
 mod lowerer;
 mod module;
+mod serde;
 mod types;
 mod verify;
 mod vm;
@@ -67,6 +69,7 @@ pub use constant::{Constant, ConstantPool};
 pub use instr::{BuiltinName, Instruction, Operand, PhiIncoming};
 pub use lowerer::lower_program;
 pub use module::{BasicBlock, Function, IrModule, IrProgram};
+pub use serde::{read_program, write_program, TrivError};
 pub use types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 pub use verify::{verify_function, verify_program, VerifierResult, VerifierViolation};
 pub use vm::{RuntimeValue, Vm, VmError};

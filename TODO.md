@@ -118,7 +118,7 @@ chưa có.
     span, cùng message).
   - Cover cả demo `demos/02-module-system/main.tri` (704-line ALU).
 
-- [x] **v0.3.8** — ADR-0008: bytecode binary format `.triv` _(uncommitted)_
+- [x] **v0.3.8** — ADR-0008: bytecode binary format `.triv` `117c20d`
   - Magic bytes `0x74 0x72 0x69 0x76` ("triv"), 32-bit version LE (bắt đầu = 1) ✓
   - Section layout: types / constants / functions / code, mỗi section có
     id (1 byte) + size (u32 LE) để forward compatibility ✓
@@ -132,11 +132,18 @@ chưa có.
     unknown discriminant/opcode, section mismatch ✓
   - Output: [`docs/decisions/0008-triv-binary-format.md`](docs/decisions/0008-triv-binary-format.md) ✓
 
-- [ ] **v0.3.9** — Serialize/deserialize: `.triv` reader/writer
-  - Writer: `IrProgram → Vec<u8>`.
-  - Reader: `&[u8] → IrProgram` với version check + corruption detection.
-  - Round-trip tests cho mọi example: parse → lower → serialize →
-    deserialize → run → so sánh output.
+- [x] **v0.3.9** — Serialize/deserialize: `.triv` reader/writer _(uncommitted)_
+  - `write_program(&IrProgram) -> Vec<u8>` — serialize to `.triv` binary ✓
+  - `read_program(&[u8]) -> Result<IrProgram, TrivError>` — deserialize with
+    version check + corruption detection ✓
+  - `crates/triet-ir/src/serde.rs` — 1500+ lines: LEB128, type table,
+    constant pool, function table, code section, 46 opcodes ✓
+  - 24 round-trip tests: empty program, single/multi function, all types,
+    all constants, control flow + phi, struct/enum, nullable, cross-module
+    calls, Ł3 logic, conversions, unreachable, all arithmetic ✓
+  - Error case tests: bad magic, unsupported version, truncated file,
+    unknown opcode ✓
+  - Determinism test: same input → same bytes ✓
 
 - [ ] **v0.3.10** — CLI: `triet build` subcommand + `.triv` execution
   - `triet build foo.tri -o foo.triv` — parse + typecheck + lower + serialize.
