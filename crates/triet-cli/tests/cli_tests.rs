@@ -115,7 +115,7 @@ fn visibility_violation() {
 #[test]
 fn reserved_namespace() {
     let temp = TempDir::new().unwrap();
-    
+
     fs::write(
         temp.path().join("main.tri"),
         "from sys.core import system\nfunction main() -> Integer = 0",
@@ -123,4 +123,97 @@ fn reserved_namespace() {
 
     let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
     insta::assert_snapshot!(stderr);
+}
+
+// ── Error exit code propagation (v0.3 safety audit) ──────────────────
+
+#[test]
+fn file_not_found_exit_code_2() {
+    let temp = TempDir::new().unwrap();
+    let output = run_cli(&["run", "nonexistent.tri"], temp.path());
+    // Load errors → exit code 2
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn type_error_exit_code_3() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("main.tri"),
+        "function main() -> Integer = true",
+    ).unwrap();
+    let output = run_cli(&["run", "main.tri"], temp.path());
+    // Type errors → exit code 3
+    assert_eq!(output.status.code(), Some(3));
+}
+
+#[test]
+fn runtime_error_exit_code_4() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("main.tri"),
+        "function main() -> Integer = 1 / 0",
+    ).unwrap();
+    let output = run_cli(&["run", "main.tri"], temp.path());
+    // Runtime errors → exit code 4
+    assert_eq!(output.status.code(), Some(4));
+}
+
+#[test]
+fn build_and_run_triv_round_trip() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("hello.tri"),
+        r#"function main() { println("hello round trip") }"#,
+    ).unwrap();
+
+    // Build step.
+    let build = run_cli(
+        &["build", "hello.tri", "-o", "hello.triv"],
+        temp.path(),
+    );
+    assert!(build.status.success(), "build failed: {:?}", String::from_utf8_lossy(&build.stderr));
+
+    // Run the .triv file.
+    let run = run_cli(&["run", "hello.triv"], temp.path());
+    assert!(run.status.success(), "run failed: {:?}", String::from_utf8_lossy(&run.stderr));
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(stdout.trim(), "hello round trip");
+}
+
+#[test]
+fn build_default_output_name() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("prog.tri"),
+        "function main() -> Integer = 1",
+    ).unwrap();
+
+    let build = run_cli(&["build", "prog.tri"], temp.path());
+    assert!(build.status.success(), "build failed: {:?}", String::from_utf8_lossy(&build.stderr));
+    // Default output should be prog.triv.
+    assert!(temp.path().join("prog.triv").exists());
+}
+
+#[test]
+fn run_triv_with_corrupted_file_exit_code_5() {
+    let temp = TempDir::new().unwrap();
+    fs::write(temp.path().join("bad.triv"), b"not a valid triv file").unwrap();
+    let output = run_cli(&["run", "bad.triv"], temp.path());
+    // Corrupted .triv → exit code 5
+    assert_eq!(output.status.code(), Some(5));
+}
+
+#[test]
+fn run_source_auto_detects_tri_extension() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("main.tri"),
+        "function main() -> Integer = 99",
+    ).unwrap();
+    // .tri should still run through the interpreter.
+    let output = run_cli(&["run", "main.tri"], temp.path());
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "99");
 }

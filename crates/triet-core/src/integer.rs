@@ -429,4 +429,49 @@ mod tests {
             assert_eq!(n * Integer::ONE, n);
         }
     }
+
+    // ── Overflow panic tests (v0.3 safety audit) ──────────────────
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn integer_add_overflow_panics() {
+        let _ = Integer::MAX + Integer::ONE;
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn integer_sub_overflow_panics() {
+        let _ = Integer::MIN - Integer::ONE;
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn integer_mul_overflow_panics() {
+        let big = Integer::new(2_000_000_000).unwrap();
+        let _ = big * big;
+    }
+
+    #[test]
+    #[should_panic(expected = "zero")]
+    fn integer_div_by_zero_panics() {
+        let _ = Integer::ONE / Integer::ZERO;
+    }
+
+    #[test]
+    #[should_panic(expected = "zero")]
+    fn integer_rem_by_zero_panics() {
+        let _ = Integer::ONE % Integer::ZERO;
+    }
+
+    #[test]
+    fn integer_negate_min_is_max() {
+        // Balanced ternary: -MIN == MAX (no overflow unlike 2's complement)
+        assert_eq!(-Integer::MIN, Integer::MAX);
+    }
+
+    #[test]
+    fn integer_balanced_range_is_symmetric() {
+        assert_eq!(-Integer::MAX, Integer::MIN);
+        assert_eq!(Integer::MAX.to_i64(), -Integer::MIN.to_i64());
+    }
 }

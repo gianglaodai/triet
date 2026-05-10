@@ -527,4 +527,34 @@ mod tests {
             assert_eq!(Tryte::ONE * t, t);
         }
     }
+
+    // ── Overflow panic tests (v0.3 safety audit) ──────────────────
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn tryte_add_overflow_panics() {
+        let _ = Tryte::MAX + Tryte::ONE;
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn tryte_sub_overflow_panics() {
+        let _ = Tryte::MIN - Tryte::ONE;
+    }
+
+    #[test]
+    #[should_panic(expected = "zero")]
+    fn tryte_div_by_zero_panics() {
+        let _ = Tryte::ONE / Tryte::ZERO;
+    }
+
+    #[test]
+    fn tryte_negate_min_is_max() {
+        assert_eq!(-Tryte::MIN, Tryte::MAX);
+    }
+
+    #[test]
+    fn tryte_balanced_range_is_symmetric() {
+        assert_eq!(-Tryte::MAX, Tryte::MIN);
+    }
 }

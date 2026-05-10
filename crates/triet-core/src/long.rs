@@ -682,4 +682,47 @@ mod tests {
         assert_eq!(Long::from_i64(-42).to_string(), "-42");
         assert_eq!(Long::ZERO.to_string(), "0");
     }
+
+    // ── Overflow panic tests (v0.3 safety audit) ──────────────────
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn long_add_overflow_panics() {
+        let _ = Long::MAX + Long::ONE;
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn long_sub_overflow_panics() {
+        let _ = Long::MIN - Long::ONE;
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow")]
+    fn long_mul_overflow_panics() {
+        let two = Long::from_i64(2);
+        let _ = Long::MAX * two;
+    }
+
+    #[test]
+    #[should_panic(expected = "zero")]
+    fn long_div_by_zero_panics() {
+        let _ = Long::ONE / Long::ZERO;
+    }
+
+    #[test]
+    fn long_negate_min_is_max() {
+        assert_eq!(-Long::MIN, Long::MAX);
+    }
+
+    #[test]
+    fn long_balanced_range_is_symmetric() {
+        assert_eq!(-Long::MAX, Long::MIN);
+    }
+
+    #[test]
+    fn long_i64_always_fits() {
+        assert_eq!(Long::from_i64(i64::MAX).to_string(), i64::MAX.to_string());
+        assert_eq!(Long::from_i64(i64::MIN).to_string(), i64::MIN.to_string());
+    }
 }
