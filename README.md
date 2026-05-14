@@ -13,10 +13,12 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **v0.2 (interpreter + struct/enum/generics) — chạy được end-to-end.** Đặc tả ngôn ngữ tại [`SPEC.md`](SPEC.md).
+🟢 **Language SPEC v0.3 — implementation v0.3.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format đã có. 827 tests pass workspace-wide.
 
 ```bash
 cargo build --release
+
+# Tree-walking interpreter (production tier hiện tại)
 ./target/release/triet run examples/fizzbuzz.tri
 ./target/release/triet run examples/measles_risk.tri
 ./target/release/triet run examples/factorial.tri
@@ -28,15 +30,21 @@ cargo build --release
 ./target/release/triet run examples/while_polling.tri
 ./target/release/triet run examples/maybe.tri
 ./target/release/triet run examples/generic.tri
-```
 
-Tổng 10 demo programs thực thi thành công. 522 tests pass workspace-wide.
+# Module system demo (704 dòng, 6 module file-bound + nested + inline)
+./target/release/triet run demos/02-module-system/main.tri
+
+# Compile → bytecode → VM execution
+./target/release/triet build examples/factorial.tri -o /tmp/factorial.triv
+./target/release/triet run /tmp/factorial.triv
+```
 
 ## Triết lý thiết kế
 
 1. **AI-first** — cú pháp và semantics tối ưu cho LLM sinh code đúng ngay lần đầu
 2. **Tam phân là first-class** — `Trit`, balanced ternary arithmetic, Łukasiewicz logic là kiểu/phép nguyên thủy
-3. **Production-grade ở Ł3, mở rộng được tới Ł∞** — đường tiến hóa tới logic vô hạn giá trị (fuzzy/probabilistic) không đập bỏ semantics hiện tại
+3. **Stability over speed** — mọi quyết định kiến trúc có ADR; gate đóng phase rõ ràng (xem [ADR-0009](docs/decisions/0009-version-gate-policy.md))
+4. **IR ≠ runtime** — Triết IR là spec, backend (VM/JIT/AOT/trytecode) là implementation (xem [VISION § 4](VISION.md))
 
 ## Ví dụ
 
@@ -50,13 +58,20 @@ function fizzbuzz(n: Integer) -> String =
         _      => std.text.from_integer(n),
     }
 
-// Lập luận với missing data — sức mạnh của Łukasiewicz
+// Lập luận với missing data — sức mạnh của Łukasiewicz Ł3
 function risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean {
     let symptoms = fever && rash
     symptoms && !vaccinated
     // Nếu vaccinated = unknown → kết quả = unknown
     // → "không đủ thông tin, cần xác minh"
 }
+
+// Module system — Python-style imports, verbose keywords
+from std.io import println
+from crate.gates import nand_gate, xor_gate
+
+public function half_adder(a: Trit, b: Trit) -> (Trit, Trit) =
+    (xor_gate(a, b), nand_gate(a, b))
 ```
 
 ## Cấu trúc workspace
@@ -64,16 +79,25 @@ function risk_measles(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Tri
 ```
 triet/
 ├── crates/
-│   ├── triet-core/      # Trit/Tryte/Integer/Long + arithmetic
-│   ├── triet-logic/     # Trilean + Łukasiewicz Ł3 + Kleene K3
-│   ├── triet-syntax/    # AST types
-│   ├── triet-lexer/     # Tokenizer
-│   ├── triet-parser/    # Parser → AST
-│   ├── triet-typecheck/ # Type checker
-│   ├── triet-interpreter/ # Tree-walking interpreter
-│   └── triet-cli/       # Binary `triet`
-├── examples/            # Sample .tri programs
-└── SPEC.md              # Đặc tả ngôn ngữ
+│   ├── triet-core/        # Trit/Tryte/Integer/Long + arithmetic
+│   ├── triet-logic/       # Trilean + Łukasiewicz Ł3 + Kleene K3
+│   ├── triet-syntax/      # AST types + arena allocator
+│   ├── triet-lexer/       # Tokenizer (logos-based)
+│   ├── triet-parser/      # Parser → AST
+│   ├── triet-modules/     # Module loader + name resolver
+│   ├── triet-ir/          # Register SSA IR + lowerer + bytecode VM
+│   ├── triet-typecheck/   # Type checker với inference + monomorphization
+│   ├── triet-interpreter/ # Tree-walking interpreter (development tier)
+│   └── triet-cli/         # Binary `triet` (run/check/build/info)
+├── std/                   # Standard library (.tri files)
+│   ├── io.tri, text.tri, assert.tri
+├── examples/              # 11 sample .tri programs
+├── demos/                 # Larger multi-file demos
+│   └── 02-module-system/  # 704-dòng ternary ALU across 6 modules
+├── docs/decisions/        # 9 ADRs
+├── SPEC.md                # Đặc tả ngôn ngữ (v0.3)
+├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
+└── ROADMAP.md             # Phase gates v0.2 → v3.0+
 ```
 
 ## Build
@@ -81,9 +105,9 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test               # run all tests (526 in v0.2)
-cargo clippy             # lint
-cargo fmt                # format
+cargo test --workspace   # run all tests (827 in v0.3)
+cargo clippy --workspace --all-targets   # lint
+cargo fmt --all          # format
 ```
 
 ## Chạy demo
@@ -92,11 +116,15 @@ cargo fmt                # format
 # Build binary
 cargo build --release
 
-# Chạy chương trình .tri
+# Chạy chương trình .tri (tree-walker)
 ./target/release/triet run examples/fizzbuzz.tri
 
 # Type-check không thực thi
 ./target/release/triet check examples/fizzbuzz.tri
+
+# Compile → bytecode → VM
+./target/release/triet build examples/fizzbuzz.tri -o /tmp/fizzbuzz.triv
+./target/release/triet run /tmp/fizzbuzz.triv
 
 # Thông tin phiên bản
 ./target/release/triet info
@@ -106,9 +134,10 @@ cargo build --release
 
 Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first + capability-secure, đủ năng lực viết microkernel khi phần cứng tam phân xuất hiện. Pace: stability over speed (5–10 năm).
 
-- **v0.2** — struct, enum, generics ✅ (đang ở đây)
-- **v0.2.x** — module system ([ADR-0005](docs/decisions/0005-module-system.md))
-- **v0.3** — bytecode VM + stable IR
+- **v0.2** — struct, enum, generics ✅
+- **v0.2.x** — module system ✅ ([ADR-0005](docs/decisions/0005-module-system.md))
+- **v0.3** — bytecode VM + stable IR ✅ ([ADR-0007](docs/decisions/0007-ir-design.md), [ADR-0008](docs/decisions/0008-triv-binary-format.md))
+- **v0.3.x.cleanup** — gate-closing phase ([ADR-0009](docs/decisions/0009-version-gate-policy.md)) — *đang ở đây*
 - **v0.4** — Crate-Pack + stable ABI
 - **v0.5** — CAS packaging (hash-based identity)
 - **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
