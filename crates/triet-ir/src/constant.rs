@@ -30,12 +30,16 @@ pub enum Constant {
     String(String),
     /// Zero-sized unit.
     Unit,
+    /// `null` marker for nullable types. Distinct from `Unit` so the VM
+    /// can recognise it via `NullCheck` without ambiguating empty
+    /// expression results.
+    Null,
 }
 
 impl Constant {
     /// Return the type tag for this constant.
     #[must_use]
-    pub const fn type_tag(&self) -> super::TypeTag {
+    pub fn type_tag(&self) -> super::TypeTag {
         match self {
             Self::Trit(_) => super::TypeTag::Trit,
             Self::Tryte(_) => super::TypeTag::Tryte,
@@ -44,6 +48,7 @@ impl Constant {
             Self::Trilean(_) => super::TypeTag::Trilean,
             Self::String(_) => super::TypeTag::String,
             Self::Unit => super::TypeTag::Unit,
+            Self::Null => super::TypeTag::Nullable(Box::new(super::TypeTag::Unit)),
         }
     }
 }

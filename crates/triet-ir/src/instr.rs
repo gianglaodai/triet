@@ -372,4 +372,10 @@ pub enum BuiltinName {
     /// F-string concatenation: convert all args to string and join.
     /// Internal builtin — not user-callable.
     FStringConcat,
+    /// `std.text.len(s)` — return UTF-8 char count of a string.
+    TextLen,
+    /// `std.text.concat(a, b)` — string concatenation.
+    TextConcat,
+    /// `std.text.from_integer(n)` — integer → decimal string.
+    TextFromInteger,
 }

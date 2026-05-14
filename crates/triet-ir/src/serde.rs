@@ -420,6 +420,9 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::Assert => 2,
         BuiltinName::AssertEq => 3,
         BuiltinName::FStringConcat => 4,
+        BuiltinName::TextLen => 5,
+        BuiltinName::TextConcat => 6,
+        BuiltinName::TextFromInteger => 7,
     };
     write_u8(buf, id);
 }
@@ -432,6 +435,9 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         2 => Ok(BuiltinName::Assert),
         3 => Ok(BuiltinName::AssertEq),
         4 => Ok(BuiltinName::FStringConcat),
+        5 => Ok(BuiltinName::TextLen),
+        6 => Ok(BuiltinName::TextConcat),
+        7 => Ok(BuiltinName::TextFromInteger),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }
@@ -1117,6 +1123,7 @@ fn write_constant(buf: &mut Vec<u8>, constant: &Constant, types: &[TypeTag]) {
             write_string(buf, s);
         }
         Constant::Unit => { /* 0 bytes */ }
+        Constant::Null => { /* 0 bytes — the type tag already says Nullable */ }
     }
 }
 
@@ -1169,9 +1176,7 @@ fn read_constant(data: &[u8], pos: &mut usize, types: &[TypeTag]) -> Result<Cons
             Ok(Constant::String(s))
         }
         TypeTag::Unit => Ok(Constant::Unit),
-        TypeTag::Nullable(_) => {
-            Err(TrivError::Corrupted("nullable constant not supported".into()))
-        }
+        TypeTag::Nullable(_) => Ok(Constant::Null),
     }
 }
 

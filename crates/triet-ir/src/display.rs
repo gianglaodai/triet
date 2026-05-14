@@ -270,6 +270,9 @@ impl fmt::Display for BuiltinName {
             Self::Assert => write!(f, "assert"),
             Self::AssertEq => write!(f, "assert_eq"),
             Self::FStringConcat => write!(f, "fstring_concat"),
+            Self::TextLen => write!(f, "text_len"),
+            Self::TextConcat => write!(f, "text_concat"),
+            Self::TextFromInteger => write!(f, "text_from_integer"),
         }
     }
 }
@@ -356,5 +359,6 @@ fn display_constant(c: &Constant) -> String {
         Constant::Trilean(t) => format!("{t}"),
         Constant::String(s) => format!("\"{s}\""),
         Constant::Unit => "()".to_string(),
+        Constant::Null => "null".to_string(),
     }
 }

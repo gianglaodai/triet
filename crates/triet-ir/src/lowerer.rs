@@ -603,9 +603,9 @@ impl<'a> LowerCtx<'a> {
             }
 
             Expr::NullLiteral => {
-                // Null is lowered as a NullCheck-tagged Unit; the consumer
-                // knows from context that this is nullable.
-                let const_id = self.intern_constant(Constant::Unit);
+                // Materialize a runtime `Null` marker so `NullCheck` can
+                // distinguish it from a genuine `Unit` expression result.
+                let const_id = self.intern_constant(Constant::Null);
                 let dest = self.fresh_value();
                 self.emit(Instruction::Const {
                     dest,
@@ -705,10 +705,22 @@ impl<'a> LowerCtx<'a> {
 
             Expr::MethodCall {
                 receiver,
-                method: _method,
-                arguments: _args,
+                method,
+                arguments,
             } => {
-                // Method calls deferred to v0.3.3.
+                // Specific method dispatch — covers the v0.2 stdlib surface
+                // (no full method-table lookup yet; see `lower_for_loop` for
+                // the `.enumerate()` adapter handling).
+                if method == "length" && arguments.is_empty() {
+                    let receiver_val = self.lower_expr(*receiver);
+                    let dest = self.fresh_value();
+                    self.emit(Instruction::CallBuiltin {
+                        dest: Some(dest),
+                        name: BuiltinName::TextLen,
+                        args: vec![Operand::Value(receiver_val)],
+                    });
+                    return dest;
+                }
                 self.lower_expr(*receiver)
             }
 
@@ -758,29 +770,107 @@ impl<'a> LowerCtx<'a> {
 
             Expr::SafeMethodCall {
                 receiver,
-                method: _method,
-                arguments: _args,
+                method,
+                arguments,
             } => {
-                // Simplified: just return receiver for now.
-                self.lower_expr(*receiver)
+                // `recv?.length()` — null check + branch:
+                // null → null; non-null → method on unwrapped value.
+                let receiver_val = self.lower_expr(*receiver);
+                let null_check = self.fresh_value();
+                self.emit(Instruction::NullCheck {
+                    dest: null_check,
+                    nullable: Operand::Value(receiver_val),
+                });
+                let then_id = self.fresh_block();
+                let else_id = self.fresh_block();
+                let merge_id = self.fresh_block();
+                // NullCheck returns Trit::Positive for non-null,
+                // Trit::Zero for null → BrIf truthy → non-null branch.
+                self.emit(Instruction::BrIf {
+                    cond: Operand::Value(null_check),
+                    then_block: then_id,
+                    else_block: else_id,
+                });
+                // `then`: non-null path. Unwrap and apply the method.
+                self.start_block(then_id, Some("safe_method_some".into()));
+                let unwrapped = self.fresh_value();
+                self.emit(Instruction::NullUnwrap {
+                    dest: unwrapped,
+                    nullable: Operand::Value(receiver_val),
+                });
+                let then_val = if method == "length" && arguments.is_empty() {
+                    let d = self.fresh_value();
+                    self.emit(Instruction::CallBuiltin {
+                        dest: Some(d),
+                        name: BuiltinName::TextLen,
+                        args: vec![Operand::Value(unwrapped)],
+                    });
+                    d
+                } else {
+                    unwrapped
+                };
+                self.emit(Instruction::Br { target: merge_id });
+                let then_end = self.current_block;
+                // `else`: null path — re-use the receiver's null value as
+                // the result of the chain (its formatted display is `null`).
+                self.start_block(else_id, Some("safe_method_none".into()));
+                self.emit(Instruction::Br { target: merge_id });
+                let else_end = self.current_block;
+                let else_val = receiver_val;
+                // Merge.
+                self.start_block(merge_id, Some("safe_method_merge".into()));
+                let merge_dest = self.fresh_value();
+                self.emit(Instruction::Phi {
+                    dest: merge_dest,
+                    incoming: vec![
+                        PhiIncoming { value: then_val, block: then_end },
+                        PhiIncoming { value: else_val, block: else_end },
+                    ],
+                });
+                merge_dest
             }
 
             Expr::ElvisOp { object, default } => {
+                // `obj ?: default` — null check + branch:
+                // null → default; non-null → unwrapped.
                 let obj_val = self.lower_expr(*object);
-                let check = self.fresh_value();
+                let null_check = self.fresh_value();
                 self.emit(Instruction::NullCheck {
-                    dest: check,
+                    dest: null_check,
                     nullable: Operand::Value(obj_val),
                 });
+                let then_id = self.fresh_block();
+                let else_id = self.fresh_block();
+                let merge_id = self.fresh_block();
+                // NullCheck: Positive for non-null, Zero for null. BrIf
+                // truthy → non-null branch (then_id = "use unwrapped").
+                self.emit(Instruction::BrIf {
+                    cond: Operand::Value(null_check),
+                    then_block: then_id,
+                    else_block: else_id,
+                });
+                self.start_block(then_id, Some("elvis_some".into()));
                 let unwrapped = self.fresh_value();
                 self.emit(Instruction::NullUnwrap {
                     dest: unwrapped,
                     nullable: Operand::Value(obj_val),
                 });
-                // For now, simplified: always return the unwrapped value.
-                // Full elvis lowering needs conditional blocks.
-                let _default_val = self.lower_expr(*default);
-                unwrapped
+                self.emit(Instruction::Br { target: merge_id });
+                let then_end = self.current_block;
+                self.start_block(else_id, Some("elvis_default".into()));
+                let default_val = self.lower_expr(*default);
+                self.emit(Instruction::Br { target: merge_id });
+                let else_end = self.current_block;
+                self.start_block(merge_id, Some("elvis_merge".into()));
+                let merge_dest = self.fresh_value();
+                self.emit(Instruction::Phi {
+                    dest: merge_dest,
+                    incoming: vec![
+                        PhiIncoming { value: unwrapped, block: then_end },
+                        PhiIncoming { value: default_val, block: else_end },
+                    ],
+                });
+                merge_dest
             }
 
             Expr::ForceUnwrap(inner) => {
@@ -1314,11 +1404,30 @@ impl<'a> LowerCtx<'a> {
         let body_id = self.fresh_block();
         let exit_id = self.fresh_block();
 
-        // Check if the iterable is a Range expression for proper counted loop.
+        // Check if the iterable is a Range, or `(Range).enumerate()`, for
+        // proper counted-loop lowering. The enumerate adapter is special-
+        // cased here because its iteration plan is statically known —
+        // generic iterator protocol lowering is deferred (would need
+        // closures or a state machine value).
         let spanned = &self.arena().expression(iterable);
         let is_range = matches!(&spanned.node, Expr::Range { .. });
+        let enumerate_range: Option<triet_syntax::arena::ExprId> = match &spanned.node {
+            Expr::MethodCall { receiver, method, arguments }
+                if method == "enumerate" && arguments.is_empty() =>
+            {
+                let inner = &self.arena().expression(*receiver).node;
+                if matches!(inner, Expr::Range { .. }) {
+                    Some(*receiver)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
 
-        if is_range {
+        if let Some(range_expr_id) = enumerate_range {
+            self.lower_for_enumerate(pattern, range_expr_id, body, header_id, body_id, exit_id);
+        } else if is_range {
             if let Expr::Range {
                 start,
                 end,
@@ -1439,6 +1548,140 @@ impl<'a> LowerCtx<'a> {
         }
 
         self.start_block(exit_id, Some("for_exit".into()));
+    }
+
+    /// Lower `for (idx, item) in (start..=end).enumerate() { body }`.
+    /// Generates two parallel phi nodes — one for the 0-based index, one
+    /// for the range value — and binds tuple-destructure pattern names
+    /// directly to them (no intermediate tuple struct).
+    fn lower_for_enumerate(
+        &mut self,
+        pattern: &triet_syntax::pattern::Pattern,
+        range_expr_id: triet_syntax::arena::ExprId,
+        body: &Block,
+        header_id: BlockId,
+        body_id: BlockId,
+        exit_id: BlockId,
+    ) {
+        let range_node = &self.arena().expression(range_expr_id).node;
+        let Expr::Range { start, end, inclusive: _ } = range_node else {
+            return;
+        };
+        let start_val = self.lower_expr(*start);
+        let end_val = self.lower_expr(*end);
+        let item_phi = self.fresh_value();
+        let idx_phi = self.fresh_value();
+        let zero_const = self.intern_constant(Constant::Integer(triet_core::Integer::new(0).unwrap()));
+        let idx_init = self.fresh_value();
+        self.emit(Instruction::Const {
+            dest: idx_init,
+            constant: zero_const,
+        });
+
+        // Bind the pattern. For `(idx, item)` tuple pattern → bind each
+        // sub-pattern; for a single Variable pattern fall back to binding
+        // the item (matches the non-enumerate range path).
+        match pattern {
+            triet_syntax::pattern::Pattern::Tuple(elems) if elems.len() == 2 => {
+                for (i, pat_id) in elems.iter().enumerate() {
+                    let inner = &self.arena().pattern(*pat_id).node;
+                    if let triet_syntax::pattern::Pattern::Variable(name) = inner {
+                        let v = if i == 0 { idx_phi } else { item_phi };
+                        self.bind_var(name.clone(), v);
+                    }
+                }
+            }
+            triet_syntax::pattern::Pattern::Variable(name) => {
+                self.bind_var(name.clone(), item_phi);
+            }
+            _ => {}
+        }
+        self.emit(Instruction::Br { target: header_id });
+
+        // Header: phi merges (start, 0) on entry and (item+1, idx+1) from body.
+        let pre_header_id = self.current_block;
+        self.start_block(header_id, Some("for_enum_header".into()));
+        self.emit(Instruction::Phi {
+            dest: item_phi,
+            incoming: vec![PhiIncoming { value: start_val, block: pre_header_id }],
+        });
+        self.emit(Instruction::Phi {
+            dest: idx_phi,
+            incoming: vec![PhiIncoming { value: idx_init, block: pre_header_id }],
+        });
+        let cmp_dest = self.fresh_value();
+        self.emit(Instruction::Le {
+            dest: cmp_dest,
+            lhs: Operand::Value(item_phi),
+            rhs: Operand::Value(end_val),
+        });
+        self.emit(Instruction::BrIf {
+            cond: Operand::Value(cmp_dest),
+            then_block: body_id,
+            else_block: exit_id,
+        });
+
+        // Body.
+        self.start_block(body_id, Some("for_enum_body".into()));
+        self.loop_stack.push(LoopContext {
+            break_target: exit_id,
+            continue_target: header_id,
+        });
+        self.push_scope();
+        // Re-bind the pattern names inside the body scope so user code
+        // sees the phi values, not stale outer-scope bindings.
+        match pattern {
+            triet_syntax::pattern::Pattern::Tuple(elems) if elems.len() == 2 => {
+                for (i, pat_id) in elems.iter().enumerate() {
+                    let inner = &self.arena().pattern(*pat_id).node;
+                    if let triet_syntax::pattern::Pattern::Variable(name) = inner {
+                        let v = if i == 0 { idx_phi } else { item_phi };
+                        self.bind_var(name.clone(), v);
+                    }
+                }
+            }
+            triet_syntax::pattern::Pattern::Variable(name) => {
+                self.bind_var(name.clone(), item_phi);
+            }
+            _ => {}
+        }
+        self.lower_block(body);
+        self.pop_scope();
+        self.loop_stack.pop();
+        if self.blocks[&self.current_block].terminator().is_none() {
+            let one_const = self.intern_constant(Constant::Integer(triet_core::Integer::new(1).unwrap()));
+            let item_next = self.fresh_value();
+            self.emit(Instruction::Add {
+                dest: item_next,
+                lhs: Operand::Value(item_phi),
+                rhs: Operand::Const(one_const),
+            });
+            let idx_next = self.fresh_value();
+            self.emit(Instruction::Add {
+                dest: idx_next,
+                lhs: Operand::Value(idx_phi),
+                rhs: Operand::Const(one_const),
+            });
+            self.emit(Instruction::Br { target: header_id });
+            let body_end = self.current_block;
+            if let Some(header_block) = self.blocks.get_mut(&header_id) {
+                let mut patched_item = false;
+                let mut patched_idx = false;
+                for instr in &mut header_block.instructions {
+                    if let Instruction::Phi { dest, incoming } = instr {
+                        if *dest == item_phi && !patched_item {
+                            incoming.push(PhiIncoming { value: item_next, block: body_end });
+                            patched_item = true;
+                        } else if *dest == idx_phi && !patched_idx {
+                            incoming.push(PhiIncoming { value: idx_next, block: body_end });
+                            patched_idx = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.start_block(exit_id, Some("for_enum_exit".into()));
     }
 
     fn lower_match_expr(
@@ -1640,23 +1883,29 @@ impl<'a> LowerCtx<'a> {
                     return dest;
                 }
 
-                // Check function table.
-                if let Some(func_id) = self.resolve_func(name) {
+                // Cross-module call via bindings — issue this BEFORE the
+                // local-function lookup so the VM can intercept calls to
+                // stdlib stub functions (`std.text.len`, etc.) by their
+                // absolute path. Otherwise `resolve_func` would resolve
+                // the import to a `FuncId` and `CallLocal` would run the
+                // placeholder body that ships in `std/*.tri`.
+                if let Some(abs_path) = self.current_module().bindings.get(name).cloned() {
                     let dest = self.fresh_value();
-                    self.emit(Instruction::CallLocal {
+                    self.emit(Instruction::CallCrossModule {
                         dest: Some(dest),
-                        callee: func_id,
+                        path: abs_path,
                         args,
                     });
                     return dest;
                 }
 
-                // Cross-module call via bindings.
-                if let Some(abs_path) = self.current_module().bindings.get(name) {
+                // Check function table for local functions defined in the
+                // current module (not imported).
+                if let Some(func_id) = self.resolve_func(name) {
                     let dest = self.fresh_value();
-                    self.emit(Instruction::CallCrossModule {
+                    self.emit(Instruction::CallLocal {
                         dest: Some(dest),
-                        path: abs_path.clone(),
+                        callee: func_id,
                         args,
                     });
                     return dest;

@@ -141,6 +141,8 @@ diff_test!(diff_generic, "examples/generic.tri");
 diff_test!(diff_counter, "examples/counter.tri");
 diff_test!(diff_while_polling, "examples/while_polling.tri");
 diff_test!(diff_long_arithmetic, "examples/long_arithmetic.tri");
+diff_test!(diff_nullable, "examples/nullable.tri");
+diff_test!(diff_enumerate, "examples/enumerate.tri");
 
 // Known issues — ignored pending lowerer/VM fixes (tracked under v0.3.x.cleanup.5–8).
 // Tests are scheduled to be un-ignored as each lowering gap is closed:
@@ -173,17 +175,7 @@ macro_rules! ignored_test {
 }
 
 ignored_test!(
-    ignore_nullable,
-    "examples/nullable.tri",
-    "v0.3.x.cleanup.7: std.text.len + Elvis operator on VM"
-);
-ignored_test!(
     ignore_fizzbuzz,
     "examples/fizzbuzz.tri",
-    "v0.3.x.cleanup.6: tuple literal match arms"
-);
-ignored_test!(
-    ignore_enumerate,
-    "examples/enumerate.tri",
-    "v0.3.x.cleanup.7: iterator + enumerate lowering"
+    "v0.3.x.cleanup.8: tuple literal pattern match arms"
 );

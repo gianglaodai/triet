@@ -89,6 +89,7 @@ impl RuntimeValue {
             Constant::Trilean(t) => Self::Trilean(*t),
             Constant::String(s) => Self::String(s.clone()),
             Constant::Unit => Self::Unit,
+            Constant::Null => Self::Null,
         }
     }
 
@@ -377,9 +378,13 @@ impl Vm {
         }
 
         // Build a path → FuncId index for cross-module call dispatch.
+        // `IrModule.path` is constructed as `AbsolutePath { module, name: "" }`
+        // so its `to_string()` ends with a trailing dot (e.g. "crate."). Strip
+        // it so the indexed key matches `AbsolutePath { name: "fn" }` callers
+        // produce (e.g. "crate.fn").
         let mut path_index: HashMap<String, FuncId> = HashMap::new();
         for module in &program.modules {
-            let module_path = module.path.to_string();
+            let module_path = module.path.module.to_string();
             for func in &module.functions {
                 if let Some(ref name) = func.name {
                     let full_path = format!("{module_path}.{name}");
@@ -1243,6 +1248,9 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         "std.io.print" => Some(BuiltinName::Print),
         "std.assert.assert" => Some(BuiltinName::Assert),
         "std.assert.assert_eq" => Some(BuiltinName::AssertEq),
+        "std.text.len" => Some(BuiltinName::TextLen),
+        "std.text.concat" => Some(BuiltinName::TextConcat),
+        "std.text.from_integer" => Some(BuiltinName::TextFromInteger),
         _ => None,
     }
 }
@@ -1295,6 +1303,29 @@ fn execute_builtin(
                 });
             }
             Ok(RuntimeValue::Unit)
+        }
+        BuiltinName::TextLen => {
+            let s = match args.first() {
+                Some(RuntimeValue::String(s)) => s.chars().count(),
+                _ => 0,
+            };
+            Ok(RuntimeValue::Integer(Integer::new(i64::try_from(s).unwrap_or(0)).unwrap_or_default()))
+        }
+        BuiltinName::TextConcat => {
+            use std::fmt::Write as _;
+            let mut out = String::new();
+            for a in args {
+                if let RuntimeValue::String(s) = a {
+                    out.push_str(s);
+                } else {
+                    write!(out, "{a}").unwrap();
+                }
+            }
+            Ok(RuntimeValue::String(out))
+        }
+        BuiltinName::TextFromInteger => {
+            let s = args.first().map_or_else(String::new, |v| format!("{v}"));
+            Ok(RuntimeValue::String(s))
         }
     }
 }
