@@ -21,7 +21,11 @@ use triet_interpreter::RuntimeError;
 use triet_typecheck::TypeError;
 
 #[derive(Parser)]
-#[command(name = "triet", version, about = "Triết — AI-first balanced-ternary language")]
+#[command(
+    name = "triet",
+    version,
+    about = "Triết — AI-first balanced-ternary language"
+)]
 struct Cli {
     /// Output diagnostics as JSON instead of human-readable text.
     #[arg(long, global = true)]
@@ -157,7 +161,7 @@ impl JsonEmitter {
 
 fn run_program(path: &str, json: bool) -> ExitCode {
     let display_path = path;
-    
+
     let resolved_program = match triet_modules::load_program(std::path::Path::new(path)) {
         Ok(p) => p,
         Err(loader_errors) => {
@@ -208,7 +212,8 @@ fn run_program(path: &str, json: bool) -> ExitCode {
                 && !matches!(
                     value,
                     triet_interpreter::Value::Unit | triet_interpreter::Value::Null
-                ) {
+                )
+            {
                 println!("{value}");
             }
             ExitCode::SUCCESS
@@ -441,9 +446,7 @@ fn run_bytecode(path: &str, json: bool) -> ExitCode {
     let mut vm = triet_ir::Vm::new(ir);
     match vm.execute(func_to_run, vec![]) {
         Ok(value) => {
-            if !json
-                && !matches!(value, triet_ir::RuntimeValue::Unit)
-            {
+            if !json && !matches!(value, triet_ir::RuntimeValue::Unit) {
                 println!("{value}");
             }
             ExitCode::SUCCESS

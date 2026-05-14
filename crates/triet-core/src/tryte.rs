@@ -303,11 +303,14 @@ impl TryFrom<i64> for Tryte {
     type Error = OverflowError;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        i16::try_from(value).ok().and_then(Self::new).ok_or(OverflowError {
-            type_name: Self::TYPE_NAME,
-            min: Self::MIN_STR,
-            max: Self::MAX_STR,
-        })
+        i16::try_from(value)
+            .ok()
+            .and_then(Self::new)
+            .ok_or(OverflowError {
+                type_name: Self::TYPE_NAME,
+                min: Self::MIN_STR,
+                max: Self::MAX_STR,
+            })
     }
 }
 

@@ -17,14 +17,14 @@ fn run_cli(args: &[&str], cwd: &std::path::Path) -> Output {
 fn run_cli_snapshot(args: &[&str], cwd: &std::path::Path) -> String {
     let output = run_cli(args, cwd);
     let mut stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    
+
     // Replace the random temp directory path with a stable string
     let cwd_str = cwd.to_str().unwrap();
     stderr = stderr.replace(cwd_str, "<TEMP_DIR>");
-    
+
     // Replace backslashes with forward slashes for Windows compatibility
     stderr = stderr.replace('\\', "/");
-    
+
     stderr
 }
 
@@ -44,21 +44,27 @@ fn single_file_backward_compat() {
 #[test]
 fn multi_file_success() {
     let temp = TempDir::new().unwrap();
-    
+
     // helper.tri
     fs::write(
         temp.path().join("helper.tri"),
         "public constant VALUE: Integer = 100",
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     // main.tri
     fs::write(
         temp.path().join("main.tri"),
         "module helper\nfrom crate.helper import VALUE\nfunction main() -> Integer = VALUE",
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = run_cli(&["run", "main.tri"], temp.path());
-    assert!(output.status.success(), "run failed: {:?}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "run failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "100");
 }
@@ -66,16 +72,18 @@ fn multi_file_success() {
 #[test]
 fn cyclic_import_error() {
     let temp = TempDir::new().unwrap();
-    
+
     fs::write(
         temp.path().join("a.tri"),
         "module b\nfrom crate.b import VALUE\npublic constant VALUE: Integer = 1",
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     fs::write(
         temp.path().join("b.tri"),
         "module a\nfrom crate.a import VALUE\npublic constant VALUE: Integer = 2",
-    ).unwrap();
+    )
+    .unwrap();
 
     let stderr = run_cli_snapshot(&["check", "a.tri"], temp.path());
     insta::assert_snapshot!(stderr);
@@ -84,11 +92,12 @@ fn cyclic_import_error() {
 #[test]
 fn file_not_found_error() {
     let temp = TempDir::new().unwrap();
-    
+
     fs::write(
         temp.path().join("main.tri"),
         "module missing\nfunction main() -> Integer = 0",
-    ).unwrap();
+    )
+    .unwrap();
 
     let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
     insta::assert_snapshot!(stderr);
@@ -97,16 +106,18 @@ fn file_not_found_error() {
 #[test]
 fn visibility_violation() {
     let temp = TempDir::new().unwrap();
-    
+
     fs::write(
         temp.path().join("secret.tri"),
         "constant HIDDEN: Integer = 42", // private by default
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     fs::write(
         temp.path().join("main.tri"),
         "module secret\nfrom crate.secret import HIDDEN\nfunction main() -> Integer = HIDDEN",
-    ).unwrap();
+    )
+    .unwrap();
 
     let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
     insta::assert_snapshot!(stderr);
@@ -119,7 +130,8 @@ fn reserved_namespace() {
     fs::write(
         temp.path().join("main.tri"),
         "from sys.core import system\nfunction main() -> Integer = 0",
-    ).unwrap();
+    )
+    .unwrap();
 
     let stderr = run_cli_snapshot(&["check", "main.tri"], temp.path());
     insta::assert_snapshot!(stderr);
@@ -141,7 +153,8 @@ fn type_error_exit_code_3() {
     fs::write(
         temp.path().join("main.tri"),
         "function main() -> Integer = true",
-    ).unwrap();
+    )
+    .unwrap();
     let output = run_cli(&["run", "main.tri"], temp.path());
     // Type errors → exit code 3
     assert_eq!(output.status.code(), Some(3));
@@ -153,7 +166,8 @@ fn runtime_error_exit_code_4() {
     fs::write(
         temp.path().join("main.tri"),
         "function main() -> Integer = 1 / 0",
-    ).unwrap();
+    )
+    .unwrap();
     let output = run_cli(&["run", "main.tri"], temp.path());
     // Runtime errors → exit code 4
     assert_eq!(output.status.code(), Some(4));
@@ -165,18 +179,24 @@ fn build_and_run_triv_round_trip() {
     fs::write(
         temp.path().join("hello.tri"),
         r#"function main() { println("hello round trip") }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Build step.
-    let build = run_cli(
-        &["build", "hello.tri", "-o", "hello.triv"],
-        temp.path(),
+    let build = run_cli(&["build", "hello.tri", "-o", "hello.triv"], temp.path());
+    assert!(
+        build.status.success(),
+        "build failed: {:?}",
+        String::from_utf8_lossy(&build.stderr)
     );
-    assert!(build.status.success(), "build failed: {:?}", String::from_utf8_lossy(&build.stderr));
 
     // Run the .triv file.
     let run = run_cli(&["run", "hello.triv"], temp.path());
-    assert!(run.status.success(), "run failed: {:?}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "run failed: {:?}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert_eq!(stdout.trim(), "hello round trip");
 }
@@ -187,10 +207,15 @@ fn build_default_output_name() {
     fs::write(
         temp.path().join("prog.tri"),
         "function main() -> Integer = 1",
-    ).unwrap();
+    )
+    .unwrap();
 
     let build = run_cli(&["build", "prog.tri"], temp.path());
-    assert!(build.status.success(), "build failed: {:?}", String::from_utf8_lossy(&build.stderr));
+    assert!(
+        build.status.success(),
+        "build failed: {:?}",
+        String::from_utf8_lossy(&build.stderr)
+    );
     // Default output should be prog.triv.
     assert!(temp.path().join("prog.triv").exists());
 }
@@ -210,7 +235,8 @@ fn run_source_auto_detects_tri_extension() {
     fs::write(
         temp.path().join("main.tri"),
         "function main() -> Integer = 99",
-    ).unwrap();
+    )
+    .unwrap();
     // .tri should still run through the interpreter.
     let output = run_cli(&["run", "main.tri"], temp.path());
     assert!(output.status.success());

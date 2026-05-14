@@ -110,12 +110,7 @@ impl Block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        arena::Arena,
-        expr::Expr,
-        numeric::TrileanValue,
-        span::Spanned,
-    };
+    use crate::{arena::Arena, expr::Expr, numeric::TrileanValue, span::Spanned};
 
     #[test]
     fn empty_block_has_no_statements_or_value() {
@@ -128,11 +123,17 @@ mod tests {
     fn let_statement_captures_mutability() {
         let mut arena = Arena::new();
         let value_immutable = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 5, suffix: None },
+            Expr::IntegerLiteral {
+                value: 5,
+                suffix: None,
+            },
             8..9,
         ));
         let value_mutable = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 0, suffix: None },
+            Expr::IntegerLiteral {
+                value: 0,
+                suffix: None,
+            },
             12..13,
         ));
         let immutable = Stmt::Let {
@@ -157,10 +158,16 @@ mod tests {
     fn assign_records_target_name_and_value() {
         let mut arena = Arena::new();
         let value = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 42, suffix: None },
+            Expr::IntegerLiteral {
+                value: 42,
+                suffix: None,
+            },
             4..6,
         ));
-        let stmt = Stmt::Assign { target: "count".to_owned(), value };
+        let stmt = Stmt::Assign {
+            target: "count".to_owned(),
+            value,
+        };
         match &stmt {
             Stmt::Assign { target, .. } => assert_eq!(target, "count"),
             other => panic!("expected Assign, got {other:?}"),
@@ -190,8 +197,14 @@ mod tests {
         };
         match (&normal, &question) {
             (
-                Stmt::While { treat_unknown_as_false: false, .. },
-                Stmt::While { treat_unknown_as_false: true, .. },
+                Stmt::While {
+                    treat_unknown_as_false: false,
+                    ..
+                },
+                Stmt::While {
+                    treat_unknown_as_false: true,
+                    ..
+                },
             ) => {}
             _ => panic!("while? flag did not differentiate"),
         }

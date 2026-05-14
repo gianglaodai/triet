@@ -86,10 +86,7 @@ impl ModulePath {
     /// `core` are usable in v0.2.x; the others are reserved for v0.6.
     #[must_use]
     pub fn is_reserved_root(&self) -> bool {
-        matches!(
-            self.root(),
-            Some("std" | "sys" | "dev" | "usr" | "core")
-        )
+        matches!(self.root(), Some("std" | "sys" | "dev" | "usr" | "core"))
     }
 
     /// True if the path's root is the local crate (`crate.…`).
@@ -151,11 +148,7 @@ mod tests {
 
     #[test]
     fn module_path_displays_with_dots() {
-        let path = ModulePath::new(vec![
-            "crate".to_owned(),
-            "foo".to_owned(),
-            "bar".to_owned(),
-        ]);
+        let path = ModulePath::new(vec!["crate".to_owned(), "foo".to_owned(), "bar".to_owned()]);
         assert_eq!(path.to_string(), "crate.foo.bar");
     }
 

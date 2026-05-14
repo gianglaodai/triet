@@ -239,9 +239,8 @@ impl Add for Integer {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        self.try_add(other).expect(
-            "Integer addition overflow; use add_and_truncate / add_and_saturate / try_add",
-        )
+        self.try_add(other)
+            .expect("Integer addition overflow; use add_and_truncate / add_and_saturate / try_add")
     }
 }
 
@@ -291,11 +290,14 @@ impl TryFrom<i128> for Integer {
     type Error = OverflowError;
 
     fn try_from(value: i128) -> Result<Self, Self::Error> {
-        i64::try_from(value).ok().and_then(Self::new).ok_or(OverflowError {
-            type_name: Self::TYPE_NAME,
-            min: Self::MIN_STR,
-            max: Self::MAX_STR,
-        })
+        i64::try_from(value)
+            .ok()
+            .and_then(Self::new)
+            .ok_or(OverflowError {
+                type_name: Self::TYPE_NAME,
+                min: Self::MIN_STR,
+                max: Self::MAX_STR,
+            })
     }
 }
 
@@ -324,7 +326,15 @@ mod tests {
 
     #[test]
     fn double_negation_is_identity() {
-        for value in [-3_812_798_742_493_i64, -1_000_000, -1, 0, 1, 1_000_000, 3_812_798_742_493] {
+        for value in [
+            -3_812_798_742_493_i64,
+            -1_000_000,
+            -1,
+            0,
+            1,
+            1_000_000,
+            3_812_798_742_493,
+        ] {
             let n = Integer::new(value).unwrap();
             assert_eq!(-(-n), n);
         }
@@ -375,7 +385,10 @@ mod tests {
     #[test]
     fn add_and_truncate_wraps() {
         assert_eq!(Integer::MAX.add_and_truncate(Integer::ONE), Integer::MIN);
-        assert_eq!(Integer::MIN.add_and_truncate(Integer::MINUS_ONE), Integer::MAX);
+        assert_eq!(
+            Integer::MIN.add_and_truncate(Integer::MINUS_ONE),
+            Integer::MAX
+        );
     }
 
     #[test]
@@ -396,7 +409,10 @@ mod tests {
 
     #[test]
     fn try_from_i128_succeeds_in_range() {
-        assert_eq!(Integer::try_from(3_812_798_742_493_i128).unwrap(), Integer::MAX);
+        assert_eq!(
+            Integer::try_from(3_812_798_742_493_i128).unwrap(),
+            Integer::MAX
+        );
         assert_eq!(Integer::try_from(0_i128).unwrap(), Integer::ZERO);
     }
 

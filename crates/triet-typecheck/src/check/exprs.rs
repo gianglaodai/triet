@@ -8,8 +8,7 @@
 //! `check` can call it; helper sub-checks stay private to this file.
 
 use triet_syntax::{
-    BinaryOperator, Block, Expr, ExprId, FStringPart, MatchArm, NumericSuffix, Span,
-    UnaryOperator,
+    BinaryOperator, Block, Expr, ExprId, FStringPart, MatchArm, NumericSuffix, Span, UnaryOperator,
 };
 
 use crate::{error::TypeError, types::Type};
@@ -64,44 +63,56 @@ impl Checker<'_> {
                     Type::Unknown
                 }
             }
-            Expr::BinaryOp { operator, left, right } => {
-                self.check_binary_op(operator, left, right, span)
-            }
-            Expr::UnaryOp { operator: UnaryOperator::Negate, operand } => {
-                self.check_unary_negate(operand, span)
-            }
+            Expr::BinaryOp {
+                operator,
+                left,
+                right,
+            } => self.check_binary_op(operator, left, right, span),
+            Expr::UnaryOp {
+                operator: UnaryOperator::Negate,
+                operand,
+            } => self.check_unary_negate(operand, span),
             Expr::Call { callee, arguments } => self.check_call(callee, &arguments, span),
-            Expr::MethodCall { receiver, method, arguments } => {
-                self.check_method_call(receiver, &method, &arguments, span)
-            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                arguments,
+            } => self.check_method_call(receiver, &method, &arguments, span),
             Expr::FieldAccess { object, field } => self.check_field_access(object, &field, span),
             Expr::TupleIndex { tuple, index } => self.check_tuple_index(tuple, index, span),
             Expr::SafeFieldAccess { object, field } => {
                 self.check_safe_field_access(object, &field, span)
             }
-            Expr::SafeMethodCall { receiver, method, arguments } => {
-                self.check_safe_method_call(receiver, &method, &arguments, span)
-            }
+            Expr::SafeMethodCall {
+                receiver,
+                method,
+                arguments,
+            } => self.check_safe_method_call(receiver, &method, &arguments, span),
             Expr::ElvisOp { object, default } => self.check_elvis(object, default, span),
             Expr::ForceUnwrap(inner) => self.check_force_unwrap(inner, span),
-            Expr::If { condition, then_branch, else_branch, treat_unknown_as_false } => self
-                .check_if(
-                    condition,
-                    &then_branch,
-                    else_branch.as_ref(),
-                    treat_unknown_as_false,
-                    span,
-                ),
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                treat_unknown_as_false,
+            } => self.check_if(
+                condition,
+                &then_branch,
+                else_branch.as_ref(),
+                treat_unknown_as_false,
+                span,
+            ),
             Expr::Match { scrutinee, arms } => self.check_match(scrutinee, &arms, span),
             Expr::Block(block) => self.check_block(&block),
             Expr::Tuple(elements) => {
-                let types = elements
-                    .iter()
-                    .map(|e| self.infer_expression(*e))
-                    .collect();
+                let types = elements.iter().map(|e| self.infer_expression(*e)).collect();
                 Type::Tuple(types)
             }
-            Expr::Lambda { parameters, return_type, body } => {
+            Expr::Lambda {
+                parameters,
+                return_type,
+                body,
+            } => {
                 let param_types: Vec<Type> = parameters
                     .iter()
                     .map(|p| match p.type_annotation {
@@ -134,12 +145,12 @@ impl Checker<'_> {
                 }
                 Type::Range(Box::new(start_ty))
             }
-            Expr::StructLiteral { name, fields } => {
-                self.check_struct_literal(&name, &fields, span)
-            }
-            Expr::EnumLiteral { name, variant_name, payload } => {
-                self.check_enum_literal(&name, &variant_name, payload.as_ref(), span)
-            }
+            Expr::StructLiteral { name, fields } => self.check_struct_literal(&name, &fields, span),
+            Expr::EnumLiteral {
+                name,
+                variant_name,
+                payload,
+            } => self.check_enum_literal(&name, &variant_name, payload.as_ref(), span),
         }
     }
 
@@ -160,15 +171,13 @@ impl Checker<'_> {
             | BinaryOperator::Divide
             | BinaryOperator::Modulo
             | BinaryOperator::Power => {
-                if !(left_ty.is_numeric()
-                    || matches!(left_ty, Type::Unknown))
+                if !(left_ty.is_numeric() || matches!(left_ty, Type::Unknown))
                     || !(right_ty.is_numeric() || matches!(right_ty, Type::Unknown))
                     || !left_ty.matches(&right_ty)
                 {
                     self.errors.push(TypeError::InvalidOperands {
                         operator: operator_symbol(operator).to_owned(),
-                        expected_description:
-                            "two numeric operands of the same type".to_owned(),
+                        expected_description: "two numeric operands of the same type".to_owned(),
                         left: left_ty,
                         right: right_ty,
                         span,
@@ -200,8 +209,7 @@ impl Checker<'_> {
                 {
                     self.errors.push(TypeError::InvalidOperands {
                         operator: operator_symbol(operator).to_owned(),
-                        expected_description:
-                            "two numeric operands of the same type".to_owned(),
+                        expected_description: "two numeric operands of the same type".to_owned(),
                         left: left_ty,
                         right: right_ty,
                         span,
@@ -281,58 +289,62 @@ impl Checker<'_> {
         }
 
         // Try enum variant construction: `Some(5)`, `None`.
-        if let Expr::Identifier(ref callee_name) =
-            self.arena.expression(callee).node
-            && let Some(enum_ty) = self.lookup_enum_variant(callee_name) {
-                let Type::UserEnum { name: _enum_name, type_params, variants } = &enum_ty
-                else {
-                    unreachable!()
-                };
-                let (_, payload) = variants
-                    .iter()
-                    .find(|(n, _)| n == callee_name)
-                    .expect("lookup_enum_variant guarantees this");
-                // Infer type arguments from the call arguments when
-                // the variant payload uses type params.
-                let mut sub_map: std::collections::HashMap<String, Type> =
-                    std::collections::HashMap::new();
-                match (arguments.len(), payload) {
-                    (1, Some(expected_ty)) => {
-                        let arg_ty = self.infer_expression(arguments[0]);
-                        // If the payload type is a TypeParam, infer from arg.
-                        if let Type::TypeParam(tp) = expected_ty.as_ref() {
-                            sub_map.insert(tp.clone(), arg_ty);
-                        } else if !expected_ty.matches(&arg_ty) {
-                            self.errors.push(TypeError::Mismatch {
-                                expected: (**expected_ty).clone(),
-                                found: arg_ty,
-                                span: self.arena.expression(arguments[0]).span.clone(),
-                            });
-                        }
-                    }
-                    (0, None) => {} // unit variant — no inference needed
-                    (n, Some(_)) => {
-                        self.errors.push(TypeError::WrongArity {
-                            expected: 1,
-                            found: n,
-                            span,
-                        });
-                    }
-                    (n, None) => {
-                        self.errors.push(TypeError::WrongArity {
-                            expected: 0,
-                            found: n,
-                            span,
+        if let Expr::Identifier(ref callee_name) = self.arena.expression(callee).node
+            && let Some(enum_ty) = self.lookup_enum_variant(callee_name)
+        {
+            let Type::UserEnum {
+                name: _enum_name,
+                type_params,
+                variants,
+            } = &enum_ty
+            else {
+                unreachable!()
+            };
+            let (_, payload) = variants
+                .iter()
+                .find(|(n, _)| n == callee_name)
+                .expect("lookup_enum_variant guarantees this");
+            // Infer type arguments from the call arguments when
+            // the variant payload uses type params.
+            let mut sub_map: std::collections::HashMap<String, Type> =
+                std::collections::HashMap::new();
+            match (arguments.len(), payload) {
+                (1, Some(expected_ty)) => {
+                    let arg_ty = self.infer_expression(arguments[0]);
+                    // If the payload type is a TypeParam, infer from arg.
+                    if let Type::TypeParam(tp) = expected_ty.as_ref() {
+                        sub_map.insert(tp.clone(), arg_ty);
+                    } else if !expected_ty.matches(&arg_ty) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: (**expected_ty).clone(),
+                            found: arg_ty,
+                            span: self.arena.expression(arguments[0]).span.clone(),
                         });
                     }
                 }
-                // If we have type params without inferred concrete types,
-                // leave them as TypeParam (will be caught by context).
-                if !sub_map.is_empty() || type_params.is_empty() {
-                    return enum_ty.substitute(&sub_map);
+                (0, None) => {} // unit variant — no inference needed
+                (n, Some(_)) => {
+                    self.errors.push(TypeError::WrongArity {
+                        expected: 1,
+                        found: n,
+                        span,
+                    });
                 }
-                return enum_ty.clone();
+                (n, None) => {
+                    self.errors.push(TypeError::WrongArity {
+                        expected: 0,
+                        found: n,
+                        span,
+                    });
+                }
             }
+            // If we have type params without inferred concrete types,
+            // leave them as TypeParam (will be caught by context).
+            if !sub_map.is_empty() || type_params.is_empty() {
+                return enum_ty.substitute(&sub_map);
+            }
+            return enum_ty.clone();
+        }
 
         if !matches!(callee_ty, Type::Unknown) {
             self.errors.push(TypeError::NotCallable {
@@ -353,9 +365,10 @@ impl Checker<'_> {
         // definition if we scanned inner frames.
         for binding in self.env.frames.first()?.names.values() {
             if let Type::UserEnum { variants, .. } = &binding.ty
-                && variants.iter().any(|(n, _)| n == name) {
-                    return Some(binding.ty.clone());
-                }
+                && variants.iter().any(|(n, _)| n == name)
+            {
+                return Some(binding.ty.clone());
+            }
         }
         None
     }
@@ -400,7 +413,12 @@ impl Checker<'_> {
             });
             Type::Unknown
         });
-        let Type::UserStruct { name: _, fields: def_fields, .. } = &ty else {
+        let Type::UserStruct {
+            name: _,
+            fields: def_fields,
+            ..
+        } = &ty
+        else {
             self.errors.push(TypeError::Mismatch {
                 expected: Type::Unknown,
                 found: ty,
@@ -445,7 +463,10 @@ impl Checker<'_> {
             });
             Type::Unknown
         });
-        let Type::UserEnum { name: _, variants, .. } = &ty else {
+        let Type::UserEnum {
+            name: _, variants, ..
+        } = &ty
+        else {
             self.errors.push(TypeError::Mismatch {
                 expected: Type::Unknown,
                 found: ty,
@@ -543,12 +564,7 @@ impl Checker<'_> {
         }
     }
 
-    fn check_safe_field_access(
-        &mut self,
-        object: ExprId,
-        field: &str,
-        span: Span,
-    ) -> Type {
+    fn check_safe_field_access(&mut self, object: ExprId, field: &str, span: Span) -> Type {
         let object_ty = self.infer_expression(object);
         if !object_ty.is_nullable() && !matches!(object_ty, Type::Unknown) {
             self.errors.push(TypeError::NotNullable {
@@ -651,7 +667,9 @@ impl Checker<'_> {
             None => Type::Unit,
             Some(block) => {
                 let else_ty = self.check_block(block);
-                if let Ok(unified) = try_unify(&then_ty, &else_ty) { unified } else {
+                if let Ok(unified) = try_unify(&then_ty, &else_ty) {
+                    unified
+                } else {
                     self.errors.push(TypeError::Mismatch {
                         expected: then_ty.clone(),
                         found: else_ty,
@@ -680,18 +698,16 @@ impl Checker<'_> {
 
             match &arm_type {
                 None => arm_type = Some(body_ty),
-                Some(expected) => {
-                    match try_unify(expected, &body_ty) {
-                        Ok(unified) => arm_type = Some(unified),
-                        Err(()) => {
-                            self.errors.push(TypeError::MatchArmMismatch {
-                                expected: expected.clone(),
-                                found: body_ty,
-                                span: self.arena.expression(arm.body).span.clone(),
-                            });
-                        }
+                Some(expected) => match try_unify(expected, &body_ty) {
+                    Ok(unified) => arm_type = Some(unified),
+                    Err(()) => {
+                        self.errors.push(TypeError::MatchArmMismatch {
+                            expected: expected.clone(),
+                            found: body_ty,
+                            span: self.arena.expression(arm.body).span.clone(),
+                        });
                     }
-                }
+                },
             }
         }
 

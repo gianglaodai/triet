@@ -320,10 +320,7 @@ pub enum Token {
     /// Digits portion always ends on a digit (each `_?[0-9]` group ends in a
     /// digit), so the optional `_<suffix>` branch can claim its leading
     /// underscore unambiguously.
-    #[regex(
-        r"[0-9](_?[0-9])*(_trit|_tryte|_integer|_long)?",
-        lex_decimal_integer,
-    )]
+    #[regex(r"[0-9](_?[0-9])*(_trit|_tryte|_integer|_long)?", lex_decimal_integer)]
     IntegerLiteral(IntLiteral),
 
     /// Balanced ternary literal: `0t+0-+`, `0t+_0_-`.

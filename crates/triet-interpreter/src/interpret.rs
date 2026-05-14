@@ -5,8 +5,8 @@ use std::{collections::HashMap, rc::Rc};
 use triet_core::{Integer, Long, Tryte};
 use triet_logic::Trilean;
 use triet_syntax::{
-    Arena, BinaryOperator, Block, Expr, ExprId, FStringPart, FunctionBody, Item, MatchArm, PatternId, Program, Span, Stmt, StmtId,
-    TrileanValue, UnaryOperator,
+    Arena, BinaryOperator, Block, Expr, ExprId, FStringPart, FunctionBody, Item, MatchArm,
+    PatternId, Program, Span, Stmt, StmtId, TrileanValue, UnaryOperator,
 };
 
 use crate::{
@@ -72,14 +72,15 @@ pub fn call_function(
 ) -> Result<Value, RuntimeError> {
     let mut interpreter = Interpreter::new(program);
     interpreter.install_program_items();
-    let function = interpreter
-        .env
-        .lookup(name)
-        .cloned()
-        .ok_or_else(|| RuntimeError::UndefinedName {
-            name: name.to_owned(),
-            span: 0..0,
-        })?;
+    let function =
+        interpreter
+            .env
+            .lookup(name)
+            .cloned()
+            .ok_or_else(|| RuntimeError::UndefinedName {
+                name: name.to_owned(),
+                span: 0..0,
+            })?;
     interpreter.invoke(&function, arguments, 0..0)
 }
 
@@ -112,7 +113,7 @@ impl<'p> Interpreter<'p> {
         let module = program.module(module_id);
         let mut env = ValueEnvironment::new();
         crate::builtins::install(&mut env);
-        
+
         // Seed environment with globals available to this module.
         // 1. Module's own items.
         for item in &module.items {
@@ -128,12 +129,12 @@ impl<'p> Interpreter<'p> {
                 }
             }
         }
-        
+
         // 2. Imported bindings.
         for (local_name, abs_path) in &module.bindings {
             // Stdlib has no AbsolutePath in `globals` yet, we use builtins.
             if abs_path.module_path().root() == Some("std") {
-                // Stdlib functions are handled by `builtins::install()`, 
+                // Stdlib functions are handled by `builtins::install()`,
                 // but if we aliased them (`from std.io import println as p`),
                 // we should map them here. We can just lookup `abs_path.name()`
                 // in the `env` if it's already installed by builtins.
@@ -255,12 +256,16 @@ impl<'p> Interpreter<'p> {
                 Ok(Outcome::Break(result))
             }
             Stmt::Continue => Ok(Outcome::Continue),
-            Stmt::For { variable, iterable, body } => {
-                self.execute_for(variable, iterable, &body, stmt.span)
-            }
-            Stmt::While { condition, body, treat_unknown_as_false } => {
-                self.execute_while(condition, &body, treat_unknown_as_false, stmt.span)
-            }
+            Stmt::For {
+                variable,
+                iterable,
+                body,
+            } => self.execute_for(variable, iterable, &body, stmt.span),
+            Stmt::While {
+                condition,
+                body,
+                treat_unknown_as_false,
+            } => self.execute_while(condition, &body, treat_unknown_as_false, stmt.span),
             Stmt::Loop(body) => self.execute_loop(&body),
             Stmt::ExprStmt(expr) => {
                 let _ = self.evaluate_expression(expr)?;
@@ -347,7 +352,9 @@ impl<'p> Interpreter<'p> {
         let span = self.arena.expression(id).span.clone();
         let node = self.arena.expression(id).node.clone();
         match node {
-            Expr::IntegerLiteral { value, suffix } => Ok(integer_literal_value(value, suffix, &span)?),
+            Expr::IntegerLiteral { value, suffix } => {
+                Ok(integer_literal_value(value, suffix, &span)?)
+            }
             Expr::TernaryLiteral { value } => Ok(integer_literal_value(value, None, &span)?),
             Expr::TrileanLiteral(value) => Ok(Value::Trilean(match value {
                 TrileanValue::False => Trilean::False,
@@ -388,22 +395,32 @@ impl<'p> Interpreter<'p> {
                     }
                 }
             }
-            Expr::BinaryOp { operator, left, right } => self.evaluate_binary(operator, left, right, span),
-            Expr::UnaryOp { operator: UnaryOperator::Negate, operand } => self.evaluate_negate(operand, span),
+            Expr::BinaryOp {
+                operator,
+                left,
+                right,
+            } => self.evaluate_binary(operator, left, right, span),
+            Expr::UnaryOp {
+                operator: UnaryOperator::Negate,
+                operand,
+            } => self.evaluate_negate(operand, span),
             Expr::Call { callee, arguments } => self.evaluate_call(callee, &arguments, span),
-            Expr::MethodCall { receiver, method, arguments } => {
-                self.evaluate_method_call(receiver, &method, &arguments, span)
-            }
+            Expr::MethodCall {
+                receiver,
+                method,
+                arguments,
+            } => self.evaluate_method_call(receiver, &method, &arguments, span),
             Expr::FieldAccess { object, field } => {
                 let value = self.evaluate_expression(object)?;
                 match value {
                     Value::Struct { fields, .. } => {
-                        fields.get(&field).cloned().ok_or_else(|| {
-                            RuntimeError::TypeError {
+                        fields
+                            .get(&field)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError::TypeError {
                                 message: format!("no field `{field}`"),
                                 span: span.clone(),
-                            }
-                        })
+                            })
                     }
                     _ => Err(RuntimeError::TypeError {
                         message: "field access on non-struct value".to_string(),
@@ -419,13 +436,10 @@ impl<'p> Interpreter<'p> {
                         span,
                     });
                 };
-                elements
-                    .get(index)
-                    .cloned()
-                    .ok_or(RuntimeError::Panic {
-                        message: format!("tuple index {index} out of range"),
-                        span,
-                    })
+                elements.get(index).cloned().ok_or(RuntimeError::Panic {
+                    message: format!("tuple index {index} out of range"),
+                    span,
+                })
             }
             Expr::SafeFieldAccess { object, field } => {
                 let value = self.evaluate_expression(object)?;
@@ -438,7 +452,11 @@ impl<'p> Interpreter<'p> {
                     })
                 }
             }
-            Expr::SafeMethodCall { receiver, method, arguments } => {
+            Expr::SafeMethodCall {
+                receiver,
+                method,
+                arguments,
+            } => {
                 let value = self.evaluate_expression(receiver)?;
                 if value.is_null() {
                     return Ok(Value::Null);
@@ -468,14 +486,24 @@ impl<'p> Interpreter<'p> {
                     Ok(value)
                 }
             }
-            Expr::If { condition, then_branch, else_branch, treat_unknown_as_false } => {
-                self.evaluate_if(condition, &then_branch, else_branch.as_ref(), treat_unknown_as_false, span)
-            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                treat_unknown_as_false,
+            } => self.evaluate_if(
+                condition,
+                &then_branch,
+                else_branch.as_ref(),
+                treat_unknown_as_false,
+                span,
+            ),
             Expr::Match { scrutinee, arms } => self.evaluate_match(scrutinee, &arms, span),
             Expr::Block(block) => match self.execute_block(&block)? {
                 Outcome::Value(value) => Ok(value),
                 _ => Err(RuntimeError::Panic {
-                    message: "block produced control-flow outside its enclosing function/loop".to_owned(),
+                    message: "block produced control-flow outside its enclosing function/loop"
+                        .to_owned(),
                     span,
                 }),
             },
@@ -486,7 +514,11 @@ impl<'p> Interpreter<'p> {
                 }
                 Ok(Value::from_tuple(values))
             }
-            Expr::Lambda { parameters, return_type, body } => {
+            Expr::Lambda {
+                parameters,
+                return_type,
+                body,
+            } => {
                 let captured = self.env.clone();
                 Ok(Value::Lambda(Rc::new(Closure {
                     parameters,
@@ -495,7 +527,11 @@ impl<'p> Interpreter<'p> {
                     captured_env: captured,
                 })))
             }
-            Expr::Range { start, end, inclusive } => {
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 let start_value = self.evaluate_expression(start)?;
                 let end_value = self.evaluate_expression(end)?;
                 let (Value::Integer(s), Value::Integer(e)) = (start_value, end_value) else {
@@ -504,7 +540,11 @@ impl<'p> Interpreter<'p> {
                         span,
                     });
                 };
-                Ok(Value::Range { start: s, end: e, inclusive })
+                Ok(Value::Range {
+                    start: s,
+                    end: e,
+                    inclusive,
+                })
             }
             Expr::StructLiteral { name, fields } => {
                 let mut field_values = HashMap::new();
@@ -512,9 +552,16 @@ impl<'p> Interpreter<'p> {
                     let val = self.evaluate_expression(value_expr)?;
                     field_values.insert(field_name.clone(), val);
                 }
-                Ok(Value::Struct { name, fields: field_values })
+                Ok(Value::Struct {
+                    name,
+                    fields: field_values,
+                })
             }
-            Expr::EnumLiteral { name, variant_name, payload } => {
+            Expr::EnumLiteral {
+                name,
+                variant_name,
+                payload,
+            } => {
                 let payload_value = match payload {
                     Some(expr) => Some(Box::new(self.evaluate_expression(expr)?)),
                     None => None,
@@ -564,14 +611,13 @@ impl<'p> Interpreter<'p> {
         // Enum variant construction: `Some(5)`, `None`.
         if let Expr::Identifier(ref name) = self.arena.expression(callee).node {
             if let Some(enum_ty) = self.env.lookup(name).cloned()
-                && let Value::EnumVariant { .. } = &enum_ty {
-                    // The name resolves to an enum variant value — this
-                    // shouldn't happen (variants aren't stored as values).
-                }
-            // Check if `name` is a variant of any registered enum.
-            if let Some((enum_name, variant_name)) =
-                self.find_enum_variant_for_construction(name)
+                && let Value::EnumVariant { .. } = &enum_ty
             {
+                // The name resolves to an enum variant value — this
+                // shouldn't happen (variants aren't stored as values).
+            }
+            // Check if `name` is a variant of any registered enum.
+            if let Some((enum_name, variant_name)) = self.find_enum_variant_for_construction(name) {
                 let payload = if arguments.is_empty() {
                     None
                 } else {
@@ -595,10 +641,7 @@ impl<'p> Interpreter<'p> {
 
     /// Scan registered enum types for a variant named `name`. Returns
     /// `(enum_type_name, variant_name)` if found.
-    fn find_enum_variant_for_construction(
-        &self,
-        name: &str,
-    ) -> Option<(String, String)> {
+    fn find_enum_variant_for_construction(&self, name: &str) -> Option<(String, String)> {
         for item in self.items {
             if let Item::Enum(def) = &item.node {
                 for variant in &def.variants {
@@ -675,12 +718,12 @@ impl<'p> Interpreter<'p> {
             (Value::Long(l), "to_integer_and_saturate") => {
                 Ok(Value::Integer(l.to_integer_and_saturate()))
             }
-            (Value::Long(l), "try_to_integer") => Ok(l
-                .try_to_integer()
-                .map_or(Value::Null, Value::Integer)),
-            (Value::Long(l), "try_to_tryte") => Ok(l
-                .try_to_tryte()
-                .map_or(Value::Null, Value::Tryte)),
+            (Value::Long(l), "try_to_integer") => {
+                Ok(l.try_to_integer().map_or(Value::Null, Value::Integer))
+            }
+            (Value::Long(l), "try_to_tryte") => {
+                Ok(l.try_to_tryte().map_or(Value::Null, Value::Tryte))
+            }
 
             // Tryte/Integer → Long with try_* (always Some, but exposed
             // for API symmetry with `try_to_*` narrowing methods).
@@ -717,24 +760,15 @@ impl<'p> Interpreter<'p> {
             }
 
             // Integer overflow-aware arithmetic
-            (Value::Integer(i), "add_and_truncate") => binary_int_method(
-                i,
-                arguments,
-                triet_core::Integer::add_and_truncate,
-                span,
-            ),
-            (Value::Integer(i), "add_and_saturate") => binary_int_method(
-                i,
-                arguments,
-                triet_core::Integer::add_and_saturate,
-                span,
-            ),
-            (Value::Integer(i), "try_add") => binary_int_try_method(
-                i,
-                arguments,
-                triet_core::Integer::try_add,
-                span,
-            ),
+            (Value::Integer(i), "add_and_truncate") => {
+                binary_int_method(i, arguments, triet_core::Integer::add_and_truncate, span)
+            }
+            (Value::Integer(i), "add_and_saturate") => {
+                binary_int_method(i, arguments, triet_core::Integer::add_and_saturate, span)
+            }
+            (Value::Integer(i), "try_add") => {
+                binary_int_try_method(i, arguments, triet_core::Integer::try_add, span)
+            }
             (Value::Integer(i), "subtract_and_truncate") => binary_int_method(
                 i,
                 arguments,
@@ -761,12 +795,10 @@ impl<'p> Interpreter<'p> {
             // Iterable adapters — `.enumerate()` produces `(index, item)`
             // tuples. V0.1 only enumerates ranges; nesting works because
             // the runtime advances iterators recursively.
-            (Value::Range { .. } | Value::Enumerate { .. }, "enumerate") => {
-                Ok(Value::Enumerate {
-                    inner: Box::new(receiver.clone()),
-                    next_index: 0,
-                })
-            }
+            (Value::Range { .. } | Value::Enumerate { .. }, "enumerate") => Ok(Value::Enumerate {
+                inner: Box::new(receiver.clone()),
+                next_index: 0,
+            }),
 
             // String
             (Value::String(text), "length") => {
@@ -836,7 +868,8 @@ impl<'p> Interpreter<'p> {
 
             for item in self.items {
                 if let Item::Function(def) = &item.node {
-                    let path = triet_modules::AbsolutePath::new(module.path.clone(), def.name.clone());
+                    let path =
+                        triet_modules::AbsolutePath::new(module.path.clone(), def.name.clone());
                     if let Some(val) = globals.get(&path) {
                         self.env.declare(&def.name, val.clone());
                     }
@@ -971,7 +1004,11 @@ impl<'p> Interpreter<'p> {
             }
         };
 
-        let target = if take_then { Some(then_branch) } else { else_branch };
+        let target = if take_then {
+            Some(then_branch)
+        } else {
+            else_branch
+        };
         match target {
             Some(block) => match self.execute_block(block)? {
                 Outcome::Value(value) => Ok(value),
@@ -1028,11 +1065,9 @@ impl<'p> Interpreter<'p> {
     }
 }
 
-
 mod eval;
 
 use eval::{
-    advance_iterator, binary_int_method, binary_int_try_method,
-    binary_long_method, binary_long_try_method,
-    execute_binary, integer_literal_value, pattern_matches,
+    advance_iterator, binary_int_method, binary_int_try_method, binary_long_method,
+    binary_long_try_method, execute_binary, integer_literal_value, pattern_matches,
 };

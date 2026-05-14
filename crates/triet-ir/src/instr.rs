@@ -101,10 +101,7 @@ pub enum Instruction {
         exp: Operand,
     },
     /// Negation (unary minus): `%d = Neg %operand`.
-    Neg {
-        dest: ValueId,
-        operand: Operand,
-    },
+    Neg { dest: ValueId, operand: Operand },
 
     // ── Logic: Łukasiewicz Ł3 (default) ────────────────────────
     /// Ł3 AND (= min): `%d = LukAnd %lhs, %rhs`.
@@ -201,30 +198,15 @@ pub enum Instruction {
 
     // ── Conversion (explicit, per SPEC §2.4) ───────────────────
     /// Widening (no loss): `%d = ToInteger %v`.
-    ToInteger {
-        dest: ValueId,
-        operand: Operand,
-    },
+    ToInteger { dest: ValueId, operand: Operand },
     /// Narrowing, panic on overflow: `%d = ToTryte %v`.
-    ToTryte {
-        dest: ValueId,
-        operand: Operand,
-    },
+    ToTryte { dest: ValueId, operand: Operand },
     /// Widening to 81-trit: `%d = ToLong %v`.
-    ToLong {
-        dest: ValueId,
-        operand: Operand,
-    },
+    ToLong { dest: ValueId, operand: Operand },
     /// Narrow to 1-trit, panic on overflow: `%d = ToTrit %v`.
-    ToTrit {
-        dest: ValueId,
-        operand: Operand,
-    },
+    ToTrit { dest: ValueId, operand: Operand },
     /// Convert to Trilean: `%d = ToTrilean %v`.
-    ToTrilean {
-        dest: ValueId,
-        operand: Operand,
-    },
+    ToTrilean { dest: ValueId, operand: Operand },
 
     // ── Aggregate: struct ──────────────────────────────────────
     /// Allocate a struct: `%d = StructNew [fields]`.
@@ -258,36 +240,21 @@ pub enum Instruction {
         payload: Option<Operand>,
     },
     /// Get the variant discriminant (Trit): `%d = EnumTag %scrutinee`.
-    EnumTag {
-        dest: ValueId,
-        scrutinee: Operand,
-    },
+    EnumTag { dest: ValueId, scrutinee: Operand },
     /// Unpack the payload of a known variant: `%d = EnumPayload %scrutinee`.
     /// Panics at runtime if the variant tag doesn't match what the
     /// type-checker expected.
-    EnumPayload {
-        dest: ValueId,
-        scrutinee: Operand,
-    },
+    EnumPayload { dest: ValueId, scrutinee: Operand },
 
     // ── Nullable ───────────────────────────────────────────────
     /// Wrap a value as nullable: `T → T?`.
-    NullWrap {
-        dest: ValueId,
-        value: Operand,
-    },
+    NullWrap { dest: ValueId, value: Operand },
     /// Force-unwrap a nullable value (panic if null): `T? → T`.
-    NullUnwrap {
-        dest: ValueId,
-        nullable: Operand,
-    },
+    NullUnwrap { dest: ValueId, nullable: Operand },
     /// Check if a nullable is non-null (returns Trit): `T? → Trit`.
     /// - `+1` = non-null
     /// - `0` = null
-    NullCheck {
-        dest: ValueId,
-        nullable: Operand,
-    },
+    NullCheck { dest: ValueId, nullable: Operand },
 
     // ── Function calls ─────────────────────────────────────────
     /// Local function call (intra-module): `%d = CallLocal @func(%args)`.
@@ -326,9 +293,7 @@ pub enum Instruction {
 
     // ── Control flow (terminators — no dest, last in block) ────
     /// Unconditional branch: `Br target`.
-    Br {
-        target: BlockId,
-    },
+    Br { target: BlockId },
     /// Conditional branch on Trilean condition: `BrIf %cond, then, else`.
     /// `true` → `then_block`, `false` or `unknown` → `else_block`
     /// (matches `if?` semantics; for `if`, the lowerer inserts an
@@ -339,9 +304,7 @@ pub enum Instruction {
         else_block: BlockId,
     },
     /// Return from the current function: `Ret [%value]`.
-    Ret {
-        value: Option<Operand>,
-    },
+    Ret { value: Option<Operand> },
     /// Unreachable — marks a code path that must never execute.
     /// Emitted after exhaustive match or as a compiler invariant marker.
     Unreachable,

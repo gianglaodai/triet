@@ -201,7 +201,10 @@ mod tests {
     fn get_returns_correct_constant() {
         let mut pool = ConstantPool::new();
         let id = pool.intern(Constant::Integer(triet_core::Integer::new(-5).unwrap()));
-        assert_eq!(pool.get(id), Some(&Constant::Integer(triet_core::Integer::new(-5).unwrap())));
+        assert_eq!(
+            pool.get(id),
+            Some(&Constant::Integer(triet_core::Integer::new(-5).unwrap()))
+        );
     }
 
     #[test]

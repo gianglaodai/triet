@@ -235,10 +235,7 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        expr::Expr,
-        type_ast::TypeExpr,
-    };
+    use crate::{expr::Expr, type_ast::TypeExpr};
 
     #[test]
     fn empty_program_has_no_items() {
@@ -264,14 +261,9 @@ mod tests {
     #[test]
     fn function_with_expression_body() {
         let mut arena = Arena::new();
-        let integer_type = arena.alloc_type(Spanned::new(
-            TypeExpr::Named("Integer".to_owned()),
-            11..18,
-        ));
-        let body = arena.alloc_expression(Spanned::new(
-            Expr::Identifier("n".to_owned()),
-            22..23,
-        ));
+        let integer_type =
+            arena.alloc_type(Spanned::new(TypeExpr::Named("Integer".to_owned()), 11..18));
+        let body = arena.alloc_expression(Spanned::new(Expr::Identifier("n".to_owned()), 22..23));
         let function = FunctionDef {
             visibility: Visibility::Public,
             name: "double".to_owned(),

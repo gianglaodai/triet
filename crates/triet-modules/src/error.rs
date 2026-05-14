@@ -50,7 +50,9 @@ pub enum LoaderError {
     #[error("namespace `{root}` is reserved and not yet usable")]
     #[diagnostic(
         code(triet::modules::E2102),
-        help("`sys`, `dev`, `usr` are reserved per ADR-0005 for v0.6 capability namespaces; use `std` for stdlib in v0.2.x")
+        help(
+            "`sys`, `dev`, `usr` are reserved per ADR-0005 for v0.6 capability namespaces; use `std` for stdlib in v0.2.x"
+        )
     )]
     ReservedNamespace {
         /// The reserved root segment that triggered the error.

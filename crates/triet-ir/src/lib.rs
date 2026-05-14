@@ -84,9 +84,9 @@ pub use constant::{Constant, ConstantPool};
 pub use instr::{BuiltinName, Instruction, Operand, PhiIncoming};
 pub use lowerer::lower_program;
 pub use module::{BasicBlock, Function, IrModule, IrProgram};
-pub use serde::{read_program, write_program, TrivError};
+pub use serde::{TrivError, read_program, write_program};
 pub use types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
-pub use verify::{verify_function, verify_program, VerifierResult, VerifierViolation};
+pub use verify::{VerifierResult, VerifierViolation, verify_function, verify_program};
 pub use vm::{RuntimeValue, Vm, VmError};
 
 #[cfg(test)]
@@ -117,7 +117,6 @@ mod tests {
         let recurse = BlockId(2);
         let merge = BlockId(3);
 
-        
         Function {
             id,
             name: Some("factorial".into()),
@@ -169,9 +168,7 @@ mod tests {
                             lhs: Operand::Value(ValueId(0)), // %n
                             rhs: Operand::Value(v_call),
                         },
-                        Instruction::Br {
-                            target: merge,
-                        },
+                        Instruction::Br { target: merge },
                     ],
                 },
                 // merge block (for future phi; just returns recurse result for now)
@@ -182,8 +179,14 @@ mod tests {
                         Instruction::Phi {
                             dest: v_phi,
                             incoming: vec![
-                                PhiIncoming { value: v_mul, block: recurse },
-                                PhiIncoming { value: v_eq, block: base },
+                                PhiIncoming {
+                                    value: v_mul,
+                                    block: recurse,
+                                },
+                                PhiIncoming {
+                                    value: v_eq,
+                                    block: base,
+                                },
                             ],
                         },
                         Instruction::Ret {
@@ -249,12 +252,7 @@ mod tests {
 
     #[test]
     fn function_without_blocks_is_not_well_formed() {
-        let func = Function::new(
-            FuncId(0),
-            Some("empty".into()),
-            vec![],
-            TypeTag::Unit,
-        );
+        let func = Function::new(FuncId(0), Some("empty".into()), vec![], TypeTag::Unit);
         assert!(!func.is_well_formed());
     }
 
@@ -267,7 +265,11 @@ mod tests {
         let c1 = pool.intern(Constant::Integer(int(1)));
         let func = make_factorial_func(FuncId(0), c0, c1);
         let result = verify_function(&func);
-        assert!(result.is_ok(), "unexpected violations: {:?}", result.violations);
+        assert!(
+            result.is_ok(),
+            "unexpected violations: {:?}",
+            result.violations
+        );
     }
 
     #[test]
@@ -298,10 +300,12 @@ mod tests {
         };
         let result = verify_function(&func);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::DuplicateDefinition { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::DuplicateDefinition { .. }))
+        );
     }
 
     #[test]
@@ -322,10 +326,12 @@ mod tests {
         };
         let result = verify_function(&func);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::UndefinedValue { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::UndefinedValue { .. }))
+        );
     }
 
     #[test]
@@ -349,26 +355,25 @@ mod tests {
         };
         let result = verify_function(&func);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::MissingTerminator { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::MissingTerminator { .. }))
+        );
     }
 
     #[test]
     fn verifier_rejects_empty_function() {
-        let func = Function::new(
-            FuncId(0),
-            Some("empty".into()),
-            vec![],
-            TypeTag::Unit,
-        );
+        let func = Function::new(FuncId(0), Some("empty".into()), vec![], TypeTag::Unit);
         let result = verify_function(&func);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::EmptyFunction { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::EmptyFunction { .. }))
+        );
     }
 
     #[test]
@@ -402,10 +407,12 @@ mod tests {
         };
         let result = verify_function(&func);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::PhiOutOfOrder { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::PhiOutOfOrder { .. }))
+        );
     }
 
     // ── Display formatting ────────────────────────────────────────
@@ -472,9 +479,7 @@ mod tests {
 
     #[test]
     fn terminator_has_no_value_operands() {
-        let i = Instruction::Br {
-            target: BlockId(0),
-        };
+        let i = Instruction::Br { target: BlockId(0) };
         assert!(i.value_operands().is_empty());
     }
 
@@ -547,10 +552,12 @@ mod tests {
 
         let result = verify_program(&program);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::MissingTerminator { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::MissingTerminator { .. }))
+        );
     }
 
     #[test]
@@ -632,9 +639,7 @@ mod tests {
                 BasicBlock {
                     id: BlockId(0),
                     name: Some("entry".into()),
-                    instructions: vec![Instruction::Br {
-                        target: BlockId(1),
-                    }],
+                    instructions: vec![Instruction::Br { target: BlockId(1) }],
                 },
                 BasicBlock {
                     id: BlockId(1),
@@ -654,10 +659,12 @@ mod tests {
         };
         let result = verify_function(&func);
         assert!(result.is_err());
-        assert!(result
-            .violations
-            .iter()
-            .any(|v| matches!(v, VerifierViolation::InvalidPhiPredecessor { .. })));
+        assert!(
+            result
+                .violations
+                .iter()
+                .any(|v| matches!(v, VerifierViolation::InvalidPhiPredecessor { .. }))
+        );
     }
 
     // ── IR types: BasicBlock edge cases ────────────────────────────
@@ -725,8 +732,14 @@ mod tests {
                 Instruction::Phi {
                     dest: ValueId(0),
                     incoming: vec![
-                        PhiIncoming { value: ValueId(1), block: b0 },
-                        PhiIncoming { value: ValueId(2), block: b1 },
+                        PhiIncoming {
+                            value: ValueId(1),
+                            block: b0,
+                        },
+                        PhiIncoming {
+                            value: ValueId(2),
+                            block: b1,
+                        },
                     ],
                 },
                 Instruction::Ret { value: None },
@@ -801,9 +814,12 @@ mod tests {
                         triet_modules::ModulePath::crate_root(),
                         "root".into(),
                     ),
-                    functions: vec![
-                        Function::new(FuncId(0), Some("main".into()), vec![], TypeTag::Unit),
-                    ],
+                    functions: vec![Function::new(
+                        FuncId(0),
+                        Some("main".into()),
+                        vec![],
+                        TypeTag::Unit,
+                    )],
                 },
                 IrModule {
                     path: triet_modules::AbsolutePath::new(
@@ -812,12 +828,7 @@ mod tests {
                     ),
                     functions: vec![
                         Function::new(FuncId(1), Some("helper".into()), vec![], TypeTag::Integer),
-                        Function::new(
-                            FuncId(2),
-                            Some("another".into()),
-                            vec![],
-                            TypeTag::Trilean,
-                        ),
+                        Function::new(FuncId(2), Some("another".into()), vec![], TypeTag::Trilean),
                     ],
                 },
             ],
@@ -847,15 +858,39 @@ mod tests {
     fn instruction_destinations_for_all_variants() {
         // Ensure destination() returns Some for value-producing instructions
         let instrs: Vec<(Instruction, bool)> = vec![
-            (Instruction::Const { dest: ValueId(0), constant: ConstId(0) }, true),
-            (Instruction::Add { dest: ValueId(1), lhs: Operand::Value(ValueId(0)), rhs: Operand::Const(ConstId(0)) }, true),
+            (
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: ConstId(0),
+                },
+                true,
+            ),
+            (
+                Instruction::Add {
+                    dest: ValueId(1),
+                    lhs: Operand::Value(ValueId(0)),
+                    rhs: Operand::Const(ConstId(0)),
+                },
+                true,
+            ),
             (Instruction::Br { target: BlockId(0) }, false),
-            (Instruction::BrIf { cond: Operand::Value(ValueId(0)), then_block: BlockId(0), else_block: BlockId(1) }, false),
+            (
+                Instruction::BrIf {
+                    cond: Operand::Value(ValueId(0)),
+                    then_block: BlockId(0),
+                    else_block: BlockId(1),
+                },
+                false,
+            ),
             (Instruction::Ret { value: None }, false),
             (Instruction::Unreachable, false),
         ];
         for (instr, should_have_dest) in &instrs {
-            assert_eq!(instr.destination().is_some(), *should_have_dest, "mismatch for {instr:?}");
+            assert_eq!(
+                instr.destination().is_some(),
+                *should_have_dest,
+                "mismatch for {instr:?}"
+            );
         }
     }
 
@@ -866,9 +901,18 @@ mod tests {
         let phi = Instruction::Phi {
             dest: ValueId(0),
             incoming: vec![
-                PhiIncoming { value: ValueId(10), block: BlockId(0) },
-                PhiIncoming { value: ValueId(11), block: BlockId(1) },
-                PhiIncoming { value: ValueId(12), block: BlockId(2) },
+                PhiIncoming {
+                    value: ValueId(10),
+                    block: BlockId(0),
+                },
+                PhiIncoming {
+                    value: ValueId(11),
+                    block: BlockId(1),
+                },
+                PhiIncoming {
+                    value: ValueId(12),
+                    block: BlockId(2),
+                },
             ],
         };
         let operands = phi.value_operands();

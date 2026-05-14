@@ -180,14 +180,11 @@ mod tests {
         let foo_path = root_path.child("foo");
         let program = ResolvedProgram {
             arenas: vec![Arena::new(), Arena::new()],
-            modules: vec![
-                empty_module(root_path, None),
-                {
-                    let mut m = empty_module(foo_path.clone(), Some(ModuleId(0)));
-                    m.arena_id = ArenaId(1);
-                    m
-                },
-            ],
+            modules: vec![empty_module(root_path, None), {
+                let mut m = empty_module(foo_path.clone(), Some(ModuleId(0)));
+                m.arena_id = ArenaId(1);
+                m
+            }],
             root: ModuleId(0),
         };
         let found = program.find_module(&foo_path).unwrap();
@@ -215,17 +212,11 @@ mod tests {
         a1.alloc_type(Sp::new(TypeExpr::Named("Marker".to_owned()), 0..6));
         let program = ResolvedProgram {
             arenas: vec![a0, a1],
-            modules: vec![
-                empty_module(ModulePath::crate_root(), None),
-                {
-                    let mut m = empty_module(
-                        ModulePath::crate_root().child("foo"),
-                        Some(ModuleId(0)),
-                    );
-                    m.arena_id = ArenaId(1);
-                    m
-                },
-            ],
+            modules: vec![empty_module(ModulePath::crate_root(), None), {
+                let mut m = empty_module(ModulePath::crate_root().child("foo"), Some(ModuleId(0)));
+                m.arena_id = ArenaId(1);
+                m
+            }],
             root: ModuleId(0),
         };
         let foo = program.module(ModuleId(1));

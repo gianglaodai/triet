@@ -121,9 +121,7 @@ fn make_if_else_ir() -> IrProgram {
                         dest: ValueId(1),
                         constant: c1,
                     },
-                    Instruction::Br {
-                        target: BlockId(3),
-                    },
+                    Instruction::Br { target: BlockId(3) },
                 ],
             },
             BasicBlock {
@@ -134,9 +132,7 @@ fn make_if_else_ir() -> IrProgram {
                         dest: ValueId(2),
                         constant: c0,
                     },
-                    Instruction::Br {
-                        target: BlockId(3),
-                    },
+                    Instruction::Br { target: BlockId(3) },
                 ],
             },
             BasicBlock {
@@ -188,9 +184,7 @@ fn make_while_loop_ir() -> IrProgram {
             BasicBlock {
                 id: BlockId(0),
                 name: Some("entry".into()),
-                instructions: vec![Instruction::Br {
-                    target: BlockId(1),
-                }],
+                instructions: vec![Instruction::Br { target: BlockId(1) }],
             },
             BasicBlock {
                 id: BlockId(1),
@@ -217,9 +211,7 @@ fn make_while_loop_ir() -> IrProgram {
                         lhs: Operand::Value(ValueId(0)),
                         rhs: Operand::Const(c1),
                     },
-                    Instruction::Br {
-                        target: BlockId(1),
-                    },
+                    Instruction::Br { target: BlockId(1) },
                 ],
             },
             BasicBlock {

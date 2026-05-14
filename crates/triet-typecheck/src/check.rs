@@ -375,13 +375,7 @@ impl<'p> Checker<'p> {
         }
     }
 
-
-    fn check_condition_type(
-        &mut self,
-        cond_ty: Type,
-        treat_unknown_as_false: bool,
-        span: Span,
-    ) {
+    fn check_condition_type(&mut self, cond_ty: Type, treat_unknown_as_false: bool, span: Span) {
         match cond_ty {
             Type::Trilean | Type::Unknown => {
                 // Plain `if` requires a definite Trilean. The checker
@@ -392,14 +386,11 @@ impl<'p> Checker<'p> {
                 let _ = treat_unknown_as_false;
             }
             other => {
-                self.errors.push(TypeError::NonTrileanCondition {
-                    found: other,
-                    span,
-                });
+                self.errors
+                    .push(TypeError::NonTrileanCondition { found: other, span });
             }
         }
     }
-
 
     // ====================================================================
     // Patterns
@@ -432,15 +423,19 @@ impl<'p> Checker<'p> {
                 }
             }
             Pattern::Range { .. } | Pattern::Literal(_) => {}
-            Pattern::EnumVariant { variant_name, payload, .. } => {
+            Pattern::EnumVariant {
+                variant_name,
+                payload,
+                ..
+            } => {
                 if let Type::UserEnum { variants, .. } = scrutinee
-                    && let Some((_, def_payload)) =
-                        variants.iter().find(|(n, _)| n.as_str() == variant_name.as_str())
-                        && let (Some(sub_pattern), Some(payload_ty)) =
-                            (payload, def_payload)
-                        {
-                            self.bind_pattern(sub_pattern, payload_ty);
-                        }
+                    && let Some((_, def_payload)) = variants
+                        .iter()
+                        .find(|(n, _)| n.as_str() == variant_name.as_str())
+                    && let (Some(sub_pattern), Some(payload_ty)) = (payload, def_payload)
+                {
+                    self.bind_pattern(sub_pattern, payload_ty);
+                }
             }
         }
     }
@@ -480,10 +475,7 @@ impl<'p> Checker<'p> {
             },
             TypeExpr::Generic { name, arguments } => {
                 // Monomorphize: `Option<Integer>` → substitute `T→Integer`.
-                let args: Vec<Type> = arguments
-                    .iter()
-                    .map(|t| self.resolve_type(*t))
-                    .collect();
+                let args: Vec<Type> = arguments.iter().map(|t| self.resolve_type(*t)).collect();
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     match &ty {
                         Type::UserStruct { type_params, .. }
@@ -496,11 +488,8 @@ impl<'p> Checker<'p> {
                                 });
                                 return Type::Unknown;
                             }
-                            let map: std::collections::HashMap<_, _> = type_params
-                                .iter()
-                                .cloned()
-                                .zip(args)
-                                .collect();
+                            let map: std::collections::HashMap<_, _> =
+                                type_params.iter().cloned().zip(args).collect();
                             return ty.substitute(&map);
                         }
                         // Non-struct types cannot have type params — fall through to UnknownType.
@@ -547,6 +536,3 @@ fn block_span(arena: &Arena, block: &Block) -> Span {
         0..0
     }
 }
-
-
-

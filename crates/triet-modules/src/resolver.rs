@@ -61,20 +61,12 @@ pub(crate) fn resolve_names(program: &mut ResolvedProgram) -> Vec<LoaderError> {
             // `foo` in the parent's scope pointing at `crate.foo`.
             for &child_id in &module.children {
                 let child = &program.modules[child_id.raw()];
-                let child_name = child
-                    .path
-                    .segments()
-                    .last()
-                    .cloned()
-                    .unwrap_or_default();
+                let child_name = child.path.segments().last().cloned().unwrap_or_default();
                 // Module bindings use the module path as-is (the module
                 // itself, not an item inside it). We represent this as an
                 // AbsolutePath where the name *is* the last segment and
                 // the module is the parent path.
-                let abs_path = AbsolutePath::new(
-                    module.path.clone(),
-                    child_name.clone(),
-                );
+                let abs_path = AbsolutePath::new(module.path.clone(), child_name.clone());
                 bindings.push((child_name, abs_path));
             }
             bindings
@@ -115,9 +107,7 @@ struct ImportInfo {
 /// Differentiate between `import X` and `from X import Y`.
 enum ImportKind {
     /// `import std.io` or `import std.io.println`.
-    Whole {
-        segments: Vec<String>,
-    },
+    Whole { segments: Vec<String> },
     /// `from std.io import println, print as p`.
     From {
         source: Vec<String>,
@@ -218,7 +208,9 @@ fn resolve_whole_import(
         // Bind under the last segment name.
         let bind_name = segments.last().unwrap().clone();
         let abs_path = AbsolutePath::new(target_path, bind_name.clone());
-        program.modules[importer_id.raw()].bindings.insert(bind_name, abs_path);
+        program.modules[importer_id.raw()]
+            .bindings
+            .insert(bind_name, abs_path);
         return;
     }
 
@@ -227,8 +219,6 @@ fn resolve_whole_import(
         let module_segments = &resolved[..resolved.len() - 1];
         let item_name = resolved.last().unwrap();
         let module_path = ModulePath::new(module_segments.to_vec());
-
-
 
         // Check user module.
         if let Some(target_mod_id) = program.find_module(&module_path) {
@@ -244,7 +234,9 @@ fn resolve_whole_import(
                 }
                 let abs_path = AbsolutePath::new(module_path, item_name.clone());
                 let bind_name = segments.last().unwrap().clone();
-                program.modules[importer_id.raw()].bindings.insert(bind_name, abs_path);
+                program.modules[importer_id.raw()]
+                    .bindings
+                    .insert(bind_name, abs_path);
                 return;
             }
         }
@@ -285,8 +277,6 @@ fn resolve_from_import(
 
     let target_path = ModulePath::new(resolved);
 
-
-
     // User module.
     let Some(target_mod_id) = program.find_module(&target_path) else {
         errors.push(LoaderError::UnresolvedImport {
@@ -304,7 +294,9 @@ fn resolve_from_import(
             if program.find_module(&child_path).is_some() {
                 let abs_path = AbsolutePath::new(target_path.clone(), name.clone());
                 let bind_name = alias.as_ref().unwrap_or(name).clone();
-                program.modules[importer_id.raw()].bindings.insert(bind_name, abs_path);
+                program.modules[importer_id.raw()]
+                    .bindings
+                    .insert(bind_name, abs_path);
                 continue;
             }
             errors.push(LoaderError::UnresolvedImport {
@@ -326,7 +318,9 @@ fn resolve_from_import(
 
         let abs_path = AbsolutePath::new(target_path.clone(), name.clone());
         let bind_name = alias.as_ref().unwrap_or(name).clone();
-        program.modules[importer_id.raw()].bindings.insert(bind_name, abs_path);
+        program.modules[importer_id.raw()]
+            .bindings
+            .insert(bind_name, abs_path);
     }
 }
 
@@ -379,8 +373,12 @@ fn resolve_path_keywords(
 fn item_name_and_visibility(item: &Item) -> Option<(String, Visibility)> {
     match item {
         Item::Function(f) => Some((f.name.clone(), f.visibility)),
-        Item::Const { name, visibility, .. }
-        | Item::TypeAlias { name, visibility, .. } => Some((name.clone(), *visibility)),
+        Item::Const {
+            name, visibility, ..
+        }
+        | Item::TypeAlias {
+            name, visibility, ..
+        } => Some((name.clone(), *visibility)),
         Item::Struct(s) => Some((s.name.clone(), s.visibility)),
         Item::Enum(e) => Some((e.name.clone(), e.visibility)),
         Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) => None,
@@ -439,9 +437,7 @@ mod tests {
         loader::load_in_memory(source)
     }
 
-    fn load_filesystem_result(
-        files: &[(&str, &str)],
-    ) -> Result<ResolvedProgram, Vec<LoaderError>> {
+    fn load_filesystem_result(files: &[(&str, &str)]) -> Result<ResolvedProgram, Vec<LoaderError>> {
         let temp = tempfile::tempdir().expect("tempdir");
         let base = temp.path();
         let mut root_path = None;
@@ -464,8 +460,7 @@ mod tests {
 
     #[test]
     fn own_function_bound() {
-        let program =
-            load_in_memory_result("function main() { }").unwrap();
+        let program = load_in_memory_result("function main() { }").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("main"),
@@ -476,8 +471,7 @@ mod tests {
 
     #[test]
     fn child_module_bound_in_parent() {
-        let program =
-            load_in_memory_result("module helper { function aid() = 1 }").unwrap();
+        let program = load_in_memory_result("module helper { function aid() = 1 }").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("helper"),
@@ -490,8 +484,7 @@ mod tests {
 
     #[test]
     fn stdlib_from_import_binds() {
-        let program =
-            load_in_memory_result("from std.io import println").unwrap();
+        let program = load_in_memory_result("from std.io import println").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("println"),
@@ -504,8 +497,7 @@ mod tests {
 
     #[test]
     fn stdlib_from_import_with_alias() {
-        let program =
-            load_in_memory_result("from std.io import println as out").unwrap();
+        let program = load_in_memory_result("from std.io import println as out").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("out"),
@@ -520,8 +512,7 @@ mod tests {
 
     #[test]
     fn stdlib_whole_import_binds() {
-        let program =
-            load_in_memory_result("import std.io.println").unwrap();
+        let program = load_in_memory_result("import std.io.println").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("println"),
@@ -557,7 +548,9 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            errors.iter().any(|e| matches!(e, LoaderError::VisibilityViolation { name, .. } if name == "secret")),
+            errors.iter().any(
+                |e| matches!(e, LoaderError::VisibilityViolation { name, .. } if name == "secret")
+            ),
             "private import should produce VisibilityViolation: {errors:?}"
         );
     }
@@ -571,17 +564,20 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            errors.iter().any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
+            errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
             "missing name should produce UnresolvedImport: {errors:?}"
         );
     }
 
     #[test]
     fn from_import_nonexistent_module_errors() {
-        let errors =
-            load_in_memory_result("from crate.ghost import thing").unwrap_err();
+        let errors = load_in_memory_result("from crate.ghost import thing").unwrap_err();
         assert!(
-            errors.iter().any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
+            errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
             "missing module should produce UnresolvedImport: {errors:?}"
         );
     }
@@ -591,8 +587,7 @@ mod tests {
     #[test]
     fn self_import_resolves() {
         let program =
-            load_in_memory_result("function helper() = 1\nfrom self import helper")
-                .unwrap();
+            load_in_memory_result("function helper() = 1\nfrom self import helper").unwrap();
         let root = program.root_module();
         // `self` in the root module = `crate`, so `from self import helper`
         // binds `helper` (which is already bound as own def, but import
@@ -604,10 +599,11 @@ mod tests {
 
     #[test]
     fn reserved_namespace_errors() {
-        let errors =
-            load_in_memory_result("from sys.cap import read").unwrap_err();
+        let errors = load_in_memory_result("from sys.cap import read").unwrap_err();
         assert!(
-            errors.iter().any(|e| matches!(e, LoaderError::ReservedNamespace { root, .. } if root == "sys")),
+            errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::ReservedNamespace { root, .. } if root == "sys")),
             "reserved namespace should error: {errors:?}"
         );
     }
@@ -616,10 +612,11 @@ mod tests {
 
     #[test]
     fn stdlib_nonexistent_export_errors() {
-        let errors =
-            load_in_memory_result("from std.io import frobnicate").unwrap_err();
+        let errors = load_in_memory_result("from std.io import frobnicate").unwrap_err();
         assert!(
-            errors.iter().any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
+            errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
             "unknown stdlib export should error: {errors:?}"
         );
     }
@@ -628,8 +625,7 @@ mod tests {
 
     #[test]
     fn multi_name_from_import() {
-        let program =
-            load_in_memory_result("from std.io import println, print").unwrap();
+        let program = load_in_memory_result("from std.io import println, print").unwrap();
         let root = program.root_module();
         assert!(root.bindings.contains_key("println"));
         assert!(root.bindings.contains_key("print"));

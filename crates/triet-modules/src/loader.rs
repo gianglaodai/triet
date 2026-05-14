@@ -62,13 +62,7 @@ pub(crate) fn load_filesystem(root_path: &Path) -> Result<ResolvedProgram, Vec<L
 pub(crate) fn load_in_memory(source: &str) -> Result<ResolvedProgram, Vec<LoaderError>> {
     let mut state = LoaderState::new();
     state.load_stdlib();
-    state.load_from_source(
-        &ModulePath::crate_root(),
-        None,
-        None,
-        source,
-        None,
-    );
+    state.load_from_source(&ModulePath::crate_root(), None, None, source, None);
     state.finish()
 }
 
@@ -177,20 +171,10 @@ impl LoaderState {
         let arena_id = ArenaId(self.program.arenas.len());
         self.program.arenas.push(parsed.arena);
 
-        let module_id = self.allocate_module(
-            path.clone(),
-            source_path,
-            arena_id,
-            parent,
-        );
+        let module_id = self.allocate_module(path.clone(), source_path, arena_id, parent);
 
-        let (items, children) = self.process_items(
-            path,
-            arena_id,
-            search_dir,
-            module_id,
-            parsed.items,
-        );
+        let (items, children) =
+            self.process_items(path, arena_id, search_dir, module_id, parsed.items);
 
         let module = self.program.module_mut(module_id);
         module.items = items;
@@ -210,20 +194,10 @@ impl LoaderState {
         parent: ModuleId,
         inline_items: Vec<Spanned<Item>>,
     ) -> ModuleId {
-        let module_id = self.allocate_module(
-            path.clone(),
-            None,
-            parent_arena,
-            Some(parent),
-        );
+        let module_id = self.allocate_module(path.clone(), None, parent_arena, Some(parent));
 
-        let (items, children) = self.process_items(
-            path,
-            parent_arena,
-            search_dir,
-            module_id,
-            inline_items,
-        );
+        let (items, children) =
+            self.process_items(path, parent_arena, search_dir, module_id, inline_items);
 
         let module = self.program.module_mut(module_id);
         module.items = items;
@@ -313,13 +287,7 @@ impl LoaderState {
             )),
             ModuleContent::External => {
                 if let Some(directory) = parent_search_dir {
-                    self.resolve_external(
-                        &child_path,
-                        &decl.name,
-                        directory,
-                        parent_id,
-                        decl_span,
-                    )
+                    self.resolve_external(&child_path, &decl.name, directory, parent_id, decl_span)
                 } else {
                     self.errors.push(LoaderError::FileNotFound {
                         module_name: decl.name,
@@ -463,20 +431,14 @@ mod tests {
         // No filesystem context → external child cannot be resolved.
         let source = "module foo";
         let errors = load_in_memory(source).unwrap_err();
-        assert!(matches!(
-            errors[0],
-            LoaderError::FileNotFound { .. }
-        ));
+        assert!(matches!(errors[0], LoaderError::FileNotFound { .. }));
     }
 
     #[test]
     fn parse_error_propagates_with_module_attribution() {
         let source = "function this is not valid syntax";
         let errors = load_in_memory(source).unwrap_err();
-        assert!(matches!(
-            errors[0],
-            LoaderError::ChildParseError { .. }
-        ));
+        assert!(matches!(errors[0], LoaderError::ChildParseError { .. }));
         if let LoaderError::ChildParseError { module, .. } = &errors[0] {
             assert_eq!(module, "crate");
         }

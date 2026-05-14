@@ -16,7 +16,7 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.3 đã ship ✅
+## Trạng thái hiện tại — v0.3 đã ship ✅ + cleanup gate ADR-0009 ✅
 
 ✅ Tree-walking interpreter end-to-end
 ✅ Type checker với inference + monomorphization
@@ -26,12 +26,14 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 ✅ Diagnostic format (miette, error codes E0000–E2200+)
 ✅ Module system: hierarchical namespace, explicit `public` export, dot paths, Python-style imports, cycle detection, visibility
 ✅ Bytecode VM: register SSA IR, 52-opcode dispatch, balanced ternary semantics
-✅ Lowerer: AST → IR cho toàn bộ v0.2 features (literals, arith, logic Ł3/K3, control flow, struct/enum/nullable, calls)
+✅ Lowerer: AST → IR cho toàn bộ v0.2 features bao gồm SSA phi cho mutable vars (loops + if), enum payload + variant tag dispatch, tuple/literal pattern match, `.enumerate()` adapter, `?.` / `?:` / `!!` nullable ops, stdlib text builtins
 ✅ `.triv` binary format: ADR-0008, serializer/deserializer (24 round-trip tests)
 ✅ CLI `triet build foo.tri -o foo.triv` + `triet run foo.triv`
-✅ Differential tests: 3/11 examples byte-identical VM vs interpreter
+✅ Differential tests: **11/11 examples byte-identical VM vs interpreter** (gate ADR-0009 § A đạt)
 ✅ Benchmark harness: criterion, VM 1.26× interpreter (baseline)
-✅ 713+ tests workspace-wide, snapshot tests cho IR + diagnostics
+✅ Cargo workspace `version = 0.3.0` đồng bộ với SPEC v0.3 (ADR-0009 § C)
+✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch (ADR-0009 § B)
+✅ 835 tests workspace-wide, 0 ignored, snapshot tests cho IR + diagnostics
 🔜 Tiếp theo: v0.4 — Crate-Pack + Stable ABI
 
 ---
@@ -118,16 +120,47 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 - For loop with phi-based SSA loop variable
 - VM path_index for cross-module dispatch + path_to_builtin fallback
 
-**Gate đã đạt (partial):**
+**Gate đã đạt (after v0.3.x.cleanup):**
 - ✅ IR spec (ADR-0007) + bytecode format `.triv` có version field (ADR-0008).
-- ⚠️ Differential tests: 3/11 examples byte-identical (lukasiewicz, measles_risk, factorial). 8 deferred pending enum/while/stdlib fixes.
-- ⚠️ Bench: VM 1.26× interpreter trên factorial (3× gate → v0.4 optimization).
+- ✅ Differential tests: **11/11 examples byte-identical VM vs interpreter** (closed under v0.3.x.cleanup phase).
+- ⚠️ Bench: VM 1.26× interpreter trên factorial (3× gate → defer cho v0.4 performance pass, ghi rõ ở BENCHMARKS.md).
 - ✅ IR snapshot tests detect regression khi đổi lowerer (4 tests).
 
 **Không làm trong v0.3:**
 - JIT (v0.9), Native AOT (v2.0), Trytecode backend (v∞).
 - ABI metadata trong `.triv` (v0.4).
 - Cross-package linking (v0.4).
+
+---
+
+## v0.3.x.cleanup — Gate-closing phase ✅ SHIPPED
+
+**Mục tiêu:** Đóng đầy đủ gate cho v0.3 trước khi mở v0.4. Lock policy bằng
+[ADR-0009](docs/decisions/0009-version-gate-policy.md) — gate này áp dụng cho
+mọi version bump tương lai, không chỉ v0.3 → v0.4.
+
+**Đã ship:**
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.3.x.cleanup.1 | ADR-0009 — version gate policy | `6a8a6b1` |
+| v0.3.x.cleanup.2 | Bump Cargo workspace 0.1.0 → 0.3.0 + `triet info` | `b86b0be` |
+| v0.3.x.cleanup.3 | README.md sync với v0.3 status + workspace structure | `a3df90f` |
+| v0.3.x.cleanup.4 | Clippy `-D warnings` sạch (109 → 0 warnings) | `84fea6c` |
+| v0.3.x.cleanup.5 | Enum payload + variant tag dispatch (maybe, generic) | `e3726c0` |
+| v0.3.x.cleanup.6 | SSA loop+if phi cho mutable vars (counter, while_polling, long_arithmetic) | `2ddd046` |
+| v0.3.x.cleanup.7 | Iterator `.enumerate()` + nullable ops `?.` `?:` `!!` + stdlib text builtins (nullable, enumerate) | `be9c0c5` |
+| v0.3.x.cleanup.8 | Tuple + literal pattern match (fizzbuzz) | `251f954` |
+
+**Gate đã đạt (ADR-0009):**
+- ✅ Gate A — Functional: 11/11 differential, 0 `#[ignore]`, 0 `TODO(v0.3...)`.
+- ✅ Gate B — Hygiene: 835 tests pass / 0 fail / 0 ignored; clippy `-D warnings` sạch.
+- ✅ Gate C — Docs: SPEC v0.3, Cargo 0.3.0, `triet info` đồng bộ, README cập nhật, ADRs 0001–0009.
+- ✅ Gate D — Self-consistency: 11/11 examples chạy interpreter & VM, demo 6-file module-system chạy.
+
+**Không làm:**
+- Bench 3× (defer cho v0.4 perf pass; ADR-0010 nếu cần revise gate).
+- Strict `if`/`while` unknown-as-error check (defer — yêu cầu `trilean_assert_known` opcode).
 
 ---
 

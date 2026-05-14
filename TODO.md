@@ -24,13 +24,25 @@ Final commits:
 
 Archived to [ROADMAP.md § v0.3](ROADMAP.md).
 
-All 12 sub-tasks done (v0.3.0–v0.3.11). Gates partially met:
+All 12 sub-tasks done (v0.3.0–v0.3.11) + v0.3.x.cleanup phase.
+All gates met (ADR-0009 § A/B/C/D):
 - IR spec + bytecode format ✓
-- Differential tests: 3/11 examples pass byte-identically ✓
-- Bench: VM 1.26× interpreter (3× gate → v0.4) ✓
+- Differential tests: **11/11** byte-identical ✓
+- Bench: VM 1.26× interpreter (3× gate deferred to v0.4 perf pass) ✓
 - IR snapshot tests ✓
 
-Final commit: `28e7da0`
+Final v0.3 commit: `28e7da0`. Final cleanup commit: `251f954`.
+
+---
+
+## v0.3.x.cleanup ✅ SHIPPED
+
+Archived to [ROADMAP.md § v0.3.x.cleanup](ROADMAP.md).
+
+Gate-closing phase before v0.4. Locks [ADR-0009](docs/decisions/0009-version-gate-policy.md)
+as the policy for every future version bump.
+
+8 sub-tasks done (v0.3.x.cleanup.1–8). 835 tests, 0 ignored, clippy clean.
 
 ---
 
@@ -38,9 +50,9 @@ Final commit: `28e7da0`
 
 Per [ROADMAP.md § v0.4](ROADMAP.md). Tasks will be added when v0.4 work begins.
 
-- [ ] ADR-0009 — ABI metadata format
-- [ ] ADR-0010 — Witness table dispatch
-- [ ] ADR-0011 — Semver linking policy
+- [ ] ADR-0010 — ABI metadata format
+- [ ] ADR-0011 — Witness table dispatch
+- [ ] ADR-0012 — Semver linking policy
 - [ ] Crate-pack format (`.tripack`)
 - [ ] Cross-package linker
 - [ ] Result/Option đầy đủ trong stdlib

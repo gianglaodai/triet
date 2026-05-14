@@ -8,10 +8,7 @@
 //!
 //! These tests are the v0.1 acceptance gate: if they fail, the demo
 //! programs the README points users at would also fail.
-#![allow(
-    clippy::uninlined_format_args,
-    clippy::unnecessary_debug_formatting,
-)]
+#![allow(clippy::uninlined_format_args, clippy::unnecessary_debug_formatting)]
 
 use std::{fs, path::PathBuf};
 
@@ -48,9 +45,15 @@ fn load_program(filename: &str) -> triet_syntax::Program {
         panic!("could not read {path:?}: {error}");
     });
     let (program, parse_errors) = parse(&source);
-    assert!(parse_errors.is_empty(), "{path:?} parse errors: {parse_errors:#?}");
+    assert!(
+        parse_errors.is_empty(),
+        "{path:?} parse errors: {parse_errors:#?}"
+    );
     let type_errors = check(&program);
-    assert!(type_errors.is_empty(), "{path:?} type errors: {type_errors:#?}");
+    assert!(
+        type_errors.is_empty(),
+        "{path:?} type errors: {type_errors:#?}"
+    );
     program
 }
 
@@ -78,11 +81,15 @@ fn fizzbuzz_classifies_15_to_fizzbuzz() {
 fn fizzbuzz_classifies_3_to_fizz_and_5_to_buzz() {
     let program = load_program(FIZZBUZZ);
     assert_eq!(
-        call_function(&program, "fizzbuzz", vec![integer(3)]).unwrap().to_string(),
+        call_function(&program, "fizzbuzz", vec![integer(3)])
+            .unwrap()
+            .to_string(),
         "Fizz",
     );
     assert_eq!(
-        call_function(&program, "fizzbuzz", vec![integer(5)]).unwrap().to_string(),
+        call_function(&program, "fizzbuzz", vec![integer(5)])
+            .unwrap()
+            .to_string(),
         "Buzz",
     );
 }
@@ -112,7 +119,11 @@ fn measles_full_evidence_yields_true() {
     let value = call_function(
         &program,
         "risk_measles",
-        vec![trilean(Trilean::True), trilean(Trilean::True), trilean(Trilean::False)],
+        vec![
+            trilean(Trilean::True),
+            trilean(Trilean::True),
+            trilean(Trilean::False),
+        ],
     )
     .unwrap();
     assert_eq!(value, trilean(Trilean::True));
@@ -124,7 +135,11 @@ fn measles_unknown_vaccination_yields_unknown() {
     let value = call_function(
         &program,
         "risk_measles",
-        vec![trilean(Trilean::True), trilean(Trilean::True), trilean(Trilean::Unknown)],
+        vec![
+            trilean(Trilean::True),
+            trilean(Trilean::True),
+            trilean(Trilean::Unknown),
+        ],
     )
     .unwrap();
     assert_eq!(value, trilean(Trilean::Unknown));
@@ -136,7 +151,11 @@ fn measles_no_symptoms_yields_false_regardless_of_vaccination() {
     let value = call_function(
         &program,
         "risk_measles",
-        vec![trilean(Trilean::False), trilean(Trilean::False), trilean(Trilean::Unknown)],
+        vec![
+            trilean(Trilean::False),
+            trilean(Trilean::False),
+            trilean(Trilean::Unknown),
+        ],
     )
     .unwrap();
     assert_eq!(value, trilean(Trilean::False));
@@ -175,7 +194,10 @@ fn lukasiewicz_vs_kleene_demo_parses_and_type_checks() {
 fn lukasiewicz_vs_kleene_main_runs_without_error() {
     let program = load_program(LK);
     let result = run(&program);
-    assert!(result.is_ok(), "lukasiewicz_vs_kleene main failed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "lukasiewicz_vs_kleene main failed: {result:?}"
+    );
 }
 
 #[test]
@@ -186,13 +208,7 @@ fn counter_demo_parses_and_type_checks() {
 #[test]
 fn counter_sum_to_n_returns_arithmetic_series() {
     let program = load_program(COUNTER);
-    let cases = &[
-        (0_i64, 0_i64),
-        (1, 1),
-        (5, 15),
-        (10, 55),
-        (100, 5050),
-    ];
+    let cases = &[(0_i64, 0_i64), (1, 1), (5, 15), (10, 55), (100, 5050)];
     for &(input, expected) in cases {
         let value = call_function(&program, "sum_to", vec![integer(input)]).unwrap();
         assert_eq!(value, integer(expected), "sum_to({input})");
@@ -246,12 +262,7 @@ fn enumerate_main_runs_without_error() {
 #[test]
 fn enumerate_rank_assigns_correct_grades() {
     let program = load_program(ENUMERATE);
-    let cases: &[(i64, &str)] = &[
-        (95, "A"),
-        (85, "B"),
-        (75, "C"),
-        (60, "F"),
-    ];
+    let cases: &[(i64, &str)] = &[(95, "A"), (85, "B"), (75, "C"), (60, "F")];
     for &(score, expected) in cases {
         let value = call_function(&program, "rank", vec![integer(score)]).unwrap();
         assert_eq!(value.to_string(), expected, "rank({score})");
@@ -268,8 +279,7 @@ fn nullable_lookup_returns_name_for_valid_ids() {
     let program = load_program(NULLABLE);
     let cases = &[(1, "Alice"), (2, "Bob"), (3, "Carol")];
     for &(id, expected) in cases {
-        let value = call_function(&program, "lookup_name", vec![integer(id)])
-            .unwrap();
+        let value = call_function(&program, "lookup_name", vec![integer(id)]).unwrap();
         assert_eq!(value.to_string(), expected, "lookup_name({id})");
     }
 }
@@ -306,8 +316,7 @@ fn nullable_force_unwrap_panics_on_null() {
 #[test]
 fn nullable_force_unwrap_succeeds_for_valid_id() {
     let program = load_program(NULLABLE);
-    let value = call_function(&program, "must_have_name", vec![integer(3)])
-        .unwrap();
+    let value = call_function(&program, "must_have_name", vec![integer(3)]).unwrap();
     assert_eq!(value.to_string(), "Carol");
 }
 
@@ -368,12 +377,7 @@ fn while_polling_isqrt_converges() {
     let program = load_program(WHILE_POLLING);
     let cases: &[(i64, i64)] = &[(1, 1), (4, 2), (9, 3), (16, 4), (100, 10)];
     for &(target, expected) in cases {
-        let value = call_function(
-            &program,
-            "isqrt",
-            vec![integer(target), integer(20)],
-        )
-        .unwrap();
+        let value = call_function(&program, "isqrt", vec![integer(target), integer(20)]).unwrap();
         assert_eq!(value, integer(expected), "isqrt({target})");
     }
 }
@@ -415,14 +419,12 @@ fn generic_main_runs_without_error() {
 
 #[test]
 fn module_system_demo_loads_and_typechecks() {
-    let path = std::path::Path::new(
-        env!("CARGO_MANIFEST_DIR"),
-    )
-    .join("..")
-    .join("..")
-    .join("demos")
-    .join("02-module-system")
-    .join("main.tri");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("demos")
+        .join("02-module-system")
+        .join("main.tri");
     let resolved = triet_modules::load_program(&path).unwrap();
     let type_errors = triet_typecheck::check_resolved(&resolved);
     assert!(type_errors.is_empty(), "type errors: {type_errors:#?}");
@@ -430,14 +432,12 @@ fn module_system_demo_loads_and_typechecks() {
 
 #[test]
 fn module_system_demo_runs_all_tests_pass() {
-    let path = std::path::Path::new(
-        env!("CARGO_MANIFEST_DIR"),
-    )
-    .join("..")
-    .join("..")
-    .join("demos")
-    .join("02-module-system")
-    .join("main.tri");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("demos")
+        .join("02-module-system")
+        .join("main.tri");
     let resolved = triet_modules::load_program(&path).unwrap();
     let type_errors = triet_typecheck::check_resolved(&resolved);
     assert!(type_errors.is_empty(), "type errors: {type_errors:#?}");
@@ -449,14 +449,12 @@ fn module_system_demo_runs_all_tests_pass() {
 fn module_system_demo_output_snapshot() {
     use std::fmt::Write as _;
 
-    let path = std::path::Path::new(
-        env!("CARGO_MANIFEST_DIR"),
-    )
-    .join("..")
-    .join("..")
-    .join("demos")
-    .join("02-module-system")
-    .join("main.tri");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("demos")
+        .join("02-module-system")
+        .join("main.tri");
     let resolved = triet_modules::load_program(&path).unwrap();
     let type_errors = triet_typecheck::check_resolved(&resolved);
     assert!(type_errors.is_empty());
@@ -467,7 +465,11 @@ fn module_system_demo_output_snapshot() {
         let path = module.path.to_string();
         let item_count = module.items.len();
         let child_count = module.children.len();
-        writeln!(summary, "{path}: {item_count} items, {child_count} children").unwrap();
+        writeln!(
+            summary,
+            "{path}: {item_count} items, {child_count} children"
+        )
+        .unwrap();
     }
     writeln!(
         summary,

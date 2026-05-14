@@ -14,13 +14,7 @@
 //! into a real `Spanned<T>` reference. Reference patterns are typed: a
 //! `PatternId` cannot be used where an `ExprId` is expected.
 
-use crate::{
-    expr::Expr,
-    pattern::Pattern,
-    span::Spanned,
-    stmt::Stmt,
-    type_ast::TypeExpr,
-};
+use crate::{expr::Expr, pattern::Pattern, span::Spanned, stmt::Stmt, type_ast::TypeExpr};
 
 macro_rules! define_id {
     ($name:ident, $doc:expr) => {
@@ -44,8 +38,14 @@ macro_rules! define_id {
 }
 
 define_id!(ExprId, "Handle to a `Spanned<Expr>` stored in an `Arena`.");
-define_id!(PatternId, "Handle to a `Spanned<Pattern>` stored in an `Arena`.");
-define_id!(TypeId, "Handle to a `Spanned<TypeExpr>` stored in an `Arena`.");
+define_id!(
+    PatternId,
+    "Handle to a `Spanned<Pattern>` stored in an `Arena`."
+);
+define_id!(
+    TypeId,
+    "Handle to a `Spanned<TypeExpr>` stored in an `Arena`."
+);
 define_id!(StmtId, "Handle to a `Spanned<Stmt>` stored in an `Arena`.");
 
 /// Storage for all recursive AST nodes belonging to a single `Program`.
@@ -93,8 +93,8 @@ impl Arena {
     ///
     /// Panics if more than `u32::MAX` patterns are allocated.
     pub fn alloc_pattern(&mut self, node: Spanned<Pattern>) -> PatternId {
-        let index = u32::try_from(self.patterns.len())
-            .expect("pattern arena exceeded u32::MAX entries");
+        let index =
+            u32::try_from(self.patterns.len()).expect("pattern arena exceeded u32::MAX entries");
         self.patterns.push(node);
         PatternId(index)
     }
@@ -105,8 +105,7 @@ impl Arena {
     ///
     /// Panics if more than `u32::MAX` type expressions are allocated.
     pub fn alloc_type(&mut self, node: Spanned<TypeExpr>) -> TypeId {
-        let index = u32::try_from(self.types.len())
-            .expect("type arena exceeded u32::MAX entries");
+        let index = u32::try_from(self.types.len()).expect("type arena exceeded u32::MAX entries");
         self.types.push(node);
         TypeId(index)
     }
@@ -175,12 +174,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        expr::Expr,
-        numeric::TrileanValue,
-        pattern::Pattern,
-        type_ast::TypeExpr,
-    };
+    use crate::{expr::Expr, numeric::TrileanValue, pattern::Pattern, type_ast::TypeExpr};
 
     #[test]
     fn new_arena_is_empty() {
@@ -195,11 +189,17 @@ mod tests {
     fn alloc_returns_sequential_handles() {
         let mut arena = Arena::new();
         let first = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 1, suffix: None },
+            Expr::IntegerLiteral {
+                value: 1,
+                suffix: None,
+            },
             0..1,
         ));
         let second = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 2, suffix: None },
+            Expr::IntegerLiteral {
+                value: 2,
+                suffix: None,
+            },
             2..3,
         ));
         assert_eq!(first.as_u32(), 0);
@@ -209,10 +209,8 @@ mod tests {
     #[test]
     fn alloc_round_trips_through_lookup() {
         let mut arena = Arena::new();
-        let id = arena.alloc_expression(Spanned::new(
-            Expr::TrileanLiteral(TrileanValue::True),
-            5..9,
-        ));
+        let id =
+            arena.alloc_expression(Spanned::new(Expr::TrileanLiteral(TrileanValue::True), 5..9));
         let stored = arena.expression(id);
         assert_eq!(stored.span, 5..9);
         assert!(matches!(
@@ -229,14 +227,14 @@ mod tests {
         // confirms each kind has its own arena slot.
         let mut arena = Arena::new();
         let _expr_id = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 0, suffix: None },
+            Expr::IntegerLiteral {
+                value: 0,
+                suffix: None,
+            },
             0..1,
         ));
         let _pattern_id = arena.alloc_pattern(Spanned::new(Pattern::Wildcard, 2..3));
-        let _type_id = arena.alloc_type(Spanned::new(
-            TypeExpr::Named("Integer".to_owned()),
-            4..11,
-        ));
+        let _type_id = arena.alloc_type(Spanned::new(TypeExpr::Named("Integer".to_owned()), 4..11));
         // Counts should match what we allocated.
         assert_eq!(arena.expression_count(), 1);
         assert_eq!(arena.pattern_count(), 1);
@@ -247,7 +245,10 @@ mod tests {
     fn handles_are_copy_and_cheaply_comparable() {
         let mut arena = Arena::new();
         let id = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 0, suffix: None },
+            Expr::IntegerLiteral {
+                value: 0,
+                suffix: None,
+            },
             0..1,
         ));
         let copied = id;

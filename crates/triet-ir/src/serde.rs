@@ -303,11 +303,7 @@ fn read_type_table(data: &[u8], pos: &mut usize) -> Result<Vec<TypeTag>, TrivErr
     Ok(types)
 }
 
-fn read_type_tag(
-    data: &[u8],
-    pos: &mut usize,
-    table: &[TypeTag],
-) -> Result<TypeTag, TrivError> {
+fn read_type_tag(data: &[u8], pos: &mut usize, table: &[TypeTag]) -> Result<TypeTag, TrivError> {
     let disc = read_u8(data, pos)?;
     match disc {
         0 => Ok(TypeTag::Trit),
@@ -355,7 +351,9 @@ fn read_operand(data: &[u8], pos: &mut usize) -> Result<Operand, TrivError> {
             let id = read_varint(data, pos)?;
             Ok(Operand::Value(ValueId(id)))
         }
-        t => Err(TrivError::Corrupted(format!("unknown operand tag 0x{t:02X}"))),
+        t => Err(TrivError::Corrupted(format!(
+            "unknown operand tag 0x{t:02X}"
+        ))),
     }
 }
 
@@ -796,62 +794,38 @@ fn read_instruction(data: &[u8], pos: &mut usize) -> Result<Instruction, TrivErr
             let operand = read_operand(data, pos)?;
             Ok(Instruction::Neg { dest, operand })
         }
-        opcode::LUK_AND => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukAnd {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::LUK_OR => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukOr {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::LUK_IMPLIES => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukImplies {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::LUK_XOR => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukXor {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::LUK_IFF => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukIff {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::KLEENE_IMPLIES => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::KleeneImplies {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::KLEENE_XOR => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::KleeneXor {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
-        opcode::KLEENE_IFF => {
-            read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::KleeneIff {
-                dest,
-                lhs,
-                rhs,
-            })
-        }
+        opcode::LUK_AND => read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukAnd {
+            dest,
+            lhs,
+            rhs,
+        }),
+        opcode::LUK_OR => read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukOr {
+            dest,
+            lhs,
+            rhs,
+        }),
+        opcode::LUK_IMPLIES => read_binary_arith(data, pos, |dest, lhs, rhs| {
+            Instruction::LukImplies { dest, lhs, rhs }
+        }),
+        opcode::LUK_XOR => read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukXor {
+            dest,
+            lhs,
+            rhs,
+        }),
+        opcode::LUK_IFF => read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::LukIff {
+            dest,
+            lhs,
+            rhs,
+        }),
+        opcode::KLEENE_IMPLIES => read_binary_arith(data, pos, |dest, lhs, rhs| {
+            Instruction::KleeneImplies { dest, lhs, rhs }
+        }),
+        opcode::KLEENE_XOR => read_binary_arith(data, pos, |dest, lhs, rhs| {
+            Instruction::KleeneXor { dest, lhs, rhs }
+        }),
+        opcode::KLEENE_IFF => read_binary_arith(data, pos, |dest, lhs, rhs| {
+            Instruction::KleeneIff { dest, lhs, rhs }
+        }),
         opcode::EQ => read_binary_arith(data, pos, |dest, lhs, rhs| Instruction::Eq {
             dest,
             lhs,
@@ -1230,11 +1204,7 @@ struct FunctionMeta {
     func_id: FuncId,
 }
 
-fn write_function_table(
-    buf: &mut Vec<u8>,
-    program: &IrProgram,
-    types: &[TypeTag],
-) {
+fn write_function_table(buf: &mut Vec<u8>, program: &IrProgram, types: &[TypeTag]) {
     let mut count = 0u32;
     for module in &program.modules {
         count += module.functions.len() as u32;
@@ -1505,16 +1475,10 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
     // Reconstruct modules by grouping functions by module_path
     let modules = group_into_modules(&functions, &function_metas);
 
-    Ok(IrProgram {
-        modules,
-        constants,
-    })
+    Ok(IrProgram { modules, constants })
 }
 
-fn group_into_modules(
-    functions: &[Function],
-    metas: &[FunctionMeta],
-) -> Vec<IrModule> {
+fn group_into_modules(functions: &[Function], metas: &[FunctionMeta]) -> Vec<IrModule> {
     let mut modules: Vec<IrModule> = Vec::new();
     // Use insertion order, not HashMap, to preserve module ordering.
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -1568,7 +1532,11 @@ mod tests {
             let mut pos = 0;
             let decoded = read_leb128(&buf, &mut pos).unwrap();
             assert_eq!(decoded, value, "LEB128 round-trip failed for {value}");
-            assert_eq!(pos, buf.len(), "LEB128 didn't consume all bytes for {value}");
+            assert_eq!(
+                pos,
+                buf.len(),
+                "LEB128 didn't consume all bytes for {value}"
+            );
         }
     }
 
@@ -1771,9 +1739,7 @@ mod tests {
         let c_trit = pool.intern(Constant::Trit(triet_core::Trit::Positive));
         let c_tryte = pool.intern(Constant::Tryte(triet_core::Tryte::new(42).unwrap()));
         let c_int = pool.intern(Constant::Integer(int(-5)));
-        let c_long = pool.intern(Constant::Long(
-            triet_core::Long::from_i64(1000),
-        ));
+        let c_long = pool.intern(Constant::Long(triet_core::Long::from_i64(1000)));
         let c_str = pool.intern(Constant::String("hello".into()));
         let c_unit = pool.intern(Constant::Unit);
 
@@ -1866,9 +1832,7 @@ mod tests {
                                     dest: ValueId(1),
                                     constant: c1,
                                 },
-                                Instruction::Br {
-                                    target: BlockId(3),
-                                },
+                                Instruction::Br { target: BlockId(3) },
                             ],
                         },
                         BasicBlock {
@@ -1879,9 +1843,7 @@ mod tests {
                                     dest: ValueId(2),
                                     constant: c0,
                                 },
-                                Instruction::Br {
-                                    target: BlockId(3),
-                                },
+                                Instruction::Br { target: BlockId(3) },
                             ],
                         },
                         BasicBlock {
@@ -1930,7 +1892,10 @@ mod tests {
                 functions: vec![Function {
                     id: FuncId(0),
                     name: Some("make_point".into()),
-                    params: vec![("%x".into(), TypeTag::Integer), ("%y".into(), TypeTag::Integer)],
+                    params: vec![
+                        ("%x".into(), TypeTag::Integer),
+                        ("%y".into(), TypeTag::Integer),
+                    ],
                     return_type: TypeTag::Unit,
                     blocks: vec![BasicBlock {
                         id: BlockId(0),
@@ -2070,10 +2035,7 @@ mod tests {
                             Instruction::CallCrossModule {
                                 dest: Some(ValueId(0)),
                                 path: triet_modules::AbsolutePath::new(
-                                    triet_modules::ModulePath::new(vec![
-                                        "std".into(),
-                                        "io".into(),
-                                    ]),
+                                    triet_modules::ModulePath::new(vec!["std".into(), "io".into()]),
                                     "println".into(),
                                 ),
                                 args: vec![Operand::Const(ConstId(0))],
@@ -2136,9 +2098,8 @@ mod tests {
         let mut pos = 12;
         for _ in 0..3 {
             // Skip section_id (1 byte) + section_size (4 bytes) + payload
-            let section_size = u32::from_le_bytes(
-                bytes[pos + 1..pos + 5].try_into().unwrap(),
-            ) as usize;
+            let section_size =
+                u32::from_le_bytes(bytes[pos + 1..pos + 5].try_into().unwrap()) as usize;
             pos += 1 + 4 + section_size;
         }
         // Now at code section. Skip section_id + section_size (5 bytes), then

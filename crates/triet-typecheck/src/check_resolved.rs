@@ -17,12 +17,7 @@
 use triet_modules::ResolvedProgram;
 use triet_syntax::Item;
 
-use crate::{
-    check::check_with_env,
-    env::TypeEnvironment,
-    error::TypeError,
-    types::Type,
-};
+use crate::{check::check_with_env, env::TypeEnvironment, error::TypeError, types::Type};
 
 /// Type-check every module in a [`ResolvedProgram`].
 ///
@@ -125,8 +120,7 @@ fn collect_declared_types(
                 type_annotation,
                 ..
             } => {
-                let ty = type_annotation
-                    .map_or(Type::Unknown, |id| resolve_type_expr(arena, id));
+                let ty = type_annotation.map_or(Type::Unknown, |id| resolve_type_expr(arena, id));
                 result.push((name.clone(), ty));
             }
             Item::Struct(def) => {
@@ -149,8 +143,7 @@ fn collect_declared_types(
                     .variants
                     .iter()
                     .map(|v| {
-                        let payload =
-                            v.payload.map(|tid| Box::new(resolve_type_expr(arena, tid)));
+                        let payload = v.payload.map(|tid| Box::new(resolve_type_expr(arena, tid)));
                         (v.name.clone(), payload)
                     })
                     .collect();
@@ -163,10 +156,7 @@ fn collect_declared_types(
                     },
                 ));
             }
-            Item::TypeAlias { .. }
-            | Item::Import(_)
-            | Item::ImportFrom(_)
-            | Item::Module(_) => {}
+            Item::TypeAlias { .. } | Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) => {}
         }
     }
 
@@ -189,20 +179,26 @@ fn resolve_type_expr(arena: &triet_syntax::Arena, id: triet_syntax::TypeId) -> T
             "Unit" => Type::Unit,
             _ => Type::Unknown,
         },
-        TypeExpr::Tuple(elements) => {
-            Type::Tuple(elements.iter().map(|t| resolve_type_expr(arena, *t)).collect())
-        }
-        TypeExpr::Nullable(inner) => {
-            Type::Nullable(Box::new(resolve_type_expr(arena, *inner)))
-        }
-        TypeExpr::Function { parameters, return_type } => Type::Function {
-            parameters: parameters.iter().map(|t| resolve_type_expr(arena, *t)).collect(),
+        TypeExpr::Tuple(elements) => Type::Tuple(
+            elements
+                .iter()
+                .map(|t| resolve_type_expr(arena, *t))
+                .collect(),
+        ),
+        TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr(arena, *inner))),
+        TypeExpr::Function {
+            parameters,
+            return_type,
+        } => Type::Function {
+            parameters: parameters
+                .iter()
+                .map(|t| resolve_type_expr(arena, *t))
+                .collect(),
             return_type: Box::new(resolve_type_expr(arena, *return_type)),
         },
         TypeExpr::Generic { .. } => Type::Unknown,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -211,8 +207,7 @@ mod tests {
     // ── Helpers ─────────────────────────────────────────────────────
 
     fn check_in_memory(source: &str) -> Vec<TypeError> {
-        let program = triet_modules::load_program_from_source(source)
-            .expect("load should succeed");
+        let program = triet_modules::load_program_from_source(source).expect("load should succeed");
         check_resolved(&program)
     }
 
@@ -232,10 +227,8 @@ mod tests {
             }
         }
 
-        let program = triet_modules::load_program(
-            root_path.as_ref().expect("at least one file"),
-        )
-        .expect("load should succeed");
+        let program = triet_modules::load_program(root_path.as_ref().expect("at least one file"))
+            .expect("load should succeed");
         check_resolved(&program)
     }
 
@@ -249,11 +242,11 @@ mod tests {
 
     #[test]
     fn single_module_type_error() {
-        let errors = check_in_memory(
-            r#"function main() -> Integer = "oops""#,
-        );
+        let errors = check_in_memory(r#"function main() -> Integer = "oops""#);
         assert!(
-            errors.iter().any(|e| matches!(e, TypeError::Mismatch { .. })),
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::Mismatch { .. })),
             "expected Mismatch: {errors:?}"
         );
     }
@@ -284,7 +277,9 @@ function main() -> String = greet()",
             ("helper.tri", "public function greet() -> Integer = 42"),
         ]);
         assert!(
-            errors.iter().any(|e| matches!(e, TypeError::Mismatch { .. })),
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::Mismatch { .. })),
             "expected Mismatch from cross-module call: {errors:?}"
         );
     }
@@ -304,9 +299,8 @@ function main() = println("hello")"#,
 
     #[test]
     fn inline_module_checks_independently() {
-        let errors = check_in_memory(
-            "module helper {\n    public function aid() -> Integer = 42\n}",
-        );
+        let errors =
+            check_in_memory("module helper {\n    public function aid() -> Integer = 42\n}");
         assert!(errors.is_empty(), "no errors expected: {errors:?}");
     }
 }

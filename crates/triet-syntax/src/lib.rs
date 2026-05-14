@@ -47,8 +47,7 @@ pub use expr::{
 };
 pub use item::{
     EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportFrom, ImportName,
-    ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Program, StructDef,
-    StructField,
+    ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Program, StructDef, StructField,
 };
 pub use numeric::{NumericSuffix, TrileanValue};
 pub use pattern::{LiteralPattern, Pattern};

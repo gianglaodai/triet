@@ -102,17 +102,12 @@ impl Type {
         // Same-name user types match even with different type params
         // (e.g., `Option<T>` vs `Option<Integer>`). Structural
         // comparison of variants/fields catches actual mismatches.
-        if let (
-            Self::UserStruct { name: n1, .. },
-            Self::UserStruct { name: n2, .. },
-        )
-        | (
-            Self::UserEnum { name: n1, .. },
-            Self::UserEnum { name: n2, .. },
-        ) = (self, other)
-            && n1 == n2 {
-                return true;
-            }
+        if let (Self::UserStruct { name: n1, .. }, Self::UserStruct { name: n2, .. })
+        | (Self::UserEnum { name: n1, .. }, Self::UserEnum { name: n2, .. }) = (self, other)
+            && n1 == n2
+        {
+            return true;
+        }
         self == other
     }
 
@@ -140,18 +135,23 @@ impl Type {
     pub fn substitute(&self, map: &std::collections::HashMap<String, Self>) -> Self {
         match self {
             Self::TypeParam(name) => map.get(name).cloned().unwrap_or_else(|| self.clone()),
-            Self::Nullable(inner) => {
-                Self::Nullable(Box::new(inner.substitute(map)))
-            }
+            Self::Nullable(inner) => Self::Nullable(Box::new(inner.substitute(map))),
             Self::Tuple(elements) => {
                 Self::Tuple(elements.iter().map(|e| e.substitute(map)).collect())
             }
-            Self::Function { parameters, return_type } => Self::Function {
+            Self::Function {
+                parameters,
+                return_type,
+            } => Self::Function {
                 parameters: parameters.iter().map(|p| p.substitute(map)).collect(),
                 return_type: Box::new(return_type.substitute(map)),
             },
             Self::Range(inner) => Self::Range(Box::new(inner.substitute(map))),
-            Self::UserStruct { name, type_params, fields } => {
+            Self::UserStruct {
+                name,
+                type_params,
+                fields,
+            } => {
                 // Type params are replaced with empty vec — the
                 // monomorphized type has no type params.
                 let local_map: std::collections::HashMap<_, _> = type_params
@@ -172,7 +172,11 @@ impl Type {
                         .collect(),
                 }
             }
-            Self::UserEnum { name, type_params, variants } => {
+            Self::UserEnum {
+                name,
+                type_params,
+                variants,
+            } => {
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
                     .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Self::Unknown)))

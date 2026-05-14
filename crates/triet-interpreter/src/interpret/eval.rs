@@ -3,12 +3,10 @@
 //! Pure functions with no `&mut Interpreter` dependency. Called by
 //! `Interpreter` methods; also callable directly for built-in dispatch.
 
-
 use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
 use triet_syntax::{
-    Arena, BinaryOperator, LiteralPattern, NumericSuffix, Pattern,
-    PatternId, Span, TrileanValue,
+    Arena, BinaryOperator, LiteralPattern, NumericSuffix, Pattern, PatternId, Span, TrileanValue,
 };
 
 use crate::error::RuntimeError;
@@ -31,12 +29,14 @@ pub(super) fn integer_literal_value(
                 span: span.clone(),
             }),
         },
-        Some(NumericSuffix::Tryte) => Tryte::new(value as i16)
-            .map(Value::Tryte)
-            .ok_or_else(|| RuntimeError::Panic {
-                message: format!("integer literal {value} out of Tryte range"),
-                span: span.clone(),
-            }),
+        Some(NumericSuffix::Tryte) => {
+            Tryte::new(value as i16)
+                .map(Value::Tryte)
+                .ok_or_else(|| RuntimeError::Panic {
+                    message: format!("integer literal {value} out of Tryte range"),
+                    span: span.clone(),
+                })
+        }
         Some(NumericSuffix::Long) => {
             // Long range strictly contains i128; the lexer produces an
             // i128 value, so this is always lossless.
@@ -58,12 +58,22 @@ pub(super) fn execute_binary(
     span: Span,
 ) -> Result<Value, RuntimeError> {
     match operator {
-        BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply
-        | BinaryOperator::Divide | BinaryOperator::Modulo | BinaryOperator::Power => {
-            execute_arithmetic(operator, left, right, span)
-        }
-        BinaryOperator::Equal => Ok(Value::Trilean(if left == right { Trilean::True } else { Trilean::False })),
-        BinaryOperator::NotEqual => Ok(Value::Trilean(if left == right { Trilean::False } else { Trilean::True })),
+        BinaryOperator::Add
+        | BinaryOperator::Subtract
+        | BinaryOperator::Multiply
+        | BinaryOperator::Divide
+        | BinaryOperator::Modulo
+        | BinaryOperator::Power => execute_arithmetic(operator, left, right, span),
+        BinaryOperator::Equal => Ok(Value::Trilean(if left == right {
+            Trilean::True
+        } else {
+            Trilean::False
+        })),
+        BinaryOperator::NotEqual => Ok(Value::Trilean(if left == right {
+            Trilean::False
+        } else {
+            Trilean::True
+        })),
         BinaryOperator::LessThan
         | BinaryOperator::LessEqual
         | BinaryOperator::GreaterThan
@@ -73,9 +83,15 @@ pub(super) fn execute_binary(
         BinaryOperator::Xor => trilean_op(left, right, span, triet_logic::Trilean::xor),
         BinaryOperator::Iff => trilean_op(left, right, span, triet_logic::Trilean::iff),
         BinaryOperator::Implies => trilean_op(left, right, span, triet_logic::Trilean::implies),
-        BinaryOperator::KleeneXor => trilean_op(left, right, span, triet_logic::Trilean::kleene_xor),
-        BinaryOperator::KleeneIff => trilean_op(left, right, span, triet_logic::Trilean::kleene_iff),
-        BinaryOperator::KleeneImplies => trilean_op(left, right, span, triet_logic::Trilean::kleene_implies),
+        BinaryOperator::KleeneXor => {
+            trilean_op(left, right, span, triet_logic::Trilean::kleene_xor)
+        }
+        BinaryOperator::KleeneIff => {
+            trilean_op(left, right, span, triet_logic::Trilean::kleene_iff)
+        }
+        BinaryOperator::KleeneImplies => {
+            trilean_op(left, right, span, triet_logic::Trilean::kleene_implies)
+        }
     }
 }
 
@@ -86,7 +102,9 @@ pub(super) fn execute_arithmetic(
     span: Span,
 ) -> Result<Value, RuntimeError> {
     match (left, right) {
-        (Value::Tryte(a), Value::Tryte(b)) => apply_tryte_arithmetic(operator, a, b, span).map(Value::Tryte),
+        (Value::Tryte(a), Value::Tryte(b)) => {
+            apply_tryte_arithmetic(operator, a, b, span).map(Value::Tryte)
+        }
         (Value::Integer(a), Value::Integer(b)) => {
             apply_integer_arithmetic(operator, a, b, span).map(Value::Integer)
         }
@@ -215,7 +233,11 @@ pub(super) fn execute_comparison(
         BinaryOperator::GreaterEqual => ordering.is_ge(),
         _ => unreachable!(),
     };
-    Ok(Value::Trilean(if result { Trilean::True } else { Trilean::False }))
+    Ok(Value::Trilean(if result {
+        Trilean::True
+    } else {
+        Trilean::False
+    }))
 }
 
 pub(super) fn trilean_op(
@@ -296,7 +318,11 @@ pub(super) fn advance_iterator(
     span: &Span,
 ) -> Result<Option<Value>, RuntimeError> {
     match value {
-        Value::Range { start, end, inclusive } => {
+        Value::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             let stop = if *inclusive {
                 start.to_i64() > end.to_i64()
             } else {
@@ -312,19 +338,15 @@ pub(super) fn advance_iterator(
             *start = start.add_and_saturate(Integer::ONE);
             Ok(Some(Value::Integer(current)))
         }
-        Value::Enumerate { inner, next_index } => {
-            match advance_iterator(inner, span)? {
-                None => Ok(None),
-                Some(elem) => {
-                    let idx = *next_index;
-                    *next_index = next_index.saturating_add(1);
-                    let index_value = Value::Integer(
-                        Integer::new(idx).unwrap_or(Integer::MAX),
-                    );
-                    Ok(Some(Value::from_tuple(vec![index_value, elem])))
-                }
+        Value::Enumerate { inner, next_index } => match advance_iterator(inner, span)? {
+            None => Ok(None),
+            Some(elem) => {
+                let idx = *next_index;
+                *next_index = next_index.saturating_add(1);
+                let index_value = Value::Integer(Integer::new(idx).unwrap_or(Integer::MAX));
+                Ok(Some(Value::from_tuple(vec![index_value, elem])))
             }
-        }
+        },
         other => Err(RuntimeError::TypeError {
             message: format!("`for` expects an iterable, found {other}"),
             span: span.clone(),
@@ -385,7 +407,11 @@ where
         Pattern::Or(alternatives) => alternatives
             .iter()
             .any(|alt| pattern_matches(arena, *alt, value, bind)),
-        Pattern::Range { start, end, inclusive } => match value {
+        Pattern::Range {
+            start,
+            end,
+            inclusive,
+        } => match value {
             Value::Integer(i) => {
                 let start_i = literal_pattern_to_i64(start);
                 let end_i = literal_pattern_to_i64(end);
@@ -409,23 +435,25 @@ where
             _ => false,
         },
         Pattern::Literal(literal) => literal_matches(literal, value),
-        Pattern::EnumVariant { variant_name, payload: sub_pattern, .. } => {
-            match value {
-                Value::EnumVariant { variant, payload, .. } => {
-                    if variant != variant_name {
-                        return false;
-                    }
-                    match (sub_pattern, payload) {
-                        (None, None) => true,
-                        (Some(pat), Some(val)) => {
-                            pattern_matches(arena, *pat, val, bind)
-                        }
-                        _ => false,
-                    }
+        Pattern::EnumVariant {
+            variant_name,
+            payload: sub_pattern,
+            ..
+        } => match value {
+            Value::EnumVariant {
+                variant, payload, ..
+            } => {
+                if variant != variant_name {
+                    return false;
                 }
-                _ => false,
+                match (sub_pattern, payload) {
+                    (None, None) => true,
+                    (Some(pat), Some(val)) => pattern_matches(arena, *pat, val, bind),
+                    _ => false,
+                }
             }
-        }
+            _ => false,
+        },
     }
 }
 

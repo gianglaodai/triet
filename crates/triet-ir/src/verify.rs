@@ -134,10 +134,7 @@ pub fn verify_function(func: &Function) -> VerifierResult {
     }
 
     // Collect all value uses.
-    let uses: BTreeSet<ValueId> = func
-        .all_value_uses()
-        .into_iter()
-        .collect();
+    let uses: BTreeSet<ValueId> = func.all_value_uses().into_iter().collect();
 
     // Use-def: every use must have a definition.
     for use_value in &uses {

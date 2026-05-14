@@ -31,10 +31,14 @@ load/typecheck/lower excluded.
 | `enumerate.tri` | — | — | — |
 | `while_polling.tri` | — | — | — |
 
-**Status: Gate not yet met.** VM is ~1.26× faster on factorial but the 3× target
-requires further optimization. Expected improvement areas:
+**Status: 3× bench gate deferred to v0.4 performance pass.** VM is ~1.26× faster
+on factorial; the 3× target requires further optimization. v0.3's primary aim
+is IR design validation, not production throughput — per [VISION § 4.3](VISION.md)
+the bytecode VM is development tier scaffolding, not a production runtime.
 
-1. **Instruction dispatch**: Currently a large `match` over all 46 opcodes.
+Expected improvement areas (work for v0.4):
+
+1. **Instruction dispatch**: Currently a large `match` over all 52 opcodes.
    Can be replaced with computed goto / threaded code.
 2. **Value representation**: `RuntimeValue` is a full enum with heap-allocated
    strings. Can use NaN-boxing or tagged pointers.
@@ -42,8 +46,10 @@ requires further optimization. Expected improvement areas:
    can use `Vec<RuntimeValue>` indexed by ValueId.0.
 4. **Builtin dispatch**: String-based builtin lookup; can use function pointers.
 
-These optimizations are deferred to v0.4 (performance pass) per ROADMAP.
-v0.3 focuses on IR design validation, not production throughput.
+Per ADR-0009 § A, this gate is the **only** v0.3 deliverable not at 100%; all
+other gates (functional coverage, differential 11/11, code hygiene, doc sync)
+are satisfied. The deferred bench gate is tracked here rather than gated as
+a v0.4 prerequisite.
 
 ## Historical data
 

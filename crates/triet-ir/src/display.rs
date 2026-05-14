@@ -42,10 +42,9 @@ impl fmt::Display for Operand {
 
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lhs = self.destination().map_or_else(
-            String::new,
-            |d| format!("{d} = "),
-        );
+        let lhs = self
+            .destination()
+            .map_or_else(String::new, |d| format!("{d} = "));
         match self {
             Self::Const { constant, .. } => {
                 write!(f, "{lhs}const c{}", constant.0)
@@ -177,21 +176,15 @@ impl fmt::Display for Instruction {
             Self::NullCheck { nullable, .. } => {
                 write!(f, "{lhs}null_check {nullable}")
             }
-            Self::CallLocal {
-                callee, args, ..
-            } => {
+            Self::CallLocal { callee, args, .. } => {
                 write!(f, "{lhs}call @f{}", callee.0)?;
                 write_args(f, args)
             }
-            Self::CallCrossModule {
-                path, args, ..
-            } => {
+            Self::CallCrossModule { path, args, .. } => {
                 write!(f, "{lhs}call {path}")?;
                 write_args(f, args)
             }
-            Self::CallBuiltin {
-                name, args, ..
-            } => {
+            Self::CallBuiltin { name, args, .. } => {
                 write!(f, "{lhs}call builtin.{name}")?;
                 write_args(f, args)
             }
@@ -211,9 +204,7 @@ impl fmt::Display for Instruction {
                 }
                 Ok(())
             }
-            Self::ClosureCall {
-                closure, args, ..
-            } => {
+            Self::ClosureCall { closure, args, .. } => {
                 write!(f, "{lhs}closure_call {closure}")?;
                 write_args(f, args)
             }

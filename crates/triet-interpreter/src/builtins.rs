@@ -10,7 +10,10 @@ use std::io::{self, BufRead, Write};
 use crate::{error::RuntimeError, value::Value};
 
 /// Map a stdlib module path and function name to its builtin implementation.
-pub(crate) fn get_builtin(module: &triet_modules::ModulePath, name: &str) -> Option<crate::value::BuiltinFn> {
+pub(crate) fn get_builtin(
+    module: &triet_modules::ModulePath,
+    name: &str,
+) -> Option<crate::value::BuiltinFn> {
     let module_str = module.to_string();
     match (module_str.as_str(), name) {
         ("std.io", "print") => Some(builtin_print),
@@ -54,12 +57,13 @@ fn builtin_println(args: &[Value]) -> Result<Value, RuntimeError> {
 fn builtin_read_line(_args: &[Value]) -> Result<Value, RuntimeError> {
     let mut line = String::new();
     let stdin = io::stdin();
-    stdin.lock().read_line(&mut line).map_err(|error| {
-        RuntimeError::Panic {
+    stdin
+        .lock()
+        .read_line(&mut line)
+        .map_err(|error| RuntimeError::Panic {
             message: format!("read_line failed: {error}"),
             span: 0..0,
-        }
-    })?;
+        })?;
     // Strip the trailing newline if present.
     if line.ends_with('\n') {
         line.pop();
@@ -108,7 +112,7 @@ fn builtin_assert(args: &[Value]) -> Result<Value, RuntimeError> {
         found: 0,
         span: 0..0,
     })?;
-    
+
     if matches!(value, Value::Trilean(triet_logic::Trilean::True)) {
         Ok(Value::Unit)
     } else {
@@ -127,10 +131,10 @@ fn builtin_assert_eq(args: &[Value]) -> Result<Value, RuntimeError> {
             span: 0..0,
         });
     }
-    
+
     let left = &args[0];
     let right = &args[1];
-    
+
     if left == right {
         Ok(Value::Unit)
     } else {

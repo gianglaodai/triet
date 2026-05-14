@@ -328,12 +328,11 @@ mod tests {
                 _ => None,
             })
             .collect();
+        assert!(!traces.is_empty(), "should detect a 2-cycle: {errors:?}");
         assert!(
-            !traces.is_empty(),
-            "should detect a 2-cycle: {errors:?}"
-        );
-        assert!(
-            traces.iter().any(|t| t.contains("foo") && t.contains("bar")),
+            traces
+                .iter()
+                .any(|t| t.contains("foo") && t.contains("bar")),
             "trace should mention both foo and bar: {traces:?}"
         );
     }
@@ -341,10 +340,7 @@ mod tests {
     #[test]
     fn three_cycle_with_correct_trace() {
         let errors = load_filesystem_errors(&[
-            (
-                "main.tri",
-                "module foo\nmodule bar\nmodule baz",
-            ),
+            ("main.tri", "module foo\nmodule bar\nmodule baz"),
             ("foo.tri", "from crate.bar import x"),
             ("bar.tri", "from crate.baz import y"),
             ("baz.tri", "from crate.foo import z"),
@@ -363,12 +359,11 @@ mod tests {
         );
         // Must close the cycle — last name equals first name.
         let parts: Vec<&str> = trace.split(" → ").collect();
-        assert!(parts.len() >= 4, "3-cycle trace should have ≥4 parts: {trace}");
-        assert_eq!(
-            parts.first(),
-            parts.last(),
-            "cycle must close: {trace}"
+        assert!(
+            parts.len() >= 4,
+            "3-cycle trace should have ≥4 parts: {trace}"
         );
+        assert_eq!(parts.first(), parts.last(), "cycle must close: {trace}");
     }
 
     #[test]
@@ -391,10 +386,7 @@ mod tests {
     fn diamond_no_cycle() {
         // A → B, A → C, B → D, C → D — no cycle.
         let errors = load_filesystem_errors(&[
-            (
-                "main.tri",
-                "module a\nmodule b\nmodule c\nmodule d",
-            ),
+            ("main.tri", "module a\nmodule b\nmodule c\nmodule d"),
             ("a.tri", "from crate.b import fb\nfrom crate.c import fc"),
             ("b.tri", "public function fb() = 1\nfrom crate.d import fd"),
             ("c.tri", "public function fc() = 2\nfrom crate.d import fd"),
@@ -408,9 +400,7 @@ mod tests {
 
     #[test]
     fn stdlib_import_not_flagged() {
-        let errors = load_in_memory_errors(
-            "from std.io import println\nimport std.text.len",
-        );
+        let errors = load_in_memory_errors("from std.io import println\nimport std.text.len");
         assert!(
             errors.is_empty(),
             "stdlib imports should not be flagged: {errors:?}"
@@ -421,10 +411,7 @@ mod tests {
     fn multiple_independent_cycles() {
         // Two separate cycles: foo↔bar and baz↔qux.
         let errors = load_filesystem_errors(&[
-            (
-                "main.tri",
-                "module foo\nmodule bar\nmodule baz\nmodule qux",
-            ),
+            ("main.tri", "module foo\nmodule bar\nmodule baz\nmodule qux"),
             ("foo.tri", "from crate.bar import x"),
             ("bar.tri", "from crate.foo import y"),
             ("baz.tri", "from crate.qux import a"),

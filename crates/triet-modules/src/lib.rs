@@ -36,7 +36,6 @@ mod module;
 mod path;
 mod resolver;
 
-
 use std::path::Path;
 
 pub use error::LoaderError;

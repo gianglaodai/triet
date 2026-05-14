@@ -31,7 +31,10 @@ impl ValueEnvironment {
 
     /// Pop the top frame (panics if only the root remains).
     pub fn pop_frame(&mut self) {
-        assert!(self.frames.len() > 1, "cannot pop the root environment frame");
+        assert!(
+            self.frames.len() > 1,
+            "cannot pop the root environment frame"
+        );
         self.frames.pop();
     }
 

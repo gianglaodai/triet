@@ -11,7 +11,10 @@ use crate::types::Type;
 pub enum TypeError {
     /// A type expression names a type the checker doesn't recognize.
     #[error("unknown type `{name}`")]
-    #[diagnostic(code(triet::typecheck::E1001), help("built-in types are: Trit, Tryte, Integer, Long, Trilean, String"))]
+    #[diagnostic(
+        code(triet::typecheck::E1001),
+        help("built-in types are: Trit, Tryte, Integer, Long, Trilean, String")
+    )]
     UnknownType {
         /// The unrecognized name.
         name: String,
@@ -24,7 +27,9 @@ pub enum TypeError {
     #[error("undefined name `{name}`")]
     #[diagnostic(
         code(triet::typecheck::E1002),
-        help("did you forget to declare this variable with `let`, or define this function with `function`?")
+        help(
+            "did you forget to declare this variable with `let`, or define this function with `function`?"
+        )
     )]
     UndefinedName {
         /// The unbound identifier.
@@ -48,7 +53,9 @@ pub enum TypeError {
     },
 
     /// An operator was applied to operands whose types are not allowed.
-    #[error("invalid operands for `{operator}`: expected {expected_description}, found {left} and {right}")]
+    #[error(
+        "invalid operands for `{operator}`: expected {expected_description}, found {left} and {right}"
+    )]
     #[diagnostic(code(triet::typecheck::E1004))]
     InvalidOperands {
         /// Operator symbol or name.
@@ -66,7 +73,10 @@ pub enum TypeError {
 
     /// A unary operator was applied to a type that doesn't support it.
     #[error("invalid operand for `{operator}`: found {operand}")]
-    #[diagnostic(code(triet::typecheck::E1005), help("`-`/`!`/`not` work on numeric types (Trit, Tryte, Integer, Long) and Trilean"))]
+    #[diagnostic(
+        code(triet::typecheck::E1005),
+        help("`-`/`!`/`not` work on numeric types (Trit, Tryte, Integer, Long) and Trilean")
+    )]
     InvalidUnary {
         /// Operator symbol.
         operator: String,
@@ -92,7 +102,10 @@ pub enum TypeError {
 
     /// A non-callable expression appeared in call position.
     #[error("type {found} is not callable")]
-    #[diagnostic(code(triet::typecheck::E1007), help("only functions and closures can be called with `(...)`"))]
+    #[diagnostic(
+        code(triet::typecheck::E1007),
+        help("only functions and closures can be called with `(...)`")
+    )]
     NotCallable {
         /// Type the checker found at the callee position.
         found: Type,
@@ -105,7 +118,9 @@ pub enum TypeError {
     #[error("condition may be `unknown`")]
     #[diagnostic(
         code(triet::typecheck::E1008),
-        help("replace `if` with `if?` to treat unknown as false, or call `.assume_known()` if you are certain the value is known")
+        help(
+            "replace `if` with `if?` to treat unknown as false, or call `.assume_known()` if you are certain the value is known"
+        )
     )]
     AmbiguousCondition {
         /// Source location of the condition.
@@ -115,7 +130,10 @@ pub enum TypeError {
 
     /// `if` condition is not `Trilean`.
     #[error("condition must be `Trilean`, found {found}")]
-    #[diagnostic(code(triet::typecheck::E1009), help("condition expressions must evaluate to a `Trilean` value (true, false, or unknown)"))]
+    #[diagnostic(
+        code(triet::typecheck::E1009),
+        help("condition expressions must evaluate to a `Trilean` value (true, false, or unknown)")
+    )]
     NonTrileanCondition {
         /// Type encountered.
         found: Type,
@@ -154,7 +172,9 @@ pub enum TypeError {
     #[error("`{operator}` requires a nullable receiver, found {found}")]
     #[diagnostic(
         code(triet::typecheck::E1012),
-        help("`{operator}` only works on nullable types (e.g. `Integer?`); the receiver `{found}` is not nullable")
+        help(
+            "`{operator}` only works on nullable types (e.g. `Integer?`); the receiver `{found}` is not nullable"
+        )
     )]
     NotNullable {
         /// Operator symbol.
@@ -168,7 +188,10 @@ pub enum TypeError {
 
     /// Match arm body types disagree.
     #[error("match arm returns {found} but earlier arms return {expected}")]
-    #[diagnostic(code(triet::typecheck::E1013), help("all arms of a `match` must have the same return type"))]
+    #[diagnostic(
+        code(triet::typecheck::E1013),
+        help("all arms of a `match` must have the same return type")
+    )]
     MatchArmMismatch {
         /// Type of earlier arms.
         expected: Type,

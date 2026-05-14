@@ -34,10 +34,10 @@ pub fn run_resolved(program: &ResolvedProgram) -> Result<Value, RuntimeError> {
     // However, `interpret.rs`'s `Interpreter` struct is private. Let's
     // modify `Interpreter` to accept a `resolved_program` and `globals`
     // map.
-    
+
     // Instead of duplicating `Interpreter`, we'll modify it in `interpret.rs`.
     // We just need to expose a new entry point there.
-    
+
     interpret::run_resolved_internal(program, globals)
 }
 
@@ -53,7 +53,7 @@ fn evaluate_all_globals(
         for item in &module.items {
             if let Item::Function(def) = &item.node {
                 let path = AbsolutePath::new(module.path.clone(), def.name.clone());
-                
+
                 let value = if path.module_path().root() == Some("std") {
                     if let Some(builtin) = crate::builtins::get_builtin(&module.path, &def.name) {
                         Value::Builtin(builtin)
@@ -69,7 +69,7 @@ fn evaluate_all_globals(
                         module_id: Some(mod_id),
                     }))
                 };
-                
+
                 globals.insert(path, value);
             }
         }
@@ -89,19 +89,16 @@ fn evaluate_all_globals(
 
     for module in &program.modules {
         let mod_id = program.find_module(&module.path).unwrap();
-        
+
         for item in &module.items {
             if let Item::Const { name, value, .. } = &item.node {
                 let path = AbsolutePath::new(module.path.clone(), name.clone());
-                
+
                 // Set up a temporary interpreter for this module to
                 // evaluate the constant.
-                let mut temp_interp = interpret::Interpreter::new_for_module(
-                    program,
-                    mod_id,
-                    &globals,
-                );
-                
+                let mut temp_interp =
+                    interpret::Interpreter::new_for_module(program, mod_id, &globals);
+
                 let const_val = temp_interp.evaluate_expression_public(*value)?;
                 globals.insert(path, const_val);
             }
@@ -167,7 +164,10 @@ mod tests {
             ),
             ("helper.tri", "public constant ANSWER: Integer = 100"),
         ]).unwrap();
-        assert_eq!(value, Value::Integer(triet_core::Integer::new(100).unwrap()));
+        assert_eq!(
+            value,
+            Value::Integer(triet_core::Integer::new(100).unwrap())
+        );
     }
 
     #[test]
@@ -175,7 +175,8 @@ mod tests {
         let value = run_in_memory(
             r#"from std.io import println
 function main() = println("hello")"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(value, Value::Unit);
     }
 }

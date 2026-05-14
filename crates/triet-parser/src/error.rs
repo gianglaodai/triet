@@ -79,7 +79,9 @@ pub enum ParseError {
     #[error("`break` with a value is only allowed inside `loop`")]
     #[diagnostic(
         code(triet::parse::E0006),
-        help("`break expr` (break-with-value) is only valid inside a `loop {{ }}` block; use plain `break` in `for`/`while`")
+        help(
+            "`break expr` (break-with-value) is only valid inside a `loop {{ }}` block; use plain `break` in `for`/`while`"
+        )
     )]
     BreakValueOutsideLoop {
         /// Span of the `break` keyword.

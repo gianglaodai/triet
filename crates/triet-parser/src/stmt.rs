@@ -41,14 +41,14 @@ pub(crate) fn parse_statement_or_final_expr(
             parser.advance();
             // optional trailing `;`
             let _ = parser.eat(&Token::Semi);
-            Ok(StatementOrFinal::Statement(parser.arena.alloc_statement(
-                Spanned::new(Stmt::Continue, span),
-            )))
+            Ok(StatementOrFinal::Statement(
+                parser
+                    .arena
+                    .alloc_statement(Spanned::new(Stmt::Continue, span)),
+            ))
         }
         Token::For => Ok(StatementOrFinal::Statement(parse_for(parser, span)?)),
-        Token::While | Token::WhileQ => {
-            Ok(StatementOrFinal::Statement(parse_while(parser, span)?))
-        }
+        Token::While | Token::WhileQ => Ok(StatementOrFinal::Statement(parse_while(parser, span)?)),
         Token::Loop => Ok(StatementOrFinal::Statement(parse_loop(parser, span)?)),
         _ => parse_expression_or_final(parser),
     }
@@ -58,12 +58,14 @@ fn parse_let(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseEr
     parser.expect(&Token::Let, "`let`")?;
     let mutable = parser.eat(&Token::Mutable);
 
-    let (name_token, _name_span) = parser.peek().cloned().ok_or_else(|| {
-        ParseError::UnexpectedEof {
-            expected: "identifier after `let`".to_owned(),
-            span: parser.eof_span(),
-        }
-    })?;
+    let (name_token, _name_span) =
+        parser
+            .peek()
+            .cloned()
+            .ok_or_else(|| ParseError::UnexpectedEof {
+                expected: "identifier after `let`".to_owned(),
+                span: parser.eof_span(),
+            })?;
     let name = match name_token {
         Token::Identifier(name) => {
             parser.advance();
@@ -91,19 +93,25 @@ fn parse_let(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseEr
     let value_span = parser.arena.expression(value).span.clone();
     let span = head_span.start..value_span.end;
     Ok(parser.arena.alloc_statement(Spanned::new(
-        Stmt::Let { name, mutable, type_annotation, value },
+        Stmt::Let {
+            name,
+            mutable,
+            type_annotation,
+            value,
+        },
         span,
     )))
 }
 
 fn parse_const(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseError> {
     parser.expect(&Token::Constant, "`constant`")?;
-    let (name_token, _) = parser.peek().cloned().ok_or_else(|| {
-        ParseError::UnexpectedEof {
+    let (name_token, _) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
             expected: "identifier after `constant`".to_owned(),
             span: parser.eof_span(),
-        }
-    })?;
+        })?;
     let name = match name_token {
         Token::Identifier(name) => {
             parser.advance();
@@ -131,7 +139,11 @@ fn parse_const(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, Parse
     let value_span = parser.arena.expression(value).span.clone();
     let span = head_span.start..value_span.end;
     Ok(parser.arena.alloc_statement(Spanned::new(
-        Stmt::Const { name, type_annotation, value },
+        Stmt::Const {
+            name,
+            type_annotation,
+            value,
+        },
         span,
     )))
 }
@@ -181,7 +193,11 @@ fn parse_for(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseEr
     let body = parse_block(parser, body_span)?;
     let span = head_span.start..parser.previous_token_end(head_span.end);
     Ok(parser.arena.alloc_statement(Spanned::new(
-        Stmt::For { variable, iterable, body },
+        Stmt::For {
+            variable,
+            iterable,
+            body,
+        },
         span,
     )))
 }
@@ -217,9 +233,7 @@ fn parse_loop(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseE
 /// Parse what looks like an expression and decide whether it is a
 /// statement (terminated by `;`), the block's final expression
 /// (followed by `}`), or an assignment statement (`name = expr`).
-fn parse_expression_or_final(
-    parser: &mut Parser<'_>,
-) -> Result<StatementOrFinal, ParseError> {
+fn parse_expression_or_final(parser: &mut Parser<'_>) -> Result<StatementOrFinal, ParseError> {
     let expr = parse_expression(parser)?;
 
     // Assignment: `target = value`. SPEC §5 — `let mutable` declares
@@ -314,9 +328,7 @@ mod tests {
         (parser, stmt)
     }
 
-    fn try_parse_stmt(
-        source: &str,
-    ) -> Result<(Parser<'static>, StatementOrFinal), ParseError> {
+    fn try_parse_stmt(source: &str) -> Result<(Parser<'static>, StatementOrFinal), ParseError> {
         let tokens: Vec<_> = lex(source).unwrap();
         let leaked: &'static [_] = Box::leak(tokens.into_boxed_slice());
         let mut parser = Parser::new(leaked);
@@ -328,7 +340,12 @@ mod tests {
     fn parses_let_immutable_no_annotation() {
         let (parser, id) = parse_stmt("let x = 5");
         match &parser.arena.statement(id).node {
-            Stmt::Let { name, mutable, type_annotation, .. } => {
+            Stmt::Let {
+                name,
+                mutable,
+                type_annotation,
+                ..
+            } => {
                 assert_eq!(name, "x");
                 assert!(!*mutable);
                 assert!(type_annotation.is_none());
@@ -350,7 +367,9 @@ mod tests {
     fn parses_let_with_type_annotation() {
         let (parser, id) = parse_stmt("let x: Integer = 5");
         match &parser.arena.statement(id).node {
-            Stmt::Let { type_annotation, .. } => assert!(type_annotation.is_some()),
+            Stmt::Let {
+                type_annotation, ..
+            } => assert!(type_annotation.is_some()),
             other => panic!("expected Let, got {other:?}"),
         }
     }
@@ -391,7 +410,10 @@ mod tests {
     #[test]
     fn parses_break_with_value() {
         let (parser, id) = parse_stmt("break 42");
-        assert!(matches!(parser.arena.statement(id).node, Stmt::Break(Some(_))));
+        assert!(matches!(
+            parser.arena.statement(id).node,
+            Stmt::Break(Some(_))
+        ));
     }
 
     #[test]
@@ -412,7 +434,10 @@ mod tests {
         match &parser.arena.statement(id).node {
             Stmt::For { variable, .. } => {
                 use triet_syntax::Pattern;
-                assert!(matches!(parser.arena.pattern(*variable).node, Pattern::Tuple(_)));
+                assert!(matches!(
+                    parser.arena.pattern(*variable).node,
+                    Pattern::Tuple(_)
+                ));
             }
             other => panic!("expected For, got {other:?}"),
         }
@@ -422,7 +447,10 @@ mod tests {
     fn parses_while() {
         let (parser, id) = parse_stmt("while running { }");
         match &parser.arena.statement(id).node {
-            Stmt::While { treat_unknown_as_false, .. } => assert!(!*treat_unknown_as_false),
+            Stmt::While {
+                treat_unknown_as_false,
+                ..
+            } => assert!(!*treat_unknown_as_false),
             other => panic!("expected While, got {other:?}"),
         }
     }
@@ -431,7 +459,10 @@ mod tests {
     fn parses_while_question_variant() {
         let (parser, id) = parse_stmt("while? maybe { }");
         match &parser.arena.statement(id).node {
-            Stmt::While { treat_unknown_as_false, .. } => assert!(*treat_unknown_as_false),
+            Stmt::While {
+                treat_unknown_as_false,
+                ..
+            } => assert!(*treat_unknown_as_false),
             other => panic!("expected While, got {other:?}"),
         }
     }
@@ -500,10 +531,9 @@ mod tests {
         let _ = parse_statement_or_final_expr(&mut parser).unwrap();
         let (_, errors) = parser.finish();
         assert!(
-            errors.iter().any(|e| matches!(
-                e,
-                ParseError::InvalidAssignmentTarget { .. }
-            )),
+            errors
+                .iter()
+                .any(|e| matches!(e, ParseError::InvalidAssignmentTarget { .. })),
             "expected InvalidAssignmentTarget, got {errors:?}",
         );
     }

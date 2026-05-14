@@ -10,11 +10,11 @@ use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
 use triet_modules::{AbsolutePath, Module, ResolvedProgram};
 use triet_syntax::{
+    Arena,
     expr::{BinaryOperator, Expr, MatchArm},
     item::{FunctionBody, FunctionDef, Item},
     numeric::{NumericSuffix, TrileanValue},
     stmt::{Block, Stmt},
-    Arena,
 };
 
 use crate::constant::{Constant, ConstantPool};
@@ -280,7 +280,9 @@ impl<'a> LowerCtx<'a> {
             }
             Stmt::Return(Some(v)) | Stmt::Break(Some(v)) => self.walk_expr_for_assigns(*v, out),
             Stmt::Return(None) | Stmt::Break(None) | Stmt::Continue => {}
-            Stmt::While { condition, body, .. } => {
+            Stmt::While {
+                condition, body, ..
+            } => {
                 self.walk_expr_for_assigns(*condition, out);
                 self.walk_block_for_assigns(body, out);
             }
@@ -295,7 +297,11 @@ impl<'a> LowerCtx<'a> {
     fn walk_expr_for_assigns(&self, expr_id: triet_syntax::arena::ExprId, out: &mut Vec<String>) {
         let expr = &self.arena().expression(expr_id).node;
         match expr {
-            Expr::If { then_branch, else_branch, .. } => {
+            Expr::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.walk_block_for_assigns(then_branch, out);
                 if let Some(eb) = else_branch.as_ref() {
                     self.walk_block_for_assigns(eb, out);
@@ -403,39 +409,32 @@ impl<'a> LowerCtx<'a> {
 
         // Lower the function body.
         let block_result = match &fd.body {
-            FunctionBody::Block(block) => {
-                Some(self.lower_block(block))
-            }
-            FunctionBody::Expression(expr_id) => {
-                Some(self.lower_expr(*expr_id))
-            }
+            FunctionBody::Block(block) => Some(self.lower_block(block)),
+            FunctionBody::Expression(expr_id) => Some(self.lower_expr(*expr_id)),
         };
 
         // If the current block doesn't have a terminator yet, emit Ret.
         // (The body may have already emitted Ret/Return via an explicit
         // `return` statement.)
         if let Some(v) = block_result {
-            if self.blocks[&self.current_block]
-                .terminator()
-                .is_none()
-            {
+            if self.blocks[&self.current_block].terminator().is_none() {
                 self.emit(Instruction::Ret {
                     value: Some(Operand::Value(v)),
                 });
             }
-        } else if self.blocks[&self.current_block]
-            .terminator()
-            .is_none()
-        {
+        } else if self.blocks[&self.current_block].terminator().is_none() {
             self.emit(Instruction::Ret { value: None });
         }
 
         self.pop_scope();
 
-        let mut func = Function::new(func_id, Some(fd.name.clone()), param_specs, self.current_return_type.clone());
-        func.blocks = std::mem::take(&mut self.blocks)
-            .into_values()
-            .collect();
+        let mut func = Function::new(
+            func_id,
+            Some(fd.name.clone()),
+            param_specs,
+            self.current_return_type.clone(),
+        );
+        func.blocks = std::mem::take(&mut self.blocks).into_values().collect();
         Some(func)
     }
 
@@ -550,9 +549,7 @@ impl<'a> LowerCtx<'a> {
                         let i64_val = i64::try_from(*value).unwrap_or(0);
                         Constant::Integer(Integer::new(i64_val).unwrap())
                     }
-                    TypeTag::Long => {
-                        Constant::Long(Long::from_i128(*value))
-                    }
+                    TypeTag::Long => Constant::Long(Long::from_i128(*value)),
                     _ => {
                         let i64_val = i64::try_from(*value).unwrap_or(0);
                         Constant::Integer(Integer::new(i64_val).unwrap())
@@ -568,7 +565,8 @@ impl<'a> LowerCtx<'a> {
 
             Expr::TernaryLiteral { value } => {
                 let i64_val = i64::try_from(*value).unwrap_or(0);
-                let const_id = self.intern_constant(Constant::Integer(Integer::new(i64_val).unwrap()));
+                let const_id =
+                    self.intern_constant(Constant::Integer(Integer::new(i64_val).unwrap()));
                 let dest = self.fresh_value();
                 self.emit(Instruction::Const {
                     dest,
@@ -699,9 +697,7 @@ impl<'a> LowerCtx<'a> {
             }
 
             // ── Calls ─────────────────────────────────────────────
-            Expr::Call { callee, arguments } => {
-                self.lower_call(*callee, arguments)
-            }
+            Expr::Call { callee, arguments } => self.lower_call(*callee, arguments),
 
             Expr::MethodCall {
                 receiver,
@@ -725,7 +721,11 @@ impl<'a> LowerCtx<'a> {
             }
 
             // ── Arithmetic ───────────────────────────────────────
-            Expr::BinaryOp { operator, left, right } => {
+            Expr::BinaryOp {
+                operator,
+                left,
+                right,
+            } => {
                 let lhs = self.lower_expr(*left);
                 let rhs = self.lower_expr(*right);
                 let dest = self.fresh_value();
@@ -734,7 +734,10 @@ impl<'a> LowerCtx<'a> {
                 dest
             }
 
-            Expr::UnaryOp { operator: _op, operand } => {
+            Expr::UnaryOp {
+                operator: _op,
+                operand,
+            } => {
                 let val = self.lower_expr(*operand);
                 let dest = self.fresh_value();
                 self.emit(Instruction::Neg {
@@ -823,8 +826,14 @@ impl<'a> LowerCtx<'a> {
                 self.emit(Instruction::Phi {
                     dest: merge_dest,
                     incoming: vec![
-                        PhiIncoming { value: then_val, block: then_end },
-                        PhiIncoming { value: else_val, block: else_end },
+                        PhiIncoming {
+                            value: then_val,
+                            block: then_end,
+                        },
+                        PhiIncoming {
+                            value: else_val,
+                            block: else_end,
+                        },
                     ],
                 });
                 merge_dest
@@ -866,8 +875,14 @@ impl<'a> LowerCtx<'a> {
                 self.emit(Instruction::Phi {
                     dest: merge_dest,
                     incoming: vec![
-                        PhiIncoming { value: unwrapped, block: then_end },
-                        PhiIncoming { value: default_val, block: else_end },
+                        PhiIncoming {
+                            value: unwrapped,
+                            block: then_end,
+                        },
+                        PhiIncoming {
+                            value: default_val,
+                            block: else_end,
+                        },
                     ],
                 });
                 merge_dest
@@ -889,13 +904,14 @@ impl<'a> LowerCtx<'a> {
                 then_branch,
                 else_branch,
                 treat_unknown_as_false,
-            } => {
-                self.lower_if_expr(*condition, then_branch, else_branch.as_ref(), *treat_unknown_as_false)
-            }
+            } => self.lower_if_expr(
+                *condition,
+                then_branch,
+                else_branch.as_ref(),
+                *treat_unknown_as_false,
+            ),
 
-            Expr::Match { scrutinee, arms } => {
-                self.lower_match_expr(*scrutinee, arms)
-            }
+            Expr::Match { scrutinee, arms } => self.lower_match_expr(*scrutinee, arms),
 
             Expr::Block(block) => {
                 self.push_scope();
@@ -922,7 +938,7 @@ impl<'a> LowerCtx<'a> {
             } => {
                 // Lambdas are lowered as separate synthetic functions.
                 // Deferred to v0.3.4.
-                
+
                 self.fresh_value()
             }
 
@@ -932,11 +948,14 @@ impl<'a> LowerCtx<'a> {
                 inclusive: _inclusive,
             } => {
                 // Range lowered as struct { start, end, inclusive }.
-                
+
                 self.fresh_value()
             }
 
-            Expr::StructLiteral { name: _name, fields } => {
+            Expr::StructLiteral {
+                name: _name,
+                fields,
+            } => {
                 let field_values: Vec<Operand> = fields
                     .iter()
                     .map(|(_n, e)| Operand::Value(self.lower_expr(*e)))
@@ -962,7 +981,11 @@ impl<'a> LowerCtx<'a> {
                     .enum_variants
                     .get(name)
                     .and_then(|vs| vs.iter().position(|v| v == variant_name))
-                    .or_else(|| self.variant_index.get(variant_name).map(|(_, i)| *i as usize))
+                    .or_else(|| {
+                        self.variant_index
+                            .get(variant_name)
+                            .map(|(_, i)| *i as usize)
+                    })
                     .map_or(0, |i| u32::try_from(i).unwrap_or(0));
                 let payload_op = payload.map(|e| Operand::Value(self.lower_expr(e)));
                 let dest = self.fresh_value();
@@ -1103,10 +1126,7 @@ impl<'a> LowerCtx<'a> {
             // Block has no final expression → yields Unit.
             let c = self.intern_constant(Constant::Unit);
             let dest = self.fresh_value();
-            self.emit(Instruction::Const {
-                dest,
-                constant: c,
-            });
+            self.emit(Instruction::Const { dest, constant: c });
             dest
         }
     }
@@ -1162,15 +1182,9 @@ impl<'a> LowerCtx<'a> {
         // Snapshot the live SSA value for each mutated name AT THE END of
         // the then-branch (this is the value the then-side phi-incoming
         // contributes).
-        let then_vals: Vec<Option<ValueId>> = mutated
-            .iter()
-            .map(|n| self.resolve_var(n))
-            .collect();
+        let then_vals: Vec<Option<ValueId>> = mutated.iter().map(|n| self.resolve_var(n)).collect();
         // Only branch if the block didn't already terminate.
-        if self.blocks[&self.current_block]
-            .terminator()
-            .is_none()
-        {
+        if self.blocks[&self.current_block].terminator().is_none() {
             self.emit(Instruction::Br {
                 target: merge_block_id,
             });
@@ -1198,14 +1212,8 @@ impl<'a> LowerCtx<'a> {
             });
             d
         };
-        let else_vals: Vec<Option<ValueId>> = mutated
-            .iter()
-            .map(|n| self.resolve_var(n))
-            .collect();
-        if self.blocks[&self.current_block]
-            .terminator()
-            .is_none()
-        {
+        let else_vals: Vec<Option<ValueId>> = mutated.iter().map(|n| self.resolve_var(n)).collect();
+        if self.blocks[&self.current_block].terminator().is_none() {
             self.emit(Instruction::Br {
                 target: merge_block_id,
             });
@@ -1244,8 +1252,14 @@ impl<'a> LowerCtx<'a> {
             self.emit(Instruction::Phi {
                 dest: phi_dest,
                 incoming: vec![
-                    PhiIncoming { value: then_v, block: then_end },
-                    PhiIncoming { value: else_v, block: else_end },
+                    PhiIncoming {
+                        value: then_v,
+                        block: then_end,
+                    },
+                    PhiIncoming {
+                        value: else_v,
+                        block: else_end,
+                    },
                 ],
             });
             self.rebind_var(name, phi_dest);
@@ -1277,9 +1291,7 @@ impl<'a> LowerCtx<'a> {
             .collect();
 
         // Branch to the header.
-        self.emit(Instruction::Br {
-            target: header_id,
-        });
+        self.emit(Instruction::Br { target: header_id });
 
         // Loop header: emit phi node placeholders for each mutated var,
         // then evaluate the condition (which may read the phi values).
@@ -1292,7 +1304,10 @@ impl<'a> LowerCtx<'a> {
                 dest: phi_dest,
                 // Second incoming (from body end) is patched once the
                 // body's final SSA value is known.
-                incoming: vec![PhiIncoming { value: pre, block: pre_loop_block }],
+                incoming: vec![PhiIncoming {
+                    value: pre,
+                    block: pre_loop_block,
+                }],
             });
             // Bind the phi as the new live value for `name` inside the loop.
             self.bind_var(name.clone(), phi_dest);
@@ -1352,13 +1367,8 @@ impl<'a> LowerCtx<'a> {
             }
         }
         // Only branch back if not already terminated.
-        if self.blocks[&self.current_block]
-            .terminator()
-            .is_none()
-        {
-            self.emit(Instruction::Br {
-                target: header_id,
-            });
+        if self.blocks[&self.current_block].terminator().is_none() {
+            self.emit(Instruction::Br { target: header_id });
         }
 
         // Exit block.
@@ -1369,9 +1379,7 @@ impl<'a> LowerCtx<'a> {
         let body_id = self.fresh_block();
         let exit_id = self.fresh_block();
 
-        self.emit(Instruction::Br {
-            target: body_id,
-        });
+        self.emit(Instruction::Br { target: body_id });
 
         self.start_block(body_id, Some("loop_body".into()));
         self.loop_stack.push(LoopContext {
@@ -1382,13 +1390,8 @@ impl<'a> LowerCtx<'a> {
         self.lower_block(body);
         self.pop_scope();
         self.loop_stack.pop();
-        if self.blocks[&self.current_block]
-            .terminator()
-            .is_none()
-        {
-            self.emit(Instruction::Br {
-                target: body_id,
-            });
+        if self.blocks[&self.current_block].terminator().is_none() {
+            self.emit(Instruction::Br { target: body_id });
         }
 
         self.start_block(exit_id, Some("loop_exit".into()));
@@ -1412,9 +1415,11 @@ impl<'a> LowerCtx<'a> {
         let spanned = &self.arena().expression(iterable);
         let is_range = matches!(&spanned.node, Expr::Range { .. });
         let enumerate_range: Option<triet_syntax::arena::ExprId> = match &spanned.node {
-            Expr::MethodCall { receiver, method, arguments }
-                if method == "enumerate" && arguments.is_empty() =>
-            {
+            Expr::MethodCall {
+                receiver,
+                method,
+                arguments,
+            } if method == "enumerate" && arguments.is_empty() => {
                 let inner = &self.arena().expression(*receiver).node;
                 if matches!(inner, Expr::Range { .. }) {
                     Some(*receiver)
@@ -1442,9 +1447,7 @@ impl<'a> LowerCtx<'a> {
                 if let triet_syntax::pattern::Pattern::Variable(var_name) = pattern {
                     self.bind_var(var_name.clone(), phi_val);
                 }
-                self.emit(Instruction::Br {
-                    target: header_id,
-                });
+                self.emit(Instruction::Br { target: header_id });
 
                 // Header: phi merges start (entry) and incremented (body).
                 let pre_header_id = self.current_block;
@@ -1481,21 +1484,17 @@ impl<'a> LowerCtx<'a> {
                 self.lower_block(body);
                 self.pop_scope();
                 self.loop_stack.pop();
-                if self.blocks[&self.current_block]
-                    .terminator()
-                    .is_none()
-                {
+                if self.blocks[&self.current_block].terminator().is_none() {
                     // Increment loop var.
                     let inc_dest = self.fresh_value();
-                    let c1 = self.intern_constant(Constant::Integer(triet_core::Integer::new(1).unwrap()));
+                    let c1 = self
+                        .intern_constant(Constant::Integer(triet_core::Integer::new(1).unwrap()));
                     self.emit(Instruction::Add {
                         dest: inc_dest,
                         lhs: Operand::Value(phi_val),
                         rhs: Operand::Const(c1),
                     });
-                    self.emit(Instruction::Br {
-                        target: header_id,
-                    });
+                    self.emit(Instruction::Br { target: header_id });
                     // Patch the phi: add the second incoming edge from body block.
                     let body_block_id = self.current_block;
                     // Go back and patch the phi in the header block.
@@ -1515,15 +1514,11 @@ impl<'a> LowerCtx<'a> {
         } else {
             // Non-range iterable: execute body once (minimal viable).
             let iter_val = self.lower_expr(iterable);
-            self.emit(Instruction::Br {
-                target: header_id,
-            });
+            self.emit(Instruction::Br { target: header_id });
 
             self.start_block(header_id, Some("for_header".into()));
             // Always enter body once.
-            self.emit(Instruction::Br {
-                target: body_id,
-            });
+            self.emit(Instruction::Br { target: body_id });
 
             self.start_block(body_id, Some("for_body".into()));
             self.loop_stack.push(LoopContext {
@@ -1537,13 +1532,8 @@ impl<'a> LowerCtx<'a> {
             self.lower_block(body);
             self.pop_scope();
             self.loop_stack.pop();
-            if self.blocks[&self.current_block]
-                .terminator()
-                .is_none()
-            {
-                self.emit(Instruction::Br {
-                    target: exit_id,
-                });
+            if self.blocks[&self.current_block].terminator().is_none() {
+                self.emit(Instruction::Br { target: exit_id });
             }
         }
 
@@ -1564,14 +1554,20 @@ impl<'a> LowerCtx<'a> {
         exit_id: BlockId,
     ) {
         let range_node = &self.arena().expression(range_expr_id).node;
-        let Expr::Range { start, end, inclusive: _ } = range_node else {
+        let Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } = range_node
+        else {
             return;
         };
         let start_val = self.lower_expr(*start);
         let end_val = self.lower_expr(*end);
         let item_phi = self.fresh_value();
         let idx_phi = self.fresh_value();
-        let zero_const = self.intern_constant(Constant::Integer(triet_core::Integer::new(0).unwrap()));
+        let zero_const =
+            self.intern_constant(Constant::Integer(triet_core::Integer::new(0).unwrap()));
         let idx_init = self.fresh_value();
         self.emit(Instruction::Const {
             dest: idx_init,
@@ -1603,11 +1599,17 @@ impl<'a> LowerCtx<'a> {
         self.start_block(header_id, Some("for_enum_header".into()));
         self.emit(Instruction::Phi {
             dest: item_phi,
-            incoming: vec![PhiIncoming { value: start_val, block: pre_header_id }],
+            incoming: vec![PhiIncoming {
+                value: start_val,
+                block: pre_header_id,
+            }],
         });
         self.emit(Instruction::Phi {
             dest: idx_phi,
-            incoming: vec![PhiIncoming { value: idx_init, block: pre_header_id }],
+            incoming: vec![PhiIncoming {
+                value: idx_init,
+                block: pre_header_id,
+            }],
         });
         let cmp_dest = self.fresh_value();
         self.emit(Instruction::Le {
@@ -1649,7 +1651,8 @@ impl<'a> LowerCtx<'a> {
         self.pop_scope();
         self.loop_stack.pop();
         if self.blocks[&self.current_block].terminator().is_none() {
-            let one_const = self.intern_constant(Constant::Integer(triet_core::Integer::new(1).unwrap()));
+            let one_const =
+                self.intern_constant(Constant::Integer(triet_core::Integer::new(1).unwrap()));
             let item_next = self.fresh_value();
             self.emit(Instruction::Add {
                 dest: item_next,
@@ -1670,10 +1673,16 @@ impl<'a> LowerCtx<'a> {
                 for instr in &mut header_block.instructions {
                     if let Instruction::Phi { dest, incoming } = instr {
                         if *dest == item_phi && !patched_item {
-                            incoming.push(PhiIncoming { value: item_next, block: body_end });
+                            incoming.push(PhiIncoming {
+                                value: item_next,
+                                block: body_end,
+                            });
                             patched_item = true;
                         } else if *dest == idx_phi && !patched_idx {
-                            incoming.push(PhiIncoming { value: idx_next, block: body_end });
+                            incoming.push(PhiIncoming {
+                                value: idx_next,
+                                block: body_end,
+                            });
                             patched_idx = true;
                         }
                     }
@@ -1736,13 +1745,17 @@ impl<'a> LowerCtx<'a> {
             // variable). The last arm is unconditional regardless — the
             // typechecker enforces exhaustiveness.
             if is_last {
-                self.emit(Instruction::Br { target: arm_body_block });
+                self.emit(Instruction::Br {
+                    target: arm_body_block,
+                });
             } else {
                 let test = self.lower_pattern_test(pat_node, scrutee_val);
                 match test {
                     None => {
                         // Wildcard/variable: always matches, drop straight in.
-                        self.emit(Instruction::Br { target: arm_body_block });
+                        self.emit(Instruction::Br {
+                            target: arm_body_block,
+                        });
                     }
                     Some(cmp_val) => {
                         self.emit(Instruction::BrIf {
@@ -1811,7 +1824,10 @@ impl<'a> LowerCtx<'a> {
                 // Compare `check` against Trit::Zero — equal → matched.
                 let zero_const = self.intern_constant(Constant::Trit(Trit::Zero));
                 let zero_val = self.fresh_value();
-                self.emit(Instruction::Const { dest: zero_val, constant: zero_const });
+                self.emit(Instruction::Const {
+                    dest: zero_val,
+                    constant: zero_const,
+                });
                 let cmp = self.fresh_value();
                 self.emit(Instruction::Eq {
                     dest: cmp,
@@ -1825,7 +1841,9 @@ impl<'a> LowerCtx<'a> {
                     triet_syntax::pattern::LiteralPattern::Integer { value, .. }
                     | triet_syntax::pattern::LiteralPattern::Ternary(value) => {
                         let n = i64::try_from(*value).unwrap_or(0);
-                        self.intern_constant(Constant::Integer(triet_core::Integer::new(n).unwrap_or_default()))
+                        self.intern_constant(Constant::Integer(
+                            triet_core::Integer::new(n).unwrap_or_default(),
+                        ))
                     }
                     triet_syntax::pattern::LiteralPattern::String(s) => {
                         self.intern_constant(Constant::String(s.clone()))
@@ -1840,7 +1858,10 @@ impl<'a> LowerCtx<'a> {
                     }
                 };
                 let lit_val = self.fresh_value();
-                self.emit(Instruction::Const { dest: lit_val, constant: const_id });
+                self.emit(Instruction::Const {
+                    dest: lit_val,
+                    constant: const_id,
+                });
                 let cmp = self.fresh_value();
                 self.emit(Instruction::Eq {
                     dest: cmp,
@@ -1876,10 +1897,7 @@ impl<'a> LowerCtx<'a> {
                 acc
             }
             triet_syntax::pattern::Pattern::EnumVariant { variant_name, .. } => {
-                let target_idx = self
-                    .variant_index
-                    .get(variant_name)
-                    .map_or(0, |(_, i)| *i);
+                let target_idx = self.variant_index.get(variant_name).map_or(0, |(_, i)| *i);
                 let tag = self.fresh_value();
                 self.emit(Instruction::EnumTag {
                     dest: tag,
@@ -1892,7 +1910,10 @@ impl<'a> LowerCtx<'a> {
                 };
                 let const_id = self.intern_constant(Constant::Trit(expected_trit));
                 let const_val = self.fresh_value();
-                self.emit(Instruction::Const { dest: const_val, constant: const_id });
+                self.emit(Instruction::Const {
+                    dest: const_val,
+                    constant: const_id,
+                });
                 let cmp = self.fresh_value();
                 self.emit(Instruction::Eq {
                     dest: cmp,
@@ -1909,11 +1930,7 @@ impl<'a> LowerCtx<'a> {
     /// Walk a pattern and bind every Variable sub-pattern to a freshly
     /// extracted SSA value from `scrutinee`. Used inside match arm
     /// bodies so the body can refer to the destructured names.
-    fn bind_pattern_vars(
-        &mut self,
-        pattern: &triet_syntax::pattern::Pattern,
-        scrutinee: ValueId,
-    ) {
+    fn bind_pattern_vars(&mut self, pattern: &triet_syntax::pattern::Pattern, scrutinee: ValueId) {
         match pattern {
             triet_syntax::pattern::Pattern::Variable(name) => {
                 self.bind_var(name.clone(), scrutinee);
@@ -2014,12 +2031,12 @@ impl<'a> LowerCtx<'a> {
                 }
 
                 // Fallback: treat as local function reference.
-                
+
                 self.fresh_value()
             }
             _ => {
                 // Indirect call (closure, etc.) — simplified.
-                
+
                 self.fresh_value()
             }
         }
@@ -2043,7 +2060,6 @@ fn resolve_builtin(name: &str) -> Option<BuiltinName> {
     }
 }
 
-
 /// Convert a field name to a deterministic index. In practice, the
 /// lowerer looks up struct field indices from the typechecker. For now,
 /// this is a placeholder; the typechecker wiring (v0.3.5) provides the
@@ -2061,13 +2077,13 @@ mod tests {
     use super::*;
     use triet_modules::{Module, ModuleId, ModulePath};
     use triet_syntax::{
+        Spanned,
         arena::Arena,
         arena::ExprId,
         expr::Expr,
         item::{FunctionBody, FunctionDef, FunctionParam, Item},
         numeric::TrileanValue,
         stmt::{Block, Stmt},
-        Spanned,
     };
 
     /// Build a minimal `ResolvedProgram` with one module and one function.
@@ -2199,10 +2215,7 @@ mod tests {
     #[test]
     fn lower_ternary_literal() {
         let mut arena = Arena::new();
-        let tlit = arena.alloc_expression(Spanned::new(
-            Expr::TernaryLiteral { value: 42 },
-            0..1,
-        ));
+        let tlit = arena.alloc_expression(Spanned::new(Expr::TernaryLiteral { value: 42 }, 0..1));
         let body = FunctionBody::Expression(tlit);
         let item = make_function_def("tern", vec![], None, body);
         let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
@@ -2228,7 +2241,12 @@ mod tests {
         // Entry block should have: const, const, add, ret
         let entry = func.entry_block().unwrap();
         assert!(entry.instructions.len() >= 2);
-        assert!(entry.instructions.iter().any(|i| matches!(i, Instruction::Add { .. })));
+        assert!(
+            entry
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Add { .. }))
+        );
     }
 
     #[test]
@@ -2249,7 +2267,10 @@ mod tests {
             let item = make_function_def("arith", vec![], None, body);
             let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
             let ir = lower_program(&prog);
-            assert!(ir.modules[0].functions[0].is_well_formed(), "failed for op {op:?}");
+            assert!(
+                ir.modules[0].functions[0].is_well_formed(),
+                "failed for op {op:?}"
+            );
         }
     }
 
@@ -2264,7 +2285,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::Neg { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Neg { .. }))
+        );
     }
 
     // ── Comparison tests ────────────────────────────────────────────
@@ -2287,7 +2313,10 @@ mod tests {
             let item = make_function_def("cmp", vec![], None, body);
             let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
             let ir = lower_program(&prog);
-            assert!(ir.modules[0].functions[0].is_well_formed(), "failed for op {op:?}");
+            assert!(
+                ir.modules[0].functions[0].is_well_formed(),
+                "failed for op {op:?}"
+            );
         }
     }
 
@@ -2310,7 +2339,10 @@ mod tests {
             let item = make_function_def("logic", vec![], None, body);
             let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
             let ir = lower_program(&prog);
-            assert!(ir.modules[0].functions[0].is_well_formed(), "failed for op {op:?}");
+            assert!(
+                ir.modules[0].functions[0].is_well_formed(),
+                "failed for op {op:?}"
+            );
         }
     }
 
@@ -2329,7 +2361,10 @@ mod tests {
             let item = make_function_def("kleene", vec![], None, body);
             let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
             let ir = lower_program(&prog);
-            assert!(ir.modules[0].functions[0].is_well_formed(), "failed for op {op:?}");
+            assert!(
+                ir.modules[0].functions[0].is_well_formed(),
+                "failed for op {op:?}"
+            );
         }
     }
 
@@ -2424,8 +2459,16 @@ mod tests {
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
         // Should have at least 4 blocks: entry, then, else, merge.
-        assert!(func.blocks.len() >= 3, "expected >= 3 blocks, got {}", func.blocks.len());
-        assert!(func.blocks.iter().any(|b| b.instructions.iter().any(super::super::instr::Instruction::is_phi)));
+        assert!(
+            func.blocks.len() >= 3,
+            "expected >= 3 blocks, got {}",
+            func.blocks.len()
+        );
+        assert!(func.blocks.iter().any(|b| {
+            b.instructions
+                .iter()
+                .any(super::super::instr::Instruction::is_phi)
+        }));
     }
 
     #[test]
@@ -2500,7 +2543,11 @@ mod tests {
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
         // Should have header, body, exit blocks.
-        assert!(func.blocks.len() >= 3, "expected >= 3 blocks, got {}", func.blocks.len());
+        assert!(
+            func.blocks.len() >= 3,
+            "expected >= 3 blocks, got {}",
+            func.blocks.len()
+        );
     }
 
     #[test]
@@ -2537,7 +2584,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::CallBuiltin { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::CallBuiltin { .. }))
+        );
     }
 
     // ── Return tests ────────────────────────────────────────────────
@@ -2557,7 +2609,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::Ret { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::Ret { .. }))
+        );
     }
 
     // ── Verifier integration ────────────────────────────────────────
@@ -2709,7 +2766,11 @@ mod tests {
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
         // Deep nesting creates multiple merge blocks.
-        assert!(func.blocks.len() >= 6, "expected >= 6 blocks, got {}", func.blocks.len());
+        assert!(
+            func.blocks.len() >= 6,
+            "expected >= 6 blocks, got {}",
+            func.blocks.len()
+        );
         let result = crate::verify::verify_function(func);
         assert!(result.is_ok(), "violations: {:?}", result.violations);
     }
@@ -2721,10 +2782,7 @@ mod tests {
         let mut arena = Arena::new();
         let cond = trilean_lit(&mut arena, TrileanValue::True);
         let ret_val = int_lit(&mut arena, -1);
-        let ret_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Return(Some(ret_val)),
-            0..10,
-        ));
+        let ret_stmt = arena.alloc_statement(Spanned::new(Stmt::Return(Some(ret_val)), 0..10));
         let else_val = int_lit(&mut arena, 0);
         let if_expr = arena.alloc_expression(Spanned::new(
             Expr::If {
@@ -2807,18 +2865,16 @@ mod tests {
         let call = call_expr(&mut arena, callee, vec![]);
         let f1 = make_function_def("main", vec![], None, FunctionBody::Expression(call));
 
-        let prog = make_program(
-            arena,
-            vec![
-                Spanned::new(f1, 0..1),
-                Spanned::new(f2, 0..1),
-            ],
-        );
+        let prog = make_program(arena, vec![Spanned::new(f1, 0..1), Spanned::new(f2, 0..1)]);
         let ir = lower_program(&prog);
         assert_eq!(ir.function_count(), 2);
         // Both functions should be well-formed.
         for func in &ir.modules[0].functions {
-            assert!(func.is_well_formed(), "{} not well-formed", func.name.as_deref().unwrap_or("?"));
+            assert!(
+                func.is_well_formed(),
+                "{} not well-formed",
+                func.name.as_deref().unwrap_or("?")
+            );
         }
         let result = crate::verify::verify_program(&ir);
         assert!(result.is_ok(), "violations: {:?}", result.violations);
@@ -2831,26 +2887,25 @@ mod tests {
         let mut arena = Arena::new();
         // ForceUnwrap: value!!
         let inner = int_lit(&mut arena, 5);
-        let unwrap = arena.alloc_expression(Spanned::new(
-            Expr::ForceUnwrap(inner),
-            0..3,
-        ));
+        let unwrap = arena.alloc_expression(Spanned::new(Expr::ForceUnwrap(inner), 0..3));
         let body = FunctionBody::Expression(unwrap);
         let item = make_function_def("unwrap_test", vec![], None, body);
         let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::NullUnwrap { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::NullUnwrap { .. }))
+        );
     }
 
     #[test]
     fn lower_null_literal() {
         let mut arena = Arena::new();
-        let null_expr = arena.alloc_expression(Spanned::new(
-            Expr::NullLiteral,
-            0..4,
-        ));
+        let null_expr = arena.alloc_expression(Spanned::new(Expr::NullLiteral, 0..4));
         let body = FunctionBody::Expression(null_expr);
         let item = make_function_def("null_test", vec![], None, body);
         let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
@@ -2878,7 +2933,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::StructNew { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::StructNew { .. }))
+        );
     }
 
     #[test]
@@ -2899,7 +2959,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::EnumNew { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::EnumNew { .. }))
+        );
     }
 
     #[test]
@@ -2926,10 +2991,7 @@ mod tests {
     fn lower_block_without_final_expression_yields_unit() {
         let mut arena = Arena::new();
         let lit = int_lit(&mut arena, 1);
-        let stmt = arena.alloc_statement(Spanned::new(
-            Stmt::ExprStmt(lit),
-            0..5,
-        ));
+        let stmt = arena.alloc_statement(Spanned::new(Stmt::ExprStmt(lit), 0..5));
         let block_expr = arena.alloc_expression(Spanned::new(
             Expr::Block(Block {
                 statements: vec![stmt],
@@ -2957,20 +3019,31 @@ mod tests {
         let cond = binary_op(&mut arena, BinaryOperator::GreaterThan, n_ref, one);
         let sub = binary_op(&mut arena, BinaryOperator::Subtract, n_ref, one);
         let assign_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Assign { target: "n".to_owned(), value: sub },
+            Stmt::Assign {
+                target: "n".to_owned(),
+                value: sub,
+            },
             0..10,
         ));
         let while_stmt = arena.alloc_statement(Spanned::new(
             Stmt::While {
                 condition: cond,
-                body: Block { statements: vec![assign_stmt], final_expression: None },
+                body: Block {
+                    statements: vec![assign_stmt],
+                    final_expression: None,
+                },
                 treat_unknown_as_false: true, // while?
             },
             0..50,
         ));
         let init = int_lit(&mut arena, 5);
         let let_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Let { name: "n".to_owned(), mutable: true, type_annotation: None, value: init },
+            Stmt::Let {
+                name: "n".to_owned(),
+                mutable: true,
+                type_annotation: None,
+                value: init,
+            },
             0..10,
         ));
         let block = Block {
@@ -2998,20 +3071,14 @@ mod tests {
             statements: vec![inner_break],
             final_expression: None,
         };
-        let inner_loop = arena.alloc_statement(Spanned::new(
-            Stmt::Loop(inner_body),
-            0..20,
-        ));
+        let inner_loop = arena.alloc_statement(Spanned::new(Stmt::Loop(inner_body), 0..20));
         // outer: loop { inner_loop; break }
         let outer_break = arena.alloc_statement(Spanned::new(Stmt::Break(None), 0..5));
         let outer_body = Block {
             statements: vec![inner_loop, outer_break],
             final_expression: None,
         };
-        let outer_loop = arena.alloc_statement(Spanned::new(
-            Stmt::Loop(outer_body),
-            0..30,
-        ));
+        let outer_loop = arena.alloc_statement(Spanned::new(Stmt::Loop(outer_body), 0..30));
         let block = Block {
             statements: vec![outer_loop],
             final_expression: None,
@@ -3029,18 +3096,12 @@ mod tests {
     fn lower_break_with_value() {
         let mut arena = Arena::new();
         let val = int_lit(&mut arena, 42);
-        let break_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Break(Some(val)),
-            0..10,
-        ));
+        let break_stmt = arena.alloc_statement(Spanned::new(Stmt::Break(Some(val)), 0..10));
         let loop_body = Block {
             statements: vec![break_stmt],
             final_expression: None,
         };
-        let loop_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Loop(loop_body),
-            0..20,
-        ));
+        let loop_stmt = arena.alloc_statement(Spanned::new(Stmt::Loop(loop_body), 0..20));
         let block = Block {
             statements: vec![loop_stmt],
             final_expression: None,
@@ -3089,7 +3150,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::CallCrossModule { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::CallCrossModule { .. }))
+        );
     }
 
     // ── Edge case: arithmetic with edge values ────────────────────
@@ -3123,10 +3189,17 @@ mod tests {
     #[test]
     fn lower_all_lukasiewicz_ops_mixed_truth_values() {
         // Test every Ł3 op with all 9 combinations of (True, False, Unknown)
-        let values = [TrileanValue::True, TrileanValue::False, TrileanValue::Unknown];
+        let values = [
+            TrileanValue::True,
+            TrileanValue::False,
+            TrileanValue::Unknown,
+        ];
         let ops = [
-            BinaryOperator::And, BinaryOperator::Or, BinaryOperator::Xor,
-            BinaryOperator::Iff, BinaryOperator::Implies,
+            BinaryOperator::And,
+            BinaryOperator::Or,
+            BinaryOperator::Xor,
+            BinaryOperator::Iff,
+            BinaryOperator::Implies,
         ];
         for op in &ops {
             for &a in &values {
@@ -3142,7 +3215,11 @@ mod tests {
                     let func = &ir.modules[0].functions[0];
                     assert!(func.is_well_formed(), "failed for {op:?} with {a:?} {b:?}");
                     let result = crate::verify::verify_function(func);
-                    assert!(result.is_ok(), "verifier failed for {op:?} with {a:?} {b:?}: {:?}", result.violations);
+                    assert!(
+                        result.is_ok(),
+                        "verifier failed for {op:?} with {a:?} {b:?}: {:?}",
+                        result.violations
+                    );
                 }
             }
         }
@@ -3153,9 +3230,12 @@ mod tests {
     #[test]
     fn lower_all_comparison_ops_with_equal_values() {
         for op in [
-            BinaryOperator::Equal, BinaryOperator::NotEqual,
-            BinaryOperator::LessThan, BinaryOperator::LessEqual,
-            BinaryOperator::GreaterThan, BinaryOperator::GreaterEqual,
+            BinaryOperator::Equal,
+            BinaryOperator::NotEqual,
+            BinaryOperator::LessThan,
+            BinaryOperator::LessEqual,
+            BinaryOperator::GreaterThan,
+            BinaryOperator::GreaterEqual,
         ] {
             let mut arena = Arena::new();
             let a = int_lit(&mut arena, 7);
@@ -3168,7 +3248,11 @@ mod tests {
             let func = &ir.modules[0].functions[0];
             assert!(func.is_well_formed(), "failed for {op:?} with 7 vs 7");
             let result = crate::verify::verify_function(func);
-            assert!(result.is_ok(), "verifier failed for {op:?}: {:?}", result.violations);
+            assert!(
+                result.is_ok(),
+                "verifier failed for {op:?}: {:?}",
+                result.violations
+            );
         }
     }
 
@@ -3192,7 +3276,10 @@ mod tests {
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
         // Should have NullCheck + NullUnwrap + FieldGet.
-        let has_null_check = func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::NullCheck { .. }));
+        let has_null_check = func.blocks[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::NullCheck { .. }));
         assert!(has_null_check, "SafeFieldAccess should emit NullCheck");
     }
 
@@ -3224,22 +3311,27 @@ mod tests {
         let mut arena = Arena::new();
         let init = int_lit(&mut arena, 0);
         let let_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Let { name: "sum".to_owned(), mutable: true, type_annotation: None, value: init },
+            Stmt::Let {
+                name: "sum".to_owned(),
+                mutable: true,
+                type_annotation: None,
+                value: init,
+            },
             0..10,
         ));
         let sum_ref = ident(&mut arena, "sum");
         let one = int_lit(&mut arena, 1);
         let add = binary_op(&mut arena, BinaryOperator::Add, sum_ref, one);
         let assign_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Assign { target: "sum".to_owned(), value: add },
+            Stmt::Assign {
+                target: "sum".to_owned(),
+                value: add,
+            },
             0..10,
         ));
         let println_id = ident(&mut arena, "println");
         let call_expr = call_expr(&mut arena, println_id, vec![add]);
-        let expr_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::ExprStmt(call_expr),
-            0..5,
-        ));
+        let expr_stmt = arena.alloc_statement(Spanned::new(Stmt::ExprStmt(call_expr), 0..5));
         let final_ref = ident(&mut arena, "sum");
         let block = Block {
             statements: vec![let_stmt, assign_stmt, expr_stmt],
@@ -3262,7 +3354,10 @@ mod tests {
         let if_expr = arena.alloc_expression(Spanned::new(
             Expr::If {
                 condition: cond,
-                then_branch: Block { statements: vec![], final_expression: Some(then_val) },
+                then_branch: Block {
+                    statements: vec![],
+                    final_expression: Some(then_val),
+                },
                 else_branch: None,
                 treat_unknown_as_false: false,
             },
@@ -3285,7 +3380,11 @@ mod tests {
         let mut arena = Arena::new();
         let val = int_lit(&mut arena, 100);
         let const_stmt = arena.alloc_statement(Spanned::new(
-            Stmt::Const { name: "MAX".to_owned(), type_annotation: None, value: val },
+            Stmt::Const {
+                name: "MAX".to_owned(),
+                type_annotation: None,
+                value: val,
+            },
             0..10,
         ));
         let id = ident(&mut arena, "MAX");
@@ -3308,17 +3407,19 @@ mod tests {
         let a = int_lit(&mut arena, 1);
         let b = int_lit(&mut arena, 2);
         let c = int_lit(&mut arena, 3);
-        let tuple = arena.alloc_expression(Spanned::new(
-            Expr::Tuple(vec![a, b, c]),
-            0..1,
-        ));
+        let tuple = arena.alloc_expression(Spanned::new(Expr::Tuple(vec![a, b, c]), 0..1));
         let body = FunctionBody::Expression(tuple);
         let item = make_function_def("make_tuple", vec![], None, body);
         let prog = make_program(arena, vec![Spanned::new(item, 0..1)]);
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::StructNew { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::StructNew { .. }))
+        );
     }
 
     // ── Edge case: field access ────────────────────────────────────
@@ -3328,7 +3429,10 @@ mod tests {
         let mut arena = Arena::new();
         let obj = ident(&mut arena, "point");
         let field_access = arena.alloc_expression(Spanned::new(
-            Expr::FieldAccess { object: obj, field: "x".to_owned() },
+            Expr::FieldAccess {
+                object: obj,
+                field: "x".to_owned(),
+            },
             0..1,
         ));
         let body = FunctionBody::Expression(field_access);
@@ -3337,7 +3441,12 @@ mod tests {
         let ir = lower_program(&prog);
         let func = &ir.modules[0].functions[0];
         assert!(func.is_well_formed());
-        assert!(func.blocks[0].instructions.iter().any(|i| matches!(i, Instruction::FieldGet { .. })));
+        assert!(
+            func.blocks[0]
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::FieldGet { .. }))
+        );
     }
 
     // ── Edge case: method call ─────────────────────────────────────
@@ -3347,7 +3456,11 @@ mod tests {
         let mut arena = Arena::new();
         let receiver = ident(&mut arena, "s");
         let method_call = arena.alloc_expression(Spanned::new(
-            Expr::MethodCall { receiver, method: "len".to_owned(), arguments: vec![] },
+            Expr::MethodCall {
+                receiver,
+                method: "len".to_owned(),
+                arguments: vec![],
+            },
             0..1,
         ));
         let body = FunctionBody::Expression(method_call);
@@ -3365,7 +3478,11 @@ mod tests {
         let start = int_lit(&mut arena, 0);
         let end = int_lit(&mut arena, 10);
         let range = arena.alloc_expression(Spanned::new(
-            Expr::Range { start, end, inclusive: false },
+            Expr::Range {
+                start,
+                end,
+                inclusive: false,
+            },
             0..1,
         ));
         let body = FunctionBody::Expression(range);
@@ -3398,7 +3515,8 @@ mod tests {
         // Module 1: crate.utils with helper()
         let mut arena1 = Arena::new();
         let helper_val = int_lit(&mut arena1, 7);
-        let helper_item = make_function_def("helper", vec![], None, FunctionBody::Expression(helper_val));
+        let helper_item =
+            make_function_def("helper", vec![], None, FunctionBody::Expression(helper_val));
 
         let module1 = Module {
             path: root_path.child("utils"),

@@ -37,7 +37,9 @@ fn parse_type_atom(parser: &mut Parser<'_>) -> Result<TypeId, ParseError> {
                 parse_generic_args(parser, name, span)
             } else {
                 let span_clone = span;
-                Ok(parser.arena.alloc_type(Spanned::new(TypeExpr::Named(name), span_clone)))
+                Ok(parser
+                    .arena
+                    .alloc_type(Spanned::new(TypeExpr::Named(name), span_clone)))
             }
         }
         Token::LParen => parse_paren_type(parser, span),
@@ -129,7 +131,10 @@ fn parse_paren_type(
         let return_span = parser.arena.type_expression(return_type).span.clone();
         let span = open_span.start..return_span.end;
         return Ok(parser.arena.alloc_type(Spanned::new(
-            TypeExpr::Function { parameters: elements, return_type },
+            TypeExpr::Function {
+                parameters: elements,
+                return_type,
+            },
             span,
         )));
     }
@@ -221,7 +226,10 @@ mod tests {
                 assert_eq!(name, "Option");
                 assert_eq!(arguments.len(), 1);
                 match &parser.arena.type_expression(arguments[0]).node {
-                    TypeExpr::Generic { name: inner, arguments: inner_args } => {
+                    TypeExpr::Generic {
+                        name: inner,
+                        arguments: inner_args,
+                    } => {
                         assert_eq!(inner, "List");
                         assert_eq!(inner_args.len(), 1);
                         expect_named(&parser, inner_args[0], "Integer");
@@ -289,10 +297,14 @@ mod tests {
         // `T??` would mean nullable of nullable — unusual but legal.
         let (parser, id) = parse("Integer??");
         match &parser.arena.type_expression(id).node {
-            TypeExpr::Nullable(outer_inner) => match &parser.arena.type_expression(*outer_inner).node {
-                TypeExpr::Nullable(inner_inner) => expect_named(&parser, *inner_inner, "Integer"),
-                other => panic!("expected nested Nullable, got {other:?}"),
-            },
+            TypeExpr::Nullable(outer_inner) => {
+                match &parser.arena.type_expression(*outer_inner).node {
+                    TypeExpr::Nullable(inner_inner) => {
+                        expect_named(&parser, *inner_inner, "Integer");
+                    }
+                    other => panic!("expected nested Nullable, got {other:?}"),
+                }
+            }
             other => panic!("expected Nullable, got {other:?}"),
         }
     }
@@ -315,7 +327,10 @@ mod tests {
     fn parses_simple_function_type() {
         let (parser, id) = parse("(Integer) -> String");
         match &parser.arena.type_expression(id).node {
-            TypeExpr::Function { parameters, return_type } => {
+            TypeExpr::Function {
+                parameters,
+                return_type,
+            } => {
                 assert_eq!(parameters.len(), 1);
                 expect_named(&parser, parameters[0], "Integer");
                 expect_named(&parser, *return_type, "String");
@@ -335,17 +350,23 @@ mod tests {
         let result = parse_type(&mut parser);
         // Accept either: error today, or successful Function with zero
         // params if we extend later.
-        assert!(result.is_err() || matches!(
-            &parser.arena.type_expression(result.unwrap()).node,
-            TypeExpr::Function { parameters, .. } if parameters.is_empty()
-        ));
+        assert!(
+            result.is_err()
+                || matches!(
+                    &parser.arena.type_expression(result.unwrap()).node,
+                    TypeExpr::Function { parameters, .. } if parameters.is_empty()
+                )
+        );
     }
 
     #[test]
     fn parses_multi_argument_function_type() {
         let (parser, id) = parse("(Integer, Integer) -> Integer");
         match &parser.arena.type_expression(id).node {
-            TypeExpr::Function { parameters, return_type } => {
+            TypeExpr::Function {
+                parameters,
+                return_type,
+            } => {
                 assert_eq!(parameters.len(), 2);
                 expect_named(&parser, *return_type, "Integer");
             }

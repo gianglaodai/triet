@@ -9,7 +9,10 @@ use triet_syntax::Span;
 pub enum RuntimeError {
     /// `main` function not found in the program.
     #[error("program has no `main` function")]
-    #[diagnostic(code(triet::runtime::E2001), help("add a `fn main() {{ ... }}` to your program"))]
+    #[diagnostic(
+        code(triet::runtime::E2001),
+        help("add a `fn main() {{ ... }}` to your program")
+    )]
     NoMainFunction,
 
     /// A name was looked up at runtime but not bound.
@@ -37,7 +40,10 @@ pub enum RuntimeError {
 
     /// `match` was non-exhaustive.
     #[error("no `match` arm matched the value")]
-    #[diagnostic(code(triet::runtime::E2004), help("add a wildcard arm `_ => ...` to handle this value"))]
+    #[diagnostic(
+        code(triet::runtime::E2004),
+        help("add a wildcard arm `_ => ...` to handle this value")
+    )]
     NonExhaustiveMatch {
         /// Source location of the `match` expression.
         #[label("no arm matched")]

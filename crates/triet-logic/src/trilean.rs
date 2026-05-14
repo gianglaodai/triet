@@ -166,7 +166,7 @@ impl Trilean {
     #[must_use]
     #[expect(
         clippy::match_same_arms,
-        reason = "explicit truth-table layout — clarity over compactness",
+        reason = "explicit truth-table layout — clarity over compactness"
     )]
     pub const fn implies(self, other: Self) -> Self {
         match (self, other) {
@@ -216,10 +216,7 @@ impl Trilean {
     #[inline]
     #[must_use]
     pub const fn kleene_iff(self, other: Self) -> Self {
-        Self::and(
-            self.kleene_implies(other),
-            other.kleene_implies(self),
-        )
+        Self::and(self.kleene_implies(other), other.kleene_implies(self))
     }
 
     /// Kleene XOR.
@@ -450,10 +447,7 @@ mod tests {
                     assert_eq!(kleene, Unknown, "Kleene U→U must be Unknown");
                     assert_ne!(lukasiewicz, kleene);
                 } else {
-                    assert_eq!(
-                        lukasiewicz, kleene,
-                        "Disagreement at ({a:?} → {b:?})",
-                    );
+                    assert_eq!(lukasiewicz, kleene, "Disagreement at ({a:?} → {b:?})");
                 }
             }
         }

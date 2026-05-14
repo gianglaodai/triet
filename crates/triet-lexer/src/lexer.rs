@@ -157,7 +157,10 @@ impl<'source> Lexer<'source> {
                 let absolute = (after_ws_offset + local.start)..(after_ws_offset + local.end);
                 let snippet = self.source[absolute.clone()].to_owned();
                 self.cursor = absolute.end;
-                Some(Err(LexError::UnexpectedCharacter { span: absolute, snippet }))
+                Some(Err(LexError::UnexpectedCharacter {
+                    span: absolute,
+                    snippet,
+                }))
             }
             Some(Err(other)) => {
                 // Callback-emitted errors carry spans relative to the
@@ -181,7 +184,9 @@ impl<'source> Lexer<'source> {
         while let Some(remaining) = self.source.get(self.cursor..) {
             let mut chars = remaining.chars();
             let Some(character) = chars.next() else {
-                return Some(Err(LexError::UnterminatedString { span: start..self.cursor }));
+                return Some(Err(LexError::UnterminatedString {
+                    span: start..self.cursor,
+                }));
             };
             let char_len = character.len_utf8();
 
@@ -223,7 +228,9 @@ impl<'source> Lexer<'source> {
                 }
                 '\\' => {
                     let Some(next_character) = chars.next() else {
-                        return Some(Err(LexError::UnterminatedString { span: start..self.cursor }));
+                        return Some(Err(LexError::UnterminatedString {
+                            span: start..self.cursor,
+                        }));
                     };
                     let escaped = match next_character {
                         'n' => '\n',
@@ -250,7 +257,9 @@ impl<'source> Lexer<'source> {
         }
 
         // Source exhausted without a closing `"`.
-        Some(Err(LexError::UnterminatedString { span: start..self.cursor }))
+        Some(Err(LexError::UnterminatedString {
+            span: start..self.cursor,
+        }))
     }
 }
 
@@ -273,4 +282,3 @@ impl Iterator for Lexer<'_> {
 pub fn lex(source: &str) -> Result<Vec<SpannedToken>, LexError> {
     Lexer::new(source).collect()
 }
-

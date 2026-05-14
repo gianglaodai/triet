@@ -45,8 +45,7 @@ const NEG_ONE_RAW: I256 = parse_i256("-1");
 const TWO_RAW: I256 = parse_i256("2");
 
 /// `(3⁸¹ - 1) / 2`.
-const HALF_MODULUS_RAW: I256 =
-    parse_i256("221713244121518884974124815309574946401");
+const HALF_MODULUS_RAW: I256 = parse_i256("221713244121518884974124815309574946401");
 
 /// `3⁸¹` — the cardinality of the balanced ternary 81-trit space.
 const MODULUS_RAW: I256 = parse_i256("443426488243037769948249630619149892803");
@@ -370,9 +369,8 @@ impl Add for Long {
     type Output = Self;
 
     fn add(self, other: Self) -> Self::Output {
-        self.try_add(other).expect(
-            "Long addition overflow; use add_and_truncate / add_and_saturate / try_add",
-        )
+        self.try_add(other)
+            .expect("Long addition overflow; use add_and_truncate / add_and_saturate / try_add")
     }
 }
 
@@ -478,7 +476,14 @@ mod tests {
 
     #[test]
     fn double_negation_is_identity() {
-        for value in [-1_i128, 0, 1, 1_000_000_000_000, -1_000_000_000_000, i128::MAX] {
+        for value in [
+            -1_i128,
+            0,
+            1,
+            1_000_000_000_000,
+            -1_000_000_000_000,
+            i128::MAX,
+        ] {
             let n = Long::from_i128(value);
             assert_eq!(-(-n), n);
         }

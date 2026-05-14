@@ -72,15 +72,15 @@ fn assert_output_eq(interp: &ProgramOutput, vm: &ProgramOutput, name: &str) {
     // For error programs (non-zero exit), compare stderr too.
     if interp.exit_code != 0 {
         assert_eq!(
-            interp.stderr,
-            vm.stderr,
+            interp.stderr, vm.stderr,
             "{name}: stderr mismatch (exit code {})",
             interp.exit_code
         );
         return;
     }
     assert_eq!(
-        interp.stdout, vm.stdout,
+        interp.stdout,
+        vm.stdout,
         "{name}: stdout mismatch.\nExpected ({} bytes): {:?}\nActual ({} bytes): {:?}",
         interp.stdout.len(),
         String::from_utf8_lossy(&interp.stdout),
@@ -133,7 +133,10 @@ macro_rules! diff_test {
 }
 
 // Verified passing (byte-identical VM vs interpreter).
-diff_test!(diff_lukasiewicz_vs_kleene, "examples/lukasiewicz_vs_kleene.tri");
+diff_test!(
+    diff_lukasiewicz_vs_kleene,
+    "examples/lukasiewicz_vs_kleene.tri"
+);
 diff_test!(diff_measles_risk, "examples/measles_risk.tri");
 diff_test!(diff_factorial, "examples/factorial.tri");
 diff_test!(diff_maybe, "examples/maybe.tri");

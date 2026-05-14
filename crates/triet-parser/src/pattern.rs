@@ -49,11 +49,15 @@ fn parse_pattern_no_or(parser: &mut Parser<'_>) -> Result<PatternId, ParseError>
     match token {
         Token::Underscore => {
             parser.advance();
-            Ok(parser.arena.alloc_pattern(Spanned::new(Pattern::Wildcard, span)))
+            Ok(parser
+                .arena
+                .alloc_pattern(Spanned::new(Pattern::Wildcard, span)))
         }
         Token::Null => {
             parser.advance();
-            Ok(parser.arena.alloc_pattern(Spanned::new(Pattern::Null, span)))
+            Ok(parser
+                .arena
+                .alloc_pattern(Spanned::new(Pattern::Null, span)))
         }
         Token::Identifier(name) => {
             parser.advance();
@@ -79,9 +83,7 @@ fn parse_pattern_no_or(parser: &mut Parser<'_>) -> Result<PatternId, ParseError>
             }
         }
         Token::LParen => parse_tuple_pattern(parser, span),
-        Token::True | Token::False | Token::Unknown => {
-            parse_trilean_pattern(parser, &token, span)
-        }
+        Token::True | Token::False | Token::Unknown => parse_trilean_pattern(parser, &token, span),
         Token::IntegerLiteral(_) | Token::TernaryLiteral(_) | Token::StringLiteral(_) => {
             parse_literal_or_range_pattern(parser)
         }
@@ -162,7 +164,11 @@ fn parse_literal_or_range_pattern(parser: &mut Parser<'_>) -> Result<PatternId, 
         let (end_lit, end_span) = parse_literal_pattern_payload(parser)?;
         let span = start_span.start..end_span.end;
         return Ok(parser.arena.alloc_pattern(Spanned::new(
-            Pattern::Range { start: start_lit, end: end_lit, inclusive },
+            Pattern::Range {
+                start: start_lit,
+                end: end_lit,
+                inclusive,
+            },
             span,
         )));
     }
@@ -174,10 +180,13 @@ fn parse_literal_or_range_pattern(parser: &mut Parser<'_>) -> Result<PatternId, 
 
 fn parse_negative_literal_pattern(parser: &mut Parser<'_>) -> Result<PatternId, ParseError> {
     let minus = parser.expect(&Token::Minus, "`-`")?;
-    let (token, span) = parser.peek().cloned().ok_or_else(|| ParseError::UnexpectedEof {
-        expected: "integer literal after `-`".to_owned(),
-        span: parser.eof_span(),
-    })?;
+    let (token, span) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "integer literal after `-`".to_owned(),
+            span: parser.eof_span(),
+        })?;
 
     let lit = match token {
         Token::IntegerLiteral(LexIntLiteral { value, suffix }) => {
@@ -208,7 +217,11 @@ fn parse_negative_literal_pattern(parser: &mut Parser<'_>) -> Result<PatternId, 
         let (end_lit, end_span) = parse_literal_pattern_payload(parser)?;
         let span = full_span.start..end_span.end;
         return Ok(parser.arena.alloc_pattern(Spanned::new(
-            Pattern::Range { start: lit, end: end_lit, inclusive },
+            Pattern::Range {
+                start: lit,
+                end: end_lit,
+                inclusive,
+            },
             span,
         )));
     }
@@ -224,10 +237,13 @@ fn parse_literal_pattern_payload(
 ) -> Result<(LiteralPattern, triet_lexer::Span), ParseError> {
     if matches!(parser.peek_token(), Some(Token::Minus)) {
         let minus = parser.expect(&Token::Minus, "`-`")?;
-        let (token, span) = parser.peek().cloned().ok_or_else(|| ParseError::UnexpectedEof {
-            expected: "literal after `-`".to_owned(),
-            span: parser.eof_span(),
-        })?;
+        let (token, span) = parser
+            .peek()
+            .cloned()
+            .ok_or_else(|| ParseError::UnexpectedEof {
+                expected: "literal after `-`".to_owned(),
+                span: parser.eof_span(),
+            })?;
         return match token {
             Token::IntegerLiteral(LexIntLiteral { value, suffix }) => {
                 parser.advance();
@@ -251,16 +267,22 @@ fn parse_literal_pattern_payload(
         };
     }
 
-    let (token, span) = parser.peek().cloned().ok_or_else(|| ParseError::UnexpectedEof {
-        expected: "literal".to_owned(),
-        span: parser.eof_span(),
-    })?;
+    let (token, span) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "literal".to_owned(),
+            span: parser.eof_span(),
+        })?;
 
     match token {
         Token::IntegerLiteral(LexIntLiteral { value, suffix }) => {
             parser.advance();
             Ok((
-                LiteralPattern::Integer { value, suffix: suffix.map(convert_suffix) },
+                LiteralPattern::Integer {
+                    value,
+                    suffix: suffix.map(convert_suffix),
+                },
                 span,
             ))
         }
@@ -431,7 +453,10 @@ mod tests {
         match &parser.arena.pattern(id).node {
             Pattern::Tuple(elements) => {
                 assert_eq!(elements.len(), 3);
-                assert!(matches!(parser.arena.pattern(elements[1]).node, Pattern::Wildcard));
+                assert!(matches!(
+                    parser.arena.pattern(elements[1]).node,
+                    Pattern::Wildcard
+                ));
             }
             other => panic!("expected Tuple, got {other:?}"),
         }
@@ -506,7 +531,11 @@ mod tests {
     fn parses_inclusive_range_pattern() {
         let (parser, id) = parse("0..=9");
         match &parser.arena.pattern(id).node {
-            Pattern::Range { start, end, inclusive } => {
+            Pattern::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 assert!(*inclusive);
                 assert!(matches!(start, LiteralPattern::Integer { value: 0, .. }));
                 assert!(matches!(end, LiteralPattern::Integer { value: 9, .. }));
@@ -528,7 +557,11 @@ mod tests {
     fn parses_negative_lower_bound_range() {
         let (parser, id) = parse("-5..=5");
         match &parser.arena.pattern(id).node {
-            Pattern::Range { start, end, inclusive } => {
+            Pattern::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 assert!(*inclusive);
                 assert!(matches!(start, LiteralPattern::Integer { value: -5, .. }));
                 assert!(matches!(end, LiteralPattern::Integer { value: 5, .. }));

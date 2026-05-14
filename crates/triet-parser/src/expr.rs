@@ -55,16 +55,16 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                 _ => None,
             };
             if let Some(name) = struct_name
-                && let Some(fields) = try_parse_struct_literal(parser) {
-                    let lhs_span = arena_span(parser, lhs);
-                    let end = parser.previous_token_end(lhs_span.end);
-                    let span = lhs_span.start..end;
-                    lhs = parser.arena.alloc_expression(Spanned::new(
-                        Expr::StructLiteral { name, fields },
-                        span,
-                    ));
-                    continue;
-                }
+                && let Some(fields) = try_parse_struct_literal(parser)
+            {
+                let lhs_span = arena_span(parser, lhs);
+                let end = parser.previous_token_end(lhs_span.end);
+                let span = lhs_span.start..end;
+                lhs = parser
+                    .arena
+                    .alloc_expression(Spanned::new(Expr::StructLiteral { name, fields }, span));
+                continue;
+            }
             // Not an identifier LHS or struct parse failed — `{` is
             // not part of this expression. Stop the Pratt loop so the
             // `{` stays available for the enclosing context (e.g.,
@@ -84,15 +84,16 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
         // Enforce no-chain rules for comparison / equality / range.
         if let Some(class) = op_kind.no_chain_class()
             && let Some(prev) = last_no_chain_class
-                && prev == class {
-                    let span = parser.current_span();
-                    parser.record_error(ParseError::ChainedNoChainOperator {
-                        class: prev.label().to_owned(),
-                        span,
-                    });
-                    // Continue parsing for recovery; the resulting AST
-                    // associates left-to-right but the error is reported.
-                }
+            && prev == class
+        {
+            let span = parser.current_span();
+            parser.record_error(ParseError::ChainedNoChainOperator {
+                class: prev.label().to_owned(),
+                span,
+            });
+            // Continue parsing for recovery; the resulting AST
+            // associates left-to-right but the error is reported.
+        }
 
         let op_span = parser.current_span();
         parser.advance(); // consume the operator token
@@ -103,7 +104,11 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                 let rhs = parse_expression_bp(parser, r_bp)?;
                 let span = arena_span(parser, lhs).start..arena_span(parser, rhs).end;
                 lhs = parser.arena.alloc_expression(Spanned::new(
-                    Expr::Range { start: lhs, end: rhs, inclusive },
+                    Expr::Range {
+                        start: lhs,
+                        end: rhs,
+                        inclusive,
+                    },
                     span,
                 ));
             }
@@ -111,7 +116,10 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                 let rhs = parse_expression_bp(parser, r_bp)?;
                 let span = arena_span(parser, lhs).start..arena_span(parser, rhs).end;
                 lhs = parser.arena.alloc_expression(Spanned::new(
-                    Expr::ElvisOp { object: lhs, default: rhs },
+                    Expr::ElvisOp {
+                        object: lhs,
+                        default: rhs,
+                    },
                     span,
                 ));
             }
@@ -119,7 +127,11 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                 let rhs = parse_expression_bp(parser, r_bp)?;
                 let span = arena_span(parser, lhs).start..arena_span(parser, rhs).end;
                 lhs = parser.arena.alloc_expression(Spanned::new(
-                    Expr::BinaryOp { operator, left: lhs, right: rhs },
+                    Expr::BinaryOp {
+                        operator,
+                        left: lhs,
+                        right: rhs,
+                    },
                     span,
                 ));
             }
@@ -150,7 +162,10 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         Token::IntegerLiteral(LexIntLiteral { value, suffix }) => {
             parser.advance();
             Ok(parser.arena.alloc_expression(Spanned::new(
-                Expr::IntegerLiteral { value, suffix: suffix.map(convert_suffix) },
+                Expr::IntegerLiteral {
+                    value,
+                    suffix: suffix.map(convert_suffix),
+                },
                 span,
             )))
         }
@@ -168,10 +183,9 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         }
         Token::True => {
             parser.advance();
-            Ok(parser.arena.alloc_expression(Spanned::new(
-                Expr::TrileanLiteral(TrileanValue::True),
-                span,
-            )))
+            Ok(parser
+                .arena
+                .alloc_expression(Spanned::new(Expr::TrileanLiteral(TrileanValue::True), span)))
         }
         Token::False => {
             parser.advance();
@@ -222,15 +236,15 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
     let operand = parse_expression_bp(parser, UNARY_RIGHT_BP)?;
     let span = op_span.start..arena_span(parser, operand).end;
     Ok(parser.arena.alloc_expression(Spanned::new(
-        Expr::UnaryOp { operator: UnaryOperator::Negate, operand },
+        Expr::UnaryOp {
+            operator: UnaryOperator::Negate,
+            operand,
+        },
         span,
     )))
 }
 
-fn parse_paren_or_tuple(
-    parser: &mut Parser<'_>,
-    open_span: Span,
-) -> Result<ExprId, ParseError> {
+fn parse_paren_or_tuple(parser: &mut Parser<'_>, open_span: Span) -> Result<ExprId, ParseError> {
     parser.expect(&Token::LParen, "`(`")?;
 
     if matches!(parser.peek_token(), Some(Token::RParen)) {
@@ -263,23 +277,19 @@ fn parse_paren_or_tuple(
         .alloc_expression(Spanned::new(Expr::Tuple(elements), span)))
 }
 
-fn parse_block_expression(
-    parser: &mut Parser<'_>,
-    open_span: Span,
-) -> Result<ExprId, ParseError> {
+fn parse_block_expression(parser: &mut Parser<'_>, open_span: Span) -> Result<ExprId, ParseError> {
     let block = parse_block(parser, open_span.clone())?;
     // Reconstruct span: start at `{`, end at `}` (the parse_block helper
     // returns the closing-brace span via its own bookkeeping below).
     let span = open_span.start..parser.previous_token_end(open_span.end);
-    Ok(parser.arena.alloc_expression(Spanned::new(Expr::Block(block), span)))
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Block(block), span)))
 }
 
 /// Parse `{ stmts? final_expr? }` into a `Block`. Used both as block
 /// expression and as function/match-arm body.
-pub(crate) fn parse_block(
-    parser: &mut Parser<'_>,
-    _open_span: Span,
-) -> Result<Block, ParseError> {
+pub(crate) fn parse_block(parser: &mut Parser<'_>, _open_span: Span) -> Result<Block, ParseError> {
     parser.expect(&Token::LBrace, "`{`")?;
 
     let mut statements = Vec::new();
@@ -378,10 +388,9 @@ fn parse_match_expression(parser: &mut Parser<'_>) -> Result<ExprId, ParseError>
 
     let close = parser.expect(&Token::RBrace, "`}`")?;
     let span = head_span.start..close.end;
-    Ok(parser.arena.alloc_expression(Spanned::new(
-        Expr::Match { scrutinee, arms },
-        span,
-    )))
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Match { scrutinee, arms }, span)))
 }
 
 fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
@@ -394,13 +403,14 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
             let mut params = Vec::new();
             if !matches!(parser.peek_token(), Some(Token::Pipe)) {
                 loop {
-                    let (name_token, _name_span) = parser
-                        .peek()
-                        .cloned()
-                        .ok_or_else(|| ParseError::UnexpectedEof {
-                            expected: "lambda parameter name".to_owned(),
-                            span: parser.eof_span(),
-                        })?;
+                    let (name_token, _name_span) =
+                        parser
+                            .peek()
+                            .cloned()
+                            .ok_or_else(|| ParseError::UnexpectedEof {
+                                expected: "lambda parameter name".to_owned(),
+                                span: parser.eof_span(),
+                            })?;
                     let name = match name_token {
                         Token::Identifier(name) => {
                             parser.advance();
@@ -419,7 +429,10 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                     } else {
                         None
                     };
-                    params.push(LambdaParam { name, type_annotation });
+                    params.push(LambdaParam {
+                        name,
+                        type_annotation,
+                    });
                     if !parser.eat(&Token::Comma) {
                         break;
                     }
@@ -456,11 +469,9 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
 
 const fn postfix_binding_power(token: &Token) -> Option<u8> {
     match token {
-        Token::Dot
-        | Token::QuestionDot
-        | Token::LParen
-        | Token::LBracket
-        | Token::BangBang => Some(POSTFIX_LEFT_BP),
+        Token::Dot | Token::QuestionDot | Token::LParen | Token::LBracket | Token::BangBang => {
+            Some(POSTFIX_LEFT_BP)
+        }
         _ => None,
     }
 }
@@ -499,10 +510,13 @@ fn parse_dot_postfix(
 ) -> Result<ExprId, ParseError> {
     parser.advance(); // consume `.` or `?.`
 
-    let (token, span) = parser.peek().cloned().ok_or_else(|| ParseError::UnexpectedEof {
-        expected: "field name, method name, or tuple index".to_owned(),
-        span: parser.eof_span(),
-    })?;
+    let (token, span) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "field name, method name, or tuple index".to_owned(),
+            span: parser.eof_span(),
+        })?;
 
     match token {
         Token::Identifier(name) => {
@@ -543,7 +557,10 @@ fn parse_dot_postfix(
                 Ok(parser.arena.alloc_expression(Spanned::new(expr, full_span)))
             }
         }
-        Token::IntegerLiteral(LexIntLiteral { value, suffix: None }) if !safe => {
+        Token::IntegerLiteral(LexIntLiteral {
+            value,
+            suffix: None,
+        }) if !safe => {
             // Tuple index: `pair.0`. Only base-10 unsuffixed integers
             // make sense as indices.
             parser.advance();
@@ -553,7 +570,10 @@ fn parse_dot_postfix(
             })?;
             let full_span = arena_span(parser, receiver).start..span.end;
             Ok(parser.arena.alloc_expression(Spanned::new(
-                Expr::TupleIndex { tuple: receiver, index },
+                Expr::TupleIndex {
+                    tuple: receiver,
+                    index,
+                },
                 full_span,
             )))
         }
@@ -625,17 +645,19 @@ fn parse_f_string(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                     None
                 };
                 parser.expect(&Token::InterpolationEnd, "`}`")?;
-                parts.push(FStringPart::Interpolation { expression, format_spec });
+                parts.push(FStringPart::Interpolation {
+                    expression,
+                    format_spec,
+                });
             }
             Token::FStringEnd => {
                 parser.advance();
                 let end_span = span.end;
                 let segments = FStringSegments { parts };
                 let full_span = start_span.start..end_span;
-                return Ok(parser.arena.alloc_expression(Spanned::new(
-                    Expr::FStringLiteral(segments),
-                    full_span,
-                )));
+                return Ok(parser
+                    .arena
+                    .alloc_expression(Spanned::new(Expr::FStringLiteral(segments), full_span)));
             }
             other => {
                 return Err(ParseError::InvalidInterpolation {
@@ -818,9 +840,7 @@ const POSTFIX_LEFT_BP: u8 = 28;
 /// cursor past `}`. On failure restores the cursor to where it was
 /// before the attempt — the `{` is NOT consumed, so the caller (or
 /// subsequent parsing) can treat it as a block/control-flow brace.
-fn try_parse_struct_literal(
-    parser: &mut Parser<'_>,
-) -> Option<Vec<(String, ExprId)>> {
+fn try_parse_struct_literal(parser: &mut Parser<'_>) -> Option<Vec<(String, ExprId)>> {
     let saved = parser.save_position();
 
     // Must start with `{`.
@@ -892,4 +912,3 @@ const fn convert_suffix(suffix: triet_lexer::NumericSuffix) -> AstSuffix {
         triet_lexer::NumericSuffix::Long => AstSuffix::Long,
     }
 }
-

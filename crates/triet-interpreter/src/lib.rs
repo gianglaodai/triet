@@ -34,7 +34,7 @@
     clippy::unnecessary_wraps,
     clippy::trivially_copy_pass_by_ref,
     clippy::needless_pass_by_ref_mut,
-    clippy::unused_self,
+    clippy::unused_self
 )]
 
 mod builtins;
@@ -96,28 +96,24 @@ mod tests {
 
     #[test]
     fn evaluates_arithmetic_precedence() {
-        let value = run_function(
-            "function calc() -> Integer = 2 + 3 * 4",
-            "calc",
-            vec![],
-        );
+        let value = run_function("function calc() -> Integer = 2 + 3 * 4", "calc", vec![]);
         assert_eq!(value, integer(14));
     }
 
     #[test]
     fn evaluates_power_right_associative() {
         // 2 ** 3 ** 2 = 2 ** (3 ** 2) = 2 ** 9 = 512
-        let value = run_function(
-            "function calc() -> Integer = 2 ** 3 ** 2",
-            "calc",
-            vec![],
-        );
+        let value = run_function("function calc() -> Integer = 2 ** 3 ** 2", "calc", vec![]);
         assert_eq!(value, integer(512));
     }
 
     #[test]
     fn evaluates_unary_negation() {
-        let value = run_function("function neg(n: Integer) -> Integer = -n", "neg", vec![integer(7)]);
+        let value = run_function(
+            "function neg(n: Integer) -> Integer = -n",
+            "neg",
+            vec![integer(7)],
+        );
         assert_eq!(value, integer(-7));
     }
 
@@ -135,8 +131,14 @@ mod tests {
 
     #[test]
     fn evaluates_trilean_literals() {
-        assert_eq!(run_function("function t() -> Trilean = true", "t", vec![]), trilean(Trilean::True));
-        assert_eq!(run_function("function f() -> Trilean = false", "f", vec![]), trilean(Trilean::False));
+        assert_eq!(
+            run_function("function t() -> Trilean = true", "t", vec![]),
+            trilean(Trilean::True)
+        );
+        assert_eq!(
+            run_function("function f() -> Trilean = false", "f", vec![]),
+            trilean(Trilean::False)
+        );
         assert_eq!(
             run_function("function u() -> Trilean = unknown", "u", vec![]),
             trilean(Trilean::Unknown),
@@ -147,15 +149,27 @@ mod tests {
     fn evaluates_logic_and() {
         let source = "function ann(a: Trilean, b: Trilean) -> Trilean = a and b";
         assert_eq!(
-            run_function(source, "ann", vec![trilean(Trilean::True), trilean(Trilean::True)]),
+            run_function(
+                source,
+                "ann",
+                vec![trilean(Trilean::True), trilean(Trilean::True)]
+            ),
             trilean(Trilean::True),
         );
         assert_eq!(
-            run_function(source, "ann", vec![trilean(Trilean::True), trilean(Trilean::Unknown)]),
+            run_function(
+                source,
+                "ann",
+                vec![trilean(Trilean::True), trilean(Trilean::Unknown)]
+            ),
             trilean(Trilean::Unknown),
         );
         assert_eq!(
-            run_function(source, "ann", vec![trilean(Trilean::False), trilean(Trilean::Unknown)]),
+            run_function(
+                source,
+                "ann",
+                vec![trilean(Trilean::False), trilean(Trilean::Unknown)]
+            ),
             trilean(Trilean::False),
         );
     }
@@ -164,7 +178,11 @@ mod tests {
     fn evaluates_lukasiewicz_implies_distinguishes_unknown_unknown() {
         let source = "function imp(a: Trilean, b: Trilean) -> Trilean = a implies b";
         assert_eq!(
-            run_function(source, "imp", vec![trilean(Trilean::Unknown), trilean(Trilean::Unknown)]),
+            run_function(
+                source,
+                "imp",
+                vec![trilean(Trilean::Unknown), trilean(Trilean::Unknown)]
+            ),
             trilean(Trilean::True),
         );
     }
@@ -173,7 +191,11 @@ mod tests {
     fn evaluates_kleene_implies_distinguishes_unknown_unknown() {
         let source = "function imp(a: Trilean, b: Trilean) -> Trilean = a kleene_implies b";
         assert_eq!(
-            run_function(source, "imp", vec![trilean(Trilean::Unknown), trilean(Trilean::Unknown)]),
+            run_function(
+                source,
+                "imp",
+                vec![trilean(Trilean::Unknown), trilean(Trilean::Unknown)]
+            ),
             trilean(Trilean::Unknown),
         );
     }
@@ -220,14 +242,23 @@ mod tests {
     #[test]
     fn evaluates_if_taking_then_branch() {
         let source = r"function pick(b: Trilean) -> Integer { if b { 1 } else { 0 } }";
-        assert_eq!(run_function(source, "pick", vec![trilean(Trilean::True)]), integer(1));
-        assert_eq!(run_function(source, "pick", vec![trilean(Trilean::False)]), integer(0));
+        assert_eq!(
+            run_function(source, "pick", vec![trilean(Trilean::True)]),
+            integer(1)
+        );
+        assert_eq!(
+            run_function(source, "pick", vec![trilean(Trilean::False)]),
+            integer(0)
+        );
     }
 
     #[test]
     fn evaluates_if_question_treats_unknown_as_false() {
         let source = r"function pick(b: Trilean) -> Integer { if? b { 1 } else { 0 } }";
-        assert_eq!(run_function(source, "pick", vec![trilean(Trilean::Unknown)]), integer(0));
+        assert_eq!(
+            run_function(source, "pick", vec![trilean(Trilean::Unknown)]),
+            integer(0)
+        );
     }
 
     #[test]
@@ -276,11 +307,7 @@ mod tests {
     #[test]
     fn evaluates_string_length_method() {
         let source = r"function len(s: String) -> Integer = s.length()";
-        let value = run_function(
-            source,
-            "len",
-            vec![Value::from_string("hello".to_owned())],
-        );
+        let value = run_function(source, "len", vec![Value::from_string("hello".to_owned())]);
         assert_eq!(value, integer(5));
     }
 
@@ -298,11 +325,7 @@ mod tests {
     #[test]
     fn evaluates_elvis_returns_unwrapped_for_non_null() {
         let source = r#"function pick(s: String?) -> String = s ?: "fallback""#;
-        let value = run_function(
-            source,
-            "pick",
-            vec![Value::from_string("real".to_owned())],
-        );
+        let value = run_function(source, "pick", vec![Value::from_string("real".to_owned())]);
         assert_eq!(value.to_string(), "real");
     }
 
@@ -384,8 +407,14 @@ mod tests {
             function odd_q(n: Integer) -> Trilean =
                 if? n == 0 { false } else { even_q(n - 1) }
         ";
-        assert_eq!(run_function(source, "even_q", vec![integer(4)]), trilean(Trilean::True));
-        assert_eq!(run_function(source, "odd_q", vec![integer(3)]), trilean(Trilean::True));
+        assert_eq!(
+            run_function(source, "even_q", vec![integer(4)]),
+            trilean(Trilean::True)
+        );
+        assert_eq!(
+            run_function(source, "odd_q", vec![integer(3)]),
+            trilean(Trilean::True)
+        );
     }
 
     // ===== End-to-end demos =====
@@ -427,7 +456,11 @@ mod tests {
             run_function(
                 source,
                 "risk",
-                vec![trilean(Trilean::True), trilean(Trilean::True), trilean(Trilean::False)],
+                vec![
+                    trilean(Trilean::True),
+                    trilean(Trilean::True),
+                    trilean(Trilean::False)
+                ],
             ),
             trilean(Trilean::True),
         );
@@ -435,7 +468,11 @@ mod tests {
             run_function(
                 source,
                 "risk",
-                vec![trilean(Trilean::True), trilean(Trilean::True), trilean(Trilean::Unknown)],
+                vec![
+                    trilean(Trilean::True),
+                    trilean(Trilean::True),
+                    trilean(Trilean::Unknown)
+                ],
             ),
             trilean(Trilean::Unknown),
         );
@@ -443,7 +480,11 @@ mod tests {
             run_function(
                 source,
                 "risk",
-                vec![trilean(Trilean::False), trilean(Trilean::False), trilean(Trilean::Unknown)],
+                vec![
+                    trilean(Trilean::False),
+                    trilean(Trilean::False),
+                    trilean(Trilean::Unknown)
+                ],
             ),
             trilean(Trilean::False),
         );

@@ -12,7 +12,7 @@
 // macro-generated functions that we cannot add doc comments to.
 #![allow(clippy::significant_drop_tightening, missing_docs)]
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::path::Path;
 use triet_ir::Vm;
 use triet_modules::ResolvedProgram;
@@ -63,9 +63,7 @@ macro_rules! bench_example {
             })
             .expect("no entry function");
         let mut group = $c.benchmark_group($name);
-        group.bench_function("interpreter", |b| {
-            b.iter(|| bench_interp(&resolved))
-        });
+        group.bench_function("interpreter", |b| b.iter(|| bench_interp(&resolved)));
         group.bench_function("vm", |b| b.iter(|| bench_vm_only(&ir, entry)));
         group.finish();
     };

@@ -9,11 +9,7 @@ use crate::types::Type;
 /// Returns the method's *return type* if `(receiver, method, arity)`
 /// matches a known built-in; otherwise `None` (which the caller turns
 /// into an `UnknownMember` error).
-pub(super) fn builtin_method_type(
-    receiver: &Type,
-    method: &str,
-    arity: usize,
-) -> Option<Type> {
+pub(super) fn builtin_method_type(receiver: &Type, method: &str, arity: usize) -> Option<Type> {
     use Type::{Integer, Long, String, Trilean, Tryte};
     match (receiver, method, arity) {
         (Tryte, "to_integer", 0) => Some(Integer),
@@ -24,27 +20,37 @@ pub(super) fn builtin_method_type(
         (Long, "to_tryte", 0) => Some(Tryte),
 
         // Try-conversions return Nullable<T>.
-        (Tryte | Long, "try_to_integer", 0) => {
-            Some(Type::Nullable(Box::new(Integer)))
-        }
-        (Integer | Long, "try_to_tryte", 0) => {
-            Some(Type::Nullable(Box::new(Tryte)))
-        }
-        (Integer | Tryte, "try_to_long", 0) => {
-            Some(Type::Nullable(Box::new(Long)))
-        }
+        (Tryte | Long, "try_to_integer", 0) => Some(Type::Nullable(Box::new(Integer))),
+        (Integer | Long, "try_to_tryte", 0) => Some(Type::Nullable(Box::new(Tryte))),
+        (Integer | Tryte, "try_to_long", 0) => Some(Type::Nullable(Box::new(Long))),
 
         // Overflow-handled arithmetic — must match self-type.
-        (Tryte, "add_and_truncate" | "add_and_saturate" | "subtract_and_truncate"
-                | "subtract_and_saturate" | "multiply_and_truncate"
-                | "multiply_and_saturate", 1) => Some(Tryte),
-        (Integer, "add_and_truncate" | "add_and_saturate" | "subtract_and_truncate"
-                  | "subtract_and_saturate" | "multiply_and_truncate"
-                  | "multiply_and_saturate", 1) => Some(Integer),
-        (Tryte, "try_add" | "try_subtract" | "try_multiply" | "try_divide"
-              | "try_modulo", 1) => Some(Type::Nullable(Box::new(Tryte))),
-        (Integer, "try_add" | "try_subtract" | "try_multiply" | "try_divide"
-                | "try_modulo", 1) => Some(Type::Nullable(Box::new(Integer))),
+        (
+            Tryte,
+            "add_and_truncate"
+            | "add_and_saturate"
+            | "subtract_and_truncate"
+            | "subtract_and_saturate"
+            | "multiply_and_truncate"
+            | "multiply_and_saturate",
+            1,
+        ) => Some(Tryte),
+        (
+            Integer,
+            "add_and_truncate"
+            | "add_and_saturate"
+            | "subtract_and_truncate"
+            | "subtract_and_saturate"
+            | "multiply_and_truncate"
+            | "multiply_and_saturate",
+            1,
+        ) => Some(Integer),
+        (Tryte, "try_add" | "try_subtract" | "try_multiply" | "try_divide" | "try_modulo", 1) => {
+            Some(Type::Nullable(Box::new(Tryte)))
+        }
+        (Integer, "try_add" | "try_subtract" | "try_multiply" | "try_divide" | "try_modulo", 1) => {
+            Some(Type::Nullable(Box::new(Integer)))
+        }
 
         // Trilean
         (Trilean, "to_trit", 0) => Some(Type::Trit),
@@ -56,12 +62,10 @@ pub(super) fn builtin_method_type(
         // Iterables — `.enumerate()` pairs each element with a 0-based
         // Integer index. Result is `Range<(Integer, T)>` so the existing
         // `for` typing path handles destructuring.
-        (Type::Range(inner), "enumerate", 0) => {
-            Some(Type::Range(Box::new(Type::Tuple(vec![
-                Integer,
-                (**inner).clone(),
-            ]))))
-        }
+        (Type::Range(inner), "enumerate", 0) => Some(Type::Range(Box::new(Type::Tuple(vec![
+            Integer,
+            (**inner).clone(),
+        ])))),
 
         // Range — only `.enumerate()` for now; other adapters arrive
         // with v0.2 generics + Iterator trait.

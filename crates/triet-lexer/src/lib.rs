@@ -29,15 +29,15 @@ pub use token::{IntLiteral, NumericSuffix, Token};
 mod tests {
     use super::*;
     use Token::{
-        And, AndAnd, As, Assign, Bang, BangBang, Break, Caret, Colon, Comma, Constant,
-        Continue, Dot, DotDot, DotDotEq, Else, EqEq, FStringEnd, FStringStart, FStringText, False,
-        FatArrow, For, From, Function, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
+        And, AndAnd, As, Assign, Bang, BangBang, Break, Caret, Colon, Comma, Constant, Continue,
+        Dot, DotDot, DotDotEq, Else, EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow,
+        For, From, Function, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
         InterpolationEnd, InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace,
         LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not,
-        NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Public, Question,
-        QuestionColon, QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star,
-        StarStar, StringLiteral, TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type,
-        Underscore, Unknown, While, WhileQ, Xor,
+        NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Public, Question, QuestionColon,
+        QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral,
+        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore, Unknown, While,
+        WhileQ, Xor,
     };
 
     fn lex_only(source: &str) -> Vec<Token> {
@@ -56,10 +56,45 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                Function, Let, Mutable, Constant, Type, If, Else, Match, Return, For, While, Loop, Break,
-                Continue, In, True, False, Unknown, Null, Not, And, Or, Xor, Iff, Implies,
-                KleeneImplies, KleeneXor, KleeneIff, Token::Import, From, As, Token::Module,
-                Public, Owned, Token::Struct, Token::Enum, Token::Crate, Token::SelfKw, Token::Super,
+                Function,
+                Let,
+                Mutable,
+                Constant,
+                Type,
+                If,
+                Else,
+                Match,
+                Return,
+                For,
+                While,
+                Loop,
+                Break,
+                Continue,
+                In,
+                True,
+                False,
+                Unknown,
+                Null,
+                Not,
+                And,
+                Or,
+                Xor,
+                Iff,
+                Implies,
+                KleeneImplies,
+                KleeneXor,
+                KleeneIff,
+                Token::Import,
+                From,
+                As,
+                Token::Module,
+                Public,
+                Owned,
+                Token::Struct,
+                Token::Enum,
+                Token::Crate,
+                Token::SelfKw,
+                Token::Super,
             ],
         );
     }
@@ -111,11 +146,14 @@ mod tests {
     fn star_star_beats_star_via_longest_match() {
         assert_eq!(lex_only("**"), vec![StarStar]);
         assert_eq!(lex_only("* *"), vec![Star, Star]);
-        assert_eq!(lex_only("a ** b"), vec![
-            Identifier("a".to_owned()),
-            StarStar,
-            Identifier("b".to_owned()),
-        ]);
+        assert_eq!(
+            lex_only("a ** b"),
+            vec![
+                Identifier("a".to_owned()),
+                StarStar,
+                Identifier("b".to_owned()),
+            ]
+        );
     }
 
     #[test]
@@ -168,11 +206,20 @@ mod tests {
         assert_eq!(lex_only(".."), vec![DotDot]);
         assert_eq!(lex_only("..="), vec![DotDotEq]);
         assert_eq!(lex_only("."), vec![Dot]);
-        assert_eq!(lex_only("0..100"), vec![
-            IntegerLiteral(IntLiteral { value: 0, suffix: None }),
-            DotDot,
-            IntegerLiteral(IntLiteral { value: 100, suffix: None }),
-        ]);
+        assert_eq!(
+            lex_only("0..100"),
+            vec![
+                IntegerLiteral(IntLiteral {
+                    value: 0,
+                    suffix: None
+                }),
+                DotDot,
+                IntegerLiteral(IntLiteral {
+                    value: 100,
+                    suffix: None
+                }),
+            ]
+        );
     }
 
     // === Punctuation ===
@@ -194,7 +241,10 @@ mod tests {
     fn lexes_plain_integer() {
         assert_eq!(
             lex_only("42"),
-            vec![IntegerLiteral(IntLiteral { value: 42, suffix: None })],
+            vec![IntegerLiteral(IntLiteral {
+                value: 42,
+                suffix: None
+            })],
         );
     }
 
@@ -202,7 +252,10 @@ mod tests {
     fn lexes_integer_with_underscores() {
         assert_eq!(
             lex_only("1_000_000"),
-            vec![IntegerLiteral(IntLiteral { value: 1_000_000, suffix: None })],
+            vec![IntegerLiteral(IntLiteral {
+                value: 1_000_000,
+                suffix: None
+            })],
         );
     }
 
@@ -211,10 +264,22 @@ mod tests {
         assert_eq!(
             lex_only("1_trit 5_tryte 42_integer 1000_long"),
             vec![
-                IntegerLiteral(IntLiteral { value: 1, suffix: Some(NumericSuffix::Trit) }),
-                IntegerLiteral(IntLiteral { value: 5, suffix: Some(NumericSuffix::Tryte) }),
-                IntegerLiteral(IntLiteral { value: 42, suffix: Some(NumericSuffix::Integer) }),
-                IntegerLiteral(IntLiteral { value: 1000, suffix: Some(NumericSuffix::Long) }),
+                IntegerLiteral(IntLiteral {
+                    value: 1,
+                    suffix: Some(NumericSuffix::Trit)
+                }),
+                IntegerLiteral(IntLiteral {
+                    value: 5,
+                    suffix: Some(NumericSuffix::Tryte)
+                }),
+                IntegerLiteral(IntLiteral {
+                    value: 42,
+                    suffix: Some(NumericSuffix::Integer)
+                }),
+                IntegerLiteral(IntLiteral {
+                    value: 1000,
+                    suffix: Some(NumericSuffix::Long)
+                }),
             ],
         );
     }
@@ -236,7 +301,10 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                IntegerLiteral(IntLiteral { value: 1, suffix: None }),
+                IntegerLiteral(IntLiteral {
+                    value: 1,
+                    suffix: None
+                }),
                 Underscore,
                 Identifier("xyz".to_owned()),
             ],
@@ -249,7 +317,10 @@ mod tests {
     fn lexes_ternary_literal_basic() {
         assert_eq!(
             lex_only("0t+0-+"),
-            vec![TernaryLiteral(IntLiteral { value: 25, suffix: None })],
+            vec![TernaryLiteral(IntLiteral {
+                value: 25,
+                suffix: None
+            })],
         );
     }
 
@@ -257,7 +328,10 @@ mod tests {
     fn lexes_ternary_zero() {
         assert_eq!(
             lex_only("0t0"),
-            vec![TernaryLiteral(IntLiteral { value: 0, suffix: None })],
+            vec![TernaryLiteral(IntLiteral {
+                value: 0,
+                suffix: None
+            })],
         );
     }
 
@@ -265,7 +339,10 @@ mod tests {
     fn lexes_ternary_positive_only() {
         assert_eq!(
             lex_only("0t+++"),
-            vec![TernaryLiteral(IntLiteral { value: 13, suffix: None })],
+            vec![TernaryLiteral(IntLiteral {
+                value: 13,
+                suffix: None
+            })],
         );
     }
 
@@ -273,7 +350,10 @@ mod tests {
     fn lexes_ternary_negative_only() {
         assert_eq!(
             lex_only("0t---"),
-            vec![TernaryLiteral(IntLiteral { value: -13, suffix: None })],
+            vec![TernaryLiteral(IntLiteral {
+                value: -13,
+                suffix: None
+            })],
         );
     }
 
@@ -281,7 +361,10 @@ mod tests {
     fn lexes_ternary_with_underscores() {
         assert_eq!(
             lex_only("0t+_0_-_+"),
-            vec![TernaryLiteral(IntLiteral { value: 25, suffix: None })],
+            vec![TernaryLiteral(IntLiteral {
+                value: 25,
+                suffix: None
+            })],
         );
     }
 
@@ -289,7 +372,10 @@ mod tests {
 
     #[test]
     fn lexes_simple_string() {
-        assert_eq!(lex_only(r#""hello""#), vec![StringLiteral("hello".to_owned())]);
+        assert_eq!(
+            lex_only(r#""hello""#),
+            vec![StringLiteral("hello".to_owned())]
+        );
     }
 
     #[test]
@@ -449,7 +535,9 @@ mod tests {
         assert!(matches!(tokens[0], FStringStart));
         assert!(matches!(tokens.last(), Some(FStringEnd)));
         // Verify the inner string literal made it through.
-        let has_string = tokens.iter().any(|t| matches!(t, StringLiteral(s) if s == "}"));
+        let has_string = tokens
+            .iter()
+            .any(|t| matches!(t, StringLiteral(s) if s == "}"));
         assert!(has_string, "expected inner string \"}}\", got {tokens:?}");
     }
 
@@ -457,7 +545,10 @@ mod tests {
     fn rejects_unmatched_closing_brace_in_f_string_text() {
         // Single `}` in text without matching `{` is an error.
         let result = lex(r#"f"oops}""#);
-        assert!(matches!(result, Err(LexError::UnmatchedFStringBrace { .. })));
+        assert!(matches!(
+            result,
+            Err(LexError::UnmatchedFStringBrace { .. })
+        ));
     }
 
     #[test]
@@ -570,9 +661,15 @@ mod tests {
             tokens,
             vec![
                 LParen,
-                IntegerLiteral(IntLiteral { value: 0, suffix: None }),
+                IntegerLiteral(IntLiteral {
+                    value: 0,
+                    suffix: None
+                }),
                 Comma,
-                IntegerLiteral(IntLiteral { value: 0, suffix: None }),
+                IntegerLiteral(IntLiteral {
+                    value: 0,
+                    suffix: None
+                }),
                 RParen,
                 FatArrow,
                 StringLiteral("FizzBuzz".to_owned()),

@@ -32,7 +32,7 @@
     clippy::redundant_pub_crate,
     clippy::needless_pass_by_value,
     clippy::unnecessary_wraps,
-    clippy::needless_continue,
+    clippy::needless_continue
 )]
 
 mod error;
@@ -271,8 +271,12 @@ mod integration_tests {
         ";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
-        let Item::Function(def) = &program.items[0].node else { panic!() };
-        let FunctionBody::Block(block) = &def.body else { panic!() };
+        let Item::Function(def) = &program.items[0].node else {
+            panic!()
+        };
+        let FunctionBody::Block(block) = &def.body else {
+            panic!()
+        };
         assert_eq!(block.statements.len(), 2);
         assert!(block.final_expression.is_some());
     }
@@ -349,9 +353,13 @@ mod integration_tests {
         assert_eq!(program.items.len(), 2);
 
         // Verify shape of each function.
-        let Item::Function(fb) = &program.items[0].node else { panic!() };
+        let Item::Function(fb) = &program.items[0].node else {
+            panic!()
+        };
         assert_eq!(fb.name, "fizzbuzz");
-        let Item::Function(main_fn) = &program.items[1].node else { panic!() };
+        let Item::Function(main_fn) = &program.items[1].node else {
+            panic!()
+        };
         assert_eq!(main_fn.name, "main");
         assert!(matches!(main_fn.body, FunctionBody::Block(_)));
     }
@@ -383,8 +391,12 @@ mod integration_tests {
         let source = "function ord() { let a = 1 let b = 2 let c = 3 }";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
-        let Item::Function(def) = &program.items[0].node else { panic!() };
-        let FunctionBody::Block(block) = &def.body else { panic!() };
+        let Item::Function(def) = &program.items[0].node else {
+            panic!()
+        };
+        let FunctionBody::Block(block) = &def.body else {
+            panic!()
+        };
         assert_eq!(block.statements.len(), 3);
         for (i, expected) in ["a", "b", "c"].iter().enumerate() {
             let stmt = program.arena.statement(block.statements[i]);

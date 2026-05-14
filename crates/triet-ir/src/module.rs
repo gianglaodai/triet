@@ -39,7 +39,9 @@ impl BasicBlock {
 
     /// Return all phi nodes in this block (must be at the top).
     pub fn phis(&self) -> impl Iterator<Item = &Instruction> {
-        self.instructions.iter().take_while(|i| matches!(i, Instruction::Phi { .. }))
+        self.instructions
+            .iter()
+            .take_while(|i| matches!(i, Instruction::Phi { .. }))
     }
 
     /// Return all non-phi, non-terminator instructions.
@@ -133,9 +135,9 @@ impl Function {
         self.blocks
             .iter()
             .flat_map(|b| {
-                b.instructions.iter().filter_map(|i| {
-                    i.destination().map(|dest| (dest, i))
-                })
+                b.instructions
+                    .iter()
+                    .filter_map(|i| i.destination().map(|dest| (dest, i)))
             })
             .collect()
     }
@@ -147,7 +149,9 @@ impl Function {
         self.blocks
             .iter()
             .flat_map(|b| {
-                b.instructions.iter().flat_map(super::instr::Instruction::value_operands)
+                b.instructions
+                    .iter()
+                    .flat_map(super::instr::Instruction::value_operands)
             })
             .collect()
     }
@@ -159,9 +163,7 @@ impl Function {
         if self.blocks.is_empty() {
             return false;
         }
-        self.blocks
-            .iter()
-            .all(|b| b.terminator().is_some())
+        self.blocks.iter().all(|b| b.terminator().is_some())
     }
 }
 
@@ -260,10 +262,7 @@ impl Instruction {
             | Self::CallCrossModule { dest, .. }
             | Self::CallBuiltin { dest, .. }
             | Self::ClosureCall { dest, .. } => *dest,
-            Self::Br { .. }
-            | Self::BrIf { .. }
-            | Self::Ret { .. }
-            | Self::Unreachable => None,
+            Self::Br { .. } | Self::BrIf { .. } | Self::Ret { .. } | Self::Unreachable => None,
         }
     }
 
@@ -272,10 +271,7 @@ impl Instruction {
     pub const fn is_terminator(&self) -> bool {
         matches!(
             self,
-            Self::Br { .. }
-                | Self::BrIf { .. }
-                | Self::Ret { .. }
-                | Self::Unreachable
+            Self::Br { .. } | Self::BrIf { .. } | Self::Ret { .. } | Self::Unreachable
         )
     }
 
@@ -413,9 +409,7 @@ impl Instruction {
             Self::FieldGet { object, .. } => {
                 object.collect_value(out);
             }
-            Self::FieldSet {
-                object, value, ..
-            } => {
+            Self::FieldSet { object, value, .. } => {
                 object.collect_value(out);
                 value.collect_value(out);
             }

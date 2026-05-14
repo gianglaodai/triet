@@ -308,7 +308,10 @@ mod tests {
 
     fn lit_int(arena: &mut Arena, value: i128, range: Span) -> ExprId {
         arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value, suffix: None },
+            Expr::IntegerLiteral {
+                value,
+                suffix: None,
+            },
             range,
         ))
     }
@@ -365,8 +368,14 @@ mod tests {
         };
         match (&normal, &question) {
             (
-                Expr::If { treat_unknown_as_false: false, .. },
-                Expr::If { treat_unknown_as_false: true, .. },
+                Expr::If {
+                    treat_unknown_as_false: false,
+                    ..
+                },
+                Expr::If {
+                    treat_unknown_as_false: true,
+                    ..
+                },
             ) => {}
             _ => panic!("flag did not differentiate variants"),
         }
@@ -405,14 +414,10 @@ mod tests {
             guard: None,
             body: true_body,
         };
-        let var_pat = arena.alloc_pattern(Spanned::new(
-            Pattern::Variable("x".to_owned()),
-            span(0, 1),
-        ));
-        let guard_expr = arena.alloc_expression(Spanned::new(
-            Expr::Identifier("ok".to_owned()),
-            span(8, 10),
-        ));
+        let var_pat =
+            arena.alloc_pattern(Spanned::new(Pattern::Variable("x".to_owned()), span(0, 1)));
+        let guard_expr =
+            arena.alloc_expression(Spanned::new(Expr::Identifier("ok".to_owned()), span(8, 10)));
         let arm_with_guard = MatchArm {
             pattern: var_pat,
             guard: Some(guard_expr),
@@ -442,7 +447,10 @@ mod tests {
     fn integer_literal_construction() {
         let mut arena = Arena::new();
         let id = arena.alloc_expression(Spanned::new(
-            Expr::IntegerLiteral { value: 42, suffix: Some(NumericSuffix::Tryte) },
+            Expr::IntegerLiteral {
+                value: 42,
+                suffix: Some(NumericSuffix::Tryte),
+            },
             span(0, 8),
         ));
         if let Expr::IntegerLiteral { value, suffix } = &arena.expression(id).node {

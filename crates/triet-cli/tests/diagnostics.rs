@@ -66,7 +66,9 @@ fn type_error_mismatch_carries_both_types() {
     let type_errors = check(&program);
     assert_eq!(type_errors.len(), 1);
     match &type_errors[0] {
-        TypeError::Mismatch { expected, found, .. } => {
+        TypeError::Mismatch {
+            expected, found, ..
+        } => {
             assert_eq!(expected.to_string(), "Integer");
             assert_eq!(found.to_string(), "String");
         }
@@ -130,17 +132,29 @@ fn type_error_invalid_operands_mentions_operator() {
 fn all_error_types_have_span_method() {
     // Verify every error variant's span() returns a usable range.
     let errors: Vec<TypeError> = vec![
-        TypeError::UnknownType { name: "Foo".into(), span: 0..3 },
-        TypeError::UndefinedName { name: "x".into(), span: 4..5 },
+        TypeError::UnknownType {
+            name: "Foo".into(),
+            span: 0..3,
+        },
+        TypeError::UndefinedName {
+            name: "x".into(),
+            span: 4..5,
+        },
         TypeError::Mismatch {
             expected: triet_typecheck::Type::Integer,
             found: triet_typecheck::Type::String,
             span: 6..7,
         },
         TypeError::AmbiguousCondition { span: 8..9 },
-        TypeError::DuplicateName { name: "f".into(), span: 10..11 },
+        TypeError::DuplicateName {
+            name: "f".into(),
+            span: 10..11,
+        },
         TypeError::NullLiteralInNonNullableContext { span: 12..13 },
-        TypeError::AssignToImmutable { name: "a".into(), span: 14..15 },
+        TypeError::AssignToImmutable {
+            name: "a".into(),
+            span: 14..15,
+        },
     ];
     for error in &errors {
         let span = error.span();

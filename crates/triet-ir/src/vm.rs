@@ -255,16 +255,11 @@ impl std::fmt::Display for VmError {
             Self::DivisionByZero { function } => {
                 write!(f, "E2204: division by zero in `{function}`")
             }
-            Self::AssertionFailed {
-                message,
-                function,
-            } => {
+            Self::AssertionFailed { message, function } => {
                 write!(
                     f,
                     "E2205: assertion failed in `{function}`{}",
-                    message
-                        .as_ref()
-                        .map_or(String::new(), |m| format!(": {m}"))
+                    message.as_ref().map_or(String::new(), |m| format!(": {m}"))
                 )
             }
             Self::OutOfBounds { function } => {
@@ -313,7 +308,10 @@ impl Frame {
         let estimated = arg_count.max(16);
         Self {
             func_id: func.id,
-            func_name: func.name.clone().unwrap_or_else(|| format!("@f{}", func.id.0)),
+            func_name: func
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("@f{}", func.id.0)),
             registers: Vec::with_capacity(estimated),
             block: func.entry_block().map_or(BlockId(0), |b| b.id),
             prev_block: None,
@@ -369,11 +367,8 @@ impl Vm {
 
         let mut block_maps: HashMap<FuncId, HashMap<BlockId, BasicBlock>> = HashMap::new();
         for func in &functions {
-            let map: HashMap<BlockId, BasicBlock> = func
-                .blocks
-                .iter()
-                .map(|b| (b.id, b.clone()))
-                .collect();
+            let map: HashMap<BlockId, BasicBlock> =
+                func.blocks.iter().map(|b| (b.id, b.clone())).collect();
             block_maps.insert(func.id, map);
         }
 
@@ -452,13 +447,13 @@ impl Vm {
                     if let Some(caller) = self.frames.last_mut()
                         && let (Some(return_block), Some(return_dest)) =
                             (completed_frame.return_block, completed_frame.return_dest)
-                        {
-                            caller.write(return_dest, value);
-                            caller.block = return_block;
-                            // pc stays where it was (already past the Call instruction)
-                        }
-                        // If no return block/dest, the call was for side effects;
-                        // the caller's pc was already advanced past the Call instruction.
+                    {
+                        caller.write(return_dest, value);
+                        caller.block = return_block;
+                        // pc stays where it was (already past the Call instruction)
+                    }
+                    // If no return block/dest, the call was for side effects;
+                    // the caller's pc was already advanced past the Call instruction.
                 }
             }
         }
@@ -621,23 +616,22 @@ impl Vm {
                 let l = read_operand(constants, frame, lhs);
                 let r = read_operand(constants, frame, rhs);
                 let cmp = runtime_cmp(&l, &r);
-                let result =
-                    if cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal {
-                        Trilean::True
-                    } else {
-                        Trilean::False
-                    };
+                let result = if cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
+                {
+                    Trilean::True
+                } else {
+                    Trilean::False
+                };
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Gt { dest, lhs, rhs } => {
                 let l = read_operand(constants, frame, lhs);
                 let r = read_operand(constants, frame, rhs);
-                let result =
-                    if runtime_cmp(&l, &r) == std::cmp::Ordering::Greater {
-                        Trilean::True
-                    } else {
-                        Trilean::False
-                    };
+                let result = if runtime_cmp(&l, &r) == std::cmp::Ordering::Greater {
+                    Trilean::True
+                } else {
+                    Trilean::False
+                };
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Ge { dest, lhs, rhs } => {
@@ -810,13 +804,11 @@ impl Vm {
             }
 
             // ── Function calls ───────────────────────────────────
-            Instruction::CallLocal {
-                dest,
-                callee,
-                args,
-            } => {
-                let arg_vals: Vec<RuntimeValue> =
-                    args.iter().map(|a| read_operand(constants, frame, *a)).collect();
+            Instruction::CallLocal { dest, callee, args } => {
+                let arg_vals: Vec<RuntimeValue> = args
+                    .iter()
+                    .map(|a| read_operand(constants, frame, *a))
+                    .collect();
 
                 let callee_func = self
                     .functions
@@ -837,23 +829,17 @@ impl Vm {
                 }
                 self.frames.push(new_frame);
             }
-            Instruction::CallBuiltin {
-                dest,
-                name,
-                args,
-            } => {
-                let arg_vals: Vec<RuntimeValue> =
-                    args.iter().map(|a| read_operand(constants, frame, *a)).collect();
+            Instruction::CallBuiltin { dest, name, args } => {
+                let arg_vals: Vec<RuntimeValue> = args
+                    .iter()
+                    .map(|a| read_operand(constants, frame, *a))
+                    .collect();
                 let result = execute_builtin(name, &arg_vals, &func_name)?;
                 if let Some(d) = dest {
                     frame.write(d, result);
                 }
             }
-            Instruction::CallCrossModule {
-                dest,
-                path,
-                args,
-            } => {
+            Instruction::CallCrossModule { dest, path, args } => {
                 let arg_vals: Vec<RuntimeValue> = args
                     .iter()
                     .map(|a| read_operand(&self.program.constants, frame, *a))
@@ -899,10 +885,8 @@ impl Vm {
                 lambda,
                 captures,
             } => {
-                let capture_vals: Vec<RuntimeValue> = captures
-                    .iter()
-                    .map(|&v| frame.read(v))
-                    .collect();
+                let capture_vals: Vec<RuntimeValue> =
+                    captures.iter().map(|&v| frame.read(v)).collect();
                 frame.write(
                     dest,
                     RuntimeValue::Closure {
@@ -917,13 +901,12 @@ impl Vm {
                 args,
             } => {
                 let clos = read_operand(constants, frame, closure);
-                let arg_vals: Vec<RuntimeValue> =
-                    args.iter().map(|a| read_operand(constants, frame, *a)).collect();
+                let arg_vals: Vec<RuntimeValue> = args
+                    .iter()
+                    .map(|a| read_operand(constants, frame, *a))
+                    .collect();
                 match clos {
-                    RuntimeValue::Closure {
-                        func_id,
-                        captures,
-                    } => {
+                    RuntimeValue::Closure { func_id, captures } => {
                         let cap_count = captures.len() as u32;
 
                         let callee_func = self
@@ -1007,16 +990,19 @@ impl Vm {
 
         Ok(StepResult::Continue)
     }
-
 }
 
 /// Read an operand from a frame, resolving constants from the pool.
-fn read_operand(constants: &crate::constant::ConstantPool, frame: &Frame, op: Operand) -> RuntimeValue {
+fn read_operand(
+    constants: &crate::constant::ConstantPool,
+    frame: &Frame,
+    op: Operand,
+) -> RuntimeValue {
     match op {
         Operand::Value(id) => frame.read(id),
-        Operand::Const(cid) => RuntimeValue::from_constant(
-            constants.get(cid).unwrap_or(&Constant::Unit),
-        ),
+        Operand::Const(cid) => {
+            RuntimeValue::from_constant(constants.get(cid).unwrap_or(&Constant::Unit))
+        }
     }
 }
 
@@ -1034,13 +1020,19 @@ enum StepResult {
 fn arithmetic_add(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match (l, r) {
         (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => {
-            Ok(RuntimeValue::Integer(a.try_add(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
+            Ok(RuntimeValue::Integer(a.try_add(*b).ok_or_else(|| {
+                VmError::Overflow {
+                    function: func.into(),
+                }
+            })?))
         }
-        (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
-            Ok(RuntimeValue::Long(*a + *b))
-        }
+        (RuntimeValue::Long(a), RuntimeValue::Long(b)) => Ok(RuntimeValue::Long(*a + *b)),
         (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => {
-            Ok(RuntimeValue::Tryte(a.try_add(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
+            Ok(RuntimeValue::Tryte(a.try_add(*b).ok_or_else(|| {
+                VmError::Overflow {
+                    function: func.into(),
+                }
+            })?))
         }
         (RuntimeValue::Trit(a), RuntimeValue::Trit(b)) => {
             let sum = a.to_i8() + b.to_i8();
@@ -1052,30 +1044,34 @@ fn arithmetic_add(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
 
 fn arithmetic_sub(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match (l, r) {
-        (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => {
-            Ok(RuntimeValue::Integer(a.try_subtract(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
-        }
-        (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
-            Ok(RuntimeValue::Long(*a - *b))
-        }
-        (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => {
-            Ok(RuntimeValue::Tryte(a.try_subtract(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
-        }
+        (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => Ok(RuntimeValue::Integer(
+            a.try_subtract(*b).ok_or_else(|| VmError::Overflow {
+                function: func.into(),
+            })?,
+        )),
+        (RuntimeValue::Long(a), RuntimeValue::Long(b)) => Ok(RuntimeValue::Long(*a - *b)),
+        (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => Ok(RuntimeValue::Tryte(
+            a.try_subtract(*b).ok_or_else(|| VmError::Overflow {
+                function: func.into(),
+            })?,
+        )),
         _ => Ok(RuntimeValue::Integer(Integer::new(0).unwrap())),
     }
 }
 
 fn arithmetic_mul(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match (l, r) {
-        (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => {
-            Ok(RuntimeValue::Integer(a.try_multiply(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
-        }
-        (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
-            Ok(RuntimeValue::Long(*a * *b))
-        }
-        (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => {
-            Ok(RuntimeValue::Tryte(a.try_multiply(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
-        }
+        (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => Ok(RuntimeValue::Integer(
+            a.try_multiply(*b).ok_or_else(|| VmError::Overflow {
+                function: func.into(),
+            })?,
+        )),
+        (RuntimeValue::Long(a), RuntimeValue::Long(b)) => Ok(RuntimeValue::Long(*a * *b)),
+        (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => Ok(RuntimeValue::Tryte(
+            a.try_multiply(*b).ok_or_else(|| VmError::Overflow {
+                function: func.into(),
+            })?,
+        )),
         _ => Ok(RuntimeValue::Integer(Integer::new(0).unwrap())),
     }
 }
@@ -1084,13 +1080,21 @@ fn arithmetic_div(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
     match (l, r) {
         (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => {
             if *b == Integer::new(0).unwrap() {
-                return Err(VmError::DivisionByZero { function: func.into() });
+                return Err(VmError::DivisionByZero {
+                    function: func.into(),
+                });
             }
-            Ok(RuntimeValue::Integer(a.try_divide(*b).map_err(|_| VmError::DivisionByZero { function: func.into() })?))
+            Ok(RuntimeValue::Integer(a.try_divide(*b).map_err(|_| {
+                VmError::DivisionByZero {
+                    function: func.into(),
+                }
+            })?))
         }
         (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
             if *b == Long::from_i128(0) {
-                return Err(VmError::DivisionByZero { function: func.into() });
+                return Err(VmError::DivisionByZero {
+                    function: func.into(),
+                });
             }
             Ok(RuntimeValue::Long(*a / *b))
         }
@@ -1102,13 +1106,21 @@ fn arithmetic_mod(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
     match (l, r) {
         (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => {
             if *b == Integer::new(0).unwrap() {
-                return Err(VmError::DivisionByZero { function: func.into() });
+                return Err(VmError::DivisionByZero {
+                    function: func.into(),
+                });
             }
-            Ok(RuntimeValue::Integer(a.try_modulo(*b).map_err(|_| VmError::DivisionByZero { function: func.into() })?))
+            Ok(RuntimeValue::Integer(a.try_modulo(*b).map_err(|_| {
+                VmError::DivisionByZero {
+                    function: func.into(),
+                }
+            })?))
         }
         (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
             if *b == Long::from_i128(0) {
-                return Err(VmError::DivisionByZero { function: func.into() });
+                return Err(VmError::DivisionByZero {
+                    function: func.into(),
+                });
             }
             Ok(RuntimeValue::Long(*a % *b))
         }
@@ -1126,9 +1138,9 @@ fn arithmetic_pow(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
             let exp = u32::try_from(b.to_i64().max(0)).unwrap_or(u32::MAX);
             let mut result = Integer::new(1).unwrap();
             for _ in 0..exp {
-                result = result
-                    .try_multiply(*a)
-                    .ok_or_else(|| VmError::Overflow { function: func.into() })?;
+                result = result.try_multiply(*a).ok_or_else(|| VmError::Overflow {
+                    function: func.into(),
+                })?;
             }
             Ok(RuntimeValue::Integer(result))
         }
@@ -1156,12 +1168,14 @@ fn arithmetic_neg(v: &RuntimeValue, _func: &str) -> Result<RuntimeValue, VmError
 
 fn convert_to_integer(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match v {
-        RuntimeValue::Trit(t) => Ok(RuntimeValue::Integer(Integer::new(i64::from(t.to_i8())).unwrap())),
-        RuntimeValue::Tryte(t) => Ok(RuntimeValue::Integer(Integer::new(i64::from(t.to_i16())).unwrap())),
+        RuntimeValue::Trit(t) => Ok(RuntimeValue::Integer(
+            Integer::new(i64::from(t.to_i8())).unwrap(),
+        )),
+        RuntimeValue::Tryte(t) => Ok(RuntimeValue::Integer(
+            Integer::new(i64::from(t.to_i16())).unwrap(),
+        )),
         RuntimeValue::Integer(_) => Ok(v.clone()),
-        RuntimeValue::Long(l) => {
-            Ok(RuntimeValue::Integer(l.to_integer()))
-        }
+        RuntimeValue::Long(l) => Ok(RuntimeValue::Integer(l.to_integer())),
         _ => Err(VmError::TypeMismatch {
             expected: TypeTag::Integer,
             actual: format!("{}", v.type_tag()),
@@ -1172,7 +1186,9 @@ fn convert_to_integer(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmEr
 
 fn convert_to_tryte(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match v {
-        RuntimeValue::Trit(t) => Ok(RuntimeValue::Tryte(Tryte::new(i16::from(t.to_i8())).unwrap())),
+        RuntimeValue::Trit(t) => Ok(RuntimeValue::Tryte(
+            Tryte::new(i16::from(t.to_i8())).unwrap(),
+        )),
         RuntimeValue::Tryte(_) => Ok(v.clone()),
         RuntimeValue::Integer(i) => Ok(RuntimeValue::Tryte(
             Tryte::new(i.to_i64() as i16).unwrap_or(Tryte::ZERO),
@@ -1309,7 +1325,9 @@ fn execute_builtin(
                 Some(RuntimeValue::String(s)) => s.chars().count(),
                 _ => 0,
             };
-            Ok(RuntimeValue::Integer(Integer::new(i64::try_from(s).unwrap_or(0)).unwrap_or_default()))
+            Ok(RuntimeValue::Integer(
+                Integer::new(i64::try_from(s).unwrap_or(0)).unwrap_or_default(),
+            ))
         }
         BuiltinName::TextConcat => {
             use std::fmt::Write as _;
@@ -1335,10 +1353,10 @@ fn execute_builtin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ConstId;
     use crate::constant::ConstantPool;
     use crate::instr::PhiIncoming;
     use crate::module::{BasicBlock, Function, IrModule};
-    use crate::ConstId;
     use triet_modules::{AbsolutePath, ModulePath};
 
     fn make_int(n: i64) -> RuntimeValue {
@@ -1363,7 +1381,10 @@ mod tests {
         let func = Function {
             id: FuncId(0),
             name: Some("add".into()),
-            params: vec![("a".into(), TypeTag::Integer), ("b".into(), TypeTag::Integer)],
+            params: vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
             return_type: TypeTag::Integer,
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -1395,7 +1416,10 @@ mod tests {
         let func = Function {
             id: FuncId(0),
             name: Some("mul".into()),
-            params: vec![("a".into(), TypeTag::Integer), ("b".into(), TypeTag::Integer)],
+            params: vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
             return_type: TypeTag::Integer,
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -1425,7 +1449,10 @@ mod tests {
         let func = Function {
             id: FuncId(0),
             name: Some("sub_div".into()),
-            params: vec![("a".into(), TypeTag::Integer), ("b".into(), TypeTag::Integer)],
+            params: vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
             return_type: TypeTag::Integer,
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -1491,7 +1518,10 @@ mod tests {
         let mut vm = Vm::new(prog);
         let result = vm.execute(FuncId(0), vec![]);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::DivisionByZero { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            VmError::DivisionByZero { .. }
+        ));
     }
 
     // ── Logic VM tests ──────────────────────────────────────────
@@ -1587,7 +1617,10 @@ mod tests {
         let func = Function {
             id: FuncId(0),
             name: Some("cmp_eq".into()),
-            params: vec![("a".into(), TypeTag::Integer), ("b".into(), TypeTag::Integer)],
+            params: vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
             return_type: TypeTag::Trilean,
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -1755,9 +1788,7 @@ mod tests {
         prog.constants = pool;
 
         let mut vm = Vm::new(prog);
-        let result = vm
-            .execute(FuncId(0), vec![make_int(5)])
-            .unwrap();
+        let result = vm.execute(FuncId(0), vec![make_int(5)]).unwrap();
         // 5! = 120
         assert_eq!(result.to_string(), make_int(120).to_string());
     }
@@ -1812,17 +1843,13 @@ mod tests {
                             dest: ValueId(2),
                             operand: Operand::Value(ValueId(0)),
                         },
-                        Instruction::Br {
-                            target: BlockId(3),
-                        },
+                        Instruction::Br { target: BlockId(3) },
                     ],
                 },
                 BasicBlock {
                     id: BlockId(2),
                     name: Some("pos".into()),
-                    instructions: vec![Instruction::Br {
-                        target: BlockId(3),
-                    }],
+                    instructions: vec![Instruction::Br { target: BlockId(3) }],
                 },
                 BasicBlock {
                     id: BlockId(3),
@@ -1853,16 +1880,12 @@ mod tests {
 
         // abs(-5) = 5
         let mut vm = Vm::new(prog.clone());
-        let result = vm
-            .execute(FuncId(0), vec![make_int(-5)])
-            .unwrap();
+        let result = vm.execute(FuncId(0), vec![make_int(-5)]).unwrap();
         assert_eq!(result.to_string(), make_int(5).to_string());
 
         // abs(7) = 7
         let mut vm2 = Vm::new(prog);
-        let result2 = vm2
-            .execute(FuncId(0), vec![make_int(7)])
-            .unwrap();
+        let result2 = vm2.execute(FuncId(0), vec![make_int(7)]).unwrap();
         assert_eq!(result2.to_string(), make_int(7).to_string());
     }
 
@@ -1946,7 +1969,7 @@ mod tests {
     /// `-(MAX) == MIN` — does NOT overflow (unlike 2's complement).
     #[test]
     fn balanced_ternary_negate_max_equals_min() {
-        let a = make_int(Integer::MAX.to_i64());  // +3_812_798_742_493
+        let a = make_int(Integer::MAX.to_i64()); // +3_812_798_742_493
         let neg_a = arithmetic_neg(&a, "test").unwrap();
         assert_eq!(neg_a.to_string(), Integer::MIN.to_string());
         // Double negation must return original value.
@@ -2028,21 +2051,21 @@ mod tests {
 
         // Ł3 AND (=min): U∧F=F, U∧U=U, U∧T=U, F∧T=F, T∧T=T
         let expected_and = [
-            [Trilean::False, Trilean::False, Trilean::False],   // F ∧ ...
+            [Trilean::False, Trilean::False, Trilean::False], // F ∧ ...
             [Trilean::False, Trilean::Unknown, Trilean::Unknown], // U ∧ ...
-            [Trilean::False, Trilean::Unknown, Trilean::True],    // T ∧ ...
+            [Trilean::False, Trilean::Unknown, Trilean::True], // T ∧ ...
         ];
         // Ł3 OR (=max): U∨F=U, U∨U=U, U∨T=T, F∨T=T, T∨T=T
         let expected_or = [
             [Trilean::False, Trilean::Unknown, Trilean::True], // F ∨ ...
             [Trilean::Unknown, Trilean::Unknown, Trilean::True], // U ∨ ...
-            [Trilean::True, Trilean::True, Trilean::True],      // T ∨ ...
+            [Trilean::True, Trilean::True, Trilean::True],     // T ∨ ...
         ];
         // Ł3 IMPLIES (=>): min(1, 1-a+b). U⇒U=T (key!), F⇒U=T
         let expected_implies = [
-            [Trilean::True, Trilean::True, Trilean::True],         // F ⇒ ...
-            [Trilean::Unknown, Trilean::True, Trilean::True],      // U ⇒ ...  (U⇒U = T!)
-            [Trilean::False, Trilean::Unknown, Trilean::True],     // T ⇒ ...
+            [Trilean::True, Trilean::True, Trilean::True], // F ⇒ ...
+            [Trilean::Unknown, Trilean::True, Trilean::True], // U ⇒ ...  (U⇒U = T!)
+            [Trilean::False, Trilean::Unknown, Trilean::True], // T ⇒ ...
         ];
 
         for (i, lhs) in values.iter().enumerate() {
@@ -2092,13 +2115,18 @@ mod tests {
                 id: BlockId(0),
                 name: Some("entry".into()),
                 instructions: vec![
-                    Instruction::Const { dest: ValueId(0), constant: cu },
+                    Instruction::Const {
+                        dest: ValueId(0),
+                        constant: cu,
+                    },
                     Instruction::LukImplies {
                         dest: ValueId(1),
                         lhs: Operand::Value(ValueId(0)),
                         rhs: Operand::Value(ValueId(0)),
                     },
-                    Instruction::Ret { value: Some(Operand::Value(ValueId(1))) },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(1))),
+                    },
                 ],
             }],
         };
@@ -2106,7 +2134,11 @@ mod tests {
         prog1.constants = pool.clone();
         let mut vm1 = Vm::new(prog1);
         let r1 = vm1.execute(FuncId(0), vec![]).unwrap();
-        assert_eq!(r1.to_string(), Trilean::True.to_string(), "Ł3: U⇒U must be True");
+        assert_eq!(
+            r1.to_string(),
+            Trilean::True.to_string(),
+            "Ł3: U⇒U must be True"
+        );
 
         // K3 implication: Unknown ~> Unknown = Unknown
         let k3_func = Function {
@@ -2118,13 +2150,18 @@ mod tests {
                 id: BlockId(0),
                 name: Some("entry".into()),
                 instructions: vec![
-                    Instruction::Const { dest: ValueId(0), constant: cu },
+                    Instruction::Const {
+                        dest: ValueId(0),
+                        constant: cu,
+                    },
                     Instruction::KleeneImplies {
                         dest: ValueId(1),
                         lhs: Operand::Value(ValueId(0)),
                         rhs: Operand::Value(ValueId(0)),
                     },
-                    Instruction::Ret { value: Some(Operand::Value(ValueId(1))) },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(1))),
+                    },
                 ],
             }],
         };
@@ -2132,6 +2169,10 @@ mod tests {
         prog2.constants = pool;
         let mut vm2 = Vm::new(prog2);
         let r2 = vm2.execute(FuncId(0), vec![]).unwrap();
-        assert_eq!(r2.to_string(), Trilean::Unknown.to_string(), "K3: U~>U must be Unknown");
+        assert_eq!(
+            r2.to_string(),
+            Trilean::Unknown.to_string(),
+            "K3: U~>U must be Unknown"
+        );
     }
 }

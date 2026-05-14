@@ -63,7 +63,10 @@ pub enum LexError {
 
     /// String literal was opened but never closed before EOF.
     #[error("unterminated string literal")]
-    #[diagnostic(code(triet::lex::E0005), help("add a closing `\"` to terminate the string"))]
+    #[diagnostic(
+        code(triet::lex::E0005),
+        help("add a closing `\"` to terminate the string")
+    )]
     UnterminatedString {
         /// Byte range of the string opener.
         #[label("starts here")]

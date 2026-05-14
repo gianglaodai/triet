@@ -116,27 +116,58 @@ impl PartialEq for Value {
             (Self::Trilean(a), Self::Trilean(b)) => a == b,
             (Self::String(a), Self::String(b)) => **a == **b,
             (Self::Unit, Self::Unit) | (Self::Null, Self::Null) => true,
-            (Self::Tuple(a), Self::Tuple(b)) => a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y),
+            (Self::Tuple(a), Self::Tuple(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+            }
             (
-                Self::Range { start: s1, end: e1, inclusive: i1 },
-                Self::Range { start: s2, end: e2, inclusive: i2 },
+                Self::Range {
+                    start: s1,
+                    end: e1,
+                    inclusive: i1,
+                },
+                Self::Range {
+                    start: s2,
+                    end: e2,
+                    inclusive: i2,
+                },
             ) => s1 == s2 && e1 == e2 && i1 == i2,
             (
-                Self::Enumerate { inner: i1, next_index: n1 },
-                Self::Enumerate { inner: i2, next_index: n2 },
+                Self::Enumerate {
+                    inner: i1,
+                    next_index: n1,
+                },
+                Self::Enumerate {
+                    inner: i2,
+                    next_index: n2,
+                },
             ) => i1 == i2 && n1 == n2,
             // Functions / lambdas / builtins compare by identity (Rc
             // pointer); comparing them in source code is rare.
             (Self::Function(a), Self::Function(b)) => Rc::ptr_eq(a, b),
             (Self::Lambda(a), Self::Lambda(b)) => Rc::ptr_eq(a, b),
             (Self::Builtin(a), Self::Builtin(b)) => std::ptr::fn_addr_eq(*a, *b),
-            (Self::Struct { name: n1, fields: f1 }, Self::Struct { name: n2, fields: f2 }) => {
-                n1 == n2 && f1.len() == f2.len() && f1.iter().all(|(k, v)| f2.get(k) == Some(v))
-            }
-            (Self::EnumVariant { name: n1, variant: v1, payload: p1 },
-             Self::EnumVariant { name: n2, variant: v2, payload: p2 }) => {
-                n1 == n2 && v1 == v2 && p1 == p2
-            }
+            (
+                Self::Struct {
+                    name: n1,
+                    fields: f1,
+                },
+                Self::Struct {
+                    name: n2,
+                    fields: f2,
+                },
+            ) => n1 == n2 && f1.len() == f2.len() && f1.iter().all(|(k, v)| f2.get(k) == Some(v)),
+            (
+                Self::EnumVariant {
+                    name: n1,
+                    variant: v1,
+                    payload: p1,
+                },
+                Self::EnumVariant {
+                    name: n2,
+                    variant: v2,
+                    payload: p2,
+                },
+            ) => n1 == n2 && v1 == v2 && p1 == p2,
             _ => false,
         }
     }
@@ -165,7 +196,11 @@ impl fmt::Display for Value {
                 }
                 formatter.write_str(")")
             }
-            Self::Range { start, end, inclusive } => {
+            Self::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 let separator = if *inclusive { "..=" } else { ".." };
                 write!(formatter, "{start}{separator}{end}")
             }
@@ -185,7 +220,11 @@ impl fmt::Display for Value {
                 }
                 formatter.write_str(" }")
             }
-            Self::EnumVariant { name, variant, payload } => {
+            Self::EnumVariant {
+                name,
+                variant,
+                payload,
+            } => {
                 write!(formatter, "{name}::{variant}")?;
                 if let Some(p) = payload {
                     write!(formatter, "({p})")?;
@@ -232,7 +271,10 @@ mod tests {
     #[test]
     fn trilean_values_compare_correctly() {
         assert_eq!(Value::Trilean(Trilean::True), Value::Trilean(Trilean::True));
-        assert_ne!(Value::Trilean(Trilean::True), Value::Trilean(Trilean::Unknown));
+        assert_ne!(
+            Value::Trilean(Trilean::True),
+            Value::Trilean(Trilean::Unknown)
+        );
     }
 
     #[test]

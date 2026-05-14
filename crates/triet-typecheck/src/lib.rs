@@ -27,7 +27,7 @@
     clippy::match_same_arms,
     clippy::option_if_let_else,
     clippy::or_fun_call,
-    clippy::missing_panics_doc,
+    clippy::missing_panics_doc
 )]
 
 mod check;
@@ -49,10 +49,7 @@ mod tests {
 
     fn check_source(source: &str) -> Vec<TypeError> {
         let (program, parse_errors) = parse(source);
-        assert!(
-            parse_errors.is_empty(),
-            "parse errors: {parse_errors:#?}",
-        );
+        assert!(parse_errors.is_empty(), "parse errors: {parse_errors:#?}");
         check(&program)
     }
 
@@ -91,13 +88,15 @@ mod tests {
 
     #[test]
     fn checks_let_with_inferred_type() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function main() {
                 let x = 5
                 let y = x + 1
                 println(to_string(y))
             }
-        ");
+        ",
+        );
     }
 
     #[test]
@@ -107,33 +106,39 @@ mod tests {
 
     #[test]
     fn checks_if_with_trilean_condition() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function check(b: Trilean) -> Integer {
                 if b { 1 } else { 0 }
             }
-        ");
+        ",
+        );
     }
 
     #[test]
     fn checks_match_with_consistent_arms() {
-        assert_ok(r#"
+        assert_ok(
+            r#"
             function classify(n: Integer) -> String =
                 match n {
                     0 => "zero",
                     _ => "nonzero",
                 }
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn checks_for_loop_over_range() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function count() {
                 for i in 0..10 {
                     print(to_string(i))
                 }
             }
-        ");
+        ",
+        );
     }
 
     #[test]
@@ -143,28 +148,34 @@ mod tests {
 
     #[test]
     fn checks_logic_expression_with_trileans() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function risk(fever: Trilean, rash: Trilean, vaccinated: Trilean) -> Trilean =
                 fever and rash and not vaccinated
-        ");
+        ",
+        );
     }
 
     #[test]
     fn checks_implication_returns_trilean() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function entail(p: Trilean, q: Trilean) -> Trilean = p implies q
-        ");
+        ",
+        );
     }
 
     #[test]
     fn checks_block_with_final_expression() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function compute() -> Integer {
                 let a = 5
                 let b = 7
                 a + b
             }
-        ");
+        ",
+        );
     }
 
     #[test]
@@ -174,9 +185,11 @@ mod tests {
 
     #[test]
     fn checks_tuple_index_lookup() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function first(pair: (Integer, Trilean)) -> Integer = pair.0
-        ");
+        ",
+        );
     }
 
     // ===== Error cases =====
@@ -223,34 +236,37 @@ mod tests {
 
     #[test]
     fn flags_let_annotation_mismatch() {
-        assert_has_error(
-            r#"function bad() { let x: Integer = "hi" }"#,
-            |e| matches!(e, TypeError::Mismatch { .. }),
-        );
+        assert_has_error(r#"function bad() { let x: Integer = "hi" }"#, |e| {
+            matches!(e, TypeError::Mismatch { .. })
+        });
     }
 
     #[test]
     fn flags_function_return_mismatch() {
-        assert_has_error(
-            r#"function bad() -> Integer = "hi""#,
-            |e| matches!(e, TypeError::Mismatch { .. }),
-        );
+        assert_has_error(r#"function bad() -> Integer = "hi""#, |e| {
+            matches!(e, TypeError::Mismatch { .. })
+        });
     }
 
     #[test]
     fn flags_call_arity_mismatch() {
-        assert_has_error(
-            r"function main() { print() }",
-            |e| matches!(e, TypeError::WrongArity { expected: 1, found: 0, .. }),
-        );
+        assert_has_error(r"function main() { print() }", |e| {
+            matches!(
+                e,
+                TypeError::WrongArity {
+                    expected: 1,
+                    found: 0,
+                    ..
+                }
+            )
+        });
     }
 
     #[test]
     fn flags_call_argument_type_mismatch() {
-        assert_has_error(
-            r"function main() { print(42) }",
-            |e| matches!(e, TypeError::Mismatch { .. }),
-        );
+        assert_has_error(r"function main() { print(42) }", |e| {
+            matches!(e, TypeError::Mismatch { .. })
+        });
     }
 
     #[test]
@@ -271,10 +287,9 @@ mod tests {
 
     #[test]
     fn flags_force_unwrap_on_non_nullable() {
-        assert_has_error(
-            r"function bad(s: String) -> String = s!!",
-            |e| matches!(e, TypeError::NotNullable { .. }),
-        );
+        assert_has_error(r"function bad(s: String) -> String = s!!", |e| {
+            matches!(e, TypeError::NotNullable { .. })
+        });
     }
 
     #[test]
@@ -308,19 +323,22 @@ mod tests {
 
     #[test]
     fn checks_nested_if_else_chain() {
-        assert_ok(r#"
+        assert_ok(
+            r#"
             function classify(score: Integer) -> String {
                 if score >= 90 { "A" }
                 else if score >= 80 { "B" }
                 else if score >= 70 { "C" }
                 else { "F" }
             }
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn checks_program_with_multiple_items() {
-        assert_ok(r"
+        assert_ok(
+            r"
             constant MAX: Integer = 100
 
             function double(n: Integer) -> Integer = n * 2
@@ -329,27 +347,32 @@ mod tests {
                 let x = double(MAX)
                 println(to_string(x))
             }
-        ");
+        ",
+        );
     }
 
     #[test]
     fn forward_reference_to_later_function_resolves() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function one() -> Integer = two()
             function two() -> Integer = 2
-        ");
+        ",
+        );
     }
 
     // ===== Assignment (SPEC §5) =====
 
     #[test]
     fn checks_assignment_to_mut_binding() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function main() {
                 let mutable count = 0
                 count = count + 1
             }
-        ");
+        ",
+        );
     }
 
     #[test]
@@ -392,27 +415,31 @@ mod tests {
 
     #[test]
     fn checks_assignment_in_inner_scope_to_outer_mut_binding() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function main() {
                 let mutable count = 0
                 if? true {
                     count = count + 1
                 }
             }
-        ");
+        ",
+        );
     }
 
     // ===== Iterator: enumerate (SPEC §7.2) =====
 
     #[test]
     fn checks_enumerate_on_range_with_tuple_destructuring() {
-        assert_ok(r"
+        assert_ok(
+            r"
             function main() {
                 for (i, v) in (0..5).enumerate() {
                     println(to_string(i + v))
                 }
             }
-        ");
+        ",
+        );
     }
 
     #[test]
