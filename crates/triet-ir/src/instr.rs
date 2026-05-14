@@ -295,13 +295,34 @@ pub enum Instruction {
     /// Unconditional branch: `Br target`.
     Br { target: BlockId },
     /// Conditional branch on Trilean condition: `BrIf %cond, then, else`.
-    /// `true` → `then_block`, `false` or `unknown` → `else_block`
-    /// (matches `if?` semantics; for `if`, the lowerer inserts an
-    ///  `unknown` check before the branch).
+    /// `true` → `then_block`, `false` or `unknown` → `else_block`.
+    ///
+    /// **DEPRECATED in favor of `BrTrilean`** per ADR-0010. Retained for
+    /// .triv v1 backward compatibility and for genuinely-binary callers
+    /// (e.g. branching on a Trit whose third state is statically impossible).
+    /// New lowerer code must emit `BrTrilean` instead so the Unknown state
+    /// is preserved at the IR level.
     BrIf {
         cond: Operand,
         then_block: BlockId,
         else_block: BlockId,
+    },
+    /// Three-way branch on a Trilean condition: ADR-0010 ternary-native IR.
+    ///
+    /// Dispatches directly on the three Ł3 truth values:
+    /// - `Trilean::True`    → `true_block`
+    /// - `Trilean::Unknown` → `unknown_block`
+    /// - `Trilean::False`   → `false_block`
+    ///
+    /// When two of the three targets are the same the opcode degenerates to
+    /// classical two-way branching; the lowerer uses this to express `if?`
+    /// (`unknown_block == false_block`) vs plain `if` (`unknown_block`
+    /// jumps to an `Unreachable` block, panicking per SPEC §7.1.1).
+    BrTrilean {
+        cond: Operand,
+        true_block: BlockId,
+        unknown_block: BlockId,
+        false_block: BlockId,
     },
     /// Return from the current function: `Ret [%value]`.
     Ret { value: Option<Operand> },

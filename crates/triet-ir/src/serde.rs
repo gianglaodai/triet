@@ -18,7 +18,11 @@ use crate::types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 // ── Constants ──────────────────────────────────────────────────────
 
 const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
-const VERSION: u32 = 1;
+/// `.triv` format version. Bumped per ADR-0010 because the IR opcode
+/// table gained `BR_TRILEAN` (0xB4) — v1 readers will hit
+/// `TrivError::UnknownOpcode` if they encounter it, so we surface the
+/// version mismatch up-front instead of silently corrupting decode.
+const VERSION: u32 = 2;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
@@ -73,6 +77,8 @@ mod opcode {
     pub(super) const BR_IF: u8 = 0xB1;
     pub(super) const RET: u8 = 0xB2;
     pub(super) const UNREACHABLE: u8 = 0xB3;
+    /// ADR-0010 — three-way branch on Trilean condition. Added in .triv v2.
+    pub(super) const BR_TRILEAN: u8 = 0xB4;
     pub(super) const PHI: u8 = 0xC0;
 }
 
@@ -731,6 +737,18 @@ fn write_instruction(buf: &mut Vec<u8>, instr: &Instruction) {
             write_varint(buf, then_block.0);
             write_varint(buf, else_block.0);
         }
+        Instruction::BrTrilean {
+            cond,
+            true_block,
+            unknown_block,
+            false_block,
+        } => {
+            write_u8(buf, opcode::BR_TRILEAN);
+            write_operand(buf, *cond);
+            write_varint(buf, true_block.0);
+            write_varint(buf, unknown_block.0);
+            write_varint(buf, false_block.0);
+        }
         Instruction::Ret { value } => {
             write_u8(buf, opcode::RET);
             write_option_operand(buf, *value);
@@ -1018,6 +1036,18 @@ fn read_instruction(data: &[u8], pos: &mut usize) -> Result<Instruction, TrivErr
                 cond,
                 then_block,
                 else_block,
+            })
+        }
+        opcode::BR_TRILEAN => {
+            let cond = read_operand(data, pos)?;
+            let true_block = BlockId(read_varint(data, pos)?);
+            let unknown_block = BlockId(read_varint(data, pos)?);
+            let false_block = BlockId(read_varint(data, pos)?);
+            Ok(Instruction::BrTrilean {
+                cond,
+                true_block,
+                unknown_block,
+                false_block,
             })
         }
         opcode::RET => {
@@ -1867,6 +1897,70 @@ mod tests {
                                     value: Some(Operand::Value(ValueId(3))),
                                 },
                             ],
+                        },
+                    ],
+                }],
+            }],
+            constants: pool,
+        };
+
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).unwrap();
+        assert_eq!(decoded, program);
+    }
+
+    /// Round-trip a `BrTrilean` instruction — ADR-0010 ternary-native
+    /// branch. Catches encoding/decoding mismatches for the new opcode +
+    /// the .triv v1 → v2 version bump.
+    #[test]
+    fn br_trilean_round_trip() {
+        let mut pool = ConstantPool::new();
+        let c_pos = pool.intern(Constant::Integer(int(1)));
+        let c_neg = pool.intern(Constant::Integer(int(-1)));
+        let c_zero = pool.intern(Constant::Integer(int(0)));
+
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::crate_root(),
+                    "test".into(),
+                ),
+                functions: vec![Function {
+                    id: FuncId(0),
+                    name: Some("sign".into()),
+                    params: vec![("%cond".into(), TypeTag::Trilean)],
+                    return_type: TypeTag::Integer,
+                    blocks: vec![
+                        BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::BrTrilean {
+                                cond: Operand::Value(ValueId(0)),
+                                true_block: BlockId(1),
+                                unknown_block: BlockId(2),
+                                false_block: BlockId(3),
+                            }],
+                        },
+                        BasicBlock {
+                            id: BlockId(1),
+                            name: Some("yes".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Const(c_pos)),
+                            }],
+                        },
+                        BasicBlock {
+                            id: BlockId(2),
+                            name: Some("maybe".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Const(c_zero)),
+                            }],
+                        },
+                        BasicBlock {
+                            id: BlockId(3),
+                            name: Some("no".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Const(c_neg)),
+                            }],
                         },
                     ],
                 }],

@@ -262,7 +262,11 @@ impl Instruction {
             | Self::CallCrossModule { dest, .. }
             | Self::CallBuiltin { dest, .. }
             | Self::ClosureCall { dest, .. } => *dest,
-            Self::Br { .. } | Self::BrIf { .. } | Self::Ret { .. } | Self::Unreachable => None,
+            Self::Br { .. }
+            | Self::BrIf { .. }
+            | Self::BrTrilean { .. }
+            | Self::Ret { .. }
+            | Self::Unreachable => None,
         }
     }
 
@@ -271,7 +275,11 @@ impl Instruction {
     pub const fn is_terminator(&self) -> bool {
         matches!(
             self,
-            Self::Br { .. } | Self::BrIf { .. } | Self::Ret { .. } | Self::Unreachable
+            Self::Br { .. }
+                | Self::BrIf { .. }
+                | Self::BrTrilean { .. }
+                | Self::Ret { .. }
+                | Self::Unreachable
         )
     }
 
@@ -447,7 +455,7 @@ impl Instruction {
             Self::ClosureNew { captures, .. } => {
                 out.extend(captures);
             }
-            Self::BrIf { cond, .. } => {
+            Self::BrIf { cond, .. } | Self::BrTrilean { cond, .. } => {
                 cond.collect_value(out);
             }
             Self::Ret { value, .. } => {

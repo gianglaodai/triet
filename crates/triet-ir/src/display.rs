@@ -218,6 +218,17 @@ impl fmt::Display for Instruction {
             } => {
                 write!(f, "br_if {cond}, {then_block}, {else_block}")
             }
+            Self::BrTrilean {
+                cond,
+                true_block,
+                unknown_block,
+                false_block,
+            } => {
+                write!(
+                    f,
+                    "br_trilean {cond}, +{true_block}, ?{unknown_block}, -{false_block}"
+                )
+            }
             Self::Ret { value } => {
                 write!(f, "ret")?;
                 if let Some(v) = value {

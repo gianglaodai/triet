@@ -963,6 +963,23 @@ impl Vm {
                 frame.prev_block = Some(prev);
                 frame.pc = 0;
             }
+            Instruction::BrTrilean {
+                cond,
+                true_block,
+                unknown_block,
+                false_block,
+            } => {
+                // ADR-0010: native three-way branch on Ł3 cond.
+                let c = read_operand(constants, frame, cond);
+                let prev = frame.block;
+                frame.block = match c.as_trilean() {
+                    Trilean::True => true_block,
+                    Trilean::Unknown => unknown_block,
+                    Trilean::False => false_block,
+                };
+                frame.prev_block = Some(prev);
+                frame.pc = 0;
+            }
             Instruction::Ret { value } => {
                 let val = value.map_or(RuntimeValue::Unit, |v| read_operand(constants, frame, v));
                 return Ok(StepResult::Return(val));
@@ -1708,6 +1725,75 @@ mod tests {
             .execute(FuncId(0), vec![RuntimeValue::Trilean(Trilean::False)])
             .unwrap();
         assert_eq!(result2.to_string(), make_int(0).to_string());
+    }
+
+    /// ADR-0010 — `BrTrilean` dispatches each of the three Trilean values
+    /// to its own block. Unknown does NOT collapse to else.
+    #[test]
+    fn vm_br_trilean_three_way() {
+        let mut pool = ConstantPool::new();
+        let c_pos = pool.intern(Constant::Integer(Integer::new(1).unwrap()));
+        let c_zero = pool.intern(Constant::Integer(Integer::new(0).unwrap()));
+        let c_neg = pool.intern(Constant::Integer(Integer::new(-1).unwrap()));
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("sign".into()),
+            params: vec![("c".into(), TypeTag::Trilean)],
+            return_type: TypeTag::Integer,
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId(0),
+                    name: Some("entry".into()),
+                    instructions: vec![Instruction::BrTrilean {
+                        cond: Operand::Value(ValueId(0)),
+                        true_block: BlockId(1),
+                        unknown_block: BlockId(2),
+                        false_block: BlockId(3),
+                    }],
+                },
+                BasicBlock {
+                    id: BlockId(1),
+                    name: Some("yes".into()),
+                    instructions: vec![Instruction::Ret {
+                        value: Some(Operand::Const(c_pos)),
+                    }],
+                },
+                BasicBlock {
+                    id: BlockId(2),
+                    name: Some("maybe".into()),
+                    instructions: vec![Instruction::Ret {
+                        value: Some(Operand::Const(c_zero)),
+                    }],
+                },
+                BasicBlock {
+                    id: BlockId(3),
+                    name: Some("no".into()),
+                    instructions: vec![Instruction::Ret {
+                        value: Some(Operand::Const(c_neg)),
+                    }],
+                },
+            ],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+
+        // Each Trilean value reaches its dedicated block (not collapsed).
+        for (input, expected) in [
+            (Trilean::True, 1_i64),
+            (Trilean::Unknown, 0_i64),
+            (Trilean::False, -1_i64),
+        ] {
+            let mut vm = Vm::new(prog.clone());
+            let result = vm
+                .execute(FuncId(0), vec![RuntimeValue::Trilean(input)])
+                .unwrap();
+            assert_eq!(
+                result.to_string(),
+                make_int(expected).to_string(),
+                "BrTrilean({input:?}) → expected {expected}",
+            );
+        }
     }
 
     #[test]
