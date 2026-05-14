@@ -1,17 +1,26 @@
 //! Binary serializer/deserializer for `.tripack` files.
 //!
-//! Encoding rules follow [ADR-0011 §6]: little-endian multi-byte
-//! integers, LEB128 varints for size + index fields, length-prefixed
-//! UTF-8 for strings. Sort orders match the canonical-encoding rules
-//! so `iface_hash` stays stable across re-builds.
+//! Encoding rules follow [ADR-0011 §6] (canonical encoding) and
+//! [ADR-0014] (3-cấp hash tree + format bump `abi_version` 1 → 2):
+//! little-endian multi-byte integers, LEB128 varints for size + index
+//! fields, length-prefixed UTF-8 for strings. Sort orders match the
+//! canonical-encoding rules so every hash level stays stable across
+//! re-builds.
 //!
 //! [ADR-0011 §6]: ../../../docs/decisions/0011-abi-metadata-format.md
+//! [ADR-0014]: ../../../docs/decisions/0014-hash-scheme-refinement.md
+
+use std::collections::BTreeMap;
 
 use crate::error::{PackError, PackResult};
-use crate::hash::{IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash};
+use crate::hash::{
+    IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash,
+    TermIfaceHash, TermImplHash, compute_module_iface_hash, compute_module_impl_hash,
+    compute_term_iface_hash, compute_term_impl_hash,
+};
 use crate::types::{
-    AbiMetadata, Capability, Dep, EnumDef, EnumVariant, FieldDef, FunctionExport, Param, SemVer,
-    StructDef, TypeDef, TypeKind, TypeRef, Visibility,
+    AbiMetadata, Capability, Dep, EnumDef, EnumVariant, FieldDef, FunctionExport, Module, Param,
+    SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,
 };
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -23,11 +32,30 @@ const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x70];
 /// the metadata block). Bump only when the container framing changes.
 const PACK_VERSION: u32 = 1;
 
+/// ABI metadata format version. v0.4 shipped 1; ADR-0014 §5 bumps to 2
+/// for the term + module hash fields and the modules table. Readers
+/// refuse anything else (no shim — ADR-0014 explicit "refuse over guess").
+const ABI_VERSION: u32 = 2;
+
+/// Term-kind discriminants used inside canonical term signature bytes.
+/// Functions and type kinds share a single byte namespace so hashes
+/// stay distinct even when a function and a type happen to share a name.
+mod term_kind {
+    /// Function-shaped term — sigs as in `FunctionExport`.
+    pub(super) const FUNCTION: u8 = 0;
+    /// Struct type — body is `StructDef`.
+    pub(super) const STRUCT: u8 = 1;
+    /// Enum type — body is `EnumDef`.
+    pub(super) const ENUM: u8 = 2;
+    /// Generic shell — no body.
+    pub(super) const GENERIC_SHELL: u8 = 3;
+}
+
 /// Section IDs inside a `.tripack`. Section IDs unknown to a reader
 /// MUST be skipped (forward-compat per ADR-0011). The constants for
 /// not-yet-emitted sections are intentionally retained so future
-/// sub-tasks (v0.4.6 witness tables, v0.5 manifest) can plug in
-/// without reshuffling IDs and bumping the format version.
+/// sub-tasks (v0.5 manifest, v0.6 capabilities) can plug in without
+/// reshuffling IDs.
 mod section {
     pub(super) const ABI_METADATA: u8 = 1;
     pub(super) const IR_CODE: u8 = 2;
@@ -45,12 +73,19 @@ mod section {
 ///
 /// `code_section` is the canonical bytes of the IR section (an entire
 /// `.triv` payload, or just the code body — caller decides format).
-/// `impl_hash` is recomputed from the final byte stream; callers
-/// don't need to pre-populate it.
+/// The writer:
+///
+/// 1. Sorts tables canonically (ADR-0011 §6).
+/// 2. Computes `iface_hash_term` + `impl_hash_term` for every type +
+///    export (ADR-0014 §2). v0.5.3 passes empty body bytes — v0.5.4
+///    wires real per-term IR via `.triv` v4.
+/// 3. Groups terms by `module_path` and computes `iface_hash_mod` +
+///    `impl_hash_mod` (ADR-0014 §3), populating `meta.modules`.
+/// 4. Computes pkg `iface_hash` from the module rollup (ADR-0014 §4)
+///    and `impl_hash` over `iface_hash ‖ code_section` (v0.5.3 carry-
+///    over from v0.4; switches to module rollup at v0.5.4).
 #[must_use]
 pub fn write_tripack(meta: &AbiMetadata, code_section: &[u8]) -> Vec<u8> {
-    // Canonicalize a copy so caller's input order doesn't affect
-    // `iface_hash`. We never write the caller's original meta back.
     let canon = canonicalize_for_hash(meta);
     let iface = crate::hash::compute_iface_hash(&canon);
     let impl_h = crate::hash::compute_impl_hash(&iface, code_section);
@@ -79,16 +114,14 @@ pub fn write_tripack(meta: &AbiMetadata, code_section: &[u8]) -> Vec<u8> {
 
 /// Parse a `.tripack` file into `(metadata, code_section_bytes)`.
 ///
-/// The caller can then hand the code bytes to `triet-ir` for further
-/// decoding when they actually need to execute the package.
-///
 /// # Errors
 ///
 /// Returns [`PackError::BadMagic`] for non-`.tripack` input,
-/// [`PackError::UnsupportedAbiVersion`] when the file's format
-/// version is newer than this reader supports, and
-/// [`PackError::Corrupted`] / [`PackError::UnknownDiscriminant`] for
-/// structural problems found while decoding.
+/// [`PackError::UnsupportedAbiVersion`] when the file's `abi_version`
+/// differs from this reader's (v0.5 = `2` — strict, no shim for v=1
+/// per ADR-0014 §5), and [`PackError::Corrupted`] /
+/// [`PackError::UnknownDiscriminant`] for structural problems found
+/// while decoding.
 pub fn read_tripack(data: &[u8]) -> PackResult<(AbiMetadata, Vec<u8>)> {
     let mut pos = 0usize;
     if data.len() < 4 || data[..4] != MAGIC {
@@ -138,34 +171,151 @@ pub fn read_tripack(data: &[u8]) -> PackResult<(AbiMetadata, Vec<u8>)> {
     Ok((meta, code))
 }
 
-// ── Canonicalization for hash stability ────────────────────────────
+// ── Canonicalization + hash pass ───────────────────────────────────
 
-/// Sort tables (types, exports, deps) by name. ADR-0011 §6 requires
-/// this for `iface_hash` to be stable across re-compiles. We return a
-/// new owned copy so callers' originals stay untouched.
+/// Per-module accumulator used by [`canonicalize_for_hash`] when
+/// grouping terms before computing module rollups. Lives in a named
+/// struct so the BTreeMap value type stays readable.
+#[derive(Default)]
+struct ModuleTerms {
+    iface: Vec<(String, TermIfaceHash)>,
+    impls: Vec<(String, TermImplHash)>,
+}
+
+/// Produce a canonicalized clone of `meta` with all hash levels
+/// populated:
+///
+/// - tables sorted by name (ADR-0011 §6),
+/// - term hashes computed from canonical signature bytes (ADR-0014 §2),
+/// - module hashes rolled up by `module_path` (ADR-0014 §3),
+/// - `meta.modules` rebuilt from scratch (caller's old list discarded
+///   so stale entries can't leak into the hash).
+///
+/// Pkg-level `iface_hash` / `impl_hash` fields are left zero here —
+/// they're filled in by `write_tripack` from `compute_iface_hash` and
+/// `compute_impl_hash` after this function returns.
 pub(crate) fn canonicalize_for_hash(meta: &AbiMetadata) -> AbiMetadata {
     let mut out = meta.clone();
+
     out.types.sort_by(|a, b| a.name.cmp(&b.name));
     out.exports.sort_by(|a, b| a.name.cmp(&b.name));
     out.deps.sort_by(|a, b| a.pkg_name.cmp(&b.pkg_name));
-    // Clear hash fields — they're recomputed and don't participate
-    // in their own input.
+
+    // Compute term hashes in place. v0.5.3 uses empty body bytes for
+    // impl — v0.5.4 wires real bodies once `.triv` v4 is in.
+    for t in &mut out.types {
+        let sig = canonical_term_signature_type(t);
+        t.iface_hash_term = compute_term_iface_hash(&sig);
+        t.impl_hash_term = compute_term_impl_hash(t.iface_hash_term, &[]);
+    }
+    for e in &mut out.exports {
+        let sig = canonical_term_signature_function(e);
+        e.iface_hash_term = compute_term_iface_hash(&sig);
+        e.impl_hash_term = compute_term_impl_hash(e.iface_hash_term, &[]);
+    }
+
+    // Group by module_path → fresh modules table. BTreeMap gives
+    // sorted iteration so we don't need to re-sort afterwards.
+    let mut by_module: BTreeMap<String, ModuleTerms> = BTreeMap::new();
+    for t in &out.types {
+        let entry = by_module.entry(t.module_path.clone()).or_default();
+        entry.iface.push((t.name.clone(), t.iface_hash_term));
+        entry.impls.push((t.name.clone(), t.impl_hash_term));
+    }
+    for e in &out.exports {
+        let entry = by_module.entry(e.module_path.clone()).or_default();
+        entry.iface.push((e.name.clone(), e.iface_hash_term));
+        entry.impls.push((e.name.clone(), e.impl_hash_term));
+    }
+
+    out.modules = by_module
+        .into_iter()
+        .map(|(path, terms)| {
+            let iface_hash_mod = compute_module_iface_hash(&path, &terms.iface);
+            let impl_hash_mod = compute_module_impl_hash(iface_hash_mod, &terms.impls);
+            Module {
+                path,
+                iface_hash_mod,
+                impl_hash_mod,
+            }
+        })
+        .collect();
+
     out.iface_hash = IfaceHash::default();
     out.impl_hash = ImplHash::default();
     out
 }
 
-/// Encode only the bytes that feed into `iface_hash`: pkg_name +
-/// canonicalized types/exports/deps/caps. ADR-0011 §6 excludes
-/// versions and the hashes themselves.
-pub(crate) fn encode_iface_for_hash(meta: &AbiMetadata) -> Vec<u8> {
-    let canon = canonicalize_for_hash(meta);
-    let mut buf = Vec::with_capacity(256);
-    write_string(&mut buf, &canon.pkg_name);
-    write_type_table(&mut buf, &canon.types);
-    write_export_table(&mut buf, &canon.exports);
-    write_dep_table(&mut buf, &canon.deps);
-    write_caps_table(&mut buf, &canon.caps);
+/// Canonical signature bytes for a [`TypeDef`] — fed to
+/// [`compute_term_iface_hash`].
+fn canonical_term_signature_type(t: &TypeDef) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64);
+    let kind = match t.kind {
+        TypeKind::Struct => term_kind::STRUCT,
+        TypeKind::Enum => term_kind::ENUM,
+        TypeKind::GenericShell => term_kind::GENERIC_SHELL,
+    };
+    write_u8(&mut buf, kind);
+    write_string(&mut buf, &t.name);
+    write_varint(&mut buf, t.type_params.len() as u32);
+    for p in &t.type_params {
+        write_string(&mut buf, p);
+    }
+    match (t.kind, &t.struct_body, &t.enum_body) {
+        (TypeKind::Struct, Some(s), _) => write_struct_def(&mut buf, s),
+        (TypeKind::Enum, _, Some(e)) => write_enum_def(&mut buf, e),
+        _ => {}
+    }
+    buf
+}
+
+/// Canonical signature bytes for a [`FunctionExport`] — excludes
+/// `body_offset` and capability claims per ADR-0014 §2.
+fn canonical_term_signature_function(f: &FunctionExport) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64);
+    write_u8(&mut buf, term_kind::FUNCTION);
+    write_string(&mut buf, &f.name);
+    write_visibility(&mut buf, f.visibility);
+    write_varint(&mut buf, f.type_params.len() as u32);
+    for p in &f.type_params {
+        write_string(&mut buf, p);
+    }
+    write_varint(&mut buf, f.params.len() as u32);
+    for p in &f.params {
+        write_string(&mut buf, &p.name);
+        write_type_ref(&mut buf, &p.type_ref);
+    }
+    write_type_ref(&mut buf, &f.return_type);
+    buf
+}
+
+/// Encode the dependency table in canonical form for hashing.
+/// `compute_iface_hash` calls this — kept here so the encoding rule
+/// lives next to `write_dep_table`.
+pub(crate) fn encode_deps_for_hash(deps: &[Dep]) -> Vec<u8> {
+    let mut sorted: Vec<&Dep> = deps.iter().collect();
+    sorted.sort_by(|a, b| a.pkg_name.cmp(&b.pkg_name));
+    let mut buf = Vec::with_capacity(64);
+    write_varint(&mut buf, sorted.len() as u32);
+    for d in sorted {
+        write_string(&mut buf, &d.pkg_name);
+        write_semver(&mut buf, d.version_min);
+        write_semver(&mut buf, d.version_max_exclusive);
+        buf.extend_from_slice(&d.iface_hash_pin.0);
+    }
+    buf
+}
+
+/// Encode the capability claims table in canonical form for hashing.
+/// Empty at v0.5; populated starting v0.6.
+pub(crate) fn encode_caps_for_hash(caps: &[Capability]) -> Vec<u8> {
+    let mut sorted: Vec<&Capability> = caps.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut buf = Vec::with_capacity(8);
+    write_varint(&mut buf, sorted.len() as u32);
+    for c in sorted {
+        write_string(&mut buf, &c.name);
+    }
     buf
 }
 
@@ -177,6 +327,7 @@ fn write_abi_metadata(buf: &mut Vec<u8>, meta: &AbiMetadata) {
     write_semver(buf, meta.pkg_version);
     buf.extend_from_slice(&meta.iface_hash.0);
     buf.extend_from_slice(&meta.impl_hash.0);
+    write_module_table(buf, &meta.modules);
     write_type_table(buf, &meta.types);
     write_export_table(buf, &meta.exports);
     write_dep_table(buf, &meta.deps);
@@ -186,16 +337,17 @@ fn write_abi_metadata(buf: &mut Vec<u8>, meta: &AbiMetadata) {
 fn read_abi_metadata(data: &[u8]) -> PackResult<AbiMetadata> {
     let mut pos = 0usize;
     let abi_version = read_u32_le(data, &mut pos)?;
-    if abi_version > 1 {
+    if abi_version != ABI_VERSION {
         return Err(PackError::UnsupportedAbiVersion {
             found: abi_version,
-            supported: 1,
+            supported: ABI_VERSION,
         });
     }
     let pkg_name = read_string(data, &mut pos)?;
     let pkg_version = read_semver(data, &mut pos)?;
     let iface_hash = read_hash(data, &mut pos)?;
     let impl_hash_bytes = read_hash(data, &mut pos)?;
+    let modules = read_module_table(data, &mut pos)?;
     let types = read_type_table(data, &mut pos)?;
     let exports = read_export_table(data, &mut pos)?;
     let deps = read_dep_table(data, &mut pos)?;
@@ -206,11 +358,39 @@ fn read_abi_metadata(data: &[u8]) -> PackResult<AbiMetadata> {
         pkg_version,
         iface_hash: IfaceHash(iface_hash),
         impl_hash: ImplHash(impl_hash_bytes),
+        modules,
         types,
         exports,
         deps,
         caps,
     })
+}
+
+// ── Module table (ADR-0014 §5) ────────────────────────────────────
+
+fn write_module_table(buf: &mut Vec<u8>, modules: &[Module]) {
+    write_varint(buf, modules.len() as u32);
+    for m in modules {
+        write_string(buf, &m.path);
+        buf.extend_from_slice(&m.iface_hash_mod.0);
+        buf.extend_from_slice(&m.impl_hash_mod.0);
+    }
+}
+
+fn read_module_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<Module>> {
+    let count = read_varint(data, pos)?;
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let path = read_string(data, pos)?;
+        let iface = read_hash(data, pos)?;
+        let impl_h = read_hash(data, pos)?;
+        out.push(Module {
+            path,
+            iface_hash_mod: ModuleIfaceHash(iface),
+            impl_hash_mod: ModuleImplHash(impl_h),
+        });
+    }
+    Ok(out)
 }
 
 // ── Type table ────────────────────────────────────────────────────
@@ -239,6 +419,7 @@ fn write_type_def(buf: &mut Vec<u8>, t: &TypeDef) {
     };
     write_u8(buf, kind_byte);
     write_string(buf, &t.name);
+    write_string(buf, &t.module_path);
     write_varint(buf, t.type_params.len() as u32);
     for p in &t.type_params {
         write_string(buf, p);
@@ -255,6 +436,8 @@ fn write_type_def(buf: &mut Vec<u8>, t: &TypeDef) {
         // still round-trips. Caller should validate before writing.
         _ => {}
     }
+    buf.extend_from_slice(&t.iface_hash_term.0);
+    buf.extend_from_slice(&t.impl_hash_term.0);
 }
 
 fn read_type_def(data: &[u8], pos: &mut usize) -> PackResult<TypeDef> {
@@ -271,6 +454,7 @@ fn read_type_def(data: &[u8], pos: &mut usize) -> PackResult<TypeDef> {
         }
     };
     let name = read_string(data, pos)?;
+    let module_path = read_string(data, pos)?;
     let type_param_count = read_varint(data, pos)?;
     let mut type_params = Vec::with_capacity(type_param_count as usize);
     for _ in 0..type_param_count {
@@ -281,12 +465,17 @@ fn read_type_def(data: &[u8], pos: &mut usize) -> PackResult<TypeDef> {
         TypeKind::Enum => (None, Some(read_enum_def(data, pos)?)),
         TypeKind::GenericShell => (None, None),
     };
+    let iface_hash_term = TermIfaceHash(read_hash(data, pos)?);
+    let impl_hash_term = TermImplHash(read_hash(data, pos)?);
     Ok(TypeDef {
         kind,
         name,
+        module_path,
         type_params,
         struct_body,
         enum_body,
+        iface_hash_term,
+        impl_hash_term,
     })
 }
 
@@ -447,6 +636,7 @@ fn write_export_table(buf: &mut Vec<u8>, exports: &[FunctionExport]) {
     write_varint(buf, exports.len() as u32);
     for e in exports {
         write_string(buf, &e.name);
+        write_string(buf, &e.module_path);
         write_visibility(buf, e.visibility);
         write_varint(buf, e.type_params.len() as u32);
         for p in &e.type_params {
@@ -458,9 +648,11 @@ fn write_export_table(buf: &mut Vec<u8>, exports: &[FunctionExport]) {
             write_type_ref(buf, &p.type_ref);
         }
         write_type_ref(buf, &e.return_type);
-        // capability count — reserved, always 0 at v0.4
+        // capability count — reserved, always 0 at v0.5
         write_varint(buf, 0);
         write_varint(buf, e.body_offset);
+        buf.extend_from_slice(&e.iface_hash_term.0);
+        buf.extend_from_slice(&e.impl_hash_term.0);
     }
 }
 
@@ -469,6 +661,7 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
     let mut exports = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let name = read_string(data, pos)?;
+        let module_path = read_string(data, pos)?;
         let visibility = read_visibility(data, pos)?;
         let tp_count = read_varint(data, pos)?;
         let mut type_params = Vec::with_capacity(tp_count as usize);
@@ -496,13 +689,18 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
             ));
         }
         let body_offset = read_varint(data, pos)?;
+        let iface_hash_term = TermIfaceHash(read_hash(data, pos)?);
+        let impl_hash_term = TermImplHash(read_hash(data, pos)?);
         exports.push(FunctionExport {
             name,
+            module_path,
             visibility,
             type_params,
             params,
             return_type,
             body_offset,
+            iface_hash_term,
+            impl_hash_term,
         });
     }
     Ok(exports)
@@ -685,11 +883,25 @@ fn read_hash(data: &[u8], pos: &mut usize) -> PackResult<[u8; IFACE_HASH_LEN]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::{IFACE_HASH_LEN, IfaceHash};
+    use crate::hash::{IFACE_HASH_LEN, IfaceHash, TermImplHash};
 
     fn integer_primitive() -> TypeRef {
         // 0x02 = Integer per TypeTag (matches the IR crate's tag byte).
         TypeRef::Primitive(0x02)
+    }
+
+    fn mk_export(name: &str) -> FunctionExport {
+        FunctionExport {
+            name: name.into(),
+            module_path: String::new(),
+            visibility: Visibility::Public,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: integer_primitive(),
+            body_offset: 0,
+            iface_hash_term: TermIfaceHash::default(),
+            impl_hash_term: TermImplHash::default(),
+        }
     }
 
     /// Empty package round-trips cleanly.
@@ -698,20 +910,25 @@ mod tests {
         let meta = AbiMetadata::empty("foo", SemVer::new(1, 0, 0));
         let bytes = write_tripack(&meta, &[]);
         let (decoded, code) = read_tripack(&bytes).unwrap();
+        assert_eq!(decoded.abi_version, 2);
         assert_eq!(decoded.pkg_name, "foo");
         assert_eq!(decoded.pkg_version, SemVer::new(1, 0, 0));
         assert!(code.is_empty());
         // iface_hash is non-zero (something was hashed).
         assert!(!decoded.iface_hash.is_zero());
+        // Empty package has zero modules (no terms).
+        assert!(decoded.modules.is_empty());
     }
 
-    /// Package with a struct + an export round-trips byte-identical.
+    /// Package with a struct + an export round-trips byte-identical
+    /// and populates a module entry for the (empty path) root module.
     #[test]
     fn struct_and_export_round_trip() {
         let mut meta = AbiMetadata::empty("math", SemVer::new(1, 2, 3));
         meta.types.push(TypeDef {
             kind: TypeKind::Struct,
             name: "Vec2".into(),
+            module_path: String::new(),
             type_params: Vec::new(),
             struct_body: Some(StructDef {
                 fields: vec![
@@ -728,9 +945,12 @@ mod tests {
                 ],
             }),
             enum_body: None,
+            iface_hash_term: TermIfaceHash::default(),
+            impl_hash_term: TermImplHash::default(),
         });
         meta.exports.push(FunctionExport {
             name: "dot".into(),
+            module_path: String::new(),
             visibility: Visibility::Public,
             type_params: Vec::new(),
             params: vec![
@@ -745,24 +965,51 @@ mod tests {
             ],
             return_type: integer_primitive(),
             body_offset: 0,
+            iface_hash_term: TermIfaceHash::default(),
+            impl_hash_term: TermImplHash::default(),
         });
         let bytes = write_tripack(&meta, &[0xDE, 0xAD, 0xBE, 0xEF]);
         let (decoded, code) = read_tripack(&bytes).unwrap();
         assert_eq!(decoded.types.len(), 1);
         assert_eq!(decoded.types[0].name, "Vec2");
+        // Term iface hash populated by canonical pass.
+        assert!(!decoded.types[0].iface_hash_term.is_zero());
         assert_eq!(decoded.exports.len(), 1);
         assert_eq!(decoded.exports[0].name, "dot");
+        assert!(!decoded.exports[0].iface_hash_term.is_zero());
+        // Vec2 + dot share the empty `module_path` → one module entry.
+        assert_eq!(decoded.modules.len(), 1);
+        assert_eq!(decoded.modules[0].path, "");
+        assert!(!decoded.modules[0].iface_hash_mod.is_zero());
         assert_eq!(code, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    /// Two terms in different modules produce two module entries.
+    #[test]
+    fn modules_grouped_by_module_path() {
+        let mut meta = AbiMetadata::empty("app", SemVer::new(0, 1, 0));
+        let mut a = mk_export("first");
+        a.module_path = "app.core".into();
+        let mut b = mk_export("second");
+        b.module_path = "app.util".into();
+        meta.exports.push(a);
+        meta.exports.push(b);
+        let bytes = write_tripack(&meta, &[]);
+        let (decoded, _) = read_tripack(&bytes).unwrap();
+        assert_eq!(decoded.modules.len(), 2);
+        let paths: Vec<&str> = decoded.modules.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec!["app.core", "app.util"]);
     }
 
     /// Generic enum (`Option<T>`) round-trips with the type param
     /// slot + payload type-param reference.
     #[test]
     fn generic_enum_round_trip() {
-        let mut meta = AbiMetadata::empty("std", SemVer::new(0, 4, 0));
+        let mut meta = AbiMetadata::empty("std", SemVer::new(0, 5, 0));
         meta.types.push(TypeDef {
             kind: TypeKind::Enum,
             name: "Option".into(),
+            module_path: "std.option".into(),
             type_params: vec!["T".into()],
             struct_body: None,
             enum_body: Some(EnumDef {
@@ -777,12 +1024,15 @@ mod tests {
                     },
                 ],
             }),
+            iface_hash_term: TermIfaceHash::default(),
+            impl_hash_term: TermImplHash::default(),
         });
         let bytes = write_tripack(&meta, &[]);
         let (decoded, _) = read_tripack(&bytes).unwrap();
         assert_eq!(decoded.types.len(), 1);
         let opt = &decoded.types[0];
         assert_eq!(opt.name, "Option");
+        assert_eq!(opt.module_path, "std.option");
         assert_eq!(opt.type_params, vec!["T"]);
         let body = opt.enum_body.as_ref().unwrap();
         assert_eq!(body.variants.len(), 2);
@@ -812,31 +1062,36 @@ mod tests {
     }
 
     /// Re-ordering tables on input should not change `iface_hash` —
-    /// canonicalization guarantees stability for the v0.5 CAS prep.
+    /// canonicalization guarantees stability across the 3-cấp tree.
     #[test]
     fn iface_hash_is_order_independent() {
         let mut a = AbiMetadata::empty("foo", SemVer::new(1, 0, 0));
-        a.exports.push(FunctionExport {
-            name: "alpha".into(),
-            visibility: Visibility::Public,
-            type_params: Vec::new(),
-            params: Vec::new(),
-            return_type: integer_primitive(),
-            body_offset: 0,
-        });
-        a.exports.push(FunctionExport {
-            name: "beta".into(),
-            visibility: Visibility::Public,
-            type_params: Vec::new(),
-            params: Vec::new(),
-            return_type: integer_primitive(),
-            body_offset: 0,
-        });
+        a.exports.push(mk_export("alpha"));
+        a.exports.push(mk_export("beta"));
         let mut b = a.clone();
         b.exports.reverse();
-        let h_a = crate::hash::compute_iface_hash(&a);
-        let h_b = crate::hash::compute_iface_hash(&b);
-        assert_eq!(h_a, h_b);
+        let bytes_a = write_tripack(&a, &[]);
+        let bytes_b = write_tripack(&b, &[]);
+        let (da, _) = read_tripack(&bytes_a).unwrap();
+        let (db, _) = read_tripack(&bytes_b).unwrap();
+        assert_eq!(da.iface_hash, db.iface_hash);
+    }
+
+    /// Renaming an export changes its term hash, the module hash, and
+    /// the package iface hash — full propagation through the tree.
+    #[test]
+    fn renaming_export_propagates_up_the_tree() {
+        let mut a = AbiMetadata::empty("foo", SemVer::new(1, 0, 0));
+        a.exports.push(mk_export("alpha"));
+        let mut b = a.clone();
+        b.exports[0].name = "renamed".into();
+
+        let (da, _) = read_tripack(&write_tripack(&a, &[])).unwrap();
+        let (db, _) = read_tripack(&write_tripack(&b, &[])).unwrap();
+
+        assert_ne!(da.exports[0].iface_hash_term, db.exports[0].iface_hash_term);
+        assert_ne!(da.modules[0].iface_hash_mod, db.modules[0].iface_hash_mod);
+        assert_ne!(da.iface_hash, db.iface_hash);
     }
 
     /// Bad magic bytes fail fast with `PackError::BadMagic`.
@@ -866,5 +1121,27 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         let err = read_tripack(&bytes).unwrap_err();
         assert!(matches!(err, PackError::UnsupportedAbiVersion { .. }));
+    }
+
+    /// v0.4 `abi_version = 1` packs are explicitly refused per
+    /// ADR-0014 §5 — no shim. Migration is via `triet store import`
+    /// (v0.5.7) which handles the lossy upgrade.
+    #[test]
+    fn legacy_abi_version_1_rejected() {
+        // Hand-craft a minimal ABI section claiming abi_version = 1.
+        let mut payload = Vec::new();
+        write_u32_le(&mut payload, 1); // abi_version
+        write_string(&mut payload, "legacy"); // pkg_name
+        write_semver(&mut payload, SemVer::new(1, 0, 0));
+        payload.extend_from_slice(&[0u8; IFACE_HASH_LEN]);
+        payload.extend_from_slice(&[0u8; IMPL_HASH_LEN]);
+        let err = read_abi_metadata(&payload).unwrap_err();
+        assert!(matches!(
+            err,
+            PackError::UnsupportedAbiVersion {
+                found: 1,
+                supported: 2,
+            }
+        ));
     }
 }

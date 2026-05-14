@@ -27,8 +27,8 @@
 //! link` command on top of it. This test is the contract.
 
 use triet_pack::{
-    AbiMetadata, Dep, FunctionExport, LinkError, Param, SemVer, TypeRef, Visibility, plan_link,
-    read_tripack, write_tripack,
+    AbiMetadata, Dep, FunctionExport, LinkError, Param, SemVer, TermIfaceHash, TermImplHash,
+    TypeRef, Visibility, plan_link, read_tripack, write_tripack,
 };
 
 /// Build the `math` package's ABI metadata. v1.0.0 publishes
@@ -39,6 +39,7 @@ fn build_math_pkg(version: SemVer) -> AbiMetadata {
     let int_ty = TypeRef::Primitive(0x02);
     meta.exports.push(FunctionExport {
         name: "add".into(),
+        module_path: String::new(),
         visibility: Visibility::Public,
         type_params: Vec::new(),
         params: vec![
@@ -53,6 +54,8 @@ fn build_math_pkg(version: SemVer) -> AbiMetadata {
         ],
         return_type: int_ty,
         body_offset: 0,
+        iface_hash_term: TermIfaceHash::default(),
+        impl_hash_term: TermImplHash::default(),
     });
     meta
 }
@@ -71,11 +74,14 @@ fn build_app_pkg() -> AbiMetadata {
     // section can be opaque bytes.
     meta.exports.push(FunctionExport {
         name: "main".into(),
+        module_path: String::new(),
         visibility: Visibility::Public,
         type_params: Vec::new(),
         params: Vec::new(),
         return_type: TypeRef::Primitive(0x06), // Unit
         body_offset: 0,
+        iface_hash_term: TermIfaceHash::default(),
+        impl_hash_term: TermImplHash::default(),
     });
     meta
 }

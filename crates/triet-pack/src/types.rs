@@ -1,13 +1,18 @@
 //! ABI metadata data structures — the in-memory shape of what
 //! `.tripack` files carry.
 //!
-//! Each struct mirrors one table from [ADR-0011 §2–5]. Field ordering
-//! is significant for hash stability (see [`hash::compute_iface_hash`]).
+//! Each struct mirrors one table from [ADR-0011 §2–5], extended at v0.5
+//! by [ADR-0014] with a 3-cấp hash tree: term → module → package.
+//! Field ordering is significant for hash stability (see
+//! [`hash::compute_iface_hash`]).
 //!
 //! [ADR-0011 §2–5]: ../../../docs/decisions/0011-abi-metadata-format.md
+//! [ADR-0014]: ../../../docs/decisions/0014-hash-scheme-refinement.md
 //! [`hash::compute_iface_hash`]: super::hash::compute_iface_hash
 
-use crate::hash::{IfaceHash, ImplHash};
+use crate::hash::{
+    IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash, TermIfaceHash, TermImplHash,
+};
 
 /// Semantic version triple (major, minor, patch). ADR-0011 §1 +
 /// ADR-0013 §1.
@@ -129,12 +134,17 @@ pub struct EnumVariant {
 }
 
 /// Top-level type definition entry — struct, enum, or generic shell.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeDef {
     /// Kind tag.
     pub kind: TypeKind,
     /// Type name as it appears in source.
     pub name: String,
+    /// Dotted module path this type belongs to (e.g. `"foo.core"`).
+    /// Empty string means "the package's root module" — given path
+    /// `pkg_name` at hash time. ADR-0014 §3 uses this to group terms
+    /// into modules for rollup.
+    pub module_path: String,
     /// Generic type parameters, in declaration order. Empty for
     /// non-generic types.
     pub type_params: Vec<String>,
@@ -142,6 +152,12 @@ pub struct TypeDef {
     pub struct_body: Option<StructDef>,
     /// Enum body, if `kind == Enum`.
     pub enum_body: Option<EnumDef>,
+    /// ADR-0014 §2 term iface hash. Populated by `write_tripack`
+    /// before serialization; left zero in user-built metadata.
+    pub iface_hash_term: TermIfaceHash,
+    /// ADR-0014 §2 term impl hash. v0.5.3 computes this with empty
+    /// body bytes; v0.5.4 wires real per-term IR bodies.
+    pub impl_hash_term: TermImplHash,
 }
 
 /// A function parameter.
@@ -155,10 +171,12 @@ pub struct Param {
 }
 
 /// A function exported by this package.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionExport {
     /// Function name as it appears in source.
     pub name: String,
+    /// Dotted module path (see [`TypeDef::module_path`]).
+    pub module_path: String,
     /// Always `Public` today (only public items are exported), but
     /// the slot lets future tools encode package-visible items too.
     pub visibility: Visibility,
@@ -173,6 +191,10 @@ pub struct FunctionExport {
     /// function's body lives. `0` means "no body" (abstract; reserved
     /// for future).
     pub body_offset: u32,
+    /// ADR-0014 §2 term iface hash. See [`TypeDef::iface_hash_term`].
+    pub iface_hash_term: TermIfaceHash,
+    /// ADR-0014 §2 term impl hash. See [`TypeDef::impl_hash_term`].
+    pub impl_hash_term: TermImplHash,
 }
 
 /// A declared dependency on another package.
@@ -190,27 +212,49 @@ pub struct Dep {
     pub iface_hash_pin: IfaceHash,
 }
 
+/// A module entry — one logical namespace inside the package. Hash
+/// fields are populated by `write_tripack`'s canonical pass from the
+/// terms (types + exports) sharing the same `module_path`.
+///
+/// ADR-0014 §3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Module {
+    /// Dotted module path (e.g. `"foo.core"`, or `pkg_name` for the
+    /// root module).
+    pub path: String,
+    /// Rollup of term iface hashes belonging to this module.
+    pub iface_hash_mod: ModuleIfaceHash,
+    /// Rollup of term impl hashes. v0.5.3 placeholder; v0.5.4 carries
+    /// real per-term body bytes.
+    pub impl_hash_mod: ModuleImplHash,
+}
+
 /// The full ABI metadata for one `.tripack`. This is what the linker
 /// loads to decide refuse-to-link, before touching code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AbiMetadata {
-    /// Format-version field. Bumped only when wire encoding changes
-    /// in a breaking way (additive changes don't bump). v0.4 ships
-    /// with `abi_version = 1`.
+    /// Format-version field. v0.5 ships with `abi_version = 2` —
+    /// extends v0.4's `abi_version = 1` additively with the term +
+    /// module hash fields and the modules table. Per ADR-0014 §5 the
+    /// reader refuses `1` (no shim).
     pub abi_version: u32,
     /// Package name as declared by the author (e.g. `"std"`,
     /// `"user.app"`).
     pub pkg_name: String,
     /// Package version triple.
     pub pkg_version: SemVer,
-    /// BLAKE3 hash over the canonical ABI surface (types + exports +
-    /// deps + caps). Stable across re-builds when the surface didn't
-    /// change. Linker compares this with dep pin.
+    /// BLAKE3 hash over the canonical ABI surface — at v0.5 rolled up
+    /// from module iface hashes (ADR-0014 §4). Stable across re-builds
+    /// when the surface didn't change. Linker compares this with dep
+    /// pin (ADR-0013 §4).
     pub iface_hash: IfaceHash,
-    /// BLAKE3 hash over `iface_hash` + IR code bytes. Tracks whether
-    /// internal impl changed even when the surface didn't. Used by
-    /// v0.5 CAS to dedup identical artefacts.
+    /// BLAKE3 hash over `iface_hash` + IR code bytes. v0.5.3 keeps the
+    /// v0.4 formula until `.triv` v4 lands per-term bodies.
     pub impl_hash: ImplHash,
+    /// Modules in this package. Populated automatically by
+    /// `write_tripack`'s canonical pass from the unique
+    /// `module_path` values across `types` + `exports`.
+    pub modules: Vec<Module>,
     /// User-defined types referenced by exports.
     pub types: Vec<TypeDef>,
     /// Functions this package exposes to others.
@@ -218,12 +262,12 @@ pub struct AbiMetadata {
     /// Declared dependencies — packages this one will look up at
     /// link time.
     pub deps: Vec<Dep>,
-    /// Capability claims slot (ADR-0011 §5). Always empty at v0.4;
+    /// Capability claims slot (ADR-0011 §5). Always empty at v0.5;
     /// populated starting v0.6.
     pub caps: Vec<Capability>,
 }
 
-/// Placeholder for capability claims. v0.4 keeps this empty; the
+/// Placeholder for capability claims. v0.5 keeps this empty; the
 /// shape is fixed in v0.6's capability ADR.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Capability {
@@ -238,11 +282,12 @@ impl AbiMetadata {
     #[must_use]
     pub fn empty(pkg_name: impl Into<String>, pkg_version: SemVer) -> Self {
         Self {
-            abi_version: 1,
+            abi_version: 2,
             pkg_name: pkg_name.into(),
             pkg_version,
             iface_hash: IfaceHash::default(),
             impl_hash: ImplHash::default(),
+            modules: Vec::new(),
             types: Vec::new(),
             exports: Vec::new(),
             deps: Vec::new(),

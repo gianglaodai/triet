@@ -53,7 +53,11 @@ mod serde;
 mod types;
 
 pub use error::{PackError, PackResult};
-pub use hash::{IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, compute_iface_hash};
+pub use hash::{
+    IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash,
+    TermIfaceHash, TermImplHash, compute_iface_hash, compute_module_iface_hash,
+    compute_module_impl_hash, compute_term_iface_hash, compute_term_impl_hash,
+};
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for
 // now; we'll promote it to the public API when the linker (v0.4.5)
@@ -62,6 +66,6 @@ pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 // API surface we haven't committed to.
 pub use serde::{read_tripack, write_tripack};
 pub use types::{
-    AbiMetadata, Dep, EnumDef, FieldDef, FunctionExport, Param, SemVer, StructDef, TypeDef,
+    AbiMetadata, Dep, EnumDef, FieldDef, FunctionExport, Module, Param, SemVer, StructDef, TypeDef,
     TypeKind, TypeRef, Visibility,
 };
