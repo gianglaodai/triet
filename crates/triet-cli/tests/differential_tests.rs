@@ -138,6 +138,9 @@ diff_test!(diff_measles_risk, "examples/measles_risk.tri");
 diff_test!(diff_factorial, "examples/factorial.tri");
 diff_test!(diff_maybe, "examples/maybe.tri");
 diff_test!(diff_generic, "examples/generic.tri");
+diff_test!(diff_counter, "examples/counter.tri");
+diff_test!(diff_while_polling, "examples/while_polling.tri");
+diff_test!(diff_long_arithmetic, "examples/long_arithmetic.tri");
 
 // Known issues — ignored pending lowerer/VM fixes (tracked under v0.3.x.cleanup.5–8).
 // Tests are scheduled to be un-ignored as each lowering gap is closed:
@@ -175,27 +178,12 @@ ignored_test!(
     "v0.3.x.cleanup.7: std.text.len + Elvis operator on VM"
 );
 ignored_test!(
-    ignore_long_arithmetic,
-    "examples/long_arithmetic.tri",
-    "v0.3.x.cleanup.8: Long cross-module arithmetic"
-);
-ignored_test!(
     ignore_fizzbuzz,
     "examples/fizzbuzz.tri",
-    "v0.3.x.cleanup.6: match arm lowering"
-);
-ignored_test!(
-    ignore_counter,
-    "examples/counter.tri",
-    "v0.3.x.cleanup.6: while loop lowering"
+    "v0.3.x.cleanup.6: tuple literal match arms"
 );
 ignored_test!(
     ignore_enumerate,
     "examples/enumerate.tri",
-    "v0.3.x.cleanup.7: iterator lowering"
-);
-ignored_test!(
-    ignore_while_polling,
-    "examples/while_polling.tri",
-    "v0.3.x.cleanup.6: while loop lowering"
+    "v0.3.x.cleanup.7: iterator + enumerate lowering"
 );

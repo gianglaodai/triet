@@ -210,6 +210,24 @@ impl<'a> LowerCtx<'a> {
         }
     }
 
+    /// Rebind a previously-declared name with a new SSA value. Searches
+    /// the scope chain from innermost outward and updates the binding at
+    /// the level where it was originally declared — so an `x = ...`
+    /// inside `if?` keeps mutating the loop-body `x`, not a shadow that
+    /// dies when the if's scope pops. Falls back to the innermost scope
+    /// when the name isn't found (e.g. first assignment to a fresh var).
+    fn rebind_var(&mut self, name: &str, value: ValueId) {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) {
+                scope.insert(name.to_string(), value);
+                return;
+            }
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), value);
+        }
+    }
+
     /// Get the current module's arena.
     fn arena(&self) -> &'a Arena {
         let module = &self.program.modules[self.current_module_idx];
@@ -219,6 +237,78 @@ impl<'a> LowerCtx<'a> {
     /// Get the current module.
     fn current_module(&self) -> &'a Module {
         &self.program.modules[self.current_module_idx]
+    }
+
+    /// Walk a block and return the names of every variable mutated by
+    /// `Stmt::Assign`. Used by the loop lowerer to know which bindings
+    /// need phi-node plumbing at the loop header.
+    ///
+    /// Recurses into nested `if`/`while`/`for`/`match` arms inside the
+    /// loop body so an assignment guarded by a conditional still gets a
+    /// phi (e.g. `while? cond { if? p { x = ... } }`).
+    ///
+    /// Returned names preserve first-write order and contain no duplicates.
+    fn collect_assigned_vars(&self, block: &Block) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        self.walk_block_for_assigns(block, &mut out);
+        out
+    }
+
+    fn walk_block_for_assigns(&self, block: &Block, out: &mut Vec<String>) {
+        for stmt_id in &block.statements {
+            let stmt = &self.arena().statement(*stmt_id).node;
+            if std::env::var("TRIET_DEBUG_LOOP").is_ok() {
+                eprintln!("[DEBUG]   stmt: {stmt:?}");
+            }
+            self.walk_stmt_for_assigns(stmt, out);
+        }
+        if let Some(final_expr) = block.final_expression {
+            self.walk_expr_for_assigns(final_expr, out);
+        }
+    }
+
+    fn walk_stmt_for_assigns(&self, stmt: &Stmt, out: &mut Vec<String>) {
+        match stmt {
+            Stmt::Assign { target, value } => {
+                if !out.iter().any(|n| n == target) {
+                    out.push(target.clone());
+                }
+                self.walk_expr_for_assigns(*value, out);
+            }
+            Stmt::Let { value, .. } | Stmt::Const { value, .. } | Stmt::ExprStmt(value) => {
+                self.walk_expr_for_assigns(*value, out);
+            }
+            Stmt::Return(Some(v)) | Stmt::Break(Some(v)) => self.walk_expr_for_assigns(*v, out),
+            Stmt::Return(None) | Stmt::Break(None) | Stmt::Continue => {}
+            Stmt::While { condition, body, .. } => {
+                self.walk_expr_for_assigns(*condition, out);
+                self.walk_block_for_assigns(body, out);
+            }
+            Stmt::For { iterable, body, .. } => {
+                self.walk_expr_for_assigns(*iterable, out);
+                self.walk_block_for_assigns(body, out);
+            }
+            Stmt::Loop(body) => self.walk_block_for_assigns(body, out),
+        }
+    }
+
+    fn walk_expr_for_assigns(&self, expr_id: triet_syntax::arena::ExprId, out: &mut Vec<String>) {
+        let expr = &self.arena().expression(expr_id).node;
+        match expr {
+            Expr::If { then_branch, else_branch, .. } => {
+                self.walk_block_for_assigns(then_branch, out);
+                if let Some(eb) = else_branch.as_ref() {
+                    self.walk_block_for_assigns(eb, out);
+                }
+            }
+            Expr::Match { arms, .. } => {
+                for arm in arms {
+                    self.walk_expr_for_assigns(arm.body, out);
+                }
+            }
+            Expr::Block(b) => self.walk_block_for_assigns(b, out),
+            _ => {}
+        }
     }
 
     // ── Function registry ───────────────────────────────────────
@@ -365,11 +455,11 @@ impl<'a> LowerCtx<'a> {
 
             Stmt::Assign { target, value } => {
                 let new_val = self.lower_expr(*value);
-                // Check if target is in scope; if mutable, rebind.
-                if let Some(_old) = self.resolve_var(target) {
-                    self.bind_var(target.clone(), new_val);
-                }
-                // else: should have been caught by typecheck; ignore.
+                // Rebind at the scope where the var was originally
+                // declared, not the innermost (so assignments inside
+                // `if?` / `match` arms actually mutate the loop-body or
+                // outer binding instead of dying with the inner scope).
+                self.rebind_var(target, new_val);
             }
 
             Stmt::Const {
@@ -940,6 +1030,25 @@ impl<'a> LowerCtx<'a> {
     ) -> ValueId {
         let cond_val = self.lower_expr(condition);
 
+        // Collect names of every var either branch may mutate so the
+        // merge block can phi them together; otherwise the post-if scope
+        // sees only the last branch's writes (statically), violating
+        // dynamic-execution semantics.
+        let mut mutated: Vec<String> = self.collect_assigned_vars(then_branch);
+        if let Some(eb) = else_branch {
+            for n in self.collect_assigned_vars(eb) {
+                if !mutated.iter().any(|x| x == &n) {
+                    mutated.push(n);
+                }
+            }
+        }
+        // Snapshot the pre-if value of each so we can phi against branches
+        // that don't write to a given var.
+        let pre_if_vals: Vec<(String, Option<ValueId>)> = mutated
+            .iter()
+            .map(|n| (n.clone(), self.resolve_var(n)))
+            .collect();
+
         let then_block_id = self.fresh_block();
         let else_block_id = self.fresh_block();
         let merge_block_id = self.fresh_block();
@@ -960,6 +1069,13 @@ impl<'a> LowerCtx<'a> {
         // Then block.
         self.start_block(then_block_id, Some("then".into()));
         let then_val = self.lower_block(then_branch);
+        // Snapshot the live SSA value for each mutated name AT THE END of
+        // the then-branch (this is the value the then-side phi-incoming
+        // contributes).
+        let then_vals: Vec<Option<ValueId>> = mutated
+            .iter()
+            .map(|n| self.resolve_var(n))
+            .collect();
         // Only branch if the block didn't already terminate.
         if self.blocks[&self.current_block]
             .terminator()
@@ -970,6 +1086,14 @@ impl<'a> LowerCtx<'a> {
             });
         }
         let then_end = self.current_block;
+
+        // Restore pre-if bindings before lowering the else branch — both
+        // branches start from the same dominator state.
+        for (name, pre) in &pre_if_vals {
+            if let Some(v) = *pre {
+                self.rebind_var(name, v);
+            }
+        }
 
         // Else block.
         self.start_block(else_block_id, Some("else".into()));
@@ -984,6 +1108,10 @@ impl<'a> LowerCtx<'a> {
             });
             d
         };
+        let else_vals: Vec<Option<ValueId>> = mutated
+            .iter()
+            .map(|n| self.resolve_var(n))
+            .collect();
         if self.blocks[&self.current_block]
             .terminator()
             .is_none()
@@ -994,7 +1122,7 @@ impl<'a> LowerCtx<'a> {
         }
         let else_end = self.current_block;
 
-        // Merge block with phi.
+        // Merge block with phi for the if's result value.
         self.start_block(merge_block_id, Some("merge".into()));
         let merge_dest = self.fresh_value();
         self.emit(Instruction::Phi {
@@ -1010,6 +1138,28 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
+        // Emit one phi per mutated variable so the post-if scope sees
+        // a single merged SSA value for each name. Skip names that the
+        // pre-if scope didn't define (typecheck rejects those anyway).
+        for (i, (name, pre)) in pre_if_vals.iter().enumerate() {
+            let Some(pre_val) = *pre else { continue };
+            let then_v = then_vals[i].unwrap_or(pre_val);
+            let else_v = else_vals[i].unwrap_or(pre_val);
+            // No need to phi if both branches leave the value untouched.
+            if then_v == pre_val && else_v == pre_val {
+                self.rebind_var(name, pre_val);
+                continue;
+            }
+            let phi_dest = self.fresh_value();
+            self.emit(Instruction::Phi {
+                dest: phi_dest,
+                incoming: vec![
+                    PhiIncoming { value: then_v, block: then_end },
+                    PhiIncoming { value: else_v, block: else_end },
+                ],
+            });
+            self.rebind_var(name, phi_dest);
+        }
         merge_dest
     }
 
@@ -1023,13 +1173,41 @@ impl<'a> LowerCtx<'a> {
         let body_id = self.fresh_block();
         let exit_id = self.fresh_block();
 
+        // Identify variables mutated by `Stmt::Assign` inside the body so
+        // we can plumb a phi node at the header for each — otherwise the
+        // SSA values bound to those names never advance across iterations
+        // and the loop diverges.
+        let mutated: Vec<String> = self.collect_assigned_vars(body);
+        let pre_loop_block = self.current_block;
+        // Snapshot the value bound to each mutated name BEFORE the loop —
+        // this is the "from pre-header" phi incoming edge.
+        let pre_loop_vals: Vec<(String, Option<ValueId>)> = mutated
+            .iter()
+            .map(|n| (n.clone(), self.resolve_var(n)))
+            .collect();
+
         // Branch to the header.
         self.emit(Instruction::Br {
             target: header_id,
         });
 
-        // Loop header: evaluate condition.
+        // Loop header: emit phi node placeholders for each mutated var,
+        // then evaluate the condition (which may read the phi values).
         self.start_block(header_id, Some("while_header".into()));
+        let mut phi_dests: Vec<(String, ValueId)> = Vec::new();
+        for (name, pre_val) in &pre_loop_vals {
+            let Some(pre) = *pre_val else { continue };
+            let phi_dest = self.fresh_value();
+            self.emit(Instruction::Phi {
+                dest: phi_dest,
+                // Second incoming (from body end) is patched once the
+                // body's final SSA value is known.
+                incoming: vec![PhiIncoming { value: pre, block: pre_loop_block }],
+            });
+            // Bind the phi as the new live value for `name` inside the loop.
+            self.bind_var(name.clone(), phi_dest);
+            phi_dests.push((name.clone(), phi_dest));
+        }
         let cond_val = self.lower_expr(condition);
 
         // Both `while` and `while?` lower to `BrIf` (unknown → exit). The
@@ -1051,9 +1229,38 @@ impl<'a> LowerCtx<'a> {
             continue_target: header_id,
         });
         self.push_scope();
+        // Re-bind the phi values in the body scope so name lookups inside
+        // the body resolve to the phi dest, not the pre-loop value.
+        for (name, phi_dest) in &phi_dests {
+            self.bind_var(name.clone(), *phi_dest);
+        }
         self.lower_block(body);
+        // After the body, each mutated name may resolve to a different
+        // SSA value than the phi — that's the "from body" incoming edge.
+        let body_end_block = self.current_block;
+        let post_body_vals: Vec<(String, ValueId, ValueId)> = phi_dests
+            .iter()
+            .filter_map(|(name, phi_dest)| {
+                self.resolve_var(name).map(|v| (name.clone(), *phi_dest, v))
+            })
+            .collect();
         self.pop_scope();
         self.loop_stack.pop();
+        // Patch the phi nodes in the header block with the body-end edge.
+        if let Some(header_block) = self.blocks.get_mut(&header_id) {
+            for (_, phi_dest, body_val) in &post_body_vals {
+                for instr in &mut header_block.instructions {
+                    if let Instruction::Phi { dest, incoming } = instr
+                        && *dest == *phi_dest
+                    {
+                        incoming.push(PhiIncoming {
+                            value: *body_val,
+                            block: body_end_block,
+                        });
+                    }
+                }
+            }
+        }
         // Only branch back if not already terminated.
         if self.blocks[&self.current_block]
             .terminator()
@@ -1480,6 +1687,7 @@ fn resolve_builtin(name: &str) -> Option<BuiltinName> {
         _ => None,
     }
 }
+
 
 /// Convert a field name to a deterministic index. In practice, the
 /// lowerer looks up struct field indices from the typechecker. For now,
