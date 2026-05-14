@@ -136,6 +136,8 @@ macro_rules! diff_test {
 diff_test!(diff_lukasiewicz_vs_kleene, "examples/lukasiewicz_vs_kleene.tri");
 diff_test!(diff_measles_risk, "examples/measles_risk.tri");
 diff_test!(diff_factorial, "examples/factorial.tri");
+diff_test!(diff_maybe, "examples/maybe.tri");
+diff_test!(diff_generic, "examples/generic.tri");
 
 // Known issues — ignored pending lowerer/VM fixes (tracked under v0.3.x.cleanup.5–8).
 // Tests are scheduled to be un-ignored as each lowering gap is closed:
@@ -170,17 +172,7 @@ macro_rules! ignored_test {
 ignored_test!(
     ignore_nullable,
     "examples/nullable.tri",
-    "v0.3.x.cleanup.5: enum payload lowering"
-);
-ignored_test!(
-    ignore_maybe,
-    "examples/maybe.tri",
-    "v0.3.x.cleanup.5: enum payload lowering"
-);
-ignored_test!(
-    ignore_generic,
-    "examples/generic.tri",
-    "v0.3.x.cleanup.5: enum payload lowering"
+    "v0.3.x.cleanup.7: std.text.len + Elvis operator on VM"
 );
 ignored_test!(
     ignore_long_arithmetic,

@@ -32,12 +32,24 @@ use crate::types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 #[must_use]
 pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
     let mut ctx = LowerCtx::new(program);
-    // Pass 1: assign FuncIds
+    // Pass 1: assign FuncIds + register enum variants
     for (module_idx, module) in program.modules.iter().enumerate() {
         ctx.current_module_idx = module_idx;
         for item in &module.items {
-            if let Item::Function(fd) = &item.node {
-                ctx.declare_function(module, fd);
+            match &item.node {
+                Item::Function(fd) => ctx.declare_function(module, fd),
+                Item::Enum(ed) => {
+                    let variants: Vec<String> =
+                        ed.variants.iter().map(|v| v.name.clone()).collect();
+                    for (idx, vname) in variants.iter().enumerate() {
+                        ctx.variant_index.insert(
+                            vname.clone(),
+                            (ed.name.clone(), u32::try_from(idx).unwrap_or(u32::MAX)),
+                        );
+                    }
+                    ctx.enum_variants.insert(ed.name.clone(), variants);
+                }
+                _ => {}
             }
         }
     }
@@ -89,6 +101,16 @@ struct LowerCtx<'a> {
     /// Maps `AbsolutePath` → `FuncId`.
     func_table: HashMap<AbsolutePath, FuncId>,
 
+    /// Enum variant table: enum name → ordered variant names. Variant
+    /// index = position in this Vec. Populated in pass 1.
+    enum_variants: HashMap<String, Vec<String>>,
+
+    /// Reverse index for unqualified variant resolution: variant name →
+    /// (enum name, `variant_idx`). When two enums share a variant name
+    /// (e.g. `Some` in `Option` and `MaybeInt`), the last-registered wins;
+    /// proper resolution still requires the enum name from the type-checker.
+    variant_index: HashMap<String, (String, u32)>,
+
     // Per-function state (reset for each function)
     value_counter: u32,
     block_counter: u32,
@@ -113,6 +135,8 @@ impl<'a> LowerCtx<'a> {
             current_module_idx: 0,
             constants: ConstantPool::new(),
             func_table: HashMap::new(),
+            enum_variants: HashMap::new(),
+            variant_index: HashMap::new(),
             value_counter: 0,
             block_counter: 0,
             blocks: BTreeMap::new(),
@@ -540,11 +564,25 @@ impl<'a> LowerCtx<'a> {
                 if let Some(v) = self.resolve_var(name) {
                     return v;
                 }
+                // Bare identifier referring to a unit enum variant (e.g.
+                // `None` for `enum MaybeInt { Some(Integer), None }`).
+                // The parser leaves these as `Expr::Identifier`; the
+                // type-checker resolves variant identity but the AST node
+                // itself is not rewritten. We rebuild the enum value here.
+                if let Some((_enum_name, variant_idx)) = self.variant_index.get(name).cloned() {
+                    let dest = self.fresh_value();
+                    self.emit(Instruction::EnumNew {
+                        dest,
+                        variant_idx,
+                        payload: None,
+                    });
+                    return dest;
+                }
                 // Look up as a function reference — defer to call sites.
                 // For now, return a placeholder.
                 // This should have been caught by typecheck; for correct IR
                 // the identifier should only appear in Call callee position.
-                
+
                 self.fresh_value()
             }
 
@@ -732,16 +770,25 @@ impl<'a> LowerCtx<'a> {
             }
 
             Expr::EnumLiteral {
-                name: _name,
-                variant_name: _vname,
+                name,
+                variant_name,
                 payload,
             } => {
+                // Resolve the variant index. Prefer enum-qualified lookup
+                // (parser may leave `name` empty when the literal comes from
+                // a bare `Some(x)` / `None` — fall back to the reverse index
+                // by variant name in that case).
+                let variant_idx = self
+                    .enum_variants
+                    .get(name)
+                    .and_then(|vs| vs.iter().position(|v| v == variant_name))
+                    .or_else(|| self.variant_index.get(variant_name).map(|(_, i)| *i as usize))
+                    .map_or(0, |i| u32::try_from(i).unwrap_or(0));
                 let payload_op = payload.map(|e| Operand::Value(self.lower_expr(e)));
                 let dest = self.fresh_value();
-                // variant_idx = 0 placeholder; real index from typechecker.
                 self.emit(Instruction::EnumNew {
                     dest,
-                    variant_idx: 0,
+                    variant_idx,
                     payload: payload_op,
                 });
                 dest
@@ -1192,7 +1239,7 @@ impl<'a> LowerCtx<'a> {
         scrutinee: triet_syntax::arena::ExprId,
         arms: &[MatchArm],
     ) -> ValueId {
-        let _scrutee_val = self.lower_expr(scrutinee);
+        let scrutee_val = self.lower_expr(scrutinee);
         if arms.is_empty() {
             let c = self.intern_constant(Constant::Unit);
             let d = self.fresh_value();
@@ -1207,32 +1254,135 @@ impl<'a> LowerCtx<'a> {
         let merge_dest = self.fresh_value();
         let mut phi_incoming: Vec<PhiIncoming> = Vec::new();
 
-        for arm in arms {
-            let arm_block_id = self.fresh_block();
+        // Each arm becomes: `test_block` → if-match → `arm_block` → merge,
+        // else fall through to next `test_block`. The first arm's test
+        // block is the current block (we don't allocate a fresh one for
+        // it — the caller is already in a sensible position).
+        let mut next_test_block = self.current_block;
 
-            // For now, simplified match lowering: each arm is unconditional
-            // (pattern exhaustiveness checked by typechecker).
-            // TODO(v0.3.4): emit tag checks and conditional branches.
+        for (i, arm) in arms.iter().enumerate() {
+            let is_last = i + 1 == arms.len();
+            let arm_body_block = self.fresh_block();
 
-            self.start_block(arm_block_id, Some("match_arm".into()));
+            // Ensure we are in the test block for this arm.
+            if self.current_block != next_test_block {
+                self.start_block(next_test_block, Some(format!("match_test_{i}")));
+            }
+
+            // Extract the arm pattern.
+            let pat_node = &self.arena().pattern(arm.pattern).node;
+
+            // Emit tag check (if needed) and branch to the arm body or
+            // the next test. The last arm is unconditional (exhaustive
+            // by typechecker invariant).
+            let next_block = if is_last {
+                arm_body_block
+            } else {
+                self.fresh_block()
+            };
+
+            match pat_node {
+                triet_syntax::pattern::Pattern::EnumVariant {
+                    variant_name,
+                    ..
+                } => {
+                    // Look up variant index by name. Fall back to 0 if
+                    // unknown (typechecker should have rejected by now).
+                    let target_idx = self
+                        .variant_index
+                        .get(variant_name)
+                        .map_or(0, |(_, i)| *i);
+
+                    if is_last {
+                        // Exhaustive: no test needed, just enter the arm.
+                        self.emit(Instruction::Br { target: arm_body_block });
+                    } else {
+                        // Compute tag from scrutinee, compare to target_idx,
+                        // branch accordingly. EnumTag returns a Trit
+                        // (Positive for variant 0, Negative for variant >=1)
+                        // which suffices for the 2-variant case driving
+                        // Option/Maybe lowering today.
+                        let tag = self.fresh_value();
+                        self.emit(Instruction::EnumTag {
+                            dest: tag,
+                            scrutinee: Operand::Value(scrutee_val),
+                        });
+                        // The condition: is `tag` the Trit corresponding to
+                        // `target_idx`? Use a constant of the expected Trit
+                        // value and compare.
+                        let expected_trit = if target_idx == 0 {
+                            Trit::Positive
+                        } else {
+                            Trit::Negative
+                        };
+                        let const_id = self.intern_constant(Constant::Trit(expected_trit));
+                        let const_val = self.fresh_value();
+                        self.emit(Instruction::Const {
+                            dest: const_val,
+                            constant: const_id,
+                        });
+                        let cmp = self.fresh_value();
+                        self.emit(Instruction::Eq {
+                            dest: cmp,
+                            lhs: Operand::Value(tag),
+                            rhs: Operand::Value(const_val),
+                        });
+                        self.emit(Instruction::BrIf {
+                            cond: Operand::Value(cmp),
+                            then_block: arm_body_block,
+                            else_block: next_block,
+                        });
+                    }
+                }
+                _ => {
+                    // Non-enum pattern: unconditionally enter the arm
+                    // (Wildcard, Variable, Literal). Literal matching on
+                    // primitives could be tightened later by emitting an
+                    // Eq + BrIf, but the current examples don't exercise
+                    // that path in match expressions.
+                    self.emit(Instruction::Br { target: arm_body_block });
+                }
+            }
+
+            // Arm body block.
+            self.start_block(arm_body_block, Some(format!("match_arm_{i}")));
             self.push_scope();
-            // Bind pattern variables (simplified).
+
+            // Bind payload variable if the pattern has a payload sub-pattern.
+            if let triet_syntax::pattern::Pattern::EnumVariant {
+                payload: Some(payload_pat),
+                ..
+            } = pat_node
+            {
+                let inner_pat = &self.arena().pattern(*payload_pat).node;
+                if let triet_syntax::pattern::Pattern::Variable(var_name) = inner_pat {
+                    let payload_val = self.fresh_value();
+                    self.emit(Instruction::EnumPayload {
+                        dest: payload_val,
+                        scrutinee: Operand::Value(scrutee_val),
+                    });
+                    self.bind_var(var_name.clone(), payload_val);
+                }
+            } else if let triet_syntax::pattern::Pattern::Variable(var_name) = pat_node {
+                // Pattern `x => …` binds the whole scrutinee.
+                self.bind_var(var_name.clone(), scrutee_val);
+            }
+
             let arm_val = self.lower_expr(arm.body);
             self.pop_scope();
 
             phi_incoming.push(PhiIncoming {
                 value: arm_val,
-                block: arm_block_id,
+                block: self.current_block,
             });
 
-            if self.blocks[&self.current_block]
-                .terminator()
-                .is_none()
-            {
+            if self.blocks[&self.current_block].terminator().is_none() {
                 self.emit(Instruction::Br {
                     target: merge_block_id,
                 });
             }
+
+            next_test_block = next_block;
         }
 
         // Merge block.
@@ -1260,6 +1410,18 @@ impl<'a> LowerCtx<'a> {
         let callee_expr = &self.arena().expression(callee).node;
         match callee_expr {
             Expr::Identifier(name) => {
+                // Enum tuple variant: `Some(42)` is parsed as Call with
+                // Identifier("Some"). Promote to EnumNew with payload.
+                if let Some((_enum_name, variant_idx)) = self.variant_index.get(name).cloned() {
+                    let payload = args.into_iter().next();
+                    let dest = self.fresh_value();
+                    self.emit(Instruction::EnumNew {
+                        dest,
+                        variant_idx,
+                        payload,
+                    });
+                    return dest;
+                }
                 // Check for builtins.
                 if let Some(builtin) = resolve_builtin(name) {
                     let dest = self.fresh_value();
