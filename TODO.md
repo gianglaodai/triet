@@ -74,18 +74,19 @@ Final v0.4 commit: this commit.
 
 ---
 
-## v0.5 — CAS Packaging (pending)
+## v0.5 — CAS Packaging (in progress)
 
-Per [ROADMAP.md § v0.5](ROADMAP.md). Tasks will be added when v0.5 work begins.
+Per [ROADMAP.md § v0.5](ROADMAP.md).
 
-- [ ] ADR-0014 — Hash scheme (Unison-inspired CAS)
-- [ ] ADR-0015 — Package store layout
-- [ ] Resolver: hash-based dep resolution
-- [ ] Lockfile format
-- [ ] Shared loading for identical iface_hash
-- [ ] Migration tool: path → CAS store
-- [ ] Cross-module enum variant import (deferred from v0.4)
-- [ ] Lowerer emit `WitnessCall` for cross-package generics (deferred from v0.4)
+- [x] v0.5.1 — ADR-0014 hash scheme refinement (3-cấp hash tree) `f876006`
+- [x] v0.5.2 — ADR-0015 package store layout (CAS filesystem) `f7b49c8`
+- [ ] v0.5.3 — Implement term + module hash computation in `triet-pack` (abi_version 1 → 2, `.triv` v3 → v4)
+- [ ] v0.5.4 — Package store filesystem (`~/.triet/store/`) + atomic install protocol
+- [ ] v0.5.5 — Hash-based dep resolver + lockfile (`triet.lock`)
+- [ ] v0.5.6 — Shared loading demo (VISION §3.1 gate — term-level RAM dedup)
+- [ ] v0.5.7 — Migration tool: `triet store import` (path → CAS)
+- [ ] v0.5.8 — Carry-over from v0.4: cross-module enum variant import + lowerer emit `WitnessCall` for cross-package generics
+- [ ] v0.5.9 — Verify gate (ADR-0009) + bump Cargo `0.4.0 → 0.5.0` + docs sync
 
 ---
 
