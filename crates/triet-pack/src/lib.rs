@@ -48,11 +48,13 @@
 
 mod error;
 mod hash;
+mod linker;
 mod serde;
 mod types;
 
 pub use error::{PackError, PackResult};
 pub use hash::{IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, compute_iface_hash};
+pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for
 // now; we'll promote it to the public API when the linker (v0.4.5)
 // needs to validate a downloaded pack against an externally-claimed
