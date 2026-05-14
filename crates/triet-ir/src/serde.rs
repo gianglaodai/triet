@@ -18,16 +18,24 @@ use crate::types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 // ── Constants ──────────────────────────────────────────────────────
 
 const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
-/// `.triv` format version. Bumped per ADR-0010 because the IR opcode
-/// table gained `BR_TRILEAN` (0xB4) — v1 readers will hit
-/// `TrivError::UnknownOpcode` if they encounter it, so we surface the
-/// version mismatch up-front instead of silently corrupting decode.
-const VERSION: u32 = 2;
+/// `.triv` format version.
+///
+/// History:
+/// - v1: initial release (ADR-0008).
+/// - v2: ADR-0010 added `BR_TRILEAN` (0xB4) ternary-native branch.
+/// - v3: ADR-0012 added `WITNESS_CALL` (0x93) and a `witness_tables`
+///   section (5). Older readers will hit `TrivError::UnknownOpcode`
+///   on either, so the version bump surfaces a precise error.
+const VERSION: u32 = 3;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
 const SEC_FUNCTIONS: u8 = 3;
 const SEC_CODE: u8 = 4;
+/// ADR-0012 witness tables. Optional — only emitted when the program
+/// contains `WitnessCall` instructions. Older readers skip unknown
+/// sections silently per ADR-0008 framing.
+const SEC_WITNESS_TABLES: u8 = 5;
 
 // ── Opcodes ────────────────────────────────────────────────────────
 
@@ -71,6 +79,9 @@ mod opcode {
     pub(super) const CALL_LOCAL: u8 = 0x90;
     pub(super) const CALL_CROSS_MODULE: u8 = 0x91;
     pub(super) const CALL_BUILTIN: u8 = 0x92;
+    /// ADR-0012 — cross-package generic dispatch via witness table.
+    /// Added in `.triv` v3.
+    pub(super) const WITNESS_CALL: u8 = 0x93;
     pub(super) const CLOSURE_NEW: u8 = 0xA0;
     pub(super) const CLOSURE_CALL: u8 = 0xA1;
     pub(super) const BR: u8 = 0xB0;
@@ -688,6 +699,21 @@ fn write_instruction(buf: &mut Vec<u8>, instr: &Instruction) {
                 write_operand(buf, *a);
             }
         }
+        Instruction::WitnessCall {
+            dest,
+            path,
+            witness_idx,
+            args,
+        } => {
+            write_u8(buf, opcode::WITNESS_CALL);
+            write_option_value(buf, *dest);
+            write_string(buf, &path.to_string());
+            write_varint(buf, *witness_idx);
+            write_varint(buf, args.len() as u32);
+            for a in args {
+                write_operand(buf, *a);
+            }
+        }
         Instruction::CallBuiltin { dest, name, args } => {
             write_u8(buf, opcode::CALL_BUILTIN);
             write_option_value(buf, *dest);
@@ -985,6 +1011,23 @@ fn read_instruction(data: &[u8], pos: &mut usize) -> Result<Instruction, TrivErr
                 args.push(read_operand(data, pos)?);
             }
             Ok(Instruction::CallCrossModule { dest, path, args })
+        }
+        opcode::WITNESS_CALL => {
+            let dest = read_option_value(data, pos)?;
+            let path_str = read_string(data, pos)?;
+            let path = parse_absolute_path(&path_str)?;
+            let witness_idx = read_varint(data, pos)?;
+            let arg_count = read_varint(data, pos)? as usize;
+            let mut args = Vec::with_capacity(arg_count);
+            for _ in 0..arg_count {
+                args.push(read_operand(data, pos)?);
+            }
+            Ok(Instruction::WitnessCall {
+                dest,
+                path,
+                witness_idx,
+                args,
+            })
         }
         opcode::CALL_BUILTIN => {
             let dest = read_option_value(data, pos)?;
@@ -1403,20 +1446,116 @@ pub fn write_program(program: &IrProgram) -> Vec<u8> {
     let mut code_payload = Vec::new();
     write_code(&mut code_payload, program);
 
+    // ADR-0012 witness tables. Only emit the section when the
+    // program actually has cross-package generic instantiations;
+    // older readers happily skip unknown sections, so the absent-
+    // section path stays bit-identical with the v1/v2 wire format.
+    let witness_payload = if program.witness_tables.is_empty() {
+        Vec::new()
+    } else {
+        let mut payload = Vec::new();
+        write_witness_tables(&mut payload, &program.witness_tables);
+        payload
+    };
+    let section_count: u32 = if witness_payload.is_empty() { 4 } else { 5 };
+
     let mut buf = Vec::new();
 
     // Header
     write_bytes(&mut buf, &MAGIC);
     write_u32_le(&mut buf, VERSION);
-    write_u32_le(&mut buf, 4); // section count
+    write_u32_le(&mut buf, section_count);
 
     // Sections
     write_section(&mut buf, SEC_TYPES, &type_payload);
     write_section(&mut buf, SEC_CONSTANTS, &const_payload);
     write_section(&mut buf, SEC_FUNCTIONS, &func_payload);
     write_section(&mut buf, SEC_CODE, &code_payload);
+    if !witness_payload.is_empty() {
+        write_section(&mut buf, SEC_WITNESS_TABLES, &witness_payload);
+    }
 
     buf
+}
+
+/// Encode the witness-table section (ADR-0012). Each table holds the
+/// concrete `TypeTag`s bound to a callee's type parameters; per the
+/// ADR, operation slots are reserved for v0.6+ so we don't emit them
+/// yet.
+///
+/// Witness tables encode their type args inline (1 byte primitive
+/// discriminator each) instead of referencing the program-wide type
+/// table — this keeps the section self-contained for the linker,
+/// which validates ABI before code is loaded. `Nullable(T)` type args
+/// are deferred (not produced by today's lowerer for generic
+/// instantiations); we error rather than silently truncate.
+fn write_witness_tables(
+    buf: &mut Vec<u8>,
+    tables: &[crate::module::WitnessTable],
+) {
+    write_varint(buf, tables.len() as u32);
+    for table in tables {
+        write_varint(buf, table.type_args.len() as u32);
+        for tag in &table.type_args {
+            write_inline_primitive_tag(buf, tag);
+        }
+    }
+}
+
+fn read_witness_tables(
+    data: &[u8],
+    pos: &mut usize,
+) -> Result<Vec<crate::module::WitnessTable>, TrivError> {
+    let count = read_varint(data, pos)? as usize;
+    let mut tables = Vec::with_capacity(count);
+    for _ in 0..count {
+        let arg_count = read_varint(data, pos)? as usize;
+        let mut type_args = Vec::with_capacity(arg_count);
+        for _ in 0..arg_count {
+            type_args.push(read_inline_primitive_tag(data, pos)?);
+        }
+        tables.push(crate::module::WitnessTable { type_args });
+    }
+    Ok(tables)
+}
+
+/// Self-contained inline encoder for a primitive `TypeTag`. Refuses
+/// `Nullable(T)` — those don't appear as generic type arguments in
+/// today's lowerer; if they ever do, we'll either resolve to the
+/// underlying primitive at link time or extend the encoding then.
+fn write_inline_primitive_tag(buf: &mut Vec<u8>, ty: &TypeTag) {
+    let disc = match ty {
+        TypeTag::Trit => 0,
+        TypeTag::Tryte => 1,
+        TypeTag::Integer => 2,
+        TypeTag::Long => 3,
+        TypeTag::Trilean => 4,
+        TypeTag::String => 5,
+        TypeTag::Unit => 6,
+        // Nullable in a witness table would need a recursive type-ref
+        // protocol that we haven't committed to yet (ADR-0012 §6
+        // "Generic constraint support at v0.4" defers complex generic
+        // arguments). Emit a sentinel that the reader will refuse —
+        // catches the case loudly during round-trip tests.
+        TypeTag::Nullable(_) => 0xFF,
+    };
+    write_u8(buf, disc);
+}
+
+fn read_inline_primitive_tag(data: &[u8], pos: &mut usize) -> Result<TypeTag, TrivError> {
+    let disc = read_u8(data, pos)?;
+    match disc {
+        0 => Ok(TypeTag::Trit),
+        1 => Ok(TypeTag::Tryte),
+        2 => Ok(TypeTag::Integer),
+        3 => Ok(TypeTag::Long),
+        4 => Ok(TypeTag::Trilean),
+        5 => Ok(TypeTag::String),
+        6 => Ok(TypeTag::Unit),
+        b => Err(TrivError::Corrupted(format!(
+            "witness table type arg 0x{b:02X} — only primitive TypeTags are encoded inline at v0.4 (ADR-0012 §6 defers complex generic args)"
+        ))),
+    }
 }
 
 fn write_section(buf: &mut Vec<u8>, section_id: u8, payload: &[u8]) {
@@ -1463,6 +1602,7 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
     let mut constants = ConstantPool::new();
     let mut function_metas: Vec<FunctionMeta> = Vec::new();
     let mut functions: Vec<Function> = Vec::new();
+    let mut witness_tables: Vec<crate::module::WitnessTable> = Vec::new();
     let mut has_code = false;
 
     for _ in 0..section_count {
@@ -1492,6 +1632,9 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
                 functions = read_code(payload, &mut payload_pos, &function_metas)?;
                 has_code = true;
             }
+            SEC_WITNESS_TABLES => {
+                witness_tables = read_witness_tables(payload, &mut payload_pos)?;
+            }
             _ => { /* skip unknown section */ }
         }
 
@@ -1505,7 +1648,11 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
     // Reconstruct modules by grouping functions by module_path
     let modules = group_into_modules(&functions, &function_metas);
 
-    Ok(IrProgram { modules, constants })
+    Ok(IrProgram {
+        modules,
+        constants,
+        witness_tables,
+    })
 }
 
 fn group_into_modules(functions: &[Function], metas: &[FunctionMeta]) -> Vec<IrModule> {
@@ -1624,6 +1771,7 @@ mod tests {
                 functions: vec![function],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         }
     }
 
@@ -1704,6 +1852,7 @@ mod tests {
                 },
             ],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -1755,6 +1904,7 @@ mod tests {
                 pool.intern(Constant::Trilean(triet_logic::Trilean::True));
                 pool
             },
+            witness_tables: Vec::new(),
         };
         let bytes = write_program(&program);
         let decoded = read_program(&bytes).unwrap();
@@ -1818,6 +1968,7 @@ mod tests {
                 }],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -1902,6 +2053,7 @@ mod tests {
                 }],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -1966,6 +2118,7 @@ mod tests {
                 }],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2019,6 +2172,7 @@ mod tests {
                 }],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2049,6 +2203,7 @@ mod tests {
                 }],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2100,6 +2255,7 @@ mod tests {
                 }],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2144,11 +2300,99 @@ mod tests {
                 pool.intern(Constant::String("hi".into()));
                 pool
             },
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
         let decoded = read_program(&bytes).unwrap();
         assert_eq!(decoded, program);
+    }
+
+    // ── Witness table dispatch ────────────────────────────────
+
+    /// ADR-0012 — round-trip a program that uses `WitnessCall` plus
+    /// a populated `witness_tables` section. Catches encoding drift
+    /// in the new opcode (0x93) and the new section (5).
+    #[test]
+    fn witness_call_round_trip() {
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::new(vec!["app".into()]),
+                    String::new(),
+                ),
+                functions: vec![Function {
+                    id: FuncId(0),
+                    name: Some("main".into()),
+                    params: vec![],
+                    return_type: TypeTag::Unit,
+                    blocks: vec![BasicBlock {
+                        id: BlockId(0),
+                        name: Some("entry".into()),
+                        instructions: vec![
+                            Instruction::WitnessCall {
+                                dest: Some(ValueId(0)),
+                                path: triet_modules::AbsolutePath::new(
+                                    triet_modules::ModulePath::new(vec!["math".into()]),
+                                    "scale".into(),
+                                ),
+                                witness_idx: 0,
+                                args: vec![],
+                            },
+                            Instruction::Ret { value: None },
+                        ],
+                    }],
+                }],
+            }],
+            constants: ConstantPool::new(),
+            witness_tables: vec![
+                crate::module::WitnessTable {
+                    type_args: vec![TypeTag::Integer],
+                },
+                crate::module::WitnessTable {
+                    type_args: vec![TypeTag::Long, TypeTag::String],
+                },
+            ],
+        };
+
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).unwrap();
+        assert_eq!(decoded, program);
+        assert_eq!(decoded.witness_tables.len(), 2);
+    }
+
+    /// Programs without `WitnessCall` must NOT emit the witness
+    /// table section — keeps the v1/v2 wire format bit-identical.
+    #[test]
+    fn witness_section_skipped_when_unused() {
+        // Build a trivial program with no witness tables.
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::crate_root(),
+                    String::new(),
+                ),
+                functions: vec![Function {
+                    id: FuncId(0),
+                    name: Some("noop".into()),
+                    params: vec![],
+                    return_type: TypeTag::Unit,
+                    blocks: vec![BasicBlock {
+                        id: BlockId(0),
+                        name: Some("entry".into()),
+                        instructions: vec![Instruction::Ret { value: None }],
+                    }],
+                }],
+            }],
+            constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
+        };
+        let bytes = write_program(&program);
+        // Section count immediately follows magic (4 bytes) +
+        // version (4 bytes). Reading at offset 8 should yield 4
+        // (no witness section).
+        let section_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert_eq!(section_count, 4);
     }
 
     // ── Error cases ────────────────────────────────────────────
@@ -2305,6 +2549,7 @@ mod tests {
                 }],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2357,6 +2602,7 @@ mod tests {
                 }],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2387,6 +2633,7 @@ mod tests {
                 }],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);
@@ -2429,6 +2676,7 @@ mod tests {
                 }],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
 
         let bytes = write_program(&program);

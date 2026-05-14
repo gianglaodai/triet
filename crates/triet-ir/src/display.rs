@@ -184,6 +184,15 @@ impl fmt::Display for Instruction {
                 write!(f, "{lhs}call {path}")?;
                 write_args(f, args)
             }
+            Self::WitnessCall {
+                path,
+                witness_idx,
+                args,
+                ..
+            } => {
+                write!(f, "{lhs}witness_call {path}[w{witness_idx}]")?;
+                write_args(f, args)
+            }
             Self::CallBuiltin { name, args, .. } => {
                 write!(f, "{lhs}call builtin.{name}")?;
                 write_args(f, args)

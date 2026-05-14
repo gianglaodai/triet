@@ -89,6 +89,7 @@ fn make_factorial_ir() -> IrProgram {
             functions: vec![func],
         }],
         constants: pool,
+        witness_tables: Vec::new(),
     }
 }
 
@@ -166,6 +167,7 @@ fn make_if_else_ir() -> IrProgram {
             functions: vec![func],
         }],
         constants: pool,
+        witness_tables: Vec::new(),
     }
 }
 
@@ -230,6 +232,7 @@ fn make_while_loop_ir() -> IrProgram {
             functions: vec![func],
         }],
         constants: pool,
+        witness_tables: Vec::new(),
     }
 }
 

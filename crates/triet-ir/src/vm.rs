@@ -878,6 +878,68 @@ impl Vm {
                     });
                 }
             }
+            Instruction::WitnessCall {
+                dest,
+                path,
+                witness_idx,
+                args,
+            } => {
+                // ADR-0012: cross-package generic dispatch. v0.4 semantics
+                // run the callee function exactly like `CallCrossModule`;
+                // the witness table is currently informational only, but
+                // we validate that the referenced index exists so a
+                // forward-compat user can rely on linker errors instead
+                // of silent zero-table dispatch.
+                if self
+                    .program
+                    .witness_tables
+                    .get(witness_idx as usize)
+                    .is_none()
+                {
+                    return Err(VmError::FunctionNotFound {
+                        name: format!(
+                            "witness table #{witness_idx} for {path} (program has {} tables)",
+                            self.program.witness_tables.len()
+                        ),
+                    });
+                }
+                let arg_vals: Vec<RuntimeValue> = args
+                    .iter()
+                    .map(|a| read_operand(&self.program.constants, frame, *a))
+                    .collect();
+                let func_name = frame.func_name.clone();
+
+                if let Some(builtin) = path_to_builtin(&path.to_string()) {
+                    // Stdlib builtins exposed as "generic" via witness
+                    // call are a degenerate case but still legal —
+                    // dispatch identically.
+                    let result = execute_builtin(builtin, &arg_vals, &func_name)?;
+                    if let Some(d) = dest {
+                        frame.write(d, result);
+                    }
+                } else if let Some(func_id) = self.path_index.get(&path.to_string()).copied() {
+                    let target = self
+                        .functions
+                        .iter()
+                        .find(|f| f.id == func_id)
+                        .cloned()
+                        .ok_or_else(|| VmError::FunctionNotFound {
+                            name: format!("@f{}", func_id.0),
+                        })?;
+                    let mut new_frame = Frame::new(&target, arg_vals.len());
+                    for (i, arg) in arg_vals.into_iter().enumerate() {
+                        new_frame.write(ValueId(i as u32), arg);
+                    }
+                    new_frame.return_block = Some(frame.block);
+                    new_frame.return_dest = dest;
+                    self.frames.push(new_frame);
+                    return Ok(StepResult::Continue);
+                } else {
+                    return Err(VmError::FunctionNotFound {
+                        name: path.to_string(),
+                    });
+                }
+            }
 
             // ── Closure ──────────────────────────────────────────
             Instruction::ClosureNew {
@@ -1397,7 +1459,7 @@ mod tests {
     use crate::ConstId;
     use crate::constant::ConstantPool;
     use crate::instr::PhiIncoming;
-    use crate::module::{BasicBlock, Function, IrModule};
+    use crate::module::{BasicBlock, Function, IrModule, WitnessTable};
     use triet_modules::{AbsolutePath, ModulePath};
 
     fn make_int(n: i64) -> RuntimeValue {
@@ -1411,6 +1473,7 @@ mod tests {
                 functions: vec![func],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         }
     }
 
@@ -1818,6 +1881,84 @@ mod tests {
                 "BrTrilean({input:?}) → expected {expected}",
             );
         }
+    }
+
+    /// ADR-0012 — `WitnessCall` dispatches a cross-package generic
+    /// like `CallCrossModule` but also verifies the referenced witness
+    /// table exists. A missing index must surface a precise error
+    /// rather than silent zero-table dispatch.
+    #[test]
+    fn vm_witness_call_dispatches_and_validates_index() {
+        let mut pool = ConstantPool::new();
+        let const_42 = pool.intern(Constant::Integer(Integer::new(42).unwrap()));
+
+        // Lib function `math.identity(x)` simply returns `x`.
+        let lib_func = Function {
+            id: FuncId(0),
+            name: Some("identity".into()),
+            params: vec![("x".into(), TypeTag::Integer)],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                }],
+            }],
+        };
+        // App function `app.main()` invokes the lib through a witness
+        // table containing `[Integer]`.
+        let app_func = Function {
+            id: FuncId(1),
+            name: Some("main".into()),
+            params: vec![],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::WitnessCall {
+                        dest: Some(ValueId(0)),
+                        path: AbsolutePath::new(
+                            ModulePath::new(vec!["math".into()]),
+                            "identity".into(),
+                        ),
+                        witness_idx: 0,
+                        args: vec![Operand::Const(const_42)],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let program = IrProgram {
+            modules: vec![
+                IrModule {
+                    path: AbsolutePath::new(ModulePath::new(vec!["math".into()]), String::new()),
+                    functions: vec![lib_func],
+                },
+                IrModule {
+                    path: AbsolutePath::new(ModulePath::new(vec!["app".into()]), String::new()),
+                    functions: vec![app_func],
+                },
+            ],
+            constants: pool,
+            witness_tables: vec![WitnessTable {
+                type_args: vec![TypeTag::Integer],
+            }],
+        };
+
+        let mut vm = Vm::new(program.clone());
+        let result = vm.execute(FuncId(1), vec![]).unwrap();
+        assert_eq!(result.to_string(), make_int(42).to_string());
+
+        // Same program but with no witness tables — index 0 is invalid.
+        let mut bad = program;
+        bad.witness_tables.clear();
+        let mut bad_vm = Vm::new(bad);
+        let err = bad_vm.execute(FuncId(1), vec![]).unwrap_err();
+        assert!(matches!(err, VmError::FunctionNotFound { .. }));
     }
 
     /// ADR-0010 — `Eq` on Trilean operands propagates Unknown per Ł3.

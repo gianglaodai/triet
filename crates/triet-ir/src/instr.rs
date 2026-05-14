@@ -270,6 +270,23 @@ pub enum Instruction {
         path: triet_modules::AbsolutePath,
         args: Vec<Operand>,
     },
+    /// Cross-package generic dispatch via a witness table
+    /// (ADR-0012): `%d = WitnessCall path[witness_idx](%args)`.
+    ///
+    /// Unlike `CallCrossModule`, this opcode carries a witness-table
+    /// index so the callee can recover the concrete type arguments
+    /// at runtime. The lowerer emits this for any call that targets
+    /// a generic export of a separately-compiled package; intra-
+    /// package generic calls keep using monomorphization, so they
+    /// still emit `CallLocal`. See `IrProgram::witness_tables`.
+    WitnessCall {
+        dest: Option<ValueId>,
+        path: triet_modules::AbsolutePath,
+        /// Index into `IrProgram::witness_tables`. Linker dedups so
+        /// the same `(path, type_args)` shares one entry.
+        witness_idx: u32,
+        args: Vec<Operand>,
+    },
     /// Builtin dispatch: `%d = CallBuiltin name(%args)`.
     CallBuiltin {
         dest: Option<ValueId>,

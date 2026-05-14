@@ -176,6 +176,26 @@ pub struct IrModule {
     pub functions: Vec<Function>,
 }
 
+/// A witness table — runtime type metadata bound at link time when the
+/// caller instantiates a cross-package generic.
+///
+/// Per [ADR-0012 §2], slot 0 carries the type metadata for each
+/// generic parameter. Additional slots are reserved for v0.6
+/// capability checks and v0.7 trait/protocol method pointers; v0.4
+/// only populates the type-arg row.
+///
+/// Tables live in the *caller* package, indexed by
+/// [`Instruction::WitnessCall::witness_idx`]. The linker dedups
+/// tables across call sites that share `(callee_path, type_args)`.
+///
+/// [ADR-0012 §2]: ../../../docs/decisions/0012-witness-table-dispatch.md
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WitnessTable {
+    /// Type arguments substituted into the callee's generic
+    /// parameters. Order matches the callee's `type_params` list.
+    pub type_args: Vec<TypeTag>,
+}
+
 /// A resolved program in IR form — the output of the lowerer, ready for
 /// any backend (VM, JIT, AOT, trytecode).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,6 +204,10 @@ pub struct IrProgram {
     pub modules: Vec<IrModule>,
     /// The shared constant pool.
     pub constants: crate::constant::ConstantPool,
+    /// Witness tables for cross-package generic instantiations.
+    /// Indexed by [`Instruction::WitnessCall::witness_idx`]. Empty
+    /// when the program performs no cross-package generic calls.
+    pub witness_tables: Vec<WitnessTable>,
 }
 
 impl IrProgram {
@@ -193,6 +217,7 @@ impl IrProgram {
         Self {
             modules: Vec::new(),
             constants: crate::constant::ConstantPool::new(),
+            witness_tables: Vec::new(),
         }
     }
 
@@ -260,6 +285,7 @@ impl Instruction {
             | Self::Phi { dest, .. } => Some(*dest),
             Self::CallLocal { dest, .. }
             | Self::CallCrossModule { dest, .. }
+            | Self::WitnessCall { dest, .. }
             | Self::CallBuiltin { dest, .. }
             | Self::ClosureCall { dest, .. } => *dest,
             Self::Br { .. }
@@ -436,7 +462,7 @@ impl Instruction {
                     a.collect_value(out);
                 }
             }
-            Self::CallCrossModule { args, .. } => {
+            Self::CallCrossModule { args, .. } | Self::WitnessCall { args, .. } => {
                 for a in args {
                     a.collect_value(out);
                 }

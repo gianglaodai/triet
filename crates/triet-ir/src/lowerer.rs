@@ -75,6 +75,11 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
     IrProgram {
         modules: ir_modules,
         constants: ctx.constants,
+        // ADR-0012 — populated by the linker (v0.4.8 demo) when a
+        // multi-package compile resolves cross-package generic call
+        // sites. Single-package builds emit `CallLocal` /
+        // `CallCrossModule` only and never need a table.
+        witness_tables: Vec::new(),
     }
 }
 

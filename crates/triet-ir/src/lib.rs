@@ -508,6 +508,7 @@ mod tests {
                 )],
             }],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
         assert!(!program.is_empty());
         assert_eq!(program.function_count(), 1);
@@ -548,6 +549,7 @@ mod tests {
                 functions: vec![valid, invalid],
             }],
             constants: pool,
+            witness_tables: Vec::new(),
         };
 
         let result = verify_program(&program);
@@ -833,6 +835,7 @@ mod tests {
                 },
             ],
             constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
         };
         assert!(!program.is_empty());
         assert_eq!(program.function_count(), 3);
