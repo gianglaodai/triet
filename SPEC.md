@@ -47,21 +47,26 @@ Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn 
 - Multi-line string indent ([ADR-0004](docs/decisions/0004-multiline-string-indent.md)).
 - Diagnostic format (miette, error codes E0000–E2106).
 
-### 0.5 Đang triển khai (v0.2.x)
+### 0.5 Đang triển khai (v0.5)
 
-Module system theo [ADR-0005](docs/decisions/0005-module-system.md). Khi v0.2.x ship, SPEC này sẽ được cập nhật với cú pháp dot-path (`crate.foo.bar`), `module` declarations, Python-style imports (`from X import Y`), và visibility modifiers (`public`, `public(package)`).
+CAS packaging theo nền tảng đã ship ở v0.4 ([ADR-0011](docs/decisions/0011-abi-metadata-format.md) `iface_hash` + ADR-0013 `iface_hash_pin`). v0.5 sẽ thêm:
+- Hash-based resolver (Unison/Nix-inspired).
+- Package store layout `~/.triet/store/<hash>/`.
+- Lockfile format với hash pinning.
+- Shared loading khi 2+ apps cùng dùng `std@hash_X`.
+- Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap từ v0.2.x.
 
-### 0.6 Non-goals của v0.2
+### 0.6 Non-goals của v0.4
 
-Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** phải v0.2:
+Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** thuộc v0.4:
 
-- **Hiệu năng tối ưu** — interpreter tree-walking. Bytecode VM (development tier) ở phase v0.3 ([ADR-0007](docs/decisions/0007-ir-design.md)). Production runtime đến v2.0 mới có; trước đó VM là tier phát triển dùng để validate IR + làm differential test oracle. Xem [VISION §4](VISION.md) cho execution model multi-backend.
+- **Hiệu năng tối ưu** — production runtime AOT đến v2.0 (LLVM). VM + tree-walker hôm nay đều là development tiers per [VISION §4.3](VISION.md). VM bench gate (3× interpreter) defer cho v0.4+ perf pass — hiện tại 1.26× trên factorial (xem `BENCHMARKS.md`).
 - **Concurrency/async** — phase v0.8.
-- **FFI với C/Rust runtime** — phase v0.4 (cùng stable ABI).
-- **CAS packaging** — phase v0.5.
-- **Capability enforcement runtime** — phase v0.6.
+- **CAS packaging** — phase v0.5 (next).
+- **Capability enforcement runtime** — phase v0.6. Capability claims slot đã reserved trong `.tripack` ABI metadata ở v0.4.
 - **Self-hosting compiler** — phase v0.7.
 - **JIT** — phase v0.9 (Cranelift backend đọc cùng Triết IR). **Native AOT compile** — phase v2.0 (LLVM backend đọc cùng Triết IR). **Trytecode native** — phase v∞ khi phần cứng tam phân xuất hiện. Cả ba backend đều share IR ADR-0007 — không re-design ngôn ngữ.
+- **FFI với C/Rust runtime** — `.tripack` format đã ready để host FFI signatures, nhưng wire encoding cho FFI thunks defer cho phase v0.5+ alongside CAS.
 
 ---
 
@@ -777,9 +782,10 @@ Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**
 
 **Heap-allocated** (ARC-managed):
 - `String` (UTF-8 owned, mutable qua `let mutable`)
-- `Option<T>` (v0.2 — user-defined enum hiện tại; stdlib version ở v0.4 cùng Crate-Pack)
-- `Result<T, E>` (v0.4 — cùng stable ABI phase)
-- `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections)
+- `Result<T, E>` ✅ (v0.4 stdlib — `std.result`; canonical error-handling type per §2.5)
+- `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections — defer to v0.5+)
+
+`Option<T>` đã **deprecated trong stdlib** từ v0.4 (xem §2.5): `T?` là cách chính tắc cho "value may be absent" — `T?` đã có discriminator 1-trit bẩm sinh, wrapper `Option<T>` redundant. Local user-defined `enum MyOption<T> { Some(T), None }` vẫn hợp lệ nhưng không khuyến khích.
 
 **Stack view** (composite, không sở hữu):
 - `StringSlice` (post-v0.4 — view vào String, immutable, lifetime infer)
@@ -799,14 +805,16 @@ function consume(owned data: String) -> String { ... }
 
 So với Rust: viết ngắn 30%, ít cognitive overhead 70%.
 
-### 10.4 Implementation hiện tại (v0.2)
+### 10.4 Implementation hiện tại (v0.4)
 
-v0.2 là interpreter tree-walking đơn giản:
-- Tất cả giá trị copy theo trị.
-- Heap types dùng `Rc<T>` của Rust runtime (≈ ARC simulation).
-- Borrow checker chưa cần — language hiện tại chưa expose references.
+Triết hôm nay chạy trên **hai tier song song**, cả hai đều là development tiers per [VISION §4.3](VISION.md):
 
-Bytecode VM (v0.3) và native compile (v2.0) sẽ implement đầy đủ ARC + simplified borrow check. Memory model nailed-down ở phase v0.4 (ABI) qua ADR riêng.
+- **Tree-walking interpreter** (`triet-interpreter`, từ v0.1): tất cả giá trị copy theo trị; heap types dùng `Rc<T>` Rust runtime (≈ ARC simulation).
+- **Bytecode VM** (`triet-ir`, từ v0.3): register-SSA IR + 53-opcode VM; differential test 11/11 byte-identical với tree-walker.
+
+Borrow checker chưa cần — language hiện tại chưa expose references.
+
+Native AOT compile (v2.0, LLVM) sẽ implement đầy đủ ARC + simplified borrow check. Trytecode backend (v∞) là production target cuối cùng khi phần cứng tam phân xuất hiện. Memory model precise (ARC opcodes, region-based vs reference-counted choice) **vẫn deferred** — v0.4 chỉ lock ABI surface, không lock memory representation; ADR riêng sẽ viết trước v0.9 JIT.
 
 ---
 
@@ -950,11 +958,11 @@ Lộ trình chi tiết với gates, deliverables, và ADRs: [`ROADMAP.md`](ROADM
 
 Tóm tắt phasing dài hạn:
 
-- **v0.2** — struct, enum, generics ✅ (hiện tại)
-- **v0.2.x** — module system ([ADR-0005](docs/decisions/0005-module-system.md))
-- **v0.3** — bytecode VM + stable IR
-- **v0.4** — Crate-Pack + stable ABI
-- **v0.5** — CAS packaging (hash-based identity)
+- **v0.2** — struct, enum, generics ✅
+- **v0.2.x** — module system ✅ ([ADR-0005](docs/decisions/0005-module-system.md))
+- **v0.3** — bytecode VM + stable IR ✅ ([ADR-0007](docs/decisions/0007-ir-design.md), [ADR-0008](docs/decisions/0008-triv-binary-format.md), [ADR-0010](docs/decisions/0010-ternary-native-ir.md) ternary-native refactor)
+- **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md)) — **hiện tại**
+- **v0.5** — CAS packaging (hash-based identity) — *next*
 - **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
 - **v0.7** — self-hosting compiler
 - **v0.8** — concurrency model
@@ -962,5 +970,4 @@ Tóm tắt phasing dài hạn:
 - **v1.0** — production stability
 - **v2.0** — AOT native compile (LLVM)
 - **v3.0** — microkernel POC
-- **v∞** — backend cho phần cứng tam phân
-- **v2.0+** — backend cho phần cứng tam phân giả định, nếu/khi có
+- **v∞** — backend cho phần cứng tam phân, khi xuất hiện

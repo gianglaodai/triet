@@ -27,14 +27,14 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → typecheck → interpret` pipeline plus a (currently in-progress) module system. Long-term aim is OS-capable; current state is a tree-walking interpreter for v0.2.
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, and a crate-pack distribution format (`.tripack`). Long-term aim is OS-capable; **current state is v0.4 — Crate-Pack + Stable ABI shipped** (interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0).
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative)
+- `SPEC.md` — language semantics (authoritative, currently v0.4)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; **next: v0.5 CAS Packaging**
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — ADRs for architectural decisions
+- `docs/decisions/` — 13 ADRs for architectural decisions (see `docs/decisions/README.md` for an index)
 
 ## Development principles
 
@@ -124,9 +124,11 @@ Compilation pipeline (each stage = one crate):
     │
     ▼  triet-lexer        tokens (logos-based)
     ▼  triet-parser       AST (recursive descent + Pratt)
-    ▼  triet-modules      ResolvedProgram (loader + resolver)   ← v0.2.x.6 in progress
+    ▼  triet-modules      ResolvedProgram (loader + resolver)
     ▼  triet-typecheck    type errors
-    ▼  triet-interpreter  runtime values
+    ▼  triet-ir           register-SSA IR + lowerer + bytecode VM
+    ▼  triet-interpreter  tree-walking runtime values (dev tier)
+    ▼  triet-pack         .tripack format + cross-package linker
     ▼  triet-cli          binary, miette diagnostics, JSON output
 ```
 
@@ -135,15 +137,24 @@ Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-log
 ### Arena-based AST
 `triet-syntax` allocates recursive nodes (`Expr`, `Stmt`, `Pattern`, `TypeExpr`) in typed sub-arenas inside `Arena`. AST nodes hold `*Id` handles (`u32`-sized) instead of `Box<T>`. Always go through `arena.expression(id)` etc. — never fabricate IDs.
 
-### Module system (v0.2.x.6, partially landed)
+### Module system (shipped v0.2.x; ADR-0005 locked)
 `triet-modules` produces `ResolvedProgram` instead of a bare `Program`:
 - **Multi-arena**: `Vec<Arena>` — one arena per parsed source file. Inline `module foo { … }` shares the parent's arena via `arena_id`; file-bound `module foo` gets a fresh arena. This sidesteps cross-file ID remapping.
 - **Flat module list**: `Vec<Module>` indexed by `ModuleId`. Each `Module` has `bindings: HashMap<String, AbsolutePath>` populated by name resolution.
-- **Synthetic stdlib**: `std.*` is treated as virtual modules via `stdlib.rs` registry — same code path as user modules. v0.2.x.7 will swap to real files.
+- **Stdlib as real files**: `std/io.tri`, `std/text.tri`, `std/assert.tri`, `std/result.tri` resolved from filesystem (loader walks from `CARGO_MANIFEST_DIR/../../std` or `./std`). Earlier "synthetic registry" approach replaced in v0.2.x.7.
 - **Locked architecture decisions** (per ADR-0005, do not change):
   - Single-file = crate root (Python/Go pattern)
   - Inline ≡ file-bound for path resolution (Rust/OCaml precedent)
-  - Stdlib goes through synthetic registry, not bypass
+
+### IR + bytecode VM (shipped v0.3; ADR-0007/0008/0010)
+`triet-ir` lowers AST to a register-SSA IR (53 opcodes) and runs it on a stack-of-frames VM. `.triv` is the wire format (currently v3 — bumped at ADR-0010 for `BR_TRILEAN` and ADR-0012 for `WITNESS_CALL`). The VM is **development tier only** per VISION §4.3; production target is AOT (v2.0) and trytecode (v∞).
+
+ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, strict `if cond` panics on Unknown (SPEC §7.1.1), `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing").
+
+### Crate-Pack distribution (shipped v0.4; ADR-0011/0012/0013)
+`triet-pack` defines `.tripack` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash: `iface_hash` (ABI surface, stable across re-compiles) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
+
+Linker decisions land in the E2300–E2399 namespace: `MajorVersionMismatch` (E2320), `VersionBelowMinimum` (E2321), `IfaceHashDrift` (E2310 advisory). `iface_hash_pin` is the final arbiter — semver triple is *declaration*, hash is *proof*. Auto-shim is explicitly NOT promised.
 
 ### Error code namespace
 - `triet::lex::E0000` — lexer
@@ -190,7 +201,7 @@ Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr
 The user follows a per-step commit pattern:
 1. Pick the next sub-task from `TODO.md`.
 2. Implement, run `cargo test --workspace` and `cargo clippy --workspace`.
-3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.2.x.6): …`.
+3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.4.N): …` / `docs(v0.4.N): …`. Next phase will use `feat(v0.5.N): …`.
 4. Push.
 5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
 
@@ -206,4 +217,4 @@ Sample programs in `examples/*.tri` exercise specific features. Useful as smoke 
 for f in examples/*.tri; do ./target/release/triet run "$f" || echo "FAILED: $f"; done
 ```
 
-Demos as of v0.2: fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic.
+Demos shipped through v0.4: 11 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic — all 11/11 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases).
