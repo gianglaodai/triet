@@ -16,27 +16,34 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.3 đã ship ✅ + cleanup + ternary-native IR ✅
+## Trạng thái hiện tại — v0.4 đã ship ✅
+
+v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
+→ **v0.4** ✅ (Crate-Pack + Stable ABI).
 
 ✅ Tree-walking interpreter end-to-end
 ✅ Type checker với inference + monomorphization
 ✅ Struct, enum + generics (G.1)
 ✅ Łukasiewicz Ł3 + Kleene K3
 ✅ Nullable subtyping `T ⊂ T?` (bẩm sinh tam phân, không bolt-on)
-✅ Diagnostic format (miette, error codes E0000–E2200+)
+✅ Diagnostic format (miette, error codes E0000–E2399+)
 ✅ Module system: hierarchical namespace, explicit `public` export, dot paths, Python-style imports, cycle detection, visibility
-✅ Bytecode VM: register SSA IR, 52-opcode dispatch, balanced ternary semantics
+✅ Bytecode VM: register SSA IR, 53-opcode dispatch (incl. WitnessCall), balanced ternary semantics
 ✅ Lowerer: AST → IR cho toàn bộ v0.2 features bao gồm SSA phi cho mutable vars (loops + if), enum payload + variant tag dispatch, tuple/literal pattern match, `.enumerate()` adapter, `?.` / `?:` / `!!` nullable ops, stdlib text builtins
-✅ `.triv` binary format: ADR-0008, serializer/deserializer (24 round-trip tests)
+✅ `.triv` binary format v3: ADR-0008 + ADR-0010 (BR_TRILEAN) + ADR-0012 (WITNESS_CALL + witness section)
+✅ `BrTrilean` 3-way branch + strict `if` Unknown→panic + Ł3-aware Eq (ADR-0010)
 ✅ CLI `triet build foo.tri -o foo.triv` + `triet run foo.triv`
 ✅ Differential tests: **11/11 examples byte-identical VM vs interpreter** (gate ADR-0009 § A đạt)
 ✅ Benchmark harness: criterion, VM 1.26× interpreter (baseline)
-✅ Cargo workspace `version = 0.3.0` đồng bộ với SPEC v0.3 (ADR-0009 § C)
+✅ Cargo workspace `version = 0.4.0` đồng bộ với SPEC v0.4 (ADR-0009 § C)
 ✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch (ADR-0009 § B)
-✅ `BrTrilean` 3-way branch + strict `if` Unknown→panic + Ł3-aware Eq (ADR-0010)
-✅ `.triv` wire format v2 (BR_TRILEAN 0xB4)
-✅ 838 tests workspace-wide, 0 ignored, snapshot tests cho IR + diagnostics
-🔜 Tiếp theo: v0.4 — Crate-Pack + Stable ABI
+✅ **Crate-Pack format** `.tripack` per ADR-0011 — ABI metadata + IR code section + dedicated linker section IDs
+✅ **Witness table dispatch** per ADR-0012 — IR-level support, VM dispatch, `.triv` v3 wire format
+✅ **Semver linking policy** per ADR-0013 — E2300-2399 decision matrix, refuse-to-link on major bump, iface_hash drift warnings
+✅ **`triet-pack` crate**: write_tripack/read_tripack + plan_link, 26 unit + 7 integration tests
+✅ **Stdlib `std.result`**: canonical `Result<T, E>` enum; SPEC §2.5 promotes `T?` as primary nullable
+✅ 867 tests workspace-wide, 0 ignored, snapshot tests cho IR + diagnostics
+🔜 Tiếp theo: v0.5 — CAS Packaging
 
 ---
 
@@ -204,30 +211,42 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 
 ---
 
-## v0.4 — Crate-Pack + Stable ABI
+## v0.4 — Crate-Pack + Stable ABI ✅ SHIPPED
 
 **Mục tiêu:** Cho phép phân phối binary library, type-safe cross-package linking.
 
-**Deliverables:**
-- Crate-Pack format: file nhị phân kèm metadata (`.tripack`).
-- Metadata gồm: ABI signatures, dependency declarations, capability claims (placeholder).
-- Compiler refuse-to-link với diagnostic khi major-version mismatch.
-- Witness table dispatch cho generics qua biên crate-pack.
-- Monomorphization vẫn dùng intra-package (tối ưu).
-- Linker: hybrid (static cho hot path, dynamic cho shared libs).
-- Result/Option đầy đủ trong stdlib (sử dụng generic của G.1).
+**Quyết định kiến trúc:**
+- **[ADR-0011](docs/decisions/0011-abi-metadata-format.md)** — ABI metadata binary format. Hai cấp hash (iface_hash + impl_hash). BLAKE3. Section ID layout cho future-compat.
+- **[ADR-0012](docs/decisions/0012-witness-table-dispatch.md)** — Witness table dispatch (Swift-style) cho cross-package generics. Hybrid: monomorphize intra-pkg, witness inter-pkg.
+- **[ADR-0013](docs/decisions/0013-semver-linking-policy.md)** — Semver decision matrix. iface_hash là final arbiter. Auto-shim explicitly not promised.
+
+**Đã ship:**
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.4.1 | ADR-0011 ABI metadata format | `8e9cfce` |
+| v0.4.2 | ADR-0012 Witness table dispatch | `d600f73` |
+| v0.4.3 | ADR-0013 Semver linking policy | `c76b89c` |
+| v0.4.4 | `triet-pack` crate + `.tripack` serde (11 round-trip tests) | `09b155d` |
+| v0.4.5 | Cross-package linker + decision matrix (8 tests) | `b1f9f83` |
+| v0.4.6 | `WitnessCall` opcode + `.triv` v3 wire format + VM dispatch | `8360036` |
+| v0.4.7 | `std.result` + SPEC `T?` primary | `06d7129` |
+| v0.4.8 | Cross-package demo (7 integration tests) | `5d61de9` |
+| v0.4.9 | Verify gate + Cargo 0.4.0 + docs sync | this commit |
+
+**Gate đạt (ADR-0009):**
+- ✅ A — Functional: differential 11/11 byte-identical, 0 `#[ignore]`, 0 `TODO(v0.4...)`.
+- ✅ B — Hygiene: 867 tests pass, clippy `-D warnings` clean, `cargo fmt` clean.
+- ✅ C — Docs: SPEC v0.4, Cargo `0.4.0`, README updated, 3 ADRs landed.
+- ✅ D — Self-consistency: 11/11 examples chạy interpreter + VM, demo cross-pkg pass.
 
 **Không làm:**
-- CAS hash identity (đợi v0.5).
-- Auto-shim ABI migration (rejected — không khả thi general case).
-- Capability enforcement runtime (đợi v0.6).
-
-**Gate:**
-- Phân phối được 1 stdlib package + 1 user package qua crate-pack format.
-- Sửa minor version của lib không cần rebuild app.
-- Sửa major version mà không update app → linker error rõ ràng.
-
-**ADR cần viết:** ADR-0009 (ABI metadata format), ADR-0010 (witness table dispatch), ADR-0011 (semver linking policy).
+- CAS hash identity (defer v0.5 — `iface_hash_pin` prep đã có trong dep table).
+- Auto-shim ABI migration (rejected per VISION §3.3 — semantic change không decidable).
+- Capability enforcement runtime (defer v0.6 — slot reserved trong ABI metadata).
+- CLI `triet link` subcommand (defer v0.5 — API trong `triet-pack` là contract).
+- Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap from v0.2.x; ADR text khuyến nghị, implementation ở v0.5.
+- Cross-package generic lowerer emit (lowerer chỉ emit `CallCrossModule` ở v0.4; full `WitnessCall` emit cross-package lands ở v0.5 với multi-package compile).
 
 ---
 

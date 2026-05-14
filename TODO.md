@@ -59,16 +59,33 @@ replaces `BrIf` for all Trilean conditions, strict `if` Unknown→panic,
 
 ---
 
-## v0.4 — Crate-Pack + Stable ABI (pending)
+## v0.4 — Crate-Pack + Stable ABI ✅ SHIPPED
 
-Per [ROADMAP.md § v0.4](ROADMAP.md). Tasks will be added when v0.4 work begins.
+Archived to [ROADMAP.md § v0.4](ROADMAP.md).
 
-- [ ] ADR-0010 — ABI metadata format
-- [ ] ADR-0011 — Witness table dispatch
-- [ ] ADR-0012 — Semver linking policy
-- [ ] Crate-pack format (`.tripack`)
-- [ ] Cross-package linker
-- [ ] Result/Option đầy đủ trong stdlib
+9 sub-tasks done (v0.4.1–v0.4.9). All gates met (ADR-0009):
+- ADR-0011/12/13 trilogy locked.
+- `triet-pack` crate landed (write/read .tripack + plan_link).
+- `WitnessCall` opcode + `.triv` v3 wire format.
+- `std.result` shipped; SPEC §2.5 promotes `T?` as primary.
+- 867 tests, 0 ignored, clippy clean, differential 11/11.
+
+Final v0.4 commit: this commit.
+
+---
+
+## v0.5 — CAS Packaging (pending)
+
+Per [ROADMAP.md § v0.5](ROADMAP.md). Tasks will be added when v0.5 work begins.
+
+- [ ] ADR-0014 — Hash scheme (Unison-inspired CAS)
+- [ ] ADR-0015 — Package store layout
+- [ ] Resolver: hash-based dep resolution
+- [ ] Lockfile format
+- [ ] Shared loading for identical iface_hash
+- [ ] Migration tool: path → CAS store
+- [ ] Cross-module enum variant import (deferred from v0.4)
+- [ ] Lowerer emit `WitnessCall` for cross-package generics (deferred from v0.4)
 
 ---
 

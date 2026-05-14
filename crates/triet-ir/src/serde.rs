@@ -1489,10 +1489,7 @@ pub fn write_program(program: &IrProgram) -> Vec<u8> {
 /// which validates ABI before code is loaded. `Nullable(T)` type args
 /// are deferred (not produced by today's lowerer for generic
 /// instantiations); we error rather than silently truncate.
-fn write_witness_tables(
-    buf: &mut Vec<u8>,
-    tables: &[crate::module::WitnessTable],
-) {
+fn write_witness_tables(buf: &mut Vec<u8>, tables: &[crate::module::WitnessTable]) {
     write_varint(buf, tables.len() as u32);
     for table in tables {
         write_varint(buf, table.type_args.len() as u32);

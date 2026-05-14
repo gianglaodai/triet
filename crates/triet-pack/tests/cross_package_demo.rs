@@ -103,12 +103,13 @@ fn happy_path_v1_links_cleanly() {
         plan.errors,
     );
     assert_eq!(plan.errors.len(), 0);
-    assert_eq!(
-        plan.resolved["math"].selected_version,
-        SemVer::new(1, 0, 0),
-    );
+    assert_eq!(plan.resolved["math"].selected_version, SemVer::new(1, 0, 0),);
     // No drift expected at the floor of the range.
-    assert!(plan.warnings.is_empty(), "unexpected warnings: {:?}", plan.warnings);
+    assert!(
+        plan.warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        plan.warnings
+    );
 }
 
 #[test]

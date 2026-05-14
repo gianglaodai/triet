@@ -185,31 +185,30 @@ fn resolve_one(dep: &Dep, available: &[AbiMetadata]) -> Resolution {
     }
 
     if let Some(chosen) = highest_in_range {
-        let hash_warning = if !dep.iface_hash_pin.is_zero()
-            && dep.iface_hash_pin != chosen.iface_hash
-        {
-            Some(LinkWarning::IfaceHashPinMismatch {
-                pkg_name: dep.pkg_name.clone(),
-                expected_pin: dep.iface_hash_pin,
-                found: chosen.iface_hash,
-            })
-        } else {
-            // Even without a pin, if the candidate's version is well
-            // ahead of the dep's declared minimum, warn about
-            // potential drift — encourages rebuild without forcing it.
-            // (ADR-0013 §2 — E2310 advisory warning.)
-            let drift = semver_cmp(&chosen.pkg_version, &dep.version_min)
-                == std::cmp::Ordering::Greater
-                && chosen.pkg_version.minor > dep.version_min.minor;
-            if drift {
-                Some(LinkWarning::IfaceHashDrift {
+        let hash_warning =
+            if !dep.iface_hash_pin.is_zero() && dep.iface_hash_pin != chosen.iface_hash {
+                Some(LinkWarning::IfaceHashPinMismatch {
                     pkg_name: dep.pkg_name.clone(),
-                    version: chosen.pkg_version,
+                    expected_pin: dep.iface_hash_pin,
+                    found: chosen.iface_hash,
                 })
             } else {
-                None
-            }
-        };
+                // Even without a pin, if the candidate's version is well
+                // ahead of the dep's declared minimum, warn about
+                // potential drift — encourages rebuild without forcing it.
+                // (ADR-0013 §2 — E2310 advisory warning.)
+                let drift = semver_cmp(&chosen.pkg_version, &dep.version_min)
+                    == std::cmp::Ordering::Greater
+                    && chosen.pkg_version.minor > dep.version_min.minor;
+                if drift {
+                    Some(LinkWarning::IfaceHashDrift {
+                        pkg_name: dep.pkg_name.clone(),
+                        version: chosen.pkg_version,
+                    })
+                } else {
+                    None
+                }
+            };
         return Resolution::Match {
             version: chosen.pkg_version,
             hash_warning,
@@ -222,7 +221,12 @@ fn resolve_one(dep: &Dep, available: &[AbiMetadata]) -> Resolution {
     if saw_major_bump {
         let candidate = candidates
             .iter()
-            .find(|c| matches!(classify_version(&c.pkg_version, dep), VersionClass::MajorMismatch))
+            .find(|c| {
+                matches!(
+                    classify_version(&c.pkg_version, dep),
+                    VersionClass::MajorMismatch
+                )
+            })
             .copied()
             .expect("saw_major_bump implies at least one candidate matched");
         return Resolution::Error(LinkError::MajorVersionMismatch {
@@ -235,7 +239,12 @@ fn resolve_one(dep: &Dep, available: &[AbiMetadata]) -> Resolution {
     if saw_below_min {
         let candidate = candidates
             .iter()
-            .find(|c| matches!(classify_version(&c.pkg_version, dep), VersionClass::BelowMin))
+            .find(|c| {
+                matches!(
+                    classify_version(&c.pkg_version, dep),
+                    VersionClass::BelowMin
+                )
+            })
             .copied()
             .expect("saw_below_min implies at least one candidate matched");
         return Resolution::Error(LinkError::VersionBelowMinimum {
@@ -304,11 +313,8 @@ mod tests {
     #[test]
     fn link_accepts_in_range_version() {
         let mut root = mk_pkg("app", SemVer::new(1, 0, 0));
-        root.deps.push(mk_dep(
-            "math",
-            SemVer::new(1, 0, 0),
-            SemVer::new(2, 0, 0),
-        ));
+        root.deps
+            .push(mk_dep("math", SemVer::new(1, 0, 0), SemVer::new(2, 0, 0)));
         let math = mk_pkg("math", SemVer::new(1, 2, 0));
         let plan = plan_link(&root, &[math]);
         assert!(plan.is_acceptable());
@@ -319,11 +325,8 @@ mod tests {
     #[test]
     fn link_refuses_major_bump() {
         let mut root = mk_pkg("app", SemVer::new(1, 0, 0));
-        root.deps.push(mk_dep(
-            "math",
-            SemVer::new(1, 0, 0),
-            SemVer::new(2, 0, 0),
-        ));
+        root.deps
+            .push(mk_dep("math", SemVer::new(1, 0, 0), SemVer::new(2, 0, 0)));
         let math = mk_pkg("math", SemVer::new(2, 0, 0));
         let plan = plan_link(&root, &[math]);
         assert!(!plan.is_acceptable());
@@ -336,15 +339,15 @@ mod tests {
     #[test]
     fn link_refuses_below_minimum() {
         let mut root = mk_pkg("app", SemVer::new(1, 0, 0));
-        root.deps.push(mk_dep(
-            "math",
-            SemVer::new(1, 2, 0),
-            SemVer::new(2, 0, 0),
-        ));
+        root.deps
+            .push(mk_dep("math", SemVer::new(1, 2, 0), SemVer::new(2, 0, 0)));
         let math = mk_pkg("math", SemVer::new(1, 1, 9));
         let plan = plan_link(&root, &[math]);
         assert!(!plan.is_acceptable());
-        assert!(matches!(plan.errors[0], LinkError::VersionBelowMinimum { .. }));
+        assert!(matches!(
+            plan.errors[0],
+            LinkError::VersionBelowMinimum { .. }
+        ));
     }
 
     #[test]
@@ -363,11 +366,8 @@ mod tests {
     #[test]
     fn link_picks_highest_in_range() {
         let mut root = mk_pkg("app", SemVer::new(1, 0, 0));
-        root.deps.push(mk_dep(
-            "math",
-            SemVer::new(1, 0, 0),
-            SemVer::new(2, 0, 0),
-        ));
+        root.deps
+            .push(mk_dep("math", SemVer::new(1, 0, 0), SemVer::new(2, 0, 0)));
         let m1 = mk_pkg("math", SemVer::new(1, 0, 0));
         let m2 = mk_pkg("math", SemVer::new(1, 5, 0));
         let m3 = mk_pkg("math", SemVer::new(1, 2, 3));
@@ -378,11 +378,7 @@ mod tests {
     #[test]
     fn link_pin_mismatch_emits_warning_not_error() {
         let mut root = mk_pkg("app", SemVer::new(1, 0, 0));
-        let mut dep = mk_dep(
-            "math",
-            SemVer::new(1, 0, 0),
-            SemVer::new(2, 0, 0),
-        );
+        let mut dep = mk_dep("math", SemVer::new(1, 0, 0), SemVer::new(2, 0, 0));
         dep.iface_hash_pin = IfaceHash::from_bytes([0x42; 32]);
         root.deps.push(dep);
         let math = mk_pkg("math", SemVer::new(1, 0, 0)); // hash differs from pin
@@ -412,11 +408,8 @@ mod tests {
     #[test]
     fn link_minor_drift_emits_warning() {
         let mut root = mk_pkg("app", SemVer::new(1, 0, 0));
-        root.deps.push(mk_dep(
-            "math",
-            SemVer::new(1, 0, 0),
-            SemVer::new(2, 0, 0),
-        ));
+        root.deps
+            .push(mk_dep("math", SemVer::new(1, 0, 0), SemVer::new(2, 0, 0)));
         let math = mk_pkg("math", SemVer::new(1, 5, 0));
         let plan = plan_link(&root, &[math]);
         assert!(plan.is_acceptable());

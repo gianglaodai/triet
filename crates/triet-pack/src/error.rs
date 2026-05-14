@@ -43,7 +43,9 @@ pub enum PackError {
     #[error("corrupted .tripack: {0}")]
     #[diagnostic(
         code(triet::pack::E2302),
-        help("the bytes describe an invalid layout — re-build the package, or inspect with `triet pack inspect`")
+        help(
+            "the bytes describe an invalid layout — re-build the package, or inspect with `triet pack inspect`"
+        )
     )]
     Corrupted(String),
 
