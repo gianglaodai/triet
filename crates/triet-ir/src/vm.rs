@@ -585,20 +585,16 @@ impl Vm {
             Instruction::Eq { dest, lhs, rhs } => {
                 let l = read_operand(constants, frame, lhs);
                 let r = read_operand(constants, frame, rhs);
-                let result = if runtime_eq(&l, &r) {
-                    Trilean::True
-                } else {
-                    Trilean::False
-                };
+                let result = runtime_eq_trilean(&l, &r);
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Ne { dest, lhs, rhs } => {
                 let l = read_operand(constants, frame, lhs);
                 let r = read_operand(constants, frame, rhs);
-                let result = if runtime_eq(&l, &r) {
-                    Trilean::False
-                } else {
-                    Trilean::True
+                let result = match runtime_eq_trilean(&l, &r) {
+                    Trilean::True => Trilean::False,
+                    Trilean::False => Trilean::True,
+                    Trilean::Unknown => Trilean::Unknown,
                 };
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
@@ -1261,6 +1257,30 @@ fn runtime_eq(l: &RuntimeValue, r: &RuntimeValue) -> bool {
     }
 }
 
+/// Łukasiewicz-aware equality (ADR-0010). Returns `Trilean::Unknown`
+/// when either operand carries an Unknown truth value, so chained
+/// boolean reasoning in user code preserves the third truth value
+/// instead of collapsing to False.
+///
+/// - Both operands `Trilean::Unknown` → Unknown (cannot confirm same).
+/// - One operand `Trilean::Unknown`, other any Trilean → Unknown.
+/// - All other value pairs: classical value equality (True/False).
+///
+/// `Trit::Zero` is a concrete trit value, not a truth-Unknown, so
+/// `Trit::Zero == Trit::Zero` remains classically True here.
+fn runtime_eq_trilean(l: &RuntimeValue, r: &RuntimeValue) -> Trilean {
+    if let (RuntimeValue::Trilean(a), RuntimeValue::Trilean(b)) = (l, r)
+        && (matches!(a, Trilean::Unknown) || matches!(b, Trilean::Unknown))
+    {
+        return Trilean::Unknown;
+    }
+    if runtime_eq(l, r) {
+        Trilean::True
+    } else {
+        Trilean::False
+    }
+}
+
 fn runtime_cmp(l: &RuntimeValue, r: &RuntimeValue) -> std::cmp::Ordering {
     match (l, r) {
         (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => a.cmp(b),
@@ -1794,6 +1814,35 @@ mod tests {
                 "BrTrilean({input:?}) → expected {expected}",
             );
         }
+    }
+
+    /// ADR-0010 — `Eq` on Trilean operands propagates Unknown per Ł3.
+    /// Classical pre-ADR behavior would collapse Unknown → False here.
+    #[test]
+    fn vm_eq_trilean_unknown_propagates() {
+        // Operand pairs with their Ł3-correct equality result.
+        let cases: &[(Trilean, Trilean, Trilean)] = &[
+            (Trilean::Unknown, Trilean::Unknown, Trilean::Unknown),
+            (Trilean::Unknown, Trilean::True, Trilean::Unknown),
+            (Trilean::Unknown, Trilean::False, Trilean::Unknown),
+            (Trilean::True, Trilean::Unknown, Trilean::Unknown),
+            (Trilean::False, Trilean::Unknown, Trilean::Unknown),
+            (Trilean::True, Trilean::True, Trilean::True),
+            (Trilean::False, Trilean::False, Trilean::True),
+            (Trilean::True, Trilean::False, Trilean::False),
+        ];
+        for (a, b, expected) in cases {
+            let got = runtime_eq_trilean(&RuntimeValue::Trilean(*a), &RuntimeValue::Trilean(*b));
+            assert_eq!(got, *expected, "eq({a:?}, {b:?})");
+        }
+        // Trit::Zero is a concrete value, NOT a truth-Unknown.
+        assert_eq!(
+            runtime_eq_trilean(
+                &RuntimeValue::Trit(Trit::Zero),
+                &RuntimeValue::Trit(Trit::Zero)
+            ),
+            Trilean::True,
+        );
     }
 
     #[test]
