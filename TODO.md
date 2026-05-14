@@ -80,7 +80,7 @@ Per [ROADMAP.md § v0.5](ROADMAP.md).
 
 - [x] v0.5.1 — ADR-0014 hash scheme refinement (3-cấp hash tree) `f876006`
 - [x] v0.5.2 — ADR-0015 package store layout (CAS filesystem) `f7b49c8`
-- [ ] v0.5.3 — Implement term + module hash computation in `triet-pack` (abi_version 1 → 2, `.triv` v3 → v4)
+- [x] v0.5.3 — 3-cấp hash tree (term + module + pkg) in `triet-pack` + abi_version 1 → 2 `b6d170c`
 - [ ] v0.5.4 — Package store filesystem (`~/.triet/store/`) + atomic install protocol
 - [ ] v0.5.5 — Hash-based dep resolver + lockfile (`triet.lock`)
 - [ ] v0.5.6 — Shared loading demo (VISION §3.1 gate — term-level RAM dedup)
