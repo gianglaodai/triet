@@ -143,39 +143,6 @@ diff_test!(diff_while_polling, "examples/while_polling.tri");
 diff_test!(diff_long_arithmetic, "examples/long_arithmetic.tri");
 diff_test!(diff_nullable, "examples/nullable.tri");
 diff_test!(diff_enumerate, "examples/enumerate.tri");
+diff_test!(diff_fizzbuzz, "examples/fizzbuzz.tri");
 
-// Known issues — ignored pending lowerer/VM fixes (tracked under v0.3.x.cleanup.5–8).
-// Tests are scheduled to be un-ignored as each lowering gap is closed:
-// - nullable, maybe, generic     → v0.3.x.cleanup.5 (enum payload lowering)
-// - counter, fizzbuzz, while_polling → v0.3.x.cleanup.6 (while loop + match)
-// - enumerate                     → v0.3.x.cleanup.7 (iterator lowering)
-// - long_arithmetic               → v0.3.x.cleanup.8 (Long cross-module ops)
-macro_rules! ignored_test {
-    ($name:ident, $path:expr, $reason:expr) => {
-        #[test]
-        #[ignore = $reason]
-        fn $name() {
-            let binary = triet_binary();
-            let example_path = $path;
-            let cwd = std::env::current_dir().unwrap();
-            let cwd = cwd.to_str().unwrap();
-            let workspace_root = if cwd.ends_with("triet-cli") {
-                format!("{cwd}/../..")
-            } else {
-                cwd.to_string()
-            };
-            let full = format!("{workspace_root}/{example_path}");
-            let tmp = format!("/tmp/triet_diff_{}.triv", stringify!($name));
-            let interp = run_interpreter(&binary, &full);
-            let vm = run_vm(&binary, &full, &tmp);
-            assert_output_eq(&interp, &vm, &full);
-            let _ = std::fs::remove_file(&tmp);
-        }
-    };
-}
-
-ignored_test!(
-    ignore_fizzbuzz,
-    "examples/fizzbuzz.tri",
-    "v0.3.x.cleanup.8: tuple literal pattern match arms"
-);
+// All 11 examples now byte-identical (gate ADR-0009 § A satisfied for v0.4).

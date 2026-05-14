@@ -1731,66 +1731,26 @@ impl<'a> LowerCtx<'a> {
                 self.fresh_block()
             };
 
-            match pat_node {
-                triet_syntax::pattern::Pattern::EnumVariant {
-                    variant_name,
-                    ..
-                } => {
-                    // Look up variant index by name. Fall back to 0 if
-                    // unknown (typechecker should have rejected by now).
-                    let target_idx = self
-                        .variant_index
-                        .get(variant_name)
-                        .map_or(0, |(_, i)| *i);
-
-                    if is_last {
-                        // Exhaustive: no test needed, just enter the arm.
+            // Synthesise the match-test predicate as an optional ValueId.
+            // `None` means "pattern matches everything" (wildcard / bare
+            // variable). The last arm is unconditional regardless — the
+            // typechecker enforces exhaustiveness.
+            if is_last {
+                self.emit(Instruction::Br { target: arm_body_block });
+            } else {
+                let test = self.lower_pattern_test(pat_node, scrutee_val);
+                match test {
+                    None => {
+                        // Wildcard/variable: always matches, drop straight in.
                         self.emit(Instruction::Br { target: arm_body_block });
-                    } else {
-                        // Compute tag from scrutinee, compare to target_idx,
-                        // branch accordingly. EnumTag returns a Trit
-                        // (Positive for variant 0, Negative for variant >=1)
-                        // which suffices for the 2-variant case driving
-                        // Option/Maybe lowering today.
-                        let tag = self.fresh_value();
-                        self.emit(Instruction::EnumTag {
-                            dest: tag,
-                            scrutinee: Operand::Value(scrutee_val),
-                        });
-                        // The condition: is `tag` the Trit corresponding to
-                        // `target_idx`? Use a constant of the expected Trit
-                        // value and compare.
-                        let expected_trit = if target_idx == 0 {
-                            Trit::Positive
-                        } else {
-                            Trit::Negative
-                        };
-                        let const_id = self.intern_constant(Constant::Trit(expected_trit));
-                        let const_val = self.fresh_value();
-                        self.emit(Instruction::Const {
-                            dest: const_val,
-                            constant: const_id,
-                        });
-                        let cmp = self.fresh_value();
-                        self.emit(Instruction::Eq {
-                            dest: cmp,
-                            lhs: Operand::Value(tag),
-                            rhs: Operand::Value(const_val),
-                        });
+                    }
+                    Some(cmp_val) => {
                         self.emit(Instruction::BrIf {
-                            cond: Operand::Value(cmp),
+                            cond: Operand::Value(cmp_val),
                             then_block: arm_body_block,
                             else_block: next_block,
                         });
                     }
-                }
-                _ => {
-                    // Non-enum pattern: unconditionally enter the arm
-                    // (Wildcard, Variable, Literal). Literal matching on
-                    // primitives could be tightened later by emitting an
-                    // Eq + BrIf, but the current examples don't exercise
-                    // that path in match expressions.
-                    self.emit(Instruction::Br { target: arm_body_block });
                 }
             }
 
@@ -1798,25 +1758,9 @@ impl<'a> LowerCtx<'a> {
             self.start_block(arm_body_block, Some(format!("match_arm_{i}")));
             self.push_scope();
 
-            // Bind payload variable if the pattern has a payload sub-pattern.
-            if let triet_syntax::pattern::Pattern::EnumVariant {
-                payload: Some(payload_pat),
-                ..
-            } = pat_node
-            {
-                let inner_pat = &self.arena().pattern(*payload_pat).node;
-                if let triet_syntax::pattern::Pattern::Variable(var_name) = inner_pat {
-                    let payload_val = self.fresh_value();
-                    self.emit(Instruction::EnumPayload {
-                        dest: payload_val,
-                        scrutinee: Operand::Value(scrutee_val),
-                    });
-                    self.bind_var(var_name.clone(), payload_val);
-                }
-            } else if let triet_syntax::pattern::Pattern::Variable(var_name) = pat_node {
-                // Pattern `x => …` binds the whole scrutinee.
-                self.bind_var(var_name.clone(), scrutee_val);
-            }
+            // Bind pattern variables (enum payload, tuple element vars,
+            // or whole-scrutinee variable).
+            self.bind_pattern_vars(pat_node, scrutee_val);
 
             let arm_val = self.lower_expr(arm.body);
             self.pop_scope();
@@ -1842,6 +1786,164 @@ impl<'a> LowerCtx<'a> {
             incoming: phi_incoming,
         });
         merge_dest
+    }
+
+    /// Synthesise a Trilean-valued match test for `pattern` against
+    /// `scrutinee`. Returns `None` when the pattern matches anything
+    /// (Wildcard, bare Variable) — the caller treats this as an
+    /// unconditional jump. Returns `Some(val)` for patterns that need a
+    /// runtime check (literals, tuple destructure, enum variant).
+    fn lower_pattern_test(
+        &mut self,
+        pattern: &triet_syntax::pattern::Pattern,
+        scrutinee: ValueId,
+    ) -> Option<ValueId> {
+        match pattern {
+            triet_syntax::pattern::Pattern::Wildcard
+            | triet_syntax::pattern::Pattern::Variable(_) => None,
+            triet_syntax::pattern::Pattern::Null => {
+                // null pattern: scrutinee is null iff NullCheck returns Zero.
+                let check = self.fresh_value();
+                self.emit(Instruction::NullCheck {
+                    dest: check,
+                    nullable: Operand::Value(scrutinee),
+                });
+                // Compare `check` against Trit::Zero — equal → matched.
+                let zero_const = self.intern_constant(Constant::Trit(Trit::Zero));
+                let zero_val = self.fresh_value();
+                self.emit(Instruction::Const { dest: zero_val, constant: zero_const });
+                let cmp = self.fresh_value();
+                self.emit(Instruction::Eq {
+                    dest: cmp,
+                    lhs: Operand::Value(check),
+                    rhs: Operand::Value(zero_val),
+                });
+                Some(cmp)
+            }
+            triet_syntax::pattern::Pattern::Literal(lit) => {
+                let const_id = match lit {
+                    triet_syntax::pattern::LiteralPattern::Integer { value, .. }
+                    | triet_syntax::pattern::LiteralPattern::Ternary(value) => {
+                        let n = i64::try_from(*value).unwrap_or(0);
+                        self.intern_constant(Constant::Integer(triet_core::Integer::new(n).unwrap_or_default()))
+                    }
+                    triet_syntax::pattern::LiteralPattern::String(s) => {
+                        self.intern_constant(Constant::String(s.clone()))
+                    }
+                    triet_syntax::pattern::LiteralPattern::Trilean(tv) => {
+                        let tl = match tv {
+                            triet_syntax::numeric::TrileanValue::True => Trilean::True,
+                            triet_syntax::numeric::TrileanValue::False => Trilean::False,
+                            triet_syntax::numeric::TrileanValue::Unknown => Trilean::Unknown,
+                        };
+                        self.intern_constant(Constant::Trilean(tl))
+                    }
+                };
+                let lit_val = self.fresh_value();
+                self.emit(Instruction::Const { dest: lit_val, constant: const_id });
+                let cmp = self.fresh_value();
+                self.emit(Instruction::Eq {
+                    dest: cmp,
+                    lhs: Operand::Value(scrutinee),
+                    rhs: Operand::Value(lit_val),
+                });
+                Some(cmp)
+            }
+            triet_syntax::pattern::Pattern::Tuple(elems) => {
+                // For each sub-pattern at index i, extract scrutinee.i via
+                // FieldGet and recurse. Conjoin all non-wildcard tests.
+                let mut acc: Option<ValueId> = None;
+                for (i, sub_id) in elems.iter().enumerate() {
+                    let sub_pat = &self.arena().pattern(*sub_id).node.clone();
+                    let field_val = self.fresh_value();
+                    self.emit(Instruction::FieldGet {
+                        dest: field_val,
+                        object: Operand::Value(scrutinee),
+                        field_idx: u32::try_from(i).unwrap_or(0),
+                    });
+                    if let Some(test) = self.lower_pattern_test(sub_pat, field_val) {
+                        acc = Some(acc.map_or(test, |prev| {
+                            let and_dest = self.fresh_value();
+                            self.emit(Instruction::LukAnd {
+                                dest: and_dest,
+                                lhs: Operand::Value(prev),
+                                rhs: Operand::Value(test),
+                            });
+                            and_dest
+                        }));
+                    }
+                }
+                acc
+            }
+            triet_syntax::pattern::Pattern::EnumVariant { variant_name, .. } => {
+                let target_idx = self
+                    .variant_index
+                    .get(variant_name)
+                    .map_or(0, |(_, i)| *i);
+                let tag = self.fresh_value();
+                self.emit(Instruction::EnumTag {
+                    dest: tag,
+                    scrutinee: Operand::Value(scrutinee),
+                });
+                let expected_trit = if target_idx == 0 {
+                    Trit::Positive
+                } else {
+                    Trit::Negative
+                };
+                let const_id = self.intern_constant(Constant::Trit(expected_trit));
+                let const_val = self.fresh_value();
+                self.emit(Instruction::Const { dest: const_val, constant: const_id });
+                let cmp = self.fresh_value();
+                self.emit(Instruction::Eq {
+                    dest: cmp,
+                    lhs: Operand::Value(tag),
+                    rhs: Operand::Value(const_val),
+                });
+                Some(cmp)
+            }
+            // Or/Range patterns deferred (not exercised by current examples).
+            _ => None,
+        }
+    }
+
+    /// Walk a pattern and bind every Variable sub-pattern to a freshly
+    /// extracted SSA value from `scrutinee`. Used inside match arm
+    /// bodies so the body can refer to the destructured names.
+    fn bind_pattern_vars(
+        &mut self,
+        pattern: &triet_syntax::pattern::Pattern,
+        scrutinee: ValueId,
+    ) {
+        match pattern {
+            triet_syntax::pattern::Pattern::Variable(name) => {
+                self.bind_var(name.clone(), scrutinee);
+            }
+            triet_syntax::pattern::Pattern::EnumVariant {
+                payload: Some(payload_pat),
+                ..
+            } => {
+                let inner_pat = self.arena().pattern(*payload_pat).node.clone();
+                let payload_val = self.fresh_value();
+                self.emit(Instruction::EnumPayload {
+                    dest: payload_val,
+                    scrutinee: Operand::Value(scrutinee),
+                });
+                self.bind_pattern_vars(&inner_pat, payload_val);
+            }
+            triet_syntax::pattern::Pattern::Tuple(elems) => {
+                for (i, sub_id) in elems.iter().enumerate() {
+                    let sub_pat = self.arena().pattern(*sub_id).node.clone();
+                    let field_val = self.fresh_value();
+                    self.emit(Instruction::FieldGet {
+                        dest: field_val,
+                        object: Operand::Value(scrutinee),
+                        field_idx: u32::try_from(i).unwrap_or(0),
+                    });
+                    self.bind_pattern_vars(&sub_pat, field_val);
+                }
+            }
+            _ => {}
+        }
     }
 
     // ── Call lowering ────────────────────────────────────────────
@@ -1933,6 +2035,10 @@ fn resolve_builtin(name: &str) -> Option<BuiltinName> {
         "print" => Some(BuiltinName::Print),
         "assert" => Some(BuiltinName::Assert),
         "assert_eq" => Some(BuiltinName::AssertEq),
+        // Global stdlib helpers — bound to integer/value formatters in the
+        // interpreter; we route them through `TextFromInteger` here so the
+        // VM produces the same string representation.
+        "to_string" | "tryte_to_string" => Some(BuiltinName::TextFromInteger),
         _ => None,
     }
 }
