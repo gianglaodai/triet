@@ -88,7 +88,9 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Run { path } => {
-            if path.ends_with(".triv") {
+            // Convention: source files end in `.tri`, bytecode in `.triv`.
+            // Both are case-sensitive lowercase per ADR-0008.
+            if Path::new(&path).extension().and_then(|e| e.to_str()) == Some("triv") {
                 run_bytecode(&path, cli.json)
             } else {
                 run_program(&path, cli.json)
@@ -385,11 +387,11 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
     let bytes = triet_ir::write_program(&ir);
 
     let output_path = output.unwrap_or_else(|| {
-        let p = path.to_string();
-        if p.ends_with(".tri") {
-            p.replace(".tri", ".triv")
+        let p = Path::new(path);
+        if p.extension().and_then(|e| e.to_str()) == Some("tri") {
+            p.with_extension("triv").to_string_lossy().into_owned()
         } else {
-            format!("{p}.triv")
+            format!("{path}.triv")
         }
     });
 

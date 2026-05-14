@@ -472,9 +472,9 @@ impl Instruction {
 }
 
 impl super::instr::Operand {
-    fn collect_value(&self, out: &mut Vec<ValueId>) {
+    fn collect_value(self, out: &mut Vec<ValueId>) {
         if let Self::Value(v) = self {
-            out.push(*v);
+            out.push(v);
         }
     }
 }

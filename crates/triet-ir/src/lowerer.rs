@@ -390,7 +390,7 @@ impl<'a> LowerCtx<'a> {
                 body,
             } => {
                 let pattern = &self.arena().pattern(*pat).node;
-                self.lower_for_loop(pattern, iterable, body);
+                self.lower_for_loop(pattern, *iterable, body);
             }
 
             Stmt::While {
@@ -589,7 +589,7 @@ impl<'a> LowerCtx<'a> {
                 let lhs = self.lower_expr(*left);
                 let rhs = self.lower_expr(*right);
                 let dest = self.fresh_value();
-                let instr = self.lower_binary_op(*operator, dest, lhs, rhs);
+                let instr = Self::lower_binary_op(*operator, dest, lhs, rhs);
                 self.emit(instr);
                 dest
             }
@@ -752,7 +752,6 @@ impl<'a> LowerCtx<'a> {
     // ── Binary operator lowering ─────────────────────────────────
 
     const fn lower_binary_op(
-        &mut self,
         op: BinaryOperator,
         dest: ValueId,
         lhs: ValueId,
@@ -898,27 +897,18 @@ impl<'a> LowerCtx<'a> {
         let else_block_id = self.fresh_block();
         let merge_block_id = self.fresh_block();
 
-        // If the condition is `if?` (treat_unknown_as_false), we need to
-        // check: unknown counts as false. `BrIf` already does this:
-        // true → then, false/unknown → else.
-        // For plain `if`, we need to also check for unknown → else.
-        if treat_unknown_as_false {
-            // `if?`: BrIf handles unknown-as-false natively.
-            self.emit(Instruction::BrIf {
-                cond: Operand::Value(cond_val),
-                then_block: then_block_id,
-                else_block: else_block_id,
-            });
-        } else {
-            // Plain `if`: if condition is unknown, it's a runtime error.
-            // For now, we emit BrIf with the same semantics; the VM will
-            // enforce the strict check.  TODO(v0.3.5): add trilean_assert_known.
-            self.emit(Instruction::BrIf {
-                cond: Operand::Value(cond_val),
-                then_block: then_block_id,
-                else_block: else_block_id,
-            });
-        }
+        // Both `if` and `if?` currently lower to `BrIf` (unknown → else branch).
+        // SPEC distinguishes them: `if?` treats unknown-as-false; plain `if`
+        // should raise when the condition is unknown. The strict check for
+        // plain `if` will be added when `trilean_assert_known` lands (deferred
+        // to a later phase; tracked via the `treat_unknown_as_false` flag
+        // already plumbed through here so the call sites don't need to change).
+        let _ = treat_unknown_as_false;
+        self.emit(Instruction::BrIf {
+            cond: Operand::Value(cond_val),
+            then_block: then_block_id,
+            else_block: else_block_id,
+        });
 
         // Then block.
         self.start_block(then_block_id, Some("then".into()));
@@ -995,20 +985,17 @@ impl<'a> LowerCtx<'a> {
         self.start_block(header_id, Some("while_header".into()));
         let cond_val = self.lower_expr(condition);
 
-        if treat_unknown_as_false {
-            self.emit(Instruction::BrIf {
-                cond: Operand::Value(cond_val),
-                then_block: body_id,
-                else_block: exit_id,
-            });
-        } else {
-            // Plain while: unknown → exit.
-            self.emit(Instruction::BrIf {
-                cond: Operand::Value(cond_val),
-                then_block: body_id,
-                else_block: exit_id,
-            });
-        }
+        // Both `while` and `while?` lower to `BrIf` (unknown → exit). The
+        // strict-`while` check on unknown will be added with the same
+        // `trilean_assert_known` helper used for plain `if` (deferred); the
+        // distinction is preserved via `treat_unknown_as_false` so callers
+        // remain stable when the strict check lands.
+        let _ = treat_unknown_as_false;
+        self.emit(Instruction::BrIf {
+            cond: Operand::Value(cond_val),
+            then_block: body_id,
+            else_block: exit_id,
+        });
 
         // Loop body.
         self.start_block(body_id, Some("while_body".into()));
@@ -1066,7 +1053,7 @@ impl<'a> LowerCtx<'a> {
     fn lower_for_loop(
         &mut self,
         pattern: &triet_syntax::pattern::Pattern,
-        iterable: &triet_syntax::arena::ExprId,
+        iterable: triet_syntax::arena::ExprId,
         body: &Block,
     ) {
         let header_id = self.fresh_block();
@@ -1074,7 +1061,7 @@ impl<'a> LowerCtx<'a> {
         let exit_id = self.fresh_block();
 
         // Check if the iterable is a Range expression for proper counted loop.
-        let spanned = &self.arena().expression(*iterable);
+        let spanned = &self.arena().expression(iterable);
         let is_range = matches!(&spanned.node, Expr::Range { .. });
 
         if is_range {
@@ -1164,7 +1151,7 @@ impl<'a> LowerCtx<'a> {
             }
         } else {
             // Non-range iterable: execute body once (minimal viable).
-            let iter_val = self.lower_expr(*iterable);
+            let iter_val = self.lower_expr(iterable);
             self.emit(Instruction::Br {
                 target: header_id,
             });
@@ -1220,8 +1207,6 @@ impl<'a> LowerCtx<'a> {
         let merge_dest = self.fresh_value();
         let mut phi_incoming: Vec<PhiIncoming> = Vec::new();
 
-        let mut arm_blocks: Vec<(BlockId, ValueId)> = Vec::new();
-
         for arm in arms {
             let arm_block_id = self.fresh_block();
 
@@ -1239,7 +1224,6 @@ impl<'a> LowerCtx<'a> {
                 value: arm_val,
                 block: arm_block_id,
             });
-            arm_blocks.push((arm_block_id, arm_val));
 
             if self.blocks[&self.current_block]
                 .terminator()
@@ -1278,35 +1262,35 @@ impl<'a> LowerCtx<'a> {
             Expr::Identifier(name) => {
                 // Check for builtins.
                 if let Some(builtin) = resolve_builtin(name) {
-                    let dest = Some(self.fresh_value());
+                    let dest = self.fresh_value();
                     self.emit(Instruction::CallBuiltin {
-                        dest,
+                        dest: Some(dest),
                         name: builtin,
                         args,
                     });
-                    return dest.unwrap();
+                    return dest;
                 }
 
                 // Check function table.
                 if let Some(func_id) = self.resolve_func(name) {
-                    let dest = Some(self.fresh_value());
+                    let dest = self.fresh_value();
                     self.emit(Instruction::CallLocal {
-                        dest,
+                        dest: Some(dest),
                         callee: func_id,
                         args,
                     });
-                    return dest.unwrap();
+                    return dest;
                 }
 
                 // Cross-module call via bindings.
                 if let Some(abs_path) = self.current_module().bindings.get(name) {
-                    let dest = Some(self.fresh_value());
+                    let dest = self.fresh_value();
                     self.emit(Instruction::CallCrossModule {
-                        dest,
+                        dest: Some(dest),
                         path: abs_path.clone(),
                         args,
                     });
-                    return dest.unwrap();
+                    return dest;
                 }
 
                 // Fallback: treat as local function reference.

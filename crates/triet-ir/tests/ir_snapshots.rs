@@ -12,7 +12,7 @@ use triet_ir::{
 };
 use triet_modules::{AbsolutePath, ModulePath};
 
-fn int(n: i64) -> Integer {
+const fn int(n: i64) -> Integer {
     Integer::new(n).unwrap()
 }
 

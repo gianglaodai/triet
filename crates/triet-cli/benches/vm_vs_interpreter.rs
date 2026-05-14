@@ -6,6 +6,12 @@
 //! Only execution time is measured; load/typecheck/lower are done once
 //! during setup and excluded from the timing.
 
+// `criterion::bench_function` returns a `&mut BenchmarkGroup` whose Drop runs
+// the actual measurement and report writing — that is the intended pattern,
+// not a leaked temporary. `criterion_group!` and `criterion_main!` expand into
+// macro-generated functions that we cannot add doc comments to.
+#![allow(clippy::significant_drop_tightening, missing_docs)]
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::path::Path;
 use triet_ir::Vm;

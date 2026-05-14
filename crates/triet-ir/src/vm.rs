@@ -44,21 +44,21 @@ pub enum RuntimeValue {
     /// A struct instance with fields in declaration order.
     Struct {
         /// Field values.
-        fields: Vec<RuntimeValue>,
+        fields: Vec<Self>,
     },
     /// An enum variant instance.
     Enum {
         /// Variant index (0-based).
         variant: u32,
         /// Optional payload.
-        payload: Option<Box<RuntimeValue>>,
+        payload: Option<Box<Self>>,
     },
     /// A closure capturing live variables.
     Closure {
         /// The IR function this closure wraps.
         func_id: FuncId,
         /// Captured values.
-        captures: Vec<RuntimeValue>,
+        captures: Vec<Self>,
     },
 }
 
@@ -85,7 +85,7 @@ impl RuntimeValue {
             Constant::Trit(t) => Self::Trit(*t),
             Constant::Tryte(t) => Self::Tryte(*t),
             Constant::Integer(i) => Self::Integer(*i),
-            Constant::Long(l) => Self::Long(l.clone()),
+            Constant::Long(l) => Self::Long(*l),
             Constant::Trilean(t) => Self::Trilean(*t),
             Constant::String(s) => Self::String(s.clone()),
             Constant::Unit => Self::Unit,
@@ -108,29 +108,25 @@ impl RuntimeValue {
             }
             Self::Integer(i) => {
                 let zero = Integer::new(0).unwrap();
-                if *i > zero {
-                    Trilean::True
-                } else if *i < zero {
-                    Trilean::False
-                } else {
-                    Trilean::Unknown
+                match (*i).cmp(&zero) {
+                    std::cmp::Ordering::Greater => Trilean::True,
+                    std::cmp::Ordering::Less => Trilean::False,
+                    std::cmp::Ordering::Equal => Trilean::Unknown,
                 }
             }
             Self::Long(l) => {
                 let zero = Long::from_i128(0);
-                if *l > zero {
-                    Trilean::True
-                } else if *l < zero {
-                    Trilean::False
-                } else {
-                    Trilean::Unknown
+                match (*l).cmp(&zero) {
+                    std::cmp::Ordering::Greater => Trilean::True,
+                    std::cmp::Ordering::Less => Trilean::False,
+                    std::cmp::Ordering::Equal => Trilean::Unknown,
                 }
             }
             _ => Trilean::Unknown,
         }
     }
 
-    /// True if this value is truthy (Trilean::True or positive numeric).
+    /// True if this value is truthy (`Trilean::True` or positive numeric).
     fn is_truthy(&self) -> bool {
         matches!(self.as_trilean(), Trilean::True)
     }
@@ -318,7 +314,7 @@ impl Frame {
             func_id: func.id,
             func_name: func.name.clone().unwrap_or_else(|| format!("@f{}", func.id.0)),
             registers: Vec::with_capacity(estimated),
-            block: func.entry_block().map(|b| b.id).unwrap_or(BlockId(0)),
+            block: func.entry_block().map_or(BlockId(0), |b| b.id),
             prev_block: None,
             pc: 0,
             return_block: None,
@@ -354,9 +350,9 @@ pub struct Vm {
     program: IrProgram,
     /// Flattened function table for quick lookup.
     functions: Vec<Function>,
-    /// Block map for each function: FuncId → Vec<&BasicBlock> (indexed by BlockId).
+    /// Block map for each function: `FuncId` → Vec<&`BasicBlock`> (indexed by `BlockId`).
     block_maps: HashMap<FuncId, HashMap<BlockId, BasicBlock>>,
-    /// Path index: absolute path string → FuncId for cross-module call dispatch.
+    /// Path index: absolute path string → `FuncId` for cross-module call dispatch.
     path_index: HashMap<String, FuncId>,
 }
 
@@ -407,6 +403,14 @@ impl Vm {
     ///
     /// Returns `VmError` on runtime failures (null unwrap, type mismatch,
     /// overflow, assertion failure, etc.).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal frame stack is empty when a `Return` step
+    /// fires. This is an invariant violation — the lowerer guarantees
+    /// that every function emits exactly one return path for each control
+    /// flow exit. Triggering it indicates a bug in the lowerer or in a
+    /// manually constructed IR program.
     pub fn execute(
         &mut self,
         entry: FuncId,
@@ -440,8 +444,8 @@ impl Vm {
                     }
                     // Pop the just-executed frame and return value to caller.
                     let completed_frame = self.frames.pop().unwrap();
-                    if let Some(caller) = self.frames.last_mut() {
-                        if let (Some(return_block), Some(return_dest)) =
+                    if let Some(caller) = self.frames.last_mut()
+                        && let (Some(return_block), Some(return_dest)) =
                             (completed_frame.return_block, completed_frame.return_dest)
                         {
                             caller.write(return_dest, value);
@@ -450,7 +454,6 @@ impl Vm {
                         }
                         // If no return block/dest, the call was for side effects;
                         // the caller's pc was already advanced past the Call instruction.
-                    }
                 }
             }
         }
@@ -471,9 +474,8 @@ impl Vm {
             .and_then(|m| m.get(&block_id))
             .cloned();
 
-        let block = match block {
-            Some(b) => b,
-            None => return Ok(StepResult::Return(RuntimeValue::Unit)),
+        let Some(block) = block else {
+            return Ok(StepResult::Return(RuntimeValue::Unit));
         };
 
         let instr = match block.instructions.get(pc) {
@@ -501,88 +503,88 @@ impl Vm {
 
             // ── Arithmetic ───────────────────────────────────────
             Instruction::Add { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 frame.write(dest, arithmetic_add(&l, &r, &func_name)?);
             }
             Instruction::Sub { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 frame.write(dest, arithmetic_sub(&l, &r, &func_name)?);
             }
             Instruction::Mul { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 frame.write(dest, arithmetic_mul(&l, &r, &func_name)?);
             }
             Instruction::Div { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 frame.write(dest, arithmetic_div(&l, &r, &func_name)?);
             }
             Instruction::Mod { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 frame.write(dest, arithmetic_mod(&l, &r, &func_name)?);
             }
             Instruction::Pow { dest, base, exp } => {
-                let b = read_operand(constants, frame, &base);
-                let e = read_operand(constants, frame, &exp);
+                let b = read_operand(constants, frame, base);
+                let e = read_operand(constants, frame, exp);
                 frame.write(dest, arithmetic_pow(&b, &e, &func_name)?);
             }
             Instruction::Neg { dest, operand } => {
-                let v = read_operand(constants, frame, &operand);
+                let v = read_operand(constants, frame, operand);
                 frame.write(dest, arithmetic_neg(&v, &func_name)?);
             }
 
             // ── Logic: Łukasiewicz Ł3 ────────────────────────────
             Instruction::LukAnd { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.and(r)));
             }
             Instruction::LukOr { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.or(r)));
             }
             Instruction::LukImplies { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.implies(r)));
             }
             Instruction::LukXor { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.xor(r)));
             }
             Instruction::LukIff { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.iff(r)));
             }
 
             // ── Logic: Kleene K3 ─────────────────────────────────
             Instruction::KleeneImplies { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.kleene_implies(r)));
             }
             Instruction::KleeneXor { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.kleene_xor(r)));
             }
             Instruction::KleeneIff { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs).as_trilean();
-                let r = read_operand(constants, frame, &rhs).as_trilean();
+                let l = read_operand(constants, frame, lhs).as_trilean();
+                let r = read_operand(constants, frame, rhs).as_trilean();
                 frame.write(dest, RuntimeValue::Trilean(l.kleene_iff(r)));
             }
 
             // ── Comparison ───────────────────────────────────────
             Instruction::Eq { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 let result = if runtime_eq(&l, &r) {
                     Trilean::True
                 } else {
@@ -591,8 +593,8 @@ impl Vm {
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Ne { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 let result = if runtime_eq(&l, &r) {
                     Trilean::False
                 } else {
@@ -601,8 +603,8 @@ impl Vm {
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Lt { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 let result = if runtime_cmp(&l, &r) == std::cmp::Ordering::Less {
                     Trilean::True
                 } else {
@@ -611,8 +613,8 @@ impl Vm {
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Le { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 let cmp = runtime_cmp(&l, &r);
                 let result =
                     if cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal {
@@ -623,8 +625,8 @@ impl Vm {
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Gt { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 let result =
                     if runtime_cmp(&l, &r) == std::cmp::Ordering::Greater {
                         Trilean::True
@@ -634,8 +636,8 @@ impl Vm {
                 frame.write(dest, RuntimeValue::Trilean(result));
             }
             Instruction::Ge { dest, lhs, rhs } => {
-                let l = read_operand(constants, frame, &lhs);
-                let r = read_operand(constants, frame, &rhs);
+                let l = read_operand(constants, frame, lhs);
+                let r = read_operand(constants, frame, rhs);
                 let cmp = runtime_cmp(&l, &r);
                 let result =
                     if cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal {
@@ -648,29 +650,29 @@ impl Vm {
 
             // ── Conversion ───────────────────────────────────────
             Instruction::ToInteger { dest, operand } => {
-                let v = read_operand(constants, frame, &operand);
+                let v = read_operand(constants, frame, operand);
                 frame.write(dest, convert_to_integer(&v, &func_name)?);
             }
             Instruction::ToTryte { dest, operand } => {
-                let v = read_operand(constants, frame, &operand);
+                let v = read_operand(constants, frame, operand);
                 frame.write(dest, convert_to_tryte(&v, &func_name)?);
             }
             Instruction::ToLong { dest, operand } => {
-                let v = read_operand(constants, frame, &operand);
+                let v = read_operand(constants, frame, operand);
                 frame.write(dest, convert_to_long(&v));
             }
             Instruction::ToTrit { dest, operand } => {
-                let v = read_operand(constants, frame, &operand);
+                let v = read_operand(constants, frame, operand);
                 frame.write(dest, convert_to_trit(&v, &func_name)?);
             }
             Instruction::ToTrilean { dest, operand } => {
-                let v = read_operand(constants, frame, &operand);
+                let v = read_operand(constants, frame, operand);
                 frame.write(dest, RuntimeValue::Trilean(v.as_trilean()));
             }
 
             // ── Nullable ─────────────────────────────────────────
             Instruction::NullWrap { dest, value } => {
-                let v = read_operand(constants, frame, &value);
+                let v = read_operand(constants, frame, value);
                 // Wrap: create an enum with variant 0 = Some(v)
                 frame.write(
                     dest,
@@ -681,7 +683,7 @@ impl Vm {
                 );
             }
             Instruction::NullUnwrap { dest, nullable } => {
-                let v = read_operand(constants, frame, &nullable);
+                let v = read_operand(constants, frame, nullable);
                 match v {
                     RuntimeValue::Enum {
                         variant: 0,
@@ -696,7 +698,7 @@ impl Vm {
                 }
             }
             Instruction::NullCheck { dest, nullable } => {
-                let v = read_operand(constants, frame, &nullable);
+                let v = read_operand(constants, frame, nullable);
                 let trit = match &v {
                     RuntimeValue::Null => Trit::Zero,
                     RuntimeValue::Enum { payload: None, .. } => Trit::Zero,
@@ -709,7 +711,7 @@ impl Vm {
             Instruction::StructNew { dest, fields } => {
                 let field_vals: Vec<RuntimeValue> = fields
                     .iter()
-                    .map(|f| read_operand(constants, frame, f))
+                    .map(|f| read_operand(constants, frame, *f))
                     .collect();
                 frame.write(dest, RuntimeValue::Struct { fields: field_vals });
             }
@@ -718,7 +720,7 @@ impl Vm {
                 object,
                 field_idx,
             } => {
-                let obj = read_operand(constants, frame, &object);
+                let obj = read_operand(constants, frame, object);
                 match obj {
                     RuntimeValue::Struct { fields } => {
                         let val = fields
@@ -742,8 +744,8 @@ impl Vm {
                 field_idx,
                 value,
             } => {
-                let mut obj = read_operand(constants, frame, &object);
-                let new_val = read_operand(constants, frame, &value);
+                let mut obj = read_operand(constants, frame, object);
+                let new_val = read_operand(constants, frame, value);
                 match &mut obj {
                     RuntimeValue::Struct { fields } => {
                         if (field_idx as usize) < fields.len() {
@@ -767,7 +769,7 @@ impl Vm {
                 variant_idx,
                 payload,
             } => {
-                let payload_val = payload.map(|p| Box::new(read_operand(constants, frame, &p)));
+                let payload_val = payload.map(|p| Box::new(read_operand(constants, frame, p)));
                 frame.write(
                     dest,
                     RuntimeValue::Enum {
@@ -777,7 +779,7 @@ impl Vm {
                 );
             }
             Instruction::EnumTag { dest, scrutinee } => {
-                let scr = read_operand(constants, frame, &scrutinee);
+                let scr = read_operand(constants, frame, scrutinee);
                 let tag = match &scr {
                     RuntimeValue::Enum { variant, .. } => match variant {
                         0 => Trit::Positive,
@@ -789,7 +791,7 @@ impl Vm {
                 frame.write(dest, RuntimeValue::Trit(tag));
             }
             Instruction::EnumPayload { dest, scrutinee } => {
-                let scr = read_operand(constants, frame, &scrutinee);
+                let scr = read_operand(constants, frame, scrutinee);
                 match scr {
                     RuntimeValue::Enum {
                         payload: Some(p), ..
@@ -809,7 +811,7 @@ impl Vm {
                 args,
             } => {
                 let arg_vals: Vec<RuntimeValue> =
-                    args.iter().map(|a| read_operand(constants, frame, a)).collect();
+                    args.iter().map(|a| read_operand(constants, frame, *a)).collect();
 
                 let callee_func = self
                     .functions
@@ -836,8 +838,8 @@ impl Vm {
                 args,
             } => {
                 let arg_vals: Vec<RuntimeValue> =
-                    args.iter().map(|a| read_operand(constants, frame, a)).collect();
-                let result = execute_builtin(&name, &arg_vals, &func_name)?;
+                    args.iter().map(|a| read_operand(constants, frame, *a)).collect();
+                let result = execute_builtin(name, &arg_vals, &func_name)?;
                 if let Some(d) = dest {
                     frame.write(d, result);
                 }
@@ -849,13 +851,13 @@ impl Vm {
             } => {
                 let arg_vals: Vec<RuntimeValue> = args
                     .iter()
-                    .map(|a| read_operand(&self.program.constants, &frame, a))
+                    .map(|a| read_operand(&self.program.constants, frame, *a))
                     .collect();
                 let func_name = frame.func_name.clone();
 
                 // Check for builtin by path suffix.
                 if let Some(builtin) = path_to_builtin(&path.to_string()) {
-                    let result = execute_builtin(&builtin, &arg_vals, &func_name)?;
+                    let result = execute_builtin(builtin, &arg_vals, &func_name)?;
                     if let Some(d) = dest {
                         frame.write(d, result);
                     }
@@ -909,9 +911,9 @@ impl Vm {
                 closure,
                 args,
             } => {
-                let clos = read_operand(constants, frame, &closure);
+                let clos = read_operand(constants, frame, closure);
                 let arg_vals: Vec<RuntimeValue> =
-                    args.iter().map(|a| read_operand(constants, frame, a)).collect();
+                    args.iter().map(|a| read_operand(constants, frame, *a)).collect();
                 match clos {
                     RuntimeValue::Closure {
                         func_id,
@@ -963,7 +965,7 @@ impl Vm {
                 then_block,
                 else_block,
             } => {
-                let c = read_operand(constants, frame, &cond);
+                let c = read_operand(constants, frame, cond);
                 let prev = frame.block;
                 if c.is_truthy() {
                     frame.block = then_block;
@@ -974,7 +976,7 @@ impl Vm {
                 frame.pc = 0;
             }
             Instruction::Ret { value } => {
-                let val = value.map_or(RuntimeValue::Unit, |v| read_operand(constants, frame, &v));
+                let val = value.map_or(RuntimeValue::Unit, |v| read_operand(constants, frame, v));
                 return Ok(StepResult::Return(val));
             }
             Instruction::Unreachable => {
@@ -1004,11 +1006,11 @@ impl Vm {
 }
 
 /// Read an operand from a frame, resolving constants from the pool.
-fn read_operand(constants: &crate::constant::ConstantPool, frame: &Frame, op: &Operand) -> RuntimeValue {
+fn read_operand(constants: &crate::constant::ConstantPool, frame: &Frame, op: Operand) -> RuntimeValue {
     match op {
-        Operand::Value(id) => frame.read(*id),
+        Operand::Value(id) => frame.read(id),
         Operand::Const(cid) => RuntimeValue::from_constant(
-            constants.get(*cid).unwrap_or(&Constant::Unit),
+            constants.get(cid).unwrap_or(&Constant::Unit),
         ),
     }
 }
@@ -1030,7 +1032,7 @@ fn arithmetic_add(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
             Ok(RuntimeValue::Integer(a.try_add(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
         }
         (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
-            Ok(RuntimeValue::Long(a.clone() + b.clone()))
+            Ok(RuntimeValue::Long(*a + *b))
         }
         (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => {
             Ok(RuntimeValue::Tryte(a.try_add(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
@@ -1049,7 +1051,7 @@ fn arithmetic_sub(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
             Ok(RuntimeValue::Integer(a.try_subtract(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
         }
         (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
-            Ok(RuntimeValue::Long(a.clone() - b.clone()))
+            Ok(RuntimeValue::Long(*a - *b))
         }
         (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => {
             Ok(RuntimeValue::Tryte(a.try_subtract(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
@@ -1064,7 +1066,7 @@ fn arithmetic_mul(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
             Ok(RuntimeValue::Integer(a.try_multiply(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
         }
         (RuntimeValue::Long(a), RuntimeValue::Long(b)) => {
-            Ok(RuntimeValue::Long(a.clone() * b.clone()))
+            Ok(RuntimeValue::Long(*a * *b))
         }
         (RuntimeValue::Tryte(a), RuntimeValue::Tryte(b)) => {
             Ok(RuntimeValue::Tryte(a.try_multiply(*b).ok_or_else(|| VmError::Overflow { function: func.into() })?))
@@ -1085,7 +1087,7 @@ fn arithmetic_div(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
             if *b == Long::from_i128(0) {
                 return Err(VmError::DivisionByZero { function: func.into() });
             }
-            Ok(RuntimeValue::Long(a.clone() / b.clone()))
+            Ok(RuntimeValue::Long(*a / *b))
         }
         _ => Ok(RuntimeValue::Integer(Integer::new(0).unwrap())),
     }
@@ -1103,7 +1105,7 @@ fn arithmetic_mod(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
             if *b == Long::from_i128(0) {
                 return Err(VmError::DivisionByZero { function: func.into() });
             }
-            Ok(RuntimeValue::Long(a.clone() % b.clone()))
+            Ok(RuntimeValue::Long(*a % *b))
         }
         _ => Ok(RuntimeValue::Integer(Integer::new(0).unwrap())),
     }
@@ -1112,7 +1114,11 @@ fn arithmetic_mod(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
 fn arithmetic_pow(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match (l, r) {
         (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => {
-            let exp = b.to_i64().max(0) as u32;
+            // `to_i64()` is bounded by `Integer`'s 27-trit range so it fits an
+            // `i64`; clamping to non-negative makes the cast lossless. If the
+            // exponent exceeds `u32::MAX` we cap there — the multiply loop
+            // below would already have overflowed long before then.
+            let exp = u32::try_from(b.to_i64().max(0)).unwrap_or(u32::MAX);
             let mut result = Integer::new(1).unwrap();
             for _ in 0..exp {
                 result = result
@@ -1125,10 +1131,15 @@ fn arithmetic_pow(l: &RuntimeValue, r: &RuntimeValue, func: &str) -> Result<Runt
     }
 }
 
+// `arithmetic_neg` cannot fail today, but every sibling `arithmetic_*` returns
+// `Result<_, VmError>` so the VM dispatch table is uniform. Keeping the same
+// signature avoids a special case at every call site and reserves headroom for
+// negate-on-MIN overflow checks (Integer/Long/Tryte/Trit all currently saturate).
+#[allow(clippy::unnecessary_wraps)]
 fn arithmetic_neg(v: &RuntimeValue, _func: &str) -> Result<RuntimeValue, VmError> {
     match v {
         RuntimeValue::Integer(a) => Ok(RuntimeValue::Integer(-*a)),
-        RuntimeValue::Long(a) => Ok(RuntimeValue::Long(-a.clone())),
+        RuntimeValue::Long(a) => Ok(RuntimeValue::Long(-*a)),
         RuntimeValue::Tryte(a) => Ok(RuntimeValue::Tryte(-*a)),
         RuntimeValue::Trit(a) => Ok(RuntimeValue::Trit(-*a)),
         RuntimeValue::Trilean(t) => Ok(RuntimeValue::Trilean(!*t)),
@@ -1140,8 +1151,8 @@ fn arithmetic_neg(v: &RuntimeValue, _func: &str) -> Result<RuntimeValue, VmError
 
 fn convert_to_integer(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match v {
-        RuntimeValue::Trit(t) => Ok(RuntimeValue::Integer(Integer::new(t.to_i8() as i64).unwrap())),
-        RuntimeValue::Tryte(t) => Ok(RuntimeValue::Integer(Integer::new(t.to_i16() as i64).unwrap())),
+        RuntimeValue::Trit(t) => Ok(RuntimeValue::Integer(Integer::new(i64::from(t.to_i8())).unwrap())),
+        RuntimeValue::Tryte(t) => Ok(RuntimeValue::Integer(Integer::new(i64::from(t.to_i16())).unwrap())),
         RuntimeValue::Integer(_) => Ok(v.clone()),
         RuntimeValue::Long(l) => {
             Ok(RuntimeValue::Integer(l.to_integer()))
@@ -1156,7 +1167,7 @@ fn convert_to_integer(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmEr
 
 fn convert_to_tryte(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
     match v {
-        RuntimeValue::Trit(t) => Ok(RuntimeValue::Tryte(Tryte::new(t.to_i8() as i16).unwrap())),
+        RuntimeValue::Trit(t) => Ok(RuntimeValue::Tryte(Tryte::new(i16::from(t.to_i8())).unwrap())),
         RuntimeValue::Tryte(_) => Ok(v.clone()),
         RuntimeValue::Integer(i) => Ok(RuntimeValue::Tryte(
             Tryte::new(i.to_i64() as i16).unwrap_or(Tryte::ZERO),
@@ -1171,9 +1182,9 @@ fn convert_to_tryte(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmErro
 
 fn convert_to_long(v: &RuntimeValue) -> RuntimeValue {
     match v {
-        RuntimeValue::Trit(t) => RuntimeValue::Long(Long::from_i128(t.to_i8() as i128)),
-        RuntimeValue::Tryte(t) => RuntimeValue::Long(Long::from_i128(t.to_i16() as i128)),
-        RuntimeValue::Integer(i) => RuntimeValue::Long(Long::from_i128(i.to_i64() as i128)),
+        RuntimeValue::Trit(t) => RuntimeValue::Long(Long::from_i128(i128::from(t.to_i8()))),
+        RuntimeValue::Tryte(t) => RuntimeValue::Long(Long::from_i128(i128::from(t.to_i16()))),
+        RuntimeValue::Integer(i) => RuntimeValue::Long(Long::from_i128(i128::from(i.to_i64()))),
         RuntimeValue::Long(_) => v.clone(),
         _ => RuntimeValue::Long(Long::from_i128(0)),
     }
@@ -1237,7 +1248,7 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
 }
 
 fn execute_builtin(
-    name: &BuiltinName,
+    name: BuiltinName,
     args: &[RuntimeValue],
     func_name: &str,
 ) -> Result<RuntimeValue, VmError> {
@@ -1301,10 +1312,6 @@ mod tests {
 
     fn make_int(n: i64) -> RuntimeValue {
         RuntimeValue::Integer(Integer::new(n).unwrap())
-    }
-
-    fn make_trilean(b: bool) -> RuntimeValue {
-        RuntimeValue::Trilean(if b { Trilean::True } else { Trilean::False })
     }
 
     fn make_simple_program(func: Function) -> IrProgram {
@@ -1489,8 +1496,8 @@ mod tests {
             }],
         };
         let mut pool = ConstantPool::new();
-        let ct = pool.intern(Constant::Trilean(Trilean::True));
-        let cu = pool.intern(Constant::Trilean(Trilean::Unknown));
+        let _ct = pool.intern(Constant::Trilean(Trilean::True));
+        let _cu = pool.intern(Constant::Trilean(Trilean::Unknown));
         let mut prog = make_simple_program(func);
         prog.constants = pool;
 
@@ -1531,8 +1538,8 @@ mod tests {
             }],
         };
         let mut pool = ConstantPool::new();
-        let cf = pool.intern(Constant::Trilean(Trilean::False));
-        let cu = pool.intern(Constant::Trilean(Trilean::Unknown));
+        let _cf = pool.intern(Constant::Trilean(Trilean::False));
+        let _cu = pool.intern(Constant::Trilean(Trilean::Unknown));
         let mut prog = make_simple_program(func);
         prog.constants = pool;
 
@@ -1855,7 +1862,7 @@ mod tests {
             }],
         };
         let mut pool = ConstantPool::new();
-        let ct = pool.intern(Constant::Trilean(Trilean::True));
+        let _ct = pool.intern(Constant::Trilean(Trilean::True));
         let mut prog = make_simple_program(func);
         prog.constants = pool;
 
@@ -1889,7 +1896,7 @@ mod tests {
             }],
         };
         let mut pool = ConstantPool::new();
-        let cf = pool.intern(Constant::Trilean(Trilean::False));
+        let _cf = pool.intern(Constant::Trilean(Trilean::False));
         let mut prog = make_simple_program(func);
         prog.constants = pool;
 
@@ -1943,7 +1950,7 @@ mod tests {
     }
 
     /// Verify balanced ternary Integer range boundaries are respected:
-    /// Integer covers [-3_812_798_742_493, +3_812_798_742_493].
+    /// Integer covers [-`3_812_798_742_493`, +`3_812_798_742_493`].
     #[test]
     fn balanced_ternary_integer_range_boundaries() {
         let min = make_int(Integer::MIN.to_i64());

@@ -109,7 +109,7 @@ fn builtin_assert(args: &[Value]) -> Result<Value, RuntimeError> {
         span: 0..0,
     })?;
     
-    if let Value::Trilean(triet_logic::Trilean::True) = value {
+    if matches!(value, Value::Trilean(triet_logic::Trilean::True)) {
         Ok(Value::Unit)
     } else {
         Err(RuntimeError::Panic {

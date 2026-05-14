@@ -137,15 +137,16 @@ diff_test!(diff_lukasiewicz_vs_kleene, "examples/lukasiewicz_vs_kleene.tri");
 diff_test!(diff_measles_risk, "examples/measles_risk.tri");
 diff_test!(diff_factorial, "examples/factorial.tri");
 
-// Known issues — ignored pending lowerer/VM fixes.
-// - nullable: FStringConcat doesn't handle std.text.len CallCrossModule (returns args verbatim)
-// - maybe, generic: enum payload lowering incomplete
-// - counter, enumerate, fizzbuzz, while_polling: while loop, match, or enumerate lowering incomplete
-// - long_arithmetic: Long arithmetic operations in cross-module calls
+// Known issues — ignored pending lowerer/VM fixes (tracked under v0.3.x.cleanup.5–8).
+// Tests are scheduled to be un-ignored as each lowering gap is closed:
+// - nullable, maybe, generic     → v0.3.x.cleanup.5 (enum payload lowering)
+// - counter, fizzbuzz, while_polling → v0.3.x.cleanup.6 (while loop + match)
+// - enumerate                     → v0.3.x.cleanup.7 (iterator lowering)
+// - long_arithmetic               → v0.3.x.cleanup.8 (Long cross-module ops)
 macro_rules! ignored_test {
-    ($name:ident, $path:expr) => {
+    ($name:ident, $path:expr, $reason:expr) => {
         #[test]
-        #[ignore]
+        #[ignore = $reason]
         fn $name() {
             let binary = triet_binary();
             let example_path = $path;
@@ -166,11 +167,43 @@ macro_rules! ignored_test {
     };
 }
 
-ignored_test!(ignore_nullable, "examples/nullable.tri");
-ignored_test!(ignore_maybe, "examples/maybe.tri");
-ignored_test!(ignore_generic, "examples/generic.tri");
-ignored_test!(ignore_long_arithmetic, "examples/long_arithmetic.tri");
-ignored_test!(ignore_fizzbuzz, "examples/fizzbuzz.tri");
-ignored_test!(ignore_counter, "examples/counter.tri");
-ignored_test!(ignore_enumerate, "examples/enumerate.tri");
-ignored_test!(ignore_while_polling, "examples/while_polling.tri");
+ignored_test!(
+    ignore_nullable,
+    "examples/nullable.tri",
+    "v0.3.x.cleanup.5: enum payload lowering"
+);
+ignored_test!(
+    ignore_maybe,
+    "examples/maybe.tri",
+    "v0.3.x.cleanup.5: enum payload lowering"
+);
+ignored_test!(
+    ignore_generic,
+    "examples/generic.tri",
+    "v0.3.x.cleanup.5: enum payload lowering"
+);
+ignored_test!(
+    ignore_long_arithmetic,
+    "examples/long_arithmetic.tri",
+    "v0.3.x.cleanup.8: Long cross-module arithmetic"
+);
+ignored_test!(
+    ignore_fizzbuzz,
+    "examples/fizzbuzz.tri",
+    "v0.3.x.cleanup.6: match arm lowering"
+);
+ignored_test!(
+    ignore_counter,
+    "examples/counter.tri",
+    "v0.3.x.cleanup.6: while loop lowering"
+);
+ignored_test!(
+    ignore_enumerate,
+    "examples/enumerate.tri",
+    "v0.3.x.cleanup.7: iterator lowering"
+);
+ignored_test!(
+    ignore_while_polling,
+    "examples/while_polling.tri",
+    "v0.3.x.cleanup.6: while loop lowering"
+);

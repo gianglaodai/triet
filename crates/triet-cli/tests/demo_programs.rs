@@ -447,6 +447,8 @@ fn module_system_demo_runs_all_tests_pass() {
 
 #[test]
 fn module_system_demo_output_snapshot() {
+    use std::fmt::Write as _;
+
     let path = std::path::Path::new(
         env!("CARGO_MANIFEST_DIR"),
     )
@@ -465,13 +467,15 @@ fn module_system_demo_output_snapshot() {
         let path = module.path.to_string();
         let item_count = module.items.len();
         let child_count = module.children.len();
-        summary.push_str(&format!("{path}: {item_count} items, {child_count} children\n"));
+        writeln!(summary, "{path}: {item_count} items, {child_count} children").unwrap();
     }
-    summary.push_str(&format!(
-        "total: {} modules, {} arenas\n",
+    writeln!(
+        summary,
+        "total: {} modules, {} arenas",
         resolved.modules.len(),
         resolved.arenas.len(),
-    ));
+    )
+    .unwrap();
 
     // Run the demo and verify it completes successfully.
     let result = triet_interpreter::run_resolved(&resolved);

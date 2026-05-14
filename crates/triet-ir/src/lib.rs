@@ -53,6 +53,21 @@
 // the nursery lint to keep the trade-off consistent across the
 // workspace (matches `triet-parser`, `triet-typecheck`, etc.).
 #![allow(clippy::redundant_pub_crate)]
+// ADR-0007 fixes the IR's `ValueId`/`BlockId`/`FuncId`/`ConstId` as `u32`-
+// sized handles. Casting `usize`-indexed counters into these handles is the
+// intentional construction pattern (a program with > 2^32 SSA values is not
+// a realistic compilation target). The lowerer + VM also pack indices into
+// fixed-width VM operands, so `cast_possible_truncation` warnings here are
+// design decisions, not latent bugs.
+#![allow(clippy::cast_possible_truncation)]
+// Dispatch routines (`display::fmt` over all instructions, `lower_expr`
+// over all AST node kinds, `serde::write_function` over the section layout,
+// `vm::step` over every opcode) are inherently long match statements.
+// Splitting them into per-opcode helpers loses locality without reducing
+// complexity. Match arms with identical bodies are intentional in these
+// dispatch tables — they document "this opcode is shaped like that one"
+// at the call site.
+#![allow(clippy::too_many_lines, clippy::match_same_arms)]
 
 mod constant;
 mod display;

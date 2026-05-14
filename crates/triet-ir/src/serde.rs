@@ -321,7 +321,7 @@ fn read_type_tag(
             let idx = read_varint(data, pos)? as usize;
             let inner = table
                 .get(idx)
-                .ok_or(TrivError::Corrupted("invalid type index in Nullable".into()))?
+                .ok_or_else(|| TrivError::Corrupted("invalid type index in Nullable".into()))?
                 .clone();
             Ok(TypeTag::Nullable(Box::new(inner)))
         }
@@ -1124,7 +1124,7 @@ fn read_constant(data: &[u8], pos: &mut usize, types: &[TypeTag]) -> Result<Cons
     let type_idx = read_varint(data, pos)? as usize;
     let ty = types
         .get(type_idx)
-        .ok_or(TrivError::Corrupted("invalid type index in constant".into()))?;
+        .ok_or_else(|| TrivError::Corrupted("invalid type index in constant".into()))?;
     match ty {
         TypeTag::Trit => {
             let b = read_u8(data, pos)?;
@@ -1283,14 +1283,14 @@ fn read_function_table(
             let type_idx = read_varint(data, pos)? as usize;
             let ty = types
                 .get(type_idx)
-                .ok_or(TrivError::Corrupted("invalid param type index".into()))?
+                .ok_or_else(|| TrivError::Corrupted("invalid param type index".into()))?
                 .clone();
             params.push((param_name, ty));
         }
         let ret_type_idx = read_varint(data, pos)? as usize;
         let return_type = types
             .get(ret_type_idx)
-            .ok_or(TrivError::Corrupted("invalid return type index".into()))?
+            .ok_or_else(|| TrivError::Corrupted("invalid return type index".into()))?
             .clone();
         metas.push(FunctionMeta {
             module_path,
@@ -1437,8 +1437,7 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
     pos += 4;
     if magic != MAGIC {
         return Err(TrivError::Corrupted(format!(
-            "bad magic bytes: expected {:02X?}, got {magic:02X?}",
-            MAGIC
+            "bad magic bytes: expected {MAGIC:02X?}, got {magic:02X?}"
         )));
     }
 
@@ -1499,7 +1498,7 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
     }
 
     // Reconstruct modules by grouping functions by module_path
-    let modules = group_into_modules(functions, &function_metas);
+    let modules = group_into_modules(&functions, &function_metas);
 
     Ok(IrProgram {
         modules,
@@ -1508,7 +1507,7 @@ pub fn read_program(data: &[u8]) -> Result<IrProgram, TrivError> {
 }
 
 fn group_into_modules(
-    functions: Vec<Function>,
+    functions: &[Function],
     metas: &[FunctionMeta],
 ) -> Vec<IrModule> {
     let mut modules: Vec<IrModule> = Vec::new();
@@ -2448,8 +2447,8 @@ mod tests {
             },
         ];
 
-        let functions = vec![func.clone(), func.clone()];
-        let modules = group_into_modules(functions, &metas);
+        let functions = vec![func.clone(), func];
+        let modules = group_into_modules(&functions, &metas);
         assert_eq!(modules.len(), 2);
         assert_eq!(modules[0].functions.len(), 1);
         assert_eq!(modules[1].functions.len(), 1);
