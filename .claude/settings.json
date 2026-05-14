@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat <<'HOOK'\n[33m[1m  TRACKING: Source files modified. When done editing, run `/check` or `cargo test --workspace && cargo clippy --workspace --all-targets` before committing.[0m\nHOOK"
+            "command": "cat <<'HOOK'\n\u001b[33m\u001b[1m  TRACKING: Source files modified. When done editing, run `/check` or `cargo test --workspace && cargo clippy --workspace --all-targets` before committing.\u001b[0m\nHOOK"
           }
         ]
       }
