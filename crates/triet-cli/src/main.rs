@@ -97,9 +97,12 @@ fn main() -> ExitCode {
         Command::Check { path } => check_program(&path, cli.json),
         Command::Build { path, output } => build_program(&path, output, cli.json),
         Command::Info => {
-            println!("Triết v{}", env!("CARGO_PKG_VERSION"));
-            println!("Balanced ternary, AI-first programming language");
-            println!("Spec: SPEC.md");
+            println!("Triết — balanced ternary, AI-first programming language");
+            println!("Language SPEC:     v0.3");
+            println!("Implementation:    v{}", env!("CARGO_PKG_VERSION"));
+            println!("Spec doc:          SPEC.md");
+            println!("Vision:            VISION.md");
+            println!("Roadmap:           ROADMAP.md");
             ExitCode::SUCCESS
         }
     }
