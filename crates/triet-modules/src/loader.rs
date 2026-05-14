@@ -122,7 +122,9 @@ impl LoaderState {
     /// current working directory at runtime.
     fn load_stdlib(&mut self) {
         let std_path = ModulePath::new(vec!["std".to_owned()]);
-        let source = "module io\nmodule text\nmodule assert";
+        // `std.result` carries the `Result<T, E>` enum per SPEC §2.5
+        // (v0.4): primary error-handling type when `T?` isn't enough.
+        let source = "module io\nmodule text\nmodule assert\nmodule result";
 
         // Resolve std/ relative to the workspace root (for dev/production).
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -365,7 +367,7 @@ mod tests {
     #[test]
     fn empty_root_creates_one_module() {
         let result = load_in_memory("").unwrap();
-        assert_eq!(result.modules.len(), 5);
+        assert_eq!(result.modules.len(), 6);
         assert_eq!(result.root_module().path, ModulePath::crate_root());
         assert!(result.root_module().items.is_empty());
         assert!(result.root_module().children.is_empty());
@@ -375,7 +377,7 @@ mod tests {
     fn root_with_function_only_keeps_item() {
         let source = "function main() { }";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), 5);
+        assert_eq!(result.modules.len(), 6);
         assert_eq!(result.root_module().items.len(), 1);
         assert!(result.root_module().children.is_empty());
     }
@@ -388,7 +390,7 @@ mod tests {
             }
         ";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), 6);
+        assert_eq!(result.modules.len(), 7);
 
         let root = result.root_module();
         assert!(root.items.is_empty(), "module decl should be lifted out");
@@ -413,7 +415,7 @@ mod tests {
             }
         ";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), 7);
+        assert_eq!(result.modules.len(), 8);
 
         let outer_id = result.root_module().children[0];
         let outer = result.module(outer_id);
@@ -457,7 +459,7 @@ mod tests {
         let helper = result.module(root.children[0]);
         assert_eq!(root.arena_id, helper.arena_id);
         // Single arena allocated for the whole inline tree.
-        assert_eq!(result.arenas.len(), 5);
+        assert_eq!(result.arenas.len(), 6);
     }
 
     // ── Filesystem tests ───────────────────────────────────────────
@@ -490,7 +492,7 @@ mod tests {
     #[test]
     fn filesystem_root_with_no_modules() {
         let result = load_files(&[("main.tri", "function main() { }")]).unwrap();
-        assert_eq!(result.modules.len(), 5);
+        assert_eq!(result.modules.len(), 6);
         assert_eq!(result.root_module().items.len(), 1);
         assert!(result.root_module().source_path.is_some());
     }
@@ -502,13 +504,13 @@ mod tests {
             ("helper.tri", "public function aid() = 7"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), 6);
+        assert_eq!(result.modules.len(), 7);
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.path.to_string(), "crate.helper");
         assert_eq!(helper.items.len(), 1);
         // External child gets its own arena.
         assert_ne!(helper.arena_id, result.root_module().arena_id);
-        assert_eq!(result.arenas.len(), 6);
+        assert_eq!(result.arenas.len(), 7);
     }
 
     #[test]
@@ -519,7 +521,7 @@ mod tests {
             ("helper/inner.tri", "public function ping() = 1"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), 7);
+        assert_eq!(result.modules.len(), 8);
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.children.len(), 1);
         let inner = result.module(helper.children[0]);
@@ -557,7 +559,7 @@ mod tests {
             ("a/b/c/c.tri", "function leaf() = 0"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), 8);
+        assert_eq!(result.modules.len(), 9);
         let leaf = result
             .find_module(&ModulePath::new(
                 ["crate", "a", "b", "c"]

@@ -282,41 +282,27 @@ match name {
 }
 ```
 
-#### `T?` KHÔNG đồng nhất với `Option<T>`
+#### `T?` là **PRIMARY** cho "value may be absent"
 
-Đây là một quyết định thiết kế quan trọng. Triết cung cấp **hai cơ chế song song** cho hai nhu cầu khác nhau:
+Quyết định kể từ v0.4: **`T?` là cách chính tắc** để diễn đạt "giá trị có thể vắng mặt". `Option<T>` (như một stdlib enum riêng) **không còn được khuyến khích** vì redundant — `T?` đã có discriminator 1-trit bẩm sinh (Trit::Zero = null per ADR-0010), không cần wrapper.
 
-| Đặc điểm | `T?` (nullable) | `Option<T>` (wrapper, v0.2+) |
+Khi cần model "operation has failed with detail", dùng `Result<T, E>` từ `std.result` (ADR-0011 ABI metadata + v0.4 stdlib). Hai mục đích, hai công cụ:
+
+| Trường hợp | Dùng | Ví dụ |
 |---|---|---|
-| Triết lý | Đơn giản: có/không có | Monadic: pipeline biến đổi |
-| Verb-first naming | `?.`, `?:`, `!!` operators | `get`, `get_or(default)`, `get_or_else { compute() }` |
-| API | `?.`, `?:`, `!!`, smart cast | `map`, `flat_map`, `filter`, `fold`, `get`, `get_or`, `get_or_else` |
-| Đối tượng dev | OOP-friendly | FP-friendly |
-| Cú pháp ngắn? | Có (`?` operator) | Không (gọi method) |
-| Auto-convert? | **Không** | **Không** |
+| Value có/không có (lookup thất bại, optional field) | `T?` | `function find_user(id: Integer) -> User?` |
+| Operation thất bại có lý do (parse, IO, capability) | `Result<T, E>` | `function parse(s: String) -> Result<Integer, ParseError>` |
+| Value có Unknown state (sensor, async, capability) | `Trilean` | `function vaccinated() -> Trilean` |
 
-Hai kiểu **không tự động convert** lẫn nhau. Dev chuyển explicit:
-
-```triet
-let n: String? = "hello"
-let m: Option<String> = n.to_maybe()     // T? → Option<T>
-let n2: String? = m.to_nullable()       // Option<T> → T?
-
-// Type khác nhau → compiler chặn nhầm lẫn
-function takes_nullable(x: String?) { ... }
-function takes_maybe(x: Option<String>) { ... }
-
-takes_maybe(n)         // ❌ lỗi compile
-takes_maybe(n.to_maybe())  // ✓
-```
+Tự dùng `enum MyOption<T> { Some(T), None }` trong user code vẫn hợp lệ (Triết không cấm), nhưng compiler emit `W0030` advisory: *"prefer `T?` for nullable values"*.
 
 Lý do thiết kế:
-- **Intent rõ ở type signature.** Thấy `T?` = check-and-use. Thấy `Option<T>` = pipeline.
-- **AI-first:** AI/dev đọc type biết ngay nên dùng API nào. Không có nhiều cách làm cùng một việc.
-- **Không Frankenstein:** Kotlin gắn `let`/`also`/`run` lên nullable đã chứng minh trộn hai paradigm vào một type tạo confusion.
-- **OOP devs không cần biết monadic.** FP devs không bị ràng buộc bởi nullable.
+- **Tam phân bẩm sinh.** Discriminator của `T?` là 1 trit, không phải 1 byte. `Option<T>` wrap thêm tag layer redundant.
+- **Operators `?.`, `?:`, `!!` giữ cú pháp ngắn.** OOP-style: check-and-use ngay tại call site.
+- **AI-first:** một cách làm cho một thứ. Đọc `T?` → biết ngay phải null-check. Không có "tôi nên dùng `Option` hay `T?`?" mơ hồ.
+- **Self-consistency:** chương trình mà có cả `String?` và `Option<String>` ở khác chỗ là smell. Chọn một.
 
-V0.1 chỉ có `T?` (compiler primitive). `Option<T>` đặc tả ở v0.2 khi có generic + enum.
+V0.1–v0.3 thử nghiệm cả hai. v0.4 chốt **`T?` primary**. `Result<T, E>` trong `std.result` cung cấp cho error-handling explicit. Local user-defined enum vẫn được phép cho ad-hoc sum types (Color, Direction, ...) nhưng không nên dùng làm wrapper cho nullability.
 
 ### 2.6 Type inference
 

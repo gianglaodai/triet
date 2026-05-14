@@ -1,4 +1,4 @@
-// Enum + match — minh họa v0.2 user-defined sum types.
+// Enum + match — minh họa user-defined sum types (language feature).
 //
 // Enum cho phép định nghĩa kiểu dữ liệu với nhiều variant:
 //   enum MaybeInt { Some(Integer), None }
@@ -8,6 +8,13 @@
 //       Some(v) => ...,
 //       None => ...,
 //   }
+//
+// LƯU Ý (SPEC §2.5, v0.4): demo này minh họa **language feature**
+// (user-defined enum + match), KHÔNG phải pattern khuyến nghị cho
+// nullability. Triết khuyến nghị `Integer?` cho "integer có thể vắng",
+// và `Result<Integer, E>` cho "operation có thể fail với lý do".
+// Local Option-style enum phù hợp cho ad-hoc sum types (Color,
+// Direction, ...) — không nên dùng làm wrapper cho nullable.
 
 enum MaybeInt { Some(Integer), None }
 

@@ -1,11 +1,13 @@
 ---
 source: crates/triet-cli/tests/demo_programs.rs
+assertion_line: 487
 expression: summary
 ---
-std: 0 items, 3 children
+std: 0 items, 4 children
 std.io: 3 items, 0 children
 std.text: 3 items, 0 children
 std.assert: 2 items, 0 children
+std.result: 1 items, 0 children
 crate: 33 items, 4 children
 crate.gates: 14 items, 0 children
 crate.alu: 11 items, 0 children
@@ -13,5 +15,5 @@ crate.memory: 18 items, 0 children
 crate.utils: 2 items, 2 children
 crate.utils.print: 7 items, 0 children
 crate.utils.advanced: 4 items, 0 children
-total: 11 modules, 10 arenas
+total: 12 modules, 11 arenas
 result: OK

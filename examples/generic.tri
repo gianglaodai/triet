@@ -1,10 +1,17 @@
-// Generics — minh họa v0.2 type parameters trên enum.
+// Generics — minh họa type parameters trên enum (language feature).
 //
 // Type parameters cho phép định nghĩa kiểu tổng quát:
 //   enum Option<T> { Some(T), None }
 //
 // Monomorphization tại typecheck time: compiler tự động thay
 // T bằng kiểu cụ thể khi sử dụng (e.g., Option<Integer>).
+//
+// LƯU Ý (SPEC §2.5, v0.4): demo này minh họa **language feature**
+// (generic enum + monomorphization), KHÔNG phải pattern khuyến nghị
+// cho nullability. Khi cần "value có thể vắng", dùng `T?` thẳng:
+//   function find_user(id: Integer) -> User?   // ← preferred
+//   function find_user(id: Integer) -> Option<User>   // redundant
+// Local `Option<T>` enum dưới đây chỉ để minh họa generic mechanics.
 
 enum Option<T> { Some(T), None }
 

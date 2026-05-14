@@ -1,0 +1,18 @@
+// Triết standard library — std.result
+//
+// `Result<T, E>` is the canonical type for "operation may fail with
+// detail" per SPEC §2.5 (v0.4). Pair it with `T?` (nullable) for
+// "value may be absent", and `Trilean` for "value has Unknown state":
+//
+//   T?                   — lookup, optional field, missing data.
+//   Result<T, E>         — parse error, IO failure, capability denial.
+//   Trilean              — Ł3 state with first-class Unknown.
+//
+// The Ok / Err variants intentionally mirror Rust's spelling so
+// LLM-emitted code interoperates with mental models trained on the
+// wider Rust ecosystem.
+
+public enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
