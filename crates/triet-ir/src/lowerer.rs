@@ -787,12 +787,17 @@ impl<'a> LowerCtx<'a> {
                 let then_id = self.fresh_block();
                 let else_id = self.fresh_block();
                 let merge_id = self.fresh_block();
-                // NullCheck returns Trit::Positive for non-null,
-                // Trit::Zero for null → BrIf truthy → non-null branch.
-                self.emit(Instruction::BrIf {
+                // ADR-0010: NullCheck returns a Trit (Positive=non-null,
+                // Zero=null, Negative=reserved-definitely-missing). Map
+                // via Trilean for ternary-native dispatch:
+                //   True (non-null) → then
+                //   Unknown (null)  → else (propagate null)
+                //   False (reserved) → else (also propagate, conservative)
+                self.emit(Instruction::BrTrilean {
                     cond: Operand::Value(null_check),
-                    then_block: then_id,
-                    else_block: else_id,
+                    true_block: then_id,
+                    unknown_block: else_id,
+                    false_block: else_id,
                 });
                 // `then`: non-null path. Unwrap and apply the method.
                 self.start_block(then_id, Some("safe_method_some".into()));
@@ -851,12 +856,13 @@ impl<'a> LowerCtx<'a> {
                 let then_id = self.fresh_block();
                 let else_id = self.fresh_block();
                 let merge_id = self.fresh_block();
-                // NullCheck: Positive for non-null, Zero for null. BrIf
-                // truthy → non-null branch (then_id = "use unwrapped").
-                self.emit(Instruction::BrIf {
+                // ADR-0010: ternary-native — null (Trit::Zero) maps to
+                // Trilean::Unknown which routes to else (use default).
+                self.emit(Instruction::BrTrilean {
                     cond: Operand::Value(null_check),
-                    then_block: then_id,
-                    else_block: else_id,
+                    true_block: then_id,
+                    unknown_block: else_id,
+                    false_block: else_id,
                 });
                 self.start_block(then_id, Some("elvis_some".into()));
                 let unwrapped = self.fresh_value();
@@ -1163,18 +1169,27 @@ impl<'a> LowerCtx<'a> {
         let else_block_id = self.fresh_block();
         let merge_block_id = self.fresh_block();
 
-        // Both `if` and `if?` currently lower to `BrIf` (unknown → else branch).
-        // SPEC distinguishes them: `if?` treats unknown-as-false; plain `if`
-        // should raise when the condition is unknown. The strict check for
-        // plain `if` will be added when `trilean_assert_known` lands (deferred
-        // to a later phase; tracked via the `treat_unknown_as_false` flag
-        // already plumbed through here so the call sites don't need to change).
-        let _ = treat_unknown_as_false;
-        self.emit(Instruction::BrIf {
+        // ADR-0010: dispatch ternary-native via `BrTrilean`. For `if?`
+        // the Unknown trit follows False (treat-as-false). For plain `if`
+        // the Unknown trit lands in an `Unreachable` block per SPEC §7.1.1
+        // (must panic, not silently take a branch).
+        let unknown_block_id = if treat_unknown_as_false {
+            else_block_id
+        } else {
+            self.fresh_block()
+        };
+        self.emit(Instruction::BrTrilean {
             cond: Operand::Value(cond_val),
-            then_block: then_block_id,
-            else_block: else_block_id,
+            true_block: then_block_id,
+            unknown_block: unknown_block_id,
+            false_block: else_block_id,
         });
+        // For plain `if`, materialise the panic block now (after the
+        // BrTrilean is on record, before lowering the then/else paths).
+        if !treat_unknown_as_false {
+            self.start_block(unknown_block_id, Some("if_unknown_panic".into()));
+            self.emit(Instruction::Unreachable);
+        }
 
         // Then block.
         self.start_block(then_block_id, Some("then".into()));
@@ -1315,17 +1330,25 @@ impl<'a> LowerCtx<'a> {
         }
         let cond_val = self.lower_expr(condition);
 
-        // Both `while` and `while?` lower to `BrIf` (unknown → exit). The
-        // strict-`while` check on unknown will be added with the same
-        // `trilean_assert_known` helper used for plain `if` (deferred); the
-        // distinction is preserved via `treat_unknown_as_false` so callers
-        // remain stable when the strict check lands.
-        let _ = treat_unknown_as_false;
-        self.emit(Instruction::BrIf {
+        // ADR-0010: dispatch ternary-native. `while?` treats Unknown as
+        // False (exit); plain `while` panics on Unknown per SPEC §7.1.1.
+        let unknown_block_id = if treat_unknown_as_false {
+            exit_id
+        } else {
+            self.fresh_block()
+        };
+        self.emit(Instruction::BrTrilean {
             cond: Operand::Value(cond_val),
-            then_block: body_id,
-            else_block: exit_id,
+            true_block: body_id,
+            unknown_block: unknown_block_id,
+            false_block: exit_id,
         });
+        if !treat_unknown_as_false {
+            // Materialise the panic block. Lowerer leaves current_block
+            // on this block; body lowering below switches back to body_id.
+            self.start_block(unknown_block_id, Some("while_unknown_panic".into()));
+            self.emit(Instruction::Unreachable);
+        }
 
         // Loop body.
         self.start_block(body_id, Some("while_body".into()));
@@ -1468,10 +1491,14 @@ impl<'a> LowerCtx<'a> {
                     lhs: Operand::Value(phi_val),
                     rhs: Operand::Value(end_val),
                 });
-                self.emit(Instruction::BrIf {
+                // ADR-0010: Le on Integer never yields Unknown, but route
+                // Unknown→exit defensively so a future widening of the
+                // loop var type cannot silently change loop semantics.
+                self.emit(Instruction::BrTrilean {
                     cond: Operand::Value(cmp_dest),
-                    then_block: body_id,
-                    else_block: exit_id,
+                    true_block: body_id,
+                    unknown_block: exit_id,
+                    false_block: exit_id,
                 });
 
                 // Body.
@@ -1617,10 +1644,13 @@ impl<'a> LowerCtx<'a> {
             lhs: Operand::Value(item_phi),
             rhs: Operand::Value(end_val),
         });
-        self.emit(Instruction::BrIf {
+        // ADR-0010: ternary-native — Le on Integer is never Unknown, but
+        // route Unknown→exit defensively.
+        self.emit(Instruction::BrTrilean {
             cond: Operand::Value(cmp_dest),
-            then_block: body_id,
-            else_block: exit_id,
+            true_block: body_id,
+            unknown_block: exit_id,
+            false_block: exit_id,
         });
 
         // Body.
@@ -1758,10 +1788,15 @@ impl<'a> LowerCtx<'a> {
                         });
                     }
                     Some(cmp_val) => {
-                        self.emit(Instruction::BrIf {
+                        // ADR-0010: match arm test is a Trilean from Eq /
+                        // LukAnd / NullCheck. Unknown means "we cannot
+                        // confirm this arm matches" → skip to next test;
+                        // False means "definitely doesn't match" → same.
+                        self.emit(Instruction::BrTrilean {
                             cond: Operand::Value(cmp_val),
-                            then_block: arm_body_block,
-                            else_block: next_block,
+                            true_block: arm_body_block,
+                            unknown_block: next_block,
+                            false_block: next_block,
                         });
                     }
                 }
