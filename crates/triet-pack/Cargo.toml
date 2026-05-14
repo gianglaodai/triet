@@ -1,0 +1,19 @@
+[package]
+name = "triet-pack"
+description = "Crate-pack format (.tripack) and cross-package linker for Triết — ABI metadata, witness tables, semver linking"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+triet-ir.workspace = true
+triet-modules.workspace = true
+thiserror.workspace = true
+miette.workspace = true
+blake3.workspace = true

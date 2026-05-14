@@ -1,0 +1,65 @@
+//! Triết crate-pack format (`.tripack`) and cross-package linker.
+//!
+//! Per [ADR-0011], this crate defines the binary format that carries an
+//! ABI surface across crate boundaries. `.tripack` is the unit of
+//! distribution: it bundles an ABI metadata section, one or more `.triv`
+//! IR code units (per [ADR-0008]), a dependency manifest, and a slot
+//! reserved for capability claims (v0.6).
+//!
+//! Linker semantics live alongside: refuse-to-link policy per
+//! [ADR-0013] and witness-table dispatch hooks per [ADR-0012].
+//!
+//! # Crate structure
+//!
+//! | Module | Purpose |
+//! |---|---|
+//! | [`types`] | `AbiMetadata`, `TypeDef`, `FunctionExport`, `Dep` |
+//! | [`hash`] | BLAKE3 helpers for `iface_hash` + `impl_hash` |
+//! | [`serde`] | `.tripack` binary serializer/deserializer |
+//! | [`error`] | E2300–E2399 linker diagnostics |
+//!
+//! [ADR-0008]: ../../../docs/decisions/0008-triv-binary-format.md
+//! [ADR-0011]: ../../../docs/decisions/0011-abi-metadata-format.md
+//! [ADR-0012]: ../../../docs/decisions/0012-witness-table-dispatch.md
+//! [ADR-0013]: ../../../docs/decisions/0013-semver-linking-policy.md
+
+#![warn(missing_docs)]
+// Internal details behind the public types stay pub(crate); silence
+// the redundant_pub_crate lint to keep the trade-off consistent
+// across the workspace (matches `triet-ir`, `triet-parser`, etc.).
+#![allow(clippy::redundant_pub_crate)]
+// `.tripack` uses fixed-width u32 fields for many index/length values
+// derived from `usize` counters. A package with > 2^32 exports or
+// dependencies is not a realistic input.
+#![allow(clippy::cast_possible_truncation)]
+// Doc comments reference ADR identifiers like "TypeRef", "TypeKind",
+// "Visibility" which appear in narrative prose pointing at the matching
+// Rust type. Wrapping every mention in backticks is noisy without
+// adding clarity — disable the pedantic check at the crate level.
+#![allow(clippy::doc_markdown)]
+// Read/write dispatch tables (`write_type_def`, `read_export_table`)
+// inherently match on a closed set of variants; arms with identical
+// short bodies are an intentional dispatch pattern rather than a sign
+// of duplication. Same trade-off the IR crate makes (ADR-0007).
+#![allow(clippy::match_same_arms)]
+// First-paragraph length is style preference — our ADR-driven doc
+// comments often pack the rationale into the lead paragraph.
+#![allow(clippy::too_long_first_doc_paragraph)]
+
+mod error;
+mod hash;
+mod serde;
+mod types;
+
+pub use error::{PackError, PackResult};
+pub use hash::{IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, compute_iface_hash};
+// `compute_impl_hash` is only needed inside `serde::write_tripack` for
+// now; we'll promote it to the public API when the linker (v0.4.5)
+// needs to validate a downloaded pack against an externally-claimed
+// hash. Until then, keeping it `pub(crate)` avoids advertising an
+// API surface we haven't committed to.
+pub use serde::{read_tripack, write_tripack};
+pub use types::{
+    AbiMetadata, Dep, EnumDef, FieldDef, FunctionExport, Param, SemVer, StructDef, TypeDef,
+    TypeKind, TypeRef, Visibility,
+};

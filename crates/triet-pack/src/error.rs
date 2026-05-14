@@ -1,0 +1,64 @@
+//! Linker + pack diagnostics in the `E2300` namespace (ADR-0013 §3).
+//!
+//! These cover both wire-format problems (bad magic, truncated input)
+//! and policy outcomes (version mismatch, refuse-to-link). Every
+//! variant implements `miette::Diagnostic` so the CLI can render
+//! them uniformly with everything else (ADR-0009 § C).
+
+use miette::Diagnostic;
+use thiserror::Error;
+
+/// Shorthand for `Result<T, PackError>`.
+pub type PackResult<T> = Result<T, PackError>;
+
+/// Errors raised by `triet-pack` — both format-level (corrupted file)
+/// and policy-level (linker refusing).
+#[derive(Clone, Debug, Diagnostic, Error, PartialEq, Eq)]
+pub enum PackError {
+    /// The file isn't a `.tripack` (magic bytes don't match).
+    #[error("not a .tripack file: magic bytes mismatch")]
+    #[diagnostic(
+        code(triet::pack::E2300),
+        help("the file may be corrupted or it's a `.triv` IR file (not a packaged crate)")
+    )]
+    BadMagic,
+
+    /// The pack format version is newer than this reader supports.
+    #[error("unsupported pack format version {found} (max supported: {supported})")]
+    #[diagnostic(
+        code(triet::pack::E2301),
+        help(
+            "update the Triết toolchain — this `.tripack` was produced by a newer compiler that knows fields this reader does not"
+        )
+    )]
+    UnsupportedAbiVersion {
+        /// Version found in the file header.
+        found: u32,
+        /// Maximum version this reader understands.
+        supported: u32,
+    },
+
+    /// Structural corruption: truncated section, bad UTF-8, varint
+    /// overflow, etc. Free-form message because the cause varies.
+    #[error("corrupted .tripack: {0}")]
+    #[diagnostic(
+        code(triet::pack::E2302),
+        help("the bytes describe an invalid layout — re-build the package, or inspect with `triet pack inspect`")
+    )]
+    Corrupted(String),
+
+    /// An unknown discriminant byte for a typed enum field
+    /// (TypeRef kind, TypeKind, Visibility). Catches forward-compat
+    /// drift without conflating with general corruption.
+    #[error("unknown discriminant 0x{discriminant:02X} for {field}")]
+    #[diagnostic(
+        code(triet::pack::E2303),
+        help("this enum variant didn't exist when the reader was built")
+    )]
+    UnknownDiscriminant {
+        /// Which field carried the bad byte (e.g. "TypeRef", "Visibility").
+        field: &'static str,
+        /// The byte value that wasn't recognised.
+        discriminant: u8,
+    },
+}
