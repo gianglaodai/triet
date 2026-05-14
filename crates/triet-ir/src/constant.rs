@@ -30,9 +30,20 @@ pub enum Constant {
     String(String),
     /// Zero-sized unit.
     Unit,
-    /// `null` marker for nullable types. Distinct from `Unit` so the VM
-    /// can recognise it via `NullCheck` without ambiguating empty
-    /// expression results.
+    /// Canonical `null` marker for nullable types `T?`.
+    ///
+    /// Per ADR-0010, this is the IR-level representation of the
+    /// **`Trit::Zero` state of the nullable discriminator**. Conceptually
+    /// equivalent to writing `Const(Trit::Zero)` and `NullWrap`-ing it,
+    /// but kept as a dedicated variant so the wire format stays compact
+    /// (1 byte instead of an instruction + operand) and so `NullCheck`
+    /// can pattern-match without inspecting a payload.
+    ///
+    /// **Not** a separate "thing" alongside `Some`/`None`. The three trit
+    /// states of a nullable discriminator are:
+    /// - `Trit::Positive`  → wrapped value (Some)
+    /// - `Trit::Zero`      → this variant (canonical null)
+    /// - `Trit::Negative`  → reserved (definitely-missing, future use)
     Null,
 }
 

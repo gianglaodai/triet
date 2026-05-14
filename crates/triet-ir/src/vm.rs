@@ -693,11 +693,15 @@ impl Vm {
                 }
             }
             Instruction::NullCheck { dest, nullable } => {
+                // ADR-0010: report the nullable's discriminator trit.
+                //   Positive = wrapped value (Some)
+                //   Zero     = canonical null
+                //   Negative = reserved for definitely-missing
+                // Today only Some/Null are produced; Negative is reserved.
                 let v = read_operand(constants, frame, nullable);
                 let trit = match &v {
-                    RuntimeValue::Null => Trit::Zero,
-                    RuntimeValue::Enum { payload: None, .. } => Trit::Zero,
-                    _ => Trit::Positive, // non-null
+                    RuntimeValue::Null | RuntimeValue::Enum { payload: None, .. } => Trit::Zero,
+                    _ => Trit::Positive,
                 };
                 frame.write(dest, RuntimeValue::Trit(trit));
             }
