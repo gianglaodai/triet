@@ -23,7 +23,10 @@ ADR này lock binary format trước khi serialize/deserialize implementation (v
 `.triv` là binary format với:
 
 1. **Magic bytes** `0x74 0x72 0x69 0x76` ("triv" ASCII).
-2. **32-bit version** (little-endian), bắt đầu từ `1`.
+2. **32-bit version** (little-endian), hiện tại = `2` (bumped từ 1 → 2
+   ở v0.3.x.ternary phase per [ADR-0010](0010-ternary-native-ir.md) khi
+   opcode `BR_TRILEAN` (0xB4) được thêm — v1 reader gặp opcode này sẽ
+   trả `UnknownOpcode` thay vì silently misinterpret).
 3. **Section-based layout** — mỗi section có `section_id` (1 byte) + `section_size` (u32
    LE). Unknown section → skip, không error.
 4. **Little-endian** cho multi-byte integers (đồng bộ với CPU target chính:

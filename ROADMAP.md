@@ -16,7 +16,7 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.3 đã ship ✅ + cleanup gate ADR-0009 ✅
+## Trạng thái hiện tại — v0.3 đã ship ✅ + cleanup + ternary-native IR ✅
 
 ✅ Tree-walking interpreter end-to-end
 ✅ Type checker với inference + monomorphization
@@ -33,7 +33,9 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 ✅ Benchmark harness: criterion, VM 1.26× interpreter (baseline)
 ✅ Cargo workspace `version = 0.3.0` đồng bộ với SPEC v0.3 (ADR-0009 § C)
 ✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch (ADR-0009 § B)
-✅ 835 tests workspace-wide, 0 ignored, snapshot tests cho IR + diagnostics
+✅ `BrTrilean` 3-way branch + strict `if` Unknown→panic + Ł3-aware Eq (ADR-0010)
+✅ `.triv` wire format v2 (BR_TRILEAN 0xB4)
+✅ 838 tests workspace-wide, 0 ignored, snapshot tests cho IR + diagnostics
 🔜 Tiếp theo: v0.4 — Crate-Pack + Stable ABI
 
 ---
@@ -160,7 +162,45 @@ mọi version bump tương lai, không chỉ v0.3 → v0.4.
 
 **Không làm:**
 - Bench 3× (defer cho v0.4 perf pass; ADR-0010 nếu cần revise gate).
-- Strict `if`/`while` unknown-as-error check (defer — yêu cầu `trilean_assert_known` opcode).
+- ~~Strict `if`/`while` unknown-as-error check~~ → Closed in v0.3.x.ternary phase below.
+
+---
+
+## v0.3.x.ternary — Ternary-native IR ✅ SHIPPED
+
+**Mục tiêu:** Audit sau cleanup phát hiện 5 chỗ binary-thinking leak ở IR:
+BrIf 2-way (Unknown collapse to else), if/if? semantic distinction hardcoded
+ở lowerer thay vì IR, EnumTag Trit chỉ dùng 2/3 states, Constant::Null
+bolt-on, Eq trên Trilean::Unknown trả False thay vì Unknown. Tất cả violate
+VISION §5 "Trit-level capability + Łukasiewicz checking + ternary ABI". Phase
+này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze.
+
+**Quyết định kiến trúc:** [ADR-0010](docs/decisions/0010-ternary-native-ir.md)
+
+**Đã ship:**
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.3.x.ternary.1 | ADR-0010 — ternary-native IR design | `c944949` |
+| v0.3.x.ternary.2 | `BrTrilean` opcode (0xB4) — 3-way branch | `6f00c0a` |
+| v0.3.x.ternary.3+5 | Lowerer migrate to `BrTrilean` + strict `if` Unknown→panic (SPEC §7.1.1) | `09cc1e5` |
+| v0.3.x.ternary.4 | Match dispatch + pattern test dùng `BrTrilean` (cùng commit trên) | — |
+| v0.3.x.ternary.6 | `Eq`/`Ne` propagate Unknown khi operand Trilean::Unknown (Ł3) | `39b6cd6` |
+| v0.3.x.ternary.7 | Document `Constant::Null` = Trit::Zero discriminator state | `3b1ef2f` |
+| v0.3.x.ternary.8 | Verify gate: 11/11 + 838 tests + clippy clean | this commit |
+
+**Backend mapping (per ADR-0010):**
+- **JIT (Cranelift, v0.9)**, **LLVM AOT (v2.0)**: BrTrilean → 2 cmp + 2 branch on binary CPU.
+- **Trytecode (v∞)**: BrTrilean → **1 native instruction** trên hardware tam phân. Đây là điểm Triết thắng vĩnh viễn nếu ngày phần cứng tam phân xuất hiện.
+
+**`.triv` wire format bumped v1 → v2** — v1 readers gặp BR_TRILEAN opcode (0xB4) trả `UnknownOpcode` thay vì silently misinterpret.
+
+**Lowerer state sau migration:** 0 emit BrIf, 7 emit BrTrilean. `BrIf` còn lại trong IR enum cho .triv v1 backward decode + cases binary-thực (Trit verified 2-state). Không có new code emit BrIf.
+
+**Không làm:**
+- Xoá `BrIf` enum variant (defer — wire format compat).
+- Encoding ≥4-variant enum thành Tryte tag (defer — chưa example nào cần).
+- Capability `Trilean` dispatch (v0.6 — sẽ build trên BrTrilean infrastructure).
 
 ---
 

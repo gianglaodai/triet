@@ -46,6 +46,19 @@ as the policy for every future version bump.
 
 ---
 
+## v0.3.x.ternary ✅ SHIPPED
+
+Archived to [ROADMAP.md § v0.3.x.ternary](ROADMAP.md).
+
+Ternary-native IR refactor per [ADR-0010](docs/decisions/0010-ternary-native-ir.md).
+Removes binary-thinking leak ở control flow: `BrTrilean` 3-way branch
+replaces `BrIf` for all Trilean conditions, strict `if` Unknown→panic,
+Ł3-aware `Eq`/`Ne`, `.triv` v1 → v2.
+
+7 sub-tasks done (v0.3.x.ternary.1–8, 4+5 merged). 838 tests, 0 ignored, clippy clean, 11/11 differential.
+
+---
+
 ## v0.4 — Crate-Pack + Stable ABI (pending)
 
 Per [ROADMAP.md § v0.4](ROADMAP.md). Tasks will be added when v0.4 work begins.

@@ -13,7 +13,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.3 — implementation v0.3.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format đã có. 827 tests pass workspace-wide.
+🟢 **Language SPEC v0.3 — implementation v0.3.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format đã có. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). 838 tests pass workspace-wide.
 
 ```bash
 cargo build --release
@@ -137,7 +137,8 @@ Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first +
 - **v0.2** — struct, enum, generics ✅
 - **v0.2.x** — module system ✅ ([ADR-0005](docs/decisions/0005-module-system.md))
 - **v0.3** — bytecode VM + stable IR ✅ ([ADR-0007](docs/decisions/0007-ir-design.md), [ADR-0008](docs/decisions/0008-triv-binary-format.md))
-- **v0.3.x.cleanup** — gate-closing phase ([ADR-0009](docs/decisions/0009-version-gate-policy.md)) — *đang ở đây*
+- **v0.3.x.cleanup** — gate-closing phase ✅ ([ADR-0009](docs/decisions/0009-version-gate-policy.md))
+- **v0.3.x.ternary** — ternary-native IR ✅ ([ADR-0010](docs/decisions/0010-ternary-native-ir.md)) — *đang ở đây*
 - **v0.4** — Crate-Pack + stable ABI
 - **v0.5** — CAS packaging (hash-based identity)
 - **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
