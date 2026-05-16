@@ -112,11 +112,14 @@ Per [ROADMAP.md § v0.6](ROADMAP.md).
 - [x] v0.6.1 — ADR-0016 — Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) `cd65127`
 - [x] v0.6.2 — ADR-0017 — Trilean policy hook protocol (`triet.policy` hybrid rules + TTY prompt, per-session cache, E2205 sub-variants) `0e6e94a`
 - [x] v0.6.3 — ADR-0018 — Loader semantics (`triet.package` grammar, eager link-time check, TTY provenance prompt, E2208 sub-variants, `CapabilityClaim` struct rename) `6742948`
-- [ ] Enforce `sys.*` / `dev.*` / `usr.*` cross-root capability check at type-check stage
-- [ ] Populate `caps section` in `.tripack` writer/reader (slot reserved since v0.4)
-- [ ] Linker capability check (E22XX series) — refuse-to-link on mismatch
-- [ ] Runtime policy hook implementation (per ADR-0017)
-- [ ] Demo: `usr.app` cannot import `dev.*` without grant in manifest
+- [x] v0.6.4 — `CapabilityClaim` struct + 4-variant `CapabilityLevel` enum (ADR-0018 §6) + caps section wire format extend (ADR-0016 §4: cap_path + level u8 + reserved u8). 924 → 930 tests, clippy -D warnings clean, abi_version stays 2. `22151a4`
+- [ ] v0.6.5 — `triet.package` source manifest parser (mirror `lockfile.rs` precedent, ADR-0018 §1)
+- [ ] v0.6.6 — `triet.policy` parser (share tokenizer with v0.6.5, ADR-0017 §3 + Addendum §A)
+- [ ] v0.6.7 — Enforce `sys.*` / `dev.*` / `usr.*` cross-root capability check at type-check stage (E2200/E2201/E2206)
+- [ ] v0.6.8 — Linker capability check Step 6a — E2202/E2203/E2208 sub-variants (ADR-0018 §2/§5)
+- [ ] v0.6.9 — Capability resolver + policy cache Step 6b (ADR-0017 §4, ADR-0018 §2)
+- [ ] v0.6.10 — TTY prompt UX (`/dev/tty` I/O + provenance display, ADR-0018 §4)
+- [ ] v0.6.11 — Demo `usr.app` vs `dev.*` + integration tests
 
 ---
 
