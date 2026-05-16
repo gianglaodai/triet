@@ -112,6 +112,7 @@ Per [ROADMAP.md § v0.6](ROADMAP.md).
 - [x] v0.6.1 — ADR-0016 — Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) `cd65127`
 - [x] v0.6.2 — ADR-0017 — Trilean policy hook protocol (`triet.policy` hybrid rules + TTY prompt, per-session cache, E2205 sub-variants) `0e6e94a`
 - [ ] v0.6.3 — ADR-0018 — Loader semantics (refuse-to-load on capability mismatch, manifest `requires:` source syntax, TTY prompt UX, E2208)
+  - Constraint (author 2026-05-17): TTY prompt phải show provenance — `iface_hash` (full hex) + `impl_hash` (full hex) + CAS store path + per-dep `ResolutionOrigin` label + `iface_hash matches triet.lock` flag. Anti-typosquatting defense per ADR-0014 §4 (impl_hash unforgeable) + ADR-0013 (iface_hash là final arbiter). Full hex, no truncate (security context). Mock UI tham khảo: turn 2026-05-17 (TTY prompt redesign).
 - [ ] Enforce `sys.*` / `dev.*` / `usr.*` cross-root capability check at type-check stage
 - [ ] Populate `caps section` in `.tripack` writer/reader (slot reserved since v0.4)
 - [ ] Linker capability check (E22XX series) — refuse-to-link on mismatch
