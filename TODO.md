@@ -84,7 +84,7 @@ Per [ROADMAP.md § v0.5](ROADMAP.md).
 - [x] v0.5.4 — Package store filesystem (`~/.triet/store/`) + atomic install + GC `2425e25`
 - [x] v0.5.5 — Hash-based dep resolver + `triet.lock` format `2c43e69`
 - [x] v0.5.6 — Shared loading demo (VISION §3.1 gate at iface level; body-level defer) `6291bc1`
-- [ ] v0.5.7 — Migration tool: `triet store import` (path → CAS)
+- [x] v0.5.7 — `triet store {import,list,gc}` CLI (v=1 lossy migration deferred) `8b4ce12`
 - [ ] v0.5.8 — Carry-over from v0.4: cross-module enum variant import + lowerer emit `WitnessCall` for cross-package generics
 - [ ] v0.5.9 — Verify gate (ADR-0009) + bump Cargo `0.4.0 → 0.5.0` + docs sync
 
