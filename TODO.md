@@ -101,7 +101,7 @@ system dựng trên resolver/store chắc chắn.
 
 - [x] v0.5.x.review.1 — Refactor `Resolution.from_lockfile: bool` → `origin: ResolutionOrigin` 3-state enum (Lockfile / IfacePin / Fresh) `20076d5`
 - [x] v0.5.x.review.2 — Negative tests: concurrent install race + E2382 IfaceHashPinMismatch + GC corrupt manifest (conservative fix + GcReport.corrupt_pkgs)
-- [ ] v0.5.x.review.3 — `$TRIET_STORE` env override test + multi-root GC test (invariant: pkg referenced by ≥1 root survives)
+- [x] v0.5.x.review.3 — `$TRIET_STORE` env override test + multi-root GC test (invariant: pkg referenced by ≥1 root survives)
 - [ ] v0.5.x.review.4 — ADR-0015 §11 — Record review findings + Windows defer
 
 ---

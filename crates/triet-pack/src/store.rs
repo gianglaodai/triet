@@ -1112,6 +1112,35 @@ mod tests {
     }
 
     #[test]
+    fn gc_keeps_pkg_referenced_by_multiple_roots() {
+        // CAS invariant: a pkg referenced by ≥1 root must survive GC.
+        // Two projects depending on the same lib then removing only
+        // one of the roots must NOT sweep the lib.
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let bytes = mk_pack("shared", SemVer::new(1, 0, 0), &["f"]);
+        let h = store.install_pack(&bytes).unwrap();
+
+        store.add_root("proj-a", &[h]).unwrap();
+        store.add_root("proj-b", &[h]).unwrap();
+
+        // Drop one root — the other still pins the pkg.
+        store.remove_root("proj-a").unwrap();
+
+        let report = store.gc().unwrap();
+        assert_eq!(report.swept_pkgs, 0, "shared pkg must survive");
+        assert_eq!(report.swept_modules, 0);
+        assert_eq!(report.swept_terms, 0);
+        assert!(store.resolve_pack(&h).unwrap().is_some());
+
+        // Drop the second root — now nothing pins it. GC should sweep.
+        store.remove_root("proj-b").unwrap();
+        let report2 = store.gc().unwrap();
+        assert!(report2.swept_pkgs >= 1);
+        assert!(store.resolve_pack(&h).unwrap().is_none());
+    }
+
+    #[test]
     fn gc_preserves_mods_terms_when_manifest_corrupt() {
         // If a live pkg's manifest.bin is unreadable, gc() can't
         // enumerate its mod/term references — sweeping under that

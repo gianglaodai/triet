@@ -140,6 +140,57 @@ fn list_full_flag_shows_long_hash() {
     assert!(has_64hex, "full form missing 64-hex hash: {full_stdout:?}");
 }
 
+/// Run with a custom `$HOME` and no `$TRIET_STORE` — exercises the
+/// `$HOME/.triet/store` fallback path in `resolve_store_root`.
+fn run_cli_with_home(args: &[&str], home: &std::path::Path) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
+    cmd.args(args)
+        .env_remove("TRIET_STORE")
+        .env("HOME", home);
+    cmd.output().expect("CLI to execute")
+}
+
+#[test]
+fn store_root_falls_back_to_home_when_env_unset() {
+    // `$TRIET_STORE` unset → CLI uses `$HOME/.triet/store`. Verifies
+    // the second arm of `resolve_store_root` actually runs and produces
+    // a usable store.
+    let home = TempDir::new().unwrap();
+    let out = run_cli_with_home(&["store", "list"], home.path());
+    assert!(
+        out.status.success(),
+        "expected success, stderr: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Store layout should exist under $HOME/.triet/store/.
+    let store_root = home.path().join(".triet").join("store");
+    for sub in ["term", "mod", "pkg", "names", "roots", "tmp"] {
+        assert!(
+            store_root.join(sub).is_dir(),
+            "missing {sub} under {}",
+            store_root.display()
+        );
+    }
+}
+
+#[test]
+fn store_root_errors_when_both_env_unset() {
+    // Neither $TRIET_STORE nor $HOME → `resolve_store_root` returns
+    // an explicit error rather than silently picking a default.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
+    cmd.args(["store", "list"])
+        .env_remove("TRIET_STORE")
+        .env_remove("HOME");
+    let out = cmd.output().expect("CLI to execute");
+    assert!(!out.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("HOME") || stderr.contains("TRIET_STORE"),
+        "expected explanatory error mentioning HOME/TRIET_STORE, got: {stderr:?}"
+    );
+}
+
 #[test]
 fn json_list_emits_one_object_per_line() {
     let store = TempDir::new().unwrap();
