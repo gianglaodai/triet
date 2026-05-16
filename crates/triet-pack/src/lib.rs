@@ -46,6 +46,7 @@
 // comments often pack the rationale into the lead paragraph.
 #![allow(clippy::too_long_first_doc_paragraph)]
 
+mod capability_link;
 mod error;
 mod hash;
 mod linker;
@@ -63,6 +64,10 @@ pub use hash::{
     IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash,
     TermIfaceHash, TermImplHash, compute_iface_hash, compute_module_iface_hash,
     compute_module_impl_hash, compute_term_iface_hash, compute_term_impl_hash,
+};
+pub use capability_link::{
+    CapabilityLinkError, CapabilityLinkReport, DeferredCap, RootRefusalLevel,
+    check_link_capabilities,
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};
