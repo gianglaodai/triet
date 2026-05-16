@@ -99,6 +99,11 @@ pub enum StoreError {
     #[error("invalid .tripack handed to store: {0}")]
     #[diagnostic(transparent)]
     Pack(#[from] PackError),
+
+    /// Lockfile (`triet.lock`) format or version mismatch.
+    #[error("lockfile error: {0}")]
+    #[diagnostic(transparent)]
+    Lockfile(#[from] crate::lockfile::LockfileError),
 }
 
 impl StoreError {

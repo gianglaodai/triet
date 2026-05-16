@@ -224,6 +224,65 @@ impl Store {
         Ok(Some(ImplHash(arr)))
     }
 
+    /// List all installed versions of `pkg_name`, sorted ascending by
+    /// version. Returns an empty vec if the package isn't in the store.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Io`] if the names directory exists but
+    /// can't be enumerated, or if a link file is malformed.
+    pub fn list_versions(&self, pkg_name: &str) -> StoreResult<Vec<(SemVer, ImplHash)>> {
+        let dir = self.root.join(dirs::NAMES).join(pkg_name);
+        let mut out = Vec::new();
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(StoreError::io(dir.display().to_string(), e)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| StoreError::io(dir.display().to_string(), e))?;
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("link") {
+                continue;
+            }
+            let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            // Parse `<major>.<minor>.<patch>` from the file stem.
+            let mut parts = stem.split('.');
+            let Some(major_str) = parts.next() else {
+                continue;
+            };
+            let Some(minor_str) = parts.next() else {
+                continue;
+            };
+            let Some(patch_str) = parts.next() else {
+                continue;
+            };
+            if parts.next().is_some() {
+                continue;
+            }
+            let (Ok(major), Ok(minor), Ok(patch)) = (
+                major_str.parse::<u32>(),
+                minor_str.parse::<u32>(),
+                patch_str.parse::<u32>(),
+            ) else {
+                continue;
+            };
+            let version = SemVer::new(major, minor, patch);
+            // Resolve the link to its impl_hash.
+            if let Some(hash) = self.resolve_by_name(pkg_name, version)? {
+                out.push((version, hash));
+            }
+        }
+        out.sort_by(|a, b| {
+            a.0.major
+                .cmp(&b.0.major)
+                .then(a.0.minor.cmp(&b.0.minor))
+                .then(a.0.patch.cmp(&b.0.patch))
+        });
+        Ok(out)
+    }
+
     /// Create or overwrite a name link `names/<pkg>/<semver>.link`
     /// pointing at `impl_hash`.
     ///
