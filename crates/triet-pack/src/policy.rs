@@ -217,6 +217,37 @@ impl PolicyRules {
         }
     }
 
+    /// Insert a rule, or overwrite an existing rule that has the same
+    /// `(cap_path, origin)` tuple. Returns `true` if a fresh slot was
+    /// added; `false` if an existing rule was replaced.
+    ///
+    /// Used by the `G`/`D` permanent-write path in
+    /// [`crate::DevTtyPrompt`] (v0.6.10) to record a user's prompt
+    /// choice. The parser refuses duplicate tuples (ADR-0017 §3 — no
+    /// merge/last-wins semantics), but programmatic callers explicitly
+    /// asking to update an existing rule are different: the user
+    /// re-prompted on the same path and chose a different decision.
+    pub fn upsert_rule(&mut self, rule: PolicyRule) -> bool {
+        if let Some(slot) = self
+            .rules
+            .iter_mut()
+            .find(|r| r.cap_path == rule.cap_path && r.origin == rule.origin)
+        {
+            *slot = rule;
+            false
+        } else {
+            self.rules.push(rule);
+            true
+        }
+    }
+
+    /// Override the `default` decision. Used by tests and by the
+    /// `G`/`D` permanent-write path. Pass `None` to clear the explicit
+    /// default (reverts to implicit `Minus1`).
+    pub const fn set_default(&mut self, decision: Option<Decision>) {
+        self.default = decision;
+    }
+
     /// Look up the decision for `(cap_path, origin)` per ADR-0017 §4
     /// match precedence:
     ///

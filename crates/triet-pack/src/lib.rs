@@ -58,6 +58,7 @@ mod resolver;
 mod serde;
 mod store;
 mod strict_parser;
+mod tty_prompt;
 mod types;
 
 pub use error::{PackError, PackResult, StoreError, StoreResult};
@@ -72,6 +73,10 @@ pub use capability_link::{
 };
 pub use capability_resolver::{
     CachedDecision, CapabilityResolver, DecisionSource, PolicyRequest, ResolverError,
+};
+pub use tty_prompt::{
+    DepChainEntry, DevTtyPrompt, LockfileMatch, PackageInfo, PromptCallback, PromptChoice,
+    PromptContext, context_from_request, non_interactive_callback, prompt_loop, render_prompt,
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};

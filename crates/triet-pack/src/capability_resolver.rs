@@ -50,6 +50,7 @@
 //! [ADR-0017 Addendum §B]: ../../../docs/decisions/0017-trilean-policy-hook.md#addendum--parser-strictness--tty-source--abstain-errata
 
 use std::collections::HashMap;
+use std::fmt;
 
 use miette::Diagnostic;
 use thiserror::Error;
@@ -57,6 +58,7 @@ use triet_core::Trit;
 
 use crate::policy::{Decision, OriginMatcher, PolicyRules};
 use crate::resolver::ResolutionOrigin;
+use crate::tty_prompt::{PromptCallback, PromptChoice};
 
 /// Input to the capability resolver — the full identity of "who's
 /// asking for what" plus *how* the dep was selected by the upstream
@@ -200,37 +202,39 @@ pub enum ResolverError {
 /// The resolver is **not** thread-safe at v0.6.9. v0.8 concurrency
 /// will revisit (probably `Arc<RwLock<HashMap<…>>>` for the cache;
 /// rules are immutable so they stay `Arc<PolicyRules>`).
-#[derive(Clone, Debug)]
 pub struct CapabilityResolver {
     rules: PolicyRules,
     cache: HashMap<(String, String), CachedDecision>,
-    /// At v0.6.9 always `false` — the `prompt` decision always
-    /// falls through to fail-closed [`ResolverError::NonTTYDefer`].
-    /// v0.6.10 sets this from `isatty(stderr)` + `/dev/tty` open per
-    /// [ADR-0017 Addendum §B] and branches into the prompt path.
-    tty_available: bool,
+    /// Prompt strategy for `Decision::Prompt` rules. When `None`,
+    /// the resolver fails closed with [`ResolverError::NonTTYDefer`]
+    /// (ADR-0017 §6). When `Some`, the callback runs and its outcome
+    /// translates into a [`DecisionSource::InteractivePrompt`] entry.
+    /// v0.6.10 ships [`crate::DevTtyPrompt`] as the production
+    /// implementation.
+    prompt_callback: Option<Box<dyn PromptCallback>>,
 }
 
 impl CapabilityResolver {
-    /// New resolver from a parsed policy. `tty_available` defaults
-    /// `false` at v0.6.9 — any `prompt` rule fires fail-closed
+    /// New resolver from a parsed policy. No prompt callback is
+    /// attached by default — `prompt` rules fail closed via
     /// [`ResolverError::NonTTYDefer`]. Use
-    /// [`Self::with_tty_available`] from v0.6.10 onward.
+    /// [`Self::with_prompt_callback`] to attach the v0.6.10
+    /// [`crate::DevTtyPrompt`] or a test mock.
     #[must_use]
     pub fn new(rules: PolicyRules) -> Self {
         Self {
             rules,
             cache: HashMap::new(),
-            tty_available: false,
+            prompt_callback: None,
         }
     }
 
-    /// Override the `tty_available` flag. Intended for v0.6.10's TTY
-    /// detection layer; tests at v0.6.9 leave it `false`. Builder-
-    /// style return so it composes with `new(...)`.
+    /// Attach a prompt callback so `prompt` rules can resolve via
+    /// user interaction (or, in tests, a fixed-response mock).
+    /// Builder-style — composes with `new(...)`.
     #[must_use]
-    pub const fn with_tty_available(mut self, tty: bool) -> Self {
-        self.tty_available = tty;
+    pub fn with_prompt_callback(mut self, callback: Box<dyn PromptCallback>) -> Self {
+        self.prompt_callback = Some(callback);
         self
     }
 
@@ -293,28 +297,55 @@ impl CapabilityResolver {
         fresh
     }
 
-    /// Handle a `prompt` rule. v0.6.9: always fall through to
-    /// fail-closed `NonTTYDefer` because `tty_available = false`.
-    /// v0.6.10: branches into the TTY prompt path when
-    /// `tty_available = true`.
-    fn handle_prompt(&self, req: &PolicyRequest) -> CachedDecision {
-        if self.tty_available {
-            // Placeholder for v0.6.10 — current code path never
-            // executes because the constructor pins `false`. Kept
-            // explicit so the v0.6.10 patch is purely additive.
-            CachedDecision {
-                outcome: Trit::Zero,
-                source: DecisionSource::InteractivePrompt,
-            }
-        } else {
-            CachedDecision {
+    /// Handle a `prompt` rule. v0.6.10 routes through the attached
+    /// [`PromptCallback`] when present; absent callback fails closed
+    /// with [`ResolverError::NonTTYDefer`].
+    ///
+    /// Callback outcomes map per ADR-0018 §4: `Grant{Once,Permanent}`
+    /// → `Trit::Positive`, `Deny{Once,Permanent}` → `Trit::Negative`.
+    /// The permanent-vs-session distinction is the callback's side
+    /// effect (writing to `triet.policy`); the resolver only records
+    /// the Trit outcome.
+    ///
+    /// I/O errors from the callback become
+    /// [`ResolverError::PromptCrash`] — fail-closed `Trit::Negative`
+    /// plus diagnostic.
+    fn handle_prompt(&mut self, req: &PolicyRequest) -> CachedDecision {
+        let Some(callback) = self.prompt_callback.as_mut() else {
+            return CachedDecision {
                 outcome: Trit::Negative,
                 source: DecisionSource::Error(ResolverError::NonTTYDefer {
                     cap_path: req.cap_path.clone(),
                     requester_pkg: req.requester_pkg.clone(),
                 }),
-            }
+            };
+        };
+        match callback.prompt(req) {
+            Ok(choice) => CachedDecision {
+                outcome: match choice {
+                    PromptChoice::GrantOnce | PromptChoice::GrantPermanent => Trit::Positive,
+                    PromptChoice::DenyOnce | PromptChoice::DenyPermanent => Trit::Negative,
+                },
+                source: DecisionSource::InteractivePrompt,
+            },
+            Err(io_err) => CachedDecision {
+                outcome: Trit::Negative,
+                source: DecisionSource::Error(ResolverError::PromptCrash {
+                    cap_path: req.cap_path.clone(),
+                    os_error: io_err.to_string(),
+                }),
+            },
         }
+    }
+}
+
+impl fmt::Debug for CapabilityResolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CapabilityResolver")
+            .field("rules", &self.rules)
+            .field("cache_len", &self.cache.len())
+            .field("has_prompt_callback", &self.prompt_callback.is_some())
+            .finish()
     }
 }
 
@@ -452,19 +483,78 @@ mod tests {
     }
 
     #[test]
-    fn tty_available_flag_branches_into_prompt_path() {
-        // v0.6.10 will fill out the prompt path; here we just verify
-        // the branch is reachable so the v0.6.10 patch can be purely
-        // additive.
+    fn prompt_callback_grant_once_yields_trit_positive() {
+        // v0.6.10 replaces the v0.6.9 placeholder branch — a real
+        // callback returns PromptChoice variants that the resolver
+        // maps to the appropriate Trit + InteractivePrompt source.
+        use crate::tty_prompt::{PromptCallback, PromptChoice};
+
+        struct FixedCallback(PromptChoice);
+        impl PromptCallback for FixedCallback {
+            fn prompt(&mut self, _req: &PolicyRequest) -> std::io::Result<PromptChoice> {
+                Ok(self.0)
+            }
+        }
+
         let rules = rules(
             "format_version 1\n\
              rule sys.io fresh prompt\n",
         );
-        let mut r = CapabilityResolver::new(rules).with_tty_available(true);
+        let mut r = CapabilityResolver::new(rules)
+            .with_prompt_callback(Box::new(FixedCallback(PromptChoice::GrantOnce)));
         let d = r.resolve(&req("sys.io", "myapp", ResolutionOrigin::Fresh));
-        // Placeholder branch returns Trit::Zero + InteractivePrompt.
-        assert_eq!(d.outcome, Trit::Zero);
+        assert_eq!(d.outcome, Trit::Positive);
         assert!(matches!(d.source, DecisionSource::InteractivePrompt));
+    }
+
+    #[test]
+    fn prompt_callback_deny_permanent_yields_trit_negative() {
+        use crate::tty_prompt::{PromptCallback, PromptChoice};
+
+        struct FixedCallback(PromptChoice);
+        impl PromptCallback for FixedCallback {
+            fn prompt(&mut self, _req: &PolicyRequest) -> std::io::Result<PromptChoice> {
+                Ok(self.0)
+            }
+        }
+
+        let rules = rules(
+            "format_version 1\n\
+             rule sys.io fresh prompt\n",
+        );
+        let mut r = CapabilityResolver::new(rules)
+            .with_prompt_callback(Box::new(FixedCallback(PromptChoice::DenyPermanent)));
+        let d = r.resolve(&req("sys.io", "myapp", ResolutionOrigin::Fresh));
+        assert_eq!(d.outcome, Trit::Negative);
+        assert!(matches!(d.source, DecisionSource::InteractivePrompt));
+    }
+
+    #[test]
+    fn prompt_callback_io_error_yields_prompt_crash() {
+        use crate::tty_prompt::{PromptCallback, PromptChoice};
+
+        struct CrashingCallback;
+        impl PromptCallback for CrashingCallback {
+            fn prompt(&mut self, _req: &PolicyRequest) -> std::io::Result<PromptChoice> {
+                Err(std::io::Error::other("simulated TTY failure"))
+            }
+        }
+
+        let rules = rules(
+            "format_version 1\n\
+             rule sys.io fresh prompt\n",
+        );
+        let mut r = CapabilityResolver::new(rules)
+            .with_prompt_callback(Box::new(CrashingCallback));
+        let d = r.resolve(&req("sys.io", "myapp", ResolutionOrigin::Fresh));
+        assert_eq!(d.outcome, Trit::Negative);
+        match &d.source {
+            DecisionSource::Error(ResolverError::PromptCrash { cap_path, os_error }) => {
+                assert_eq!(cap_path, "sys.io");
+                assert!(os_error.contains("simulated"), "os_error: {os_error}");
+            }
+            other => panic!("expected PromptCrash, got {other:?}"),
+        }
     }
 
     // ── Origin dispatch ────────────────────────────────────────────
