@@ -117,6 +117,27 @@ pub enum LoaderError {
         #[label]
         span: Span,
     },
+
+    /// E2107 — `from X import Variant as Alias` for an enum variant.
+    /// Variant aliasing isn't supported because the constructor's
+    /// spelling is part of the value (typechecker matches variant by
+    /// name within its enum). Import the parent enum instead.
+    #[error("enum variant `{variant}` cannot be imported under an alias")]
+    #[diagnostic(
+        code(triet::modules::E2107),
+        help(
+            "either import the variant unaliased (e.g. `from X import {variant}`) or import the parent enum `{enum_name}` and use `{enum_name}.{variant}` at use sites"
+        )
+    )]
+    AliasedVariantImport {
+        /// The variant name in the import list.
+        variant: String,
+        /// The enum that owns the variant.
+        enum_name: String,
+        /// Span of the import.
+        #[label]
+        span: Span,
+    },
 }
 
 impl LoaderError {
@@ -130,7 +151,8 @@ impl LoaderError {
             | Self::VisibilityViolation { span, .. }
             | Self::UnresolvedImport { span, .. }
             | Self::ChildParseError { span, .. }
-            | Self::IoError { span, .. } => span.clone(),
+            | Self::IoError { span, .. }
+            | Self::AliasedVariantImport { span, .. } => span.clone(),
         }
     }
 
@@ -145,6 +167,7 @@ impl LoaderError {
             Self::UnresolvedImport { .. } => "triet::modules::E2104",
             Self::ChildParseError { .. } => "triet::modules::E2105",
             Self::IoError { .. } => "triet::modules::E2106",
+            Self::AliasedVariantImport { .. } => "triet::modules::E2107",
         }
     }
 }

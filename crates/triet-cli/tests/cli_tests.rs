@@ -243,3 +243,52 @@ fn run_source_auto_detects_tri_extension() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "99");
 }
+
+// ── v0.5.8: cross-module enum variant import ────────────────────────
+
+/// `from std.result import Result, Ok, Err` — variant imports bind to
+/// the parent enum so the constructor + pattern resolve at runtime.
+#[test]
+fn variant_import_from_std_result_runs() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("main.tri"),
+        r#"from std.result import Result, Ok, Err
+
+function divide(a: Integer, b: Integer) -> Result<Integer, String> = if b == 0 { Err("division by zero") } else { Ok(a / b) }
+
+function main() -> Integer = match divide(10, 2) {
+    Ok(v) => v,
+    Err(_) => -1,
+}
+"#,
+    )
+    .unwrap();
+    let output = run_cli(&["run", "main.tri"], temp.path());
+    assert!(
+        output.status.success(),
+        "run failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "5");
+}
+
+/// `from std.result import Ok as MyOk` is rejected with E2107 —
+/// variant aliasing isn't supported.
+#[test]
+fn aliased_variant_import_rejected_by_cli() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("main.tri"),
+        "from std.result import Ok as MyOk\nfunction main() -> Integer = 0",
+    )
+    .unwrap();
+    let output = run_cli(&["check", "main.tri"], temp.path());
+    assert!(!output.status.success(), "expected check to fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("E2107") || stderr.contains("cannot be imported under an alias"),
+        "stderr: {stderr}"
+    );
+}

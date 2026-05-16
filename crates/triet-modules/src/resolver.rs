@@ -299,6 +299,35 @@ fn resolve_from_import(
                     .insert(bind_name, abs_path);
                 continue;
             }
+            // Check enum variants — `from std.result import Ok` should
+            // resolve `Ok` to the parent enum `Result` so the type
+            // checker sees the variant in scope. Aliasing is rejected
+            // (variant constructor names are positional in the AST).
+            if let Some((enum_name, enum_vis)) =
+                find_enum_owning_variant(program, target_mod_id, name)
+            {
+                if alias.is_some() {
+                    errors.push(LoaderError::AliasedVariantImport {
+                        variant: name.clone(),
+                        enum_name,
+                        span: span.clone(),
+                    });
+                    continue;
+                }
+                if !is_visible(enum_vis, importer_id, target_mod_id, program) {
+                    errors.push(LoaderError::VisibilityViolation {
+                        name: name.clone(),
+                        actual_visibility: enum_vis.to_string(),
+                        span: span.clone(),
+                    });
+                    continue;
+                }
+                let abs_path = AbsolutePath::new(target_path.clone(), enum_name);
+                program.modules[importer_id.raw()]
+                    .bindings
+                    .insert(name.clone(), abs_path);
+                continue;
+            }
             errors.push(LoaderError::UnresolvedImport {
                 path: format!("{}.{}", source.join("."), name),
                 span: span.clone(),
@@ -397,6 +426,33 @@ fn find_item_visibility(
             && item_name == name
         {
             return Some(vis);
+        }
+    }
+    None
+}
+
+/// Find the enum that defines `variant_name` in `module_id`, returning
+/// `(enum_name, enum_visibility)` so the caller can bind the variant
+/// import to its parent enum's [`AbsolutePath`].
+///
+/// Variant-level visibility isn't tracked separately at v0.2.x — a
+/// variant inherits the enum's visibility, matching Rust + OCaml
+/// precedent. Two enums with the same variant name would be ambiguous
+/// here; we return the first match in declaration order and rely on
+/// the parser to keep variant names unique within a module's enum
+/// namespace (typechecker will surface a clearer error if multiple
+/// enums collide).
+fn find_enum_owning_variant(
+    program: &ResolvedProgram,
+    module_id: ModuleId,
+    variant_name: &str,
+) -> Option<(String, Visibility)> {
+    let module = program.module(module_id);
+    for item in &module.items {
+        if let Item::Enum(e) = &item.node
+            && e.variants.iter().any(|v| v.name == variant_name)
+        {
+            return Some((e.name.clone(), e.visibility));
         }
     }
     None
@@ -629,5 +685,43 @@ mod tests {
         let root = program.root_module();
         assert!(root.bindings.contains_key("println"));
         assert!(root.bindings.contains_key("print"));
+    }
+
+    // ── Enum variant import (v0.5.8) ────────────────────────────────
+
+    #[test]
+    fn variant_import_binds_to_parent_enum() {
+        let program = load_in_memory_result("from std.result import Ok").unwrap();
+        let root = program.root_module();
+        assert!(
+            root.bindings.contains_key("Ok"),
+            "variant import should bind: {:?}",
+            root.bindings
+        );
+        // The binding points at the parent enum's AbsolutePath so the
+        // typechecker can find `Ok` among Result's variants.
+        let path = &root.bindings["Ok"];
+        assert_eq!(path.to_string(), "std.result.Result");
+    }
+
+    #[test]
+    fn multi_variant_import_works() {
+        let program = load_in_memory_result("from std.result import Ok, Err").unwrap();
+        let root = program.root_module();
+        assert!(root.bindings.contains_key("Ok"));
+        assert!(root.bindings.contains_key("Err"));
+        assert_eq!(root.bindings["Ok"].to_string(), "std.result.Result");
+        assert_eq!(root.bindings["Err"].to_string(), "std.result.Result");
+    }
+
+    #[test]
+    fn aliased_variant_import_rejected() {
+        let errors = load_in_memory_result("from std.result import Ok as MyOk").unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::AliasedVariantImport { .. })),
+            "expected AliasedVariantImport, got: {errors:?}"
+        );
     }
 }

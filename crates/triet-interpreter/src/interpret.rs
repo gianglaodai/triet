@@ -90,6 +90,9 @@ pub(crate) struct Interpreter<'p> {
     env: ValueEnvironment,
     resolved_program: Option<&'p triet_modules::ResolvedProgram>,
     resolved_globals: Option<&'p std::collections::HashMap<triet_modules::AbsolutePath, Value>>,
+    /// The module currently executing — used for cross-module variant
+    /// lookups (`from std.result import Ok` style).
+    current_module_id: Option<triet_modules::ModuleId>,
 }
 
 impl<'p> Interpreter<'p> {
@@ -102,6 +105,7 @@ impl<'p> Interpreter<'p> {
             env,
             resolved_program: None,
             resolved_globals: None,
+            current_module_id: None,
         }
     }
 
@@ -154,6 +158,7 @@ impl<'p> Interpreter<'p> {
             env,
             resolved_program: Some(program),
             resolved_globals: Some(globals),
+            current_module_id: Some(module_id),
         }
     }
 
@@ -641,11 +646,44 @@ impl<'p> Interpreter<'p> {
 
     /// Scan registered enum types for a variant named `name`. Returns
     /// `(enum_type_name, variant_name)` if found.
+    ///
+    /// Two scopes are searched in order:
+    /// 1. Current module's own enum declarations.
+    /// 2. Cross-module variant imports — when the current module's
+    ///    bindings include `name → AbsolutePath(other_module, Enum)`
+    ///    (from `from X import Variant`), we follow the path to the
+    ///    enum's variant list. Aliased variant imports are rejected
+    ///    at resolver time (E2107), so `name` matches both the local
+    ///    binding key and the variant spelling.
     fn find_enum_variant_for_construction(&self, name: &str) -> Option<(String, String)> {
         for item in self.items {
             if let Item::Enum(def) = &item.node {
                 for variant in &def.variants {
                     if variant.name == name {
+                        return Some((def.name.clone(), variant.name.clone()));
+                    }
+                }
+            }
+        }
+
+        // Cross-module variant imports — only attempted in multi-module
+        // mode, when `new_for_module` set up the resolved-program ref.
+        let program = self.resolved_program?;
+        let module_id = self.current_module_id?;
+        let module = program.module(module_id);
+        let abs_path = module.bindings.get(name)?;
+        let source_id = program.find_module(abs_path.module_path())?;
+        let source_module = program.module(source_id);
+        let source_arena = program.arena(source_module);
+        for item in &source_module.items {
+            if let Item::Enum(def) = &item.node
+                && def.name == abs_path.name()
+            {
+                for variant in &def.variants {
+                    if variant.name == name {
+                        // `source_arena` reference suppresses unused-binding
+                        // warnings when no payload introspection is needed.
+                        let _ = source_arena;
                         return Some((def.name.clone(), variant.name.clone()));
                     }
                 }
