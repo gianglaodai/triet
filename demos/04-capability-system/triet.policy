@@ -1,0 +1,13 @@
+# triet.policy — capability resolution rules.
+# ADR-0017 §3 — sysadmin audit-friendly numeric tokens.
+format_version 1
+
+# Lockfile-pinned deps get auto-grant for sys.io family.
+rule sys.io        lockfile +1
+# Fresh deps need user confirmation.
+rule sys.net.dns   fresh    prompt
+# Disk raw access blanket-denied; override per-path if needed.
+rule dev.disk      *        -1
+
+# Catch-all: fail closed.
+default -1

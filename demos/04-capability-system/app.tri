@@ -1,0 +1,24 @@
+// Demo: capability-aware application source.
+//
+// Illustrative only — v0.6 ships the type-checker + linker + resolver
+// machinery, but the CLI doesn't yet build this file with caps wired
+// in (see README — CLI integration lands with v0.7 self-hosting).
+//
+// Cross-root imports below are what the type-checker's
+// `check_capabilities` pass enforces against `triet.package`:
+//
+// - `from sys.io import println` — `sys.io` granted in manifest → OK
+// - `from sys.net.dns import lookup` — `sys.net.dns` deferred →
+//   runtime policy decides via `triet.policy`
+// - `from dev.disk import read_block` — `dev.disk` denied in manifest
+//   → compile fails with E2201 (self-contradictory). Remove the
+//   import OR change manifest to `grant`/`defer` to compile.
+
+from sys.io import println
+from sys.net.dns import lookup
+
+function main() {
+    println("hello from usr.myapp")
+    let addr = lookup("example.com")
+    println(addr)
+}

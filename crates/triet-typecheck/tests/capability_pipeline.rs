@@ -441,6 +441,32 @@ fn full_pipeline_capstone_happy_path() {
 }
 
 #[test]
+fn demo_files_parse_with_v06_grammar() {
+    // Ensures the `demos/04-capability-system/` illustrative files
+    // stay in sync with the parser. If a grammar change breaks the
+    // demo's `triet.package` or `triet.policy`, this test fails
+    // before the change ships — the README's gate walkthrough would
+    // otherwise reference text the parser refuses.
+    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/")
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let demo_root = workspace_root.join("demos").join("04-capability-system");
+
+    let manifest = PackageManifest::load(&demo_root.join("triet.package"))
+        .expect("demo triet.package must parse with current grammar");
+    assert_eq!(manifest.name, "myapp");
+    assert_eq!(manifest.version, SemVer::new(0, 1, 0));
+    assert_eq!(manifest.requires.len(), 3);
+
+    let policy = PolicyRules::load(&demo_root.join("triet.policy"))
+        .expect("demo triet.policy must parse with current grammar");
+    assert_eq!(policy.rules().len(), 3);
+}
+
+#[test]
 fn full_pipeline_capstone_refuse_path() {
     // ROADMAP §v0.6 GATE 3 ✓ (refusal)
     //

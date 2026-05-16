@@ -1,0 +1,9 @@
+# triet.package — generated, hand-editable.
+# ADR-0018 §1 — capability claims + deps.
+format_version 1
+name myapp
+version 0.1.0
+
+requires sys.io        grant
+requires sys.net.dns   defer
+requires dev.disk      deny
