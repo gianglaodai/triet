@@ -19,8 +19,8 @@ use crate::hash::{
     compute_term_iface_hash, compute_term_impl_hash,
 };
 use crate::types::{
-    AbiMetadata, Capability, Dep, EnumDef, EnumVariant, FieldDef, FunctionExport, Module, Param,
-    SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,
+    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDef, EnumVariant, FieldDef,
+    FunctionExport, Module, Param, SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,
 };
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -309,14 +309,19 @@ pub(crate) fn encode_deps_for_hash(deps: &[Dep]) -> Vec<u8> {
 }
 
 /// Encode the capability claims table in canonical form for hashing.
-/// Empty at v0.5; populated starting v0.6.
-pub(crate) fn encode_caps_for_hash(caps: &[Capability]) -> Vec<u8> {
-    let mut sorted: Vec<&Capability> = caps.iter().collect();
-    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+/// Canonical rule (ADR-0016 §4): sort by `cap_path` lexicographically;
+/// each entry serializes as `(path: length-prefixed UTF-8, level: u8,
+/// reserved: u8 = 0x00)`. Reused by both the iface-hash rollup and
+/// the on-disk caps section (`write_caps_table`).
+pub(crate) fn encode_caps_for_hash(caps: &[CapabilityClaim]) -> Vec<u8> {
+    let mut sorted: Vec<&CapabilityClaim> = caps.iter().collect();
+    sorted.sort_by(|a, b| a.cap_path.cmp(&b.cap_path));
     let mut buf = Vec::with_capacity(8);
     write_varint(&mut buf, sorted.len() as u32);
     for c in sorted {
-        write_string(&mut buf, &c.name);
+        write_string(&mut buf, &c.cap_path);
+        write_u8(&mut buf, c.level.as_byte());
+        write_u8(&mut buf, 0x00);
     }
     buf
 }
@@ -738,22 +743,32 @@ fn read_dep_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<Dep>> {
     Ok(deps)
 }
 
-// ── Caps table (v0.6 placeholder) ─────────────────────────────────
+// ── Caps table (ADR-0016 §4 wire format, populated v0.6) ──────────
 
-fn write_caps_table(buf: &mut Vec<u8>, caps: &[Capability]) {
-    write_varint(buf, caps.len() as u32);
-    for c in caps {
-        write_string(buf, &c.name);
-    }
+fn write_caps_table(buf: &mut Vec<u8>, caps: &[CapabilityClaim]) {
+    // Reuse the canonical (sort + per-entry) encoding so the on-disk
+    // bytes match what `encode_caps_for_hash` fed into `iface_hash`.
+    buf.extend_from_slice(&encode_caps_for_hash(caps));
 }
 
-fn read_caps_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<Capability>> {
+fn read_caps_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<CapabilityClaim>> {
     let count = read_varint(data, pos)?;
     let mut caps = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        caps.push(Capability {
-            name: read_string(data, pos)?,
-        });
+        let cap_path = read_string(data, pos)?;
+        let level_byte = read_u8(data, pos)?;
+        let level = CapabilityLevel::from_byte(level_byte).ok_or_else(|| {
+            PackError::Corrupted(format!(
+                "invalid capability level byte 0x{level_byte:02X} (expected 0x00..=0x03)"
+            ))
+        })?;
+        let reserved = read_u8(data, pos)?;
+        if reserved != 0x00 {
+            return Err(PackError::Corrupted(format!(
+                "capability entry reserved byte must be 0x00, got 0x{reserved:02X}"
+            )));
+        }
+        caps.push(CapabilityClaim { cap_path, level });
     }
     Ok(caps)
 }
@@ -1145,5 +1160,123 @@ mod tests {
                 supported: 2,
             }
         ));
+    }
+
+    // ── Capability claims (ADR-0016 §4 + ADR-0018 §6, v0.6.4) ────
+
+    fn cap(path: &str, level: CapabilityLevel) -> CapabilityClaim {
+        CapabilityClaim {
+            cap_path: path.into(),
+            level,
+        }
+    }
+
+    #[test]
+    fn caps_roundtrip_non_empty() {
+        // Mix of all four levels, deliberately unsorted on the way in
+        // to prove the writer normalizes.
+        let caps = vec![
+            cap("sys.net.dns", CapabilityLevel::Defer),
+            cap("dev.disk", CapabilityLevel::Deny),
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("usr.somelib", CapabilityLevel::Ambient),
+        ];
+        let mut buf = Vec::new();
+        write_caps_table(&mut buf, &caps);
+        let mut pos = 0;
+        let decoded = read_caps_table(&buf, &mut pos).expect("round-trip ok");
+        assert_eq!(pos, buf.len(), "consumed exactly the bytes written");
+
+        // Output must arrive sorted by cap_path (canonical per ADR-0016 §4).
+        let expected = vec![
+            cap("dev.disk", CapabilityLevel::Deny),
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("sys.net.dns", CapabilityLevel::Defer),
+            cap("usr.somelib", CapabilityLevel::Ambient),
+        ];
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn caps_empty_roundtrips_to_one_zero_byte() {
+        // Empty caps section = single `cap_count = 0` varint. Preserves
+        // hash stability for pre-v0.6 packs (ADR-0016 §4 promise).
+        let mut buf = Vec::new();
+        write_caps_table(&mut buf, &[]);
+        assert_eq!(buf, vec![0x00]);
+        let mut pos = 0;
+        let decoded = read_caps_table(&buf, &mut pos).expect("round-trip ok");
+        assert_eq!(pos, 1);
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn caps_hash_encoding_is_order_independent() {
+        // Sort canonical means the hash input must be identical regardless
+        // of how the caller orders the input vector.
+        let a = vec![
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("dev.disk", CapabilityLevel::Deny),
+        ];
+        let b = vec![
+            cap("dev.disk", CapabilityLevel::Deny),
+            cap("sys.io", CapabilityLevel::Grant),
+        ];
+        assert_eq!(encode_caps_for_hash(&a), encode_caps_for_hash(&b));
+    }
+
+    #[test]
+    fn caps_reject_invalid_level_byte() {
+        // Hand-craft caps section with level=0x04 (outside 0x00..=0x03).
+        let mut buf = Vec::new();
+        write_varint(&mut buf, 1); // cap_count
+        write_string(&mut buf, "sys.io");
+        write_u8(&mut buf, 0x04); // invalid level
+        write_u8(&mut buf, 0x00); // reserved
+        let mut pos = 0;
+        let err = read_caps_table(&buf, &mut pos).expect_err("must reject");
+        match err {
+            PackError::Corrupted(msg) => {
+                assert!(
+                    msg.contains("invalid capability level"),
+                    "unexpected message: {msg}"
+                );
+                assert!(msg.contains("0x04"), "must surface the bad byte: {msg}");
+            }
+            other => panic!("expected Corrupted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caps_reject_non_zero_reserved_byte() {
+        // Reserved must stay 0x00 at v0.6 (ADR-0016 §4) — guard the slot
+        // against accidental forward-compat writes.
+        let mut buf = Vec::new();
+        write_varint(&mut buf, 1);
+        write_string(&mut buf, "sys.io");
+        write_u8(&mut buf, CapabilityLevel::Grant.as_byte());
+        write_u8(&mut buf, 0xAB); // non-zero reserved
+        let mut pos = 0;
+        let err = read_caps_table(&buf, &mut pos).expect_err("must reject");
+        match err {
+            PackError::Corrupted(msg) => {
+                assert!(msg.contains("reserved"), "unexpected message: {msg}");
+            }
+            other => panic!("expected Corrupted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn caps_populated_does_not_bump_abi_version() {
+        // ADR-0016 §4 promise: populating the caps slot reuses the
+        // v=2 layout (no bump). Round-trip an AbiMetadata with caps and
+        // assert the wire still says 2.
+        let mut meta = AbiMetadata::empty("withcaps", SemVer::new(0, 1, 0));
+        meta.caps = vec![cap("sys.io", CapabilityLevel::Grant)];
+        let mut buf = Vec::new();
+        write_abi_metadata(&mut buf, &meta);
+        let decoded = read_abi_metadata(&buf).expect("decode ok");
+        assert_eq!(decoded.abi_version, 2);
+        assert_eq!(decoded.caps, meta.caps);
     }
 }

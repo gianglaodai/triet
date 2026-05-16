@@ -262,18 +262,78 @@ pub struct AbiMetadata {
     /// Declared dependencies — packages this one will look up at
     /// link time.
     pub deps: Vec<Dep>,
-    /// Capability claims slot (ADR-0011 §5). Always empty at v0.5;
-    /// populated starting v0.6.
-    pub caps: Vec<Capability>,
+    /// Capability claims (ADR-0011 §5 slot, populated v0.6 per
+    /// ADR-0016 §4 + ADR-0018 §6). Empty for leaf libs that need
+    /// no cross-root caps; non-empty entries serialize sorted by
+    /// `cap_path` (ADR-0016 §4 canonical rule).
+    pub caps: Vec<CapabilityClaim>,
 }
 
-/// Placeholder for capability claims. v0.5 keeps this empty; the
-/// shape is fixed in v0.6's capability ADR.
+/// One capability claim — *"this package needs to access `cap_path`
+/// at `level`"*. Locked in ADR-0018 §6 (rename from v0.5 `Capability`
+/// placeholder). Path stored as dotted-`String` matching pack-level
+/// convention (`module_path`, `pkg_name` — see crate docs); structural
+/// validation (root ∈ {sys, dev, usr}, well-formed dot path) lives at
+/// the manifest parser boundary (v0.6.5+).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Capability {
-    /// Reserved name field — left untyped so the v0.6 ADR can pick
-    /// the namespace encoding (likely `sys.net`, `dev.disk`, …).
-    pub name: String,
+pub struct CapabilityClaim {
+    /// Module-level `AbsolutePath` (ADR-0005) as dotted string, e.g.
+    /// `"sys.io"`, `"dev.disk"`. Encoded as length-prefixed UTF-8 in
+    /// the caps section.
+    pub cap_path: String,
+    /// Static level — Trit-valued grant/ambient/deny plus the
+    /// Trilean::Unknown `Defer` slot (ADR-0016 §3).
+    pub level: CapabilityLevel,
+}
+
+/// Four-state capability level (ADR-0016 §3). Three Trit values
+/// (Grant/Ambient/Deny) plus the `Defer` slot encoding
+/// `Trilean::Unknown` — the case where the static manifest defers
+/// the decision to a runtime policy hook (ADR-0017).
+///
+/// Wire encoding (ADR-0016 §4): single byte, values `0x00..=0x03`.
+/// Anything outside that range is rejected at deserialization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CapabilityLevel {
+    /// Explicit refuse — caller cannot reach `cap_path` (`Trit::Negative`).
+    Deny,
+    /// "Inherit from caller" — at the root package this collapses to
+    /// `Deny` (no caller above). Non-root: linker overrides per root
+    /// manifest authority (ADR-0016 §7).
+    Ambient,
+    /// Explicit allow — caller may reach `cap_path` (`Trit::Positive`).
+    Grant,
+    /// `Trilean::Unknown` — defer to runtime policy hook (ADR-0017 §4).
+    Defer,
+}
+
+impl CapabilityLevel {
+    /// Wire byte (ADR-0016 §4).
+    #[must_use]
+    pub const fn as_byte(self) -> u8 {
+        match self {
+            Self::Deny => 0x00,
+            Self::Ambient => 0x01,
+            Self::Grant => 0x02,
+            Self::Defer => 0x03,
+        }
+    }
+
+    /// Parse the wire byte, returning `None` for any value outside
+    /// the four locked encodings. Caller maps `None` to a structural
+    /// error (currently [`PackError::Corrupted`](crate::PackError);
+    /// dedicated `E2207 InvalidCapabilityLevel` lands with the
+    /// manifest parser in v0.6.5+).
+    #[must_use]
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(Self::Deny),
+            0x01 => Some(Self::Ambient),
+            0x02 => Some(Self::Grant),
+            0x03 => Some(Self::Defer),
+            _ => None,
+        }
+    }
 }
 
 impl AbiMetadata {
