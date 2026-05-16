@@ -30,12 +30,14 @@
     clippy::missing_panics_doc
 )]
 
+mod capability_check;
 mod check;
 mod check_resolved;
 mod env;
 mod error;
 mod types;
 
+pub use capability_check::{CapabilityError, check_capabilities};
 pub use check::check;
 pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
