@@ -85,7 +85,8 @@ Per [ROADMAP.md § v0.5](ROADMAP.md).
 - [x] v0.5.5 — Hash-based dep resolver + `triet.lock` format `2c43e69`
 - [x] v0.5.6 — Shared loading demo (VISION §3.1 gate at iface level; body-level defer) `6291bc1`
 - [x] v0.5.7 — `triet store {import,list,gc}` CLI (v=1 lossy migration deferred) `8b4ce12`
-- [ ] v0.5.8 — Carry-over from v0.4: cross-module enum variant import + lowerer emit `WitnessCall` for cross-package generics
+- [x] v0.5.8 — Cross-module enum variant import `from X import Variant` (Item 1 of 2) `07323a1`
+  - Item 2 (lowerer emit `WitnessCall` for cross-package generics) **deferred** out of v0.5 — needs package-aware lowering, multi-week architectural milestone. Reschedules to a future phase (multi-package compile or v0.7 self-hosting).
 - [ ] v0.5.9 — Verify gate (ADR-0009) + bump Cargo `0.4.0 → 0.5.0` + docs sync
 
 ---
