@@ -110,8 +110,8 @@ Final v0.5.x.review commit: this commit.
 Per [ROADMAP.md § v0.6](ROADMAP.md).
 
 - [x] v0.6.1 — ADR-0016 — Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) `cd65127`
-- [ ] v0.6.2 — ADR-0017 — `Trilean::Unknown` runtime policy hook (protocol, caching, ResolutionOrigin dispatch)
-- [ ] v0.6.3 — ADR-0018 — Loader semantics (refuse-to-load on capability mismatch, manifest source syntax, E2208)
+- [x] v0.6.2 — ADR-0017 — Trilean policy hook protocol (`triet.policy` hybrid rules + TTY prompt, per-session cache, E2205 sub-variants) `0e6e94a`
+- [ ] v0.6.3 — ADR-0018 — Loader semantics (refuse-to-load on capability mismatch, manifest `requires:` source syntax, TTY prompt UX, E2208)
 - [ ] Enforce `sys.*` / `dev.*` / `usr.*` cross-root capability check at type-check stage
 - [ ] Populate `caps section` in `.tripack` writer/reader (slot reserved since v0.4)
 - [ ] Linker capability check (E22XX series) — refuse-to-link on mismatch

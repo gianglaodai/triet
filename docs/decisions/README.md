@@ -65,6 +65,7 @@ prior decision, write a new ADR that supersedes it.
 | ADR | Title | Status |
 |---|---|---|
 | [0016](0016-capability-type-system.md) | Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) | Locked |
+| [0017](0017-trilean-policy-hook.md) | Trilean policy hook protocol (`triet.policy` rules + TTY prompt fallback, per-session cache, E2205 sub-variants) | Locked |
 
 ## How to read an ADR
 
