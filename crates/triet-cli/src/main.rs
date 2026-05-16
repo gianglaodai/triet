@@ -702,6 +702,7 @@ fn emit_store_error(e: &triet_pack::StoreError, path: &str, json: bool) -> ExitC
             triet_pack::StoreError::Io { .. } => "triet::pack::E2360",
             triet_pack::StoreError::Pack(_) => "triet::pack::E2302",
             triet_pack::StoreError::Lockfile(_) => "triet::pack::E2371",
+            triet_pack::StoreError::PackageManifest(_) => "triet::capability::E2208",
         };
         emitter.emit(&e.to_string(), code, &(0..0), path);
         emitter.finish();

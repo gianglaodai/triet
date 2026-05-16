@@ -104,6 +104,12 @@ pub enum StoreError {
     #[error("lockfile error: {0}")]
     #[diagnostic(transparent)]
     Lockfile(#[from] crate::lockfile::LockfileError),
+
+    /// Package manifest (`triet.package`) format or version mismatch
+    /// (v0.6.5+, ADR-0018 §1).
+    #[error("package manifest error: {0}")]
+    #[diagnostic(transparent)]
+    PackageManifest(#[from] crate::package_manifest::PackageManifestError),
 }
 
 impl StoreError {

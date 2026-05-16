@@ -50,6 +50,7 @@ mod error;
 mod hash;
 mod linker;
 mod lockfile;
+mod package_manifest;
 mod resolver;
 mod serde;
 mod store;
@@ -63,6 +64,7 @@ pub use hash::{
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};
+pub use package_manifest::{PackageManifest, PackageManifestError};
 pub use resolver::{Resolution, ResolutionOrigin, ResolveError, ResolveResult, Resolver};
 pub use store::{GcReport, RootEntry, Store};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for
@@ -72,6 +74,6 @@ pub use store::{GcReport, RootEntry, Store};
 // API surface we haven't committed to.
 pub use serde::{read_tripack, write_tripack};
 pub use types::{
-    AbiMetadata, Dep, EnumDef, FieldDef, FunctionExport, Module, Param, SemVer, StructDef, TypeDef,
-    TypeKind, TypeRef, Visibility,
+    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDef, FieldDef, FunctionExport, Module,
+    Param, SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,
 };
