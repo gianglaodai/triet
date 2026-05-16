@@ -292,6 +292,24 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 
 ---
 
+## v0.5.x.review — Pre-v0.6 audit fixes ✅ SHIPPED
+
+Audit window trước v0.6. 1 binary leak + 3 testing gap được bít. Không
+thay đổi spec gốc; thêm Addendum vào ADR-0015. 918 → 924 tests.
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.5.x.review.1 | `Resolution.from_lockfile: bool` → `ResolutionOrigin { Lockfile, IfacePin, Fresh }` 3-state enum | `20076d5` |
+| v0.5.x.review.2 | Concurrent install race + E2382 negative + GC corrupt-manifest conservative (+ `GcReport.corrupt_pkgs`) | `d7f1beb` |
+| v0.5.x.review.3 | `$TRIET_STORE` fallback chain + multi-root GC invariant tests | `b167717` |
+| v0.5.x.review.4 | ADR-0015 Addendum + sync docs | this commit |
+
+**Trigger:** Audit của tôi (AI) trước khi mở v0.6. Author chấp nhận
+"hãy fix tất cả" sau khi review findings — duy trì cadence
+*proactive tech-debt audit trước version freeze*.
+
+---
+
 ## v0.6 — Capability System (`sys::` / `dev::` / `usr::`)
 
 **Mục tiêu:** Enforce isolation ở compiler level. Đây là trụ cột bản sắc của Triết.

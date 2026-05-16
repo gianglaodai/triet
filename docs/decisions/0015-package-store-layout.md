@@ -232,3 +232,70 @@ CLI: `triet store import <path/to/foo.tripack>`:
 - [ADR-0014 — Hash scheme refinement](0014-hash-scheme-refinement.md) (defines hashes that name dirs)
 - [ROADMAP § v0.5](../../ROADMAP.md)
 - [Nix store spec](https://nixos.org/manual/nix/stable/store/file-system-object.html)
+
+---
+
+## Addendum — v0.5.x.review (pre-v0.6 audit)
+
+Audit window trước khi mở v0.6 capability system. Không thay đổi
+quyết định gốc; làm rõ behavior + bít blind spot trong test coverage.
+
+### Resolver origin — 3-state thay vì bool
+
+`Resolution.from_lockfile: bool` (v0.5.5 initial) gộp 2 đường khác nhau:
+*iface_hash_pin matching* và *plain enumeration*. Audit gắn cờ là binary
+leak so với bản sắc tam phân (VISION §5).
+
+Refactor thành `ResolutionOrigin { Lockfile, IfacePin, Fresh }`. Đây là
+3 đường thực sự §5 đã thiết kế nhưng v0.5.5 chỉ encode được 2. Cần
+thiết cho v0.6 capability gates muốn áp policy khác nhau theo origin
+(ví dụ: chỉ `Lockfile` được auto-trust, `IfacePin` cần admin grant).
+
+Commit: `20076d5`.
+
+### GC conservative under manifest corruption
+
+§6 (mark-and-sweep) trước đây không quy định behavior khi
+`pkg/<hash>/manifest.bin` parse fail trong mark phase. v0.5.4 default:
+silently skip → mod/term refs không được mark → sweep remove các deps
+đó → silent orphan + data leak.
+
+Behavior chốt lại:
+
+1. Nếu BẤT KỲ live pkg nào có manifest corrupt → push hash vào
+   `GcReport.corrupt_pkgs`.
+2. Khi `corrupt_pkgs` non-empty → **skip mod + term sweeps hoàn toàn**
+   (conservative mode). Pkg-level sweep vẫn chạy (unreferenced pkgs đi
+   bình thường — không ảnh hưởng bởi corruption ở pkg khác).
+3. User thấy `corrupt_pkgs` trong report → fix corruption → re-run GC.
+
+Khớp nguyên tắc VISION §6 *Refuse over guess*. Commit: `d7f1beb`.
+
+### Race-safety verified
+
+§6 quy định EEXIST = race-loss = success. v0.5.4 có code path nhưng
+không có integration test với threading thật. v0.5.x.review.2 thêm
+`concurrent_install_same_hash_is_race_safe` — 8 threads cùng install
+identical bytes → tất cả nhận cùng hash, 1 pkg dir duy nhất, `tmp/`
+sạch.
+
+### Multi-root invariant verified
+
+§7 quy định "pkg sống iff reachable từ ≥1 root". v0.5.4 test duy nhất
+1-to-1 root↔pkg. v0.5.x.review.3 thêm
+`gc_keeps_pkg_referenced_by_multiple_roots` — 2 projects cùng pin 1
+pkg, remove 1 root → pkg vẫn sống; remove root thứ 2 → mới sweep.
+
+### `$TRIET_STORE` fallback chain
+
+Hai arm bổ sung của `resolve_store_root()` giờ có test tường minh:
+HOME fallback (TRIET_STORE unset) tạo store ở `$HOME/.triet/store/`;
+both-unset trả lỗi rõ ràng. Không thay đổi spec — chỉ verify.
+
+### Windows defer (explicit)
+
+ADR-0015 đã ghi "Không Windows-first support ở v0.5". v0.5.x.review
+xác nhận không thêm Windows-specific test (POSIX `rename` atomicity
+là semantic chính của atomic install). Khi v0.6+ mở rộng platform
+support, cần ADR riêng cho Windows rename behavior + lock file
+strategy (POSIX advisory locks không có trên NTFS).

@@ -94,15 +94,14 @@ Final v0.5 commit: this commit.
 
 ---
 
-## v0.5.x.review — Pre-v0.6 audit fixes (in progress)
+## v0.5.x.review — Pre-v0.6 audit fixes ✅ SHIPPED
 
-Audit window trước khi mở v0.6. Bít gap testing + 1 binary leak để nền capability
-system dựng trên resolver/store chắc chắn.
+Archived to [ROADMAP.md § v0.5.x.review](ROADMAP.md).
 
-- [x] v0.5.x.review.1 — Refactor `Resolution.from_lockfile: bool` → `origin: ResolutionOrigin` 3-state enum (Lockfile / IfacePin / Fresh) `20076d5`
-- [x] v0.5.x.review.2 — Negative tests: concurrent install race + E2382 IfaceHashPinMismatch + GC corrupt manifest (conservative fix + GcReport.corrupt_pkgs)
-- [x] v0.5.x.review.3 — `$TRIET_STORE` env override test + multi-root GC test (invariant: pkg referenced by ≥1 root survives)
-- [ ] v0.5.x.review.4 — ADR-0015 §11 — Record review findings + Windows defer
+4 sub-tasks done. Audit của AI trước v0.6 → 1 binary leak + 3 testing gap
+được bít. 918 → 924 tests, ADR-0015 Addendum landed.
+
+Final v0.5.x.review commit: this commit.
 
 ---
 
