@@ -342,3 +342,74 @@ AOT v2.0 baked-binary: cache initialized empty mỗi process start. `triet.polic
 - ADR-0018 — Capability loader semantics (TBD, v0.6.3)
 - [ROADMAP §v0.6 — Capability System](../../ROADMAP.md)
 - [ROADMAP §v0.8 — Concurrency Model](../../ROADMAP.md) (future: timeout + thread-safe cache)
+
+---
+
+## Addendum — Parser strictness + TTY source + Abstain errata
+
+Audit window post-decision, mirror precedent [ADR-0015 Addendum](0015-package-store-layout.md#addendum--v05xreview-pre-v06-audit). Không reopen quyết định gốc; bít 3 blind spot author flag trước khi v0.6.3 (ADR-0018) bắt đầu implement loader. Cả 3 đều là *clarification + errata*, không thay đổi semantics đã lock.
+
+### §A — Parser whitelist rules (strengthen §3)
+
+§3 list được CRLF reject + duplicate path reject, nhưng **thiếu** spec rõ ràng cho input shapes lạ. Nguyên tắc bít blind spot: **parser cực kỳ ngốc, whitelist-only**. Bất kỳ ambiguity = E2205.ConfigParse → refuse-to-load. Refuse-over-guess strict mode ([VISION §6](../../VISION.md)).
+
+| Input shape | Behavior |
+|---|---|
+| Empty file (0 bytes) | E2205.ConfigParse — "missing format_version" |
+| BOM (`U+FEFF` ở byte 0) | E2205.ConfigParse — "BOM not allowed" |
+| Missing `format_version 1` first non-comment line | E2205.ConfigParse |
+| Duplicate `format_version` line | E2205.ConfigParse |
+| Unicode whitespace ngoài identifier (U+00A0 NBSP, U+2028 LS, U+2029 PS, U+200B ZWSP, ...) | E2205.ConfigParse |
+| Mixed tab/space giữa fields | Accept (normalize ở writer) |
+| Trailing whitespace at EOL | Accept (ignored) |
+| Blank line (zero hoặc whitespace-only) | Accept (no-op) |
+| Comment line (`#` prefix, optionally leading whitespace) | Accept (ignored) |
+| Inline comment (`#` mid-line) | E2205.ConfigParse — đã list ở §3 |
+| CRLF | E2205.ConfigParse — đã list ở §3 |
+| Line > 4096 bytes | E2205.ConfigParse — DoS prevention |
+| File > 1 MiB | E2205.ConfigParse — DoS prevention |
+| Identifier (cap_path component) chứa Unicode | Accept nếu pass XID Start/Continue ([SPEC §1.3](../../SPEC.md)); reject otherwise → E2205.ConfigParse |
+| Bất kỳ shape không match grammar | E2205.ConfigParse |
+
+**Tách rule whitespace vs identifier:** byte structure (separators, line endings) phải ASCII (`0x09` tab, `0x20` space, `0x0A` LF only); identifier content (cap_path components) có thể Unicode theo XID rules — vì `sys.tính_giá_trị` là legal `AbsolutePath` per [SPEC §1.3](../../SPEC.md).
+
+**Lý do "stupid parser":** policy file điều khiển security boundary. Smart parser với recovery / fuzzy matching = silent semantic drift = false grant. Tự viết hand-rolled parser thiếu fuzzer coverage của serde/TOML — chỉ an toàn nếu grammar nhỏ + reject-on-anything-weird.
+
+### §B — TTY input source: `/dev/tty`, không phải stdin (strengthen §7)
+
+§7 chỉ check `isatty(stderr)` và §4 pseudo-code `prompt_user(req)` không specify input source. Blind spot: default đọc stdin → attack `echo G | triet run` auto-grant Defer cap. Classic pipe spoofing.
+
+**Fix:**
+
+1. **Authoritative TTY check = mở terminal device trực tiếp.**
+   - POSIX: `open("/dev/tty", O_RDWR)`. Thành công → prompt. Thất bại (daemon không có controlling tty) → E2205.NonTTYDefer.
+   - Windows: `CreateFile("CONIN$" / "CONOUT$")` (ConPTY console handles). Cùng fail-closed semantics.
+2. **Cả input + output bind vào terminal handle mới mở**, KHÔNG qua stdin/stdout/stderr. Display PolicyRequest details và đọc user choice (g/d/G/D/?) đều qua `/dev/tty` fd.
+3. **`isatty(stderr)` là fast pre-screen optimization**, không authoritative. Skip optimization → correctness identical. Loader có thể chọn pre-screen hoặc luôn thử mở `/dev/tty`.
+4. **`--non-interactive` CLI flag** (ADR-0018 TBD) force skip terminal open → E2205.NonTTYDefer dù TTY available. Cho script attended.
+5. **Authorized wrapper inheritance:** Nếu user chạy `triet run` bên trong wrapper script wrap `/dev/tty` qua FIFO/expect → đây là **authorized spoofing** (user owns wrapper). ADR-0017 KHÔNG cố ngăn case này; chỉ ngăn **unauthorized pipe injection** từ untrusted caller redirect stdin.
+
+Prior art reference: `sudo(8)` AUTHENTICATION section — `/dev/tty` bypass mọi password prompt cho cùng lý do.
+
+### §C — Abstain row errata (§2 table)
+
+§2 row text tạo false impression structural difference giữa `Ok(Trit::Zero)` và `Ok(Trit::Negative)`. Thực tế: cache lifetime = process lifetime cho cả 4 outcome (theo §5 monotonicity invariant); "allow re-eval next session" applies universally — KHÔNG phải khác biệt giữa Abstain và Deny.
+
+**Errata** — text replace §2 table rows:
+
+| Outcome | Hậu quả runtime | Diagnostic |
+|---|---|---|
+| `Ok(Trit::Positive)` | Grant — cache as Grant **for process lifetime**; allow current + all future calls (cap_path, requester_pkg) | None |
+| `Ok(Trit::Zero)` | Abstain — cache as Deny **for process lifetime**; behavior cache **identical** với `Negative` | Info: "policy abstained" — distinguish chỉ ở diagnostic |
+| `Ok(Trit::Negative)` | Deny — cache as Deny **for process lifetime**; behavior cache identical với `Zero` | None (decision recorded as authoritative) |
+| `Err(PolicyError)` | Fail-closed Deny — cache as Deny với reason | E2205.<sub> |
+
+**Implementation hint:** code path cho `Zero` và `Negative` share cache-write logic; branch chỉ ở diagnostic emit step (line right before cache insert).
+
+**Restate monotonicity invariant** (đã ở §5, repeat cho clarity): cache discarded ở process exit. Re-eval next session áp dụng cho **mọi** outcome (Grant cũng re-evaluate ở next process start — không phải permanent grant ngoài session). Persistent grant = user chọn `G` ở prompt → write rule vào `triet.policy` file → next process đọc file = grant ngay từ Bước 2.
+
+### Tham chiếu addendum
+
+- Trigger: author audit trước khi mở v0.6.3 (ADR-0018 loader semantics).
+- Pattern: mirror [ADR-0015 Addendum](0015-package-store-layout.md#addendum--v05xreview-pre-v06-audit) — clarify + errata, không reopen quyết định.
+- Commit: `docs(v0.6.2.addendum): ADR-0017 Addendum — parser strictness + TTY source + Abstain errata`.
