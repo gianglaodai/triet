@@ -1,4 +1,4 @@
-# Triết — Đặc tả ngôn ngữ v0.5
+# Triết — Đặc tả ngôn ngữ v0.6
 
 > Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, với tham vọng **đủ năng lực viết hệ điều hành** khi phần cứng tam phân xuất hiện. Lấy cảm hứng từ Setun (Liên Xô, 1958) và logic Łukasiewicz Ł3 (1920).
 >
@@ -16,7 +16,7 @@ Triết được thiết kế quanh **năm trụ cột** (chi tiết: [VISION.md
 2. **Module System** — hierarchical, explicit `public` export, không bind filesystem. Phase v0.2.x ([ADR-0005](docs/decisions/0005-module-system.md)).
 3. **Stable ABI** — witness tables cho cross-package generics, refuse-to-link với diff rõ ràng. Phase v0.4.
 4. **Crate-Pack & Hybrid Linking** — binary distribution với metadata, static + dynamic linking. Phase v0.4.
-5. **OS-Native Capability Namespaces** — `sys.*`/`dev.*`/`usr.*` enforce ở compiler. Trit-level capability + Łukasiewicz `Unknown` runtime policy. Phase v0.6.
+5. **OS-Native Capability Namespaces** — `sys.*`/`dev.*`/`usr.*` enforce ở compiler. Trit-level capability + Łukasiewicz `Unknown` runtime policy. Phase v0.6 ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md)).
 
 ### 0.2 Bản sắc Triết
 
@@ -57,19 +57,36 @@ CAS packaging trên nền tảng v0.4 ABI metadata. v0.5 land:
 - Shared loading demo — VISION §3.1 gate hit at iface level (body-level RAM dedup chờ lowerer per-term body extraction).
 - Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap từ v0.2.x closed; aliased variant imports rejected với E2107.
 
-### 0.6 Non-goals của v0.5
+### 0.6 Đã ship ở v0.6
 
-Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** thuộc v0.5:
+Capability system — trụ cột bản sắc #5 (VISION §3.5 + §5). 3 ADRs ([0016](docs/decisions/0016-capability-type-system.md), [0017](docs/decisions/0017-trilean-policy-hook.md), [0018](docs/decisions/0018-capability-loader-semantics.md)) lock the contract; 11 sub-tasks land the machinery:
 
-- **Hiệu năng tối ưu** — production runtime AOT đến v2.0 (LLVM). VM + tree-walker đều là development tiers per [VISION §4.3](VISION.md). VM bench gate (3× interpreter) defer cho post-v0.5 perf pass — hiện tại 1.26× trên factorial (xem `BENCHMARKS.md`).
+- **Capability declaration:** namespace-level claims in `triet.package` source manifest (ADR-0018 §1). 4-state `CapabilityLevel`: `Grant` / `Ambient` / `Deny` (Trit) + `Defer` (`Trilean::Unknown`).
+- **Wire format:** `caps section` of `.tripack` ABI metadata populated (ADR-0016 §4). `abi_version` stays `2` (no bump — slot was reserved since v0.4 per ADR-0011 §5).
+- **Compile-stage enforcement** (`triet-typecheck::check_capabilities`): cross-root imports (`sys.*`/`dev.*`/`usr.*`) require manifest claim. E2200 `MissingCapabilityClaim` + E2201 `SelfContradictoryCapability`. `std.*`/`core.*` ambient (skip); `crate.*`/`self.*`/`super.*` intra-pkg (skip).
+- **Link-stage enforcement** (`triet-pack::check_link_capabilities`, ADR-0018 §2 Step 6a): root manifest is sole authority over the dep closure (ADR-0016 §7). E2202 `UnresolvedCapabilityPath`, E2203 `CapabilityRefused`. `Defer` collected into `CapabilityLinkReport::deferrals`.
+- **Runtime resolution** (`triet-pack::CapabilityResolver`, ADR-0017 §4 + ADR-0018 §2 Step 6b): `triet.policy` rules indexed by `(cap_path, origin)` with exact > wildcard precedence. Per-session cache, monotonicity invariant (ADR-0017 §5). E2205 sub-variants for runtime errors.
+- **TTY prompt** (`triet-pack::DevTtyPrompt`, ADR-0018 §4 + ADR-0017 Addendum §B): `/dev/tty` paired I/O bypassing stdin/stderr (anti-spoofing). Full 64-hex hashes (no truncation — security context). ASCII `!!` markers. `G`/`D` permanent-write via atomic `PolicyRules::save`.
+- **Error namespace:** `triet::capability::E22XX` (E2200–E2208 + sub-variants) — distinct from `triet::pack::E23XX` (semver linker) and `triet::modules::E21XX` (resolver).
+- **Demo + capstone test:** [`demos/04-capability-system/`](demos/04-capability-system/) illustrative files + [`capability_pipeline.rs`](crates/triet-typecheck/tests/capability_pipeline.rs) executable proof for the three ROADMAP §v0.6 gates.
+
+### 0.7 Non-goals của v0.6
+
+Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** thuộc v0.6:
+
+- **CLI wiring** (`triet check` reading `triet.package` from project root, `triet build` populating `.tripack` caps section from manifest, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner với v0.7 self-hosting.
+- **Hiệu năng tối ưu** — production runtime AOT đến v2.0 (LLVM). VM + tree-walker đều là development tiers per [VISION §4.3](VISION.md).
 - **Concurrency/async** — phase v0.8.
-- **Capability enforcement runtime** — phase v0.6. Capability claims slot reserved trong `.tripack` ABI metadata từ v0.4.
-- **Lowerer emit `WitnessCall` cho cross-package generics** — defer khỏi v0.5. Cần package-aware `ResolvedProgram` + generic-instantiation tracking; multi-week architectural milestone. Lands cùng multi-package compile path (post-v0.5) hoặc v0.7 self-hosting.
-- **v=1 `.tripack` lossy migration** (ADR-0015 §9) — defer khỏi v0.5. Hiện chưa có v=1 packs trong wild (`triet build` chỉ tạo `.triv`); migration tool lands khi có demand thật.
+- **Lowerer emit `WitnessCall` cho cross-package generics** — defer khỏi v0.6. Cần package-aware `ResolvedProgram` + generic-instantiation tracking; multi-week architectural milestone. Lands cùng multi-package compile path hoặc v0.7 self-hosting.
+- **v=1 `.tripack` lossy migration** (ADR-0015 §9) — defer. Hiện chưa có v=1 packs trong wild.
 - **Self-hosting compiler** — phase v0.7.
-- **JIT** — phase v0.9 (Cranelift backend đọc cùng Triết IR). **Native AOT compile** — phase v2.0 (LLVM backend đọc cùng Triết IR). **Trytecode native** — phase v∞ khi phần cứng tam phân xuất hiện. Cả ba backend đều share IR ADR-0007 — không re-design ngôn ngữ.
-- **FFI với C/Rust runtime** — `.tripack` format đã ready host FFI signatures, wire encoding cho FFI thunks defer cho phase v0.6+.
-- **Distributed registry** — local store đủ cho v0.5; network fetch + signature/provenance là v1.0+ work.
+- **Per-function capability granularity** — defer post-v1.0 (ADR-0016 "Không làm"). Workaround: stdlib author splits modules.
+- **Wildcard cap claims** (`sys.* grant`) — refuse-over-guess; explicit > implicit (ADR-0016).
+- **Windows ConPTY** for TTY prompt — POSIX-first; Windows defer.
+- **ANSI colour + Unicode box-drawing** in TTY prompt — usability win, defer post-security-floor.
+- **JIT** — phase v0.9 (Cranelift backend đọc cùng Triết IR). **Native AOT compile** — phase v2.0 (LLVM backend đọc cùng Triết IR). **Trytecode native** — phase v∞ khi phần cứng tam phân xuất hiện.
+- **FFI với C/Rust runtime** — `.tripack` format đã ready host FFI signatures, wire encoding cho FFI thunks defer.
+- **Distributed registry** — local store đủ; network fetch + signature/provenance là v1.0+ work.
 
 ---
 
@@ -964,10 +981,10 @@ Tóm tắt phasing dài hạn:
 - **v0.2** — struct, enum, generics ✅
 - **v0.2.x** — module system ✅ ([ADR-0005](docs/decisions/0005-module-system.md))
 - **v0.3** — bytecode VM + stable IR ✅ ([ADR-0007](docs/decisions/0007-ir-design.md), [ADR-0008](docs/decisions/0008-triv-binary-format.md), [ADR-0010](docs/decisions/0010-ternary-native-ir.md) ternary-native refactor)
-- **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md)) — **hiện tại**
-- **v0.5** — CAS packaging (hash-based identity) — *next*
-- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
-- **v0.7** — self-hosting compiler
+- **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md))
+- **v0.5** — CAS packaging (hash-based identity) ✅ ([ADR-0014](docs/decisions/0014-hash-scheme-refinement.md), [ADR-0015](docs/decisions/0015-package-store-layout.md))
+- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`) ✅ ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md)) — **hiện tại**
+- **v0.7** — self-hosting compiler — *next*
 - **v0.8** — concurrency model
 - **v0.9** — JIT (Cranelift)
 - **v1.0** — production stability

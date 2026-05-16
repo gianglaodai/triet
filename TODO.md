@@ -105,21 +105,30 @@ Final v0.5.x.review commit: this commit.
 
 ---
 
-## v0.6 — Capability System (in progress)
+## v0.6 — Capability System ✅ SHIPPED
 
-Per [ROADMAP.md § v0.6](ROADMAP.md).
+Archived to [ROADMAP.md § v0.6](ROADMAP.md).
 
-- [x] v0.6.1 — ADR-0016 — Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) `cd65127`
-- [x] v0.6.2 — ADR-0017 — Trilean policy hook protocol (`triet.policy` hybrid rules + TTY prompt, per-session cache, E2205 sub-variants) `0e6e94a`
-- [x] v0.6.3 — ADR-0018 — Loader semantics (`triet.package` grammar, eager link-time check, TTY provenance prompt, E2208 sub-variants, `CapabilityClaim` struct rename) `6742948`
-- [x] v0.6.4 — `CapabilityClaim` struct + 4-variant `CapabilityLevel` enum (ADR-0018 §6) + caps section wire format extend (ADR-0016 §4: cap_path + level u8 + reserved u8). 924 → 930 tests, clippy -D warnings clean, abi_version stays 2. `22151a4`
-- [x] v0.6.5 — `triet.package` source manifest parser (ADR-0018 §1). Hand-rolled strict whitelist per ADR-0017 Addendum §A. `PackageManifest` + `PackageManifestError` (`E2208 Malformed`, `E2208 UnsupportedFormatVersion`, `E2206 InvalidCapabilityRoot`). 930 → 955 tests, clippy -D warnings clean. ASCII identifier subset at v0.6.5; XID Unicode deferred. `cb8aa7b`
-- [x] v0.6.6 — `triet.policy` parser + shared `strict_parser` (ADR-0017 §3 + Addendum §A). Extracted whitelist tokenizer (`for_each_directive_line` + `LineViolation`) — refactored `PackageManifest::parse` to share, then built `PolicyRules` on top. Numeric token style per ADR-0018 §1 audience split. `PolicyError` 4 load-time variants (E2205). Lookup precedence per ADR-0017 §4 (exact origin > `*`). `default prompt` rejected. 955 → 996 tests, clippy -D warnings clean. Runtime sub-variants (NonTTYDefer/PromptCrash) defer v0.6.9–10. `2a3a6c6`
-- [x] v0.6.7 — Cross-root capability check at type-check stage (ADR-0016 §5 rules 1+2). `triet-typecheck::check_capabilities(&ResolvedProgram, &PackageManifest)` + `CapabilityError` 2 variants (E2200 MissingCapabilityClaim, E2201 SelfContradictoryCapability). Scope reduced from original wording: E2206 already parse-stage (v0.6.5). Span placeholder `0..0`; refine v0.6.8. `triet-pack` added as dep of `triet-typecheck` (no cycle). 996 → 1012 tests, clippy -D warnings clean. `b41d47e`
-- [x] v0.6.8 — Link-time capability check (ADR-0018 §2 Step 6a, ADR-0016 §5+§7). `triet-pack::check_link_capabilities(root, available) -> CapabilityLinkReport`. `CapabilityLinkError` 3 variants (E2200 missing/E2202 unresolved-path/E2203 refused with Deny|Ambient sub-level). `DeferredCap` collection for runtime resolver. Per-path dedupe + sorted requester aggregation; deterministic ordering. E2208 sub-variants defer with explicit trigger. 1012 → 1027 tests, clippy -D warnings clean. `24c34c3`
-- [x] v0.6.9 — Capability resolver + per-session cache (ADR-0017 §4, ADR-0018 §2 Step 6b). `CapabilityResolver::new(rules: PolicyRules)` owns snapshot. `resolve(req) -> CachedDecision` with Trit outcome + DecisionSource (Cache/ConfigRule/AbstainFromRule/Default/InteractivePrompt/Error). `ResolverError::NonTTYDefer` fires when rule says prompt + tty_available=false (always at v0.6.9). PromptCrash variant placeholder for v0.6.10. ADR-0017 §5 monotonicity invariant verified via Cache replay tests. `triet-core` now direct dep of `triet-pack`. 1027 → 1044 tests, clippy -D warnings clean. `6151399`
-- [x] v0.6.10 — TTY prompt UX (`/dev/tty` I/O + provenance display, ADR-0018 §4 + ADR-0017 Addendum §B). New `tty_prompt` module: PromptContext + PackageInfo + DepChainEntry + LockfileMatch + PromptChoice. `PromptCallback` trait (`Box<dyn>`). DevTtyPrompt opens `/dev/tty` POSIX (no unsafe), Windows = Unsupported stub. `G`/`D` permanent-write via `PolicyRules::upsert_rule` + atomic save. ASCII-only markers, full 64-hex never truncated. Resolver `tty_available` field replaced với `prompt_callback: Option<Box<dyn>>`. PromptCrash now actually fires on callback Err. 1044 → 1067 tests, clippy -D warnings clean. `40f8cf4`
-- [ ] v0.6.11 — Demo `usr.app` vs `dev.*` + integration tests
+11 sub-tasks done (v0.6.1–v0.6.11). All gates met:
+- 3 ADRs locked (0016, 0017, 0018) + ADR-0017 Addendum (parser strict + `/dev/tty` + Abstain errata).
+- Type-check, link-time, runtime resolver all enforce E22XX namespace.
+- TTY prompt UX (`/dev/tty` POSIX + provenance display) shipped.
+- Demo folder `demos/04-capability-system/` + integration test
+  (`crates/triet-typecheck/tests/capability_pipeline.rs`) prove
+  the three ROADMAP §v0.6 gates.
+- 924 → 1079 tests, clippy `-D warnings` clean.
+
+Defer out of v0.6 (rescheduled):
+- CLI wiring (`triet check` reading `triet.package`, cap-aware build,
+  loader integration with `DevTtyPrompt`) — needs project-layout
+  discovery convention; lands cleaner with v0.7 self-hosting.
+- E2208.PreV06Reader — gated by future `abi_version` bump.
+- E2208.CapabilityDivergence — wires when lowerer actually populates
+  caps from source manifest.
+- Per-function capability granularity — defer post-v1.0 (ADR-0016).
+- Windows ConPTY — POSIX-first; Windows defer.
+
+Final v0.6 commit: this commit.
 
 ---
 

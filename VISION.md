@@ -128,7 +128,7 @@ Capability không phải convention mà **enforce ở compiler**: ứng dụng `
 
 **Prior art:** [Pony](https://www.ponylang.io/) (object capabilities ở type system), [Genode OS](https://genode.org/) / [seL4](https://sel4.systems/) (capability microkernel), E language, Plan 9 namespaces.
 
-**Phase:** v0.6 (sau khi module system, ABI, CAS đã chín).
+**Phase:** v0.6 ✅ (shipped). Chi tiết: [ADR-0016](docs/decisions/0016-capability-type-system.md) (type system), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md) (runtime policy hook), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md) (loader semantics).
 
 ---
 
@@ -258,10 +258,10 @@ Tóm tắt trục thời gian (5–10 năm):
 v0.2  ──────►  Struct, enum, generics                     ✅
 v0.2.x ─────►  Module system                              ✅
 v0.3  ──────►  Bytecode VM + Stable IR                    ✅
-v0.4  ──────►  Crate-Pack + ABI metadata                  ✅  ← hiện tại
-v0.5  ──────►  CAS packaging                              [next]
-v0.6  ──────►  Capability system (sys/dev/usr)
-v0.7  ──────►  Self-hosting compiler
+v0.4  ──────►  Crate-Pack + ABI metadata                  ✅
+v0.5  ──────►  CAS packaging                              ✅
+v0.6  ──────►  Capability system (sys/dev/usr)            ✅  ← hiện tại
+v0.7  ──────►  Self-hosting compiler                      [next]
 v0.8  ──────►  Concurrency model
 v0.9  ──────►  JIT (Cranelift)
 v1.0  ──────►  Production stability

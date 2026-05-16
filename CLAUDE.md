@@ -27,14 +27,14 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.tripack`), and a content-addressed package store (`~/.triet/store/`). Long-term aim is OS-capable; **current state is v0.5 — CAS Packaging shipped** (interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0).
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.tripack`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.6 — Capability System shipped** (interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0).
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative, currently v0.5)
+- `SPEC.md` — language semantics (authoritative, currently v0.6)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; **next: v0.6 Capability System**
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; **next: v0.7 Self-hosting Compiler**
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — 15 ADRs for architectural decisions (see `docs/decisions/README.md` for an index)
+- `docs/decisions/` — 18 ADRs for architectural decisions (see `docs/decisions/README.md` for an index)
 
 ## Development principles
 
@@ -165,12 +165,31 @@ Package store lives at `~/.triet/store/` (override via `$TRIET_STORE`). Three br
 
 CLI: `triet store {import,list,gc}` (lossy v=1 migration deferred until v=1 packs exist in the wild). Body-level RAM dedup (`body.bin`) chờ lowerer per-term IR body split — iface-level dedup proven via `tests/shared_loading.rs`.
 
+### Capability System (shipped v0.6; ADR-0016/0017/0018)
+Trụ cột bản sắc #5 (VISION §3.5 + §5). Capability is a **namespace attribute** declared in `triet.package` source manifest (ADR-0018 §1) — phương án C picked over capability-as-runtime-token (Pony) and capability-as-effect-annotation (Koka). 4-state `CapabilityLevel`: `Grant`/`Ambient`/`Deny` (Trit) + `Defer` (`Trilean::Unknown`). Wire format reuses `caps section` reserved since v0.4 ABI metadata; `abi_version` stays `2` (ADR-0016 §4 promise: populate-not-bump).
+
+Three-stage enforcement, three-file contract:
+
+- **`triet.package`** — per-package source manifest. Textual level tokens (`grant`/`ambient`/`deny`/`defer`). Parsed by `PackageManifest::parse`; strict whitelist (BOM/CRLF/inline-`#`/oversize-line/file rejected per ADR-0017 Addendum §A).
+- **`triet.policy`** — per-deploy resolution rules + default. Numeric tokens (`+1`/`0`/`-1`/`prompt`) for sysadmin audit. Parsed by `PolicyRules::parse`; same shared `strict_parser`. Exact-origin > wildcard `*` precedence. `default prompt` rejected.
+- **`triet.lock`** — pre-existing pinned resolution from v0.5 (informs `ResolutionOrigin` of each dep).
+
+Compile-stage `check_capabilities(ResolvedProgram, &PackageManifest)` fires E2200 `MissingCapabilityClaim` + E2201 `SelfContradictoryCapability`. Link-stage `check_link_capabilities(root, available)` fires E2200 (root authority gap) + E2202 `UnresolvedCapabilityPath` + E2203 `CapabilityRefused`. Runtime `CapabilityResolver::resolve(req)` returns `CachedDecision { outcome: Trit, source: DecisionSource }` per ADR-0017 §4; `Defer` unresolved at link goes to `triet.policy` rules → TTY prompt → fail-closed. Per-session cache, monotonicity invariant (ADR-0017 §5).
+
+TTY prompt (`DevTtyPrompt`, ADR-0018 §4 + ADR-0017 Addendum §B): opens `/dev/tty` paired I/O on POSIX (bypasses stdin/stderr — anti-spoofing); full 64-hex hashes never truncated (security boundary); ASCII `!!` markers (universally renderable); `G`/`D` permanent-write via atomic `PolicyRules::save`. Windows ConPTY = `io::ErrorKind::Unsupported` stub.
+
+Root authority semantics (ADR-0016 §7): root package's manifest is the **sole decision-maker**. Dep claims are *requests*, never auto-promoted. No path inheritance (`sys.io grant` does NOT cover `sys.io.async`).
+
+Demo + capstone test: `demos/04-capability-system/` (illustrative) + `crates/triet-typecheck/tests/capability_pipeline.rs` (executable proof for ROADMAP §v0.6 gates).
+
 ### Error code namespace
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
 - `triet::typecheck::E10XX` — type checker
 - `triet::runtime::E20XX` — interpreter
 - `triet::modules::E21XX` — loader / resolver (E2100 = cyclic, E2101 = file-not-found, etc.)
+- `triet::capability::E22XX` — capability system (E2200 missing claim / E2201 self-contradictory / E2202 unresolved path / E2203 refused / E2204 dup decl / E2205 policy runtime / E2206 invalid root / E2207 invalid level / E2208 loader)
+- `triet::pack::E23XX` — semver linker (existing v0.4)
 
 All errors implement `miette::Diagnostic`. The CLI's `--json` flag also needs each variant in `parse_error_code` / `type_error_code` / `runtime_error_code` mappers in `crates/triet-cli/src/main.rs` — keep them in sync when adding variants.
 
@@ -210,7 +229,7 @@ Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr
 The user follows a per-step commit pattern:
 1. Pick the next sub-task from `TODO.md`.
 2. Implement, run `cargo test --workspace` and `cargo clippy --workspace`.
-3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.5.N): …` / `docs(v0.5.N): …`. Next phase will use `feat(v0.6.N): …`.
+3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.6.N): …` / `docs(v0.6.N): …`. Next phase will use `feat(v0.7.N): …`.
 4. Push.
 5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
 
@@ -226,6 +245,6 @@ Sample programs in `examples/*.tri` exercise specific features. Useful as smoke 
 for f in examples/*.tri; do ./target/release/triet run "$f" || echo "FAILED: $f"; done
 ```
 
-Demos shipped through v0.5: 11 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic — all 11/11 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases). 1 shared-loading demo (`crates/triet-pack/tests/shared_loading.rs` — 4 integration tests proving CAS dedup at term + module level). 1 store CLI smoke test suite (`crates/triet-cli/tests/store_cli.rs` — 8 integration tests including `$TRIET_STORE` fallback chain).
+Demos shipped through v0.6: 11 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic — all 11/11 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases). 1 shared-loading demo (`crates/triet-pack/tests/shared_loading.rs` — 4 integration tests proving CAS dedup at term + module level). 1 store CLI smoke test suite (`crates/triet-cli/tests/store_cli.rs` — 8 integration tests including `$TRIET_STORE` fallback chain). 1 capability system demo (`demos/04-capability-system/` illustrative files + `crates/triet-typecheck/tests/capability_pipeline.rs` — 12 integration tests proving ROADMAP §v0.6 gates).
 
-**Post-v0.5 audit** (`v0.5.x.review`, ADR-0015 Addendum): `Resolution.origin` is the 3-state `ResolutionOrigin { Lockfile, IfacePin, Fresh }` enum, not a bool — capability gates in v0.6 will dispatch on it. `Store::gc()` is **conservative under manifest corruption**: `GcReport.corrupt_pkgs` flags unreadable manifests and suppresses mod + term sweeps to avoid orphaning their deps (VISION §6 *Refuse over guess*). 924 tests workspace-wide.
+**Post-v0.5 audit** (`v0.5.x.review`, ADR-0015 Addendum): `Resolution.origin` is the 3-state `ResolutionOrigin { Lockfile, IfacePin, Fresh }` enum, not a bool — capability gates in v0.6 dispatch on it (proven via `OriginMatcher` lookup keys in `triet.policy`). `Store::gc()` is **conservative under manifest corruption**: `GcReport.corrupt_pkgs` flags unreadable manifests and suppresses mod + term sweeps to avoid orphaning their deps (VISION §6 *Refuse over guess*). 1079 tests workspace-wide.

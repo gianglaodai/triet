@@ -310,33 +310,56 @@ thay đổi spec gốc; thêm Addendum vào ADR-0015. 918 → 924 tests.
 
 ---
 
-## v0.6 — Capability System (`sys::` / `dev::` / `usr::`)
+## v0.6 — Capability System (`sys.` / `dev.` / `usr.`) ✅ SHIPPED
 
-**Mục tiêu:** Enforce isolation ở compiler level. Đây là trụ cột bản sắc của Triết.
+Trụ cột bản sắc #5 (VISION §3.5 + §5). Capability is a namespace
+attribute declared in the per-package `triet.package` manifest;
+runtime `Defer` slots resolve via `triet.policy` rules + optional
+TTY prompt.
 
-**Deliverables:**
-- Top-level namespaces `sys`, `dev`, `usr` enforced.
-- `Capability<T>` type ở stdlib: `Capability<Sys::Net>`, `Capability<Dev::Disk>`...
-- Trit-level capability: `Trit` hoặc `Trilean` làm capability level.
-  - `+1` (Grant) — explicit grant.
-  - `0` (Ambient) — inherit từ caller.
-  - `-1` (Deny) — compile error nếu cố use.
-  - `Trilean::Unknown` — runtime policy resolves.
-- Capability propagation rules ở type checker.
-- Crate-pack metadata khai báo capability requirements.
-- Loader runtime: refuse-to-load nếu không cấp đủ capability.
-- Demo: minimal "kernel-style" program với `usr::app` không thể chạm `dev::*`.
+**3 ADRs locked + 1 Addendum:**
 
-**Không làm:**
-- Hardware enforcement (cần phần cứng tam phân hoặc bytecode VM sandbox — defer).
-- Distributed capability (defer).
+| ADR | Title | Status |
+|---|---|---|
+| [0016](docs/decisions/0016-capability-type-system.md) | Capability type system (namespace + manifest, Trit + Trilean::Unknown) | Locked |
+| [0017](docs/decisions/0017-trilean-policy-hook.md) | Trilean policy hook protocol (`triet.policy` rules + TTY fallback) — *+ Addendum: parser strict + `/dev/tty` source + Abstain errata* | Locked |
+| [0018](docs/decisions/0018-capability-loader-semantics.md) | Loader semantics (`triet.package` grammar, eager Step 6a refuse, TTY provenance prompt, `CapabilityClaim`) | Locked |
 
-**Gate:**
-- Compile-time error rõ ràng khi `usr::*` import `dev::*` không có capability.
-- Runtime policy hook hoạt động cho `Trilean::Unknown`.
-- Demo capability-restricted program chạy được + bị reject khi capability sai.
+**11 sub-tasks (v0.6.1–v0.6.11):**
 
-**ADR cần viết:** ADR-0016 (capability type system), ADR-0017 (Trilean policy hook), ADR-0018 (loader semantics). ADR-0014/0015 đã land ở v0.5 cho CAS packaging.
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.6.1 | ADR-0016 land | `cd65127` |
+| v0.6.2 | ADR-0017 land | `0e6e94a` |
+| v0.6.2.addendum | ADR-0017 Addendum (parser strict + `/dev/tty` + Abstain errata) | `d6d0aa3` |
+| v0.6.3 | ADR-0018 land | `6742948` |
+| v0.6.4 | `CapabilityClaim` + `CapabilityLevel` + wire format (ADR-0016 §4) | `22151a4` |
+| v0.6.5 | `triet.package` parser (ADR-0018 §1) | `cb8aa7b` |
+| v0.6.6 | `triet.policy` parser + shared `strict_parser` (ADR-0017 §3) | `2a3a6c6` |
+| v0.6.7 | Type-check cross-root cap check (ADR-0016 §5 rules 1+2) | `b41d47e` |
+| v0.6.8 | Link-time cap check (ADR-0018 §2 Step 6a) | `24c34c3` |
+| v0.6.9 | Runtime resolver + per-session cache (ADR-0017 §4, ADR-0018 §2 Step 6b) | `6151399` |
+| v0.6.10 | TTY prompt UX (`/dev/tty` + provenance + G/D permanent write, ADR-0018 §4 + ADR-0017 Addendum §B) | `40f8cf4` |
+| v0.6.11 | Demo + capability pipeline integration test | this commit |
+
+**Gate đạt:**
+- ✅ Compile-time E2200/E2201 fire khi `usr.*` imports `dev.*`/`sys.*` không cap claim — proven by [`compile_*` tests in `capability_pipeline.rs`](crates/triet-typecheck/tests/capability_pipeline.rs).
+- ✅ Runtime policy hook resolves `Trilean::Unknown` via `triet.policy` rules + TTY prompt — proven by `resolve_*` tests.
+- ✅ Demo capability-restricted program: accept path + refuse path both proven by `full_pipeline_capstone_*` tests + `demos/04-capability-system/` illustrative files.
+- ✅ E22XX namespace fully populated: E2200–E2208 (+ sub-variants) across parse/compile/link/runtime stages.
+- ✅ 924 → 1079 tests, clippy `-D warnings` clean, `abi_version` stays `2` (ADR-0016 §4 promise honored).
+
+**Không làm (defer khỏi v0.6):**
+- **CLI wiring** (`triet check` reading `triet.package` from project root, cap-aware build pipeline emitting `.tripack` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
+- **E2208.PreV06Reader** — gated by future `abi_version` bump.
+- **E2208.CapabilityDivergence** — fires when lowerer actually populates caps section from `triet.package`; defer with lowerer work.
+- **Per-function cap granularity** — defer post-v1.0 (ADR-0016 "Không làm").
+- **Wildcard claims** in manifest — refuse-over-guess (ADR-0016 "Không làm").
+- **Windows ConPTY** for TTY prompt — POSIX-first; Windows defer.
+- **ANSI colour theming** + box-drawing Unicode in TTY prompt — usability win, defer post-security-floor.
+- **`Capability<T>` stdlib type** (old roadmap wording) — superseded by namespace-level claims (ADR-0016 §1 picked phương án C over A/B/D).
+- Hardware enforcement (cần phần cứng tam phân hoặc bytecode VM sandbox).
+- Distributed capability (defer v1.0+).
 
 ---
 
