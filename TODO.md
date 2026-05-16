@@ -82,7 +82,7 @@ Per [ROADMAP.md § v0.5](ROADMAP.md).
 - [x] v0.5.2 — ADR-0015 package store layout (CAS filesystem) `f7b49c8`
 - [x] v0.5.3 — 3-cấp hash tree (term + module + pkg) in `triet-pack` + abi_version 1 → 2 `b6d170c`
 - [x] v0.5.4 — Package store filesystem (`~/.triet/store/`) + atomic install + GC `2425e25`
-- [ ] v0.5.5 — Hash-based dep resolver + lockfile (`triet.lock`)
+- [x] v0.5.5 — Hash-based dep resolver + `triet.lock` format `2c43e69`
 - [ ] v0.5.6 — Shared loading demo (VISION §3.1 gate — term-level RAM dedup)
 - [ ] v0.5.7 — Migration tool: `triet store import` (path → CAS)
 - [ ] v0.5.8 — Carry-over from v0.4: cross-module enum variant import + lowerer emit `WitnessCall` for cross-package generics
