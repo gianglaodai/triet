@@ -51,9 +51,11 @@ mod hash;
 mod linker;
 mod lockfile;
 mod package_manifest;
+mod policy;
 mod resolver;
 mod serde;
 mod store;
+mod strict_parser;
 mod types;
 
 pub use error::{PackError, PackResult, StoreError, StoreResult};
@@ -65,6 +67,7 @@ pub use hash::{
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};
 pub use package_manifest::{PackageManifest, PackageManifestError};
+pub use policy::{Decision, OriginMatcher, PolicyError, PolicyRule, PolicyRules};
 pub use resolver::{Resolution, ResolutionOrigin, ResolveError, ResolveResult, Resolver};
 pub use store::{GcReport, RootEntry, Store};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for

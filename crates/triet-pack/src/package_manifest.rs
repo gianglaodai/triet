@@ -50,16 +50,11 @@ use thiserror::Error;
 
 use crate::error::{StoreError, StoreResult};
 use crate::hash::{IFACE_HASH_LEN, IfaceHash};
+use crate::strict_parser::{LineViolation, for_each_directive_line};
 use crate::types::{CapabilityClaim, CapabilityLevel, Dep, SemVer};
 
 /// `triet.package` format version. Bump on incompatible wire change.
 const FORMAT_VERSION: u32 = 1;
-
-/// Per-line byte cap (ADR-0017 Addendum §A — DoS prevention).
-const MAX_LINE_LEN: usize = 4096;
-
-/// Per-file byte cap (ADR-0017 Addendum §A — DoS prevention).
-const MAX_FILE_SIZE: usize = 1024 * 1024;
 
 /// Capability roots that require explicit grant (ADR-0016 §5 rule 3).
 /// `std`/`core` are ambient — not declared in `requires`. Intra-package
@@ -112,78 +107,13 @@ impl PackageManifest {
     // struct without gaining readability. Keep it inline.
     #[allow(clippy::too_many_lines)]
     pub fn parse(text: &str) -> Result<Self, PackageManifestError> {
-        // ── File-level checks ──────────────────────────────────────
-        if text.len() > MAX_FILE_SIZE {
-            return Err(PackageManifestError::Malformed {
-                line: 0,
-                reason: format!("file exceeds {MAX_FILE_SIZE} byte cap"),
-            });
-        }
-        if text.starts_with('\u{FEFF}') {
-            return Err(PackageManifestError::Malformed {
-                line: 1,
-                reason: "BOM (U+FEFF) is not allowed".into(),
-            });
-        }
-
         let mut format_version_seen = false;
         let mut name: Option<String> = None;
         let mut version: Option<SemVer> = None;
         let mut requires: Vec<CapabilityClaim> = Vec::new();
         let mut deps: Vec<Dep> = Vec::new();
 
-        // `split('\n')` preserves trailing `\r` so we can refuse CRLF.
-        for (idx, raw) in text.split('\n').enumerate() {
-            let line_no = idx + 1;
-
-            // ── Per-line structural checks ─────────────────────────
-            if raw.len() > MAX_LINE_LEN {
-                return Err(PackageManifestError::Malformed {
-                    line: line_no,
-                    reason: format!("line exceeds {MAX_LINE_LEN} byte cap"),
-                });
-            }
-            if raw.ends_with('\r') {
-                return Err(PackageManifestError::Malformed {
-                    line: line_no,
-                    reason: "CRLF line endings are not allowed (use LF)".into(),
-                });
-            }
-
-            // Trim only ASCII space/tab — Unicode whitespace is a
-            // structural error (Addendum §A).
-            let trimmed = trim_ascii_ws(raw);
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            // Leading-`#` = comment, body discarded entirely.
-            if trimmed.starts_with('#') {
-                continue;
-            }
-
-            // Reject Unicode whitespace + non-ASCII bytes outside
-            // comments. Identifiers are ASCII-only at v0.6.5 so a
-            // bytes-only ASCII check on content lines is sufficient.
-            if let Some(byte) = trimmed.bytes().find(|b| !is_strict_ascii(*b)) {
-                return Err(PackageManifestError::Malformed {
-                    line: line_no,
-                    reason: format!(
-                        "non-ASCII byte 0x{byte:02X} outside comment — Unicode identifiers \
-                         require XID support, deferred"
-                    ),
-                });
-            }
-
-            // Inline-`#` rejected. Only line-start `#` qualifies as a
-            // comment (already handled above).
-            if trimmed.contains('#') {
-                return Err(PackageManifestError::Malformed {
-                    line: line_no,
-                    reason: "inline `#` comments are not allowed".into(),
-                });
-            }
-
+        for_each_directive_line(text, |line_no, trimmed| {
             // ── Directive dispatch ─────────────────────────────────
             let mut parts = trimmed.split_ascii_whitespace();
             let head = parts.next().unwrap_or("");
@@ -390,7 +320,8 @@ impl PackageManifest {
                     });
                 }
             }
-        }
+            Ok(())
+        })?;
 
         // ── Required-field gates ───────────────────────────────────
         if !format_version_seen {
@@ -576,6 +507,15 @@ pub enum PackageManifestError {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+impl From<LineViolation> for PackageManifestError {
+    fn from(v: LineViolation) -> Self {
+        Self::Malformed {
+            line: v.line,
+            reason: v.kind.reason(),
+        }
+    }
+}
+
 fn require_format_version(seen: bool, line: usize) -> Result<(), PackageManifestError> {
     if seen {
         Ok(())
@@ -585,24 +525,6 @@ fn require_format_version(seen: bool, line: usize) -> Result<(), PackageManifest
             reason: "directive precedes `format_version`".into(),
         })
     }
-}
-
-fn trim_ascii_ws(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let start = bytes.iter().position(|b| !is_ascii_ws(*b)).unwrap_or(bytes.len());
-    let end = bytes.iter().rposition(|b| !is_ascii_ws(*b)).map_or(start, |p| p + 1);
-    &s[start..end]
-}
-
-const fn is_ascii_ws(b: u8) -> bool {
-    b == b' ' || b == b'\t'
-}
-
-/// Allow ASCII printable + space + tab. Reject anything else (control
-/// chars, non-ASCII bytes). Comments may carry UTF-8 — this check is
-/// only applied to non-comment lines.
-const fn is_strict_ascii(b: u8) -> bool {
-    matches!(b, 0x20..=0x7E | b'\t')
 }
 
 fn is_pkg_name(s: &str) -> bool {
@@ -718,6 +640,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::strict_parser::{MAX_FILE_SIZE, MAX_LINE_LEN};
 
     fn sample_hash() -> [u8; IFACE_HASH_LEN] {
         let mut h = [0u8; IFACE_HASH_LEN];

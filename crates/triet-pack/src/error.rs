@@ -110,6 +110,12 @@ pub enum StoreError {
     #[error("package manifest error: {0}")]
     #[diagnostic(transparent)]
     PackageManifest(#[from] crate::package_manifest::PackageManifestError),
+
+    /// Policy file (`triet.policy`) format or version mismatch
+    /// (v0.6.6+, ADR-0017 §3).
+    #[error("policy error: {0}")]
+    #[diagnostic(transparent)]
+    Policy(#[from] crate::policy::PolicyError),
 }
 
 impl StoreError {
