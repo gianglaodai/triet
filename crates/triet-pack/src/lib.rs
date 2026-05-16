@@ -47,6 +47,7 @@
 #![allow(clippy::too_long_first_doc_paragraph)]
 
 mod capability_link;
+mod capability_resolver;
 mod error;
 mod hash;
 mod linker;
@@ -68,6 +69,9 @@ pub use hash::{
 pub use capability_link::{
     CapabilityLinkError, CapabilityLinkReport, DeferredCap, RootRefusalLevel,
     check_link_capabilities,
+};
+pub use capability_resolver::{
+    CachedDecision, CapabilityResolver, DecisionSource, PolicyRequest, ResolverError,
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};
