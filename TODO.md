@@ -114,7 +114,7 @@ Per [ROADMAP.md § v0.6](ROADMAP.md).
 - [x] v0.6.3 — ADR-0018 — Loader semantics (`triet.package` grammar, eager link-time check, TTY provenance prompt, E2208 sub-variants, `CapabilityClaim` struct rename) `6742948`
 - [x] v0.6.4 — `CapabilityClaim` struct + 4-variant `CapabilityLevel` enum (ADR-0018 §6) + caps section wire format extend (ADR-0016 §4: cap_path + level u8 + reserved u8). 924 → 930 tests, clippy -D warnings clean, abi_version stays 2. `22151a4`
 - [x] v0.6.5 — `triet.package` source manifest parser (ADR-0018 §1). Hand-rolled strict whitelist per ADR-0017 Addendum §A. `PackageManifest` + `PackageManifestError` (`E2208 Malformed`, `E2208 UnsupportedFormatVersion`, `E2206 InvalidCapabilityRoot`). 930 → 955 tests, clippy -D warnings clean. ASCII identifier subset at v0.6.5; XID Unicode deferred. `cb8aa7b`
-- [ ] v0.6.6 — `triet.policy` parser (share tokenizer with v0.6.5, ADR-0017 §3 + Addendum §A)
+- [x] v0.6.6 — `triet.policy` parser + shared `strict_parser` (ADR-0017 §3 + Addendum §A). Extracted whitelist tokenizer (`for_each_directive_line` + `LineViolation`) — refactored `PackageManifest::parse` to share, then built `PolicyRules` on top. Numeric token style per ADR-0018 §1 audience split. `PolicyError` 4 load-time variants (E2205). Lookup precedence per ADR-0017 §4 (exact origin > `*`). `default prompt` rejected. 955 → 996 tests, clippy -D warnings clean. Runtime sub-variants (NonTTYDefer/PromptCrash) defer v0.6.9–10. `2a3a6c6`
 - [ ] v0.6.7 — Enforce `sys.*` / `dev.*` / `usr.*` cross-root capability check at type-check stage (E2200/E2201/E2206)
 - [ ] v0.6.8 — Linker capability check Step 6a — E2202/E2203/E2208 sub-variants (ADR-0018 §2/§5)
 - [ ] v0.6.9 — Capability resolver + policy cache Step 6b (ADR-0017 §4, ADR-0018 §2)
