@@ -11,11 +11,15 @@
 //! process already installed the same hash → no-op.
 //!
 //! v0.5.4 scope: pack-level install + module-level rollup + term-level
-//! iface bytes. Body bytes (`term/<hash>/body.bin`) defer to v0.5.6
-//! when `.triv` v4 lands per-term offset index — until then store
-//! holds only signature material per term, which is enough for the
-//! resolver (v0.5.5) and almost enough for the shared-loading demo
-//! (which actually needs body bytes for RAM dedup, hence v0.5.6).
+//! iface bytes. Body bytes (`term/<hash>/body.bin`) deferred until the
+//! lowerer can split per-term IR bodies (v0.5.8 / v0.6). v0.5.6 demo
+//! verifies iface-level dedup end-to-end; full RAM-sharing of bodies
+//! lands when the lowerer hookup arrives.
+//!
+//! v0.5.6: term dir keyed by `impl_hash_term` per ADR-0015 §2 (not
+//! `iface_hash_term`). With empty bodies (v0.5.3 placeholder) the two
+//! collapse, so dedup behaviour is unchanged; the rename is purely a
+//! correctness fix that pays off when real bodies arrive.
 //!
 //! [ADR-0014]: ../../../docs/decisions/0014-hash-scheme-refinement.md
 //! [ADR-0015]: ../../../docs/decisions/0015-package-store-layout.md
@@ -27,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{StoreError, StoreResult};
-use crate::hash::{IFACE_HASH_LEN, IMPL_HASH_LEN, ImplHash, ModuleImplHash};
+use crate::hash::{IMPL_HASH_LEN, ImplHash, ModuleImplHash};
 use crate::serde::{
     canonical_term_signature_function, canonical_term_signature_type, read_tripack,
 };
@@ -118,9 +122,9 @@ impl Store {
     /// Side effects:
     /// - `pkg/<hex(impl_hash_pkg)>/pack.tripack` + `manifest.bin`
     /// - `mod/<hex(impl_hash_mod)>/index.bin` for every module
-    /// - `term/<hex(iface_hash_term)>/iface.bin` for every type +
-    ///   export (canonical signature bytes — body.bin deferred to
-    ///   v0.5.6 when per-term bodies are available)
+    /// - `term/<hex(impl_hash_term)>/iface.bin` for every type +
+    ///   export (canonical signature bytes — body.bin written once the
+    ///   lowerer can split per-term IR bodies, v0.5.8 / v0.6)
     /// - `names/<pkg_name>/<semver>.link` containing the pack's
     ///   `impl_hash` hex bytes (overwrites any existing alias)
     ///
@@ -154,11 +158,11 @@ impl Store {
         // ── term/<hash>/ per type + export ──────────────────────────
         for t in &meta.types {
             let iface_bytes = canonical_term_signature_type(t);
-            self.install_term(&t.iface_hash_term, &iface_bytes)?;
+            self.install_term(&t.impl_hash_term, &iface_bytes)?;
         }
         for e in &meta.exports {
             let iface_bytes = canonical_term_signature_function(e);
-            self.install_term(&e.iface_hash_term, &iface_bytes)?;
+            self.install_term(&e.impl_hash_term, &iface_bytes)?;
         }
 
         // ── names/<pkg_name>/<semver>.link ──────────────────────────
@@ -407,7 +411,7 @@ impl Store {
 
         let mut live_pkgs: HashSet<[u8; IMPL_HASH_LEN]> = HashSet::new();
         let mut live_mods: HashSet<[u8; IMPL_HASH_LEN]> = HashSet::new();
-        let mut live_terms: HashSet<[u8; IFACE_HASH_LEN]> = HashSet::new();
+        let mut live_terms: HashSet<[u8; IMPL_HASH_LEN]> = HashSet::new();
 
         // ── Mark phase ──────────────────────────────────────────────
         for root in self.list_roots()? {
@@ -420,10 +424,10 @@ impl Store {
                         live_mods.insert(m.impl_hash_mod.0);
                     }
                     for t in meta.types {
-                        live_terms.insert(t.iface_hash_term.0);
+                        live_terms.insert(t.impl_hash_term.0);
                     }
                     for e in meta.exports {
-                        live_terms.insert(e.iface_hash_term.0);
+                        live_terms.insert(e.impl_hash_term.0);
                     }
                 }
             }
@@ -469,10 +473,8 @@ impl Store {
         self.root.join(dirs::MOD).join(hex_encode(&h.0))
     }
 
-    fn term_dir(&self, iface_hash_bytes: &[u8; IFACE_HASH_LEN]) -> PathBuf {
-        self.root
-            .join(dirs::TERM)
-            .join(hex_encode(iface_hash_bytes))
+    fn term_dir(&self, impl_hash_bytes: &[u8; IMPL_HASH_LEN]) -> PathBuf {
+        self.root.join(dirs::TERM).join(hex_encode(impl_hash_bytes))
     }
 
     fn roots_dir(&self) -> PathBuf {
@@ -496,23 +498,24 @@ impl Store {
         if target.exists() {
             return Ok(());
         }
-        // index.bin = sorted (term_name, iface_hash_term) entries for
+        // index.bin = sorted (term_name, impl_hash_term) entries for
         // terms belonging to this module path. Cheap re-read so
-        // resolvers don't need the parent pack.
-        let mut entries: Vec<(String, [u8; IFACE_HASH_LEN])> = Vec::new();
+        // resolvers don't need the parent pack. Entries point at the
+        // term dirs which are keyed by impl_hash per ADR-0015 §2.
+        let mut entries: Vec<(String, [u8; IMPL_HASH_LEN])> = Vec::new();
         for t in &meta.types {
             if t.module_path == module_path {
-                entries.push((t.name.clone(), t.iface_hash_term.0));
+                entries.push((t.name.clone(), t.impl_hash_term.0));
             }
         }
         for e in &meta.exports {
             if e.module_path == module_path {
-                entries.push((e.name.clone(), e.iface_hash_term.0));
+                entries.push((e.name.clone(), e.impl_hash_term.0));
             }
         }
         entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
-        let mut body = Vec::with_capacity(entries.len() * (IFACE_HASH_LEN + 32));
+        let mut body = Vec::with_capacity(entries.len() * (IMPL_HASH_LEN + 32));
         for (name, hash_bytes) in entries {
             let len = u32::try_from(name.len()).unwrap_or(u32::MAX);
             body.extend_from_slice(&len.to_le_bytes());
@@ -528,17 +531,18 @@ impl Store {
 
     fn install_term(
         &self,
-        iface_hash: &crate::hash::TermIfaceHash,
+        impl_hash: &crate::hash::TermImplHash,
         signature_bytes: &[u8],
     ) -> StoreResult<()> {
-        let target = self.term_dir(&iface_hash.0);
+        let target = self.term_dir(&impl_hash.0);
         if target.exists() {
             return Ok(());
         }
         self.atomic_install_dir(&target, |tmp| {
             write_file(&tmp.join("iface.bin"), signature_bytes)?;
-            // body.bin intentionally absent — v0.5.6 fills it once
-            // `.triv` v4 carries per-term offset index.
+            // body.bin intentionally absent — wires up when the
+            // lowerer can split per-term IR bodies (v0.5.8 or v0.6).
+            // v0.5.6 demo proves the dedup mechanism at iface level.
             Ok(())
         })
     }
@@ -906,13 +910,14 @@ mod tests {
             .expect("manifest present");
         assert!(!manifest.is_empty());
 
-        // term iface bytes were installed
+        // term iface bytes were installed (dirs keyed by impl_hash per
+        // ADR-0015 §2; iface.bin lives inside).
         let (meta, _) = read_tripack(&bytes).unwrap();
         for e in &meta.exports {
             let iface = store
                 .root()
                 .join("term")
-                .join(hex_encode(&e.iface_hash_term.0))
+                .join(hex_encode(&e.impl_hash_term.0))
                 .join("iface.bin");
             assert!(iface.exists(), "missing iface for {}", e.name);
         }
