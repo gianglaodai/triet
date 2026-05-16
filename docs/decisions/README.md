@@ -60,6 +60,12 @@ prior decision, write a new ADR that supersedes it.
 | [0014](0014-hash-scheme-refinement.md) | Hash scheme refinement (3-cấp hash tree: term + module + package, `abi_version` 1 → 2) | Locked |
 | [0015](0015-package-store-layout.md) | Package store layout (`~/.triet/store/`, atomic install, mark-and-sweep GC) — *+ v0.5.x.review Addendum: resolver origin 3-state + GC conservative-on-corruption* | Locked |
 
+### v0.6 — Capability System
+
+| ADR | Title | Status |
+|---|---|---|
+| [0016](0016-capability-type-system.md) | Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) | Locked |
+
 ## How to read an ADR
 
 Every ADR follows the same shape:
