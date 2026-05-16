@@ -24,7 +24,7 @@ triet-typecheck.workspace = true
 triet-interpreter.workspace = true
 triet-modules.workspace = true
 triet-ir.workspace = true
-triet-pack = { path = "../triet-pack", version = "0.4.0" }
+triet-pack = { path = "../triet-pack", version = "0.5.0" }
 clap.workspace = true
 miette.workspace = true
 

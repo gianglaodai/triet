@@ -74,20 +74,37 @@ Final v0.4 commit: this commit.
 
 ---
 
-## v0.5 — CAS Packaging (in progress)
+## v0.5 — CAS Packaging ✅ SHIPPED
 
-Per [ROADMAP.md § v0.5](ROADMAP.md).
+Archived to [ROADMAP.md § v0.5](ROADMAP.md).
 
-- [x] v0.5.1 — ADR-0014 hash scheme refinement (3-cấp hash tree) `f876006`
-- [x] v0.5.2 — ADR-0015 package store layout (CAS filesystem) `f7b49c8`
-- [x] v0.5.3 — 3-cấp hash tree (term + module + pkg) in `triet-pack` + abi_version 1 → 2 `b6d170c`
-- [x] v0.5.4 — Package store filesystem (`~/.triet/store/`) + atomic install + GC `2425e25`
-- [x] v0.5.5 — Hash-based dep resolver + `triet.lock` format `2c43e69`
-- [x] v0.5.6 — Shared loading demo (VISION §3.1 gate at iface level; body-level defer) `6291bc1`
-- [x] v0.5.7 — `triet store {import,list,gc}` CLI (v=1 lossy migration deferred) `8b4ce12`
-- [x] v0.5.8 — Cross-module enum variant import `from X import Variant` (Item 1 of 2) `07323a1`
-  - Item 2 (lowerer emit `WitnessCall` for cross-package generics) **deferred** out of v0.5 — needs package-aware lowering, multi-week architectural milestone. Reschedules to a future phase (multi-package compile or v0.7 self-hosting).
-- [ ] v0.5.9 — Verify gate (ADR-0009) + bump Cargo `0.4.0 → 0.5.0` + docs sync
+9 sub-tasks done (v0.5.1–v0.5.9). All gates met (ADR-0009 § A/B/C/D):
+- ADR-0014/0015 locked. 3-cấp hash tree, package store, atomic install, GC.
+- Resolver + `triet.lock`. `triet store {import,list,gc}` CLI.
+- Shared loading demo (iface-level dedup proven).
+- Cross-module enum variant import closed.
+- 918 tests, 0 ignored, clippy clean, differential 11/11.
+
+**Defer out of v0.5** (rescheduled):
+- Lowerer emit `WitnessCall` for cross-package generics — needs package-aware lowering, multi-week milestone. Future phase (multi-package compile or v0.7 self-hosting).
+- v=1 `.tripack` lossy migration — lands when v=1 packs exist in wild.
+- Body-level RAM dedup (`term/<hash>/body.bin`) — chờ lowerer per-term IR body split.
+
+Final v0.5 commit: this commit.
+
+---
+
+## v0.6 — Capability System (pending)
+
+Per [ROADMAP.md § v0.6](ROADMAP.md). Tasks will be added when v0.6 work begins.
+
+- [ ] ADR-NNNN — Capability type system (Trit-level grant/deny/ambient)
+- [ ] ADR-NNNN — `Trilean::Unknown` runtime policy hook
+- [ ] ADR-NNNN — Loader semantics (refuse-to-load on capability mismatch)
+- [ ] Enforce `sys.*` / `dev.*` / `usr.*` top-level namespaces
+- [ ] `Capability<T>` type in stdlib
+- [ ] Crate-pack metadata: capability requirements (slot reserved since v0.4)
+- [ ] Demo: `usr.app` cannot touch `dev.*` without capability token
 
 ---
 

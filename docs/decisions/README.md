@@ -53,11 +53,12 @@ prior decision, write a new ADR that supersedes it.
 | [0012](0012-witness-table-dispatch.md) | Witness table dispatch (Swift-style, hybrid intra/inter-package) | Locked |
 | [0013](0013-semver-linking-policy.md) | Semver linking policy (E2300–E2399, `iface_hash` is final arbiter) | Locked |
 
-### v0.5 — CAS Packaging (next, no ADRs yet)
+### v0.5 — CAS Packaging
 
-Planned: hash scheme refinement (ADR-0014), package store layout
-(ADR-0015). See [ROADMAP.md § v0.5](../../ROADMAP.md) for the
-deliverables list.
+| ADR | Title | Status |
+|---|---|---|
+| [0014](0014-hash-scheme-refinement.md) | Hash scheme refinement (3-cấp hash tree: term + module + package, `abi_version` 1 → 2) | Locked |
+| [0015](0015-package-store-layout.md) | Package store layout (`~/.triet/store/`, atomic install, mark-and-sweep GC) | Locked |
 
 ## How to read an ADR
 

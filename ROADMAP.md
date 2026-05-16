@@ -16,10 +16,10 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.4 đã ship ✅
+## Trạng thái hiện tại — v0.5 đã ship ✅
 
 v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
-→ **v0.4** ✅ (Crate-Pack + Stable ABI).
+→ v0.4 ✅ (Crate-Pack + Stable ABI) → **v0.5** ✅ (CAS Packaging).
 
 ✅ Tree-walking interpreter end-to-end
 ✅ Type checker với inference + monomorphization
@@ -42,8 +42,13 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 ✅ **Semver linking policy** per ADR-0013 — E2300-2399 decision matrix, refuse-to-link on major bump, iface_hash drift warnings
 ✅ **`triet-pack` crate**: write_tripack/read_tripack + plan_link, 26 unit + 7 integration tests
 ✅ **Stdlib `std.result`**: canonical `Result<T, E>` enum; SPEC §2.5 promotes `T?` as primary nullable
-✅ 867 tests workspace-wide, 0 ignored, snapshot tests cho IR + diagnostics
-🔜 Tiếp theo: v0.5 — CAS Packaging
+✅ 867 tests workspace-wide ở v0.4, → **918 tests ở v0.5** (0 ignored), snapshot tests cho IR + diagnostics
+✅ **CAS Packaging** per ADR-0014/0015 — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install protocol, mark-and-sweep GC
+✅ **Resolver + lockfile** — hash-pinned dep resolution, `triet.lock` line format
+✅ **`triet store` CLI** — `import`, `list`, `gc` subcommands
+✅ **Shared loading demo** — VISION §3.1 gate hit at iface level (term iface dedup proven; body-level RAM dedup queued behind lowerer per-term split)
+✅ **Cross-module enum variant import** — `from std.result import Ok, Err` closed pre-existing v0.2.x gap; E2107 cho aliased variant import
+🔜 Tiếp theo: v0.6 — Capability System (`sys.*` / `dev.*` / `usr.*` enforce, Trit-level capability, Ł3 policy hook)
 
 ---
 
@@ -250,27 +255,40 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 
 ---
 
-## v0.5 — CAS Packaging
+## v0.5 — CAS Packaging ✅ SHIPPED
 
-**Mục tiêu:** Định danh package bằng hash, eliminate DLL Hell, parallel versions.
+**Mục tiêu:** Định danh package bằng hash, eliminate DLL Hell, prep parallel versions ở RAM level.
 
-**Deliverables:**
-- Hash scheme: hai cấp `iface_hash` (ABI surface) + `impl_hash` (toàn nội dung).
-- Package store: filesystem layout `~/.triet/store/<hash>/`.
-- Resolver: `use foo::bar` → resolve theo hash trong manifest.
-- Manifest format: lockfile có hash đầy đủ.
-- Shared loading: 2+ apps cùng dùng `std@hash_X` → load 1 lần.
-- Migration tool: import package từ filesystem path → CAS store.
+**Quyết định kiến trúc:**
+- **[ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)** — Hash scheme refinement: 3-cấp hash tree (term + module + package), `abi_version` 1 → 2, domain separation per level.
+- **[ADR-0015](docs/decisions/0015-package-store-layout.md)** — Package store layout: `~/.triet/store/{term,mod,pkg,names,roots,tmp}/`, atomic install via tmp + rename, mark-and-sweep GC.
 
-**Không làm:**
-- Distributed registry (defer — local store đủ cho v0.5).
-- Garbage collection (defer — manual `triet store gc` đủ).
+**Đã ship:**
 
-**Gate:**
-- Chạy song song 2 phiên bản incompatible của cùng package trong cùng app, không xung đột.
-- Sửa internal của lib không invalidate `iface_hash` → app không rebuild.
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.5.1 | ADR-0014 hash scheme refinement | `f876006` |
+| v0.5.2 | ADR-0015 package store layout | `f7b49c8` |
+| v0.5.3 | 3-cấp hash tree implementation + abi_version 1 → 2 | `b6d170c` |
+| v0.5.4 | Package store filesystem + atomic install + GC | `2425e25` |
+| v0.5.5 | Hash-based resolver + `triet.lock` format | `2c43e69` |
+| v0.5.6 | Shared loading demo + term dir keyed by impl_hash | `6291bc1` |
+| v0.5.7 | `triet store {import,list,gc}` CLI | `8b4ce12` |
+| v0.5.8 | Cross-module enum variant import (`from X import Variant`) | `07323a1` |
+| v0.5.9 | Verify gate (ADR-0009) + bump 0.4.0 → 0.5.0 + docs sync | this commit |
 
-**ADR cần viết:** ADR-0012 (hash scheme), ADR-0013 (package store layout).
+**Gate đạt (ADR-0009):**
+- ✅ A — Functional: differential 11/11 byte-identical, 0 `#[ignore]`, 0 `TODO(v0.5...)`.
+- ✅ B — Hygiene: 918 tests pass, clippy `-D warnings` clean, `cargo fmt` clean.
+- ✅ C — Docs: SPEC v0.5, Cargo `0.5.0`, README updated, 2 ADRs landed (0014, 0015).
+- ✅ D — Self-consistency: 11/11 examples chạy interpreter + VM, store CLI smoke OK, variant import e2e OK.
+
+**Không làm (defer khỏi v0.5):**
+- **Lowerer emit `WitnessCall` cho cross-package generics** (Item 2 carry-over) — cần package-aware lowering, multi-week milestone. Reschedules cùng multi-package compile path hoặc v0.7 self-hosting.
+- **v=1 `.tripack` lossy migration** (ADR-0015 §9) — hiện chưa có v=1 packs trong wild; lands on demand.
+- **Body-level RAM dedup** (`term/<hash>/body.bin`) — chờ lowerer per-term IR body split. Iface-level dedup proven; body-level deferred to v0.6+ alongside lowerer work.
+- **Distributed registry / network fetch** — local store đủ; defer v1.0+.
+- **Auto-GC** — manual `triet store gc` đủ; "refuse over guess" policy.
 
 ---
 
@@ -300,7 +318,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 - Runtime policy hook hoạt động cho `Trilean::Unknown`.
 - Demo capability-restricted program chạy được + bị reject khi capability sai.
 
-**ADR cần viết:** ADR-0014 (capability type system), ADR-0015 (Trilean policy hook), ADR-0016 (loader semantics).
+**ADR cần viết:** ADR-0016 (capability type system), ADR-0017 (Trilean policy hook), ADR-0018 (loader semantics). ADR-0014/0015 đã land ở v0.5 cho CAS packaging.
 
 ---
 
@@ -330,7 +348,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 - CSP / channels (Go) — đơn giản.
 - Structured concurrency (Trio, Project Loom) — modern.
 
-**Quyết định:** ADR-0017 ở giai đoạn vào v0.8. Hiện tại favor **Actor + structured concurrency** vì alignment với capability model.
+**Quyết định:** ADR ở giai đoạn vào v0.8 (next ADR-NNNN khi land). Hiện tại favor **Actor + structured concurrency** vì alignment với capability model.
 
 **Gate:** Demo concurrent program chạy đúng dưới load + race detector pass.
 

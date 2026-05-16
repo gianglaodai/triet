@@ -130,7 +130,7 @@ fn main() -> ExitCode {
         Command::Store { subcommand } => store_command(subcommand, cli.json),
         Command::Info => {
             println!("Triết — balanced ternary, AI-first programming language");
-            println!("Language SPEC:     v0.4");
+            println!("Language SPEC:     v0.5");
             println!("Implementation:    v{}", env!("CARGO_PKG_VERSION"));
             println!("Spec doc:          SPEC.md");
             println!("Vision:            VISION.md");

@@ -13,7 +13,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.4 — implementation v0.4.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format đã có. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). 867 tests pass workspace-wide.
+🟢 **Language SPEC v0.5 — implementation v0.5.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install, `triet store {import,list,gc}` CLI, hash-pinned `triet.lock` resolver. 918 tests pass workspace-wide.
 
 ```bash
 cargo build --release
@@ -95,7 +95,7 @@ triet/
 ├── demos/                 # Larger multi-file demos
 │   └── 02-module-system/  # 704-dòng ternary ALU across 6 modules
 ├── docs/decisions/        # 9 ADRs
-├── SPEC.md                # Đặc tả ngôn ngữ (v0.4)
+├── SPEC.md                # Đặc tả ngôn ngữ (v0.5)
 ├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
 └── ROADMAP.md             # Phase gates v0.2 → v3.0+
 ```
@@ -105,7 +105,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test --workspace   # run all tests (867 in v0.4)
+cargo test --workspace   # run all tests (918 in v0.5)
 cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```
@@ -139,8 +139,8 @@ Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first +
 - **v0.3** — bytecode VM + stable IR ✅ ([ADR-0007](docs/decisions/0007-ir-design.md), [ADR-0008](docs/decisions/0008-triv-binary-format.md))
 - **v0.3.x.cleanup** — gate-closing phase ✅ ([ADR-0009](docs/decisions/0009-version-gate-policy.md))
 - **v0.3.x.ternary** — ternary-native IR ✅ ([ADR-0010](docs/decisions/0010-ternary-native-ir.md))
-- **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md)) — *đang ở đây*
-- **v0.5** — CAS packaging (hash-based identity)
+- **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md))
+- **v0.5** — CAS packaging ✅ ([ADR-0014](docs/decisions/0014-hash-scheme-refinement.md), [ADR-0015](docs/decisions/0015-package-store-layout.md)) — *đang ở đây*
 - **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
 - **v0.7** — self-hosting compiler
 - **v0.8** — concurrency model

@@ -27,14 +27,14 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, and a crate-pack distribution format (`.tripack`). Long-term aim is OS-capable; **current state is v0.4 — Crate-Pack + Stable ABI shipped** (interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0).
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.tripack`), and a content-addressed package store (`~/.triet/store/`). Long-term aim is OS-capable; **current state is v0.5 — CAS Packaging shipped** (interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0).
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative, currently v0.4)
+- `SPEC.md` — language semantics (authoritative, currently v0.5)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; **next: v0.5 CAS Packaging**
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; **next: v0.6 Capability System**
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — 13 ADRs for architectural decisions (see `docs/decisions/README.md` for an index)
+- `docs/decisions/` — 15 ADRs for architectural decisions (see `docs/decisions/README.md` for an index)
 
 ## Development principles
 
@@ -152,9 +152,18 @@ Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-log
 ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, strict `if cond` panics on Unknown (SPEC §7.1.1), `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing").
 
 ### Crate-Pack distribution (shipped v0.4; ADR-0011/0012/0013)
-`triet-pack` defines `.tripack` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash: `iface_hash` (ABI surface, stable across re-compiles) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
+`triet-pack` defines `.tripack` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash at pack level: `iface_hash` (ABI surface) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
 
 Linker decisions land in the E2300–E2399 namespace: `MajorVersionMismatch` (E2320), `VersionBelowMinimum` (E2321), `IfaceHashDrift` (E2310 advisory). `iface_hash_pin` is the final arbiter — semver triple is *declaration*, hash is *proof*. Auto-shim is explicitly NOT promised.
+
+### CAS Packaging (shipped v0.5; ADR-0014/0015)
+Extends the pack-level hash from v0.4 into a **3-cấp hash tree**: term + module + package. Each level has its own `iface_hash` (signature-only) + `impl_hash` (covers body bytes), with 16-byte ASCII domain separators per level to prevent cross-level collisions. `abi_version` bumped 1 → 2 (additive — `.tripack` v=1 explicitly refused per ADR-0014 §5, no shim).
+
+Package store lives at `~/.triet/store/` (override via `$TRIET_STORE`). Three branches mirror the hash tree: `term/<impl_hash>/{iface.bin, body.bin}`, `mod/<impl_hash>/index.bin`, `pkg/<impl_hash>/{pack.tripack, manifest.bin}`. Plus `names/<pkg>/<semver>.link` (symbolic alias → hash), `roots/<project_id>.root` (GC roots), `tmp/<uid>/` (atomic install staging). Atomic install protocol: write to tmp dir → `rename()` (POSIX atomic; EEXIST = race-lost = success). Manual `triet store gc` (mark-and-sweep). E2360–E2382 namespace covers store I/O + lockfile + resolver errors.
+
+`triet.lock` hand-rolled line format (`format_version 1` + `pkg <name> <maj>.<min>.<pat> <iface_hex> <impl_hash_hex>`) — sort-by-name canonical, diff-friendly, no serde dep. `Resolver` (lockfile authoritative when present + still in store; dep `iface_hash_pin` overrides cache).
+
+CLI: `triet store {import,list,gc}` (lossy v=1 migration deferred until v=1 packs exist in the wild). Body-level RAM dedup (`body.bin`) chờ lowerer per-term IR body split — iface-level dedup proven via `tests/shared_loading.rs`.
 
 ### Error code namespace
 - `triet::lex::E0000` — lexer
@@ -201,7 +210,7 @@ Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr
 The user follows a per-step commit pattern:
 1. Pick the next sub-task from `TODO.md`.
 2. Implement, run `cargo test --workspace` and `cargo clippy --workspace`.
-3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.4.N): …` / `docs(v0.4.N): …`. Next phase will use `feat(v0.5.N): …`.
+3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.5.N): …` / `docs(v0.5.N): …`. Next phase will use `feat(v0.6.N): …`.
 4. Push.
 5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
 
@@ -217,4 +226,4 @@ Sample programs in `examples/*.tri` exercise specific features. Useful as smoke 
 for f in examples/*.tri; do ./target/release/triet run "$f" || echo "FAILED: $f"; done
 ```
 
-Demos shipped through v0.4: 11 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic — all 11/11 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases).
+Demos shipped through v0.5: 11 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic — all 11/11 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases). 1 shared-loading demo (`crates/triet-pack/tests/shared_loading.rs` — 4 integration tests proving CAS dedup at term + module level). 1 store CLI smoke test suite (`crates/triet-cli/tests/store_cli.rs` — 6 integration tests).
