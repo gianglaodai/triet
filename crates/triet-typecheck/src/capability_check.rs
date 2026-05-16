@@ -35,10 +35,11 @@
 //! Per ADR-0016 §2 path matching is **exact**, no inheritance.
 //! `requires sys.io grant` does not cover `sys.io.async`.
 //!
-//! **Span placeholder** — bindings carry no span at v0.6.7 (the
-//! resolver records local-name → `AbsolutePath` only). Diagnostics
-//! emit `Span(0..0)`; span recovery via `Item::Import` walk lands in
-//! v0.6.8 with the linker integration.
+//! **Span placeholder** — bindings carry no span (the resolver
+//! records local-name → `AbsolutePath` only). Diagnostics emit
+//! `Span(0..0)`; span recovery via `Item::Import` walk is deferred
+//! post-v0.6 — it pairs cleanly with v0.7 CLI wiring that needs
+//! richer source-location threading anyway.
 
 use std::collections::HashSet;
 
@@ -75,9 +76,9 @@ pub enum CapabilityError {
         /// Dotted module path the source attempted to reach
         /// (e.g. `"sys.io"`, `"dev.disk"`).
         cap_path: String,
-        /// Source location. v0.6.7 emits `Span(0..0)` since the
-        /// resolver's binding map carries no span; v0.6.8 will refine
-        /// by walking `Item::Import` declarations.
+        /// Source location placeholder (`0..0`). The resolver's
+        /// binding map carries no span at v0.6; span refinement via
+        /// `Item::Import` walking is deferred post-v0.6.
         #[label("missing manifest entry for this import")]
         span: Span,
     },
@@ -100,7 +101,11 @@ pub enum CapabilityError {
         requester_pkg: String,
         /// Dotted module path simultaneously imported and denied.
         cap_path: String,
-        /// Source location placeholder; refines in v0.6.8.
+        /// Source location placeholder (`0..0`). Span refinement
+        /// requires walking `Item::Import` to recover the offending
+        /// import statement's range; deferred post-v0.6 (the loader
+        /// integration that benefits most from spans lives with v0.7
+        /// CLI wiring).
         #[label("manifest denies this import")]
         span: Span,
     },
@@ -118,9 +123,10 @@ pub enum CapabilityError {
 /// Run **after** [`crate::check_resolved`] — name resolution must
 /// have completed so every binding maps to a real `AbsolutePath`.
 ///
-/// Span quality: v0.6.7 emits `Span(0..0)`. v0.6.8 will refine by
-/// walking each module's `Item::Import` declarations to recover the
-/// source location of each cross-root import statement.
+/// Span quality: emits `Span(0..0)`. Refinement by walking each
+/// module's `Item::Import` declarations to recover the cross-root
+/// import statement's range is deferred post-v0.6 — pairs with v0.7
+/// CLI wiring which needs richer source-location threading anyway.
 #[must_use]
 pub fn check_capabilities(
     program: &ResolvedProgram,

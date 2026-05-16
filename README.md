@@ -13,7 +13,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.5 — implementation v0.5.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install, `triet store {import,list,gc}` CLI, hash-pinned `triet.lock` resolver. 924 tests pass workspace-wide.
+🟢 **Language SPEC v0.6 — implementation v0.6.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install, `triet store {import,list,gc}` CLI, hash-pinned `triet.lock` resolver. **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md) — `sys.*`/`dev.*`/`usr.*` enforce ở compile + link + runtime, 4-state `CapabilityLevel` (Trit + Trilean::Unknown), `triet.package` source manifest + `triet.policy` rules + `/dev/tty` provenance prompt. 1079 tests pass workspace-wide.
 
 ```bash
 cargo build --release
@@ -33,6 +33,10 @@ cargo build --release
 
 # Module system demo (704 dòng, 6 module file-bound + nested + inline)
 ./target/release/triet run demos/02-module-system/main.tri
+
+# Capability system walkthrough (v0.6 — illustrative manifest + policy)
+cat demos/04-capability-system/README.md
+cat demos/04-capability-system/triet.package
 
 # Compile → bytecode → VM execution
 ./target/release/triet build examples/factorial.tri -o /tmp/factorial.triv
@@ -93,9 +97,10 @@ triet/
 │   ├── io.tri, text.tri, assert.tri
 ├── examples/              # 11 sample .tri programs
 ├── demos/                 # Larger multi-file demos
-│   └── 02-module-system/  # 704-dòng ternary ALU across 6 modules
-├── docs/decisions/        # 9 ADRs
-├── SPEC.md                # Đặc tả ngôn ngữ (v0.5)
+│   ├── 02-module-system/  # 704-dòng ternary ALU across 6 modules
+│   └── 04-capability-system/  # v0.6 capability gates walkthrough
+├── docs/decisions/        # 18 ADRs (+ Addendum on ADR-0015, ADR-0017)
+├── SPEC.md                # Đặc tả ngôn ngữ (v0.6)
 ├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
 └── ROADMAP.md             # Phase gates v0.2 → v3.0+
 ```
@@ -105,7 +110,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test --workspace   # run all tests (924 in v0.5)
+cargo test --workspace   # run all tests (1079 in v0.6)
 cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```
@@ -140,9 +145,9 @@ Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first +
 - **v0.3.x.cleanup** — gate-closing phase ✅ ([ADR-0009](docs/decisions/0009-version-gate-policy.md))
 - **v0.3.x.ternary** — ternary-native IR ✅ ([ADR-0010](docs/decisions/0010-ternary-native-ir.md))
 - **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md))
-- **v0.5** — CAS packaging ✅ ([ADR-0014](docs/decisions/0014-hash-scheme-refinement.md), [ADR-0015](docs/decisions/0015-package-store-layout.md)) — *đang ở đây*
-- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`)
-- **v0.7** — self-hosting compiler
+- **v0.5** — CAS packaging ✅ ([ADR-0014](docs/decisions/0014-hash-scheme-refinement.md), [ADR-0015](docs/decisions/0015-package-store-layout.md))
+- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`) ✅ ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md)) — *đang ở đây*
+- **v0.7** — self-hosting compiler — *next*
 - **v0.8** — concurrency model
 - **v0.9** — JIT (Cranelift)
 - **v1.0** — production stability

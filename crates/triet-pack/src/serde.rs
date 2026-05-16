@@ -688,11 +688,17 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
         let return_type = read_type_ref(data, pos)?;
         let cap_count = read_varint(data, pos)?;
         if cap_count > 0 {
-            // Encoding is reserved; if a forward-compat .tripack
-            // arrives with claims, treat it as corruption for now
-            // because the wire shape isn't yet specified (v0.6 ADR).
+            // Per-export (function-level) capability slots remain
+            // reserved. v0.6 populated the *package-level* caps
+            // section (ADR-0016 §4); per-function granularity was
+            // explicitly deferred post-v1.0 (ADR-0016 "Không làm").
+            // A forward-compat `.tripack` arriving with per-export
+            // claims is treated as corruption until the future ADR
+            // specifies the wire shape.
             return Err(PackError::Corrupted(
-                "function export carries capability claims (reserved for v0.6)".into(),
+                "function export carries capability claims (per-function granularity \
+                 deferred post-v1.0 per ADR-0016)"
+                    .into(),
             ));
         }
         let body_offset = read_varint(data, pos)?;
