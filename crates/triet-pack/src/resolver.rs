@@ -22,6 +22,29 @@ use crate::lockfile::{LockEntry, Lockfile};
 use crate::store::Store;
 use crate::types::{Dep, SemVer};
 
+/// Why the resolver picked this particular pack — one of three
+/// distinct decision paths. Kept as a 3-state enum rather than a
+/// `bool` so callers (telemetry, capability gates, diagnostics) can
+/// distinguish *lockfile-authoritative*, *iface-pin-authoritative*,
+/// and *fresh-by-range* origins without re-deriving the path.
+///
+/// Aligns with VISION §5 *bản sắc tam phân* — resolution decisions
+/// are ternary by nature; binary `from_lockfile` collapsed two cases
+/// (pin-match vs. plain enumeration) into one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ResolutionOrigin {
+    /// Pinned by an existing `triet.lock` entry whose hash is still
+    /// installed. Authoritative — no enumeration was performed.
+    Lockfile,
+    /// `dep.iface_hash_pin` was non-zero. Resolver enumerated store
+    /// versions and picked the highest one whose `iface_hash` matches
+    /// the pin. ADR-0013 declaration-wins-over-cache.
+    IfacePin,
+    /// No lockfile entry, no iface pin — resolver picked the highest
+    /// installed version satisfying the dep's semver range.
+    Fresh,
+}
+
 /// Outcome for one declared dep — which pack the resolver picked and
 /// why.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,9 +55,8 @@ pub struct Resolution {
     pub version: SemVer,
     /// CAS store address of the chosen pack.
     pub impl_hash: ImplHash,
-    /// `true` if the choice came from a pre-existing lockfile entry;
-    /// `false` if newly resolved (and freshly added to the lockfile).
-    pub from_lockfile: bool,
+    /// Which of the three decision paths produced this resolution.
+    pub origin: ResolutionOrigin,
 }
 
 /// Errors that can prevent resolution. Wraps [`StoreError`] for
@@ -162,7 +184,7 @@ impl<'a> Resolver<'a> {
                     pkg_name: entry.pkg_name,
                     version: entry.version,
                     impl_hash: entry.impl_hash,
-                    from_lockfile: true,
+                    origin: ResolutionOrigin::Lockfile,
                 });
             } else {
                 return Err(ResolveError::LockfileHashMissing {
@@ -214,7 +236,11 @@ impl<'a> Resolver<'a> {
             pkg_name: dep.pkg_name.clone(),
             version,
             impl_hash,
-            from_lockfile: false,
+            origin: if has_pin {
+                ResolutionOrigin::IfacePin
+            } else {
+                ResolutionOrigin::Fresh
+            },
         })
     }
 
@@ -357,7 +383,7 @@ mod tests {
         assert_eq!(r.pkg_name, "math");
         assert_eq!(r.version, SemVer::new(1, 7, 0));
         assert_eq!(r.impl_hash, expected_hash);
-        assert!(!r.from_lockfile);
+        assert_eq!(r.origin, ResolutionOrigin::Fresh);
 
         // Lockfile now has the entry.
         let lf = resolver.lockfile();
@@ -392,7 +418,7 @@ mod tests {
         let res = resolver.resolve(&[dep]).unwrap();
         assert_eq!(res[0].version, SemVer::new(1, 0, 0));
         assert_eq!(res[0].impl_hash, h_old);
-        assert!(res[0].from_lockfile);
+        assert_eq!(res[0].origin, ResolutionOrigin::Lockfile);
     }
 
     #[test]
@@ -462,7 +488,8 @@ mod tests {
         let mut resolver = Resolver::with_lockfile(&store, lf);
         let res = resolver.resolve(&[dep]).unwrap();
         assert_eq!(res[0].version, SemVer::new(1, 2, 0));
-        assert!(!res[0].from_lockfile);
+        // Pin path — not Fresh, not Lockfile.
+        assert_eq!(res[0].origin, ResolutionOrigin::IfacePin);
     }
 
     #[test]
@@ -489,7 +516,7 @@ mod tests {
         let res = resolver.resolve(&[dep]).unwrap();
         assert_eq!(res[0].version, SemVer::new(2, 0, 0));
         assert_eq!(res[0].impl_hash, h_v2);
-        assert!(!res[0].from_lockfile);
+        assert_eq!(res[0].origin, ResolutionOrigin::Fresh);
         // Lockfile updated to the new resolution — including the real
         // iface hash read off the installed manifest.
         let updated = resolver.lockfile().find("foo").unwrap();

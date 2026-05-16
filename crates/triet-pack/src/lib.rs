@@ -63,7 +63,7 @@ pub use hash::{
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};
-pub use resolver::{Resolution, ResolveError, ResolveResult, Resolver};
+pub use resolver::{Resolution, ResolutionOrigin, ResolveError, ResolveResult, Resolver};
 pub use store::{GcReport, RootEntry, Store};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for
 // now; we'll promote it to the public API when the linker (v0.4.5)
