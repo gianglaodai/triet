@@ -4,6 +4,9 @@
 //! - `triet run <path>` — run a .tri source or .triv bytecode file.
 //! - `triet check <path>` — parse + type-check only, no execution.
 //! - `triet build <path>` — compile .tri source to .triv bytecode.
+//! - `triet store import <path>` — install a .tripack into the CAS store.
+//! - `triet store list` — list installed packs.
+//! - `triet store gc` — garbage-collect unreferenced packs.
 //! - `triet info` — version and project info.
 //!
 //! Global flags:
@@ -66,8 +69,30 @@ enum Command {
         #[arg(short = 'o', long)]
         output: Option<String>,
     },
+    /// Manage the local CAS package store (~/.triet/store/).
+    Store {
+        #[command(subcommand)]
+        subcommand: StoreCommand,
+    },
     /// Print version and build info.
     Info,
+}
+
+#[derive(Subcommand)]
+enum StoreCommand {
+    /// Install a .tripack into the CAS store.
+    Import {
+        /// Path to .tripack file.
+        path: String,
+    },
+    /// List packages currently installed in the store.
+    List {
+        /// Show full 64-char hashes instead of the 12-char abbreviation.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Garbage-collect unreachable packs / modules / terms.
+    Gc,
 }
 
 fn main() -> ExitCode {
@@ -102,6 +127,7 @@ fn main() -> ExitCode {
         }
         Command::Check { path } => check_program(&path, cli.json),
         Command::Build { path, output } => build_program(&path, output, cli.json),
+        Command::Store { subcommand } => store_command(subcommand, cli.json),
         Command::Info => {
             println!("Triết — balanced ternary, AI-first programming language");
             println!("Language SPEC:     v0.4");
@@ -482,4 +508,227 @@ fn find_entry_function(ir: &triet_ir::IrProgram) -> triet_ir::FuncId {
     }
 
     first.unwrap_or(triet_ir::FuncId(0))
+}
+
+// ── `triet store` subcommands ───────────────────────────────────────
+
+/// Top-level handler for `triet store <subcommand>`.
+fn store_command(cmd: StoreCommand, json: bool) -> ExitCode {
+    let root = match resolve_store_root() {
+        Ok(p) => p,
+        Err(msg) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                emitter.emit(&msg, "triet::pack::E2360", &(0..0), "");
+                emitter.finish();
+            } else {
+                eprintln!("Error: {msg}");
+            }
+            return ExitCode::from(5);
+        }
+    };
+
+    let store = match triet_pack::Store::open(&root) {
+        Ok(s) => s,
+        Err(e) => {
+            return emit_store_error(&e, &root.display().to_string(), json);
+        }
+    };
+
+    match cmd {
+        StoreCommand::Import { path } => store_import(&store, &path, json),
+        StoreCommand::List { full } => store_list(&store, full, json),
+        StoreCommand::Gc => store_gc(&store, json),
+    }
+}
+
+/// Resolve the store root from `$TRIET_STORE` or `$HOME/.triet/store`.
+/// Returned path is not created here — `Store::open` handles `mkdir`.
+fn resolve_store_root() -> Result<std::path::PathBuf, String> {
+    if let Ok(env_path) = std::env::var("TRIET_STORE")
+        && !env_path.is_empty()
+    {
+        return Ok(std::path::PathBuf::from(env_path));
+    }
+    let home = std::env::var("HOME")
+        .map_err(|_| "HOME env var not set — set TRIET_STORE explicitly".to_owned())?;
+    Ok(std::path::PathBuf::from(home).join(".triet").join("store"))
+}
+
+fn store_import(store: &triet_pack::Store, path: &str, json: bool) -> ExitCode {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                let msg = format!("can't read {path}: {e}");
+                emitter.emit(&msg, "triet::pack::E2360", &(0..0), path);
+                emitter.finish();
+            } else {
+                eprintln!("Error reading {path}: {e}");
+            }
+            return ExitCode::from(5);
+        }
+    };
+    match store.install_pack(&bytes) {
+        Ok(hash) => {
+            if !json {
+                let hex = hash.0.iter().take(6).fold(String::new(), |mut s, b| {
+                    use std::fmt::Write;
+                    let _ = write!(&mut s, "{b:02x}");
+                    s
+                });
+                println!("Installed {path} → pkg/{hex}…");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => emit_store_error(&e, path, json),
+    }
+}
+
+fn store_list(store: &triet_pack::Store, full: bool, json: bool) -> ExitCode {
+    // Walk names/ to enumerate (pkg_name, version, impl_hash) triples.
+    let names_dir = store.root().join("names");
+    let entries = match std::fs::read_dir(&names_dir) {
+        Ok(it) => it,
+        Err(e) => {
+            if json {
+                let mut emitter = JsonEmitter::new();
+                let msg = format!("can't read names/: {e}");
+                emitter.emit(
+                    &msg,
+                    "triet::pack::E2360",
+                    &(0..0),
+                    &names_dir.display().to_string(),
+                );
+                emitter.finish();
+            } else {
+                eprintln!("Error: can't read {}: {e}", names_dir.display());
+            }
+            return ExitCode::from(5);
+        }
+    };
+
+    let mut rows: Vec<(String, triet_pack::SemVer, triet_pack::ImplHash)> = Vec::new();
+    for entry in entries.flatten() {
+        let pkg_path = entry.path();
+        if !pkg_path.is_dir() {
+            continue;
+        }
+        let Some(pkg_name) = pkg_path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let pkg_name = pkg_name.to_owned();
+        match store.list_versions(&pkg_name) {
+            Ok(versions) => {
+                for (ver, hash) in versions {
+                    rows.push((pkg_name.clone(), ver, hash));
+                }
+            }
+            Err(e) => return emit_store_error(&e, &pkg_path.display().to_string(), json),
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(cmp_semver(&a.1, &b.1)));
+
+    if json {
+        // Minimal JSON: one object per row, line-separated.
+        for (name, ver, hash) in &rows {
+            let hex = full_hex(&hash.0);
+            println!(
+                "{{\"pkg\":\"{name}\",\"version\":\"{}.{}.{}\",\"impl_hash\":\"{hex}\"}}",
+                ver.major, ver.minor, ver.patch
+            );
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if rows.is_empty() {
+        println!("(store is empty)");
+        return ExitCode::SUCCESS;
+    }
+
+    let pkg_w = rows
+        .iter()
+        .map(|(n, _, _)| n.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    println!(
+        "{:<pkg_w$}  {:<8}  impl_hash",
+        "pkg",
+        "version",
+        pkg_w = pkg_w
+    );
+    for (name, ver, hash) in &rows {
+        let hex = if full {
+            full_hex(&hash.0)
+        } else {
+            short_hex(&hash.0)
+        };
+        let ver_str = format!("{}.{}.{}", ver.major, ver.minor, ver.patch);
+        println!("{name:<pkg_w$}  {ver_str:<8}  {hex}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn store_gc(store: &triet_pack::Store, json: bool) -> ExitCode {
+    match store.gc() {
+        Ok(report) => {
+            if json {
+                println!(
+                    "{{\"swept_pkgs\":{},\"swept_modules\":{},\"swept_terms\":{},\"swept_name_links\":{}}}",
+                    report.swept_pkgs,
+                    report.swept_modules,
+                    report.swept_terms,
+                    report.swept_name_links,
+                );
+            } else {
+                println!("Garbage-collected:");
+                println!("  {} pkg dirs", report.swept_pkgs);
+                println!("  {} module dirs", report.swept_modules);
+                println!("  {} term dirs", report.swept_terms);
+                println!("  {} dangling name links", report.swept_name_links);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => emit_store_error(&e, &store.root().display().to_string(), json),
+    }
+}
+
+fn emit_store_error(e: &triet_pack::StoreError, path: &str, json: bool) -> ExitCode {
+    if json {
+        let mut emitter = JsonEmitter::new();
+        let code = match e {
+            triet_pack::StoreError::Io { .. } => "triet::pack::E2360",
+            triet_pack::StoreError::Pack(_) => "triet::pack::E2302",
+            triet_pack::StoreError::Lockfile(_) => "triet::pack::E2371",
+        };
+        emitter.emit(&e.to_string(), code, &(0..0), path);
+        emitter.finish();
+    } else {
+        eprintln!("Error: {e}");
+    }
+    ExitCode::from(5)
+}
+
+fn cmp_semver(a: &triet_pack::SemVer, b: &triet_pack::SemVer) -> std::cmp::Ordering {
+    a.major
+        .cmp(&b.major)
+        .then(a.minor.cmp(&b.minor))
+        .then(a.patch.cmp(&b.patch))
+}
+
+fn full_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
+fn short_hex(bytes: &[u8]) -> String {
+    let mut s = full_hex(&bytes[..6]);
+    s.push('…');
+    s
 }
