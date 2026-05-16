@@ -493,6 +493,38 @@ mod tests {
     }
 
     #[test]
+    fn iface_hash_pin_mismatch_returns_e2382() {
+        // dep declares an iface_hash_pin that doesn't match any
+        // installed version → ResolveError::IfaceHashPinMismatch
+        // (E2382). The audit found the success path covered but no
+        // explicit test for the mismatch error code.
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        store
+            .install_pack(&mk_pack("math", SemVer::new(1, 0, 0), 1))
+            .unwrap();
+        store
+            .install_pack(&mk_pack("math", SemVer::new(1, 2, 0), 2))
+            .unwrap();
+
+        // Pin a bogus iface_hash that matches neither installed pack.
+        let dep = Dep {
+            pkg_name: "math".into(),
+            version_min: SemVer::new(1, 0, 0),
+            version_max_exclusive: SemVer::new(2, 0, 0),
+            iface_hash_pin: IfaceHash::from_bytes([0x77; IFACE_HASH_LEN]),
+        };
+        let mut resolver = Resolver::new(&store);
+        let err = resolver.resolve(&[dep]).unwrap_err();
+        match err {
+            ResolveError::IfaceHashPinMismatch { pkg_name } => {
+                assert_eq!(pkg_name, "math");
+            }
+            other => panic!("expected IfaceHashPinMismatch (E2382), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn lockfile_out_of_range_falls_back_to_fresh() {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();

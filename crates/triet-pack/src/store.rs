@@ -84,6 +84,12 @@ pub struct GcReport {
     pub swept_terms: usize,
     /// Number of dangling name links removed.
     pub swept_name_links: usize,
+    /// Pkg hashes whose `manifest.bin` couldn't be parsed during the
+    /// mark phase — typically filesystem corruption or tampering.
+    /// When non-empty, GC enters a conservative mode: module and term
+    /// sweeps are skipped entirely (we can't tell what those packs
+    /// referenced, so we don't risk orphaning their dependencies).
+    pub corrupt_pkgs: Vec<ImplHash>,
 }
 
 impl Store {
@@ -412,22 +418,32 @@ impl Store {
         let mut live_pkgs: HashSet<[u8; IMPL_HASH_LEN]> = HashSet::new();
         let mut live_mods: HashSet<[u8; IMPL_HASH_LEN]> = HashSet::new();
         let mut live_terms: HashSet<[u8; IMPL_HASH_LEN]> = HashSet::new();
+        let mut corrupt_pkgs: Vec<ImplHash> = Vec::new();
 
         // ── Mark phase ──────────────────────────────────────────────
         for root in self.list_roots()? {
             for h in root.pkg_hashes {
                 live_pkgs.insert(h.0);
-                if let Some(manifest_bytes) = self.resolve_manifest_bytes(&h)?
-                    && let Ok(meta) = parse_manifest_only(&manifest_bytes)
-                {
-                    for m in meta.modules {
-                        live_mods.insert(m.impl_hash_mod.0);
-                    }
-                    for t in meta.types {
-                        live_terms.insert(t.impl_hash_term.0);
-                    }
-                    for e in meta.exports {
-                        live_terms.insert(e.impl_hash_term.0);
+                if let Some(manifest_bytes) = self.resolve_manifest_bytes(&h)? {
+                    match parse_manifest_only(&manifest_bytes) {
+                        Ok(meta) => {
+                            for m in meta.modules {
+                                live_mods.insert(m.impl_hash_mod.0);
+                            }
+                            for t in meta.types {
+                                live_terms.insert(t.impl_hash_term.0);
+                            }
+                            for e in meta.exports {
+                                live_terms.insert(e.impl_hash_term.0);
+                            }
+                        }
+                        Err(_) => {
+                            // Can't enumerate references → don't risk
+                            // orphaning this pkg's mod/term deps in the
+                            // sweep. Record for the report; conservative
+                            // mode kicks in below.
+                            corrupt_pkgs.push(h);
+                        }
                     }
                 }
             }
@@ -438,12 +454,18 @@ impl Store {
         report.swept_pkgs += sweep_hash_dir(&self.root.join(dirs::PKG), |bytes| {
             !live_pkgs.contains(&bytes)
         })?;
-        report.swept_modules += sweep_hash_dir(&self.root.join(dirs::MOD), |bytes| {
-            !live_mods.contains(&bytes)
-        })?;
-        report.swept_terms += sweep_hash_dir(&self.root.join(dirs::TERM), |bytes| {
-            !live_terms.contains(&bytes)
-        })?;
+        // Conservative mode: if any live pkg had a corrupt manifest, we
+        // can't tell which mods/terms it referenced — skip those sweeps
+        // entirely. User fixes the corruption + re-runs GC.
+        if corrupt_pkgs.is_empty() {
+            report.swept_modules += sweep_hash_dir(&self.root.join(dirs::MOD), |bytes| {
+                !live_mods.contains(&bytes)
+            })?;
+            report.swept_terms += sweep_hash_dir(&self.root.join(dirs::TERM), |bytes| {
+                !live_terms.contains(&bytes)
+            })?;
+        }
+        report.corrupt_pkgs = corrupt_pkgs;
 
         // Drop dangling name links — alias pointing at a swept pkg.
         report.swept_name_links += self.sweep_name_links(&live_pkgs)?;
@@ -1034,5 +1056,96 @@ mod tests {
             err,
             StoreError::Pack(crate::error::PackError::BadMagic)
         ));
+    }
+
+    #[test]
+    fn concurrent_install_same_hash_is_race_safe() {
+        // Two `cargo build` jobs producing identical pack bytes will
+        // race on the atomic rename. ADR-0015 §6 says EEXIST = race-loss
+        // = success. Exercise that code path with real threads.
+        use std::sync::Arc;
+        use std::thread;
+
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(Store::open(tmp.path()).unwrap());
+        let pack = mk_pack("racy", SemVer::new(1, 0, 0), &["f"]);
+
+        let n_threads = 8;
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let s = Arc::clone(&store);
+                let p = pack.clone();
+                thread::spawn(move || s.install_pack(&p))
+            })
+            .collect();
+
+        let mut hashes = Vec::with_capacity(n_threads);
+        for h in handles {
+            hashes.push(h.join().expect("thread panicked").expect("install failed"));
+        }
+
+        // All threads agree on the same hash.
+        let first = hashes[0];
+        for h in &hashes {
+            assert_eq!(*h, first);
+        }
+
+        // Exactly one pkg dir landed — race losers cleaned up after
+        // themselves and did not produce duplicate entries.
+        let pkg_dirs: Vec<_> = fs::read_dir(store.root().join("pkg"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(pkg_dirs.len(), 1, "expected exactly one pkg dir after race");
+
+        // tmp/ is empty — all stagers cleaned up.
+        let tmp_dir = store.root().join("tmp");
+        let leftovers: Vec<_> = fs::read_dir(&tmp_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "tmp/ should be empty after install race, got {} entries",
+            leftovers.len()
+        );
+    }
+
+    #[test]
+    fn gc_preserves_mods_terms_when_manifest_corrupt() {
+        // If a live pkg's manifest.bin is unreadable, gc() can't
+        // enumerate its mod/term references — sweeping under that
+        // ambiguity could orphan still-needed dirs. Conservative
+        // behaviour: report corruption, skip mod + term sweeps.
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let bytes = mk_pack("victim", SemVer::new(1, 0, 0), &["alpha", "beta"]);
+        let h = store.install_pack(&bytes).unwrap();
+        store.add_root("proj", &[h]).unwrap();
+
+        // Count term dirs before corruption (should match exports).
+        let term_root = store.root().join("term");
+        let term_count_before = fs::read_dir(&term_root).unwrap().count();
+        assert!(term_count_before > 0, "expected installed term dirs");
+
+        // Smash the manifest.
+        let manifest_path = store
+            .root()
+            .join("pkg")
+            .join(hex_encode(&h.0))
+            .join("manifest.bin");
+        fs::write(&manifest_path, b"not a valid manifest").unwrap();
+
+        let report = store.gc().unwrap();
+
+        // Corruption reported.
+        assert_eq!(report.corrupt_pkgs, vec![h]);
+        // Mod + term sweeps suppressed (conservative).
+        assert_eq!(report.swept_modules, 0);
+        assert_eq!(report.swept_terms, 0);
+
+        // Term dirs survive — the gc didn't silently orphan them.
+        let term_count_after = fs::read_dir(&term_root).unwrap().count();
+        assert_eq!(term_count_after, term_count_before);
     }
 }
