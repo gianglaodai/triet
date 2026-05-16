@@ -17,3 +17,6 @@ triet-modules.workspace = true
 thiserror.workspace = true
 miette.workspace = true
 blake3.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

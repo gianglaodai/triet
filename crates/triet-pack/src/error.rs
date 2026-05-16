@@ -4,6 +4,11 @@
 //! and policy outcomes (version mismatch, refuse-to-link). Every
 //! variant implements `miette::Diagnostic` so the CLI can render
 //! them uniformly with everything else (ADR-0009 § C).
+//!
+//! `StoreError` (v0.5.4+) wraps both [`PackError`] and `io::Error`
+//! for the CAS store API in `store.rs`.
+
+use std::io;
 
 use miette::Diagnostic;
 use thiserror::Error;
@@ -63,4 +68,45 @@ pub enum PackError {
         /// The byte value that wasn't recognised.
         discriminant: u8,
     },
+}
+
+/// Shorthand for `Result<T, StoreError>`.
+pub type StoreResult<T> = Result<T, StoreError>;
+
+/// Errors raised by the CAS package store (`store.rs`). Wraps the
+/// pure format errors from [`PackError`] and the filesystem errors
+/// from [`std::io::Error`]. Reserved error-code namespace E2360–E2369
+/// per ADR-0015.
+#[derive(Debug, Diagnostic, Error)]
+pub enum StoreError {
+    /// Filesystem error during install / resolve / gc.
+    #[error("store I/O error at {path}: {source}")]
+    #[diagnostic(
+        code(triet::pack::E2360),
+        help("verify the store directory exists and is writable")
+    )]
+    Io {
+        /// Path that triggered the failure (best-effort — set to "" if
+        /// the failing op didn't touch a specific path).
+        path: String,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// The pack bytes didn't parse — wraps a [`PackError`] surfaced
+    /// while reading metadata before installing.
+    #[error("invalid .tripack handed to store: {0}")]
+    #[diagnostic(transparent)]
+    Pack(#[from] PackError),
+}
+
+impl StoreError {
+    /// Convenience constructor for IO errors with a path context.
+    pub(crate) fn io(path: impl Into<String>, source: io::Error) -> Self {
+        Self::Io {
+            path: path.into(),
+            source,
+        }
+    }
 }

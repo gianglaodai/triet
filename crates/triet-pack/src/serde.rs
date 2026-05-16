@@ -247,8 +247,9 @@ pub(crate) fn canonicalize_for_hash(meta: &AbiMetadata) -> AbiMetadata {
 }
 
 /// Canonical signature bytes for a [`TypeDef`] — fed to
-/// [`compute_term_iface_hash`].
-fn canonical_term_signature_type(t: &TypeDef) -> Vec<u8> {
+/// [`compute_term_iface_hash`]. `pub(crate)` so `store` can reuse the
+/// same encoding when populating `term/<hash>/iface.bin`.
+pub(crate) fn canonical_term_signature_type(t: &TypeDef) -> Vec<u8> {
     let mut buf = Vec::with_capacity(64);
     let kind = match t.kind {
         TypeKind::Struct => term_kind::STRUCT,
@@ -270,8 +271,9 @@ fn canonical_term_signature_type(t: &TypeDef) -> Vec<u8> {
 }
 
 /// Canonical signature bytes for a [`FunctionExport`] — excludes
-/// `body_offset` and capability claims per ADR-0014 §2.
-fn canonical_term_signature_function(f: &FunctionExport) -> Vec<u8> {
+/// `body_offset` and capability claims per ADR-0014 §2. `pub(crate)`
+/// shared with `store` for `term/<hash>/iface.bin` writes.
+pub(crate) fn canonical_term_signature_function(f: &FunctionExport) -> Vec<u8> {
     let mut buf = Vec::with_capacity(64);
     write_u8(&mut buf, term_kind::FUNCTION);
     write_string(&mut buf, &f.name);

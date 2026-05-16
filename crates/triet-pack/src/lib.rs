@@ -50,15 +50,17 @@ mod error;
 mod hash;
 mod linker;
 mod serde;
+mod store;
 mod types;
 
-pub use error::{PackError, PackResult};
+pub use error::{PackError, PackResult, StoreError, StoreResult};
 pub use hash::{
     IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash,
     TermIfaceHash, TermImplHash, compute_iface_hash, compute_module_iface_hash,
     compute_module_impl_hash, compute_term_iface_hash, compute_term_impl_hash,
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
+pub use store::{GcReport, RootEntry, Store};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for
 // now; we'll promote it to the public API when the linker (v0.4.5)
 // needs to validate a downloaded pack against an externally-claimed
