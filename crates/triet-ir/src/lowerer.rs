@@ -11,7 +11,7 @@ use triet_logic::Trilean;
 use triet_modules::{AbsolutePath, Module, ResolvedProgram};
 use triet_syntax::{
     Arena,
-    expr::{BinaryOperator, Expr, MatchArm},
+    expr::{BinaryOperator, Expr, MatchArm, OutcomeArm},
     item::{FunctionBody, FunctionDef, Item},
     numeric::{NumericSuffix, TrileanValue},
     stmt::{Block, Stmt},
@@ -738,6 +738,30 @@ impl<'a> LowerCtx<'a> {
                     });
                     return dest;
                 }
+                // Outcome unwrap methods (ADR-0020 §3 — verbose strict
+                // unwrap pairs). The message argument is lowered for
+                // side-effect parity with the source contract but is
+                // not consumed by the VM tier; the runtime E2210 panic
+                // carries a hardcoded label. Source-level message
+                // satisfies `feedback_explicit_strictness`.
+                if (method == "unwrap_value" || method == "unwrap_error") && arguments.len() == 1 {
+                    let receiver_val = self.lower_expr(*receiver);
+                    let _msg_val = self.lower_expr(arguments[0]);
+                    let dest = self.fresh_value();
+                    let instr = if method == "unwrap_value" {
+                        Instruction::OutcomeUnwrapValue {
+                            dest,
+                            source: Operand::Value(receiver_val),
+                        }
+                    } else {
+                        Instruction::OutcomeUnwrapError {
+                            dest,
+                            source: Operand::Value(receiver_val),
+                        }
+                    };
+                    self.emit(instr);
+                    return dest;
+                }
                 self.lower_expr(*receiver)
             }
 
@@ -1024,23 +1048,238 @@ impl<'a> LowerCtx<'a> {
                 dest
             }
 
-            // v0.7.4.3-error.1 (ADR-0020): outcome AST nodes accepted
-            // at parse time; lowering lands in v0.7.4.3-error.3 with
-            // new opcodes 0xC1–0xC6 and RuntimeValue::Outcome. For
-            // now, emit a placeholder Unit constant and let the user
-            // know via typecheck (v0.7.4.3-error.2 will reject).
-            Expr::OutcomeConstructor { .. }
-            | Expr::OutcomePropagate { .. }
-            | Expr::OutcomeDefault { .. } => {
-                let const_id = self.intern_constant(Constant::Unit);
-                let dest = self.fresh_value();
-                self.emit(Instruction::Const {
+            // v0.7.4.3-error.3b (ADR-0020): full lowering for the
+            // three Outcome AST shapes. Constructors map 1:1 to the
+            // 0xC1-0xC3 opcodes; default / propagate emit three-way
+            // BrTrilean dispatch over the discriminator.
+            Expr::OutcomeConstructor { arm, payload } => {
+                self.lower_outcome_constructor(*arm, *payload)
+            }
+            Expr::OutcomeDefault { inner, default } => {
+                self.lower_outcome_default(*inner, *default)
+            }
+            Expr::OutcomePropagate {
+                inner,
+                capture_name,
+                early_return,
+            } => self.lower_outcome_propagate(
+                *inner,
+                capture_name.as_deref(),
+                *early_return,
+            ),
+        }
+    }
+
+    // ── Outcome lowering (v0.7.4.3-error.3b, ADR-0020) ───────────
+
+    /// Lower `~+ value` / `~0` / `~- error` to one of the three
+    /// outcome constructor opcodes. Type-erased — the surrounding
+    /// typecheck context determines which arm is valid (E1024 etc.).
+    fn lower_outcome_constructor(
+        &mut self,
+        arm: OutcomeArm,
+        payload: Option<triet_syntax::arena::ExprId>,
+    ) -> ValueId {
+        let dest = self.fresh_value();
+        match arm {
+            OutcomeArm::Positive => {
+                let payload_val = self.lower_expr(
+                    payload.expect("typecheck guarantees ~+ has a payload"),
+                );
+                self.emit(Instruction::OutcomeNewPositive {
                     dest,
-                    constant: const_id,
+                    payload: Operand::Value(payload_val),
                 });
-                dest
+            }
+            OutcomeArm::Negative => {
+                let payload_val = self.lower_expr(
+                    payload.expect("typecheck guarantees ~- has a payload"),
+                );
+                self.emit(Instruction::OutcomeNewNegative {
+                    dest,
+                    payload: Operand::Value(payload_val),
+                });
+            }
+            OutcomeArm::Zero => {
+                self.emit(Instruction::OutcomeNewNull { dest });
             }
         }
+        dest
+    }
+
+    /// Lower `inner ~: default`. Reads the discriminator; branches
+    /// three ways. Success → `unwrap_value` flows into the merge block;
+    /// failure / null → evaluate `default`. The merge block carries a
+    /// phi node selecting whichever path produced the result.
+    fn lower_outcome_default(
+        &mut self,
+        inner: triet_syntax::arena::ExprId,
+        default: triet_syntax::arena::ExprId,
+    ) -> ValueId {
+        let inner_val = self.lower_expr(inner);
+        let disc = self.fresh_value();
+        self.emit(Instruction::OutcomeDiscriminant {
+            dest: disc,
+            source: Operand::Value(inner_val),
+        });
+
+        let success_block = self.fresh_block();
+        let fallback_block = self.fresh_block();
+        let merge_block = self.fresh_block();
+
+        // BrTrilean reads the discriminator as: Positive → True,
+        // Negative → False, Zero → Unknown. Map success arm to
+        // `true_block`; both null and failure arms go to fallback.
+        self.emit(Instruction::BrTrilean {
+            cond: Operand::Value(disc),
+            true_block: success_block,
+            unknown_block: fallback_block,
+            false_block: fallback_block,
+        });
+
+        // Success path — unwrap and continue.
+        self.start_block(success_block, None);
+        let success_val = self.fresh_value();
+        self.emit(Instruction::OutcomeUnwrapValue {
+            dest: success_val,
+            source: Operand::Value(inner_val),
+        });
+        self.emit(Instruction::Br {
+            target: merge_block,
+        });
+        let success_pred = success_block;
+
+        // Fallback path — evaluate default.
+        self.start_block(fallback_block, None);
+        let fallback_val = self.lower_expr(default);
+        self.emit(Instruction::Br {
+            target: merge_block,
+        });
+        let fallback_pred = self.current_block;
+
+        // Merge — phi between the two paths.
+        self.start_block(merge_block, None);
+        let merged = self.fresh_value();
+        self.emit(Instruction::Phi {
+            dest: merged,
+            incoming: vec![
+                PhiIncoming {
+                    value: success_val,
+                    block: success_pred,
+                },
+                PhiIncoming {
+                    value: fallback_val,
+                    block: fallback_pred,
+                },
+            ],
+        });
+        merged
+    }
+
+    /// Lower `inner ~? |capture| early_return`.
+    ///
+    /// Semantics per ADR-0020 §3.1: on the failure arm, the
+    /// `early_return` expression is **divergent** — typecheck E1031
+    /// enforces it must be a `return` / panic / re-propagate. The
+    /// lowerer treats it as such by emitting `Ret <early_return>`
+    /// rather than branching into the merge block, so the failure
+    /// arm terminates the surrounding function. If the user's
+    /// `early_return` is the re-wrap form `~- err`, the resulting
+    /// Outcome value is returned directly — matching the source-
+    /// level expectation that the outer function is fallible.
+    ///
+    /// Null arm (only reachable when the inner is `T?~E`) propagates
+    /// the null marker through to the merge block; merging with the
+    /// success arm's unwrapped value yields a `T?` typed expression.
+    /// For binary `T~E` outcomes typecheck guarantees the Zero arm
+    /// is statically unreachable, but the IR still emits the block
+    /// for verifier well-formedness.
+    fn lower_outcome_propagate(
+        &mut self,
+        inner: triet_syntax::arena::ExprId,
+        capture_name: Option<&str>,
+        early_return: triet_syntax::arena::ExprId,
+    ) -> ValueId {
+        let inner_val = self.lower_expr(inner);
+        let disc = self.fresh_value();
+        self.emit(Instruction::OutcomeDiscriminant {
+            dest: disc,
+            source: Operand::Value(inner_val),
+        });
+
+        let success_block = self.fresh_block();
+        let null_block = self.fresh_block();
+        let failure_block = self.fresh_block();
+        let merge_block = self.fresh_block();
+
+        self.emit(Instruction::BrTrilean {
+            cond: Operand::Value(disc),
+            true_block: success_block,
+            unknown_block: null_block,
+            false_block: failure_block,
+        });
+
+        // Success path — unwrap and continue to merge.
+        self.start_block(success_block, None);
+        let success_val = self.fresh_value();
+        self.emit(Instruction::OutcomeUnwrapValue {
+            dest: success_val,
+            source: Operand::Value(inner_val),
+        });
+        self.emit(Instruction::Br {
+            target: merge_block,
+        });
+        let success_pred = success_block;
+
+        // Null path — propagate null marker through to merge.
+        self.start_block(null_block, None);
+        let null_const = self.intern_constant(Constant::Null);
+        let null_val = self.fresh_value();
+        self.emit(Instruction::Const {
+            dest: null_val,
+            constant: null_const,
+        });
+        self.emit(Instruction::Br {
+            target: merge_block,
+        });
+        let null_pred = null_block;
+
+        // Failure path — bind capture, evaluate the (divergent)
+        // early-return expression, then `Ret` its value so the
+        // surrounding function terminates here.
+        self.start_block(failure_block, None);
+        self.push_scope();
+        let captured_payload = self.fresh_value();
+        self.emit(Instruction::OutcomeUnwrapError {
+            dest: captured_payload,
+            source: Operand::Value(inner_val),
+        });
+        if let Some(name) = capture_name {
+            self.bind_var(name.to_owned(), captured_payload);
+        }
+        let early_return_val = self.lower_expr(early_return);
+        self.emit(Instruction::Ret {
+            value: Some(Operand::Value(early_return_val)),
+        });
+        self.pop_scope();
+
+        // Merge — only success + null reach here (failure arm Ret-ed).
+        self.start_block(merge_block, None);
+        let merged = self.fresh_value();
+        self.emit(Instruction::Phi {
+            dest: merged,
+            incoming: vec![
+                PhiIncoming {
+                    value: success_val,
+                    block: success_pred,
+                },
+                PhiIncoming {
+                    value: null_val,
+                    block: null_pred,
+                },
+            ],
+        });
+        merged
     }
 
     // ── Binary operator lowering ─────────────────────────────────
@@ -1995,6 +2234,34 @@ impl<'a> LowerCtx<'a> {
                 });
                 Some(cmp)
             }
+            // Outcome arm pattern (ADR-0020 §5): test the
+            // discriminator trit against the expected arm. Payload
+            // binding happens in `bind_pattern_vars`.
+            triet_syntax::pattern::Pattern::OutcomeArm { arm, .. } => {
+                let disc = self.fresh_value();
+                self.emit(Instruction::OutcomeDiscriminant {
+                    dest: disc,
+                    source: Operand::Value(scrutinee),
+                });
+                let expected_trit = match arm {
+                    OutcomeArm::Positive => Trit::Positive,
+                    OutcomeArm::Zero => Trit::Zero,
+                    OutcomeArm::Negative => Trit::Negative,
+                };
+                let const_id = self.intern_constant(Constant::Trit(expected_trit));
+                let const_val = self.fresh_value();
+                self.emit(Instruction::Const {
+                    dest: const_val,
+                    constant: const_id,
+                });
+                let cmp = self.fresh_value();
+                self.emit(Instruction::Eq {
+                    dest: cmp,
+                    lhs: Operand::Value(disc),
+                    rhs: Operand::Value(const_val),
+                });
+                Some(cmp)
+            }
             // Or/Range patterns deferred (not exercised by current examples).
             _ => None,
         }
@@ -2031,6 +2298,35 @@ impl<'a> LowerCtx<'a> {
                     });
                     self.bind_pattern_vars(&sub_pat, field_val);
                 }
+            }
+            // Outcome arm pattern — extract the payload via the
+            // matching unwrap opcode then recurse into the sub-pattern.
+            // `~0` has no payload, so its `payload` is always `None`
+            // (typecheck guarantees this).
+            triet_syntax::pattern::Pattern::OutcomeArm {
+                arm,
+                payload: Some(payload_pat),
+            } => {
+                let inner_pat = self.arena().pattern(*payload_pat).node.clone();
+                let payload_val = self.fresh_value();
+                let unwrap = match arm {
+                    OutcomeArm::Positive => Instruction::OutcomeUnwrapValue {
+                        dest: payload_val,
+                        source: Operand::Value(scrutinee),
+                    },
+                    OutcomeArm::Negative => Instruction::OutcomeUnwrapError {
+                        dest: payload_val,
+                        source: Operand::Value(scrutinee),
+                    },
+                    OutcomeArm::Zero => {
+                        // ~0 has no payload — sub-pattern presence is a
+                        // typecheck violation; silently skip rather than
+                        // emit a malformed unwrap.
+                        return;
+                    }
+                };
+                self.emit(unwrap);
+                self.bind_pattern_vars(&inner_pat, payload_val);
             }
             _ => {}
         }

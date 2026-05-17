@@ -69,6 +69,32 @@ pub(super) fn builtin_method_type(receiver: &Type, method: &str, arity: usize) -
 
         // Range — only `.enumerate()` for now; other adapters arrive
         // with v0.2 generics + Iterator trait.
+        _ => check_outcome_unwrap_method(receiver, method, arity),
+    }
+}
+
+/// Resolve `.unwrap_value(message)` / `.unwrap_error(message)` on an
+/// `Outcome` receiver per [ADR-0020] §3 + `feedback_explicit_strictness`:
+/// panic-possible ops MUST be verbose methods with a message argument,
+/// never property access. Returns `Some(value_type)` for `unwrap_value`
+/// and `Some(error_type)` for `unwrap_error`; `None` for anything else.
+/// The message argument is not type-checked here (the surrounding
+/// `check_method_call` runs `infer_expression` on each arg for side
+/// effects); enforcing `String` is left for a later strictness pass.
+///
+/// [ADR-0020]: ../../../../docs/decisions/0020-outcome-error-handling.md
+fn check_outcome_unwrap_method(receiver: &Type, method: &str, arity: usize) -> Option<Type> {
+    let Type::Outcome {
+        value_type,
+        error_type,
+        ..
+    } = receiver
+    else {
+        return None;
+    };
+    match (method, arity) {
+        ("unwrap_value", 1) => Some((**value_type).clone()),
+        ("unwrap_error", 1) => Some((**error_type).clone()),
         _ => None,
     }
 }
