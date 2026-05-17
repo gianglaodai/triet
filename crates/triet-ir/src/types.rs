@@ -70,6 +70,20 @@ pub enum TypeTag {
     Unit,
     /// Nullable wrapper: `T?` — 1-trit discriminator + inner type.
     Nullable(Box<Self>),
+    /// Homogeneous ordered collection: `Vector<T>`. Element type is the
+    /// inner tag. Introduced at v0.7.3 alongside the Rust-shim builtin
+    /// opcodes per [ADR-0019 §5] so the self-hosted compiler can
+    /// express symbol tables and other dynamic sequences.
+    ///
+    /// Java naming convention — no abbreviations (per author 2026-05-17).
+    ///
+    /// [ADR-0019 §5]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+    Vector(Box<Self>),
+    /// Keyed collection: `HashMap<K, V>`. Box pair carries (key, value)
+    /// element types. Introduced at v0.7.3 per [ADR-0019 §5].
+    ///
+    /// [ADR-0019 §5]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+    HashMap(Box<Self>, Box<Self>),
 }
 
 impl fmt::Display for TypeTag {
@@ -83,6 +97,8 @@ impl fmt::Display for TypeTag {
             Self::String => write!(f, "String"),
             Self::Unit => write!(f, "Unit"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
+            Self::Vector(inner) => write!(f, "Vector<{inner}>"),
+            Self::HashMap(key, value) => write!(f, "HashMap<{key}, {value}>"),
         }
     }
 }
@@ -154,6 +170,42 @@ mod tests {
         assert_eq!(
             TypeTag::Nullable(Box::new(TypeTag::Nullable(Box::new(TypeTag::Trit)))).to_string(),
             "Trit??"
+        );
+    }
+
+    #[test]
+    fn vector_type_display() {
+        assert_eq!(
+            TypeTag::Vector(Box::new(TypeTag::Integer)).to_string(),
+            "Vector<Integer>"
+        );
+        assert_eq!(
+            TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::Trit)))).to_string(),
+            "Vector<Vector<Trit>>"
+        );
+    }
+
+    #[test]
+    fn hashmap_type_display() {
+        assert_eq!(
+            TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Integer)).to_string(),
+            "HashMap<String, Integer>"
+        );
+    }
+
+    #[test]
+    fn collection_equality() {
+        assert_eq!(
+            TypeTag::Vector(Box::new(TypeTag::Integer)),
+            TypeTag::Vector(Box::new(TypeTag::Integer))
+        );
+        assert_ne!(
+            TypeTag::Vector(Box::new(TypeTag::Integer)),
+            TypeTag::Vector(Box::new(TypeTag::Long))
+        );
+        assert_ne!(
+            TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Integer)),
+            TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Long))
         );
     }
 

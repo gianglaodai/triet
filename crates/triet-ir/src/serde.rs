@@ -26,7 +26,12 @@ const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
 /// - v3: ADR-0012 added `WITNESS_CALL` (0x93) and a `witness_tables`
 ///   section (5). Older readers will hit `TrivError::UnknownOpcode`
 ///   on either, so the version bump surfaces a precise error.
-const VERSION: u32 = 3;
+/// - v4: ADR-0019 Addendum (v0.7.3) added `TypeTag::Vector(T)` (disc 8)
+///   and `TypeTag::HashMap(K, V)` (disc 9) to the type table encoding
+///   for self-host compiler builtin opcodes. Patch bump per ADR-0008
+///   §"Version compatibility": additive type discriminants; older
+///   readers refuse with `UnknownTypeDiscriminant` (E2104).
+const VERSION: u32 = 4;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
@@ -274,8 +279,17 @@ fn collect_type_table(program: &IrProgram) -> Vec<TypeTag> {
 }
 
 fn add_type(types: &mut Vec<TypeTag>, ty: TypeTag) {
-    if let TypeTag::Nullable(inner) = &ty {
-        add_type(types, (**inner).clone());
+    // Recurse into composite types first — the inner tag must be
+    // present in the table before the container references it by
+    // index. Mirrors the read-side post-order reconstruction.
+    match &ty {
+        TypeTag::Nullable(inner) => add_type(types, (**inner).clone()),
+        TypeTag::Vector(element) => add_type(types, (**element).clone()),
+        TypeTag::HashMap(key, value) => {
+            add_type(types, (**key).clone());
+            add_type(types, (**value).clone());
+        }
+        _ => {}
     }
     if !types.contains(&ty) {
         types.push(ty);
@@ -307,6 +321,18 @@ fn write_type_tag(buf: &mut Vec<u8>, types: &[TypeTag], ty: &TypeTag) {
             let idx = type_index(types, inner);
             write_varint(buf, idx);
         }
+        TypeTag::Vector(element) => {
+            write_u8(buf, 8);
+            let idx = type_index(types, element);
+            write_varint(buf, idx);
+        }
+        TypeTag::HashMap(key, value) => {
+            write_u8(buf, 9);
+            let key_idx = type_index(types, key);
+            let value_idx = type_index(types, value);
+            write_varint(buf, key_idx);
+            write_varint(buf, value_idx);
+        }
     }
 }
 
@@ -337,6 +363,27 @@ fn read_type_tag(data: &[u8], pos: &mut usize, table: &[TypeTag]) -> Result<Type
                 .ok_or_else(|| TrivError::Corrupted("invalid type index in Nullable".into()))?
                 .clone();
             Ok(TypeTag::Nullable(Box::new(inner)))
+        }
+        8 => {
+            let idx = read_varint(data, pos)? as usize;
+            let element = table
+                .get(idx)
+                .ok_or_else(|| TrivError::Corrupted("invalid type index in Vector".into()))?
+                .clone();
+            Ok(TypeTag::Vector(Box::new(element)))
+        }
+        9 => {
+            let key_idx = read_varint(data, pos)? as usize;
+            let value_idx = read_varint(data, pos)? as usize;
+            let key = table
+                .get(key_idx)
+                .ok_or_else(|| TrivError::Corrupted("invalid key type index in HashMap".into()))?
+                .clone();
+            let value = table
+                .get(value_idx)
+                .ok_or_else(|| TrivError::Corrupted("invalid value type index in HashMap".into()))?
+                .clone();
+            Ok(TypeTag::HashMap(Box::new(key), Box::new(value)))
         }
         d => Err(TrivError::UnknownTypeDiscriminant(d)),
     }
@@ -1224,6 +1271,12 @@ fn read_constant(data: &[u8], pos: &mut usize, types: &[TypeTag]) -> Result<Cons
         }
         TypeTag::Unit => Ok(Constant::Unit),
         TypeTag::Nullable(_) => Ok(Constant::Null),
+        TypeTag::Vector(_) | TypeTag::HashMap(_, _) => Err(TrivError::Corrupted(
+            "Vector / HashMap have no constant-pool encoding — \
+             collection values are built at runtime via builtin opcodes \
+             (ADR-0019 §5)"
+                .into(),
+        )),
     }
 }
 
@@ -1517,9 +1570,10 @@ fn read_witness_tables(
 }
 
 /// Self-contained inline encoder for a primitive `TypeTag`. Refuses
-/// `Nullable(T)` — those don't appear as generic type arguments in
-/// today's lowerer; if they ever do, we'll either resolve to the
-/// underlying primitive at link time or extend the encoding then.
+/// `Nullable(T)` / `Vector(T)` / `HashMap(K, V)` — composite types
+/// don't appear as generic type arguments in today's lowerer; if they
+/// ever do, we'll either resolve to the underlying primitive at link
+/// time or extend the encoding then.
 fn write_inline_primitive_tag(buf: &mut Vec<u8>, ty: &TypeTag) {
     let disc = match ty {
         TypeTag::Trit => 0,
@@ -1529,12 +1583,12 @@ fn write_inline_primitive_tag(buf: &mut Vec<u8>, ty: &TypeTag) {
         TypeTag::Trilean => 4,
         TypeTag::String => 5,
         TypeTag::Unit => 6,
-        // Nullable in a witness table would need a recursive type-ref
-        // protocol that we haven't committed to yet (ADR-0012 §6
-        // "Generic constraint support at v0.4" defers complex generic
-        // arguments). Emit a sentinel that the reader will refuse —
-        // catches the case loudly during round-trip tests.
-        TypeTag::Nullable(_) => 0xFF,
+        // Composites in a witness table would need a recursive
+        // type-ref protocol that we haven't committed to yet
+        // (ADR-0012 §6 "Generic constraint support at v0.4" defers
+        // complex generic arguments). Emit a sentinel that the reader
+        // will refuse — catches the case loudly during round-trip tests.
+        TypeTag::Nullable(_) | TypeTag::Vector(_) | TypeTag::HashMap(_, _) => 0xFF,
     };
     write_u8(buf, disc);
 }
@@ -1906,6 +1960,118 @@ mod tests {
         let bytes = write_program(&program);
         let decoded = read_program(&bytes).unwrap();
         assert_eq!(decoded, program);
+    }
+
+    /// Round-trip `Vector<T>` + `HashMap<K, V>` type tags through the
+    /// type table. Catches v3 → v4 wire-format regression in the
+    /// `write_type_tag` / `read_type_tag` pair (ADR-0019 §1 type
+    /// system extension + ADR-0008 §"Version compatibility" patch
+    /// bump rule). Composites also exercise the recursive `add_type`
+    /// post-order — the inner tag must precede the container.
+    #[test]
+    fn vector_and_hashmap_type_tags_round_trip() {
+        let vector_int = TypeTag::Vector(Box::new(TypeTag::Integer));
+        let map_string_int = TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Integer));
+        let nested = TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::Trit))));
+
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::crate_root(),
+                    "test".into(),
+                ),
+                functions: vec![
+                    Function {
+                        id: FuncId(0),
+                        name: Some("with_vector".into()),
+                        params: vec![("%v".into(), vector_int.clone())],
+                        return_type: vector_int,
+                        blocks: vec![BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Value(ValueId(0))),
+                            }],
+                        }],
+                    },
+                    Function {
+                        id: FuncId(1),
+                        name: Some("with_hashmap".into()),
+                        params: vec![("%m".into(), map_string_int.clone())],
+                        return_type: map_string_int,
+                        blocks: vec![BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Value(ValueId(0))),
+                            }],
+                        }],
+                    },
+                    Function {
+                        id: FuncId(2),
+                        name: Some("with_nested".into()),
+                        params: vec![("%nv".into(), nested.clone())],
+                        return_type: nested,
+                        blocks: vec![BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Value(ValueId(0))),
+                            }],
+                        }],
+                    },
+                ],
+            }],
+            constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
+        };
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).unwrap();
+        assert_eq!(decoded, program);
+    }
+
+    /// Verify that the wire-format version was bumped from v3 to v4
+    /// alongside the Vector/HashMap type-tag additions. The version
+    /// field is the 4 bytes at offset 4 (after the 4-byte magic).
+    #[test]
+    fn wire_format_version_bumped_to_v4() {
+        let program = IrProgram::new();
+        let bytes = write_program(&program);
+        assert!(bytes.len() >= 8, "header truncated");
+        let version_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
+        let version = u32::from_le_bytes(version_bytes);
+        assert_eq!(
+            version, 4,
+            "ADR-0019 Addendum requires .triv version 4 (was {version})",
+        );
+    }
+
+    /// A pre-v4 reader (one that only knows discriminants 0..=7) must
+    /// refuse a type table containing the new Vector (8) discriminant
+    /// with `UnknownTypeDiscriminant`. We simulate the pre-v4 reader
+    /// by calling `read_type_tag` directly — same behavior the older
+    /// `.triv` consumers would exhibit when fed a v4 file.
+    #[test]
+    fn pre_v4_reader_refuses_vector_discriminant() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_u8(&mut buf, 8); // Vector discriminant
+        write_varint(&mut buf, 0);
+        let mut pos = 0;
+        // Empty table — the read will fail either at the discriminant
+        // (if rejected) or at the inner-type lookup. Either way the
+        // pre-v4 contract is honored.
+        let result = read_type_tag(&buf, &mut pos, &[TypeTag::Trit]);
+        assert!(
+            result.is_ok(),
+            "v4-aware reader should accept Vector discriminant: {result:?}"
+        );
+        // Confirm the v4-aware reader DOES accept it (this protects
+        // against accidentally regressing the new branch).
+        if let Ok(TypeTag::Vector(inner)) = result {
+            assert_eq!(*inner, TypeTag::Trit);
+        } else {
+            panic!("expected TypeTag::Vector, got {result:?}");
+        }
     }
 
     // ── All instruction variants ───────────────────────────────

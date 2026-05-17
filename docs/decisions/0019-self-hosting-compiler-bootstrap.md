@@ -404,3 +404,85 @@ Estimated cadence: 12+ tháng (matches [ROADMAP §Pace expectations](../../ROADM
 ---
 
 *Quyết định này lock bootstrap chain + emission invariants + stdlib strategy + testing strategy + perf gate cho phase v0.7. Breaking change ở bất kỳ §1–§8 cần ADR mới supersede. Sub-task v0.7.2+ implements decisions; mỗi sub-task có per-step design questions theo author cadence.*
+
+---
+
+## Addendum — v0.7.3 (Rust-shim builtin scaffolding)
+
+Lock 4 decisions surfaced during v0.7.3.1 sub-task open, mirror precedent [ADR-0015 Addendum](0015-package-store-layout.md#addendum--v05xreview-pre-v06-audit) + [ADR-0018 Addendum](0018-capability-loader-semantics.md#addendum--v06xreview-pre-v07-audit). Plus author naming-convention constraint locked 2026-05-17.
+
+### A1 — Collection types are first-class `TypeTag` variants
+
+Original ADR §5 promised "wire format v3 unchanged" + only opaque struct shells for Vec/HashMap. Sub-task v0.7.3.1 design discovery (Q1) reframed: opaque shells would force VM to special-case path strings (`std.collections.Vec`) and break the abstraction promise of [ADR-0007](0007-ir-design.md) — every IR value carries an explicit `TypeTag`. Promotion to first-class variants reuses existing generic-function machinery (proven via `examples/generic.tri`).
+
+**Lock:** `TypeTag::Vector(Box<TypeTag>)` + `TypeTag::HashMap(Box<TypeTag>, Box<TypeTag>)`. Wire format discriminants `8` (Vector, post-order single inner ref) + `9` (HashMap, post-order key + value refs).
+
+**Wire format bump: v3 → v4.** This is a **patch bump** per [ADR-0008 §"Version bump rules"](0008-triv-binary-format.md): *"new opcodes or type discriminants added; old readers skip unknown opcodes (error at runtime, not at load time)"*. Pre-v4 readers encountering discriminant 8 or 9 emit `TrivError::UnknownTypeDiscriminant` (mapped to E2104). No ADR-0008 rewrite required — the existing patch-bump rule explicitly covers additive type-table extension.
+
+### A2 — `RuntimeValue` collection variants + `RuntimeMapKey` discipline
+
+VM-side mirror: `RuntimeValue::Vector(Vec<Self>)` + `RuntimeValue::HashMap(BTreeMap<RuntimeMapKey, Self>)`. **`BTreeMap`** (not `HashMap`) — aligns with [ADR-0019 §3 canonical emission principle](#3--canonical-emission-invariants-deterministic-output): deterministic iteration order is mandatory once the self-host compiler starts serializing collection contents. Bonus: ordering enables future content-hashing.
+
+`RuntimeMapKey` enum restricts map keys to hashable primitives (Trit/Tryte/Integer/Long/String). Vector/HashMap/Struct/Enum/Closure/Unit/Null/Trilean **cannot** be keys at v0.7.3 — refuse-over-guess. Trilean specifically excluded because Ł3 `Unknown` semantics make equality undecidable; allowing it as key would silently coerce. Future ADR may revisit once concurrency model (v0.8) decides equality discipline.
+
+### A3 — `vec_*` → `vector_*`, `vec_len` → `vector_length` (no abbreviations)
+
+**Author constraint locked 2026-05-17:** Triết-facing identifiers (TypeTag variants, BuiltinName variants, stdlib `.tri` paths, parameter names) spell out fully — Java naming convention, never abbreviate. Rationale: *"tôi rất dị ứng với viết tắt"* — Java developer mental model carries through SPEC §0.3 AI-first principle (explicit > terse).
+
+**Rename table (overrides §5 original ADR-0019 spec):**
+
+| ADR-0019 §5 (original) | v0.7.3 Addendum (corrected) |
+|---|---|
+| `vec_new` | `vector_new` |
+| `vec_push` | `vector_push` |
+| `vec_get` | `vector_get` |
+| `vec_len` | **`vector_length`** (len → length) |
+| `vec_pop` | `vector_pop` |
+| `vec_iter` | **`vector_iterator`** (iter → iterator) |
+| `Vec(Box<TypeTag>)` | **`Vector(Box<TypeTag>)`** |
+| `BuiltinName::VecNew` | `BuiltinName::VectorNew` |
+
+`HashMap` retains its name (Java `java.util.HashMap` — not an abbreviation). `string_*` / `path_*` / `parse_*` keep verbal form (not abbreviations).
+
+**Rust-internal code excluded:** `Vec<T>` (Rust stdlib), `Box<>`, `Arc<>`, `Rc<>` — Rust idioms in Rust impl crates stay. ADR-0019 §3 audit (v0.7.2) did **not** retroactively rename `func_table` / `pkg_name` / `meta` — CLAUDE.md "Surgical Changes" applies.
+
+### A4 — Drop duplicate builtin IDs 23 + 26 (Q5-A)
+
+Discovery during sub-task open: ADR-0019 §5 IDs 23 `string_push` + 26 `integer_to_string` duplicate existing stdlib builtins (`std.text.concat` + `std.text.from_integer`). Triết strings are immutable — `string_push` semantically ≡ `concat`. Triết stdlib stays minimal per [VISION §6 "explicit > implicit"](../../VISION.md).
+
+**Lock:**
+
+| Dropped | Use instead |
+|---|---|
+| ID 23 `string_push` | Existing `std.text.concat` (returns new String) |
+| ID 26 `integer_to_string` | Existing `std.text.from_integer` |
+
+Self-host compiler (v0.7.4+) consumes existing stdlib paths — no source-side change in `compiler/*.tri`. **21 net-new builtins** (was 23) across IDs 4–22 + 24–25.
+
+### A5 — Sub-task split v0.7.3.1 → v0.7.3.4
+
+Per Q2-B (4-sub-commit cadence for the v0.7.3 umbrella):
+
+| Sub-task | Scope | Status |
+|---|---|---|
+| **v0.7.3.1** | TypeTag + RuntimeValue + wire format v4 + this Addendum | (current) |
+| **v0.7.3.2** | Vector builtins (IDs 4–9, 6 ops) — VM dispatch + stdlib `.tri` stub | pending |
+| **v0.7.3.3** | HashMap builtins (IDs 10–14, 5 ops) — VM dispatch + stdlib `.tri` stub | pending |
+| **v0.7.3.4** | IO + path + string builtins (IDs 15–22 + 24–25, 10 ops post-dedup) | pending |
+
+### A6 — IO Trilean shape (Q4-A): strict 2-state
+
+`file_exists` / `write_file` builtins return `Trilean` per ADR-0019 §5 signatures. **Locked semantic:** strict 2-state — `True` / `False` only; `Unknown` never returned from I/O builtins. Permission denied, race condition, EBUSY → collapse to `False` (matches spec "None nếu I/O error"). Rationale: I/O semantically binary; Triết-native Ł3 philosophy doesn't apply cleanly to "did syscall succeed".
+
+Future-compat: if v0.8 actor model introduces async-pending I/O state, that's a new ADR. v0.7.3 IO builtins stay strict.
+
+### Test coverage scorecard (v0.7.3.1 only)
+
+| Layer | Test | Commit |
+|---|---|---|
+| TypeTag display | `vector_type_display` + `hashmap_type_display` + `collection_equality` | this commit |
+| Wire format | `wire_format_version_bumped_to_v4` | this commit |
+| Round-trip | `vector_and_hashmap_type_tags_round_trip` (nested Vector + flat HashMap) | this commit |
+| Forward-compat | `pre_v4_reader_refuses_vector_discriminant` (v4-aware reader accepts; documents pre-v4 refusal contract) | this commit |
+
+1088 → 1094 tests (6 net-new: 3 display/equality + 3 wire-format), clippy `-D warnings` clean. v0.7.3.2 onward will add per-builtin smoke tests + composition integration tests per Q3-C.

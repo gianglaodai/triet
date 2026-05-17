@@ -72,7 +72,7 @@ prior decision, write a new ADR that supersedes it.
 
 | ADR | Title | Status |
 |---|---|---|
-| [0019](0019-self-hosting-compiler-bootstrap.md) | Self-hosting compiler bootstrap (3-stage chain, bottom-up incremental component order, canonical emission invariants, full `.tripack` byte-identical gate, Rust-shim builtin stdlib, 3-layer testing, perf parity gate deferred to v0.9) | Locked |
+| [0019](0019-self-hosting-compiler-bootstrap.md) | Self-hosting compiler bootstrap (3-stage chain, bottom-up incremental component order, canonical emission invariants, full `.tripack` byte-identical gate, Rust-shim builtin stdlib, 3-layer testing, perf parity gate deferred to v0.9) — *+ v0.7.3 Addendum: collection TypeTags first-class, .triv v3 → v4 patch bump, Vector rename (Java naming), drop duplicate builtin IDs 23/26, sub-task split v0.7.3.1–4* | Locked |
 
 ## How to read an ADR
 

@@ -60,6 +60,77 @@ pub enum RuntimeValue {
         /// Captured values.
         captures: Vec<Self>,
     },
+    /// Homogeneous ordered collection — backing for `Vector<T>` type
+    /// (introduced at v0.7.3 per ADR-0019 §5). Element runtime type
+    /// is not stored on each value; the IR's [`TypeTag`] keeps that
+    /// invariant. Builtin opcodes operate on this in-place.
+    Vector(Vec<Self>),
+    /// Keyed collection — backing for `HashMap<K, V>` type. Uses
+    /// `BTreeMap` for deterministic iteration order (aligns with
+    /// ADR-0019 §3 canonical emission principle — important once the
+    /// self-host compiler starts serializing collection contents).
+    HashMap(std::collections::BTreeMap<RuntimeMapKey, Self>),
+}
+
+/// Keys for `RuntimeValue::HashMap`. Restricted to hashable primitives
+/// — Triết maps don't accept Vector/HashMap/Struct/Enum/Closure keys
+/// at v0.7.3. Ordering is well-defined for `BTreeMap`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RuntimeMapKey {
+    /// 1-trit key.
+    Trit(Trit),
+    /// 9-trit key.
+    Tryte(Tryte),
+    /// 27-trit key.
+    Integer(Integer),
+    /// 81-trit key.
+    Long(Long),
+    /// String key (most common in practice — symbol tables in the
+    /// self-host compiler).
+    String(String),
+}
+
+impl RuntimeMapKey {
+    /// Attempt to derive a map key from a runtime value. Returns
+    /// `None` for values that aren't allowed as keys (`Vector`,
+    /// `HashMap`, `Struct`, `Enum`, `Closure`, `Unit`, `Null`,
+    /// `Trilean`).
+    #[must_use]
+    pub fn from_runtime(value: &RuntimeValue) -> Option<Self> {
+        match value {
+            RuntimeValue::Trit(t) => Some(Self::Trit(*t)),
+            RuntimeValue::Tryte(t) => Some(Self::Tryte(*t)),
+            RuntimeValue::Integer(i) => Some(Self::Integer(*i)),
+            RuntimeValue::Long(l) => Some(Self::Long(*l)),
+            RuntimeValue::String(s) => Some(Self::String(s.clone())),
+            _ => None,
+        }
+    }
+
+    /// Lift this key back to a `RuntimeValue` (e.g. when returning the
+    /// list of keys via `hashmap_keys`).
+    #[must_use]
+    pub fn to_runtime(&self) -> RuntimeValue {
+        match self {
+            Self::Trit(t) => RuntimeValue::Trit(*t),
+            Self::Tryte(t) => RuntimeValue::Tryte(*t),
+            Self::Integer(i) => RuntimeValue::Integer(*i),
+            Self::Long(l) => RuntimeValue::Long(*l),
+            Self::String(s) => RuntimeValue::String(s.clone()),
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeMapKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trit(t) => write!(f, "{t}"),
+            Self::Tryte(t) => write!(f, "{t}"),
+            Self::Integer(i) => write!(f, "{i}"),
+            Self::Long(l) => write!(f, "{l}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+        }
+    }
 }
 
 impl RuntimeValue {
@@ -76,6 +147,14 @@ impl RuntimeValue {
             Self::Unit => TypeTag::Unit,
             Self::Null => TypeTag::Nullable(Box::new(TypeTag::Unit)),
             Self::Struct { .. } | Self::Enum { .. } | Self::Closure { .. } => TypeTag::Unit,
+            // Collection element types aren't tracked on the runtime
+            // value — the IR's static `TypeTag` retains that info. Fall
+            // back to a wildcard element of `Unit`; callers that need
+            // precise types should consult the originating instruction.
+            Self::Vector(_) => TypeTag::Vector(Box::new(TypeTag::Unit)),
+            Self::HashMap(_) => {
+                TypeTag::HashMap(Box::new(TypeTag::Unit), Box::new(TypeTag::Unit))
+            }
         }
     }
 
@@ -163,6 +242,26 @@ impl std::fmt::Display for RuntimeValue {
                 payload: None,
             } => write!(f, "enum.v{variant}"),
             Self::Closure { func_id, .. } => write!(f, "closure(@f{func_id})"),
+            Self::Vector(elements) => {
+                write!(f, "[")?;
+                for (i, element) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{element}")?;
+                }
+                write!(f, "]")
+            }
+            Self::HashMap(entries) => {
+                write!(f, "{{")?;
+                for (i, (key, value)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{key}: {value}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
