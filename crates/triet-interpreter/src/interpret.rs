@@ -577,18 +577,29 @@ impl<'p> Interpreter<'p> {
                     payload: payload_value,
                 })
             }
-            // v0.7.4.3-error.1 (ADR-0020): outcome AST nodes are
-            // accepted at parse time but execution paths land in
-            // v0.7.4.3-error.3 (VM dispatch). Interpreter parity is
-            // a separately deferred §A7 item — outcome programs run
-            // via `triet build` + `triet run .triv` (VM path).
+            // v0.7.4.3-error.6b (ADR-0010 Addendum §D): `~0` source
+            // unifies with the legacy `null` literal — both encode
+            // the canonical Trit::Zero state. Interpreter evaluates
+            // `~0` to `Value::Null` directly, matching the lowerer
+            // emitting `Constant::Null` and the VM's cross-tolerant
+            // null/outcome opcodes per Addendum §D.
+            //
+            // Other outcome shapes (`~+ value`, `~- error`, postfix
+            // `~?` / `~:`) still require a full `RuntimeValue::Outcome`
+            // which the interpreter does not carry; those land in a
+            // separate "interpreter parity" sub-task (ADR-0019
+            // Addendum §A7).
+            Expr::OutcomeConstructor {
+                arm: triet_syntax::expr::OutcomeArm::Zero,
+                payload: None,
+            } => Ok(Value::Null),
             Expr::OutcomeConstructor { .. }
             | Expr::OutcomePropagate { .. }
             | Expr::OutcomeDefault { .. } => Err(RuntimeError::TypeError {
-                message: "outcome operators (~+, ~0, ~-, ~?, ~:) not supported by the interpreter — \
-                          pending v0.7.4.3-error.3 VM dispatch; interpreter parity tracked as a \
-                          deferred item in ADR-0019 Addendum §A7 (use `triet build` + `triet run .triv` \
-                          path for now)"
+                message: "outcome operators (~+, ~-, ~?, ~:) not supported by the interpreter — \
+                          pending interpreter parity per ADR-0019 Addendum §A7 (use `triet build` \
+                          + `triet run .triv` path for now). `~0` is supported and unifies with \
+                          the legacy `null` literal per ADR-0010 Addendum §D."
                     .into(),
                 span,
             }),

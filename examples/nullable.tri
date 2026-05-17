@@ -24,7 +24,7 @@ function lookup_name(id: Integer) -> String? =
     if? id == 1 { "Alice" }
     else if? id == 2 { "Bob" }
     else if? id == 3 { "Carol" }
-    else { null }                    // widen: String → String? cho các nhánh
+    else { ~0 }                    // widen: String → String? cho các nhánh
 
 // ── Safe-call + Elvis pipeline ───────────────────────────────────────
 

@@ -57,14 +57,11 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.3e | Migrate corpus `if (trilean == lit)` → `match` (alu/memory/utils/print) | `6e4db80` |
 | v0.7.4.3-error.4a | `triet fmt --migrate-null` tool (lexer-based, idempotent, dry-run-by-default + `--write`) | `e49d389` |
 | v0.7.4.3-error.4b | Apply migration to 6 stdlib stubs (`examples/nullable.tri` deferred pending outcome-null runtime unification) | `be7532d` |
+| v0.7.4.3-error.6a | Outcome-null runtime unification — ADR-0010 Addendum §D + lowerer + 4 cross-tolerant VM opcodes + 6 tests | `ffcf6de` |
 
 ### In progress
 
-_None — `.4` umbrella complete._
-
-### Deferred (post-`.4`)
-
-- [ ] **outcome-null runtime unification** — `~0` source-level literal currently lowers to `OutcomeNewNull` opcode (RuntimeValue::Outcome) but should produce `Constant::Null` (RuntimeValue::Null) per [ADR-0010 Addendum §B](docs/decisions/0010-ternary-native-ir.md). Affects `examples/nullable.tri` (kept on legacy `null` keyword until unification lands). Touches lowerer + likely 2 VM opcodes (NullCheck + OutcomeDiscriminant cross-tolerance).
+- [ ] **v0.7.4.3-error.6b** — Interpreter parity for `~0` + migrate `examples/nullable.tri` (closes `.4b` deferred item)
 
 ### Next sub-task: v0.7.4.3-error remaining
 
