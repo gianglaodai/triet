@@ -129,6 +129,10 @@ impl Checker<'_> {
                 let return_ty = declared_return.unwrap_or_else(|| body_ty.clone());
                 self.env.pop_frame();
                 Type::Function {
+                    // Closure literals don't introduce generic type
+                    // parameters at v0.7.4.1 (Q2-A minimal scope —
+                    // only function declarations get type params).
+                    type_params: Vec::new(),
                     parameters: param_types,
                     return_type: Box::new(return_ty),
                 }
@@ -262,6 +266,7 @@ impl Checker<'_> {
 
         // Try function call first.
         if let Type::Function {
+            type_params,
             parameters,
             return_type,
         } = callee_ty.clone()
@@ -273,19 +278,38 @@ impl Checker<'_> {
                     span,
                 });
             }
+            // Generic function inference per Q2-A (v0.7.4.1):
+            // walk param/arg pairs and bind TypeParam(name) → concrete
+            // arg type into `sub_map`. Reuses existing
+            // [`Type::substitute`] machinery shared with generic enum
+            // constructors. Empty `type_params` short-circuits to the
+            // pre-v0.7.4.1 path.
+            let mut sub_map: std::collections::HashMap<String, Type> =
+                std::collections::HashMap::new();
             for (i, argument) in arguments.iter().enumerate() {
                 let arg_ty = self.infer_expression(*argument);
-                if let Some(expected) = parameters.get(i)
-                    && !expected.matches(&arg_ty)
-                {
-                    self.errors.push(TypeError::Mismatch {
-                        expected: expected.clone(),
-                        found: arg_ty,
-                        span: self.arena.expression(*argument).span.clone(),
-                    });
+                if let Some(expected) = parameters.get(i) {
+                    if !type_params.is_empty() {
+                        extract_type_params(expected, &arg_ty, &mut sub_map);
+                    }
+                    // Substitute already-bound type params before
+                    // comparing — handles `function f<T>(a: T, b: T)`
+                    // where the second arg must match the first's
+                    // inferred T.
+                    let expected_sub = expected.substitute(&sub_map);
+                    if !expected_sub.matches(&arg_ty) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: expected_sub,
+                            found: arg_ty,
+                            span: self.arena.expression(*argument).span.clone(),
+                        });
+                    }
                 }
             }
-            return *return_type;
+            if type_params.is_empty() {
+                return *return_type;
+            }
+            return return_type.substitute(&sub_map);
         }
 
         // Try enum variant construction: `Some(5)`, `None`.
@@ -751,6 +775,101 @@ fn try_unify(a: &Type, b: &Type) -> Result<Type, ()> {
         }
     }
     Err(())
+}
+
+/// Walk a parameter type alongside the concrete argument type and bind
+/// `TypeParam(name)` slots in `sub_map`. Supports composites: `Nullable`,
+/// `Tuple`, `Range`, `Vector` (via `UserStruct` shape if added later),
+/// and the arms reachable from generic stdlib stubs. Conflicting
+/// bindings (e.g. `f<T>(a: T, b: T)` called with `(Integer, String)`)
+/// leave the first binding intact — `check_call`'s subsequent
+/// `expected.matches` emits the user-visible `TypeError`.
+///
+/// v0.7.4.1 (ADR-0019 Addendum §A7).
+fn extract_type_params(
+    param: &Type,
+    arg: &Type,
+    sub_map: &mut std::collections::HashMap<String, Type>,
+) {
+    match (param, arg) {
+        (Type::TypeParam(name), concrete) => {
+            sub_map.entry(name.clone()).or_insert_with(|| concrete.clone());
+        }
+        (Type::Nullable(p_inner), Type::Nullable(a_inner)) => {
+            extract_type_params(p_inner, a_inner, sub_map);
+        }
+        // Subtype rule: T ⊂ T?. If param is Nullable(TypeParam) and
+        // arg is concrete, bind T to the arg's bare type.
+        (Type::Nullable(p_inner), concrete) => {
+            extract_type_params(p_inner, concrete, sub_map);
+        }
+        (Type::Tuple(p_elems), Type::Tuple(a_elems)) if p_elems.len() == a_elems.len() => {
+            for (p, a) in p_elems.iter().zip(a_elems.iter()) {
+                extract_type_params(p, a, sub_map);
+            }
+        }
+        (Type::Range(p_inner), Type::Range(a_inner)) => {
+            extract_type_params(p_inner, a_inner, sub_map);
+        }
+        // User-defined generic types: match by name, walk type-param
+        // slots positionally. Catches `Vector<T>` / `HashMap<K, V>`
+        // once they land as user types (v0.7.4.2+ stdlib stubs).
+        (
+            Type::UserStruct {
+                name: p_name,
+                fields: p_fields,
+                ..
+            },
+            Type::UserStruct {
+                name: a_name,
+                fields: a_fields,
+                ..
+            },
+        ) if p_name == a_name && p_fields.len() == a_fields.len() => {
+            for ((_, p_ty), (_, a_ty)) in p_fields.iter().zip(a_fields.iter()) {
+                extract_type_params(p_ty, a_ty, sub_map);
+            }
+        }
+        (
+            Type::UserEnum {
+                name: p_name,
+                variants: p_variants,
+                ..
+            },
+            Type::UserEnum {
+                name: a_name,
+                variants: a_variants,
+                ..
+            },
+        ) if p_name == a_name && p_variants.len() == a_variants.len() => {
+            for ((_, p_pl), (_, a_pl)) in p_variants.iter().zip(a_variants.iter()) {
+                if let (Some(p_box), Some(a_box)) = (p_pl, a_pl) {
+                    extract_type_params(p_box, a_box, sub_map);
+                }
+            }
+        }
+        // Function types (closure params): walk parameters + return.
+        (
+            Type::Function {
+                parameters: p_params,
+                return_type: p_ret,
+                ..
+            },
+            Type::Function {
+                parameters: a_params,
+                return_type: a_ret,
+                ..
+            },
+        ) if p_params.len() == a_params.len() => {
+            for (p, a) in p_params.iter().zip(a_params.iter()) {
+                extract_type_params(p, a, sub_map);
+            }
+            extract_type_params(p_ret, a_ret, sub_map);
+        }
+        // Concrete/concrete mismatches and shapes not above are
+        // left for `expected.matches(arg)` to surface as TypeError.
+        _ => {}
+    }
 }
 
 /// Map a `BinaryOperator` to its source-code symbol for diagnostics.

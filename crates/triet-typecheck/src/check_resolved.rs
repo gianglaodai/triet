@@ -102,14 +102,15 @@ fn collect_declared_types(
                 let parameters: Vec<Type> = def
                     .parameters
                     .iter()
-                    .map(|p| resolve_type_expr(arena, p.type_annotation))
+                    .map(|p| resolve_type_expr_with_params(arena, p.type_annotation, &def.type_params))
                     .collect();
-                let return_type = def
-                    .return_type
-                    .map_or(Type::Unit, |id| resolve_type_expr(arena, id));
+                let return_type = def.return_type.map_or(Type::Unit, |id| {
+                    resolve_type_expr_with_params(arena, id, &def.type_params)
+                });
                 result.push((
                     def.name.clone(),
                     Type::Function {
+                        type_params: def.type_params.clone(),
                         parameters,
                         return_type: Box::new(return_type),
                     },
@@ -167,6 +168,19 @@ fn collect_declared_types(
 /// nullables, and function types. User-defined types resolve to Unknown
 /// at this stage (they're handled during full checking).
 fn resolve_type_expr(arena: &triet_syntax::Arena, id: triet_syntax::TypeId) -> Type {
+    resolve_type_expr_with_params(arena, id, &[])
+}
+
+/// Like [`resolve_type_expr`] but treats `type_params` (e.g. `T`, `U`)
+/// as `Type::TypeParam(name)` rather than `Type::Unknown`. Used by
+/// generic function signature extraction (v0.7.4.1, ADR-0019 Addendum
+/// §A7) so that a parameter typed `T` resolves to a type-param
+/// reference, not the unknown sink.
+fn resolve_type_expr_with_params(
+    arena: &triet_syntax::Arena,
+    id: triet_syntax::TypeId,
+    type_params: &[String],
+) -> Type {
     use triet_syntax::TypeExpr;
     match &arena.type_expression(id).node {
         TypeExpr::Named(name) => match name.as_str() {
@@ -177,24 +191,36 @@ fn resolve_type_expr(arena: &triet_syntax::Arena, id: triet_syntax::TypeId) -> T
             "Trilean" => Type::Trilean,
             "String" => Type::String,
             "Unit" => Type::Unit,
+            other if type_params.iter().any(|p| p == other) => {
+                Type::TypeParam(other.to_owned())
+            }
             _ => Type::Unknown,
         },
         TypeExpr::Tuple(elements) => Type::Tuple(
             elements
                 .iter()
-                .map(|t| resolve_type_expr(arena, *t))
+                .map(|t| resolve_type_expr_with_params(arena, *t, type_params))
                 .collect(),
         ),
-        TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr(arena, *inner))),
+        TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr_with_params(
+            arena,
+            *inner,
+            type_params,
+        ))),
         TypeExpr::Function {
             parameters,
             return_type,
         } => Type::Function {
+            type_params: Vec::new(),
             parameters: parameters
                 .iter()
-                .map(|t| resolve_type_expr(arena, *t))
+                .map(|t| resolve_type_expr_with_params(arena, *t, type_params))
                 .collect(),
-            return_type: Box::new(resolve_type_expr(arena, *return_type)),
+            return_type: Box::new(resolve_type_expr_with_params(
+                arena,
+                *return_type,
+                type_params,
+            )),
         },
         TypeExpr::Generic { .. } => Type::Unknown,
     }

@@ -134,6 +134,9 @@ fn parse_function(
     parser.expect(&Token::Function, "`function`")?;
 
     let (name, _) = parse_item_name(parser, "function name")?;
+    // Optional generic type parameters `<T, U>` per ADR-0019
+    // Addendum §A7 (v0.7.4.1). Returns empty Vec when absent.
+    let type_params = parse_generic_params(parser)?;
 
     parser.expect(&Token::LParen, "`(`")?;
     let parameters = parse_parameter_list(parser)?;
@@ -164,6 +167,7 @@ fn parse_function(
         Item::Function(FunctionDef {
             visibility,
             name,
+            type_params,
             parameters,
             return_type,
             body,
@@ -764,6 +768,53 @@ mod tests {
         match &item.node {
             Item::Function(def) => {
                 assert_eq!(def.parameters[0].passing, ParameterPassing::Owned);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// v0.7.4.1: generic function with single type parameter.
+    /// ADR-0019 Addendum §A7 — unblocks self-host compiler stdlib
+    /// stubs. Mirror existing `enum Option<T>` parsing pattern.
+    #[test]
+    fn parses_function_with_single_type_param() {
+        let (_, item) = parse("function identity<T>(x: T) -> T = x");
+        match &item.node {
+            Item::Function(def) => {
+                assert_eq!(def.type_params, vec!["T".to_owned()]);
+                assert_eq!(def.parameters.len(), 1);
+                assert!(def.return_type.is_some());
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    /// v0.7.4.1: generic function with multiple type parameters.
+    /// Targets `function hashmap_keys<K, V>(m: HashMap<K, V>) -> Vector<K>`
+    /// shape needed for stdlib stub work (v0.7.4.2).
+    #[test]
+    fn parses_function_with_multiple_type_params() {
+        let (_, item) = parse("function pair<K, V>(k: K, v: V) -> K = k");
+        match &item.node {
+            Item::Function(def) => {
+                assert_eq!(def.type_params, vec!["K".to_owned(), "V".to_owned()]);
+                assert_eq!(def.parameters.len(), 2);
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    /// v0.7.4.1: non-generic function still parses (no regression).
+    #[test]
+    fn parses_function_without_type_params_has_empty_type_params() {
+        let (_, item) = parse("function add(a: Integer, b: Integer) -> Integer = a + b");
+        match &item.node {
+            Item::Function(def) => {
+                assert!(
+                    def.type_params.is_empty(),
+                    "non-generic function must have empty type_params, got {:?}",
+                    def.type_params
+                );
             }
             other => panic!("got {other:?}"),
         }

@@ -1,0 +1,27 @@
+// Generic functions — v0.7.4.1 minh họa language feature mới.
+//
+// Trước v0.7.4.1: Triết chỉ có generic ENUMS + STRUCTS (Option<T>,
+// Box<T>). Generic FUNCTIONS thiếu nên không viết được `vector_new<T>()`.
+// ADR-0019 Addendum §A7 ghi nhận gap này; v0.7.4.1 đóng nó.
+//
+// Type inference Rust-style (Q2-A): caller's context (binding type
+// annotation, arg types) drives T → concrete substitution.
+
+// Identity function — `T` chảy qua không đổi.
+function identity<T>(x: T) -> T = x
+
+// Generic function với 2 type params; `second` trả lại param thứ hai.
+function second<K, V>(k: K, v: V) -> V = v
+
+function main() {
+    // Single type param + inference từ arg.
+    let a = identity(42)
+    println(f"identity(42) = {a}")
+
+    let b = identity("xin chào")
+    println(f"identity(string) = {b}")
+
+    // Two type params; V inferred từ "Triết" arg.
+    let c = second(99, "Triết")
+    println(f"second(99, 'Triết') = {c}")
+}

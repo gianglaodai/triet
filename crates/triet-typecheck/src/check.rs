@@ -87,6 +87,13 @@ impl<'p> Checker<'p> {
     fn declare_item(&mut self, item: &Spanned<Item>) {
         match &item.node {
             Item::Function(def) => {
+                // Push a frame so generic type params are visible
+                // during parameter/return type resolution (mirror
+                // struct/enum below).
+                self.env.push_frame();
+                for param in &def.type_params {
+                    self.env.declare(param, Type::TypeParam(param.clone()));
+                }
                 let parameters: Vec<Type> = def
                     .parameters
                     .iter()
@@ -95,7 +102,9 @@ impl<'p> Checker<'p> {
                 let return_type = def
                     .return_type
                     .map_or(Type::Unit, |id| self.resolve_type(id));
+                self.env.pop_frame();
                 let function_type = Type::Function {
+                    type_params: def.type_params.clone(),
                     parameters,
                     return_type: Box::new(return_type),
                 };
@@ -192,11 +201,21 @@ impl<'p> Checker<'p> {
     }
 
     fn check_function(&mut self, def: &FunctionDef) {
+        // Push a frame so type params are visible during type
+        // resolution of parameters + return type. Reused as the
+        // function body's scope (params live in same frame).
+        self.env.push_frame();
+        // Declare generic type params first so `resolve_type` sees
+        // them as `TypeParam(name)` rather than `Unknown` (v0.7.4.1,
+        // ADR-0019 Addendum §A7, Q2-A).
+        for param in &def.type_params {
+            self.env.declare(param, Type::TypeParam(param.clone()));
+        }
+
         let return_type = def
             .return_type
             .map_or(Type::Unit, |id| self.resolve_type(id));
 
-        self.env.push_frame();
         self.current_return_type = Some(return_type.clone());
 
         for parameter in &def.parameters {
@@ -507,6 +526,11 @@ impl<'p> Checker<'p> {
                 parameters,
                 return_type,
             } => Type::Function {
+                // Function-type literal expressions (e.g., closure
+                // type annotations) don't carry type params — those
+                // are owned by function definitions, not function
+                // types as values.
+                type_params: Vec::new(),
                 parameters: parameters.iter().map(|t| self.resolve_type(*t)).collect(),
                 return_type: Box::new(self.resolve_type(return_type)),
             },

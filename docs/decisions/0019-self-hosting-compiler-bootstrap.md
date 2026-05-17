@@ -568,9 +568,9 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 
 | Deferred item | Reason | Target phase |
 |---|---|---|
-| **Stdlib `.tri` stubs for Vector builtins** (`std/vector.tri` or `std/collections/vector.tri`) | Stubs would declare `function vector_new<T>() -> Vector<T>` — requires generic function syntax in parser/AST (see next row). | v0.7.4+ (when self-host compiler forces issue) |
-| **`path_to_builtin` entries for Vector/HashMap/IO/path/string ops** | Path mapping is meaningful only when source-callable. Same blocker as stdlib stubs. | v0.7.4+ |
-| **Generic function syntax in AST/parser** (`function vector_new<T>() -> Vector<T>`) | `FunctionDef` struct in `triet-syntax/src/item.rs` lacks `type_params` field that `StructDef`/`EnumDef` have. Parser does not consume `<T>` after function name. Substantial work (parser + AST + typecheck + lowerer all need touch). | v0.7.4+ — likely v0.7.5 (parser sub-task) or earlier sub-step. Tracked as carry-over from v0.7.3. |
+| **Stdlib `.tri` stubs for Vector builtins** (`std/collections/vector.tri`, `std/collections/hashmap.tri`, `std/io/fs.tri`, `std/path.tri`, `std/string.tri`) | ~~Requires generic function syntax (next row).~~ **Unblocked by v0.7.4.1.** Pending implementation in v0.7.4.2. | **v0.7.4.2** (next sub-task in umbrella) |
+| **`path_to_builtin` entries for Vector/HashMap/IO/path/string ops** | Path mapping is meaningful only when source-callable. ~~Same blocker as stdlib stubs.~~ Unblocked by v0.7.4.1. | **v0.7.4.2** |
+| ~~**Generic function syntax in AST/parser**~~ (`function vector_new<T>() -> Vector<T>`) | ~~`FunctionDef` struct lacks `type_params` field; parser does not consume `<T>`.~~ | **Shipped in v0.7.4.1** (this sub-task). Parser + AST + typecheck (Rust-style inference per Q2-A) + lowerer all wired. **Deviation from Q3-A locked in §A7.1 below: lowerer uses type erasure** (TypeTag::Unit for generic param slots) instead of clone-per-instantiation. |
 | **`vector_pop(v) -> (Vector<T>, T?)`** | Functional return-new semantic (Q1-A) requires tuple return; Triết IR lacks first-class tuple opcodes. Self-host compiler doesn't need pop (symbol tables grow monotonically). | post-v1.0 — alongside tuple opcode + slice support |
 | **Tuple opcodes in IR** (`TupleNew`, `TupleGet`, `TupleLength`) | Triết has tuple values in SPEC §8 but no IR opcodes — current lowerer represents tuples via struct workaround. Blocks `vector_pop`, multi-return functions, structural pattern matching. | post-v1.0 (post-self-host, when language stability allows IR additions) |
 | **`vector_iterator(v) -> Iterator<T>`** | ADR-0003 Iterator trait specced but never implemented at Triết level (v0.2 deliverable did not land; see ADR-0003 *Implementation roadmap* table). | Lands with ADR-0003 implementation — likely v0.8 (concurrency model reframes iterator+stream protocols) |
@@ -585,3 +585,45 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 **Maintenance rule (per author 2026-05-17 feedback):** When future v0.7.x.review audits identify additional deferred items, append to this table. When a deferred item ships, mark with strikethrough + commit hash rather than removing — preserves the history of *what was once missing* for future readers.
 
 This Addendum also commits ADR-0019 §3 emission-determinism scope to mention the Vector/HashMap collection types: `add_type` now recurses into `Vector`/`HashMap` for post-order encoding, preserving canonical type-table layout across rebuilds. The v0.7.2 `bootstrap_determinism` test continues to cover this transparently (Vector/HashMap not yet exercised by `examples/*.tri` — when v0.7.4+ adds `compiler/*.tri` source, the test will gain coverage automatically).
+
+### A7.1 — v0.7.4.1 deviation from Q3-A (lowerer monomorphization strategy)
+
+Original v0.7.4.1 design Q3-A locked **clone-per-instantiation** for generic functions: emit separate IR `FuncId`s per unique `(function, type_args)` tuple, mirror Rust monomorphization. v0.7.4.1 implementation **deviates to type erasure at IR level** — `TypeTag::Unit` placeholder for generic param slots, single `FuncId` shared across all instantiations.
+
+**Reasons for deviation:**
+
+- True clone-per-instantiation requires the lowerer to re-do typecheck's call-site inference (re-extract type_params from arg types). Typecheck currently doesn't pipe inferred concrete types to the lowerer, so duplicating logic would couple the two passes invasively.
+- For v0.7.4.1's primary use case (unblock stdlib stubs + self-host compiler), type erasure produces semantically correct programs: builtins (`Vector*`/`HashMap*` etc.) are VM-dispatched on name, not `TypeTag`; user-defined generic functions like `identity<T>(x) = x` flow values through registers without depending on TypeTag.
+- `RuntimeValue::Vector(Vec<Self>)` is heterogeneous at runtime anyway — element TypeTag is erased post-lowering.
+- Determinism is preserved: same source → same erased FuncIds → byte-identical IR (in fact erasure is *more* deterministic than monomorphization, which would need careful hash-stable cache iteration order).
+
+**What this costs:**
+
+- IR loses static type info for generic param slots (placeholder `TypeTag::Unit`). VM doesn't care; future LLVM AOT (v2.0) might benefit from concrete types for optimization.
+- IR verifier sees `TypeTag::Unit` where the source had `T` — looks weird in `triet inspect` dumps for generic functions.
+- Cannot specialize per-instantiation optimizations (e.g. inlining `vector_new<Integer>` differently from `vector_new<String>`).
+
+**Re-tackle path:**
+
+True clone-per-instantiation lands when **v2.0 LLVM AOT** backend demands it for inlining. At that point we'll need to:
+
+1. Pipe typecheck's call-site inferences (concrete type args per CallExpr span) through to the lowerer.
+2. Refactor lowerer's Pass 1 to defer generic-function FuncId allocation.
+3. Add `(AbsolutePath, Vec<TypeTag>) -> FuncId` cache + on-demand body instantiation with type substitution.
+
+Tracked in §A7 deferred items log under a future "Generic function monomorphization (Q3-A true semantics)" entry — added below for transparency.
+
+| **Generic function clone-per-instantiation** (Q3-A true monomorphization) | v0.7.4.1 ships type-erased generic functions (§A7.1). Acceptable for VM dev tier but loses static type info for backend optimization. | **v2.0 LLVM AOT** (when concrete types matter for inlining + specialization) |
+
+### A7.2 — v0.7.4.1 test scorecard
+
+| Layer | Test |
+|---|---|
+| Parser | `parses_function_with_single_type_param` (`function identity<T>(x: T) -> T = x`) |
+| Parser | `parses_function_with_multiple_type_params` (`function pair<K, V>(k: K, v: V) -> K`) |
+| Parser | `parses_function_without_type_params_has_empty_type_params` (regression guard) |
+| Typecheck | `checks_generic_identity_function` (single `T`, inferred via Integer + String call contexts) |
+| Typecheck | `checks_generic_function_with_two_params` (`K`/`V` independent inference) |
+| End-to-end | `diff_generic_function` — `examples/generic_function.tri` parses → typechecks → lowers → runs byte-identical VM vs interpreter (joins existing 11 examples → 12) |
+
+1118 → 1124 tests (6 net-new across parse/typecheck/end-to-end), clippy `-D warnings` clean. v0.7.4.2 will continue with stdlib `.tri` stubs + `path_to_builtin` wiring.

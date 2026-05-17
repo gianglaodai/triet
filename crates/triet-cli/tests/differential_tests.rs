@@ -141,6 +141,8 @@ diff_test!(diff_measles_risk, "examples/measles_risk.tri");
 diff_test!(diff_factorial, "examples/factorial.tri");
 diff_test!(diff_maybe, "examples/maybe.tri");
 diff_test!(diff_generic, "examples/generic.tri");
+// v0.7.4.1 generic FUNCTIONS (ADR-0019 Addendum §A7).
+diff_test!(diff_generic_function, "examples/generic_function.tri");
 diff_test!(diff_counter, "examples/counter.tri");
 diff_test!(diff_while_polling, "examples/while_polling.tri");
 diff_test!(diff_long_arithmetic, "examples/long_arithmetic.tri");

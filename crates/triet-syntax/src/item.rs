@@ -109,6 +109,13 @@ pub struct FunctionDef {
     pub visibility: Visibility,
     /// Function name.
     pub name: String,
+    /// Generic type parameters (e.g., `T` in `function identity<T>(x: T) -> T`).
+    /// Empty for non-generic functions. Introduced at v0.7.4.1 per
+    /// [ADR-0019 Addendum §A7] "generic function syntax" deferred item
+    /// resolution. Mirror precedent of [`StructDef`]/[`EnumDef`].
+    ///
+    /// [ADR-0019 Addendum §A7]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+    pub type_params: Vec<String>,
     /// Parameters in declaration order.
     pub parameters: Vec<FunctionParam>,
     /// Optional return type annotation. Required for block bodies; may
@@ -249,6 +256,7 @@ mod tests {
         let function = FunctionDef {
             visibility: Visibility::Private,
             name: "main".to_owned(),
+            type_params: Vec::new(),
             parameters: Vec::new(),
             return_type: None,
             body: FunctionBody::Block(Block::empty()),
@@ -267,6 +275,7 @@ mod tests {
         let function = FunctionDef {
             visibility: Visibility::Public,
             name: "double".to_owned(),
+            type_params: Vec::new(),
             parameters: vec![FunctionParam {
                 name: "n".to_owned(),
                 type_annotation: integer_type,

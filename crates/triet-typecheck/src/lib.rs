@@ -78,6 +78,39 @@ mod tests {
         assert_ok("function id(n: Integer) -> Integer = n");
     }
 
+    /// v0.7.4.1: generic function with single type param.
+    /// ADR-0019 Addendum §A7 — unblocks self-host stdlib stubs.
+    /// `T` resolves to `TypeParam`, body uses x flowing as `T`, type
+    /// inferred at call site by argument context.
+    #[test]
+    fn checks_generic_identity_function() {
+        assert_ok(
+            r#"
+            function id<T>(x: T) -> T = x
+
+            function main() {
+                let a: Integer = id(42)
+                let b: String = id("hello")
+            }
+            "#,
+        );
+    }
+
+    /// v0.7.4.1: generic function with two type params.
+    /// Targets the inference pattern for `function pair<K, V>(...) -> V`.
+    #[test]
+    fn checks_generic_function_with_two_params() {
+        assert_ok(
+            r#"
+            function second<K, V>(k: K, v: V) -> V = v
+
+            function main() {
+                let result: String = second(42, "world")
+            }
+            "#,
+        );
+    }
+
     #[test]
     fn checks_simple_arithmetic() {
         assert_ok("function add(a: Integer, b: Integer) -> Integer = a + b");

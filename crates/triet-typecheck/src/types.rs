@@ -28,11 +28,20 @@ pub enum Type {
     Nullable(Box<Self>),
     /// Tuple type.
     Tuple(Vec<Self>),
-    /// Function type `(P1, P2, ...) -> R`.
+    /// Function type `(P1, P2, ...) -> R`, optionally with generic
+    /// type parameters: `<T, U>(P1, P2, ...) -> R`. Generic functions
+    /// carry their type-param names so call sites can perform
+    /// Rust-style inference per ADR-0019 Addendum §A7 + v0.7.4.1
+    /// Q2-A. Empty `type_params` means a monomorphic function.
     Function {
-        /// Parameter types, positionally.
+        /// Generic type parameters declared on the function
+        /// (empty for non-generic functions).
+        type_params: Vec<String>,
+        /// Parameter types, positionally. May contain `TypeParam(name)`
+        /// when the function is generic.
         parameters: Vec<Self>,
-        /// Return type.
+        /// Return type. May contain `TypeParam(name)` when the
+        /// function is generic.
         return_type: Box<Self>,
     },
     /// `Range<T>` produced by `a..b` or `a..=b`. The element type is
@@ -140,9 +149,11 @@ impl Type {
                 Self::Tuple(elements.iter().map(|e| e.substitute(map)).collect())
             }
             Self::Function {
+                type_params,
                 parameters,
                 return_type,
             } => Self::Function {
+                type_params: type_params.clone(),
                 parameters: parameters.iter().map(|p| p.substitute(map)).collect(),
                 return_type: Box::new(return_type.substitute(map)),
             },
@@ -234,9 +245,20 @@ impl fmt::Display for Type {
                 formatter.write_str(")")
             }
             Self::Function {
+                type_params,
                 parameters,
                 return_type,
             } => {
+                if !type_params.is_empty() {
+                    formatter.write_str("<")?;
+                    for (i, param) in type_params.iter().enumerate() {
+                        if i > 0 {
+                            formatter.write_str(", ")?;
+                        }
+                        formatter.write_str(param)?;
+                    }
+                    formatter.write_str(">")?;
+                }
                 formatter.write_str("(")?;
                 for (i, parameter) in parameters.iter().enumerate() {
                     if i > 0 {
@@ -303,11 +325,22 @@ mod tests {
         );
         assert_eq!(
             Type::Function {
+                type_params: Vec::new(),
                 parameters: vec![Type::Integer, Type::Integer],
                 return_type: Box::new(Type::Integer),
             }
             .to_string(),
             "(Integer, Integer) -> Integer",
+        );
+        // Generic function display shows the type params prefix.
+        assert_eq!(
+            Type::Function {
+                type_params: vec!["T".into()],
+                parameters: vec![Type::TypeParam("T".into())],
+                return_type: Box::new(Type::TypeParam("T".into())),
+            }
+            .to_string(),
+            "<T>(T) -> T",
         );
     }
 }

@@ -104,6 +104,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "print",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Unit.clone()),
         },
@@ -111,6 +112,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "println",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Unit.clone()),
         },
@@ -118,6 +120,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "read_line",
         Type::Function {
+            type_params: Vec::new(),
             parameters: Vec::new(),
             return_type: Box::new(String.clone()),
         },
@@ -130,6 +133,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "to_string",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![Integer.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -137,6 +141,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "tryte_to_string",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![Tryte.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -144,6 +149,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "long_to_string",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![Long.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -151,6 +157,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "trilean_to_string",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![Trilean.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -161,6 +168,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "length",
         Type::Function {
+            type_params: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Integer),
         },

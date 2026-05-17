@@ -363,10 +363,26 @@ impl<'a> LowerCtx<'a> {
                 "Trilean" => TypeTag::Trilean,
                 "String" => TypeTag::String,
                 "Unit" => TypeTag::Unit,
-                _ => TypeTag::Unit, // user-defined type — placeholder
+                _ => TypeTag::Unit, // user-defined type OR generic type param — placeholder
             },
             triet_syntax::type_ast::TypeExpr::Nullable(inner) => {
                 TypeTag::Nullable(Box::new(self.type_expr_to_tag(*inner)))
+            }
+            // Generic types — `Vector<T>`, `HashMap<K, V>` (v0.7.4.1
+            // via ADR-0019 Addendum §A7 stdlib stub support). Other
+            // generic user types (e.g. `Option<Integer>`) erase to
+            // Unit per existing user-defined-type placeholder rule.
+            triet_syntax::type_ast::TypeExpr::Generic { name, arguments } => {
+                match (name.as_str(), arguments.as_slice()) {
+                    ("Vector", [element]) => {
+                        TypeTag::Vector(Box::new(self.type_expr_to_tag(*element)))
+                    }
+                    ("HashMap", [key, value]) => TypeTag::HashMap(
+                        Box::new(self.type_expr_to_tag(*key)),
+                        Box::new(self.type_expr_to_tag(*value)),
+                    ),
+                    _ => TypeTag::Unit,
+                }
             }
             _ => TypeTag::Unit,
         }
@@ -2208,6 +2224,7 @@ mod tests {
         Item::Function(FunctionDef {
             visibility: triet_syntax::visibility::Visibility::Private,
             name: name.to_owned(),
+            type_params: Vec::new(),
             parameters: params,
             return_type,
             body,
@@ -3593,6 +3610,7 @@ mod tests {
         let item = Item::Function(FunctionDef {
             visibility: triet_syntax::visibility::Visibility::Private,
             name: "get_zero".to_owned(),
+            type_params: Vec::new(),
             parameters: vec![],
             return_type: Some(ret_type),
             body: FunctionBody::Expression(val),
