@@ -51,10 +51,11 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.1 | Lexer + AST + Parser for Outcome syntax (compound tokens, `\|capture\|`, productions) | `c0fe111` |
 | v0.7.4.3-error.2 | Typecheck Outcome support — `Type::Outcome` + 9 errors (E1024-E1032) + W2001 NullDeprecated | `d8e5b07` |
 | v0.7.4.3-error.3a | IR data plane — `TypeTag::Outcome` + 6 opcodes (0xC1-0xC6) + `.triv` v5 + VM dispatch + E2210 | `f9d1f91` |
+| v0.7.4.3-error.3b | Lowerer — AST Outcome → IR opcodes + pattern matching + 10 e2e VM tests | `d03aa66` |
 
 ### In progress
 
-- [ ] **v0.7.4.3-error.3b** — Lowerer integration (AST → IR for Outcome constructors / postfix `~?` / `~:` / unwrap methods) + e2e VM tests
+_None — awaiting next sub-task selection._
 
 ### Next sub-task: v0.7.4.3-error remaining
 
