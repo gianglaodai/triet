@@ -29,3 +29,43 @@ T?  ::=  is_null: 1 trit  +  payload: T
 ## Implementation v0.1
 
 Interpreter dùng `Value::Null` enum variant của Rust — tương đương semantically với discriminator (Rust enum tag = discriminator). Layout vật lý sẽ được commit ở v0.3 khi bytecode VM đến.
+
+---
+
+## Addendum — v0.7.4.3-error (null literal unification)
+
+Per [ADR-0020 §10](0020-outcome-error-handling.md) (2026-05-17), the source-level literal for the Trit::Zero discriminator state is unified across the language:
+
+| Pre-v0.7.4.3 | v0.7.4.3+ (canonical) | v1.0+ |
+|---|---|---|
+| `null` (deprecated synonym, W2001 warning) | `~0` | `~0` (only — `null` removed, E2002) |
+
+**No change to memory layout.** The 1-trit discriminator + payload union encoding locked in this ADR is unchanged. Only the source syntax for the Trit::Zero state literal changes:
+
+```triet
+// Pre-v0.7.4.3 (still works through v1.0 with W2001 warning):
+let user: User? = null
+
+// v0.7.4.3+ canonical (no warning):
+let user: User? = ~0
+```
+
+The lowerer accepts both source forms and emits the same `Constant::Null` IR opcode (see [ADR-0010 Addendum — v0.7.4.3-error](0010-ternary-native-ir.md#addendum--v0743-error-null-literal-unification)). No IR / wire-format change.
+
+**Pattern match implications:** patterns for `T?` types must use explicit `~+ binding` for the success arm (no implicit T ⊂ T? widening in pattern position per ADR-0020 §10.4):
+
+```triet
+// Pre-v0.7.4.3 widening match (still works with W2001 if `null` used):
+match maybe_user {
+    user => greet(user),       // implicit T ⊂ T? widening — DEPRECATED in patterns
+    null => prompt_login(),
+}
+
+// v0.7.4.3+ canonical:
+match maybe_user {
+    ~+ user => greet(user),
+    ~0      => prompt_login(),
+}
+```
+
+**Migration:** `triet fmt --fix --migrate-null` auto-rewrites both literal and pattern occurrences. See [ADR-0020 §10.5](0020-outcome-error-handling.md) for tool specification.

@@ -175,7 +175,35 @@ false       // -1
 unknown     // 0
 ```
 
-#### 1.5.3 String (string)
+#### 1.5.3 Outcome state literals (`~+ value` / `~0` / `~- error`)
+
+Literal form cho ba trạng thái trit của các kiểu trit-discriminator (nullable `T?`, outcome `T~E`, ternary outcome `T?~E`). Mỗi tiền tố `~` ánh xạ trực tiếp lên một state của balanced ternary `{−1, 0, +1}`:
+
+```triet
+~+ 42       // Trit::Positive arm — value 42 (success / present)
+~0          // Trit::Zero arm — no payload (null / absent)
+~- "error"  // Trit::Negative arm — error payload (failure)
+```
+
+Lock semantics đầy đủ ở [ADR-0020](docs/decisions/0020-outcome-error-handling.md) (v0.7.4.3-error). Tóm tắt:
+
+- `~+ expr` — Trit::Positive arm, payload là `expr`. Hợp lệ cho mọi kiểu trit-discriminator.
+- `~0` — Trit::Zero arm, không payload. Hợp lệ cho `T?` (null state) và `T?~E` (null state). **Refused** cho `T~E` (E1025).
+- `~- expr` — Trit::Negative arm, payload là `expr`. Hợp lệ cho `T~E` và `T?~E`. **Refused** cho `T?` (T? không có failure arm).
+- Compound token `?~` ở type position là **lexer-level adjacent** (no whitespace within) — `T?~E` parses unified, không phải `(T?)~E` chain.
+- Style guide: dấu cách bắt buộc sau prefix (`~+ value`, không `~+value`).
+- Đối xứng pattern match: `match { ~+ v => ..., ~0 => ..., ~- e => ... }`.
+
+**Lịch sử — từ khóa `null` deprecated kể từ v0.7.4.3-error:**
+
+`null` (pre-v0.7.4.3 keyword cho Trit::Zero state của `T?`) bị deprecate, thay bằng `~0` canonical per ADR-0020 §10. Lý do: thống nhất tam phân — `~+`/`~0`/`~-` là bộ ba balanced-ternary hoàn chỉnh; `null` 2-state-vocabulary phá vỡ symmetry.
+
+Timeline:
+- **v0.7.4.3-error → v0.7.x:** lexer chấp nhận cả `null` lẫn `~0`; mỗi `null` token sinh **W2001 NullDeprecated** warning với fix-hint *"replace `null` with `~0`"*.
+- **v1.0:** `null` keyword bị xóa khỏi grammar; W2001 → **E2002 NullRemoved**.
+- Migration tự động: `triet fmt --fix --migrate-null` rewrite tất cả `null` → `~0` recursively trong project tree.
+
+#### 1.5.4 String (string)
 
 ```triet
 "Hello, thế giới!"
@@ -188,7 +216,7 @@ không cần escape "ngoặc kép" bên trong.
 
 Escape sequences: `\n`, `\t`, `\r`, `\\`, `\"`, `\u{XXXX}` (Unicode codepoint hex).
 
-#### 1.5.4 String interpolation (f-string)
+#### 1.5.5 String interpolation (f-string)
 
 Prefix `f` bật interpolation. String thường (không có `f`) là literal nguyên bản.
 
@@ -299,25 +327,27 @@ n + 1                       // ❌ lỗi compile: phải kiểm tra null trướ
 
 #### Toán tử và pattern cho nullable
 
+**Lưu ý cú pháp v0.7.4.3-error:** từ khóa `null` deprecated, thay bằng `~0` canonical (lock ở [ADR-0020 §10](docs/decisions/0020-outcome-error-handling.md)). Examples dưới đây dùng `~0`; legacy `null` vẫn hợp lệ qua v0.7.x với W2001 warning, removed ở v1.0.
+
 ```triet
 // Smart cast qua kiểm tra
-if name != null {
+if name != ~0 {
     std.io.println(name)    // name lúc này được narrow về String
 }
 
-// Safe call: trả về null nếu chuỗi bị null ở đâu đó
+// Safe call: trả về ~0 nếu chuỗi bị null ở đâu đó
 let len: Integer? = name?.length
 
-// Elvis: thay null bằng giá trị mặc định
+// Elvis: thay ~0 bằng giá trị mặc định
 let len: Integer = name?.length ?: 0
 
 // Force unwrap: panic nếu null
 let must: String = name!!
 
-// match trên null
+// match trên nullable — patterns dùng explicit `~+ binding` (no auto-widening)
 match name {
-    null => "khuyết danh",
-    n    => f"xin chào {n}",
+    ~0      => "khuyết danh",
+    ~+ n    => f"xin chào {n}",
 }
 ```
 
@@ -325,13 +355,18 @@ match name {
 
 Quyết định kể từ v0.4: **`T?` là cách chính tắc** để diễn đạt "giá trị có thể vắng mặt". `Option<T>` (như một stdlib enum riêng) **không còn được khuyến khích** vì redundant — `T?` đã có discriminator 1-trit bẩm sinh (Trit::Zero = null per ADR-0010), không cần wrapper.
 
-Khi cần model "operation has failed with detail", dùng `Result<T, E>` từ `std.result` (ADR-0011 ABI metadata + v0.4 stdlib). Hai mục đích, hai công cụ:
+Khi cần model "operation has failed with detail", từ **v0.7.4.3-error** dùng [outcome type `T~E` / `T?~E`](docs/decisions/0020-outcome-error-handling.md) làm primary. `Result<T, E>` từ `std.result` (ADR-0011 + v0.4 stdlib) vẫn hợp lệ như **legacy convention** cho structural-enum needs hoặc backwards-compat.
+
+Năm mục đích, năm công cụ:
 
 | Trường hợp | Dùng | Ví dụ |
 |---|---|---|
-| Value có/không có (lookup thất bại, optional field) | `T?` | `function find_user(id: Integer) -> User?` |
-| Operation thất bại có lý do (parse, IO, capability) | `Result<T, E>` | `function parse(s: String) -> Result<Integer, ParseError>` |
-| Value có Unknown state (sensor, async, capability) | `Trilean` | `function vaccinated() -> Trilean` |
+| Value có/không có (lookup thất bại, optional field) | `T?` (primary) | `function find_user(id: Integer) -> User?` |
+| Operation thất bại có lý do (parse, IO, capability) | `T~E` (primary v0.7.4.3+) | `function parse(s: String) -> Integer~ParseError` |
+| Operation có thể thất bại VÀ value có thể vắng | `T?~E` (primary v0.7.4.3+) | `function lookup(name: String) -> Symbol?~IoError` |
+| Operation thất bại — structural enum / legacy | `Result<T, E>` (std.result, legacy) | `function parse_v0_4(s: String) -> Result<Integer, ParseError>` |
+| Value có Unknown state (sensor, async, capability) | `Trilean` (Ł3) | `function vaccinated() -> Trilean` |
+| Bug-tier failure (không recover được) | Runtime panic E22XX | `divide(a, 0)` |
 
 Tự dùng `enum MyOption<T> { Some(T), None }` trong user code vẫn hợp lệ (Triết không cấm), nhưng compiler emit `W0030` advisory: *"prefer `T?` for nullable values"*.
 

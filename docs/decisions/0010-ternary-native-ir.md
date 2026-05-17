@@ -174,3 +174,22 @@ Code lowering hoặc VM nào collapse 1 trong 3 trạng thái phải có comment
 - [ADR-0007 — IR design](0007-ir-design.md) (this ADR refines)
 - [ADR-0008 — .triv binary format](0008-triv-binary-format.md) (this ADR bumps version)
 - [ADR-0009 — Version gate policy](0009-version-gate-policy.md) (this ADR is filed under v0.3.x.ternary phase)
+
+---
+
+## Addendum — v0.7.4.3-error (null literal unification)
+
+Per [ADR-0020 §10](0020-outcome-error-handling.md) (2026-05-17), the source-level syntax for the Trit::Zero discriminator state is unified across the language: `~0` becomes canonical, `null` is deprecated as a synonym until v1.0 removal.
+
+**No change to IR or wire format.** The `Constant::Null` IR opcode locked in this ADR continues to encode "the canonical Trit::Zero state of a nullable discriminator". The only change is the **source-level naming** the lowerer accepts:
+
+| Source syntax | Lowerer behavior | IR emission |
+|---|---|---|
+| `null` | Emit W2001 NullDeprecated warning, then lower normally | `Constant::Null` (unchanged) |
+| `~0` | Lower normally (no warning) | `Constant::Null` (unchanged) |
+
+Both source forms produce **byte-identical** `.triv` output — the wire-format `Constant::Null` encoding (1 byte, `0x00` 0-byte payload per ADR-0008 §"Constant pool") is the canonical Trit::Zero on-disk representation. No version bump.
+
+**For `T?~E` outcome types** (introduced in ADR-0020 §1), the same `Constant::Null` IR opcode encodes the null arm — Trit::Zero discriminator state is universal across nullable types and ternary outcome types alike. The OUTCOME_NEW_NULL opcode (ADR-0020 §7.3, opcode 0xC3) is the dynamic constructor equivalent; `Constant::Null` is the compile-time-constant form.
+
+**No backend change required.** Backends already handle `Constant::Null` (VM: shipped v0.3; JIT v0.9 / AOT v2.0 / Trytecode v∞: contract pre-existing). The source-level unification is parser-and-typecheck-only.

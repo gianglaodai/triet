@@ -381,7 +381,9 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 
 **Mục tiêu:** Compiler Triết viết bằng Triết. Bootstrap đầy đủ. 3-stage chain với fixed-point hội tụ là gate.
 
-**Quyết định kiến trúc:** [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — bootstrap chain shape, component order, canonical emission invariants, bit-identical gate semantics, Rust-shim stdlib, testing strategy, perf gate recalibration.
+**Quyết định kiến trúc:**
+- [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — bootstrap chain shape, component order, canonical emission invariants, bit-identical gate semantics, Rust-shim stdlib, testing strategy, perf gate recalibration.
+- [ADR-0020](docs/decisions/0020-outcome-error-handling.md) — outcome error handling primitive (`T~E` / `T?~E` trit-encoded fallibility, replaces forced `Result<T, E>` functional ceremony with imperative-friendly Triết-native form; `~+`/`~0`/`~-` constructors mirror balanced ternary states; `~?` propagate + `~:` default operators; verbose force-unwrap methods with mandatory message; `.triv` v4 → v5 patch bump). Self-host compiler v0.7.4.3+ adopts as primary error mechanism; existing `Result<T, E>` enum stays legacy-convention.
 
 **Deliverables:**
 - `compiler/lexer.tri` + `parser.tri` + `modules.tri` + `typecheck.tri` + `ir_lowerer.tri` + `pack_writer.tri` + `main.tri` — Triết-in-Triết compiler source, 1:1 mirror crate boundaries của Rust impl.
