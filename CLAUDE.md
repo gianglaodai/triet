@@ -30,11 +30,11 @@ that gap by grounding every recommendation in the project's own documents.
 Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.tripack`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.7.4.3-error (design locked, implementation pending)** — v0.6 Capability System shipped; v0.7 Self-hosting Compiler in progress (umbrella sub-tasks v0.7.1 → v0.7.4.2 shipped, lexer port v0.7.4.3 next). Interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0.
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative; header v0.6 stable, v0.7 design locked per ADR-0019 + ADR-0020 — header bumps at v0.7.13 verify gate)
+- `SPEC.md` — language semantics (authoritative; header v0.6 stable, v0.7 design locked per ADR-0019 + ADR-0020 + ADR-0021 — header bumps at v0.7.13 verify gate)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.7 Self-hosting Compiler in progress, **next: v0.7.4.3-error implementation** (Outcome type per ADR-0020)
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.7 Self-hosting Compiler in progress, **next: v0.7.4.3-error implementation** (Outcome type per ADR-0020 + Trilean! refinement per ADR-0021)
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — 20 ADRs for architectural decisions (ADR-0019 Self-hosting bootstrap + Addendums, ADR-0020 Outcome error handling; see `docs/decisions/README.md` for an index)
+- `docs/decisions/` — 21 ADRs for architectural decisions (ADR-0019 Self-hosting bootstrap + Addendums, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement for strict `if`; see `docs/decisions/README.md` for an index)
 
 ## Development principles
 
@@ -149,7 +149,7 @@ Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-log
 ### IR + bytecode VM (shipped v0.3; ADR-0007/0008/0010)
 `triet-ir` lowers AST to a register-SSA IR (53 opcodes) and runs it on a stack-of-frames VM. `.triv` is the wire format (currently v3 — bumped at ADR-0010 for `BR_TRILEAN` and ADR-0012 for `WITNESS_CALL`). The VM is **development tier only** per VISION §4.3; production target is AOT (v2.0) and trytecode (v∞).
 
-ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, strict `if cond` panics on Unknown (SPEC §7.1.1), `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing").
+ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing"). **Post-ADR-0021** (v0.7.4.3-error.3c), strict `if cond` Unknown-handling moved from *runtime panic via BrTrilean unknown_block* (primary safety) to *compile-time E1033 `PossiblyUnknownCondition`* (primary safety); the unknown_block panic stays as defense-in-depth for `if?`/match/untrusted `.triv` consumers — see [ADR-0010 Addendum §C](docs/decisions/0010-ternary-native-ir.md).
 
 ### Crate-Pack distribution (shipped v0.4; ADR-0011/0012/0013)
 `triet-pack` defines `.tripack` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash at pack level: `iface_hash` (ABI surface) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
@@ -185,7 +185,7 @@ Demo + capstone test: `demos/04-capability-system/` (illustrative) + `crates/tri
 ### Error code namespace
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
-- `triet::typecheck::E10XX` — type checker
+- `triet::typecheck::E10XX` — type checker (E1024-E1032 ADR-0020 Outcome; E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` per ADR-0021)
 - `triet::runtime::E20XX` — interpreter
 - `triet::modules::E21XX` — loader / resolver (E2100 = cyclic, E2101 = file-not-found, etc.)
 - `triet::capability::E22XX` — capability system (E2200 missing claim / E2201 self-contradictory / E2202 unresolved path / E2203 refused / E2204 dup decl / E2205 policy runtime / E2206 invalid root / E2207 invalid level / E2208 loader)
@@ -214,7 +214,7 @@ These are decisions locked by ADRs. Code generation, examples, error messages, a
 
 Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr`, `core`, `crate`, `self`, `super`.
 
-`Trilean` defaults to **Łukasiewicz Ł3** semantics (not Kleene). Don't substitute Boolean reasoning when working on logic ops.
+`Trilean` defaults to **Łukasiewicz Ł3** semantics (not Kleene). Don't substitute Boolean reasoning when working on logic ops. Per ADR-0021, the typecheck distinguishes generic `Trilean` (might be Unknown) from refinement `Trilean!` (statically proven ≠ Unknown). Plain `if cond` requires `Trilean!`; `Trilean` raises E1033. Literals `true`/`false` are `Trilean!`; `unknown` is `Trilean`. Non-nullable primitive comparisons (`Integer == Integer`, etc.) produce `Trilean!`. Łukasiewicz/Kleene ops preserve refinement when both operands are `Trilean!`.
 
 **Logic operators:** Both symbolic (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`) and keyword (`not`, `and`, `or`, `xor`, `implies`, `kleene_implies`, `kleene_xor`, `iff`, `kleene_iff`) forms are valid. Symbolic form is preferred per user convention. The `~` prefix consistently marks Kleene K3 variants.
 

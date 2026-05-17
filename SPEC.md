@@ -685,28 +685,43 @@ let category =
 
 #### 7.1.1 Xử lý `unknown` trong điều kiện
 
-Đây là quyết định AI-first quan trọng. Triết **bắt buộc** xử lý explicit khi điều kiện có thể `unknown`:
+Đây là quyết định AI-first quan trọng. Triết **bắt buộc** xử lý explicit khi điều kiện có thể `unknown`. Cơ chế: plain `if` chỉ nhận `Trilean!` (Trilean đã chứng minh tĩnh là ≠ Unknown — xem ADR-0021). `Trilean` (chưa refined) làm cond của plain `if` sẽ raise **E1033 `PossiblyUnknownCondition`**.
 
 ```triet
-// Lỗi compile: cond là Trilean, có thể unknown — phải xử lý
+// E1033 compile-time: cond là Trilean (might be Unknown) — plain `if` từ chối
 if cond { do_something() }
 
-// OK 1: dùng `if?` để đối xử unknown như false (giống boolean fallback)
+// OK 1: dùng `if?` để đối xử unknown như false (Trilean! ∪ Trilean accepted)
 if? cond { do_something() }
 
-// OK 2: dùng match để xử lý cả 3
+// OK 2: dùng match để xử lý cả 3 (exhaustive over Ł3)
 match cond {
     true => do_something(),
     false => do_other(),
     unknown => do_default(),
 }
 
-// OK 3: ép tới boolean 2 giá trị
-if cond.assume_known() { ... }  // panic nếu unknown
-if cond == true { ... }         // chỉ true mới chạy, unknown đối xử false
+// OK 3: narrow Trilean → Trilean! với assume_known(message) — runtime check, panic E2209 nếu Unknown
+if cond.assume_known("validated upstream") { ... }
 ```
 
-Lý do: nếu để `if cond` chạy mặc định trên 3 giá trị, dev rất dễ ngầm coi `unknown` là `false` mà không nhận ra — bug âm thầm. Triết force explicit. **AI-first:** LLM thấy lỗi compile, biết phải chọn cách xử lý.
+**Type-level refinement (ADR-0021):** Trilean có hai trạng thái tĩnh:
+
+- `Trilean` — generic, có thể là `true` / `false` / `unknown`.
+- `Trilean!` — refinement subtype, statically proven ≠ Unknown. Generated bởi:
+  - Literal `true` / `false`.
+  - Comparisons giữa non-nullable primitives (`Integer == Integer`, `String < String`, …).
+  - Łukasiewicz/Kleene operators trên hai `Trilean!` operand.
+  - `assume_known("msg")` method (panic-possible nhưng visible).
+  - Pattern match arms cho `true` / `false` (variable bound bên trong arm là `Trilean!`).
+
+Widening `Trilean! → Trilean` là implicit. Narrowing `Trilean → Trilean!` PHẢI explicit (qua `.assume_known(msg)`, `match`, hoặc `if?`).
+
+**Cẩn thận với `cond == true` pattern:** Vì `Trilean == Trilean` trả `Trilean` (per ADR-0010 §4: `Unknown == true` → `Unknown`), `if (cond == true)` với `cond: Trilean` vẫn raise E1033. Chỉ an toàn nếu `cond: Trilean!` đã sẵn — lúc đó `Trilean! == Trilean!` → `Trilean!`. Khuyến nghị: dùng `match` cho clarity thay vì rely trên equality narrowing.
+
+Lý do compile-time: nếu để `if cond` chạy mặc định trên 3 giá trị, dev rất dễ ngầm coi `unknown` là `false` mà không nhận ra — bug âm thầm. Triết force explicit. **AI-first:** LLM thấy lỗi compile, biết phải chọn cách xử lý. **Stability:** lỗi ở compile time thay vì runtime panic.
+
+Xem [ADR-0021](docs/decisions/0021-trilean-refinement.md) cho design lock đầy đủ, danh sách 4 remediations trong E1033 diagnostic, và bảng operator refinement rules.
 
 ### 7.2 Loops: `for`, `while`, `loop`
 

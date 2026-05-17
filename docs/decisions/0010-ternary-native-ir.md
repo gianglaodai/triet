@@ -193,3 +193,26 @@ Both source forms produce **byte-identical** `.triv` output — the wire-format 
 **For `T?~E` outcome types** (introduced in ADR-0020 §1), the same `Constant::Null` IR opcode encodes the null arm — Trit::Zero discriminator state is universal across nullable types and ternary outcome types alike. The OUTCOME_NEW_NULL opcode (ADR-0020 §7.3, opcode 0xC3) is the dynamic constructor equivalent; `Constant::Null` is the compile-time-constant form.
 
 **No backend change required.** Backends already handle `Constant::Null` (VM: shipped v0.3; JIT v0.9 / AOT v2.0 / Trytecode v∞: contract pre-existing). The source-level unification is parser-and-typecheck-only.
+
+---
+
+## Addendum §C — v0.7.4.3-error.3c (BrTrilean unknown_block demoted to defense-in-depth)
+
+Per [ADR-0021](0021-trilean-refinement.md) (2026-05-18), the safety contract for plain `if cond` shifts from **runtime panic via BrTrilean unknown_block** (this ADR §1) to **compile-time error via E1033 `PossiblyUnknownCondition`** (ADR-0021 §3).
+
+**No change to IR, VM, or wire format.** The `BrTrilean { unknown_block }` opcode locked in this ADR continues to exist with identical runtime semantics. The change is purely in the **threat model**:
+
+| Era | Primary safety mechanism for plain `if` on possibly-Unknown |
+|---|---|
+| Pre-ADR-0021 (v0.7 ≤ .3b) | Runtime panic — VM dispatches Unknown discriminator to `unknown_block`, which the lowerer emits as Panic |
+| Post-ADR-0021 (v0.7.4.3-error.3d+) | Compile-time error — typecheck rejects the program before IR is generated |
+
+The runtime path remains **defense-in-depth** for three legitimate cases:
+
+1. **`if? cond`** — relaxed form continues to dispatch all three Trilean states correctly via BrTrilean. The `unknown_block` for `if?` is the *else* branch, not a panic.
+2. **`match`** — three-arm match on Trilean lowers through BrTrilean; all arms reachable.
+3. **`.triv` consumers that skip typecheck** — backends loading IR from untrusted sources (cross-package CAS imports without manifest verification, hypothetical future JIT-on-untrusted-bytecode) cannot rely on typecheck having run. The runtime panic stays as a paranoia net.
+
+**Author 2026-05-18 directive** ("xử lý ngay" / no warning period) means v0.7.4.3-error.3d ships compile-time rejection immediately. Programs that pre-3d relied on the runtime panic as primary safety must migrate per ADR-0021 §3 remediations.
+
+**No backend change required.** The BrTrilean opcode, its three-successor encoding, and the lowerer's emission strategy for `if` / `if?` / `match` are unchanged.

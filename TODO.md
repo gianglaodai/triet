@@ -55,10 +55,12 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### In progress
 
-_None — awaiting next sub-task selection._
+- [ ] **v0.7.4.3-error.3c** — ADR-0021 `Trilean!` refinement design + SPEC §7.1.1 fix + ADR-0010 Addendum §C (BrTrilean unknown_block demoted to defense-in-depth)
 
 ### Next sub-task: v0.7.4.3-error remaining
 
+- [ ] **v0.7.4.3-error.3d** — Implement `Trilean!` refinement: `Type::Trilean { refined: bool }`, operator typing rules, E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined`, ~15 typecheck tests
+- [ ] **v0.7.4.3-error.3e** — Migrate corpus (12 sites in `demos/02-module-system/{alu,memory,utils,utils/print}.tri`) from `if (t == true/false/unknown)` to `match` / `if?`
 - [ ] **v0.7.4.3-error.4** — Migration tool `triet fmt --fix --migrate-null` + auto-migrate existing `null` in stdlib + examples
 - [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
 

@@ -43,7 +43,7 @@ prior decision, write a new ADR that supersedes it.
 
 | ADR | Title | Status |
 |---|---|---|
-| [0010](0010-ternary-native-ir.md) | Ternary-native IR (`BrTrilean` 3-way branch, strict `if` Unknown→panic, Ł3-aware `Eq`/`Ne`) | Locked |
+| [0010](0010-ternary-native-ir.md) | Ternary-native IR (`BrTrilean` 3-way branch, strict `if` Unknown→panic, Ł3-aware `Eq`/`Ne`) — *+ v0.7.4.3-error Addendum: null→~0 unification; + v0.7.4.3-error.3c Addendum §C: BrTrilean unknown_block demoted to defense-in-depth (primary safety moved to typecheck E1033 per ADR-0021)* | Locked |
 
 ### v0.4 — Crate-Pack + Stable ABI
 
@@ -74,6 +74,7 @@ prior decision, write a new ADR that supersedes it.
 |---|---|---|
 | [0019](0019-self-hosting-compiler-bootstrap.md) | Self-hosting compiler bootstrap (3-stage chain, bottom-up incremental component order, canonical emission invariants, full `.tripack` byte-identical gate, Rust-shim builtin stdlib, 3-layer testing, perf parity gate deferred to v0.9) — *+ v0.7.3 Addendum: collection TypeTags first-class, .triv v3 → v4 patch bump, Vector rename (Java naming), drop duplicate builtin IDs 23/26, sub-task split v0.7.3.1–4; + v0.7.4 Addendum: generic function syntax type-erased, stdlib stubs Java-aesthetic, interpreter parity deferred* | Locked |
 | [0020](0020-outcome-error-handling.md) | Outcome error handling (`T~E` 2-state / `T?~E` 3-state — trit-encoded fallibility, `~+`/`~0`/`~-` constructors, `~?` propagate + `~:` default operators, verbose `.unwrap_value(message)` / `.unwrap_error(message)` methods, `.triv` v4 → v5 patch bump, Trit::Zero reserved for v0.8 async pending, std.result coexistence) | Locked |
+| [0021](0021-trilean-refinement.md) | Compile-time `Trilean!` refinement for strict `if` (typecheck-only single-bit refinement on `Type::Trilean`, E1033 `PossiblyUnknownCondition` for plain `if` on possibly-Unknown cond, E1034 `TrileanReturnNotRefined`, `.assume_known(message)` returns `Trilean!`, no IR / wire-format / VM changes — refinement erased at lowering, aligns implementation with SPEC §7.1.1) | Locked |
 
 ## How to read an ADR
 
