@@ -8,7 +8,7 @@
 use triet_lexer::{IntLiteral as LexIntLiteral, Span, Token};
 use triet_syntax::{
     BinaryOperator, Block, Expr, ExprId, FStringPart, FStringSegments, LambdaParam, MatchArm,
-    NumericSuffix as AstSuffix, Spanned, TrileanValue, UnaryOperator,
+    NumericSuffix as AstSuffix, OutcomeArm, Spanned, TrileanValue, UnaryOperator,
 };
 
 use crate::{error::ParseError, parser::Parser, pattern::parse_pattern, type_expr::parse_type};
@@ -221,6 +221,11 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         Token::Pipe | Token::OrOr => parse_lambda(parser),
         // Unary prefix operators
         Token::Minus | Token::Bang | Token::Not => parse_unary(parser),
+        // Outcome constructors (v0.7.4.3-error per ADR-0020 §2):
+        // `~+ value` (Positive), `~- error` (Negative), `~0` (Zero).
+        Token::TildePlus => parse_outcome_constructor(parser, OutcomeArm::Positive, span),
+        Token::TildeMinus => parse_outcome_constructor(parser, OutcomeArm::Negative, span),
+        Token::TildeZero => parse_outcome_zero(parser, span),
         other => Err(ParseError::UnexpectedToken {
             expected: "expression".to_owned(),
             found: format!("{other:?}"),
@@ -239,6 +244,55 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         Expr::UnaryOp {
             operator: UnaryOperator::Negate,
             operand,
+        },
+        span,
+    )))
+}
+
+// ============================================================================
+// Outcome constructors (v0.7.4.3-error per ADR-0020 §2)
+// ============================================================================
+
+/// Parse `~+ expr` (Positive arm) or `~- expr` (Negative arm). The
+/// compound token (`TildePlus`/`TildeMinus`) is the current peek; this
+/// function consumes it and parses the following payload expression at
+/// unary-right binding power so that `~+ -1` parses as
+/// `Positive(Negate(1))` and `~- IoError::NotFound(path)` parses as
+/// `Negative(Call(...))` cleanly.
+///
+/// Style guide mandates space between the prefix and payload, but the
+/// lexer emits them as separate tokens regardless of whitespace —
+/// `triet fmt` enforces the space at format-time.
+fn parse_outcome_constructor(
+    parser: &mut Parser<'_>,
+    arm: OutcomeArm,
+    op_span: Span,
+) -> Result<ExprId, ParseError> {
+    parser.advance(); // consume TildePlus or TildeMinus
+    let payload = parse_expression_bp(parser, UNARY_RIGHT_BP)?;
+    let span = op_span.start..arena_span(parser, payload).end;
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::OutcomeConstructor {
+            arm,
+            payload: Some(payload),
+        },
+        span,
+    )))
+}
+
+/// Parse `~0` (Zero arm — null state). No payload follows. Only valid
+/// in T?~E contexts at typecheck time; parse accepts unconditionally
+/// per refuse-over-guess (E1025 fires at typecheck if used in T~E).
+///
+/// Per ADR-0020 §10, `~0` is also the canonical `Trit::Zero` literal
+/// for `T?` (deprecates `null` keyword). The parser produces the same
+/// AST node either way; semantic interpretation is typecheck's job.
+fn parse_outcome_zero(parser: &mut Parser<'_>, span: Span) -> Result<ExprId, ParseError> {
+    parser.advance(); // consume TildeZero
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::OutcomeConstructor {
+            arm: OutcomeArm::Zero,
+            payload: None,
         },
         span,
     )))
@@ -469,9 +523,13 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
 
 const fn postfix_binding_power(token: &Token) -> Option<u8> {
     match token {
-        Token::Dot | Token::QuestionDot | Token::LParen | Token::LBracket | Token::BangBang => {
-            Some(POSTFIX_LEFT_BP)
-        }
+        Token::Dot
+        | Token::QuestionDot
+        | Token::LParen
+        | Token::LBracket
+        | Token::BangBang
+        | Token::TildeQuestion
+        | Token::TildeColon => Some(POSTFIX_LEFT_BP),
         _ => None,
     }
 }
@@ -489,6 +547,8 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
                 .arena
                 .alloc_expression(Spanned::new(Expr::ForceUnwrap(lhs), span)))
         }
+        Token::TildeQuestion => parse_outcome_propagate(parser, lhs),
+        Token::TildeColon => parse_outcome_default(parser, lhs),
         Token::LBracket => {
             // Subscript / index access — not in v0.1 SPEC; treat as error
             // for now to keep semantics tight.
@@ -501,6 +561,64 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
         }
         _ => unreachable!("caller filtered postfix tokens"),
     }
+}
+
+/// Parse `inner ~? |capture_name| early_return_form` per ADR-0020 §3.1.
+/// The `|name|` form is mandatory — no implicit error binding.
+/// `|_|` allowed for discard.
+fn parse_outcome_propagate(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprId, ParseError> {
+    parser.expect(&Token::TildeQuestion, "`~?`")?;
+
+    // Expect `|name|` closure-capture marker (single `|` token).
+    parser.expect(&Token::Pipe, "`|` (closure capture for ~?)")?;
+    let (capture_token, capture_span) =
+        parser.peek().cloned().ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "binding name or `_`".to_owned(),
+            span: parser.eof_span(),
+        })?;
+    let capture_name = match capture_token {
+        Token::Identifier(name) => {
+            parser.advance();
+            Some(name)
+        }
+        Token::Underscore => {
+            parser.advance();
+            None
+        }
+        other => {
+            return Err(ParseError::UnexpectedToken {
+                expected: "binding name or `_` after `|`".to_owned(),
+                found: format!("{other:?}"),
+                span: capture_span,
+            });
+        }
+    };
+    parser.expect(&Token::Pipe, "closing `|`")?;
+
+    // Parse the early-return form. Typecheck (v0.7.4.3-error.2) enforces
+    // that this is a return/panic/re-fail; parse accepts any expression
+    // and surfaces the constraint at semantic-analysis time.
+    let early_return = parse_expression_bp(parser, 0)?;
+    let span = arena_span(parser, inner).start..arena_span(parser, early_return).end;
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::OutcomePropagate {
+            inner,
+            capture_name,
+            early_return,
+        },
+        span,
+    )))
+}
+
+/// Parse `inner ~: default_expr` per ADR-0020 §3.2.
+fn parse_outcome_default(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprId, ParseError> {
+    parser.expect(&Token::TildeColon, "`~:`")?;
+    let default = parse_expression_bp(parser, 0)?;
+    let span = arena_span(parser, inner).start..arena_span(parser, default).end;
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::OutcomeDefault { inner, default },
+        span,
+    )))
 }
 
 fn parse_dot_postfix(
@@ -695,7 +813,7 @@ fn render_format_token(token: &Token) -> String {
 }
 
 #[cfg(test)]
-#[cfg(test)]
+#[allow(clippy::doc_markdown, clippy::doc_lazy_continuation)]
 mod tests;
 
 // ============================================================================

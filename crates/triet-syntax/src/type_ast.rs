@@ -40,4 +40,23 @@ pub enum TypeExpr {
         /// Return type.
         return_type: TypeId,
     },
+
+    /// Outcome type (v0.7.4.3-error per [ADR-0020]):
+    ///
+    /// - `T~E` binary outcome (`allow_null_state = false`): success T or
+    ///   failure E. `Trit::Zero` state invalid (typecheck E1025).
+    /// - `T?~E` ternary outcome (`allow_null_state = true`): success T,
+    ///   null (`Trit::Zero`), or failure E. Parses from `?~` compound token.
+    ///
+    /// [ADR-0020]: ../../../../docs/decisions/0020-outcome-error-handling.md
+    Outcome {
+        /// Success-arm payload type.
+        value_type: TypeId,
+        /// Failure-arm payload type.
+        error_type: TypeId,
+        /// True when the type allows a null state (`Trit::Zero` arm
+        /// carrying no payload). Parsed from `T?~E` compound; false
+        /// for binary `T~E`.
+        allow_null_state: bool,
+    },
 }

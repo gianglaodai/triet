@@ -155,6 +155,31 @@ impl Checker<'_> {
                 variant_name,
                 payload,
             } => self.check_enum_literal(&name, &variant_name, payload.as_ref(), span),
+
+            // v0.7.4.3-error.1 (ADR-0020 §2-§3): outcome AST nodes
+            // accepted at parse time. Full typecheck (Type::Outcome,
+            // exhaustiveness E1026, error codes E1024-E1032, W2001
+            // NullDeprecated) lands in v0.7.4.3-error.2.
+            Expr::OutcomeConstructor { payload, .. } => {
+                if let Some(inner) = payload {
+                    self.infer_expression(inner);
+                }
+                Type::Unknown
+            }
+            Expr::OutcomePropagate {
+                inner,
+                early_return,
+                ..
+            } => {
+                self.infer_expression(inner);
+                self.infer_expression(early_return);
+                Type::Unknown
+            }
+            Expr::OutcomeDefault { inner, default } => {
+                self.infer_expression(inner);
+                self.infer_expression(default);
+                Type::Unknown
+            }
         }
     }
 

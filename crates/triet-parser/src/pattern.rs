@@ -3,7 +3,8 @@
 
 use triet_lexer::{IntLiteral as LexIntLiteral, Token};
 use triet_syntax::{
-    LiteralPattern, NumericSuffix as AstSuffix, Pattern, PatternId, Spanned, TrileanValue,
+    LiteralPattern, NumericSuffix as AstSuffix, OutcomeArm, Pattern, PatternId, Spanned,
+    TrileanValue,
 };
 
 use crate::{error::ParseError, parser::Parser};
@@ -90,6 +91,22 @@ fn parse_pattern_no_or(parser: &mut Parser<'_>) -> Result<PatternId, ParseError>
         Token::Minus => {
             // Negative integer literal in pattern: `-5`, `-9_841_tryte`.
             parse_negative_literal_pattern(parser)
+        }
+        // Outcome arm patterns (v0.7.4.3-error per ADR-0020 §5):
+        // `~+ binding` (Positive), `~- binding` (Negative), `~0` (Zero).
+        // Style guide mandates space; lexer is whitespace-insensitive
+        // between compound and following identifier.
+        Token::TildePlus => parse_outcome_arm_pattern(parser, OutcomeArm::Positive, span),
+        Token::TildeMinus => parse_outcome_arm_pattern(parser, OutcomeArm::Negative, span),
+        Token::TildeZero => {
+            parser.advance();
+            Ok(parser.arena.alloc_pattern(Spanned::new(
+                Pattern::OutcomeArm {
+                    arm: OutcomeArm::Zero,
+                    payload: None,
+                },
+                span,
+            )))
         }
         other => Err(ParseError::UnexpectedToken {
             expected: "pattern".to_owned(),
@@ -314,6 +331,26 @@ fn parse_literal_pattern_payload(
     }
 }
 
+/// Parse `~+ binding` or `~- binding` outcome arm pattern. Consumes
+/// the compound prefix token and then parses a sub-pattern (variable
+/// name, wildcard `_`, or literal/nested pattern) per ADR-0020 §5.2.
+fn parse_outcome_arm_pattern(
+    parser: &mut Parser<'_>,
+    arm: OutcomeArm,
+    op_span: triet_lexer::Span,
+) -> Result<PatternId, ParseError> {
+    parser.advance(); // consume TildePlus or TildeMinus
+    let payload = parse_pattern_no_or(parser)?;
+    let span = op_span.start..parser.arena.pattern(payload).span.end;
+    Ok(parser.arena.alloc_pattern(Spanned::new(
+        Pattern::OutcomeArm {
+            arm,
+            payload: Some(payload),
+        },
+        span,
+    )))
+}
+
 /// Convert a lexer-side numeric suffix to the AST-side enum (they have
 /// the same variants but live in different crates by design).
 const fn convert_suffix(suffix: triet_lexer::NumericSuffix) -> AstSuffix {
@@ -326,6 +363,7 @@ const fn convert_suffix(suffix: triet_lexer::NumericSuffix) -> AstSuffix {
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
     use triet_lexer::lex;
@@ -610,6 +648,69 @@ mod tests {
                 }
             }
             other => panic!("expected Tuple, got {other:?}"),
+        }
+    }
+
+    // === Outcome arm patterns (v0.7.4.3-error per ADR-0020 §5) ===
+
+    /// `~+ value` parses as OutcomeArm { Positive, payload: Variable }.
+    #[test]
+    fn parses_outcome_positive_arm_pattern_with_binding() {
+        let (parser, id) = parse("~+ value");
+        match &parser.arena.pattern(id).node {
+            Pattern::OutcomeArm { arm, payload } => {
+                assert_eq!(*arm, OutcomeArm::Positive);
+                let payload_id = payload.expect("positive arm binds variable");
+                match &parser.arena.pattern(payload_id).node {
+                    Pattern::Variable(name) => assert_eq!(name, "value"),
+                    other => panic!("expected Variable, got {other:?}"),
+                }
+            }
+            other => panic!("expected OutcomeArm, got {other:?}"),
+        }
+    }
+
+    /// `~- error` parses as OutcomeArm { Negative, payload: Variable }.
+    #[test]
+    fn parses_outcome_negative_arm_pattern_with_binding() {
+        let (parser, id) = parse("~- error");
+        match &parser.arena.pattern(id).node {
+            Pattern::OutcomeArm { arm, payload } => {
+                assert_eq!(*arm, OutcomeArm::Negative);
+                assert!(payload.is_some());
+            }
+            other => panic!("expected OutcomeArm, got {other:?}"),
+        }
+    }
+
+    /// `~0` parses as OutcomeArm { Zero, payload: None }. No binding —
+    /// null arm carries no payload per ADR-0020.
+    #[test]
+    fn parses_outcome_zero_arm_pattern_no_payload() {
+        let (parser, id) = parse("~0");
+        match &parser.arena.pattern(id).node {
+            Pattern::OutcomeArm { arm, payload } => {
+                assert_eq!(*arm, OutcomeArm::Zero);
+                assert!(payload.is_none(), "~0 pattern has no payload");
+            }
+            other => panic!("expected OutcomeArm, got {other:?}"),
+        }
+    }
+
+    /// Wildcard binding: `~+ _` discards positive arm payload.
+    #[test]
+    fn parses_outcome_positive_arm_pattern_with_wildcard() {
+        let (parser, id) = parse("~+ _");
+        match &parser.arena.pattern(id).node {
+            Pattern::OutcomeArm { arm, payload } => {
+                assert_eq!(*arm, OutcomeArm::Positive);
+                let payload_id = payload.expect("wildcard is still a sub-pattern");
+                assert!(matches!(
+                    parser.arena.pattern(payload_id).node,
+                    Pattern::Wildcard
+                ));
+            }
+            other => panic!("expected OutcomeArm, got {other:?}"),
         }
     }
 }

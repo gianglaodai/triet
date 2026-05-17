@@ -226,6 +226,34 @@ pub enum Token {
     /// `~^` — Kleene XOR.
     #[token("~^")]
     TildeCaret,
+    // === Outcome syntax (v0.7.4.3-error per ADR-0020) ===
+    // Compound tokens MUST appear before `Tilde` bare for longest-match.
+    /// `?~` — Ternary outcome separator (`T?~E` parses unified per
+    /// ADR-0020 §1.3). Must precede `Question` for longest-match.
+    #[token("?~")]
+    QuestionTilde,
+    /// `~+` — Outcome positive arm constructor (success).
+    #[token("~+")]
+    TildePlus,
+    /// `~-` — Outcome negative arm constructor (failure).
+    #[token("~-")]
+    TildeMinus,
+    /// `~0` — Outcome zero arm constructor (null state, `T?~E` only).
+    /// Also the canonical `Trit::Zero` literal for `T?` per ADR-0020
+    /// §10 (replaces deprecated `null` keyword).
+    #[token("~0")]
+    TildeZero,
+    /// `~?` — Outcome propagate operator (early-return on failure).
+    /// Right-hand side uses `|capture| early_return_form` syntax.
+    #[token("~?")]
+    TildeQuestion,
+    /// `~:` — Outcome default operator (substitute value on failure).
+    #[token("~:")]
+    TildeColon,
+    /// `~` — Binary outcome type separator (`T~E`). Bare tilde in type
+    /// position. Must follow all compound `~X` tokens for longest-match.
+    #[token("~")]
+    Tilde,
     /// `->` — function return type.
     #[token("->")]
     ThinArrow,

@@ -255,6 +255,10 @@ fn resolve_type_expr_with_params(
             }
         }
         TypeExpr::Generic { .. } => Type::Unknown,
+        // v0.7.4.3-error.1 (ADR-0020 §1): outcome type expressions
+        // parse-only. Cross-module signature extraction for T~E /
+        // T?~E lands in v0.7.4.3-error.2.
+        TypeExpr::Outcome { .. } => Type::Unknown,
     }
 }
 

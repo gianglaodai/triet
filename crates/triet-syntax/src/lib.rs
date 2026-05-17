@@ -43,7 +43,8 @@ pub mod visibility;
 
 pub use arena::{Arena, ExprId, PatternId, StmtId, TypeId};
 pub use expr::{
-    BinaryOperator, Expr, FStringPart, FStringSegments, LambdaParam, MatchArm, UnaryOperator,
+    BinaryOperator, Expr, FStringPart, FStringSegments, LambdaParam, MatchArm, OutcomeArm,
+    UnaryOperator,
 };
 pub use item::{
     EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportFrom, ImportName,

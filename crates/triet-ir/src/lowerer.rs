@@ -1023,6 +1023,23 @@ impl<'a> LowerCtx<'a> {
                 });
                 dest
             }
+
+            // v0.7.4.3-error.1 (ADR-0020): outcome AST nodes accepted
+            // at parse time; lowering lands in v0.7.4.3-error.3 with
+            // new opcodes 0xC1–0xC6 and RuntimeValue::Outcome. For
+            // now, emit a placeholder Unit constant and let the user
+            // know via typecheck (v0.7.4.3-error.2 will reject).
+            Expr::OutcomeConstructor { .. }
+            | Expr::OutcomePropagate { .. }
+            | Expr::OutcomeDefault { .. } => {
+                let const_id = self.intern_constant(Constant::Unit);
+                let dest = self.fresh_value();
+                self.emit(Instruction::Const {
+                    dest,
+                    constant: const_id,
+                });
+                dest
+            }
         }
     }
 

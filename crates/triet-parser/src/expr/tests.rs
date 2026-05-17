@@ -693,3 +693,137 @@ fn parses_logical_chain_from_measles_demo() {
     // Outer should be a binary And.
     assert_eq!(binary_op_of(&parser, id), BinaryOperator::And);
 }
+
+// === Outcome constructors + operators (v0.7.4.3-error per ADR-0020) ===
+
+/// `~+ 5` parses as OutcomeConstructor { arm: Positive, payload: Some(5) }.
+#[test]
+fn parses_outcome_positive_constructor() {
+    let (parser, id) = parse_expr("~+ 5");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomeConstructor { arm, payload } => {
+            assert_eq!(*arm, triet_syntax::OutcomeArm::Positive);
+            let payload_id = payload.expect("positive arm carries payload");
+            assert_eq!(integer_value_of(&parser, payload_id), 5);
+        }
+        other => panic!("expected OutcomeConstructor, got {other:?}"),
+    }
+}
+
+/// `~- error` parses as OutcomeConstructor { arm: Negative, .. }.
+/// Payload can be any expression.
+#[test]
+fn parses_outcome_negative_constructor_with_identifier_payload() {
+    let (parser, id) = parse_expr("~- err");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomeConstructor { arm, payload } => {
+            assert_eq!(*arm, triet_syntax::OutcomeArm::Negative);
+            let payload_id = payload.expect("negative arm carries payload");
+            match &parser.arena.expression(payload_id).node {
+                Expr::Identifier(name) => assert_eq!(name, "err"),
+                other => panic!("expected Identifier payload, got {other:?}"),
+            }
+        }
+        other => panic!("expected OutcomeConstructor, got {other:?}"),
+    }
+}
+
+/// `~+ -1` is the canonical readability case — confirms space-between
+/// parsing works and `-1` becomes the payload (a negated integer).
+#[test]
+fn parses_outcome_positive_with_negative_integer_payload() {
+    let (parser, id) = parse_expr("~+ -1");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomeConstructor { arm, payload } => {
+            assert_eq!(*arm, triet_syntax::OutcomeArm::Positive);
+            let payload_id = payload.expect("payload");
+            match &parser.arena.expression(payload_id).node {
+                Expr::UnaryOp {
+                    operator: UnaryOperator::Negate,
+                    operand,
+                } => {
+                    assert_eq!(integer_value_of(&parser, *operand), 1);
+                }
+                other => panic!("expected UnaryOp(Negate, 1), got {other:?}"),
+            }
+        }
+        other => panic!("expected OutcomeConstructor, got {other:?}"),
+    }
+}
+
+/// `~0` parses as OutcomeConstructor { arm: Zero, payload: None }.
+#[test]
+fn parses_outcome_zero_literal_no_payload() {
+    let (parser, id) = parse_expr("~0");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomeConstructor { arm, payload } => {
+            assert_eq!(*arm, triet_syntax::OutcomeArm::Zero);
+            assert!(payload.is_none(), "~0 has no payload");
+        }
+        other => panic!("expected OutcomeConstructor, got {other:?}"),
+    }
+}
+
+/// `expr ~? |err| return ~- err` parses as OutcomePropagate with
+/// explicit closure capture binding name "err" and an early-return body.
+///
+/// NOTE: ADR-0020 §3.1 examples use `return ~- err` as the RHS, but
+/// `return` is a Triết Stmt (not Expr) — so bare `return` form is
+/// PARSE-DEFERRED. Two valid forms at v0.7.4.3-error.1:
+///
+/// 1. Expression RHS: `expr ~? |err| ~- err` (re-emits error as value)
+/// 2. Braced block RHS: `expr ~? |err| { return ~- err }`
+///
+/// Unbraced `return` after `|cap|` is tracked as a deferred parse
+/// sugar in ADR-0019 Addendum §A7 for v0.7.4.3-error.2.
+#[test]
+fn parses_outcome_propagate_with_named_capture() {
+    let (parser, id) = parse_expr("read_file ~? |err| ~- err");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomePropagate {
+            capture_name,
+            inner,
+            early_return,
+        } => {
+            assert_eq!(capture_name.as_deref(), Some("err"));
+            match &parser.arena.expression(*inner).node {
+                Expr::Identifier(name) => assert_eq!(name, "read_file"),
+                other => panic!("expected Identifier as inner, got {other:?}"),
+            }
+            // Early-return shape exists; deep-walk in v0.7.4.3-error.2.
+            let _ = early_return;
+        }
+        other => panic!("expected OutcomePropagate, got {other:?}"),
+    }
+}
+
+/// `expr ~? |_| ~- err` — `|_|` discards the captured error name.
+#[test]
+fn parses_outcome_propagate_with_underscore_discard() {
+    let (parser, id) = parse_expr("read_file ~? |_| ~- err");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomePropagate { capture_name, .. } => {
+            assert!(
+                capture_name.is_none(),
+                "|_| capture must produce None for capture_name"
+            );
+        }
+        other => panic!("expected OutcomePropagate, got {other:?}"),
+    }
+}
+
+/// `expr ~: default_value` parses as OutcomeDefault.
+#[test]
+fn parses_outcome_default_operator() {
+    let (parser, id) = parse_expr("parse_count ~: 0");
+    match &parser.arena.expression(id).node {
+        Expr::OutcomeDefault { inner, default } => {
+            match &parser.arena.expression(*inner).node {
+                Expr::Identifier(name) => assert_eq!(name, "parse_count"),
+                other => panic!("expected Identifier as inner, got {other:?}"),
+            }
+            assert_eq!(integer_value_of(&parser, *default), 0);
+        }
+        other => panic!("expected OutcomeDefault, got {other:?}"),
+    }
+}

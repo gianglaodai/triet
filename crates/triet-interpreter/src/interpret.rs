@@ -577,6 +577,21 @@ impl<'p> Interpreter<'p> {
                     payload: payload_value,
                 })
             }
+            // v0.7.4.3-error.1 (ADR-0020): outcome AST nodes are
+            // accepted at parse time but execution paths land in
+            // v0.7.4.3-error.3 (VM dispatch). Interpreter parity is
+            // a separately deferred §A7 item — outcome programs run
+            // via `triet build` + `triet run .triv` (VM path).
+            Expr::OutcomeConstructor { .. }
+            | Expr::OutcomePropagate { .. }
+            | Expr::OutcomeDefault { .. } => Err(RuntimeError::TypeError {
+                message: "outcome operators (~+, ~0, ~-, ~?, ~:) not supported by the interpreter — \
+                          pending v0.7.4.3-error.3 VM dispatch; interpreter parity tracked as a \
+                          deferred item in ADR-0019 Addendum §A7 (use `triet build` + `triet run .triv` \
+                          path for now)"
+                    .into(),
+                span,
+            }),
         }
     }
 

@@ -51,8 +51,45 @@ fn parse_type_atom(parser: &mut Parser<'_>) -> Result<TypeId, ParseError> {
     }
 }
 
-/// Apply zero or more `?` suffixes to wrap a type in `Nullable`.
+/// Apply postfix type operators after parsing an atom. Order matters
+/// because the outcome compounds `?~` and `~` take precedence over the
+/// historical `?` chained nullable wrapping (which still applies when
+/// neither outcome compound is present).
+///
+/// Precedence per ADR-0020 §1.3:
+/// 1. `T?~E` (compound `?~` token) — `TypeExpr::Outcome` `{ allow_null: true }`
+/// 2. `T~E`  (bare `~` token)      — `TypeExpr::Outcome` `{ allow_null: false }`
+/// 3. `T?`...`?` (one or more bare `?` tokens) — chained `Nullable`
 fn apply_type_postfix(parser: &mut Parser<'_>, mut id: TypeId) -> Result<TypeId, ParseError> {
+    // v0.7.4.3-error: check for outcome compounds first.
+    if parser.eat(&Token::QuestionTilde) {
+        let error_type = parse_type_atom(parser)?;
+        let value_span = parser.arena.type_expression(id).span.clone();
+        let error_span = parser.arena.type_expression(error_type).span.clone();
+        let span = value_span.start..error_span.end;
+        return Ok(parser.arena.alloc_type(Spanned::new(
+            TypeExpr::Outcome {
+                value_type: id,
+                error_type,
+                allow_null_state: true,
+            },
+            span,
+        )));
+    }
+    if parser.eat(&Token::Tilde) {
+        let error_type = parse_type_atom(parser)?;
+        let value_span = parser.arena.type_expression(id).span.clone();
+        let error_span = parser.arena.type_expression(error_type).span.clone();
+        let span = value_span.start..error_span.end;
+        return Ok(parser.arena.alloc_type(Spanned::new(
+            TypeExpr::Outcome {
+                value_type: id,
+                error_type,
+                allow_null_state: false,
+            },
+            span,
+        )));
+    }
     while parser.eat(&Token::Question) {
         let inner_span = parser.arena.type_expression(id).span.clone();
         // The `?` token sits right after the inner type; extend span to
@@ -154,6 +191,7 @@ fn parse_paren_type(
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
     use triet_lexer::lex;
@@ -424,5 +462,93 @@ mod tests {
         let mut parser = Parser::new(leaked);
         let err = parse_type(&mut parser).unwrap_err();
         assert!(matches!(err, ParseError::UnexpectedEof { .. }));
+    }
+
+    // === Outcome types (v0.7.4.3-error per ADR-0020 §1) ===
+
+    /// `T~E` parses as binary outcome (allow_null_state=false).
+    #[test]
+    fn parses_binary_outcome_type() {
+        let (parser, id) = parse("String~IoError");
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } => {
+                assert!(!*allow_null_state, "T~E must be binary outcome");
+                expect_named(&parser, *value_type, "String");
+                expect_named(&parser, *error_type, "IoError");
+            }
+            other => panic!("expected Outcome (binary), got {other:?}"),
+        }
+    }
+
+    /// `T?~E` parses as ternary outcome (allow_null_state=true) via
+    /// the `?~` lexer compound token. Confirms ADR-0020 §1.3 unified
+    /// parse (NOT `(T?)~E` chain).
+    #[test]
+    fn parses_ternary_outcome_type_via_question_tilde_compound() {
+        let (parser, id) = parse("Symbol?~IoError");
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } => {
+                assert!(*allow_null_state, "T?~E must be ternary outcome");
+                expect_named(&parser, *value_type, "Symbol");
+                expect_named(&parser, *error_type, "IoError");
+            }
+            other => panic!("expected Outcome (ternary), got {other:?}"),
+        }
+    }
+
+    /// Outcome types compose with whitespace tolerance around the
+    /// compound. `T?~E` and `T ?~ E` produce identical AST.
+    #[test]
+    fn ternary_outcome_accepts_outer_whitespace() {
+        let (parser_a, id_a) = parse("Symbol?~IoError");
+        let (parser_b, id_b) = parse("Symbol ?~ IoError");
+        // Both should be Outcome with allow_null_state=true. Compare
+        // shapes.
+        let node_a = parser_a.arena.type_expression(id_a).node.clone();
+        let node_b = parser_b.arena.type_expression(id_b).node.clone();
+        match (&node_a, &node_b) {
+            (
+                TypeExpr::Outcome {
+                    allow_null_state: a,
+                    ..
+                },
+                TypeExpr::Outcome {
+                    allow_null_state: b,
+                    ..
+                },
+            ) => {
+                assert!(a, "first parse: expected ternary outcome");
+                assert!(b, "second parse: expected ternary outcome");
+            }
+            (a, b) => panic!("expected both Outcome, got ({a:?}, {b:?})"),
+        }
+    }
+
+    /// Generic value-type composes with outcome: `Vector<Integer>~ParseError`.
+    #[test]
+    fn parses_outcome_with_generic_value_type() {
+        let (parser, id) = parse("Vector<Integer>~ParseError");
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::Outcome {
+                value_type,
+                allow_null_state,
+                ..
+            } => {
+                assert!(!*allow_null_state);
+                match &parser.arena.type_expression(*value_type).node {
+                    TypeExpr::Generic { name, .. } => assert_eq!(name, "Vector"),
+                    other => panic!("expected Generic, got {other:?}"),
+                }
+            }
+            other => panic!("expected Outcome, got {other:?}"),
+        }
     }
 }

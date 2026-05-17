@@ -456,6 +456,15 @@ impl<'p> Checker<'p> {
                     self.bind_pattern(sub_pattern, payload_ty);
                 }
             }
+            // v0.7.4.3-error.1 (ADR-0020 §5): outcome arm patterns
+            // parse-only at this stage. Full typecheck + binding
+            // semantics (exhaustiveness, E1026/E1032, sub-pattern
+            // binding to T or E type) lands in v0.7.4.3-error.2.
+            Pattern::OutcomeArm { payload, .. } => {
+                if let Some(sub) = payload {
+                    self.bind_pattern(sub, &Type::Unknown);
+                }
+            }
         }
     }
 
@@ -463,6 +472,7 @@ impl<'p> Checker<'p> {
     // Type-expression resolution + helpers
     // ====================================================================
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_type(&mut self, id: TypeId) -> Type {
         let span = self.arena.type_expression(id).span.clone();
         match self.arena.type_expression(id).node.clone() {
@@ -579,6 +589,10 @@ impl<'p> Checker<'p> {
                 parameters: parameters.iter().map(|t| self.resolve_type(*t)).collect(),
                 return_type: Box::new(self.resolve_type(return_type)),
             },
+            // v0.7.4.3-error.1 (ADR-0020 §1): outcome type expressions
+            // parse-only at this stage. Full Type::Outcome variant +
+            // structural matching land in v0.7.4.3-error.2.
+            TypeExpr::Outcome { .. } => Type::Unknown,
         }
     }
 

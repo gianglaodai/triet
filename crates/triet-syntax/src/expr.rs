@@ -178,6 +178,56 @@ pub enum Expr {
         /// Optional payload value. `None` = unit variant.
         payload: Option<ExprId>,
     },
+
+    // === Outcome constructors (v0.7.4.3-error per ADR-0020 §2) ===
+    /// Outcome constructor: `~+ value` / `~0` / `~- error`. Maps to
+    /// `Trit::Positive` / `Trit::Zero` / `Trit::Negative` arm of `T~E`
+    /// or `T?~E`. `~0` arm has no payload (null state).
+    OutcomeConstructor {
+        /// Which arm this constructs.
+        arm: OutcomeArm,
+        /// Payload expression. `None` for `~0` (null state). `Some`
+        /// for `~+ value` / `~- error`.
+        payload: Option<ExprId>,
+    },
+
+    /// Outcome propagate (`~?` operator with explicit closure capture):
+    /// `inner_expr ~? |capture_name| early_return_form`.
+    /// On success: bind result to expression value (or null for T?~E).
+    /// On failure: declare `capture_name` (type E) in scope of
+    /// `early_return_form`, evaluate it.
+    OutcomePropagate {
+        /// The fallible expression being propagated.
+        inner: ExprId,
+        /// Name to bind the failure payload to within the early-return
+        /// form. `None` represents `|_|` (discard).
+        capture_name: Option<String>,
+        /// The early-return form (must be `return`, panic, or another
+        /// `~?`). Typecheck E1031 if falls through.
+        early_return: ExprId,
+    },
+
+    /// Outcome default (`~:` operator): `inner_expr ~: default_expr`.
+    /// On success: bind to success payload. On failure: evaluate
+    /// `default_expr` and bind to that.
+    OutcomeDefault {
+        /// The fallible expression.
+        inner: ExprId,
+        /// Default-value expression on failure.
+        default: ExprId,
+    },
+}
+
+/// Which arm of an outcome value is being constructed or matched.
+/// Mirrors the three states of a balanced ternary discriminator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OutcomeArm {
+    /// `~+` — `Trit::Positive` arm (success).
+    Positive,
+    /// `~0` — `Trit::Zero` arm (null state; `T?~E` only).
+    Zero,
+    /// `~-` — `Trit::Negative` arm (failure).
+    Negative,
 }
 
 /// A single arm of a `match` expression.

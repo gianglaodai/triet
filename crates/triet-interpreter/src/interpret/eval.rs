@@ -454,6 +454,11 @@ where
             }
             _ => false,
         },
+        // v0.7.4.3-error.1 (ADR-0020 §5): outcome patterns are
+        // accepted at parse-time but pattern-match execution lands in
+        // v0.7.4.3-error.3. Interpreter parity for outcome is a
+        // deferred §A7 item — no arm matches in interpreter pass.
+        Pattern::OutcomeArm { .. } => false,
     }
 }
 

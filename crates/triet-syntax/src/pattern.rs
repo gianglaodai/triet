@@ -48,6 +48,27 @@ pub enum Pattern {
         /// Optional sub-pattern for the payload.
         payload: Option<PatternId>,
     },
+
+    /// Outcome arm pattern (v0.7.4.3-error per [ADR-0020] §5):
+    ///
+    /// - `~+ binding` — matches `Trit::Positive`, binds payload to `binding`.
+    /// - `~0` — matches `Trit::Zero` (null state, `T?~E` only); no binding.
+    /// - `~- binding` — matches `Trit::Negative`, binds payload to `binding`.
+    ///
+    /// Use `_` for `|_|`-style discard binding.
+    ///
+    /// Patterns require explicit `~+` even on `T?` — no implicit
+    /// `T ⊂ T?` widening in pattern position per ADR-0020 §10.4 (E1032).
+    ///
+    /// [ADR-0020]: ../../../../docs/decisions/0020-outcome-error-handling.md
+    OutcomeArm {
+        /// Which arm of the outcome to match.
+        arm: crate::expr::OutcomeArm,
+        /// Sub-pattern for the payload. `None` for `~0` (no payload)
+        /// or when the arm uses literal/wildcard inline. `Some(_)`
+        /// represents wildcard discard.
+        payload: Option<PatternId>,
+    },
 }
 
 /// Literal forms allowed inside patterns.
