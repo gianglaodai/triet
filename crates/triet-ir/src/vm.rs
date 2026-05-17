@@ -1723,6 +1723,308 @@ fn execute_builtin(
             let keys: Vec<RuntimeValue> = map.keys().map(RuntimeMapKey::to_runtime).collect();
             Ok(RuntimeValue::Vector(keys))
         }
+        BuiltinName::ReadFile => {
+            // Capability gating deferred per ADR-0019 Addendum §A7 —
+            // v0.7.10 CLI wiring will resolve `sys.fs.read` against
+            // CapabilityResolver before reaching the VM. For v0.7.3.4
+            // self-host bootstrap context, trust the caller.
+            // Any I/O error → Null (data-tier per error model §A7).
+            let path_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let path = match path_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            Ok(std::fs::read_to_string(&path)
+                .map_or(RuntimeValue::Null, RuntimeValue::String))
+        }
+        BuiltinName::WriteFile => {
+            // Q4-A strict 2-state Trilean: True/False only, never
+            // Unknown. Capability gating deferred (§A7).
+            let path_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let contents_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let path = match path_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let contents = match contents_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let ok = std::fs::write(&path, &contents).is_ok();
+            Ok(RuntimeValue::Trilean(if ok {
+                Trilean::True
+            } else {
+                Trilean::False
+            }))
+        }
+        BuiltinName::FileExists => {
+            let path_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let path = match path_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let exists = std::path::Path::new(&path).is_file();
+            Ok(RuntimeValue::Trilean(if exists {
+                Trilean::True
+            } else {
+                Trilean::False
+            }))
+        }
+        BuiltinName::PathJoin => {
+            // Q2-A POSIX-only string manipulation. Hardcoded `/`
+            // separator for byte-identical bootstrap output
+            // regardless of host OS. Windows path semantics deferred
+            // (§A7). Empty base returns segment as-is; trailing `/`
+            // in base not duplicated.
+            let base_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let segment_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let base = match base_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let segment = match segment_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let joined = if base.is_empty() {
+                segment
+            } else if base.ends_with('/') {
+                format!("{base}{segment}")
+            } else {
+                format!("{base}/{segment}")
+            };
+            Ok(RuntimeValue::String(joined))
+        }
+        BuiltinName::PathParent => {
+            // Strip last `/`-segment. Null if path is root `/`, empty,
+            // or has no separator. POSIX semantic per Q2-A.
+            let path_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let path = match path_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let result = match path.rfind('/') {
+                None => RuntimeValue::Null,
+                Some(0) if path.len() == 1 => RuntimeValue::Null, // path == "/"
+                Some(idx) => RuntimeValue::String(path[..idx].into()),
+            };
+            Ok(result)
+        }
+        BuiltinName::PathBasename => {
+            // Return last `/`-segment. For paths ending in `/`,
+            // return the segment before the final separator.
+            let path_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let path = match path_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            // Trim trailing `/` then take the last segment.
+            let trimmed = path.trim_end_matches('/');
+            let basename = trimmed
+                .rfind('/')
+                .map_or(trimmed, |idx| &trimmed[idx + 1..]);
+            Ok(RuntimeValue::String(basename.into()))
+        }
+        BuiltinName::StringSubstring => {
+            // Q3-A char-index slicing with OOB panic. Caller checks
+            // text_len first. Handles Vietnamese correctly via
+            // codepoint iteration. Empty range returns "".
+            let s_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let start_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let end_arg = args.get(2).cloned().unwrap_or(RuntimeValue::Unit);
+            let s = match s_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let start = match start_arg {
+                RuntimeValue::Integer(i) => i.to_i64(),
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Integer,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let end = match end_arg {
+                RuntimeValue::Integer(i) => i.to_i64(),
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Integer,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let char_count = i64::try_from(s.chars().count()).unwrap_or(i64::MAX);
+            if start < 0 || end < 0 || start > end || end > char_count {
+                return Err(VmError::OutOfBounds {
+                    function: func_name.into(),
+                });
+            }
+            // Use char_indices to map codepoint positions to byte
+            // offsets — preserves multi-byte UTF-8 (Vietnamese, etc.).
+            let mut byte_start = s.len();
+            let mut byte_end = s.len();
+            for (char_idx, (byte_idx, _)) in s.char_indices().enumerate() {
+                let char_idx_i64 = i64::try_from(char_idx).unwrap_or(i64::MAX);
+                if char_idx_i64 == start {
+                    byte_start = byte_idx;
+                }
+                if char_idx_i64 == end {
+                    byte_end = byte_idx;
+                    break;
+                }
+            }
+            if start == char_count {
+                byte_start = s.len();
+            }
+            Ok(RuntimeValue::String(s[byte_start..byte_end].into()))
+        }
+        BuiltinName::StringSplit => {
+            let s_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let sep_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let s = match s_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let sep = match sep_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let parts: Vec<RuntimeValue> = if sep.is_empty() {
+                // Empty separator → single-element vector [s].
+                // Refuse-over-guess: don't split into chars silently.
+                vec![RuntimeValue::String(s)]
+            } else {
+                s.split(&sep)
+                    .map(|part| RuntimeValue::String(part.into()))
+                    .collect()
+            };
+            Ok(RuntimeValue::Vector(parts))
+        }
+        BuiltinName::StringIndexOf => {
+            // Char (codepoint) offset of first occurrence, or Null.
+            // Empty needle → 0 (matches at start).
+            let haystack_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let needle_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let haystack = match haystack_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let needle = match needle_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            if needle.is_empty() {
+                return Ok(RuntimeValue::Integer(Integer::new(0).unwrap_or_default()));
+            }
+            Ok(haystack.find(&needle).map_or(RuntimeValue::Null, |byte_idx| {
+                // Convert byte offset to char offset for Q3-A
+                // consistency (StringSubstring uses chars).
+                let char_offset =
+                    i64::try_from(haystack[..byte_idx].chars().count()).unwrap_or(i64::MAX);
+                RuntimeValue::Integer(Integer::new(char_offset).unwrap_or_default())
+            }))
+        }
+        BuiltinName::ParseInteger => {
+            // Refuse-over-guess: strict decimal parse via Rust's
+            // i64::from_str. Any failure → Null. No leading
+            // whitespace, no hex prefix, no underscore separators.
+            let s_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let s = match s_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            Ok(s.parse::<i64>()
+                .ok()
+                .and_then(Integer::new)
+                .map_or(RuntimeValue::Null, RuntimeValue::Integer))
+        }
         BuiltinName::HashMapContains => {
             // Q3-A: strict 2-state Trilean. True if key present,
             // False if absent. Invalid key type = bug → TypeMismatch
@@ -3702,5 +4004,563 @@ mod tests {
             "400",
             "compose test: get(0)+get(2) of [100,200,300] = 100+300 = 400"
         );
+    }
+
+    // ── v0.7.3.4 IO + path + string builtins ─────────────────────
+    //
+    // Per ADR-0019 §5 + Addendum §A4.1: 10 builtins post-dedup —
+    // ReadFile/WriteFile/FileExists (IO, Q1-A no caps yet),
+    // PathJoin/PathParent/PathBasename (Q2-A POSIX),
+    // StringSubstring/Split/IndexOf + ParseInteger (Q3-A char-index).
+    //
+    // IO tests use `tempfile` for filesystem fixtures (Q4-A).
+    // Capability gating deferred per §A7 (v0.7.10 CLI wiring).
+    // Path semantics POSIX-only — Windows deferred (§A7).
+    // Substring OOB panics with E2206 per Q3-A (slicing = intent).
+
+    // ── IO ──────────────────────────────────────────────────────
+
+    /// Helper: build a single-builtin program. Args bound to the
+    /// function's parameter list, dispatched into the builtin
+    /// with operand references in order.
+    fn build_builtin_program(
+        params: Vec<(String, TypeTag)>,
+        return_type: TypeTag,
+        builtin: BuiltinName,
+        constants: ConstantPool,
+    ) -> IrProgram {
+        let param_count = u32::try_from(params.len()).unwrap_or(0);
+        let dest = ValueId(param_count);
+        let args: Vec<Operand> = (0..param_count).map(|i| Operand::Value(ValueId(i))).collect();
+        let func = Function {
+            id: FuncId(0),
+            name: Some("dispatch".into()),
+            params,
+            return_type,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(dest),
+                        name: builtin,
+                        args,
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(dest)),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = constants;
+        prog
+    }
+
+    fn make_string(s: &str) -> RuntimeValue {
+        RuntimeValue::String(s.into())
+    }
+
+    /// `write_file` then `read_file` round-trip — proves the strict
+    /// 2-state Trilean (Q4-A) write returns True on success and the
+    /// content survives unchanged.
+    #[test]
+    fn vm_read_file_write_file_round_trip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("hello.txt");
+        let path_str = path.to_string_lossy().into_owned();
+        let contents = "Xin chào, Triết!";
+
+        // write_file(path, contents) — returns Trilean::True on success.
+        let prog_write = build_builtin_program(
+            vec![
+                ("path".into(), TypeTag::String),
+                ("contents".into(), TypeTag::String),
+            ],
+            TypeTag::Trilean,
+            BuiltinName::WriteFile,
+            ConstantPool::new(),
+        );
+        let mut vm_write = Vm::new(prog_write);
+        let r_write = vm_write
+            .execute(
+                FuncId(0),
+                vec![make_string(&path_str), make_string(contents)],
+            )
+            .unwrap();
+        assert!(
+            matches!(r_write, RuntimeValue::Trilean(Trilean::True)),
+            "write_file must return Trilean::True on success, got {r_write:?}"
+        );
+
+        // read_file(path) → Some(String) — content matches.
+        let prog_read = build_builtin_program(
+            vec![("path".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::String)),
+            BuiltinName::ReadFile,
+            ConstantPool::new(),
+        );
+        let mut vm_read = Vm::new(prog_read);
+        let r_read = vm_read.execute(FuncId(0), vec![make_string(&path_str)]).unwrap();
+        match r_read {
+            RuntimeValue::String(s) => assert_eq!(s, contents),
+            other => panic!("expected read_file → String, got {other:?}"),
+        }
+    }
+
+    /// `read_file` on non-existent path → Null (data tier, not panic).
+    #[test]
+    fn vm_read_file_missing_path_returns_null() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("does_not_exist.txt");
+        let path_str = path.to_string_lossy().into_owned();
+
+        let prog = build_builtin_program(
+            vec![("path".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::String)),
+            BuiltinName::ReadFile,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let r = vm.execute(FuncId(0), vec![make_string(&path_str)]).unwrap();
+        assert!(
+            matches!(r, RuntimeValue::Null),
+            "missing file must return Null (data event, not panic), got {r:?}"
+        );
+    }
+
+    /// `file_exists` strict 2-state — True for existing file, False
+    /// for missing path.
+    #[test]
+    fn vm_file_exists_strict_trilean() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let present = tmp.path().join("present.txt");
+        std::fs::write(&present, "x").expect("write fixture");
+        let missing = tmp.path().join("missing.txt");
+
+        let prog = build_builtin_program(
+            vec![("path".into(), TypeTag::String)],
+            TypeTag::Trilean,
+            BuiltinName::FileExists,
+            ConstantPool::new(),
+        );
+        let mut vm_present = Vm::new(prog.clone());
+        let r_present = vm_present
+            .execute(
+                FuncId(0),
+                vec![make_string(&present.to_string_lossy())],
+            )
+            .unwrap();
+        assert!(
+            matches!(r_present, RuntimeValue::Trilean(Trilean::True)),
+            "existing file must return True, got {r_present:?}"
+        );
+
+        let mut vm_missing = Vm::new(prog);
+        let r_missing = vm_missing
+            .execute(
+                FuncId(0),
+                vec![make_string(&missing.to_string_lossy())],
+            )
+            .unwrap();
+        assert!(
+            matches!(r_missing, RuntimeValue::Trilean(Trilean::False)),
+            "missing file must return False (NOT Unknown — Q4-A strict), got {r_missing:?}"
+        );
+    }
+
+    // ── Path ────────────────────────────────────────────────────
+
+    /// `path_join` Q2-A POSIX semantic: hardcoded `/`, deterministic.
+    #[test]
+    fn vm_path_join_posix_semantic() {
+        let prog = build_builtin_program(
+            vec![
+                ("base".into(), TypeTag::String),
+                ("segment".into(), TypeTag::String),
+            ],
+            TypeTag::String,
+            BuiltinName::PathJoin,
+            ConstantPool::new(),
+        );
+
+        // Normal join.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm
+            .execute(FuncId(0), vec![make_string("a"), make_string("b")])
+            .unwrap();
+        assert_eq!(r.to_string(), "a/b");
+
+        // Trailing slash on base — no duplication.
+        let mut vm2 = Vm::new(prog.clone());
+        let r2 = vm2
+            .execute(FuncId(0), vec![make_string("a/"), make_string("b")])
+            .unwrap();
+        assert_eq!(r2.to_string(), "a/b");
+
+        // Empty base.
+        let mut vm3 = Vm::new(prog);
+        let r3 = vm3
+            .execute(FuncId(0), vec![make_string(""), make_string("b")])
+            .unwrap();
+        assert_eq!(r3.to_string(), "b");
+    }
+
+    /// `path_parent` returns parent path or Null.
+    #[test]
+    fn vm_path_parent_returns_parent_or_null() {
+        let prog = build_builtin_program(
+            vec![("path".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::String)),
+            BuiltinName::PathParent,
+            ConstantPool::new(),
+        );
+
+        // Normal case.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm.execute(FuncId(0), vec![make_string("a/b/c")]).unwrap();
+        assert_eq!(r.to_string(), "a/b");
+
+        // Root `/` → Null.
+        let mut vm_root = Vm::new(prog.clone());
+        let r_root = vm_root.execute(FuncId(0), vec![make_string("/")]).unwrap();
+        assert!(
+            matches!(r_root, RuntimeValue::Null),
+            "root path has no parent, got {r_root:?}"
+        );
+
+        // No separator → Null.
+        let mut vm_no_sep = Vm::new(prog);
+        let r_no_sep = vm_no_sep
+            .execute(FuncId(0), vec![make_string("file")])
+            .unwrap();
+        assert!(
+            matches!(r_no_sep, RuntimeValue::Null),
+            "no-separator path has no parent, got {r_no_sep:?}"
+        );
+    }
+
+    /// `path_basename` returns last segment.
+    #[test]
+    fn vm_path_basename_last_segment() {
+        let prog = build_builtin_program(
+            vec![("path".into(), TypeTag::String)],
+            TypeTag::String,
+            BuiltinName::PathBasename,
+            ConstantPool::new(),
+        );
+
+        let mut vm = Vm::new(prog.clone());
+        let r = vm.execute(FuncId(0), vec![make_string("a/b/c.txt")]).unwrap();
+        assert_eq!(r.to_string(), "c.txt");
+
+        // Trailing slash — strip then take.
+        let mut vm2 = Vm::new(prog.clone());
+        let r2 = vm2.execute(FuncId(0), vec![make_string("a/b/")]).unwrap();
+        assert_eq!(r2.to_string(), "b");
+
+        // No separator — whole path is basename.
+        let mut vm3 = Vm::new(prog);
+        let r3 = vm3.execute(FuncId(0), vec![make_string("file")]).unwrap();
+        assert_eq!(r3.to_string(), "file");
+    }
+
+    // ── String ──────────────────────────────────────────────────
+
+    /// `string_substring` Q3-A char-index, multi-byte UTF-8 safe.
+    /// Tests Vietnamese to prove codepoint handling.
+    #[test]
+    fn vm_string_substring_char_index_multibyte_safe() {
+        let prog = build_builtin_program(
+            vec![
+                ("s".into(), TypeTag::String),
+                ("start".into(), TypeTag::Integer),
+                ("end".into(), TypeTag::Integer),
+            ],
+            TypeTag::String,
+            BuiltinName::StringSubstring,
+            ConstantPool::new(),
+        );
+
+        // ASCII slice.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm
+            .execute(
+                FuncId(0),
+                vec![make_string("hello"), make_int(1), make_int(4)],
+            )
+            .unwrap();
+        assert_eq!(r.to_string(), "ell");
+
+        // Vietnamese: "Việt" — 4 codepoints. chars()[0..1] = "V".
+        let mut vm_vn = Vm::new(prog.clone());
+        let r_vn = vm_vn
+            .execute(
+                FuncId(0),
+                vec![make_string("Việt"), make_int(0), make_int(2)],
+            )
+            .unwrap();
+        assert_eq!(r_vn.to_string(), "Vi");
+
+        // Empty range.
+        let mut vm_empty = Vm::new(prog);
+        let r_empty = vm_empty
+            .execute(
+                FuncId(0),
+                vec![make_string("hello"), make_int(3), make_int(3)],
+            )
+            .unwrap();
+        assert_eq!(r_empty.to_string(), "");
+    }
+
+    /// `string_substring` OOB → E2206 `OutOfBounds` panic (Q3-A
+    /// slicing = intentional; bug if OOB).
+    #[test]
+    fn vm_string_substring_out_of_bounds_panics() {
+        let prog = build_builtin_program(
+            vec![
+                ("s".into(), TypeTag::String),
+                ("start".into(), TypeTag::Integer),
+                ("end".into(), TypeTag::Integer),
+            ],
+            TypeTag::String,
+            BuiltinName::StringSubstring,
+            ConstantPool::new(),
+        );
+
+        // end > char_count.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm.execute(
+            FuncId(0),
+            vec![make_string("hi"), make_int(0), make_int(99)],
+        );
+        assert!(
+            matches!(r, Err(VmError::OutOfBounds { .. })),
+            "expected OutOfBounds for end>length, got {r:?}"
+        );
+
+        // Negative start.
+        let mut vm_neg = Vm::new(prog.clone());
+        let r_neg = vm_neg.execute(
+            FuncId(0),
+            vec![make_string("hi"), make_int(-1), make_int(1)],
+        );
+        assert!(
+            matches!(r_neg, Err(VmError::OutOfBounds { .. })),
+            "expected OutOfBounds for negative start, got {r_neg:?}"
+        );
+
+        // start > end.
+        let mut vm_swap = Vm::new(prog);
+        let r_swap = vm_swap.execute(
+            FuncId(0),
+            vec![make_string("hi"), make_int(2), make_int(1)],
+        );
+        assert!(
+            matches!(r_swap, Err(VmError::OutOfBounds { .. })),
+            "expected OutOfBounds for start>end, got {r_swap:?}"
+        );
+    }
+
+    /// `string_split` returns Vector of parts.
+    #[test]
+    fn vm_string_split_returns_vector() {
+        let prog = build_builtin_program(
+            vec![
+                ("s".into(), TypeTag::String),
+                ("sep".into(), TypeTag::String),
+            ],
+            TypeTag::Vector(Box::new(TypeTag::String)),
+            BuiltinName::StringSplit,
+            ConstantPool::new(),
+        );
+
+        // Normal split.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm
+            .execute(FuncId(0), vec![make_string("a,b,c"), make_string(",")])
+            .unwrap();
+        match r {
+            RuntimeValue::Vector(parts) => {
+                assert_eq!(parts.len(), 3);
+                assert_eq!(parts[0].to_string(), "a");
+                assert_eq!(parts[1].to_string(), "b");
+                assert_eq!(parts[2].to_string(), "c");
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        }
+
+        // Empty separator → single-element [s] (refuse-over-guess).
+        let mut vm_empty = Vm::new(prog);
+        let r_empty = vm_empty
+            .execute(FuncId(0), vec![make_string("abc"), make_string("")])
+            .unwrap();
+        match r_empty {
+            RuntimeValue::Vector(parts) => {
+                assert_eq!(parts.len(), 1);
+                assert_eq!(parts[0].to_string(), "abc");
+            }
+            other => panic!("expected single-element Vector, got {other:?}"),
+        }
+    }
+
+    /// `string_index_of` returns char (codepoint) offset, or Null.
+    #[test]
+    fn vm_string_index_of_char_offset_or_null() {
+        let prog = build_builtin_program(
+            vec![
+                ("haystack".into(), TypeTag::String),
+                ("needle".into(), TypeTag::String),
+            ],
+            TypeTag::Nullable(Box::new(TypeTag::Integer)),
+            BuiltinName::StringIndexOf,
+            ConstantPool::new(),
+        );
+
+        // Found.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm
+            .execute(FuncId(0), vec![make_string("hello"), make_string("ll")])
+            .unwrap();
+        assert_eq!(r.to_string(), "2");
+
+        // Not found → Null.
+        let mut vm_miss = Vm::new(prog.clone());
+        let r_miss = vm_miss
+            .execute(FuncId(0), vec![make_string("hello"), make_string("xyz")])
+            .unwrap();
+        assert!(
+            matches!(r_miss, RuntimeValue::Null),
+            "needle-not-found returns Null, got {r_miss:?}"
+        );
+
+        // Vietnamese — needle starts at char 2 (codepoint), not byte 2.
+        let mut vm_vn = Vm::new(prog.clone());
+        let r_vn = vm_vn
+            .execute(
+                FuncId(0),
+                vec![make_string("Việt Nam"), make_string("Nam")],
+            )
+            .unwrap();
+        assert_eq!(r_vn.to_string(), "5");
+
+        // Empty needle → 0 (matches at start).
+        let mut vm_empty = Vm::new(prog);
+        let r_empty = vm_empty
+            .execute(FuncId(0), vec![make_string("hello"), make_string("")])
+            .unwrap();
+        assert_eq!(r_empty.to_string(), "0");
+    }
+
+    /// `parse_integer` strict decimal — refuse-over-guess.
+    #[test]
+    fn vm_parse_integer_strict_decimal() {
+        let prog = build_builtin_program(
+            vec![("s".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::Integer)),
+            BuiltinName::ParseInteger,
+            ConstantPool::new(),
+        );
+
+        // Success.
+        let mut vm = Vm::new(prog.clone());
+        let r = vm.execute(FuncId(0), vec![make_string("42")]).unwrap();
+        assert_eq!(r.to_string(), "42");
+
+        // Negative.
+        let mut vm_neg = Vm::new(prog.clone());
+        let r_neg = vm_neg.execute(FuncId(0), vec![make_string("-7")]).unwrap();
+        assert_eq!(r_neg.to_string(), "-7");
+
+        // Empty → Null.
+        let mut vm_empty = Vm::new(prog.clone());
+        let r_empty = vm_empty.execute(FuncId(0), vec![make_string("")]).unwrap();
+        assert!(matches!(r_empty, RuntimeValue::Null));
+
+        // Non-digit → Null.
+        let mut vm_bad = Vm::new(prog.clone());
+        let r_bad = vm_bad
+            .execute(FuncId(0), vec![make_string("abc")])
+            .unwrap();
+        assert!(matches!(r_bad, RuntimeValue::Null));
+
+        // Leading whitespace → Null (refuse-over-guess).
+        let mut vm_ws = Vm::new(prog);
+        let r_ws = vm_ws.execute(FuncId(0), vec![make_string(" 42")]).unwrap();
+        assert!(
+            matches!(r_ws, RuntimeValue::Null),
+            "leading whitespace must NOT parse (refuse-over-guess), got {r_ws:?}"
+        );
+    }
+
+    /// Composition: lexer-like flow — read source file, split by
+    /// newline, parse each line as integer, accumulate to a Vector.
+    /// Mirrors self-host compiler's main file-handling pattern.
+    #[test]
+    fn vm_compose_read_split_parse_accumulate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("numbers.txt");
+        std::fs::write(&path, "10\n20\n30").expect("write fixture");
+        let path_str = path.to_string_lossy().into_owned();
+
+        // Step 1: read file.
+        let prog_read = build_builtin_program(
+            vec![("path".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::String)),
+            BuiltinName::ReadFile,
+            ConstantPool::new(),
+        );
+        let mut vm_read = Vm::new(prog_read);
+        let contents = vm_read
+            .execute(FuncId(0), vec![make_string(&path_str)])
+            .unwrap();
+        let contents_str = match contents {
+            RuntimeValue::String(s) => s,
+            other => panic!("expected read_file → String, got {other:?}"),
+        };
+
+        // Step 2: split by newline.
+        let prog_split = build_builtin_program(
+            vec![
+                ("s".into(), TypeTag::String),
+                ("sep".into(), TypeTag::String),
+            ],
+            TypeTag::Vector(Box::new(TypeTag::String)),
+            BuiltinName::StringSplit,
+            ConstantPool::new(),
+        );
+        let mut vm_split = Vm::new(prog_split);
+        let parts = vm_split
+            .execute(
+                FuncId(0),
+                vec![make_string(&contents_str), make_string("\n")],
+            )
+            .unwrap();
+        let parts_vec = match parts {
+            RuntimeValue::Vector(v) => v,
+            other => panic!("expected Vector, got {other:?}"),
+        };
+        assert_eq!(parts_vec.len(), 3);
+
+        // Step 3: parse each part — collect successes.
+        let prog_parse = build_builtin_program(
+            vec![("s".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::Integer)),
+            BuiltinName::ParseInteger,
+            ConstantPool::new(),
+        );
+        let mut parsed = Vec::new();
+        for part in &parts_vec {
+            let part_str = match part {
+                RuntimeValue::String(s) => s.clone(),
+                _ => panic!("non-string element"),
+            };
+            let mut vm_parse = Vm::new(prog_parse.clone());
+            let r = vm_parse
+                .execute(FuncId(0), vec![make_string(&part_str)])
+                .unwrap();
+            parsed.push(r.to_string());
+        }
+        assert_eq!(parsed, vec!["10", "20", "30"]);
     }
 }

@@ -293,6 +293,16 @@ impl fmt::Display for BuiltinName {
             Self::HashMapGet => write!(f, "hashmap_get"),
             Self::HashMapKeys => write!(f, "hashmap_keys"),
             Self::HashMapContains => write!(f, "hashmap_contains"),
+            Self::ReadFile => write!(f, "read_file"),
+            Self::WriteFile => write!(f, "write_file"),
+            Self::FileExists => write!(f, "file_exists"),
+            Self::PathJoin => write!(f, "path_join"),
+            Self::PathParent => write!(f, "path_parent"),
+            Self::PathBasename => write!(f, "path_basename"),
+            Self::StringSubstring => write!(f, "string_substring"),
+            Self::StringSplit => write!(f, "string_split"),
+            Self::StringIndexOf => write!(f, "string_index_of"),
+            Self::ParseInteger => write!(f, "parse_integer"),
         }
     }
 }

@@ -19,3 +19,6 @@ triet-syntax.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+# Temp directories for v0.7.3.4 IO builtin tests (ReadFile/WriteFile/
+# FileExists). Pinned at workspace `3` (matches triet-modules + triet-pack).
+tempfile = "3"

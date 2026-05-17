@@ -422,4 +422,55 @@ pub enum BuiltinName {
     /// invalid key type → panic E2201 (`TypeMismatch`) instead of
     /// conflating Ł3 uncertainty with type errors.
     HashMapContains,
+    /// `read_file(path) -> String?` — return file contents as String
+    /// on success, `Null` on any I/O error (file not found,
+    /// permission denied, invalid UTF-8, etc). Capability gating
+    /// deferred to v0.7.10 per [ADR-0019 Addendum §A7]; v0.7.3.4
+    /// trusts caller (self-host compiler bootstrap context).
+    ///
+    /// [ADR-0019 Addendum §A7]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+    ReadFile,
+    /// `write_file(path, contents) -> Trilean` — Q4-A strict 2-state:
+    /// `True` on success, `False` on any I/O error. Never `Unknown`.
+    /// Capability gating deferred (same as `ReadFile`).
+    WriteFile,
+    /// `file_exists(path) -> Trilean` — strict 2-state. `True` if
+    /// path resolves to existing file, `False` otherwise.
+    FileExists,
+    /// `path_join(base, segment) -> String` — POSIX path join per
+    /// Q2-A. Hardcoded `/` separator for determinism (bootstrap
+    /// gate requires byte-identical output regardless of host OS).
+    /// Empty `base` returns `segment` as-is; trailing `/` in `base`
+    /// is not duplicated.
+    PathJoin,
+    /// `path_parent(path) -> String?` — return path with the last
+    /// `/`-segment stripped, or `Null` if no parent (path is root
+    /// `/`, empty, or has no separator). POSIX semantic per Q2-A.
+    PathParent,
+    /// `path_basename(path) -> String` — return the last `/`-segment.
+    /// For paths ending in `/`, returns the segment before the final
+    /// separator. Empty path returns `""`. POSIX semantic per Q2-A.
+    PathBasename,
+    /// `string_substring(s, start_char, end_char) -> String` —
+    /// Q3-A char-index slicing. Returns substring from
+    /// `start_char` (inclusive) to `end_char` (exclusive), counted
+    /// in Unicode codepoints (handles Vietnamese correctly). OOB
+    /// panics with `E2206 OutOfBounds`; caller checks `text_len`
+    /// first. Empty range `start == end` returns `""`.
+    StringSubstring,
+    /// `string_split(s, separator) -> Vector<String>` — split `s`
+    /// on every occurrence of `separator`. Empty separator returns
+    /// a single-element vector `[s]`. Adjacent separators produce
+    /// empty-string elements.
+    StringSplit,
+    /// `string_index_of(haystack, needle) -> Integer?` — return the
+    /// **char (codepoint) offset** of the first occurrence of
+    /// `needle` in `haystack`, or `Null` if not found. Empty
+    /// `needle` returns `0`. Char-indexed per Q3-A consistency.
+    StringIndexOf,
+    /// `parse_integer(s) -> Integer?` — parse decimal integer (with
+    /// optional leading `-` for negatives). Returns `Null` on any
+    /// parse failure (non-digit, overflow, empty string, whitespace).
+    /// Refuse-over-guess: no lenient parsing.
+    ParseInteger,
 }

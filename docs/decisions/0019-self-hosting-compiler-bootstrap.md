@@ -482,7 +482,16 @@ ADR-0019 §5 builtin ID table had wire-ID conflicts with pre-existing extensions
 | **14** | `HashMapGet` | **v0.7.3.3 (shipped)** |
 | **15** | `HashMapKeys` (sorted per Q4-A) | **v0.7.3.3 (shipped)** |
 | **16** | `HashMapContains` (strict 2-state Trilean per Q3-A) | **v0.7.3.3 (shipped)** |
-| 17–26 | IO + path + string ops (10 ops post-dedup) | v0.7.3.4 (pending) |
+| **17** | `ReadFile` (data tier: missing/I-O-error → Null) | **v0.7.3.4 (shipped)** |
+| **18** | `WriteFile` (Q4-A strict 2-state Trilean) | **v0.7.3.4 (shipped)** |
+| **19** | `FileExists` (strict 2-state) | **v0.7.3.4 (shipped)** |
+| **20** | `PathJoin` (Q2-A POSIX `/`, deterministic) | **v0.7.3.4 (shipped)** |
+| **21** | `PathParent` (Null if root/empty/no-sep) | **v0.7.3.4 (shipped)** |
+| **22** | `PathBasename` | **v0.7.3.4 (shipped)** |
+| **23** | `StringSubstring` (Q3-A char-index, OOB panic E2206) | **v0.7.3.4 (shipped)** |
+| **24** | `StringSplit` (empty-separator returns single-element `[s]`) | **v0.7.3.4 (shipped)** |
+| **25** | `StringIndexOf` (char-offset, Null on miss) | **v0.7.3.4 (shipped)** |
+| **26** | `ParseInteger` (strict decimal, Null on any failure) | **v0.7.3.4 (shipped)** |
 
 ### A5 — Sub-task split v0.7.3.1 → v0.7.3.4
 
@@ -493,7 +502,7 @@ Per Q2-B (4-sub-commit cadence for the v0.7.3 umbrella):
 | **v0.7.3.1** | TypeTag + RuntimeValue + wire format v4 + this Addendum | shipped |
 | **v0.7.3.2** | Vector builtins (IDs 8–11, 4 ops post-Q1A/Q2A drops) — VM dispatch + smoke + composition test. Stdlib stubs + path_to_builtin defer until generic-function syntax lands (v0.7.4+). | shipped |
 | **v0.7.3.3** | HashMap builtins (IDs 12–16, 5 ops) — VM dispatch + smoke + composition + invalid-key panic test. ADR-0019 Addendum §A4.1 IDs marked shipped. Locks error-model 3-tier discipline (lookup miss = data event, invalid key = bug panic). | shipped |
-| **v0.7.3.4** | IO + path + string builtins (IDs 17–26, 10 ops post-dedup) | pending |
+| **v0.7.3.4** | IO + path + string builtins (IDs 17–26, 10 ops post-dedup). Q1-A capability gating deferred §A7 (lands v0.7.10 CLI wiring). Q2-A POSIX-only path semantic (deterministic for bootstrap byte-identical gate). Q3-A char-index string slicing with OOB panic. Q4-A `tempfile` crate for IO tests. **Closes v0.7.3 umbrella — 19 net-new builtins total across 4 sub-tasks.** | shipped |
 
 ### A6 — IO Trilean shape (Q4-A): strict 2-state
 
@@ -534,7 +543,24 @@ Future-compat: if v0.8 actor model introduces async-pending I/O state, that's a 
 | Error model | `vm_hashmap_invalid_key_type_panics_with_type_mismatch` (Q2-B: Vector as key → E2201 panic, NOT silent Null. Locks bug-tier vs data-tier discipline.) |
 | Composition | `vm_hashmap_compose_insert_contains_get_keys_round_trip` — build 3-entry map, get("middle") = 300 |
 
-1088 → 1106 tests (18 net-new across v0.7.3.1+2+3: 6 + 5 + 7), clippy `-D warnings` clean. v0.7.3.4 will continue the pattern for IO + path + string builtins.
+**v0.7.3.4 (shipped):**
+
+| Layer | Test |
+|---|---|
+| Smoke (IO) | `vm_read_file_write_file_round_trip` (write → read invariant + Q4-A True confirmation) |
+| Smoke (IO) | `vm_read_file_missing_path_returns_null` (data tier: missing file = Null, not panic) |
+| Smoke (IO) | `vm_file_exists_strict_trilean` (present → True, missing → False, never Unknown) |
+| Smoke (path) | `vm_path_join_posix_semantic` (3 cases: normal / trailing slash / empty base) |
+| Smoke (path) | `vm_path_parent_returns_parent_or_null` (3 cases: normal / root `/` / no-sep) |
+| Smoke (path) | `vm_path_basename_last_segment` (3 cases: normal / trailing slash / no-sep) |
+| Smoke (string) | `vm_string_substring_char_index_multibyte_safe` (ASCII + Vietnamese "Việt" + empty range) |
+| Error contract | `vm_string_substring_out_of_bounds_panics` (Q3-A: end>length, negative start, start>end all panic E2206) |
+| Smoke (string) | `vm_string_split_returns_vector` (normal + empty-separator refuse-over-guess) |
+| Smoke (string) | `vm_string_index_of_char_offset_or_null` (found ASCII + Vietnamese codepoint offset + miss → Null + empty needle) |
+| Smoke (string) | `vm_parse_integer_strict_decimal` (positive + negative + empty + non-digit + leading whitespace refuse) |
+| Composition | `vm_compose_read_split_parse_accumulate` — lexer-like flow: read tempfile → split by `\n` → parse each line → accumulate to Vec |
+
+**v0.7.3 umbrella totals:** 1088 → 1118 tests (30 net-new across v0.7.3.1+2+3+4: 6 + 5 + 7 + 12), clippy `-D warnings` clean. **19 net-new builtins** ship across IDs 8–26. Phase closes with all 4 sub-tasks complete.
 
 ### A7 — Deferred items log (technical debt surfaced by v0.7.3)
 
@@ -551,6 +577,10 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 | **`Iterator<T>` / `Iterable<T>` traits in stdlib + user-extensible iterator protocol** | ADR-0003 status: locked but not implemented. v0.1 hardcoded `Range`+`Enumerate` still in use; refactor to trait pending. | v0.8 (revisit alongside concurrency primitives) or earlier if v0.7.x sub-task forces it |
 | **`vector_iterator` adapter chains** (`map`/`filter`/`take`/`zip`) | Depends on Iterator trait. | Same as Iterator trait above |
 | **Error handling primitive — recovery / try-catch / supervisor** | Triết currently has **no mechanism** for user code to catch runtime panics. `VmError` (E22XX) aborts execution; only domain errors (`T?`, `Result<T, E>`, `Trilean::Unknown`) are recoverable. v0.7.3.3 surfaced this via Q2-B: invalid HashMap key types → panic, not recovery. Decision locked because self-host compiler doesn't need recovery (bugs are bugs). But future application code, actor supervisors (v0.8), and microkernel boundary (v3.0) will. | **Future ADR-0020 candidate** — "Error handling discipline: panic vs Result vs Trilean, recovery story". Likely v0.8 alongside concurrency model (actor supervisor patterns force the question). Write ADR-0020 when v0.8 phase opens or when an earlier sub-task demands recovery. |
+| **IO builtin capability gating** (`sys.fs.read`, `sys.fs.write` etc.) | v0.7.3.4 Q1-A: `ReadFile`/`WriteFile`/`FileExists` dispatch directly via `std::fs::*` with no `CapabilityResolver` consultation. Self-host compiler bootstrap context is trusted, but future user code calling these builtins must go through v0.6 capability machinery. | **v0.7.10** — paired with CLI wiring carry-over (ADR-0019 §8 project layout discovery). `triet run` flow will resolve `sys.fs.*` capabilities against root manifest before instantiating the VM. |
+| **Windows path semantics** | v0.7.3.4 Q2-A: `PathJoin`/`PathParent`/`PathBasename` hardcode POSIX `/` separator for byte-identical bootstrap determinism. Windows backslash + drive-letter handling deferred. Matches existing POSIX-first precedent ([ADR-0018 DevTtyPrompt POSIX-only](0018-capability-loader-semantics.md)). | **post-v1.0** — alongside Windows ConPTY TTY support and broader cross-platform pass. Currently no Triết user has demanded it; bootstrap loop must be byte-identical, and per-OS-variant output would break that. |
+| **IO write atomicity** (`WriteFile` is not atomic — partial writes possible on crash mid-write) | v0.7.3.4 uses `std::fs::write` which is **not** atomic. Crash between truncate and full write leaves a truncated/empty file. Self-host compiler bootstrap doesn't need atomicity (any crash invalidates the build run). | **post-v0.7** — when first user-facing application demands it. Pattern would mirror [ADR-0015 §5 atomic install protocol](0015-package-store-layout.md) (write to tmp + rename). |
+| **`StringSubstring` byte-index variant** | v0.7.3.4 Q3-A: only char-index version shipped (Vietnamese-safe). Byte-index could be ~100× faster for ASCII-heavy code paths. Self-host compiler doesn't benchmark that hot yet. | **post-v0.9 JIT** — measure self-host compiler hot path; add `StringSubstringBytes` builtin only if profiled bottleneck. Refuse-over-guess: don't add until evidence demands. |
 
 **Maintenance rule (per author 2026-05-17 feedback):** When future v0.7.x.review audits identify additional deferred items, append to this table. When a deferred item ships, mark with strikethrough + commit hash rather than removing — preserves the history of *what was once missing* for future readers.
 

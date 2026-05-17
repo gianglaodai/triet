@@ -97,6 +97,10 @@ Các thứ deferred ra khỏi v0.7.3 sub-tasks; full bảng ở [ADR-0019 Addend
 - **`vector_pop` + tuple opcodes** — Q1-A functional semantic requires tuple return; IR thiếu tuple opcodes. post-v1.0.
 - **`vector_iterator` + Iterator trait implementation** — ADR-0003 v0.2 deliverable chưa land (slipped qua v0.2–v0.6). Target v0.8 alongside concurrency model.
 - **Error handling primitive — recovery / try-catch / supervisor** — Triết hiện chỉ có 2 lớp recoverable error: `T?` (nullable) + `Result<T, E>` (std.result) + `Trilean::Unknown` (Ł3). Runtime panic (VmError E22XX) **không catch được**. v0.7.3.3 lock policy "bug = panic, data event = T?/Result/Trilean" nhưng v0.8 actor supervisor sẽ force question. Target ADR-0020 candidate khi v0.8 mở.
+- **IO builtin capability gating** — v0.7.3.4 ship `ReadFile`/`WriteFile`/`FileExists` không qua `CapabilityResolver`. Bootstrap context trusted; production user code phải đi qua v0.6 capability machinery. Target re-tackle: v0.7.10 CLI wiring (cùng project layout discovery).
+- **Windows path semantics** — v0.7.3.4 hardcode POSIX `/` cho `PathJoin`/`PathParent`/`PathBasename` (deterministic bootstrap output). Windows backslash + drive-letter defer post-v1.0 (mirror ADR-0018 ConPTY POSIX-first).
+- **`WriteFile` atomicity** — hiện dùng `std::fs::write` non-atomic. Mirror ADR-0015 §5 atomic install (write tmp + rename) khi user-facing application demand. Self-host bootstrap không cần.
+- **`StringSubstring` byte-index variant** — v0.7.3.4 chỉ ship char-index (Vietnamese-safe). Byte-index defer post-v0.9 JIT, chỉ add nếu self-host profiling cho thấy bottleneck.
 
 ---
 

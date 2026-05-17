@@ -503,6 +503,16 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::HashMapGet => 14,
         BuiltinName::HashMapKeys => 15,
         BuiltinName::HashMapContains => 16,
+        BuiltinName::ReadFile => 17,
+        BuiltinName::WriteFile => 18,
+        BuiltinName::FileExists => 19,
+        BuiltinName::PathJoin => 20,
+        BuiltinName::PathParent => 21,
+        BuiltinName::PathBasename => 22,
+        BuiltinName::StringSubstring => 23,
+        BuiltinName::StringSplit => 24,
+        BuiltinName::StringIndexOf => 25,
+        BuiltinName::ParseInteger => 26,
     };
     write_u8(buf, id);
 }
@@ -527,6 +537,16 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         14 => Ok(BuiltinName::HashMapGet),
         15 => Ok(BuiltinName::HashMapKeys),
         16 => Ok(BuiltinName::HashMapContains),
+        17 => Ok(BuiltinName::ReadFile),
+        18 => Ok(BuiltinName::WriteFile),
+        19 => Ok(BuiltinName::FileExists),
+        20 => Ok(BuiltinName::PathJoin),
+        21 => Ok(BuiltinName::PathParent),
+        22 => Ok(BuiltinName::PathBasename),
+        23 => Ok(BuiltinName::StringSubstring),
+        24 => Ok(BuiltinName::StringSplit),
+        25 => Ok(BuiltinName::StringIndexOf),
+        26 => Ok(BuiltinName::ParseInteger),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }
