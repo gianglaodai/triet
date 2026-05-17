@@ -55,10 +55,12 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.3c | ADR-0021 `Trilean!` refinement + SPEC §7.1.1 fix + ADR-0010 Addendum §C | `f4fa78e` |
 | v0.7.4.3-error.3d | `Trilean!` refinement type + E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` + 15 typecheck tests | `c3eb126` |
 | v0.7.4.3-error.3e | Migrate corpus `if (trilean == lit)` → `match` (alu/memory/utils/print) | `6e4db80` |
+| v0.7.4.3-error.4a | `triet fmt --migrate-null` tool (lexer-based, idempotent, dry-run-by-default + `--write`) | `e49d389` |
+| v0.7.4.3-error.4b | Apply migration to 6 stdlib stubs (`examples/nullable.tri` deferred pending outcome-null runtime unification) | `be7532d` |
 
 ### In progress
 
-- [ ] **v0.7.4.3-error.4b** — Apply `--migrate-null` to corpus (6 stdlib stubs migrated; `examples/nullable.tri` deferred — see runtime-unification note below)
+_None — `.4` umbrella complete._
 
 ### Deferred (post-`.4`)
 
