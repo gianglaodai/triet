@@ -46,19 +46,18 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.2 | Stdlib `.tri` stubs (5 new files, Java-aesthetic) + `path_to_builtin` (19 entries) + 5 VM tests | `f6d722f` |
 | v0.7.4.3-error (docs) | ADR-0020 Outcome error handling design (10 §s including null/~0 unification) + ADR-0001/0010 Addendums + SPEC §1.5.3/§2.5 updates | `9f8dca6` |
 | v0.7.x.audit.1 | CRITICAL fixes (CLAUDE state + ADR-0007/0008 cross-refs) | `46dd59a` |
+| v0.7.x.audit.2 | MAJOR fixes (README + TODO + anchors) | `0b2d336` |
+| v0.7.x.audit.3 | MINOR fixes (SPEC null→~0 + CLAUDE outcome syntax + audit memory) | `06eff56` |
+| v0.7.4.3-error.1 | Lexer + AST + Parser for Outcome syntax (compound tokens, `\|capture\|`, productions) | `c0fe111` |
+| v0.7.4.3-error.2 | Typecheck Outcome support — `Type::Outcome` + 9 errors (E1024-E1032) + W2001 NullDeprecated | `d8e5b07` |
+| v0.7.4.3-error.3a | IR data plane — `TypeTag::Outcome` + 6 opcodes (0xC1-0xC6) + `.triv` v5 + VM dispatch + E2210 | `f9d1f91` |
 
 ### In progress
 
-- [ ] **v0.7.x.audit.2** — MAJOR fixes (README + TODO + anchors). This commit.
-- [ ] **v0.7.x.audit.3** — MINOR fixes (SPEC null examples + CLAUDE outcome syntax note + audit memory update).
+- [ ] **v0.7.4.3-error.3b** — Lowerer integration (AST → IR for Outcome constructors / postfix `~?` / `~:` / unwrap methods) + e2e VM tests
 
-### Next sub-task: v0.7.4.3-error implementation
+### Next sub-task: v0.7.4.3-error remaining
 
-Largest single sub-task của v0.7 (trừ self-host compiler port). Estimated 2-3 weeks, split into ~5 sub-commits per per-step pattern. See ADR-0020 §"Implementation" + ADR-0019 Addendum §A7 deferred items.
-
-- [ ] **v0.7.4.3-error.1** — Lexer + AST + Parser (compound tokens `?~`/`~+`/`~-`/`~0`/`~?`/`~:`, `|capture|` form, type/expr/pattern productions)
-- [ ] **v0.7.4.3-error.2** — Typecheck (`Type::Outcome`, exhaustiveness, error codes E1024-E1032, W2001 NullDeprecated)
-- [ ] **v0.7.4.3-error.3** — Lowerer + VM (opcodes 0xC1-0xC6, `RuntimeValue::Outcome`, deallocation contract, `.triv` v4 → v5)
 - [ ] **v0.7.4.3-error.4** — Migration tool `triet fmt --fix --migrate-null` + auto-migrate existing `null` in stdlib + examples
 - [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
 
