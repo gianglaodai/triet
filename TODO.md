@@ -52,15 +52,15 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.2 | Typecheck Outcome support — `Type::Outcome` + 9 errors (E1024-E1032) + W2001 NullDeprecated | `d8e5b07` |
 | v0.7.4.3-error.3a | IR data plane — `TypeTag::Outcome` + 6 opcodes (0xC1-0xC6) + `.triv` v5 + VM dispatch + E2210 | `f9d1f91` |
 | v0.7.4.3-error.3b | Lowerer — AST Outcome → IR opcodes + pattern matching + 10 e2e VM tests | `d03aa66` |
+| v0.7.4.3-error.3c | ADR-0021 `Trilean!` refinement + SPEC §7.1.1 fix + ADR-0010 Addendum §C | `f4fa78e` |
+| v0.7.4.3-error.3d | `Trilean!` refinement type + E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` + 15 typecheck tests | `c3eb126` |
 
 ### In progress
 
-- [ ] **v0.7.4.3-error.3c** — ADR-0021 `Trilean!` refinement design + SPEC §7.1.1 fix + ADR-0010 Addendum §C (BrTrilean unknown_block demoted to defense-in-depth)
+- [ ] **v0.7.4.3-error.3e** — Migrate corpus from `if (trilean_var == lit)` to `match` per ADR-0021 (`demos/02-module-system/{alu,memory,utils,utils/print}.tri`)
 
 ### Next sub-task: v0.7.4.3-error remaining
 
-- [ ] **v0.7.4.3-error.3d** — Implement `Trilean!` refinement: `Type::Trilean { refined: bool }`, operator typing rules, E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined`, ~15 typecheck tests
-- [ ] **v0.7.4.3-error.3e** — Migrate corpus (12 sites in `demos/02-module-system/{alu,memory,utils,utils/print}.tri`) from `if (t == true/false/unknown)` to `match` / `if?`
 - [ ] **v0.7.4.3-error.4** — Migration tool `triet fmt --fix --migrate-null` + auto-migrate existing `null` in stdlib + examples
 - [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
 

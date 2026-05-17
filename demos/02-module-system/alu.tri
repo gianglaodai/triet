@@ -21,22 +21,21 @@ public function full_carry(a: Trilean, b: Trilean, carry_in: Trilean) -> Trilean
 // ── Ternary ring counter (increment / decrement) ──────────────────
 // In balanced ternary, the ordering is: false → unknown → true
 
+// Migrated to `match` per ADR-0021 — `if a == lit` is unsafe when `a`
+// might be Unknown (E1033 PossiblyUnknownCondition). `match` dispatches
+// all three Ł3 states explicitly.
 public function increment(a: Trilean) -> Trilean =
-    if a == false {
-        unknown
-    } else if a == unknown {
-        true
-    } else {
-        false
+    match a {
+        false => unknown,
+        unknown => true,
+        true => false,
     }
 
 public function decrement(a: Trilean) -> Trilean =
-    if a == true {
-        unknown
-    } else if a == unknown {
-        false
-    } else {
-        true
+    match a {
+        true => unknown,
+        unknown => false,
+        false => true,
     }
 
 // ── Comparator ────────────────────────────────────────────────────
@@ -45,32 +44,44 @@ public function decrement(a: Trilean) -> Trilean =
 public function tri_eq(a: Trilean, b: Trilean) -> Trilean = !(a ^ b)
 
 // Returns true when a > b in the truth ordering (false < unknown < true).
+// Nested match dispatches both operands explicitly; pre-ADR-0021 form
+// used `if a == b / a == true / ...` chains which raise E1033.
 public function tri_gt(a: Trilean, b: Trilean) -> Trilean =
-    if a == b {
-        false
-    } else if a == true {
-        true
-    } else if b == true {
-        false
-    } else if a == unknown {
-        true
-    } else {
-        false
+    match a {
+        true => match b {
+            true => false,
+            unknown => true,
+            false => true,
+        },
+        unknown => match b {
+            true => false,
+            unknown => false,
+            false => true,
+        },
+        false => false,
     }
 
 // ── 4-to-1 multiplexer ────────────────────────────────────────────
 
 // Select one of four inputs using two select signals.
+// Nested match on (s1, s0) — `if s1 == false / s1 == unknown / ...`
+// pattern raises E1033 since both signals are generic Trilean.
 public function mux4(
     s1: Trilean, s0: Trilean,
     i00: Trilean, i01: Trilean, i10: Trilean, i11: Trilean
 ) -> Trilean =
-    if s1 == false {
-        if s0 == false { i00 } else { i01 }
-    } else if s1 == unknown {
-        unknown
-    } else {
-        if s0 == false { i10 } else { i11 }
+    match s1 {
+        false => match s0 {
+            false => i00,
+            unknown => i01,
+            true => i01,
+        },
+        unknown => unknown,
+        true => match s0 {
+            false => i10,
+            unknown => i11,
+            true => i11,
+        },
     }
 
 // ── 3-trit ripple-carry adder ─────────────────────────────────────

@@ -6,23 +6,21 @@ from std.io import println
 
 // ── Trilean formatting ────────────────────────────────────────────
 
+// Migrated to `match` per ADR-0021 — `t == true / t == false` chain
+// on a generic Trilean raises E1033.
 public function format_trilean(t: Trilean) -> String =
-    if t == true {
-        "T"
-    } else if t == false {
-        "F"
-    } else {
-        "U"
+    match t {
+        true => "T",
+        false => "F",
+        unknown => "U",
     }
 
 // Full-word form of a Trilean value.
 public function format_trilean_word(t: Trilean) -> String =
-    if t == true {
-        "true"
-    } else if t == false {
-        "false"
-    } else {
-        "unknown"
+    match t {
+        true => "true",
+        false => "false",
+        unknown => "unknown",
     }
 
 // ── Separators and banners ────────────────────────────────────────

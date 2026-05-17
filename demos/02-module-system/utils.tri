@@ -11,19 +11,21 @@ module advanced {
     public function cube(x: Integer) -> Integer = x * x * x
 
     // Absolute value for Trilean: maps true→true, false→true, unknown→unknown.
+    // Migrated to `match` per ADR-0021 — `a == unknown` is unsafe when
+    // `a` itself might be Unknown (E1033).
     public function trilean_abs(a: Trilean) -> Trilean =
-        if a == unknown {
-            unknown
-        } else {
-            true
+        match a {
+            unknown => unknown,
+            true => true,
+            false => true,
         }
 
     // Check if a Trilean value is "definite" (not unknown).
     public function is_definite(a: Trilean) -> Trilean =
-        if a == unknown {
-            false
-        } else {
-            true
+        match a {
+            unknown => false,
+            true => true,
+            false => true,
         }
 
     // Safe division: returns 0 if divisor is 0 (ternary null-guard).
@@ -42,15 +44,17 @@ public function identity(a: Trilean) -> Trilean = a
 
 // Repeat a Trilean value N times via the ring counter pattern.
 // Advances `start` by `steps` steps in the false→unknown→true ring.
+// `remainder == 0` dispatch is Integer comparison (Trilean!, safe);
+// inner `start == ...` chains migrate to `match` per ADR-0021.
 public function step_ring(start: Trilean, steps: Integer) -> Trilean = {
     let remainder = steps %% 3
     if remainder == 0 {
         start
-    } else if start == false {
-        if remainder == 1 { unknown } else { true }
-    } else if start == unknown {
-        if remainder == 1 { true } else { false }
     } else {
-        if remainder == 1 { false } else { unknown }
+        match start {
+            false => if remainder == 1 { unknown } else { true },
+            unknown => if remainder == 1 { true } else { false },
+            true => if remainder == 1 { false } else { unknown },
+        }
     }
 }

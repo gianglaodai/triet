@@ -30,13 +30,14 @@ public function new_latch(init: Trilean) -> Latch =
 public function latch_read(lt: Latch) -> Trilean = lt.stored
 
 // When enabled, latch captures the input value; otherwise holds.
+// Migrated to `match` per ADR-0021 — three Ł3 states dispatched
+// explicitly. Unknown enable signal collapses to "hold" (same as
+// false) — the original semantics.
 public function latch_write(lt: Latch, input: Trilean, enable: Trilean) -> Latch =
-    if enable == true {
-        Latch { stored: input, enabled: true }
-    } else if enable == false {
-        Latch { stored: lt.stored, enabled: false }
-    } else {
-        Latch { stored: lt.stored, enabled: false }
+    match enable {
+        true => Latch { stored: input, enabled: true },
+        false => Latch { stored: lt.stored, enabled: false },
+        unknown => Latch { stored: lt.stored, enabled: false },
     }
 
 public function latch_enable(lt: Latch) -> Latch =
@@ -59,13 +60,12 @@ public function new_counter(init: Trilean, max: Integer) -> Counter =
 public function counter_value(c: Counter) -> Trilean = c.value
 
 // Advance the counter to the next Trilean value in ring order.
+// Migrated to `match` per ADR-0021.
 public function tick(c: Counter) -> Counter = {
-    let next = if c.value == false {
-        unknown
-    } else if c.value == unknown {
-        true
-    } else {
-        false
+    let next = match c.value {
+        false => unknown,
+        unknown => true,
+        true => false,
     }
     let next_count = c.count + 1
     Counter { value: next, max: c.max, count: next_count }
