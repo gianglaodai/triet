@@ -292,3 +292,75 @@ fn aliased_variant_import_rejected_by_cli() {
         "stderr: {stderr}"
     );
 }
+
+// ── `triet fmt --migrate-null` (v0.7.4.3-error.4a) ──────────────────
+
+/// Dry-run does not modify the file on disk.
+#[test]
+fn fmt_migrate_null_dry_run_preserves_file() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("main.tri");
+    let original = "function lookup(id: Integer) -> User? = null\n";
+    fs::write(&file, original).unwrap();
+    let output = run_cli(&["fmt", "--migrate-null", "main.tri"], temp.path());
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let after = fs::read_to_string(&file).unwrap();
+    assert_eq!(after, original, "dry-run must not touch disk");
+    // Dry-run reports the file count in stderr.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("1 of 1 file(s) would change"), "stderr: {stderr}");
+}
+
+/// `--write` persists the `null` → `~0` rewrite.
+#[test]
+fn fmt_migrate_null_write_rewrites_file() {
+    let temp = TempDir::new().unwrap();
+    let file = temp.path().join("main.tri");
+    fs::write(&file, "function lookup(id: Integer) -> User? = null\n").unwrap();
+    let output = run_cli(
+        &["fmt", "--migrate-null", "--write", "main.tri"],
+        temp.path(),
+    );
+    assert!(output.status.success());
+    let after = fs::read_to_string(&file).unwrap();
+    assert_eq!(after, "function lookup(id: Integer) -> User? = ~0\n");
+}
+
+/// Running without a rule flag prints a helpful error.
+#[test]
+fn fmt_without_rule_flag_exits_with_help() {
+    let temp = TempDir::new().unwrap();
+    fs::write(temp.path().join("main.tri"), "function main() -> Integer = 0").unwrap();
+    let output = run_cli(&["fmt", "main.tri"], temp.path());
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--migrate-null"),
+        "stderr should mention --migrate-null: {stderr}"
+    );
+}
+
+/// Walking a directory migrates every `.tri` file recursively.
+#[test]
+fn fmt_migrate_null_recurses_into_directory() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::write(root.join("a.tri"), "let x = null\n").unwrap();
+    fs::create_dir(root.join("sub")).unwrap();
+    fs::write(root.join("sub").join("b.tri"), "let y = null\n").unwrap();
+    // Non-.tri files are ignored.
+    fs::write(root.join("README.md"), "uses null word freely").unwrap();
+
+    let output = run_cli(&["fmt", "--migrate-null", "--write", "."], root);
+    assert!(output.status.success());
+    assert_eq!(fs::read_to_string(root.join("a.tri")).unwrap(), "let x = ~0\n");
+    assert_eq!(
+        fs::read_to_string(root.join("sub").join("b.tri")).unwrap(),
+        "let y = ~0\n",
+    );
+    // README untouched.
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        "uses null word freely",
+    );
+}

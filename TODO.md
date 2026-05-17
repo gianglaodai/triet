@@ -58,11 +58,11 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### In progress
 
-_None — `.3` umbrella complete. Awaiting `.4` migration tool selection._
+- [ ] **v0.7.4.3-error.4a** — `triet fmt --migrate-null` tool (lexer-based token rewrite, idempotent, dry-run-by-default + `--write`)
 
 ### Next sub-task: v0.7.4.3-error remaining
 
-- [ ] **v0.7.4.3-error.4** — Migration tool `triet fmt --fix --migrate-null` + auto-migrate existing `null` in stdlib + examples
+- [ ] **v0.7.4.3-error.4b** — Apply `--migrate-null` to corpus (6 stdlib stubs + `examples/nullable.tri`)
 - [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
 
 ### After v0.7.4.3-error: v0.7.4.3 lexer port + remaining v0.7 sub-tasks

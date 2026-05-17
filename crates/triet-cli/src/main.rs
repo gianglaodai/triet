@@ -7,6 +7,8 @@
 //! - `triet store import <path>` — install a .tripack into the CAS store.
 //! - `triet store list` — list installed packs.
 //! - `triet store gc` — garbage-collect unreferenced packs.
+//! - `triet fmt --migrate-null [--write] <path>` — apply source-level
+//!   migrations (currently: ADR-0020 `null` → `~0`).
 //! - `triet info` — version and project info.
 //!
 //! Global flags:
@@ -15,6 +17,8 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod fmt;
+
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -22,6 +26,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use miette::Report;
 use triet_interpreter::RuntimeError;
 use triet_typecheck::TypeError;
+
+use crate::fmt::fmt_command;
 
 #[derive(Parser)]
 #[command(
@@ -73,6 +79,24 @@ enum Command {
     Store {
         #[command(subcommand)]
         subcommand: StoreCommand,
+    },
+    /// Source-level formatter / migrator (v0.7.4.3-error.4a).
+    ///
+    /// Currently exposes a single migration rule via `--migrate-null`
+    /// (ADR-0020 §10): rewrite the deprecated `null` keyword to its
+    /// canonical `~0` form. Other rules will land alongside future
+    /// deprecations and reuse the same `triet fmt` entry point.
+    Fmt {
+        /// Apply the `null` → `~0` migration (ADR-0020 §10).
+        #[arg(long)]
+        migrate_null: bool,
+        /// Write changes back to disk. Without this flag, the command
+        /// prints the unified diff to stdout (dry-run).
+        #[arg(long)]
+        write: bool,
+        /// File or directory to operate on. Directories are walked
+        /// recursively; only `*.tri` files are touched.
+        path: String,
     },
     /// Print version and build info.
     Info,
@@ -128,6 +152,11 @@ fn main() -> ExitCode {
         Command::Check { path } => check_program(&path, cli.json),
         Command::Build { path, output } => build_program(&path, output, cli.json),
         Command::Store { subcommand } => store_command(subcommand, cli.json),
+        Command::Fmt {
+            migrate_null,
+            write,
+            path,
+        } => fmt_command(&path, migrate_null, write),
         Command::Info => {
             println!("Triết — balanced ternary, AI-first programming language");
             println!("Language SPEC:     v0.5");
