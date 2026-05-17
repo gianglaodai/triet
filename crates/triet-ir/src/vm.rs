@@ -868,9 +868,21 @@ impl Vm {
                 //   Zero     = canonical null
                 //   Negative = reserved for definitely-missing
                 // Today only Some/Null are produced; Negative is reserved.
+                //
+                // ADR-0010 Addendum §D (v0.7.4.3-error.6a): cross-
+                // tolerance with the Outcome value carrier — an
+                // `OutcomeNewNull`-constructed `RuntimeValue::Outcome
+                // { Trit::Zero, None }` is also recognized as the
+                // canonical null state. This unifies `~0` source with
+                // the legacy `null` keyword at the runtime tier.
                 let v = read_operand(constants, frame, nullable);
                 let trit = match &v {
-                    RuntimeValue::Null | RuntimeValue::Enum { payload: None, .. } => Trit::Zero,
+                    RuntimeValue::Null
+                    | RuntimeValue::Enum { payload: None, .. }
+                    | RuntimeValue::Outcome {
+                        discriminator: Trit::Zero,
+                        payload: None,
+                    } => Trit::Zero,
                     _ => Trit::Positive,
                 };
                 frame.write(dest, RuntimeValue::Trit(trit));
@@ -1255,35 +1267,57 @@ impl Vm {
             }
             Instruction::OutcomeDiscriminant { dest, source } => {
                 let outcome = read_operand(constants, frame, source);
-                let RuntimeValue::Outcome { discriminator, .. } = outcome else {
-                    return Err(VmError::TypeMismatch {
-                        expected: TypeTag::Outcome {
-                            value_type: Box::new(TypeTag::Unit),
-                            error_type: Box::new(TypeTag::Unit),
-                            allow_null_state: false,
-                        },
-                        actual: outcome.type_tag().to_string(),
-                        function: func_name,
-                    });
+                // ADR-0010 Addendum §D (v0.7.4.3-error.6a): cross-
+                // tolerance with the legacy `RuntimeValue::Null`
+                // carrier — `~0` source-level value lowers to
+                // `Constant::Null` per Addendum §B byte-identity
+                // promise, so the discriminator readout has to
+                // recognize Null as a Zero-state.
+                let discriminator = match outcome {
+                    RuntimeValue::Outcome { discriminator, .. } => discriminator,
+                    RuntimeValue::Null => Trit::Zero,
+                    other => {
+                        return Err(VmError::TypeMismatch {
+                            expected: TypeTag::Outcome {
+                                value_type: Box::new(TypeTag::Unit),
+                                error_type: Box::new(TypeTag::Unit),
+                                allow_null_state: false,
+                            },
+                            actual: other.type_tag().to_string(),
+                            function: func_name,
+                        });
+                    }
                 };
                 frame.write(dest, RuntimeValue::Trit(discriminator));
             }
             Instruction::OutcomeUnwrapValue { dest, source } => {
                 let outcome = read_operand(constants, frame, source);
-                let RuntimeValue::Outcome {
-                    discriminator,
-                    payload,
-                } = outcome
-                else {
-                    return Err(VmError::TypeMismatch {
-                        expected: TypeTag::Outcome {
-                            value_type: Box::new(TypeTag::Unit),
-                            error_type: Box::new(TypeTag::Unit),
-                            allow_null_state: false,
-                        },
-                        actual: outcome.type_tag().to_string(),
-                        function: func_name,
-                    });
+                let (discriminator, payload) = match outcome {
+                    RuntimeValue::Outcome {
+                        discriminator,
+                        payload,
+                    } => (discriminator, payload),
+                    // ADR-0010 Addendum §D: unwrap on a Null-carried
+                    // Zero state surfaces as E2210 (wrong arm), not
+                    // E2201 (wrong type) — the value IS valid, it's
+                    // just not the success arm.
+                    RuntimeValue::Null => {
+                        return Err(VmError::InvalidOutcomeState {
+                            reason: "unwrap_value called on null state".into(),
+                            function: func_name,
+                        });
+                    }
+                    other => {
+                        return Err(VmError::TypeMismatch {
+                            expected: TypeTag::Outcome {
+                                value_type: Box::new(TypeTag::Unit),
+                                error_type: Box::new(TypeTag::Unit),
+                                allow_null_state: false,
+                            },
+                            actual: other.type_tag().to_string(),
+                            function: func_name,
+                        });
+                    }
                 };
                 if !discriminator.is_positive() {
                     return Err(VmError::InvalidOutcomeState {
@@ -1299,20 +1333,28 @@ impl Vm {
             }
             Instruction::OutcomeUnwrapError { dest, source } => {
                 let outcome = read_operand(constants, frame, source);
-                let RuntimeValue::Outcome {
-                    discriminator,
-                    payload,
-                } = outcome
-                else {
-                    return Err(VmError::TypeMismatch {
-                        expected: TypeTag::Outcome {
-                            value_type: Box::new(TypeTag::Unit),
-                            error_type: Box::new(TypeTag::Unit),
-                            allow_null_state: false,
-                        },
-                        actual: outcome.type_tag().to_string(),
-                        function: func_name,
-                    });
+                let (discriminator, payload) = match outcome {
+                    RuntimeValue::Outcome {
+                        discriminator,
+                        payload,
+                    } => (discriminator, payload),
+                    RuntimeValue::Null => {
+                        return Err(VmError::InvalidOutcomeState {
+                            reason: "unwrap_error called on null state".into(),
+                            function: func_name,
+                        });
+                    }
+                    other => {
+                        return Err(VmError::TypeMismatch {
+                            expected: TypeTag::Outcome {
+                                value_type: Box::new(TypeTag::Unit),
+                                error_type: Box::new(TypeTag::Unit),
+                                allow_null_state: false,
+                            },
+                            actual: other.type_tag().to_string(),
+                            function: func_name,
+                        });
+                    }
                 };
                 if !discriminator.is_negative() {
                     return Err(VmError::InvalidOutcomeState {
@@ -5114,5 +5156,201 @@ mod tests {
             1,
             "probe Rc should retain only the outer reference",
         );
+    }
+
+    // ── Outcome-null unification (ADR-0010 Addendum §D, v0.7.4.3-error.6a) ──
+    //
+    // Six round-trip tests covering the four cross-tolerant opcodes
+    // plus a regression test that the original `OutcomeNewNull → ...`
+    // path still works for backward compat.
+
+    /// `OutcomeDiscriminant` accepts a `Constant::Null` and returns
+    /// `Trit::Zero` per Addendum §D — closes the `~0` source path now
+    /// that the lowerer emits `Constant::Null` instead of `OutcomeNewNull`.
+    #[test]
+    fn vm_outcome_discriminant_on_null_returns_zero() {
+        let mut pool = ConstantPool::new();
+        let null_const = pool.intern(Constant::Null);
+        let func = outcome_function(
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: null_const,
+                },
+                Instruction::OutcomeDiscriminant {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+            TypeTag::Trit,
+        );
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), Vec::new()).unwrap();
+        assert!(
+            matches!(result, RuntimeValue::Trit(Trit::Zero)),
+            "expected Trit::Zero from Null, got {result}",
+        );
+    }
+
+    /// `NullCheck` accepts a `RuntimeValue::Outcome { Zero, None }`
+    /// and returns `Trit::Zero` — same byte-level state, just the
+    /// other carrier shape. This is what unblocks Elvis `?:` on `~0`.
+    #[test]
+    fn vm_null_check_on_outcome_zero_returns_zero() {
+        let func = outcome_function(
+            vec![
+                Instruction::OutcomeNewNull { dest: ValueId(0) },
+                Instruction::NullCheck {
+                    dest: ValueId(1),
+                    nullable: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+            TypeTag::Trit,
+        );
+        let prog = make_simple_program(func);
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), Vec::new()).unwrap();
+        assert!(
+            matches!(result, RuntimeValue::Trit(Trit::Zero)),
+            "expected Trit::Zero from Outcome{{Zero,None}}, got {result}",
+        );
+    }
+
+    /// `OutcomeUnwrapValue` on a `RuntimeValue::Null` surfaces E2210
+    /// `"unwrap_value called on null state"` — the value is valid Zero,
+    /// just not the success arm. Cleaner than the pre-§D E2201
+    /// `TypeMismatch`. Distinct from the .3a test of similar name which
+    /// tests unwrap on the Zero arm of a `RuntimeValue::Outcome`.
+    #[test]
+    fn vm_outcome_unwrap_value_on_runtime_null_panics_e2210() {
+        let mut pool = ConstantPool::new();
+        let null_const = pool.intern(Constant::Null);
+        let func = outcome_function(
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: null_const,
+                },
+                Instruction::OutcomeUnwrapValue {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+            TypeTag::Integer,
+        );
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let err = vm.execute(FuncId(0), Vec::new()).unwrap_err();
+        match err {
+            VmError::InvalidOutcomeState { reason, .. } => {
+                assert!(
+                    reason.contains("unwrap_value") && reason.contains("null state"),
+                    "expected unwrap_value/null-state mention, got {reason:?}",
+                );
+            }
+            other => panic!("expected E2210 InvalidOutcomeState, got {other:?}"),
+        }
+    }
+
+    /// Symmetric for `OutcomeUnwrapError` on `RuntimeValue::Null`.
+    #[test]
+    fn vm_outcome_unwrap_error_on_runtime_null_panics_e2210() {
+        let mut pool = ConstantPool::new();
+        let null_const = pool.intern(Constant::Null);
+        let func = outcome_function(
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: null_const,
+                },
+                Instruction::OutcomeUnwrapError {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+            TypeTag::String,
+        );
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let err = vm.execute(FuncId(0), Vec::new()).unwrap_err();
+        match err {
+            VmError::InvalidOutcomeState { reason, .. } => {
+                assert!(
+                    reason.contains("unwrap_error") && reason.contains("null state"),
+                    "expected unwrap_error/null-state mention, got {reason:?}",
+                );
+            }
+            other => panic!("expected E2210 InvalidOutcomeState, got {other:?}"),
+        }
+    }
+
+    /// Regression: the legacy `OutcomeNewNull → OutcomeDiscriminant`
+    /// path still returns `Trit::Zero`. This was the pre-§D primary
+    /// path and stays functional for backward `.triv` compat.
+    #[test]
+    fn vm_outcome_new_null_discriminant_still_zero_legacy_path() {
+        let func = outcome_function(
+            vec![
+                Instruction::OutcomeNewNull { dest: ValueId(0) },
+                Instruction::OutcomeDiscriminant {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+            TypeTag::Trit,
+        );
+        let prog = make_simple_program(func);
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), Vec::new()).unwrap();
+        assert!(matches!(result, RuntimeValue::Trit(Trit::Zero)));
+    }
+
+    /// `NullCheck` on a non-null `RuntimeValue::Outcome` (e.g. success
+    /// arm) returns `Trit::Positive` — only the Zero state pair
+    /// triggers the cross-tolerance.
+    #[test]
+    fn vm_null_check_on_positive_outcome_returns_positive() {
+        let mut pool = ConstantPool::new();
+        let payload_const = pool.intern(Constant::Integer(Integer::new(7).unwrap()));
+        let func = outcome_function(
+            vec![
+                Instruction::OutcomeNewPositive {
+                    dest: ValueId(0),
+                    payload: Operand::Const(payload_const),
+                },
+                Instruction::NullCheck {
+                    dest: ValueId(1),
+                    nullable: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+            TypeTag::Trit,
+        );
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), Vec::new()).unwrap();
+        assert!(matches!(result, RuntimeValue::Trit(Trit::Positive)));
     }
 }

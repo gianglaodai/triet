@@ -216,3 +216,46 @@ The runtime path remains **defense-in-depth** for three legitimate cases:
 **Author 2026-05-18 directive** ("xử lý ngay" / no warning period) means v0.7.4.3-error.3d ships compile-time rejection immediately. Programs that pre-3d relied on the runtime panic as primary safety must migrate per ADR-0021 §3 remediations.
 
 **No backend change required.** The BrTrilean opcode, its three-successor encoding, and the lowerer's emission strategy for `if` / `if?` / `match` are unchanged.
+
+---
+
+## Addendum §D — v0.7.4.3-error.6a (outcome-null runtime unification)
+
+Closes the runtime-level half of [Addendum §B](#addendum--v074.3-error-null-literal-unification) (null/`~0` source unification, 2026-05-17). Addendum §B promised:
+
+> "Both source forms produce **byte-identical** `.triv` output — the wire-format `Constant::Null` encoding (1 byte, `0x00` 0-byte payload per ADR-0008 §"Constant pool") is the canonical Trit::Zero on-disk representation."
+
+The `.3a`/`.3b` implementation broke this promise: source `~0` lowered to the new `OutcomeNewNull` opcode (`0xC3`) producing `RuntimeValue::Outcome { Trit::Zero, None }`, while source `null` lowered to `Constant::Null` producing `RuntimeValue::Null`. Two different runtime shapes for one canonical state.
+
+Concrete consequence (surfaced during `v0.7.4.3-error.4b` corpus migration): `examples/nullable.tri` uses `~0` inside a `String?` Elvis `?:` fallback. After migrating `null → ~0`, the VM-tier Elvis (built on `NullCheck` over `RuntimeValue::Null`) no longer recognized the value as null — it saw `RuntimeValue::Outcome` instead, and the fallback never fired. Interpreter (which has no Outcome value at all) likewise rejected the migrated form.
+
+### Decision
+
+**Lock:** Three changes, all backward-compatible at the wire-format level.
+
+1. **Lowerer.** `Expr::OutcomeConstructor { arm: Zero, payload: None }` now emits `Constant::Null` instead of `Instruction::OutcomeNewNull`. Source `~0` and source `null` (deprecated W2001) produce byte-identical IR — finally honoring §B's promise. The `OutcomeNewNull` opcode (`0xC3`) is retained for backward `.triv` compatibility and as the dynamic-constructor path for tools that build IR without source (no version bump).
+
+2. **VM cross-tolerance.** The Trit::Zero state has a single canonical runtime representation (`RuntimeValue::Null`) but the IR carries two runtime shapes (`RuntimeValue::Null` and `RuntimeValue::Outcome { Trit::Zero, None }`) for legacy reasons. Four opcodes accept both shapes interchangeably:
+
+| Opcode | Pre-§D | Post-§D |
+|---|---|---|
+| `OutcomeDiscriminant` on `RuntimeValue::Null` | E2201 TypeMismatch | return `Trit::Zero` |
+| `NullCheck` on `RuntimeValue::Outcome { Zero, None }` | E2201 TypeMismatch | return `Trit::Zero` |
+| `OutcomeUnwrapValue` on `RuntimeValue::Null` | E2201 TypeMismatch | E2210 InvalidOutcomeState (clean message: "unwrap_value on null state") |
+| `OutcomeUnwrapError` on `RuntimeValue::Null` | E2201 TypeMismatch | E2210 InvalidOutcomeState ("unwrap_error on null state") |
+
+The asymmetry (panic E2210 not E2201) for unwrap-on-null reflects the semantic: the value IS in a valid Trit::Zero state, just not the arm being unwrapped — exactly like calling `.unwrap_value()` on a failure outcome.
+
+3. **Interpreter parity.** `Expr::OutcomeConstructor { arm: Zero, payload: None }` evaluates to `Value::Null` directly (matches lowerer + VM). Interpreter doesn't carry a separate `Value::Outcome` enum variant, so this is automatic — only the rejection arm needed updating.
+
+### Tests
+
+Round-trip tests (`crates/triet-ir/src/vm.rs#[cfg(test)] mod tests`) cover each of the four cross-tolerant cases. The existing `.3a` test `vm_outcome_discriminant_returns_trit_per_arm` continues to verify the `OutcomeNewNull → OutcomeDiscriminant → Trit::Zero` path (unchanged — opcode still emits `RuntimeValue::Outcome`). The `.3b` e2e test `outcome_null_constructor_on_ternary_outcome` exercises the new path (`~0` source → `Constant::Null` IR → `RuntimeValue::Null` runtime → cross-tolerant `OutcomeDiscriminant` returns Zero → match arm `~0` fires).
+
+`examples/nullable.tri` is migrated back to `~0` form in `.6b`. Differential test (interpreter vs VM) re-greens, closing the `.4b` deferred item.
+
+### Không làm
+
+- **Drop `OutcomeNewNull` opcode.** Rejected — backward `.triv` compat + future dynamic-construction paths (JIT, tool emitters) keep the opcode alive even though the lowerer no longer emits it from source.
+- **Force `RuntimeValue::Outcome { Zero, None }` → `RuntimeValue::Null` at the VM level.** Rejected — would require the VM to inspect every `Outcome` value at construction time. Cross-tolerance on the consuming opcodes is simpler and equally correct.
+- **Add an `is_null()` helper as a method on `RuntimeValue`.** The cross-tolerance lives in the opcode dispatch sites — fewer places to keep in sync.

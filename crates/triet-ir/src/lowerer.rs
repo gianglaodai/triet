@@ -1101,7 +1101,19 @@ impl<'a> LowerCtx<'a> {
                 });
             }
             OutcomeArm::Zero => {
-                self.emit(Instruction::OutcomeNewNull { dest });
+                // ADR-0010 Addendum §D (v0.7.4.3-error.6a): source `~0`
+                // and source `null` produce byte-identical IR — both
+                // emit Constant::Null. The OutcomeNewNull opcode (0xC3)
+                // is retained for backward `.triv` compat + dynamic-
+                // construction paths but is no longer the source-level
+                // target for `~0`. Cross-tolerant VM dispatch (also §D)
+                // ensures `OutcomeDiscriminant` and pattern-match arms
+                // continue to recognize this value as the Zero state.
+                let null_const = self.intern_constant(Constant::Null);
+                self.emit(Instruction::Const {
+                    dest,
+                    constant: null_const,
+                });
             }
         }
         dest

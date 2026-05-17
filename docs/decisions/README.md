@@ -43,7 +43,7 @@ prior decision, write a new ADR that supersedes it.
 
 | ADR | Title | Status |
 |---|---|---|
-| [0010](0010-ternary-native-ir.md) | Ternary-native IR (`BrTrilean` 3-way branch, strict `if` Unknown→panic, Ł3-aware `Eq`/`Ne`) — *+ v0.7.4.3-error Addendum: null→~0 unification; + v0.7.4.3-error.3c Addendum §C: BrTrilean unknown_block demoted to defense-in-depth (primary safety moved to typecheck E1033 per ADR-0021)* | Locked |
+| [0010](0010-ternary-native-ir.md) | Ternary-native IR (`BrTrilean` 3-way branch, strict `if` Unknown→panic, Ł3-aware `Eq`/`Ne`) — *+ v0.7.4.3-error Addendum: null→~0 unification; + v0.7.4.3-error.3c Addendum §C: BrTrilean unknown_block demoted to defense-in-depth (primary safety moved to typecheck E1033 per ADR-0021); + v0.7.4.3-error.6a Addendum §D: outcome-null runtime unification (lowerer emits Constant::Null for `~0`; OutcomeDiscriminant + NullCheck become cross-tolerant)* | Locked |
 
 ### v0.4 — Crate-Pack + Stable ABI
 
