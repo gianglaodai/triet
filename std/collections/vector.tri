@@ -1,0 +1,24 @@
+// Triết standard library — std.collections.vector
+//
+// `Vector<T>` — homogeneous ordered collection. Backed by builtin
+// opcodes IDs 8-11 (v0.7.3.2). Bodies are placeholders that
+// typecheck but never execute — VM intercepts cross-module calls
+// via `path_to_builtin` per ADR-0019 Addendum §A7.
+//
+// Self-call body pattern for zero-arg generic returns (no concrete
+// placeholder available for `Vector<T>` literal).
+
+/// Create an empty `Vector<T>`. Element type inferred from context.
+public function new<T>() -> Vector<T> = new()
+
+/// Functional return-new: clone `v`, append `item`, return new vector.
+/// Body returns `v` as-is — typecheck-only placeholder.
+public function push<T>(v: Vector<T>, item: T) -> Vector<T> = v
+
+/// Lookup by index. Returns `T?` — `null` on out-of-bounds (negative
+/// index or `index >= length`) per Q3-A strict bounds. Body returns
+/// `null` (widens to `T?` via Nullable subtyping).
+public function get<T>(v: Vector<T>, index: Integer) -> T? = null
+
+/// Element count. Body returns `0` (widens to Integer; never executes).
+public function length<T>(v: Vector<T>) -> Integer = 0

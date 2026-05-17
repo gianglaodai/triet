@@ -1,5 +1,10 @@
 // Triết standard library — std.io
-// Input/output operations.
+// Console input/output operations.
+//
+// File I/O lives in `std.io.fs` (v0.7.4.2 sub-module per ADR-0019
+// Addendum §A7) — keep `std.io` focused on console streams.
+module fs
+
 public function print(text: String) {}
 public function println(text: String) {}
 public function read_line() -> String = ""

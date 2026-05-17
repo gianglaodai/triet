@@ -1462,6 +1462,7 @@ fn runtime_cmp(l: &RuntimeValue, r: &RuntimeValue) -> std::cmp::Ordering {
 /// Map an absolute path to a builtin, if the path refers to a known stdlib builtin.
 fn path_to_builtin(path: &str) -> Option<BuiltinName> {
     match path {
+        // Pre-v0.7 builtins (stdlib `std.io` / `std.assert` / `std.text`).
         "std.io.println" => Some(BuiltinName::Println),
         "std.io.print" => Some(BuiltinName::Print),
         "std.assert.assert" => Some(BuiltinName::Assert),
@@ -1469,6 +1470,46 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         "std.text.len" => Some(BuiltinName::TextLen),
         "std.text.concat" => Some(BuiltinName::TextConcat),
         "std.text.from_integer" => Some(BuiltinName::TextFromInteger),
+
+        // v0.7.4.2 (ADR-0019 Addendum §A7) stdlib stub paths.
+        // Function names in each module do NOT repeat the module
+        // name — match existing `std.io.println` / `std.text.len`
+        // precedent. BuiltinName enum (Rust-side) keeps explicit
+        // `VectorNew`/`HashMapNew`/etc. for disambiguation.
+
+        // Vector ops (v0.7.3.2, IDs 8-11).
+        "std.collections.vector.new" => Some(BuiltinName::VectorNew),
+        "std.collections.vector.push" => Some(BuiltinName::VectorPush),
+        "std.collections.vector.get" => Some(BuiltinName::VectorGet),
+        "std.collections.vector.length" => Some(BuiltinName::VectorLength),
+
+        // HashMap ops (v0.7.3.3, IDs 12-16).
+        "std.collections.hashmap.new" => Some(BuiltinName::HashMapNew),
+        "std.collections.hashmap.insert" => Some(BuiltinName::HashMapInsert),
+        "std.collections.hashmap.get" => Some(BuiltinName::HashMapGet),
+        "std.collections.hashmap.keys" => Some(BuiltinName::HashMapKeys),
+        "std.collections.hashmap.contains" => Some(BuiltinName::HashMapContains),
+
+        // File I/O (v0.7.3.4, IDs 17-19). Capability gating deferred
+        // §A7 → v0.7.10.
+        "std.io.fs.read" => Some(BuiltinName::ReadFile),
+        "std.io.fs.write" => Some(BuiltinName::WriteFile),
+        "std.io.fs.exists" => Some(BuiltinName::FileExists),
+
+        // Path ops (v0.7.3.4, IDs 20-22). POSIX-only Q2-A.
+        "std.path.join" => Some(BuiltinName::PathJoin),
+        "std.path.parent" => Some(BuiltinName::PathParent),
+        "std.path.basename" => Some(BuiltinName::PathBasename),
+
+        // String ops (v0.7.3.4, IDs 23-25). Char-index Q3-A.
+        "std.string.substring" => Some(BuiltinName::StringSubstring),
+        "std.string.split" => Some(BuiltinName::StringSplit),
+        "std.string.index_of" => Some(BuiltinName::StringIndexOf),
+
+        // ParseInteger (v0.7.3.4, ID 26). Paired with `from_integer`
+        // in `std.text` per Q2-A symmetry.
+        "std.text.parse_integer" => Some(BuiltinName::ParseInteger),
+
         _ => None,
     }
 }

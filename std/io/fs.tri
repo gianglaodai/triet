@@ -1,0 +1,20 @@
+// Triết standard library — std.io.fs
+//
+// Filesystem operations. Backed by VM builtins IDs 17-19 (v0.7.3.4).
+// Capability gating deferred to v0.7.10 CLI wiring per ADR-0019
+// Addendum §A7 — current implementation trusts caller (self-host
+// compiler bootstrap context). Production user code calling these
+// will eventually go through `sys.fs.*` capability resolution.
+
+/// Read file contents as UTF-8 String. Returns `null` on any I/O
+/// error (file not found, permission denied, invalid UTF-8, etc).
+/// Data-tier failure — caller handles via `?:` / `!!` / pattern match.
+public function read(path: String) -> String? = null
+
+/// Write `contents` to `path`. Returns strict 2-state Trilean per
+/// Q4-A: True on success, False on any error. Not atomic (deferred
+/// §A7 — pattern mirrors ADR-0015 §5 tmp+rename when needed).
+public function write(path: String, contents: String) -> Trilean = false
+
+/// True if `path` resolves to an existing file. Strict 2-state.
+public function exists(path: String) -> Trilean = false

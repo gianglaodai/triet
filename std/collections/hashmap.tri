@@ -1,0 +1,26 @@
+// Triết standard library — std.collections.hashmap
+//
+// `HashMap<K, V>` — keyed collection with sorted-key iteration order
+// (BTreeMap-backed per v0.7.3.1 §A2). Key types restricted to
+// hashable primitives (Trit/Tryte/Integer/Long/String); passing a
+// non-primitive (Vector/HashMap/Trilean/Struct/Enum/Closure/Unit/Null)
+// as key panics with E2201 TypeMismatch per v0.7.3.3 Q2-B.
+
+/// Create an empty `HashMap<K, V>`.
+public function new<K, V>() -> HashMap<K, V> = new()
+
+/// Functional return-new insert. Body returns `m` as-is —
+/// typecheck-only placeholder.
+public function insert<K, V>(m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> = m
+
+/// Lookup by key. Returns `V?` — `null` if absent (data event),
+/// panic on invalid key type (programmer bug per error-model §A7 3-tier).
+public function get<K, V>(m: HashMap<K, V>, k: K) -> V? = null
+
+/// All keys in sorted order. Body recurses into itself — typecheck
+/// resolves via identity TypeParam substitution; never executes.
+public function keys<K, V>(m: HashMap<K, V>) -> Vector<K> = keys(m)
+
+/// Strict 2-state Trilean: True if key present, False if absent.
+/// Never Unknown (Ł3 reserved for genuine semantic uncertainty per Q3-A).
+public function contains<K, V>(m: HashMap<K, V>, k: K) -> Trilean = false

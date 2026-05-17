@@ -3,3 +3,9 @@
 public function len(text: String) -> Integer = 0
 public function concat(a: String, b: String) -> String = ""
 public function from_integer(value: Integer) -> String = ""
+
+// v0.7.4.2 (ADR-0019 Addendum §A7): paired with `from_integer` as
+// the inverse Integer↔String conversion. Strict decimal parse;
+// returns null on any failure (empty, non-digit, leading whitespace,
+// overflow) per refuse-over-guess.
+public function parse_integer(text: String) -> Integer? = null

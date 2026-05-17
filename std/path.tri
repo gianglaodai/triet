@@ -1,0 +1,18 @@
+// Triết standard library — std.path
+//
+// POSIX-only path manipulation (hardcoded `/` separator) per
+// v0.7.3.4 Q2-A. Determinism required for bootstrap byte-identical
+// gate — host OS must not influence output. Windows backslash
+// support deferred post-v1.0 (ADR-0019 Addendum §A7).
+
+/// Join `base` and `segment` with `/`. Empty `base` returns
+/// `segment` as-is; trailing `/` in `base` not duplicated.
+public function join(base: String, segment: String) -> String = base
+
+/// Path with the last `/`-segment stripped, or `null` if `path` is
+/// root `/`, empty, or has no separator.
+public function parent(path: String) -> String? = null
+
+/// Last `/`-segment of `path`. For paths ending in `/`, returns the
+/// segment before the final separator. Empty path returns `""`.
+public function basename(path: String) -> String = path

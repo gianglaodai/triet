@@ -1,0 +1,10 @@
+// Triết standard library — std.collections
+//
+// Generic collection types: `Vector<T>`, `HashMap<K, V>`. Backed by
+// VM builtins shipped in v0.7.3 + exposed via path_to_builtin
+// resolution per ADR-0019 Addendum §A7.
+//
+// Java-aesthetic: each container lives in its own sub-module, mirror
+// `java.util.{Vector, HashMap}`.
+module vector
+module hashmap

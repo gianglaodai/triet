@@ -495,6 +495,51 @@ impl<'p> Checker<'p> {
             TypeExpr::Generic { name, arguments } => {
                 // Monomorphize: `Option<Integer>` → substitute `T→Integer`.
                 let args: Vec<Type> = arguments.iter().map(|t| self.resolve_type(*t)).collect();
+
+                // v0.7.4.2 (ADR-0019 Addendum §A7): `Vector<T>` and
+                // `HashMap<K, V>` are built-in collection types
+                // surfaced as pseudo user-struct shells for
+                // typecheck purposes — IR carries the concrete
+                // `TypeTag::Vector`/`TypeTag::HashMap` variants
+                // (locked v0.7.3.1). Existing struct/enum
+                // monomorphization machinery applies uniformly.
+                match (name.as_str(), args.len()) {
+                    ("Vector", 1) => {
+                        return Type::UserStruct {
+                            name: "Vector".into(),
+                            type_params: Vec::new(),
+                            fields: vec![("__element".into(), args.into_iter().next().unwrap())],
+                        };
+                    }
+                    ("HashMap", 2) => {
+                        let mut iter = args.into_iter();
+                        let key = iter.next().unwrap();
+                        let value = iter.next().unwrap();
+                        return Type::UserStruct {
+                            name: "HashMap".into(),
+                            type_params: Vec::new(),
+                            fields: vec![("__key".into(), key), ("__value".into(), value)],
+                        };
+                    }
+                    ("Vector", n) => {
+                        self.errors.push(TypeError::WrongArity {
+                            expected: 1,
+                            found: n,
+                            span,
+                        });
+                        return Type::Unknown;
+                    }
+                    ("HashMap", n) => {
+                        self.errors.push(TypeError::WrongArity {
+                            expected: 2,
+                            found: n,
+                            span,
+                        });
+                        return Type::Unknown;
+                    }
+                    _ => {}
+                }
+
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     match &ty {
                         Type::UserStruct { type_params, .. }

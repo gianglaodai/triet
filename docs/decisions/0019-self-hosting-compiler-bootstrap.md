@@ -359,7 +359,7 @@ Outline. Per-sub-task design questions (3-5 A/B/C) lands khi sub-task open per a
 | **v0.7.1** | ADR-0019 land + ROADMAP §v0.7 recalibrate + ADR index update | `docs/`, `ROADMAP.md` only |
 | **v0.7.2** | Canonical emission invariants audit + lock + CI test `bootstrap_determinism` | Rust impl audit; new `crates/triet-bootstrap/` skeleton |
 | **v0.7.3** | Builtin opcodes 4–26 land trong VM dispatcher (Rust-shim) | `triet-ir` (VM + serde), `triet-cli` for testing |
-| **v0.7.4** | `compiler/lexer.tri` + lexer_differential test | New `compiler/` dir, new `crates/triet-bootstrap/tests/lexer_differential.rs` |
+| **v0.7.4** | `compiler/lexer.tri` + lexer_differential test (umbrella: 4 sub-commits — see §A7.4 v0.7.4 sub-task breakdown below) | New `compiler/` dir, new `crates/triet-bootstrap/tests/lexer_differential.rs` |
 | **v0.7.5** | `compiler/parser.tri` + parser_differential test | `compiler/parser.tri`, parser_differential.rs |
 | **v0.7.6** | `compiler/modules.tri` + modules_differential test | `compiler/modules.tri`, modules_differential.rs |
 | **v0.7.7** | `compiler/typecheck.tri` + typecheck_differential test | `compiler/typecheck.tri`, typecheck_differential.rs |
@@ -568,8 +568,9 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 
 | Deferred item | Reason | Target phase |
 |---|---|---|
-| **Stdlib `.tri` stubs for Vector builtins** (`std/collections/vector.tri`, `std/collections/hashmap.tri`, `std/io/fs.tri`, `std/path.tri`, `std/string.tri`) | ~~Requires generic function syntax (next row).~~ **Unblocked by v0.7.4.1.** Pending implementation in v0.7.4.2. | **v0.7.4.2** (next sub-task in umbrella) |
-| **`path_to_builtin` entries for Vector/HashMap/IO/path/string ops** | Path mapping is meaningful only when source-callable. ~~Same blocker as stdlib stubs.~~ Unblocked by v0.7.4.1. | **v0.7.4.2** |
+| ~~**Stdlib `.tri` stubs for Vector builtins**~~ (`std/collections/vector.tri`, `std/collections/hashmap.tri`, `std/io/fs.tri`, `std/path.tri`, `std/string.tri`) | ~~Unblocked by v0.7.4.1.~~ | **Shipped in v0.7.4.2.** 5 new stdlib files + `std/text.tri` extended with `parse_integer`. Java-aesthetic per-namespace organization (no module-name repetition in function names). |
+| ~~**`path_to_builtin` entries for Vector/HashMap/IO/path/string ops**~~ | ~~Unblocked by v0.7.4.1.~~ | **Shipped in v0.7.4.2.** 19 entries added to `vm.rs::path_to_builtin`. |
+| **Interpreter parity for v0.7.3 builtins** (`Vector`/`HashMap`/IO/path/string ops not callable via tree-walking interpreter) | `triet-interpreter::builtins::install` only registers the v0.2 prelude (print/println/length/assert/...). The 19 v0.7.3 builtins are VM-dispatched via `path_to_builtin`; interpreter has no equivalent intercept. v0.7.4.2 stdlib stubs work via `triet build` + `triet run .triv` (VM path) but `triet run file.tri` (interpreter path) fails with `UndefinedName`. | **post-v0.7** — VISION §4.3 marks interpreter as development tier; self-host compiler doesn't need it once VM path covers all examples. Bridging would require duplicating 19 builtin implementations in `triet-interpreter::builtins.rs`. Either ship that parity in `v0.7.x.review`, OR drop interpreter entirely when v0.9 JIT lands (faster than tree-walker anyway). |
 | ~~**Generic function syntax in AST/parser**~~ (`function vector_new<T>() -> Vector<T>`) | ~~`FunctionDef` struct lacks `type_params` field; parser does not consume `<T>`.~~ | **Shipped in v0.7.4.1** (this sub-task). Parser + AST + typecheck (Rust-style inference per Q2-A) + lowerer all wired. **Deviation from Q3-A locked in §A7.1 below: lowerer uses type erasure** (TypeTag::Unit for generic param slots) instead of clone-per-instantiation. |
 | **`vector_pop(v) -> (Vector<T>, T?)`** | Functional return-new semantic (Q1-A) requires tuple return; Triết IR lacks first-class tuple opcodes. Self-host compiler doesn't need pop (symbol tables grow monotonically). | post-v1.0 — alongside tuple opcode + slice support |
 | **Tuple opcodes in IR** (`TupleNew`, `TupleGet`, `TupleLength`) | Triết has tuple values in SPEC §8 but no IR opcodes — current lowerer represents tuples via struct workaround. Blocks `vector_pop`, multi-return functions, structural pattern matching. | post-v1.0 (post-self-host, when language stability allows IR additions) |
@@ -626,4 +627,31 @@ Tracked in §A7 deferred items log under a future "Generic function monomorphiza
 | Typecheck | `checks_generic_function_with_two_params` (`K`/`V` independent inference) |
 | End-to-end | `diff_generic_function` — `examples/generic_function.tri` parses → typechecks → lowers → runs byte-identical VM vs interpreter (joins existing 11 examples → 12) |
 
-1118 → 1124 tests (6 net-new across parse/typecheck/end-to-end), clippy `-D warnings` clean. v0.7.4.2 will continue with stdlib `.tri` stubs + `path_to_builtin` wiring.
+1118 → 1124 tests (6 net-new across parse/typecheck/end-to-end), clippy `-D warnings` clean.
+
+### A7.3 — v0.7.4.2 test scorecard
+
+| Layer | Test |
+|---|---|
+| Stdlib stubs | `vector_stdlib_path_dispatches_correctly` (new/push/length/get round-trip via `from std.collections.vector import …`) |
+| Stdlib stubs | `hashmap_stdlib_path_dispatches_correctly` (new/insert/get/contains, BTreeMap deterministic key order via Q4-A) |
+| Stdlib stubs | `path_stdlib_dispatches_correctly` (join/basename/parent — POSIX semantic per Q2-A) |
+| Stdlib stubs | `string_and_parse_integer_dispatch_correctly` (substring char-index UTF-8 + index_of + parse_integer; mixed `std.string` + `std.text` imports) |
+| Stdlib stubs | `io_fs_dispatch_with_tempfile_round_trip` (write → exists → read via `tempfile` fixture) |
+
+Tests live in `crates/triet-bootstrap/tests/stdlib_stubs_vm.rs`. **VM path only** — interpreter parity deferred §A7 (`triet-interpreter::builtins::install` covers v0.2 prelude; 19 v0.7.3 builtins are VM-dispatched via `path_to_builtin`, no interpreter equivalent). Subprocess capture deferred — assertions inside `.tri` source surface dispatch bugs as test panics.
+
+**A7.2 update — `diff_generic_function` interpreter parity** worked in v0.7.4.1 because `examples/generic_function.tri` uses only the existing v0.2 prelude (`println`, no stdlib stub imports). v0.7.4.2 stdlib stubs cross the threshold — interpreter doesn't dispatch them. Future `v0.7.x.review` may bridge or drop interpreter; see §A7 deferred item.
+
+1124 → 1129 tests (5 net-new stdlib stub VM tests), clippy `-D warnings` clean.
+
+### A7.4 — v0.7.4 umbrella sub-task breakdown
+
+Original ADR-0019 §8 plan v0.7.4 was a single sub-task ("`compiler/lexer.tri` + lexer_differential test"). v0.7.4.1 design review surfaced that 3 blockers must land first — split into 4-sub-commit umbrella mirroring v0.7.3 cadence:
+
+| Sub-task | Scope | Status |
+|---|---|---|
+| **v0.7.4.1** | Generic function syntax — parser + AST + typecheck (Rust-style inference) + lowerer (type-erased per §A7.1). Unblocks stdlib stubs. | shipped |
+| **v0.7.4.2** | Stdlib `.tri` stubs (5 new files: `std/collections.tri` + `std/collections/{vector,hashmap}.tri` + `std/io/fs.tri` + `std/path.tri` + `std/string.tri`) + `std/text.tri::parse_integer` extension + 19 `path_to_builtin` entries + pseudo-struct shells for `Vector<T>`/`HashMap<K, V>` in typecheck. Java-naming per author convention (no module-name repetition in function names). | shipped |
+| **v0.7.4.3** | `compiler/lexer.tri` — hand-rolled scanner port per Q4-A (~500-700 LOC Triết). | pending |
+| **v0.7.4.4** | `lexer_differential` integration test (NDJSON byte-diff per Q5-A) + verify gate. Closes v0.7.4 umbrella. | pending |

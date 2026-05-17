@@ -1,0 +1,25 @@
+// Triết standard library — std.string
+//
+// String manipulation operations. Backed by VM builtins IDs 23-25
+// (v0.7.3.4). Char-index semantic per Q3-A — Vietnamese-safe UTF-8
+// (handles "Việt" / "Trí" / "Tế" correctly).
+//
+// `parse_integer` lives in `std.text` for symmetry với existing
+// `from_integer` (Integer↔String conversion pair).
+
+/// Return chars `[start_char, end_char)` of `s` — char-index, NOT
+/// byte-index (handles multi-byte UTF-8). Out-of-bounds (negative,
+/// over-length, start>end) panics with E2206 OutOfBounds per Q3-A
+/// slicing-is-intentional semantic. Caller checks `text.len` first.
+public function substring(s: String, start_char: Integer, end_char: Integer) -> String = s
+
+/// Split `s` on every occurrence of `separator`. Empty separator
+/// returns single-element `[s]` (refuse-over-guess — don't silently
+/// split into chars). Adjacent separators produce empty-string
+/// elements. Body recurses; never executes.
+public function split(s: String, separator: String) -> Vector<String> = split(s, separator)
+
+/// Char (codepoint) offset of first match, or `null` if not found.
+/// Empty `needle` returns `0` (matches at start). Char-indexed per
+/// Q3-A consistency with `substring`.
+public function index_of(haystack: String, needle: String) -> Integer? = null

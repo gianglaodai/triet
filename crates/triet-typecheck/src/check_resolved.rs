@@ -222,6 +222,38 @@ fn resolve_type_expr_with_params(
                 type_params,
             )),
         },
+        // v0.7.4.2: Vector<T>/HashMap<K,V> in stdlib stub signatures.
+        // Mirror the pseudo-struct shells materialized by `check.rs`
+        // so cross-module signature extraction round-trips. Other
+        // user-generic instantiations (e.g. Option<T>) still resolve
+        // to Unknown here — they're handled during full per-module
+        // checking via the env-lookup path.
+        TypeExpr::Generic { name, arguments } if name == "Vector" && arguments.len() == 1 => {
+            Type::UserStruct {
+                name: "Vector".into(),
+                type_params: Vec::new(),
+                fields: vec![(
+                    "__element".into(),
+                    resolve_type_expr_with_params(arena, arguments[0], type_params),
+                )],
+            }
+        }
+        TypeExpr::Generic { name, arguments } if name == "HashMap" && arguments.len() == 2 => {
+            Type::UserStruct {
+                name: "HashMap".into(),
+                type_params: Vec::new(),
+                fields: vec![
+                    (
+                        "__key".into(),
+                        resolve_type_expr_with_params(arena, arguments[0], type_params),
+                    ),
+                    (
+                        "__value".into(),
+                        resolve_type_expr_with_params(arena, arguments[1], type_params),
+                    ),
+                ],
+            }
+        }
         TypeExpr::Generic { .. } => Type::Unknown,
     }
 }
