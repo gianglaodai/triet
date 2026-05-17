@@ -456,14 +456,35 @@ impl<'p> Checker<'p> {
                     self.bind_pattern(sub_pattern, payload_ty);
                 }
             }
-            // v0.7.4.3-error.1 (ADR-0020 §5): outcome arm patterns
-            // parse-only at this stage. Full typecheck + binding
-            // semantics (exhaustiveness, E1026/E1032, sub-pattern
-            // binding to T or E type) lands in v0.7.4.3-error.2.
-            Pattern::OutcomeArm { payload, .. } => {
+            // v0.7.4.3-error.2 (ADR-0020 §5): outcome arm patterns.
+            // Bind payload sub-pattern to the appropriate inner type:
+            // - ~+ binding → bind to value_type
+            // - ~- binding → bind to error_type
+            // - ~0 → no binding (no payload)
+            // For T?~E patterns where scrutinee is `T?` (nullable),
+            // we synthesize an Outcome shape for binding purposes —
+            // ADR-0020 §10.4 unifies these contexts.
+            Pattern::OutcomeArm { arm, payload } => {
+                use triet_syntax::OutcomeArm as Arm;
                 if let Some(sub) = payload {
-                    self.bind_pattern(sub, &Type::Unknown);
+                    let inner_ty = match (&arm, scrutinee) {
+                        (
+                            Arm::Positive,
+                            Type::Outcome { value_type, .. },
+                        ) => (**value_type).clone(),
+                        (
+                            Arm::Negative,
+                            Type::Outcome { error_type, .. },
+                        ) => (**error_type).clone(),
+                        // For nullable scrutinee with ~+ pattern, bind
+                        // to the wrapped type (ADR-0020 §10.4 unified
+                        // pattern semantics across T? and T?~E).
+                        (Arm::Positive, Type::Nullable(inner)) => (**inner).clone(),
+                        _ => Type::Unknown,
+                    };
+                    self.bind_pattern(sub, &inner_ty);
                 }
+                // `~0` has no payload; nothing to bind.
             }
         }
     }
@@ -589,10 +610,27 @@ impl<'p> Checker<'p> {
                 parameters: parameters.iter().map(|t| self.resolve_type(*t)).collect(),
                 return_type: Box::new(self.resolve_type(return_type)),
             },
-            // v0.7.4.3-error.1 (ADR-0020 §1): outcome type expressions
-            // parse-only at this stage. Full Type::Outcome variant +
-            // structural matching land in v0.7.4.3-error.2.
-            TypeExpr::Outcome { .. } => Type::Unknown,
+            // v0.7.4.3-error.2 (ADR-0020 §1): outcome type expressions
+            // resolve to `Type::Outcome` proper. Reject nullable error
+            // type per ADR-0020 §1.4 (E1024).
+            TypeExpr::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } => {
+                let v_ty = self.resolve_type(value_type);
+                let e_ty = self.resolve_type(error_type);
+                // E1024: error type cannot itself be nullable.
+                if matches!(e_ty, Type::Nullable(_)) {
+                    self.errors.push(TypeError::NullableErrorInOutcomeType { span });
+                    return Type::Unknown;
+                }
+                Type::Outcome {
+                    value_type: Box::new(v_ty),
+                    error_type: Box::new(e_ty),
+                    allow_null_state,
+                }
+            }
         }
     }
 

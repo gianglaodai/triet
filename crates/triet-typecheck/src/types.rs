@@ -69,6 +69,23 @@ pub enum Type {
     },
     /// A generic type parameter: `T` in `struct Box<T> { value: T }`.
     TypeParam(String),
+    /// Outcome type per [ADR-0020]:
+    ///
+    /// - `T~E` binary outcome (`allow_null_state = false`): success T
+    ///   or failure E. `Trit::Zero` state is invalid (compile-time
+    ///   E1025 if constructed; runtime E2210 if encountered).
+    /// - `T?~E` ternary outcome (`allow_null_state = true`): success T,
+    ///   null (`Trit::Zero`), or failure E.
+    ///
+    /// [ADR-0020]: ../../../../docs/decisions/0020-outcome-error-handling.md
+    Outcome {
+        /// Success-arm payload type.
+        value_type: Box<Self>,
+        /// Failure-arm payload type.
+        error_type: Box<Self>,
+        /// True for `T?~E` (3-state with null); false for `T~E` (2-state).
+        allow_null_state: bool,
+    },
     /// A type the checker could not determine — used as a recovery
     /// placeholder so cascading errors don't compound.
     Unknown,
@@ -107,6 +124,24 @@ impl Type {
             && inner.as_ref() == other
         {
             return true;
+        }
+        // Outcome structural match (ADR-0020 §1): same null-state +
+        // both inner types match. `T~E` and `T?~E` are distinct types
+        // — no implicit conversion. Refuse-over-guess.
+        if let (
+            Self::Outcome {
+                value_type: v1,
+                error_type: e1,
+                allow_null_state: n1,
+            },
+            Self::Outcome {
+                value_type: v2,
+                error_type: e2,
+                allow_null_state: n2,
+            },
+        ) = (self, other)
+        {
+            return n1 == n2 && v1.matches(v2) && e1.matches(e2);
         }
         // Same-name user types match even with different type params
         // (e.g., `Option<T>` vs `Option<Integer>`). Structural
@@ -211,6 +246,16 @@ impl Type {
                         .collect(),
                 }
             }
+            // Outcome substitution — recurse into value + error types.
+            Self::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } => Self::Outcome {
+                value_type: Box::new(value_type.substitute(map)),
+                error_type: Box::new(error_type.substitute(map)),
+                allow_null_state: *allow_null_state,
+            },
             // Primitives and Unknown are unchanged.
             other => other.clone(),
         }
@@ -272,6 +317,17 @@ impl fmt::Display for Type {
             Self::UserStruct { name, .. } => formatter.write_str(name),
             Self::UserEnum { name, .. } => formatter.write_str(name),
             Self::TypeParam(name) => formatter.write_str(name),
+            Self::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } => {
+                if *allow_null_state {
+                    write!(formatter, "{value_type}?~{error_type}")
+                } else {
+                    write!(formatter, "{value_type}~{error_type}")
+                }
+            }
             Self::Unknown => formatter.write_str("?"),
         }
     }

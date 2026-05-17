@@ -45,6 +45,7 @@ pub use error::TypeError;
 pub use types::Type;
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
     use triet_parser::parse;
@@ -482,6 +483,92 @@ mod tests {
         assert_has_error(
             r"function bad(n: Integer) -> Integer = n.enumerate()",
             |e| matches!(e, TypeError::UnknownMember { .. }),
+        );
+    }
+
+    // ===== v0.7.4.3-error.2: Outcome typecheck (ADR-0020) =====
+
+    /// `T~E?` (nullable error type) parses as `T~(E?)` because the
+    /// type-position `~` only consumes an atom, then trailing `?` is
+    /// invalid syntax (current parser refuses it as malformed
+    /// function-body). E1024 NullableErrorInOutcomeType will fire if
+    /// future syntax sugar allows the form to parse — the typecheck
+    /// arm exists to catch the semantic case.
+    ///
+    /// For now, asserting that the typecheck arm exists. Future test
+    /// when parser sugar lands.
+    #[test]
+    fn typecheck_nullable_error_arm_exists() {
+        // Confirm the error variant is reachable. Construction is
+        // a quick smoke check — actual triggering requires parser
+        // sugar that doesn't exist at v0.7.4.3-error.2.
+        let _ = TypeError::NullableErrorInOutcomeType { span: 0..0 };
+    }
+
+    /// `~?` propagate operator requires the enclosing function to
+    /// return an outcome type (E1028).
+    #[test]
+    fn flags_propagate_outside_fallible_context() {
+        assert_has_error(
+            r#"
+            function dangerous() -> Integer {
+                let result: String~IoError = ~- "err"
+                let value = result ~? |err| ~- err
+                42
+            }
+            "#,
+            |e| matches!(e, TypeError::PropagateInNonFallibleContext { .. }),
+        );
+    }
+
+    /// `~?` inside fallible function compiles cleanly when error
+    /// types match.
+    #[test]
+    fn checks_propagate_in_fallible_function() {
+        assert_ok(
+            r"
+            function safe() -> Integer~String {
+                let result: Integer~String = ~+ 7
+                let value = result ~? |err| ~- err
+                ~+ value
+            }
+            ",
+        );
+    }
+
+    /// `null` keyword emits W2001 warning (severity = Warning,
+    /// does not block compile). We assert the warning IS produced
+    /// (counts as a TypeError in the accumulator, with miette
+    /// severity flag distinguishing it).
+    #[test]
+    fn null_keyword_emits_deprecation_warning() {
+        use miette::Diagnostic;
+        let errors = check_source(
+            r"function main() -> Integer? = null",
+        );
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| e.severity() == Some(miette::Severity::Warning))
+            .collect();
+        assert!(
+            warnings.iter().any(|e| matches!(e, TypeError::NullDeprecated { .. })),
+            "expected W2001 NullDeprecated warning, got: {errors:#?}"
+        );
+    }
+
+    /// `~0` literal does NOT emit the deprecation warning — it's the
+    /// canonical form.
+    #[test]
+    fn outcome_zero_literal_does_not_warn() {
+        use miette::Diagnostic;
+        let errors = check_source(r"function main() -> Integer? = ~0");
+        let warnings: Vec<_> = errors
+            .iter()
+            .filter(|e| e.severity() == Some(miette::Severity::Warning))
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "~0 should not emit deprecation warning, got: {warnings:#?}"
         );
     }
 }

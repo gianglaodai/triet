@@ -255,14 +255,32 @@ fn resolve_type_expr_with_params(
             }
         }
         TypeExpr::Generic { .. } => Type::Unknown,
-        // v0.7.4.3-error.1 (ADR-0020 §1): outcome type expressions
-        // parse-only. Cross-module signature extraction for T~E /
-        // T?~E lands in v0.7.4.3-error.2.
-        TypeExpr::Outcome { .. } => Type::Unknown,
+        // v0.7.4.3-error.2 (ADR-0020 §1): cross-module signature
+        // extraction for `T~E` / `T?~E`. Mirrors `check.rs::resolve_type`
+        // Outcome arm above (sans error reporting — this path runs at
+        // import-collection time before per-module checker spins up).
+        TypeExpr::Outcome {
+            value_type,
+            error_type,
+            allow_null_state,
+        } => Type::Outcome {
+            value_type: Box::new(resolve_type_expr_with_params(
+                arena,
+                *value_type,
+                type_params,
+            )),
+            error_type: Box::new(resolve_type_expr_with_params(
+                arena,
+                *error_type,
+                type_params,
+            )),
+            allow_null_state: *allow_null_state,
+        },
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
 
@@ -270,7 +288,19 @@ mod tests {
 
     fn check_in_memory(source: &str) -> Vec<TypeError> {
         let program = triet_modules::load_program_from_source(source).expect("load should succeed");
-        check_resolved(&program)
+        filter_warnings(check_resolved(&program))
+    }
+
+    /// v0.7.4.3-error.2: drop Warning-severity diagnostics (W2001
+    /// NullDeprecated). Stdlib stubs still use `null` until
+    /// v0.7.4.3-error.4 migration tool — keep unit tests focused on
+    /// hard errors.
+    fn filter_warnings(errors: Vec<TypeError>) -> Vec<TypeError> {
+        use miette::Diagnostic;
+        errors
+            .into_iter()
+            .filter(|err| err.severity() != Some(miette::Severity::Warning))
+            .collect()
     }
 
     fn check_filesystem(files: &[(&str, &str)]) -> Vec<TypeError> {
@@ -291,7 +321,7 @@ mod tests {
 
         let program = triet_modules::load_program(root_path.as_ref().expect("at least one file"))
             .expect("load should succeed");
-        check_resolved(&program)
+        filter_warnings(check_resolved(&program))
     }
 
     // ── Single-module (backward compat) ─────────────────────────────

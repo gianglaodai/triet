@@ -46,10 +46,11 @@ impl Checker<'_> {
                 Type::String
             }
             Expr::NullLiteral => {
-                // In balanced ternary, `null` is a legitimate value for
-                // any `T?` type. It infers as `?(?)` and is narrowed by
-                // context — e.g., `if { "x" } else { null }` resolves
-                // to `String` via branch unification + widening.
+                // v0.7.4.3-error.2 (ADR-0020 §10.3): `null` keyword is
+                // deprecated. Emit W2001 warning with fix-hint pointing
+                // to `~0` canonical literal. Keeps inferring as
+                // `Nullable(Unknown)` for backwards-compat through v1.0.
+                self.errors.push(TypeError::NullDeprecated { span });
                 Type::Nullable(Box::new(Type::Unknown))
             }
             Expr::Identifier(name) => {
@@ -156,31 +157,164 @@ impl Checker<'_> {
                 payload,
             } => self.check_enum_literal(&name, &variant_name, payload.as_ref(), span),
 
-            // v0.7.4.3-error.1 (ADR-0020 §2-§3): outcome AST nodes
-            // accepted at parse time. Full typecheck (Type::Outcome,
-            // exhaustiveness E1026, error codes E1024-E1032, W2001
-            // NullDeprecated) lands in v0.7.4.3-error.2.
-            Expr::OutcomeConstructor { payload, .. } => {
+            // v0.7.4.3-error.2 (ADR-0020 §2-§3): outcome expressions.
+            // Constructor: infer payload, defer type construction to
+            // context (caller's return type or `let` annotation drives
+            // the value_type / error_type / allow_null_state choice).
+            // Constructors alone are AMBIGUOUS without context — type
+            // inference happens at the matches() check against the
+            // expected type, which we cannot know here. Return Unknown
+            // and let context-sensitive checks (assignment, return,
+            // function-call arg) catch shape mismatches.
+            Expr::OutcomeConstructor { arm, payload } => {
                 if let Some(inner) = payload {
                     self.infer_expression(inner);
                 }
-                Type::Unknown
+                self.check_outcome_constructor_context(arm, span)
             }
             Expr::OutcomePropagate {
                 inner,
+                capture_name,
                 early_return,
-                ..
-            } => {
-                self.infer_expression(inner);
-                self.infer_expression(early_return);
-                Type::Unknown
-            }
-            Expr::OutcomeDefault { inner, default } => {
-                self.infer_expression(inner);
-                self.infer_expression(default);
-                Type::Unknown
-            }
+            } => self.check_outcome_propagate(inner, capture_name.as_deref(), early_return, span),
+            Expr::OutcomeDefault { inner, default } => self.check_outcome_default(inner, default),
         }
+    }
+
+    /// Check an outcome constructor (`~+ value` / `~0` / `~- error`)
+    /// against the active context (`current_return_type` or — pending
+    /// future context-tracking — return Unknown). For v0.7.4.3-error.2
+    /// the constructor returns:
+    ///
+    /// - `~+ payload`: `Type::Outcome { value=typeof(payload), error=Unknown, allow_null=?}`
+    /// - `~- payload`: `Type::Outcome { value=Unknown, error=typeof(payload), allow_null=? }`
+    /// - `~0`: `Type::Outcome { value=Unknown, error=Unknown, allow_null=true }`
+    ///   Note: E1025 fires below if context expects binary `T~E`.
+    ///
+    /// Context-sensitive resolution (`current_return_type` is `T~E` or
+    /// `T?~E`) tightens the shape during the `.matches()` check at
+    /// `return`/let-binding sites. Without context, Unknown propagates.
+    fn check_outcome_constructor_context(
+        &mut self,
+        arm: triet_syntax::OutcomeArm,
+        span: Span,
+    ) -> Type {
+        use triet_syntax::OutcomeArm;
+        // E1025: `~0` outside `T?~E` context. Detect when caller's
+        // return type is `Type::Outcome { allow_null_state: false }`.
+        if matches!(arm, OutcomeArm::Zero)
+            && let Some(Type::Outcome {
+                allow_null_state: false,
+                ..
+            }) = &self.current_return_type
+        {
+            self.errors.push(TypeError::NullStateInBinaryOutcome { span });
+            return Type::Unknown;
+        }
+        // The constructor's shape is fully resolvable only against a
+        // concrete `Type::Outcome` context. Return the active
+        // `current_return_type` if it is an Outcome — Rust-style
+        // back-flow inference (mirrors v0.7.4.1 generic function
+        // inference). Otherwise Unknown.
+        match &self.current_return_type {
+            Some(Type::Outcome { .. }) => self.current_return_type.clone().unwrap_or(Type::Unknown),
+            _ => Type::Unknown,
+        }
+    }
+
+    /// Check `inner ~? |capture| early_return` per ADR-0020 §3.1.
+    ///
+    /// 1. Inner must be Outcome (else this operator is meaningless).
+    /// 2. Caller's `current_return_type` must be Outcome (E1028).
+    /// 3. Inner's error type must match caller's error type — explicit
+    ///    conversion required (E1029) when they differ.
+    /// 4. Capture name binds in the early-return form's scope.
+    fn check_outcome_propagate(
+        &mut self,
+        inner: ExprId,
+        capture_name: Option<&str>,
+        early_return: ExprId,
+        span: Span,
+    ) -> Type {
+        let inner_ty = self.infer_expression(inner);
+        // E1028: caller must be fallible.
+        let caller_outcome = if matches!(&self.current_return_type, Some(Type::Outcome { .. })) {
+            self.current_return_type.clone()
+        } else {
+            self.errors.push(TypeError::PropagateInNonFallibleContext { span: span.clone() });
+            None
+        };
+        // E1029: error-type compatibility check.
+        if let (
+            Type::Outcome {
+                error_type: inner_e,
+                value_type: inner_v,
+                allow_null_state: inner_null,
+            },
+            Some(Type::Outcome {
+                error_type: outer_e,
+                ..
+            }),
+        ) = (&inner_ty, &caller_outcome)
+        {
+            if !inner_e.matches(outer_e) {
+                self.errors.push(TypeError::ErrorTypeMismatch {
+                    inner_error: (**inner_e).clone(),
+                    outer_error: (**outer_e).clone(),
+                    span,
+                });
+            }
+            // Bind capture inside early_return scope.
+            self.env.push_frame();
+            if let Some(name) = capture_name {
+                self.env.declare(name, (**inner_e).clone());
+            }
+            self.infer_expression(early_return);
+            self.env.pop_frame();
+            // Propagate evaluates to inner's success type. For T?~E,
+            // the success-path also threads the null state through.
+            return if *inner_null {
+                Type::Nullable(Box::new((**inner_v).clone()))
+            } else {
+                (**inner_v).clone()
+            };
+        }
+        // Unknown inner — still check early_return scope.
+        self.env.push_frame();
+        if let Some(name) = capture_name {
+            self.env.declare(name, Type::Unknown);
+        }
+        self.infer_expression(early_return);
+        self.env.pop_frame();
+        Type::Unknown
+    }
+
+    /// Check `inner ~: default` per ADR-0020 §3.2. Result type is the
+    /// inner's success type. Default expression must match success type.
+    fn check_outcome_default(&mut self, inner: ExprId, default: ExprId) -> Type {
+        let inner_ty = self.infer_expression(inner);
+        let default_ty = self.infer_expression(default);
+        if let Type::Outcome {
+            value_type,
+            allow_null_state,
+            ..
+        } = &inner_ty
+        {
+            let expected = if *allow_null_state {
+                Type::Nullable(Box::new((**value_type).clone()))
+            } else {
+                (**value_type).clone()
+            };
+            if !expected.matches(&default_ty) {
+                self.errors.push(TypeError::Mismatch {
+                    expected: expected.clone(),
+                    found: default_ty,
+                    span: self.arena.expression(default).span.clone(),
+                });
+            }
+            return expected;
+        }
+        Type::Unknown
     }
 
     fn check_binary_op(
@@ -760,6 +894,17 @@ impl Checker<'_> {
             }
         }
 
+        // v0.7.4.3-error.2 (ADR-0020 §5.1): exhaustiveness check for
+        // outcome scrutinee. Binary T~E requires ~+ and ~-; ternary
+        // T?~E requires all three (~+, ~0, ~-). Wildcard `_` covers
+        // any missing arm.
+        if let Type::Outcome {
+            allow_null_state, ..
+        } = &scrutinee_ty
+        {
+            self.check_outcome_exhaustiveness(arms, *allow_null_state, span.clone());
+        }
+
         arm_type.unwrap_or_else(|| {
             // Empty match — flag as a type error.
             self.errors.push(TypeError::Mismatch {
@@ -769,6 +914,56 @@ impl Checker<'_> {
             });
             Type::Unknown
         })
+    }
+
+    /// Verify a match on outcome covers required arms (E1026). Wildcard
+    /// `_` arm covers any missing arm.
+    fn check_outcome_exhaustiveness(
+        &mut self,
+        arms: &[MatchArm],
+        allow_null_state: bool,
+        span: Span,
+    ) {
+        use triet_syntax::OutcomeArm as Arm;
+        // Check for wildcard short-circuit.
+        for arm in arms {
+            if matches!(
+                self.arena.pattern(arm.pattern).node,
+                triet_syntax::Pattern::Wildcard
+            ) {
+                return;
+            }
+        }
+        let mut has_pos = false;
+        let mut has_neg = false;
+        let mut has_zero = false;
+        for arm in arms {
+            if let triet_syntax::Pattern::OutcomeArm { arm: outcome_arm, .. } =
+                &self.arena.pattern(arm.pattern).node
+            {
+                match outcome_arm {
+                    Arm::Positive => has_pos = true,
+                    Arm::Negative => has_neg = true,
+                    Arm::Zero => has_zero = true,
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        if !has_pos {
+            missing.push("`~+`");
+        }
+        if !has_neg {
+            missing.push("`~-`");
+        }
+        if allow_null_state && !has_zero {
+            missing.push("`~0`");
+        }
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveOutcomeMatch {
+                missing: missing.join(", "),
+                span,
+            });
+        }
     }
 }
 
@@ -890,6 +1085,24 @@ fn extract_type_params(
                 extract_type_params(p, a, sub_map);
             }
             extract_type_params(p_ret, a_ret, sub_map);
+        }
+        // v0.7.4.3-error.2: Outcome → walk value + error types when
+        // both sides share the same allow_null_state. Mismatched
+        // null-states are concrete type errors (caught by .matches()).
+        (
+            Type::Outcome {
+                value_type: p_v,
+                error_type: p_e,
+                allow_null_state: p_null,
+            },
+            Type::Outcome {
+                value_type: a_v,
+                error_type: a_e,
+                allow_null_state: a_null,
+            },
+        ) if p_null == a_null => {
+            extract_type_params(p_v, a_v, sub_map);
+            extract_type_params(p_e, a_e, sub_map);
         }
         // Concrete/concrete mismatches and shapes not above are
         // left for `expected.matches(arg)` to surface as TypeError.

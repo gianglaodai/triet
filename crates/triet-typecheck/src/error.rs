@@ -241,6 +241,139 @@ pub enum TypeError {
         #[label("`{name}` is immutable")]
         span: Span,
     },
+
+    // === Outcome / `T~E` errors (v0.7.4.3-error.2, ADR-0020 §9) ===
+
+    /// E1024: `T~E?` is not a valid type — nullable error not allowed.
+    #[error("outcome error type cannot itself be nullable")]
+    #[diagnostic(
+        code(triet::typecheck::E1024),
+        help("if the operation may fail, the error must be present — use `T?~E` for null-able success path")
+    )]
+    NullableErrorInOutcomeType {
+        /// Source location of the outer outcome type expression.
+        #[label("nullable error type is meaningless: if it failed, the error must exist")]
+        span: Span,
+    },
+
+    /// E1025: `~0` constructor used in non-`T?~E` outcome (binary `T~E`).
+    #[error("`~0` constructor requires outcome type with null state (`T?~E`)")]
+    #[diagnostic(
+        code(triet::typecheck::E1025),
+        help("declared return type is binary outcome `T~E`. Change to `T?~E` to allow null state, or replace with `~- DefaultError`.")
+    )]
+    NullStateInBinaryOutcome {
+        /// Source location of the offending `~0` constructor.
+        #[label("`~0` requires `T?~E` (ternary), got binary `T~E`")]
+        span: Span,
+    },
+
+    /// E1026: non-exhaustive match on outcome type.
+    #[error("non-exhaustive `match` on outcome type: missing arm(s) {missing}")]
+    #[diagnostic(
+        code(triet::typecheck::E1026),
+        help("add the missing arm(s) or use `_` wildcard to cover them")
+    )]
+    NonExhaustiveOutcomeMatch {
+        /// Comma-separated list of missing arm tokens (e.g. "`~+`, `~-`").
+        missing: String,
+        /// Source location of the `match` expression.
+        #[label("this match does not cover all outcome arms")]
+        span: Span,
+    },
+
+    /// E1027: mixing `Result<T, E>` and `T~E` without explicit conversion.
+    #[error("cannot mix `Result<T, E>` and `T~E` without explicit conversion")]
+    #[diagnostic(
+        code(triet::typecheck::E1027),
+        help("Result and outcome are distinct types; use pattern match on one and reconstruct the other")
+    )]
+    OutcomeTypeMismatch {
+        /// Source location of the conversion site.
+        #[label("Result/outcome boundary must be explicit")]
+        span: Span,
+    },
+
+    /// E1028: `~?` propagate used outside fallible function.
+    #[error("`~?` propagate operator requires the enclosing function to return `T~E` or `T?~E`")]
+    #[diagnostic(
+        code(triet::typecheck::E1028),
+        help("change the function's return type to outcome, or handle the error explicitly with `match`")
+    )]
+    PropagateInNonFallibleContext {
+        /// Source location of the propagate operator.
+        #[label("`~?` requires fallible enclosing function")]
+        span: Span,
+    },
+
+    /// E1029: outcome error type mismatch in propagate path.
+    #[error("outcome error type mismatch in `~?`: inner has {inner_error}, caller expects {outer_error}")]
+    #[diagnostic(
+        code(triet::typecheck::E1029),
+        help("explicitly convert the error inside the `|capture|` body: `|err| ~- OuterError::Wrap(err)`")
+    )]
+    ErrorTypeMismatch {
+        /// Inner outcome's error type.
+        inner_error: Type,
+        /// Outer (caller's) error type.
+        outer_error: Type,
+        /// Source location of the propagate operator.
+        #[label("error type does not match — explicit conversion required")]
+        span: Span,
+    },
+
+    /// E1030: `~?` right-hand side missing closure capture form.
+    #[error("`~?` operator requires explicit closure capture form")]
+    #[diagnostic(
+        code(triet::typecheck::E1030),
+        help("write `~? |binding_name| early_return_form` or `~? |_| early_return_form` to discard the error")
+    )]
+    OutcomePropagateMissingCapture {
+        /// Source location of the propagate operator.
+        #[label("missing `|capture|` form")]
+        span: Span,
+    },
+
+    /// E1031: `~?` early-return form must be return/panic/re-propagate.
+    #[error("`~?` early-return form must be a `return` statement, panic, or another `~?`")]
+    #[diagnostic(
+        code(triet::typecheck::E1031),
+        help("falling through after `~?` would leave the binding unbound; emit a `return` or panic")
+    )]
+    OutcomePropagateMalformedReturn {
+        /// Source location of the malformed body.
+        #[label("must terminate this branch with return/panic")]
+        span: Span,
+    },
+
+    /// E1032: pattern binding does not implicitly widen `T → T?`.
+    #[error("pattern arm for nullable / outcome type must use explicit `~+ binding` constructor")]
+    #[diagnostic(
+        code(triet::typecheck::E1032),
+        help("replace bare `binding` with `~+ binding` — patterns do not perform implicit T ⊂ T? widening")
+    )]
+    PatternMissingExplicitConstructor {
+        /// Source location of the pattern arm.
+        #[label("explicit `~+ binding` required here")]
+        span: Span,
+    },
+
+    // === Warning-severity diagnostics (Q2-C: miette severity field) ===
+
+    /// W2001: deprecated `null` keyword (use `~0` canonical literal).
+    /// Severity: WARNING (does not block compile until v1.0 per
+    /// ADR-0020 §10.3). At v1.0, W2001 promotes to E2002 (`NullRemoved`).
+    #[error("`null` keyword is deprecated; use `~0` instead")]
+    #[diagnostic(
+        severity(Warning),
+        code(triet::typecheck::W2001),
+        help("replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10). Auto-fix: `triet fmt --fix --migrate-null`")
+    )]
+    NullDeprecated {
+        /// Source location of the `null` token.
+        #[label("deprecated keyword")]
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -263,7 +396,17 @@ impl TypeError {
             | Self::MatchArmMismatch { span, .. }
             | Self::TupleIndexOutOfRange { span, .. }
             | Self::UnknownMember { span, .. }
-            | Self::AssignToImmutable { span, .. } => span.clone(),
+            | Self::AssignToImmutable { span, .. }
+            | Self::NullableErrorInOutcomeType { span }
+            | Self::NullStateInBinaryOutcome { span }
+            | Self::NonExhaustiveOutcomeMatch { span, .. }
+            | Self::OutcomeTypeMismatch { span }
+            | Self::PropagateInNonFallibleContext { span }
+            | Self::ErrorTypeMismatch { span, .. }
+            | Self::OutcomePropagateMissingCapture { span }
+            | Self::OutcomePropagateMalformedReturn { span }
+            | Self::PatternMissingExplicitConstructor { span }
+            | Self::NullDeprecated { span } => span.clone(),
         }
     }
 }

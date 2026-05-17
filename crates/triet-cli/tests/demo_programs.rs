@@ -12,6 +12,7 @@
 
 use std::{fs, path::PathBuf};
 
+use miette::Diagnostic;
 use triet_core::Integer;
 use triet_interpreter::{Value, call_function, run};
 use triet_logic::Trilean;
@@ -40,6 +41,7 @@ fn examples_dir() -> PathBuf {
 }
 
 fn load_program(filename: &str) -> triet_syntax::Program {
+    use miette::Diagnostic;
     let path = examples_dir().join(filename);
     let source = fs::read_to_string(&path).unwrap_or_else(|error| {
         panic!("could not read {path:?}: {error}");
@@ -49,10 +51,16 @@ fn load_program(filename: &str) -> triet_syntax::Program {
         parse_errors.is_empty(),
         "{path:?} parse errors: {parse_errors:#?}"
     );
-    let type_errors = check(&program);
+    let type_diagnostics = check(&program);
+    // v0.7.4.3-error.2: filter W2001 NullDeprecated warnings — examples
+    // still use legacy `null` until v0.7.4.3-error.4 migration tool.
+    let blocking: Vec<_> = type_diagnostics
+        .iter()
+        .filter(|err| err.severity() != Some(miette::Severity::Warning))
+        .collect();
     assert!(
-        type_errors.is_empty(),
-        "{path:?} type errors: {type_errors:#?}"
+        blocking.is_empty(),
+        "{path:?} type errors: {blocking:#?}"
     );
     program
 }
@@ -426,7 +434,11 @@ fn module_system_demo_loads_and_typechecks() {
         .join("02-module-system")
         .join("main.tri");
     let resolved = triet_modules::load_program(&path).unwrap();
-    let type_errors = triet_typecheck::check_resolved(&resolved);
+    let type_diagnostics = triet_typecheck::check_resolved(&resolved);
+    let type_errors: Vec<_> = type_diagnostics
+        .iter()
+        .filter(|err| err.severity() != Some(miette::Severity::Warning))
+        .collect();
     assert!(type_errors.is_empty(), "type errors: {type_errors:#?}");
 }
 
@@ -439,7 +451,11 @@ fn module_system_demo_runs_all_tests_pass() {
         .join("02-module-system")
         .join("main.tri");
     let resolved = triet_modules::load_program(&path).unwrap();
-    let type_errors = triet_typecheck::check_resolved(&resolved);
+    let type_diagnostics = triet_typecheck::check_resolved(&resolved);
+    let type_errors: Vec<_> = type_diagnostics
+        .iter()
+        .filter(|err| err.severity() != Some(miette::Severity::Warning))
+        .collect();
     assert!(type_errors.is_empty(), "type errors: {type_errors:#?}");
     let result = triet_interpreter::run_resolved(&resolved);
     assert!(result.is_ok(), "module system demo failed: {result:?}");
@@ -456,8 +472,11 @@ fn module_system_demo_output_snapshot() {
         .join("02-module-system")
         .join("main.tri");
     let resolved = triet_modules::load_program(&path).unwrap();
-    let type_errors = triet_typecheck::check_resolved(&resolved);
-    assert!(type_errors.is_empty());
+    let type_diagnostics = triet_typecheck::check_resolved(&resolved);
+    let has_hard_errors = type_diagnostics
+        .iter()
+        .any(|err| err.severity() != Some(miette::Severity::Warning));
+    assert!(!has_hard_errors);
 
     // Capture the demo's module structure.
     let mut summary = String::new();

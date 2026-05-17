@@ -71,14 +71,24 @@ fn example_path(name: &str) -> PathBuf {
 /// `.triv` bytes. Panics on any pipeline failure — for the
 /// determinism test we only care about reproducibility of *successful*
 /// builds.
+///
+/// Filters out Warning-severity diagnostics (W2001 `NullDeprecated`
+/// per ADR-0020 §10.3) — these do not block compile until v1.0. The
+/// `examples/*.tri` files still use legacy `null` syntax until the
+/// `triet fmt --fix --migrate-null` tool ships in v0.7.4.3-error.4.
 fn build_triv(path: &Path) -> Vec<u8> {
+    use miette::Diagnostic;
     let resolved = triet_modules::load_program(path).expect("load_program");
-    let type_errors = triet_typecheck::check_resolved(&resolved);
+    let diagnostics = triet_typecheck::check_resolved(&resolved);
+    let blocking: Vec<_> = diagnostics
+        .iter()
+        .filter(|err| err.severity() != Some(miette::Severity::Warning))
+        .collect();
     assert!(
-        type_errors.is_empty(),
+        blocking.is_empty(),
         "type errors in {}: {:?}",
         path.display(),
-        type_errors
+        blocking
     );
     let ir = triet_ir::lower_program(&resolved);
     triet_ir::write_program(&ir)

@@ -211,11 +211,17 @@ fn run_program(path: &str, json: bool) -> ExitCode {
         }
     };
 
-    let type_errors = triet_typecheck::check_resolved(&resolved_program);
-    if !type_errors.is_empty() {
+    let type_diagnostics = triet_typecheck::check_resolved(&resolved_program);
+    if !type_diagnostics.is_empty() {
+        use miette::Diagnostic;
+        // v0.7.4.3-error.2: split into hard errors (block exit) and
+        // warnings (display but continue per ADR-0020 §10.3 W2001 contract).
+        let has_hard_errors = type_diagnostics
+            .iter()
+            .any(|err| err.severity() != Some(miette::Severity::Warning));
         if json {
             let mut emitter = JsonEmitter::new();
-            for error in &type_errors {
+            for error in &type_diagnostics {
                 let msg = error.to_string();
                 let code = type_error_code(error);
                 // The span is in some file, but JSON emitter just takes display_path.
@@ -224,12 +230,15 @@ fn run_program(path: &str, json: bool) -> ExitCode {
             }
             emitter.finish();
         } else {
-            for error in type_errors {
-                let report = Report::new(error);
+            for error in &type_diagnostics {
+                let report = Report::new(error.clone());
                 eprintln!("{report:?}");
             }
         }
-        return ExitCode::from(3);
+        if has_hard_errors {
+            return ExitCode::from(3);
+        }
+        // Only warnings — continue.
     }
 
     match triet_interpreter::run_resolved(&resolved_program) {
@@ -287,23 +296,30 @@ fn check_program(path: &str, json: bool) -> ExitCode {
         }
     };
 
-    let type_errors = triet_typecheck::check_resolved(&resolved_program);
-    if !type_errors.is_empty() {
+    let type_diagnostics = triet_typecheck::check_resolved(&resolved_program);
+    if !type_diagnostics.is_empty() {
+        use miette::Diagnostic;
+        let has_hard_errors = type_diagnostics
+            .iter()
+            .any(|err| err.severity() != Some(miette::Severity::Warning));
         if json {
             let mut emitter = JsonEmitter::new();
-            for error in &type_errors {
+            for error in &type_diagnostics {
                 let msg = error.to_string();
                 let code = type_error_code(error);
                 emitter.emit(&msg, &code, &error.span(), display_path);
             }
             emitter.finish();
         } else {
-            for error in type_errors {
-                let report = Report::new(error);
+            for error in &type_diagnostics {
+                let report = Report::new(error.clone());
                 eprintln!("{report:?}");
             }
         }
-        return ExitCode::from(3);
+        if has_hard_errors {
+            return ExitCode::from(3);
+        }
+        // Only warnings — fall through to OK.
     }
 
     if !json {
@@ -334,6 +350,18 @@ fn type_error_code(error: &TypeError) -> String {
         TypeError::TupleIndexOutOfRange { .. } => "triet::typecheck::E1014",
         TypeError::UnknownMember { .. } => "triet::typecheck::E1015",
         TypeError::AssignToImmutable { .. } => "triet::typecheck::E1016",
+        // v0.7.4.3-error.2 (ADR-0020 §9) — outcome error codes:
+        TypeError::NullableErrorInOutcomeType { .. } => "triet::typecheck::E1024",
+        TypeError::NullStateInBinaryOutcome { .. } => "triet::typecheck::E1025",
+        TypeError::NonExhaustiveOutcomeMatch { .. } => "triet::typecheck::E1026",
+        TypeError::OutcomeTypeMismatch { .. } => "triet::typecheck::E1027",
+        TypeError::PropagateInNonFallibleContext { .. } => "triet::typecheck::E1028",
+        TypeError::ErrorTypeMismatch { .. } => "triet::typecheck::E1029",
+        TypeError::OutcomePropagateMissingCapture { .. } => "triet::typecheck::E1030",
+        TypeError::OutcomePropagateMalformedReturn { .. } => "triet::typecheck::E1031",
+        TypeError::PatternMissingExplicitConstructor { .. } => "triet::typecheck::E1032",
+        // Warning code (ADR-0020 §10.3 — promotes to E2002 at v1.0):
+        TypeError::NullDeprecated { .. } => "triet::typecheck::W2001",
     }
     .to_owned()
 }
@@ -392,11 +420,15 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
         }
     };
 
-    let type_errors = triet_typecheck::check_resolved(&resolved);
-    if !type_errors.is_empty() {
+    let type_diagnostics = triet_typecheck::check_resolved(&resolved);
+    if !type_diagnostics.is_empty() {
+        use miette::Diagnostic;
+        let has_hard_errors = type_diagnostics
+            .iter()
+            .any(|err| err.severity() != Some(miette::Severity::Warning));
         if json {
             let mut emitter = JsonEmitter::new();
-            for error in &type_errors {
+            for error in &type_diagnostics {
                 emitter.emit(
                     &error.to_string(),
                     &type_error_code(error),
@@ -406,12 +438,14 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
             }
             emitter.finish();
         } else {
-            for error in type_errors {
-                let report = Report::new(error);
+            for error in &type_diagnostics {
+                let report = Report::new(error.clone());
                 eprintln!("{report:?}");
             }
         }
-        return ExitCode::from(3);
+        if has_hard_errors {
+            return ExitCode::from(3);
+        }
     }
 
     let ir = triet_ir::lower_program(&resolved);

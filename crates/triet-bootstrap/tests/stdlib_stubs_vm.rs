@@ -23,9 +23,16 @@ use triet_typecheck::check_resolved;
 /// error — these tests pin successful builtin dispatch, not error
 /// paths.
 fn run_program_via_vm(source: &str) -> String {
+    use miette::Diagnostic;
     let resolved = load_program_from_source(source).expect("load");
-    let type_errors = check_resolved(&resolved);
-    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+    let diagnostics = check_resolved(&resolved);
+    // v0.7.4.3-error.2: filter W2001 NullDeprecated warnings — stdlib
+    // stubs still use `null` until v0.7.4.3-error.4 migration tool.
+    let blocking: Vec<_> = diagnostics
+        .iter()
+        .filter(|err| err.severity() != Some(miette::Severity::Warning))
+        .collect();
+    assert!(blocking.is_empty(), "type errors: {blocking:?}");
     let ir = lower_program(&resolved);
     let bytes = write_program(&ir);
 
