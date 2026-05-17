@@ -379,17 +379,30 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 
 ## v0.7 — Self-hosting Compiler
 
-**Mục tiêu:** Compiler Triết viết bằng Triết. Bootstrap đầy đủ.
+**Mục tiêu:** Compiler Triết viết bằng Triết. Bootstrap đầy đủ. 3-stage chain với fixed-point hội tụ là gate.
+
+**Quyết định kiến trúc:** [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — bootstrap chain shape, component order, canonical emission invariants, bit-identical gate semantics, Rust-shim stdlib, testing strategy, perf gate recalibration.
 
 **Deliverables:**
-- Lexer, parser, typecheck, IR generator viết lại bằng Triết.
-- Bootstrap chain: Rust-compiler-v0.6 → Triết-compiler-v0.7 → Triết-compiler-v0.7 (self-build).
-- Performance parity với Rust impl trong vòng 2×.
+- `compiler/lexer.tri` + `parser.tri` + `modules.tri` + `typecheck.tri` + `ir_lowerer.tri` + `pack_writer.tri` + `main.tri` — Triết-in-Triết compiler source, 1:1 mirror crate boundaries của Rust impl.
+- Bootstrap chain 3-stage: Stage 1 (Rust impl) → Stage 2 (Triết-built-by-Stage-1) → Stage 3 (Triết-built-by-Stage-2).
+- Builtin opcodes 4–26 (Vec / HashMap / file IO / path / string ops) trong VM dispatcher per ADR-0019 §5 Rust-shim approach.
+- CLI wiring carry-over từ v0.6: project layout discovery (`triet.package` walk-upward), `triet check`/`build`/`run` cap-aware, loader integration với `DevTtyPrompt`, `E2208.CapabilityDivergence` fires.
+- Three-layer testing: per-component differential test (5) + end-to-end semantic regression + bootstrap-loop CI gate.
+- Canonical emission determinism CI test (`bootstrap_determinism`) — `examples/*.tri` × 10 builds byte-identical.
 
-**Không làm:**
-- Compile thẳng sang native (vẫn xuất bytecode v0.3).
+**Không làm (defer khỏi v0.7 per ADR-0019 §Không làm):**
+- Native AOT emit (vẫn xuất bytecode `.triv` v3).
+- JIT integration (v0.9 Cranelift).
+- Triết-native `std.collections`/`std.io.fs` wrappers — Rust-shim builtins đủ; stdlib expansion v0.8+ scope.
+- Macro / metaprogramming, cross-compile, incremental cache, parallel compilation.
+- Triết-impl divergent semantics from Rust-impl — goal là 1:1 reimplementation.
 
-**Gate:** Bit-identical bootstrap qua 2 vòng tự build.
+**Gate (recalibrated by ADR-0019 §7):**
+- **Functional:** Bit-identical Stage 2 ≡ Stage 3 (`cmp compiler-stage2.tripack compiler-stage3.tripack` exit 0).
+- **Coverage:** Tất cả `examples/*.tri` + module-system demo + capability tests pass via self-hosted compiler.
+- **Performance:** Full 3-stage bootstrap loop hoàn thành **< 10 phút** trên developer hardware (8-core modern laptop). 2× parity với Rust impl **defer sang v0.9 JIT** — Triết-on-VM là dev tier per [VISION §4.3](VISION.md); JIT/AOT là production tier.
+- **Hygiene:** ADR-0009 §A/B/C/D gates applied trong sub-task v0.7.13.
 
 ---
 
@@ -418,7 +431,9 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 - Tier 2: Cranelift JIT cho function chạy thường xuyên (profile-guided).
 - AOT cache: lần chạy thứ 2 dùng JIT-output cached.
 
-**Gate:** Bench ≥10× so với v0.3 bytecode trên numeric-heavy programs.
+**Gate:**
+- Bench ≥10× so với v0.3 bytecode trên numeric-heavy programs.
+- Self-hosted compiler bootstrap loop ≤ 2× Rust impl runtime trên same hardware (carry-forward từ v0.7 perf gate per [ADR-0019 §7](docs/decisions/0019-self-hosting-compiler-bootstrap.md)).
 
 ---
 

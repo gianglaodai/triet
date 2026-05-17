@@ -66,7 +66,13 @@ prior decision, write a new ADR that supersedes it.
 |---|---|---|
 | [0016](0016-capability-type-system.md) | Capability type system (namespace + manifest, Trit-level grant/deny/ambient + Trilean::Unknown defer, `triet::capability::E22XX`) | Locked |
 | [0017](0017-trilean-policy-hook.md) | Trilean policy hook protocol (`triet.policy` rules + TTY prompt fallback, per-session cache, E2205 sub-variants) — *+ Addendum: parser strictness + `/dev/tty` source + Abstain errata* | Locked |
-| [0018](0018-capability-loader-semantics.md) | Capability loader semantics (`triet.package` source manifest, eager link-time check, TTY provenance display, E2208 sub-variants, `CapabilityClaim` Rust struct) | Locked |
+| [0018](0018-capability-loader-semantics.md) | Capability loader semantics (`triet.package` source manifest, eager link-time check, TTY provenance display, E2208 sub-variants, `CapabilityClaim` Rust struct) — *+ v0.6.x.review Addendum: monotonicity-under-mutation, policy round-trip, requester sort, strict_parser positional contracts* | Locked |
+
+### v0.7 — Self-hosting Compiler
+
+| ADR | Title | Status |
+|---|---|---|
+| [0019](0019-self-hosting-compiler-bootstrap.md) | Self-hosting compiler bootstrap (3-stage chain, bottom-up incremental component order, canonical emission invariants, full `.tripack` byte-identical gate, Rust-shim builtin stdlib, 3-layer testing, perf parity gate deferred to v0.9) | Locked |
 
 ## How to read an ADR
 
