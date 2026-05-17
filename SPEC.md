@@ -353,7 +353,7 @@ match name {
 
 #### `T?` là **PRIMARY** cho "value may be absent"
 
-Quyết định kể từ v0.4: **`T?` là cách chính tắc** để diễn đạt "giá trị có thể vắng mặt". `Option<T>` (như một stdlib enum riêng) **không còn được khuyến khích** vì redundant — `T?` đã có discriminator 1-trit bẩm sinh (Trit::Zero = null per ADR-0010), không cần wrapper.
+Quyết định kể từ v0.4: **`T?` là cách chính tắc** để diễn đạt "giá trị có thể vắng mặt". `Option<T>` (như một stdlib enum riêng) **không còn được khuyến khích** vì redundant — `T?` đã có discriminator 1-trit bẩm sinh (Trit::Zero = `~0` literal per ADR-0010 + ADR-0020 §10 unification; pre-v0.7.4.3 spelling `null` deprecated W2001 → removed v1.0), không cần wrapper.
 
 Khi cần model "operation has failed with detail", từ **v0.7.4.3-error** dùng [outcome type `T~E` / `T?~E`](docs/decisions/0020-outcome-error-handling.md) làm primary. `Result<T, E>` từ `std.result` (ADR-0011 + v0.4 stdlib) vẫn hợp lệ như **legacy convention** cho structural-enum needs hoặc backwards-compat.
 

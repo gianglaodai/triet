@@ -209,13 +209,16 @@ These are decisions locked by ADRs. Code generation, examples, error messages, a
 | `!a`, `a && b`, `a \|\| b`, `a ^ b`, `a => b` | — | SPEC §4.2 (symbolic preferred) |
 | `a ~> b`, `a ~^ b`, `a <=> b`, `a <~> b` | — | SPEC §4.2 (Kleene variants) |
 | `0t+`, `0t-`, `0t0` (prefix trit literal) | `0T` (capital T), suffix `_trit` | SPEC §1.5.1 |
-| `unknown` (third Trilean value) | `null` | SPEC §1.5.2 |
+| `unknown` (third Trilean value) | `null` for Trilean | SPEC §1.5.2 |
+| `~0` (canonical Trit::Zero literal for `T?` / `T?~E`) | `null` (deprecated v0.7.4.3-error, W2001 → E2002 v1.0) | SPEC §1.5.3 + ADR-0020 §10 |
 
 Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr`, `core`, `crate`, `self`, `super`.
 
 `Trilean` defaults to **Łukasiewicz Ł3** semantics (not Kleene). Don't substitute Boolean reasoning when working on logic ops.
 
 **Logic operators:** Both symbolic (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`) and keyword (`not`, `and`, `or`, `xor`, `implies`, `kleene_implies`, `kleene_xor`, `iff`, `kleene_iff`) forms are valid. Symbolic form is preferred per user convention. The `~` prefix consistently marks Kleene K3 variants.
+
+**Outcome operators (v0.7.4.3-error, design locked per [ADR-0020](docs/decisions/0020-outcome-error-handling.md)):** `~+ value` (Trit::Positive success arm), `~0` (Trit::Zero null arm — `T?` / `T?~E` only), `~- error` (Trit::Negative failure arm). Postfix operators: `expr ~? |capture| early_return` (propagate, explicit closure capture), `expr ~: default` (default on error). Force-unwrap NOT available as operator — use verbose methods `.unwrap_value(message)` / `.unwrap_error(message)` per `feedback_explicit_strictness.md`. Type syntax: `T~E` (2-state binary outcome), `T?~E` (3-state with null) with `?~` as **lexer compound token** (no whitespace within).
 
 ## Workspace conventions
 
