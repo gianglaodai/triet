@@ -58,8 +58,10 @@ loop {
 
 ## Implementation roadmap
 
-| Phase | Deliverable |
-|---|---|
-| v0.1 ✅ | Hardcoded `Range`, `Enumerate` qua `advance_iterator` (commit `06025bb`) |
-| v0.2 | Trait `Iterator<T>`, `Iterable<T>`; refactor `Range`/`Enumerate` thành Iterable structs; adapter `map`/`filter`/`take`/`zip` |
-| v0.3 | Performance pass: tránh allocation cho adapter chains (state machine fusion) |
+| Phase | Deliverable | Status (as of v0.7.3.2) |
+|---|---|---|
+| v0.1 ✅ | Hardcoded `Range`, `Enumerate` qua `advance_iterator` (commit `06025bb`) | shipped |
+| v0.2 | Trait `Iterator<T>`, `Iterable<T>`; refactor `Range`/`Enumerate` thành Iterable structs; adapter `map`/`filter`/`take`/`zip` | **NOT LANDED** — slipped past v0.2/v0.3/v0.4/v0.5/v0.6 phases. Re-tracked as deferred item in [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md). Target re-tackle: v0.8 (concurrency model reframes iterator+stream protocols). |
+| v0.3 | Performance pass: tránh allocation cho adapter chains (state machine fusion) | deferred — depends on v0.2 deliverable landing first |
+
+**v0.7.3.2 implication:** `BuiltinName::VectorIterator` was specced in ADR-0019 §5 but dropped per Q2-A — Iterator trait gap makes it unimplementable cleanly. Self-host compiler workaround: explicit index loop `for i in 0..vector_length(v) { vector_get(v, i)!! }` instead of `for x in v.iter()`. Revisit when v0.2 deliverable above ships.

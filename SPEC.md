@@ -88,6 +88,15 @@ Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** th
 - **FFI với C/Rust runtime** — `.tripack` format đã ready host FFI signatures, wire encoding cho FFI thunks defer.
 - **Distributed registry** — local store đủ; network fetch + signature/provenance là v1.0+ work.
 
+### Carry-over từ v0.7.3 (per ADR-0019 Addendum §A7)
+
+Các thứ deferred ra khỏi v0.7.3 sub-tasks; full bảng ở [ADR-0019 Addendum §A7](docs/decisions/0019-self-hosting-compiler-bootstrap.md):
+
+- **Generic function syntax** (`function vector_new<T>() -> Vector<T>`) — `FunctionDef` AST hiện không có `type_params`; parser không consume `<T>` sau function name. Target re-tackle: v0.7.4+ (likely v0.7.5 parser sub-task) khi self-host compiler force issue.
+- **Stdlib `.tri` stubs + `path_to_builtin` entries cho Vector/HashMap/IO/path/string builtins** — chờ generic function syntax (same blocker as trên).
+- **`vector_pop` + tuple opcodes** — Q1-A functional semantic requires tuple return; IR thiếu tuple opcodes. post-v1.0.
+- **`vector_iterator` + Iterator trait implementation** — ADR-0003 v0.2 deliverable chưa land (slipped qua v0.2–v0.6). Target v0.8 alongside concurrency model.
+
 ---
 
 ## 1. Cấu trúc từ vựng (Lexical structure)

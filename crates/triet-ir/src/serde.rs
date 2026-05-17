@@ -475,6 +475,15 @@ fn read_option_value(data: &[u8], pos: &mut usize) -> Result<Option<ValueId>, Tr
 
 // ── Builtin ────────────────────────────────────────────────────────
 
+// Builtin ID table additive-extension policy:
+//
+// Builtin IDs 0–7 shipped pre-v0.7.3 (Println=0 .. TextFromInteger=7).
+// IDs 8+ are additive within `.triv` v4 per ADR-0019 Addendum §A1 —
+// new builtin IDs do not require a version bump because the
+// `CallBuiltin` opcode byte itself is unchanged; only the operand byte
+// (builtin ID) gains new accepted values. Pre-v0.7.3 readers
+// encountering ID 8+ emit `TrivError::UnknownBuiltinId` (same refusal
+// contract as `UnknownTypeDiscriminant`).
 fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
     let id = match builtin {
         BuiltinName::Println => 0,
@@ -485,6 +494,10 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::TextLen => 5,
         BuiltinName::TextConcat => 6,
         BuiltinName::TextFromInteger => 7,
+        BuiltinName::VectorNew => 8,
+        BuiltinName::VectorPush => 9,
+        BuiltinName::VectorGet => 10,
+        BuiltinName::VectorLength => 11,
     };
     write_u8(buf, id);
 }
@@ -500,6 +513,10 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         5 => Ok(BuiltinName::TextLen),
         6 => Ok(BuiltinName::TextConcat),
         7 => Ok(BuiltinName::TextFromInteger),
+        8 => Ok(BuiltinName::VectorNew),
+        9 => Ok(BuiltinName::VectorPush),
+        10 => Ok(BuiltinName::VectorGet),
+        11 => Ok(BuiltinName::VectorLength),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }

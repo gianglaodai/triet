@@ -284,6 +284,10 @@ impl fmt::Display for BuiltinName {
             Self::TextLen => write!(f, "text_len"),
             Self::TextConcat => write!(f, "text_concat"),
             Self::TextFromInteger => write!(f, "text_from_integer"),
+            Self::VectorNew => write!(f, "vector_new"),
+            Self::VectorPush => write!(f, "vector_push"),
+            Self::VectorGet => write!(f, "vector_get"),
+            Self::VectorLength => write!(f, "vector_length"),
         }
     }
 }

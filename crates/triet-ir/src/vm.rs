@@ -1547,6 +1547,87 @@ fn execute_builtin(
             let s = args.first().map_or_else(String::new, |v| format!("{v}"));
             Ok(RuntimeValue::String(s))
         }
+        BuiltinName::VectorNew => {
+            // Zero-arg builtin per ADR-0019 §5 + Addendum §A1. Extra
+            // args are ignored to keep dispatch tolerant under fuzz —
+            // the lowerer is responsible for arity correctness.
+            Ok(RuntimeValue::Vector(Vec::new()))
+        }
+        BuiltinName::VectorPush => {
+            // Functional return-new (Q1-A): clone the input, append,
+            // emit a fresh Vector. SSA-safe: caller binds the result
+            // to a fresh ValueId.
+            let vector = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let item = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let mut new_vector = match vector {
+                RuntimeValue::Vector(elements) => elements,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Vector(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            new_vector.push(item);
+            Ok(RuntimeValue::Vector(new_vector))
+        }
+        BuiltinName::VectorGet => {
+            // Strict bounds (Q3-A): negative index → Null, out-of-
+            // bounds positive → Null. In-range returns the cloned
+            // element wrapped in `T?` ≡ value-itself; the IR `T?`
+            // discriminator is the value's own presence.
+            let vector = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let index = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let elements = match vector {
+                RuntimeValue::Vector(v) => v,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Vector(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let idx = match index {
+                RuntimeValue::Integer(i) => i.to_i64(),
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Integer,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            if idx < 0 {
+                return Ok(RuntimeValue::Null);
+            }
+            let result = usize::try_from(idx)
+                .ok()
+                .and_then(|i| elements.get(i).cloned())
+                .unwrap_or(RuntimeValue::Null);
+            Ok(result)
+        }
+        BuiltinName::VectorLength => {
+            let vector = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let length = match vector {
+                RuntimeValue::Vector(v) => v.len(),
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Vector(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            // Vector lengths are bounded by Rust's `Vec` (≤ isize::MAX),
+            // so the `i64::try_from` cannot realistically fail on
+            // current targets. Fall back to `Integer::default()` for
+            // defense against future 128-bit `Vec` capacities.
+            Ok(RuntimeValue::Integer(
+                Integer::new(i64::try_from(length).unwrap_or(i64::MAX)).unwrap_or_default(),
+            ))
+        }
     }
 }
 
@@ -2552,6 +2633,397 @@ mod tests {
             r2.to_string(),
             Trilean::Unknown.to_string(),
             "K3: U~>U must be Unknown"
+        );
+    }
+
+    // ── v0.7.3.2 Vector builtins ─────────────────────────────────
+    //
+    // Per ADR-0019 §5 + Addendum §A1/A3/A4: 4 Vector builtins —
+    // VectorNew/VectorPush/VectorGet/VectorLength. Q1-A picked
+    // functional return-new for push; Q2-A skipped vector_iterator;
+    // Q3-A picked strict bounds (negative + over-length both return
+    // Null). vector_pop deferred post-v0.7.
+    //
+    // Tests build IR programs directly (bypassing parser/typecheck)
+    // because generic function syntax doesn't exist in the AST yet;
+    // user-source path mapping lands when the self-host compiler
+    // forces the issue (v0.7.4+). Precedent: `BuiltinName::FStringConcat`
+    // is also "Internal builtin — not user-callable".
+
+    /// `vector_new()` returns an empty Vector value.
+    #[test]
+    fn vm_vector_new_returns_empty_vector() {
+        let func = Function {
+            id: FuncId(0),
+            name: Some("make_empty".into()),
+            params: vec![],
+            return_type: TypeTag::Vector(Box::new(TypeTag::Integer)),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let prog = make_simple_program(func);
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        match result {
+            RuntimeValue::Vector(elements) => assert!(elements.is_empty()),
+            other => panic!("expected empty Vector, got {other:?}"),
+        }
+    }
+
+    /// `vector_push(v, item)` returns a new Vector with `item`
+    /// appended — functional (Q1-A). Input vector is unchanged.
+    #[test]
+    fn vm_vector_push_appends_and_returns_new_vector() {
+        let mut pool = ConstantPool::new();
+        let c_seed = pool.intern(Constant::Integer(Integer::new(7).unwrap()));
+        let c_item = pool.intern(Constant::Integer(Integer::new(42).unwrap()));
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("push_one".into()),
+            params: vec![],
+            return_type: TypeTag::Vector(Box::new(TypeTag::Integer)),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    // %0 = vector_new()
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    // %1 = const 7
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c_seed,
+                    },
+                    // %2 = vector_push(%0, %1)
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(2)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                    },
+                    // %3 = const 42
+                    Instruction::Const {
+                        dest: ValueId(3),
+                        constant: c_item,
+                    },
+                    // %4 = vector_push(%2, %3)
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(4)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(2)), Operand::Value(ValueId(3))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(4))),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        match result {
+            RuntimeValue::Vector(elements) => {
+                assert_eq!(elements.len(), 2);
+                assert_eq!(elements[0].to_string(), "7");
+                assert_eq!(elements[1].to_string(), "42");
+            }
+            other => panic!("expected Vector with 2 elements, got {other:?}"),
+        }
+    }
+
+    /// `vector_get(v, idx)` returns `T?`-style: in-range = element
+    /// itself (Some), out-of-range = Null (None).
+    #[test]
+    fn vm_vector_get_in_range_returns_element_out_of_range_returns_null() {
+        let mut pool = ConstantPool::new();
+        let c10 = pool.intern(Constant::Integer(Integer::new(10).unwrap()));
+        let c_idx_in = pool.intern(Constant::Integer(Integer::new(0).unwrap()));
+        let c_idx_oor = pool.intern(Constant::Integer(Integer::new(5).unwrap()));
+        let c_idx_neg = pool.intern(Constant::Integer(Integer::new(-1).unwrap()));
+
+        // Helper builds a function returning vector_get(push(new(), 10), <idx_const>)
+        let build_func = |id: FuncId, idx_const: ConstId, fn_name: &str| Function {
+            id,
+            name: Some(fn_name.into()),
+            params: vec![],
+            return_type: TypeTag::Nullable(Box::new(TypeTag::Integer)),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c10,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(2)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(3),
+                        constant: idx_const,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(4)),
+                        name: BuiltinName::VectorGet,
+                        args: vec![Operand::Value(ValueId(2)), Operand::Value(ValueId(3))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(4))),
+                    },
+                ],
+            }],
+        };
+
+        let prog = IrProgram {
+            modules: vec![IrModule {
+                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                functions: vec![
+                    build_func(FuncId(0), c_idx_in, "get_in_range"),
+                    build_func(FuncId(1), c_idx_oor, "get_over_length"),
+                    build_func(FuncId(2), c_idx_neg, "get_negative"),
+                ],
+            }],
+            constants: pool,
+            witness_tables: Vec::new(),
+        };
+
+        let mut vm_in = Vm::new(prog.clone());
+        let r_in = vm_in.execute(FuncId(0), vec![]).unwrap();
+        assert_eq!(r_in.to_string(), "10", "in-range get must return value");
+
+        let mut vm_oor = Vm::new(prog.clone());
+        let r_oor = vm_oor.execute(FuncId(1), vec![]).unwrap();
+        assert!(
+            matches!(r_oor, RuntimeValue::Null),
+            "over-length get must return Null, got {r_oor:?}"
+        );
+
+        let mut vm_neg = Vm::new(prog);
+        let r_neg = vm_neg.execute(FuncId(2), vec![]).unwrap();
+        assert!(
+            matches!(r_neg, RuntimeValue::Null),
+            "negative-index get must return Null (Q3-A strict bounds), got {r_neg:?}"
+        );
+    }
+
+    /// `vector_length(v)` returns element count as Integer.
+    #[test]
+    fn vm_vector_length_returns_element_count() {
+        let mut pool = ConstantPool::new();
+        let c_a = pool.intern(Constant::Integer(Integer::new(1).unwrap()));
+        let c_b = pool.intern(Constant::Integer(Integer::new(2).unwrap()));
+        let c_c = pool.intern(Constant::Integer(Integer::new(3).unwrap()));
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("count".into()),
+            params: vec![],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c_a,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(2)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(3),
+                        constant: c_b,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(4)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(2)), Operand::Value(ValueId(3))],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(5),
+                        constant: c_c,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(6)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(4)), Operand::Value(ValueId(5))],
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(7)),
+                        name: BuiltinName::VectorLength,
+                        args: vec![Operand::Value(ValueId(6))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(7))),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        assert_eq!(result.to_string(), "3", "expected length=3 after 3 pushes");
+
+        // Empty vector also exercises the length=0 fast path.
+        let empty_func = Function {
+            id: FuncId(0),
+            name: Some("empty_count".into()),
+            params: vec![],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(1)),
+                        name: BuiltinName::VectorLength,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(1))),
+                    },
+                ],
+            }],
+        };
+        let mut vm_empty = Vm::new(make_simple_program(empty_func));
+        let r_empty = vm_empty.execute(FuncId(0), vec![]).unwrap();
+        assert_eq!(r_empty.to_string(), "0", "empty vector has length 0");
+    }
+
+    /// Composition integration test (Q3-C): build a 3-element vector,
+    /// verify length AND multiple `get` indices in the same program.
+    /// Mirrors the self-host compiler's expected symbol-table
+    /// access pattern.
+    #[test]
+    fn vm_vector_compose_push_length_get_round_trip() {
+        let mut pool = ConstantPool::new();
+        let c_a = pool.intern(Constant::Integer(Integer::new(100).unwrap()));
+        let c_b = pool.intern(Constant::Integer(Integer::new(200).unwrap()));
+        let c_c = pool.intern(Constant::Integer(Integer::new(300).unwrap()));
+        // Idx constants for get(0)+get(2) — sum should be 100+300=400.
+        let c_i0 = pool.intern(Constant::Integer(Integer::new(0).unwrap()));
+        let c_i2 = pool.intern(Constant::Integer(Integer::new(2).unwrap()));
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("compose".into()),
+            params: vec![],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c_a,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(2)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(3),
+                        constant: c_b,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(4)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(2)), Operand::Value(ValueId(3))],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(5),
+                        constant: c_c,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(6)),
+                        name: BuiltinName::VectorPush,
+                        args: vec![Operand::Value(ValueId(4)), Operand::Value(ValueId(5))],
+                    },
+                    // get(0)
+                    Instruction::Const {
+                        dest: ValueId(7),
+                        constant: c_i0,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(8)),
+                        name: BuiltinName::VectorGet,
+                        args: vec![Operand::Value(ValueId(6)), Operand::Value(ValueId(7))],
+                    },
+                    // get(2)
+                    Instruction::Const {
+                        dest: ValueId(9),
+                        constant: c_i2,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(10)),
+                        name: BuiltinName::VectorGet,
+                        args: vec![Operand::Value(ValueId(6)), Operand::Value(ValueId(9))],
+                    },
+                    // sum = get(0) + get(2)
+                    // Note: VectorGet returns Integer directly (Null wraps
+                    // are implicit at the runtime layer — the value IS
+                    // the discriminator's presence).
+                    Instruction::Add {
+                        dest: ValueId(11),
+                        lhs: Operand::Value(ValueId(8)),
+                        rhs: Operand::Value(ValueId(10)),
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(11))),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        assert_eq!(
+            result.to_string(),
+            "400",
+            "compose test: get(0)+get(2) of [100,200,300] = 100+300 = 400"
         );
     }
 }

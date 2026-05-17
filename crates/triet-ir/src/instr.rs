@@ -379,4 +379,20 @@ pub enum BuiltinName {
     TextConcat,
     /// `std.text.from_integer(n)` — integer → decimal string.
     TextFromInteger,
+    /// `vector_new()` — return an empty `Vector<T>`. Internal builtin
+    /// at v0.7.3.2 (not user-callable from source until generic
+    /// function syntax lands post-v0.7.3); self-host compiler emits
+    /// `CallBuiltin` directly per [ADR-0019 §5] / Addendum §A1.
+    ///
+    /// [ADR-0019 §5]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+    VectorNew,
+    /// `vector_push(v, item)` — functional return-new (Q1-A): clone
+    /// `v`, push `item`, return the new vector. SSA-safe.
+    VectorPush,
+    /// `vector_get(v, idx) -> T?` — strict bounds (Q3-A): negative
+    /// indices and `idx >= length` both return `Null`; in-range
+    /// returns the cloned element wrapped as `T?` ≡ value-itself.
+    VectorGet,
+    /// `vector_length(v) -> Integer` — element count.
+    VectorLength,
 }

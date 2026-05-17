@@ -446,18 +446,39 @@ VM-side mirror: `RuntimeValue::Vector(Vec<Self>)` + `RuntimeValue::HashMap(BTree
 
 **Rust-internal code excluded:** `Vec<T>` (Rust stdlib), `Box<>`, `Arc<>`, `Rc<>` — Rust idioms in Rust impl crates stay. ADR-0019 §3 audit (v0.7.2) did **not** retroactively rename `func_table` / `pkg_name` / `meta` — CLAUDE.md "Surgical Changes" applies.
 
-### A4 — Drop duplicate builtin IDs 23 + 26 (Q5-A)
+### A4 — Drop duplicate builtin IDs 23 + 26 (Q5-A) + Vector mutation + iterator (v0.7.3.2 Q1-A / Q2-A)
 
 Discovery during sub-task open: ADR-0019 §5 IDs 23 `string_push` + 26 `integer_to_string` duplicate existing stdlib builtins (`std.text.concat` + `std.text.from_integer`). Triết strings are immutable — `string_push` semantically ≡ `concat`. Triết stdlib stays minimal per [VISION §6 "explicit > implicit"](../../VISION.md).
 
-**Lock:**
+**v0.7.3.2 design review added two more drops:**
 
-| Dropped | Use instead |
-|---|---|
-| ID 23 `string_push` | Existing `std.text.concat` (returns new String) |
-| ID 26 `integer_to_string` | Existing `std.text.from_integer` |
+- **`vector_pop` dropped (Q1-A consequence).** Q1-A picked functional return-new for `vector_push` (SSA-safe, parallelism-friendly). `vector_pop`'s natural signature `(Vector<T>) -> (Vector<T>, T?)` requires tuple return — Triết IR doesn't have first-class tuples in opcodes yet. Self-host compiler doesn't need pop (symbol tables grow monotonically). Defer post-v1.0 alongside slice support.
+- **`vector_iterator` dropped (Q2-A).** ADR-0003 Iterator trait specced but not implemented at Triết level. Self-host compiler uses explicit `for i in 0..vector_length(v) { vector_get(v, i)!! }` pattern. Iterator trait scoping ⇒ separate ADR when concurrency model (v0.8) reframes adapter chains.
 
-Self-host compiler (v0.7.4+) consumes existing stdlib paths — no source-side change in `compiler/*.tri`. **21 net-new builtins** (was 23) across IDs 4–22 + 24–25.
+**Lock (final v0.7.3 dropped list):**
+
+| Dropped | Reason | Use instead |
+|---|---|---|
+| ID 8 `vector_pop` | Q1-A functional semantic requires tuple return; Triết IR lacks tuple opcodes | Defer post-v1.0 |
+| ID 9 `vector_iterator` | Q2-A — ADR-0003 trait not implemented; explicit index loop suffices | `for i in 0..length(v) { get(v, i)!! }` |
+| ID 23 `string_push` | Strings immutable → ≡ `concat` | Existing `std.text.concat` |
+| ID 26 `integer_to_string` | Duplicate of existing | Existing `std.text.from_integer` |
+
+Self-host compiler (v0.7.4+) consumes existing stdlib paths — no source-side change in `compiler/*.tri`. **19 net-new builtins** (was 23 in original spec; 21 after string/integer dedup; 19 after vector mutation/iterator drop).
+
+### A4.1 — Wire format builtin ID assignments (v0.7.3.2 actual)
+
+ADR-0019 §5 builtin ID table had wire-ID conflicts with pre-existing extensions (`FStringConcat`=4, `TextLen`=5, `TextConcat`=6, `TextFromInteger`=7 had already shipped pre-v0.7.3 — original ADR-0019 §5 mistakenly assumed IDs 4–26 were available). Corrected assignments below; pre-v0.7.3.2 readers encountering ID 8+ emit `TrivError::UnknownBuiltin` (no `.triv` version bump per ADR-0008 §"Version compatibility" — `CallBuiltin` opcode byte unchanged, only operand-byte values grow additively).
+
+| ID | Builtin | Phase |
+|---|---|---|
+| 0–7 | pre-existing (Println..TextFromInteger) | pre-v0.7.3 |
+| **8** | `VectorNew` | **v0.7.3.2 (shipped)** |
+| **9** | `VectorPush` | **v0.7.3.2 (shipped)** |
+| **10** | `VectorGet` | **v0.7.3.2 (shipped)** |
+| **11** | `VectorLength` | **v0.7.3.2 (shipped)** |
+| 12–16 | HashMap ops (5 ops) | v0.7.3.3 (pending) |
+| 17–26 | IO + path + string ops (10 ops post-dedup) | v0.7.3.4 (pending) |
 
 ### A5 — Sub-task split v0.7.3.1 → v0.7.3.4
 
@@ -465,10 +486,10 @@ Per Q2-B (4-sub-commit cadence for the v0.7.3 umbrella):
 
 | Sub-task | Scope | Status |
 |---|---|---|
-| **v0.7.3.1** | TypeTag + RuntimeValue + wire format v4 + this Addendum | (current) |
-| **v0.7.3.2** | Vector builtins (IDs 4–9, 6 ops) — VM dispatch + stdlib `.tri` stub | pending |
-| **v0.7.3.3** | HashMap builtins (IDs 10–14, 5 ops) — VM dispatch + stdlib `.tri` stub | pending |
-| **v0.7.3.4** | IO + path + string builtins (IDs 15–22 + 24–25, 10 ops post-dedup) | pending |
+| **v0.7.3.1** | TypeTag + RuntimeValue + wire format v4 + this Addendum | shipped |
+| **v0.7.3.2** | Vector builtins (IDs 8–11, 4 ops post-Q1A/Q2A drops) — VM dispatch + smoke + composition test. Stdlib stubs + path_to_builtin defer until generic-function syntax lands (v0.7.4+). | shipped |
+| **v0.7.3.3** | HashMap builtins (IDs 12–16, 5 ops) — VM dispatch + smoke + composition test | pending |
+| **v0.7.3.4** | IO + path + string builtins (IDs 17–26, 10 ops post-dedup) | pending |
 
 ### A6 — IO Trilean shape (Q4-A): strict 2-state
 
@@ -476,13 +497,44 @@ Per Q2-B (4-sub-commit cadence for the v0.7.3 umbrella):
 
 Future-compat: if v0.8 actor model introduces async-pending I/O state, that's a new ADR. v0.7.3 IO builtins stay strict.
 
-### Test coverage scorecard (v0.7.3.1 only)
+### Test coverage scorecard
 
-| Layer | Test | Commit |
+**v0.7.3.1 (shipped):**
+
+| Layer | Test |
+|---|---|
+| TypeTag display | `vector_type_display` + `hashmap_type_display` + `collection_equality` |
+| Wire format | `wire_format_version_bumped_to_v4` |
+| Round-trip | `vector_and_hashmap_type_tags_round_trip` (nested Vector + flat HashMap) |
+| Forward-compat | `pre_v4_reader_refuses_vector_discriminant` (v4-aware reader accepts; documents pre-v4 refusal contract) |
+
+**v0.7.3.2 (shipped):**
+
+| Layer | Test |
+|---|---|
+| Smoke | `vm_vector_new_returns_empty_vector` |
+| Smoke | `vm_vector_push_appends_and_returns_new_vector` (functional return-new) |
+| Smoke | `vm_vector_get_in_range_returns_element_out_of_range_returns_null` (covers in-range + over-length + negative — Q3-A strict bounds) |
+| Smoke | `vm_vector_length_returns_element_count` (covers length=3 + length=0 empty) |
+| Composition | `vm_vector_compose_push_length_get_round_trip` — build 3-element vector, sum get(0)+get(2)=400 |
+
+1088 → 1099 tests (11 net-new across v0.7.3.1+v0.7.3.2: 6 + 5), clippy `-D warnings` clean. v0.7.3.3 onward will continue the pattern for HashMap + IO/path/string builtins.
+
+### A7 — Deferred items log (technical debt surfaced by v0.7.3)
+
+Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with target re-tackle phase. Mirrors precedent ([ADR-0015 §9 lossy migration log](0015-package-store-layout.md), [SPEC §0.7 non-goals của v0.6](../../SPEC.md#07-non-goals-của-v06)). Future contributors checking "what's missing" land here.
+
+| Deferred item | Reason | Target phase |
 |---|---|---|
-| TypeTag display | `vector_type_display` + `hashmap_type_display` + `collection_equality` | this commit |
-| Wire format | `wire_format_version_bumped_to_v4` | this commit |
-| Round-trip | `vector_and_hashmap_type_tags_round_trip` (nested Vector + flat HashMap) | this commit |
-| Forward-compat | `pre_v4_reader_refuses_vector_discriminant` (v4-aware reader accepts; documents pre-v4 refusal contract) | this commit |
+| **Stdlib `.tri` stubs for Vector builtins** (`std/vector.tri` or `std/collections/vector.tri`) | Stubs would declare `function vector_new<T>() -> Vector<T>` — requires generic function syntax in parser/AST (see next row). | v0.7.4+ (when self-host compiler forces issue) |
+| **`path_to_builtin` entries for Vector/HashMap/IO/path/string ops** | Path mapping is meaningful only when source-callable. Same blocker as stdlib stubs. | v0.7.4+ |
+| **Generic function syntax in AST/parser** (`function vector_new<T>() -> Vector<T>`) | `FunctionDef` struct in `triet-syntax/src/item.rs` lacks `type_params` field that `StructDef`/`EnumDef` have. Parser does not consume `<T>` after function name. Substantial work (parser + AST + typecheck + lowerer all need touch). | v0.7.4+ — likely v0.7.5 (parser sub-task) or earlier sub-step. Tracked as carry-over from v0.7.3. |
+| **`vector_pop(v) -> (Vector<T>, T?)`** | Functional return-new semantic (Q1-A) requires tuple return; Triết IR lacks first-class tuple opcodes. Self-host compiler doesn't need pop (symbol tables grow monotonically). | post-v1.0 — alongside tuple opcode + slice support |
+| **Tuple opcodes in IR** (`TupleNew`, `TupleGet`, `TupleLength`) | Triết has tuple values in SPEC §8 but no IR opcodes — current lowerer represents tuples via struct workaround. Blocks `vector_pop`, multi-return functions, structural pattern matching. | post-v1.0 (post-self-host, when language stability allows IR additions) |
+| **`vector_iterator(v) -> Iterator<T>`** | ADR-0003 Iterator trait specced but never implemented at Triết level (v0.2 deliverable did not land; see ADR-0003 *Implementation roadmap* table). | Lands with ADR-0003 implementation — likely v0.8 (concurrency model reframes iterator+stream protocols) |
+| **`Iterator<T>` / `Iterable<T>` traits in stdlib + user-extensible iterator protocol** | ADR-0003 status: locked but not implemented. v0.1 hardcoded `Range`+`Enumerate` still in use; refactor to trait pending. | v0.8 (revisit alongside concurrency primitives) or earlier if v0.7.x sub-task forces it |
+| **`vector_iterator` adapter chains** (`map`/`filter`/`take`/`zip`) | Depends on Iterator trait. | Same as Iterator trait above |
 
-1088 → 1094 tests (6 net-new: 3 display/equality + 3 wire-format), clippy `-D warnings` clean. v0.7.3.2 onward will add per-builtin smoke tests + composition integration tests per Q3-C.
+**Maintenance rule (per author 2026-05-17 feedback):** When future v0.7.x.review audits identify additional deferred items, append to this table. When a deferred item ships, mark with strikethrough + commit hash rather than removing — preserves the history of *what was once missing* for future readers.
+
+This Addendum also commits ADR-0019 §3 emission-determinism scope to mention the Vector/HashMap collection types: `add_type` now recurses into `Vector`/`HashMap` for post-order encoding, preserving canonical type-table layout across rebuilds. The v0.7.2 `bootstrap_determinism` test continues to cover this transparently (Vector/HashMap not yet exercised by `examples/*.tri` — when v0.7.4+ adds `compiler/*.tri` source, the test will gain coverage automatically).
