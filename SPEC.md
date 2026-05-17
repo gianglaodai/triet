@@ -90,7 +90,7 @@ Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** th
 
 ### Carry-over từ v0.7.3 (per ADR-0019 Addendum §A7)
 
-Các thứ deferred ra khỏi v0.7.3 sub-tasks; full bảng ở [ADR-0019 Addendum §A7](docs/decisions/0019-self-hosting-compiler-bootstrap.md):
+Các thứ deferred ra khỏi v0.7.3 sub-tasks; full bảng ở [ADR-0019 Addendum §A7](docs/decisions/0019-self-hosting-compiler-bootstrap.md#a7--deferred-items-log-technical-debt-surfaced-by-v073):
 
 - **Generic function syntax** (`function vector_new<T>() -> Vector<T>`) — `FunctionDef` AST hiện không có `type_params`; parser không consume `<T>` sau function name. Target re-tackle: v0.7.4+ (likely v0.7.5 parser sub-task) khi self-host compiler force issue.
 - **Stdlib `.tri` stubs + `path_to_builtin` entries cho Vector/HashMap/IO/path/string builtins** — chờ generic function syntax (same blocker as trên).

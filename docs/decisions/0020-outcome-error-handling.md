@@ -1,6 +1,6 @@
 # ADR 0020 — Outcome error handling (`T~E` / `T?~E` — trit-encoded fallibility)
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.7.4.3-error + tất cả new code từ v0.7.4.3 trở đi. Closes [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md) deferred item *"Error handling primitive — recovery / try-catch / supervisor"*. Foundational design — affects SPEC §2.5 (nullable + new fallible primitive), ADR-0003 (Iterator), std.result existing enum, capability resolver return types, and the entire self-host compiler error paths.
+**Trạng thái:** Quyết định. Áp dụng cho v0.7.4.3-error + tất cả new code từ v0.7.4.3 trở đi. Closes [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md#a7--deferred-items-log-technical-debt-surfaced-by-v073) deferred item *"Error handling primitive — recovery / try-catch / supervisor"*. Foundational design — affects SPEC §2.5 (nullable + new fallible primitive), ADR-0003 (Iterator), std.result existing enum, capability resolver return types, and the entire self-host compiler error paths.
 
 **Issue:** Triết v0.6 ships với 4 cơ chế xử lý "absence/failure":
 
@@ -666,7 +666,7 @@ ADR-0001 (nullable memory layout) and ADR-0010 (ternary-native IR) each receive 
 - Typecheck emits W2001 for every `null` token.
 - New code paths and examples use `~0`; legacy `null` still works through v1.0.
 
-Tracked in [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md) deferred items log under "Null keyword deprecation (W2001) + migration tool".
+Tracked in [ADR-0019 Addendum §A7](0019-self-hosting-compiler-bootstrap.md#a7--deferred-items-log-technical-debt-surfaced-by-v073) deferred items log under "Null keyword deprecation (W2001) + migration tool".
 
 ## Hệ quả
 

@@ -13,7 +13,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.6 — implementation v0.6.0.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install, `triet store {import,list,gc}` CLI, hash-pinned `triet.lock` resolver. **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md) — `sys.*`/`dev.*`/`usr.*` enforce ở compile + link + runtime, 4-state `CapabilityLevel` (Trit + Trilean::Unknown), `triet.package` source manifest + `triet.policy` rules + `/dev/tty` provenance prompt. 1079 tests pass workspace-wide.
+🟢 **Language SPEC v0.6 — implementation v0.6.0 — v0.7 Self-hosting Compiler IN PROGRESS.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format (currently v4, [ADR-0008 §Version history](docs/decisions/0008-triv-binary-format.md)). **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree, atomic install, hash-pinned `triet.lock`. **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md) — `sys.*`/`dev.*`/`usr.*` enforce, 4-state `CapabilityLevel`, `triet.package` + `triet.policy` + `/dev/tty` provenance prompt. **v0.7 Self-hosting Compiler in progress** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — 3-stage bootstrap chain, canonical emission invariants, Rust-shim stdlib (19 builtins shipped v0.7.3), generic function syntax shipped v0.7.4.1, stdlib stubs `.tri` shipped v0.7.4.2. **Outcome error handling** design locked per [ADR-0020](docs/decisions/0020-outcome-error-handling.md) — `T~E` / `T?~E` trit-encoded fallibility, implementation pending v0.7.4.3-error. 1129 tests pass workspace-wide.
 
 ```bash
 cargo build --release
@@ -34,7 +34,7 @@ cargo build --release
 # Module system demo (704 dòng, 6 module file-bound + nested + inline)
 ./target/release/triet run demos/02-module-system/main.tri
 
-# Capability system walkthrough (v0.6 — illustrative manifest + policy)
+# Capability system walkthrough (v0.6 — shipped, illustrative manifest + policy)
 cat demos/04-capability-system/README.md
 cat demos/04-capability-system/triet.package
 
@@ -99,10 +99,10 @@ triet/
 ├── demos/                 # Larger multi-file demos
 │   ├── 02-module-system/  # 704-dòng ternary ALU across 6 modules
 │   └── 04-capability-system/  # v0.6 capability gates walkthrough
-├── docs/decisions/        # 18 ADRs (+ Addendum on ADR-0015, ADR-0017)
-├── SPEC.md                # Đặc tả ngôn ngữ (v0.6)
+├── docs/decisions/        # 20 ADRs (+ Addendums on ADR-0015, 0017, 0018, 0001, 0010, 0019)
+├── SPEC.md                # Đặc tả ngôn ngữ (header v0.6, v0.7 design locked per ADR-0019/0020)
 ├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
-└── ROADMAP.md             # Phase gates v0.2 → v3.0+
+└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.7 SHC in progress)
 ```
 
 ## Build
@@ -110,7 +110,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test --workspace   # run all tests (1079 in v0.6)
+cargo test --workspace   # run all tests (1129 in v0.7.4.2)
 cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```
@@ -146,8 +146,8 @@ Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first +
 - **v0.3.x.ternary** — ternary-native IR ✅ ([ADR-0010](docs/decisions/0010-ternary-native-ir.md))
 - **v0.4** — Crate-Pack + stable ABI ✅ ([ADR-0011](docs/decisions/0011-abi-metadata-format.md), [ADR-0012](docs/decisions/0012-witness-table-dispatch.md), [ADR-0013](docs/decisions/0013-semver-linking-policy.md))
 - **v0.5** — CAS packaging ✅ ([ADR-0014](docs/decisions/0014-hash-scheme-refinement.md), [ADR-0015](docs/decisions/0015-package-store-layout.md))
-- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`) ✅ ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md)) — *đang ở đây*
-- **v0.7** — self-hosting compiler — *next*
+- **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`) ✅ ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md))
+- **v0.7** — self-hosting compiler **🔄 in progress** ([ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md), [ADR-0020](docs/decisions/0020-outcome-error-handling.md)) — *đang ở đây*. v0.7.1-v0.7.4.2 shipped (framework + builtins + stdlib stubs + generic functions); v0.7.4.3-error Outcome impl next.
 - **v0.8** — concurrency model
 - **v0.9** — JIT (Cranelift)
 - **v1.0** — production stability

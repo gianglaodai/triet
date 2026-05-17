@@ -6,147 +6,82 @@ Sub-task tracking — short-term work in progress.
 - Architectural decisions: [`docs/decisions/`](docs/decisions/)
 - Language semantics: [`SPEC.md`](SPEC.md), [`VISION.md`](VISION.md)
 
-This file is updated as tasks complete. When a phase finishes (e.g. v0.2.x),
-the summary is archived into `ROADMAP.md` and detailed checkboxes
-removed from here.
+This file tracks the **current phase** only. When a phase finishes, its summary archives to `ROADMAP.md` and detailed checkboxes are deleted from here.
 
 ---
 
-## v0.2.x — Module system ✅ SHIPPED
+## v0.2 — v0.6 archived
 
-Archived to [ROADMAP.md § v0.2.x](ROADMAP.md).
+All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
-Final commits:
-- v0.2.x.7 — Stdlib as real filesystem files `befc59c`
-- v0.2.x.8 — Module system demo + snapshot tests `e356a61`
-
-## v0.3 — Bytecode VM + Stable IR ✅ SHIPPED
-
-Archived to [ROADMAP.md § v0.3](ROADMAP.md).
-
-All 12 sub-tasks done (v0.3.0–v0.3.11) + v0.3.x.cleanup phase.
-All gates met (ADR-0009 § A/B/C/D):
-- IR spec + bytecode format ✓
-- Differential tests: **11/11** byte-identical ✓
-- Bench: VM 1.26× interpreter (3× gate deferred to v0.4 perf pass) ✓
-- IR snapshot tests ✓
-
-Final v0.3 commit: `28e7da0`. Final cleanup commit: `251f954`.
+| Phase | ADRs | Final test count |
+|---|---|---|
+| v0.2.x Module system | 0005, 0006 | 700+ |
+| v0.3 Bytecode VM + Stable IR | 0007, 0008 | 835 |
+| v0.3.x.cleanup | 0009 | 835 |
+| v0.3.x.ternary | 0010 | 838 |
+| v0.4 Crate-Pack + Stable ABI | 0011, 0012, 0013 | 867 |
+| v0.5 CAS Packaging | 0014, 0015 | 918 |
+| v0.5.x.review | 0015 Addendum | 924 |
+| v0.6 Capability System | 0016, 0017, 0018 | 1079 |
+| v0.6.x.review | 0018 Addendum | 1085 |
 
 ---
 
-## v0.3.x.cleanup ✅ SHIPPED
+## v0.7 — Self-hosting Compiler 🔄 in progress
 
-Archived to [ROADMAP.md § v0.3.x.cleanup](ROADMAP.md).
+**Quyết định kiến trúc:** [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) (bootstrap + Rust-shim stdlib), [ADR-0020](docs/decisions/0020-outcome-error-handling.md) (Outcome error handling). See ROADMAP.md §v0.7 for deliverables + gates (recalibrated per ADR-0019 §7 — perf parity defers to v0.9).
 
-Gate-closing phase before v0.4. Locks [ADR-0009](docs/decisions/0009-version-gate-policy.md)
-as the policy for every future version bump.
+### Shipped (9 commits, 1085 → 1129 tests)
 
-8 sub-tasks done (v0.3.x.cleanup.1–8). 835 tests, 0 ignored, clippy clean.
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.7.1 | ADR-0019 framework + ROADMAP §v0.7 recalibrate + ADR index update | `277ee7f` |
+| v0.7.2 | Canonical emission invariants audit + `triet-bootstrap` skeleton + 3 determinism tests | `cf7eaf4` |
+| v0.7.3.1 | `TypeTag::Vector`/`HashMap` + `.triv` wire v3 → v4 + ADR-0019 Addendum §A1-A4 | `5da6234` |
+| v0.7.3.2 | Vector builtins (4 ops, wire IDs 8-11) — VM dispatch + 5 tests | `472cc65` |
+| v0.7.3.3 | HashMap builtins (5 ops, wire IDs 12-16) + error-model 3-tier lock + 7 tests | `77e5acf` |
+| v0.7.3.4 | IO/path/string builtins (10 ops, wire IDs 17-26) — closes v0.7.3 umbrella; 12 tests | `f304e87` |
+| v0.7.4.1 | Generic function syntax — parser + AST + typecheck + lowerer (type-erased per Q3-A deviation §A7.1) | `96c92ef` |
+| v0.7.4.2 | Stdlib `.tri` stubs (5 new files, Java-aesthetic) + `path_to_builtin` (19 entries) + 5 VM tests | `f6d722f` |
+| v0.7.4.3-error (docs) | ADR-0020 Outcome error handling design (10 §s including null/~0 unification) + ADR-0001/0010 Addendums + SPEC §1.5.3/§2.5 updates | `9f8dca6` |
+| v0.7.x.audit.1 | CRITICAL fixes (CLAUDE state + ADR-0007/0008 cross-refs) | `46dd59a` |
 
----
+### In progress
 
-## v0.3.x.ternary ✅ SHIPPED
+- [ ] **v0.7.x.audit.2** — MAJOR fixes (README + TODO + anchors). This commit.
+- [ ] **v0.7.x.audit.3** — MINOR fixes (SPEC null examples + CLAUDE outcome syntax note + audit memory update).
 
-Archived to [ROADMAP.md § v0.3.x.ternary](ROADMAP.md).
+### Next sub-task: v0.7.4.3-error implementation
 
-Ternary-native IR refactor per [ADR-0010](docs/decisions/0010-ternary-native-ir.md).
-Removes binary-thinking leak ở control flow: `BrTrilean` 3-way branch
-replaces `BrIf` for all Trilean conditions, strict `if` Unknown→panic,
-Ł3-aware `Eq`/`Ne`, `.triv` v1 → v2.
+Largest single sub-task của v0.7 (trừ self-host compiler port). Estimated 2-3 weeks, split into ~5 sub-commits per per-step pattern. See ADR-0020 §"Implementation" + ADR-0019 Addendum §A7 deferred items.
 
-7 sub-tasks done (v0.3.x.ternary.1–8, 4+5 merged). 838 tests, 0 ignored, clippy clean, 11/11 differential.
+- [ ] **v0.7.4.3-error.1** — Lexer + AST + Parser (compound tokens `?~`/`~+`/`~-`/`~0`/`~?`/`~:`, `|capture|` form, type/expr/pattern productions)
+- [ ] **v0.7.4.3-error.2** — Typecheck (`Type::Outcome`, exhaustiveness, error codes E1024-E1032, W2001 NullDeprecated)
+- [ ] **v0.7.4.3-error.3** — Lowerer + VM (opcodes 0xC1-0xC6, `RuntimeValue::Outcome`, deallocation contract, `.triv` v4 → v5)
+- [ ] **v0.7.4.3-error.4** — Migration tool `triet fmt --fix --migrate-null` + auto-migrate existing `null` in stdlib + examples
+- [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
 
----
+### After v0.7.4.3-error: v0.7.4.3 lexer port + remaining v0.7 sub-tasks
 
-## v0.4 — Crate-Pack + Stable ABI ✅ SHIPPED
-
-Archived to [ROADMAP.md § v0.4](ROADMAP.md).
-
-9 sub-tasks done (v0.4.1–v0.4.9). All gates met (ADR-0009):
-- ADR-0011/12/13 trilogy locked.
-- `triet-pack` crate landed (write/read .tripack + plan_link).
-- `WitnessCall` opcode + `.triv` v3 wire format.
-- `std.result` shipped; SPEC §2.5 promotes `T?` as primary.
-- 867 tests, 0 ignored, clippy clean, differential 11/11.
-
-Final v0.4 commit: this commit.
-
----
-
-## v0.5 — CAS Packaging ✅ SHIPPED
-
-Archived to [ROADMAP.md § v0.5](ROADMAP.md).
-
-9 sub-tasks done (v0.5.1–v0.5.9). All gates met (ADR-0009 § A/B/C/D):
-- ADR-0014/0015 locked. 3-cấp hash tree, package store, atomic install, GC.
-- Resolver + `triet.lock`. `triet store {import,list,gc}` CLI.
-- Shared loading demo (iface-level dedup proven).
-- Cross-module enum variant import closed.
-- 918 tests, 0 ignored, clippy clean, differential 11/11.
-
-**Defer out of v0.5** (rescheduled):
-- Lowerer emit `WitnessCall` for cross-package generics — needs package-aware lowering, multi-week milestone. Future phase (multi-package compile or v0.7 self-hosting).
-- v=1 `.tripack` lossy migration — lands when v=1 packs exist in wild.
-- Body-level RAM dedup (`term/<hash>/body.bin`) — chờ lowerer per-term IR body split.
-
-Final v0.5 commit: this commit.
-
----
-
-## v0.5.x.review — Pre-v0.6 audit fixes ✅ SHIPPED
-
-Archived to [ROADMAP.md § v0.5.x.review](ROADMAP.md).
-
-4 sub-tasks done. Audit của AI trước v0.6 → 1 binary leak + 3 testing gap
-được bít. 918 → 924 tests, ADR-0015 Addendum landed.
-
-Final v0.5.x.review commit: this commit.
-
----
-
-## v0.6 — Capability System ✅ SHIPPED
-
-Archived to [ROADMAP.md § v0.6](ROADMAP.md).
-
-11 sub-tasks done (v0.6.1–v0.6.11). All gates met:
-- 3 ADRs locked (0016, 0017, 0018) + ADR-0017 Addendum (parser strict + `/dev/tty` + Abstain errata).
-- Type-check, link-time, runtime resolver all enforce E22XX namespace.
-- TTY prompt UX (`/dev/tty` POSIX + provenance display) shipped.
-- Demo folder `demos/04-capability-system/` + integration test
-  (`crates/triet-typecheck/tests/capability_pipeline.rs`) prove
-  the three ROADMAP §v0.6 gates.
-- 924 → 1079 tests, clippy `-D warnings` clean.
-
-Defer out of v0.6 (rescheduled):
-- CLI wiring (`triet check` reading `triet.package`, cap-aware build,
-  loader integration with `DevTtyPrompt`) — needs project-layout
-  discovery convention; lands cleaner with v0.7 self-hosting.
-- E2208.PreV06Reader — gated by future `abi_version` bump.
-- E2208.CapabilityDivergence — wires when lowerer actually populates
-  caps from source manifest.
-- Per-function capability granularity — defer post-v1.0 (ADR-0016).
-- Windows ConPTY — POSIX-first; Windows defer.
-
-Final v0.6 commit: this commit.
-
----
-
-## v0.6.x.review — Pre-v0.7 audit fixes ✅ SHIPPED
-
-Archived to [ROADMAP.md § v0.6.x.review](ROADMAP.md).
-
-3 sub-tasks done. Audit của AI trước v0.7 → 5 audit miss + 1 deferred + 4 real/partial → 6 net-new tests filling distinct invariants. 1079 → 1085 tests, ADR-0018 Addendum landed.
-
-Final v0.6.x.review commit: this commit.
+- [ ] **v0.7.4.3** — `compiler/lexer.tri` hand-rolled scanner port (~500-700 LOC Triết)
+- [ ] **v0.7.4.4** — `lexer_differential` NDJSON byte-diff test + verify gate (closes v0.7.4 umbrella)
+- [ ] **v0.7.5** — `compiler/parser.tri` + parser_differential test
+- [ ] **v0.7.6** — `compiler/modules.tri` + modules_differential test
+- [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
+- [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
+- [ ] **v0.7.9** — `compiler/pack_writer.tri` + `compiler/main.tri` + drop bridges
+- [ ] **v0.7.10** — CLI wiring carry-over (project layout + cap-aware build + DevTtyPrompt + E2208.CapabilityDivergence)
+- [ ] **v0.7.11** — Stage 1 → Stage 2 bootstrap script + CI integration
+- [ ] **v0.7.12** — Stage 2 → Stage 3 + bit-identical gate verify
+- [ ] **v0.7.13** — Verify gate ADR-0009 §A/B/C/D + workspace version 0.6.0 → 0.7.0 + SPEC v0.6 → v0.7 + docs sync
 
 ---
 
 ## How to update this file
 
-- Mark a task `[x]` and move it to **Done** when its commit lands on `main`.
-- Add the commit short-hash next to completed tasks for quick git reference.
-- Keep the order: **Done** → **In progress** → **Pending**.
-- When a whole phase (e.g. v0.2.x) ships, archive its summary into
-  `ROADMAP.md` (under the changelog section) and delete the detailed
-  checkboxes from this file.
+- Mark sub-task `[x]` when its commit lands on `main`.
+- Add commit short-hash next to completed sub-tasks for quick git reference.
+- Keep order: **Shipped** (table format) → **In progress** (checkbox list) → **Pending** (checkbox list).
+- When a whole phase ships, archive its summary into `ROADMAP.md` (changelog section) and delete detailed checkboxes here.
+- Audit cadence: every 5-10 commits OR before major implementation phase, per `feedback_proactive_audit.md`.
