@@ -376,8 +376,13 @@ fn read_abi_metadata(data: &[u8]) -> PackResult<AbiMetadata> {
 // ── Module table (ADR-0014 §5) ────────────────────────────────────
 
 fn write_module_table(buf: &mut Vec<u8>, modules: &[Module]) {
-    write_varint(buf, modules.len() as u32);
-    for m in modules {
+    // Canonical sort-at-boundary per ADR-0011 §6 + ADR-0019 §3:
+    // on-disk byte order must match hash-input order so two runs over
+    // the same logical input produce byte-identical `.tripack`.
+    let mut sorted: Vec<&Module> = modules.iter().collect();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    write_varint(buf, sorted.len() as u32);
+    for m in sorted {
         write_string(buf, &m.path);
         buf.extend_from_slice(&m.iface_hash_mod.0);
         buf.extend_from_slice(&m.impl_hash_mod.0);
@@ -403,8 +408,11 @@ fn read_module_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<Module>> {
 // ── Type table ────────────────────────────────────────────────────
 
 fn write_type_table(buf: &mut Vec<u8>, types: &[TypeDef]) {
-    write_varint(buf, types.len() as u32);
-    for t in types {
+    // Canonical sort-at-boundary — see `write_module_table`.
+    let mut sorted: Vec<&TypeDef> = types.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    write_varint(buf, sorted.len() as u32);
+    for t in sorted {
         write_type_def(buf, t);
     }
 }
@@ -640,8 +648,11 @@ fn read_visibility(data: &[u8], pos: &mut usize) -> PackResult<Visibility> {
 // ── Export table ──────────────────────────────────────────────────
 
 fn write_export_table(buf: &mut Vec<u8>, exports: &[FunctionExport]) {
-    write_varint(buf, exports.len() as u32);
-    for e in exports {
+    // Canonical sort-at-boundary — see `write_module_table`.
+    let mut sorted: Vec<&FunctionExport> = exports.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    write_varint(buf, sorted.len() as u32);
+    for e in sorted {
         write_string(buf, &e.name);
         write_string(buf, &e.module_path);
         write_visibility(buf, e.visibility);
@@ -722,8 +733,12 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
 // ── Dep table ─────────────────────────────────────────────────────
 
 fn write_dep_table(buf: &mut Vec<u8>, deps: &[Dep]) {
-    write_varint(buf, deps.len() as u32);
-    for d in deps {
+    // Canonical sort-at-boundary — mirror `encode_deps_for_hash` so the
+    // on-disk dep table matches the iface_hash input byte-for-byte.
+    let mut sorted: Vec<&Dep> = deps.iter().collect();
+    sorted.sort_by(|a, b| a.pkg_name.cmp(&b.pkg_name));
+    write_varint(buf, sorted.len() as u32);
+    for d in sorted {
         write_string(buf, &d.pkg_name);
         write_semver(buf, d.version_min);
         write_semver(buf, d.version_max_exclusive);

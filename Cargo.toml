@@ -12,6 +12,7 @@ members = [
     "crates/triet-typecheck",
     "crates/triet-interpreter",
     "crates/triet-cli",
+    "crates/triet-bootstrap",
 ]
 
 [workspace.package]
