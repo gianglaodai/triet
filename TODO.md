@@ -58,10 +58,11 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.4a | `triet fmt --migrate-null` tool (lexer-based, idempotent, dry-run-by-default + `--write`) | `e49d389` |
 | v0.7.4.3-error.4b | Apply migration to 6 stdlib stubs (`examples/nullable.tri` deferred pending outcome-null runtime unification) | `be7532d` |
 | v0.7.4.3-error.6a | Outcome-null runtime unification — ADR-0010 Addendum §D + lowerer + 4 cross-tolerant VM opcodes + 6 tests | `ffcf6de` |
+| v0.7.4.3-error.6b | Interpreter parity for `~0` + migrate `examples/nullable.tri` (closes `.4b` deferred) | `a48c275` |
 
 ### In progress
 
-- [ ] **v0.7.4.3-error.6b** — Interpreter parity for `~0` + migrate `examples/nullable.tri` (closes `.4b` deferred item)
+_None — `.6` umbrella complete (outcome-null unification closed). Awaiting `.5` capstone selection._
 
 ### Next sub-task: v0.7.4.3-error remaining
 
