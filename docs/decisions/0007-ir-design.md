@@ -63,6 +63,7 @@ ADR này không liệt kê đầy đủ instruction set — chi tiết sẽ land
 | **Nullable** | `null_wrap` (T → T?), `null_unwrap` (T? → T, panic), `null_check` (T? → Trit) |
 | **Closure** | `closure_new @lambda, [captures]`, `closure_call %c, [args]` |
 | **Builtin** | `builtin "<name>", args` (cho `println`, `assert`, ...) |
+| **Outcome** *(v0.7.4.3-error+, [ADR-0020](0020-outcome-error-handling.md))* | `outcome_new_positive` (Trit::Positive arm), `outcome_new_negative` (Trit::Negative arm), `outcome_new_null` (Trit::Zero arm, T?~E only), `outcome_discriminant` (extract trit), `outcome_unwrap_value` (panic if not Positive), `outcome_unwrap_error` (panic if not Negative). Wire opcodes 0xC1–0xC6. Cross-references nullable `T?` via shared `Constant::Null` for compile-time null literals (per [ADR-0010 Addendum](0010-ternary-native-ir.md#addendum--v0743-error-null-literal-unification)). |
 
 **Capability annotation:** Cross-module call mang theo namespace tag từ `AbsolutePath` (e.g., `call @sys.print %s` là gọi vào `sys.*`). v0.6 capability check sẽ đọc tag này — không cần thay đổi IR shape khi enforce capability.
 

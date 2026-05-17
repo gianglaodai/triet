@@ -23,10 +23,19 @@ ADR này lock binary format trước khi serialize/deserialize implementation (v
 `.triv` là binary format với:
 
 1. **Magic bytes** `0x74 0x72 0x69 0x76` ("triv" ASCII).
-2. **32-bit version** (little-endian), hiện tại = `2` (bumped từ 1 → 2
-   ở v0.3.x.ternary phase per [ADR-0010](0010-ternary-native-ir.md) khi
-   opcode `BR_TRILEAN` (0xB4) được thêm — v1 reader gặp opcode này sẽ
-   trả `UnknownOpcode` thay vì silently misinterpret).
+2. **32-bit version** (little-endian) — currently `4` (centralized history below).
+
+**Version history (canonical — single source of truth):**
+
+| Version | Phase / ADR | Change | Reader behavior on encounter |
+|---|---|---|---|
+| `1` | v0.3 initial release ([ADR-0008](0008-triv-binary-format.md), this ADR) | Initial format: magic + version + section_count + 4 sections (types/constants/functions/code). | n/a (oldest readable) |
+| `2` | v0.3.x.ternary ([ADR-0010](0010-ternary-native-ir.md)) | Added `BR_TRILEAN` opcode (0xB4). | v1 readers emit `UnknownOpcode` on 0xB4. |
+| `3` | v0.4 ([ADR-0012](0012-witness-table-dispatch.md)) | Added `WITNESS_CALL` opcode (0x93) + new `witness_tables` section (5). | v2 readers emit `UnknownOpcode` on 0x93. |
+| `4` | v0.7.3.1 ([ADR-0019 Addendum §A1](0019-self-hosting-compiler-bootstrap.md)) | Added type discriminants 8 (Vector) + 9 (HashMap). | v3 readers emit `UnknownTypeDiscriminant` on 8/9. |
+| `5` | v0.7.4.3-error ([ADR-0020 §7](0020-outcome-error-handling.md), pending impl) | Added type discriminant 10 (Outcome with `allow_null_state: bool`) + 6 opcodes 0xC1–0xC6 (`OUTCOME_NEW_POSITIVE/NEGATIVE/NULL`, `OUTCOME_DISCRIMINANT`, `OUTCOME_UNWRAP_VALUE/ERROR`). | v4 readers emit `UnknownTypeDiscriminant` on 10 / `UnknownOpcode` on 0xC1–0xC6. |
+
+Each bump is **additive-only** per §"Version compatibility" rules below — no semantic change to existing sections/opcodes. Older readers refuse cleanly on encountering newer features, never silently misinterpret.
 3. **Section-based layout** — mỗi section có `section_id` (1 byte) + `section_size` (u32
    LE). Unknown section → skip, không error.
 4. **Little-endian** cho multi-byte integers (đồng bộ với CPU target chính:
