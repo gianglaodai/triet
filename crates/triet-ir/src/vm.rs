@@ -1628,6 +1628,138 @@ fn execute_builtin(
                 Integer::new(i64::try_from(length).unwrap_or(i64::MAX)).unwrap_or_default(),
             ))
         }
+        BuiltinName::HashMapNew => {
+            Ok(RuntimeValue::HashMap(std::collections::BTreeMap::new()))
+        }
+        BuiltinName::HashMapInsert => {
+            // Functional return-new (Q1-A consistency): clone the
+            // map, insert/overwrite k -> v, return new map. Old
+            // value at key (if any) is silently dropped — caller
+            // does explicit `hashmap_get` first if they need it.
+            let map_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let key_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let value_arg = args.get(2).cloned().unwrap_or(RuntimeValue::Unit);
+            let mut new_map = match map_arg {
+                RuntimeValue::HashMap(m) => m,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::HashMap(
+                            Box::new(TypeTag::Unit),
+                            Box::new(TypeTag::Unit),
+                        ),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            // Q2-B invalid key handling: refuse-over-guess. Non-
+            // hashable key types (Vector/HashMap/Trilean/Struct/Enum/
+            // Closure/Unit/Null) → TypeMismatch panic. This is a
+            // bug, not a data event — caller's logic is broken.
+            // See ADR-0019 Addendum §A7 "error handling primitive"
+            // for future recovery story.
+            let key = RuntimeMapKey::from_runtime(&key_arg).ok_or_else(|| {
+                VmError::TypeMismatch {
+                    expected: TypeTag::String, // sentinel: documented as "any hashable primitive"
+                    actual: format!(
+                        "non-hashable key type {:?} (expected Trit/Tryte/Integer/Long/String)",
+                        key_arg.type_tag()
+                    ),
+                    function: func_name.into(),
+                }
+            })?;
+            new_map.insert(key, value_arg);
+            Ok(RuntimeValue::HashMap(new_map))
+        }
+        BuiltinName::HashMapGet => {
+            // Lookup-miss = data event → return `V? = Null`. Invalid
+            // key type = bug → TypeMismatch panic (Q2-B). Distinct
+            // tiers per error model: §A7 deferred items doc.
+            let map_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let key_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let map = match map_arg {
+                RuntimeValue::HashMap(m) => m,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::HashMap(
+                            Box::new(TypeTag::Unit),
+                            Box::new(TypeTag::Unit),
+                        ),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let key = RuntimeMapKey::from_runtime(&key_arg).ok_or_else(|| {
+                VmError::TypeMismatch {
+                    expected: TypeTag::String,
+                    actual: format!(
+                        "non-hashable key type {:?} (expected Trit/Tryte/Integer/Long/String)",
+                        key_arg.type_tag()
+                    ),
+                    function: func_name.into(),
+                }
+            })?;
+            Ok(map.get(&key).cloned().unwrap_or(RuntimeValue::Null))
+        }
+        BuiltinName::HashMapKeys => {
+            // Q4-A: sorted key order (BTreeMap natural). Deterministic
+            // by construction — aligns ADR-0019 §3 canonical
+            // emission principle. Empty map → empty Vector.
+            let map_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let map = match map_arg {
+                RuntimeValue::HashMap(m) => m,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::HashMap(
+                            Box::new(TypeTag::Unit),
+                            Box::new(TypeTag::Unit),
+                        ),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let keys: Vec<RuntimeValue> = map.keys().map(RuntimeMapKey::to_runtime).collect();
+            Ok(RuntimeValue::Vector(keys))
+        }
+        BuiltinName::HashMapContains => {
+            // Q3-A: strict 2-state Trilean. True if key present,
+            // False if absent. Invalid key type = bug → TypeMismatch
+            // (NOT Trilean::Unknown — error model §A7 reserves
+            // Unknown for genuine Ł3 uncertainty).
+            let map_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let key_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let map = match map_arg {
+                RuntimeValue::HashMap(m) => m,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::HashMap(
+                            Box::new(TypeTag::Unit),
+                            Box::new(TypeTag::Unit),
+                        ),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let key = RuntimeMapKey::from_runtime(&key_arg).ok_or_else(|| {
+                VmError::TypeMismatch {
+                    expected: TypeTag::String,
+                    actual: format!(
+                        "non-hashable key type {:?} (expected Trit/Tryte/Integer/Long/String)",
+                        key_arg.type_tag()
+                    ),
+                    function: func_name.into(),
+                }
+            })?;
+            let present = if map.contains_key(&key) {
+                Trilean::True
+            } else {
+                Trilean::False
+            };
+            Ok(RuntimeValue::Trilean(present))
+        }
     }
 }
 
@@ -2924,6 +3056,551 @@ mod tests {
         let mut vm_empty = Vm::new(make_simple_program(empty_func));
         let r_empty = vm_empty.execute(FuncId(0), vec![]).unwrap();
         assert_eq!(r_empty.to_string(), "0", "empty vector has length 0");
+    }
+
+    // ── v0.7.3.3 HashMap builtins ────────────────────────────────
+    //
+    // Per ADR-0019 §5 + Addendum §A4.1: 5 HashMap builtins —
+    // HashMapNew/Insert/Get/Keys/Contains, wire IDs 12-16.
+    // Q1-A functional return-new (mirror VectorPush).
+    // Q2-B reuse TypeMismatch for invalid key types.
+    // Q3-A strict 2-state Trilean for Contains.
+    // Q4-A sorted key order for Keys.
+    //
+    // Error model 3-tier (ADR-0019 Addendum §A7):
+    // - Lookup miss = data event → V? Null / Trilean::False
+    // - Invalid key type = bug → VmError::TypeMismatch panic
+    //   (NOT Trilean::Unknown — Ł3 reserved for genuine
+    //   semantic uncertainty, not type errors).
+
+    /// `hashmap_new()` returns an empty `HashMap`.
+    #[test]
+    fn vm_hashmap_new_returns_empty_map() {
+        let func = Function {
+            id: FuncId(0),
+            name: Some("make_empty_map".into()),
+            params: vec![],
+            return_type: TypeTag::HashMap(
+                Box::new(TypeTag::String),
+                Box::new(TypeTag::Integer),
+            ),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::HashMapNew,
+                        args: vec![],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let prog = make_simple_program(func);
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        match result {
+            RuntimeValue::HashMap(entries) => assert!(entries.is_empty()),
+            other => panic!("expected empty HashMap, got {other:?}"),
+        }
+    }
+
+    /// `hashmap_insert(m, k, v)` returns new map with k -> v added.
+    /// Functional return-new (Q1-A consistency).
+    #[test]
+    fn vm_hashmap_insert_returns_new_map_with_pair() {
+        let mut pool = ConstantPool::new();
+        let c_key = pool.intern(Constant::String("alpha".into()));
+        let c_value = pool.intern(Constant::Integer(Integer::new(42).unwrap()));
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("insert_one".into()),
+            params: vec![],
+            return_type: TypeTag::HashMap(
+                Box::new(TypeTag::String),
+                Box::new(TypeTag::Integer),
+            ),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::HashMapNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c_key,
+                    },
+                    Instruction::Const {
+                        dest: ValueId(2),
+                        constant: c_value,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(3)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Value(ValueId(1)),
+                            Operand::Value(ValueId(2)),
+                        ],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(3))),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        match result {
+            RuntimeValue::HashMap(entries) => {
+                assert_eq!(entries.len(), 1);
+                let key = RuntimeMapKey::String("alpha".into());
+                assert!(entries.contains_key(&key));
+                assert_eq!(entries.get(&key).unwrap().to_string(), "42");
+            }
+            other => panic!("expected HashMap with 1 entry, got {other:?}"),
+        }
+    }
+
+    /// `hashmap_get(m, k)` returns V? — value if present, Null if not.
+    /// Strict tier: miss = data event, not error.
+    #[test]
+    fn vm_hashmap_get_hit_returns_value_miss_returns_null() {
+        let mut pool = ConstantPool::new();
+        let c_key_present = pool.intern(Constant::String("present".into()));
+        let c_key_absent = pool.intern(Constant::String("absent".into()));
+        let c_value = pool.intern(Constant::Integer(Integer::new(7).unwrap()));
+
+        // Helper builds a function that inserts (c_key_present -> c_value)
+        // and then gets <lookup_const>.
+        let build = |id: FuncId, lookup: ConstId, name: &str| Function {
+            id,
+            name: Some(name.into()),
+            params: vec![],
+            return_type: TypeTag::Nullable(Box::new(TypeTag::Integer)),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::HashMapNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c_key_present,
+                    },
+                    Instruction::Const {
+                        dest: ValueId(2),
+                        constant: c_value,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(3)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Value(ValueId(1)),
+                            Operand::Value(ValueId(2)),
+                        ],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(4),
+                        constant: lookup,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(5)),
+                        name: BuiltinName::HashMapGet,
+                        args: vec![Operand::Value(ValueId(3)), Operand::Value(ValueId(4))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(5))),
+                    },
+                ],
+            }],
+        };
+
+        let prog = IrProgram {
+            modules: vec![IrModule {
+                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                functions: vec![
+                    build(FuncId(0), c_key_present, "get_hit"),
+                    build(FuncId(1), c_key_absent, "get_miss"),
+                ],
+            }],
+            constants: pool,
+            witness_tables: Vec::new(),
+        };
+
+        let mut vm_hit = Vm::new(prog.clone());
+        let r_hit = vm_hit.execute(FuncId(0), vec![]).unwrap();
+        assert_eq!(r_hit.to_string(), "7", "present key must return value");
+
+        let mut vm_miss = Vm::new(prog);
+        let r_miss = vm_miss.execute(FuncId(1), vec![]).unwrap();
+        assert!(
+            matches!(r_miss, RuntimeValue::Null),
+            "absent key must return Null (data event, not error), got {r_miss:?}"
+        );
+    }
+
+    /// `hashmap_keys(m)` returns sorted Vector of keys (Q4-A).
+    /// Deterministic order is critical for canonical emission.
+    #[test]
+    fn vm_hashmap_keys_returns_sorted_vector() {
+        let mut pool = ConstantPool::new();
+        // Insert keys out of order: "zebra", "alpha", "middle"
+        let c_zebra = pool.intern(Constant::String("zebra".into()));
+        let c_alpha = pool.intern(Constant::String("alpha".into()));
+        let c_middle = pool.intern(Constant::String("middle".into()));
+        let c_value = pool.intern(Constant::Integer(Integer::new(0).unwrap()));
+
+        let mut instructions = vec![Instruction::CallBuiltin {
+            dest: Some(ValueId(0)),
+            name: BuiltinName::HashMapNew,
+            args: vec![],
+        }];
+
+        let mut next_value_id = 1u32;
+        let mut current_map = ValueId(0);
+        for (key_const, label) in [(c_zebra, "z"), (c_alpha, "a"), (c_middle, "m")] {
+            let k_id = ValueId(next_value_id);
+            instructions.push(Instruction::Const {
+                dest: k_id,
+                constant: key_const,
+            });
+            next_value_id += 1;
+
+            let v_id = ValueId(next_value_id);
+            instructions.push(Instruction::Const {
+                dest: v_id,
+                constant: c_value,
+            });
+            next_value_id += 1;
+
+            let new_map = ValueId(next_value_id);
+            instructions.push(Instruction::CallBuiltin {
+                dest: Some(new_map),
+                name: BuiltinName::HashMapInsert,
+                args: vec![
+                    Operand::Value(current_map),
+                    Operand::Value(k_id),
+                    Operand::Value(v_id),
+                ],
+            });
+            next_value_id += 1;
+            current_map = new_map;
+            // label used only for documentation
+            let _ = label;
+        }
+
+        let keys_id = ValueId(next_value_id);
+        instructions.push(Instruction::CallBuiltin {
+            dest: Some(keys_id),
+            name: BuiltinName::HashMapKeys,
+            args: vec![Operand::Value(current_map)],
+        });
+        instructions.push(Instruction::Ret {
+            value: Some(Operand::Value(keys_id)),
+        });
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("keys_of".into()),
+            params: vec![],
+            return_type: TypeTag::Vector(Box::new(TypeTag::String)),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions,
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        match result {
+            RuntimeValue::Vector(keys) => {
+                assert_eq!(keys.len(), 3);
+                // Sorted alphabetically by BTreeMap natural order.
+                assert_eq!(keys[0].to_string(), "alpha");
+                assert_eq!(keys[1].to_string(), "middle");
+                assert_eq!(keys[2].to_string(), "zebra");
+            }
+            other => panic!("expected Vector of 3 sorted keys, got {other:?}"),
+        }
+    }
+
+    /// `hashmap_contains(m, k)` strict 2-state per Q3-A.
+    #[test]
+    fn vm_hashmap_contains_returns_strict_trilean() {
+        let mut pool = ConstantPool::new();
+        let c_key_present = pool.intern(Constant::String("here".into()));
+        let c_key_absent = pool.intern(Constant::String("missing".into()));
+        let c_value = pool.intern(Constant::Integer(Integer::new(1).unwrap()));
+
+        let build = |id: FuncId, lookup: ConstId, name: &str| Function {
+            id,
+            name: Some(name.into()),
+            params: vec![],
+            return_type: TypeTag::Trilean,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::HashMapNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: c_key_present,
+                    },
+                    Instruction::Const {
+                        dest: ValueId(2),
+                        constant: c_value,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(3)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Value(ValueId(1)),
+                            Operand::Value(ValueId(2)),
+                        ],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(4),
+                        constant: lookup,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(5)),
+                        name: BuiltinName::HashMapContains,
+                        args: vec![Operand::Value(ValueId(3)), Operand::Value(ValueId(4))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(5))),
+                    },
+                ],
+            }],
+        };
+
+        let prog = IrProgram {
+            modules: vec![IrModule {
+                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                functions: vec![
+                    build(FuncId(0), c_key_present, "contains_hit"),
+                    build(FuncId(1), c_key_absent, "contains_miss"),
+                ],
+            }],
+            constants: pool,
+            witness_tables: Vec::new(),
+        };
+
+        let mut vm_hit = Vm::new(prog.clone());
+        let r_hit = vm_hit.execute(FuncId(0), vec![]).unwrap();
+        assert!(
+            matches!(r_hit, RuntimeValue::Trilean(Trilean::True)),
+            "present key must return Trilean::True (strict 2-state), got {r_hit:?}"
+        );
+
+        let mut vm_miss = Vm::new(prog);
+        let r_miss = vm_miss.execute(FuncId(1), vec![]).unwrap();
+        assert!(
+            matches!(r_miss, RuntimeValue::Trilean(Trilean::False)),
+            "absent key must return Trilean::False (NOT Unknown — Q3-A strict), got {r_miss:?}"
+        );
+    }
+
+    /// Invalid key type panics with E2201 `TypeMismatch`, NOT silently
+    /// returns `Null` or `Trilean::Unknown`. Q2-B + error model §A7
+    /// 3-tier compliance: bug-driven failure → runtime panic.
+    #[test]
+    fn vm_hashmap_invalid_key_type_panics_with_type_mismatch() {
+        // Build a function that inserts vector_new() (a Vector value)
+        // as a key — Vector is NOT a hashable primitive per
+        // RuntimeMapKey::from_runtime contract.
+        let mut pool = ConstantPool::new();
+        let c_value = pool.intern(Constant::Integer(Integer::new(99).unwrap()));
+
+        let func = Function {
+            id: FuncId(0),
+            name: Some("invalid_key".into()),
+            params: vec![],
+            return_type: TypeTag::HashMap(
+                Box::new(TypeTag::Unit),
+                Box::new(TypeTag::Integer),
+            ),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::HashMapNew,
+                        args: vec![],
+                    },
+                    // Build a Vector to use as (invalid) key.
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(1)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(2),
+                        constant: c_value,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(3)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Value(ValueId(1)), // Vector as key — bug
+                            Operand::Value(ValueId(2)),
+                        ],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(3))),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]);
+        match result {
+            Err(VmError::TypeMismatch { actual, .. }) => {
+                assert!(
+                    actual.contains("non-hashable"),
+                    "expected TypeMismatch with non-hashable hint, got: {actual}"
+                );
+            }
+            other => panic!(
+                "expected VmError::TypeMismatch (E2201 — bug-tier, not data-tier), got {other:?}"
+            ),
+        }
+    }
+
+    /// Composition integration test (Q3-C pattern from v0.7.3.2):
+    /// build a 3-entry `HashMap`, verify keys ordering + contains
+    /// hit/miss + get round-trip in the same program. Mirrors
+    /// self-host compiler's symbol-table pattern.
+    #[test]
+    fn vm_hashmap_compose_insert_contains_get_keys_round_trip() {
+        let mut pool = ConstantPool::new();
+        let key_zebra = pool.intern(Constant::String("zebra".into()));
+        let key_alpha = pool.intern(Constant::String("alpha".into()));
+        let key_middle = pool.intern(Constant::String("middle".into()));
+        let value_first = pool.intern(Constant::Integer(Integer::new(100).unwrap()));
+        let value_second = pool.intern(Constant::Integer(Integer::new(200).unwrap()));
+        let value_third = pool.intern(Constant::Integer(Integer::new(300).unwrap()));
+        let lookup_key = pool.intern(Constant::String("middle".into()));
+
+        // Build a 3-insert chain then verify get("middle") = 300.
+        let func = Function {
+            id: FuncId(0),
+            name: Some("compose_map".into()),
+            params: vec![],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::HashMapNew,
+                        args: vec![],
+                    },
+                    // insert(map, "zebra", 100)
+                    Instruction::Const {
+                        dest: ValueId(1),
+                        constant: key_zebra,
+                    },
+                    Instruction::Const {
+                        dest: ValueId(2),
+                        constant: value_first,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(3)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(0)),
+                            Operand::Value(ValueId(1)),
+                            Operand::Value(ValueId(2)),
+                        ],
+                    },
+                    // insert(map2, "alpha", 200)
+                    Instruction::Const {
+                        dest: ValueId(4),
+                        constant: key_alpha,
+                    },
+                    Instruction::Const {
+                        dest: ValueId(5),
+                        constant: value_second,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(6)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(3)),
+                            Operand::Value(ValueId(4)),
+                            Operand::Value(ValueId(5)),
+                        ],
+                    },
+                    // insert(map3, "middle", 300)
+                    Instruction::Const {
+                        dest: ValueId(7),
+                        constant: key_middle,
+                    },
+                    Instruction::Const {
+                        dest: ValueId(8),
+                        constant: value_third,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(9)),
+                        name: BuiltinName::HashMapInsert,
+                        args: vec![
+                            Operand::Value(ValueId(6)),
+                            Operand::Value(ValueId(7)),
+                            Operand::Value(ValueId(8)),
+                        ],
+                    },
+                    // get(final_map, "middle")
+                    Instruction::Const {
+                        dest: ValueId(10),
+                        constant: lookup_key,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(11)),
+                        name: BuiltinName::HashMapGet,
+                        args: vec![Operand::Value(ValueId(9)), Operand::Value(ValueId(10))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(11))),
+                    },
+                ],
+            }],
+        };
+        let mut prog = make_simple_program(func);
+        prog.constants = pool;
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![]).unwrap();
+        assert_eq!(
+            result.to_string(),
+            "300",
+            "compose test: get(\"middle\") of {{\"zebra\":100, \"alpha\":200, \"middle\":300}} = 300"
+        );
     }
 
     /// Composition integration test (Q3-C): build a 3-element vector,

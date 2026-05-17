@@ -96,6 +96,7 @@ Các thứ deferred ra khỏi v0.7.3 sub-tasks; full bảng ở [ADR-0019 Addend
 - **Stdlib `.tri` stubs + `path_to_builtin` entries cho Vector/HashMap/IO/path/string builtins** — chờ generic function syntax (same blocker as trên).
 - **`vector_pop` + tuple opcodes** — Q1-A functional semantic requires tuple return; IR thiếu tuple opcodes. post-v1.0.
 - **`vector_iterator` + Iterator trait implementation** — ADR-0003 v0.2 deliverable chưa land (slipped qua v0.2–v0.6). Target v0.8 alongside concurrency model.
+- **Error handling primitive — recovery / try-catch / supervisor** — Triết hiện chỉ có 2 lớp recoverable error: `T?` (nullable) + `Result<T, E>` (std.result) + `Trilean::Unknown` (Ł3). Runtime panic (VmError E22XX) **không catch được**. v0.7.3.3 lock policy "bug = panic, data event = T?/Result/Trilean" nhưng v0.8 actor supervisor sẽ force question. Target ADR-0020 candidate khi v0.8 mở.
 
 ---
 

@@ -477,7 +477,11 @@ ADR-0019 §5 builtin ID table had wire-ID conflicts with pre-existing extensions
 | **9** | `VectorPush` | **v0.7.3.2 (shipped)** |
 | **10** | `VectorGet` | **v0.7.3.2 (shipped)** |
 | **11** | `VectorLength` | **v0.7.3.2 (shipped)** |
-| 12–16 | HashMap ops (5 ops) | v0.7.3.3 (pending) |
+| **12** | `HashMapNew` | **v0.7.3.3 (shipped)** |
+| **13** | `HashMapInsert` (functional return-new per Q1-A) | **v0.7.3.3 (shipped)** |
+| **14** | `HashMapGet` | **v0.7.3.3 (shipped)** |
+| **15** | `HashMapKeys` (sorted per Q4-A) | **v0.7.3.3 (shipped)** |
+| **16** | `HashMapContains` (strict 2-state Trilean per Q3-A) | **v0.7.3.3 (shipped)** |
 | 17–26 | IO + path + string ops (10 ops post-dedup) | v0.7.3.4 (pending) |
 
 ### A5 — Sub-task split v0.7.3.1 → v0.7.3.4
@@ -488,7 +492,7 @@ Per Q2-B (4-sub-commit cadence for the v0.7.3 umbrella):
 |---|---|---|
 | **v0.7.3.1** | TypeTag + RuntimeValue + wire format v4 + this Addendum | shipped |
 | **v0.7.3.2** | Vector builtins (IDs 8–11, 4 ops post-Q1A/Q2A drops) — VM dispatch + smoke + composition test. Stdlib stubs + path_to_builtin defer until generic-function syntax lands (v0.7.4+). | shipped |
-| **v0.7.3.3** | HashMap builtins (IDs 12–16, 5 ops) — VM dispatch + smoke + composition test | pending |
+| **v0.7.3.3** | HashMap builtins (IDs 12–16, 5 ops) — VM dispatch + smoke + composition + invalid-key panic test. ADR-0019 Addendum §A4.1 IDs marked shipped. Locks error-model 3-tier discipline (lookup miss = data event, invalid key = bug panic). | shipped |
 | **v0.7.3.4** | IO + path + string builtins (IDs 17–26, 10 ops post-dedup) | pending |
 
 ### A6 — IO Trilean shape (Q4-A): strict 2-state
@@ -518,7 +522,19 @@ Future-compat: if v0.8 actor model introduces async-pending I/O state, that's a 
 | Smoke | `vm_vector_length_returns_element_count` (covers length=3 + length=0 empty) |
 | Composition | `vm_vector_compose_push_length_get_round_trip` — build 3-element vector, sum get(0)+get(2)=400 |
 
-1088 → 1099 tests (11 net-new across v0.7.3.1+v0.7.3.2: 6 + 5), clippy `-D warnings` clean. v0.7.3.3 onward will continue the pattern for HashMap + IO/path/string builtins.
+**v0.7.3.3 (shipped):**
+
+| Layer | Test |
+|---|---|
+| Smoke | `vm_hashmap_new_returns_empty_map` |
+| Smoke | `vm_hashmap_insert_returns_new_map_with_pair` (Q1-A functional return-new) |
+| Smoke | `vm_hashmap_get_hit_returns_value_miss_returns_null` (data tier: miss → Null, not panic) |
+| Smoke | `vm_hashmap_keys_returns_sorted_vector` (Q4-A BTreeMap natural order) |
+| Smoke | `vm_hashmap_contains_returns_strict_trilean` (Q3-A strict 2-state — hit→True, miss→False, never Unknown) |
+| Error model | `vm_hashmap_invalid_key_type_panics_with_type_mismatch` (Q2-B: Vector as key → E2201 panic, NOT silent Null. Locks bug-tier vs data-tier discipline.) |
+| Composition | `vm_hashmap_compose_insert_contains_get_keys_round_trip` — build 3-entry map, get("middle") = 300 |
+
+1088 → 1106 tests (18 net-new across v0.7.3.1+2+3: 6 + 5 + 7), clippy `-D warnings` clean. v0.7.3.4 will continue the pattern for IO + path + string builtins.
 
 ### A7 — Deferred items log (technical debt surfaced by v0.7.3)
 
@@ -534,6 +550,7 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 | **`vector_iterator(v) -> Iterator<T>`** | ADR-0003 Iterator trait specced but never implemented at Triết level (v0.2 deliverable did not land; see ADR-0003 *Implementation roadmap* table). | Lands with ADR-0003 implementation — likely v0.8 (concurrency model reframes iterator+stream protocols) |
 | **`Iterator<T>` / `Iterable<T>` traits in stdlib + user-extensible iterator protocol** | ADR-0003 status: locked but not implemented. v0.1 hardcoded `Range`+`Enumerate` still in use; refactor to trait pending. | v0.8 (revisit alongside concurrency primitives) or earlier if v0.7.x sub-task forces it |
 | **`vector_iterator` adapter chains** (`map`/`filter`/`take`/`zip`) | Depends on Iterator trait. | Same as Iterator trait above |
+| **Error handling primitive — recovery / try-catch / supervisor** | Triết currently has **no mechanism** for user code to catch runtime panics. `VmError` (E22XX) aborts execution; only domain errors (`T?`, `Result<T, E>`, `Trilean::Unknown`) are recoverable. v0.7.3.3 surfaced this via Q2-B: invalid HashMap key types → panic, not recovery. Decision locked because self-host compiler doesn't need recovery (bugs are bugs). But future application code, actor supervisors (v0.8), and microkernel boundary (v3.0) will. | **Future ADR-0020 candidate** — "Error handling discipline: panic vs Result vs Trilean, recovery story". Likely v0.8 alongside concurrency model (actor supervisor patterns force the question). Write ADR-0020 when v0.8 phase opens or when an earlier sub-task demands recovery. |
 
 **Maintenance rule (per author 2026-05-17 feedback):** When future v0.7.x.review audits identify additional deferred items, append to this table. When a deferred item ships, mark with strikethrough + commit hash rather than removing — preserves the history of *what was once missing* for future readers.
 

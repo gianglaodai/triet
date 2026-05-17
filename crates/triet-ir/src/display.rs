@@ -288,6 +288,11 @@ impl fmt::Display for BuiltinName {
             Self::VectorPush => write!(f, "vector_push"),
             Self::VectorGet => write!(f, "vector_get"),
             Self::VectorLength => write!(f, "vector_length"),
+            Self::HashMapNew => write!(f, "hashmap_new"),
+            Self::HashMapInsert => write!(f, "hashmap_insert"),
+            Self::HashMapGet => write!(f, "hashmap_get"),
+            Self::HashMapKeys => write!(f, "hashmap_keys"),
+            Self::HashMapContains => write!(f, "hashmap_contains"),
         }
     }
 }

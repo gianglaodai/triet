@@ -498,6 +498,11 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::VectorPush => 9,
         BuiltinName::VectorGet => 10,
         BuiltinName::VectorLength => 11,
+        BuiltinName::HashMapNew => 12,
+        BuiltinName::HashMapInsert => 13,
+        BuiltinName::HashMapGet => 14,
+        BuiltinName::HashMapKeys => 15,
+        BuiltinName::HashMapContains => 16,
     };
     write_u8(buf, id);
 }
@@ -517,6 +522,11 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         9 => Ok(BuiltinName::VectorPush),
         10 => Ok(BuiltinName::VectorGet),
         11 => Ok(BuiltinName::VectorLength),
+        12 => Ok(BuiltinName::HashMapNew),
+        13 => Ok(BuiltinName::HashMapInsert),
+        14 => Ok(BuiltinName::HashMapGet),
+        15 => Ok(BuiltinName::HashMapKeys),
+        16 => Ok(BuiltinName::HashMapContains),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }

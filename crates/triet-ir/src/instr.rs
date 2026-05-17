@@ -395,4 +395,31 @@ pub enum BuiltinName {
     VectorGet,
     /// `vector_length(v) -> Integer` — element count.
     VectorLength,
+    /// `hashmap_new()` — return an empty `HashMap<K, V>`. Internal
+    /// builtin at v0.7.3.3 (not user-callable from source until
+    /// generic function syntax lands per [ADR-0019 Addendum §A7]).
+    ///
+    /// [ADR-0019 Addendum §A7]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+    HashMapNew,
+    /// `hashmap_insert(m, k, v)` — functional return-new (mirror Vector
+    /// Q1-A): clone `m`, insert/overwrite `k -> v`, return new map.
+    /// Old value is *not* surfaced — caller does explicit
+    /// `hashmap_get` first if they need it. Original ADR-0019 §5
+    /// signature `-> V?` corrected to `-> HashMap<K, V>` per v0.7.3.3
+    /// design (no tuple opcodes yet — [Addendum §A7]).
+    HashMapInsert,
+    /// `hashmap_get(m, k) -> V?` — return cloned value if key
+    /// present, else `Null`. Invalid key type → panic E2201
+    /// (`TypeMismatch`) per Q2-B; this is a programmer bug, not a
+    /// lookup miss.
+    HashMapGet,
+    /// `hashmap_keys(m) -> Vector<K>` — return sorted vector of keys
+    /// (Q4-A, deterministic by construction via `BTreeMap` natural
+    /// order). Empty map → empty vector.
+    HashMapKeys,
+    /// `hashmap_contains(m, k) -> Trilean` — strict 2-state per
+    /// Q3-A: `True` if present, `False` if not. Never `Unknown` —
+    /// invalid key type → panic E2201 (`TypeMismatch`) instead of
+    /// conflating Ł3 uncertainty with type errors.
+    HashMapContains,
 }
