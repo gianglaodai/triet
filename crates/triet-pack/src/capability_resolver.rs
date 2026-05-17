@@ -628,6 +628,40 @@ mod tests {
     }
 
     #[test]
+    fn monotonicity_holds_under_policy_mutation() {
+        // ADR-0017 §5 invariant: once a decision is cached, mutating
+        // the policy rules in-place must NOT change replays. The
+        // session sees a stable view — "knowledge growth doesn't
+        // flip". v0.6.x.review.1 covers the mutation step that the
+        // existing `second_resolve_same_key_replays_from_cache`
+        // leaves untested.
+        use crate::policy::PolicyRule;
+
+        let initial = rules(
+            "format_version 1\n\
+             rule sys.io fresh +1\n",
+        );
+        let mut r = CapabilityResolver::new(initial);
+        let request = req("sys.io", "myapp", ResolutionOrigin::Fresh);
+
+        let first = r.resolve(&request);
+        assert_eq!(first.outcome, Trit::Positive);
+        assert!(matches!(first.source, DecisionSource::ConfigRule));
+
+        // Flip the rule from +1 to -1 mid-session.
+        r.rules.upsert_rule(PolicyRule {
+            cap_path: "sys.io".into(),
+            origin: OriginMatcher::Fresh,
+            decision: Decision::Minus1,
+        });
+
+        // Replay returns cached Positive, NOT the recomputed Minus1.
+        let second = r.resolve(&request);
+        assert_eq!(second.outcome, Trit::Positive, "monotonicity violated");
+        assert!(matches!(second.source, DecisionSource::Cache));
+    }
+
+    #[test]
     fn distinct_requester_pkgs_get_separate_entries() {
         let rules = rules(
             "format_version 1\n\

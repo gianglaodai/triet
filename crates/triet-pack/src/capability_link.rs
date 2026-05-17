@@ -428,6 +428,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn requesters_sorted_when_inserted_out_of_order() {
+        // v0.6.x.review.1: `multiple_dep_requesters_aggregated`
+        // inserts alpha+beta — already alphabetical, so the
+        // BTreeSet sort is invisible. This test inserts in
+        // zeta/alpha/beta order so the sort is forced to actually
+        // reorder, proving deterministic E2200 requester output
+        // independent of dep iteration order.
+        let root = pkg("root", vec![], vec![]);
+        let dep_z = pkg(
+            "zeta",
+            vec![module("sys.io")], // one pack must publish the module
+            vec![cap("sys.io", CapabilityLevel::Grant)],
+        );
+        let dep_a = pkg("alpha", vec![], vec![cap("sys.io", CapabilityLevel::Grant)]);
+        let dep_b = pkg("beta", vec![], vec![cap("sys.io", CapabilityLevel::Grant)]);
+
+        let report = check_link_capabilities(&root, &[dep_z, dep_a, dep_b]);
+        assert_eq!(report.errors.len(), 1);
+        if let CapabilityLinkError::MissingCapabilityClaim {
+            requester_pkgs, ..
+        } = &report.errors[0]
+        {
+            assert_eq!(
+                requester_pkgs,
+                &vec!["alpha".to_owned(), "beta".to_owned(), "zeta".to_owned()],
+                "requesters must be alphabetical despite zeta/alpha/beta insertion order",
+            );
+        } else {
+            panic!("expected E2200 MissingCapabilityClaim");
+        }
+    }
+
     // ── E2202 — Unresolved path ───────────────────────────────────
 
     #[test]

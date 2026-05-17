@@ -1041,6 +1041,50 @@ mod tests {
     }
 
     #[test]
+    fn upsert_then_save_round_trip() {
+        // v0.6.x.review.1: pins the exact mutation→persist path used
+        // by [`crate::DevTtyPrompt`]'s `G`/`D` permanent-write branch
+        // (upsert_rule → save). Existing `save_load_roundtrip`
+        // proves save+load equality on a freshly-parsed instance,
+        // but never exercises a programmatic mutation in between.
+        //
+        // Insight surfaced by writing this test: `upsert_rule` appends
+        // to the `Vec` (insertion order); `save` canonicalises via
+        // sort-by-cap-path. So in-memory upserted state is NOT byte-
+        // equal to the loaded state — but the rule survives, which is
+        // the user-facing guarantee callers depend on.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("triet.policy");
+
+        let mut p = PolicyRules::parse(happy_path()).expect("parse ok");
+        let inserted = p.upsert_rule(PolicyRule {
+            cap_path: "dev.gpu".into(),
+            origin: OriginMatcher::Lockfile,
+            decision: Decision::Plus1,
+        });
+        assert!(inserted, "fresh slot expected — dev.gpu absent from happy_path");
+
+        p.save(&path).expect("save ok");
+        let p2 = PolicyRules::load(&path).expect("load ok");
+
+        // Survives the round-trip (regardless of in-mem vs canonical
+        // disk ordering).
+        assert!(
+            p2.rules().iter().any(|r| r.cap_path == "dev.gpu"
+                && r.origin == OriginMatcher::Lockfile
+                && matches!(r.decision, Decision::Plus1)),
+            "upserted (dev.gpu, lockfile, +1) missing after reload",
+        );
+
+        // Canonical form is a fixed point — save→load→save→load is
+        // identity once we're past the first save. Proves the
+        // permanent-write path is deterministic across sessions.
+        p2.save(&path).expect("re-save ok");
+        let p3 = PolicyRules::load(&path).expect("re-load ok");
+        assert_eq!(p2, p3, "canonical form is not a fixed point");
+    }
+
+    #[test]
     fn load_missing_file_returns_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("missing.policy");
