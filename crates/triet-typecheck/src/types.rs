@@ -18,8 +18,20 @@ pub enum Type {
     Integer,
     /// `Long` — 81-trit integer (deferred, accepted in annotations).
     Long,
-    /// `Trilean` — three-valued truth.
-    Trilean,
+    /// `Trilean` — three-valued truth. Per [ADR-0021], the `refined`
+    /// flag distinguishes generic `Trilean` (might be Unknown) from
+    /// `Trilean!` (statically proven non-Unknown). Plain `if cond`
+    /// accepts only `refined: true`; generic Trilean raises E1033.
+    /// Widening `Trilean! → Trilean` is implicit via [`Self::matches`].
+    ///
+    /// Use [`Self::TRILEAN`] / [`Self::TRILEAN_KNOWN`] consts at call
+    /// sites instead of constructing the struct literal directly.
+    ///
+    /// [ADR-0021]: ../../../docs/decisions/0021-trilean-refinement.md
+    Trilean {
+        /// True ⇔ this is `Trilean!` — refinement subtype, never Unknown.
+        refined: bool,
+    },
     /// UTF-8 owned text.
     String,
     /// `()` zero-sized value.
@@ -92,11 +104,39 @@ pub enum Type {
 }
 
 impl Type {
+    /// Generic `Trilean` — might be Unknown. The default when a Trilean
+    /// originates from a Trilean-typed variable, `unknown` literal,
+    /// nullable comparison, or any operator that can propagate
+    /// `Trilean::Unknown` per ADR-0010 §4.
+    pub const TRILEAN: Self = Self::Trilean { refined: false };
+
+    /// Refined `Trilean!` — statically proven non-Unknown per ADR-0021.
+    /// Produced by `true` / `false` literals, non-nullable primitive
+    /// comparisons (`Integer == Integer`, etc.), Łukasiewicz/Kleene
+    /// operators where both operands are refined, and explicit
+    /// narrowing methods (`.assume_known(msg)` etc.). Widens implicitly
+    /// to [`Self::TRILEAN`] via [`Self::matches`].
+    pub const TRILEAN_KNOWN: Self = Self::Trilean { refined: true };
+
     /// Returns true if this type is a numeric ternary integer (Trit,
     /// Tryte, Integer, Long).
     #[must_use]
     pub const fn is_numeric(&self) -> bool {
         matches!(self, Self::Trit | Self::Tryte | Self::Integer | Self::Long)
+    }
+
+    /// Returns true if this is any Trilean (refined or not). Replaces
+    /// the old unit-variant `matches!(t, Type::Trilean)` pattern.
+    #[must_use]
+    pub const fn is_trilean(&self) -> bool {
+        matches!(self, Self::Trilean { .. })
+    }
+
+    /// Returns true if this is a refined `Trilean!`. Returns false for
+    /// generic `Trilean` and every non-Trilean type.
+    #[must_use]
+    pub const fn is_refined_trilean(&self) -> bool {
+        matches!(self, Self::Trilean { refined: true })
     }
 
     /// Returns true if `self` and `other` are the same type, treating
@@ -112,6 +152,24 @@ impl Type {
     pub fn matches(&self, other: &Self) -> bool {
         if matches!(self, Self::Unknown) || matches!(other, Self::Unknown) {
             return true;
+        }
+        // Trilean refinement (ADR-0021 §1): Trilean! widens to Trilean
+        // implicitly. Generic Trilean does NOT satisfy Trilean! — that
+        // narrowing requires explicit .assume_known() etc.
+        //
+        // Convention: `self.matches(other)` is read as "self (expected
+        // type) accepts other (supplied value type)" — mirrors the
+        // Nullable widening case below where `Nullable(T).matches(T)`
+        // is true. So:
+        //   self=Trilean!  other=Trilean!  → OK
+        //   self=Trilean!  other=Trilean   → REFUSE (narrowing)
+        //   self=Trilean   other=Trilean!  → OK     (widening)
+        //   self=Trilean   other=Trilean   → OK
+        if let (Self::Trilean { refined: self_r }, Self::Trilean { refined: other_r }) =
+            (self, other)
+        {
+            // Refuse only when self is refined but other is not.
+            return !*self_r || *other_r;
         }
         // Recurse through Nullable so Nullable(Unknown) matches any
         // Nullable(T) — needed for `if { x } else { null }` branch
@@ -269,7 +327,8 @@ impl fmt::Display for Type {
             Self::Tryte => formatter.write_str("Tryte"),
             Self::Integer => formatter.write_str("Integer"),
             Self::Long => formatter.write_str("Long"),
-            Self::Trilean => formatter.write_str("Trilean"),
+            Self::Trilean { refined: true } => formatter.write_str("Trilean!"),
+            Self::Trilean { refined: false } => formatter.write_str("Trilean"),
             Self::String => formatter.write_str("String"),
             Self::Unit => formatter.write_str("Unit"),
             Self::Nullable(inner) => {
@@ -343,7 +402,8 @@ mod tests {
         assert!(Type::Tryte.is_numeric());
         assert!(Type::Integer.is_numeric());
         assert!(Type::Long.is_numeric());
-        assert!(!Type::Trilean.is_numeric());
+        assert!(!Type::TRILEAN.is_numeric());
+        assert!(!Type::TRILEAN_KNOWN.is_numeric());
         assert!(!Type::String.is_numeric());
     }
 
@@ -376,7 +436,7 @@ mod tests {
             "String?",
         );
         assert_eq!(
-            Type::Tuple(vec![Type::Integer, Type::Trilean]).to_string(),
+            Type::Tuple(vec![Type::Integer, Type::TRILEAN]).to_string(),
             "(Integer, Trilean)",
         );
         assert_eq!(

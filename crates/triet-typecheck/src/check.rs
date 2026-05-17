@@ -227,21 +227,15 @@ impl<'p> Checker<'p> {
             FunctionBody::Block(block) => {
                 let body_ty = self.check_block(block);
                 if !return_type.matches(&body_ty) {
-                    self.errors.push(TypeError::Mismatch {
-                        expected: return_type,
-                        found: body_ty,
-                        span: block_span(self.arena, block),
-                    });
+                    let span = block_span(self.arena, block);
+                    self.push_return_mismatch(&return_type, &body_ty, span);
                 }
             }
             FunctionBody::Expression(expr) => {
                 let body_ty = self.infer_expression(*expr);
                 if !return_type.matches(&body_ty) {
-                    self.errors.push(TypeError::Mismatch {
-                        expected: return_type,
-                        found: body_ty,
-                        span: self.arena.expression(*expr).span.clone(),
-                    });
+                    let span = self.arena.expression(*expr).span.clone();
+                    self.push_return_mismatch(&return_type, &body_ty, span);
                 }
             }
         }
@@ -394,15 +388,40 @@ impl<'p> Checker<'p> {
         }
     }
 
+    /// Specialized return-type mismatch: when the declared type is
+    /// `Trilean!` and the body produces generic `Trilean`, raise
+    /// E1034 `TrileanReturnNotRefined` per [ADR-0021] §2.7 — the
+    /// narrowing-direction error has its own diagnostic with help
+    /// text about `.assume_known()` and refactoring. Other mismatches
+    /// fall through to the generic E1003 Mismatch.
+    fn push_return_mismatch(&mut self, expected: &Type, found: &Type, span: Span) {
+        if matches!(expected, Type::Trilean { refined: true })
+            && matches!(found, Type::Trilean { refined: false })
+        {
+            self.errors
+                .push(TypeError::TrileanReturnNotRefined { span });
+        } else {
+            self.errors.push(TypeError::Mismatch {
+                expected: expected.clone(),
+                found: found.clone(),
+                span,
+            });
+        }
+    }
+
     fn check_condition_type(&mut self, cond_ty: Type, treat_unknown_as_false: bool, span: Span) {
         match cond_ty {
-            Type::Trilean | Type::Unknown => {
-                // Plain `if` requires a definite Trilean. The checker
-                // can't tell statically whether a Trilean is "always
-                // known", so we accept any Trilean here and rely on
-                // `if?` for explicit unknown handling. A future pass
-                // could refine this.
-                let _ = treat_unknown_as_false;
+            Type::Unknown => { /* recovery path — earlier error suppresses */ }
+            Type::Trilean { refined: true } => { /* OK — Trilean! is plain-`if` safe */ }
+            Type::Trilean { refined: false } => {
+                // ADR-0021 §3: plain `if cond` rejects generic Trilean
+                // at compile time. `if?` form sets treat_unknown_as_false
+                // so this raise is suppressed for the relaxed `if?` /
+                // `while?` / match-guard contexts.
+                if !treat_unknown_as_false {
+                    self.errors
+                        .push(TypeError::PossiblyUnknownCondition { span });
+                }
             }
             other => {
                 self.errors
@@ -468,14 +487,8 @@ impl<'p> Checker<'p> {
                 use triet_syntax::OutcomeArm as Arm;
                 if let Some(sub) = payload {
                     let inner_ty = match (&arm, scrutinee) {
-                        (
-                            Arm::Positive,
-                            Type::Outcome { value_type, .. },
-                        ) => (**value_type).clone(),
-                        (
-                            Arm::Negative,
-                            Type::Outcome { error_type, .. },
-                        ) => (**error_type).clone(),
+                        (Arm::Positive, Type::Outcome { value_type, .. }) => (**value_type).clone(),
+                        (Arm::Negative, Type::Outcome { error_type, .. }) => (**error_type).clone(),
                         // For nullable scrutinee with ~+ pattern, bind
                         // to the wrapped type (ADR-0020 §10.4 unified
                         // pattern semantics across T? and T?~E).
@@ -502,7 +515,7 @@ impl<'p> Checker<'p> {
                 "Tryte" => Type::Tryte,
                 "Integer" => Type::Integer,
                 "Long" => Type::Long,
-                "Trilean" => Type::Trilean,
+                "Trilean" => Type::TRILEAN,
                 "String" => Type::String,
                 "Unit" => Type::Unit,
                 _ => {
@@ -622,7 +635,8 @@ impl<'p> Checker<'p> {
                 let e_ty = self.resolve_type(error_type);
                 // E1024: error type cannot itself be nullable.
                 if matches!(e_ty, Type::Nullable(_)) {
-                    self.errors.push(TypeError::NullableErrorInOutcomeType { span });
+                    self.errors
+                        .push(TypeError::NullableErrorInOutcomeType { span });
                     return Type::Unknown;
                 }
                 Type::Outcome {

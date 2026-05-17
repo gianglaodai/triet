@@ -10,7 +10,13 @@ use crate::types::Type;
 /// matches a known built-in; otherwise `None` (which the caller turns
 /// into an `UnknownMember` error).
 pub(super) fn builtin_method_type(receiver: &Type, method: &str, arity: usize) -> Option<Type> {
-    use Type::{Integer, Long, String, Trilean, Tryte};
+    use Type::{Integer, Long, String, Tryte};
+    // ADR-0021: Trilean is now a struct variant — handle separately
+    // since we want both `Trilean` and `Trilean!` receivers to dispatch
+    // to the same methods.
+    if let Type::Trilean { .. } = receiver {
+        return trilean_method_type(method, arity);
+    }
     match (receiver, method, arity) {
         (Tryte, "to_integer", 0) => Some(Integer),
         (Tryte, "to_long", 0) => Some(Long),
@@ -52,9 +58,8 @@ pub(super) fn builtin_method_type(receiver: &Type, method: &str, arity: usize) -
             Some(Type::Nullable(Box::new(Integer)))
         }
 
-        // Trilean
-        (Trilean, "to_trit", 0) => Some(Type::Trit),
-        (Trilean, "assume_known", 0) => Some(Trilean),
+        // (Trilean methods handled by `trilean_method_type` above — both
+        // refined and generic Trilean dispatch through that branch.)
 
         // String
         (String, "length", 0) => Some(Integer),
@@ -70,6 +75,21 @@ pub(super) fn builtin_method_type(receiver: &Type, method: &str, arity: usize) -
         // Range — only `.enumerate()` for now; other adapters arrive
         // with v0.2 generics + Iterator trait.
         _ => check_outcome_unwrap_method(receiver, method, arity),
+    }
+}
+
+/// Resolve methods on a `Trilean` / `Trilean!` receiver per ADR-0021.
+/// Both refinement states dispatch identically — widening / narrowing
+/// happens via the result type, not the receiver match.
+fn trilean_method_type(method: &str, arity: usize) -> Option<Type> {
+    match (method, arity) {
+        ("to_trit", 0) => Some(Type::Trit),
+        // ADR-0021 §2.4 + §8: `.assume_known(message)` requires a
+        // message argument (matches `feedback_explicit_strictness` —
+        // panic-possible ops MUST be verbose methods with msg). Returns
+        // `Trilean!` so callers can chain into plain `if`.
+        ("assume_known", 1) => Some(Type::TRILEAN_KNOWN),
+        _ => None,
     }
 }
 

@@ -99,7 +99,9 @@ impl TypeEnvironment {
 /// is intentionally minimal — extending it lives alongside library
 /// growth, not the type-checker core.
 fn bind_prelude(env: &mut TypeEnvironment) {
-    use Type::{Integer, Long, String, Trilean, Tryte, Unit};
+    use Type::{Integer, Long, String, Tryte, Unit};
+    // Trilean is now a struct variant — use the const helpers (ADR-0021).
+    let trilean = Type::TRILEAN;
 
     env.declare(
         "print",
@@ -158,7 +160,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "trilean_to_string",
         Type::Function {
             type_params: Vec::new(),
-            parameters: vec![Trilean.clone()],
+            parameters: vec![trilean],
             return_type: Box::new(String.clone()),
         },
     );

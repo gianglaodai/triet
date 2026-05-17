@@ -141,11 +141,13 @@ mod tests {
     }
 
     #[test]
-    fn checks_if_with_trilean_condition() {
+    fn checks_if_question_with_trilean_condition() {
+        // Updated v0.7.4.3-error.3d per ADR-0021: plain `if b` on a
+        // bare Trilean parameter raises E1033; relaxed `if? b` accepts.
         assert_ok(
             r"
             function check(b: Trilean) -> Integer {
-                if b { 1 } else { 0 }
+                if? b { 1 } else { 0 }
             }
         ",
         );
@@ -543,15 +545,15 @@ mod tests {
     #[test]
     fn null_keyword_emits_deprecation_warning() {
         use miette::Diagnostic;
-        let errors = check_source(
-            r"function main() -> Integer? = null",
-        );
+        let errors = check_source(r"function main() -> Integer? = null");
         let warnings: Vec<_> = errors
             .iter()
             .filter(|e| e.severity() == Some(miette::Severity::Warning))
             .collect();
         assert!(
-            warnings.iter().any(|e| matches!(e, TypeError::NullDeprecated { .. })),
+            warnings
+                .iter()
+                .any(|e| matches!(e, TypeError::NullDeprecated { .. })),
             "expected W2001 NullDeprecated warning, got: {errors:#?}"
         );
     }

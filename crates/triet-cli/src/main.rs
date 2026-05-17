@@ -360,6 +360,8 @@ fn type_error_code(error: &TypeError) -> String {
         TypeError::OutcomePropagateMissingCapture { .. } => "triet::typecheck::E1030",
         TypeError::OutcomePropagateMalformedReturn { .. } => "triet::typecheck::E1031",
         TypeError::PatternMissingExplicitConstructor { .. } => "triet::typecheck::E1032",
+        TypeError::PossiblyUnknownCondition { .. } => "triet::typecheck::E1033",
+        TypeError::TrileanReturnNotRefined { .. } => "triet::typecheck::E1034",
         // Warning code (ADR-0020 §10.3 — promotes to E2002 at v1.0):
         TypeError::NullDeprecated { .. } => "triet::typecheck::W2001",
     }

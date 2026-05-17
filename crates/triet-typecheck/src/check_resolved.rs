@@ -102,7 +102,9 @@ fn collect_declared_types(
                 let parameters: Vec<Type> = def
                     .parameters
                     .iter()
-                    .map(|p| resolve_type_expr_with_params(arena, p.type_annotation, &def.type_params))
+                    .map(|p| {
+                        resolve_type_expr_with_params(arena, p.type_annotation, &def.type_params)
+                    })
                     .collect();
                 let return_type = def.return_type.map_or(Type::Unit, |id| {
                     resolve_type_expr_with_params(arena, id, &def.type_params)
@@ -188,12 +190,15 @@ fn resolve_type_expr_with_params(
             "Tryte" => Type::Tryte,
             "Integer" => Type::Integer,
             "Long" => Type::Long,
-            "Trilean" => Type::Trilean,
+            // ADR-0021: bare `Trilean` annotation in a type expression
+            // is generic Trilean (might be Unknown). Authors who want
+            // `Trilean!` annotation will need to write it explicitly —
+            // syntax for that is deferred (see ADR-0021 §2.7 — function
+            // return type narrowing is the main use case today).
+            "Trilean" => Type::TRILEAN,
             "String" => Type::String,
             "Unit" => Type::Unit,
-            other if type_params.iter().any(|p| p == other) => {
-                Type::TypeParam(other.to_owned())
-            }
+            other if type_params.iter().any(|p| p == other) => Type::TypeParam(other.to_owned()),
             _ => Type::Unknown,
         },
         TypeExpr::Tuple(elements) => Type::Tuple(
@@ -394,5 +399,172 @@ function main() = println("hello")"#,
         let errors =
             check_in_memory("module helper {\n    public function aid() -> Integer = 42\n}");
         assert!(errors.is_empty(), "no errors expected: {errors:?}");
+    }
+
+    // ── Trilean! refinement (ADR-0021, v0.7.4.3-error.3d) ───────────
+
+    /// Helper — count diagnostics matching a predicate.
+    fn count_errors<F: Fn(&TypeError) -> bool>(errors: &[TypeError], pred: F) -> usize {
+        errors.iter().filter(|e| pred(e)).count()
+    }
+
+    /// Helper — assert that errors contains exactly `expected` count of
+    /// `PossiblyUnknownCondition`. Other diagnostics are ignored so
+    /// the test doesn't break when parser shape changes around the
+    /// snippet.
+    fn assert_e1033_count(source: &str, expected: usize) {
+        let errors = check_in_memory(source);
+        let count = count_errors(&errors, |e| {
+            matches!(e, TypeError::PossiblyUnknownCondition { .. })
+        });
+        assert_eq!(
+            count, expected,
+            "expected {expected} E1033, got {count}. errors={errors:#?}",
+        );
+    }
+
+    #[test]
+    fn integer_comparison_yields_trilean_known_safe_for_strict_if() {
+        // `n > 0` is Trilean! because Integer ordering is total — no
+        // Unknown propagation. Plain `if` accepts it.
+        assert_e1033_count(
+            "function f(n: Integer) -> String = if n > 0 { \"pos\" } else { \"non-pos\" }",
+            0,
+        );
+    }
+
+    #[test]
+    fn plain_if_on_trilean_variable_emits_e1033() {
+        // Bare Trilean parameter feeds plain `if` → E1033.
+        assert_e1033_count(
+            "function f(t: Trilean) -> String = if t { \"yes\" } else { \"no\" }",
+            1,
+        );
+    }
+
+    #[test]
+    fn if_question_on_trilean_variable_typechecks_no_e1033() {
+        // Relaxed `if?` accepts generic Trilean.
+        assert_e1033_count(
+            "function f(t: Trilean) -> String = if? t { \"yes\" } else { \"no\" }",
+            0,
+        );
+    }
+
+    #[test]
+    fn trilean_eq_trilean_returns_generic_trilean_strict_if_rejects() {
+        // `t == true`: Trilean × Trilean! → Trilean (per ADR-0021 §2.2
+        // because Trilean side might be Unknown, Unknown == true is
+        // Unknown per ADR-0010 §4). Plain `if` rejects.
+        assert_e1033_count(
+            "function f(t: Trilean) -> String = if t == true { \"y\" } else { \"n\" }",
+            1,
+        );
+    }
+
+    #[test]
+    fn refined_and_refined_logic_op_preserves_refinement() {
+        // Both `true` and `false` are Trilean!, so `true && false` is
+        // Trilean! and plain `if` accepts. Literal-only expressions
+        // also typecheck as Trilean! per §2.1.
+        assert_e1033_count(
+            "function f() -> String = if true && false { \"a\" } else { \"b\" }",
+            0,
+        );
+    }
+
+    #[test]
+    fn refined_and_generic_logic_op_poisons_refinement() {
+        // Trilean! && Trilean → Trilean (one side might be Unknown).
+        assert_e1033_count(
+            "function f(t: Trilean) -> String = if true && t { \"a\" } else { \"b\" }",
+            1,
+        );
+    }
+
+    #[test]
+    fn nullable_comparison_yields_generic_trilean_rejected() {
+        // T? == T? propagates null → Unknown per ADR-0010 §3.
+        assert_e1033_count(
+            "function f(a: Integer?, b: Integer?) -> String = if a == b { \"eq\" } else { \"ne\" }",
+            1,
+        );
+    }
+
+    #[test]
+    fn assume_known_requires_message_argument_and_returns_refined() {
+        // .assume_known("msg") returns Trilean! — usable in plain `if`.
+        assert_e1033_count(
+            "function f(t: Trilean) -> String = \
+             if t.assume_known(\"validated upstream\") { \"y\" } else { \"n\" }",
+            0,
+        );
+    }
+
+    #[test]
+    fn match_on_trilean_three_arm_typechecks() {
+        // Exhaustive 3-arm match dispatches all states explicitly.
+        assert_e1033_count(
+            "function f(t: Trilean) -> String = match t { \
+                true => \"y\", false => \"n\", unknown => \"?\" }",
+            0,
+        );
+    }
+
+    #[test]
+    fn function_return_trilean_known_with_refined_body_typechecks() {
+        // -> Trilean! body is `n > 0` (Trilean!) — OK.
+        let errors = check_in_memory("function pos(n: Integer) -> Trilean = n > 0");
+        // Returning Trilean! into Trilean slot is widening — no error.
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn function_returns_generic_trilean_in_refined_slot_does_not_widen() {
+        // The function's declared return type itself is `Trilean` (not
+        // refined), so this case doesn't trigger E1034 — that fires
+        // only when the return annotation is `Trilean!`. Today the
+        // parser doesn't expose Trilean! syntax in annotation
+        // position; E1034 is reserved for when it does (the parser
+        // extension is part of ADR-0021 §2.7 future work). For now
+        // the test pins the placeholder: bare Trilean accepts both.
+        let errors = check_in_memory("function f(t: Trilean) -> Trilean = t");
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn while_on_trilean_emits_e1033() {
+        // `while` follows same rule as `if`. Statement form requires a
+        // block body wrapping the loop.
+        assert_e1033_count("function f(t: Trilean) -> Unit { while t { } }", 1);
+    }
+
+    #[test]
+    fn match_guard_on_trilean_emits_e1033() {
+        // Match guard expression must be `Trilean!`.
+        assert_e1033_count(
+            "function f(n: Integer, t: Trilean) -> String = \
+             match n { _ if t => \"a\", _ => \"b\" }",
+            1,
+        );
+    }
+
+    #[test]
+    fn negation_of_refined_stays_refined() {
+        // !true is Trilean!, plain `if` accepts.
+        assert_e1033_count(
+            "function f() -> String = if !true { \"a\" } else { \"b\" }",
+            0,
+        );
+    }
+
+    #[test]
+    fn equal_on_strings_yields_refined() {
+        // Strings have total equality — `s1 == s2` is Trilean!.
+        assert_e1033_count(
+            "function f(a: String, b: String) -> String = \
+             if a == b { \"eq\" } else { \"ne\" }",
+            0,
+        );
     }
 }

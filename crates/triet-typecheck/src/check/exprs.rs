@@ -33,7 +33,14 @@ impl Checker<'_> {
                 Some(NumericSuffix::Integer) | None => Type::Integer,
             },
             Expr::TernaryLiteral { .. } => Type::Integer,
-            Expr::TrileanLiteral(_) => Type::Trilean,
+            // ADR-0021 §2.1: `true` / `false` literals are Trilean!
+            // (statically proven non-Unknown). Only `unknown` literal
+            // produces generic Trilean.
+            Expr::TrileanLiteral(value) => match value {
+                triet_syntax::numeric::TrileanValue::Unknown => Type::TRILEAN,
+                triet_syntax::numeric::TrileanValue::True
+                | triet_syntax::numeric::TrileanValue::False => Type::TRILEAN_KNOWN,
+            },
             Expr::StringLiteral(_) => Type::String,
             Expr::FStringLiteral(segments) => {
                 for part in &segments.parts {
@@ -208,7 +215,8 @@ impl Checker<'_> {
                 ..
             }) = &self.current_return_type
         {
-            self.errors.push(TypeError::NullStateInBinaryOutcome { span });
+            self.errors
+                .push(TypeError::NullStateInBinaryOutcome { span });
             return Type::Unknown;
         }
         // The constructor's shape is fully resolvable only against a
@@ -241,7 +249,8 @@ impl Checker<'_> {
         let caller_outcome = if matches!(&self.current_return_type, Some(Type::Outcome { .. })) {
             self.current_return_type.clone()
         } else {
-            self.errors.push(TypeError::PropagateInNonFallibleContext { span: span.clone() });
+            self.errors
+                .push(TypeError::PropagateInNonFallibleContext { span: span.clone() });
             None
         };
         // E1029: error-type compatibility check.
@@ -360,7 +369,8 @@ impl Checker<'_> {
                     });
                     return Type::Unknown;
                 }
-                Type::Trilean
+                // ADR-0021 §2.2: comparison refinement propagation.
+                eq_result_type(&left_ty, &right_ty)
             }
             BinaryOperator::LessThan
             | BinaryOperator::LessEqual
@@ -379,7 +389,10 @@ impl Checker<'_> {
                     });
                     return Type::Unknown;
                 }
-                Type::Trilean
+                // ADR-0021 §2.2: numeric ordering is total — result is
+                // Trilean! (no Unknown propagation from Integer/Tryte/
+                // Long; Trit has total ordering too).
+                Type::TRILEAN_KNOWN
             }
             BinaryOperator::And
             | BinaryOperator::Or
@@ -389,8 +402,10 @@ impl Checker<'_> {
             | BinaryOperator::KleeneXor
             | BinaryOperator::KleeneIff
             | BinaryOperator::KleeneImplies => {
-                let left_ok = left_ty.matches(&Type::Trilean);
-                let right_ok = right_ty.matches(&Type::Trilean);
+                // Accept either refined or generic Trilean on each
+                // side; refinement of the result is computed below.
+                let left_ok = left_ty.is_trilean() || matches!(left_ty, Type::Unknown);
+                let right_ok = right_ty.is_trilean() || matches!(right_ty, Type::Unknown);
                 if !left_ok || !right_ok {
                     self.errors.push(TypeError::InvalidOperands {
                         operator: operator_symbol(operator).to_owned(),
@@ -401,14 +416,23 @@ impl Checker<'_> {
                     });
                     return Type::Unknown;
                 }
-                Type::Trilean
+                // ADR-0021 §2.3: Łukasiewicz / Kleene preserve refinement
+                // when both operands are Trilean! — Ł3 truth tables for
+                // {True, False} inputs never produce Unknown.
+                if left_ty.is_refined_trilean() && right_ty.is_refined_trilean() {
+                    Type::TRILEAN_KNOWN
+                } else {
+                    Type::TRILEAN
+                }
             }
         }
     }
 
     fn check_unary_negate(&mut self, operand: ExprId, span: Span) -> Type {
         let ty = self.infer_expression(operand);
-        if ty.is_numeric() || ty.matches(&Type::Trilean) || matches!(ty, Type::Unknown) {
+        if ty.is_numeric() || ty.is_trilean() || matches!(ty, Type::Unknown) {
+            // ADR-0021 §2.3: negation preserves refinement (cannot
+            // introduce Unknown from non-Unknown input).
             ty
         } else {
             self.errors.push(TypeError::InvalidUnary {
@@ -938,8 +962,9 @@ impl Checker<'_> {
         let mut has_neg = false;
         let mut has_zero = false;
         for arm in arms {
-            if let triet_syntax::Pattern::OutcomeArm { arm: outcome_arm, .. } =
-                &self.arena.pattern(arm.pattern).node
+            if let triet_syntax::Pattern::OutcomeArm {
+                arm: outcome_arm, ..
+            } = &self.arena.pattern(arm.pattern).node
             {
                 match outcome_arm {
                     Arm::Positive => has_pos = true,
@@ -964,6 +989,43 @@ impl Checker<'_> {
                 span,
             });
         }
+    }
+}
+
+/// Compute the result type of `==` / `!=` between two operands per
+/// ADR-0021 §2.2. Returns `Trilean!` when neither operand can introduce
+/// Unknown (Integer/Tryte/Long/String/Unit/Trit comparisons + refined
+/// Trilean-Trilean), otherwise generic `Trilean`. Mismatched operand
+/// types fall through to generic `Trilean` (callers handle the
+/// mismatch error separately).
+///
+/// `Trit == Trit` returns generic `Trilean` — `Trit::Zero` acts as
+/// Unknown discriminator per ADR-0010 §3, so the equality propagates.
+const fn eq_result_type(left: &Type, right: &Type) -> Type {
+    match (left, right) {
+        // Nullable / outcome / Trit on either side: Unknown propagates.
+        (Type::Nullable(_) | Type::Outcome { .. } | Type::Trit, _)
+        | (_, Type::Nullable(_) | Type::Outcome { .. } | Type::Trit) => Type::TRILEAN,
+        // Trilean × Trilean: refined only when both sides refined.
+        (Type::Trilean { refined: l }, Type::Trilean { refined: r }) => {
+            if *l && *r {
+                Type::TRILEAN_KNOWN
+            } else {
+                Type::TRILEAN
+            }
+        }
+        // Trilean × non-Trilean (or vice versa) shouldn't typecheck —
+        // matches() guard upstream rejects. Defensive: Trilean side
+        // pollutes refinement.
+        (Type::Trilean { refined: false }, _) | (_, Type::Trilean { refined: false }) => {
+            Type::TRILEAN
+        }
+        (Type::Trilean { refined: true }, _) | (_, Type::Trilean { refined: true }) => {
+            Type::TRILEAN_KNOWN
+        }
+        // Two non-nullable, non-Trilean, non-Trit primitives: total
+        // equality, never Unknown.
+        _ => Type::TRILEAN_KNOWN,
     }
 }
 
@@ -1013,7 +1075,9 @@ fn extract_type_params(
 ) {
     match (param, arg) {
         (Type::TypeParam(name), concrete) => {
-            sub_map.entry(name.clone()).or_insert_with(|| concrete.clone());
+            sub_map
+                .entry(name.clone())
+                .or_insert_with(|| concrete.clone());
         }
         (Type::Nullable(p_inner), Type::Nullable(a_inner)) => {
             extract_type_params(p_inner, a_inner, sub_map);

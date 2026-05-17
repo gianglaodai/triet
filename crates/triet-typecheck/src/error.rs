@@ -243,12 +243,13 @@ pub enum TypeError {
     },
 
     // === Outcome / `T~E` errors (v0.7.4.3-error.2, ADR-0020 §9) ===
-
     /// E1024: `T~E?` is not a valid type — nullable error not allowed.
     #[error("outcome error type cannot itself be nullable")]
     #[diagnostic(
         code(triet::typecheck::E1024),
-        help("if the operation may fail, the error must be present — use `T?~E` for null-able success path")
+        help(
+            "if the operation may fail, the error must be present — use `T?~E` for null-able success path"
+        )
     )]
     NullableErrorInOutcomeType {
         /// Source location of the outer outcome type expression.
@@ -260,7 +261,9 @@ pub enum TypeError {
     #[error("`~0` constructor requires outcome type with null state (`T?~E`)")]
     #[diagnostic(
         code(triet::typecheck::E1025),
-        help("declared return type is binary outcome `T~E`. Change to `T?~E` to allow null state, or replace with `~- DefaultError`.")
+        help(
+            "declared return type is binary outcome `T~E`. Change to `T?~E` to allow null state, or replace with `~- DefaultError`."
+        )
     )]
     NullStateInBinaryOutcome {
         /// Source location of the offending `~0` constructor.
@@ -286,7 +289,9 @@ pub enum TypeError {
     #[error("cannot mix `Result<T, E>` and `T~E` without explicit conversion")]
     #[diagnostic(
         code(triet::typecheck::E1027),
-        help("Result and outcome are distinct types; use pattern match on one and reconstruct the other")
+        help(
+            "Result and outcome are distinct types; use pattern match on one and reconstruct the other"
+        )
     )]
     OutcomeTypeMismatch {
         /// Source location of the conversion site.
@@ -298,7 +303,9 @@ pub enum TypeError {
     #[error("`~?` propagate operator requires the enclosing function to return `T~E` or `T?~E`")]
     #[diagnostic(
         code(triet::typecheck::E1028),
-        help("change the function's return type to outcome, or handle the error explicitly with `match`")
+        help(
+            "change the function's return type to outcome, or handle the error explicitly with `match`"
+        )
     )]
     PropagateInNonFallibleContext {
         /// Source location of the propagate operator.
@@ -307,10 +314,14 @@ pub enum TypeError {
     },
 
     /// E1029: outcome error type mismatch in propagate path.
-    #[error("outcome error type mismatch in `~?`: inner has {inner_error}, caller expects {outer_error}")]
+    #[error(
+        "outcome error type mismatch in `~?`: inner has {inner_error}, caller expects {outer_error}"
+    )]
     #[diagnostic(
         code(triet::typecheck::E1029),
-        help("explicitly convert the error inside the `|capture|` body: `|err| ~- OuterError::Wrap(err)`")
+        help(
+            "explicitly convert the error inside the `|capture|` body: `|err| ~- OuterError::Wrap(err)`"
+        )
     )]
     ErrorTypeMismatch {
         /// Inner outcome's error type.
@@ -326,7 +337,9 @@ pub enum TypeError {
     #[error("`~?` operator requires explicit closure capture form")]
     #[diagnostic(
         code(triet::typecheck::E1030),
-        help("write `~? |binding_name| early_return_form` or `~? |_| early_return_form` to discard the error")
+        help(
+            "write `~? |binding_name| early_return_form` or `~? |_| early_return_form` to discard the error"
+        )
     )]
     OutcomePropagateMissingCapture {
         /// Source location of the propagate operator.
@@ -338,7 +351,9 @@ pub enum TypeError {
     #[error("`~?` early-return form must be a `return` statement, panic, or another `~?`")]
     #[diagnostic(
         code(triet::typecheck::E1031),
-        help("falling through after `~?` would leave the binding unbound; emit a `return` or panic")
+        help(
+            "falling through after `~?` would leave the binding unbound; emit a `return` or panic"
+        )
     )]
     OutcomePropagateMalformedReturn {
         /// Source location of the malformed body.
@@ -350,7 +365,9 @@ pub enum TypeError {
     #[error("pattern arm for nullable / outcome type must use explicit `~+ binding` constructor")]
     #[diagnostic(
         code(triet::typecheck::E1032),
-        help("replace bare `binding` with `~+ binding` — patterns do not perform implicit T ⊂ T? widening")
+        help(
+            "replace bare `binding` with `~+ binding` — patterns do not perform implicit T ⊂ T? widening"
+        )
     )]
     PatternMissingExplicitConstructor {
         /// Source location of the pattern arm.
@@ -358,8 +375,53 @@ pub enum TypeError {
         span: Span,
     },
 
-    // === Warning-severity diagnostics (Q2-C: miette severity field) ===
+    /// E1033: condition might be `Trilean::Unknown` — plain `if`
+    /// requires `Trilean!` per [ADR-0021] §3. Suggest the four
+    /// canonical remediations (`if?`, `match`, `.assume_known`, comparison
+    /// narrowing). Closes the runtime-panic-as-primary-safety gap
+    /// originally left by ADR-0010 §1.
+    ///
+    /// [ADR-0021]: ../../../docs/decisions/0021-trilean-refinement.md
+    #[error("condition might be Trilean::Unknown — plain `if` requires `Trilean!`")]
+    #[diagnostic(
+        code(triet::typecheck::E1033),
+        help(
+            "choose one:\n\
+             1) Use `if?` to treat Unknown as false: `if? cond {{ ... }} else {{ ... }}`\n\
+             2) Use `match cond {{ true => ..., false => ..., unknown => ... }}`\n\
+             3) Narrow with `.assume_known(\"reason\")` (panics at runtime if Unknown)\n\
+             4) Compare against `true` — works only if both sides already `Trilean!`\n\
+             See SPEC §7.1.1 and ADR-0021 for the full design."
+        )
+    )]
+    PossiblyUnknownCondition {
+        /// Source location of the condition expression.
+        #[label("this is `Trilean` (might be Unknown) — need `Trilean!`")]
+        span: Span,
+    },
 
+    /// E1034: function declared `-> Trilean!` returns a value of type
+    /// `Trilean` (un-refined) — implicit narrowing is rejected per
+    /// [ADR-0021] §2.7. Author must either widen the return annotation
+    /// to `Trilean`, or narrow the body via `.assume_known(msg)`,
+    /// `match`, or refactor to produce a refined Trilean.
+    ///
+    /// [ADR-0021]: ../../../docs/decisions/0021-trilean-refinement.md
+    #[error("function declared `-> Trilean!` but body returns `Trilean` (might be Unknown)")]
+    #[diagnostic(
+        code(triet::typecheck::E1034),
+        help(
+            "either change return type annotation to `Trilean`, or narrow the body \
+             with `.assume_known(\"reason\")` / `match` to produce a refined Trilean!"
+        )
+    )]
+    TrileanReturnNotRefined {
+        /// Source location of the function return expression / body.
+        #[label("body produces `Trilean`, declared returns `Trilean!`")]
+        span: Span,
+    },
+
+    // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
     /// ADR-0020 §10.3). At v1.0, W2001 promotes to E2002 (`NullRemoved`).
@@ -367,7 +429,9 @@ pub enum TypeError {
     #[diagnostic(
         severity(Warning),
         code(triet::typecheck::W2001),
-        help("replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10). Auto-fix: `triet fmt --fix --migrate-null`")
+        help(
+            "replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10). Auto-fix: `triet fmt --fix --migrate-null`"
+        )
     )]
     NullDeprecated {
         /// Source location of the `null` token.
@@ -406,6 +470,8 @@ impl TypeError {
             | Self::OutcomePropagateMissingCapture { span }
             | Self::OutcomePropagateMalformedReturn { span }
             | Self::PatternMissingExplicitConstructor { span }
+            | Self::PossiblyUnknownCondition { span }
+            | Self::TrileanReturnNotRefined { span }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }
