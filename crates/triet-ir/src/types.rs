@@ -84,6 +84,25 @@ pub enum TypeTag {
     ///
     /// [ADR-0019 §5]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
     HashMap(Box<Self>, Box<Self>),
+    /// Outcome type per [ADR-0020]:
+    ///
+    /// - `T~E` binary outcome (`allow_null_state = false`): success T
+    ///   or failure E. `Trit::Zero` arm is invalid (panic E2210).
+    /// - `T?~E` ternary outcome (`allow_null_state = true`): success T,
+    ///   null (`Trit::Zero`), or failure E.
+    ///
+    /// Introduced at v0.7.4.3-error.3a. Wire format `.triv` v5
+    /// patch bump (type discriminant 10, ADR-0008 §"Version history").
+    ///
+    /// [ADR-0020]: ../../../../docs/decisions/0020-outcome-error-handling.md
+    Outcome {
+        /// Success-arm payload type.
+        value_type: Box<Self>,
+        /// Failure-arm payload type.
+        error_type: Box<Self>,
+        /// True for `T?~E` (3-state with null); false for `T~E` (2-state).
+        allow_null_state: bool,
+    },
 }
 
 impl fmt::Display for TypeTag {
@@ -99,6 +118,17 @@ impl fmt::Display for TypeTag {
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Vector(inner) => write!(f, "Vector<{inner}>"),
             Self::HashMap(key, value) => write!(f, "HashMap<{key}, {value}>"),
+            Self::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } => {
+                if *allow_null_state {
+                    write!(f, "{value_type}?~{error_type}")
+                } else {
+                    write!(f, "{value_type}~{error_type}")
+                }
+            }
         }
     }
 }
@@ -191,6 +221,54 @@ mod tests {
             TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Integer)).to_string(),
             "HashMap<String, Integer>"
         );
+    }
+
+    // v0.7.4.3-error.3a: Outcome TypeTag (ADR-0020)
+    #[test]
+    fn outcome_binary_type_display() {
+        assert_eq!(
+            TypeTag::Outcome {
+                value_type: Box::new(TypeTag::Integer),
+                error_type: Box::new(TypeTag::String),
+                allow_null_state: false,
+            }
+            .to_string(),
+            "Integer~String"
+        );
+    }
+
+    #[test]
+    fn outcome_ternary_type_display() {
+        assert_eq!(
+            TypeTag::Outcome {
+                value_type: Box::new(TypeTag::String),
+                error_type: Box::new(TypeTag::Integer),
+                allow_null_state: true,
+            }
+            .to_string(),
+            "String?~Integer"
+        );
+    }
+
+    #[test]
+    fn outcome_equality() {
+        let binary_a = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::Integer),
+            error_type: Box::new(TypeTag::String),
+            allow_null_state: false,
+        };
+        let binary_b = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::Integer),
+            error_type: Box::new(TypeTag::String),
+            allow_null_state: false,
+        };
+        let ternary = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::Integer),
+            error_type: Box::new(TypeTag::String),
+            allow_null_state: true,
+        };
+        assert_eq!(binary_a, binary_b);
+        assert_ne!(binary_a, ternary, "T~E vs T?~E are distinct types");
     }
 
     #[test]

@@ -282,7 +282,13 @@ impl Instruction {
             | Self::NullUnwrap { dest, .. }
             | Self::NullCheck { dest, .. }
             | Self::ClosureNew { dest, .. }
-            | Self::Phi { dest, .. } => Some(*dest),
+            | Self::Phi { dest, .. }
+            | Self::OutcomeNewPositive { dest, .. }
+            | Self::OutcomeNewNegative { dest, .. }
+            | Self::OutcomeNewNull { dest }
+            | Self::OutcomeDiscriminant { dest, .. }
+            | Self::OutcomeUnwrapValue { dest, .. }
+            | Self::OutcomeUnwrapError { dest, .. } => Some(*dest),
             Self::CallLocal { dest, .. }
             | Self::CallCrossModule { dest, .. }
             | Self::WitnessCall { dest, .. }
@@ -494,6 +500,16 @@ impl Instruction {
                     out.push(p.value);
                 }
             }
+            // Outcome ops — payload/source operands surface as uses.
+            Self::OutcomeNewPositive { payload, .. } | Self::OutcomeNewNegative { payload, .. } => {
+                payload.collect_value(out);
+            }
+            Self::OutcomeDiscriminant { source, .. }
+            | Self::OutcomeUnwrapValue { source, .. }
+            | Self::OutcomeUnwrapError { source, .. } => {
+                source.collect_value(out);
+            }
+            Self::OutcomeNewNull { .. } => {}
             Self::Br { .. } | Self::Unreachable => {}
         }
     }

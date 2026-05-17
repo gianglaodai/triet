@@ -20,18 +20,20 @@ use crate::types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
 /// `.triv` format version.
 ///
-/// History:
+/// History (canonical — single source at [ADR-0008 §"Version history"]):
 /// - v1: initial release (ADR-0008).
 /// - v2: ADR-0010 added `BR_TRILEAN` (0xB4) ternary-native branch.
-/// - v3: ADR-0012 added `WITNESS_CALL` (0x93) and a `witness_tables`
-///   section (5). Older readers will hit `TrivError::UnknownOpcode`
-///   on either, so the version bump surfaces a precise error.
+/// - v3: ADR-0012 added `WITNESS_CALL` (0x93) + `witness_tables`
+///   section (5). Older readers hit `TrivError::UnknownOpcode`.
 /// - v4: ADR-0019 Addendum (v0.7.3) added `TypeTag::Vector(T)` (disc 8)
-///   and `TypeTag::HashMap(K, V)` (disc 9) to the type table encoding
-///   for self-host compiler builtin opcodes. Patch bump per ADR-0008
-///   §"Version compatibility": additive type discriminants; older
-///   readers refuse with `UnknownTypeDiscriminant` (E2104).
-const VERSION: u32 = 4;
+///   and `TypeTag::HashMap(K, V)` (disc 9).
+/// - v5: ADR-0020 (v0.7.4.3-error.3a) added `TypeTag::Outcome` (disc 10
+///   with `allow_null_state` boolean payload) + 6 opcodes 0xC1-0xC6
+///   for outcome construction / unwrap / discriminant extraction.
+///   Patch bump per ADR-0008 §"Version compatibility".
+///
+/// [ADR-0008 §"Version history"]: ../../../../docs/decisions/0008-triv-binary-format.md
+const VERSION: u32 = 5;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
@@ -96,6 +98,13 @@ mod opcode {
     /// ADR-0010 — three-way branch on Trilean condition. Added in .triv v2.
     pub(super) const BR_TRILEAN: u8 = 0xB4;
     pub(super) const PHI: u8 = 0xC0;
+    // v0.7.4.3-error.3a (ADR-0020 §7.3) — outcome ops, .triv v5.
+    pub(super) const OUTCOME_NEW_POSITIVE: u8 = 0xC1;
+    pub(super) const OUTCOME_NEW_NEGATIVE: u8 = 0xC2;
+    pub(super) const OUTCOME_NEW_NULL: u8 = 0xC3;
+    pub(super) const OUTCOME_DISCRIMINANT: u8 = 0xC4;
+    pub(super) const OUTCOME_UNWRAP_VALUE: u8 = 0xC5;
+    pub(super) const OUTCOME_UNWRAP_ERROR: u8 = 0xC6;
 }
 
 const OPERAND_CONST: u8 = 0x00;
@@ -289,6 +298,14 @@ fn add_type(types: &mut Vec<TypeTag>, ty: TypeTag) {
             add_type(types, (**key).clone());
             add_type(types, (**value).clone());
         }
+        TypeTag::Outcome {
+            value_type,
+            error_type,
+            ..
+        } => {
+            add_type(types, (**value_type).clone());
+            add_type(types, (**error_type).clone());
+        }
         _ => {}
     }
     if !types.contains(&ty) {
@@ -332,6 +349,21 @@ fn write_type_tag(buf: &mut Vec<u8>, types: &[TypeTag], ty: &TypeTag) {
             let value_idx = type_index(types, value);
             write_varint(buf, key_idx);
             write_varint(buf, value_idx);
+        }
+        // v0.7.4.3-error.3a (ADR-0020 §7.1): outcome type encoding.
+        // Discriminant 10 + 1-byte `allow_null_state` boolean + 2
+        // varint inner-type indices (value first, error second).
+        TypeTag::Outcome {
+            value_type,
+            error_type,
+            allow_null_state,
+        } => {
+            write_u8(buf, 10);
+            write_u8(buf, u8::from(*allow_null_state));
+            let value_idx = type_index(types, value_type);
+            let error_idx = type_index(types, error_type);
+            write_varint(buf, value_idx);
+            write_varint(buf, error_idx);
         }
     }
 }
@@ -384,6 +416,26 @@ fn read_type_tag(data: &[u8], pos: &mut usize, table: &[TypeTag]) -> Result<Type
                 .ok_or_else(|| TrivError::Corrupted("invalid value type index in HashMap".into()))?
                 .clone();
             Ok(TypeTag::HashMap(Box::new(key), Box::new(value)))
+        }
+        // v0.7.4.3-error.3a (ADR-0020 §7.1): outcome type encoding.
+        10 => {
+            let allow_null_state_byte = read_u8(data, pos)?;
+            let allow_null_state = allow_null_state_byte != 0;
+            let value_idx = read_varint(data, pos)? as usize;
+            let error_idx = read_varint(data, pos)? as usize;
+            let value_type = table
+                .get(value_idx)
+                .ok_or_else(|| TrivError::Corrupted("invalid value type index in Outcome".into()))?
+                .clone();
+            let error_type = table
+                .get(error_idx)
+                .ok_or_else(|| TrivError::Corrupted("invalid error type index in Outcome".into()))?
+                .clone();
+            Ok(TypeTag::Outcome {
+                value_type: Box::new(value_type),
+                error_type: Box::new(error_type),
+                allow_null_state,
+            })
         }
         d => Err(TrivError::UnknownTypeDiscriminant(d)),
     }
@@ -885,6 +937,36 @@ fn write_instruction(buf: &mut Vec<u8>, instr: &Instruction) {
                 write_varint(buf, phi.block.0);
             }
         }
+        // v0.7.4.3-error.3a (ADR-0020 §7.3) — outcome opcodes:
+        Instruction::OutcomeNewPositive { dest, payload } => {
+            write_u8(buf, opcode::OUTCOME_NEW_POSITIVE);
+            write_varint(buf, dest.0);
+            write_operand(buf, *payload);
+        }
+        Instruction::OutcomeNewNegative { dest, payload } => {
+            write_u8(buf, opcode::OUTCOME_NEW_NEGATIVE);
+            write_varint(buf, dest.0);
+            write_operand(buf, *payload);
+        }
+        Instruction::OutcomeNewNull { dest } => {
+            write_u8(buf, opcode::OUTCOME_NEW_NULL);
+            write_varint(buf, dest.0);
+        }
+        Instruction::OutcomeDiscriminant { dest, source } => {
+            write_u8(buf, opcode::OUTCOME_DISCRIMINANT);
+            write_varint(buf, dest.0);
+            write_operand(buf, *source);
+        }
+        Instruction::OutcomeUnwrapValue { dest, source } => {
+            write_u8(buf, opcode::OUTCOME_UNWRAP_VALUE);
+            write_varint(buf, dest.0);
+            write_operand(buf, *source);
+        }
+        Instruction::OutcomeUnwrapError { dest, source } => {
+            write_u8(buf, opcode::OUTCOME_UNWRAP_ERROR);
+            write_varint(buf, dest.0);
+            write_operand(buf, *source);
+        }
     }
 }
 
@@ -1203,6 +1285,36 @@ fn read_instruction(data: &[u8], pos: &mut usize) -> Result<Instruction, TrivErr
             }
             Ok(Instruction::Phi { dest, incoming })
         }
+        // v0.7.4.3-error.3a (ADR-0020 §7.3) — outcome opcodes:
+        opcode::OUTCOME_NEW_POSITIVE => {
+            let dest = ValueId(read_varint(data, pos)?);
+            let payload = read_operand(data, pos)?;
+            Ok(Instruction::OutcomeNewPositive { dest, payload })
+        }
+        opcode::OUTCOME_NEW_NEGATIVE => {
+            let dest = ValueId(read_varint(data, pos)?);
+            let payload = read_operand(data, pos)?;
+            Ok(Instruction::OutcomeNewNegative { dest, payload })
+        }
+        opcode::OUTCOME_NEW_NULL => {
+            let dest = ValueId(read_varint(data, pos)?);
+            Ok(Instruction::OutcomeNewNull { dest })
+        }
+        opcode::OUTCOME_DISCRIMINANT => {
+            let dest = ValueId(read_varint(data, pos)?);
+            let source = read_operand(data, pos)?;
+            Ok(Instruction::OutcomeDiscriminant { dest, source })
+        }
+        opcode::OUTCOME_UNWRAP_VALUE => {
+            let dest = ValueId(read_varint(data, pos)?);
+            let source = read_operand(data, pos)?;
+            Ok(Instruction::OutcomeUnwrapValue { dest, source })
+        }
+        opcode::OUTCOME_UNWRAP_ERROR => {
+            let dest = ValueId(read_varint(data, pos)?);
+            let source = read_operand(data, pos)?;
+            Ok(Instruction::OutcomeUnwrapError { dest, source })
+        }
         op => Err(TrivError::UnknownOpcode(op)),
     }
 }
@@ -1322,6 +1434,11 @@ fn read_constant(data: &[u8], pos: &mut usize, types: &[TypeTag]) -> Result<Cons
             "Vector / HashMap have no constant-pool encoding — \
              collection values are built at runtime via builtin opcodes \
              (ADR-0019 §5)"
+                .into(),
+        )),
+        TypeTag::Outcome { .. } => Err(TrivError::Corrupted(
+            "Outcome has no constant-pool encoding — outcome values are \
+             built at runtime via opcodes 0xC1-0xC3 per ADR-0020 §7.2"
                 .into(),
         )),
     }
@@ -1635,7 +1752,10 @@ fn write_inline_primitive_tag(buf: &mut Vec<u8>, ty: &TypeTag) {
         // (ADR-0012 §6 "Generic constraint support at v0.4" defers
         // complex generic arguments). Emit a sentinel that the reader
         // will refuse — catches the case loudly during round-trip tests.
-        TypeTag::Nullable(_) | TypeTag::Vector(_) | TypeTag::HashMap(_, _) => 0xFF,
+        TypeTag::Nullable(_)
+        | TypeTag::Vector(_)
+        | TypeTag::HashMap(_, _)
+        | TypeTag::Outcome { .. } => 0xFF,
     };
     write_u8(buf, disc);
 }
@@ -2018,7 +2138,8 @@ mod tests {
     #[test]
     fn vector_and_hashmap_type_tags_round_trip() {
         let vector_int = TypeTag::Vector(Box::new(TypeTag::Integer));
-        let map_string_int = TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Integer));
+        let map_string_int =
+            TypeTag::HashMap(Box::new(TypeTag::String), Box::new(TypeTag::Integer));
         let nested = TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::Trit))));
 
         let program = IrProgram {
@@ -2077,19 +2198,173 @@ mod tests {
         assert_eq!(decoded, program);
     }
 
-    /// Verify that the wire-format version was bumped from v3 to v4
-    /// alongside the Vector/HashMap type-tag additions. The version
-    /// field is the 4 bytes at offset 4 (after the 4-byte magic).
+    /// `TypeTag::Outcome` survives a `.triv` round-trip — covers both
+    /// the binary (`T~E`, `allow_null_state` = false) and ternary
+    /// (`T?~E`, `allow_null_state` = true) shapes plus a nested
+    /// `Outcome<Outcome<...>, _>` to prove the post-order type
+    /// table encodes inner outcomes before the outer.
     #[test]
-    fn wire_format_version_bumped_to_v4() {
+    fn outcome_type_tag_round_trip() {
+        let binary = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::Integer),
+            error_type: Box::new(TypeTag::String),
+            allow_null_state: false,
+        };
+        let ternary = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::String),
+            error_type: Box::new(TypeTag::Integer),
+            allow_null_state: true,
+        };
+        // Outcome<Outcome<Integer, String>, Long> — exercises post-
+        // order recursion through the type table.
+        let nested = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::Outcome {
+                value_type: Box::new(TypeTag::Integer),
+                error_type: Box::new(TypeTag::String),
+                allow_null_state: false,
+            }),
+            error_type: Box::new(TypeTag::Long),
+            allow_null_state: false,
+        };
+
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::crate_root(),
+                    "test".into(),
+                ),
+                functions: vec![
+                    Function {
+                        id: FuncId(0),
+                        name: Some("binary_outcome".into()),
+                        params: vec![("%o".into(), binary.clone())],
+                        return_type: binary,
+                        blocks: vec![BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Value(ValueId(0))),
+                            }],
+                        }],
+                    },
+                    Function {
+                        id: FuncId(1),
+                        name: Some("ternary_outcome".into()),
+                        params: vec![("%o".into(), ternary.clone())],
+                        return_type: ternary,
+                        blocks: vec![BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Value(ValueId(0))),
+                            }],
+                        }],
+                    },
+                    Function {
+                        id: FuncId(2),
+                        name: Some("nested_outcome".into()),
+                        params: vec![("%o".into(), nested.clone())],
+                        return_type: nested,
+                        blocks: vec![BasicBlock {
+                            id: BlockId(0),
+                            name: Some("entry".into()),
+                            instructions: vec![Instruction::Ret {
+                                value: Some(Operand::Value(ValueId(0))),
+                            }],
+                        }],
+                    },
+                ],
+            }],
+            constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
+        };
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).unwrap();
+        assert_eq!(decoded, program);
+    }
+
+    /// All 6 new outcome opcodes (0xC1-0xC6) survive a `.triv`
+    /// round-trip. Builds one function holding all six instructions,
+    /// encodes, decodes, asserts equality.
+    #[test]
+    fn outcome_opcodes_round_trip() {
+        let mut pool = ConstantPool::new();
+        let payload = pool.intern(Constant::Integer(Integer::new(7).unwrap()));
+        let outcome_type = TypeTag::Outcome {
+            value_type: Box::new(TypeTag::Integer),
+            error_type: Box::new(TypeTag::String),
+            allow_null_state: true,
+        };
+        let function = Function {
+            id: FuncId(0),
+            name: Some("all_outcome_opcodes".into()),
+            params: Vec::new(),
+            return_type: TypeTag::Unit,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![
+                    Instruction::OutcomeNewPositive {
+                        dest: ValueId(0),
+                        payload: Operand::Const(payload),
+                    },
+                    Instruction::OutcomeNewNegative {
+                        dest: ValueId(1),
+                        payload: Operand::Const(payload),
+                    },
+                    Instruction::OutcomeNewNull { dest: ValueId(2) },
+                    Instruction::OutcomeDiscriminant {
+                        dest: ValueId(3),
+                        source: Operand::Value(ValueId(0)),
+                    },
+                    Instruction::OutcomeUnwrapValue {
+                        dest: ValueId(4),
+                        source: Operand::Value(ValueId(0)),
+                    },
+                    Instruction::OutcomeUnwrapError {
+                        dest: ValueId(5),
+                        source: Operand::Value(ValueId(1)),
+                    },
+                    Instruction::Ret { value: None },
+                ],
+            }],
+        };
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::crate_root(),
+                    "test".into(),
+                ),
+                functions: vec![Function {
+                    // Stash the outcome_type into a param so the type
+                    // table sees a real `TypeTag::Outcome` entry.
+                    params: vec![("%seed".into(), outcome_type)],
+                    ..function
+                }],
+            }],
+            constants: pool,
+            witness_tables: Vec::new(),
+        };
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).unwrap();
+        assert_eq!(decoded, program);
+    }
+
+    /// Verify the wire-format version pin. Bumped 3→4 alongside the
+    /// Vector/HashMap type-tag additions (ADR-0019 Addendum); bumped
+    /// 4→5 alongside the Outcome type-tag + opcodes 0xC1-0xC6
+    /// (v0.7.4.3-error.3a, ADR-0020 §7). The version field is the 4
+    /// bytes at offset 4 (after the 4-byte magic).
+    #[test]
+    fn wire_format_version_pinned_to_v5() {
         let program = IrProgram::new();
         let bytes = write_program(&program);
         assert!(bytes.len() >= 8, "header truncated");
         let version_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
         let version = u32::from_le_bytes(version_bytes);
         assert_eq!(
-            version, 4,
-            "ADR-0019 Addendum requires .triv version 4 (was {version})",
+            version, 5,
+            "v0.7.4.3-error.3a requires .triv version 5 (was {version})",
         );
     }
 

@@ -354,6 +354,59 @@ pub enum Instruction {
         dest: ValueId,
         incoming: Vec<PhiIncoming>,
     },
+
+    // ── Outcome ops (v0.7.4.3-error.3a per [ADR-0020] §7.3) ─────
+    // Wire opcodes 0xC1-0xC6. Lower from Expr::OutcomeConstructor
+    // / OutcomePropagate / OutcomeDefault / Pattern::OutcomeArm.
+    //
+    // [ADR-0020]: ../../../../docs/decisions/0020-outcome-error-handling.md
+    /// `%d = OutcomeNewPositive payload` — construct outcome with
+    /// `Trit::Positive` arm carrying `payload`.
+    OutcomeNewPositive {
+        /// Destination register.
+        dest: ValueId,
+        /// Success payload.
+        payload: Operand,
+    },
+    /// `%d = OutcomeNewNegative payload` — construct outcome with
+    /// `Trit::Negative` arm carrying `payload`.
+    OutcomeNewNegative {
+        /// Destination register.
+        dest: ValueId,
+        /// Failure payload.
+        payload: Operand,
+    },
+    /// `%d = OutcomeNewNull` — construct outcome with `Trit::Zero`
+    /// arm (null state). Valid only for `T?~E` types.
+    OutcomeNewNull {
+        /// Destination register.
+        dest: ValueId,
+    },
+    /// `%d = OutcomeDiscriminant source` — extract the trit
+    /// discriminator (-1/0/+1 as `Trit` value).
+    OutcomeDiscriminant {
+        /// Destination register (typed `Trit`).
+        dest: ValueId,
+        /// Outcome value to inspect.
+        source: Operand,
+    },
+    /// `%d = OutcomeUnwrapValue source` — extract success payload.
+    /// Panics with E2210 `InvalidOutcomeState` if discriminator is
+    /// not `Trit::Positive`.
+    OutcomeUnwrapValue {
+        /// Destination register.
+        dest: ValueId,
+        /// Outcome value to unwrap.
+        source: Operand,
+    },
+    /// `%d = OutcomeUnwrapError source` — extract failure payload.
+    /// Panics with E2210 if discriminator is not `Trit::Negative`.
+    OutcomeUnwrapError {
+        /// Destination register.
+        dest: ValueId,
+        /// Outcome value to unwrap.
+        source: Operand,
+    },
 }
 
 /// Builtin function names recognized by the IR.

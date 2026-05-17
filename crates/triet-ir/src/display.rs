@@ -258,6 +258,24 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, "]")
             }
+            Self::OutcomeNewPositive { payload, .. } => {
+                write!(f, "{lhs}outcome_new_positive {payload}")
+            }
+            Self::OutcomeNewNegative { payload, .. } => {
+                write!(f, "{lhs}outcome_new_negative {payload}")
+            }
+            Self::OutcomeNewNull { .. } => {
+                write!(f, "{lhs}outcome_new_null")
+            }
+            Self::OutcomeDiscriminant { source, .. } => {
+                write!(f, "{lhs}outcome_discriminant {source}")
+            }
+            Self::OutcomeUnwrapValue { source, .. } => {
+                write!(f, "{lhs}outcome_unwrap_value {source}")
+            }
+            Self::OutcomeUnwrapError { source, .. } => {
+                write!(f, "{lhs}outcome_unwrap_error {source}")
+            }
         }
     }
 }
