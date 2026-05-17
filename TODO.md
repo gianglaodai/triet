@@ -54,10 +54,11 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.3b | Lowerer — AST Outcome → IR opcodes + pattern matching + 10 e2e VM tests | `d03aa66` |
 | v0.7.4.3-error.3c | ADR-0021 `Trilean!` refinement + SPEC §7.1.1 fix + ADR-0010 Addendum §C | `f4fa78e` |
 | v0.7.4.3-error.3d | `Trilean!` refinement type + E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` + 15 typecheck tests | `c3eb126` |
+| v0.7.4.3-error.3e | Migrate corpus `if (trilean == lit)` → `match` (alu/memory/utils/print) | `6e4db80` |
 
 ### In progress
 
-- [ ] **v0.7.4.3-error.3e** — Migrate corpus from `if (trilean_var == lit)` to `match` per ADR-0021 (`demos/02-module-system/{alu,memory,utils,utils/print}.tri`)
+_None — `.3` umbrella complete. Awaiting `.4` migration tool selection._
 
 ### Next sub-task: v0.7.4.3-error remaining
 
