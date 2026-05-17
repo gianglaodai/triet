@@ -250,6 +250,55 @@ mod tests {
     }
 
     #[test]
+    fn empty_file_succeeds_with_zero_callbacks() {
+        // v0.6.x.review.2: pin the empty-input contract. All existing
+        // tests use non-empty fixtures; this asserts that zero bytes is
+        // a valid (no-op) parse — protecting against a future refactor
+        // that adds a "must have at least one directive" guard.
+        let lines = collect_lines("").expect("empty file must succeed");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn bom_mid_file_classifies_as_non_ascii_not_bom() {
+        // v0.6.x.review.2: pin the positional contract. The BOM check
+        // is `text.starts_with('\u{FEFF}')` — only file-start BOM is a
+        // Bom violation. A `\u{FEFF}` byte appearing later in the file
+        // must be classified as NonAscii (the generic content rule),
+        // not Bom. Prevents future refactor from moving the BOM check
+        // inside the per-line loop.
+        let err = collect_lines("foo\n\u{FEFF}bar\n").expect_err("must reject");
+        match err {
+            TestErr::Structural(LineViolation {
+                line: 2,
+                kind: StrictParseViolation::NonAscii { byte },
+            }) => {
+                // First byte of UTF-8 encoding of U+FEFF is 0xEF.
+                assert_eq!(byte, 0xEF, "expected first UTF-8 byte of U+FEFF");
+            }
+            other => panic!("expected NonAscii on line 2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cr_mid_line_classifies_as_non_ascii_not_crlf() {
+        // v0.6.x.review.2: pin the positional contract. The CRLF check
+        // is `raw.ends_with('\r')` — only trailing CR (i.e. real CRLF)
+        // is a Crlf violation. A bare CR mid-line must fall through to
+        // the NonAscii rule (0x0D is not in 0x20..=0x7E and not `\t`).
+        // Prevents future refactor from using `contains('\r')` which
+        // would conflate two distinct conditions into one error code.
+        let err = collect_lines("foo\rbar\n").expect_err("must reject");
+        match err {
+            TestErr::Structural(LineViolation {
+                line: 1,
+                kind: StrictParseViolation::NonAscii { byte: 0x0D },
+            }) => {}
+            other => panic!("expected NonAscii(0x0D) on line 1, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn rejects_inline_comment() {
         let err = collect_lines("foo bar # nope\n").expect_err("must reject");
         assert!(matches!(
