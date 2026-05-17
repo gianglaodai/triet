@@ -132,6 +132,16 @@ Final v0.6 commit: this commit.
 
 ---
 
+## v0.6.x.review — Pre-v0.7 audit fixes ✅ SHIPPED
+
+Archived to [ROADMAP.md § v0.6.x.review](ROADMAP.md).
+
+3 sub-tasks done. Audit của AI trước v0.7 → 5 audit miss + 1 deferred + 4 real/partial → 6 net-new tests filling distinct invariants. 1079 → 1085 tests, ADR-0018 Addendum landed.
+
+Final v0.6.x.review commit: this commit.
+
+---
+
 ## How to update this file
 
 - Mark a task `[x]` and move it to **Done** when its commit lands on `main`.

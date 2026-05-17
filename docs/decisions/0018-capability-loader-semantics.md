@@ -399,3 +399,38 @@ Cached decision authoritative; JIT lift across cap boundary đọc cache, không
 - [`crates/triet-pack/src/types.rs:272-277`](../../crates/triet-pack/src/types.rs) — placeholder being replaced
 - [`crates/triet-pack/src/lockfile.rs`](../../crates/triet-pack/src/lockfile.rs) — hand-rolled parser precedent to mirror
 - [ROADMAP §v0.6](../../ROADMAP.md)
+
+---
+
+## Addendum — v0.6.x.review (pre-v0.7 audit)
+
+Audit window post-decision, mirror precedent [ADR-0015 Addendum](0015-package-store-layout.md#addendum--v05xreview-pre-v06-audit). Cả 3 ADRs (0016, 0017, 0018) được verify; findings anchor ở đây vì 0018 là capstone integrative của phase v0.6.
+
+### Test coverage scorecard
+
+| Original gap | Layer | Status | Anchor |
+|---|---|---|---|
+| Monotonicity replay assertion | resolver | Partial → strengthened | `second_resolve_same_key_replays_from_cache` (replay only) + new `monotonicity_holds_under_policy_mutation` (mutation invariant) |
+| `upsert_rule` + `save` round-trip | policy | Real gap → filled | new `upsert_then_save_round_trip` |
+| Multi-dep aggregation determinism | linker | Partial → strengthened | `multiple_dep_requesters_aggregated` (alphabetical insertion) + new `requesters_sorted_when_inserted_out_of_order` |
+| E2204 duplicate cap claim | manifest | Already covered | `rejects_duplicate_requires` |
+| Unused `grant` claim semantic | typecheck | Already covered | `orphan_claim_without_import_passes` |
+| `prompt_loop` retry-on-invalid | tty | Already covered | `prompt_loop_reprompts_on_invalid_input` |
+| `?` ShowHashHelp branch | tty | Already covered | `prompt_loop_reprompts_on_hash_help_then_terminal` |
+| `default prompt` rejection message | policy | Already covered | `rejects_default_prompt` (reason contains "static") |
+| Cross-stage propagation | pipeline | Not a v0.6 gap | CLI orchestration deferred to v0.7 per SPEC §0.7 |
+| CRLF/BOM positional contract | strict_parser | Partial → strengthened | basic `rejects_bom`/`rejects_crlf` + new `empty_file_succeeds_with_zero_callbacks` + `bom_mid_file_classifies_as_non_ascii_not_bom` + `cr_mid_line_classifies_as_non_ascii_not_crlf` |
+
+Audit listed 10 gaps; 5 already covered, 1 deferred (CLI wiring → v0.7), 4 partial/real → 6 net-new tests across review.1 (`d56c518`) + review.2 (`b6bde0c`). Workspace: 1079 → 1085 tests, clippy `-D warnings` clean.
+
+### Monotonicity invariant — pinned under PolicyRules mutation
+
+ADR-0017 §5 quy định "knowledge growth doesn't flip". v0.6.9 implementation honors this (cache lookup precedes rule lookup), nhưng existing test chỉ prove replay, không exercise mutation step. v0.6.x.review.1 thêm assertion: flip rule `+1 → -1` mid-session → cached `Positive` survives + source=Cache. Commit `d56c518`.
+
+### `upsert_rule` + `save` insight — in-memory ≠ disk byte-equal
+
+Test surfaced contract subtle: `upsert_rule` appends to `Vec` (insertion order); `save` canonicalize sort-by-cap-path → in-memory state NOT byte-equal disk state. User-facing guarantee: rule survives round-trip. Test cũng assert canonical form is fixed point across re-save. Important context cho DevTtyPrompt G/D path. Commit `d56c518`.
+
+### Strict parser positional contracts
+
+`strict_parser.rs` phân biệt positional violations (Bom = file-start; Crlf = line-trailing) vs generic NonAscii. Existing tests cover positive cases only; v0.6.x.review.2 pin *negative* cases để prevent future refactor conflate distinct violation kinds. Commit `b6bde0c`.

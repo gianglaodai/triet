@@ -363,6 +363,20 @@ TTY prompt.
 
 ---
 
+## v0.6.x.review — Pre-v0.7 audit fixes ✅ SHIPPED
+
+Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, linker, strict_parser). Audit listed 10 gaps; 5 already covered, 1 deferred (CLI wiring → v0.7), 4 partial/real → 6 net-new. Không thay đổi spec; thêm Addendum vào ADR-0018. 1079 → 1085 tests.
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.6.x.review.1 | Layer 1 (code core) — monotonicity-under-mutation, `upsert_then_save_round_trip`, requesters sort with non-alphabetical insertion | `d56c518` |
+| v0.6.x.review.2 | Layer 2 (boundary/UI) — `strict_parser` positional contract pins: empty file, BOM mid-file, CR mid-line | `b6bde0c` |
+| v0.6.x.review.3 | ADR-0018 Addendum + sync docs | this commit |
+
+**Trigger:** Audit của tôi (AI) trước khi mở v0.7. Author chấp nhận transparency về 5 audit miss → ship 6 net-new tests filling distinct invariants. Duy trì cadence *proactive tech-debt audit trước version freeze*.
+
+---
+
 ## v0.7 — Self-hosting Compiler
 
 **Mục tiêu:** Compiler Triết viết bằng Triết. Bootstrap đầy đủ.
