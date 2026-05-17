@@ -8,4 +8,4 @@ public function from_integer(value: Integer) -> String = ""
 // the inverse Integer↔String conversion. Strict decimal parse;
 // returns null on any failure (empty, non-digit, leading whitespace,
 // overflow) per refuse-over-guess.
-public function parse_integer(text: String) -> Integer? = null
+public function parse_integer(text: String) -> Integer? = ~0

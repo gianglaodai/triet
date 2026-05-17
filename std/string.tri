@@ -22,4 +22,4 @@ public function split(s: String, separator: String) -> Vector<String> = split(s,
 /// Char (codepoint) offset of first match, or `null` if not found.
 /// Empty `needle` returns `0` (matches at start). Char-indexed per
 /// Q3-A consistency with `substring`.
-public function index_of(haystack: String, needle: String) -> Integer? = null
+public function index_of(haystack: String, needle: String) -> Integer? = ~0

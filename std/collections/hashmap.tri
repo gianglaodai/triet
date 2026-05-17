@@ -15,7 +15,7 @@ public function insert<K, V>(m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> = m
 
 /// Lookup by key. Returns `V?` — `null` if absent (data event),
 /// panic on invalid key type (programmer bug per error-model §A7 3-tier).
-public function get<K, V>(m: HashMap<K, V>, k: K) -> V? = null
+public function get<K, V>(m: HashMap<K, V>, k: K) -> V? = ~0
 
 /// All keys in sorted order. Body recurses into itself — typecheck
 /// resolves via identity TypeParam substitution; never executes.

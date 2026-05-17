@@ -58,11 +58,14 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### In progress
 
-- [ ] **v0.7.4.3-error.4a** — `triet fmt --migrate-null` tool (lexer-based token rewrite, idempotent, dry-run-by-default + `--write`)
+- [ ] **v0.7.4.3-error.4b** — Apply `--migrate-null` to corpus (6 stdlib stubs migrated; `examples/nullable.tri` deferred — see runtime-unification note below)
+
+### Deferred (post-`.4`)
+
+- [ ] **outcome-null runtime unification** — `~0` source-level literal currently lowers to `OutcomeNewNull` opcode (RuntimeValue::Outcome) but should produce `Constant::Null` (RuntimeValue::Null) per [ADR-0010 Addendum §B](docs/decisions/0010-ternary-native-ir.md). Affects `examples/nullable.tri` (kept on legacy `null` keyword until unification lands). Touches lowerer + likely 2 VM opcodes (NullCheck + OutcomeDiscriminant cross-tolerance).
 
 ### Next sub-task: v0.7.4.3-error remaining
 
-- [ ] **v0.7.4.3-error.4b** — Apply `--migrate-null` to corpus (6 stdlib stubs + `examples/nullable.tri`)
 - [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
 
 ### After v0.7.4.3-error: v0.7.4.3 lexer port + remaining v0.7 sub-tasks

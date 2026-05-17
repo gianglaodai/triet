@@ -18,7 +18,7 @@ public function push<T>(v: Vector<T>, item: T) -> Vector<T> = v
 /// Lookup by index. Returns `T?` — `null` on out-of-bounds (negative
 /// index or `index >= length`) per Q3-A strict bounds. Body returns
 /// `null` (widens to `T?` via Nullable subtyping).
-public function get<T>(v: Vector<T>, index: Integer) -> T? = null
+public function get<T>(v: Vector<T>, index: Integer) -> T? = ~0
 
 /// Element count. Body returns `0` (widens to Integer; never executes).
 public function length<T>(v: Vector<T>) -> Integer = 0

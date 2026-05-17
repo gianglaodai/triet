@@ -9,7 +9,7 @@
 /// Read file contents as UTF-8 String. Returns `null` on any I/O
 /// error (file not found, permission denied, invalid UTF-8, etc).
 /// Data-tier failure — caller handles via `?:` / `!!` / pattern match.
-public function read(path: String) -> String? = null
+public function read(path: String) -> String? = ~0
 
 /// Write `contents` to `path`. Returns strict 2-state Trilean per
 /// Q4-A: True on success, False on any error. Not atomic (deferred

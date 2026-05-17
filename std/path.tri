@@ -11,7 +11,7 @@ public function join(base: String, segment: String) -> String = base
 
 /// Path with the last `/`-segment stripped, or `null` if `path` is
 /// root `/`, empty, or has no separator.
-public function parent(path: String) -> String? = null
+public function parent(path: String) -> String? = ~0
 
 /// Last `/`-segment of `path`. For paths ending in `/`, returns the
 /// segment before the final separator. Empty path returns `""`.
