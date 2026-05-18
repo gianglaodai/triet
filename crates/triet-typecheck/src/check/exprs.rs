@@ -189,43 +189,69 @@ impl Checker<'_> {
     }
 
     /// Check an outcome constructor (`~+ value` / `~0` / `~- error`)
-    /// against the active context (`current_return_type` or — pending
-    /// future context-tracking — return Unknown). For v0.7.4.3-error.2
-    /// the constructor returns:
+    /// against the active context. Context resolution order
+    /// (v0.7.4.3-debt.3 / WA-5):
+    ///
+    /// 1. **`expected_type_stack.last()`** — local site context from a
+    ///    `let x: T = …` annotation, struct field position, or call
+    ///    argument position. Tightest scope, consulted first.
+    /// 2. **`current_return_type`** — surrounding function's return
+    ///    type. Only consulted if the local stack is empty.
+    /// 3. **None** — return `Type::Unknown` (downstream `.matches()`
+    ///    catches the shape mismatch).
+    ///
+    /// For v0.7.4.3-error.2 the constructor returns:
     ///
     /// - `~+ payload`: `Type::Outcome { value=typeof(payload), error=Unknown, allow_null=?}`
     /// - `~- payload`: `Type::Outcome { value=Unknown, error=typeof(payload), allow_null=? }`
-    /// - `~0`: `Type::Outcome { value=Unknown, error=Unknown, allow_null=true }`
-    ///   Note: E1025 fires below if context expects binary `T~E`.
+    /// - `~0`: validated against the local + return context; widens
+    ///   to `Nullable<T>` when the local context expects `T?`.
     ///
-    /// Context-sensitive resolution (`current_return_type` is `T~E` or
-    /// `T?~E`) tightens the shape during the `.matches()` check at
-    /// `return`/let-binding sites. Without context, Unknown propagates.
+    /// E1025 fires only when the most-specific applicable context is
+    /// a binary outcome `T~E` (`allow_null_state = false`). A `let x:
+    /// T? = ~0` inside a function returning `T~E` no longer false-
+    /// positives because the local-site context (T?) supersedes the
+    /// surrounding return-type context.
     fn check_outcome_constructor_context(
         &mut self,
         arm: triet_syntax::OutcomeArm,
         span: Span,
     ) -> Type {
         use triet_syntax::OutcomeArm;
-        // E1025: `~0` outside `T?~E` context. Detect when caller's
-        // return type is `Type::Outcome { allow_null_state: false }`.
+        // Most-specific applicable context. Local site wins.
+        let local_context = self.expected_type_stack.last().cloned();
+        let surrounding_context = self.current_return_type.clone();
+        let resolved_context = local_context.or(surrounding_context);
+
+        // E1025: `~0` against a binary outcome `T~E`. Only fire when
+        // the SELECTED context (most-specific) expects no null state.
         if matches!(arm, OutcomeArm::Zero)
             && let Some(Type::Outcome {
                 allow_null_state: false,
                 ..
-            }) = &self.current_return_type
+            }) = &resolved_context
         {
             self.errors
                 .push(TypeError::NullStateInBinaryOutcome { span });
             return Type::Unknown;
         }
-        // The constructor's shape is fully resolvable only against a
-        // concrete `Type::Outcome` context. Return the active
-        // `current_return_type` if it is an Outcome — Rust-style
-        // back-flow inference (mirrors v0.7.4.1 generic function
-        // inference). Otherwise Unknown.
-        match &self.current_return_type {
-            Some(Type::Outcome { .. }) => self.current_return_type.clone().unwrap_or(Type::Unknown),
+
+        // For `~0` whose local context is a plain `Nullable<T>`,
+        // return that Nullable so the let-binding's `.matches()`
+        // check succeeds. ADR-0010 Addendum §D (v0.7.4.3-error.6a)
+        // already ensured runtime cross-tolerance between `~0` and
+        // `Constant::Null`; the typecheck path here closes the loop
+        // by giving the literal a concrete Nullable shape.
+        if matches!(arm, OutcomeArm::Zero)
+            && let Some(Type::Nullable(_)) = &resolved_context
+        {
+            return resolved_context.clone().unwrap_or(Type::Unknown);
+        }
+
+        // Outcome context (T~E or T?~E) — return it directly so the
+        // surrounding `.matches()` can tighten the constructor's shape.
+        match &resolved_context {
+            Some(Type::Outcome { .. }) => resolved_context.clone().unwrap_or(Type::Unknown),
             _ => Type::Unknown,
         }
     }

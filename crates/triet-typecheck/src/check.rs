@@ -42,6 +42,13 @@ struct Checker<'p> {
     /// The function whose body is currently being checked (for return-
     /// type enforcement). `None` at top level.
     current_return_type: Option<Type>,
+    /// Local-context expected-type stack pushed by let/const annotations,
+    /// struct-literal field positions, and call-argument positions per
+    /// [v0.7.4.3-debt.3] (WA-5). Outcome constructors (`~0` especially)
+    /// consult the TOP of this stack before falling back to
+    /// `current_return_type` so a `let x: T? = ~0` binding inside a
+    /// function returning `T~E` is accepted without firing E1025.
+    expected_type_stack: Vec<Type>,
     errors: Vec<TypeError>,
 }
 
@@ -52,6 +59,7 @@ impl<'p> Checker<'p> {
             items: &program.items,
             env: TypeEnvironment::with_prelude(),
             current_return_type: None,
+            expected_type_stack: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -64,8 +72,18 @@ impl<'p> Checker<'p> {
             items: &program.items,
             env,
             current_return_type: None,
+            expected_type_stack: Vec::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// Run `body` with `expected` pushed onto the expected-type stack;
+    /// pop on the way out. Mirrors RAII-style scope handling.
+    fn with_expected<R>(&mut self, expected: Type, body: impl FnOnce(&mut Self) -> R) -> R {
+        self.expected_type_stack.push(expected);
+        let result = body(self);
+        self.expected_type_stack.pop();
+        result
     }
 
     fn check_program(&mut self) {
@@ -347,7 +365,17 @@ impl<'p> Checker<'p> {
     /// back to the annotated type for downstream checking.
     fn check_initializer(&mut self, type_annotation: Option<TypeId>, value: ExprId) -> Type {
         let declared = type_annotation.map(|tid| self.resolve_type(tid));
-        let inferred = self.infer_expression(value);
+        // v0.7.4.3-debt.3 (WA-5): when the binding has an explicit
+        // type annotation, push it as the local expected type while
+        // checking the initializer. Outcome constructors (`~0` in
+        // particular) consult this stack first — letting `let x: T?
+        // = ~0` succeed inside a function returning `T~E` instead of
+        // false-positive E1025.
+        let inferred = if let Some(expected) = declared.clone() {
+            self.with_expected(expected, |s| s.infer_expression(value))
+        } else {
+            self.infer_expression(value)
+        };
         match declared {
             Some(annotated) => {
                 if !annotated.matches(&inferred) {

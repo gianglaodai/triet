@@ -84,9 +84,8 @@ The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.
   - Auto-fix WA-4 (refinement preservation through `&&` once helpers can declare `-> Trilean!`)
 - [x] **v0.7.4.3-debt.2** — Field access alphabetical bug (WA-2) — (this commit)
   - Lowerer now tracks `value_outcome_value_struct` / `func_return_outcome_value_struct` parallel to the existing struct-typing maps. Propagation lands in `lower_outcome_propagate` (after `OutcomeUnwrapValue` + Phi), `lower_outcome_default` (after success-arm `OutcomeUnwrapValue` + same-struct Phi), and `bind_pattern_vars` for `Pattern::OutcomeArm(Positive)`. 2 integration tests in `triet-bootstrap`.
-- [ ] **v0.7.4.3-debt.3** — E1025 false positive (WA-5)
-  - `~0` in `let x: T? = ~0` raises E1025 if enclosing function returns `T~E`
-  - Expected-type stack in `check_outcome_constructor_context` (let-binding annotation, struct field, function param — not just `current_return_type`)
+- [x] **v0.7.4.3-debt.3** — E1025 false positive (WA-5) — (this commit)
+  - `Checker::expected_type_stack: Vec<Type>` consulted before `current_return_type` in `check_outcome_constructor_context`. `check_initializer` pushes the let-binding annotation while inferring the value; `with_expected` RAII helper handles push/pop. Local site wins over surrounding return type, so `let x: T? = ~0` inside a `T~E` function is accepted while a bare `return ~0` from the same function still raises E1025. 5 integration tests cover positive + negative paths.
 - [ ] **v0.7.4.3-debt.4** — Generic chain inference (WA-7)
   - `push(new(), x)` fails — generic type variable doesn't back-flow through nested generic calls in the same expression
   - Expected-type back-flow for generic arguments
