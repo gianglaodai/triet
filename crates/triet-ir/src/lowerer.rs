@@ -2222,9 +2222,37 @@ impl<'a> LowerCtx<'a> {
             return d;
         }
 
+        // v0.7.4.3-debt.5 (WA-1): collect every variable that any arm
+        // body reassigns so the merge block can phi-merge them. Without
+        // this, all arms write to the same outer-scope binding and the
+        // LAST arm's SSA value wins statically — at runtime any executed
+        // arm overwrites the others' state. Pre-fix, this corrupted a
+        // mutable `Vector<T>` (or anything else) that arms rebound
+        // because the loop header's phi was patched with the
+        // statically-last arm's value, regardless of which arm actually
+        // ran.
+        let mut mutated: Vec<String> = Vec::new();
+        for arm in arms {
+            for n in self.walk_expr_for_assigns_into(arm.body) {
+                if !mutated.iter().any(|x| x == &n) {
+                    mutated.push(n);
+                }
+            }
+        }
+        // Snapshot pre-match bindings so every arm starts from the same
+        // dominator state and arms that DON'T touch a given var still
+        // contribute the pre-match value to the merge phi.
+        let pre_match_vals: Vec<(String, Option<ValueId>)> = mutated
+            .iter()
+            .map(|n| (n.clone(), self.resolve_var(n)))
+            .collect();
+
         let merge_block_id = self.fresh_block();
         let merge_dest = self.fresh_value();
         let mut phi_incoming: Vec<PhiIncoming> = Vec::new();
+        // For each arm: store (end_block, [post-arm value for each mutated var]).
+        let mut arm_mutated_vals: Vec<(BlockId, Vec<Option<ValueId>>)> =
+            Vec::with_capacity(arms.len());
 
         // Each arm becomes: `test_block` → if-match → `arm_block` → merge,
         // else fall through to next `test_block`. The first arm's test
@@ -2285,6 +2313,15 @@ impl<'a> LowerCtx<'a> {
                 }
             }
 
+            // Restore pre-match bindings so this arm sees the same
+            // dominator state as every other arm (mirrors `lower_if_expr`
+            // where the then/else branches both start from pre-if).
+            for (name, pre) in &pre_match_vals {
+                if let Some(v) = *pre {
+                    self.rebind_var(name, v);
+                }
+            }
+
             // Arm body block.
             self.start_block(arm_body_block, Some(format!("match_arm_{i}")));
             self.push_scope();
@@ -2294,12 +2331,21 @@ impl<'a> LowerCtx<'a> {
             self.bind_pattern_vars(pat_node, scrutee_val);
 
             let arm_val = self.lower_expr(arm.body);
+
+            // Snapshot the post-arm SSA value for every mutated var
+            // BEFORE popping the arm scope — pop drops pattern-bound
+            // names but leaves the outer-scope rebindings intact via
+            // `rebind_var`'s walk-to-declaring-scope contract.
+            let post_vals: Vec<Option<ValueId>> =
+                mutated.iter().map(|n| self.resolve_var(n)).collect();
+
             self.pop_scope();
 
             phi_incoming.push(PhiIncoming {
                 value: arm_val,
                 block: self.current_block,
             });
+            arm_mutated_vals.push((self.current_block, post_vals));
 
             if self.blocks[&self.current_block].terminator().is_none() {
                 self.emit(Instruction::Br {
@@ -2316,7 +2362,45 @@ impl<'a> LowerCtx<'a> {
             dest: merge_dest,
             incoming: phi_incoming,
         });
+
+        // v0.7.4.3-debt.5: emit one phi per mutated outer-scope var so
+        // post-match reads see a single merged SSA value. Skip vars that
+        // every arm left untouched (pre-match value identical at every
+        // arm-end).
+        for (i, (name, pre)) in pre_match_vals.iter().enumerate() {
+            let Some(pre_val) = *pre else { continue };
+            // Build per-arm incoming pairs, defaulting arms that didn't
+            // touch the var to the pre-match value.
+            let incoming: Vec<PhiIncoming> = arm_mutated_vals
+                .iter()
+                .map(|(arm_end_block, post)| PhiIncoming {
+                    value: post[i].unwrap_or(pre_val),
+                    block: *arm_end_block,
+                })
+                .collect();
+            // No phi needed if every arm left the value untouched.
+            if incoming.iter().all(|p| p.value == pre_val) {
+                self.rebind_var(name, pre_val);
+                continue;
+            }
+            let phi_dest = self.fresh_value();
+            self.emit(Instruction::Phi {
+                dest: phi_dest,
+                incoming,
+            });
+            self.rebind_var(name, phi_dest);
+        }
         merge_dest
+    }
+
+    /// Helper: collect the names of variables assigned by `Stmt::Assign`
+    /// reachable from a single expression. Used by match-arm body
+    /// scanning so we can phi-merge mutations across arms. Wrapper over
+    /// `walk_expr_for_assigns` for ergonomics.
+    fn walk_expr_for_assigns_into(&self, expr: triet_syntax::arena::ExprId) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        self.walk_expr_for_assigns(expr, &mut out);
+        out
     }
 
     /// Synthesise a Trilean-valued match test for `pattern` against
@@ -2330,8 +2414,49 @@ impl<'a> LowerCtx<'a> {
         scrutinee: ValueId,
     ) -> Option<ValueId> {
         match pattern {
-            triet_syntax::pattern::Pattern::Wildcard
-            | triet_syntax::pattern::Pattern::Variable(_) => None,
+            triet_syntax::pattern::Pattern::Wildcard => None,
+            // v0.7.4.3-debt.5: bare identifier patterns whose name
+            // matches a known enum variant must be tested as
+            // `EnumVariant` (tag check), NOT treated as a catch-all
+            // variable binding. The parser leaves them as
+            // `Pattern::Variable` because it doesn't carry a variant
+            // table — the lowerer disambiguates here. Mirrors the
+            // existing `Expr::Identifier`-as-variant resolution at
+            // line 815-833. Without this, `match e { A => ..., B =>
+            // ... }` always dispatches to arm 0 because Variable
+            // returns None (catch-all). Pre-fix this latent bug was
+            // hidden by `lower_match_expr`'s static-last-write
+            // semantics around mutable rebinds — fixing match-arm
+            // phi-merging in this same sub-task exposed it.
+            triet_syntax::pattern::Pattern::Variable(name)
+                if self.variant_index.contains_key(name) =>
+            {
+                let target_idx = self.variant_index.get(name).map_or(0, |(_, i)| *i);
+                let tag = self.fresh_value();
+                self.emit(Instruction::EnumTag {
+                    dest: tag,
+                    scrutinee: Operand::Value(scrutinee),
+                });
+                let expected_trit = if target_idx == 0 {
+                    Trit::Positive
+                } else {
+                    Trit::Negative
+                };
+                let const_id = self.intern_constant(Constant::Trit(expected_trit));
+                let const_val = self.fresh_value();
+                self.emit(Instruction::Const {
+                    dest: const_val,
+                    constant: const_id,
+                });
+                let cmp = self.fresh_value();
+                self.emit(Instruction::Eq {
+                    dest: cmp,
+                    lhs: Operand::Value(tag),
+                    rhs: Operand::Value(const_val),
+                });
+                Some(cmp)
+            }
+            triet_syntax::pattern::Pattern::Variable(_) => None,
             triet_syntax::pattern::Pattern::Null => {
                 // null pattern: scrutinee is null iff NullCheck returns Zero.
                 let check = self.fresh_value();
@@ -2478,6 +2603,14 @@ impl<'a> LowerCtx<'a> {
     /// bodies so the body can refer to the destructured names.
     fn bind_pattern_vars(&mut self, pattern: &triet_syntax::pattern::Pattern, scrutinee: ValueId) {
         match pattern {
+            // v0.7.4.3-debt.5: a bare-identifier pattern whose name
+            // matches a known enum variant is NOT a variable binding —
+            // it's a tag check. Skip the bind so `match e { A => ...,
+            // B => ... }` doesn't pollute the arm scope with stale
+            // bindings of A/B. Mirrors the `lower_pattern_test`
+            // disambiguation.
+            triet_syntax::pattern::Pattern::Variable(name)
+                if self.variant_index.contains_key(name) => {}
             triet_syntax::pattern::Pattern::Variable(name) => {
                 self.bind_var(name.clone(), scrutinee);
             }

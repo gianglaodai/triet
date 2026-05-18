@@ -88,9 +88,9 @@ The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.
   - `Checker::expected_type_stack: Vec<Type>` consulted before `current_return_type` in `check_outcome_constructor_context`. `check_initializer` pushes the let-binding annotation while inferring the value; `with_expected` RAII helper handles push/pop. Local site wins over surrounding return type, so `let x: T? = ~0` inside a `T~E` function is accepted while a bare `return ~0` from the same function still raises E1025. 5 integration tests cover positive + negative paths.
 - [x] **v0.7.4.3-debt.4** — Generic chain inference (WA-7) — (this commit)
   - `extract_type_params` switched from `or_insert_with` to a prefer-concrete rule: when the existing `sub_map[T]` is itself a `TypeParam` (poisoned by an upstream un-inferrable generic like `new<T>()`), a subsequent concrete arg replaces it. First-concrete-wins still holds for `f<T>(a: T, b: T)` mismatched calls. 5 integration tests cover the lexer-port `push(new(), x)` chain, nested chains, mismatch detection, and the bare `new()` alone case.
-- [ ] **v0.7.4.3-debt.5** — Vector type-tag in match-arm with enum payload (WA-1)
-  - `push(tokens, …)` inside a match arm whose pattern binds an enum-variant payload triggers E2201 at runtime
-  - Lowerer audit: mutable variable type tags must survive across arm boundaries
+- [x] **v0.7.4.3-debt.5** — Match-arm mutation phi + bare-variant pattern dispatch (WA-1) — (this commit)
+  - Two interacting bugs found and fixed together. (a) `lower_match_expr` now collects mutated vars across all arms, pre-snapshots, post-snapshots per arm, and emits one phi per mutable at the merge block — mirroring `lower_if_expr`. (b) `lower_pattern_test` + `bind_pattern_vars` rewrite `Pattern::Variable(name)` to an `EnumVariant` tag check when `name` resolves to a known unit variant. Pre-fix the parser bug was latently masked by the static-last-write semantics of bug (a); fixing (a) exposed it.
+  - 5 integration tests in `match_arm_mutation_phi.rs`: while+match+push, bare-unit-variant dispatch, mutation-observable-after-match, wildcard-with-mutations, and a `lex_decimal_integer` reproducer.
 - [ ] **v0.7.4.3-debt.6** — Final: rewrite `compiler/lexer.tri` without workarounds + commit lexer port + bootstrap test
   - Removes the `mode_is_normal` / `mode_is_fstring` / `interp_brace_depth` helpers + the `OneToken` field-reorder comment
   - Restores `match top { NormalMode => …, FStringMode => …, InterpolationMode(state) => … }` shape
