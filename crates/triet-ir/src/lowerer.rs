@@ -149,11 +149,27 @@ struct LowerCtx<'a> {
     /// as `value_counter` / `blocks`).
     value_struct_types: HashMap<ValueId, String>,
 
+    /// Per-function map for SSA values that hold an Outcome whose
+    /// success-arm payload is a known struct. Distinct from
+    /// `value_struct_types` because the outcome itself is not the
+    /// struct — only the unwrapped payload is. Lets `~?` / `~:` /
+    /// match-arm `OutcomeUnwrapValue` propagate struct tracking onto
+    /// the unwrap result so field access through the post-unwrap
+    /// value resolves the correct field index per
+    /// [v0.7.4.3-debt.2 / WA-2].
+    value_outcome_value_struct: HashMap<ValueId, String>,
+
     /// Function-level return-type registry: `FuncId` → struct name (if
     /// the function returns a `UserStruct`). Populated in pass 1
     /// alongside `func_table`. `CallLocal` / `CallCrossModule` consult
     /// this to propagate struct-typing into the dest `ValueId`.
     func_return_struct: HashMap<FuncId, String>,
+
+    /// Function-level registry for the success-arm struct of functions
+    /// declared `-> T~E` / `-> T?~E` where T is a known struct.
+    /// Populated in pass 1; consulted at call sites to seed
+    /// `value_outcome_value_struct`. Parallel to `func_return_struct`.
+    func_return_outcome_value_struct: HashMap<FuncId, String>,
 
     // Per-function state (reset for each function)
     value_counter: u32,
@@ -183,7 +199,9 @@ impl<'a> LowerCtx<'a> {
             variant_index: HashMap::new(),
             struct_fields: HashMap::new(),
             value_struct_types: HashMap::new(),
+            value_outcome_value_struct: HashMap::new(),
             func_return_struct: HashMap::new(),
+            func_return_outcome_value_struct: HashMap::new(),
             value_counter: 0,
             block_counter: 0,
             blocks: BTreeMap::new(),
@@ -373,11 +391,38 @@ impl<'a> LowerCtx<'a> {
         // Track which functions return a user-defined struct so call
         // sites can propagate struct-typing into the dest `ValueId`
         // (needed for `FieldAccess` resolution per ADR-0007 §field).
-        if let Some(rt) = fd.return_type
-            && let Some(struct_name) = self.type_expr_to_struct_name(rt, module)
-        {
-            self.func_return_struct.insert(id, struct_name);
+        if let Some(rt) = fd.return_type {
+            if let Some(struct_name) = self.type_expr_to_struct_name(rt, module) {
+                self.func_return_struct.insert(id, struct_name);
+            }
+            // v0.7.4.3-debt.2 (WA-2): functions returning `T~E` /
+            // `T?~E` where T is a known struct also need tracking so
+            // the success-arm unwrap (~? / ~: / match-arm) can
+            // propagate the struct identity onto the unwrapped value.
+            if let Some(struct_name) = self.outcome_value_struct_name(rt, module) {
+                self.func_return_outcome_value_struct
+                    .insert(id, struct_name);
+            }
         }
+    }
+
+    /// Peer into a `TypeExpr::Outcome { value_type, .. }` and return
+    /// the success-arm struct name when `value_type` is a known
+    /// user-struct. Returns `None` for any other shape (non-Outcome,
+    /// Outcome wrapping a primitive, etc.). Mirrors
+    /// `type_expr_to_struct_name` but unwraps one Outcome layer
+    /// first. Per [v0.7.4.3-debt.2 / WA-2].
+    fn outcome_value_struct_name(
+        &self,
+        type_id: triet_syntax::arena::TypeId,
+        module: &Module,
+    ) -> Option<String> {
+        let arena = &self.program.arenas[module.arena_id.0];
+        let type_expr = &arena.type_expression(type_id).node;
+        if let triet_syntax::type_ast::TypeExpr::Outcome { value_type, .. } = type_expr {
+            return self.type_expr_to_struct_name(*value_type, module);
+        }
+        None
     }
 
     /// Look up the field index for `field_name` on a `ValueId` known
@@ -499,6 +544,7 @@ impl<'a> LowerCtx<'a> {
         self.loop_stack = Vec::new();
         self.params = HashMap::new();
         self.value_struct_types = HashMap::new();
+        self.value_outcome_value_struct = HashMap::new();
         self.current_func_id = func_id;
         self.current_return_type = fd
             .return_type
@@ -1181,18 +1227,12 @@ impl<'a> LowerCtx<'a> {
             Expr::OutcomeConstructor { arm, payload } => {
                 self.lower_outcome_constructor(*arm, *payload)
             }
-            Expr::OutcomeDefault { inner, default } => {
-                self.lower_outcome_default(*inner, *default)
-            }
+            Expr::OutcomeDefault { inner, default } => self.lower_outcome_default(*inner, *default),
             Expr::OutcomePropagate {
                 inner,
                 capture_name,
                 early_return,
-            } => self.lower_outcome_propagate(
-                *inner,
-                capture_name.as_deref(),
-                *early_return,
-            ),
+            } => self.lower_outcome_propagate(*inner, capture_name.as_deref(), *early_return),
         }
     }
 
@@ -1209,18 +1249,16 @@ impl<'a> LowerCtx<'a> {
         let dest = self.fresh_value();
         match arm {
             OutcomeArm::Positive => {
-                let payload_val = self.lower_expr(
-                    payload.expect("typecheck guarantees ~+ has a payload"),
-                );
+                let payload_val =
+                    self.lower_expr(payload.expect("typecheck guarantees ~+ has a payload"));
                 self.emit(Instruction::OutcomeNewPositive {
                     dest,
                     payload: Operand::Value(payload_val),
                 });
             }
             OutcomeArm::Negative => {
-                let payload_val = self.lower_expr(
-                    payload.expect("typecheck guarantees ~- has a payload"),
-                );
+                let payload_val =
+                    self.lower_expr(payload.expect("typecheck guarantees ~- has a payload"));
                 self.emit(Instruction::OutcomeNewNegative {
                     dest,
                     payload: Operand::Value(payload_val),
@@ -1282,6 +1320,10 @@ impl<'a> LowerCtx<'a> {
             dest: success_val,
             source: Operand::Value(inner_val),
         });
+        // v0.7.4.3-debt.2 (WA-2): propagate success-arm struct identity.
+        if let Some(s) = self.value_outcome_value_struct.get(&inner_val).cloned() {
+            self.value_struct_types.insert(success_val, s);
+        }
         self.emit(Instruction::Br {
             target: merge_block,
         });
@@ -1311,6 +1353,18 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
+        // v0.7.4.3-debt.2 (WA-2): if both branches resolve to the same
+        // struct identity, the merge inherits it. When the fallback
+        // produces an unrelated type (Integer default for a struct
+        // success arm), we leave the merge untracked — caller must
+        // not access struct fields on a value of mixed type.
+        if let (Some(s1), Some(s2)) = (
+            self.value_struct_types.get(&success_val).cloned(),
+            self.value_struct_types.get(&fallback_val).cloned(),
+        ) && s1 == s2
+        {
+            self.value_struct_types.insert(merged, s1);
+        }
         merged
     }
 
@@ -1364,6 +1418,13 @@ impl<'a> LowerCtx<'a> {
             dest: success_val,
             source: Operand::Value(inner_val),
         });
+        // v0.7.4.3-debt.2 (WA-2): if the inner outcome's success arm
+        // was a known struct, propagate that identity onto the
+        // unwrapped value so subsequent field access resolves the
+        // correct index.
+        if let Some(s) = self.value_outcome_value_struct.get(&inner_val).cloned() {
+            self.value_struct_types.insert(success_val, s);
+        }
         self.emit(Instruction::Br {
             target: merge_block,
         });
@@ -1417,6 +1478,13 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
+        // v0.7.4.3-debt.2 (WA-2): merged carries the same struct as
+        // the success arm. The null branch can never reach a field
+        // access without an upstream null-check, so attributing the
+        // struct identity is correct on the success-reachable subset.
+        if let Some(s) = self.value_struct_types.get(&success_val).cloned() {
+            self.value_struct_types.insert(merged, s);
+        }
         merged
     }
 
@@ -2464,6 +2532,14 @@ impl<'a> LowerCtx<'a> {
                     }
                 };
                 self.emit(unwrap);
+                // v0.7.4.3-debt.2 (WA-2): propagate success-arm struct
+                // identity onto the bound payload so the arm body can
+                // resolve `payload.field` correctly.
+                if matches!(arm, OutcomeArm::Positive)
+                    && let Some(s) = self.value_outcome_value_struct.get(&scrutinee).cloned()
+                {
+                    self.value_struct_types.insert(payload_val, s);
+                }
                 self.bind_pattern_vars(&inner_pat, payload_val);
             }
             _ => {}
@@ -2521,10 +2597,20 @@ impl<'a> LowerCtx<'a> {
                     // returns a struct. The callee's `FuncId` is in
                     // `func_table`; check `func_return_struct` for the
                     // associated struct name.
-                    if let Some(callee_id) = self.func_table.get(&abs_path).copied()
-                        && let Some(s) = self.func_return_struct.get(&callee_id).cloned()
-                    {
-                        self.value_struct_types.insert(dest, s);
+                    if let Some(callee_id) = self.func_table.get(&abs_path).copied() {
+                        if let Some(s) = self.func_return_struct.get(&callee_id).cloned() {
+                            self.value_struct_types.insert(dest, s);
+                        }
+                        // v0.7.4.3-debt.2 (WA-2): also seed the
+                        // outcome-payload tracker for callees returning
+                        // `T~E` / `T?~E`.
+                        if let Some(s) = self
+                            .func_return_outcome_value_struct
+                            .get(&callee_id)
+                            .cloned()
+                        {
+                            self.value_outcome_value_struct.insert(dest, s);
+                        }
                     }
                     self.emit(Instruction::CallCrossModule {
                         dest: Some(dest),
@@ -2540,6 +2626,10 @@ impl<'a> LowerCtx<'a> {
                     let dest = self.fresh_value();
                     if let Some(s) = self.func_return_struct.get(&func_id).cloned() {
                         self.value_struct_types.insert(dest, s);
+                    }
+                    // v0.7.4.3-debt.2 (WA-2): outcome-payload tracker.
+                    if let Some(s) = self.func_return_outcome_value_struct.get(&func_id).cloned() {
+                        self.value_outcome_value_struct.insert(dest, s);
                     }
                     self.emit(Instruction::CallLocal {
                         dest: Some(dest),

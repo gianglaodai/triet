@@ -79,12 +79,11 @@ The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.
 
 ### Debt sub-tasks
 
-- [ ] **v0.7.4.3-debt.1** — Trilean! parser support (WA-3 + WA-4)
+- [x] **v0.7.4.3-debt.1** — Trilean! parser support (WA-3 + WA-4) — `123ffa7`
   - Parse `Trilean!` in type-annotation position as `Type::Trilean { refined: true }`
   - Auto-fix WA-4 (refinement preservation through `&&` once helpers can declare `-> Trilean!`)
-- [ ] **v0.7.4.3-debt.2** — Field access alphabetical bug (WA-2)
-  - Field access on a struct value produced by `~?` resolves names alphabetically instead of declared order
-  - Extend `func_return_struct` / value-struct tracking through outcome unwrap path (the `0d4577e` fix only covered StructLiteral construction)
+- [x] **v0.7.4.3-debt.2** — Field access alphabetical bug (WA-2) — (this commit)
+  - Lowerer now tracks `value_outcome_value_struct` / `func_return_outcome_value_struct` parallel to the existing struct-typing maps. Propagation lands in `lower_outcome_propagate` (after `OutcomeUnwrapValue` + Phi), `lower_outcome_default` (after success-arm `OutcomeUnwrapValue` + same-struct Phi), and `bind_pattern_vars` for `Pattern::OutcomeArm(Positive)`. 2 integration tests in `triet-bootstrap`.
 - [ ] **v0.7.4.3-debt.3** — E1025 false positive (WA-5)
   - `~0` in `let x: T? = ~0` raises E1025 if enclosing function returns `T~E`
   - Expected-type stack in `check_outcome_constructor_context` (let-binding annotation, struct field, function param — not just `current_return_type`)
