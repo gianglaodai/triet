@@ -59,14 +59,17 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.4b | Apply migration to 6 stdlib stubs (`examples/nullable.tri` deferred pending outcome-null runtime unification) | `be7532d` |
 | v0.7.4.3-error.6a | Outcome-null runtime unification — ADR-0010 Addendum §D + lowerer + 4 cross-tolerant VM opcodes + 6 tests | `ffcf6de` |
 | v0.7.4.3-error.6b | Interpreter parity for `~0` + migrate `examples/nullable.tri` (closes `.4b` deferred) | `a48c275` |
+| v0.7.4.3-fix (struct-fields) | Wire `StructDef` field order into lowerer — kills `field_name_to_idx` placeholder | `0d4577e` |
+| v0.7.4.3-error.5a | Capstone demo (`demos/05-error-handling/` — 4 `.tri` files + README) | `c139a89` |
+| v0.7.4.3-error.5b | Capstone integration tests (4 tests in `error_handling_demo.rs`) | (this commit) |
 
 ### In progress
 
-_None — `.6` umbrella complete (outcome-null unification closed). Awaiting `.5` capstone selection._
+_None — `v0.7.4.3-error` umbrella **complete**. 11 sub-tasks + 1 fix shipped._
 
-### Next sub-task: v0.7.4.3-error remaining
+### Closing summary
 
-- [ ] **v0.7.4.3-error.5** — End-to-end tests + capstone
+`v0.7.4.3-error` introduced Outcome error handling (ADR-0020), Trilean! refinement (ADR-0021), and the outcome-null runtime unification (ADR-0010 Addendum §D). The `.5` capstone demo proves all locked features end-to-end through the VM tier. 1221 workspace tests pass.
 
 ### After v0.7.4.3-error: v0.7.4.3 lexer port + remaining v0.7 sub-tasks
 
