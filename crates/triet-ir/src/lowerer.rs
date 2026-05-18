@@ -32,12 +32,18 @@ use crate::types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 #[must_use]
 pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
     let mut ctx = LowerCtx::new(program);
-    // Pass 1: assign FuncIds + register enum variants
+    // Pass 1a: register all struct + enum definitions FIRST. Done
+    // before function declaration so `declare_function` can resolve
+    // user-struct return types (per `func_return_struct` doc).
     for (module_idx, module) in program.modules.iter().enumerate() {
         ctx.current_module_idx = module_idx;
         for item in &module.items {
             match &item.node {
-                Item::Function(fd) => ctx.declare_function(module, fd),
+                Item::Struct(sd) => {
+                    let field_names: Vec<String> =
+                        sd.fields.iter().map(|f| f.name.clone()).collect();
+                    ctx.struct_fields.insert(sd.name.clone(), field_names);
+                }
                 Item::Enum(ed) => {
                     let variants: Vec<String> =
                         ed.variants.iter().map(|v| v.name.clone()).collect();
@@ -50,6 +56,17 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
                     ctx.enum_variants.insert(ed.name.clone(), variants);
                 }
                 _ => {}
+            }
+        }
+    }
+    // Pass 1b: assign FuncIds. Struct table is now complete, so
+    // `declare_function` correctly identifies struct-returning
+    // functions for downstream call-site type propagation.
+    for (module_idx, module) in program.modules.iter().enumerate() {
+        ctx.current_module_idx = module_idx;
+        for item in &module.items {
+            if let Item::Function(fd) = &item.node {
+                ctx.declare_function(module, fd);
             }
         }
     }
@@ -116,6 +133,28 @@ struct LowerCtx<'a> {
     /// proper resolution still requires the enum name from the type-checker.
     variant_index: HashMap<String, (String, u32)>,
 
+    /// Struct definitions table: struct name → ordered field names in
+    /// declaration order. Field index for a `name.field` access is the
+    /// position of `field` in this Vec. Populated in pass 1.
+    ///
+    /// Fixes the v0.3.5 placeholder TODO (originally `field_name_to_idx`
+    /// always returned 0 — only single-field structs worked correctly).
+    struct_fields: HashMap<String, Vec<String>>,
+
+    /// Per-function map of which SSA values carry struct payloads,
+    /// indexed by struct name. Populated as struct values flow through
+    /// `StructLiteral`, function params, calls returning structs, and
+    /// pattern destructuring. `FieldAccess` consults this map to find
+    /// the correct field index. Reset for each function (same lifecycle
+    /// as `value_counter` / `blocks`).
+    value_struct_types: HashMap<ValueId, String>,
+
+    /// Function-level return-type registry: `FuncId` → struct name (if
+    /// the function returns a `UserStruct`). Populated in pass 1
+    /// alongside `func_table`. `CallLocal` / `CallCrossModule` consult
+    /// this to propagate struct-typing into the dest `ValueId`.
+    func_return_struct: HashMap<FuncId, String>,
+
     // Per-function state (reset for each function)
     value_counter: u32,
     block_counter: u32,
@@ -142,6 +181,9 @@ impl<'a> LowerCtx<'a> {
             func_table: HashMap::new(),
             enum_variants: HashMap::new(),
             variant_index: HashMap::new(),
+            struct_fields: HashMap::new(),
+            value_struct_types: HashMap::new(),
+            func_return_struct: HashMap::new(),
             value_counter: 0,
             block_counter: 0,
             blocks: BTreeMap::new(),
@@ -328,6 +370,56 @@ impl<'a> LowerCtx<'a> {
         let path = AbsolutePath::new(module.path.clone(), fd.name.clone());
         let id = FuncId(self.func_table.len() as u32);
         self.func_table.insert(path, id);
+        // Track which functions return a user-defined struct so call
+        // sites can propagate struct-typing into the dest `ValueId`
+        // (needed for `FieldAccess` resolution per ADR-0007 §field).
+        if let Some(rt) = fd.return_type
+            && let Some(struct_name) = self.type_expr_to_struct_name(rt, module)
+        {
+            self.func_return_struct.insert(id, struct_name);
+        }
+    }
+
+    /// Look up the field index for `field_name` on a `ValueId` known
+    /// to carry a struct payload. Falls back to `0` for values whose
+    /// struct type isn't tracked (e.g. struct flowed through a path
+    /// the lowerer doesn't yet propagate through, or the struct's
+    /// definition isn't in scope) — preserves legacy single-field
+    /// behavior so we don't regress existing tests.
+    fn resolve_struct_field_idx(&self, value: ValueId, field_name: &str) -> u32 {
+        let Some(struct_name) = self.value_struct_types.get(&value) else {
+            return 0;
+        };
+        let Some(fields) = self.struct_fields.get(struct_name) else {
+            return 0;
+        };
+        fields
+            .iter()
+            .position(|n| n == field_name)
+            .and_then(|i| u32::try_from(i).ok())
+            .unwrap_or(0)
+    }
+
+    /// Resolve a `TypeId` to its struct name if it refers to a known
+    /// user-defined struct. Returns `None` for primitive types,
+    /// nullables, generics, etc. Pass 1 is permitted to call this
+    /// during function declaration since `struct_fields` is registered
+    /// alongside (the iteration order across `Item`s within a module
+    /// may interleave structs and functions, but both register first
+    /// before any function bodies are lowered).
+    fn type_expr_to_struct_name(
+        &self,
+        type_id: triet_syntax::arena::TypeId,
+        module: &Module,
+    ) -> Option<String> {
+        let arena = &self.program.arenas[module.arena_id.0];
+        let type_expr = &arena.type_expression(type_id).node;
+        if let triet_syntax::type_ast::TypeExpr::Named(name) = type_expr
+            && self.struct_fields.contains_key(name)
+        {
+            return Some(name.clone());
+        }
+        None
     }
 
     fn resolve_func(&self, name: &str) -> Option<FuncId> {
@@ -406,6 +498,7 @@ impl<'a> LowerCtx<'a> {
         self.scopes = Vec::new();
         self.loop_stack = Vec::new();
         self.params = HashMap::new();
+        self.value_struct_types = HashMap::new();
         self.current_func_id = func_id;
         self.current_return_type = fd
             .return_type
@@ -418,11 +511,16 @@ impl<'a> LowerCtx<'a> {
         let entry_id = self.fresh_block();
         self.start_block(entry_id, Some("entry".into()));
 
-        // Allocate parameter ValueIds.
+        // Allocate parameter ValueIds. Record struct-typed parameters in
+        // `value_struct_types` so `FieldAccess` inside the function body
+        // can resolve `param.field` to the correct field index.
         let mut param_specs: Vec<(String, TypeTag)> = Vec::new();
         for p in &fd.parameters {
             let v = self.fresh_value();
             let pty = self.type_expr_to_tag(p.type_annotation);
+            if let Some(struct_name) = self.type_expr_to_struct_name(p.type_annotation, module) {
+                self.value_struct_types.insert(v, struct_name);
+            }
             self.params.insert(p.name.clone(), v);
             self.bind_var(p.name.clone(), v);
             param_specs.push((p.name.clone(), pty));
@@ -697,11 +795,12 @@ impl<'a> LowerCtx<'a> {
 
             Expr::FieldAccess { object, field } => {
                 let obj_val = self.lower_expr(*object);
+                let field_idx = self.resolve_struct_field_idx(obj_val, field);
                 let dest = self.fresh_value();
                 self.emit(Instruction::FieldGet {
                     dest,
                     object: Operand::Value(obj_val),
-                    field_idx: field_name_to_idx(field),
+                    field_idx,
                 });
                 dest
             }
@@ -807,11 +906,16 @@ impl<'a> LowerCtx<'a> {
                     dest: unwrapped,
                     nullable: Operand::Value(obj_val),
                 });
+                // The unwrapped value carries the same struct typing as
+                // the original (Nullable peels off cleanly). Look up the
+                // field index via the original object — `value_struct_types`
+                // entry was populated when the struct was constructed.
+                let field_idx = self.resolve_struct_field_idx(obj_val, field);
                 let dest = self.fresh_value();
                 self.emit(Instruction::FieldGet {
                     dest,
                     object: Operand::Value(unwrapped),
-                    field_idx: field_name_to_idx(field),
+                    field_idx,
                 });
                 dest
             }
@@ -1003,19 +1107,41 @@ impl<'a> LowerCtx<'a> {
                 self.fresh_value()
             }
 
-            Expr::StructLiteral {
-                name: _name,
-                fields,
-            } => {
-                let field_values: Vec<Operand> = fields
+            Expr::StructLiteral { name, fields } => {
+                // Lower each field's value expression FIRST (preserves
+                // source-order side effects), then reorder according to
+                // the struct's declared field order so `FieldGet { idx }`
+                // sees a consistent layout across literal sites.
+                //
+                // Pre-fix (v0.3.5 placeholder era): fields emitted in
+                // literal order. Two literals of the same struct could
+                // produce divergent layouts. This is the layout bug
+                // surfaced by `v0.7.4.3-error.5` capstone authoring.
+                let mut by_name: std::collections::HashMap<&str, Operand> =
+                    std::collections::HashMap::new();
+                for (field_name, expr_id) in fields {
+                    let value = self.lower_expr(*expr_id);
+                    by_name.insert(field_name.as_str(), Operand::Value(value));
+                }
+                let ordered = self.struct_fields.get(name).cloned().unwrap_or_else(|| {
+                    // Unknown struct (recovery path): fall back to
+                    // literal order so existing tests that omit the
+                    // struct declaration still typecheck-and-erase.
+                    fields.iter().map(|(n, _)| n.clone()).collect()
+                });
+                let field_values: Vec<Operand> = ordered
                     .iter()
-                    .map(|(_n, e)| Operand::Value(self.lower_expr(*e)))
+                    .filter_map(|field_name| by_name.get(field_name.as_str()).copied())
                     .collect();
                 let dest = self.fresh_value();
                 self.emit(Instruction::StructNew {
                     dest,
                     fields: field_values,
                 });
+                // Track which struct the dest carries so downstream
+                // `FieldAccess` can resolve `name.field` to the right
+                // index in the declared field list.
+                self.value_struct_types.insert(dest, name.clone());
                 dest
             }
 
@@ -2391,6 +2517,15 @@ impl<'a> LowerCtx<'a> {
                 // placeholder body that ships in `std/*.tri`.
                 if let Some(abs_path) = self.current_module().bindings.get(name).cloned() {
                     let dest = self.fresh_value();
+                    // Propagate struct-typing if the imported callee
+                    // returns a struct. The callee's `FuncId` is in
+                    // `func_table`; check `func_return_struct` for the
+                    // associated struct name.
+                    if let Some(callee_id) = self.func_table.get(&abs_path).copied()
+                        && let Some(s) = self.func_return_struct.get(&callee_id).cloned()
+                    {
+                        self.value_struct_types.insert(dest, s);
+                    }
                     self.emit(Instruction::CallCrossModule {
                         dest: Some(dest),
                         path: abs_path,
@@ -2403,6 +2538,9 @@ impl<'a> LowerCtx<'a> {
                 // current module (not imported).
                 if let Some(func_id) = self.resolve_func(name) {
                     let dest = self.fresh_value();
+                    if let Some(s) = self.func_return_struct.get(&func_id).cloned() {
+                        self.value_struct_types.insert(dest, s);
+                    }
                     self.emit(Instruction::CallLocal {
                         dest: Some(dest),
                         callee: func_id,
@@ -2441,15 +2579,10 @@ fn resolve_builtin(name: &str) -> Option<BuiltinName> {
     }
 }
 
-/// Convert a field name to a deterministic index. In practice, the
-/// lowerer looks up struct field indices from the typechecker. For now,
-/// this is a placeholder; the typechecker wiring (v0.3.5) provides the
-/// real index.
-const fn field_name_to_idx(_name: &str) -> u32 {
-    // Placeholder — always 0. Real index comes from struct definition
-    // when typechecker integration lands.
-    0
-}
+// (Removed v0.7.4.3-error.fix: `field_name_to_idx` placeholder.
+// Field resolution now uses `LowerCtx::resolve_struct_field_idx`
+// which consults the per-function `value_struct_types` map +
+// global `struct_fields` table populated in Pass 1a.)
 
 // ── Tests ───────────────────────────────────────────────────────────
 
@@ -2554,6 +2687,137 @@ mod tests {
             return_type,
             body,
         })
+    }
+
+    /// Helper: alloc a `Named(name)` type expression.
+    fn named_type(arena: &mut Arena, name: &str) -> triet_syntax::arena::TypeId {
+        arena.alloc_type(Spanned::new(
+            triet_syntax::type_ast::TypeExpr::Named(name.to_owned()),
+            0..1,
+        ))
+    }
+
+    /// Helper: build a `FunctionParam` with default Mojo-style passing.
+    fn param(name: &str, type_annotation: triet_syntax::arena::TypeId) -> FunctionParam {
+        FunctionParam {
+            name: name.to_owned(),
+            type_annotation,
+            passing: triet_syntax::ParameterPassing::Borrowed,
+        }
+    }
+
+    // ── Struct field-index regression (v0.7.4.3-error.fix) ─────────
+    //
+    // Pre-fix, `field_name_to_idx` returned 0 for every field name,
+    // so `point.y` lowered to `FieldGet { field_idx: 0 }` — silently
+    // returning `point.x` instead. The fix wires struct definitions
+    // into the lowerer via `LowerCtx::struct_fields` and a per-value
+    // `value_struct_types` map populated at StructLiteral / param /
+    // call sites. These tests pin the corrected behavior.
+
+    /// Build a `Point { x: Integer, y: Integer }` struct definition.
+    fn point_struct_item(arena: &mut Arena) -> Item {
+        let x_ty = named_type(arena, "Integer");
+        let y_ty = named_type(arena, "Integer");
+        Item::Struct(triet_syntax::item::StructDef {
+            visibility: triet_syntax::visibility::Visibility::Public,
+            name: "Point".to_owned(),
+            type_params: Vec::new(),
+            fields: vec![
+                triet_syntax::item::StructField {
+                    name: "x".to_owned(),
+                    type_annotation: x_ty,
+                },
+                triet_syntax::item::StructField {
+                    name: "y".to_owned(),
+                    type_annotation: y_ty,
+                },
+            ],
+        })
+    }
+
+    /// `function get_y(p: Point) -> Integer = p.y` lowers `p.y` to
+    /// `FieldGet { field_idx: 1 }`, not 0.
+    #[test]
+    fn struct_field_access_uses_correct_index_for_second_field() {
+        let mut arena = Arena::new();
+        let struct_item = point_struct_item(&mut arena);
+        let param_type = named_type(&mut arena, "Point");
+        let ret_type = named_type(&mut arena, "Integer");
+        let p_ident = ident(&mut arena, "p");
+        let field_access = arena.alloc_expression(Spanned::new(
+            Expr::FieldAccess {
+                object: p_ident,
+                field: "y".to_owned(),
+            },
+            0..1,
+        ));
+        let body = FunctionBody::Expression(field_access);
+        let params = vec![param("p", param_type)];
+        let func_item = make_function_def("get_y", params, Some(ret_type), body);
+        let prog = make_program(
+            arena,
+            vec![
+                Spanned::new(struct_item, 0..1),
+                Spanned::new(func_item, 0..1),
+            ],
+        );
+        let ir = lower_program(&prog);
+        let func = &ir.modules[0].functions[0];
+        assert!(func.is_well_formed());
+        let field_idx = func.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|i| match i {
+                Instruction::FieldGet { field_idx, .. } => Some(*field_idx),
+                _ => None,
+            })
+            .expect("FieldGet should be emitted for p.y");
+        assert_eq!(
+            field_idx, 1,
+            "p.y must lower to field_idx=1, got {field_idx} (pre-fix would return 0)",
+        );
+    }
+
+    /// `function get_x(p: Point) -> Integer = p.x` lowers `p.x` to
+    /// `FieldGet { field_idx: 0 }`. Pin the happy-zero case too —
+    /// previously the placeholder coincidentally produced this same
+    /// result, but for the wrong reason.
+    #[test]
+    fn struct_field_access_uses_correct_index_for_first_field() {
+        let mut arena = Arena::new();
+        let struct_item = point_struct_item(&mut arena);
+        let param_type = named_type(&mut arena, "Point");
+        let ret_type = named_type(&mut arena, "Integer");
+        let p_ident = ident(&mut arena, "p");
+        let field_access = arena.alloc_expression(Spanned::new(
+            Expr::FieldAccess {
+                object: p_ident,
+                field: "x".to_owned(),
+            },
+            0..1,
+        ));
+        let body = FunctionBody::Expression(field_access);
+        let params = vec![param("p", param_type)];
+        let func_item = make_function_def("get_x", params, Some(ret_type), body);
+        let prog = make_program(
+            arena,
+            vec![
+                Spanned::new(struct_item, 0..1),
+                Spanned::new(func_item, 0..1),
+            ],
+        );
+        let ir = lower_program(&prog);
+        let func = &ir.modules[0].functions[0];
+        let field_idx = func.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|i| match i {
+                Instruction::FieldGet { field_idx, .. } => Some(*field_idx),
+                _ => None,
+            })
+            .expect("FieldGet should be emitted for p.x");
+        assert_eq!(field_idx, 0);
     }
 
     // ── Literal tests ──────────────────────────────────────────────
