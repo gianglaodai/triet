@@ -1,0 +1,104 @@
+// Capstone driver — exercises the full outcome stack end-to-end.
+//
+// The `register_user` pipeline runs three validators in sequence,
+// propagating the first failure via the postfix `~?` operator. The
+// `main()` entry point runs three scenarios (success, mid-pipeline
+// failure, registry lookup) and prints the result of each.
+
+module errors;
+module validators;
+module registry;
+
+from std.io import println
+from std.text import from_integer
+
+from crate.errors import ConfigError
+from crate.validators import validate_age, validate_nickname, validate_age_range
+from crate.registry import find_user_role
+
+// Final shape produced by a successful registration.
+public struct UserAccount {
+    age: Integer,
+    nickname: String,
+}
+
+// Pipeline composing three validators. Each call uses `~?` to
+// propagate the first failure verbatim — the `|err| ~- err`
+// closure body re-wraps the error into the outer outcome's failure
+// arm, so the caller observes a single chained `~- ConfigError`
+// pointing at the offending stage.
+//
+// On the success path, every intermediate binding is `Integer` /
+// `String` (not the outcome) — `~?` peels the success arm off.
+public function register_user(
+    age: Integer,
+    nickname: String,
+) -> UserAccount~ConfigError = {
+    let valid_age: Integer = validate_age(age) ~? |err| ~- err
+    let in_range: Integer = validate_age_range(valid_age, 13, 130) ~? |err| ~- err
+    let valid_nick: String = validate_nickname(nickname) ~? |err| ~- err
+    ~+ UserAccount { age: in_range, nickname: valid_nick }
+}
+
+// Format helper used by the demo printout.
+function describe_account(account: UserAccount) -> String =
+    f"UserAccount{{age={account.age}, nick={account.nickname}}}"
+
+function describe_error(err: ConfigError) -> String =
+    f"ConfigError[{err.stage}]: {err.detail}"
+
+// Pattern-match dispatch on a binary outcome (`T~E`) — two arms,
+// `~+ value` and `~- err`, both binding their payload via
+// destructuring. Exhaustiveness here is 2-arm (no `~0` since
+// `register_user` returns `T~E`, not `T?~E`).
+function print_account_outcome(label: String, outcome: UserAccount~ConfigError) -> Unit = {
+    let line = match outcome {
+        ~+ account => describe_account(account),
+        ~- err => describe_error(err),
+    }
+    println(f"{label}{line}")
+}
+
+// Pattern-match dispatch on a ternary outcome (`T?~E`) — all three
+// arms covered: success, null, failure.
+function print_role_outcome(label: String, user_id: Integer) -> Unit = {
+    let line = match find_user_role(user_id) {
+        ~+ role => f"role={role}",
+        ~0 => "role=(none assigned)",
+        ~- err => describe_error(err),
+    }
+    println(f"{label}{line}")
+}
+
+function main() -> Unit = {
+    // ── Pipeline success path ─────────────────────────────────
+    print_account_outcome(
+        "ok    : ",
+        register_user(25, "alice"),
+    )
+
+    // ── First-stage failure (age <= 0) ────────────────────────
+    print_account_outcome(
+        "age<=0: ",
+        register_user(-5, "bob"),
+    )
+
+    // ── Second-stage failure (out of [13, 130]) ───────────────
+    print_account_outcome(
+        "old   : ",
+        register_user(150, "old_timer"),
+    )
+
+    // ── Third-stage failure (empty nickname) ──────────────────
+    print_account_outcome(
+        "noname: ",
+        register_user(30, ""),
+    )
+
+    // ── Ternary outcome — three-arm match ─────────────────────
+    print_role_outcome("admin : ", 5)    // ~+ "admin"
+    print_role_outcome("mod   : ", 30)   // ~+ "moderator"
+    print_role_outcome("noroll: ", 75)   // ~0
+    print_role_outcome("bad   : ", 0)    // ~- error
+    print_role_outcome("range : ", 999)  // ~- error
+}

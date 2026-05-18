@@ -1,0 +1,49 @@
+// Field-level validators. Each one accepts a raw input and returns a
+// 2-state outcome `T~ConfigError` — success with the validated value
+// or failure with the typed error.
+//
+// Features demonstrated:
+// - Outcome constructors `~+ value` (success arm) and `~- error`
+//   (failure arm) — per ADR-0020 §2.
+// - `Trilean!` refinement on the comparison operators
+//   (`age > 0` returns `Trilean!` since Integer ordering is total,
+//   per ADR-0021 §2.2). Plain `if` accepts the refined Trilean
+//   without raising E1033.
+
+from crate.errors import ConfigError, config_error
+from std.text import len as text_length
+
+// Age must be strictly positive. `age > 0` returns `Trilean!` so the
+// strict `if` form is allowed (ADR-0021 §3 forbids generic `Trilean`
+// in plain `if`).
+public function validate_age(age: Integer) -> Integer~ConfigError = {
+    if age > 0 {
+        ~+ age
+    } else {
+        ~- config_error("age", "must be strictly positive")
+    }
+}
+
+// Nickname must be non-empty (length >= 1). String length is Integer
+// so `> 0` is again `Trilean!`.
+public function validate_nickname(name: String) -> String~ConfigError = {
+    if text_length(name) > 0 {
+        ~+ name
+    } else {
+        ~- config_error("nickname", "must not be empty")
+    }
+}
+
+// Age range check. Demonstrates `&&` over two `Trilean!` operands
+// preserving refinement (per ADR-0021 §2.3): both sides are Integer
+// comparisons, so `&&` of the two stays `Trilean!`.
+public function validate_age_range(age: Integer, lo: Integer, hi: Integer) -> Integer~ConfigError = {
+    if age >= lo && age <= hi {
+        ~+ age
+    } else {
+        ~- config_error(
+            "age_range",
+            "value outside allowed [lo, hi] window"
+        )
+    }
+}

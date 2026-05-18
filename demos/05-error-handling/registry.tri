@@ -1,0 +1,44 @@
+// Mock user-role registry. Demonstrates the `T?~E` ternary outcome
+// — three runtime states encoded by a single trit discriminator
+// (ADR-0020 §1.2):
+//
+//   ~+ value   → Trit::Positive — user exists, role assigned
+//   ~0         → Trit::Zero     — user exists but no role yet
+//   ~- error   → Trit::Negative — lookup failed (invalid id)
+//
+// The `~0` literal here uses the canonical form from ADR-0020 §10 +
+// ADR-0010 Addendum §B/§D — source-level `~0` lowers to
+// `Constant::Null`, byte-identical to the deprecated `null` keyword.
+// VM cross-tolerance (Addendum §D) lets pattern match `~0` recognize
+// the value as the Zero arm even though the runtime carrier is
+// `RuntimeValue::Null`.
+
+from crate.errors import ConfigError, config_error
+
+// In-memory "registry" — toy lookup matching specific user IDs.
+// Real code would consult a database or HashMap; the toy shape is
+// enough to exercise all three outcome arms.
+public function find_user_role(user_id: Integer) -> String?~ConfigError = {
+    if user_id <= 0 {
+        ~- config_error("registry", "invalid user id (must be > 0)")
+    } else if user_id > 100 {
+        ~- config_error("registry", "id out of range (max 100)")
+    } else if user_id < 10 {
+        ~+ "admin"
+    } else if user_id < 50 {
+        ~+ "moderator"
+    } else {
+        // User exists in the [50, 100] range but no role assigned
+        // — return the null arm rather than fabricating a default.
+        ~0
+    }
+}
+
+// Convenience wrapper: collapses null/error arms into a default.
+// `~:` (postfix default operator, ADR-0020 §3.2) evaluates the
+// success arm if present, else evaluates the default expression.
+// For `T?~E` the typed result is `T?` (callers may still observe
+// `~0` widening through). Chain with `?:` to collapse to bare `T`.
+public function role_or_guest(user_id: Integer) -> String? = {
+    find_user_role(user_id) ~: "guest"
+}

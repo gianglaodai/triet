@@ -1,0 +1,16 @@
+// Central error type for the config-loader pipeline.
+//
+// Single shared `ConfigError` struct carries the failing stage label
+// plus a human-readable detail. The pipeline stages (`read_config`,
+// `parse_field`, `coerce_port`, `coerce_debug`) all produce outcomes
+// shaped `T~ConfigError`, so the `~?` propagate operator chains them
+// without converting between error types.
+
+public struct ConfigError {
+    stage: String,
+    detail: String
+}
+
+// Convenience constructor — keeps call sites short.
+public function config_error(stage: String, detail: String) -> ConfigError =
+    ConfigError { stage: stage, detail: detail }
