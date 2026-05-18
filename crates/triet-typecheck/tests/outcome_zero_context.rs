@@ -35,7 +35,7 @@ fn nullable_local_inside_binary_outcome_function_is_clean() {
         function main() {}
     ";
     let errors = check_codes(src);
-    assert!(errors.is_empty(), "no errors expected; got: {errors:#?}",);
+    assert!(errors.is_empty(), "no errors expected; got: {errors:#?}");
 }
 
 #[test]

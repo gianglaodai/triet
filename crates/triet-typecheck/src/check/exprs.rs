@@ -1101,9 +1101,34 @@ fn extract_type_params(
 ) {
     match (param, arg) {
         (Type::TypeParam(name), concrete) => {
-            sub_map
-                .entry(name.clone())
-                .or_insert_with(|| concrete.clone());
+            // v0.7.4.3-debt.4 (WA-7): prefer concrete bindings over
+            // TypeParam ones. The naïve `or_insert_with` semantic
+            // lets the first arg "poison" `sub_map[T]` with an
+            // unbound `TypeParam("T")` — e.g. `push(new(), 99)`
+            // where `new<T>() -> Vector<T>` returns
+            // `Vector<TypeParam("T"))` because T cannot be inferred
+            // from a zero-arg call. Pre-fix, that self-binding
+            // blocked the subsequent `99` arg from setting T =
+            // Integer; now we replace the poisoned binding when a
+            // concrete arg comes in.
+            //
+            // The replacement is restricted: only swap when the
+            // EXISTING binding is a `TypeParam` AND the new
+            // `concrete` is NOT a `TypeParam`. This preserves the
+            // "first concrete wins" semantic for `f<T>(a: T, b: T)`
+            // called with `(Integer, String)` (T stays Integer).
+            match sub_map.get(name) {
+                None => {
+                    sub_map.insert(name.clone(), concrete.clone());
+                }
+                Some(existing)
+                    if matches!(existing, Type::TypeParam(_))
+                        && !matches!(concrete, Type::TypeParam(_)) =>
+                {
+                    sub_map.insert(name.clone(), concrete.clone());
+                }
+                _ => {} // keep existing
+            }
         }
         (Type::Nullable(p_inner), Type::Nullable(a_inner)) => {
             extract_type_params(p_inner, a_inner, sub_map);
