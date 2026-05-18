@@ -875,10 +875,19 @@ impl Vm {
                 // { Trit::Zero, None }` is also recognized as the
                 // canonical null state. This unifies `~0` source with
                 // the legacy `null` keyword at the runtime tier.
+                //
+                // v0.7.4.4: the legacy "any payload-less Enum is null"
+                // arm was removed — it collided with bare unit-variant
+                // enum values (e.g. `LetKw` from a `Token?` slot via
+                // cross-tolerance), which a hand-rolled Elvis like
+                // `keyword_for(slice) ?: Identifier(...)` then mis-
+                // classified as null. Today no opcode emits a unit
+                // enum as a null marker; `RuntimeValue::Null` and
+                // `Outcome { Trit::Zero, None }` are the two canonical
+                // null carriers.
                 let v = read_operand(constants, frame, nullable);
                 let trit = match &v {
                     RuntimeValue::Null
-                    | RuntimeValue::Enum { payload: None, .. }
                     | RuntimeValue::Outcome {
                         discriminator: Trit::Zero,
                         payload: None,

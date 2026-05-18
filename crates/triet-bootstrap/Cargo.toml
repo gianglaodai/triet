@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
+triet-lexer.workspace = true
 triet-modules.workspace = true
 triet-typecheck.workspace = true
 triet-ir.workspace = true

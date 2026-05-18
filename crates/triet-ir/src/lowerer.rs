@@ -1808,7 +1808,16 @@ impl<'a> LowerCtx<'a> {
                 }],
             });
             // Bind the phi as the new live value for `name` inside the loop.
-            self.bind_var(name.clone(), phi_dest);
+            // v0.7.4.4: rebind into the declaring scope (not innermost),
+            // so an intermediate `Expr::Block` scope around the while —
+            // e.g. when the while sits in a match-arm body which the
+            // parser wraps as `Expr::Block` — doesn't drop the phi-dest
+            // on its `pop_scope`, leaving `lower_match_expr`'s post-arm
+            // snapshot to read the stale pre-loop value from an outer
+            // scope. The body-scope shadow at line ~1846 keeps in-body
+            // reads/writes pointing at this phi-dest via the innermost
+            // entry, so loop-local SSA tracking is unchanged.
+            self.rebind_var(name, phi_dest);
             phi_dests.push((name.clone(), phi_dest));
         }
         let cond_val = self.lower_expr(condition);

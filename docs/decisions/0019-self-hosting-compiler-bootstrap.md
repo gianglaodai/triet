@@ -656,5 +656,5 @@ Original ADR-0019 §8 plan v0.7.4 was a single sub-task ("`compiler/lexer.tri` +
 |---|---|---|
 | **v0.7.4.1** | Generic function syntax — parser + AST + typecheck (Rust-style inference) + lowerer (type-erased per §A7.1). Unblocks stdlib stubs. | shipped |
 | **v0.7.4.2** | Stdlib `.tri` stubs (5 new files: `std/collections.tri` + `std/collections/{vector,hashmap}.tri` + `std/io/fs.tri` + `std/path.tri` + `std/string.tri`) + `std/text.tri::parse_integer` extension + 19 `path_to_builtin` entries + pseudo-struct shells for `Vector<T>`/`HashMap<K, V>` in typecheck. Java-naming per author convention (no module-name repetition in function names). | shipped |
-| **v0.7.4.3** | `compiler/lexer.tri` — hand-rolled scanner port per Q4-A (~500-700 LOC Triết). | pending |
-| **v0.7.4.4** | `lexer_differential` integration test (NDJSON byte-diff per Q5-A) + verify gate. Closes v0.7.4 umbrella. | pending |
+| **v0.7.4.3** | `compiler/lexer.tri` — hand-rolled scanner port per Q4-A (~1090 LOC Triết — `73590fc`). Followed by `-debt.{1..7}` umbrella that drained all 7 workarounds first (lands `123ffa7..730fddc`). | shipped |
+| **v0.7.4.4** | `lexer_differential` integration test (NDJSON byte-diff per Q5-A, 20 corpus entries) + verify gate. Closes v0.7.4 umbrella. Surfaced + fixed two pre-existing bugs (`lower_while_loop` declaring-scope phi via `rebind_var`; `NullCheck` mis-classifying unit-variant enums) plus one Triết-port gap (`if?` / `while?` compound keyword handling). | shipped |

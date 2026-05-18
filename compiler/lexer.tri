@@ -652,6 +652,29 @@ function lex_identifier(source: String, cursor: Integer) -> OneToken~LexError = 
 
 function finish_ident(source: String, start: Integer, end: Integer) -> OneToken~LexError = {
     let slice: String = substring(source, start, end)
+    // The Rust impl tokenizes `if?` and `while?` as single tokens
+    // via `#[token("if?")]` / `#[token("while?")]`. Identifier
+    // scanning stops at `?` (not an ident-continue char), so we
+    // need to peek past the slice and absorb the `?` for those two
+    // keywords. Order matters — check before keyword_for so the
+    // bare `if` / `while` branches don't win.
+    let source_len: Integer = len(source)
+    if end < source_len {
+        if substring(source, end, end + 1) == "?" {
+            if slice == "if" {
+                return ~+ OneToken {
+                    spanned: spanned(IfQKw, start, end + 1),
+                    new_cursor: end + 1,
+                }
+            }
+            if slice == "while" {
+                return ~+ OneToken {
+                    spanned: spanned(WhileQKw, start, end + 1),
+                    new_cursor: end + 1,
+                }
+            }
+        }
+    }
     // Elvis (`?:`) selects keyword if the slice matches; otherwise
     // falls back to `Identifier`. Match on `Token?` works post-
     // ADR-0010 Addendum §D unification (commit `ffcf6de`), but the
@@ -980,6 +1003,274 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
     }
 
     ~+ tokens
+}
+
+// ─────────────────────────────────────────────────────────────────
+// NDJSON dump (v0.7.4.4 lexer_differential bridge per ADR-0019 §A2)
+// ─────────────────────────────────────────────────────────────────
+//
+// `dump_ndjson(source)` runs `lex(source)` and emits one NDJSON line
+// per token. Format:
+//
+//   {"t":"<Kind>","s":[<start>,<end>]}                       // unit
+//   {"t":"<Kind>","s":[<start>,<end>],"v":"<text>"}          // text
+//   {"t":"<Kind>","s":[<start>,<end>],"v":<value>}           // int
+//   {"t":"<Kind>","s":[<start>,<end>],"v":<value>,"u":"<s>"} // suffixed
+//
+// On lex error, a single line replaces the token stream:
+//
+//   {"e":"<ErrorKind>","s":[<start>,<end>][,"v":"<detail>"]}
+//
+// Kind names match the Rust `Token` enum verbatim — the Triết-side
+// `*Kw` postfix is stripped (e.g. `FunctionKw` → `"Function"`). Spans
+// are char-indexed per Q3-A; the Rust-side mirror in
+// `lexer_differential.rs` converts byte → char indices to match.
+//
+// Transient bridge format per ADR-0019 §A2 — dropped at v0.7.9 when
+// Triết-side data flows in-memory.
+
+function json_escape(s: String) -> String = {
+    let n: Integer = len(s)
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    while i < n {
+        let c: String = substring(s, i, i + 1)
+        if c == "\\" {
+            out = concat(out, "\\\\")
+        } else if c == "\"" {
+            out = concat(out, "\\\"")
+        } else if c == "\n" {
+            out = concat(out, "\\n")
+        } else if c == "\t" {
+            out = concat(out, "\\t")
+        } else if c == "\r" {
+            out = concat(out, "\\r")
+        } else {
+            out = concat(out, c)
+        }
+        i = i + 1
+    }
+    out
+}
+
+function token_kind_name(t: Token) -> String =
+    match t {
+        FunctionKw => "Function",
+        LetKw => "Let",
+        MutableKw => "Mutable",
+        ConstantKw => "Constant",
+        TypeKw => "Type",
+        IfKw => "If",
+        IfQKw => "IfQ",
+        ElseKw => "Else",
+        MatchKw => "Match",
+        ReturnKw => "Return",
+        ForKw => "For",
+        WhileKw => "While",
+        WhileQKw => "WhileQ",
+        LoopKw => "Loop",
+        BreakKw => "Break",
+        ContinueKw => "Continue",
+        InKw => "In",
+        TrueKw => "True",
+        FalseKw => "False",
+        UnknownKw => "Unknown",
+        NullKw => "Null",
+        NotKw => "Not",
+        AndKw => "And",
+        OrKw => "Or",
+        XorKw => "Xor",
+        IffKw => "Iff",
+        ImpliesKw => "Implies",
+        KleeneImpliesKw => "KleeneImplies",
+        KleeneXorKw => "KleeneXor",
+        KleeneIffKw => "KleeneIff",
+        ImportKw => "Import",
+        FromKw => "From",
+        AsKw => "As",
+        ModuleKw => "Module",
+        PublicKw => "Public",
+        OwnedKw => "Owned",
+        StructKw => "Struct",
+        EnumKw => "Enum",
+        CrateKw => "Crate",
+        SelfKw => "SelfKw",
+        SuperKw => "Super",
+        LtEqGt => "LtEqGt",
+        LtTildeGt => "LtTildeGt",
+        DotDotEq => "DotDotEq",
+        DotDot => "DotDot",
+        EqEq => "EqEq",
+        NotEq => "NotEq",
+        LtEq => "LtEq",
+        GtEq => "GtEq",
+        AndAnd => "AndAnd",
+        OrOr => "OrOr",
+        FatArrow => "FatArrow",
+        TildeArrow => "TildeArrow",
+        TildeCaret => "TildeCaret",
+        QuestionTilde => "QuestionTilde",
+        TildePlus => "TildePlus",
+        TildeMinus => "TildeMinus",
+        TildeZero => "TildeZero",
+        TildeQuestion => "TildeQuestion",
+        TildeColon => "TildeColon",
+        Tilde => "Tilde",
+        ThinArrow => "ThinArrow",
+        QuestionDot => "QuestionDot",
+        QuestionColon => "QuestionColon",
+        BangBang => "BangBang",
+        StarStar => "StarStar",
+        Plus => "Plus",
+        Minus => "Minus",
+        Star => "Star",
+        Slash => "Slash",
+        PercentPercent => "PercentPercent",
+        Assign => "Assign",
+        Lt => "Lt",
+        Gt => "Gt",
+        Bang => "Bang",
+        Caret => "Caret",
+        Question => "Question",
+        Colon => "Colon",
+        Semi => "Semi",
+        Comma => "Comma",
+        Dot => "Dot",
+        LBrace => "LBrace",
+        RBrace => "RBrace",
+        LBracket => "LBracket",
+        RBracket => "RBracket",
+        LParen => "LParen",
+        RParen => "RParen",
+        Pipe => "Pipe",
+        Underscore => "Underscore",
+        IntegerLiteral(_) => "IntegerLiteral",
+        TernaryLiteral(_) => "TernaryLiteral",
+        StringLiteral(_) => "StringLiteral",
+        Identifier(_) => "Identifier",
+        FStringStart => "FStringStart",
+        FStringText(_) => "FStringText",
+        InterpolationStart => "InterpolationStart",
+        InterpolationEnd => "InterpolationEnd",
+        FStringEnd => "FStringEnd",
+    }
+
+function suffix_name(s: NumericSuffix) -> String =
+    match s {
+        TritSuffix => "trit",
+        TryteSuffix => "tryte",
+        IntegerSuffix => "integer",
+        LongSuffix => "long",
+    }
+
+function span_str(start: Integer, end: Integer) -> String = {
+    let mutable s: String = "["
+    s = concat(s, from_integer(start))
+    s = concat(s, ",")
+    s = concat(s, from_integer(end))
+    s = concat(s, "]")
+    s
+}
+
+function format_unit_line(kind: String, start: Integer, end: Integer) -> String = {
+    let mutable line: String = "{\"t\":\""
+    line = concat(line, kind)
+    line = concat(line, "\",\"s\":")
+    line = concat(line, span_str(start, end))
+    line = concat(line, "}\n")
+    line
+}
+
+function format_text_line(kind: String, text: String, start: Integer, end: Integer) -> String = {
+    let mutable line: String = "{\"t\":\""
+    line = concat(line, kind)
+    line = concat(line, "\",\"s\":")
+    line = concat(line, span_str(start, end))
+    line = concat(line, ",\"v\":\"")
+    line = concat(line, json_escape(text))
+    line = concat(line, "\"}\n")
+    line
+}
+
+function format_int_line(kind: String, lit: IntLiteral, start: Integer, end: Integer) -> String = {
+    let mutable line: String = "{\"t\":\""
+    line = concat(line, kind)
+    line = concat(line, "\",\"s\":")
+    line = concat(line, span_str(start, end))
+    line = concat(line, ",\"v\":")
+    line = concat(line, from_integer(lit.value))
+    match lit.suffix {
+        ~+ suf => {
+            line = concat(line, ",\"u\":\"")
+            line = concat(line, suffix_name(suf))
+            line = concat(line, "\"")
+        },
+        ~0 => {},
+    }
+    line = concat(line, "}\n")
+    line
+}
+
+function format_token_line(st: SpannedToken) -> String =
+    match st.token {
+        IntegerLiteral(p) => format_int_line("IntegerLiteral", p.literal, st.span_start, st.span_end),
+        TernaryLiteral(p) => format_int_line("TernaryLiteral", p.literal, st.span_start, st.span_end),
+        StringLiteral(p) => format_text_line("StringLiteral", p.text, st.span_start, st.span_end),
+        Identifier(p) => format_text_line("Identifier", p.text, st.span_start, st.span_end),
+        FStringText(p) => format_text_line("FStringText", p.text, st.span_start, st.span_end),
+        other => format_unit_line(token_kind_name(other), st.span_start, st.span_end),
+    }
+
+function format_span_err(kind: String, start: Integer, end: Integer) -> String = {
+    let mutable line: String = "{\"e\":\""
+    line = concat(line, kind)
+    line = concat(line, "\",\"s\":")
+    line = concat(line, span_str(start, end))
+    line = concat(line, "}\n")
+    line
+}
+
+function format_text_err(kind: String, text: String, start: Integer, end: Integer) -> String = {
+    let mutable line: String = "{\"e\":\""
+    line = concat(line, kind)
+    line = concat(line, "\",\"s\":")
+    line = concat(line, span_str(start, end))
+    line = concat(line, ",\"v\":\"")
+    line = concat(line, json_escape(text))
+    line = concat(line, "\"}\n")
+    line
+}
+
+function format_error_line(err: LexError) -> String =
+    match err {
+        Unrecognized => "{\"e\":\"Unrecognized\",\"s\":[0,0]}\n",
+        UnexpectedCharacter(d) => format_text_err("UnexpectedCharacter", d.snippet, d.span_start, d.span_end),
+        NumericOverflow(sp) => format_span_err("NumericOverflow", sp.span_start, sp.span_end),
+        InvalidTernaryDigit(d) => format_text_err("InvalidTernaryDigit", d.character, d.span_start, d.span_end),
+        UnterminatedBlockComment(sp) => format_span_err("UnterminatedBlockComment", sp.span_start, sp.span_end),
+        UnterminatedString(sp) => format_span_err("UnterminatedString", sp.span_start, sp.span_end),
+        InvalidEscape(d) => format_text_err("InvalidEscape", d.sequence, d.span_start, d.span_end),
+        UnmatchedFStringBrace(sp) => format_span_err("UnmatchedFStringBrace", sp.span_start, sp.span_end),
+    }
+
+public function dump_ndjson(source: String) -> String = {
+    let result = lex(source)
+    let mutable out: String = ""
+    match result {
+        ~+ toks => {
+            let total: Integer = length(toks)
+            let mutable i: Integer = 0
+            while i < total {
+                let st: SpannedToken = get(toks, i)!!
+                out = concat(out, format_token_line(st))
+                i = i + 1
+            }
+        },
+        ~- err => {
+            out = concat(out, format_error_line(err))
+        },
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────────────

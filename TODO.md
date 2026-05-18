@@ -96,7 +96,7 @@ The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.
   - Also fixed two additional gaps surfaced during rewrite: struct-literal field positions need the expected-type push (mirrors `.debt.3`'s let-binding logic); and `OutcomeDiscriminant`/`OutcomeUnwrapValue` now cross-tolerate bare `T` values flowing through a `T?` slot (closes WA-6 — the previously-deferred lowerer cross-tolerance for match-arm dispatch beyond the 4 opcodes proven in `ffcf6de`).
   - Bootstrap regression gate (`lexer_self_smoke.rs`) green; 1247 workspace tests pass.
 
-- [x] **v0.7.4.3-debt.7** — EnumTag Integer variant index (parser.tri unblocker) — (this commit)
+- [x] **v0.7.4.3-debt.7** — EnumTag Integer variant index (parser.tri unblocker) — `730fddc`
   - `EnumTag` opcode: output changed from `Trit(Positive | Negative)` to `Integer(variant_index)`. Pattern::EnumVariant + Variable-as-variant now compare `Eq(tag, Integer(idx))` instead of `Eq(tag, Trit(idx==0?Positive:Negative))`. Pre-fix any enum with 3+ variants collapsed variant 1,2,3,... into indistinguishable Negative; post-fix all variants dispatch correctly. 1247 tests pass; 4-variant enum reproducer `E { A, B, C, D }` now produces `A→1 B→2 C→3 D→4`.
 
 ### Deferred (not in debt umbrella)
@@ -105,7 +105,18 @@ _None — all 7 workarounds resolved. WA-6 deferral moved to .debt.6 since it su
 
 ### After v0.7.4.3-debt: remaining v0.7 sub-tasks
 
-- [ ] **v0.7.4.4** — `lexer_differential` NDJSON byte-diff test + verify gate (closes v0.7.4 umbrella)
+- [x] **v0.7.4.4** — `lexer_differential` NDJSON byte-diff test + verify gate (closes v0.7.4 umbrella) — (this commit)
+  - New `crates/triet-bootstrap/tests/lexer_differential.rs` (20 tests). Adds `dump_ndjson(source: String) -> String` to `compiler/lexer.tri` (NDJSON bridge format per [ADR-0019 §A2]: `{"t":<Kind>,"s":[start,end][,"v":...][,"u":...]}` per token; `{"e":...}` on error). Rust-side mirror converts byte spans → char spans via `byte_to_char_index` so real `examples/*.tri` files with UTF-8 comments (box-drawing) participate in the corpus. Corpus covers keywords, operators (single + compound + outcome), nullable/force-unwrap, ternary + decimal + suffixed integer literals, string/f-string/escape handling, line comments, question-modified keywords (`if?`/`while?`), realistic function signatures, and three example files (factorial / maybe / nullable). 1267 workspace tests pass.
+  - **Lowerer fix surfaced by this gate**: `lower_while_loop` now uses `rebind_var` (instead of `bind_var`) when binding the loop-header phi-dest into the live scope. Without this, an `Expr::Block` scope wrapping a match-arm body (the parser wraps `~+ x => { … }` arm bodies as `Expr::Block`) would `pop_scope` and drop the phi-dest mapping before `lower_match_expr`'s post-arm `resolve_var` snapshot, so any variable mutated through a `while` inside a match arm reverted to its pre-match value after the match. The body-scope shadow at line ~1846 still keeps in-body reads/writes pointing at the phi-dest.
+  - **VM fix surfaced by this gate**: `NullCheck` no longer classifies `RuntimeValue::Enum { payload: None, .. }` as the null state. The legacy "any payload-less Enum is null" arm collided with bare unit-variant enums (e.g. `LetKw`) flowing through a `T?` slot via the ADR-0010 Addendum §D cross-tolerance — `keyword_for(slice) ?: Identifier(…)` then mis-classified every keyword as null and produced `Identifier` for `let`/`while`/etc. The two canonical null carriers remain `RuntimeValue::Null` and `Outcome { discriminator: Trit::Zero, payload: None }`.
+  - **Lexer-port gap surfaced by this gate**: `finish_ident` now peeks past the identifier slice and absorbs a trailing `?` for the `if?` / `while?` compound keywords, mirroring the Rust impl's `#[token("if?")]` / `#[token("while?")]` longest-match.
+
+### v0.7.4 umbrella closed
+
+The 4-sub-commit umbrella from [ADR-0019 §A7.4] is now done end-to-end: v0.7.4.1 generic syntax → v0.7.4.2 stdlib stubs → v0.7.4.3 lexer port + `-debt.{1..7}` cleanup → v0.7.4.4 differential gate. Triết-side and Rust-side lexers agree byte-for-byte on the corpus.
+
+[ADR-0019 §A2]: docs/decisions/0019-self-hosting-compiler-bootstrap.md
+[ADR-0019 §A7.4]: docs/decisions/0019-self-hosting-compiler-bootstrap.md
 - [ ] **v0.7.5** — `compiler/parser.tri` + parser_differential test
 - [ ] **v0.7.6** — `compiler/modules.tri` + modules_differential test
 - [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
