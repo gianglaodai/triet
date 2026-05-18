@@ -1273,20 +1273,24 @@ impl Vm {
                 // `Constant::Null` per Addendum §B byte-identity
                 // promise, so the discriminator readout has to
                 // recognize Null as a Zero-state.
+                //
+                // v0.7.4.3-debt.6 (WA-6 fix): extend cross-tolerance
+                // to bare `T?` values. A nullable holds either Null
+                // or a bare T (no Outcome wrapper), so any non-Null
+                // non-Outcome value reads as `Positive`. This is what
+                // makes `match user { ~+ u => ..., ~0 => ... }` work
+                // for plain `T?` per the ADR-0010 Addendum §D §"Match
+                // arm dispatch" promise (cross-tolerance now reaches
+                // pattern-match dispatch beyond the 4 opcodes
+                // originally proven in `ffcf6de`).
                 let discriminator = match outcome {
                     RuntimeValue::Outcome { discriminator, .. } => discriminator,
                     RuntimeValue::Null => Trit::Zero,
-                    other => {
-                        return Err(VmError::TypeMismatch {
-                            expected: TypeTag::Outcome {
-                                value_type: Box::new(TypeTag::Unit),
-                                error_type: Box::new(TypeTag::Unit),
-                                allow_null_state: false,
-                            },
-                            actual: other.type_tag().to_string(),
-                            function: func_name,
-                        });
-                    }
+                    // Bare T value (Enum, Struct, Integer, etc.) flowing
+                    // through a `T?` slot at runtime. T ⊂ T? widening
+                    // doesn't wrap the value, so the runtime sees it
+                    // raw — treat as the success arm.
+                    _ => Trit::Positive,
                 };
                 frame.write(dest, RuntimeValue::Trit(discriminator));
             }
@@ -1307,16 +1311,13 @@ impl Vm {
                             function: func_name,
                         });
                     }
+                    // v0.7.4.3-debt.6 (WA-6 fix): bare T value flowing
+                    // through a `T?` slot — the value IS its own
+                    // success payload, no wrapper to peel. Return it
+                    // directly.
                     other => {
-                        return Err(VmError::TypeMismatch {
-                            expected: TypeTag::Outcome {
-                                value_type: Box::new(TypeTag::Unit),
-                                error_type: Box::new(TypeTag::Unit),
-                                allow_null_state: false,
-                            },
-                            actual: other.type_tag().to_string(),
-                            function: func_name,
-                        });
+                        frame.write(dest, other);
+                        return Ok(StepResult::Continue);
                     }
                 };
                 if !discriminator.is_positive() {
@@ -5095,13 +5096,16 @@ mod tests {
         }
     }
 
-    /// Type-erased outcome unwrap on a non-outcome value must surface
-    /// E2201 rather than panic with the wrong code — proves the
-    /// `else { return Err(TypeMismatch) }` guard in dispatch.
+    /// Bare value flowing through `OutcomeUnwrapValue`. Per ADR-0010
+    /// Addendum §D + v0.7.4.3-debt.6 WA-6 fix, the runtime treats a
+    /// bare T value (not Null, not Outcome-wrapped) as its own
+    /// success payload — `T ⊂ T?` widening doesn't wrap, so the
+    /// runtime returns the value directly instead of erroring.
+    /// Pre-fix this surfaced E2201 `TypeMismatch`.
     #[test]
-    fn vm_outcome_unwrap_on_non_outcome_panics_e2201() {
+    fn vm_outcome_unwrap_value_on_bare_value_returns_it_directly() {
         let mut pool = ConstantPool::new();
-        let int_const = pool.intern(Constant::Integer(Integer::new(0).unwrap()));
+        let int_const = pool.intern(Constant::Integer(Integer::new(7).unwrap()));
         let func = outcome_function(
             vec![
                 Instruction::Const {
@@ -5121,11 +5125,11 @@ mod tests {
         let mut prog = make_simple_program(func);
         prog.constants = pool;
         let mut vm = Vm::new(prog);
-        let err = vm.execute(FuncId(0), Vec::new()).unwrap_err();
-        assert!(
-            matches!(err, VmError::TypeMismatch { .. }),
-            "expected E2201 TypeMismatch, got {err:?}",
-        );
+        let result = vm.execute(FuncId(0), Vec::new()).unwrap();
+        match result {
+            RuntimeValue::Integer(n) => assert_eq!(n.to_i64(), 7),
+            other => panic!("expected Integer(7), got {other:?}"),
+        }
     }
 
     /// Memory deallocation contract (ADR-0020): the `Drop` impl on

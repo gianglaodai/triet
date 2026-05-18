@@ -91,13 +91,14 @@ The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.
 - [x] **v0.7.4.3-debt.5** — Match-arm mutation phi + bare-variant pattern dispatch (WA-1) — (this commit)
   - Two interacting bugs found and fixed together. (a) `lower_match_expr` now collects mutated vars across all arms, pre-snapshots, post-snapshots per arm, and emits one phi per mutable at the merge block — mirroring `lower_if_expr`. (b) `lower_pattern_test` + `bind_pattern_vars` rewrite `Pattern::Variable(name)` to an `EnumVariant` tag check when `name` resolves to a known unit variant. Pre-fix the parser bug was latently masked by the static-last-write semantics of bug (a); fixing (a) exposed it.
   - 5 integration tests in `match_arm_mutation_phi.rs`: while+match+push, bare-unit-variant dispatch, mutation-observable-after-match, wildcard-with-mutations, and a `lex_decimal_integer` reproducer.
-- [ ] **v0.7.4.3-debt.6** — Final: rewrite `compiler/lexer.tri` without workarounds + commit lexer port + bootstrap test
-  - Removes the `mode_is_normal` / `mode_is_fstring` / `interp_brace_depth` helpers + the `OneToken` field-reorder comment
-  - Restores `match top { NormalMode => …, FStringMode => …, InterpolationMode(state) => … }` shape
+- [x] **v0.7.4.3-debt.6** — Rewrite `compiler/lexer.tri` + commit lexer port (this commit)
+  - Removed all 7 workarounds: helpers now return `Trilean!` (with plain `if` at call sites), `NumericSuffix?` replaces the explicit `NoSuffix` sentinel, `OneToken` declared in natural order, mode-dispatch restored to canonical `match top { NormalMode => …, FStringMode => …, InterpolationMode(state) => … }`. Generic `push(new(), x)` chain reads cleanly. ~1090 LOC Triết.
+  - Also fixed two additional gaps surfaced during rewrite: struct-literal field positions need the expected-type push (mirrors `.debt.3`'s let-binding logic); and `OutcomeDiscriminant`/`OutcomeUnwrapValue` now cross-tolerate bare `T` values flowing through a `T?` slot (closes WA-6 — the previously-deferred lowerer cross-tolerance for match-arm dispatch beyond the 4 opcodes proven in `ffcf6de`).
+  - Bootstrap regression gate (`lexer_self_smoke.rs`) green; 1247 workspace tests pass.
 
 ### Deferred (not in debt umbrella)
 
-- **WA-6** Pattern match on `T?` with `~+`/`~0` arms (lowerer cross-tolerance for match-arm dispatch beyond the 4 VM opcodes proven in `ffcf6de`). Workaround via Elvis is idiomatic enough that this stays in `v0.7.x.audit` deferred list.
+_None — all 7 workarounds resolved. WA-6 deferral moved to .debt.6 since it surfaced together with struct-field expected-type extension and was cheap to fix in the same commit._
 
 ### After v0.7.4.3-debt: remaining v0.7 sub-tasks
 

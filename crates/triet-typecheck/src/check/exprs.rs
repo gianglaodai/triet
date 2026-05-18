@@ -670,7 +670,13 @@ impl Checker<'_> {
                 });
                 continue;
             };
-            let value_ty = self.infer_expression(*value);
+            // v0.7.4.3-debt.6: push the field's expected type so
+            // outcome constructors (`~0` especially) can resolve their
+            // shape against it. Extends the let-binding push from
+            // .debt.3 to struct field positions. Without this,
+            // `Foo { tag: ~0 }` inside a function returning `T~E`
+            // raises false-positive E1025.
+            let value_ty = self.with_expected(expected_ty.clone(), |s| s.infer_expression(*value));
             if !expected_ty.matches(&value_ty) {
                 self.errors.push(TypeError::Mismatch {
                     expected: expected_ty.clone(),
