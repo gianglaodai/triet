@@ -961,15 +961,19 @@ impl Vm {
             }
             Instruction::EnumTag { dest, scrutinee } => {
                 let scr = read_operand(constants, frame, scrutinee);
-                let tag = match &scr {
-                    RuntimeValue::Enum { variant, .. } => match variant {
-                        0 => Trit::Positive,
-                        _ => Trit::Negative,
-                    },
-                    RuntimeValue::Null => Trit::Zero,
-                    _ => Trit::Positive,
+                // v0.7.4.3-debt.7: return the variant index as Integer
+                // instead of a 2-state Trit. Pre-fix only distinguished
+                // variant 0 (Positive) vs all others (Negative), so
+                // match-on-enum-with-3+-variants dispatched incorrectly.
+                let idx: i64 = match &scr {
+                    RuntimeValue::Enum { variant, .. } => i64::from(*variant),
+                    RuntimeValue::Null => -1,
+                    _ => 0, // bare value — treat as variant 0
                 };
-                frame.write(dest, RuntimeValue::Trit(tag));
+                frame.write(
+                    dest,
+                    RuntimeValue::Integer(triet_core::Integer::new(idx).unwrap_or_default()),
+                );
             }
             Instruction::EnumPayload { dest, scrutinee } => {
                 let scr = read_operand(constants, frame, scrutinee);

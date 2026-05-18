@@ -239,7 +239,12 @@ pub enum Instruction {
         /// Optional payload value (None for unit variants).
         payload: Option<Operand>,
     },
-    /// Get the variant discriminant (Trit): `%d = EnumTag %scrutinee`.
+    /// Get the variant index as an Integer: `%d = EnumTag %scrutinee`.
+    /// Returns `-1` for Null (spelled as the runtime value `Null`, not
+    /// as the Integer -1 — `NullCheck` is the correct guard), `0` for
+    /// variant 0, `1` for variant 1, etc. The result type changed from
+    /// Trit to Integer in v0.7.4.3-debt.7 to support 3+ variant enums
+    /// (pre-fix only distinguished variant 0 vs non-zero).
     EnumTag { dest: ValueId, scrutinee: Operand },
     /// Unpack the payload of a known variant: `%d = EnumPayload %scrutinee`.
     /// Panics at runtime if the variant tag doesn't match what the

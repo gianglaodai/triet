@@ -96,6 +96,9 @@ The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.
   - Also fixed two additional gaps surfaced during rewrite: struct-literal field positions need the expected-type push (mirrors `.debt.3`'s let-binding logic); and `OutcomeDiscriminant`/`OutcomeUnwrapValue` now cross-tolerate bare `T` values flowing through a `T?` slot (closes WA-6 — the previously-deferred lowerer cross-tolerance for match-arm dispatch beyond the 4 opcodes proven in `ffcf6de`).
   - Bootstrap regression gate (`lexer_self_smoke.rs`) green; 1247 workspace tests pass.
 
+- [x] **v0.7.4.3-debt.7** — EnumTag Integer variant index (parser.tri unblocker) — (this commit)
+  - `EnumTag` opcode: output changed from `Trit(Positive | Negative)` to `Integer(variant_index)`. Pattern::EnumVariant + Variable-as-variant now compare `Eq(tag, Integer(idx))` instead of `Eq(tag, Trit(idx==0?Positive:Negative))`. Pre-fix any enum with 3+ variants collapsed variant 1,2,3,... into indistinguishable Negative; post-fix all variants dispatch correctly. 1247 tests pass; 4-variant enum reproducer `E { A, B, C, D }` now produces `A→1 B→2 C→3 D→4`.
+
 ### Deferred (not in debt umbrella)
 
 _None — all 7 workarounds resolved. WA-6 deferral moved to .debt.6 since it surfaced together with struct-field expected-type extension and was cheap to fix in the same commit._

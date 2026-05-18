@@ -2437,12 +2437,10 @@ impl<'a> LowerCtx<'a> {
                     dest: tag,
                     scrutinee: Operand::Value(scrutinee),
                 });
-                let expected_trit = if target_idx == 0 {
-                    Trit::Positive
-                } else {
-                    Trit::Negative
-                };
-                let const_id = self.intern_constant(Constant::Trit(expected_trit));
+                // v0.7.4.3-debt.7: EnumTag now returns Integer.
+                let const_id = self.intern_constant(Constant::Integer(
+                    triet_core::Integer::new(i64::from(target_idx)).unwrap_or_default(),
+                ));
                 let const_val = self.fresh_value();
                 self.emit(Instruction::Const {
                     dest: const_val,
@@ -2546,12 +2544,11 @@ impl<'a> LowerCtx<'a> {
                     dest: tag,
                     scrutinee: Operand::Value(scrutinee),
                 });
-                let expected_trit = if target_idx == 0 {
-                    Trit::Positive
-                } else {
-                    Trit::Negative
-                };
-                let const_id = self.intern_constant(Constant::Trit(expected_trit));
+                // v0.7.4.3-debt.7: EnumTag returns Integer (variant
+                // index), so compare against the Integer constant.
+                let const_id = self.intern_constant(Constant::Integer(
+                    triet_core::Integer::new(i64::from(target_idx)).unwrap_or_default(),
+                ));
                 let const_val = self.fresh_value();
                 self.emit(Instruction::Const {
                     dest: const_val,
