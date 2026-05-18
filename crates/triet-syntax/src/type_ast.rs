@@ -59,4 +59,12 @@ pub enum TypeExpr {
         /// for binary `T~E`.
         allow_null_state: bool,
     },
+
+    /// Refined Trilean type `Trilean!` per [ADR-0021] §2.7. Parsed only
+    /// after a bare `Trilean` identifier — `Integer!` and friends are
+    /// rejected at parse time because there is no refinement concept
+    /// for other types in v0.7. Resolves to `Type::Trilean { refined: true }`.
+    ///
+    /// [ADR-0021]: ../../../../docs/decisions/0021-trilean-refinement.md
+    RefinedTrilean,
 }

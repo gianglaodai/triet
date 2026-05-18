@@ -281,6 +281,8 @@ fn resolve_type_expr_with_params(
             )),
             allow_null_state: *allow_null_state,
         },
+        // v0.7.4.3-debt.1: `Trilean!` annotation per ADR-0021 §2.7.
+        TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
     }
 }
 

@@ -61,19 +61,49 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.6b | Interpreter parity for `~0` + migrate `examples/nullable.tri` (closes `.4b` deferred) | `a48c275` |
 | v0.7.4.3-fix (struct-fields) | Wire `StructDef` field order into lowerer — kills `field_name_to_idx` placeholder | `0d4577e` |
 | v0.7.4.3-error.5a | Capstone demo (`demos/05-error-handling/` — 4 `.tri` files + README) | `c139a89` |
-| v0.7.4.3-error.5b | Capstone integration tests (4 tests in `error_handling_demo.rs`) | (this commit) |
+| v0.7.4.3-error.5b | Capstone integration tests (4 tests in `error_handling_demo.rs`) | `b5b2abc` |
 
-### In progress
-
-_None — `v0.7.4.3-error` umbrella **complete**. 11 sub-tasks + 1 fix shipped._
-
-### Closing summary
+### Closing summary (`v0.7.4.3-error` umbrella)
 
 `v0.7.4.3-error` introduced Outcome error handling (ADR-0020), Trilean! refinement (ADR-0021), and the outcome-null runtime unification (ADR-0010 Addendum §D). The `.5` capstone demo proves all locked features end-to-end through the VM tier. 1221 workspace tests pass.
 
-### After v0.7.4.3-error: v0.7.4.3 lexer port + remaining v0.7 sub-tasks
+---
 
-- [ ] **v0.7.4.3** — `compiler/lexer.tri` hand-rolled scanner port (~500-700 LOC Triết)
+## v0.7.4.3-debt — Lowerer + typecheck cleanup before lexer port (in progress)
+
+Pre-port audit surfaced **7 workaround sites** in the draft `compiler/lexer.tri`. Author opted (2026-05-19) for the no-tech-debt path: fix the underlying compiler bugs FIRST, then commit `lexer.tri` without workarounds. Rationale per [`feedback_stability_over_speed.md`][stab] + the explicit "tránh tăng thêm nợ kỹ thuật" directive.
+
+[stab]: ../home/.claude/projects/-mnt-M2-STORAGE-Work-workspace-gh-rust-triet/memory/feedback_stability_over_speed.md
+
+The draft `compiler/lexer.tri` + `crates/triet-bootstrap/tests/lexer_self_smoke.rs` stay in the working tree (uncommitted) as a regression gate — each debt fix must keep the smoke test passing.
+
+### Debt sub-tasks
+
+- [ ] **v0.7.4.3-debt.1** — Trilean! parser support (WA-3 + WA-4)
+  - Parse `Trilean!` in type-annotation position as `Type::Trilean { refined: true }`
+  - Auto-fix WA-4 (refinement preservation through `&&` once helpers can declare `-> Trilean!`)
+- [ ] **v0.7.4.3-debt.2** — Field access alphabetical bug (WA-2)
+  - Field access on a struct value produced by `~?` resolves names alphabetically instead of declared order
+  - Extend `func_return_struct` / value-struct tracking through outcome unwrap path (the `0d4577e` fix only covered StructLiteral construction)
+- [ ] **v0.7.4.3-debt.3** — E1025 false positive (WA-5)
+  - `~0` in `let x: T? = ~0` raises E1025 if enclosing function returns `T~E`
+  - Expected-type stack in `check_outcome_constructor_context` (let-binding annotation, struct field, function param — not just `current_return_type`)
+- [ ] **v0.7.4.3-debt.4** — Generic chain inference (WA-7)
+  - `push(new(), x)` fails — generic type variable doesn't back-flow through nested generic calls in the same expression
+  - Expected-type back-flow for generic arguments
+- [ ] **v0.7.4.3-debt.5** — Vector type-tag in match-arm with enum payload (WA-1)
+  - `push(tokens, …)` inside a match arm whose pattern binds an enum-variant payload triggers E2201 at runtime
+  - Lowerer audit: mutable variable type tags must survive across arm boundaries
+- [ ] **v0.7.4.3-debt.6** — Final: rewrite `compiler/lexer.tri` without workarounds + commit lexer port + bootstrap test
+  - Removes the `mode_is_normal` / `mode_is_fstring` / `interp_brace_depth` helpers + the `OneToken` field-reorder comment
+  - Restores `match top { NormalMode => …, FStringMode => …, InterpolationMode(state) => … }` shape
+
+### Deferred (not in debt umbrella)
+
+- **WA-6** Pattern match on `T?` with `~+`/`~0` arms (lowerer cross-tolerance for match-arm dispatch beyond the 4 VM opcodes proven in `ffcf6de`). Workaround via Elvis is idiomatic enough that this stays in `v0.7.x.audit` deferred list.
+
+### After v0.7.4.3-debt: remaining v0.7 sub-tasks
+
 - [ ] **v0.7.4.4** — `lexer_differential` NDJSON byte-diff test + verify gate (closes v0.7.4 umbrella)
 - [ ] **v0.7.5** — `compiler/parser.tri` + parser_differential test
 - [ ] **v0.7.6** — `compiler/modules.tri` + modules_differential test

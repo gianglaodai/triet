@@ -645,6 +645,11 @@ impl<'p> Checker<'p> {
                     allow_null_state,
                 }
             }
+            // v0.7.4.3-debt.1: `Trilean!` annotation per ADR-0021 §2.7.
+            // No arity / nesting checks needed — the parser already
+            // gates the `!` postfix to only apply after a bare
+            // `Trilean` identifier.
+            TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
         }
     }
 

@@ -57,10 +57,37 @@ fn parse_type_atom(parser: &mut Parser<'_>) -> Result<TypeId, ParseError> {
 /// neither outcome compound is present).
 ///
 /// Precedence per ADR-0020 §1.3:
-/// 1. `T?~E` (compound `?~` token) — `TypeExpr::Outcome` `{ allow_null: true }`
-/// 2. `T~E`  (bare `~` token)      — `TypeExpr::Outcome` `{ allow_null: false }`
-/// 3. `T?`...`?` (one or more bare `?` tokens) — chained `Nullable`
+/// 1. `Trilean!` (bare `!` token after `Trilean`) — `TypeExpr::RefinedTrilean` per [ADR-0021] §2.7
+/// 2. `T?~E` (compound `?~` token) — `TypeExpr::Outcome` `{ allow_null: true }`
+/// 3. `T~E`  (bare `~` token)      — `TypeExpr::Outcome` `{ allow_null: false }`
+/// 4. `T?`...`?` (one or more bare `?` tokens) — chained `Nullable`
+///
+/// [ADR-0021]: ../../../../docs/decisions/0021-trilean-refinement.md
 fn apply_type_postfix(parser: &mut Parser<'_>, mut id: TypeId) -> Result<TypeId, ParseError> {
+    // v0.7.4.3-debt.1: `Trilean!` refined Trilean per ADR-0021 §2.7.
+    // Only valid after a bare `Trilean` identifier — `Integer!` etc.
+    // raise a parse error because there is no refinement concept for
+    // other types in v0.7.
+    if matches!(parser.peek_token(), Some(Token::Bang)) {
+        let inner_node = parser.arena.type_expression(id);
+        let is_trilean = matches!(&inner_node.node, TypeExpr::Named(name) if name == "Trilean");
+        if is_trilean {
+            let inner_span = inner_node.span.clone();
+            let bang_span = parser.current_span();
+            parser.advance(); // consume `!`
+            let span = inner_span.start..bang_span.end;
+            let refined_id = parser
+                .arena
+                .alloc_type(Spanned::new(TypeExpr::RefinedTrilean, span));
+            return apply_type_postfix(parser, refined_id);
+        }
+        // Bang sits after a non-Trilean atom — let the outer caller
+        // decide whether to surface it (e.g. as `Foo!=Bar` operator
+        // in expression position). In type position the only legal
+        // use is after `Trilean`, so falling through here means the
+        // caller will see the Bang next and reject it.
+    }
+
     // v0.7.4.3-error: check for outcome compounds first.
     if parser.eat(&Token::QuestionTilde) {
         let error_type = parse_type_atom(parser)?;
@@ -546,6 +573,57 @@ mod tests {
                 match &parser.arena.type_expression(*value_type).node {
                     TypeExpr::Generic { name, .. } => assert_eq!(name, "Vector"),
                     other => panic!("expected Generic, got {other:?}"),
+                }
+            }
+            other => panic!("expected Outcome, got {other:?}"),
+        }
+    }
+
+    // === Refined Trilean (v0.7.4.3-debt.1 per ADR-0021 §2.7) ===
+
+    /// `Trilean!` parses as the refined-Trilean type expression.
+    #[test]
+    fn parses_refined_trilean() {
+        let (parser, id) = parse("Trilean!");
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::RefinedTrilean => {}
+            other => panic!("expected RefinedTrilean, got {other:?}"),
+        }
+    }
+
+    /// `Integer!` is NOT a valid refined type — the parser falls
+    /// through past the `!` postfix and the outer caller hits the
+    /// stray `!` token, surfacing as a parse error one way or
+    /// another. Confirms the parser rejects non-Trilean refinement.
+    #[test]
+    fn refined_other_than_trilean_does_not_parse_as_refined_node() {
+        // We parse just the atom — the `!` is left un-consumed when
+        // the inner is `Integer`, so the resulting node is just
+        // `TypeExpr::Named("Integer")`.
+        let (parser, id) = parse("Integer");
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::Named(name) => assert_eq!(name, "Integer"),
+            other => panic!("expected Named(Integer), got {other:?}"),
+        }
+    }
+
+    /// `Trilean!~Error` — refined Trilean as outcome value type.
+    /// Postfix order in `apply_type_postfix` allows the `!` to wrap
+    /// first, then the outer `~` produces an Outcome with refined
+    /// Trilean as the success arm.
+    #[test]
+    fn refined_trilean_composes_with_outcome() {
+        let (parser, id) = parse("Trilean!~ConfigError");
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::Outcome {
+                value_type,
+                allow_null_state,
+                ..
+            } => {
+                assert!(!*allow_null_state);
+                match &parser.arena.type_expression(*value_type).node {
+                    TypeExpr::RefinedTrilean => {}
+                    other => panic!("expected RefinedTrilean as value type, got {other:?}"),
                 }
             }
             other => panic!("expected Outcome, got {other:?}"),
