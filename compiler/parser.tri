@@ -1,0 +1,407 @@
+// Triết-in-Triết parser port — bootstrap source for the self-hosting
+// compiler ([ADR-0019][adr-0019] §A7.5 v0.7.5 umbrella).
+//
+// v0.7.5.1 — AST + Arena scaffolding. Mirrors crates/triet-syntax/'s
+// arena pattern (Vec<Spanned<T>> + u32 index handle) using Triết's
+// Vector<T> + Integer index. Minimal Expr/Pattern/TypeExpr/Stmt
+// surface for the scaffolding smoke test; each subsequent v0.7.5.N
+// sub-task expands the AST as parser features land.
+//
+// AllocResult wraps (arena, id) because IR tuple returns are deferred
+// post-v1.0 per SPEC §95 — without tuple returns, the alloc helpers
+// can't expose Rust's `&mut Arena -> ExprId` shape directly.
+//
+// [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+
+from std.io import println
+from std.collections.vector import new, push, length, get
+from std.text import from_integer, concat
+from std.assert import assert
+
+// ─────────────────────────────────────────────────────────────────
+// Numeric suffix + Trilean value (mirror triet-syntax::numeric)
+// ─────────────────────────────────────────────────────────────────
+
+public enum NumericSuffix {
+    TritSuffix,
+    TryteSuffix,
+    IntegerSuffix,
+    LongSuffix,
+}
+
+public enum TrileanValue {
+    TrueValue,
+    FalseValue,
+    UnknownValue,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Operator enums (1:1 with triet-syntax::expr::{BinaryOperator,
+// UnaryOperator})
+// ─────────────────────────────────────────────────────────────────
+
+public enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Power,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual,
+    And,
+    Or,
+    Xor,
+    Iff,
+    Implies,
+    KleeneXor,
+    KleeneIff,
+    KleeneImplies,
+}
+
+public enum UnaryOperator {
+    Negate,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Expr payload structs (Triết enum single-payload constraint —
+// each Rust struct-style variant wraps in a tagged payload)
+// ─────────────────────────────────────────────────────────────────
+
+public struct IntegerLiteralPayload {
+    value: Integer,
+    suffix: NumericSuffix?,
+}
+
+public struct TernaryLiteralPayload {
+    value: Integer,
+}
+
+public struct StringTextPayload {
+    text: String,
+}
+
+public struct IdentifierPayload {
+    name: String,
+}
+
+public struct BinaryOpPayload {
+    operator: BinaryOperator,
+    left: Integer,
+    right: Integer,
+}
+
+public struct UnaryOpPayload {
+    operator: UnaryOperator,
+    operand: Integer,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Expr — minimal v0.7.5.1 surface, expanded incrementally in .5.2+
+// ─────────────────────────────────────────────────────────────────
+
+public enum Expr {
+    IntegerLiteral(IntegerLiteralPayload),
+    TernaryLiteral(TernaryLiteralPayload),
+    TrileanLiteralExpr(TrileanValue),
+    StringLiteral(StringTextPayload),
+    NullLiteral,
+    Identifier(IdentifierPayload),
+    BinaryOp(BinaryOpPayload),
+    UnaryOp(UnaryOpPayload),
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pattern / TypeExpr / Stmt — placeholder variants. Each keeps its
+// Arena sub-arena alive in v0.7.5.1 so allocator helpers can be
+// fully wired; full enum surfaces land in v0.7.5.{3, 5}.
+// ─────────────────────────────────────────────────────────────────
+
+public enum Pattern {
+    WildcardPattern,
+}
+
+public struct NamedTypePayload {
+    name: String,
+}
+
+public enum TypeExpr {
+    NamedType(NamedTypePayload),
+}
+
+public struct ExpressionStmtPayload {
+    expression: Integer,
+}
+
+public enum Stmt {
+    ExpressionStmt(ExpressionStmtPayload),
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Spanned wrappers — every AST node carries its source byte range
+// ─────────────────────────────────────────────────────────────────
+
+public struct SpannedExpr {
+    node: Expr,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct SpannedPattern {
+    node: Pattern,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct SpannedTypeExpr {
+    node: TypeExpr,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct SpannedStmt {
+    node: Stmt,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Arena — 4 typed sub-arenas; IDs are Integer indices into each
+// ─────────────────────────────────────────────────────────────────
+
+public struct Arena {
+    expressions: Vector<SpannedExpr>,
+    patterns: Vector<SpannedPattern>,
+    types: Vector<SpannedTypeExpr>,
+    statements: Vector<SpannedStmt>,
+}
+
+public struct AllocResult {
+    arena: Arena,
+    id: Integer,
+}
+
+public function arena_new() -> Arena =
+    Arena {
+        expressions: new(),
+        patterns: new(),
+        types: new(),
+        statements: new(),
+    }
+
+public function alloc_expression(a: Arena, node: SpannedExpr) -> AllocResult = {
+    let next_id: Integer = length(a.expressions)
+    AllocResult {
+        arena: Arena {
+            expressions: push(a.expressions, node),
+            patterns: a.patterns,
+            types: a.types,
+            statements: a.statements,
+        },
+        id: next_id,
+    }
+}
+
+public function alloc_pattern(a: Arena, node: SpannedPattern) -> AllocResult = {
+    let next_id: Integer = length(a.patterns)
+    AllocResult {
+        arena: Arena {
+            expressions: a.expressions,
+            patterns: push(a.patterns, node),
+            types: a.types,
+            statements: a.statements,
+        },
+        id: next_id,
+    }
+}
+
+public function alloc_type(a: Arena, node: SpannedTypeExpr) -> AllocResult = {
+    let next_id: Integer = length(a.types)
+    AllocResult {
+        arena: Arena {
+            expressions: a.expressions,
+            patterns: a.patterns,
+            types: push(a.types, node),
+            statements: a.statements,
+        },
+        id: next_id,
+    }
+}
+
+public function alloc_statement(a: Arena, node: SpannedStmt) -> AllocResult = {
+    let next_id: Integer = length(a.statements)
+    AllocResult {
+        arena: Arena {
+            expressions: a.expressions,
+            patterns: a.patterns,
+            types: a.types,
+            statements: push(a.statements, node),
+        },
+        id: next_id,
+    }
+}
+
+public function get_expression(a: Arena, id: Integer) -> SpannedExpr =
+    get(a.expressions, id)!!
+
+public function get_pattern(a: Arena, id: Integer) -> SpannedPattern =
+    get(a.patterns, id)!!
+
+public function get_type(a: Arena, id: Integer) -> SpannedTypeExpr =
+    get(a.types, id)!!
+
+public function get_statement(a: Arena, id: Integer) -> SpannedStmt =
+    get(a.statements, id)!!
+
+public function expression_count(a: Arena) -> Integer =
+    length(a.expressions)
+
+public function pattern_count(a: Arena) -> Integer =
+    length(a.patterns)
+
+public function type_count(a: Arena) -> Integer =
+    length(a.types)
+
+public function statement_count(a: Arena) -> Integer =
+    length(a.statements)
+
+// ─────────────────────────────────────────────────────────────────
+// Convenience constructors — make smoke-test construction readable
+// ─────────────────────────────────────────────────────────────────
+
+public function spanned_expr(node: Expr, start: Integer, end: Integer) -> SpannedExpr =
+    SpannedExpr { node: node, span_start: start, span_end: end }
+
+public function int_literal(value: Integer) -> Expr =
+    IntegerLiteral(IntegerLiteralPayload { value: value, suffix: ~0 })
+
+public function binary_op(op: BinaryOperator, l_id: Integer, r_id: Integer) -> Expr =
+    BinaryOp(BinaryOpPayload { operator: op, left: l_id, right: r_id })
+
+// ─────────────────────────────────────────────────────────────────
+// Pretty-printer — sexpr form, used by smoke test to eyeball shape
+// ─────────────────────────────────────────────────────────────────
+
+function bin_op_name(op: BinaryOperator) -> String =
+    match op {
+        Add => "+",
+        Subtract => "-",
+        Multiply => "*",
+        Divide => "/",
+        Modulo => "%%",
+        Power => "**",
+        Equal => "==",
+        NotEqual => "!=",
+        LessThan => "<",
+        LessEqual => "<=",
+        GreaterThan => ">",
+        GreaterEqual => ">=",
+        And => "&&",
+        Or => "||",
+        Xor => "^",
+        Iff => "<=>",
+        Implies => "=>",
+        KleeneXor => "~^",
+        KleeneIff => "<~>",
+        KleeneImplies => "~>",
+    }
+
+function trilean_name(v: TrileanValue) -> String =
+    match v {
+        TrueValue => "true",
+        FalseValue => "false",
+        UnknownValue => "unknown",
+    }
+
+public function format_expr(a: Arena, id: Integer) -> String = {
+    let sp: SpannedExpr = get_expression(a, id)
+    match sp.node {
+        IntegerLiteral(p) => from_integer(p.value),
+        TernaryLiteral(p) => from_integer(p.value),
+        TrileanLiteralExpr(v) => trilean_name(v),
+        StringLiteral(p) => concat(concat("\"", p.text), "\""),
+        NullLiteral => "~0",
+        Identifier(p) => p.name,
+        BinaryOp(p) => {
+            let l: String = format_expr(a, p.left)
+            let r: String = format_expr(a, p.right)
+            let head: String = concat(concat("(", bin_op_name(p.operator)), " ")
+            concat(head, concat(l, concat(" ", concat(r, ")"))))
+        },
+        UnaryOp(p) => {
+            let o: String = format_expr(a, p.operand)
+            concat("(- ", concat(o, ")"))
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Smoke test — build `1 + 2 * 3` AST, traverse, verify
+// ─────────────────────────────────────────────────────────────────
+
+function main() -> Unit = {
+    let mutable arena: Arena = arena_new()
+
+    let r1: AllocResult = alloc_expression(arena, spanned_expr(int_literal(1), 0, 1))
+    arena = r1.arena
+    let id1: Integer = r1.id
+
+    let r2: AllocResult = alloc_expression(arena, spanned_expr(int_literal(2), 4, 5))
+    arena = r2.arena
+    let id2: Integer = r2.id
+
+    let r3: AllocResult = alloc_expression(arena, spanned_expr(int_literal(3), 8, 9))
+    arena = r3.arena
+    let id3: Integer = r3.id
+
+    let r4: AllocResult = alloc_expression(arena, spanned_expr(binary_op(Multiply, id2, id3), 4, 9))
+    arena = r4.arena
+    let id_mul: Integer = r4.id
+
+    let r5: AllocResult = alloc_expression(arena, spanned_expr(binary_op(Add, id1, id_mul), 0, 9))
+    arena = r5.arena
+    let id_add: Integer = r5.id
+
+    assert(expression_count(arena) == 5)
+    assert(id1 == 0)
+    assert(id2 == 1)
+    assert(id_mul == 3)
+    assert(id_add == 4)
+
+    // Cross-check that the recursive lookup through Arena rebuilds
+    // the same tree we constructed — proves arena indirection works.
+    let printed: String = format_expr(arena, id_add)
+    println(printed)
+    assert(printed == "(+ 1 (* 2 3))")
+
+    // Exercise the other three sub-arenas so each helper is covered
+    // by the scaffolding smoke. Subsequent sub-tasks expand the enum
+    // variants used here, but the alloc/get shape is locked.
+    let p1: AllocResult = alloc_pattern(arena, SpannedPattern {
+        node: WildcardPattern, span_start: 0, span_end: 1,
+    })
+    arena = p1.arena
+    assert(pattern_count(arena) == 1)
+
+    let t1: AllocResult = alloc_type(arena, SpannedTypeExpr {
+        node: NamedType(NamedTypePayload { name: "Integer" }),
+        span_start: 0,
+        span_end: 7,
+    })
+    arena = t1.arena
+    assert(type_count(arena) == 1)
+
+    let s1: AllocResult = alloc_statement(arena, SpannedStmt {
+        node: ExpressionStmt(ExpressionStmtPayload { expression: id_add }),
+        span_start: 0,
+        span_end: 9,
+    })
+    arena = s1.arena
+    assert(statement_count(arena) == 1)
+
+    println("v0.7.5.1 scaffolding smoke passed")
+}

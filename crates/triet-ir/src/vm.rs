@@ -848,18 +848,26 @@ impl Vm {
                 );
             }
             Instruction::NullUnwrap { dest, nullable } => {
+                // v0.7.5.1: symmetric to the v0.7.4.4 NullCheck cleanup.
+                // The legacy `Enum { variant: 0, payload: Some(p) }`
+                // unwrap arm was the inverse of the legacy `NullWrap`
+                // emit. With ADR-0010 Addendum §D's unified encoding,
+                // `T?` values flow as the bare value (or `Null`); no
+                // current lowerer path emits `NullWrap`, so the only
+                // hits on the legacy arm were user enums whose
+                // variant-0 happened to carry a payload — `Vector<Node>`
+                // round-trip through `get(...)!!` was reading `Leaf(10)`
+                // as `Integer(10)`, dropping the enum tag. The two
+                // canonical nullable carriers are `RuntimeValue::Null`
+                // (panic) and any other value (pass through).
                 let v = read_operand(constants, frame, nullable);
                 match v {
-                    RuntimeValue::Enum {
-                        variant: 0,
-                        payload: Some(p),
-                    } => frame.write(dest, *p),
                     RuntimeValue::Null => {
                         return Err(VmError::NullUnwrap {
                             function: func_name,
                         });
                     }
-                    _ => frame.write(dest, v), // pass through non-nullable
+                    _ => frame.write(dest, v),
                 }
             }
             Instruction::NullCheck { dest, nullable } => {

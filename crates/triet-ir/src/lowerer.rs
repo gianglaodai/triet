@@ -15,6 +15,7 @@ use triet_syntax::{
     item::{FunctionBody, FunctionDef, Item},
     numeric::{NumericSuffix, TrileanValue},
     stmt::{Block, Stmt},
+    type_ast::TypeExpr,
 };
 
 use crate::constant::{Constant, ConstantPool};
@@ -56,6 +57,31 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
                     ctx.enum_variants.insert(ed.name.clone(), variants);
                 }
                 _ => {}
+            }
+        }
+    }
+    // Pass 1a.2 — resolve which enum variants carry a struct payload so
+    // `bind_pattern_vars` (Pattern::EnumVariant) can propagate the
+    // struct identity onto the post-`EnumPayload` SSA value. Without
+    // this, `match e { Bin(p) => p.left }` always reads field slot 0
+    // because `value_struct_types[payload_val]` is empty and
+    // `FieldAccess` falls back to its placeholder. Parallel to the
+    // OutcomeArm propagation in `bind_pattern_vars` ([v0.7.4.3-debt.2]).
+    // Requires struct_fields populated by Pass 1a (above) so we can
+    // distinguish struct-typed Named payloads from primitives.
+    for module in &program.modules {
+        let arena = &program.arenas[module.arena_id.0];
+        for item in &module.items {
+            if let Item::Enum(ed) = &item.node {
+                for variant in &ed.variants {
+                    if let Some(payload_id) = variant.payload
+                        && let TypeExpr::Named(name) = &arena.type_expression(payload_id).node
+                        && ctx.struct_fields.contains_key(name)
+                    {
+                        ctx.variant_payload_struct
+                            .insert(variant.name.clone(), name.clone());
+                    }
+                }
             }
         }
     }
@@ -133,6 +159,16 @@ struct LowerCtx<'a> {
     /// proper resolution still requires the enum name from the type-checker.
     variant_index: HashMap<String, (String, u32)>,
 
+    /// Variant name → struct name when the variant's payload is a named
+    /// struct (e.g. `enum Expr { BinaryOp(BinaryOpPayload) }` registers
+    /// `BinaryOp → BinaryOpPayload`). Populated in Pass 1a.2 so
+    /// `bind_pattern_vars` can propagate struct identity onto the SSA
+    /// value bound by `match Variant(p) => ...`, fixing the v0.7.5.1
+    /// repro where `p.field` always reads slot 0. Parallel to
+    /// `value_outcome_value_struct` (which covers the `~?` /
+    /// `OutcomeArm` path).
+    variant_payload_struct: HashMap<String, String>,
+
     /// Struct definitions table: struct name → ordered field names in
     /// declaration order. Field index for a `name.field` access is the
     /// position of `field` in this Vec. Populated in pass 1.
@@ -197,6 +233,7 @@ impl<'a> LowerCtx<'a> {
             func_table: HashMap::new(),
             enum_variants: HashMap::new(),
             variant_index: HashMap::new(),
+            variant_payload_struct: HashMap::new(),
             struct_fields: HashMap::new(),
             value_struct_types: HashMap::new(),
             value_outcome_value_struct: HashMap::new(),
@@ -2621,6 +2658,7 @@ impl<'a> LowerCtx<'a> {
                 self.bind_var(name.clone(), scrutinee);
             }
             triet_syntax::pattern::Pattern::EnumVariant {
+                variant_name,
                 payload: Some(payload_pat),
                 ..
             } => {
@@ -2630,6 +2668,13 @@ impl<'a> LowerCtx<'a> {
                     dest: payload_val,
                     scrutinee: Operand::Value(scrutinee),
                 });
+                // v0.7.5.1: propagate the variant's struct payload
+                // identity onto the bound SSA value so field access
+                // through `p.field` in the arm body resolves the right
+                // slot (mirrors the OutcomeArm propagation below).
+                if let Some(s) = self.variant_payload_struct.get(variant_name).cloned() {
+                    self.value_struct_types.insert(payload_val, s);
+                }
                 self.bind_pattern_vars(&inner_pat, payload_val);
             }
             triet_syntax::pattern::Pattern::Tuple(elems) => {

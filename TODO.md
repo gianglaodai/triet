@@ -105,7 +105,7 @@ _None — all 7 workarounds resolved. WA-6 deferral moved to .debt.6 since it su
 
 ### After v0.7.4.3-debt: remaining v0.7 sub-tasks
 
-- [x] **v0.7.4.4** — `lexer_differential` NDJSON byte-diff test + verify gate (closes v0.7.4 umbrella) — (this commit)
+- [x] **v0.7.4.4** — `lexer_differential` NDJSON byte-diff test + verify gate (closes v0.7.4 umbrella) — `e1535fd`
   - New `crates/triet-bootstrap/tests/lexer_differential.rs` (20 tests). Adds `dump_ndjson(source: String) -> String` to `compiler/lexer.tri` (NDJSON bridge format per [ADR-0019 §A2]: `{"t":<Kind>,"s":[start,end][,"v":...][,"u":...]}` per token; `{"e":...}` on error). Rust-side mirror converts byte spans → char spans via `byte_to_char_index` so real `examples/*.tri` files with UTF-8 comments (box-drawing) participate in the corpus. Corpus covers keywords, operators (single + compound + outcome), nullable/force-unwrap, ternary + decimal + suffixed integer literals, string/f-string/escape handling, line comments, question-modified keywords (`if?`/`while?`), realistic function signatures, and three example files (factorial / maybe / nullable). 1267 workspace tests pass.
   - **Lowerer fix surfaced by this gate**: `lower_while_loop` now uses `rebind_var` (instead of `bind_var`) when binding the loop-header phi-dest into the live scope. Without this, an `Expr::Block` scope wrapping a match-arm body (the parser wraps `~+ x => { … }` arm bodies as `Expr::Block`) would `pop_scope` and drop the phi-dest mapping before `lower_match_expr`'s post-arm `resolve_var` snapshot, so any variable mutated through a `while` inside a match arm reverted to its pre-match value after the match. The body-scope shadow at line ~1846 still keeps in-body reads/writes pointing at the phi-dest.
   - **VM fix surfaced by this gate**: `NullCheck` no longer classifies `RuntimeValue::Enum { payload: None, .. }` as the null state. The legacy "any payload-less Enum is null" arm collided with bare unit-variant enums (e.g. `LetKw`) flowing through a `T?` slot via the ADR-0010 Addendum §D cross-tolerance — `keyword_for(slice) ?: Identifier(…)` then mis-classified every keyword as null and produced `Identifier` for `let`/`while`/etc. The two canonical null carriers remain `RuntimeValue::Null` and `Outcome { discriminator: Trit::Zero, payload: None }`.
@@ -117,7 +117,30 @@ The 4-sub-commit umbrella from [ADR-0019 §A7.4] is now done end-to-end: v0.7.4.
 
 [ADR-0019 §A2]: docs/decisions/0019-self-hosting-compiler-bootstrap.md
 [ADR-0019 §A7.4]: docs/decisions/0019-self-hosting-compiler-bootstrap.md
-- [ ] **v0.7.5** — `compiler/parser.tri` + parser_differential test
+
+---
+
+## v0.7.5 — `compiler/parser.tri` port (in progress)
+
+Per ADR-0019 §A7.5: port crates/triet-parser/ (~6027 LOC across 9 files) to a Triết-native `compiler/parser.tri`, mirroring crates/triet-syntax/'s arena pattern. Author opted (2026-05-21) for the split-umbrella approach: each sub-task ships an incremental AST + parser slice with its own integration test, rather than a single 7000-LOC commit. Rationale per `feedback_stability_over_speed.md` — debug surface co lại, per-sub-task verify gate matches v0.3 cadence.
+
+### Sub-tasks
+
+- [x] **v0.7.5.1** — AST + Arena scaffolding (this commit)
+  - New `compiler/parser.tri` (~340 LOC). Mirrors Rust `Arena` with four `Vector<Spanned*>` sub-arenas keyed by Integer index. Ships minimal `Expr` / `Pattern` / `TypeExpr` / `Stmt` surfaces (just the variants needed to prove the recursive lookup pattern); subsequent .5.N sub-tasks expand each enum as parser features land. `AllocResult` wraps `(arena, id)` because IR tuple returns are deferred post-v1.0. Smoke `main()` constructs the AST for `1 + 2 * 3`, asserts arena counts + recursive `format_expr` traversal, and exercises all four sub-arenas.
+  - **Two pre-existing lowerer/VM bugs surfaced + fixed under this sub-task:**
+    - `lowerer.rs`: `bind_pattern_vars` for `Pattern::EnumVariant` never propagated payload-struct identity onto the SSA value bound by the match, so `match e { Variant(p) => p.field }` always read slot 0. Pass 1a.2 now populates `variant_payload_struct` (variant_name → struct_name) which the bind site consults — parallel to the OutcomeArm path covered by debt.2.
+    - `vm.rs`: `NullUnwrap` retained a legacy `Enum { variant: 0, payload: Some(p) } → unwrap` arm that was the inverse of the now-unused `NullWrap` emit. Under ADR-0010 Addendum §D unified encoding, `T?` flows as the bare value (or `Null`); the legacy arm only ever hit user enums whose variant-0 carried a payload, so `Vector<Node>.get(...)!!` returned `Integer(10)` instead of `Leaf(10)`. Symmetric to the v0.7.4.4 NullCheck cleanup.
+  - 4 integration tests across `parser_arena_smoke.rs` (1) + `struct_field_through_enum_variant.rs` (3) cover the smoke + both bug fixes. 1271 workspace tests pass.
+
+- [ ] **v0.7.5.2** — Pratt expressions + atoms (`crates/triet-parser/src/expr.rs` port)
+- [ ] **v0.7.5.3** — Statements + bindings (`crates/triet-parser/src/stmt.rs` port)
+- [ ] **v0.7.5.4** — Items (function/struct/enum/module/typedef — `crates/triet-parser/src/item.rs` port, largest sub-task at ~1386 Rust LOC)
+- [ ] **v0.7.5.5** — Types + patterns (`crates/triet-parser/src/{type_expr,pattern}.rs` ports)
+- [ ] **v0.7.5.6** — Error recovery + `parser_differential` NDJSON gate (closes v0.7.5 umbrella)
+
+### Remaining v0.7 sub-tasks after parser
+
 - [ ] **v0.7.6** — `compiler/modules.tri` + modules_differential test
 - [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
 - [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
