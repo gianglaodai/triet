@@ -14,6 +14,8 @@
 //!
 //! The returned error list is empty on success.
 
+use std::collections::HashMap;
+
 use triet_modules::ResolvedProgram;
 use triet_syntax::Item;
 
@@ -31,15 +33,45 @@ use crate::{check::check_with_env, env::TypeEnvironment, error::TypeError, types
 pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
     let mut all_errors = Vec::new();
 
-    // Pass 1: Collect declared types per module.
-    let module_types: Vec<Vec<(String, Type)>> = program
+    // Pass 1: Collect declared types per module. Iterate to a fixed point
+    // so cross-module type references resolve into full UserStruct/
+    // UserEnum shapes rather than `Type::Unknown` — without this fixup,
+    // `struct Spanned { token: Token }` declared in module A and imported
+    // by module B would leave `Spanned`'s `token` field typed as Unknown
+    // when B looks it up, breaking expressions like
+    // `match spanned.token { Variant(payload) => ... }` (the
+    // `bind_pattern` UserEnum guard fails, so the payload binding never
+    // enters scope and E1002 fires on the payload reference). Bound at
+    // `modules.len()` iterations — deeper dep chains converge before
+    // that. Surfaced by the v0.7.5.2 parser.tri port (cross-module
+    // imports of Token + SpannedToken from compiler/lexer.tri).
+    let mut module_types: Vec<Vec<(String, Type)>> = program
         .modules
         .iter()
         .map(|module| {
             let arena = program.arena(module);
-            collect_declared_types(arena, &module.items)
+            collect_declared_types(arena, &module.items, &HashMap::new())
         })
         .collect();
+    let max_iterations = program.modules.len();
+    for _ in 0..max_iterations {
+        let name_table: HashMap<String, Type> = module_types
+            .iter()
+            .flat_map(|m| m.iter().map(|(n, t)| (n.clone(), t.clone())))
+            .collect();
+        let next: Vec<Vec<(String, Type)>> = program
+            .modules
+            .iter()
+            .map(|module| {
+                let arena = program.arena(module);
+                collect_declared_types(arena, &module.items, &name_table)
+            })
+            .collect();
+        if next == module_types {
+            break;
+        }
+        module_types = next;
+    }
 
     // Pass 2: For each module, build env with imports, then check.
     for (idx, module) in program.modules.iter().enumerate() {
@@ -90,9 +122,13 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
 }
 
 /// Walk a module's items and extract declared types for each named item.
+/// `name_table` (typically built from the previous Pass 1 iteration) lets
+/// cross-module user-type references resolve into their full `UserStruct`
+/// / `UserEnum` shapes rather than falling through to `Type::Unknown`.
 fn collect_declared_types(
     arena: &triet_syntax::Arena,
     items: &[triet_syntax::Spanned<Item>],
+    name_table: &HashMap<String, Type>,
 ) -> Vec<(String, Type)> {
     let mut result = Vec::new();
 
@@ -103,11 +139,16 @@ fn collect_declared_types(
                     .parameters
                     .iter()
                     .map(|p| {
-                        resolve_type_expr_with_params(arena, p.type_annotation, &def.type_params)
+                        resolve_type_expr_with_params(
+                            arena,
+                            p.type_annotation,
+                            &def.type_params,
+                            name_table,
+                        )
                     })
                     .collect();
                 let return_type = def.return_type.map_or(Type::Unit, |id| {
-                    resolve_type_expr_with_params(arena, id, &def.type_params)
+                    resolve_type_expr_with_params(arena, id, &def.type_params, name_table)
                 });
                 result.push((
                     def.name.clone(),
@@ -123,14 +164,20 @@ fn collect_declared_types(
                 type_annotation,
                 ..
             } => {
-                let ty = type_annotation.map_or(Type::Unknown, |id| resolve_type_expr(arena, id));
+                let ty = type_annotation
+                    .map_or(Type::Unknown, |id| resolve_type_expr(arena, id, name_table));
                 result.push((name.clone(), ty));
             }
             Item::Struct(def) => {
                 let fields: Vec<(String, Type)> = def
                     .fields
                     .iter()
-                    .map(|f| (f.name.clone(), resolve_type_expr(arena, f.type_annotation)))
+                    .map(|f| {
+                        (
+                            f.name.clone(),
+                            resolve_type_expr(arena, f.type_annotation, name_table),
+                        )
+                    })
                     .collect();
                 result.push((
                     def.name.clone(),
@@ -146,7 +193,9 @@ fn collect_declared_types(
                     .variants
                     .iter()
                     .map(|v| {
-                        let payload = v.payload.map(|tid| Box::new(resolve_type_expr(arena, tid)));
+                        let payload = v
+                            .payload
+                            .map(|tid| Box::new(resolve_type_expr(arena, tid, name_table)));
                         (v.name.clone(), payload)
                     })
                     .collect();
@@ -167,10 +216,15 @@ fn collect_declared_types(
 }
 
 /// Resolve a type expression to a Type. Handles built-in names, tuples,
-/// nullables, and function types. User-defined types resolve to Unknown
-/// at this stage (they're handled during full checking).
-fn resolve_type_expr(arena: &triet_syntax::Arena, id: triet_syntax::TypeId) -> Type {
-    resolve_type_expr_with_params(arena, id, &[])
+/// nullables, and function types. User-defined types resolve via
+/// `name_table` when known; otherwise fall through to `Type::Unknown`
+/// (single-module Pass 2 still re-resolves through env).
+fn resolve_type_expr(
+    arena: &triet_syntax::Arena,
+    id: triet_syntax::TypeId,
+    name_table: &HashMap<String, Type>,
+) -> Type {
+    resolve_type_expr_with_params(arena, id, &[], name_table)
 }
 
 /// Like [`resolve_type_expr`] but treats `type_params` (e.g. `T`, `U`)
@@ -182,6 +236,7 @@ fn resolve_type_expr_with_params(
     arena: &triet_syntax::Arena,
     id: triet_syntax::TypeId,
     type_params: &[String],
+    name_table: &HashMap<String, Type>,
 ) -> Type {
     use triet_syntax::TypeExpr;
     match &arena.type_expression(id).node {
@@ -199,18 +254,16 @@ fn resolve_type_expr_with_params(
             "String" => Type::String,
             "Unit" => Type::Unit,
             other if type_params.iter().any(|p| p == other) => Type::TypeParam(other.to_owned()),
-            _ => Type::Unknown,
+            other => name_table.get(other).cloned().unwrap_or(Type::Unknown),
         },
         TypeExpr::Tuple(elements) => Type::Tuple(
             elements
                 .iter()
-                .map(|t| resolve_type_expr_with_params(arena, *t, type_params))
+                .map(|t| resolve_type_expr_with_params(arena, *t, type_params, name_table))
                 .collect(),
         ),
         TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr_with_params(
-            arena,
-            *inner,
-            type_params,
+            arena, *inner, type_params, name_table,
         ))),
         TypeExpr::Function {
             parameters,
@@ -219,12 +272,13 @@ fn resolve_type_expr_with_params(
             type_params: Vec::new(),
             parameters: parameters
                 .iter()
-                .map(|t| resolve_type_expr_with_params(arena, *t, type_params))
+                .map(|t| resolve_type_expr_with_params(arena, *t, type_params, name_table))
                 .collect(),
             return_type: Box::new(resolve_type_expr_with_params(
                 arena,
                 *return_type,
                 type_params,
+                name_table,
             )),
         },
         // v0.7.4.2: Vector<T>/HashMap<K,V> in stdlib stub signatures.
@@ -239,7 +293,7 @@ fn resolve_type_expr_with_params(
                 type_params: Vec::new(),
                 fields: vec![(
                     "__element".into(),
-                    resolve_type_expr_with_params(arena, arguments[0], type_params),
+                    resolve_type_expr_with_params(arena, arguments[0], type_params, name_table),
                 )],
             }
         }
@@ -250,11 +304,11 @@ fn resolve_type_expr_with_params(
                 fields: vec![
                     (
                         "__key".into(),
-                        resolve_type_expr_with_params(arena, arguments[0], type_params),
+                        resolve_type_expr_with_params(arena, arguments[0], type_params, name_table),
                     ),
                     (
                         "__value".into(),
-                        resolve_type_expr_with_params(arena, arguments[1], type_params),
+                        resolve_type_expr_with_params(arena, arguments[1], type_params, name_table),
                     ),
                 ],
             }
@@ -273,11 +327,13 @@ fn resolve_type_expr_with_params(
                 arena,
                 *value_type,
                 type_params,
+                name_table,
             )),
             error_type: Box::new(resolve_type_expr_with_params(
                 arena,
                 *error_type,
                 type_params,
+                name_table,
             )),
             allow_null_state: *allow_null_state,
         },
@@ -567,6 +623,66 @@ function main() = println("hello")"#,
             "function f(a: String, b: String) -> String = \
              if a == b { \"eq\" } else { \"ne\" }",
             0,
+        );
+    }
+
+    // ── Cross-module type resolution (v0.7.5.2) ─────────────────────
+
+    /// Pre-fix: a struct whose field type was a user-defined enum from
+    /// another module resolved to `Type::Unknown` in Pass 1 (cross-
+    /// module names had no name table), so downstream match destructure
+    /// against the field failed with E1002 "undefined name". This test
+    /// proves the iterated Pass-1 fixed-point resolves the field type
+    /// into the real `UserEnum` shape so `bind_pattern` can introduce
+    /// the payload binding.
+    #[test]
+    fn cross_module_struct_field_match_payload_binds() {
+        let errors = check_filesystem(&[
+            (
+                "main.tri",
+                "module lib
+from crate.lib import Token, Spanned, IntPayload
+function describe(sp: Spanned) -> Integer = match sp.token {
+    IntLit(p) => p.value,
+    Kw => -1,
+}
+function main() -> Integer = describe(Spanned { token: IntLit(IntPayload { value: 7 }), span_start: 0 })",
+            ),
+            (
+                "lib.tri",
+                "public struct IntPayload { value: Integer }
+public enum Token { Kw, IntLit(IntPayload) }
+public struct Spanned { token: Token, span_start: Integer }",
+            ),
+        ]);
+        assert!(
+            errors.is_empty(),
+            "cross-module struct.field match must type-check: {errors:?}"
+        );
+    }
+
+    /// Same shape but the struct field is itself a struct (not an
+    /// enum). Pre-fix the imported nested struct's fields were also
+    /// Unknown, so `outer.inner.leaf` couldn't resolve `leaf`.
+    #[test]
+    fn cross_module_nested_struct_field_access() {
+        let errors = check_filesystem(&[
+            (
+                "main.tri",
+                "module lib
+from crate.lib import Outer, Inner
+function read(o: Outer) -> Integer = o.inner.leaf
+function main() -> Integer = read(Outer { inner: Inner { leaf: 9 }, tag: 0 })",
+            ),
+            (
+                "lib.tri",
+                "public struct Inner { leaf: Integer }
+public struct Outer { inner: Inner, tag: Integer }",
+            ),
+        ]);
+        assert!(
+            errors.is_empty(),
+            "cross-module nested struct access must type-check: {errors:?}"
         );
     }
 }

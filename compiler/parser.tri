@@ -4,30 +4,54 @@
 // v0.7.5.1 — AST + Arena scaffolding. Mirrors crates/triet-syntax/'s
 // arena pattern (Vec<Spanned<T>> + u32 index handle) using Triết's
 // Vector<T> + Integer index. Minimal Expr/Pattern/TypeExpr/Stmt
-// surface for the scaffolding smoke test; each subsequent v0.7.5.N
-// sub-task expands the AST as parser features land.
+// surface for the scaffolding smoke; subsequent sub-tasks expand
+// each enum as parser features land.
 //
-// AllocResult wraps (arena, id) because IR tuple returns are deferred
-// post-v1.0 per SPEC §95 — without tuple returns, the alloc helpers
-// can't expose Rust's `&mut Arena -> ExprId` shape directly.
+// v0.7.5.2 — Pratt expressions + atoms. Wires up compiler/lexer.tri
+// via `module lexer;` + `from crate.lexer import …` and grows the
+// parser surface to cover: literals (Integer / Ternary / Trilean /
+// String / NullLiteral / Identifier), parenthesised expressions,
+// unary `Negate`, the full 17-variant `BinaryOperator` Pratt
+// precedence ladder, force-unwrap `!!`, the Outcome operator trio
+// (`~+` / `~0` / `~-` constructors and the `~?` / `~:` postfix
+// operators), Elvis `?:`, range `..` / `..=`, and the dotted
+// postfix family (Call / FieldAccess / MethodCall). Block / If /
+// Match / StructLiteral / FString / Lambda / Tuple / safe-access
+// stay deferred to v0.7.5.3+ since they require the statement
+// layer or item-level context. ParserState threads `(tokens, cursor,
+// arena)` functionally and parse helpers return `ParseStep~ParseError`
+// (wrapper struct, not a tuple — IR tuple returns defer post-v1.0).
+//
+// AllocResult / ParseStep wrap (arena, id) / (state, expr_id) because
+// IR tuple returns are deferred post-v1.0 per SPEC §95 — without
+// tuple returns, the alloc helpers can't expose Rust's
+// `&mut Arena -> ExprId` shape directly.
+//
+// Variant names carry an `Expr` / `Pattern` / `Type` / `Stmt`
+// suffix to avoid collisions with the Token enum's variants once
+// `crate.lexer` is in scope — Triết binds enum variants into a
+// single global namespace (last-write-wins). Confirmed via the
+// E1003 typecheck error a bare `Add` raises when both `FooKind`
+// and `BarKind` declare it.
 //
 // [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+
+module lexer;
 
 from std.io import println
 from std.collections.vector import new, push, length, get
 from std.text import from_integer, concat
 from std.assert import assert
 
-// ─────────────────────────────────────────────────────────────────
-// Numeric suffix + Trilean value (mirror triet-syntax::numeric)
-// ─────────────────────────────────────────────────────────────────
+from crate.lexer import NumericSuffix, IntLiteral, Token, SpannedToken
+from crate.lexer import StringPayload, IntPayload, LexError, lex
 
-public enum NumericSuffix {
-    TritSuffix,
-    TryteSuffix,
-    IntegerSuffix,
-    LongSuffix,
-}
+// ─────────────────────────────────────────────────────────────────
+// Trilean AST value — not in the lexer (the lexer emits the
+// `TrueKw`/`FalseKw`/`UnknownKw` tokens; the parser maps those to
+// this 3-state enum so the AST stores the resolved value, not the
+// raw token).
+// ─────────────────────────────────────────────────────────────────
 
 public enum TrileanValue {
     TrueValue,
@@ -68,26 +92,20 @@ public enum UnaryOperator {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Expr payload structs (Triết enum single-payload constraint —
-// each Rust struct-style variant wraps in a tagged payload)
+// OutcomeArm — which arm of a `T~E` / `T?~E` outcome the AST node
+// constructs or matches. Trit-shaped per ADR-0020 §2.
 // ─────────────────────────────────────────────────────────────────
 
-public struct IntegerLiteralPayload {
-    value: Integer,
-    suffix: NumericSuffix?,
+public enum OutcomeArm {
+    PositiveArm,
+    ZeroArm,
+    NegativeArm,
 }
 
-public struct TernaryLiteralPayload {
-    value: Integer,
-}
-
-public struct StringTextPayload {
-    text: String,
-}
-
-public struct IdentifierPayload {
-    name: String,
-}
+// ─────────────────────────────────────────────────────────────────
+// Expr payload structs — Triết enum variants take a single payload,
+// so every Rust struct-style variant becomes its own tagged record.
+// ─────────────────────────────────────────────────────────────────
 
 public struct BinaryOpPayload {
     operator: BinaryOperator,
@@ -100,25 +118,78 @@ public struct UnaryOpPayload {
     operand: Integer,
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Expr — minimal v0.7.5.1 surface, expanded incrementally in .5.2+
-// ─────────────────────────────────────────────────────────────────
+public struct CallPayload {
+    callee: Integer,
+    arguments: Vector<Integer>,
+}
 
-public enum Expr {
-    IntegerLiteral(IntegerLiteralPayload),
-    TernaryLiteral(TernaryLiteralPayload),
-    TrileanLiteralExpr(TrileanValue),
-    StringLiteral(StringTextPayload),
-    NullLiteral,
-    Identifier(IdentifierPayload),
-    BinaryOp(BinaryOpPayload),
-    UnaryOp(UnaryOpPayload),
+public struct FieldAccessPayload {
+    object: Integer,
+    field: String,
+}
+
+public struct MethodCallPayload {
+    receiver: Integer,
+    method: String,
+    arguments: Vector<Integer>,
+}
+
+public struct OutcomeConstructorPayload {
+    arm: OutcomeArm,
+    payload: Integer?,
+}
+
+public struct OutcomePropagatePayload {
+    inner: Integer,
+    capture_name: String?,
+    early_return: Integer,
+}
+
+public struct OutcomeDefaultPayload {
+    inner: Integer,
+    default_expr: Integer,
+}
+
+public struct ElvisOpPayload {
+    object: Integer,
+    default_expr: Integer,
+}
+
+public struct RangePayload {
+    range_start: Integer,
+    range_end: Integer,
+    inclusive: Trilean!,
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Pattern / TypeExpr / Stmt — placeholder variants. Each keeps its
-// Arena sub-arena alive in v0.7.5.1 so allocator helpers can be
-// fully wired; full enum surfaces land in v0.7.5.{3, 5}.
+// Expr — v0.7.5.2 surface. Block / If / Match / Lambda / Tuple /
+// FStringLiteral / StructLiteral / EnumLiteral / Safe* operators /
+// TupleIndex defer to subsequent sub-tasks per the umbrella plan.
+// ─────────────────────────────────────────────────────────────────
+
+public enum Expr {
+    IntegerLiteralExpr(IntLiteral),
+    TernaryLiteralExpr(IntLiteral),
+    TrileanLiteralExpr(TrileanValue),
+    StringLiteralExpr(StringPayload),
+    NullLiteralExpr,
+    IdentifierExpr(StringPayload),
+    UnaryOpExpr(UnaryOpPayload),
+    BinaryOpExpr(BinaryOpPayload),
+    ForceUnwrapExpr(Integer),
+    CallExpr(CallPayload),
+    FieldAccessExpr(FieldAccessPayload),
+    MethodCallExpr(MethodCallPayload),
+    OutcomeConstructorExpr(OutcomeConstructorPayload),
+    OutcomePropagateExpr(OutcomePropagatePayload),
+    OutcomeDefaultExpr(OutcomeDefaultPayload),
+    ElvisOpExpr(ElvisOpPayload),
+    RangeExpr(RangePayload),
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pattern / TypeExpr / Stmt — still placeholder surfaces from
+// v0.7.5.1. Expanded in v0.7.5.{3, 5}.
 // ─────────────────────────────────────────────────────────────────
 
 public enum Pattern {
@@ -170,7 +241,7 @@ public struct SpannedStmt {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Arena — 4 typed sub-arenas; IDs are Integer indices into each
+// Arena — 4 typed sub-arenas indexed by Integer
 // ─────────────────────────────────────────────────────────────────
 
 public struct Arena {
@@ -270,20 +341,928 @@ public function statement_count(a: Arena) -> Integer =
     length(a.statements)
 
 // ─────────────────────────────────────────────────────────────────
-// Convenience constructors — make smoke-test construction readable
+// Convenience constructors — make smoke construction readable.
 // ─────────────────────────────────────────────────────────────────
 
 public function spanned_expr(node: Expr, start: Integer, end: Integer) -> SpannedExpr =
     SpannedExpr { node: node, span_start: start, span_end: end }
 
 public function int_literal(value: Integer) -> Expr =
-    IntegerLiteral(IntegerLiteralPayload { value: value, suffix: ~0 })
+    IntegerLiteralExpr(IntLiteral { value: value, suffix: ~0 })
 
 public function binary_op(op: BinaryOperator, l_id: Integer, r_id: Integer) -> Expr =
-    BinaryOp(BinaryOpPayload { operator: op, left: l_id, right: r_id })
+    BinaryOpExpr(BinaryOpPayload { operator: op, left: l_id, right: r_id })
 
 // ─────────────────────────────────────────────────────────────────
-// Pretty-printer — sexpr form, used by smoke test to eyeball shape
+// ParseError — only the variants the v0.7.5.2 surface can raise.
+// Recovery + multi-error reporting land in v0.7.5.6.
+// ─────────────────────────────────────────────────────────────────
+
+public struct ParseErrorDetail {
+    expected: String,
+    found: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public enum ParseError {
+    UnexpectedTokenErr(ParseErrorDetail),
+    UnexpectedEofErr(ParseErrorDetail),
+    LexerFailedErr(ParseErrorDetail),
+}
+
+// ─────────────────────────────────────────────────────────────────
+// ParserState — token cursor + arena. Threaded functionally through
+// every parse_* helper. ParseStep wraps the (state, expr_id) pair.
+// ─────────────────────────────────────────────────────────────────
+
+public struct ParserState {
+    tokens: Vector<SpannedToken>,
+    cursor: Integer,
+    arena: Arena,
+}
+
+public struct ParseStep {
+    state: ParserState,
+    expr_id: Integer,
+}
+
+public function parser_new(tokens: Vector<SpannedToken>) -> ParserState =
+    ParserState { tokens: tokens, cursor: 0, arena: arena_new() }
+
+// ── Token consumer helpers ──────────────────────────────────────
+
+public function peek(s: ParserState) -> SpannedToken? =
+    get(s.tokens, s.cursor)
+
+public function advance(s: ParserState) -> ParserState =
+    ParserState { tokens: s.tokens, cursor: s.cursor + 1, arena: s.arena }
+
+public function at_end(s: ParserState) -> Trilean! =
+    s.cursor >= length(s.tokens)
+
+public function eof_position(s: ParserState) -> Integer = {
+    let tlen: Integer = length(s.tokens)
+    if tlen == 0 {
+        0
+    } else {
+        let last: SpannedToken = get(s.tokens, tlen - 1)!!
+        last.span_end
+    }
+}
+
+function token_kind_label(t: Token) -> String =
+    match t {
+        FunctionKw => "function",
+        LetKw => "let",
+        MutableKw => "mutable",
+        ConstantKw => "constant",
+        TypeKw => "type",
+        IfKw => "if",
+        IfQKw => "if?",
+        ElseKw => "else",
+        MatchKw => "match",
+        ReturnKw => "return",
+        ForKw => "for",
+        WhileKw => "while",
+        WhileQKw => "while?",
+        LoopKw => "loop",
+        BreakKw => "break",
+        ContinueKw => "continue",
+        InKw => "in",
+        TrueKw => "true",
+        FalseKw => "false",
+        UnknownKw => "unknown",
+        NullKw => "null",
+        NotKw => "not",
+        AndKw => "and",
+        OrKw => "or",
+        XorKw => "xor",
+        IffKw => "iff",
+        ImpliesKw => "implies",
+        KleeneImpliesKw => "kleene_implies",
+        KleeneXorKw => "kleene_xor",
+        KleeneIffKw => "kleene_iff",
+        ImportKw => "import",
+        FromKw => "from",
+        AsKw => "as",
+        ModuleKw => "module",
+        PublicKw => "public",
+        OwnedKw => "owned",
+        StructKw => "struct",
+        EnumKw => "enum",
+        CrateKw => "crate",
+        SelfKw => "self",
+        SuperKw => "super",
+        LtEqGt => "<=>",
+        LtTildeGt => "<~>",
+        DotDotEq => "..=",
+        DotDot => "..",
+        EqEq => "==",
+        NotEq => "!=",
+        LtEq => "<=",
+        GtEq => ">=",
+        AndAnd => "&&",
+        OrOr => "||",
+        FatArrow => "=>",
+        TildeArrow => "~>",
+        TildeCaret => "~^",
+        QuestionTilde => "?~",
+        TildePlus => "~+",
+        TildeMinus => "~-",
+        TildeZero => "~0",
+        TildeQuestion => "~?",
+        TildeColon => "~:",
+        Tilde => "~",
+        ThinArrow => "->",
+        QuestionDot => "?.",
+        QuestionColon => "?:",
+        BangBang => "!!",
+        StarStar => "**",
+        Plus => "+",
+        Minus => "-",
+        Star => "*",
+        Slash => "/",
+        PercentPercent => "%%",
+        Assign => "=",
+        Lt => "<",
+        Gt => ">",
+        Bang => "!",
+        Caret => "^",
+        Question => "?",
+        Colon => ":",
+        Semi => ";",
+        Comma => ",",
+        Dot => ".",
+        LBrace => "{",
+        RBrace => "}",
+        LBracket => "[",
+        RBracket => "]",
+        LParen => "(",
+        RParen => ")",
+        Pipe => "|",
+        Underscore => "_",
+        IntegerLiteral(_) => "<int>",
+        TernaryLiteral(_) => "<ternary>",
+        StringLiteral(_) => "<string>",
+        Identifier(_) => "<ident>",
+        FStringStart => "f\"",
+        FStringText(_) => "<fstr-text>",
+        InterpolationStart => "${",
+        InterpolationEnd => "}",
+        FStringEnd => "\"",
+    }
+
+public function current_kind_label(s: ParserState) -> String = {
+    let sp: SpannedToken? = peek(s)
+    match sp {
+        ~0 => "<eof>",
+        _ => token_kind_label(sp!!.token),
+    }
+}
+
+public function current_span_start(s: ParserState) -> Integer = {
+    let sp: SpannedToken? = peek(s)
+    match sp {
+        ~0 => eof_position(s),
+        _ => sp!!.span_start,
+    }
+}
+
+public function current_span_end(s: ParserState) -> Integer = {
+    let sp: SpannedToken? = peek(s)
+    match sp {
+        ~0 => eof_position(s),
+        _ => sp!!.span_end,
+    }
+}
+
+function make_unexpected_token_err(s: ParserState, expected: String) -> ParseError = {
+    let detail: ParseErrorDetail = ParseErrorDetail {
+        expected: expected,
+        found: current_kind_label(s),
+        span_start: current_span_start(s),
+        span_end: current_span_end(s),
+    }
+    UnexpectedTokenErr(detail)
+}
+
+function make_unexpected_eof_err(s: ParserState, expected: String) -> ParseError = {
+    let pos: Integer = eof_position(s)
+    let detail: ParseErrorDetail = ParseErrorDetail {
+        expected: expected,
+        found: "<eof>",
+        span_start: pos,
+        span_end: pos,
+    }
+    UnexpectedEofErr(detail)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Token classification — Pratt precedence tables. Mirrors
+// crates/triet-parser/src/expr.rs binding-power layout.
+// ─────────────────────────────────────────────────────────────────
+
+public struct BindingPowerPair {
+    bp_left: Integer,
+    bp_right: Integer,
+}
+
+function binding_power(op: BinaryOperator) -> BindingPowerPair =
+    match op {
+        Implies => BindingPowerPair { bp_left: 1, bp_right: 0 },
+        KleeneImplies => BindingPowerPair { bp_left: 1, bp_right: 0 },
+        Iff => BindingPowerPair { bp_left: 2, bp_right: 3 },
+        KleeneIff => BindingPowerPair { bp_left: 2, bp_right: 3 },
+        Or => BindingPowerPair { bp_left: 4, bp_right: 5 },
+        Xor => BindingPowerPair { bp_left: 6, bp_right: 7 },
+        KleeneXor => BindingPowerPair { bp_left: 6, bp_right: 7 },
+        And => BindingPowerPair { bp_left: 8, bp_right: 9 },
+        Equal => BindingPowerPair { bp_left: 10, bp_right: 11 },
+        NotEqual => BindingPowerPair { bp_left: 10, bp_right: 11 },
+        LessThan => BindingPowerPair { bp_left: 12, bp_right: 13 },
+        LessEqual => BindingPowerPair { bp_left: 12, bp_right: 13 },
+        GreaterThan => BindingPowerPair { bp_left: 12, bp_right: 13 },
+        GreaterEqual => BindingPowerPair { bp_left: 12, bp_right: 13 },
+        Add => BindingPowerPair { bp_left: 18, bp_right: 19 },
+        Subtract => BindingPowerPair { bp_left: 18, bp_right: 19 },
+        Multiply => BindingPowerPair { bp_left: 20, bp_right: 21 },
+        Divide => BindingPowerPair { bp_left: 20, bp_right: 21 },
+        Modulo => BindingPowerPair { bp_left: 20, bp_right: 21 },
+        Power => BindingPowerPair { bp_left: 26, bp_right: 25 },
+    }
+
+function elvis_binding_power() -> BindingPowerPair =
+    BindingPowerPair { bp_left: 15, bp_right: 14 }
+
+function range_binding_power() -> BindingPowerPair =
+    BindingPowerPair { bp_left: 16, bp_right: 17 }
+
+function unary_right_bp() -> Integer = 23
+function postfix_left_bp() -> Integer = 28
+
+function classify_binary(t: Token) -> BinaryOperator? =
+    match t {
+        Plus => Add,
+        Minus => Subtract,
+        Star => Multiply,
+        Slash => Divide,
+        PercentPercent => Modulo,
+        StarStar => Power,
+        EqEq => Equal,
+        NotEq => NotEqual,
+        Lt => LessThan,
+        LtEq => LessEqual,
+        Gt => GreaterThan,
+        GtEq => GreaterEqual,
+        AndAnd => And,
+        AndKw => And,
+        OrOr => Or,
+        OrKw => Or,
+        Caret => Xor,
+        XorKw => Xor,
+        TildeCaret => KleeneXor,
+        KleeneXorKw => KleeneXor,
+        LtEqGt => Iff,
+        IffKw => Iff,
+        LtTildeGt => KleeneIff,
+        KleeneIffKw => KleeneIff,
+        FatArrow => Implies,
+        ImpliesKw => Implies,
+        TildeArrow => KleeneImplies,
+        KleeneImpliesKw => KleeneImplies,
+        _ => ~0,
+    }
+
+function is_postfix_token(t: Token) -> Trilean! =
+    match t {
+        Dot => true,
+        QuestionDot => true,
+        LParen => true,
+        BangBang => true,
+        TildeQuestion => true,
+        TildeColon => true,
+        _ => false,
+    }
+
+function is_elvis_token(t: Token) -> Trilean! =
+    match t {
+        QuestionColon => true,
+        _ => false,
+    }
+
+function is_range_token(t: Token) -> Trilean! =
+    match t {
+        DotDot => true,
+        DotDotEq => true,
+        _ => false,
+    }
+
+// ─────────────────────────────────────────────────────────────────
+// Pratt parser — entry + recursive driver
+// ─────────────────────────────────────────────────────────────────
+
+public function parse_expression(s: ParserState) -> ParseStep~ParseError =
+    parse_expression_bp(s, 0)
+
+function parse_expression_bp(s: ParserState, min_bp: Integer) -> ParseStep~ParseError = {
+    let prefix_step: ParseStep = parse_prefix(s) ~? |err| ~- err
+    parse_infix_chain(prefix_step.state, prefix_step.expr_id, min_bp)
+}
+
+function parse_infix_chain(s: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
+    let next_opt: SpannedToken? = peek(s)
+    match next_opt {
+        ~0 => ~+ ParseStep { state: s, expr_id: lhs },
+        _ => {
+            let next: SpannedToken = next_opt!!
+            // Postfix has highest binding power; try it first.
+            if is_postfix_token(next.token) {
+                let pf_bp: Integer = postfix_left_bp()
+                if pf_bp < min_bp {
+                    ~+ ParseStep { state: s, expr_id: lhs }
+                } else {
+                    let post_step: ParseStep = parse_postfix(s, lhs) ~? |err| ~- err
+                    parse_infix_chain(post_step.state, post_step.expr_id, min_bp)
+                }
+            } else {
+                if is_elvis_token(next.token) {
+                    parse_elvis_infix(s, lhs, min_bp)
+                } else {
+                    if is_range_token(next.token) {
+                        parse_range_infix(s, lhs, min_bp)
+                    } else {
+                        let bin_opt: BinaryOperator? = classify_binary(next.token)
+                        match bin_opt {
+                            ~0 => ~+ ParseStep { state: s, expr_id: lhs },
+                            _ => {
+                                let op: BinaryOperator = bin_opt!!
+                                let bps: BindingPowerPair = binding_power(op)
+                                if bps.bp_left < min_bp {
+                                    ~+ ParseStep { state: s, expr_id: lhs }
+                                } else {
+                                    let advanced: ParserState = advance(s)
+                                    let rhs_step: ParseStep = parse_expression_bp(advanced, bps.bp_right) ~? |err| ~- err
+                                    let lhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, lhs)
+                                    let rhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, rhs_step.expr_id)
+                                    let bin_node: Expr = binary_op(op, lhs, rhs_step.expr_id)
+                                    let alloc_res: AllocResult = alloc_expression(
+                                        rhs_step.state.arena,
+                                        spanned_expr(bin_node, lhs_sp.span_start, rhs_sp.span_end),
+                                    )
+                                    let new_state: ParserState = ParserState {
+                                        tokens: rhs_step.state.tokens,
+                                        cursor: rhs_step.state.cursor,
+                                        arena: alloc_res.arena,
+                                    }
+                                    parse_infix_chain(new_state, alloc_res.id, min_bp)
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        },
+    }
+}
+
+function parse_elvis_infix(s: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
+    let bps: BindingPowerPair = elvis_binding_power()
+    if bps.bp_left < min_bp {
+        ~+ ParseStep { state: s, expr_id: lhs }
+    } else {
+        let advanced: ParserState = advance(s)
+        let rhs_step: ParseStep = parse_expression_bp(advanced, bps.bp_right) ~? |err| ~- err
+        let lhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, lhs)
+        let rhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, rhs_step.expr_id)
+        let payload: ElvisOpPayload = ElvisOpPayload { object: lhs, default_expr: rhs_step.expr_id }
+        let alloc_res: AllocResult = alloc_expression(
+            rhs_step.state.arena,
+            spanned_expr(ElvisOpExpr(payload), lhs_sp.span_start, rhs_sp.span_end),
+        )
+        let new_state: ParserState = ParserState {
+            tokens: rhs_step.state.tokens,
+            cursor: rhs_step.state.cursor,
+            arena: alloc_res.arena,
+        }
+        parse_infix_chain(new_state, alloc_res.id, min_bp)
+    }
+}
+
+function parse_range_infix(s: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
+    let bps: BindingPowerPair = range_binding_power()
+    if bps.bp_left < min_bp {
+        ~+ ParseStep { state: s, expr_id: lhs }
+    } else {
+        let next: SpannedToken = peek(s)!!
+        let inclusive: Trilean! = match next.token {
+            DotDotEq => true,
+            _ => false,
+        }
+        let advanced: ParserState = advance(s)
+        let rhs_step: ParseStep = parse_expression_bp(advanced, bps.bp_right) ~? |err| ~- err
+        let lhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, lhs)
+        let rhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, rhs_step.expr_id)
+        let payload: RangePayload = RangePayload {
+            range_start: lhs,
+            range_end: rhs_step.expr_id,
+            inclusive: inclusive,
+        }
+        let alloc_res: AllocResult = alloc_expression(
+            rhs_step.state.arena,
+            spanned_expr(RangeExpr(payload), lhs_sp.span_start, rhs_sp.span_end),
+        )
+        let new_state: ParserState = ParserState {
+            tokens: rhs_step.state.tokens,
+            cursor: rhs_step.state.cursor,
+            arena: alloc_res.arena,
+        }
+        parse_infix_chain(new_state, alloc_res.id, min_bp)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Prefix parsing — atoms + unary + outcome constructors
+// ─────────────────────────────────────────────────────────────────
+
+function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
+    let next_opt: SpannedToken? = peek(s)
+    match next_opt {
+        ~0 => ~- make_unexpected_eof_err(s, "expression"),
+        ~+ next => {
+            match next.token {
+                IntegerLiteral(p) => {
+                    let advanced: ParserState = advance(s)
+                    let node: Expr = IntegerLiteralExpr(p.literal)
+                    let res: AllocResult = alloc_expression(
+                        advanced.arena,
+                        spanned_expr(node, next.span_start, next.span_end),
+                    )
+                    ~+ ParseStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        expr_id: res.id,
+                    }
+                },
+                TernaryLiteral(p) => {
+                    let advanced: ParserState = advance(s)
+                    let node: Expr = TernaryLiteralExpr(p.literal)
+                    let res: AllocResult = alloc_expression(
+                        advanced.arena,
+                        spanned_expr(node, next.span_start, next.span_end),
+                    )
+                    ~+ ParseStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        expr_id: res.id,
+                    }
+                },
+                StringLiteral(p) => {
+                    let advanced: ParserState = advance(s)
+                    let node: Expr = StringLiteralExpr(p)
+                    let res: AllocResult = alloc_expression(
+                        advanced.arena,
+                        spanned_expr(node, next.span_start, next.span_end),
+                    )
+                    ~+ ParseStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        expr_id: res.id,
+                    }
+                },
+                TrueKw => parse_trilean_atom(s, next, TrueValue),
+                FalseKw => parse_trilean_atom(s, next, FalseValue),
+                UnknownKw => parse_trilean_atom(s, next, UnknownValue),
+                NullKw => {
+                    let advanced: ParserState = advance(s)
+                    let res: AllocResult = alloc_expression(
+                        advanced.arena,
+                        spanned_expr(NullLiteralExpr, next.span_start, next.span_end),
+                    )
+                    ~+ ParseStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        expr_id: res.id,
+                    }
+                },
+                Identifier(p) => {
+                    let advanced: ParserState = advance(s)
+                    let node: Expr = IdentifierExpr(p)
+                    let res: AllocResult = alloc_expression(
+                        advanced.arena,
+                        spanned_expr(node, next.span_start, next.span_end),
+                    )
+                    ~+ ParseStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        expr_id: res.id,
+                    }
+                },
+                LParen => parse_paren_atom(s),
+                Minus => parse_unary_prefix(s),
+                Bang => parse_unary_prefix(s),
+                NotKw => parse_unary_prefix(s),
+                TildePlus => parse_outcome_ctor_payloaded(s, PositiveArm),
+                TildeMinus => parse_outcome_ctor_payloaded(s, NegativeArm),
+                TildeZero => parse_outcome_ctor_zero(s),
+                _ => ~- make_unexpected_token_err(s, "expression"),
+            }
+        },
+    }
+}
+
+function parse_trilean_atom(s: ParserState, tok: SpannedToken, value: TrileanValue) -> ParseStep~ParseError = {
+    let advanced: ParserState = advance(s)
+    let res: AllocResult = alloc_expression(
+        advanced.arena,
+        spanned_expr(TrileanLiteralExpr(value), tok.span_start, tok.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+        expr_id: res.id,
+    }
+}
+
+function parse_paren_atom(s: ParserState) -> ParseStep~ParseError = {
+    // consume `(`
+    let after_open: ParserState = advance(s)
+    let inner_step: ParseStep = parse_expression_bp(after_open, 0) ~? |err| ~- err
+    // expect `)`
+    let next_opt: SpannedToken? = peek(inner_step.state)
+    match next_opt {
+        ~0 => ~- make_unexpected_eof_err(inner_step.state, "`)`"),
+        _ => {
+            let next: SpannedToken = next_opt!!
+            match next.token {
+                RParen => {
+                    let after_close: ParserState = advance(inner_step.state)
+                    // Paren just groups — no AST wrapper, return inner expr_id.
+                    ~+ ParseStep { state: after_close, expr_id: inner_step.expr_id }
+                },
+                _ => ~- make_unexpected_token_err(inner_step.state, "`)`"),
+            }
+        },
+    }
+}
+
+function parse_unary_prefix(s: ParserState) -> ParseStep~ParseError = {
+    let op_tok: SpannedToken = peek(s)!!
+    let advanced: ParserState = advance(s)
+    let operand_step: ParseStep = parse_expression_bp(advanced, unary_right_bp()) ~? |err| ~- err
+    let operand_sp: SpannedExpr = get_expression(operand_step.state.arena, operand_step.expr_id)
+    let payload: UnaryOpPayload = UnaryOpPayload { operator: Negate, operand: operand_step.expr_id }
+    let res: AllocResult = alloc_expression(
+        operand_step.state.arena,
+        spanned_expr(UnaryOpExpr(payload), op_tok.span_start, operand_sp.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState {
+            tokens: operand_step.state.tokens,
+            cursor: operand_step.state.cursor,
+            arena: res.arena,
+        },
+        expr_id: res.id,
+    }
+}
+
+function parse_outcome_ctor_payloaded(s: ParserState, arm: OutcomeArm) -> ParseStep~ParseError = {
+    let op_tok: SpannedToken = peek(s)!!
+    let advanced: ParserState = advance(s)
+    let payload_step: ParseStep = parse_expression_bp(advanced, unary_right_bp()) ~? |err| ~- err
+    let payload_sp: SpannedExpr = get_expression(payload_step.state.arena, payload_step.expr_id)
+    let ctor_payload: OutcomeConstructorPayload = OutcomeConstructorPayload {
+        arm: arm,
+        payload: payload_step.expr_id,
+    }
+    let res: AllocResult = alloc_expression(
+        payload_step.state.arena,
+        spanned_expr(OutcomeConstructorExpr(ctor_payload), op_tok.span_start, payload_sp.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState {
+            tokens: payload_step.state.tokens,
+            cursor: payload_step.state.cursor,
+            arena: res.arena,
+        },
+        expr_id: res.id,
+    }
+}
+
+function parse_outcome_ctor_zero(s: ParserState) -> ParseStep~ParseError = {
+    let op_tok: SpannedToken = peek(s)!!
+    let advanced: ParserState = advance(s)
+    let ctor_payload: OutcomeConstructorPayload = OutcomeConstructorPayload {
+        arm: ZeroArm,
+        payload: ~0,
+    }
+    let res: AllocResult = alloc_expression(
+        advanced.arena,
+        spanned_expr(OutcomeConstructorExpr(ctor_payload), op_tok.span_start, op_tok.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+        expr_id: res.id,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Postfix parsing — `(args)` / `.field` / `.method(args)` / `!!` /
+// `~?` / `~:`
+// ─────────────────────────────────────────────────────────────────
+
+function parse_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    let next: SpannedToken = peek(s)!!
+    match next.token {
+        Dot => parse_dot_postfix(s, lhs),
+        LParen => parse_call_postfix(s, lhs),
+        BangBang => parse_bangbang_postfix(s, lhs, next),
+        TildeQuestion => parse_outcome_propagate_postfix(s, lhs),
+        TildeColon => parse_outcome_default_postfix(s, lhs),
+        QuestionDot => ~- make_unexpected_token_err(s, "operator (safe access `?.` deferred to v0.7.5.3)"),
+        _ => ~- make_unexpected_token_err(s, "postfix operator"),
+    }
+}
+
+function parse_bangbang_postfix(s: ParserState, lhs: Integer, op_tok: SpannedToken) -> ParseStep~ParseError = {
+    let advanced: ParserState = advance(s)
+    let lhs_sp: SpannedExpr = get_expression(advanced.arena, lhs)
+    let res: AllocResult = alloc_expression(
+        advanced.arena,
+        spanned_expr(ForceUnwrapExpr(lhs), lhs_sp.span_start, op_tok.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+        expr_id: res.id,
+    }
+}
+
+function parse_call_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    let args_step: CallArgsStep = parse_call_args(s) ~? |err| ~- err
+    let lhs_sp: SpannedExpr = get_expression(args_step.state.arena, lhs)
+    let payload: CallPayload = CallPayload { callee: lhs, arguments: args_step.arguments }
+    let res: AllocResult = alloc_expression(
+        args_step.state.arena,
+        spanned_expr(CallExpr(payload), lhs_sp.span_start, args_step.close_end),
+    )
+    ~+ ParseStep {
+        state: ParserState {
+            tokens: args_step.state.tokens,
+            cursor: args_step.state.cursor,
+            arena: res.arena,
+        },
+        expr_id: res.id,
+    }
+}
+
+public struct CallArgsStep {
+    state: ParserState,
+    arguments: Vector<Integer>,
+    close_end: Integer,
+}
+
+function parse_call_args(s: ParserState) -> CallArgsStep~ParseError = {
+    // peek already saw LParen; consume it
+    let after_open: ParserState = advance(s)
+    let mutable state: ParserState = after_open
+    let mutable args: Vector<Integer> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable maybe_err: ParseError? = ~0
+    let mutable close_end: Integer = 0
+
+    // Empty arg list short-circuit
+    let first_peek: SpannedToken? = peek(state)
+    match first_peek {
+        ~0 => {
+            maybe_err = make_unexpected_eof_err(state, "`)` or argument")
+            should_continue = false
+        },
+        _ => {
+            let first: SpannedToken = first_peek!!
+            match first.token {
+                RParen => {
+                    close_end = first.span_end
+                    state = advance(state)
+                    should_continue = false
+                },
+                _ => {},
+            }
+        },
+    }
+
+    while should_continue {
+        let arg_outcome: ParseStep~ParseError = parse_expression(state)
+        match arg_outcome {
+            ~+ astep => {
+                args = push(args, astep.expr_id)
+                state = astep.state
+                let after_arg: SpannedToken? = peek(state)
+                match after_arg {
+                    ~0 => {
+                        maybe_err = make_unexpected_eof_err(state, "`,` or `)`")
+                        should_continue = false
+                    },
+                    _ => {
+                        let t: SpannedToken = after_arg!!
+                        match t.token {
+                            Comma => {
+                                state = advance(state)
+                                let after_comma: SpannedToken? = peek(state)
+                                match after_comma {
+                                    ~0 => {
+                                        maybe_err = make_unexpected_eof_err(state, "argument or `)`")
+                                        should_continue = false
+                                    },
+                                    _ => {
+                                        let t2: SpannedToken = after_comma!!
+                                        match t2.token {
+                                            RParen => {
+                                                close_end = t2.span_end
+                                                state = advance(state)
+                                                should_continue = false
+                                            },
+                                            _ => {},
+                                        }
+                                    },
+                                }
+                            },
+                            RParen => {
+                                close_end = t.span_end
+                                state = advance(state)
+                                should_continue = false
+                            },
+                            _ => {
+                                maybe_err = make_unexpected_token_err(state, "`,` or `)`")
+                                should_continue = false
+                            },
+                        }
+                    },
+                }
+            },
+            ~- e => {
+                maybe_err = e
+                should_continue = false
+            },
+        }
+    }
+
+    match maybe_err {
+        ~0 => ~+ CallArgsStep { state: state, arguments: args, close_end: close_end },
+        _ => ~- maybe_err!!,
+    }
+}
+
+function parse_dot_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    // consume `.`
+    let after_dot: ParserState = advance(s)
+    let name_tok_opt: SpannedToken? = peek(after_dot)
+    match name_tok_opt {
+        ~0 => ~- make_unexpected_eof_err(after_dot, "field name or method name"),
+        _ => {
+            let name_tok: SpannedToken = name_tok_opt!!
+            match name_tok.token {
+                Identifier(p) => {
+                    let after_name: ParserState = advance(after_dot)
+                    // Method call iff next is `(`
+                    let lookahead: SpannedToken? = peek(after_name)
+                    let is_call: Trilean! = match lookahead {
+                        ~0 => false,
+                        _ => match lookahead!!.token {
+                            LParen => true,
+                            _ => false,
+                        },
+                    }
+                    if is_call {
+                        let args_step: CallArgsStep = parse_call_args(after_name) ~? |err| ~- err
+                        let lhs_sp: SpannedExpr = get_expression(args_step.state.arena, lhs)
+                        let payload: MethodCallPayload = MethodCallPayload {
+                            receiver: lhs,
+                            method: p.text,
+                            arguments: args_step.arguments,
+                        }
+                        let res: AllocResult = alloc_expression(
+                            args_step.state.arena,
+                            spanned_expr(MethodCallExpr(payload), lhs_sp.span_start, args_step.close_end),
+                        )
+                        ~+ ParseStep {
+                            state: ParserState {
+                                tokens: args_step.state.tokens,
+                                cursor: args_step.state.cursor,
+                                arena: res.arena,
+                            },
+                            expr_id: res.id,
+                        }
+                    } else {
+                        let lhs_sp: SpannedExpr = get_expression(after_name.arena, lhs)
+                        let payload: FieldAccessPayload = FieldAccessPayload {
+                            object: lhs,
+                            field: p.text,
+                        }
+                        let res: AllocResult = alloc_expression(
+                            after_name.arena,
+                            spanned_expr(FieldAccessExpr(payload), lhs_sp.span_start, name_tok.span_end),
+                        )
+                        ~+ ParseStep {
+                            state: ParserState {
+                                tokens: after_name.tokens,
+                                cursor: after_name.cursor,
+                                arena: res.arena,
+                            },
+                            expr_id: res.id,
+                        }
+                    }
+                },
+                _ => ~- make_unexpected_token_err(after_dot, "field name or method name"),
+            }
+        },
+    }
+}
+
+function parse_outcome_propagate_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    // consume `~?`
+    let after_op: ParserState = advance(s)
+    // expect `|`
+    let pipe_opt: SpannedToken? = peek(after_op)
+    let after_pipe: ParserState = match pipe_opt {
+        ~0 => ~- make_unexpected_eof_err(after_op, "`|` (closure capture for ~?)"),
+        _ => {
+            let pipe: SpannedToken = pipe_opt!!
+            match pipe.token {
+                Pipe => advance(after_op),
+                _ => ~- make_unexpected_token_err(after_op, "`|` (closure capture for ~?)"),
+            }
+        },
+    }
+    // capture name (Identifier or `_`)
+    let name_opt: SpannedToken? = peek(after_pipe)
+    let capture: String? = match name_opt {
+        ~0 => ~- make_unexpected_eof_err(after_pipe, "binding name or `_`"),
+        _ => {
+            let nt: SpannedToken = name_opt!!
+            match nt.token {
+                Identifier(p) => p.text,
+                Underscore => ~0,
+                _ => ~- make_unexpected_token_err(after_pipe, "binding name or `_`"),
+            }
+        },
+    }
+    let after_name: ParserState = advance(after_pipe)
+    // expect closing `|`
+    let close_opt: SpannedToken? = peek(after_name)
+    let after_close: ParserState = match close_opt {
+        ~0 => ~- make_unexpected_eof_err(after_name, "closing `|`"),
+        _ => {
+            let close: SpannedToken = close_opt!!
+            match close.token {
+                Pipe => advance(after_name),
+                _ => ~- make_unexpected_token_err(after_name, "closing `|`"),
+            }
+        },
+    }
+    // parse early-return expression at bp 0
+    let early_step: ParseStep = parse_expression_bp(after_close, 0) ~? |err| ~- err
+    let lhs_sp: SpannedExpr = get_expression(early_step.state.arena, lhs)
+    let early_sp: SpannedExpr = get_expression(early_step.state.arena, early_step.expr_id)
+    let payload: OutcomePropagatePayload = OutcomePropagatePayload {
+        inner: lhs,
+        capture_name: capture,
+        early_return: early_step.expr_id,
+    }
+    let res: AllocResult = alloc_expression(
+        early_step.state.arena,
+        spanned_expr(OutcomePropagateExpr(payload), lhs_sp.span_start, early_sp.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState {
+            tokens: early_step.state.tokens,
+            cursor: early_step.state.cursor,
+            arena: res.arena,
+        },
+        expr_id: res.id,
+    }
+}
+
+function parse_outcome_default_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    let after_op: ParserState = advance(s)
+    let default_step: ParseStep = parse_expression_bp(after_op, 0) ~? |err| ~- err
+    let lhs_sp: SpannedExpr = get_expression(default_step.state.arena, lhs)
+    let def_sp: SpannedExpr = get_expression(default_step.state.arena, default_step.expr_id)
+    let payload: OutcomeDefaultPayload = OutcomeDefaultPayload {
+        inner: lhs,
+        default_expr: default_step.expr_id,
+    }
+    let res: AllocResult = alloc_expression(
+        default_step.state.arena,
+        spanned_expr(OutcomeDefaultExpr(payload), lhs_sp.span_start, def_sp.span_end),
+    )
+    ~+ ParseStep {
+        state: ParserState {
+            tokens: default_step.state.tokens,
+            cursor: default_step.state.cursor,
+            arena: res.arena,
+        },
+        expr_id: res.id,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pretty-printer — s-expression form, used by smoke tests to
+// eyeball the parsed AST shape. Mirrors v0.7.5.1 with the new
+// variants wired in.
 // ─────────────────────────────────────────────────────────────────
 
 function bin_op_name(op: BinaryOperator) -> String =
@@ -317,91 +1296,169 @@ function trilean_name(v: TrileanValue) -> String =
         UnknownValue => "unknown",
     }
 
+function outcome_arm_name(a: OutcomeArm) -> String =
+    match a {
+        PositiveArm => "~+",
+        ZeroArm => "~0",
+        NegativeArm => "~-",
+    }
+
 public function format_expr(a: Arena, id: Integer) -> String = {
     let sp: SpannedExpr = get_expression(a, id)
     match sp.node {
-        IntegerLiteral(p) => from_integer(p.value),
-        TernaryLiteral(p) => from_integer(p.value),
+        IntegerLiteralExpr(p) => from_integer(p.value),
+        TernaryLiteralExpr(p) => from_integer(p.value),
         TrileanLiteralExpr(v) => trilean_name(v),
-        StringLiteral(p) => concat(concat("\"", p.text), "\""),
-        NullLiteral => "~0",
-        Identifier(p) => p.name,
-        BinaryOp(p) => {
+        StringLiteralExpr(p) => concat(concat("\"", p.text), "\""),
+        NullLiteralExpr => "null",
+        IdentifierExpr(p) => p.text,
+        UnaryOpExpr(p) => {
+            let inner: String = format_expr(a, p.operand)
+            concat("(- ", concat(inner, ")"))
+        },
+        BinaryOpExpr(p) => {
             let l: String = format_expr(a, p.left)
             let r: String = format_expr(a, p.right)
             let head: String = concat(concat("(", bin_op_name(p.operator)), " ")
             concat(head, concat(l, concat(" ", concat(r, ")"))))
         },
-        UnaryOp(p) => {
-            let o: String = format_expr(a, p.operand)
-            concat("(- ", concat(o, ")"))
+        ForceUnwrapExpr(inner_id) => {
+            let inner: String = format_expr(a, inner_id)
+            concat("(!! ", concat(inner, ")"))
+        },
+        CallExpr(p) => {
+            let callee: String = format_expr(a, p.callee)
+            concat("(call ", concat(callee, concat(format_args(a, p.arguments), ")")))
+        },
+        FieldAccessExpr(p) => {
+            let obj: String = format_expr(a, p.object)
+            concat("(. ", concat(obj, concat(" ", concat(p.field, ")"))))
+        },
+        MethodCallExpr(p) => {
+            let recv: String = format_expr(a, p.receiver)
+            concat(concat("(.call ", concat(recv, concat(" ", p.method))), concat(format_args(a, p.arguments), ")"))
+        },
+        OutcomeConstructorExpr(p) => {
+            let arm_str: String = outcome_arm_name(p.arm)
+            match p.payload {
+                ~0 => arm_str,
+                _ => {
+                    let inner: String = format_expr(a, p.payload!!)
+                    concat("(", concat(arm_str, concat(" ", concat(inner, ")"))))
+                },
+            }
+        },
+        OutcomePropagateExpr(p) => {
+            let inner: String = format_expr(a, p.inner)
+            let ret: String = format_expr(a, p.early_return)
+            let cap: String = match p.capture_name {
+                ~0 => "_",
+                _ => p.capture_name!!,
+            }
+            concat("(~? ", concat(inner, concat(" |", concat(cap, concat("| ", concat(ret, ")"))))))
+        },
+        OutcomeDefaultExpr(p) => {
+            let inner: String = format_expr(a, p.inner)
+            let def: String = format_expr(a, p.default_expr)
+            concat("(~: ", concat(inner, concat(" ", concat(def, ")"))))
+        },
+        ElvisOpExpr(p) => {
+            let obj: String = format_expr(a, p.object)
+            let def: String = format_expr(a, p.default_expr)
+            concat("(?: ", concat(obj, concat(" ", concat(def, ")"))))
+        },
+        RangeExpr(p) => {
+            let l: String = format_expr(a, p.range_start)
+            let r: String = format_expr(a, p.range_end)
+            let op: String = match p.inclusive {
+                true => "..=",
+                false => "..",
+                unknown => "..",
+            }
+            concat("(", concat(op, concat(" ", concat(l, concat(" ", concat(r, ")"))))))
         },
     }
 }
 
+function format_args(a: Arena, args: Vector<Integer>) -> String = {
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    let n: Integer = length(args)
+    while i < n {
+        let arg_id: Integer = get(args, i)!!
+        out = concat(out, concat(" ", format_expr(a, arg_id)))
+        i = i + 1
+    }
+    out
+}
+
 // ─────────────────────────────────────────────────────────────────
-// Smoke test — build `1 + 2 * 3` AST, traverse, verify
+// Smoke harness — lex+parse a source snippet, compare its s-expr
+// against the expected shape. Each call asserts; failures panic
+// via assert(false) so the bootstrap test surfaces them.
+// ─────────────────────────────────────────────────────────────────
+
+function lex_or_fail(source: String) -> Vector<SpannedToken> = {
+    let outcome: Vector<SpannedToken>~LexError = lex(source)
+    match outcome {
+        ~+ toks => toks,
+        ~- _ => {
+            assert(false)
+            new()
+        },
+    }
+}
+
+function parse_or_fail(source: String) -> ParseStep = {
+    let toks: Vector<SpannedToken> = lex_or_fail(source)
+    let st: ParserState = parser_new(toks)
+    let outcome: ParseStep~ParseError = parse_expression(st)
+    match outcome {
+        ~+ step => step,
+        ~- _ => {
+            assert(false)
+            ParseStep { state: parser_new(new()), expr_id: 0 }
+        },
+    }
+}
+
+function assert_parse(source: String, expected: String) -> Unit = {
+    let step: ParseStep = parse_or_fail(source)
+    let printed: String = format_expr(step.state.arena, step.expr_id)
+    assert(printed == expected)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Entry — exercises the Pratt parser across the supported surface
 // ─────────────────────────────────────────────────────────────────
 
 function main() -> Unit = {
-    let mutable arena: Arena = arena_new()
+    // Arithmetic + precedence
+    assert_parse("1 + 2 * 3", "(+ 1 (* 2 3))")
+    assert_parse("1 * 2 + 3", "(+ (* 1 2) 3)")
+    assert_parse("(1 + 2) * 3", "(* (+ 1 2) 3)")
+    assert_parse("-a + b", "(+ (- a) b)")
+    assert_parse("2 ** 3 ** 2", "(** 2 (** 3 2))")
 
-    let r1: AllocResult = alloc_expression(arena, spanned_expr(int_literal(1), 0, 1))
-    arena = r1.arena
-    let id1: Integer = r1.id
+    // Comparison + logic
+    assert_parse("x == y", "(== x y)")
+    assert_parse("a && b || c", "(|| (&& a b) c)")
+    assert_parse("p => q", "(=> p q)")
 
-    let r2: AllocResult = alloc_expression(arena, spanned_expr(int_literal(2), 4, 5))
-    arena = r2.arena
-    let id2: Integer = r2.id
+    // Postfix
+    assert_parse("x!!", "(!! x)")
+    assert_parse("f(1, 2)", "(call f 1 2)")
+    assert_parse("a.b", "(. a b)")
+    assert_parse("a.f(x)", "(.call a f x)")
 
-    let r3: AllocResult = alloc_expression(arena, spanned_expr(int_literal(3), 8, 9))
-    arena = r3.arena
-    let id3: Integer = r3.id
+    // Outcome + elvis + range
+    assert_parse("~+ 7", "(~+ 7)")
+    assert_parse("~0", "~0")
+    assert_parse("f() ~? |e| 0", "(~? (call f) |e| 0)")
+    assert_parse("get() ~: 0", "(~: (call get) 0)")
+    assert_parse("x ?: 0", "(?: x 0)")
+    assert_parse("0..10", "(.. 0 10)")
+    assert_parse("0..=10", "(..= 0 10)")
 
-    let r4: AllocResult = alloc_expression(arena, spanned_expr(binary_op(Multiply, id2, id3), 4, 9))
-    arena = r4.arena
-    let id_mul: Integer = r4.id
-
-    let r5: AllocResult = alloc_expression(arena, spanned_expr(binary_op(Add, id1, id_mul), 0, 9))
-    arena = r5.arena
-    let id_add: Integer = r5.id
-
-    assert(expression_count(arena) == 5)
-    assert(id1 == 0)
-    assert(id2 == 1)
-    assert(id_mul == 3)
-    assert(id_add == 4)
-
-    // Cross-check that the recursive lookup through Arena rebuilds
-    // the same tree we constructed — proves arena indirection works.
-    let printed: String = format_expr(arena, id_add)
-    println(printed)
-    assert(printed == "(+ 1 (* 2 3))")
-
-    // Exercise the other three sub-arenas so each helper is covered
-    // by the scaffolding smoke. Subsequent sub-tasks expand the enum
-    // variants used here, but the alloc/get shape is locked.
-    let p1: AllocResult = alloc_pattern(arena, SpannedPattern {
-        node: WildcardPattern, span_start: 0, span_end: 1,
-    })
-    arena = p1.arena
-    assert(pattern_count(arena) == 1)
-
-    let t1: AllocResult = alloc_type(arena, SpannedTypeExpr {
-        node: NamedType(NamedTypePayload { name: "Integer" }),
-        span_start: 0,
-        span_end: 7,
-    })
-    arena = t1.arena
-    assert(type_count(arena) == 1)
-
-    let s1: AllocResult = alloc_statement(arena, SpannedStmt {
-        node: ExpressionStmt(ExpressionStmtPayload { expression: id_add }),
-        span_start: 0,
-        span_end: 9,
-    })
-    arena = s1.arena
-    assert(statement_count(arena) == 1)
-
-    println("v0.7.5.1 scaffolding smoke passed")
+    println("v0.7.5.2 Pratt smoke passed")
 }

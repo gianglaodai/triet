@@ -83,6 +83,23 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
                     }
                 }
             }
+            // Walk each struct's fields to record which carry a named-
+            // struct type. `FieldGet` propagates that name onto its dest
+            // so chained accesses like `step.state.arena` keep tracking
+            // struct identity through every link. Parallel to
+            // `variant_payload_struct` above. Requires `struct_fields`
+            // populated by Pass 1a so we can confirm a Named ref is a
+            // real struct (not a primitive shadowed by the same name).
+            if let Item::Struct(sd) = &item.node {
+                for field in &sd.fields {
+                    if let TypeExpr::Named(name) = &arena.type_expression(field.type_annotation).node
+                        && ctx.struct_fields.contains_key(name)
+                    {
+                        ctx.struct_field_types
+                            .insert((sd.name.clone(), field.name.clone()), name.clone());
+                    }
+                }
+            }
         }
     }
     // Pass 1b: assign FuncIds. Struct table is now complete, so
@@ -177,6 +194,19 @@ struct LowerCtx<'a> {
     /// always returned 0 — only single-field structs worked correctly).
     struct_fields: HashMap<String, Vec<String>>,
 
+    /// (struct name, field name) → field's struct type name when the
+    /// field is itself a named user struct. Lets `FieldGet` propagate
+    /// struct identity onto its dest so chained accesses like
+    /// `step.state.arena` keep resolving the correct field slot.
+    /// Surfaced by the v0.7.5.2 parser.tri port — `ParseStep { state,
+    /// expr_id }` returned from a function then unwrapped via match-arm
+    /// `~+ step =>` correctly tracked `step: ParseStep`, but the
+    /// intermediate `step.state` (of type `ParserState`) lost identity
+    /// and the next `.arena` field access fell back to slot 0,
+    /// triggering E2201 at the VM. Populated in Pass 1a alongside
+    /// `struct_fields`.
+    struct_field_types: HashMap<(String, String), String>,
+
     /// Per-function map of which SSA values carry struct payloads,
     /// indexed by struct name. Populated as struct values flow through
     /// `StructLiteral`, function params, calls returning structs, and
@@ -235,6 +265,7 @@ impl<'a> LowerCtx<'a> {
             variant_index: HashMap::new(),
             variant_payload_struct: HashMap::new(),
             struct_fields: HashMap::new(),
+            struct_field_types: HashMap::new(),
             value_struct_types: HashMap::new(),
             value_outcome_value_struct: HashMap::new(),
             func_return_struct: HashMap::new(),
@@ -885,6 +916,18 @@ impl<'a> LowerCtx<'a> {
                     object: Operand::Value(obj_val),
                     field_idx,
                 });
+                // v0.7.5.2: propagate struct identity onto the FieldGet
+                // dest when the accessed field is itself a named struct.
+                // Without this, chained accesses like `step.state.arena`
+                // lose track at the intermediate `step.state` value.
+                if let Some(obj_struct) = self.value_struct_types.get(&obj_val).cloned()
+                    && let Some(field_struct) = self
+                        .struct_field_types
+                        .get(&(obj_struct, field.clone()))
+                        .cloned()
+                {
+                    self.value_struct_types.insert(dest, field_struct);
+                }
                 dest
             }
 
