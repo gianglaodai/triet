@@ -76,6 +76,14 @@ prior decision, write a new ADR that supersedes it.
 | [0020](0020-outcome-error-handling.md) | Outcome error handling (`T~E` 2-state / `T?~E` 3-state — trit-encoded fallibility, `~+`/`~0`/`~-` constructors, `~?` propagate + `~:` default operators, verbose `.unwrap_value(message)` / `.unwrap_error(message)` methods, `.triv` v4 → v5 patch bump, Trit::Zero reserved for v0.8 async pending, std.result coexistence) | Locked |
 | [0021](0021-trilean-refinement.md) | Compile-time `Trilean!` refinement for strict `if` (typecheck-only single-bit refinement on `Type::Trilean`, E1033 `PossiblyUnknownCondition` for plain `if` on possibly-Unknown cond, E1034 `TrileanReturnNotRefined`, `.assume_known(message)` returns `Trilean!`, no IR / wire-format / VM changes — refinement erased at lowering, aligns implementation with SPEC §7.1.1) | Locked |
 
+### Future research (post-v0.7)
+
+ADRs in this bucket capture exploratory design directions — recorded so the context isn't lost, but **explicitly NOT locked**. They will be revisited only after the v0.7 self-hosting compiler ships. Each carries a "deferred research" status and lists the open questions that must be answered before promotion to Locked.
+
+| ADR | Title | Status |
+|---|---|---|
+| [0022](0022-trit-balanced-ownership.md) | Trit-balanced ownership — polarity-typed references (`~+ T` strong / `~- T` weak), cycle-balance conservation law (cycle sum = 0 at compile time), candidate 4th memory-management mechanism alongside GC / Rc-Weak / Manual. Origin: author's intuition that `+1`/`0`/`-1` can encode ownership direction. Research window: post-v0.7.13. | Draft (exploratory) |
+
 ## How to read an ADR
 
 Every ADR follows the same shape:
