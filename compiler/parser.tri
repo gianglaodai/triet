@@ -56,6 +56,21 @@
 // Struct / Enum / Module / Import / ImportFrom parsers stub-fail
 // at `parse_item` dispatch — implementation lands in v0.7.5.4b.
 //
+// v0.7.5.6b — `parser_differential` NDJSON byte-diff gate. Adds
+// `dump_program_ndjson(source: String) -> String` recursive AST
+// walker emitting one JSON line per Item / nested node in pre-
+// order (lexer.tri's `dump_ndjson` is the lexer-side analogue).
+// Per ADR-0019 §A2 this is a transient bridge format dropped at
+// v0.7.9 when Triết-side data flows in-memory. Closes v0.7.5 per
+// ADR-0019 §A7.5. Three pre-existing lowerer struct-tracking
+// bugs surfaced + fixed: `Nullable<NamedStruct>` return tracking
+// in `declare_function`; the same on `Stmt::Let` annotations;
+// pattern `~+ pat =>` destructure propagation for `T?`; `!!`
+// (NullUnwrap) struct-identity propagation. The pretty-printer
+// in v0.7.5.{1..5b} didn't read `.span_start` / `.span_end`, so
+// these bugs were invisible until the differential gate
+// materialized span data into output.
+//
 // v0.7.5.6a — Error recovery. `parse_program`'s return type
 // changes from `ParseProgramStep~ParseError` to plain
 // `ParseProgramStep { program, errors }` because the program itself
@@ -149,7 +164,8 @@ module lexer;
 
 from std.io import println
 from std.collections.vector import new, push, length, get
-from std.text import from_integer, concat
+from std.text import from_integer, concat, len
+from std.string import substring
 from std.assert import assert
 
 from crate.lexer import NumericSuffix, IntLiteral, Token, SpannedToken
@@ -2722,6 +2738,7 @@ public struct ParseTypeListStep {
     state: ParserState,
     types: Vector<Integer>,
     had_comma: Trilean!,
+    close_end: Integer,
 }
 
 // Public entrypoint — kept named `parse_type_minimal` so the v0.7.5.3+
@@ -2918,12 +2935,11 @@ function parse_paren_type(s: ParserState, open_start: Integer) -> ParseTypeStep~
                     let elem_count: Integer = length(elems_step.types)
                     if elem_count == 1 {
                         if elems_step.had_comma {
-                            // `(T,)` — singleton tuple.
-                            let inner_id: Integer = get(elems_step.types, 0)!!
-                            let inner_sp: SpannedTypeExpr = get_type(elems_step.state.arena, inner_id)
+                            // `(T,)` — singleton tuple. Span includes
+                            // the closing `)` to match Rust.
                             let res: AllocResult = alloc_type(
                                 elems_step.state.arena,
-                                spanned_type(TupleType(elems_step.types), open_start, inner_sp.span_end),
+                                spanned_type(TupleType(elems_step.types), open_start, elems_step.close_end),
                             )
                             ~+ ParseTypeStep {
                                 state: ParserState {
@@ -2939,12 +2955,11 @@ function parse_paren_type(s: ParserState, open_start: Integer) -> ParseTypeStep~
                             ~+ ParseTypeStep { state: elems_step.state, type_id: inner_id }
                         }
                     } else {
-                        // 2+ elements — tuple.
-                        let last_id: Integer = get(elems_step.types, elem_count - 1)!!
-                        let last_sp: SpannedTypeExpr = get_type(elems_step.state.arena, last_id)
+                        // 2+ elements — tuple. Span includes the
+                        // closing `)`.
                         let res: AllocResult = alloc_type(
                             elems_step.state.arena,
-                            spanned_type(TupleType(elems_step.types), open_start, last_sp.span_end),
+                            spanned_type(TupleType(elems_step.types), open_start, elems_step.close_end),
                         )
                         ~+ ParseTypeStep {
                             state: ParserState {
@@ -3024,11 +3039,13 @@ function parse_type_list_until_rparen(s: ParserState) -> ParseTypeListStep~Parse
             match close_peek {
                 ~0 => ~- make_unexpected_eof_err(state, "`)`"),
                 _ => {
-                    if is_rparen(close_peek!!.token) {
+                    let close_tok: SpannedToken = close_peek!!
+                    if is_rparen(close_tok.token) {
                         ~+ ParseTypeListStep {
                             state: advance(state),
                             types: types,
                             had_comma: had_comma,
+                            close_end: close_tok.span_end,
                         }
                     } else {
                         ~- make_unexpected_token_err(state, "`)`")
@@ -5635,6 +5652,906 @@ public function format_program(p: Program) -> String = {
         i = i + 1
     }
     concat(out, ")")
+}
+
+// ─────────────────────────────────────────────────────────────────
+// NDJSON dump (v0.7.5.6b parser_differential bridge per ADR-0019
+// §A2). Pre-order traversal of every AST node, one JSON object per
+// line. The Rust-side mirror at
+// crates/triet-bootstrap/tests/parser_differential.rs walks the
+// triet-syntax AST in the same order and emits byte-identical
+// output, so any divergence between the two parsers surfaces at
+// the first differing byte.
+//
+// Format per node:
+//
+//   {"k":"<Kind>","s":[<start>,<end>],...leaf metadata...}
+//
+// Children appear immediately after the parent in declared source
+// order; structure is implicit in the kind + count fields (e.g.
+// CallExpr's `args` says how many argument subtrees follow).
+//
+// `Program` has no span (no SpannedItem wrap): emit
+// `{"k":"Program","items":N}` then N item subtrees. On parse
+// failure each accumulated ParseError emits a sibling line:
+//
+//   {"e":"<ParseErrorKind>","s":[<start>,<end>],"v":"<expected>"}
+//
+// Transient bridge per ADR-0019 §A2 — dropped at v0.7.9 when
+// Triết-side data flows in-memory.
+// ─────────────────────────────────────────────────────────────────
+
+// JSON escape — identical contract to compiler/lexer.tri's helper.
+// Reimplemented rather than imported to keep parser.tri's surface
+// area minimal (lexer.tri's `json_escape` is private by design).
+function json_escape(s: String) -> String = {
+    let n: Integer = len(s)
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    while i < n {
+        let c: String = substring(s, i, i + 1)
+        if c == "\\" {
+            out = concat(out, "\\\\")
+        } else if c == "\"" {
+            out = concat(out, "\\\"")
+        } else if c == "\n" {
+            out = concat(out, "\\n")
+        } else if c == "\t" {
+            out = concat(out, "\\t")
+        } else if c == "\r" {
+            out = concat(out, "\\r")
+        } else {
+            out = concat(out, c)
+        }
+        i = i + 1
+    }
+    out
+}
+
+function quote_string(s: String) -> String =
+    concat("\"", concat(json_escape(s), "\""))
+
+// `{"k":"<kind>","s":[<start>,<end>]`  (no trailing brace — caller
+// appends extra fields then closes).
+function ndjson_header(kind: String, span_start: Integer, span_end: Integer) -> String =
+    concat(
+        concat("{\"k\":", concat(quote_string(kind), ",\"s\":[")),
+        concat(from_integer(span_start), concat(",", concat(from_integer(span_end), "]"))),
+    )
+
+function bool_repr(v: Trilean!) -> String =
+    if v {
+        "true"
+    } else {
+        "false"
+    }
+
+function visibility_name(v: Visibility) -> String =
+    match v {
+        PrivateVis => "private",
+        PublicVis => "public",
+        PackageVis => "package",
+    }
+
+function passing_name(p: ParameterPassing) -> String =
+    match p {
+        BorrowedParam => "borrowed",
+        MutableParam => "mutable",
+        OwnedParam => "owned",
+    }
+
+function arm_name(a: OutcomeArm) -> String =
+    match a {
+        PositiveArm => "positive",
+        ZeroArm => "zero",
+        NegativeArm => "negative",
+    }
+
+function trilean_lit_name(v: TrileanValue) -> String =
+    match v {
+        TrueValue => "true",
+        FalseValue => "false",
+        UnknownValue => "unknown",
+    }
+
+function binary_op_name(op: BinaryOperator) -> String =
+    match op {
+        Add => "Add",
+        Subtract => "Subtract",
+        Multiply => "Multiply",
+        Divide => "Divide",
+        Modulo => "Modulo",
+        Power => "Power",
+        Equal => "Equal",
+        NotEqual => "NotEqual",
+        LessThan => "LessThan",
+        LessEqual => "LessEqual",
+        GreaterThan => "GreaterThan",
+        GreaterEqual => "GreaterEqual",
+        And => "And",
+        Or => "Or",
+        Xor => "Xor",
+        Iff => "Iff",
+        Implies => "Implies",
+        KleeneXor => "KleeneXor",
+        KleeneIff => "KleeneIff",
+        KleeneImplies => "KleeneImplies",
+    }
+
+function unary_op_name(op: UnaryOperator) -> String =
+    match op {
+        Negate => "Negate",
+    }
+
+function suffix_name(s: NumericSuffix) -> String =
+    match s {
+        TritSuffix => "trit",
+        TryteSuffix => "tryte",
+        IntegerSuffix => "integer",
+        LongSuffix => "long",
+    }
+
+// ── Integer literal helpers ─────────────────────────────────────
+
+function int_literal_fields(lit: IntLiteral) -> String = {
+    let v_field: String = concat(",\"v\":", from_integer(lit.value))
+    match lit.suffix {
+        ~0 => v_field,
+        _ => concat(v_field, concat(",\"u\":", quote_string(suffix_name(lit.suffix!!)))),
+    }
+}
+
+// ── ParseError serialization ────────────────────────────────────
+
+function ndjson_parse_error(err: ParseError) -> String = {
+    let out: String = match err {
+        UnexpectedTokenErr(d) => concat(
+            concat("{\"e\":\"UnexpectedToken\",\"s\":[", from_integer(d.span_start)),
+            concat(
+                concat(",", concat(from_integer(d.span_end), "],\"v\":")),
+                concat(quote_string(d.expected), concat(",\"f\":", concat(quote_string(d.found), "}"))),
+            ),
+        ),
+        UnexpectedEofErr(d) => concat(
+            concat("{\"e\":\"UnexpectedEof\",\"s\":[", from_integer(d.span_start)),
+            concat(
+                concat(",", concat(from_integer(d.span_end), "],\"v\":")),
+                concat(quote_string(d.expected), "}"),
+            ),
+        ),
+        LexerFailedErr(d) => concat(
+            concat("{\"e\":\"LexerFailed\",\"s\":[", from_integer(d.span_start)),
+            concat(
+                concat(",", concat(from_integer(d.span_end), "],\"v\":")),
+                concat(quote_string(d.expected), "}"),
+            ),
+        ),
+        ReservedItemNameErr(d) => concat(
+            concat("{\"e\":\"ReservedItemName\",\"s\":[", from_integer(d.span_start)),
+            concat(
+                concat(",", concat(from_integer(d.span_end), "],\"v\":")),
+                concat(quote_string(d.name), "}"),
+            ),
+        ),
+    }
+    concat(out, "\n")
+}
+
+// ── Type dump ──────────────────────────────────────────────────
+
+function dump_type(a: Arena, id: Integer) -> String = {
+    let sp: SpannedTypeExpr = get_type(a, id)
+    let head: String = ndjson_header_for_type(sp.node, sp.span_start, sp.span_end)
+    match sp.node {
+        NamedType(p) => concat(head, concat(",\"name\":", concat(quote_string(p.name), "}\n"))),
+        GenericType(p) => {
+            let n: Integer = length(p.arguments)
+            let line: String = concat(
+                head,
+                concat(
+                    ",\"name\":",
+                    concat(quote_string(p.name), concat(",\"args\":", concat(from_integer(n), "}\n"))),
+                ),
+            )
+            let mutable out: String = line
+            let mutable i: Integer = 0
+            while i < n {
+                let arg_id: Integer = get(p.arguments, i)!!
+                out = concat(out, dump_type(a, arg_id))
+                i = i + 1
+            }
+            out
+        },
+        TupleType(elems) => {
+            let n: Integer = length(elems)
+            let mutable out: String = concat(head, concat(",\"elems\":", concat(from_integer(n), "}\n")))
+            let mutable i: Integer = 0
+            while i < n {
+                let elem_id: Integer = get(elems, i)!!
+                out = concat(out, dump_type(a, elem_id))
+                i = i + 1
+            }
+            out
+        },
+        NullableType(inner_id) => concat(concat(head, "}\n"), dump_type(a, inner_id)),
+        FunctionType(p) => {
+            let n: Integer = length(p.parameters)
+            let mutable out: String = concat(head, concat(",\"params\":", concat(from_integer(n), "}\n")))
+            let mutable i: Integer = 0
+            while i < n {
+                let param_id: Integer = get(p.parameters, i)!!
+                out = concat(out, dump_type(a, param_id))
+                i = i + 1
+            }
+            concat(out, dump_type(a, p.return_type))
+        },
+        OutcomeType(p) => {
+            let line: String = concat(head, concat(",\"null\":", concat(bool_repr(p.allow_null_state), "}\n")))
+            concat(line, concat(dump_type(a, p.value_type), dump_type(a, p.error_type)))
+        },
+        RefinedTrileanType => concat(head, "}\n"),
+    }
+}
+
+function ndjson_header_for_type(node: TypeExpr, span_start: Integer, span_end: Integer) -> String = {
+    let kind: String = match node {
+        NamedType(_) => "NamedType",
+        GenericType(_) => "GenericType",
+        TupleType(_) => "TupleType",
+        NullableType(_) => "NullableType",
+        FunctionType(_) => "FunctionType",
+        OutcomeType(_) => "OutcomeType",
+        RefinedTrileanType => "RefinedTrileanType",
+    }
+    ndjson_header(kind, span_start, span_end)
+}
+
+// ── Pattern dump ────────────────────────────────────────────────
+
+function dump_literal_pattern_fields(lit: LiteralPattern) -> String =
+    match lit {
+        IntegerLit(p) => {
+            let v_field: String = concat(",\"lit\":\"int\",\"v\":", from_integer(p.value))
+            match p.suffix {
+                ~0 => v_field,
+                _ => concat(v_field, concat(",\"u\":", quote_string(suffix_name(p.suffix!!)))),
+            }
+        },
+        TernaryLit(v) => concat(",\"lit\":\"ternary\",\"v\":", from_integer(v)),
+        StringLit(p) => concat(",\"lit\":\"string\",\"v\":", quote_string(p.text)),
+        TrileanLit(v) => concat(",\"lit\":\"trilean\",\"v\":", quote_string(trilean_lit_name(v))),
+    }
+
+function dump_pattern(a: Arena, id: Integer) -> String = {
+    let sp: SpannedPattern = get_pattern(a, id)
+    let kind: String = match sp.node {
+        WildcardPattern => "WildcardPattern",
+        IdentifierPattern(_) => "IdentifierPattern",
+        LiteralPat(_) => "LiteralPat",
+        TuplePat(_) => "TuplePat",
+        OrPat(_) => "OrPat",
+        RangePat(_) => "RangePat",
+        NullPat => "NullPat",
+        EnumVariantPat(_) => "EnumVariantPat",
+        OutcomeArmPat(_) => "OutcomeArmPat",
+    }
+    let head: String = ndjson_header(kind, sp.span_start, sp.span_end)
+    match sp.node {
+        WildcardPattern => concat(head, "}\n"),
+        NullPat => concat(head, "}\n"),
+        IdentifierPattern(p) => concat(head, concat(",\"name\":", concat(quote_string(p.text), "}\n"))),
+        LiteralPat(lit) => concat(head, concat(dump_literal_pattern_fields(lit), "}\n")),
+        TuplePat(elems) => {
+            let n: Integer = length(elems)
+            let mutable out: String = concat(head, concat(",\"elems\":", concat(from_integer(n), "}\n")))
+            let mutable i: Integer = 0
+            while i < n {
+                let elem_id: Integer = get(elems, i)!!
+                out = concat(out, dump_pattern(a, elem_id))
+                i = i + 1
+            }
+            out
+        },
+        OrPat(alts) => {
+            let n: Integer = length(alts)
+            let mutable out: String = concat(head, concat(",\"alts\":", concat(from_integer(n), "}\n")))
+            let mutable i: Integer = 0
+            while i < n {
+                let alt_id: Integer = get(alts, i)!!
+                out = concat(out, dump_pattern(a, alt_id))
+                i = i + 1
+            }
+            out
+        },
+        RangePat(p) => {
+            let s_field: String = concat(",\"start\":{", concat(dump_literal_pattern_fields(p.range_start), "}"))
+            let e_field: String = concat(",\"end\":{", concat(dump_literal_pattern_fields(p.range_end), "}"))
+            let incl_field: String = concat(",\"incl\":", bool_repr(p.inclusive))
+            concat(head, concat(s_field, concat(e_field, concat(incl_field, "}\n"))))
+        },
+        EnumVariantPat(p) => {
+            let has_payload: Trilean! = match p.payload {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"variant\":", quote_string(p.variant_name)),
+                    concat(",\"payload\":", concat(bool_repr(has_payload), "}\n")),
+                ),
+            )
+            match p.payload {
+                ~0 => line,
+                _ => concat(line, dump_pattern(a, p.payload!!)),
+            }
+        },
+        OutcomeArmPat(p) => {
+            let has_payload: Trilean! = match p.payload {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"arm\":", quote_string(arm_name(p.arm))),
+                    concat(",\"payload\":", concat(bool_repr(has_payload), "}\n")),
+                ),
+            )
+            match p.payload {
+                ~0 => line,
+                _ => concat(line, dump_pattern(a, p.payload!!)),
+            }
+        },
+    }
+}
+
+// ── Expression dump ─────────────────────────────────────────────
+
+function dump_expr(a: Arena, id: Integer) -> String = {
+    let sp: SpannedExpr = get_expression(a, id)
+    let kind: String = match sp.node {
+        IntegerLiteralExpr(_) => "IntegerLiteralExpr",
+        TernaryLiteralExpr(_) => "TernaryLiteralExpr",
+        TrileanLiteralExpr(_) => "TrileanLiteralExpr",
+        StringLiteralExpr(_) => "StringLiteralExpr",
+        NullLiteralExpr => "NullLiteralExpr",
+        IdentifierExpr(_) => "IdentifierExpr",
+        UnaryOpExpr(_) => "UnaryOpExpr",
+        BinaryOpExpr(_) => "BinaryOpExpr",
+        ForceUnwrapExpr(_) => "ForceUnwrapExpr",
+        CallExpr(_) => "CallExpr",
+        FieldAccessExpr(_) => "FieldAccessExpr",
+        MethodCallExpr(_) => "MethodCallExpr",
+        OutcomeConstructorExpr(_) => "OutcomeConstructorExpr",
+        OutcomePropagateExpr(_) => "OutcomePropagateExpr",
+        OutcomeDefaultExpr(_) => "OutcomeDefaultExpr",
+        ElvisOpExpr(_) => "ElvisOpExpr",
+        RangeExpr(_) => "RangeExpr",
+    }
+    let head: String = ndjson_header(kind, sp.span_start, sp.span_end)
+    match sp.node {
+        IntegerLiteralExpr(p) => concat(head, concat(int_literal_fields(p), "}\n")),
+        TernaryLiteralExpr(p) => concat(head, concat(int_literal_fields(p), "}\n")),
+        TrileanLiteralExpr(v) => concat(head, concat(",\"v\":", concat(quote_string(trilean_lit_name(v)), "}\n"))),
+        StringLiteralExpr(p) => concat(head, concat(",\"v\":", concat(quote_string(p.text), "}\n"))),
+        NullLiteralExpr => concat(head, "}\n"),
+        IdentifierExpr(p) => concat(head, concat(",\"v\":", concat(quote_string(p.text), "}\n"))),
+        UnaryOpExpr(p) => {
+            let line: String = concat(head, concat(",\"op\":", concat(quote_string(unary_op_name(p.operator)), "}\n")))
+            concat(line, dump_expr(a, p.operand))
+        },
+        BinaryOpExpr(p) => {
+            let line: String = concat(head, concat(",\"op\":", concat(quote_string(binary_op_name(p.operator)), "}\n")))
+            concat(line, concat(dump_expr(a, p.left), dump_expr(a, p.right)))
+        },
+        ForceUnwrapExpr(inner_id) => concat(concat(head, "}\n"), dump_expr(a, inner_id)),
+        CallExpr(p) => {
+            let n: Integer = length(p.arguments)
+            let line: String = concat(head, concat(",\"args\":", concat(from_integer(n), "}\n")))
+            let mutable out: String = concat(line, dump_expr(a, p.callee))
+            let mutable i: Integer = 0
+            while i < n {
+                let arg_id: Integer = get(p.arguments, i)!!
+                out = concat(out, dump_expr(a, arg_id))
+                i = i + 1
+            }
+            out
+        },
+        FieldAccessExpr(p) => {
+            let line: String = concat(head, concat(",\"field\":", concat(quote_string(p.field), "}\n")))
+            concat(line, dump_expr(a, p.object))
+        },
+        MethodCallExpr(p) => {
+            let n: Integer = length(p.arguments)
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"method\":", quote_string(p.method)),
+                    concat(",\"args\":", concat(from_integer(n), "}\n")),
+                ),
+            )
+            let mutable out: String = concat(line, dump_expr(a, p.receiver))
+            let mutable i: Integer = 0
+            while i < n {
+                let arg_id: Integer = get(p.arguments, i)!!
+                out = concat(out, dump_expr(a, arg_id))
+                i = i + 1
+            }
+            out
+        },
+        OutcomeConstructorExpr(p) => {
+            let has_payload: Trilean! = match p.payload {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"arm\":", quote_string(arm_name(p.arm))),
+                    concat(",\"payload\":", concat(bool_repr(has_payload), "}\n")),
+                ),
+            )
+            match p.payload {
+                ~0 => line,
+                _ => concat(line, dump_expr(a, p.payload!!)),
+            }
+        },
+        OutcomePropagateExpr(p) => {
+            let cap_field: String = match p.capture_name {
+                ~0 => "",
+                _ => concat(",\"capture\":", quote_string(p.capture_name!!)),
+            }
+            let line: String = concat(head, concat(cap_field, "}\n"))
+            concat(line, concat(dump_expr(a, p.inner), dump_expr(a, p.early_return)))
+        },
+        OutcomeDefaultExpr(p) => {
+            let line: String = concat(head, "}\n")
+            concat(line, concat(dump_expr(a, p.inner), dump_expr(a, p.default_expr)))
+        },
+        ElvisOpExpr(p) => {
+            let line: String = concat(head, "}\n")
+            concat(line, concat(dump_expr(a, p.object), dump_expr(a, p.default_expr)))
+        },
+        RangeExpr(p) => {
+            let line: String = concat(head, concat(",\"incl\":", concat(bool_repr(p.inclusive), "}\n")))
+            concat(line, concat(dump_expr(a, p.range_start), dump_expr(a, p.range_end)))
+        },
+    }
+}
+
+// ── Statement dump ──────────────────────────────────────────────
+
+function dump_block(a: Arena, b: Block) -> String = {
+    let n: Integer = length(b.block_statements)
+    let has_final: Trilean! = match b.block_final {
+        ~0 => false,
+        _ => true,
+    }
+    let line: String = concat(
+        concat("{\"k\":\"Block\",\"stmts\":", from_integer(n)),
+        concat(",\"final\":", concat(bool_repr(has_final), "}\n")),
+    )
+    let mutable out: String = line
+    let mutable i: Integer = 0
+    while i < n {
+        let sid: Integer = get(b.block_statements, i)!!
+        out = concat(out, dump_stmt(a, sid))
+        i = i + 1
+    }
+    match b.block_final {
+        ~0 => out,
+        _ => concat(out, dump_expr(a, b.block_final!!)),
+    }
+}
+
+function dump_stmt(a: Arena, id: Integer) -> String = {
+    let sp: SpannedStmt = get_statement(a, id)
+    let kind: String = match sp.node {
+        LetStmt(_) => "LetStmt",
+        ConstantStmt(_) => "ConstantStmt",
+        ReturnStmt(_) => "ReturnStmt",
+        BreakStmt(_) => "BreakStmt",
+        ContinueStmt => "ContinueStmt",
+        ForStmt(_) => "ForStmt",
+        WhileStmt(_) => "WhileStmt",
+        LoopStmt(_) => "LoopStmt",
+        AssignStmt(_) => "AssignStmt",
+        ExpressionStmt(_) => "ExpressionStmt",
+    }
+    let head: String = ndjson_header(kind, sp.span_start, sp.span_end)
+    match sp.node {
+        ContinueStmt => concat(head, "}\n"),
+        LetStmt(p) => {
+            let has_ann: Trilean! = match p.type_annotation {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(p.name)),
+                    concat(
+                        concat(",\"mut\":", bool_repr(p.is_mutable)),
+                        concat(",\"ann\":", concat(bool_repr(has_ann), "}\n")),
+                    ),
+                ),
+            )
+            let mutable out: String = line
+            match p.type_annotation {
+                ~0 => {},
+                _ => {
+                    out = concat(out, dump_type(a, p.type_annotation!!))
+                },
+            }
+            concat(out, dump_expr(a, p.value))
+        },
+        ConstantStmt(p) => {
+            let has_ann: Trilean! = match p.type_annotation {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(p.name)),
+                    concat(",\"ann\":", concat(bool_repr(has_ann), "}\n")),
+                ),
+            )
+            let mutable out: String = line
+            match p.type_annotation {
+                ~0 => {},
+                _ => {
+                    out = concat(out, dump_type(a, p.type_annotation!!))
+                },
+            }
+            concat(out, dump_expr(a, p.value))
+        },
+        ReturnStmt(p) => {
+            let has_value: Trilean! = match p.value {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(head, concat(",\"value\":", concat(bool_repr(has_value), "}\n")))
+            match p.value {
+                ~0 => line,
+                _ => concat(line, dump_expr(a, p.value!!)),
+            }
+        },
+        BreakStmt(p) => {
+            let has_value: Trilean! = match p.value {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(head, concat(",\"value\":", concat(bool_repr(has_value), "}\n")))
+            match p.value {
+                ~0 => line,
+                _ => concat(line, dump_expr(a, p.value!!)),
+            }
+        },
+        ForStmt(p) => {
+            let line: String = concat(head, "}\n")
+            concat(
+                line,
+                concat(dump_pattern(a, p.variable), concat(dump_expr(a, p.iterable), dump_block(a, p.body))),
+            )
+        },
+        WhileStmt(p) => {
+            let line: String = concat(head, concat(",\"q\":", concat(bool_repr(p.treat_unknown_as_false), "}\n")))
+            concat(line, concat(dump_expr(a, p.condition), dump_block(a, p.body)))
+        },
+        LoopStmt(p) => concat(concat(head, "}\n"), dump_block(a, p.body)),
+        AssignStmt(p) => {
+            let line: String = concat(head, concat(",\"target\":", concat(quote_string(p.target), "}\n")))
+            concat(line, dump_expr(a, p.value))
+        },
+        ExpressionStmt(p) => concat(concat(head, "}\n"), dump_expr(a, p.expression)),
+    }
+}
+
+// ── Item dump ───────────────────────────────────────────────────
+
+function dump_string_list(name: String, items: Vector<String>) -> String = {
+    let n: Integer = length(items)
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    while i < n {
+        let entry: String = get(items, i)!!
+        out = concat(
+            out,
+            concat(
+                concat("{\"k\":\"", concat(name, "\",\"name\":")),
+                concat(quote_string(entry), "}\n"),
+            ),
+        )
+        i = i + 1
+    }
+    out
+}
+
+function dump_function_body(a: Arena, body: FunctionBody) -> String =
+    match body {
+        BlockBody(b) => concat("{\"k\":\"FunctionBodyBlock\"}\n", dump_block(a, b)),
+        ExpressionBody(eid) => concat("{\"k\":\"FunctionBodyExpression\"}\n", dump_expr(a, eid)),
+    }
+
+function dump_item(a: Arena, id: Integer) -> String = {
+    let sp: SpannedItem = get_item(a, id)
+    let kind: String = match sp.node {
+        FunctionItem(_) => "FunctionItem",
+        ConstantItem(_) => "ConstantItem",
+        TypeAliasItem(_) => "TypeAliasItem",
+        StructItem(_) => "StructItem",
+        EnumItem(_) => "EnumItem",
+        ImportItem(_) => "ImportItem",
+        ImportFromItem(_) => "ImportFromItem",
+        ModuleItem(_) => "ModuleItem",
+    }
+    let head: String = ndjson_header(kind, sp.span_start, sp.span_end)
+    match sp.node {
+        FunctionItem(f) => {
+            let g_count: Integer = length(f.type_params)
+            let p_count: Integer = length(f.parameters)
+            let has_ret: Trilean! = match f.return_type {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(f.name)),
+                    concat(
+                        concat(",\"vis\":", quote_string(visibility_name(f.visibility))),
+                        concat(
+                            concat(",\"gen\":", from_integer(g_count)),
+                            concat(
+                                concat(",\"params\":", from_integer(p_count)),
+                                concat(",\"ret\":", concat(bool_repr(has_ret), "}\n")),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            let mutable out: String = concat(line, dump_string_list("GenericParam", f.type_params))
+            let mutable i: Integer = 0
+            while i < p_count {
+                let param: FunctionParam = get(f.parameters, i)!!
+                let param_line: String = concat(
+                    concat("{\"k\":\"FunctionParam\",\"name\":", quote_string(param.name)),
+                    concat(",\"pass\":", concat(quote_string(passing_name(param.passing)), "}\n")),
+                )
+                out = concat(out, concat(param_line, dump_type(a, param.type_annotation)))
+                i = i + 1
+            }
+            match f.return_type {
+                ~0 => {},
+                _ => {
+                    out = concat(out, dump_type(a, f.return_type!!))
+                },
+            }
+            concat(out, dump_function_body(a, f.body))
+        },
+        ConstantItem(p) => {
+            let has_ann: Trilean! = match p.type_annotation {
+                ~0 => false,
+                _ => true,
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(p.name)),
+                    concat(
+                        concat(",\"vis\":", quote_string(visibility_name(p.visibility))),
+                        concat(",\"ann\":", concat(bool_repr(has_ann), "}\n")),
+                    ),
+                ),
+            )
+            let mutable out: String = line
+            match p.type_annotation {
+                ~0 => {},
+                _ => {
+                    out = concat(out, dump_type(a, p.type_annotation!!))
+                },
+            }
+            concat(out, dump_expr(a, p.value))
+        },
+        TypeAliasItem(p) => {
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(p.name)),
+                    concat(",\"vis\":", concat(quote_string(visibility_name(p.visibility)), "}\n")),
+                ),
+            )
+            concat(line, dump_type(a, p.target))
+        },
+        StructItem(sd) => {
+            let g_count: Integer = length(sd.type_params)
+            let f_count: Integer = length(sd.fields)
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(sd.name)),
+                    concat(
+                        concat(",\"vis\":", quote_string(visibility_name(sd.visibility))),
+                        concat(
+                            concat(",\"gen\":", from_integer(g_count)),
+                            concat(",\"fields\":", concat(from_integer(f_count), "}\n")),
+                        ),
+                    ),
+                ),
+            )
+            let mutable out: String = concat(line, dump_string_list("GenericParam", sd.type_params))
+            let mutable i: Integer = 0
+            while i < f_count {
+                let field: StructField = get(sd.fields, i)!!
+                let field_line: String = concat(
+                    concat("{\"k\":\"StructField\",\"name\":", quote_string(field.name)),
+                    "}\n",
+                )
+                out = concat(out, concat(field_line, dump_type(a, field.type_annotation)))
+                i = i + 1
+            }
+            out
+        },
+        EnumItem(ed) => {
+            let g_count: Integer = length(ed.type_params)
+            let v_count: Integer = length(ed.variants)
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(ed.name)),
+                    concat(
+                        concat(",\"vis\":", quote_string(visibility_name(ed.visibility))),
+                        concat(
+                            concat(",\"gen\":", from_integer(g_count)),
+                            concat(",\"variants\":", concat(from_integer(v_count), "}\n")),
+                        ),
+                    ),
+                ),
+            )
+            let mutable out: String = concat(line, dump_string_list("GenericParam", ed.type_params))
+            let mutable i: Integer = 0
+            while i < v_count {
+                let variant: EnumVariant = get(ed.variants, i)!!
+                let has_payload: Trilean! = match variant.payload {
+                    ~0 => false,
+                    _ => true,
+                }
+                let variant_line: String = concat(
+                    concat("{\"k\":\"EnumVariant\",\"name\":", quote_string(variant.name)),
+                    concat(",\"payload\":", concat(bool_repr(has_payload), "}\n")),
+                )
+                out = concat(out, variant_line)
+                match variant.payload {
+                    ~0 => {},
+                    _ => {
+                        out = concat(out, dump_type(a, variant.payload!!))
+                    },
+                }
+                i = i + 1
+            }
+            out
+        },
+        ImportItem(p) => {
+            let n: Integer = length(p.segments)
+            let line: String = concat(head, concat(",\"segments\":", concat(from_integer(n), "}\n")))
+            concat(line, dump_string_list("PathSegment", p.segments))
+        },
+        ImportFromItem(p) => {
+            let src_count: Integer = length(p.source)
+            let names_count: Integer = length(p.names)
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"src\":", from_integer(src_count)),
+                    concat(",\"names\":", concat(from_integer(names_count), "}\n")),
+                ),
+            )
+            let mutable out: String = concat(line, dump_string_list("PathSegment", p.source))
+            let mutable i: Integer = 0
+            while i < names_count {
+                let nm: ImportName = get(p.names, i)!!
+                let has_alias: Trilean! = match nm.alias {
+                    ~0 => false,
+                    _ => true,
+                }
+                let name_line: String = concat(
+                    concat("{\"k\":\"ImportName\",\"name\":", quote_string(nm.name)),
+                    concat(",\"alias\":", concat(bool_repr(has_alias), "}\n")),
+                )
+                out = concat(out, name_line)
+                match nm.alias {
+                    ~0 => {},
+                    _ => {
+                        out = concat(
+                            out,
+                            concat(
+                                concat("{\"k\":\"ImportAlias\",\"name\":", quote_string(nm.alias!!)),
+                                "}\n",
+                            ),
+                        )
+                    },
+                }
+                i = i + 1
+            }
+            out
+        },
+        ModuleItem(m) => {
+            let content_label: String = match m.content {
+                ExternalContent => "external",
+                InlineContent(_) => "inline",
+            }
+            let item_count: Integer = match m.content {
+                ExternalContent => 0,
+                InlineContent(ids) => length(ids),
+            }
+            let line: String = concat(
+                head,
+                concat(
+                    concat(",\"name\":", quote_string(m.name)),
+                    concat(
+                        concat(",\"vis\":", quote_string(visibility_name(m.visibility))),
+                        concat(
+                            concat(",\"content\":", quote_string(content_label)),
+                            concat(",\"items\":", concat(from_integer(item_count), "}\n")),
+                        ),
+                    ),
+                ),
+            )
+            match m.content {
+                ExternalContent => line,
+                InlineContent(ids) => {
+                    let mutable out: String = line
+                    let mutable i: Integer = 0
+                    while i < item_count {
+                        let iid: Integer = get(ids, i)!!
+                        out = concat(out, dump_item(a, iid))
+                        i = i + 1
+                    }
+                    out
+                },
+            }
+        },
+    }
+}
+
+// ── Top-level entrypoint ────────────────────────────────────────
+
+public function dump_program_ndjson(source: String) -> String = {
+    let lex_outcome: Vector<SpannedToken>~LexError = lex(source)
+    match lex_outcome {
+        // Lex failure — emit a single error line so the Rust mirror
+        // can match. Spans default to 0,0 since the exact LexError
+        // span isn't surfaced through the current ParseError
+        // wrapper. The parser_differential corpus is curated to
+        // contain only lex-clean sources, so this branch is a
+        // safety stub rather than a tested code path.
+        ~- _ => "{\"e\":\"LexerFailed\",\"s\":[0,0]}\n",
+        ~+ toks => {
+            let st: ParserState = parser_new(toks)
+            let step: ParseProgramStep = parse_program(st)
+            let item_count: Integer = length(step.program.item_ids)
+            let mutable out: String = concat(
+                concat("{\"k\":\"Program\",\"items\":", from_integer(item_count)),
+                "}\n",
+            )
+            let mutable i: Integer = 0
+            while i < item_count {
+                let iid: Integer = get(step.program.item_ids, i)!!
+                out = concat(out, dump_item(step.program.arena, iid))
+                i = i + 1
+            }
+            let err_count: Integer = length(step.errors)
+            let mutable j: Integer = 0
+            while j < err_count {
+                let err: ParseError = get(step.errors, j)!!
+                out = concat(out, ndjson_parse_error(err))
+                j = j + 1
+            }
+            out
+        },
+    }
 }
 
 function parse_program_or_fail(source: String) -> Program = {

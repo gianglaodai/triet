@@ -460,7 +460,13 @@ impl<'a> LowerCtx<'a> {
         // sites can propagate struct-typing into the dest `ValueId`
         // (needed for `FieldAccess` resolution per ADR-0007 §field).
         if let Some(rt) = fd.return_type {
-            if let Some(struct_name) = self.type_expr_to_struct_name(rt, module) {
+            // v0.7.5.6b — first try the direct case (T returns), then
+            // fall back to `T?` (nullable returns where Triết stores
+            // the value as bare T at runtime). Both produce a value
+            // whose field-access layout matches T's struct.
+            let direct = self.type_expr_to_struct_name(rt, module);
+            let nullable_inner = self.nullable_inner_struct_name(rt, module);
+            if let Some(struct_name) = direct.or(nullable_inner) {
                 self.func_return_struct.insert(id, struct_name);
             }
             // v0.7.4.3-debt.2 (WA-2): functions returning `T~E` /
@@ -489,6 +495,32 @@ impl<'a> LowerCtx<'a> {
         let type_expr = &arena.type_expression(type_id).node;
         if let triet_syntax::type_ast::TypeExpr::Outcome { value_type, .. } = type_expr {
             return self.type_expr_to_struct_name(*value_type, module);
+        }
+        None
+    }
+
+    /// Peer into `TypeExpr::Nullable(T)` and return the inner struct
+    /// name when `T` is a known user-struct. Returns `None` for any
+    /// other shape (non-nullable, nullable-of-primitive, etc.).
+    ///
+    /// Used by v0.7.5.6b — `peek(s) -> SpannedToken?` and similar
+    /// nullable-returning getters need their result tracked so a
+    /// subsequent `~+ next => next.field` pattern destructure
+    /// resolves field indices correctly. Triết represents `T?` as
+    /// bare `T` (or `Null`) at runtime — no wrapper struct — so the
+    /// outer value's `value_struct_types` slot carrying the inner
+    /// struct's name is the right model: field accesses on a
+    /// non-null `T?` work as if it were `T`; null check via
+    /// `match` / `!!` is the user's responsibility.
+    fn nullable_inner_struct_name(
+        &self,
+        type_id: triet_syntax::arena::TypeId,
+        module: &Module,
+    ) -> Option<String> {
+        let arena = &self.program.arenas[module.arena_id.0];
+        let type_expr = &arena.type_expression(type_id).node;
+        if let triet_syntax::type_ast::TypeExpr::Nullable(inner) = type_expr {
+            return self.type_expr_to_struct_name(*inner, module);
         }
         None
     }
@@ -706,21 +738,26 @@ impl<'a> LowerCtx<'a> {
                 value,
             } => {
                 let val = self.lower_expr(*value);
-                // v0.7.5.4a — if the let carries a user type annotation
-                // and the value doesn't already have struct tracking,
-                // seed it from the annotation. Covers
-                // `let p: FunctionParam = get(params, i)!!` where
-                // `get` opaque-returns the struct so the value flows
-                // through `Vector<T>` untracked, but the user's
-                // declared type tells us exactly what T is.
+                // v0.7.5.4a + v0.7.5.6b — seed value_struct_types
+                // from the let's type annotation when the value
+                // doesn't already have struct tracking. Covers:
+                // (a) `let p: FunctionParam = get(params, i)!!` —
+                //     Vector<T> element extraction is opaque, but
+                //     the annotation tells us T.
+                // (b) `let next_opt: SpannedToken? = peek(s)` —
+                //     nullable-of-struct: same struct identity at
+                //     the value level, since T? bare-stores T at
+                //     runtime (Triết has no boxing wrapper).
                 if let Some(ty_id) = type_annotation
                     && !self.value_struct_types.contains_key(&val)
-                    && let Some(struct_name) = self.type_expr_to_struct_name(
-                        *ty_id,
-                        &self.program.modules[self.current_module_idx].clone(),
-                    )
                 {
-                    self.value_struct_types.insert(val, struct_name);
+                    let module_clone = self.program.modules[self.current_module_idx].clone();
+                    let struct_name = self
+                        .type_expr_to_struct_name(*ty_id, &module_clone)
+                        .or_else(|| self.nullable_inner_struct_name(*ty_id, &module_clone));
+                    if let Some(name) = struct_name {
+                        self.value_struct_types.insert(val, name);
+                    }
                 }
                 self.bind_var(name.clone(), val);
             }
@@ -1216,6 +1253,14 @@ impl<'a> LowerCtx<'a> {
                     dest,
                     nullable: Operand::Value(val),
                 });
+                // v0.7.5.6b — propagate struct identity through `!!`.
+                // For `T?` where T is a known struct, the inner value
+                // tracking IS the outer value tracking (Triết bare-
+                // stores T at runtime). The unwrapped result inherits
+                // the same struct identity.
+                if let Some(s) = self.value_struct_types.get(&val).cloned() {
+                    self.value_struct_types.insert(dest, s);
+                }
                 dest
             }
 
@@ -2911,13 +2956,23 @@ impl<'a> LowerCtx<'a> {
                     }
                 };
                 self.emit(unwrap);
-                // v0.7.4.3-debt.2 (WA-2): propagate success-arm struct
-                // identity onto the bound payload so the arm body can
-                // resolve `payload.field` correctly.
-                if matches!(arm, OutcomeArm::Positive)
-                    && let Some(s) = self.value_outcome_value_struct.get(&scrutinee).cloned()
-                {
-                    self.value_struct_types.insert(payload_val, s);
+                // v0.7.4.3-debt.2 (WA-2) + v0.7.5.6b: propagate
+                // success-arm struct identity onto the bound payload.
+                // Two cases:
+                //   - Outcome (`T~E` / `T?~E`): look up
+                //     `value_outcome_value_struct` for the scrutinee.
+                //   - Nullable (`T?`): the scrutinee's value-level
+                //     tracking IS the inner struct identity (Triết
+                //     bare-stores T at runtime — no wrapper).
+                if matches!(arm, OutcomeArm::Positive) {
+                    let propagated = self
+                        .value_outcome_value_struct
+                        .get(&scrutinee)
+                        .cloned()
+                        .or_else(|| self.value_struct_types.get(&scrutinee).cloned());
+                    if let Some(s) = propagated {
+                        self.value_struct_types.insert(payload_val, s);
+                    }
                 }
                 self.bind_pattern_vars(&inner_pat, payload_val);
             }
