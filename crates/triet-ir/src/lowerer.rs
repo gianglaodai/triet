@@ -546,6 +546,30 @@ impl<'a> LowerCtx<'a> {
         self.func_table.get(&local_path).copied()
     }
 
+    /// Helper for v0.7.5.4a phi propagation. Returns `Some(name)`
+    /// if every `value_ids` entry maps to the same key under
+    /// `tracker`. Returns `None` if any entry is missing (so any
+    /// arm with no struct identity poisons the merge) or if the
+    /// entries disagree (the lowerer never asserts a struct identity
+    /// on a value that mixes types across paths).
+    fn shared_struct_identity(
+        tracker: &HashMap<ValueId, String>,
+        value_ids: impl IntoIterator<Item = ValueId>,
+    ) -> Option<String> {
+        let mut shared: Option<String> = None;
+        let mut any = false;
+        for v in value_ids {
+            any = true;
+            let s = tracker.get(&v)?;
+            match &shared {
+                None => shared = Some(s.clone()),
+                Some(existing) if existing == s => {}
+                _ => return None,
+            }
+        }
+        if any { shared } else { None }
+    }
+
     // ── Type inference helpers ──────────────────────────────────
 
     const fn suffix_type_tag(suffix: Option<NumericSuffix>) -> TypeTag {
@@ -678,10 +702,26 @@ impl<'a> LowerCtx<'a> {
             Stmt::Let {
                 name,
                 mutable: _mutable,
-                type_annotation: _ty,
+                type_annotation,
                 value,
             } => {
                 let val = self.lower_expr(*value);
+                // v0.7.5.4a — if the let carries a user type annotation
+                // and the value doesn't already have struct tracking,
+                // seed it from the annotation. Covers
+                // `let p: FunctionParam = get(params, i)!!` where
+                // `get` opaque-returns the struct so the value flows
+                // through `Vector<T>` untracked, but the user's
+                // declared type tells us exactly what T is.
+                if let Some(ty_id) = type_annotation
+                    && !self.value_struct_types.contains_key(&val)
+                    && let Some(struct_name) = self.type_expr_to_struct_name(
+                        *ty_id,
+                        &self.program.modules[self.current_module_idx].clone(),
+                    )
+                {
+                    self.value_struct_types.insert(val, struct_name);
+                }
                 self.bind_var(name.clone(), val);
             }
 
@@ -1331,6 +1371,16 @@ impl<'a> LowerCtx<'a> {
             OutcomeArm::Positive => {
                 let payload_val =
                     self.lower_expr(payload.expect("typecheck guarantees ~+ has a payload"));
+                // v0.7.5.4a — propagate struct identity from the
+                // success payload onto the constructed Outcome value's
+                // `value_outcome_value_struct` slot, so a subsequent
+                // `~?` / `~:` / match-arm unwrap can recover that
+                // identity on the unwrapped value. Parallel to the
+                // `func_return_outcome_value_struct` seeding at call
+                // sites; this is the missing literal-side analogue.
+                if let Some(s) = self.value_struct_types.get(&payload_val).cloned() {
+                    self.value_outcome_value_struct.insert(dest, s);
+                }
                 self.emit(Instruction::OutcomeNewPositive {
                     dest,
                     payload: Operand::Value(payload_val),
@@ -1801,6 +1851,27 @@ impl<'a> LowerCtx<'a> {
         // Merge block with phi for the if's result value.
         self.start_block(merge_block_id, Some("merge".into()));
         let merge_dest = self.fresh_value();
+        // v0.7.5.4a — propagate value_struct_types and
+        // value_outcome_value_struct onto merge_dest when both
+        // branches agree. Parallel to lower_match_expr +
+        // lower_outcome_default + lower_while_loop. Without this, an
+        // `if cond { ~+ X } else { ~+ X }` loses outcome-payload
+        // tracking, so a chained `~?` unwrap drops X's struct
+        // identity at the caller.
+        let merge_struct: Option<String> = match (
+            self.value_struct_types.get(&then_val).cloned(),
+            self.value_struct_types.get(&else_val).cloned(),
+        ) {
+            (Some(s1), Some(s2)) if s1 == s2 => Some(s1),
+            _ => None,
+        };
+        let merge_outcome_struct: Option<String> = match (
+            self.value_outcome_value_struct.get(&then_val).cloned(),
+            self.value_outcome_value_struct.get(&else_val).cloned(),
+        ) {
+            (Some(s1), Some(s2)) if s1 == s2 => Some(s1),
+            _ => None,
+        };
         self.emit(Instruction::Phi {
             dest: merge_dest,
             incoming: vec![
@@ -1814,6 +1885,12 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
+        if let Some(s) = merge_struct {
+            self.value_struct_types.insert(merge_dest, s);
+        }
+        if let Some(s) = merge_outcome_struct {
+            self.value_outcome_value_struct.insert(merge_dest, s);
+        }
         // Emit one phi per mutated variable so the post-if scope sees
         // a single merged SSA value for each name. Skip names that the
         // pre-if scope didn't define (typecheck rejects those anyway).
@@ -1887,6 +1964,19 @@ impl<'a> LowerCtx<'a> {
                     block: pre_loop_block,
                 }],
             });
+            // v0.7.5.4a — propagate value_struct_types from the
+            // pre-loop incoming onto phi_dest UP-FRONT (before the
+            // body lowers). The user-declared `let mutable name: T`
+            // contract guarantees rebinds preserve T's struct
+            // identity, so we can assume the body's body_val will
+            // also carry T. This is needed because match-phi
+            // propagation inside the body uses the *current* tracking
+            // of phi_dest — if it's untracked, every nested-match
+            // mutation phi loses identity, and `name.field` in the
+            // tail block falls back to field_idx=0.
+            if let Some(s) = self.value_struct_types.get(&pre).cloned() {
+                self.value_struct_types.insert(phi_dest, s);
+            }
             // Bind the phi as the new live value for `name` inside the loop.
             // v0.7.4.4: rebind into the declaring scope (not innermost),
             // so an intermediate `Expr::Block` scope around the while —
@@ -1959,6 +2049,29 @@ impl<'a> LowerCtx<'a> {
                         });
                     }
                 }
+            }
+        }
+        // v0.7.5.4a — propagate value_struct_types onto each phi_dest
+        // when both incoming edges (pre-loop + body-end) agree on the
+        // same struct identity. Mirrors the merge-phi propagation in
+        // `lower_match_expr` (~L2441) and `lower_outcome_default`
+        // (~L1441). Without this, `let mutable state: T = … ; while …
+        // { state = step.state }` loses struct tracking on `state`
+        // across the phi, so post-loop `state.field` falls back to
+        // field_idx=0 and `FieldGet` reads the wrong slot.
+        let pre_map: HashMap<&str, ValueId> = pre_loop_vals
+            .iter()
+            .filter_map(|(n, v)| v.map(|val| (n.as_str(), val)))
+            .collect();
+        for (name, phi_dest, body_val) in &post_body_vals {
+            if let Some(pre_val) = pre_map.get(name.as_str())
+                && let (Some(s1), Some(s2)) = (
+                    self.value_struct_types.get(pre_val).cloned(),
+                    self.value_struct_types.get(body_val).cloned(),
+                )
+                && s1 == s2
+            {
+                self.value_struct_types.insert(*phi_dest, s1);
             }
         }
         // Only branch back if not already terminated.
@@ -2447,10 +2560,34 @@ impl<'a> LowerCtx<'a> {
 
         // Merge block.
         self.start_block(merge_block_id, Some("match_merge".into()));
+        // v0.7.5.4a — propagate value_struct_types AND
+        // value_outcome_value_struct onto merge_dest when every arm's
+        // body produced the same identity. Parallel to
+        // lower_outcome_default + the per-arm mutated-var phi
+        // propagation below + the while-loop phi propagation in
+        // lower_while_loop. Without this, a `match … => struct-typed
+        // value` loses struct identity at the merge point, so later
+        // `result.field` accesses fall back to field_idx=0; and a
+        // `match … => ~+ X` chain loses outcome-payload tracking so a
+        // subsequent `~?` unwrap drops `X`'s struct identity.
+        let merge_dest_struct = Self::shared_struct_identity(
+            &self.value_struct_types,
+            phi_incoming.iter().map(|pi| pi.value),
+        );
+        let merge_dest_outcome_struct = Self::shared_struct_identity(
+            &self.value_outcome_value_struct,
+            phi_incoming.iter().map(|pi| pi.value),
+        );
         self.emit(Instruction::Phi {
             dest: merge_dest,
             incoming: phi_incoming,
         });
+        if let Some(s) = merge_dest_struct {
+            self.value_struct_types.insert(merge_dest, s);
+        }
+        if let Some(s) = merge_dest_outcome_struct {
+            self.value_outcome_value_struct.insert(merge_dest, s);
+        }
 
         // v0.7.4.3-debt.5: emit one phi per mutated outer-scope var so
         // post-match reads see a single merged SSA value. Skip vars that
@@ -2475,8 +2612,23 @@ impl<'a> LowerCtx<'a> {
             let phi_dest = self.fresh_value();
             self.emit(Instruction::Phi {
                 dest: phi_dest,
-                incoming,
+                incoming: incoming.clone(),
             });
+            // v0.7.5.4a — propagate value_struct_types when every
+            // incoming edge agrees on the same struct identity.
+            // Parallel to the while-loop phi propagation in
+            // `lower_while_loop` and the merge-phi propagation in
+            // `lower_outcome_default`. Without this, a `mutable`
+            // variable reassigned inside one match arm
+            // (`state = step.state`) loses struct tracking across
+            // the merge, so post-match `state.field` falls back to
+            // field_idx=0.
+            if let Some(s) = Self::shared_struct_identity(
+                &self.value_struct_types,
+                incoming.iter().map(|pi| pi.value),
+            ) {
+                self.value_struct_types.insert(phi_dest, s);
+            }
             self.rebind_var(name, phi_dest);
         }
         merge_dest

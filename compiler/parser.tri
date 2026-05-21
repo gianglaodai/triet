@@ -34,6 +34,28 @@
 // type grammar, items, and parser-level error recovery stay
 // deferred to v0.7.5.{4, 5, 6}.
 //
+// v0.7.5.4a — Items: top-level driver + functions + constant +
+// type alias + visibility. Ports the upper half of
+// crates/triet-parser/src/item.rs. Adds the `Item` enum (all 8
+// variants scaffolded so the AST + Arena shape stays stable for
+// .4b), `Visibility` / `ParameterPassing` / `FunctionBody` /
+// `FunctionParam` / `FunctionDef` / `ConstantItemPayload` /
+// `TypeAliasPayload`, a fifth `items` sub-arena keyed by Integer
+// (mirroring the existing expr/pattern/type/stmt arenas), and
+// `Program { arena, item_ids }` as the root container.
+// Parser surface: `parse_program` (loops over items till EOF),
+// `parse_item` dispatcher (visibility prefix + keyword dispatch),
+// `parse_visibility` (PrivateVis / PublicVis / PackageVis),
+// `parse_function` (+ `parse_parameter_list` / `parse_parameter`
+// / `parse_generic_params` / `parse_function_body`),
+// `parse_constant_item`, `parse_type_alias`, `parse_ident`,
+// `parse_item_name` (+ ADR-0005 reserved-name check for `std` /
+// `sys` / `dev` / `usr` / `core` via `ReservedItemNameErr`).
+// `parse_function_body` consumes either `{ … }` (via the v0.7.5.3
+// `parse_block`) or `= expr` (via the v0.7.5.2 `parse_expression`).
+// Struct / Enum / Module / Import / ImportFrom parsers stub-fail
+// at `parse_item` dispatch — implementation lands in v0.7.5.4b.
+//
 // AllocResult / ParseStep wrap (arena, id) / (state, expr_id) because
 // IR tuple returns are deferred post-v1.0 per SPEC §95 — without
 // tuple returns, the alloc helpers can't expose Rust's
@@ -302,6 +324,126 @@ public enum Stmt {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Item AST — top-level declarations (v0.7.5.4a scaffolds the enum
+// + all payload structs; .4a parses Function / Constant / TypeAlias,
+// .4b adds Struct / Enum / Module / Import / ImportFrom).
+// Mirrors triet-syntax::item.
+// ─────────────────────────────────────────────────────────────────
+
+// Per ADR-0005 §"Visibility": three states. The `Vis` suffix avoids
+// collision with the `PublicKw` token name in the global namespace.
+public enum Visibility {
+    PrivateVis,
+    PublicVis,
+    PackageVis,
+}
+
+// SPEC §10.3 — Mojo-aligned parameter passing.
+public enum ParameterPassing {
+    BorrowedParam,
+    MutableParam,
+    OwnedParam,
+}
+
+public struct FunctionParam {
+    name: String,
+    type_annotation: Integer,
+    passing: ParameterPassing,
+}
+
+// `function foo() -> T { ... }` vs `function foo() -> T = expr`.
+public enum FunctionBody {
+    BlockBody(Block),
+    ExpressionBody(Integer),
+}
+
+public struct FunctionDef {
+    visibility: Visibility,
+    name: String,
+    type_params: Vector<String>,
+    parameters: Vector<FunctionParam>,
+    return_type: Integer?,
+    body: FunctionBody,
+}
+
+public struct ConstantItemPayload {
+    visibility: Visibility,
+    name: String,
+    type_annotation: Integer?,
+    value: Integer,
+}
+
+public struct TypeAliasPayload {
+    visibility: Visibility,
+    name: String,
+    target: Integer,
+}
+
+// .4b will populate these — defined now so the Item enum + Arena
+// shape stay stable across the .4a → .4b split.
+public struct StructField {
+    name: String,
+    type_annotation: Integer,
+}
+
+public struct StructDef {
+    visibility: Visibility,
+    name: String,
+    type_params: Vector<String>,
+    fields: Vector<StructField>,
+}
+
+public struct EnumVariant {
+    name: String,
+    payload: Integer?,
+}
+
+public struct EnumDef {
+    visibility: Visibility,
+    name: String,
+    type_params: Vector<String>,
+    variants: Vector<EnumVariant>,
+}
+
+public struct ImportPath {
+    segments: Vector<String>,
+}
+
+public struct ImportName {
+    name: String,
+    alias: String?,
+}
+
+public struct ImportFromPayload {
+    source: Vector<String>,
+    names: Vector<ImportName>,
+}
+
+// `module foo` (file-bound) vs `module foo { items… }` (inline).
+// Inline items reference into the Arena's 5th sub-arena by ID.
+public enum ModuleContent {
+    ExternalContent,
+    InlineContent(Vector<Integer>),
+}
+
+public struct ModuleDecl {
+    visibility: Visibility,
+    name: String,
+    content: ModuleContent,
+}
+
+public enum Item {
+    FunctionItem(FunctionDef),
+    ConstantItem(ConstantItemPayload),
+    TypeAliasItem(TypeAliasPayload),
+    StructItem(StructDef),
+    EnumItem(EnumDef),
+    ImportItem(ImportPath),
+    ImportFromItem(ImportFromPayload),
+    ModuleItem(ModuleDecl),
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Spanned wrappers — every AST node carries its source byte range
 // ─────────────────────────────────────────────────────────────────
 
@@ -329,8 +471,17 @@ public struct SpannedStmt {
     span_end: Integer,
 }
 
+public struct SpannedItem {
+    node: Item,
+    span_start: Integer,
+    span_end: Integer,
+}
+
 // ─────────────────────────────────────────────────────────────────
-// Arena — 4 typed sub-arenas indexed by Integer
+// Arena — 5 typed sub-arenas indexed by Integer.
+// v0.7.5.4a adds the items sub-arena; inline `module foo { … }`
+// content references items by ID, and `Program` stores top-level
+// item IDs in source order.
 // ─────────────────────────────────────────────────────────────────
 
 public struct Arena {
@@ -338,6 +489,7 @@ public struct Arena {
     patterns: Vector<SpannedPattern>,
     types: Vector<SpannedTypeExpr>,
     statements: Vector<SpannedStmt>,
+    items: Vector<SpannedItem>,
 }
 
 public struct AllocResult {
@@ -351,6 +503,7 @@ public function arena_new() -> Arena =
         patterns: new(),
         types: new(),
         statements: new(),
+        items: new(),
     }
 
 public function alloc_expression(a: Arena, node: SpannedExpr) -> AllocResult = {
@@ -361,6 +514,7 @@ public function alloc_expression(a: Arena, node: SpannedExpr) -> AllocResult = {
             patterns: a.patterns,
             types: a.types,
             statements: a.statements,
+            items: a.items,
         },
         id: next_id,
     }
@@ -374,6 +528,7 @@ public function alloc_pattern(a: Arena, node: SpannedPattern) -> AllocResult = {
             patterns: push(a.patterns, node),
             types: a.types,
             statements: a.statements,
+            items: a.items,
         },
         id: next_id,
     }
@@ -387,6 +542,7 @@ public function alloc_type(a: Arena, node: SpannedTypeExpr) -> AllocResult = {
             patterns: a.patterns,
             types: push(a.types, node),
             statements: a.statements,
+            items: a.items,
         },
         id: next_id,
     }
@@ -400,6 +556,21 @@ public function alloc_statement(a: Arena, node: SpannedStmt) -> AllocResult = {
             patterns: a.patterns,
             types: a.types,
             statements: push(a.statements, node),
+            items: a.items,
+        },
+        id: next_id,
+    }
+}
+
+public function alloc_item(a: Arena, node: SpannedItem) -> AllocResult = {
+    let next_id: Integer = length(a.items)
+    AllocResult {
+        arena: Arena {
+            expressions: a.expressions,
+            patterns: a.patterns,
+            types: a.types,
+            statements: a.statements,
+            items: push(a.items, node),
         },
         id: next_id,
     }
@@ -417,6 +588,9 @@ public function get_type(a: Arena, id: Integer) -> SpannedTypeExpr =
 public function get_statement(a: Arena, id: Integer) -> SpannedStmt =
     get(a.statements, id)!!
 
+public function get_item(a: Arena, id: Integer) -> SpannedItem =
+    get(a.items, id)!!
+
 public function expression_count(a: Arena) -> Integer =
     length(a.expressions)
 
@@ -428,6 +602,17 @@ public function type_count(a: Arena) -> Integer =
 
 public function statement_count(a: Arena) -> Integer =
     length(a.statements)
+
+public function item_count(a: Arena) -> Integer =
+    length(a.items)
+
+// `Program` — root of a parsed `.tri` source file. Mirrors
+// triet-syntax::item::Program: owns the Arena so all `*Id` handles
+// remain valid, plus an ordered list of top-level item IDs.
+public struct Program {
+    arena: Arena,
+    item_ids: Vector<Integer>,
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Convenience constructors — make smoke construction readable.
@@ -454,10 +639,17 @@ public struct ParseErrorDetail {
     span_end: Integer,
 }
 
+public struct ReservedNameDetail {
+    name: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
 public enum ParseError {
     UnexpectedTokenErr(ParseErrorDetail),
     UnexpectedEofErr(ParseErrorDetail),
     LexerFailedErr(ParseErrorDetail),
+    ReservedItemNameErr(ReservedNameDetail),
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -507,6 +699,39 @@ public enum BlockElement {
 public struct BlockElementStep {
     state: ParserState,
     element: BlockElement,
+}
+
+// ── v0.7.5.4a item / program / visibility step wrappers ─────────
+
+public struct ParseItemStep {
+    state: ParserState,
+    item_id: Integer,
+}
+
+public struct ParseProgramStep {
+    program: Program,
+}
+
+public struct ParseVisibilityStep {
+    state: ParserState,
+    visibility: Visibility,
+}
+
+public struct ParseIdentStep {
+    state: ParserState,
+    text: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct ParseParamsStep {
+    state: ParserState,
+    parameters: Vector<FunctionParam>,
+}
+
+public struct ParseGenericsStep {
+    state: ParserState,
+    type_params: Vector<String>,
 }
 
 public function parser_new(tokens: Vector<SpannedToken>) -> ParserState =
@@ -2130,6 +2355,686 @@ function parse_assignment_after_target(s: ParserState, target_expr: Integer) -> 
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Item parsing — top-level `function` / `constant` / `type` (.4a)
+// plus stubs for `struct` / `enum` / `module` / `import` / `from`
+// that surface as ParseError until .4b lands. Mirrors
+// crates/triet-parser/src/item.rs.
+// ─────────────────────────────────────────────────────────────────
+
+function spanned_item(node: Item, start: Integer, end: Integer) -> SpannedItem =
+    SpannedItem { node: node, span_start: start, span_end: end }
+
+// ── Token kind predicates for item-level keywords ────────────────
+
+function is_function_kw(t: Token) -> Trilean! =
+    match t {
+        FunctionKw => true,
+        _ => false,
+    }
+
+function is_constant_kw(t: Token) -> Trilean! =
+    match t {
+        ConstantKw => true,
+        _ => false,
+    }
+
+function is_type_kw(t: Token) -> Trilean! =
+    match t {
+        TypeKw => true,
+        _ => false,
+    }
+
+function is_struct_kw(t: Token) -> Trilean! =
+    match t {
+        StructKw => true,
+        _ => false,
+    }
+
+function is_enum_kw(t: Token) -> Trilean! =
+    match t {
+        EnumKw => true,
+        _ => false,
+    }
+
+function is_module_kw(t: Token) -> Trilean! =
+    match t {
+        ModuleKw => true,
+        _ => false,
+    }
+
+function is_import_kw(t: Token) -> Trilean! =
+    match t {
+        ImportKw => true,
+        _ => false,
+    }
+
+function is_from_kw(t: Token) -> Trilean! =
+    match t {
+        FromKw => true,
+        _ => false,
+    }
+
+function is_public_kw(t: Token) -> Trilean! =
+    match t {
+        PublicKw => true,
+        _ => false,
+    }
+
+function is_lparen(t: Token) -> Trilean! =
+    match t {
+        LParen => true,
+        _ => false,
+    }
+
+function is_rparen(t: Token) -> Trilean! =
+    match t {
+        RParen => true,
+        _ => false,
+    }
+
+function is_lt(t: Token) -> Trilean! =
+    match t {
+        Lt => true,
+        _ => false,
+    }
+
+function is_gt(t: Token) -> Trilean! =
+    match t {
+        Gt => true,
+        _ => false,
+    }
+
+function is_thin_arrow(t: Token) -> Trilean! =
+    match t {
+        ThinArrow => true,
+        _ => false,
+    }
+
+function is_owned_kw(t: Token) -> Trilean! =
+    match t {
+        OwnedKw => true,
+        _ => false,
+    }
+
+// `parse_visibility` — ADR-0005 §"Visibility": three states.
+// `public` alone → PublicVis, `public(package)` → PackageVis, no
+// keyword → PrivateVis. Anything other than `package` inside the
+// parens is an error.
+public function parse_visibility(s: ParserState) -> ParseVisibilityStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~+ ParseVisibilityStep { state: s, visibility: PrivateVis },
+        _ => {
+            let nt: SpannedToken = nx!!
+            if is_public_kw(nt.token) {
+                let after_pub: ParserState = advance(s)
+                let nx2: SpannedToken? = peek(after_pub)
+                match nx2 {
+                    ~0 => ~+ ParseVisibilityStep { state: after_pub, visibility: PublicVis },
+                    _ => {
+                        let nt2: SpannedToken = nx2!!
+                        if is_lparen(nt2.token) {
+                            let after_open: ParserState = advance(after_pub)
+                            let nx3: SpannedToken? = peek(after_open)
+                            match nx3 {
+                                ~0 => ~- make_unexpected_eof_err(after_open, "`package` after `public(`"),
+                                _ => {
+                                    let nt3: SpannedToken = nx3!!
+                                    match nt3.token {
+                                        Identifier(p) => {
+                                            if p.text == "package" {
+                                                let after_name: ParserState = advance(after_open)
+                                                let nx4: SpannedToken? = peek(after_name)
+                                                match nx4 {
+                                                    ~0 => ~- make_unexpected_eof_err(after_name, "`)`"),
+                                                    _ => {
+                                                        let nt4: SpannedToken = nx4!!
+                                                        if is_rparen(nt4.token) {
+                                                            let after_close: ParserState = advance(after_name)
+                                                            ~+ ParseVisibilityStep { state: after_close, visibility: PackageVis }
+                                                        } else {
+                                                            ~- make_unexpected_token_err(after_name, "`)`")
+                                                        }
+                                                    },
+                                                }
+                                            } else {
+                                                ~- make_unexpected_token_err(
+                                                    after_open,
+                                                    "`package` (the only restriction allowed in `public(...)`)",
+                                                )
+                                            }
+                                        },
+                                        _ => ~- make_unexpected_token_err(
+                                            after_open,
+                                            "`package` (the only restriction allowed in `public(...)`)",
+                                        ),
+                                    }
+                                },
+                            }
+                        } else {
+                            ~+ ParseVisibilityStep { state: after_pub, visibility: PublicVis }
+                        }
+                    },
+                }
+            } else {
+                ~+ ParseVisibilityStep { state: s, visibility: PrivateVis }
+            }
+        },
+    }
+}
+
+// `parse_ident` — consumes one Identifier token and returns its
+// text + span. Errors on EOF / non-Identifier.
+function parse_ident(s: ParserState, expected: String) -> ParseIdentStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, expected),
+        ~+ nt => {
+            match nt.token {
+                Identifier(p) => {
+                    let advanced: ParserState = advance(s)
+                    ~+ ParseIdentStep {
+                        state: advanced,
+                        text: p.text,
+                        span_start: nt.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                _ => ~- make_unexpected_token_err(s, expected),
+            }
+        },
+    }
+}
+
+// Reserved namespace roots — ADR-0005 trụ cột #5. Top-level item
+// names cannot collide with these (kept for stdlib + OS namespaces).
+function is_reserved_item_name(name: String) -> Trilean! = {
+    if name == "std" {
+        true
+    } else {
+        if name == "sys" {
+            true
+        } else {
+            if name == "dev" {
+                true
+            } else {
+                if name == "usr" {
+                    true
+                } else {
+                    if name == "core" {
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+        }
+    }
+}
+
+// `parse_item_name` — like `parse_ident` but rejects reserved
+// namespace roots with `ReservedItemNameErr`.
+function parse_item_name(s: ParserState, expected: String) -> ParseIdentStep~ParseError = {
+    let ident_step: ParseIdentStep = parse_ident(s, expected) ~? |err| ~- err
+    if is_reserved_item_name(ident_step.text) {
+        let detail: ReservedNameDetail = ReservedNameDetail {
+            name: ident_step.text,
+            span_start: ident_step.span_start,
+            span_end: ident_step.span_end,
+        }
+        ~- ReservedItemNameErr(detail)
+    } else {
+        ~+ ident_step
+    }
+}
+
+// `parse_generic_params` — optional `<T, U>` (ADR-0019 Addendum
+// §A7, v0.7.4.1). Empty Vector when absent.
+function parse_generic_params(s: ParserState) -> ParseGenericsStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~+ ParseGenericsStep { state: s, type_params: new() },
+        _ => {
+            let nt: SpannedToken = nx!!
+            if is_lt(nt.token) {
+                let after_lt: ParserState = advance(s)
+                let mutable state: ParserState = after_lt
+                let mutable params: Vector<String> = new()
+                let mutable should_continue: Trilean! = true
+                let mutable err_slot: ParseError? = ~0
+
+                while should_continue {
+                    let id_outcome: ParseIdentStep~ParseError = parse_ident(state, "type parameter")
+                    match id_outcome {
+                        ~+ id_step => {
+                            params = push(params, id_step.text)
+                            state = id_step.state
+                            let nx2: SpannedToken? = peek(state)
+                            match nx2 {
+                                ~0 => {
+                                    err_slot = make_unexpected_eof_err(state, "`,` or `>`")
+                                    should_continue = false
+                                },
+                                _ => {
+                                    let nt2: SpannedToken = nx2!!
+                                    if is_comma(nt2.token) {
+                                        state = advance(state)
+                                    } else {
+                                        should_continue = false
+                                    }
+                                },
+                            }
+                        },
+                        ~- e => {
+                            err_slot = e
+                            should_continue = false
+                        },
+                    }
+                }
+
+                match err_slot {
+                    ~+ e => ~- e,
+                    ~0 => {
+                        let nx3: SpannedToken? = peek(state)
+                        match nx3 {
+                            ~0 => ~- make_unexpected_eof_err(state, "`>`"),
+                            _ => {
+                                let nt3: SpannedToken = nx3!!
+                                if is_gt(nt3.token) {
+                                    ~+ ParseGenericsStep { state: advance(state), type_params: params }
+                                } else {
+                                    ~- make_unexpected_token_err(state, "`>`")
+                                }
+                            },
+                        }
+                    },
+                }
+            } else {
+                ~+ ParseGenericsStep { state: s, type_params: new() }
+            }
+        },
+    }
+}
+
+// `parse_parameter` — optional `mutable` / `owned` prefix +
+// identifier + `: T`.
+public struct ParseParamStep {
+    state: ParserState,
+    parameter: FunctionParam,
+}
+
+function parse_parameter(s: ParserState) -> ParseParamStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    let passing_step: EatFlagStep = {
+        match nx {
+            ~0 => EatFlagStep { state: s, was_present: false },
+            _ => {
+                let nt: SpannedToken = nx!!
+                if is_mutable_kw(nt.token) {
+                    EatFlagStep { state: advance(s), was_present: true }
+                } else {
+                    EatFlagStep { state: s, was_present: false }
+                }
+            },
+        }
+    }
+
+    let after_mut: ParserState = passing_step.state
+    let is_mut: Trilean! = passing_step.was_present
+
+    let nx_after_mut: SpannedToken? = peek(after_mut)
+    let owned_step: EatFlagStep = {
+        if is_mut {
+            EatFlagStep { state: after_mut, was_present: false }
+        } else {
+            match nx_after_mut {
+                ~0 => EatFlagStep { state: after_mut, was_present: false },
+                _ => {
+                    let nt: SpannedToken = nx_after_mut!!
+                    if is_owned_kw(nt.token) {
+                        EatFlagStep { state: advance(after_mut), was_present: true }
+                    } else {
+                        EatFlagStep { state: after_mut, was_present: false }
+                    }
+                },
+            }
+        }
+    }
+    let after_passing: ParserState = owned_step.state
+    let is_owned: Trilean! = owned_step.was_present
+
+    let passing: ParameterPassing = if is_mut {
+        MutableParam
+    } else {
+        if is_owned {
+            OwnedParam
+        } else {
+            BorrowedParam
+        }
+    }
+
+    let id_step: ParseIdentStep = parse_ident(after_passing, "parameter name") ~? |err| ~- err
+    let after_colon: ParserState = expect_colon(id_step.state) ~? |err| ~- err
+    let ty_step: ParseTypeStep = parse_type_minimal(after_colon) ~? |err| ~- err
+
+    let param: FunctionParam = FunctionParam {
+        name: id_step.text,
+        type_annotation: ty_step.type_id,
+        passing: passing,
+    }
+    ~+ ParseParamStep { state: ty_step.state, parameter: param }
+}
+
+function parse_parameter_list(s: ParserState) -> ParseParamsStep~ParseError = {
+    let mutable state: ParserState = s
+    let mutable params: Vector<FunctionParam> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    // Empty arg list short-circuit
+    let first_peek: SpannedToken? = peek(state)
+    match first_peek {
+        ~0 => {
+            err_slot = make_unexpected_eof_err(state, "`)` or parameter")
+            should_continue = false
+        },
+        _ => {
+            let first: SpannedToken = first_peek!!
+            if is_rparen(first.token) {
+                should_continue = false
+            }
+        },
+    }
+
+    while should_continue {
+        let outcome: ParseParamStep~ParseError = parse_parameter(state)
+        match outcome {
+            ~+ pstep => {
+                params = push(params, pstep.parameter)
+                state = pstep.state
+                let after: SpannedToken? = peek(state)
+                match after {
+                    ~0 => {
+                        err_slot = make_unexpected_eof_err(state, "`,` or `)`")
+                        should_continue = false
+                    },
+                    _ => {
+                        let nt: SpannedToken = after!!
+                        if is_comma(nt.token) {
+                            state = advance(state)
+                            let after_comma: SpannedToken? = peek(state)
+                            match after_comma {
+                                ~0 => {
+                                    err_slot = make_unexpected_eof_err(state, "parameter or `)`")
+                                    should_continue = false
+                                },
+                                _ => {
+                                    let nt2: SpannedToken = after_comma!!
+                                    if is_rparen(nt2.token) {
+                                        should_continue = false
+                                    }
+                                },
+                            }
+                        } else {
+                            should_continue = false
+                        }
+                    },
+                }
+            },
+            ~- e => {
+                err_slot = e
+                should_continue = false
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => ~+ ParseParamsStep { state: state, parameters: params },
+    }
+}
+
+// Wrapper for parse_function's body parse.
+public struct ParseFunctionBodyStep {
+    state: ParserState,
+    body: FunctionBody,
+}
+
+function parse_function_body(s: ParserState) -> ParseFunctionBodyStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "function body (`{ … }` or `= expr`)"),
+        ~+ nt => {
+            match nt.token {
+                LBrace => {
+                    let block_step: ParseBlockStep = parse_block(s) ~? |err| ~- err
+                    ~+ ParseFunctionBodyStep { state: block_step.state, body: BlockBody(block_step.block) }
+                },
+                Assign => {
+                    let after_eq: ParserState = advance(s)
+                    let expr_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
+                    ~+ ParseFunctionBodyStep { state: expr_step.state, body: ExpressionBody(expr_step.expr_id) }
+                },
+                _ => ~- make_unexpected_token_err(s, "function body (`{ … }` or `= expr`)"),
+            }
+        },
+    }
+}
+
+// `function name<G…>(params) -> R? { body | = expr }`.
+function parse_function(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let name_step: ParseIdentStep = parse_item_name(after_kw, "function name") ~? |err| ~- err
+    let generics_step: ParseGenericsStep = parse_generic_params(name_step.state) ~? |err| ~- err
+
+    // expect `(`
+    let nx_open: SpannedToken? = peek(generics_step.state)
+    let after_open: ParserState = match nx_open {
+        ~0 => ~- make_unexpected_eof_err(generics_step.state, "`(`"),
+        _ => if is_lparen(nx_open!!.token) {
+            advance(generics_step.state)
+        } else {
+            ~- make_unexpected_token_err(generics_step.state, "`(`")
+        },
+    }
+
+    let params_step: ParseParamsStep = parse_parameter_list(after_open) ~? |err| ~- err
+
+    // expect `)`
+    let nx_close: SpannedToken? = peek(params_step.state)
+    let after_close: ParserState = match nx_close {
+        ~0 => ~- make_unexpected_eof_err(params_step.state, "`)`"),
+        _ => if is_rparen(nx_close!!.token) {
+            advance(params_step.state)
+        } else {
+            ~- make_unexpected_token_err(params_step.state, "`)`")
+        },
+    }
+
+    // Optional return type: `-> T`. Parsing the type may fail, so
+    // each branch threads `ParseLetAnnotation~ParseError` and the
+    // outer `~?` unwraps. (An earlier draft mixed `ParseLetAnnotation`
+    // and `~- err` in two arms of the same `match` — that's invalid
+    // because the arms must agree on result type. The propagation
+    // shape mirrors `parse_optional_type_annotation` in v0.7.5.3.)
+    let return_outcome: ParseLetAnnotation~ParseError = {
+        let nx_ret: SpannedToken? = peek(after_close)
+        match nx_ret {
+            ~0 => ~+ ParseLetAnnotation { state: after_close, annotation_id: ~0 },
+            _ => {
+                let nt: SpannedToken = nx_ret!!
+                if is_thin_arrow(nt.token) {
+                    let after_arrow: ParserState = advance(after_close)
+                    let ty_step: ParseTypeStep = parse_type_minimal(after_arrow) ~? |err| ~- err
+                    ~+ ParseLetAnnotation { state: ty_step.state, annotation_id: ty_step.type_id }
+                } else {
+                    ~+ ParseLetAnnotation { state: after_close, annotation_id: ~0 }
+                }
+            },
+        }
+    }
+    let return_step: ParseLetAnnotation = return_outcome ~? |err| ~- err
+
+    let body_step: ParseFunctionBodyStep = parse_function_body(return_step.state) ~? |err| ~- err
+    let prev_end: Integer = previous_token_end(body_step.state, head_start)
+
+    let function_def: FunctionDef = FunctionDef {
+        visibility: visibility,
+        name: name_step.text,
+        type_params: generics_step.type_params,
+        parameters: params_step.parameters,
+        return_type: return_step.annotation_id,
+        body: body_step.body,
+    }
+    let res: AllocResult = alloc_item(
+        body_step.state.arena,
+        spanned_item(FunctionItem(function_def), head_start, prev_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState {
+            tokens: body_step.state.tokens,
+            cursor: body_step.state.cursor,
+            arena: res.arena,
+        },
+        item_id: res.id,
+    }
+}
+
+// `constant NAME (: T)? = expr ;?` — module-level constant.
+function parse_constant_item(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let name_step: ParseIdentStep = parse_item_name(after_kw, "constant name") ~? |err| ~- err
+
+    let ann_step: ParseLetAnnotation = parse_optional_type_annotation(name_step.state) ~? |err| ~- err
+    let after_eq: ParserState = expect_assign(ann_step.state) ~? |err| ~- err
+    let val_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(val_step.state)
+
+    let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
+    let payload: ConstantItemPayload = ConstantItemPayload {
+        visibility: visibility,
+        name: name_step.text,
+        type_annotation: ann_step.annotation_id,
+        value: val_step.expr_id,
+    }
+    let res: AllocResult = alloc_item(
+        after_semi.arena,
+        spanned_item(ConstantItem(payload), head_start, val_sp.span_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState {
+            tokens: after_semi.tokens,
+            cursor: after_semi.cursor,
+            arena: res.arena,
+        },
+        item_id: res.id,
+    }
+}
+
+// `type Alias = T ;?` — type alias.
+function parse_type_alias(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let name_step: ParseIdentStep = parse_item_name(after_kw, "type alias name") ~? |err| ~- err
+    let after_eq: ParserState = expect_assign(name_step.state) ~? |err| ~- err
+    let ty_step: ParseTypeStep = parse_type_minimal(after_eq) ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(ty_step.state)
+
+    let ty_sp: SpannedTypeExpr = get_type(after_semi.arena, ty_step.type_id)
+    let payload: TypeAliasPayload = TypeAliasPayload {
+        visibility: visibility,
+        name: name_step.text,
+        target: ty_step.type_id,
+    }
+    let res: AllocResult = alloc_item(
+        after_semi.arena,
+        spanned_item(TypeAliasItem(payload), head_start, ty_sp.span_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState {
+            tokens: after_semi.tokens,
+            cursor: after_semi.cursor,
+            arena: res.arena,
+        },
+        item_id: res.id,
+    }
+}
+
+// `parse_item` — visibility prefix + dispatch on the next keyword.
+// Stubs for struct / enum / module / import / from raise
+// `UnexpectedTokenErr` until v0.7.5.4b lands.
+public function parse_item(s: ParserState) -> ParseItemStep~ParseError = {
+    // Capture span start before visibility (covers `public` prefix).
+    let head_start: Integer = current_span_start(s)
+    let vis_step: ParseVisibilityStep = parse_visibility(s) ~? |err| ~- err
+    let after_vis: ParserState = vis_step.state
+    let visibility: Visibility = vis_step.visibility
+
+    let nx: SpannedToken? = peek(after_vis)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(after_vis, "item keyword"),
+        ~+ nt => {
+            if is_function_kw(nt.token) {
+                parse_function(after_vis, head_start, visibility)
+            } else {
+                if is_constant_kw(nt.token) {
+                    parse_constant_item(after_vis, head_start, visibility)
+                } else {
+                    if is_type_kw(nt.token) {
+                        parse_type_alias(after_vis, head_start, visibility)
+                    } else {
+                        // .4b: struct / enum / module / import / from
+                        // currently surface as parser errors so .4a
+                        // stays self-contained.
+                        ~- make_unexpected_token_err(
+                            after_vis,
+                            "`function`, `constant`, or `type` (struct / enum / module / import land in v0.7.5.4b)",
+                        )
+                    }
+                }
+            }
+        },
+    }
+}
+
+// `parse_program` — top-level driver. Loops over items until EOF
+// and collects their IDs into `Program::item_ids` (source order).
+public function parse_program(s: ParserState) -> ParseProgramStep~ParseError = {
+    let mutable state: ParserState = s
+    let mutable item_ids: Vector<Integer> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                should_continue = false
+            },
+            _ => {
+                let outcome: ParseItemStep~ParseError = parse_item(state)
+                match outcome {
+                    ~+ step => {
+                        item_ids = push(item_ids, step.item_id)
+                        state = step.state
+                    },
+                    ~- e => {
+                        err_slot = e
+                        should_continue = false
+                    },
+                }
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => ~+ ParseProgramStep {
+            program: Program { arena: state.arena, item_ids: item_ids },
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Pretty-printer — s-expression form, used by smoke tests to
 // eyeball the parsed AST shape. Mirrors v0.7.5.1 with the new
 // variants wired in.
@@ -2407,8 +3312,133 @@ function assert_parse_block(source: String, expected: String) -> Unit = {
     assert(printed == expected)
 }
 
+// ── v0.7.5.4a item pretty-printer + program smoke harness ───────
+
+function vis_prefix(v: Visibility) -> String =
+    match v {
+        PrivateVis => "",
+        PublicVis => "public ",
+        PackageVis => "public(package) ",
+    }
+
+function passing_prefix(p: ParameterPassing) -> String =
+    match p {
+        BorrowedParam => "",
+        MutableParam => "mutable ",
+        OwnedParam => "owned ",
+    }
+
+function format_generics(params: Vector<String>) -> String = {
+    let n: Integer = length(params)
+    if n == 0 {
+        ""
+    } else {
+        let mutable out: String = "<"
+        let mutable i: Integer = 0
+        while i < n {
+            if i > 0 {
+                out = concat(out, ",")
+            }
+            out = concat(out, get(params, i)!!)
+            i = i + 1
+        }
+        concat(out, ">")
+    }
+}
+
+function format_params(a: Arena, params: Vector<FunctionParam>) -> String = {
+    let n: Integer = length(params)
+    let mutable out: String = "("
+    let mutable i: Integer = 0
+    while i < n {
+        if i > 0 {
+            out = concat(out, " ")
+        }
+        let p: FunctionParam = get(params, i)!!
+        let head: String = concat(passing_prefix(p.passing), p.name)
+        let ty_str: String = format_type(a, p.type_annotation)
+        out = concat(out, concat(head, concat(":", ty_str)))
+        i = i + 1
+    }
+    concat(out, ")")
+}
+
+function format_function_body(a: Arena, body: FunctionBody) -> String =
+    match body {
+        BlockBody(b) => format_block(a, b),
+        ExpressionBody(eid) => concat("(= ", concat(format_expr(a, eid), ")")),
+    }
+
+public function format_item(a: Arena, id: Integer) -> String = {
+    let sp: SpannedItem = get_item(a, id)
+    match sp.node {
+        FunctionItem(f) => {
+            let head: String = concat(vis_prefix(f.visibility), "(fn ")
+            let generics: String = format_generics(f.type_params)
+            let params_str: String = format_params(a, f.parameters)
+            let ret_str: String = match f.return_type {
+                ~0 => "",
+                _ => concat(" ->", format_type(a, f.return_type!!)),
+            }
+            let body_str: String = format_function_body(a, f.body)
+            concat(head, concat(f.name, concat(generics, concat(" ", concat(params_str, concat(ret_str, concat(" ", concat(body_str, ")"))))))))
+        },
+        ConstantItem(p) => {
+            let head: String = concat(vis_prefix(p.visibility), "(const ")
+            let ann: String = match p.type_annotation {
+                ~0 => "",
+                _ => concat(" :", format_type(a, p.type_annotation!!)),
+            }
+            concat(head, concat(p.name, concat(ann, concat(" ", concat(format_expr(a, p.value), ")")))))
+        },
+        TypeAliasItem(p) => {
+            let head: String = concat(vis_prefix(p.visibility), "(type ")
+            let target_str: String = format_type(a, p.target)
+            concat(head, concat(p.name, concat(" ", concat(target_str, ")"))))
+        },
+        // .4b: struct / enum / module / import — placeholders until
+        // the second half of the item port lands.
+        StructItem(_) => "(struct …)",
+        EnumItem(_) => "(enum …)",
+        ImportItem(_) => "(import …)",
+        ImportFromItem(_) => "(from-import …)",
+        ModuleItem(_) => "(module …)",
+    }
+}
+
+public function format_program(p: Program) -> String = {
+    let n: Integer = length(p.item_ids)
+    let mutable out: String = "(program"
+    let mutable i: Integer = 0
+    while i < n {
+        let id: Integer = get(p.item_ids, i)!!
+        out = concat(out, concat(" ", format_item(p.arena, id)))
+        i = i + 1
+    }
+    concat(out, ")")
+}
+
+function parse_program_or_fail(source: String) -> Program = {
+    let toks: Vector<SpannedToken> = lex_or_fail(source)
+    let st: ParserState = parser_new(toks)
+    let outcome: ParseProgramStep~ParseError = parse_program(st)
+    match outcome {
+        ~+ step => step.program,
+        ~- _ => {
+            assert(false)
+            Program { arena: arena_new(), item_ids: new() }
+        },
+    }
+}
+
+function assert_parse_program(source: String, expected: String) -> Unit = {
+    let prog: Program = parse_program_or_fail(source)
+    let printed: String = format_program(prog)
+    assert(printed == expected)
+}
+
 // ─────────────────────────────────────────────────────────────────
-// Entry — exercises the Pratt parser + v0.7.5.3 statement layer
+// Entry — exercises the Pratt parser + statement + item layers
 // ─────────────────────────────────────────────────────────────────
 
 function main() -> Unit = {
@@ -2461,5 +3491,64 @@ function main() -> Unit = {
     assert_parse_block("{ f(x); g(y) }", "(block (expr (call f x)) (final (call g y)))")
     assert_parse_block("{ let x = 1 let y = 2 x + y }", "(block (let x 1) (let y 2) (final (+ x y)))")
 
-    println("v0.7.5.3 statement smoke passed")
+    // v0.7.5.4a — item + program layer (functions, const, typedef, visibility)
+    assert_parse_program("", "(program)")
+    assert_parse_program(
+        "function main() = 0",
+        "(program (fn main () (= 0)))",
+    )
+    assert_parse_program(
+        "function double(n: Integer) -> Integer = n * 2",
+        "(program (fn double (n:Integer) ->Integer (= (* n 2))))",
+    )
+    assert_parse_program(
+        "public function main() { 0 }",
+        "(program public (fn main () (block (final 0))))",
+    )
+    assert_parse_program(
+        "public(package) function helper() = 1",
+        "(program public(package) (fn helper () (= 1)))",
+    )
+    assert_parse_program(
+        "function identity<T>(x: T) -> T = x",
+        "(program (fn identity<T> (x:T) ->T (= x)))",
+    )
+    assert_parse_program(
+        "function pair<T,U>(a: T, b: U) = a",
+        "(program (fn pair<T,U> (a:T b:U) (= a)))",
+    )
+    assert_parse_program(
+        "function mutate(mutable n: Integer) = n",
+        "(program (fn mutate (mutable n:Integer) (= n)))",
+    )
+    assert_parse_program(
+        "function take(owned n: Integer) = n",
+        "(program (fn take (owned n:Integer) (= n)))",
+    )
+    assert_parse_program(
+        "function noop() { }",
+        "(program (fn noop () (block)))",
+    )
+    assert_parse_program(
+        "constant PI = 3",
+        "(program (const PI 3))",
+    )
+    assert_parse_program(
+        "public constant PI: Integer = 3",
+        "(program public (const PI :Integer 3))",
+    )
+    assert_parse_program(
+        "type Username = String",
+        "(program (type Username String))",
+    )
+    assert_parse_program(
+        "public type Age = Integer",
+        "(program public (type Age Integer))",
+    )
+    assert_parse_program(
+        "function a() = 1 function b() = 2",
+        "(program (fn a () (= 1)) (fn b () (= 2)))",
+    )
+
+    println("v0.7.5.4a item smoke passed")
 }
