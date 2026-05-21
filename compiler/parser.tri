@@ -662,105 +662,105 @@ public function arena_new() -> Arena =
         items: new(),
     }
 
-public function alloc_expression(a: Arena, node: SpannedExpr) -> AllocResult = {
-    let next_id: Integer = length(a.expressions)
+public function alloc_expression(arena: Arena, node: SpannedExpr) -> AllocResult = {
+    let next_id: Integer = length(arena.expressions)
     AllocResult {
         arena: Arena {
-            expressions: push(a.expressions, node),
-            patterns: a.patterns,
-            types: a.types,
-            statements: a.statements,
-            items: a.items,
+            expressions: push(arena.expressions, node),
+            patterns: arena.patterns,
+            types: arena.types,
+            statements: arena.statements,
+            items: arena.items,
         },
         id: next_id,
     }
 }
 
-public function alloc_pattern(a: Arena, node: SpannedPattern) -> AllocResult = {
-    let next_id: Integer = length(a.patterns)
+public function alloc_pattern(arena: Arena, node: SpannedPattern) -> AllocResult = {
+    let next_id: Integer = length(arena.patterns)
     AllocResult {
         arena: Arena {
-            expressions: a.expressions,
-            patterns: push(a.patterns, node),
-            types: a.types,
-            statements: a.statements,
-            items: a.items,
+            expressions: arena.expressions,
+            patterns: push(arena.patterns, node),
+            types: arena.types,
+            statements: arena.statements,
+            items: arena.items,
         },
         id: next_id,
     }
 }
 
-public function alloc_type(a: Arena, node: SpannedTypeExpr) -> AllocResult = {
-    let next_id: Integer = length(a.types)
+public function alloc_type(arena: Arena, node: SpannedTypeExpr) -> AllocResult = {
+    let next_id: Integer = length(arena.types)
     AllocResult {
         arena: Arena {
-            expressions: a.expressions,
-            patterns: a.patterns,
-            types: push(a.types, node),
-            statements: a.statements,
-            items: a.items,
+            expressions: arena.expressions,
+            patterns: arena.patterns,
+            types: push(arena.types, node),
+            statements: arena.statements,
+            items: arena.items,
         },
         id: next_id,
     }
 }
 
-public function alloc_statement(a: Arena, node: SpannedStmt) -> AllocResult = {
-    let next_id: Integer = length(a.statements)
+public function alloc_statement(arena: Arena, node: SpannedStmt) -> AllocResult = {
+    let next_id: Integer = length(arena.statements)
     AllocResult {
         arena: Arena {
-            expressions: a.expressions,
-            patterns: a.patterns,
-            types: a.types,
-            statements: push(a.statements, node),
-            items: a.items,
+            expressions: arena.expressions,
+            patterns: arena.patterns,
+            types: arena.types,
+            statements: push(arena.statements, node),
+            items: arena.items,
         },
         id: next_id,
     }
 }
 
-public function alloc_item(a: Arena, node: SpannedItem) -> AllocResult = {
-    let next_id: Integer = length(a.items)
+public function alloc_item(arena: Arena, node: SpannedItem) -> AllocResult = {
+    let next_id: Integer = length(arena.items)
     AllocResult {
         arena: Arena {
-            expressions: a.expressions,
-            patterns: a.patterns,
-            types: a.types,
-            statements: a.statements,
-            items: push(a.items, node),
+            expressions: arena.expressions,
+            patterns: arena.patterns,
+            types: arena.types,
+            statements: arena.statements,
+            items: push(arena.items, node),
         },
         id: next_id,
     }
 }
 
-public function get_expression(a: Arena, id: Integer) -> SpannedExpr =
-    get(a.expressions, id)!!
+public function get_expression(arena: Arena, id: Integer) -> SpannedExpr =
+    get(arena.expressions, id)!!
 
-public function get_pattern(a: Arena, id: Integer) -> SpannedPattern =
-    get(a.patterns, id)!!
+public function get_pattern(arena: Arena, id: Integer) -> SpannedPattern =
+    get(arena.patterns, id)!!
 
-public function get_type(a: Arena, id: Integer) -> SpannedTypeExpr =
-    get(a.types, id)!!
+public function get_type(arena: Arena, id: Integer) -> SpannedTypeExpr =
+    get(arena.types, id)!!
 
-public function get_statement(a: Arena, id: Integer) -> SpannedStmt =
-    get(a.statements, id)!!
+public function get_statement(arena: Arena, id: Integer) -> SpannedStmt =
+    get(arena.statements, id)!!
 
-public function get_item(a: Arena, id: Integer) -> SpannedItem =
-    get(a.items, id)!!
+public function get_item(arena: Arena, id: Integer) -> SpannedItem =
+    get(arena.items, id)!!
 
-public function expression_count(a: Arena) -> Integer =
-    length(a.expressions)
+public function expression_count(arena: Arena) -> Integer =
+    length(arena.expressions)
 
-public function pattern_count(a: Arena) -> Integer =
-    length(a.patterns)
+public function pattern_count(arena: Arena) -> Integer =
+    length(arena.patterns)
 
-public function type_count(a: Arena) -> Integer =
-    length(a.types)
+public function type_count(arena: Arena) -> Integer =
+    length(arena.types)
 
-public function statement_count(a: Arena) -> Integer =
-    length(a.statements)
+public function statement_count(arena: Arena) -> Integer =
+    length(arena.statements)
 
-public function item_count(a: Arena) -> Integer =
-    length(a.items)
+public function item_count(arena: Arena) -> Integer =
+    length(arena.items)
 
 // `Program` — root of a parsed `.tri` source file. Mirrors
 // triet-syntax::item::Program: owns the Arena so all `*Id` handles
@@ -896,27 +896,27 @@ public function parser_new(tokens: Vector<SpannedToken>) -> ParserState =
 
 // ── Token consumer helpers ──────────────────────────────────────
 
-public function peek(s: ParserState) -> SpannedToken? =
-    get(s.tokens, s.cursor)
+public function peek(state: ParserState) -> SpannedToken? =
+    get(state.tokens, state.cursor)
 
-public function advance(s: ParserState) -> ParserState =
-    ParserState { tokens: s.tokens, cursor: s.cursor + 1, arena: s.arena }
+public function advance(state: ParserState) -> ParserState =
+    ParserState { tokens: state.tokens, cursor: state.cursor + 1, arena: state.arena }
 
-public function at_end(s: ParserState) -> Trilean! =
-    s.cursor >= length(s.tokens)
+public function at_end(state: ParserState) -> Trilean! =
+    state.cursor >= length(state.tokens)
 
-public function eof_position(s: ParserState) -> Integer = {
-    let tlen: Integer = length(s.tokens)
+public function eof_position(state: ParserState) -> Integer = {
+    let tlen: Integer = length(state.tokens)
     if tlen == 0 {
         0
     } else {
-        let last: SpannedToken = get(s.tokens, tlen - 1)!!
+        let last: SpannedToken = get(state.tokens, tlen - 1)!!
         last.span_end
     }
 }
 
-function token_kind_label(t: Token) -> String =
-    match t {
+function token_kind_label(token: Token) -> String =
+    match token {
         FunctionKw => "function",
         LetKw => "let",
         MutableKw => "mutable",
@@ -1017,42 +1017,42 @@ function token_kind_label(t: Token) -> String =
         FStringEnd => "\"",
     }
 
-public function current_kind_label(s: ParserState) -> String = {
-    let sp: SpannedToken? = peek(s)
+public function current_kind_label(state: ParserState) -> String = {
+    let sp: SpannedToken? = peek(state)
     match sp {
         ~0 => "<eof>",
         _ => token_kind_label(sp!!.token),
     }
 }
 
-public function current_span_start(s: ParserState) -> Integer = {
-    let sp: SpannedToken? = peek(s)
+public function current_span_start(state: ParserState) -> Integer = {
+    let sp: SpannedToken? = peek(state)
     match sp {
-        ~0 => eof_position(s),
+        ~0 => eof_position(state),
         _ => sp!!.span_start,
     }
 }
 
-public function current_span_end(s: ParserState) -> Integer = {
-    let sp: SpannedToken? = peek(s)
+public function current_span_end(state: ParserState) -> Integer = {
+    let sp: SpannedToken? = peek(state)
     match sp {
-        ~0 => eof_position(s),
+        ~0 => eof_position(state),
         _ => sp!!.span_end,
     }
 }
 
-function make_unexpected_token_err(s: ParserState, expected: String) -> ParseError = {
+function make_unexpected_token_err(state: ParserState, expected: String) -> ParseError = {
     let detail: ParseErrorDetail = ParseErrorDetail {
         expected: expected,
-        found: current_kind_label(s),
-        span_start: current_span_start(s),
-        span_end: current_span_end(s),
+        found: current_kind_label(state),
+        span_start: current_span_start(state),
+        span_end: current_span_end(state),
     }
     UnexpectedTokenErr(detail)
 }
 
-function make_unexpected_eof_err(s: ParserState, expected: String) -> ParseError = {
-    let pos: Integer = eof_position(s)
+function make_unexpected_eof_err(state: ParserState, expected: String) -> ParseError = {
+    let pos: Integer = eof_position(state)
     let detail: ParseErrorDetail = ParseErrorDetail {
         expected: expected,
         found: "<eof>",
@@ -1075,38 +1075,38 @@ function make_unexpected_eof_err(s: ParserState, expected: String) -> ParseError
 // "optional `mutable`" patterns idiomatically.
 // ─────────────────────────────────────────────────────────────────
 
-function is_semi(t: Token) -> Trilean! =
-    match t {
+function is_semi(token: Token) -> Trilean! =
+    match token {
         Semi => true,
         _ => false,
     }
 
-function is_rbrace(t: Token) -> Trilean! =
-    match t {
+function is_rbrace(token: Token) -> Trilean! =
+    match token {
         RBrace => true,
         _ => false,
     }
 
-function is_assign_token(t: Token) -> Trilean! =
-    match t {
+function is_assign_token(token: Token) -> Trilean! =
+    match token {
         Assign => true,
         _ => false,
     }
 
-function is_comma(t: Token) -> Trilean! =
-    match t {
+function is_comma(token: Token) -> Trilean! =
+    match token {
         Comma => true,
         _ => false,
     }
 
-function is_mutable_kw(t: Token) -> Trilean! =
-    match t {
+function is_mutable_kw(token: Token) -> Trilean! =
+    match token {
         MutableKw => true,
         _ => false,
     }
 
-function is_while_q_kw(t: Token) -> Trilean! =
-    match t {
+function is_while_q_kw(token: Token) -> Trilean! =
+    match token {
         WhileQKw => true,
         _ => false,
     }
@@ -1115,19 +1115,19 @@ function is_while_q_kw(t: Token) -> Trilean! =
 // the value is absent when the next token is `;`, `}`, `,`, or EOF.
 // (Mirrors the Rust `matches!(peek_token(), None | Some(Token::Semi
 // | Token::RBrace | Token::Comma))` guard.)
-function is_value_terminator(t: Token) -> Trilean! =
-    match t {
+function is_value_terminator(token: Token) -> Trilean! =
+    match token {
         Semi => true,
         RBrace => true,
         Comma => true,
         _ => false,
     }
 
-function eat_semi(s: ParserState) -> ParserState = {
-    let nx: SpannedToken? = peek(s)
+function eat_semi(state: ParserState) -> ParserState = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => s,
-        _ => if is_semi(nx!!.token) { advance(s) } else { s },
+        ~0 => state,
+        _ => if is_semi(nx!!.token) { advance(state) } else { state },
     }
 }
 
@@ -1136,71 +1136,71 @@ public struct EatFlagStep {
     was_present: Trilean!,
 }
 
-function eat_mutable(s: ParserState) -> EatFlagStep = {
-    let nx: SpannedToken? = peek(s)
+function eat_mutable(state: ParserState) -> EatFlagStep = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => EatFlagStep { state: s, was_present: false },
+        ~0 => EatFlagStep { state: state, was_present: false },
         _ => if is_mutable_kw(nx!!.token) {
-            EatFlagStep { state: advance(s), was_present: true }
+            EatFlagStep { state: advance(state), was_present: true }
         } else {
-            EatFlagStep { state: s, was_present: false }
+            EatFlagStep { state: state, was_present: false }
         },
     }
 }
 
-function expect_assign(s: ParserState) -> ParserState~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function expect_assign(state: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "`=`"),
+        ~0 => ~- make_unexpected_eof_err(state, "`=`"),
         _ => if is_assign_token(nx!!.token) {
-            ~+ advance(s)
+            ~+ advance(state)
         } else {
-            ~- make_unexpected_token_err(s, "`=`")
+            ~- make_unexpected_token_err(state, "`=`")
         },
     }
 }
 
-function expect_lbrace(s: ParserState) -> ParserState~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function expect_lbrace(state: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "`{`"),
+        ~0 => ~- make_unexpected_eof_err(state, "`{`"),
         _ => match nx!!.token {
-            LBrace => ~+ advance(s),
-            _ => ~- make_unexpected_token_err(s, "`{`"),
+            LBrace => ~+ advance(state),
+            _ => ~- make_unexpected_token_err(state, "`{`"),
         },
     }
 }
 
-function expect_rbrace(s: ParserState) -> ParserState~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function expect_rbrace(state: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "`}`"),
+        ~0 => ~- make_unexpected_eof_err(state, "`}`"),
         _ => if is_rbrace(nx!!.token) {
-            ~+ advance(s)
+            ~+ advance(state)
         } else {
-            ~- make_unexpected_token_err(s, "`}`")
+            ~- make_unexpected_token_err(state, "`}`")
         },
     }
 }
 
-function expect_in_kw(s: ParserState) -> ParserState~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function expect_in_kw(state: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "`in`"),
+        ~0 => ~- make_unexpected_eof_err(state, "`in`"),
         _ => match nx!!.token {
-            InKw => ~+ advance(s),
-            _ => ~- make_unexpected_token_err(s, "`in`"),
+            InKw => ~+ advance(state),
+            _ => ~- make_unexpected_token_err(state, "`in`"),
         },
     }
 }
 
-function expect_colon(s: ParserState) -> ParserState~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function expect_colon(state: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "`:`"),
+        ~0 => ~- make_unexpected_eof_err(state, "`:`"),
         _ => match nx!!.token {
-            Colon => ~+ advance(s),
-            _ => ~- make_unexpected_token_err(s, "`:`"),
+            Colon => ~+ advance(state),
+            _ => ~- make_unexpected_token_err(state, "`:`"),
         },
     }
 }
@@ -1248,8 +1248,8 @@ function range_binding_power() -> BindingPowerPair =
 function unary_right_bp() -> Integer = 23
 function postfix_left_bp() -> Integer = 28
 
-function classify_binary(t: Token) -> BinaryOperator? =
-    match t {
+function classify_binary(token: Token) -> BinaryOperator? =
+    match token {
         Plus => Add,
         Minus => Subtract,
         Star => Multiply,
@@ -1281,8 +1281,8 @@ function classify_binary(t: Token) -> BinaryOperator? =
         _ => ~0,
     }
 
-function is_postfix_token(t: Token) -> Trilean! =
-    match t {
+function is_postfix_token(token: Token) -> Trilean! =
+    match token {
         Dot => true,
         QuestionDot => true,
         LParen => true,
@@ -1292,14 +1292,14 @@ function is_postfix_token(t: Token) -> Trilean! =
         _ => false,
     }
 
-function is_elvis_token(t: Token) -> Trilean! =
-    match t {
+function is_elvis_token(token: Token) -> Trilean! =
+    match token {
         QuestionColon => true,
         _ => false,
     }
 
-function is_range_token(t: Token) -> Trilean! =
-    match t {
+function is_range_token(token: Token) -> Trilean! =
+    match token {
         DotDot => true,
         DotDotEq => true,
         _ => false,
@@ -1309,46 +1309,46 @@ function is_range_token(t: Token) -> Trilean! =
 // Pratt parser — entry + recursive driver
 // ─────────────────────────────────────────────────────────────────
 
-public function parse_expression(s: ParserState) -> ParseStep~ParseError =
-    parse_expression_bp(s, 0)
+public function parse_expression(state: ParserState) -> ParseStep~ParseError =
+    parse_expression_bp(state, 0)
 
-function parse_expression_bp(s: ParserState, min_bp: Integer) -> ParseStep~ParseError = {
-    let prefix_step: ParseStep = parse_prefix(s) ~? |err| ~- err
+function parse_expression_bp(state: ParserState, min_bp: Integer) -> ParseStep~ParseError = {
+    let prefix_step: ParseStep = parse_prefix(state) ~? |err| ~- err
     parse_infix_chain(prefix_step.state, prefix_step.expr_id, min_bp)
 }
 
-function parse_infix_chain(s: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
-    let next_opt: SpannedToken? = peek(s)
+function parse_infix_chain(state: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
+    let next_opt: SpannedToken? = peek(state)
     match next_opt {
-        ~0 => ~+ ParseStep { state: s, expr_id: lhs },
+        ~0 => ~+ ParseStep { state: state, expr_id: lhs },
         _ => {
             let next: SpannedToken = next_opt!!
             // Postfix has highest binding power; try it first.
             if is_postfix_token(next.token) {
                 let pf_bp: Integer = postfix_left_bp()
                 if pf_bp < min_bp {
-                    ~+ ParseStep { state: s, expr_id: lhs }
+                    ~+ ParseStep { state: state, expr_id: lhs }
                 } else {
-                    let post_step: ParseStep = parse_postfix(s, lhs) ~? |err| ~- err
+                    let post_step: ParseStep = parse_postfix(state, lhs) ~? |err| ~- err
                     parse_infix_chain(post_step.state, post_step.expr_id, min_bp)
                 }
             } else {
                 if is_elvis_token(next.token) {
-                    parse_elvis_infix(s, lhs, min_bp)
+                    parse_elvis_infix(state, lhs, min_bp)
                 } else {
                     if is_range_token(next.token) {
-                        parse_range_infix(s, lhs, min_bp)
+                        parse_range_infix(state, lhs, min_bp)
                     } else {
                         let bin_opt: BinaryOperator? = classify_binary(next.token)
                         match bin_opt {
-                            ~0 => ~+ ParseStep { state: s, expr_id: lhs },
+                            ~0 => ~+ ParseStep { state: state, expr_id: lhs },
                             _ => {
                                 let op: BinaryOperator = bin_opt!!
                                 let bps: BindingPowerPair = binding_power(op)
                                 if bps.bp_left < min_bp {
-                                    ~+ ParseStep { state: s, expr_id: lhs }
+                                    ~+ ParseStep { state: state, expr_id: lhs }
                                 } else {
-                                    let advanced: ParserState = advance(s)
+                                    let advanced: ParserState = advance(state)
                                     let rhs_step: ParseStep = parse_expression_bp(advanced, bps.bp_right) ~? |err| ~- err
                                     let lhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, lhs)
                                     let rhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, rhs_step.expr_id)
@@ -1373,12 +1373,12 @@ function parse_infix_chain(s: ParserState, lhs: Integer, min_bp: Integer) -> Par
     }
 }
 
-function parse_elvis_infix(s: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
+function parse_elvis_infix(state: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
     let bps: BindingPowerPair = elvis_binding_power()
     if bps.bp_left < min_bp {
-        ~+ ParseStep { state: s, expr_id: lhs }
+        ~+ ParseStep { state: state, expr_id: lhs }
     } else {
-        let advanced: ParserState = advance(s)
+        let advanced: ParserState = advance(state)
         let rhs_step: ParseStep = parse_expression_bp(advanced, bps.bp_right) ~? |err| ~- err
         let lhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, lhs)
         let rhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, rhs_step.expr_id)
@@ -1396,17 +1396,17 @@ function parse_elvis_infix(s: ParserState, lhs: Integer, min_bp: Integer) -> Par
     }
 }
 
-function parse_range_infix(s: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
+function parse_range_infix(state: ParserState, lhs: Integer, min_bp: Integer) -> ParseStep~ParseError = {
     let bps: BindingPowerPair = range_binding_power()
     if bps.bp_left < min_bp {
-        ~+ ParseStep { state: s, expr_id: lhs }
+        ~+ ParseStep { state: state, expr_id: lhs }
     } else {
-        let next: SpannedToken = peek(s)!!
+        let next: SpannedToken = peek(state)!!
         let inclusive: Trilean! = match next.token {
             DotDotEq => true,
             _ => false,
         }
-        let advanced: ParserState = advance(s)
+        let advanced: ParserState = advance(state)
         let rhs_step: ParseStep = parse_expression_bp(advanced, bps.bp_right) ~? |err| ~- err
         let lhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, lhs)
         let rhs_sp: SpannedExpr = get_expression(rhs_step.state.arena, rhs_step.expr_id)
@@ -1432,14 +1432,14 @@ function parse_range_infix(s: ParserState, lhs: Integer, min_bp: Integer) -> Par
 // Prefix parsing — atoms + unary + outcome constructors
 // ─────────────────────────────────────────────────────────────────
 
-function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
-    let next_opt: SpannedToken? = peek(s)
+function parse_prefix(state: ParserState) -> ParseStep~ParseError = {
+    let next_opt: SpannedToken? = peek(state)
     match next_opt {
-        ~0 => ~- make_unexpected_eof_err(s, "expression"),
+        ~0 => ~- make_unexpected_eof_err(state, "expression"),
         ~+ next => {
             match next.token {
                 IntegerLiteral(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let node: Expr = IntegerLiteralExpr(p.literal)
                     let res: AllocResult = alloc_expression(
                         advanced.arena,
@@ -1451,7 +1451,7 @@ function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
                     }
                 },
                 TernaryLiteral(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let node: Expr = TernaryLiteralExpr(p.literal)
                     let res: AllocResult = alloc_expression(
                         advanced.arena,
@@ -1463,7 +1463,7 @@ function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
                     }
                 },
                 StringLiteral(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let node: Expr = StringLiteralExpr(p)
                     let res: AllocResult = alloc_expression(
                         advanced.arena,
@@ -1474,11 +1474,11 @@ function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
                         expr_id: res.id,
                     }
                 },
-                TrueKw => parse_trilean_atom(s, next, TrueValue),
-                FalseKw => parse_trilean_atom(s, next, FalseValue),
-                UnknownKw => parse_trilean_atom(s, next, UnknownValue),
+                TrueKw => parse_trilean_atom(state, next, TrueValue),
+                FalseKw => parse_trilean_atom(state, next, FalseValue),
+                UnknownKw => parse_trilean_atom(state, next, UnknownValue),
                 NullKw => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let res: AllocResult = alloc_expression(
                         advanced.arena,
                         spanned_expr(NullLiteralExpr, next.span_start, next.span_end),
@@ -1489,7 +1489,7 @@ function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
                     }
                 },
                 Identifier(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let node: Expr = IdentifierExpr(p)
                     let res: AllocResult = alloc_expression(
                         advanced.arena,
@@ -1500,21 +1500,21 @@ function parse_prefix(s: ParserState) -> ParseStep~ParseError = {
                         expr_id: res.id,
                     }
                 },
-                LParen => parse_paren_atom(s),
-                Minus => parse_unary_prefix(s),
-                Bang => parse_unary_prefix(s),
-                NotKw => parse_unary_prefix(s),
-                TildePlus => parse_outcome_ctor_payloaded(s, PositiveArm),
-                TildeMinus => parse_outcome_ctor_payloaded(s, NegativeArm),
-                TildeZero => parse_outcome_ctor_zero(s),
-                _ => ~- make_unexpected_token_err(s, "expression"),
+                LParen => parse_paren_atom(state),
+                Minus => parse_unary_prefix(state),
+                Bang => parse_unary_prefix(state),
+                NotKw => parse_unary_prefix(state),
+                TildePlus => parse_outcome_ctor_payloaded(state, PositiveArm),
+                TildeMinus => parse_outcome_ctor_payloaded(state, NegativeArm),
+                TildeZero => parse_outcome_ctor_zero(state),
+                _ => ~- make_unexpected_token_err(state, "expression"),
             }
         },
     }
 }
 
-function parse_trilean_atom(s: ParserState, tok: SpannedToken, value: TrileanValue) -> ParseStep~ParseError = {
-    let advanced: ParserState = advance(s)
+function parse_trilean_atom(state: ParserState, tok: SpannedToken, value: TrileanValue) -> ParseStep~ParseError = {
+    let advanced: ParserState = advance(state)
     let res: AllocResult = alloc_expression(
         advanced.arena,
         spanned_expr(TrileanLiteralExpr(value), tok.span_start, tok.span_end),
@@ -1525,9 +1525,9 @@ function parse_trilean_atom(s: ParserState, tok: SpannedToken, value: TrileanVal
     }
 }
 
-function parse_paren_atom(s: ParserState) -> ParseStep~ParseError = {
+function parse_paren_atom(state: ParserState) -> ParseStep~ParseError = {
     // consume `(`
-    let after_open: ParserState = advance(s)
+    let after_open: ParserState = advance(state)
     let inner_step: ParseStep = parse_expression_bp(after_open, 0) ~? |err| ~- err
     // expect `)`
     let next_opt: SpannedToken? = peek(inner_step.state)
@@ -1547,9 +1547,9 @@ function parse_paren_atom(s: ParserState) -> ParseStep~ParseError = {
     }
 }
 
-function parse_unary_prefix(s: ParserState) -> ParseStep~ParseError = {
-    let op_tok: SpannedToken = peek(s)!!
-    let advanced: ParserState = advance(s)
+function parse_unary_prefix(state: ParserState) -> ParseStep~ParseError = {
+    let op_tok: SpannedToken = peek(state)!!
+    let advanced: ParserState = advance(state)
     let operand_step: ParseStep = parse_expression_bp(advanced, unary_right_bp()) ~? |err| ~- err
     let operand_sp: SpannedExpr = get_expression(operand_step.state.arena, operand_step.expr_id)
     let payload: UnaryOpPayload = UnaryOpPayload { operator: Negate, operand: operand_step.expr_id }
@@ -1567,9 +1567,9 @@ function parse_unary_prefix(s: ParserState) -> ParseStep~ParseError = {
     }
 }
 
-function parse_outcome_ctor_payloaded(s: ParserState, arm: OutcomeArm) -> ParseStep~ParseError = {
-    let op_tok: SpannedToken = peek(s)!!
-    let advanced: ParserState = advance(s)
+function parse_outcome_ctor_payloaded(state: ParserState, arm: OutcomeArm) -> ParseStep~ParseError = {
+    let op_tok: SpannedToken = peek(state)!!
+    let advanced: ParserState = advance(state)
     let payload_step: ParseStep = parse_expression_bp(advanced, unary_right_bp()) ~? |err| ~- err
     let payload_sp: SpannedExpr = get_expression(payload_step.state.arena, payload_step.expr_id)
     let ctor_payload: OutcomeConstructorPayload = OutcomeConstructorPayload {
@@ -1590,9 +1590,9 @@ function parse_outcome_ctor_payloaded(s: ParserState, arm: OutcomeArm) -> ParseS
     }
 }
 
-function parse_outcome_ctor_zero(s: ParserState) -> ParseStep~ParseError = {
-    let op_tok: SpannedToken = peek(s)!!
-    let advanced: ParserState = advance(s)
+function parse_outcome_ctor_zero(state: ParserState) -> ParseStep~ParseError = {
+    let op_tok: SpannedToken = peek(state)!!
+    let advanced: ParserState = advance(state)
     let ctor_payload: OutcomeConstructorPayload = OutcomeConstructorPayload {
         arm: ZeroArm,
         payload: ~0,
@@ -1612,21 +1612,21 @@ function parse_outcome_ctor_zero(s: ParserState) -> ParseStep~ParseError = {
 // `~?` / `~:`
 // ─────────────────────────────────────────────────────────────────
 
-function parse_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
-    let next: SpannedToken = peek(s)!!
+function parse_postfix(state: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    let next: SpannedToken = peek(state)!!
     match next.token {
-        Dot => parse_dot_postfix(s, lhs),
-        LParen => parse_call_postfix(s, lhs),
-        BangBang => parse_bangbang_postfix(s, lhs, next),
-        TildeQuestion => parse_outcome_propagate_postfix(s, lhs),
-        TildeColon => parse_outcome_default_postfix(s, lhs),
-        QuestionDot => ~- make_unexpected_token_err(s, "operator (safe access `?.` deferred to v0.7.5.4)"),
-        _ => ~- make_unexpected_token_err(s, "postfix operator"),
+        Dot => parse_dot_postfix(state, lhs),
+        LParen => parse_call_postfix(state, lhs),
+        BangBang => parse_bangbang_postfix(state, lhs, next),
+        TildeQuestion => parse_outcome_propagate_postfix(state, lhs),
+        TildeColon => parse_outcome_default_postfix(state, lhs),
+        QuestionDot => ~- make_unexpected_token_err(state, "operator (safe access `?.` deferred to v0.7.5.4)"),
+        _ => ~- make_unexpected_token_err(state, "postfix operator"),
     }
 }
 
-function parse_bangbang_postfix(s: ParserState, lhs: Integer, op_tok: SpannedToken) -> ParseStep~ParseError = {
-    let advanced: ParserState = advance(s)
+function parse_bangbang_postfix(state: ParserState, lhs: Integer, op_tok: SpannedToken) -> ParseStep~ParseError = {
+    let advanced: ParserState = advance(state)
     let lhs_sp: SpannedExpr = get_expression(advanced.arena, lhs)
     let res: AllocResult = alloc_expression(
         advanced.arena,
@@ -1638,8 +1638,8 @@ function parse_bangbang_postfix(s: ParserState, lhs: Integer, op_tok: SpannedTok
     }
 }
 
-function parse_call_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
-    let args_step: CallArgsStep = parse_call_args(s) ~? |err| ~- err
+function parse_call_postfix(state: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    let args_step: CallArgsStep = parse_call_args(state) ~? |err| ~- err
     let lhs_sp: SpannedExpr = get_expression(args_step.state.arena, lhs)
     let payload: CallPayload = CallPayload { callee: lhs, arguments: args_step.arguments }
     let res: AllocResult = alloc_expression(
@@ -1662,9 +1662,9 @@ public struct CallArgsStep {
     close_end: Integer,
 }
 
-function parse_call_args(s: ParserState) -> CallArgsStep~ParseError = {
+function parse_call_args(state: ParserState) -> CallArgsStep~ParseError = {
     // peek already saw LParen; consume it
-    let after_open: ParserState = advance(s)
+    let after_open: ParserState = advance(state)
     let mutable state: ParserState = after_open
     let mutable args: Vector<Integer> = new()
     let mutable should_continue: Trilean! = true
@@ -1704,8 +1704,8 @@ function parse_call_args(s: ParserState) -> CallArgsStep~ParseError = {
                         should_continue = false
                     },
                     _ => {
-                        let t: SpannedToken = after_arg!!
-                        match t.token {
+                        let token: SpannedToken = after_arg!!
+                        match token.token {
                             Comma => {
                                 state = advance(state)
                                 let after_comma: SpannedToken? = peek(state)
@@ -1728,7 +1728,7 @@ function parse_call_args(s: ParserState) -> CallArgsStep~ParseError = {
                                 }
                             },
                             RParen => {
-                                close_end = t.span_end
+                                close_end = token.span_end
                                 state = advance(state)
                                 should_continue = false
                             },
@@ -1753,9 +1753,9 @@ function parse_call_args(s: ParserState) -> CallArgsStep~ParseError = {
     }
 }
 
-function parse_dot_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+function parse_dot_postfix(state: ParserState, lhs: Integer) -> ParseStep~ParseError = {
     // consume `.`
-    let after_dot: ParserState = advance(s)
+    let after_dot: ParserState = advance(state)
     let name_tok_opt: SpannedToken? = peek(after_dot)
     match name_tok_opt {
         ~0 => ~- make_unexpected_eof_err(after_dot, "field name or method name"),
@@ -1819,9 +1819,9 @@ function parse_dot_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError
     }
 }
 
-function parse_outcome_propagate_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+function parse_outcome_propagate_postfix(state: ParserState, lhs: Integer) -> ParseStep~ParseError = {
     // consume `~?`
-    let after_op: ParserState = advance(s)
+    let after_op: ParserState = advance(state)
     // expect `|`
     let pipe_opt: SpannedToken? = peek(after_op)
     let after_pipe: ParserState = match pipe_opt {
@@ -1883,8 +1883,8 @@ function parse_outcome_propagate_postfix(s: ParserState, lhs: Integer) -> ParseS
     }
 }
 
-function parse_outcome_default_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
-    let after_op: ParserState = advance(s)
+function parse_outcome_default_postfix(state: ParserState, lhs: Integer) -> ParseStep~ParseError = {
+    let after_op: ParserState = advance(state)
     let default_step: ParseStep = parse_expression_bp(after_op, 0) ~? |err| ~- err
     let lhs_sp: SpannedExpr = get_expression(default_step.state.arena, lhs)
     let def_sp: SpannedExpr = get_expression(default_step.state.arena, default_step.expr_id)
@@ -1928,45 +1928,45 @@ public struct ParseLiteralPatternStep {
     span_end: Integer,
 }
 
-function is_pipe(t: Token) -> Trilean! =
-    match t {
+function is_pipe(token: Token) -> Trilean! =
+    match token {
         Pipe => true,
         _ => false,
     }
 
-function is_dotdot(t: Token) -> Trilean! =
-    match t {
+function is_dotdot(token: Token) -> Trilean! =
+    match token {
         DotDot => true,
         _ => false,
     }
 
-function is_dotdoteq(t: Token) -> Trilean! =
-    match t {
+function is_dotdoteq(token: Token) -> Trilean! =
+    match token {
         DotDotEq => true,
         _ => false,
     }
 
-function is_underscore(t: Token) -> Trilean! =
-    match t {
+function is_underscore(token: Token) -> Trilean! =
+    match token {
         Underscore => true,
         _ => false,
     }
 
-function is_null_kw(t: Token) -> Trilean! =
-    match t {
+function is_null_kw(token: Token) -> Trilean! =
+    match token {
         NullKw => true,
         _ => false,
     }
 
-function is_minus(t: Token) -> Trilean! =
-    match t {
+function is_minus(token: Token) -> Trilean! =
+    match token {
         Minus => true,
         _ => false,
     }
 
 // Top-level pattern parse — handles or-patterns.
-public function parse_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
-    let first: ParsePatternStep = parse_pattern_no_or(s) ~? |err| ~- err
+public function parse_pattern(state: ParserState) -> ParsePatternStep~ParseError = {
+    let first: ParsePatternStep = parse_pattern_no_or(state) ~? |err| ~- err
 
     // Peek for `|` — if absent, return as-is.
     let nx: SpannedToken? = peek(first.state)
@@ -2031,14 +2031,14 @@ public function parse_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
 
 // Parse a single pattern that does NOT consume top-level `|`.
 // Mirrors Rust's parse_pattern_no_or.
-function parse_pattern_no_or(s: ParserState) -> ParsePatternStep~ParseError = {
-    let nx_opt: SpannedToken? = peek(s)
+function parse_pattern_no_or(state: ParserState) -> ParsePatternStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(state)
     match nx_opt {
-        ~0 => ~- make_unexpected_eof_err(s, "pattern"),
+        ~0 => ~- make_unexpected_eof_err(state, "pattern"),
         ~+ nx => {
             match nx.token {
                 Underscore => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let res: AllocResult = alloc_pattern(
                         advanced.arena,
                         spanned_pattern(WildcardPattern, nx.span_start, nx.span_end),
@@ -2049,7 +2049,7 @@ function parse_pattern_no_or(s: ParserState) -> ParsePatternStep~ParseError = {
                     }
                 },
                 NullKw => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let res: AllocResult = alloc_pattern(
                         advanced.arena,
                         spanned_pattern(NullPat, nx.span_start, nx.span_end),
@@ -2059,19 +2059,19 @@ function parse_pattern_no_or(s: ParserState) -> ParsePatternStep~ParseError = {
                         pattern_id: res.id,
                     }
                 },
-                Identifier(p) => parse_identifier_or_enum_variant_pattern(s, p, nx.span_start, nx.span_end),
-                LParen => parse_tuple_pattern(s, nx.span_start),
-                TrueKw => parse_trilean_pattern_atom(s, TrueValue, nx.span_start, nx.span_end),
-                FalseKw => parse_trilean_pattern_atom(s, FalseValue, nx.span_start, nx.span_end),
-                UnknownKw => parse_trilean_pattern_atom(s, UnknownValue, nx.span_start, nx.span_end),
-                IntegerLiteral(_) => parse_literal_or_range_pattern(s),
-                TernaryLiteral(_) => parse_literal_or_range_pattern(s),
-                StringLiteral(_) => parse_literal_or_range_pattern(s),
-                Minus => parse_negative_literal_pattern(s),
-                TildePlus => parse_outcome_arm_pattern_with_payload(s, PositiveArm),
-                TildeMinus => parse_outcome_arm_pattern_with_payload(s, NegativeArm),
+                Identifier(p) => parse_identifier_or_enum_variant_pattern(state, p, nx.span_start, nx.span_end),
+                LParen => parse_tuple_pattern(state, nx.span_start),
+                TrueKw => parse_trilean_pattern_atom(state, TrueValue, nx.span_start, nx.span_end),
+                FalseKw => parse_trilean_pattern_atom(state, FalseValue, nx.span_start, nx.span_end),
+                UnknownKw => parse_trilean_pattern_atom(state, UnknownValue, nx.span_start, nx.span_end),
+                IntegerLiteral(_) => parse_literal_or_range_pattern(state),
+                TernaryLiteral(_) => parse_literal_or_range_pattern(state),
+                StringLiteral(_) => parse_literal_or_range_pattern(state),
+                Minus => parse_negative_literal_pattern(state),
+                TildePlus => parse_outcome_arm_pattern_with_payload(state, PositiveArm),
+                TildeMinus => parse_outcome_arm_pattern_with_payload(state, NegativeArm),
                 TildeZero => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     let res: AllocResult = alloc_pattern(
                         advanced.arena,
                         spanned_pattern(
@@ -2085,7 +2085,7 @@ function parse_pattern_no_or(s: ParserState) -> ParsePatternStep~ParseError = {
                         pattern_id: res.id,
                     }
                 },
-                _ => ~- make_unexpected_token_err(s, "pattern"),
+                _ => ~- make_unexpected_token_err(state, "pattern"),
             }
         },
     }
@@ -2094,12 +2094,12 @@ function parse_pattern_no_or(s: ParserState) -> ParsePatternStep~ParseError = {
 // `Variant(subpattern)` vs bare `Variable` — disambiguated by
 // looking ahead for `(` after the identifier.
 function parse_identifier_or_enum_variant_pattern(
-    s: ParserState,
+    state: ParserState,
     p: StringPayload,
     span_start: Integer,
     span_end: Integer,
 ) -> ParsePatternStep~ParseError = {
-    let advanced: ParserState = advance(s)
+    let advanced: ParserState = advance(state)
     let nx2: SpannedToken? = peek(advanced)
     let is_variant: Trilean! = match nx2 {
         ~0 => false,
@@ -2149,8 +2149,8 @@ function parse_identifier_or_enum_variant_pattern(
 
 // `(p1, p2, ...)` tuple pattern. Single-element parens without
 // trailing comma are grouping (returns inner pattern unchanged).
-function parse_tuple_pattern(s: ParserState, open_start: Integer) -> ParsePatternStep~ParseError = {
-    let after_open: ParserState = advance(s)
+function parse_tuple_pattern(state: ParserState, open_start: Integer) -> ParsePatternStep~ParseError = {
+    let after_open: ParserState = advance(state)
     // Empty tuple `()` — valid pattern (matches Unit).
     let nx: SpannedToken? = peek(after_open)
     match nx {
@@ -2271,12 +2271,12 @@ function parse_tuple_pattern(s: ParserState, open_start: Integer) -> ParsePatter
 
 // Atom Trilean literal pattern (`true` / `false` / `unknown`).
 function parse_trilean_pattern_atom(
-    s: ParserState,
+    state: ParserState,
     value: TrileanValue,
     span_start: Integer,
     span_end: Integer,
 ) -> ParsePatternStep~ParseError = {
-    let advanced: ParserState = advance(s)
+    let advanced: ParserState = advance(state)
     let res: AllocResult = alloc_pattern(
         advanced.arena,
         spanned_pattern(LiteralPat(TrileanLit(value)), span_start, span_end),
@@ -2289,8 +2289,8 @@ function parse_trilean_pattern_atom(
 
 // Parse a literal pattern, optionally followed by `..` or `..=`
 // to form a range pattern.
-function parse_literal_or_range_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
-    let start_step: ParseLiteralPatternStep = parse_literal_pattern_payload(s) ~? |err| ~- err
+function parse_literal_or_range_pattern(state: ParserState) -> ParsePatternStep~ParseError = {
+    let start_step: ParseLiteralPatternStep = parse_literal_pattern_payload(state) ~? |err| ~- err
     let nx: SpannedToken? = peek(start_step.state)
     let range_kind: Integer = match nx {
         ~0 => 0,
@@ -2341,9 +2341,9 @@ function parse_literal_or_range_pattern(s: ParserState) -> ParsePatternStep~Pars
 
 // `-N` negative integer literal pattern, optionally followed by
 // range continuation.
-function parse_negative_literal_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
-    let minus_tok: SpannedToken = peek(s)!!
-    let after_minus: ParserState = advance(s)
+function parse_negative_literal_pattern(state: ParserState) -> ParsePatternStep~ParseError = {
+    let minus_tok: SpannedToken = peek(state)!!
+    let after_minus: ParserState = advance(state)
     let nx: SpannedToken? = peek(after_minus)
     let lit_step: ParseLiteralPatternStep = match nx {
         ~0 => ~- make_unexpected_eof_err(after_minus, "integer literal after `-`"),
@@ -2427,14 +2427,14 @@ function parse_negative_literal_pattern(s: ParserState) -> ParsePatternStep~Pars
 // Pull a literal value (with optional leading `-`) and its span.
 // Used by both `parse_literal_or_range_pattern` and as the range-
 // end parser.
-function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_literal_pattern_payload(state: ParserState) -> ParseLiteralPatternStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "literal"),
+        ~0 => ~- make_unexpected_eof_err(state, "literal"),
         ~+ nt => {
             // Leading `-` allowed (e.g. range `-5..=5`).
             if is_minus(nt.token) {
-                let after_minus: ParserState = advance(s)
+                let after_minus: ParserState = advance(state)
                 let nx2: SpannedToken? = peek(after_minus)
                 match nx2 {
                     ~0 => ~- make_unexpected_eof_err(after_minus, "literal after `-`"),
@@ -2468,7 +2468,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
             } else {
                 match nt.token {
                     IntegerLiteral(int_p) => {
-                        let advanced: ParserState = advance(s)
+                        let advanced: ParserState = advance(state)
                         ~+ ParseLiteralPatternStep {
                             state: advanced,
                             literal: IntegerLit(LiteralIntegerPattern {
@@ -2480,7 +2480,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
                         }
                     },
                     TernaryLiteral(int_p) => {
-                        let advanced: ParserState = advance(s)
+                        let advanced: ParserState = advance(state)
                         ~+ ParseLiteralPatternStep {
                             state: advanced,
                             literal: TernaryLit(int_p.literal.value),
@@ -2489,7 +2489,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
                         }
                     },
                     StringLiteral(p) => {
-                        let advanced: ParserState = advance(s)
+                        let advanced: ParserState = advance(state)
                         ~+ ParseLiteralPatternStep {
                             state: advanced,
                             literal: StringLit(p),
@@ -2498,7 +2498,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
                         }
                     },
                     TrueKw => {
-                        let advanced: ParserState = advance(s)
+                        let advanced: ParserState = advance(state)
                         ~+ ParseLiteralPatternStep {
                             state: advanced,
                             literal: TrileanLit(TrueValue),
@@ -2507,7 +2507,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
                         }
                     },
                     FalseKw => {
-                        let advanced: ParserState = advance(s)
+                        let advanced: ParserState = advance(state)
                         ~+ ParseLiteralPatternStep {
                             state: advanced,
                             literal: TrileanLit(FalseValue),
@@ -2516,7 +2516,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
                         }
                     },
                     UnknownKw => {
-                        let advanced: ParserState = advance(s)
+                        let advanced: ParserState = advance(state)
                         ~+ ParseLiteralPatternStep {
                             state: advanced,
                             literal: TrileanLit(UnknownValue),
@@ -2524,7 +2524,7 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
                             span_end: nt.span_end,
                         }
                     },
-                    _ => ~- make_unexpected_token_err(s, "literal"),
+                    _ => ~- make_unexpected_token_err(state, "literal"),
                 }
             }
         },
@@ -2533,11 +2533,11 @@ function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternSte
 
 // `~+ subpattern` or `~- subpattern` outcome arm pattern with payload.
 function parse_outcome_arm_pattern_with_payload(
-    s: ParserState,
+    state: ParserState,
     arm: OutcomeArm,
 ) -> ParsePatternStep~ParseError = {
-    let op_tok: SpannedToken = peek(s)!!
-    let advanced: ParserState = advance(s)
+    let op_tok: SpannedToken = peek(state)!!
+    let advanced: ParserState = advance(state)
     let payload_step: ParsePatternStep = parse_pattern_no_or(advanced) ~? |err| ~- err
     let payload_sp: SpannedPattern = get_pattern(payload_step.state.arena, payload_step.pattern_id)
     let res: AllocResult = alloc_pattern(
@@ -2566,10 +2566,10 @@ function spanned_stmt(node: Stmt, start: Integer, end: Integer) -> SpannedStmt =
     SpannedStmt { node: node, span_start: start, span_end: end }
 
 // `let [mutable] name (: T)? = expr ;?`
-function parse_let(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_let(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
-    let after_let: ParserState = advance(s)
+    let after_let: ParserState = advance(state)
 
     let mut_step: EatFlagStep = eat_mutable(after_let)
     let after_mut: ParserState = mut_step.state
@@ -2617,10 +2617,10 @@ function parse_let(s: ParserState) -> ParseStmtStep~ParseError = {
 }
 
 // `constant NAME (: T)? = expr ;?`
-function parse_constant(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_constant(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
-    let after_kw: ParserState = advance(s)
+    let after_kw: ParserState = advance(state)
 
     let name_opt: SpannedToken? = peek(after_kw)
     let parsed_name: StringPayload = match name_opt {
@@ -2665,19 +2665,19 @@ public struct ParseLetAnnotation {
     annotation_id: Integer?,
 }
 
-function parse_optional_type_annotation(s: ParserState) -> ParseLetAnnotation~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_optional_type_annotation(state: ParserState) -> ParseLetAnnotation~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~+ ParseLetAnnotation { state: s, annotation_id: ~0 },
+        ~0 => ~+ ParseLetAnnotation { state: state, annotation_id: ~0 },
         _ => {
             let nt: SpannedToken = nx!!
             match nt.token {
                 Colon => {
-                    let after_colon: ParserState = advance(s)
+                    let after_colon: ParserState = advance(state)
                     let ty_step: ParseTypeStep = parse_type_minimal(after_colon) ~? |err| ~- err
                     ~+ ParseLetAnnotation { state: ty_step.state, annotation_id: ty_step.type_id }
                 },
-                _ => ~+ ParseLetAnnotation { state: s, annotation_id: ~0 },
+                _ => ~+ ParseLetAnnotation { state: state, annotation_id: ~0 },
             }
         },
     }
@@ -2709,26 +2709,26 @@ function spanned_type(node: TypeExpr, start: Integer, end: Integer) -> SpannedTy
 
 // ── Token predicates for type-level tokens ───────────────────────
 
-function is_question(t: Token) -> Trilean! =
-    match t {
+function is_question(token: Token) -> Trilean! =
+    match token {
         Question => true,
         _ => false,
     }
 
-function is_question_tilde(t: Token) -> Trilean! =
-    match t {
+function is_question_tilde(token: Token) -> Trilean! =
+    match token {
         QuestionTilde => true,
         _ => false,
     }
 
-function is_tilde(t: Token) -> Trilean! =
-    match t {
+function is_tilde(token: Token) -> Trilean! =
+    match token {
         Tilde => true,
         _ => false,
     }
 
-function is_bang(t: Token) -> Trilean! =
-    match t {
+function is_bang(token: Token) -> Trilean! =
+    match token {
         Bang => true,
         _ => false,
     }
@@ -2744,21 +2744,21 @@ public struct ParseTypeListStep {
 // Public entrypoint — kept named `parse_type_minimal` so the v0.7.5.3+
 // call sites compile unchanged. Returns a `ParseTypeStep` containing
 // the root TypeExpr ID.
-public function parse_type_minimal(s: ParserState) -> ParseTypeStep~ParseError = {
-    let head: ParseTypeStep = parse_type_atom(s) ~? |err| ~- err
+public function parse_type_minimal(state: ParserState) -> ParseTypeStep~ParseError = {
+    let head: ParseTypeStep = parse_type_atom(state) ~? |err| ~- err
     apply_type_postfix(head.state, head.type_id)
 }
 
 // Atom: NamedType (+ optional generic args), or paren-form (which
 // resolves to grouping, tuple type, or function type).
-function parse_type_atom(s: ParserState) -> ParseTypeStep~ParseError = {
-    let nx_opt: SpannedToken? = peek(s)
+function parse_type_atom(state: ParserState) -> ParseTypeStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(state)
     match nx_opt {
-        ~0 => ~- make_unexpected_eof_err(s, "type expression"),
+        ~0 => ~- make_unexpected_eof_err(state, "type expression"),
         ~+ nx => {
             match nx.token {
                 Identifier(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     // Optional generic instantiation `Name<T1, T2>`.
                     let nx2: SpannedToken? = peek(advanced)
                     let is_gen: Trilean! = match nx2 {
@@ -2782,16 +2782,16 @@ function parse_type_atom(s: ParserState) -> ParseTypeStep~ParseError = {
                         }
                     }
                 },
-                LParen => parse_paren_type(s, nx.span_start),
-                _ => ~- make_unexpected_token_err(s, "type expression"),
+                LParen => parse_paren_type(state, nx.span_start),
+                _ => ~- make_unexpected_token_err(state, "type expression"),
             }
         },
     }
 }
 
 // `Name<T1, T2, ...>` after the name has been consumed.
-function parse_generic_args(s: ParserState, name: String, name_start: Integer) -> ParseTypeStep~ParseError = {
-    let after_lt: ParserState = advance(s) // consume `<`
+function parse_generic_args(state: ParserState, name: String, name_start: Integer) -> ParseTypeStep~ParseError = {
+    let after_lt: ParserState = advance(state) // consume `<`
     let mutable state: ParserState = after_lt
     let mutable args: Vector<Integer> = new()
     let mutable should_continue: Trilean! = true
@@ -2890,8 +2890,8 @@ function parse_generic_args(s: ParserState, name: String, name_start: Integer) -
 //   1. `(T)` — grouping, returns inner T unchanged.
 //   2. `(T1, T2 [, ...])` — tuple type.
 //   3. `(T1, T2 [, ...]) -> R` — function type.
-function parse_paren_type(s: ParserState, open_start: Integer) -> ParseTypeStep~ParseError = {
-    let after_open: ParserState = advance(s) // consume `(`
+function parse_paren_type(state: ParserState, open_start: Integer) -> ParseTypeStep~ParseError = {
+    let after_open: ParserState = advance(state) // consume `(`
     // Reject empty `()` for consistency with Rust impl (no Unit syntax sugar).
     let nx: SpannedToken? = peek(after_open)
     match nx {
@@ -2979,8 +2979,8 @@ function parse_paren_type(s: ParserState, open_start: Integer) -> ParseTypeStep~
 // Parse comma-separated types until `)`. Returns the list + a
 // trailing flag so the caller can disambiguate `(T)` grouping from
 // `(T,)` singleton tuple. Consumes the closing `)`.
-function parse_type_list_until_rparen(s: ParserState) -> ParseTypeListStep~ParseError = {
-    let first_step: ParseTypeStep = parse_type_minimal(s) ~? |err| ~- err
+function parse_type_list_until_rparen(state: ParserState) -> ParseTypeListStep~ParseError = {
+    let first_step: ParseTypeStep = parse_type_minimal(state) ~? |err| ~- err
     let mutable state: ParserState = first_step.state
     let mutable types: Vector<Integer> = push(new(), first_step.type_id)
     let mutable had_comma: Trilean! = false
@@ -3057,25 +3057,25 @@ function parse_type_list_until_rparen(s: ParserState) -> ParseTypeListStep~Parse
 }
 
 // Postfix operators: precedence per ADR-0020 §1.3.
-function apply_type_postfix(s: ParserState, id: Integer) -> ParseTypeStep~ParseError = {
+function apply_type_postfix(state: ParserState, id: Integer) -> ParseTypeStep~ParseError = {
     // 1. `Trilean!` refinement — only valid right after a bare
     //    `Trilean` atom per ADR-0021 §2.7. If the bang sits after
     //    a non-Trilean atom, fall through and let the surrounding
     //    context decide (typically the caller treats it as an
     //    error).
-    let nx: SpannedToken? = peek(s)
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~+ ParseTypeStep { state: s, type_id: id },
+        ~0 => ~+ ParseTypeStep { state: state, type_id: id },
         _ => {
             let nt: SpannedToken = nx!!
             if is_bang(nt.token) {
-                let inner_sp: SpannedTypeExpr = get_type(s.arena, id)
+                let inner_sp: SpannedTypeExpr = get_type(state.arena, id)
                 let is_bare_trilean: Trilean! = match inner_sp.node {
                     NamedType(p) => p.name == "Trilean",
                     _ => false,
                 }
                 if is_bare_trilean {
-                    let after_bang: ParserState = advance(s)
+                    let after_bang: ParserState = advance(state)
                     let res: AllocResult = alloc_type(
                         after_bang.arena,
                         spanned_type(RefinedTrileanType, inner_sp.span_start, nt.span_end),
@@ -3086,24 +3086,24 @@ function apply_type_postfix(s: ParserState, id: Integer) -> ParseTypeStep~ParseE
                     )
                 } else {
                     // Bang after a non-Trilean atom — let the caller surface.
-                    apply_outcome_or_nullable(s, id)
+                    apply_outcome_or_nullable(state, id)
                 }
             } else {
-                apply_outcome_or_nullable(s, id)
+                apply_outcome_or_nullable(state, id)
             }
         },
     }
 }
 
 // 2. + 3. + 4. — `T?~E` / `T~E` / chained `T?`s.
-function apply_outcome_or_nullable(s: ParserState, id: Integer) -> ParseTypeStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function apply_outcome_or_nullable(state: ParserState, id: Integer) -> ParseTypeStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~+ ParseTypeStep { state: s, type_id: id },
+        ~0 => ~+ ParseTypeStep { state: state, type_id: id },
         _ => {
             let nt: SpannedToken = nx!!
             if is_question_tilde(nt.token) {
-                let after_op: ParserState = advance(s)
+                let after_op: ParserState = advance(state)
                 let err_step: ParseTypeStep = parse_type_atom(after_op) ~? |err| ~- err
                 let val_sp: SpannedTypeExpr = get_type(err_step.state.arena, id)
                 let err_sp: SpannedTypeExpr = get_type(err_step.state.arena, err_step.type_id)
@@ -3129,7 +3129,7 @@ function apply_outcome_or_nullable(s: ParserState, id: Integer) -> ParseTypeStep
                 }
             } else {
                 if is_tilde(nt.token) {
-                    let after_op: ParserState = advance(s)
+                    let after_op: ParserState = advance(state)
                     let err_step: ParseTypeStep = parse_type_atom(after_op) ~? |err| ~- err
                     let val_sp: SpannedTypeExpr = get_type(err_step.state.arena, id)
                     let err_sp: SpannedTypeExpr = get_type(err_step.state.arena, err_step.type_id)
@@ -3155,9 +3155,9 @@ function apply_outcome_or_nullable(s: ParserState, id: Integer) -> ParseTypeStep
                     }
                 } else {
                     if is_question(nt.token) {
-                        apply_chained_nullable(s, id)
+                        apply_chained_nullable(state, id)
                     } else {
-                        ~+ ParseTypeStep { state: s, type_id: id }
+                        ~+ ParseTypeStep { state: state, type_id: id }
                     }
                 }
             }
@@ -3166,8 +3166,8 @@ function apply_outcome_or_nullable(s: ParserState, id: Integer) -> ParseTypeStep
 }
 
 // 4. Chained `T?` / `T??` / `T???` — one or more bare `?` tokens.
-function apply_chained_nullable(s: ParserState, start_id: Integer) -> ParseTypeStep~ParseError = {
-    let mutable state: ParserState = s
+function apply_chained_nullable(state: ParserState, start_id: Integer) -> ParseTypeStep~ParseError = {
+    let mutable state: ParserState = state
     let mutable id: Integer = start_id
     let mutable should_continue: Trilean! = true
 
@@ -3198,11 +3198,11 @@ function apply_chained_nullable(s: ParserState, start_id: Integer) -> ParseTypeS
 }
 
 // `return [expr] ;?` — value absent when next is `;`, `}`, `,`, or EOF.
-function parse_return(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_return(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
     let head_end: Integer = head_tok.span_end
-    let after_kw: ParserState = advance(s)
+    let after_kw: ParserState = advance(state)
 
     let has_value: Trilean! = {
         let nx: SpannedToken? = peek(after_kw)
@@ -3240,11 +3240,11 @@ function parse_return(s: ParserState) -> ParseStmtStep~ParseError = {
 }
 
 // `break [expr] ;?` — same value-absence rule as `return`.
-function parse_break(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_break(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
     let head_end: Integer = head_tok.span_end
-    let after_kw: ParserState = advance(s)
+    let after_kw: ParserState = advance(state)
 
     let has_value: Trilean! = {
         let nx: SpannedToken? = peek(after_kw)
@@ -3281,9 +3281,9 @@ function parse_break(s: ParserState) -> ParseStmtStep~ParseError = {
     }
 }
 
-function parse_continue(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
-    let after_kw: ParserState = advance(s)
+function parse_continue(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
+    let after_kw: ParserState = advance(state)
     let after_semi: ParserState = eat_semi(after_kw)
     let res: AllocResult = alloc_statement(
         after_semi.arena,
@@ -3296,10 +3296,10 @@ function parse_continue(s: ParserState) -> ParseStmtStep~ParseError = {
 }
 
 // `for pattern in expr { ... }`.
-function parse_for(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_for(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
-    let after_kw: ParserState = advance(s)
+    let after_kw: ParserState = advance(state)
 
     let pat_step: ParsePatternStep = parse_pattern(after_kw) ~? |err| ~- err
     let after_in: ParserState = expect_in_kw(pat_step.state) ~? |err| ~- err
@@ -3328,11 +3328,11 @@ function parse_for(s: ParserState) -> ParseStmtStep~ParseError = {
 }
 
 // `while expr { ... }` / `while? expr { ... }`.
-function parse_while(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_while(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
     let unknown_as_false: Trilean! = is_while_q_kw(head_tok.token)
-    let after_kw: ParserState = advance(s)
+    let after_kw: ParserState = advance(state)
 
     let cond_step: ParseStep = parse_expression(after_kw) ~? |err| ~- err
     let body_step: ParseBlockStep = parse_block(cond_step.state) ~? |err| ~- err
@@ -3358,10 +3358,10 @@ function parse_while(s: ParserState) -> ParseStmtStep~ParseError = {
 }
 
 // `loop { ... }`.
-function parse_loop_stmt(s: ParserState) -> ParseStmtStep~ParseError = {
-    let head_tok: SpannedToken = peek(s)!!
+function parse_loop_stmt(state: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(state)!!
     let head_start: Integer = head_tok.span_start
-    let after_kw: ParserState = advance(s)
+    let after_kw: ParserState = advance(state)
     let body_step: ParseBlockStep = parse_block(after_kw) ~? |err| ~- err
     let prev_end: Integer = previous_token_end(body_step.state, head_tok.span_end)
     let payload: LoopStmtPayload = LoopStmtPayload { body: body_step.block }
@@ -3382,11 +3382,11 @@ function parse_loop_stmt(s: ParserState) -> ParseStmtStep~ParseError = {
 // `previous_token_end` mirrors Parser::previous_token_end — returns
 // the `span_end` of the token immediately before the current
 // cursor, falling back to `default_end` when we're at the start.
-function previous_token_end(s: ParserState, default_end: Integer) -> Integer = {
-    if s.cursor == 0 {
+function previous_token_end(state: ParserState, default_end: Integer) -> Integer = {
+    if state.cursor == 0 {
         default_end
     } else {
-        let prev: SpannedToken = get(s.tokens, s.cursor - 1)!!
+        let prev: SpannedToken = get(state.tokens, state.cursor - 1)!!
         prev.span_end
     }
 }
@@ -3398,8 +3398,8 @@ function previous_token_end(s: ParserState, default_end: Integer) -> Integer = {
 // the loop before the closing brace.
 // ─────────────────────────────────────────────────────────────────
 
-public function parse_block(s: ParserState) -> ParseBlockStep~ParseError = {
-    let after_open: ParserState = expect_lbrace(s) ~? |err| ~- err
+public function parse_block(state: ParserState) -> ParseBlockStep~ParseError = {
+    let after_open: ParserState = expect_lbrace(state) ~? |err| ~- err
     let mutable state: ParserState = after_open
     let mutable stmts: Vector<Integer> = new()
     let mutable final_expr: Integer? = ~0
@@ -3457,49 +3457,49 @@ public function parse_block(s: ParserState) -> ParseBlockStep~ParseError = {
 // (`let`/`return`/…), an expression-statement (`expr ;`), an
 // assignment (`ident = expr ;?`), or the block's final expression
 // (`expr` followed by `}`).
-public function parse_statement_or_final_expr(s: ParserState) -> BlockElementStep~ParseError = {
-    let nx_opt: SpannedToken? = peek(s)
+public function parse_statement_or_final_expr(state: ParserState) -> BlockElementStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(state)
     match nx_opt {
-        ~0 => ~- make_unexpected_eof_err(s, "statement or expression"),
+        ~0 => ~- make_unexpected_eof_err(state, "statement or expression"),
         ~+ nx => {
             match nx.token {
                 LetKw => {
-                    let stmt_step: ParseStmtStep = parse_let(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_let(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 ConstantKw => {
-                    let stmt_step: ParseStmtStep = parse_constant(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_constant(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 ReturnKw => {
-                    let stmt_step: ParseStmtStep = parse_return(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_return(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 BreakKw => {
-                    let stmt_step: ParseStmtStep = parse_break(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_break(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 ContinueKw => {
-                    let stmt_step: ParseStmtStep = parse_continue(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_continue(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 ForKw => {
-                    let stmt_step: ParseStmtStep = parse_for(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_for(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 WhileKw => {
-                    let stmt_step: ParseStmtStep = parse_while(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_while(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 WhileQKw => {
-                    let stmt_step: ParseStmtStep = parse_while(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_while(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
                 LoopKw => {
-                    let stmt_step: ParseStmtStep = parse_loop_stmt(s) ~? |err| ~- err
+                    let stmt_step: ParseStmtStep = parse_loop_stmt(state) ~? |err| ~- err
                     ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
                 },
-                _ => parse_expression_or_final(s),
+                _ => parse_expression_or_final(state),
             }
         },
     }
@@ -3508,8 +3508,8 @@ public function parse_statement_or_final_expr(s: ParserState) -> BlockElementSte
 // Expression-position dispatch: after `parse_expression`, check
 // for `=` (assignment), `;` (expr-stmt), `}` / EOF (final expr),
 // or fall through to expr-stmt with no semicolon.
-function parse_expression_or_final(s: ParserState) -> BlockElementStep~ParseError = {
-    let expr_step: ParseStep = parse_expression(s) ~? |err| ~- err
+function parse_expression_or_final(state: ParserState) -> BlockElementStep~ParseError = {
+    let expr_step: ParseStep = parse_expression(state) ~? |err| ~- err
     let after_expr: ParserState = expr_step.state
     let expr_id: Integer = expr_step.expr_id
 
@@ -3567,13 +3567,13 @@ function parse_expression_or_final(s: ParserState) -> BlockElementStep~ParseErro
 
 // `target = value ;?` — validate `target` is an identifier (SPEC §5).
 // Tuple / field / index targets are reserved for future spec work.
-function parse_assignment_after_target(s: ParserState, target_expr: Integer) -> BlockElementStep~ParseError = {
-    let target_sp: SpannedExpr = get_expression(s.arena, target_expr)
+function parse_assignment_after_target(state: ParserState, target_expr: Integer) -> BlockElementStep~ParseError = {
+    let target_sp: SpannedExpr = get_expression(state.arena, target_expr)
     let target_name: String = match target_sp.node {
         IdentifierExpr(p) => p.text,
-        _ => ~- make_unexpected_token_err(s, "identifier on left of `=`"),
+        _ => ~- make_unexpected_token_err(state, "identifier on left of `=`"),
     }
-    let after_eq: ParserState = expect_assign(s) ~? |err| ~- err
+    let after_eq: ParserState = expect_assign(state) ~? |err| ~- err
     let val_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
     let after_semi: ParserState = eat_semi(val_step.state)
     let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
@@ -3607,92 +3607,92 @@ function spanned_item(node: Item, start: Integer, end: Integer) -> SpannedItem =
 
 // ── Token kind predicates for item-level keywords ────────────────
 
-function is_function_kw(t: Token) -> Trilean! =
-    match t {
+function is_function_kw(token: Token) -> Trilean! =
+    match token {
         FunctionKw => true,
         _ => false,
     }
 
-function is_constant_kw(t: Token) -> Trilean! =
-    match t {
+function is_constant_kw(token: Token) -> Trilean! =
+    match token {
         ConstantKw => true,
         _ => false,
     }
 
-function is_type_kw(t: Token) -> Trilean! =
-    match t {
+function is_type_kw(token: Token) -> Trilean! =
+    match token {
         TypeKw => true,
         _ => false,
     }
 
-function is_struct_kw(t: Token) -> Trilean! =
-    match t {
+function is_struct_kw(token: Token) -> Trilean! =
+    match token {
         StructKw => true,
         _ => false,
     }
 
-function is_enum_kw(t: Token) -> Trilean! =
-    match t {
+function is_enum_kw(token: Token) -> Trilean! =
+    match token {
         EnumKw => true,
         _ => false,
     }
 
-function is_module_kw(t: Token) -> Trilean! =
-    match t {
+function is_module_kw(token: Token) -> Trilean! =
+    match token {
         ModuleKw => true,
         _ => false,
     }
 
-function is_import_kw(t: Token) -> Trilean! =
-    match t {
+function is_import_kw(token: Token) -> Trilean! =
+    match token {
         ImportKw => true,
         _ => false,
     }
 
-function is_from_kw(t: Token) -> Trilean! =
-    match t {
+function is_from_kw(token: Token) -> Trilean! =
+    match token {
         FromKw => true,
         _ => false,
     }
 
-function is_public_kw(t: Token) -> Trilean! =
-    match t {
+function is_public_kw(token: Token) -> Trilean! =
+    match token {
         PublicKw => true,
         _ => false,
     }
 
-function is_lparen(t: Token) -> Trilean! =
-    match t {
+function is_lparen(token: Token) -> Trilean! =
+    match token {
         LParen => true,
         _ => false,
     }
 
-function is_rparen(t: Token) -> Trilean! =
-    match t {
+function is_rparen(token: Token) -> Trilean! =
+    match token {
         RParen => true,
         _ => false,
     }
 
-function is_lt(t: Token) -> Trilean! =
-    match t {
+function is_lt(token: Token) -> Trilean! =
+    match token {
         Lt => true,
         _ => false,
     }
 
-function is_gt(t: Token) -> Trilean! =
-    match t {
+function is_gt(token: Token) -> Trilean! =
+    match token {
         Gt => true,
         _ => false,
     }
 
-function is_thin_arrow(t: Token) -> Trilean! =
-    match t {
+function is_thin_arrow(token: Token) -> Trilean! =
+    match token {
         ThinArrow => true,
         _ => false,
     }
 
-function is_owned_kw(t: Token) -> Trilean! =
-    match t {
+function is_owned_kw(token: Token) -> Trilean! =
+    match token {
         OwnedKw => true,
         _ => false,
     }
@@ -3701,14 +3701,14 @@ function is_owned_kw(t: Token) -> Trilean! =
 // `public` alone → PublicVis, `public(package)` → PackageVis, no
 // keyword → PrivateVis. Anything other than `package` inside the
 // parens is an error.
-public function parse_visibility(s: ParserState) -> ParseVisibilityStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+public function parse_visibility(state: ParserState) -> ParseVisibilityStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~+ ParseVisibilityStep { state: s, visibility: PrivateVis },
+        ~0 => ~+ ParseVisibilityStep { state: state, visibility: PrivateVis },
         _ => {
             let nt: SpannedToken = nx!!
             if is_public_kw(nt.token) {
-                let after_pub: ParserState = advance(s)
+                let after_pub: ParserState = advance(state)
                 let nx2: SpannedToken? = peek(after_pub)
                 match nx2 {
                     ~0 => ~+ ParseVisibilityStep { state: after_pub, visibility: PublicVis },
@@ -3758,7 +3758,7 @@ public function parse_visibility(s: ParserState) -> ParseVisibilityStep~ParseErr
                     },
                 }
             } else {
-                ~+ ParseVisibilityStep { state: s, visibility: PrivateVis }
+                ~+ ParseVisibilityStep { state: state, visibility: PrivateVis }
             }
         },
     }
@@ -3766,14 +3766,14 @@ public function parse_visibility(s: ParserState) -> ParseVisibilityStep~ParseErr
 
 // `parse_ident` — consumes one Identifier token and returns its
 // text + span. Errors on EOF / non-Identifier.
-function parse_ident(s: ParserState, expected: String) -> ParseIdentStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_ident(state: ParserState, expected: String) -> ParseIdentStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, expected),
+        ~0 => ~- make_unexpected_eof_err(state, expected),
         ~+ nt => {
             match nt.token {
                 Identifier(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     ~+ ParseIdentStep {
                         state: advanced,
                         text: p.text,
@@ -3781,7 +3781,7 @@ function parse_ident(s: ParserState, expected: String) -> ParseIdentStep~ParseEr
                         span_end: nt.span_end,
                     }
                 },
-                _ => ~- make_unexpected_token_err(s, expected),
+                _ => ~- make_unexpected_token_err(state, expected),
             }
         },
     }
@@ -3815,8 +3815,8 @@ function is_reserved_item_name(name: String) -> Trilean! = {
 
 // `parse_item_name` — like `parse_ident` but rejects reserved
 // namespace roots with `ReservedItemNameErr`.
-function parse_item_name(s: ParserState, expected: String) -> ParseIdentStep~ParseError = {
-    let ident_step: ParseIdentStep = parse_ident(s, expected) ~? |err| ~- err
+function parse_item_name(state: ParserState, expected: String) -> ParseIdentStep~ParseError = {
+    let ident_step: ParseIdentStep = parse_ident(state, expected) ~? |err| ~- err
     if is_reserved_item_name(ident_step.text) {
         let detail: ReservedNameDetail = ReservedNameDetail {
             name: ident_step.text,
@@ -3831,14 +3831,14 @@ function parse_item_name(s: ParserState, expected: String) -> ParseIdentStep~Par
 
 // `parse_generic_params` — optional `<T, U>` (ADR-0019 Addendum
 // §A7, v0.7.4.1). Empty Vector when absent.
-function parse_generic_params(s: ParserState) -> ParseGenericsStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_generic_params(state: ParserState) -> ParseGenericsStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~+ ParseGenericsStep { state: s, type_params: new() },
+        ~0 => ~+ ParseGenericsStep { state: state, type_params: new() },
         _ => {
             let nt: SpannedToken = nx!!
             if is_lt(nt.token) {
-                let after_lt: ParserState = advance(s)
+                let after_lt: ParserState = advance(state)
                 let mutable state: ParserState = after_lt
                 let mutable params: Vector<String> = new()
                 let mutable should_continue: Trilean! = true
@@ -3891,7 +3891,7 @@ function parse_generic_params(s: ParserState) -> ParseGenericsStep~ParseError = 
                     },
                 }
             } else {
-                ~+ ParseGenericsStep { state: s, type_params: new() }
+                ~+ ParseGenericsStep { state: state, type_params: new() }
             }
         },
     }
@@ -3904,17 +3904,17 @@ public struct ParseParamStep {
     parameter: FunctionParam,
 }
 
-function parse_parameter(s: ParserState) -> ParseParamStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_parameter(state: ParserState) -> ParseParamStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     let passing_step: EatFlagStep = {
         match nx {
-            ~0 => EatFlagStep { state: s, was_present: false },
+            ~0 => EatFlagStep { state: state, was_present: false },
             _ => {
                 let nt: SpannedToken = nx!!
                 if is_mutable_kw(nt.token) {
-                    EatFlagStep { state: advance(s), was_present: true }
+                    EatFlagStep { state: advance(state), was_present: true }
                 } else {
-                    EatFlagStep { state: s, was_present: false }
+                    EatFlagStep { state: state, was_present: false }
                 }
             },
         }
@@ -3966,8 +3966,8 @@ function parse_parameter(s: ParserState) -> ParseParamStep~ParseError = {
     ~+ ParseParamStep { state: ty_step.state, parameter: param }
 }
 
-function parse_parameter_list(s: ParserState) -> ParseParamsStep~ParseError = {
-    let mutable state: ParserState = s
+function parse_parameter_list(state: ParserState) -> ParseParamsStep~ParseError = {
+    let mutable state: ParserState = state
     let mutable params: Vector<FunctionParam> = new()
     let mutable should_continue: Trilean! = true
     let mutable err_slot: ParseError? = ~0
@@ -4041,30 +4041,30 @@ public struct ParseFunctionBodyStep {
     body: FunctionBody,
 }
 
-function parse_function_body(s: ParserState) -> ParseFunctionBodyStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_function_body(state: ParserState) -> ParseFunctionBodyStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "function body (`{ … }` or `= expr`)"),
+        ~0 => ~- make_unexpected_eof_err(state, "function body (`{ … }` or `= expr`)"),
         ~+ nt => {
             match nt.token {
                 LBrace => {
-                    let block_step: ParseBlockStep = parse_block(s) ~? |err| ~- err
+                    let block_step: ParseBlockStep = parse_block(state) ~? |err| ~- err
                     ~+ ParseFunctionBodyStep { state: block_step.state, body: BlockBody(block_step.block) }
                 },
                 Assign => {
-                    let after_eq: ParserState = advance(s)
+                    let after_eq: ParserState = advance(state)
                     let expr_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
                     ~+ ParseFunctionBodyStep { state: expr_step.state, body: ExpressionBody(expr_step.expr_id) }
                 },
-                _ => ~- make_unexpected_token_err(s, "function body (`{ … }` or `= expr`)"),
+                _ => ~- make_unexpected_token_err(state, "function body (`{ … }` or `= expr`)"),
             }
         },
     }
 }
 
 // `function name<G…>(params) -> R? { body | = expr }`.
-function parse_function(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_function(state: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let name_step: ParseIdentStep = parse_item_name(after_kw, "function name") ~? |err| ~- err
     let generics_step: ParseGenericsStep = parse_generic_params(name_step.state) ~? |err| ~- err
 
@@ -4142,8 +4142,8 @@ function parse_function(s: ParserState, head_start: Integer, visibility: Visibil
 }
 
 // `constant NAME (: T)? = expr ;?` — module-level constant.
-function parse_constant_item(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_constant_item(state: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let name_step: ParseIdentStep = parse_item_name(after_kw, "constant name") ~? |err| ~- err
 
     let ann_step: ParseLetAnnotation = parse_optional_type_annotation(name_step.state) ~? |err| ~- err
@@ -4173,8 +4173,8 @@ function parse_constant_item(s: ParserState, head_start: Integer, visibility: Vi
 }
 
 // `type Alias = T ;?` — type alias.
-function parse_type_alias(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_type_alias(state: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let name_step: ParseIdentStep = parse_item_name(after_kw, "type alias name") ~? |err| ~- err
     let after_eq: ParserState = expect_assign(name_step.state) ~? |err| ~- err
     let ty_step: ParseTypeStep = parse_type_minimal(after_eq) ~? |err| ~- err
@@ -4243,46 +4243,46 @@ public struct ParseImportNamesStep {
 
 // ── Token kind predicates added for .4b ──────────────────────────
 
-function is_dot(t: Token) -> Trilean! =
-    match t {
+function is_dot(token: Token) -> Trilean! =
+    match token {
         Dot => true,
         _ => false,
     }
 
-function is_star(t: Token) -> Trilean! =
-    match t {
+function is_star(token: Token) -> Trilean! =
+    match token {
         Star => true,
         _ => false,
     }
 
-function is_as_kw(t: Token) -> Trilean! =
-    match t {
+function is_as_kw(token: Token) -> Trilean! =
+    match token {
         AsKw => true,
         _ => false,
     }
 
-function is_crate_kw(t: Token) -> Trilean! =
-    match t {
+function is_crate_kw(token: Token) -> Trilean! =
+    match token {
         CrateKw => true,
         _ => false,
     }
 
-function is_self_kw(t: Token) -> Trilean! =
-    match t {
+function is_self_kw(token: Token) -> Trilean! =
+    match token {
         SelfKw => true,
         _ => false,
     }
 
-function is_super_kw(t: Token) -> Trilean! =
-    match t {
+function is_super_kw(token: Token) -> Trilean! =
+    match token {
         SuperKw => true,
         _ => false,
     }
 
 // ── Struct fields ────────────────────────────────────────────────
 
-function parse_struct_field(s: ParserState) -> ParseStructFieldStep~ParseError = {
-    let id_step: ParseIdentStep = parse_ident(s, "field name") ~? |err| ~- err
+function parse_struct_field(state: ParserState) -> ParseStructFieldStep~ParseError = {
+    let id_step: ParseIdentStep = parse_ident(state, "field name") ~? |err| ~- err
     let after_colon: ParserState = expect_colon(id_step.state) ~? |err| ~- err
     let ty_step: ParseTypeStep = parse_type_minimal(after_colon) ~? |err| ~- err
     let field: StructField = StructField {
@@ -4292,8 +4292,8 @@ function parse_struct_field(s: ParserState) -> ParseStructFieldStep~ParseError =
     ~+ ParseStructFieldStep { state: ty_step.state, field: field }
 }
 
-function parse_struct_fields(s: ParserState) -> ParseStructFieldsStep~ParseError = {
-    let mutable state: ParserState = s
+function parse_struct_fields(state: ParserState) -> ParseStructFieldsStep~ParseError = {
+    let mutable state: ParserState = state
     let mutable fields: Vector<StructField> = new()
     let mutable should_continue: Trilean! = true
     let mutable err_slot: ParseError? = ~0
@@ -4361,8 +4361,8 @@ function parse_struct_fields(s: ParserState) -> ParseStructFieldsStep~ParseError
 }
 
 // `struct Foo<G…> { fields }`.
-function parse_struct(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_struct(state: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let name_step: ParseIdentStep = parse_item_name(after_kw, "struct name") ~? |err| ~- err
     let generics_step: ParseGenericsStep = parse_generic_params(name_step.state) ~? |err| ~- err
     let after_open: ParserState = expect_lbrace(generics_step.state) ~? |err| ~- err
@@ -4388,8 +4388,8 @@ function parse_struct(s: ParserState, head_start: Integer, visibility: Visibilit
 
 // ── Enum variants ────────────────────────────────────────────────
 
-function parse_enum_variant(s: ParserState) -> ParseEnumVariantStep~ParseError = {
-    let id_step: ParseIdentStep = parse_ident(s, "variant name") ~? |err| ~- err
+function parse_enum_variant(state: ParserState) -> ParseEnumVariantStep~ParseError = {
+    let id_step: ParseIdentStep = parse_ident(state, "variant name") ~? |err| ~- err
     // Optional `(PayloadType)`.
     let nx: SpannedToken? = peek(id_step.state)
     let payload_outcome: ParseLetAnnotation~ParseError = {
@@ -4426,8 +4426,8 @@ function parse_enum_variant(s: ParserState) -> ParseEnumVariantStep~ParseError =
     ~+ ParseEnumVariantStep { state: payload_step.state, variant: variant }
 }
 
-function parse_enum_variants(s: ParserState) -> ParseEnumVariantsStep~ParseError = {
-    let mutable state: ParserState = s
+function parse_enum_variants(state: ParserState) -> ParseEnumVariantsStep~ParseError = {
+    let mutable state: ParserState = state
     let mutable variants: Vector<EnumVariant> = new()
     let mutable should_continue: Trilean! = true
     let mutable err_slot: ParseError? = ~0
@@ -4493,8 +4493,8 @@ function parse_enum_variants(s: ParserState) -> ParseEnumVariantsStep~ParseError
 }
 
 // `enum Foo<G…> { variants }`.
-function parse_enum(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_enum(state: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let name_step: ParseIdentStep = parse_item_name(after_kw, "enum name") ~? |err| ~- err
     let generics_step: ParseGenericsStep = parse_generic_params(name_step.state) ~? |err| ~- err
     let after_open: ParserState = expect_lbrace(generics_step.state) ~? |err| ~- err
@@ -4520,14 +4520,14 @@ function parse_enum(s: ParserState, head_start: Integer, visibility: Visibility)
 
 // ── Dot path (used by `import`, `from`, future qualified types) ──
 
-function parse_dot_path_root(s: ParserState, what: String) -> ParseIdentStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_dot_path_root(state: ParserState, what: String) -> ParseIdentStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     match nx {
-        ~0 => ~- make_unexpected_eof_err(s, what),
+        ~0 => ~- make_unexpected_eof_err(state, what),
         ~+ nt => {
             match nt.token {
                 Identifier(p) => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     ~+ ParseIdentStep {
                         state: advanced,
                         text: p.text,
@@ -4536,7 +4536,7 @@ function parse_dot_path_root(s: ParserState, what: String) -> ParseIdentStep~Par
                     }
                 },
                 CrateKw => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     ~+ ParseIdentStep {
                         state: advanced,
                         text: "crate",
@@ -4545,7 +4545,7 @@ function parse_dot_path_root(s: ParserState, what: String) -> ParseIdentStep~Par
                     }
                 },
                 SelfKw => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     ~+ ParseIdentStep {
                         state: advanced,
                         text: "self",
@@ -4554,7 +4554,7 @@ function parse_dot_path_root(s: ParserState, what: String) -> ParseIdentStep~Par
                     }
                 },
                 SuperKw => {
-                    let advanced: ParserState = advance(s)
+                    let advanced: ParserState = advance(state)
                     ~+ ParseIdentStep {
                         state: advanced,
                         text: "super",
@@ -4562,17 +4562,17 @@ function parse_dot_path_root(s: ParserState, what: String) -> ParseIdentStep~Par
                         span_end: nt.span_end,
                     }
                 },
-                _ => ~- make_unexpected_token_err(s, what),
+                _ => ~- make_unexpected_token_err(state, what),
             }
         },
     }
 }
 
-function parse_dot_path_segment(s: ParserState) -> ParseIdentStep~ParseError =
-    parse_ident(s, "identifier after `.`")
+function parse_dot_path_segment(state: ParserState) -> ParseIdentStep~ParseError =
+    parse_ident(state, "identifier after `.`")
 
-function parse_dot_path(s: ParserState, what: String) -> ParseDotPathStep~ParseError = {
-    let root_step: ParseIdentStep = parse_dot_path_root(s, what) ~? |err| ~- err
+function parse_dot_path(state: ParserState, what: String) -> ParseDotPathStep~ParseError = {
+    let root_step: ParseIdentStep = parse_dot_path_root(state, what) ~? |err| ~- err
     let mutable state: ParserState = root_step.state
     let mutable segments: Vector<String> = push(new(), root_step.text)
     let mutable should_continue: Trilean! = true
@@ -4614,8 +4614,8 @@ function parse_dot_path(s: ParserState, what: String) -> ParseDotPathStep~ParseE
 // ── Imports ──────────────────────────────────────────────────────
 
 // `import a.b.c ;?`.
-function parse_import_item(s: ParserState, head_start: Integer) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_import_item(state: ParserState, head_start: Integer) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let path_step: ParseDotPathStep = parse_dot_path(after_kw, "import path") ~? |err| ~- err
     let after_semi: ParserState = eat_semi(path_step.state)
     let prev_end: Integer = previous_token_end(after_semi, head_start)
@@ -4631,18 +4631,18 @@ function parse_import_item(s: ParserState, head_start: Integer) -> ParseItemStep
 }
 
 // `name (as alias)?` — single entry of a from-import name list.
-function parse_import_name(s: ParserState) -> ParseImportNameStep~ParseError = {
-    let nx: SpannedToken? = peek(s)
+function parse_import_name(state: ParserState) -> ParseImportNameStep~ParseError = {
+    let nx: SpannedToken? = peek(state)
     let name_step: ParseIdentStep = match nx {
-        ~0 => ~- make_unexpected_eof_err(s, "imported name"),
+        ~0 => ~- make_unexpected_eof_err(state, "imported name"),
         ~+ nt => {
             if is_star(nt.token) {
                 ~- make_unexpected_token_err(
-                    s,
+                    state,
                     "imported name (glob `*` is not supported per ADR-0005)",
                 )
             } else {
-                parse_ident(s, "imported name") ~? |err| ~- err
+                parse_ident(state, "imported name") ~? |err| ~- err
             }
         },
     }
@@ -4677,8 +4677,8 @@ function parse_import_name(s: ParserState) -> ParseImportNameStep~ParseError = {
     alias_outcome
 }
 
-function parse_import_name_list(s: ParserState) -> ParseImportNamesStep~ParseError = {
-    let first_step: ParseImportNameStep = parse_import_name(s) ~? |err| ~- err
+function parse_import_name_list(state: ParserState) -> ParseImportNamesStep~ParseError = {
+    let first_step: ParseImportNameStep = parse_import_name(state) ~? |err| ~- err
     let mutable state: ParserState = first_step.state
     let mutable names: Vector<ImportName> = push(new(), first_step.name)
     let mutable should_continue: Trilean! = true
@@ -4732,8 +4732,8 @@ function parse_import_name_list(s: ParserState) -> ParseImportNamesStep~ParseErr
 }
 
 // `from a.b import x, y as z ;?`.
-function parse_from_import(s: ParserState, head_start: Integer) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_from_import(state: ParserState, head_start: Integer) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let source_step: ParseDotPathStep = parse_dot_path(after_kw, "module path after `from`") ~? |err| ~- err
 
     // expect `import`
@@ -4769,8 +4769,8 @@ function parse_from_import(s: ParserState, head_start: Integer) -> ParseItemStep
 // `module foo` (file-bound) or `module foo { items… }` (inline).
 // ADR-0005 §"File resolution": nested paths must use nested
 // `module` blocks — `module foo.bar` is invalid syntax.
-function parse_module(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
-    let after_kw: ParserState = advance(s)
+function parse_module(state: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(state)
     let name_step: ParseIdentStep = parse_item_name(after_kw, "module name") ~? |err| ~- err
 
     // Reject `module foo.bar`.
@@ -4830,8 +4830,8 @@ public struct ParseModuleContentStep {
     content: ModuleContent,
 }
 
-function parse_inline_module_body(s: ParserState) -> ParseModuleContentStep~ParseError = {
-    let after_open: ParserState = advance(s)  // consume `{`
+function parse_inline_module_body(state: ParserState) -> ParseModuleContentStep~ParseError = {
+    let after_open: ParserState = advance(state)  // consume `{`
     let mutable state: ParserState = after_open
     let mutable item_ids: Vector<Integer> = new()
     let mutable should_continue: Trilean! = true
@@ -4874,10 +4874,10 @@ function parse_inline_module_body(s: ParserState) -> ParseModuleContentStep~Pars
 }
 
 // `parse_item` — visibility prefix + dispatch on the next keyword.
-public function parse_item(s: ParserState) -> ParseItemStep~ParseError = {
+public function parse_item(state: ParserState) -> ParseItemStep~ParseError = {
     // Capture span start before visibility (covers `public` prefix).
-    let head_start: Integer = current_span_start(s)
-    let vis_step: ParseVisibilityStep = parse_visibility(s) ~? |err| ~- err
+    let head_start: Integer = current_span_start(state)
+    let vis_step: ParseVisibilityStep = parse_visibility(state) ~? |err| ~- err
     let after_vis: ParserState = vis_step.state
     let visibility: Visibility = vis_step.visibility
 
@@ -4934,12 +4934,12 @@ public function parse_item(s: ParserState) -> ParseItemStep~ParseError = {
 
 // Imports never carry visibility per ADR-0005 §"Imports — Python style".
 // Re-exporting an imported name is a post-v0.2.x feature.
-function reject_visibility_on_import(s: ParserState, kw_label: String) -> ParseError = {
+function reject_visibility_on_import(state: ParserState, kw_label: String) -> ParseError = {
     let detail: ParseErrorDetail = ParseErrorDetail {
         expected: "`function`, `constant`, `type`, `struct`, `enum`, or `module` after `public`",
         found: concat("`", concat(kw_label, "` (re-exports of imported names are not yet implemented)")),
-        span_start: current_span_start(s),
-        span_end: current_span_end(s),
+        span_start: current_span_start(state),
+        span_end: current_span_end(state),
     }
     UnexpectedTokenErr(detail)
 }
@@ -4961,8 +4961,8 @@ function reject_visibility_on_import(s: ParserState, kw_label: String) -> ParseE
 
 // Tokens that begin a fresh construct — synchronize STOPS BEFORE
 // them so the driver can retry parse_item from a clean position.
-function is_sync_stop_before(t: Token) -> Trilean! =
-    match t {
+function is_sync_stop_before(token: Token) -> Trilean! =
+    match token {
         FunctionKw => true,
         LetKw => true,
         ConstantKw => true,
@@ -4989,8 +4989,8 @@ function is_sync_stop_before(t: Token) -> Trilean! =
 
 // Skip tokens until we hit a sync boundary (or EOF). After a `;`
 // we consume the semi and stop — it ends the bad statement.
-public function synchronize(s: ParserState) -> ParserState = {
-    let mutable state: ParserState = s
+public function synchronize(state: ParserState) -> ParserState = {
+    let mutable state: ParserState = state
     let mutable done: Trilean! = false
     while done == false {
         let nx: SpannedToken? = peek(state)
@@ -5023,8 +5023,8 @@ public function synchronize(s: ParserState) -> ParserState = {
 // guards against `parse_item` failing at a sync token (e.g. `}`)
 // without consuming anything — without it the driver would spin
 // forever at top-level on a malformed corpus.
-public function parse_program(s: ParserState) -> ParseProgramStep = {
-    let mutable state: ParserState = s
+public function parse_program(state: ParserState) -> ParseProgramStep = {
+    let mutable state: ParserState = state
     let mutable item_ids: Vector<Integer> = new()
     let mutable errors: Vector<ParseError> = new()
     let mutable should_continue: Trilean! = true
@@ -5099,15 +5099,15 @@ function trilean_name(v: TrileanValue) -> String =
         UnknownValue => "unknown",
     }
 
-function outcome_arm_name(a: OutcomeArm) -> String =
-    match a {
+function outcome_arm_name(arena: OutcomeArm) -> String =
+    match arena {
         PositiveArm => "~+",
         ZeroArm => "~0",
         NegativeArm => "~-",
     }
 
-public function format_expr(a: Arena, id: Integer) -> String = {
-    let sp: SpannedExpr = get_expression(a, id)
+public function format_expr(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedExpr = get_expression(arena, id)
     match sp.node {
         IntegerLiteralExpr(p) => from_integer(p.value),
         TernaryLiteralExpr(p) => from_integer(p.value),
@@ -5116,44 +5116,44 @@ public function format_expr(a: Arena, id: Integer) -> String = {
         NullLiteralExpr => "null",
         IdentifierExpr(p) => p.text,
         UnaryOpExpr(p) => {
-            let inner: String = format_expr(a, p.operand)
+            let inner: String = format_expr(arena, p.operand)
             concat("(- ", concat(inner, ")"))
         },
         BinaryOpExpr(p) => {
-            let l: String = format_expr(a, p.left)
-            let r: String = format_expr(a, p.right)
+            let l: String = format_expr(arena, p.left)
+            let r: String = format_expr(arena, p.right)
             let head: String = concat(concat("(", bin_op_name(p.operator)), " ")
             concat(head, concat(l, concat(" ", concat(r, ")"))))
         },
         ForceUnwrapExpr(inner_id) => {
-            let inner: String = format_expr(a, inner_id)
+            let inner: String = format_expr(arena, inner_id)
             concat("(!! ", concat(inner, ")"))
         },
         CallExpr(p) => {
-            let callee: String = format_expr(a, p.callee)
-            concat("(call ", concat(callee, concat(format_args(a, p.arguments), ")")))
+            let callee: String = format_expr(arena, p.callee)
+            concat("(call ", concat(callee, concat(format_args(arena, p.arguments), ")")))
         },
         FieldAccessExpr(p) => {
-            let obj: String = format_expr(a, p.object)
+            let obj: String = format_expr(arena, p.object)
             concat("(. ", concat(obj, concat(" ", concat(p.field, ")"))))
         },
         MethodCallExpr(p) => {
-            let recv: String = format_expr(a, p.receiver)
-            concat(concat("(.call ", concat(recv, concat(" ", p.method))), concat(format_args(a, p.arguments), ")"))
+            let recv: String = format_expr(arena, p.receiver)
+            concat(concat("(.call ", concat(recv, concat(" ", p.method))), concat(format_args(arena, p.arguments), ")"))
         },
         OutcomeConstructorExpr(p) => {
             let arm_str: String = outcome_arm_name(p.arm)
             match p.payload {
                 ~0 => arm_str,
                 _ => {
-                    let inner: String = format_expr(a, p.payload!!)
+                    let inner: String = format_expr(arena, p.payload!!)
                     concat("(", concat(arm_str, concat(" ", concat(inner, ")"))))
                 },
             }
         },
         OutcomePropagateExpr(p) => {
-            let inner: String = format_expr(a, p.inner)
-            let ret: String = format_expr(a, p.early_return)
+            let inner: String = format_expr(arena, p.inner)
+            let ret: String = format_expr(arena, p.early_return)
             let cap: String = match p.capture_name {
                 ~0 => "_",
                 _ => p.capture_name!!,
@@ -5161,18 +5161,18 @@ public function format_expr(a: Arena, id: Integer) -> String = {
             concat("(~? ", concat(inner, concat(" |", concat(cap, concat("| ", concat(ret, ")"))))))
         },
         OutcomeDefaultExpr(p) => {
-            let inner: String = format_expr(a, p.inner)
-            let def: String = format_expr(a, p.default_expr)
+            let inner: String = format_expr(arena, p.inner)
+            let def: String = format_expr(arena, p.default_expr)
             concat("(~: ", concat(inner, concat(" ", concat(def, ")"))))
         },
         ElvisOpExpr(p) => {
-            let obj: String = format_expr(a, p.object)
-            let def: String = format_expr(a, p.default_expr)
+            let obj: String = format_expr(arena, p.object)
+            let def: String = format_expr(arena, p.default_expr)
             concat("(?: ", concat(obj, concat(" ", concat(def, ")"))))
         },
         RangeExpr(p) => {
-            let l: String = format_expr(a, p.range_start)
-            let r: String = format_expr(a, p.range_end)
+            let l: String = format_expr(arena, p.range_start)
+            let r: String = format_expr(arena, p.range_end)
             let op: String = match p.inclusive {
                 true => "..=",
                 false => "..",
@@ -5183,13 +5183,13 @@ public function format_expr(a: Arena, id: Integer) -> String = {
     }
 }
 
-function format_args(a: Arena, args: Vector<Integer>) -> String = {
+function format_args(arena: Arena, args: Vector<Integer>) -> String = {
     let mutable out: String = ""
     let mutable i: Integer = 0
     let n: Integer = length(args)
     while i < n {
         let arg_id: Integer = get(args, i)!!
-        out = concat(out, concat(" ", format_expr(a, arg_id)))
+        out = concat(out, concat(" ", format_expr(arena, arg_id)))
         i = i + 1
     }
     out
@@ -5197,8 +5197,8 @@ function format_args(a: Arena, args: Vector<Integer>) -> String = {
 
 // ── v0.7.5.3 pattern / type / stmt / block pretty-printers ──────
 
-public function format_pattern(a: Arena, id: Integer) -> String = {
-    let sp: SpannedPattern = get_pattern(a, id)
+public function format_pattern(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedPattern = get_pattern(arena, id)
     match sp.node {
         WildcardPattern => "_",
         IdentifierPattern(p) => p.text,
@@ -5213,7 +5213,7 @@ public function format_pattern(a: Arena, id: Integer) -> String = {
                     out = concat(out, ",")
                 }
                 let elem_id: Integer = get(elems, i)!!
-                out = concat(out, format_pattern(a, elem_id))
+                out = concat(out, format_pattern(arena, elem_id))
                 i = i + 1
             }
             concat(out, ")")
@@ -5224,7 +5224,7 @@ public function format_pattern(a: Arena, id: Integer) -> String = {
             let mutable i: Integer = 0
             while i < n {
                 let alt_id: Integer = get(alts, i)!!
-                out = concat(out, concat(" ", format_pattern(a, alt_id)))
+                out = concat(out, concat(" ", format_pattern(arena, alt_id)))
                 i = i + 1
             }
             concat(out, ")")
@@ -5240,7 +5240,7 @@ public function format_pattern(a: Arena, id: Integer) -> String = {
         EnumVariantPat(p) => {
             let payload_str: String = match p.payload {
                 ~0 => "",
-                _ => concat(" ", format_pattern(a, p.payload!!)),
+                _ => concat(" ", format_pattern(arena, p.payload!!)),
             }
             concat("(", concat(p.variant_name, concat(payload_str, ")")))
         },
@@ -5248,7 +5248,7 @@ public function format_pattern(a: Arena, id: Integer) -> String = {
             let arm_str: String = outcome_arm_name(p.arm)
             match p.payload {
                 ~0 => arm_str,
-                _ => concat("(", concat(arm_str, concat(" ", concat(format_pattern(a, p.payload!!), ")")))),
+                _ => concat("(", concat(arm_str, concat(" ", concat(format_pattern(arena, p.payload!!), ")")))),
             }
         },
     }
@@ -5262,8 +5262,8 @@ function format_literal_pattern(lit: LiteralPattern) -> String =
         TrileanLit(v) => trilean_name(v),
     }
 
-public function format_type(a: Arena, id: Integer) -> String = {
-    let sp: SpannedTypeExpr = get_type(a, id)
+public function format_type(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedTypeExpr = get_type(arena, id)
     match sp.node {
         NamedType(p) => p.name,
         GenericType(p) => {
@@ -5275,7 +5275,7 @@ public function format_type(a: Arena, id: Integer) -> String = {
                     out = concat(out, ",")
                 }
                 let arg_id: Integer = get(p.arguments, i)!!
-                out = concat(out, format_type(a, arg_id))
+                out = concat(out, format_type(arena, arg_id))
                 i = i + 1
             }
             concat(out, ">")
@@ -5289,12 +5289,12 @@ public function format_type(a: Arena, id: Integer) -> String = {
                     out = concat(out, ",")
                 }
                 let elem_id: Integer = get(elems, i)!!
-                out = concat(out, format_type(a, elem_id))
+                out = concat(out, format_type(arena, elem_id))
                 i = i + 1
             }
             concat(out, ")")
         },
-        NullableType(inner_id) => concat(format_type(a, inner_id), "?"),
+        NullableType(inner_id) => concat(format_type(arena, inner_id), "?"),
         FunctionType(p) => {
             let mutable params: String = "("
             let n: Integer = length(p.parameters)
@@ -5304,11 +5304,11 @@ public function format_type(a: Arena, id: Integer) -> String = {
                     params = concat(params, ",")
                 }
                 let param_id: Integer = get(p.parameters, i)!!
-                params = concat(params, format_type(a, param_id))
+                params = concat(params, format_type(arena, param_id))
                 i = i + 1
             }
             params = concat(params, ")")
-            concat(params, concat("->", format_type(a, p.return_type)))
+            concat(params, concat("->", format_type(arena, p.return_type)))
         },
         OutcomeType(p) => {
             let op: String = if p.allow_null_state {
@@ -5316,34 +5316,34 @@ public function format_type(a: Arena, id: Integer) -> String = {
             } else {
                 "~"
             }
-            concat(format_type(a, p.value_type), concat(op, format_type(a, p.error_type)))
+            concat(format_type(arena, p.value_type), concat(op, format_type(arena, p.error_type)))
         },
         RefinedTrileanType => "Trilean!",
     }
 }
 
-public function format_block(a: Arena, b: Block) -> String = {
+public function format_block(arena: Arena, b: Block) -> String = {
     let mutable out: String = "(block"
     let stmts: Vector<Integer> = b.block_statements
     let n: Integer = length(stmts)
     let mutable i: Integer = 0
     while i < n {
         let sid: Integer = get(stmts, i)!!
-        out = concat(out, concat(" ", format_stmt(a, sid)))
+        out = concat(out, concat(" ", format_stmt(arena, sid)))
         i = i + 1
     }
     match b.block_final {
         ~0 => {},
         _ => {
             let eid: Integer = b.block_final!!
-            out = concat(out, concat(" (final ", concat(format_expr(a, eid), ")")))
+            out = concat(out, concat(" (final ", concat(format_expr(arena, eid), ")")))
         },
     }
     concat(out, ")")
 }
 
-public function format_stmt(a: Arena, id: Integer) -> String = {
-    let sp: SpannedStmt = get_statement(a, id)
+public function format_stmt(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedStmt = get_statement(arena, id)
     match sp.node {
         LetStmt(p) => {
             let head: String = if p.is_mutable {
@@ -5353,30 +5353,30 @@ public function format_stmt(a: Arena, id: Integer) -> String = {
             }
             let ann: String = match p.type_annotation {
                 ~0 => "",
-                _ => concat(" :", format_type(a, p.type_annotation!!)),
+                _ => concat(" :", format_type(arena, p.type_annotation!!)),
             }
-            concat(head, concat(p.name, concat(ann, concat(" ", concat(format_expr(a, p.value), ")")))))
+            concat(head, concat(p.name, concat(ann, concat(" ", concat(format_expr(arena, p.value), ")")))))
         },
         ConstantStmt(p) => {
             let ann: String = match p.type_annotation {
                 ~0 => "",
-                _ => concat(" :", format_type(a, p.type_annotation!!)),
+                _ => concat(" :", format_type(arena, p.type_annotation!!)),
             }
-            concat("(const ", concat(p.name, concat(ann, concat(" ", concat(format_expr(a, p.value), ")")))))
+            concat("(const ", concat(p.name, concat(ann, concat(" ", concat(format_expr(arena, p.value), ")")))))
         },
         ReturnStmt(p) => match p.value {
             ~0 => "(return)",
-            _ => concat("(return ", concat(format_expr(a, p.value!!), ")")),
+            _ => concat("(return ", concat(format_expr(arena, p.value!!), ")")),
         },
         BreakStmt(p) => match p.value {
             ~0 => "(break)",
-            _ => concat("(break ", concat(format_expr(a, p.value!!), ")")),
+            _ => concat("(break ", concat(format_expr(arena, p.value!!), ")")),
         },
         ContinueStmt => "(continue)",
         ForStmt(p) => {
-            let var_str: String = format_pattern(a, p.variable)
-            let iter_str: String = format_expr(a, p.iterable)
-            let body_str: String = format_block(a, p.body)
+            let var_str: String = format_pattern(arena, p.variable)
+            let iter_str: String = format_expr(arena, p.iterable)
+            let body_str: String = format_block(arena, p.body)
             concat("(for ", concat(var_str, concat(" ", concat(iter_str, concat(" ", concat(body_str, ")"))))))
         },
         WhileStmt(p) => {
@@ -5385,13 +5385,13 @@ public function format_stmt(a: Arena, id: Integer) -> String = {
             } else {
                 "(while "
             }
-            let cond_str: String = format_expr(a, p.condition)
-            let body_str: String = format_block(a, p.body)
+            let cond_str: String = format_expr(arena, p.condition)
+            let body_str: String = format_block(arena, p.body)
             concat(head, concat(cond_str, concat(" ", concat(body_str, ")"))))
         },
-        LoopStmt(p) => concat("(loop ", concat(format_block(a, p.body), ")")),
-        AssignStmt(p) => concat("(assign ", concat(p.target, concat(" ", concat(format_expr(a, p.value), ")")))),
-        ExpressionStmt(p) => concat("(expr ", concat(format_expr(a, p.expression), ")")),
+        LoopStmt(p) => concat("(loop ", concat(format_block(arena, p.body), ")")),
+        AssignStmt(p) => concat("(assign ", concat(p.target, concat(" ", concat(format_expr(arena, p.value), ")")))),
+        ExpressionStmt(p) => concat("(expr ", concat(format_expr(arena, p.expression), ")")),
     }
 }
 
@@ -5484,7 +5484,7 @@ function format_generics(params: Vector<String>) -> String = {
     }
 }
 
-function format_params(a: Arena, params: Vector<FunctionParam>) -> String = {
+function format_params(arena: Arena, params: Vector<FunctionParam>) -> String = {
     let n: Integer = length(params)
     let mutable out: String = "("
     let mutable i: Integer = 0
@@ -5494,56 +5494,56 @@ function format_params(a: Arena, params: Vector<FunctionParam>) -> String = {
         }
         let p: FunctionParam = get(params, i)!!
         let head: String = concat(passing_prefix(p.passing), p.name)
-        let ty_str: String = format_type(a, p.type_annotation)
+        let ty_str: String = format_type(arena, p.type_annotation)
         out = concat(out, concat(head, concat(":", ty_str)))
         i = i + 1
     }
     concat(out, ")")
 }
 
-function format_function_body(a: Arena, body: FunctionBody) -> String =
+function format_function_body(arena: Arena, body: FunctionBody) -> String =
     match body {
-        BlockBody(b) => format_block(a, b),
-        ExpressionBody(eid) => concat("(= ", concat(format_expr(a, eid), ")")),
+        BlockBody(b) => format_block(arena, b),
+        ExpressionBody(eid) => concat("(= ", concat(format_expr(arena, eid), ")")),
     }
 
-public function format_item(a: Arena, id: Integer) -> String = {
-    let sp: SpannedItem = get_item(a, id)
+public function format_item(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedItem = get_item(arena, id)
     match sp.node {
         FunctionItem(f) => {
             let head: String = concat(vis_prefix(f.visibility), "(fn ")
             let generics: String = format_generics(f.type_params)
-            let params_str: String = format_params(a, f.parameters)
+            let params_str: String = format_params(arena, f.parameters)
             let ret_str: String = match f.return_type {
                 ~0 => "",
-                _ => concat(" ->", format_type(a, f.return_type!!)),
+                _ => concat(" ->", format_type(arena, f.return_type!!)),
             }
-            let body_str: String = format_function_body(a, f.body)
+            let body_str: String = format_function_body(arena, f.body)
             concat(head, concat(f.name, concat(generics, concat(" ", concat(params_str, concat(ret_str, concat(" ", concat(body_str, ")"))))))))
         },
         ConstantItem(p) => {
             let head: String = concat(vis_prefix(p.visibility), "(const ")
             let ann: String = match p.type_annotation {
                 ~0 => "",
-                _ => concat(" :", format_type(a, p.type_annotation!!)),
+                _ => concat(" :", format_type(arena, p.type_annotation!!)),
             }
-            concat(head, concat(p.name, concat(ann, concat(" ", concat(format_expr(a, p.value), ")")))))
+            concat(head, concat(p.name, concat(ann, concat(" ", concat(format_expr(arena, p.value), ")")))))
         },
         TypeAliasItem(p) => {
             let head: String = concat(vis_prefix(p.visibility), "(type ")
-            let target_str: String = format_type(a, p.target)
+            let target_str: String = format_type(arena, p.target)
             concat(head, concat(p.name, concat(" ", concat(target_str, ")"))))
         },
         StructItem(sd) => {
             let head: String = concat(vis_prefix(sd.visibility), "(struct ")
             let generics: String = format_generics(sd.type_params)
-            let fields_str: String = format_struct_fields(a, sd.fields)
+            let fields_str: String = format_struct_fields(arena, sd.fields)
             concat(head, concat(sd.name, concat(generics, concat(" ", concat(fields_str, ")")))))
         },
         EnumItem(ed) => {
             let head: String = concat(vis_prefix(ed.visibility), "(enum ")
             let generics: String = format_generics(ed.type_params)
-            let variants_str: String = format_enum_variants(a, ed.variants)
+            let variants_str: String = format_enum_variants(arena, ed.variants)
             concat(head, concat(ed.name, concat(generics, concat(" ", concat(variants_str, ")")))))
         },
         ImportItem(p) => concat("(import ", concat(format_dot_path(p.segments), ")")),
@@ -5562,7 +5562,7 @@ public function format_item(a: Arena, id: Integer) -> String = {
                     let n: Integer = length(ids)
                     while i < n {
                         let id: Integer = get(ids, i)!!
-                        out = concat(out, concat(" ", format_item(a, id)))
+                        out = concat(out, concat(" ", format_item(arena, id)))
                         i = i + 1
                     }
                     concat(out, ")")
@@ -5575,7 +5575,7 @@ public function format_item(a: Arena, id: Integer) -> String = {
 
 // ── v0.7.5.4b helper printers ────────────────────────────────────
 
-function format_struct_fields(a: Arena, fields: Vector<StructField>) -> String = {
+function format_struct_fields(arena: Arena, fields: Vector<StructField>) -> String = {
     let n: Integer = length(fields)
     let mutable out: String = "("
     let mutable i: Integer = 0
@@ -5584,13 +5584,13 @@ function format_struct_fields(a: Arena, fields: Vector<StructField>) -> String =
             out = concat(out, " ")
         }
         let f: StructField = get(fields, i)!!
-        out = concat(out, concat(f.name, concat(":", format_type(a, f.type_annotation))))
+        out = concat(out, concat(f.name, concat(":", format_type(arena, f.type_annotation))))
         i = i + 1
     }
     concat(out, ")")
 }
 
-function format_enum_variants(a: Arena, variants: Vector<EnumVariant>) -> String = {
+function format_enum_variants(arena: Arena, variants: Vector<EnumVariant>) -> String = {
     let n: Integer = length(variants)
     let mutable out: String = "("
     let mutable i: Integer = 0
@@ -5601,7 +5601,7 @@ function format_enum_variants(a: Arena, variants: Vector<EnumVariant>) -> String
         let v: EnumVariant = get(variants, i)!!
         let payload_str: String = match v.payload {
             ~0 => "",
-            _ => concat("(", concat(format_type(a, v.payload!!), ")")),
+            _ => concat("(", concat(format_type(arena, v.payload!!), ")")),
         }
         out = concat(out, concat(v.name, payload_str))
         i = i + 1
@@ -5684,20 +5684,20 @@ public function format_program(p: Program) -> String = {
 // JSON escape — identical contract to compiler/lexer.tri's helper.
 // Reimplemented rather than imported to keep parser.tri's surface
 // area minimal (lexer.tri's `json_escape` is private by design).
-function json_escape(s: String) -> String = {
-    let n: Integer = len(s)
+function json_escape(state: String) -> String = {
+    let n: Integer = len(state)
     let mutable out: String = ""
     let mutable i: Integer = 0
     while i < n {
-        let c: String = substring(s, i, i + 1)
+        let c: String = substring(state, i, i + 1)
         if c == "\\" {
             out = concat(out, "\\\\")
         } else if c == "\"" {
             out = concat(out, "\\\"")
         } else if c == "\n" {
             out = concat(out, "\\n")
-        } else if c == "\t" {
-            out = concat(out, "\\t")
+        } else if c == "\token" {
+            out = concat(out, "\\token")
         } else if c == "\r" {
             out = concat(out, "\\r")
         } else {
@@ -5708,8 +5708,8 @@ function json_escape(s: String) -> String = {
     out
 }
 
-function quote_string(s: String) -> String =
-    concat("\"", concat(json_escape(s), "\""))
+function quote_string(state: String) -> String =
+    concat("\"", concat(json_escape(state), "\""))
 
 // `{"k":"<kind>","s":[<start>,<end>]`  (no trailing brace — caller
 // appends extra fields then closes).
@@ -5740,8 +5740,8 @@ function passing_name(p: ParameterPassing) -> String =
         OwnedParam => "owned",
     }
 
-function arm_name(a: OutcomeArm) -> String =
-    match a {
+function arm_name(arena: OutcomeArm) -> String =
+    match arena {
         PositiveArm => "positive",
         ZeroArm => "zero",
         NegativeArm => "negative",
@@ -5783,8 +5783,8 @@ function unary_op_name(op: UnaryOperator) -> String =
         Negate => "Negate",
     }
 
-function suffix_name(s: NumericSuffix) -> String =
-    match s {
+function suffix_name(state: NumericSuffix) -> String =
+    match state {
         TritSuffix => "trit",
         TryteSuffix => "tryte",
         IntegerSuffix => "integer",
@@ -5839,8 +5839,8 @@ function ndjson_parse_error(err: ParseError) -> String = {
 
 // ── Type dump ──────────────────────────────────────────────────
 
-function dump_type(a: Arena, id: Integer) -> String = {
-    let sp: SpannedTypeExpr = get_type(a, id)
+function dump_type(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedTypeExpr = get_type(arena, id)
     let head: String = ndjson_header_for_type(sp.node, sp.span_start, sp.span_end)
     match sp.node {
         NamedType(p) => concat(head, concat(",\"name\":", concat(quote_string(p.name), "}\n"))),
@@ -5857,7 +5857,7 @@ function dump_type(a: Arena, id: Integer) -> String = {
             let mutable i: Integer = 0
             while i < n {
                 let arg_id: Integer = get(p.arguments, i)!!
-                out = concat(out, dump_type(a, arg_id))
+                out = concat(out, dump_type(arena, arg_id))
                 i = i + 1
             }
             out
@@ -5868,26 +5868,26 @@ function dump_type(a: Arena, id: Integer) -> String = {
             let mutable i: Integer = 0
             while i < n {
                 let elem_id: Integer = get(elems, i)!!
-                out = concat(out, dump_type(a, elem_id))
+                out = concat(out, dump_type(arena, elem_id))
                 i = i + 1
             }
             out
         },
-        NullableType(inner_id) => concat(concat(head, "}\n"), dump_type(a, inner_id)),
+        NullableType(inner_id) => concat(concat(head, "}\n"), dump_type(arena, inner_id)),
         FunctionType(p) => {
             let n: Integer = length(p.parameters)
             let mutable out: String = concat(head, concat(",\"params\":", concat(from_integer(n), "}\n")))
             let mutable i: Integer = 0
             while i < n {
                 let param_id: Integer = get(p.parameters, i)!!
-                out = concat(out, dump_type(a, param_id))
+                out = concat(out, dump_type(arena, param_id))
                 i = i + 1
             }
-            concat(out, dump_type(a, p.return_type))
+            concat(out, dump_type(arena, p.return_type))
         },
         OutcomeType(p) => {
             let line: String = concat(head, concat(",\"null\":", concat(bool_repr(p.allow_null_state), "}\n")))
-            concat(line, concat(dump_type(a, p.value_type), dump_type(a, p.error_type)))
+            concat(line, concat(dump_type(arena, p.value_type), dump_type(arena, p.error_type)))
         },
         RefinedTrileanType => concat(head, "}\n"),
     }
@@ -5922,8 +5922,8 @@ function dump_literal_pattern_fields(lit: LiteralPattern) -> String =
         TrileanLit(v) => concat(",\"lit\":\"trilean\",\"v\":", quote_string(trilean_lit_name(v))),
     }
 
-function dump_pattern(a: Arena, id: Integer) -> String = {
-    let sp: SpannedPattern = get_pattern(a, id)
+function dump_pattern(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedPattern = get_pattern(arena, id)
     let kind: String = match sp.node {
         WildcardPattern => "WildcardPattern",
         IdentifierPattern(_) => "IdentifierPattern",
@@ -5947,7 +5947,7 @@ function dump_pattern(a: Arena, id: Integer) -> String = {
             let mutable i: Integer = 0
             while i < n {
                 let elem_id: Integer = get(elems, i)!!
-                out = concat(out, dump_pattern(a, elem_id))
+                out = concat(out, dump_pattern(arena, elem_id))
                 i = i + 1
             }
             out
@@ -5958,7 +5958,7 @@ function dump_pattern(a: Arena, id: Integer) -> String = {
             let mutable i: Integer = 0
             while i < n {
                 let alt_id: Integer = get(alts, i)!!
-                out = concat(out, dump_pattern(a, alt_id))
+                out = concat(out, dump_pattern(arena, alt_id))
                 i = i + 1
             }
             out
@@ -5983,7 +5983,7 @@ function dump_pattern(a: Arena, id: Integer) -> String = {
             )
             match p.payload {
                 ~0 => line,
-                _ => concat(line, dump_pattern(a, p.payload!!)),
+                _ => concat(line, dump_pattern(arena, p.payload!!)),
             }
         },
         OutcomeArmPat(p) => {
@@ -6000,7 +6000,7 @@ function dump_pattern(a: Arena, id: Integer) -> String = {
             )
             match p.payload {
                 ~0 => line,
-                _ => concat(line, dump_pattern(a, p.payload!!)),
+                _ => concat(line, dump_pattern(arena, p.payload!!)),
             }
         },
     }
@@ -6008,8 +6008,8 @@ function dump_pattern(a: Arena, id: Integer) -> String = {
 
 // ── Expression dump ─────────────────────────────────────────────
 
-function dump_expr(a: Arena, id: Integer) -> String = {
-    let sp: SpannedExpr = get_expression(a, id)
+function dump_expr(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedExpr = get_expression(arena, id)
     let kind: String = match sp.node {
         IntegerLiteralExpr(_) => "IntegerLiteralExpr",
         TernaryLiteralExpr(_) => "TernaryLiteralExpr",
@@ -6039,28 +6039,28 @@ function dump_expr(a: Arena, id: Integer) -> String = {
         IdentifierExpr(p) => concat(head, concat(",\"v\":", concat(quote_string(p.text), "}\n"))),
         UnaryOpExpr(p) => {
             let line: String = concat(head, concat(",\"op\":", concat(quote_string(unary_op_name(p.operator)), "}\n")))
-            concat(line, dump_expr(a, p.operand))
+            concat(line, dump_expr(arena, p.operand))
         },
         BinaryOpExpr(p) => {
             let line: String = concat(head, concat(",\"op\":", concat(quote_string(binary_op_name(p.operator)), "}\n")))
-            concat(line, concat(dump_expr(a, p.left), dump_expr(a, p.right)))
+            concat(line, concat(dump_expr(arena, p.left), dump_expr(arena, p.right)))
         },
-        ForceUnwrapExpr(inner_id) => concat(concat(head, "}\n"), dump_expr(a, inner_id)),
+        ForceUnwrapExpr(inner_id) => concat(concat(head, "}\n"), dump_expr(arena, inner_id)),
         CallExpr(p) => {
             let n: Integer = length(p.arguments)
             let line: String = concat(head, concat(",\"args\":", concat(from_integer(n), "}\n")))
-            let mutable out: String = concat(line, dump_expr(a, p.callee))
+            let mutable out: String = concat(line, dump_expr(arena, p.callee))
             let mutable i: Integer = 0
             while i < n {
                 let arg_id: Integer = get(p.arguments, i)!!
-                out = concat(out, dump_expr(a, arg_id))
+                out = concat(out, dump_expr(arena, arg_id))
                 i = i + 1
             }
             out
         },
         FieldAccessExpr(p) => {
             let line: String = concat(head, concat(",\"field\":", concat(quote_string(p.field), "}\n")))
-            concat(line, dump_expr(a, p.object))
+            concat(line, dump_expr(arena, p.object))
         },
         MethodCallExpr(p) => {
             let n: Integer = length(p.arguments)
@@ -6071,11 +6071,11 @@ function dump_expr(a: Arena, id: Integer) -> String = {
                     concat(",\"args\":", concat(from_integer(n), "}\n")),
                 ),
             )
-            let mutable out: String = concat(line, dump_expr(a, p.receiver))
+            let mutable out: String = concat(line, dump_expr(arena, p.receiver))
             let mutable i: Integer = 0
             while i < n {
                 let arg_id: Integer = get(p.arguments, i)!!
-                out = concat(out, dump_expr(a, arg_id))
+                out = concat(out, dump_expr(arena, arg_id))
                 i = i + 1
             }
             out
@@ -6094,7 +6094,7 @@ function dump_expr(a: Arena, id: Integer) -> String = {
             )
             match p.payload {
                 ~0 => line,
-                _ => concat(line, dump_expr(a, p.payload!!)),
+                _ => concat(line, dump_expr(arena, p.payload!!)),
             }
         },
         OutcomePropagateExpr(p) => {
@@ -6103,26 +6103,26 @@ function dump_expr(a: Arena, id: Integer) -> String = {
                 _ => concat(",\"capture\":", quote_string(p.capture_name!!)),
             }
             let line: String = concat(head, concat(cap_field, "}\n"))
-            concat(line, concat(dump_expr(a, p.inner), dump_expr(a, p.early_return)))
+            concat(line, concat(dump_expr(arena, p.inner), dump_expr(arena, p.early_return)))
         },
         OutcomeDefaultExpr(p) => {
             let line: String = concat(head, "}\n")
-            concat(line, concat(dump_expr(a, p.inner), dump_expr(a, p.default_expr)))
+            concat(line, concat(dump_expr(arena, p.inner), dump_expr(arena, p.default_expr)))
         },
         ElvisOpExpr(p) => {
             let line: String = concat(head, "}\n")
-            concat(line, concat(dump_expr(a, p.object), dump_expr(a, p.default_expr)))
+            concat(line, concat(dump_expr(arena, p.object), dump_expr(arena, p.default_expr)))
         },
         RangeExpr(p) => {
             let line: String = concat(head, concat(",\"incl\":", concat(bool_repr(p.inclusive), "}\n")))
-            concat(line, concat(dump_expr(a, p.range_start), dump_expr(a, p.range_end)))
+            concat(line, concat(dump_expr(arena, p.range_start), dump_expr(arena, p.range_end)))
         },
     }
 }
 
 // ── Statement dump ──────────────────────────────────────────────
 
-function dump_block(a: Arena, b: Block) -> String = {
+function dump_block(arena: Arena, b: Block) -> String = {
     let n: Integer = length(b.block_statements)
     let has_final: Trilean! = match b.block_final {
         ~0 => false,
@@ -6136,17 +6136,17 @@ function dump_block(a: Arena, b: Block) -> String = {
     let mutable i: Integer = 0
     while i < n {
         let sid: Integer = get(b.block_statements, i)!!
-        out = concat(out, dump_stmt(a, sid))
+        out = concat(out, dump_stmt(arena, sid))
         i = i + 1
     }
     match b.block_final {
         ~0 => out,
-        _ => concat(out, dump_expr(a, b.block_final!!)),
+        _ => concat(out, dump_expr(arena, b.block_final!!)),
     }
 }
 
-function dump_stmt(a: Arena, id: Integer) -> String = {
-    let sp: SpannedStmt = get_statement(a, id)
+function dump_stmt(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedStmt = get_statement(arena, id)
     let kind: String = match sp.node {
         LetStmt(_) => "LetStmt",
         ConstantStmt(_) => "ConstantStmt",
@@ -6181,10 +6181,10 @@ function dump_stmt(a: Arena, id: Integer) -> String = {
             match p.type_annotation {
                 ~0 => {},
                 _ => {
-                    out = concat(out, dump_type(a, p.type_annotation!!))
+                    out = concat(out, dump_type(arena, p.type_annotation!!))
                 },
             }
-            concat(out, dump_expr(a, p.value))
+            concat(out, dump_expr(arena, p.value))
         },
         ConstantStmt(p) => {
             let has_ann: Trilean! = match p.type_annotation {
@@ -6202,10 +6202,10 @@ function dump_stmt(a: Arena, id: Integer) -> String = {
             match p.type_annotation {
                 ~0 => {},
                 _ => {
-                    out = concat(out, dump_type(a, p.type_annotation!!))
+                    out = concat(out, dump_type(arena, p.type_annotation!!))
                 },
             }
-            concat(out, dump_expr(a, p.value))
+            concat(out, dump_expr(arena, p.value))
         },
         ReturnStmt(p) => {
             let has_value: Trilean! = match p.value {
@@ -6215,7 +6215,7 @@ function dump_stmt(a: Arena, id: Integer) -> String = {
             let line: String = concat(head, concat(",\"value\":", concat(bool_repr(has_value), "}\n")))
             match p.value {
                 ~0 => line,
-                _ => concat(line, dump_expr(a, p.value!!)),
+                _ => concat(line, dump_expr(arena, p.value!!)),
             }
         },
         BreakStmt(p) => {
@@ -6226,26 +6226,26 @@ function dump_stmt(a: Arena, id: Integer) -> String = {
             let line: String = concat(head, concat(",\"value\":", concat(bool_repr(has_value), "}\n")))
             match p.value {
                 ~0 => line,
-                _ => concat(line, dump_expr(a, p.value!!)),
+                _ => concat(line, dump_expr(arena, p.value!!)),
             }
         },
         ForStmt(p) => {
             let line: String = concat(head, "}\n")
             concat(
                 line,
-                concat(dump_pattern(a, p.variable), concat(dump_expr(a, p.iterable), dump_block(a, p.body))),
+                concat(dump_pattern(arena, p.variable), concat(dump_expr(arena, p.iterable), dump_block(arena, p.body))),
             )
         },
         WhileStmt(p) => {
             let line: String = concat(head, concat(",\"q\":", concat(bool_repr(p.treat_unknown_as_false), "}\n")))
-            concat(line, concat(dump_expr(a, p.condition), dump_block(a, p.body)))
+            concat(line, concat(dump_expr(arena, p.condition), dump_block(arena, p.body)))
         },
-        LoopStmt(p) => concat(concat(head, "}\n"), dump_block(a, p.body)),
+        LoopStmt(p) => concat(concat(head, "}\n"), dump_block(arena, p.body)),
         AssignStmt(p) => {
             let line: String = concat(head, concat(",\"target\":", concat(quote_string(p.target), "}\n")))
-            concat(line, dump_expr(a, p.value))
+            concat(line, dump_expr(arena, p.value))
         },
-        ExpressionStmt(p) => concat(concat(head, "}\n"), dump_expr(a, p.expression)),
+        ExpressionStmt(p) => concat(concat(head, "}\n"), dump_expr(arena, p.expression)),
     }
 }
 
@@ -6269,14 +6269,14 @@ function dump_string_list(name: String, items: Vector<String>) -> String = {
     out
 }
 
-function dump_function_body(a: Arena, body: FunctionBody) -> String =
+function dump_function_body(arena: Arena, body: FunctionBody) -> String =
     match body {
-        BlockBody(b) => concat("{\"k\":\"FunctionBodyBlock\"}\n", dump_block(a, b)),
-        ExpressionBody(eid) => concat("{\"k\":\"FunctionBodyExpression\"}\n", dump_expr(a, eid)),
+        BlockBody(b) => concat("{\"k\":\"FunctionBodyBlock\"}\n", dump_block(arena, b)),
+        ExpressionBody(eid) => concat("{\"k\":\"FunctionBodyExpression\"}\n", dump_expr(arena, eid)),
     }
 
-function dump_item(a: Arena, id: Integer) -> String = {
-    let sp: SpannedItem = get_item(a, id)
+function dump_item(arena: Arena, id: Integer) -> String = {
+    let sp: SpannedItem = get_item(arena, id)
     let kind: String = match sp.node {
         FunctionItem(_) => "FunctionItem",
         ConstantItem(_) => "ConstantItem",
@@ -6320,16 +6320,16 @@ function dump_item(a: Arena, id: Integer) -> String = {
                     concat("{\"k\":\"FunctionParam\",\"name\":", quote_string(param.name)),
                     concat(",\"pass\":", concat(quote_string(passing_name(param.passing)), "}\n")),
                 )
-                out = concat(out, concat(param_line, dump_type(a, param.type_annotation)))
+                out = concat(out, concat(param_line, dump_type(arena, param.type_annotation)))
                 i = i + 1
             }
             match f.return_type {
                 ~0 => {},
                 _ => {
-                    out = concat(out, dump_type(a, f.return_type!!))
+                    out = concat(out, dump_type(arena, f.return_type!!))
                 },
             }
-            concat(out, dump_function_body(a, f.body))
+            concat(out, dump_function_body(arena, f.body))
         },
         ConstantItem(p) => {
             let has_ann: Trilean! = match p.type_annotation {
@@ -6350,10 +6350,10 @@ function dump_item(a: Arena, id: Integer) -> String = {
             match p.type_annotation {
                 ~0 => {},
                 _ => {
-                    out = concat(out, dump_type(a, p.type_annotation!!))
+                    out = concat(out, dump_type(arena, p.type_annotation!!))
                 },
             }
-            concat(out, dump_expr(a, p.value))
+            concat(out, dump_expr(arena, p.value))
         },
         TypeAliasItem(p) => {
             let line: String = concat(
@@ -6363,7 +6363,7 @@ function dump_item(a: Arena, id: Integer) -> String = {
                     concat(",\"vis\":", concat(quote_string(visibility_name(p.visibility)), "}\n")),
                 ),
             )
-            concat(line, dump_type(a, p.target))
+            concat(line, dump_type(arena, p.target))
         },
         StructItem(sd) => {
             let g_count: Integer = length(sd.type_params)
@@ -6389,7 +6389,7 @@ function dump_item(a: Arena, id: Integer) -> String = {
                     concat("{\"k\":\"StructField\",\"name\":", quote_string(field.name)),
                     "}\n",
                 )
-                out = concat(out, concat(field_line, dump_type(a, field.type_annotation)))
+                out = concat(out, concat(field_line, dump_type(arena, field.type_annotation)))
                 i = i + 1
             }
             out
@@ -6426,7 +6426,7 @@ function dump_item(a: Arena, id: Integer) -> String = {
                 match variant.payload {
                     ~0 => {},
                     _ => {
-                        out = concat(out, dump_type(a, variant.payload!!))
+                        out = concat(out, dump_type(arena, variant.payload!!))
                     },
                 }
                 i = i + 1
@@ -6506,7 +6506,7 @@ function dump_item(a: Arena, id: Integer) -> String = {
                     let mutable i: Integer = 0
                     while i < item_count {
                         let iid: Integer = get(ids, i)!!
-                        out = concat(out, dump_item(a, iid))
+                        out = concat(out, dump_item(arena, iid))
                         i = i + 1
                     }
                     out
@@ -6640,19 +6640,19 @@ function main() -> Unit = {
     assert_parse("1 + 2 * 3", "(+ 1 (* 2 3))")
     assert_parse("1 * 2 + 3", "(+ (* 1 2) 3)")
     assert_parse("(1 + 2) * 3", "(* (+ 1 2) 3)")
-    assert_parse("-a + b", "(+ (- a) b)")
+    assert_parse("-arena + b", "(+ (- arena) b)")
     assert_parse("2 ** 3 ** 2", "(** 2 (** 3 2))")
 
     // Comparison + logic
     assert_parse("x == y", "(== x y)")
-    assert_parse("a && b || c", "(|| (&& a b) c)")
+    assert_parse("arena && b || c", "(|| (&& arena b) c)")
     assert_parse("p => q", "(=> p q)")
 
     // Postfix
     assert_parse("x!!", "(!! x)")
     assert_parse("f(1, 2)", "(call f 1 2)")
-    assert_parse("a.b", "(. a b)")
-    assert_parse("a.f(x)", "(.call a f x)")
+    assert_parse("arena.b", "(. arena b)")
+    assert_parse("arena.f(x)", "(.call arena f x)")
 
     // Outcome + elvis + range
     assert_parse("~+ 7", "(~+ 7)")
@@ -6708,8 +6708,8 @@ function main() -> Unit = {
         "(program (fn identity<T> (x:T) ->T (= x)))",
     )
     assert_parse_program(
-        "function pair<T,U>(a: T, b: U) = a",
-        "(program (fn pair<T,U> (a:T b:U) (= a)))",
+        "function pair<T,U>(arena: T, b: U) = arena",
+        "(program (fn pair<T,U> (arena:T b:U) (= arena)))",
     )
     assert_parse_program(
         "function mutate(mutable n: Integer) = n",
@@ -6740,8 +6740,8 @@ function main() -> Unit = {
         "(program public (type Age Integer))",
     )
     assert_parse_program(
-        "function a() = 1 function b() = 2",
-        "(program (fn a () (= 1)) (fn b () (= 2)))",
+        "function arena() = 1 function b() = 2",
+        "(program (fn arena () (= 1)) (fn b () (= 2)))",
     )
 
     // v0.7.5.4b — struct + enum + module + imports
@@ -6834,8 +6834,8 @@ function main() -> Unit = {
     assert_parse_pattern("0..10", "(range 0..10)")
     assert_parse_pattern("0..=9", "(range 0..=9)")
     assert_parse_pattern("-5..=5", "(range -5..=5)")
-    assert_parse_pattern("(a, b)", "(a,b)")
-    assert_parse_pattern("(a, _, c)", "(a,_,c)")
+    assert_parse_pattern("(arena, b)", "(arena,b)")
+    assert_parse_pattern("(arena, _, c)", "(arena,_,c)")
     assert_parse_pattern("(x,)", "(x)")
     assert_parse_pattern("(x)", "x")
     assert_parse_pattern("1 | 2 | 3", "(or 1 2 3)")
@@ -6863,9 +6863,9 @@ function main() -> Unit = {
     // Case 1: broken `type = X` between two good functions —
     // surviving items pretty-print cleanly.
     assert_parse_program_recovers(
-        "function a() = 1 type = X function b() = 2",
+        "function arena() = 1 type = X function b() = 2",
         2,
-        "(program (fn a () (= 1)) (fn b () (= 2)))",
+        "(program (fn arena () (= 1)) (fn b () (= 2)))",
     )
     // Case 2: leading broken item, valid item follows.
     assert_parse_program_recovers(

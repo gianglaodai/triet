@@ -234,34 +234,34 @@ enum LexerMode {
 // `if`. ADR-0021 §2.7 Trilean! return annotation lands in
 // v0.7.4.3-debt.1.
 
-function is_in_set(set: String, c: String) -> Trilean! = {
-    let pos: Integer = index_of(set, c) ?: -1
+function is_in_set(set: String, character: String) -> Trilean! = {
+    let pos: Integer = index_of(set, character) ?: -1
     pos >= 0
 }
 
-function is_digit(c: String) -> Trilean! =
-    is_in_set("0123456789", c)
+function is_digit(character: String) -> Trilean! =
+    is_in_set("0123456789", character)
 
-function is_lower_alpha(c: String) -> Trilean! =
-    is_in_set("abcdefghijklmnopqrstuvwxyz", c)
+function is_lower_alpha(character: String) -> Trilean! =
+    is_in_set("abcdefghijklmnopqrstuvwxyz", character)
 
-function is_alpha(c: String) -> Trilean! =
+function is_alpha(character: String) -> Trilean! =
     is_in_set(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
-        c,
+        character,
     )
 
-function is_ident_continue(c: String) -> Trilean! =
+function is_ident_continue(character: String) -> Trilean! =
     is_in_set(
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_",
-        c,
+        character,
     )
 
-function is_whitespace(c: String) -> Trilean! =
-    is_in_set(" \t\r\n", c)
+function is_whitespace(character: String) -> Trilean! =
+    is_in_set(" \t\r\n", character)
 
-function is_ternary_digit(c: String) -> Trilean! =
-    is_in_set("+0-_", c)
+function is_ternary_digit(character: String) -> Trilean! =
+    is_in_set("+0-_", character)
 
 // ─────────────────────────────────────────────────────────────────
 // Source cursor primitives
@@ -284,8 +284,8 @@ function starts_with_at(source: String, cursor: Integer, prefix: String) -> Tril
 // SpannedToken constructor helper
 // ─────────────────────────────────────────────────────────────────
 
-function spanned(t: Token, start: Integer, end: Integer) -> SpannedToken =
-    SpannedToken { token: t, span_start: start, span_end: end }
+function spanned(token: Token, start: Integer, end: Integer) -> SpannedToken =
+    SpannedToken { token: token, span_start: start, span_end: end }
 
 // ─────────────────────────────────────────────────────────────────
 // Keyword lookup
@@ -388,10 +388,10 @@ function skip_ws_comments(source: String, start: Integer) -> Integer = {
     let source_len: Integer = len(source)
     let mutable keep_going: Trilean = true
     while? keep_going && cursor < source_len {
-        let c: String = substring(source, cursor, cursor + 1)
-        if is_whitespace(c) {
+        let character: String = substring(source, cursor, cursor + 1)
+        if is_whitespace(character) {
             cursor = cursor + 1
-        } else if c == "/" && starts_with_at(source, cursor, "//") {
+        } else if character == "/" && starts_with_at(source, cursor, "//") {
             cursor = cursor + 2
             let mutable in_comment: Trilean = true
             while? in_comment && cursor < source_len {
@@ -447,16 +447,16 @@ function lex_decimal_integer(source: String, cursor: Integer) -> OneToken~LexErr
     // preceded by a single underscore.
     let mutable scanning: Trilean = true
     while? scanning && end < source_len {
-        let c: String = substring(source, end, end + 1)
-        if is_digit(c) {
-            digits = concat(digits, c)
+        let character: String = substring(source, end, end + 1)
+        if is_digit(character) {
+            digits = concat(digits, character)
             end = end + 1
-        } else if c == "_" {
+        } else if character == "_" {
             // Underscore is digit-grouping only if the next char is a digit.
             if end + 1 < source_len {
-                let n: String = substring(source, end + 1, end + 2)
-                if is_digit(n) {
-                    digits = concat(digits, n)
+                let next_character: String = substring(source, end + 1, end + 2)
+                if is_digit(next_character) {
+                    digits = concat(digits, next_character)
                     end = end + 2
                 } else {
                     scanning = false
@@ -475,17 +475,17 @@ function lex_decimal_integer(source: String, cursor: Integer) -> OneToken~LexErr
     // `_<word>` as Underscore + Identifier.
     let mutable suffix: NumericSuffix? = ~0
     if end < source_len {
-        let c: String = substring(source, end, end + 1)
-        if c == "_" && end + 1 < source_len {
-            let n: String = substring(source, end + 1, end + 2)
-            if is_lower_alpha(n) {
+        let character: String = substring(source, end, end + 1)
+        if character == "_" && end + 1 < source_len {
+            let next_character: String = substring(source, end + 1, end + 2)
+            if is_lower_alpha(next_character) {
                 let mutable word_end: Integer = end + 1
                 let mutable word: String = ""
                 let mutable walking: Trilean = true
                 while? walking && word_end < source_len {
-                    let w: String = substring(source, word_end, word_end + 1)
-                    if is_lower_alpha(w) {
-                        word = concat(word, w)
+                    let word_character: String = substring(source, word_end, word_end + 1)
+                    if is_lower_alpha(word_character) {
+                        word = concat(word, word_character)
                         word_end = word_end + 1
                     } else {
                         walking = false
@@ -493,8 +493,8 @@ function lex_decimal_integer(source: String, cursor: Integer) -> OneToken~LexErr
                 }
                 let candidate: NumericSuffix? = suffix_for(word)
                 match candidate {
-                    ~+ s => {
-                        suffix = s
+                    ~+ resolved_suffix => {
+                        suffix = resolved_suffix
                         end = word_end
                     },
                     ~0 => {
@@ -531,17 +531,17 @@ function lex_ternary_literal(source: String, cursor: Integer) -> OneToken~LexErr
     let mutable end: Integer = cursor + 2 // skip `0t`
     let mutable value: Integer = 0
     while? end < source_len {
-        let c: String = substring(source, end, end + 1)
-        if c == "+" {
+        let character: String = substring(source, end, end + 1)
+        if character == "+" {
             value = value * 3 + 1
             end = end + 1
-        } else if c == "0" {
+        } else if character == "0" {
             value = value * 3
             end = end + 1
-        } else if c == "-" {
+        } else if character == "-" {
             value = value * 3 - 1
             end = end + 1
-        } else if c == "_" {
+        } else if character == "_" {
             end = end + 1
         } else {
             // Stop scanning at first non-trit char.
@@ -582,8 +582,8 @@ function lex_string_literal(source: String, cursor: Integer) -> OneToken~LexErro
     let mutable end: Integer = cursor + 1 // skip opening "
     let mutable text: String = ""
     while? end < source_len {
-        let c: String = substring(source, end, end + 1)
-        if c == "\"" {
+        let character: String = substring(source, end, end + 1)
+        if character == "\"" {
             end = end + 1
             return ~+ OneToken {
                 spanned: spanned(
@@ -594,7 +594,7 @@ function lex_string_literal(source: String, cursor: Integer) -> OneToken~LexErro
                 new_cursor: end,
             }
         }
-        if c == "\\" {
+        if character == "\\" {
             if end + 1 >= source_len {
                 return ~- InvalidEscape(InvalidEscapeDetail {
                     span_start: end,
@@ -618,7 +618,7 @@ function lex_string_literal(source: String, cursor: Integer) -> OneToken~LexErro
             }
             end = end + 2
         } else {
-            text = concat(text, c)
+            text = concat(text, character)
             end = end + 1
         }
     }
@@ -640,8 +640,8 @@ function lex_identifier(source: String, cursor: Integer) -> OneToken~LexError = 
     let start: Integer = cursor
     let mutable end: Integer = cursor + 1
     while? end < source_len {
-        let c: String = substring(source, end, end + 1)
-        if is_ident_continue(c) {
+        let character: String = substring(source, end, end + 1)
+        if is_ident_continue(character) {
             end = end + 1
         } else {
             return finish_ident(source, start, end)
@@ -696,7 +696,7 @@ function finish_ident(source: String, start: Integer, end: Integer) -> OneToken~
 // regex-engine longest-match.
 
 function lex_single_or_compound(source: String, cursor: Integer) -> OneToken~LexError = {
-    let c: String = substring(source, cursor, cursor + 1)
+    let character: String = substring(source, cursor, cursor + 1)
 
     // 3-char compounds first
     if starts_with_at(source, cursor, "<=>") {
@@ -778,41 +778,41 @@ function lex_single_or_compound(source: String, cursor: Integer) -> OneToken~Lex
     }
 
     // Single-char tokens.
-    if c == "+" { return ~+ make_op(Plus, cursor, 1) }
-    if c == "-" { return ~+ make_op(Minus, cursor, 1) }
-    if c == "*" { return ~+ make_op(Star, cursor, 1) }
-    if c == "/" { return ~+ make_op(Slash, cursor, 1) }
-    if c == "=" { return ~+ make_op(Assign, cursor, 1) }
-    if c == "<" { return ~+ make_op(Lt, cursor, 1) }
-    if c == ">" { return ~+ make_op(Gt, cursor, 1) }
-    if c == "!" { return ~+ make_op(Bang, cursor, 1) }
-    if c == "^" { return ~+ make_op(Caret, cursor, 1) }
-    if c == "?" { return ~+ make_op(Question, cursor, 1) }
-    if c == "~" { return ~+ make_op(Tilde, cursor, 1) }
-    if c == ":" { return ~+ make_op(Colon, cursor, 1) }
-    if c == ";" { return ~+ make_op(Semi, cursor, 1) }
-    if c == "," { return ~+ make_op(Comma, cursor, 1) }
-    if c == "." { return ~+ make_op(Dot, cursor, 1) }
-    if c == "{" { return ~+ make_op(LBrace, cursor, 1) }
-    if c == "}" { return ~+ make_op(RBrace, cursor, 1) }
-    if c == "[" { return ~+ make_op(LBracket, cursor, 1) }
-    if c == "]" { return ~+ make_op(RBracket, cursor, 1) }
-    if c == "(" { return ~+ make_op(LParen, cursor, 1) }
-    if c == ")" { return ~+ make_op(RParen, cursor, 1) }
-    if c == "|" { return ~+ make_op(Pipe, cursor, 1) }
-    if c == "_" { return ~+ make_op(Underscore, cursor, 1) }
+    if character == "+" { return ~+ make_op(Plus, cursor, 1) }
+    if character == "-" { return ~+ make_op(Minus, cursor, 1) }
+    if character == "*" { return ~+ make_op(Star, cursor, 1) }
+    if character == "/" { return ~+ make_op(Slash, cursor, 1) }
+    if character == "=" { return ~+ make_op(Assign, cursor, 1) }
+    if character == "<" { return ~+ make_op(Lt, cursor, 1) }
+    if character == ">" { return ~+ make_op(Gt, cursor, 1) }
+    if character == "!" { return ~+ make_op(Bang, cursor, 1) }
+    if character == "^" { return ~+ make_op(Caret, cursor, 1) }
+    if character == "?" { return ~+ make_op(Question, cursor, 1) }
+    if character == "~" { return ~+ make_op(Tilde, cursor, 1) }
+    if character == ":" { return ~+ make_op(Colon, cursor, 1) }
+    if character == ";" { return ~+ make_op(Semi, cursor, 1) }
+    if character == "," { return ~+ make_op(Comma, cursor, 1) }
+    if character == "." { return ~+ make_op(Dot, cursor, 1) }
+    if character == "{" { return ~+ make_op(LBrace, cursor, 1) }
+    if character == "}" { return ~+ make_op(RBrace, cursor, 1) }
+    if character == "[" { return ~+ make_op(LBracket, cursor, 1) }
+    if character == "]" { return ~+ make_op(RBracket, cursor, 1) }
+    if character == "(" { return ~+ make_op(LParen, cursor, 1) }
+    if character == ")" { return ~+ make_op(RParen, cursor, 1) }
+    if character == "|" { return ~+ make_op(Pipe, cursor, 1) }
+    if character == "_" { return ~+ make_op(Underscore, cursor, 1) }
 
     ~- UnexpectedCharacter(UnexpectedCharacterDetail {
         span_start: cursor,
         span_end: cursor + 1,
-        snippet: c,
+        snippet: character,
     })
 }
 
-function make_op(t: Token, start: Integer, w: Integer) -> OneToken =
+function make_op(token: Token, start: Integer, width: Integer) -> OneToken =
     OneToken {
-        spanned: spanned(t, start, start + w),
-        new_cursor: start + w,
+        spanned: spanned(token, start, start + width),
+        new_cursor: start + width,
     }
 
 // ─────────────────────────────────────────────────────────────────
@@ -821,12 +821,12 @@ function make_op(t: Token, start: Integer, w: Integer) -> OneToken =
 
 function lex_one_token(source: String, cursor: Integer) -> OneToken~LexError = {
     let source_len: Integer = len(source)
-    let c: String = substring(source, cursor, cursor + 1)
+    let character: String = substring(source, cursor, cursor + 1)
 
     // Decimal vs ternary integer: `0t...` is ternary, anything else
     // starting with a digit is decimal.
-    if is_digit(c) {
-        if c == "0" && starts_with_at(source, cursor, "0t") && cursor + 2 < source_len {
+    if is_digit(character) {
+        if character == "0" && starts_with_at(source, cursor, "0t") && cursor + 2 < source_len {
             let next: String = substring(source, cursor + 2, cursor + 3)
             if is_ternary_digit(next) {
                 return lex_ternary_literal(source, cursor)
@@ -837,13 +837,13 @@ function lex_one_token(source: String, cursor: Integer) -> OneToken~LexError = {
 
     // String literal (NOT f-string entry — that's handled by the
     // outer loop before dispatching here).
-    if c == "\"" {
+    if character == "\"" {
         return lex_string_literal(source, cursor)
     }
 
     // Identifier or keyword (must start with letter; `_` alone or
     // followed by non-letter is Underscore).
-    if is_alpha(c) {
+    if is_alpha(character) {
         return lex_identifier(source, cursor)
     }
 
@@ -889,8 +889,8 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
                 let mutable trigger: String = ""
                 let mutable scanning: Trilean = true
                 while? scanning && cursor < source_len {
-                    let c: String = substring(source, cursor, cursor + 1)
-                    if c == "{" {
+                    let character: String = substring(source, cursor, cursor + 1)
+                    if character == "{" {
                         if starts_with_at(source, cursor, "{{") {
                             text = concat(text, "{")
                             cursor = cursor + 2
@@ -898,7 +898,7 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
                             trigger = "{"
                             scanning = false
                         }
-                    } else if c == "}" {
+                    } else if character == "}" {
                         if starts_with_at(source, cursor, "}}") {
                             text = concat(text, "}")
                             cursor = cursor + 2
@@ -908,10 +908,10 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
                                 span_end: cursor + 1,
                             })
                         }
-                    } else if c == "\"" {
+                    } else if character == "\"" {
                         trigger = "\""
                         scanning = false
-                    } else if c == "\\" {
+                    } else if character == "\\" {
                         if cursor + 1 >= source_len {
                             return ~- UnterminatedString(SpanDetail {
                                 span_start: text_start,
@@ -934,7 +934,7 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
                         }
                         cursor = cursor + 2
                     } else {
-                        text = concat(text, c)
+                        text = concat(text, character)
                         cursor = cursor + 1
                     }
                 }
@@ -964,12 +964,12 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
                 let depth: Integer = state.brace_depth
                 cursor = skip_ws_comments(source, cursor)
                 if cursor < source_len {
-                    let c: String = substring(source, cursor, cursor + 1)
-                    if c == "}" && depth == 0 {
+                    let character: String = substring(source, cursor, cursor + 1)
+                    if character == "}" && depth == 0 {
                         tokens = push(tokens, spanned(InterpolationEnd, cursor, cursor + 1))
                         cursor = cursor + 1
                         modes = pop_mode(modes)
-                    } else if c == "}" {
+                    } else if character == "}" {
                         tokens = push(tokens, spanned(RBrace, cursor, cursor + 1))
                         cursor = cursor + 1
                         modes = replace_top(
@@ -978,7 +978,7 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
                                 brace_depth: depth - 1,
                             }),
                         )
-                    } else if c == "{" {
+                    } else if character == "{" {
                         tokens = push(tokens, spanned(LBrace, cursor, cursor + 1))
                         cursor = cursor + 1
                         modes = replace_top(
@@ -1029,32 +1029,32 @@ public function lex(source: String) -> Vector<SpannedToken>~LexError = {
 // Transient bridge format per ADR-0019 §A2 — dropped at v0.7.9 when
 // Triết-side data flows in-memory.
 
-function json_escape(s: String) -> String = {
-    let n: Integer = len(s)
+function json_escape(text: String) -> String = {
+    let n: Integer = len(text)
     let mutable out: String = ""
     let mutable i: Integer = 0
     while i < n {
-        let c: String = substring(s, i, i + 1)
-        if c == "\\" {
+        let character: String = substring(text, i, i + 1)
+        if character == "\\" {
             out = concat(out, "\\\\")
-        } else if c == "\"" {
+        } else if character == "\"" {
             out = concat(out, "\\\"")
-        } else if c == "\n" {
+        } else if character == "\n" {
             out = concat(out, "\\n")
-        } else if c == "\t" {
+        } else if character == "\t" {
             out = concat(out, "\\t")
-        } else if c == "\r" {
+        } else if character == "\r" {
             out = concat(out, "\\r")
         } else {
-            out = concat(out, c)
+            out = concat(out, character)
         }
         i = i + 1
     }
     out
 }
 
-function token_kind_name(t: Token) -> String =
-    match t {
+function token_kind_name(token: Token) -> String =
+    match token {
         FunctionKw => "Function",
         LetKw => "Let",
         MutableKw => "Mutable",
@@ -1155,8 +1155,8 @@ function token_kind_name(t: Token) -> String =
         FStringEnd => "FStringEnd",
     }
 
-function suffix_name(s: NumericSuffix) -> String =
-    match s {
+function suffix_name(suffix: NumericSuffix) -> String =
+    match suffix {
         TritSuffix => "trit",
         TryteSuffix => "tryte",
         IntegerSuffix => "integer",
@@ -1164,12 +1164,12 @@ function suffix_name(s: NumericSuffix) -> String =
     }
 
 function span_str(start: Integer, end: Integer) -> String = {
-    let mutable s: String = "["
-    s = concat(s, from_integer(start))
-    s = concat(s, ",")
-    s = concat(s, from_integer(end))
-    s = concat(s, "]")
-    s
+    let mutable output: String = "["
+    output = concat(output, from_integer(start))
+    output = concat(output, ",")
+    output = concat(output, from_integer(end))
+    output = concat(output, "]")
+    output
 }
 
 function format_unit_line(kind: String, start: Integer, end: Integer) -> String = {

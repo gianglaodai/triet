@@ -465,6 +465,7 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 - Cross-compile toolchain.
 - Debug symbol format (DWARF compat).
 - FFI ổn định với C ABI (cho legacy interop).
+- **Syscall opcode design** trong IR (VISION §4.4 "OS-friendly properties — syscall opcodes / FFI primitives"). Lock encoding khi LLVM AOT landing — trước đó VM dev tier không cần.
 
 **Gate:** Triết-compiled binary perf ≥80% so với equivalent Rust binary.
 
