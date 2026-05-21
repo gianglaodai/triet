@@ -56,6 +56,25 @@
 // Struct / Enum / Module / Import / ImportFrom parsers stub-fail
 // at `parse_item` dispatch — implementation lands in v0.7.5.4b.
 //
+// v0.7.5.5a — Full type grammar. Expands the v0.7.5.3 placeholder
+// `parse_type_minimal` (single-Identifier `NamedType` only) into
+// the full ADR-0020 + ADR-0021 grammar in place: `NamedType` is
+// joined by `GenericType` (`Option<T>` / `HashMap<K, V>` with
+// trailing-comma support), `TupleType` (`(T1, T2 [, …])` —
+// singleton tuple `(T,)` distinguished from grouping `(T)` via the
+// trailing comma), `NullableType` (chained `T?…?`), `FunctionType`
+// (`(T1, T2) -> R`), `OutcomeType` (`T~E` binary outcome + `T?~E`
+// ternary outcome with `Trit::Zero` null arm), and the
+// `RefinedTrileanType` marker for `Trilean!` per ADR-0021 §2.7.
+// Postfix dispatch (`apply_type_postfix`) follows ADR-0020 §1.3
+// precedence: `Trilean!` (only after a bare `Trilean` atom) →
+// `T?~E` (compound `?~`) → `T~E` (bare `~`) → chained `T?…?`.
+// `parse_type_minimal` keeps its v0.7.5.3 name as the public
+// entrypoint so every existing call site (let / constant / param
+// annotation / return type / struct field / enum variant payload
+// / type alias body) inherits the full grammar without touching
+// its signature.
+//
 // v0.7.5.4b — Items: struct + enum + module + imports. Fills in
 // the remaining Item variants .4a scaffolded. New parsers:
 // `parse_struct` (+ `parse_struct_field` / `parse_struct_fields`),
@@ -256,15 +275,40 @@ public enum Pattern {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// TypeExpr — placeholder. Expanded in v0.7.5.5.
+// TypeExpr — v0.7.5.5a grows the surface from a single
+// `NamedType` placeholder to the full ADR-0020 + ADR-0021 grammar:
+// generics, tuples, nullables, function types, outcome types (`T~E`
+// + `T?~E`), and the `Trilean!` refinement marker.
 // ─────────────────────────────────────────────────────────────────
 
 public struct NamedTypePayload {
     name: String,
 }
 
+public struct GenericTypePayload {
+    name: String,
+    arguments: Vector<Integer>,
+}
+
+public struct FunctionTypePayload {
+    parameters: Vector<Integer>,
+    return_type: Integer,
+}
+
+public struct OutcomeTypePayload {
+    value_type: Integer,
+    error_type: Integer,
+    allow_null_state: Trilean!,
+}
+
 public enum TypeExpr {
     NamedType(NamedTypePayload),
+    GenericType(GenericTypePayload),
+    TupleType(Vector<Integer>),
+    NullableType(Integer),
+    FunctionType(FunctionTypePayload),
+    OutcomeType(OutcomeTypePayload),
+    RefinedTrileanType,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1947,35 +1991,512 @@ public struct ParseTypeStep {
     type_id: Integer,
 }
 
-// v0.7.5.3 only needs the type-annotation slot of `let`/`constant`,
-// so this is a placeholder that accepts a single Identifier and
-// allocates a `NamedType`. Full grammar (generics, `T?`, `T~E`,
-// function types) lands with v0.7.5.5.
-function parse_type_minimal(s: ParserState) -> ParseTypeStep~ParseError = {
+// ─────────────────────────────────────────────────────────────────
+// Type parsing — v0.7.5.5a full grammar. Mirrors
+// crates/triet-parser/src/type_expr.rs. The atom + postfix split
+// is preserved so we can apply ADR-0020 §1.3 precedence:
+// 1. `Trilean!` (only after a bare `Trilean` atom)
+// 2. `T?~E` (compound `?~`)
+// 3. `T~E`  (bare `~`)
+// 4. `T?...?` (one or more bare `?`s — chained nullable)
+//
+// `parse_type_minimal` is kept as the public name for backward
+// compat with v0.7.5.3+ call sites (let / constant / param / return
+// type annotations + struct fields + enum variant payloads). It is
+// just `parse_type` under the hood now.
+// ─────────────────────────────────────────────────────────────────
+
+// Helper: alloc a typed node with span.
+function spanned_type(node: TypeExpr, start: Integer, end: Integer) -> SpannedTypeExpr =
+    SpannedTypeExpr { node: node, span_start: start, span_end: end }
+
+// ── Token predicates for type-level tokens ───────────────────────
+
+function is_question(t: Token) -> Trilean! =
+    match t {
+        Question => true,
+        _ => false,
+    }
+
+function is_question_tilde(t: Token) -> Trilean! =
+    match t {
+        QuestionTilde => true,
+        _ => false,
+    }
+
+function is_tilde(t: Token) -> Trilean! =
+    match t {
+        Tilde => true,
+        _ => false,
+    }
+
+function is_bang(t: Token) -> Trilean! =
+    match t {
+        Bang => true,
+        _ => false,
+    }
+
+// Step wrapper for parse_type_list (used by tuple + generic args + function params).
+public struct ParseTypeListStep {
+    state: ParserState,
+    types: Vector<Integer>,
+    had_comma: Trilean!,
+}
+
+// Public entrypoint — kept named `parse_type_minimal` so the v0.7.5.3+
+// call sites compile unchanged. Returns a `ParseTypeStep` containing
+// the root TypeExpr ID.
+public function parse_type_minimal(s: ParserState) -> ParseTypeStep~ParseError = {
+    let head: ParseTypeStep = parse_type_atom(s) ~? |err| ~- err
+    apply_type_postfix(head.state, head.type_id)
+}
+
+// Atom: NamedType (+ optional generic args), or paren-form (which
+// resolves to grouping, tuple type, or function type).
+function parse_type_atom(s: ParserState) -> ParseTypeStep~ParseError = {
     let nx_opt: SpannedToken? = peek(s)
     match nx_opt {
-        ~0 => ~- make_unexpected_eof_err(s, "type name"),
+        ~0 => ~- make_unexpected_eof_err(s, "type expression"),
         ~+ nx => {
             match nx.token {
                 Identifier(p) => {
                     let advanced: ParserState = advance(s)
-                    let res: AllocResult = alloc_type(
-                        advanced.arena,
-                        SpannedTypeExpr {
-                            node: NamedType(NamedTypePayload { name: p.text }),
-                            span_start: nx.span_start,
-                            span_end: nx.span_end,
-                        },
-                    )
-                    ~+ ParseTypeStep {
-                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
-                        type_id: res.id,
+                    // Optional generic instantiation `Name<T1, T2>`.
+                    let nx2: SpannedToken? = peek(advanced)
+                    let is_gen: Trilean! = match nx2 {
+                        ~0 => false,
+                        _ => is_lt(nx2!!.token),
+                    }
+                    if is_gen {
+                        parse_generic_args(advanced, p.text, nx.span_start)
+                    } else {
+                        let res: AllocResult = alloc_type(
+                            advanced.arena,
+                            spanned_type(
+                                NamedType(NamedTypePayload { name: p.text }),
+                                nx.span_start,
+                                nx.span_end,
+                            ),
+                        )
+                        ~+ ParseTypeStep {
+                            state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                            type_id: res.id,
+                        }
                     }
                 },
-                _ => ~- make_unexpected_token_err(s, "type name"),
+                LParen => parse_paren_type(s, nx.span_start),
+                _ => ~- make_unexpected_token_err(s, "type expression"),
             }
         },
     }
+}
+
+// `Name<T1, T2, ...>` after the name has been consumed.
+function parse_generic_args(s: ParserState, name: String, name_start: Integer) -> ParseTypeStep~ParseError = {
+    let after_lt: ParserState = advance(s) // consume `<`
+    let mutable state: ParserState = after_lt
+    let mutable args: Vector<Integer> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    // Empty generic list `<>` short-circuit (parser_minimal rejects, but
+    // mirror the Rust impl: walk normally and let `>` close it).
+    let first_peek: SpannedToken? = peek(state)
+    match first_peek {
+        ~0 => {
+            err_slot = make_unexpected_eof_err(state, "type argument or `>`")
+            should_continue = false
+        },
+        _ => {
+            if is_gt(first_peek!!.token) {
+                should_continue = false
+            }
+        },
+    }
+
+    while should_continue {
+        let arg_outcome: ParseTypeStep~ParseError = parse_type_minimal(state)
+        match arg_outcome {
+            ~+ arg_step => {
+                args = push(args, arg_step.type_id)
+                state = arg_step.state
+                let after_arg: SpannedToken? = peek(state)
+                match after_arg {
+                    ~0 => {
+                        err_slot = make_unexpected_eof_err(state, "`,` or `>`")
+                        should_continue = false
+                    },
+                    _ => {
+                        let nt: SpannedToken = after_arg!!
+                        if is_comma(nt.token) {
+                            state = advance(state)
+                            // Trailing comma allowed.
+                            let after_comma: SpannedToken? = peek(state)
+                            match after_comma {
+                                ~0 => {
+                                    err_slot = make_unexpected_eof_err(state, "type argument or `>`")
+                                    should_continue = false
+                                },
+                                _ => {
+                                    if is_gt(after_comma!!.token) {
+                                        should_continue = false
+                                    }
+                                },
+                            }
+                        } else {
+                            should_continue = false
+                        }
+                    },
+                }
+            },
+            ~- e => {
+                err_slot = e
+                should_continue = false
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => {
+            // expect `>`
+            let close_peek: SpannedToken? = peek(state)
+            match close_peek {
+                ~0 => ~- make_unexpected_eof_err(state, "`>`"),
+                _ => {
+                    let nt: SpannedToken = close_peek!!
+                    if is_gt(nt.token) {
+                        let after_close: ParserState = advance(state)
+                        let res: AllocResult = alloc_type(
+                            after_close.arena,
+                            spanned_type(
+                                GenericType(GenericTypePayload { name: name, arguments: args }),
+                                name_start,
+                                nt.span_end,
+                            ),
+                        )
+                        ~+ ParseTypeStep {
+                            state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+                            type_id: res.id,
+                        }
+                    } else {
+                        ~- make_unexpected_token_err(state, "`>`")
+                    }
+                },
+            }
+        },
+    }
+}
+
+// `(...)` form. Three outcomes:
+//   1. `(T)` — grouping, returns inner T unchanged.
+//   2. `(T1, T2 [, ...])` — tuple type.
+//   3. `(T1, T2 [, ...]) -> R` — function type.
+function parse_paren_type(s: ParserState, open_start: Integer) -> ParseTypeStep~ParseError = {
+    let after_open: ParserState = advance(s) // consume `(`
+    // Reject empty `()` for consistency with Rust impl (no Unit syntax sugar).
+    let nx: SpannedToken? = peek(after_open)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(after_open, "at least one type before `)`"),
+        _ => {
+            if is_rparen(nx!!.token) {
+                ~- make_unexpected_token_err(after_open, "at least one type before `)`")
+            } else {
+                let elems_step: ParseTypeListStep = parse_type_list_until_rparen(after_open) ~? |err| ~- err
+                // We're now past `)`. Check for `->` (function type).
+                let nx_arrow: SpannedToken? = peek(elems_step.state)
+                let is_arrow: Trilean! = match nx_arrow {
+                    ~0 => false,
+                    _ => is_thin_arrow(nx_arrow!!.token),
+                }
+                if is_arrow {
+                    let after_arrow: ParserState = advance(elems_step.state)
+                    let ret_step: ParseTypeStep = parse_type_minimal(after_arrow) ~? |err| ~- err
+                    let ret_sp: SpannedTypeExpr = get_type(ret_step.state.arena, ret_step.type_id)
+                    let res: AllocResult = alloc_type(
+                        ret_step.state.arena,
+                        spanned_type(
+                            FunctionType(FunctionTypePayload {
+                                parameters: elems_step.types,
+                                return_type: ret_step.type_id,
+                            }),
+                            open_start,
+                            ret_sp.span_end,
+                        ),
+                    )
+                    ~+ ParseTypeStep {
+                        state: ParserState {
+                            tokens: ret_step.state.tokens,
+                            cursor: ret_step.state.cursor,
+                            arena: res.arena,
+                        },
+                        type_id: res.id,
+                    }
+                } else {
+                    // Grouping vs tuple decided by length + comma presence.
+                    let elem_count: Integer = length(elems_step.types)
+                    if elem_count == 1 {
+                        if elems_step.had_comma {
+                            // `(T,)` — singleton tuple.
+                            let inner_id: Integer = get(elems_step.types, 0)!!
+                            let inner_sp: SpannedTypeExpr = get_type(elems_step.state.arena, inner_id)
+                            let res: AllocResult = alloc_type(
+                                elems_step.state.arena,
+                                spanned_type(TupleType(elems_step.types), open_start, inner_sp.span_end),
+                            )
+                            ~+ ParseTypeStep {
+                                state: ParserState {
+                                    tokens: elems_step.state.tokens,
+                                    cursor: elems_step.state.cursor,
+                                    arena: res.arena,
+                                },
+                                type_id: res.id,
+                            }
+                        } else {
+                            // `(T)` — grouping, return inner unchanged.
+                            let inner_id: Integer = get(elems_step.types, 0)!!
+                            ~+ ParseTypeStep { state: elems_step.state, type_id: inner_id }
+                        }
+                    } else {
+                        // 2+ elements — tuple.
+                        let last_id: Integer = get(elems_step.types, elem_count - 1)!!
+                        let last_sp: SpannedTypeExpr = get_type(elems_step.state.arena, last_id)
+                        let res: AllocResult = alloc_type(
+                            elems_step.state.arena,
+                            spanned_type(TupleType(elems_step.types), open_start, last_sp.span_end),
+                        )
+                        ~+ ParseTypeStep {
+                            state: ParserState {
+                                tokens: elems_step.state.tokens,
+                                cursor: elems_step.state.cursor,
+                                arena: res.arena,
+                            },
+                            type_id: res.id,
+                        }
+                    }
+                }
+            }
+        },
+    }
+}
+
+// Parse comma-separated types until `)`. Returns the list + a
+// trailing flag so the caller can disambiguate `(T)` grouping from
+// `(T,)` singleton tuple. Consumes the closing `)`.
+function parse_type_list_until_rparen(s: ParserState) -> ParseTypeListStep~ParseError = {
+    let first_step: ParseTypeStep = parse_type_minimal(s) ~? |err| ~- err
+    let mutable state: ParserState = first_step.state
+    let mutable types: Vector<Integer> = push(new(), first_step.type_id)
+    let mutable had_comma: Trilean! = false
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                err_slot = make_unexpected_eof_err(state, "`,` or `)`")
+                should_continue = false
+            },
+            _ => {
+                let nt: SpannedToken = nx!!
+                if is_comma(nt.token) {
+                    had_comma = true
+                    state = advance(state)
+                    // Trailing comma before `)` allowed.
+                    let after_comma: SpannedToken? = peek(state)
+                    match after_comma {
+                        ~0 => {
+                            err_slot = make_unexpected_eof_err(state, "type or `)`")
+                            should_continue = false
+                        },
+                        _ => {
+                            if is_rparen(after_comma!!.token) {
+                                should_continue = false
+                            } else {
+                                let next_outcome: ParseTypeStep~ParseError = parse_type_minimal(state)
+                                match next_outcome {
+                                    ~+ next_step => {
+                                        types = push(types, next_step.type_id)
+                                        state = next_step.state
+                                    },
+                                    ~- e => {
+                                        err_slot = e
+                                        should_continue = false
+                                    },
+                                }
+                            }
+                        },
+                    }
+                } else {
+                    should_continue = false
+                }
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => {
+            // consume `)`
+            let close_peek: SpannedToken? = peek(state)
+            match close_peek {
+                ~0 => ~- make_unexpected_eof_err(state, "`)`"),
+                _ => {
+                    if is_rparen(close_peek!!.token) {
+                        ~+ ParseTypeListStep {
+                            state: advance(state),
+                            types: types,
+                            had_comma: had_comma,
+                        }
+                    } else {
+                        ~- make_unexpected_token_err(state, "`)`")
+                    }
+                },
+            }
+        },
+    }
+}
+
+// Postfix operators: precedence per ADR-0020 §1.3.
+function apply_type_postfix(s: ParserState, id: Integer) -> ParseTypeStep~ParseError = {
+    // 1. `Trilean!` refinement — only valid right after a bare
+    //    `Trilean` atom per ADR-0021 §2.7. If the bang sits after
+    //    a non-Trilean atom, fall through and let the surrounding
+    //    context decide (typically the caller treats it as an
+    //    error).
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~+ ParseTypeStep { state: s, type_id: id },
+        _ => {
+            let nt: SpannedToken = nx!!
+            if is_bang(nt.token) {
+                let inner_sp: SpannedTypeExpr = get_type(s.arena, id)
+                let is_bare_trilean: Trilean! = match inner_sp.node {
+                    NamedType(p) => p.name == "Trilean",
+                    _ => false,
+                }
+                if is_bare_trilean {
+                    let after_bang: ParserState = advance(s)
+                    let res: AllocResult = alloc_type(
+                        after_bang.arena,
+                        spanned_type(RefinedTrileanType, inner_sp.span_start, nt.span_end),
+                    )
+                    apply_type_postfix(
+                        ParserState { tokens: after_bang.tokens, cursor: after_bang.cursor, arena: res.arena },
+                        res.id,
+                    )
+                } else {
+                    // Bang after a non-Trilean atom — let the caller surface.
+                    apply_outcome_or_nullable(s, id)
+                }
+            } else {
+                apply_outcome_or_nullable(s, id)
+            }
+        },
+    }
+}
+
+// 2. + 3. + 4. — `T?~E` / `T~E` / chained `T?`s.
+function apply_outcome_or_nullable(s: ParserState, id: Integer) -> ParseTypeStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~+ ParseTypeStep { state: s, type_id: id },
+        _ => {
+            let nt: SpannedToken = nx!!
+            if is_question_tilde(nt.token) {
+                let after_op: ParserState = advance(s)
+                let err_step: ParseTypeStep = parse_type_atom(after_op) ~? |err| ~- err
+                let val_sp: SpannedTypeExpr = get_type(err_step.state.arena, id)
+                let err_sp: SpannedTypeExpr = get_type(err_step.state.arena, err_step.type_id)
+                let res: AllocResult = alloc_type(
+                    err_step.state.arena,
+                    spanned_type(
+                        OutcomeType(OutcomeTypePayload {
+                            value_type: id,
+                            error_type: err_step.type_id,
+                            allow_null_state: true,
+                        }),
+                        val_sp.span_start,
+                        err_sp.span_end,
+                    ),
+                )
+                ~+ ParseTypeStep {
+                    state: ParserState {
+                        tokens: err_step.state.tokens,
+                        cursor: err_step.state.cursor,
+                        arena: res.arena,
+                    },
+                    type_id: res.id,
+                }
+            } else {
+                if is_tilde(nt.token) {
+                    let after_op: ParserState = advance(s)
+                    let err_step: ParseTypeStep = parse_type_atom(after_op) ~? |err| ~- err
+                    let val_sp: SpannedTypeExpr = get_type(err_step.state.arena, id)
+                    let err_sp: SpannedTypeExpr = get_type(err_step.state.arena, err_step.type_id)
+                    let res: AllocResult = alloc_type(
+                        err_step.state.arena,
+                        spanned_type(
+                            OutcomeType(OutcomeTypePayload {
+                                value_type: id,
+                                error_type: err_step.type_id,
+                                allow_null_state: false,
+                            }),
+                            val_sp.span_start,
+                            err_sp.span_end,
+                        ),
+                    )
+                    ~+ ParseTypeStep {
+                        state: ParserState {
+                            tokens: err_step.state.tokens,
+                            cursor: err_step.state.cursor,
+                            arena: res.arena,
+                        },
+                        type_id: res.id,
+                    }
+                } else {
+                    if is_question(nt.token) {
+                        apply_chained_nullable(s, id)
+                    } else {
+                        ~+ ParseTypeStep { state: s, type_id: id }
+                    }
+                }
+            }
+        },
+    }
+}
+
+// 4. Chained `T?` / `T??` / `T???` — one or more bare `?` tokens.
+function apply_chained_nullable(s: ParserState, start_id: Integer) -> ParseTypeStep~ParseError = {
+    let mutable state: ParserState = s
+    let mutable id: Integer = start_id
+    let mutable should_continue: Trilean! = true
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                should_continue = false
+            },
+            _ => {
+                let nt: SpannedToken = nx!!
+                if is_question(nt.token) {
+                    let after_q: ParserState = advance(state)
+                    let inner_sp: SpannedTypeExpr = get_type(after_q.arena, id)
+                    let res: AllocResult = alloc_type(
+                        after_q.arena,
+                        spanned_type(NullableType(id), inner_sp.span_start, nt.span_end),
+                    )
+                    state = ParserState { tokens: after_q.tokens, cursor: after_q.cursor, arena: res.arena }
+                    id = res.id
+                } else {
+                    should_continue = false
+                }
+            },
+        }
+    }
+    ~+ ParseTypeStep { state: state, type_id: id }
 }
 
 // `return [expr] ;?` — value absent when next is `;`, `}`, `,`, or EOF.
@@ -3910,6 +4431,59 @@ public function format_type(a: Arena, id: Integer) -> String = {
     let sp: SpannedTypeExpr = get_type(a, id)
     match sp.node {
         NamedType(p) => p.name,
+        GenericType(p) => {
+            let mutable out: String = concat(p.name, "<")
+            let n: Integer = length(p.arguments)
+            let mutable i: Integer = 0
+            while i < n {
+                if i > 0 {
+                    out = concat(out, ",")
+                }
+                let arg_id: Integer = get(p.arguments, i)!!
+                out = concat(out, format_type(a, arg_id))
+                i = i + 1
+            }
+            concat(out, ">")
+        },
+        TupleType(elems) => {
+            let mutable out: String = "("
+            let n: Integer = length(elems)
+            let mutable i: Integer = 0
+            while i < n {
+                if i > 0 {
+                    out = concat(out, ",")
+                }
+                let elem_id: Integer = get(elems, i)!!
+                out = concat(out, format_type(a, elem_id))
+                i = i + 1
+            }
+            concat(out, ")")
+        },
+        NullableType(inner_id) => concat(format_type(a, inner_id), "?"),
+        FunctionType(p) => {
+            let mutable params: String = "("
+            let n: Integer = length(p.parameters)
+            let mutable i: Integer = 0
+            while i < n {
+                if i > 0 {
+                    params = concat(params, ",")
+                }
+                let param_id: Integer = get(p.parameters, i)!!
+                params = concat(params, format_type(a, param_id))
+                i = i + 1
+            }
+            params = concat(params, ")")
+            concat(params, concat("->", format_type(a, p.return_type)))
+        },
+        OutcomeType(p) => {
+            let op: String = if p.allow_null_state {
+                "?~"
+            } else {
+                "~"
+            }
+            concat(format_type(a, p.value_type), concat(op, format_type(a, p.error_type)))
+        },
+        RefinedTrileanType => "Trilean!",
     }
 }
 
@@ -4264,6 +4838,27 @@ function assert_parse_program(source: String, expected: String) -> Unit = {
     assert(printed == expected)
 }
 
+// ── v0.7.5.5a type-level smoke helpers ──────────────────────────
+
+function parse_type_or_fail(source: String) -> ParseTypeStep = {
+    let toks: Vector<SpannedToken> = lex_or_fail(source)
+    let st: ParserState = parser_new(toks)
+    let outcome: ParseTypeStep~ParseError = parse_type_minimal(st)
+    match outcome {
+        ~+ step => step,
+        ~- _ => {
+            assert(false)
+            ParseTypeStep { state: parser_new(new()), type_id: 0 }
+        },
+    }
+}
+
+function assert_parse_type(source: String, expected: String) -> Unit = {
+    let step: ParseTypeStep = parse_type_or_fail(source)
+    let printed: String = format_type(step.state.arena, step.type_id)
+    assert(printed == expected)
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Entry — exercises the Pratt parser + statement + item layers
 // ─────────────────────────────────────────────────────────────────
@@ -4435,5 +5030,25 @@ function main() -> Unit = {
         "(program public(package) (module data (inline (struct Cell (v:Integer)))))",
     )
 
-    println("v0.7.5.4b item smoke passed")
+    // v0.7.5.5a — full type grammar (atom-level, exercised directly
+    // through `parse_type_minimal`; item-level wiring stays the same
+    // since the placeholder is replaced in place).
+    assert_parse_type("Integer", "Integer")
+    assert_parse_type("Trilean!", "Trilean!")
+    assert_parse_type("Integer?", "Integer?")
+    assert_parse_type("Integer??", "Integer??")
+    assert_parse_type("Option<Integer>", "Option<Integer>")
+    assert_parse_type("HashMap<String, Integer>", "HashMap<String,Integer>")
+    assert_parse_type("Result<Vector<Integer>, Error>", "Result<Vector<Integer>,Error>")
+    assert_parse_type("(Integer, String)", "(Integer,String)")
+    assert_parse_type("(Integer, String, Trilean)", "(Integer,String,Trilean)")
+    assert_parse_type("(Integer)", "Integer")
+    assert_parse_type("(Integer,)", "(Integer)")
+    assert_parse_type("(Integer) -> String", "(Integer)->String")
+    assert_parse_type("(Integer, Integer) -> Long", "(Integer,Integer)->Long")
+    assert_parse_type("Integer~ParseError", "Integer~ParseError")
+    assert_parse_type("Integer?~ParseError", "Integer?~ParseError")
+    assert_parse_type("Vector<Token>~LexError", "Vector<Token>~LexError")
+
+    println("v0.7.5.5a item + type smoke passed")
 }
