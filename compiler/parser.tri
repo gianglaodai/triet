@@ -56,6 +56,28 @@
 // Struct / Enum / Module / Import / ImportFrom parsers stub-fail
 // at `parse_item` dispatch — implementation lands in v0.7.5.4b.
 //
+// v0.7.5.4b — Items: struct + enum + module + imports. Fills in
+// the remaining Item variants .4a scaffolded. New parsers:
+// `parse_struct` (+ `parse_struct_field` / `parse_struct_fields`),
+// `parse_enum` (+ `parse_enum_variant` / `parse_enum_variants` —
+// optional tuple-style payload `Some(T)`), `parse_module`
+// (file-bound `module foo` + inline `module foo { items… }` via
+// `parse_inline_module_body` recursing through `parse_item`; per
+// ADR-0005 §"File resolution" rejects `module foo.bar` dotted
+// declarations), `parse_import_item` (`import a.b.c`),
+// `parse_from_import` (`from a.b import x, y as z` per ADR-0005
+// §"Imports — Python style"), `parse_import_name_list` /
+// `parse_import_name` (+ ADR-0005 glob `*` rejection + optional
+// `as alias`), and the `parse_dot_path` family (root accepts
+// `crate` / `self` / `super` per ADR-0005 §"Path syntax";
+// subsequent segments must be regular identifiers). Visibility
+// on `import` / `from` is explicitly rejected via
+// `reject_visibility_on_import` (re-exports of imported names are
+// a post-v0.2.x feature). 15 new program-level smoke assertions
+// exercise every shape. Closes the item layer; v0.7.5.5 grows
+// the placeholder `parse_type_minimal` into the full type grammar
+// (generics, `T?`, `T~E`, function types).
+//
 // AllocResult / ParseStep wrap (arena, id) / (state, expr_id) because
 // IR tuple returns are deferred post-v1.0 per SPEC §95 — without
 // tuple returns, the alloc helpers can't expose Rust's
@@ -2959,9 +2981,680 @@ function parse_type_alias(s: ParserState, head_start: Integer, visibility: Visib
     }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// v0.7.5.4b — struct / enum / module / import / from parsers.
+// Mirrors the bottom half of crates/triet-parser/src/item.rs.
+// ─────────────────────────────────────────────────────────────────
+
+// Per-element step wrappers (mirror v0.7.5.4a's ParseParamStep).
+public struct ParseStructFieldStep {
+    state: ParserState,
+    field: StructField,
+}
+
+public struct ParseStructFieldsStep {
+    state: ParserState,
+    fields: Vector<StructField>,
+}
+
+public struct ParseEnumVariantStep {
+    state: ParserState,
+    variant: EnumVariant,
+}
+
+public struct ParseEnumVariantsStep {
+    state: ParserState,
+    variants: Vector<EnumVariant>,
+}
+
+public struct ParseDotPathStep {
+    state: ParserState,
+    segments: Vector<String>,
+}
+
+public struct ParseImportNameStep {
+    state: ParserState,
+    name: ImportName,
+}
+
+public struct ParseImportNamesStep {
+    state: ParserState,
+    names: Vector<ImportName>,
+}
+
+// ── Token kind predicates added for .4b ──────────────────────────
+
+function is_dot(t: Token) -> Trilean! =
+    match t {
+        Dot => true,
+        _ => false,
+    }
+
+function is_star(t: Token) -> Trilean! =
+    match t {
+        Star => true,
+        _ => false,
+    }
+
+function is_as_kw(t: Token) -> Trilean! =
+    match t {
+        AsKw => true,
+        _ => false,
+    }
+
+function is_crate_kw(t: Token) -> Trilean! =
+    match t {
+        CrateKw => true,
+        _ => false,
+    }
+
+function is_self_kw(t: Token) -> Trilean! =
+    match t {
+        SelfKw => true,
+        _ => false,
+    }
+
+function is_super_kw(t: Token) -> Trilean! =
+    match t {
+        SuperKw => true,
+        _ => false,
+    }
+
+// ── Struct fields ────────────────────────────────────────────────
+
+function parse_struct_field(s: ParserState) -> ParseStructFieldStep~ParseError = {
+    let id_step: ParseIdentStep = parse_ident(s, "field name") ~? |err| ~- err
+    let after_colon: ParserState = expect_colon(id_step.state) ~? |err| ~- err
+    let ty_step: ParseTypeStep = parse_type_minimal(after_colon) ~? |err| ~- err
+    let field: StructField = StructField {
+        name: id_step.text,
+        type_annotation: ty_step.type_id,
+    }
+    ~+ ParseStructFieldStep { state: ty_step.state, field: field }
+}
+
+function parse_struct_fields(s: ParserState) -> ParseStructFieldsStep~ParseError = {
+    let mutable state: ParserState = s
+    let mutable fields: Vector<StructField> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    // Empty body short-circuit
+    let first_peek: SpannedToken? = peek(state)
+    match first_peek {
+        ~0 => {
+            err_slot = make_unexpected_eof_err(state, "`}` or field name")
+            should_continue = false
+        },
+        _ => {
+            if is_rbrace(first_peek!!.token) {
+                should_continue = false
+            }
+        },
+    }
+
+    while should_continue {
+        let outcome: ParseStructFieldStep~ParseError = parse_struct_field(state)
+        match outcome {
+            ~+ fstep => {
+                fields = push(fields, fstep.field)
+                state = fstep.state
+                let after: SpannedToken? = peek(state)
+                match after {
+                    ~0 => {
+                        err_slot = make_unexpected_eof_err(state, "`,` or `}`")
+                        should_continue = false
+                    },
+                    _ => {
+                        let nt: SpannedToken = after!!
+                        if is_comma(nt.token) {
+                            state = advance(state)
+                            // Trailing comma allowed.
+                            let after_comma: SpannedToken? = peek(state)
+                            match after_comma {
+                                ~0 => {
+                                    err_slot = make_unexpected_eof_err(state, "field name or `}`")
+                                    should_continue = false
+                                },
+                                _ => {
+                                    if is_rbrace(after_comma!!.token) {
+                                        should_continue = false
+                                    }
+                                },
+                            }
+                        } else {
+                            should_continue = false
+                        }
+                    },
+                }
+            },
+            ~- e => {
+                err_slot = e
+                should_continue = false
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => ~+ ParseStructFieldsStep { state: state, fields: fields },
+    }
+}
+
+// `struct Foo<G…> { fields }`.
+function parse_struct(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let name_step: ParseIdentStep = parse_item_name(after_kw, "struct name") ~? |err| ~- err
+    let generics_step: ParseGenericsStep = parse_generic_params(name_step.state) ~? |err| ~- err
+    let after_open: ParserState = expect_lbrace(generics_step.state) ~? |err| ~- err
+    let fields_step: ParseStructFieldsStep = parse_struct_fields(after_open) ~? |err| ~- err
+    let after_close: ParserState = expect_rbrace(fields_step.state) ~? |err| ~- err
+    let prev_end: Integer = previous_token_end(after_close, head_start)
+
+    let struct_def: StructDef = StructDef {
+        visibility: visibility,
+        name: name_step.text,
+        type_params: generics_step.type_params,
+        fields: fields_step.fields,
+    }
+    let res: AllocResult = alloc_item(
+        after_close.arena,
+        spanned_item(StructItem(struct_def), head_start, prev_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+        item_id: res.id,
+    }
+}
+
+// ── Enum variants ────────────────────────────────────────────────
+
+function parse_enum_variant(s: ParserState) -> ParseEnumVariantStep~ParseError = {
+    let id_step: ParseIdentStep = parse_ident(s, "variant name") ~? |err| ~- err
+    // Optional `(PayloadType)`.
+    let nx: SpannedToken? = peek(id_step.state)
+    let payload_outcome: ParseLetAnnotation~ParseError = {
+        match nx {
+            ~0 => ~+ ParseLetAnnotation { state: id_step.state, annotation_id: ~0 },
+            _ => {
+                let nt: SpannedToken = nx!!
+                if is_lparen(nt.token) {
+                    let after_open: ParserState = advance(id_step.state)
+                    let ty_step: ParseTypeStep = parse_type_minimal(after_open) ~? |err| ~- err
+                    let nx2: SpannedToken? = peek(ty_step.state)
+                    match nx2 {
+                        ~0 => ~- make_unexpected_eof_err(ty_step.state, "`)`"),
+                        _ => {
+                            if is_rparen(nx2!!.token) {
+                                let after_close: ParserState = advance(ty_step.state)
+                                ~+ ParseLetAnnotation { state: after_close, annotation_id: ty_step.type_id }
+                            } else {
+                                ~- make_unexpected_token_err(ty_step.state, "`)`")
+                            }
+                        },
+                    }
+                } else {
+                    ~+ ParseLetAnnotation { state: id_step.state, annotation_id: ~0 }
+                }
+            },
+        }
+    }
+    let payload_step: ParseLetAnnotation = payload_outcome ~? |err| ~- err
+    let variant: EnumVariant = EnumVariant {
+        name: id_step.text,
+        payload: payload_step.annotation_id,
+    }
+    ~+ ParseEnumVariantStep { state: payload_step.state, variant: variant }
+}
+
+function parse_enum_variants(s: ParserState) -> ParseEnumVariantsStep~ParseError = {
+    let mutable state: ParserState = s
+    let mutable variants: Vector<EnumVariant> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    let first_peek: SpannedToken? = peek(state)
+    match first_peek {
+        ~0 => {
+            err_slot = make_unexpected_eof_err(state, "`}` or variant name")
+            should_continue = false
+        },
+        _ => {
+            if is_rbrace(first_peek!!.token) {
+                should_continue = false
+            }
+        },
+    }
+
+    while should_continue {
+        let outcome: ParseEnumVariantStep~ParseError = parse_enum_variant(state)
+        match outcome {
+            ~+ vstep => {
+                variants = push(variants, vstep.variant)
+                state = vstep.state
+                let after: SpannedToken? = peek(state)
+                match after {
+                    ~0 => {
+                        err_slot = make_unexpected_eof_err(state, "`,` or `}`")
+                        should_continue = false
+                    },
+                    _ => {
+                        let nt: SpannedToken = after!!
+                        if is_comma(nt.token) {
+                            state = advance(state)
+                            let after_comma: SpannedToken? = peek(state)
+                            match after_comma {
+                                ~0 => {
+                                    err_slot = make_unexpected_eof_err(state, "variant name or `}`")
+                                    should_continue = false
+                                },
+                                _ => {
+                                    if is_rbrace(after_comma!!.token) {
+                                        should_continue = false
+                                    }
+                                },
+                            }
+                        } else {
+                            should_continue = false
+                        }
+                    },
+                }
+            },
+            ~- e => {
+                err_slot = e
+                should_continue = false
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => ~+ ParseEnumVariantsStep { state: state, variants: variants },
+    }
+}
+
+// `enum Foo<G…> { variants }`.
+function parse_enum(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let name_step: ParseIdentStep = parse_item_name(after_kw, "enum name") ~? |err| ~- err
+    let generics_step: ParseGenericsStep = parse_generic_params(name_step.state) ~? |err| ~- err
+    let after_open: ParserState = expect_lbrace(generics_step.state) ~? |err| ~- err
+    let variants_step: ParseEnumVariantsStep = parse_enum_variants(after_open) ~? |err| ~- err
+    let after_close: ParserState = expect_rbrace(variants_step.state) ~? |err| ~- err
+    let prev_end: Integer = previous_token_end(after_close, head_start)
+
+    let enum_def: EnumDef = EnumDef {
+        visibility: visibility,
+        name: name_step.text,
+        type_params: generics_step.type_params,
+        variants: variants_step.variants,
+    }
+    let res: AllocResult = alloc_item(
+        after_close.arena,
+        spanned_item(EnumItem(enum_def), head_start, prev_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+        item_id: res.id,
+    }
+}
+
+// ── Dot path (used by `import`, `from`, future qualified types) ──
+
+function parse_dot_path_root(s: ParserState, what: String) -> ParseIdentStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, what),
+        ~+ nt => {
+            match nt.token {
+                Identifier(p) => {
+                    let advanced: ParserState = advance(s)
+                    ~+ ParseIdentStep {
+                        state: advanced,
+                        text: p.text,
+                        span_start: nt.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                CrateKw => {
+                    let advanced: ParserState = advance(s)
+                    ~+ ParseIdentStep {
+                        state: advanced,
+                        text: "crate",
+                        span_start: nt.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                SelfKw => {
+                    let advanced: ParserState = advance(s)
+                    ~+ ParseIdentStep {
+                        state: advanced,
+                        text: "self",
+                        span_start: nt.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                SuperKw => {
+                    let advanced: ParserState = advance(s)
+                    ~+ ParseIdentStep {
+                        state: advanced,
+                        text: "super",
+                        span_start: nt.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                _ => ~- make_unexpected_token_err(s, what),
+            }
+        },
+    }
+}
+
+function parse_dot_path_segment(s: ParserState) -> ParseIdentStep~ParseError =
+    parse_ident(s, "identifier after `.`")
+
+function parse_dot_path(s: ParserState, what: String) -> ParseDotPathStep~ParseError = {
+    let root_step: ParseIdentStep = parse_dot_path_root(s, what) ~? |err| ~- err
+    let mutable state: ParserState = root_step.state
+    let mutable segments: Vector<String> = push(new(), root_step.text)
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                should_continue = false
+            },
+            _ => {
+                if is_dot(nx!!.token) {
+                    state = advance(state)
+                    let seg_outcome: ParseIdentStep~ParseError = parse_dot_path_segment(state)
+                    match seg_outcome {
+                        ~+ seg_step => {
+                            segments = push(segments, seg_step.text)
+                            state = seg_step.state
+                        },
+                        ~- e => {
+                            err_slot = e
+                            should_continue = false
+                        },
+                    }
+                } else {
+                    should_continue = false
+                }
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => ~+ ParseDotPathStep { state: state, segments: segments },
+    }
+}
+
+// ── Imports ──────────────────────────────────────────────────────
+
+// `import a.b.c ;?`.
+function parse_import_item(s: ParserState, head_start: Integer) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let path_step: ParseDotPathStep = parse_dot_path(after_kw, "import path") ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(path_step.state)
+    let prev_end: Integer = previous_token_end(after_semi, head_start)
+    let payload: ImportPath = ImportPath { segments: path_step.segments }
+    let res: AllocResult = alloc_item(
+        after_semi.arena,
+        spanned_item(ImportItem(payload), head_start, prev_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+        item_id: res.id,
+    }
+}
+
+// `name (as alias)?` — single entry of a from-import name list.
+function parse_import_name(s: ParserState) -> ParseImportNameStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    let name_step: ParseIdentStep = match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "imported name"),
+        ~+ nt => {
+            if is_star(nt.token) {
+                ~- make_unexpected_token_err(
+                    s,
+                    "imported name (glob `*` is not supported per ADR-0005)",
+                )
+            } else {
+                parse_ident(s, "imported name") ~? |err| ~- err
+            }
+        },
+    }
+    let after_name: ParserState = name_step.state
+
+    // Optional `as alias`.
+    let nx_as: SpannedToken? = peek(after_name)
+    let alias_outcome: ParseImportNameStep~ParseError = {
+        match nx_as {
+            ~0 => ~+ ParseImportNameStep {
+                state: after_name,
+                name: ImportName { name: name_step.text, alias: ~0 },
+            },
+            _ => {
+                let nt2: SpannedToken = nx_as!!
+                if is_as_kw(nt2.token) {
+                    let after_as: ParserState = advance(after_name)
+                    let alias_step: ParseIdentStep = parse_ident(after_as, "alias identifier after `as`") ~? |err| ~- err
+                    ~+ ParseImportNameStep {
+                        state: alias_step.state,
+                        name: ImportName { name: name_step.text, alias: alias_step.text },
+                    }
+                } else {
+                    ~+ ParseImportNameStep {
+                        state: after_name,
+                        name: ImportName { name: name_step.text, alias: ~0 },
+                    }
+                }
+            },
+        }
+    }
+    alias_outcome
+}
+
+function parse_import_name_list(s: ParserState) -> ParseImportNamesStep~ParseError = {
+    let first_step: ParseImportNameStep = parse_import_name(s) ~? |err| ~- err
+    let mutable state: ParserState = first_step.state
+    let mutable names: Vector<ImportName> = push(new(), first_step.name)
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                should_continue = false
+            },
+            _ => {
+                if is_comma(nx!!.token) {
+                    state = advance(state)
+                    let after_comma: SpannedToken? = peek(state)
+                    match after_comma {
+                        ~0 => {
+                            should_continue = false
+                        },
+                        _ => {
+                            let nt: SpannedToken = after_comma!!
+                            if is_semi(nt.token) {
+                                // Trailing comma before `;` allowed.
+                                should_continue = false
+                            } else {
+                                let outcome: ParseImportNameStep~ParseError = parse_import_name(state)
+                                match outcome {
+                                    ~+ step => {
+                                        names = push(names, step.name)
+                                        state = step.state
+                                    },
+                                    ~- e => {
+                                        err_slot = e
+                                        should_continue = false
+                                    },
+                                }
+                            }
+                        },
+                    }
+                } else {
+                    should_continue = false
+                }
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => ~+ ParseImportNamesStep { state: state, names: names },
+    }
+}
+
+// `from a.b import x, y as z ;?`.
+function parse_from_import(s: ParserState, head_start: Integer) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let source_step: ParseDotPathStep = parse_dot_path(after_kw, "module path after `from`") ~? |err| ~- err
+
+    // expect `import`
+    let nx: SpannedToken? = peek(source_step.state)
+    let after_import: ParserState = match nx {
+        ~0 => ~- make_unexpected_eof_err(source_step.state, "`import`"),
+        _ => if is_import_kw(nx!!.token) {
+            advance(source_step.state)
+        } else {
+            ~- make_unexpected_token_err(source_step.state, "`import`")
+        },
+    }
+
+    let names_step: ParseImportNamesStep = parse_import_name_list(after_import) ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(names_step.state)
+    let prev_end: Integer = previous_token_end(after_semi, head_start)
+    let payload: ImportFromPayload = ImportFromPayload {
+        source: source_step.segments,
+        names: names_step.names,
+    }
+    let res: AllocResult = alloc_item(
+        after_semi.arena,
+        spanned_item(ImportFromItem(payload), head_start, prev_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+        item_id: res.id,
+    }
+}
+
+// ── Modules ──────────────────────────────────────────────────────
+
+// `module foo` (file-bound) or `module foo { items… }` (inline).
+// ADR-0005 §"File resolution": nested paths must use nested
+// `module` blocks — `module foo.bar` is invalid syntax.
+function parse_module(s: ParserState, head_start: Integer, visibility: Visibility) -> ParseItemStep~ParseError = {
+    let after_kw: ParserState = advance(s)
+    let name_step: ParseIdentStep = parse_item_name(after_kw, "module name") ~? |err| ~- err
+
+    // Reject `module foo.bar`.
+    let nx_dot: SpannedToken? = peek(name_step.state)
+    let after_name: ParserState = match nx_dot {
+        ~0 => name_step.state,
+        _ => {
+            let nt: SpannedToken = nx_dot!!
+            if is_dot(nt.token) {
+                ~- make_unexpected_token_err(
+                    name_step.state,
+                    "`{` (inline body), `;`, or end of declaration — nested paths must use nested `module` blocks",
+                )
+            } else {
+                name_step.state
+            }
+        },
+    }
+
+    // `{ items… }` → InlineContent; otherwise ExternalContent.
+    let nx_brace: SpannedToken? = peek(after_name)
+    let content_outcome: ParseModuleContentStep~ParseError = {
+        match nx_brace {
+            ~0 => ~+ ParseModuleContentStep { state: eat_semi(after_name), content: ExternalContent },
+            _ => {
+                let nt: SpannedToken = nx_brace!!
+                match nt.token {
+                    LBrace => parse_inline_module_body(after_name),
+                    _ => ~+ ParseModuleContentStep { state: eat_semi(after_name), content: ExternalContent },
+                }
+            },
+        }
+    }
+    let content_step: ParseModuleContentStep = content_outcome ~? |err| ~- err
+    let prev_end: Integer = previous_token_end(content_step.state, head_start)
+    let module_decl: ModuleDecl = ModuleDecl {
+        visibility: visibility,
+        name: name_step.text,
+        content: content_step.content,
+    }
+    let res: AllocResult = alloc_item(
+        content_step.state.arena,
+        spanned_item(ModuleItem(module_decl), head_start, prev_end),
+    )
+    ~+ ParseItemStep {
+        state: ParserState {
+            tokens: content_step.state.tokens,
+            cursor: content_step.state.cursor,
+            arena: res.arena,
+        },
+        item_id: res.id,
+    }
+}
+
+public struct ParseModuleContentStep {
+    state: ParserState,
+    content: ModuleContent,
+}
+
+function parse_inline_module_body(s: ParserState) -> ParseModuleContentStep~ParseError = {
+    let after_open: ParserState = advance(s)  // consume `{`
+    let mutable state: ParserState = after_open
+    let mutable item_ids: Vector<Integer> = new()
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                err_slot = make_unexpected_eof_err(state, "`}` to close module body")
+                should_continue = false
+            },
+            _ => {
+                if is_rbrace(nx!!.token) {
+                    should_continue = false
+                } else {
+                    let outcome: ParseItemStep~ParseError = parse_item(state)
+                    match outcome {
+                        ~+ step => {
+                            item_ids = push(item_ids, step.item_id)
+                            state = step.state
+                        },
+                        ~- e => {
+                            err_slot = e
+                            should_continue = false
+                        },
+                    }
+                }
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => {
+            let after_close: ParserState = expect_rbrace(state) ~? |err| ~- err
+            ~+ ParseModuleContentStep { state: after_close, content: InlineContent(item_ids) }
+        },
+    }
+}
+
 // `parse_item` — visibility prefix + dispatch on the next keyword.
-// Stubs for struct / enum / module / import / from raise
-// `UnexpectedTokenErr` until v0.7.5.4b lands.
 public function parse_item(s: ParserState) -> ParseItemStep~ParseError = {
     // Capture span start before visibility (covers `public` prefix).
     let head_start: Integer = current_span_start(s)
@@ -2982,18 +3675,54 @@ public function parse_item(s: ParserState) -> ParseItemStep~ParseError = {
                     if is_type_kw(nt.token) {
                         parse_type_alias(after_vis, head_start, visibility)
                     } else {
-                        // .4b: struct / enum / module / import / from
-                        // currently surface as parser errors so .4a
-                        // stays self-contained.
-                        ~- make_unexpected_token_err(
-                            after_vis,
-                            "`function`, `constant`, or `type` (struct / enum / module / import land in v0.7.5.4b)",
-                        )
+                        if is_struct_kw(nt.token) {
+                            parse_struct(after_vis, head_start, visibility)
+                        } else {
+                            if is_enum_kw(nt.token) {
+                                parse_enum(after_vis, head_start, visibility)
+                            } else {
+                                if is_module_kw(nt.token) {
+                                    parse_module(after_vis, head_start, visibility)
+                                } else {
+                                    // `import` / `from` do not carry visibility (ADR-0005).
+                                    if is_import_kw(nt.token) {
+                                        match visibility {
+                                            PrivateVis => parse_import_item(after_vis, head_start),
+                                            _ => ~- reject_visibility_on_import(after_vis, "import"),
+                                        }
+                                    } else {
+                                        if is_from_kw(nt.token) {
+                                            match visibility {
+                                                PrivateVis => parse_from_import(after_vis, head_start),
+                                                _ => ~- reject_visibility_on_import(after_vis, "from"),
+                                            }
+                                        } else {
+                                            ~- make_unexpected_token_err(
+                                                after_vis,
+                                                "`function`, `constant`, `type`, `struct`, `enum`, `module`, `import`, `from`, or `public`",
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         },
     }
+}
+
+// Imports never carry visibility per ADR-0005 §"Imports — Python style".
+// Re-exporting an imported name is a post-v0.2.x feature.
+function reject_visibility_on_import(s: ParserState, kw_label: String) -> ParseError = {
+    let detail: ParseErrorDetail = ParseErrorDetail {
+        expected: "`function`, `constant`, `type`, `struct`, `enum`, or `module` after `public`",
+        found: concat("`", concat(kw_label, "` (re-exports of imported names are not yet implemented)")),
+        span_start: current_span_start(s),
+        span_end: current_span_end(s),
+    }
+    UnexpectedTokenErr(detail)
 }
 
 // `parse_program` — top-level driver. Loops over items until EOF
@@ -3396,14 +4125,112 @@ public function format_item(a: Arena, id: Integer) -> String = {
             let target_str: String = format_type(a, p.target)
             concat(head, concat(p.name, concat(" ", concat(target_str, ")"))))
         },
-        // .4b: struct / enum / module / import — placeholders until
-        // the second half of the item port lands.
-        StructItem(_) => "(struct …)",
-        EnumItem(_) => "(enum …)",
-        ImportItem(_) => "(import …)",
-        ImportFromItem(_) => "(from-import …)",
-        ModuleItem(_) => "(module …)",
+        StructItem(sd) => {
+            let head: String = concat(vis_prefix(sd.visibility), "(struct ")
+            let generics: String = format_generics(sd.type_params)
+            let fields_str: String = format_struct_fields(a, sd.fields)
+            concat(head, concat(sd.name, concat(generics, concat(" ", concat(fields_str, ")")))))
+        },
+        EnumItem(ed) => {
+            let head: String = concat(vis_prefix(ed.visibility), "(enum ")
+            let generics: String = format_generics(ed.type_params)
+            let variants_str: String = format_enum_variants(a, ed.variants)
+            concat(head, concat(ed.name, concat(generics, concat(" ", concat(variants_str, ")")))))
+        },
+        ImportItem(p) => concat("(import ", concat(format_dot_path(p.segments), ")")),
+        ImportFromItem(p) => {
+            let src: String = format_dot_path(p.source)
+            let names: String = format_import_names(p.names)
+            concat("(from-import ", concat(src, concat(" ", concat(names, ")"))))
+        },
+        ModuleItem(m) => {
+            let head: String = concat(vis_prefix(m.visibility), "(module ")
+            let content_str: String = match m.content {
+                ExternalContent => "external",
+                InlineContent(ids) => {
+                    let mutable out: String = "(inline"
+                    let mutable i: Integer = 0
+                    let n: Integer = length(ids)
+                    while i < n {
+                        let id: Integer = get(ids, i)!!
+                        out = concat(out, concat(" ", format_item(a, id)))
+                        i = i + 1
+                    }
+                    concat(out, ")")
+                },
+            }
+            concat(head, concat(m.name, concat(" ", concat(content_str, ")"))))
+        },
     }
+}
+
+// ── v0.7.5.4b helper printers ────────────────────────────────────
+
+function format_struct_fields(a: Arena, fields: Vector<StructField>) -> String = {
+    let n: Integer = length(fields)
+    let mutable out: String = "("
+    let mutable i: Integer = 0
+    while i < n {
+        if i > 0 {
+            out = concat(out, " ")
+        }
+        let f: StructField = get(fields, i)!!
+        out = concat(out, concat(f.name, concat(":", format_type(a, f.type_annotation))))
+        i = i + 1
+    }
+    concat(out, ")")
+}
+
+function format_enum_variants(a: Arena, variants: Vector<EnumVariant>) -> String = {
+    let n: Integer = length(variants)
+    let mutable out: String = "("
+    let mutable i: Integer = 0
+    while i < n {
+        if i > 0 {
+            out = concat(out, " ")
+        }
+        let v: EnumVariant = get(variants, i)!!
+        let payload_str: String = match v.payload {
+            ~0 => "",
+            _ => concat("(", concat(format_type(a, v.payload!!), ")")),
+        }
+        out = concat(out, concat(v.name, payload_str))
+        i = i + 1
+    }
+    concat(out, ")")
+}
+
+function format_dot_path(segments: Vector<String>) -> String = {
+    let n: Integer = length(segments)
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    while i < n {
+        if i > 0 {
+            out = concat(out, ".")
+        }
+        out = concat(out, get(segments, i)!!)
+        i = i + 1
+    }
+    out
+}
+
+function format_import_names(names: Vector<ImportName>) -> String = {
+    let n: Integer = length(names)
+    let mutable out: String = "("
+    let mutable i: Integer = 0
+    while i < n {
+        if i > 0 {
+            out = concat(out, " ")
+        }
+        let nm: ImportName = get(names, i)!!
+        let entry: String = match nm.alias {
+            ~0 => nm.name,
+            _ => concat(nm.name, concat("=", nm.alias!!)),
+        }
+        out = concat(out, entry)
+        i = i + 1
+    }
+    concat(out, ")")
 }
 
 public function format_program(p: Program) -> String = {
@@ -3550,5 +4377,63 @@ function main() -> Unit = {
         "(program (fn a () (= 1)) (fn b () (= 2)))",
     )
 
-    println("v0.7.5.4a item smoke passed")
+    // v0.7.5.4b — struct + enum + module + imports
+    assert_parse_program(
+        "struct Point { x: Integer, y: Integer }",
+        "(program (struct Point (x:Integer y:Integer)))",
+    )
+    assert_parse_program(
+        "public struct Box<T> { value: T }",
+        "(program public (struct Box<T> (value:T)))",
+    )
+    assert_parse_program(
+        "struct Empty { }",
+        "(program (struct Empty ()))",
+    )
+    assert_parse_program(
+        "enum Color { Red, Green, Blue }",
+        "(program (enum Color (Red Green Blue)))",
+    )
+    assert_parse_program(
+        "public enum Option<T> { Some(T), None }",
+        "(program public (enum Option<T> (Some(T) None)))",
+    )
+    assert_parse_program(
+        "enum Empty { }",
+        "(program (enum Empty ()))",
+    )
+    assert_parse_program(
+        "import std.io",
+        "(program (import std.io))",
+    )
+    assert_parse_program(
+        "import crate.lexer",
+        "(program (import crate.lexer))",
+    )
+    assert_parse_program(
+        "from std.io import println",
+        "(program (from-import std.io (println)))",
+    )
+    assert_parse_program(
+        "from std.io import println, print",
+        "(program (from-import std.io (println print)))",
+    )
+    assert_parse_program(
+        "from std.io import println as p",
+        "(program (from-import std.io (println=p)))",
+    )
+    assert_parse_program(
+        "module foo",
+        "(program (module foo external))",
+    )
+    assert_parse_program(
+        "module bar { function helper() = 0 }",
+        "(program (module bar (inline (fn helper () (= 0)))))",
+    )
+    assert_parse_program(
+        "public(package) module data { struct Cell { v: Integer } }",
+        "(program public(package) (module data (inline (struct Cell (v:Integer)))))",
+    )
+
+    println("v0.7.5.4b item smoke passed")
 }
