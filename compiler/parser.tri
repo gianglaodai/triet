@@ -56,6 +56,24 @@
 // Struct / Enum / Module / Import / ImportFrom parsers stub-fail
 // at `parse_item` dispatch — implementation lands in v0.7.5.4b.
 //
+// v0.7.5.5b — Full pattern grammar. Expands the v0.7.5.3 minimal
+// `Pattern` (Wildcard / Identifier) into the full grammar per
+// crates/triet-parser/src/pattern.rs. New variants: `LiteralPat`
+// (Integer / Ternary / String / Trilean — each in `LiteralPattern`
+// sub-enum), `TuplePat` (`(p1, p2, …)` with singleton `(p,)` vs
+// grouping `(p)` distinction matching the type grammar in .5a),
+// `OrPat` (top-level `a | b | c` — `parse_pattern_no_or` keeps `|`
+// from binding across structural boundaries), `RangePat` (`..`
+// exclusive / `..=` inclusive — supports negative range bounds
+// `-5..=5`), `NullPat` (the bare `null` keyword), `EnumVariantPat`
+// (`Variant(payload)` — bare identifier `Variant` falls back to
+// IdentifierPattern; the enum/variable distinction is resolved at
+// lowering time, mirroring the Rust impl), and `OutcomeArmPat`
+// (`~+ binding` / `~- binding` / `~0` per ADR-0020 §5). Negative
+// integer literals (`-N`) handled via dedicated
+// `parse_negative_literal_pattern` and as range bounds via
+// `parse_literal_pattern_payload`.
+//
 // v0.7.5.5a — Full type grammar. Expands the v0.7.5.3 placeholder
 // `parse_type_minimal` (single-Identifier `NamedType` only) into
 // the full ADR-0020 + ADR-0021 grammar in place: `NamedType` is
@@ -263,15 +281,55 @@ public enum Expr {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Pattern — v0.7.5.3 grows the surface to `Wildcard` + `Identifier`
-// (the minimum the statement layer needs for `let name = …`, `for
-// name in …`, `for _ in …`). Tuple / enum-variant / literal /
-// outcome patterns still defer to v0.7.5.5.
+// Pattern — v0.7.5.5b expands the v0.7.5.3 minimal surface
+// (Wildcard / Identifier) into the full grammar per
+// crates/triet-parser/src/pattern.rs. Mirrors triet-syntax::Pattern.
+// `Identifier` doubles as `Variable` in the Rust shape — the
+// distinction between "bind name" and "tag-check on enum variant"
+// is resolved at lowering time, not parse time.
 // ─────────────────────────────────────────────────────────────────
+
+// Pattern-position literals — distinct from Expr literals because
+// only Integer / Ternary / String / Trilean are valid pattern
+// scalars (no f-string, no `null` — null has its own variant).
+public struct LiteralIntegerPattern {
+    value: Integer,
+    suffix: NumericSuffix?,
+}
+
+public enum LiteralPattern {
+    IntegerLit(LiteralIntegerPattern),
+    TernaryLit(Integer),
+    StringLit(StringPayload),
+    TrileanLit(TrileanValue),
+}
+
+public struct RangePatternPayload {
+    range_start: LiteralPattern,
+    range_end: LiteralPattern,
+    inclusive: Trilean!,
+}
+
+public struct EnumVariantPatternPayload {
+    variant_name: String,
+    payload: Integer?,
+}
+
+public struct OutcomeArmPatternPayload {
+    arm: OutcomeArm,
+    payload: Integer?,
+}
 
 public enum Pattern {
     WildcardPattern,
     IdentifierPattern(StringPayload),
+    LiteralPat(LiteralPattern),
+    TuplePat(Vector<Integer>),
+    OrPat(Vector<Integer>),
+    RangePat(RangePatternPayload),
+    NullPat,
+    EnumVariantPat(EnumVariantPatternPayload),
+    OutcomeArmPat(OutcomeArmPatternPayload),
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1816,30 +1874,136 @@ function parse_outcome_default_postfix(s: ParserState, lhs: Integer) -> ParseSte
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Pattern parsing — minimal `Identifier | _` surface for v0.7.5.3.
-// Tuple / enum-variant / literal patterns land in v0.7.5.5.
+// Pattern parsing — v0.7.5.5b full grammar. Mirrors
+// crates/triet-parser/src/pattern.rs.
+//
+// Or-patterns (`a | b | c`) parse at the top level only;
+// sub-patterns (tuple elements, enum variant payloads, outcome arm
+// payloads) call `parse_pattern_no_or` so `|` stops at structural
+// boundaries.
 // ─────────────────────────────────────────────────────────────────
 
 function spanned_pattern(node: Pattern, start: Integer, end: Integer) -> SpannedPattern =
     SpannedPattern { node: node, span_start: start, span_end: end }
 
+// ── Step wrappers + literal helpers for .5b ──────────────────────
+
+public struct ParseLiteralPatternStep {
+    state: ParserState,
+    literal: LiteralPattern,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+function is_pipe(t: Token) -> Trilean! =
+    match t {
+        Pipe => true,
+        _ => false,
+    }
+
+function is_dotdot(t: Token) -> Trilean! =
+    match t {
+        DotDot => true,
+        _ => false,
+    }
+
+function is_dotdoteq(t: Token) -> Trilean! =
+    match t {
+        DotDotEq => true,
+        _ => false,
+    }
+
+function is_underscore(t: Token) -> Trilean! =
+    match t {
+        Underscore => true,
+        _ => false,
+    }
+
+function is_null_kw(t: Token) -> Trilean! =
+    match t {
+        NullKw => true,
+        _ => false,
+    }
+
+function is_minus(t: Token) -> Trilean! =
+    match t {
+        Minus => true,
+        _ => false,
+    }
+
+// Top-level pattern parse — handles or-patterns.
 public function parse_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
-    let nx_opt: SpannedToken? = peek(s)
-    match nx_opt {
-        ~0 => ~- make_unexpected_eof_err(s, "pattern (identifier or `_`)"),
-        ~+ nx => {
-            match nx.token {
-                Identifier(p) => {
-                    let advanced: ParserState = advance(s)
-                    let res: AllocResult = alloc_pattern(
-                        advanced.arena,
-                        spanned_pattern(IdentifierPattern(p), nx.span_start, nx.span_end),
-                    )
-                    ~+ ParsePatternStep {
-                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
-                        pattern_id: res.id,
+    let first: ParsePatternStep = parse_pattern_no_or(s) ~? |err| ~- err
+
+    // Peek for `|` — if absent, return as-is.
+    let nx: SpannedToken? = peek(first.state)
+    let has_pipe: Trilean! = match nx {
+        ~0 => false,
+        _ => is_pipe(nx!!.token),
+    }
+    if has_pipe {
+        let first_sp: SpannedPattern = get_pattern(first.state.arena, first.pattern_id)
+        let mutable state: ParserState = first.state
+        let mutable alts: Vector<Integer> = push(new(), first.pattern_id)
+        let mutable should_continue: Trilean! = true
+        let mutable err_slot: ParseError? = ~0
+        let mutable last_end: Integer = first_sp.span_end
+
+        while should_continue {
+            let nx2: SpannedToken? = peek(state)
+            match nx2 {
+                ~0 => {
+                    should_continue = false
+                },
+                _ => {
+                    if is_pipe(nx2!!.token) {
+                        let after_pipe: ParserState = advance(state)
+                        let alt_outcome: ParsePatternStep~ParseError = parse_pattern_no_or(after_pipe)
+                        match alt_outcome {
+                            ~+ alt_step => {
+                                alts = push(alts, alt_step.pattern_id)
+                                state = alt_step.state
+                                let alt_sp: SpannedPattern = get_pattern(state.arena, alt_step.pattern_id)
+                                last_end = alt_sp.span_end
+                            },
+                            ~- e => {
+                                err_slot = e
+                                should_continue = false
+                            },
+                        }
+                    } else {
+                        should_continue = false
                     }
                 },
+            }
+        }
+
+        match err_slot {
+            ~+ e => ~- e,
+            ~0 => {
+                let res: AllocResult = alloc_pattern(
+                    state.arena,
+                    spanned_pattern(OrPat(alts), first_sp.span_start, last_end),
+                )
+                ~+ ParsePatternStep {
+                    state: ParserState { tokens: state.tokens, cursor: state.cursor, arena: res.arena },
+                    pattern_id: res.id,
+                }
+            },
+        }
+    } else {
+        ~+ first
+    }
+}
+
+// Parse a single pattern that does NOT consume top-level `|`.
+// Mirrors Rust's parse_pattern_no_or.
+function parse_pattern_no_or(s: ParserState) -> ParsePatternStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(s)
+    match nx_opt {
+        ~0 => ~- make_unexpected_eof_err(s, "pattern"),
+        ~+ nx => {
+            match nx.token {
                 Underscore => {
                     let advanced: ParserState = advance(s)
                     let res: AllocResult = alloc_pattern(
@@ -1851,9 +2015,509 @@ public function parse_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
                         pattern_id: res.id,
                     }
                 },
-                _ => ~- make_unexpected_token_err(s, "pattern (identifier or `_`)"),
+                NullKw => {
+                    let advanced: ParserState = advance(s)
+                    let res: AllocResult = alloc_pattern(
+                        advanced.arena,
+                        spanned_pattern(NullPat, nx.span_start, nx.span_end),
+                    )
+                    ~+ ParsePatternStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        pattern_id: res.id,
+                    }
+                },
+                Identifier(p) => parse_identifier_or_enum_variant_pattern(s, p, nx.span_start, nx.span_end),
+                LParen => parse_tuple_pattern(s, nx.span_start),
+                TrueKw => parse_trilean_pattern_atom(s, TrueValue, nx.span_start, nx.span_end),
+                FalseKw => parse_trilean_pattern_atom(s, FalseValue, nx.span_start, nx.span_end),
+                UnknownKw => parse_trilean_pattern_atom(s, UnknownValue, nx.span_start, nx.span_end),
+                IntegerLiteral(_) => parse_literal_or_range_pattern(s),
+                TernaryLiteral(_) => parse_literal_or_range_pattern(s),
+                StringLiteral(_) => parse_literal_or_range_pattern(s),
+                Minus => parse_negative_literal_pattern(s),
+                TildePlus => parse_outcome_arm_pattern_with_payload(s, PositiveArm),
+                TildeMinus => parse_outcome_arm_pattern_with_payload(s, NegativeArm),
+                TildeZero => {
+                    let advanced: ParserState = advance(s)
+                    let res: AllocResult = alloc_pattern(
+                        advanced.arena,
+                        spanned_pattern(
+                            OutcomeArmPat(OutcomeArmPatternPayload { arm: ZeroArm, payload: ~0 }),
+                            nx.span_start,
+                            nx.span_end,
+                        ),
+                    )
+                    ~+ ParsePatternStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        pattern_id: res.id,
+                    }
+                },
+                _ => ~- make_unexpected_token_err(s, "pattern"),
             }
         },
+    }
+}
+
+// `Variant(subpattern)` vs bare `Variable` — disambiguated by
+// looking ahead for `(` after the identifier.
+function parse_identifier_or_enum_variant_pattern(
+    s: ParserState,
+    p: StringPayload,
+    span_start: Integer,
+    span_end: Integer,
+) -> ParsePatternStep~ParseError = {
+    let advanced: ParserState = advance(s)
+    let nx2: SpannedToken? = peek(advanced)
+    let is_variant: Trilean! = match nx2 {
+        ~0 => false,
+        _ => is_lparen(nx2!!.token),
+    }
+    if is_variant {
+        let after_open: ParserState = advance(advanced)
+        let payload_step: ParsePatternStep = parse_pattern(after_open) ~? |err| ~- err
+        let nx3: SpannedToken? = peek(payload_step.state)
+        match nx3 {
+            ~0 => ~- make_unexpected_eof_err(payload_step.state, "`)`"),
+            _ => {
+                let nt3: SpannedToken = nx3!!
+                if is_rparen(nt3.token) {
+                    let after_close: ParserState = advance(payload_step.state)
+                    let res: AllocResult = alloc_pattern(
+                        after_close.arena,
+                        spanned_pattern(
+                            EnumVariantPat(EnumVariantPatternPayload {
+                                variant_name: p.text,
+                                payload: payload_step.pattern_id,
+                            }),
+                            span_start,
+                            nt3.span_end,
+                        ),
+                    )
+                    ~+ ParsePatternStep {
+                        state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+                        pattern_id: res.id,
+                    }
+                } else {
+                    ~- make_unexpected_token_err(payload_step.state, "`)`")
+                }
+            },
+        }
+    } else {
+        let res: AllocResult = alloc_pattern(
+            advanced.arena,
+            spanned_pattern(IdentifierPattern(p), span_start, span_end),
+        )
+        ~+ ParsePatternStep {
+            state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+            pattern_id: res.id,
+        }
+    }
+}
+
+// `(p1, p2, ...)` tuple pattern. Single-element parens without
+// trailing comma are grouping (returns inner pattern unchanged).
+function parse_tuple_pattern(s: ParserState, open_start: Integer) -> ParsePatternStep~ParseError = {
+    let after_open: ParserState = advance(s)
+    // Empty tuple `()` — valid pattern (matches Unit).
+    let nx: SpannedToken? = peek(after_open)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(after_open, "pattern or `)`"),
+        _ => {
+            if is_rparen(nx!!.token) {
+                let close_end: Integer = nx!!.span_end
+                let after_close: ParserState = advance(after_open)
+                let res: AllocResult = alloc_pattern(
+                    after_close.arena,
+                    spanned_pattern(TuplePat(new()), open_start, close_end),
+                )
+                ~+ ParsePatternStep {
+                    state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+                    pattern_id: res.id,
+                }
+            } else {
+                let first_step: ParsePatternStep = parse_pattern(after_open) ~? |err| ~- err
+                let mutable state: ParserState = first_step.state
+                let mutable elems: Vector<Integer> = push(new(), first_step.pattern_id)
+                let mutable had_comma: Trilean! = false
+                let mutable should_continue: Trilean! = true
+                let mutable err_slot: ParseError? = ~0
+
+                while should_continue {
+                    let nx2: SpannedToken? = peek(state)
+                    match nx2 {
+                        ~0 => {
+                            err_slot = make_unexpected_eof_err(state, "`,` or `)`")
+                            should_continue = false
+                        },
+                        _ => {
+                            let nt: SpannedToken = nx2!!
+                            if is_comma(nt.token) {
+                                had_comma = true
+                                state = advance(state)
+                                let after_comma: SpannedToken? = peek(state)
+                                match after_comma {
+                                    ~0 => {
+                                        err_slot = make_unexpected_eof_err(state, "pattern or `)`")
+                                        should_continue = false
+                                    },
+                                    _ => {
+                                        if is_rparen(after_comma!!.token) {
+                                            should_continue = false
+                                        } else {
+                                            let next_outcome: ParsePatternStep~ParseError = parse_pattern(state)
+                                            match next_outcome {
+                                                ~+ next_step => {
+                                                    elems = push(elems, next_step.pattern_id)
+                                                    state = next_step.state
+                                                },
+                                                ~- e => {
+                                                    err_slot = e
+                                                    should_continue = false
+                                                },
+                                            }
+                                        }
+                                    },
+                                }
+                            } else {
+                                should_continue = false
+                            }
+                        },
+                    }
+                }
+
+                match err_slot {
+                    ~+ e => ~- e,
+                    ~0 => {
+                        let close_peek: SpannedToken? = peek(state)
+                        match close_peek {
+                            ~0 => ~- make_unexpected_eof_err(state, "`)`"),
+                            _ => {
+                                let nt: SpannedToken = close_peek!!
+                                if is_rparen(nt.token) {
+                                    let after_close: ParserState = advance(state)
+                                    // Single element without trailing comma → grouping.
+                                    if length(elems) == 1 {
+                                        if had_comma {
+                                            let res: AllocResult = alloc_pattern(
+                                                after_close.arena,
+                                                spanned_pattern(TuplePat(elems), open_start, nt.span_end),
+                                            )
+                                            ~+ ParsePatternStep {
+                                                state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+                                                pattern_id: res.id,
+                                            }
+                                        } else {
+                                            // Grouping — return inner pattern.
+                                            let inner: Integer = get(elems, 0)!!
+                                            ~+ ParsePatternStep {
+                                                state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: after_close.arena },
+                                                pattern_id: inner,
+                                            }
+                                        }
+                                    } else {
+                                        let res: AllocResult = alloc_pattern(
+                                            after_close.arena,
+                                            spanned_pattern(TuplePat(elems), open_start, nt.span_end),
+                                        )
+                                        ~+ ParsePatternStep {
+                                            state: ParserState { tokens: after_close.tokens, cursor: after_close.cursor, arena: res.arena },
+                                            pattern_id: res.id,
+                                        }
+                                    }
+                                } else {
+                                    ~- make_unexpected_token_err(state, "`)`")
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    }
+}
+
+// Atom Trilean literal pattern (`true` / `false` / `unknown`).
+function parse_trilean_pattern_atom(
+    s: ParserState,
+    value: TrileanValue,
+    span_start: Integer,
+    span_end: Integer,
+) -> ParsePatternStep~ParseError = {
+    let advanced: ParserState = advance(s)
+    let res: AllocResult = alloc_pattern(
+        advanced.arena,
+        spanned_pattern(LiteralPat(TrileanLit(value)), span_start, span_end),
+    )
+    ~+ ParsePatternStep {
+        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+        pattern_id: res.id,
+    }
+}
+
+// Parse a literal pattern, optionally followed by `..` or `..=`
+// to form a range pattern.
+function parse_literal_or_range_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
+    let start_step: ParseLiteralPatternStep = parse_literal_pattern_payload(s) ~? |err| ~- err
+    let nx: SpannedToken? = peek(start_step.state)
+    let range_kind: Integer = match nx {
+        ~0 => 0,
+        _ => {
+            let nt: SpannedToken = nx!!
+            if is_dotdoteq(nt.token) {
+                2
+            } else {
+                if is_dotdot(nt.token) {
+                    1
+                } else {
+                    0
+                }
+            }
+        },
+    }
+    if range_kind == 0 {
+        let res: AllocResult = alloc_pattern(
+            start_step.state.arena,
+            spanned_pattern(LiteralPat(start_step.literal), start_step.span_start, start_step.span_end),
+        )
+        ~+ ParsePatternStep {
+            state: ParserState { tokens: start_step.state.tokens, cursor: start_step.state.cursor, arena: res.arena },
+            pattern_id: res.id,
+        }
+    } else {
+        let inclusive: Trilean! = range_kind == 2
+        let after_op: ParserState = advance(start_step.state)
+        let end_step: ParseLiteralPatternStep = parse_literal_pattern_payload(after_op) ~? |err| ~- err
+        let res: AllocResult = alloc_pattern(
+            end_step.state.arena,
+            spanned_pattern(
+                RangePat(RangePatternPayload {
+                    range_start: start_step.literal,
+                    range_end: end_step.literal,
+                    inclusive: inclusive,
+                }),
+                start_step.span_start,
+                end_step.span_end,
+            ),
+        )
+        ~+ ParsePatternStep {
+            state: ParserState { tokens: end_step.state.tokens, cursor: end_step.state.cursor, arena: res.arena },
+            pattern_id: res.id,
+        }
+    }
+}
+
+// `-N` negative integer literal pattern, optionally followed by
+// range continuation.
+function parse_negative_literal_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
+    let minus_tok: SpannedToken = peek(s)!!
+    let after_minus: ParserState = advance(s)
+    let nx: SpannedToken? = peek(after_minus)
+    let lit_step: ParseLiteralPatternStep = match nx {
+        ~0 => ~- make_unexpected_eof_err(after_minus, "integer literal after `-`"),
+        ~+ nt => {
+            match nt.token {
+                IntegerLiteral(int_p) => {
+                    let advanced: ParserState = advance(after_minus)
+                    ParseLiteralPatternStep {
+                        state: advanced,
+                        literal: IntegerLit(LiteralIntegerPattern {
+                            value: -int_p.literal.value,
+                            suffix: int_p.literal.suffix,
+                        }),
+                        span_start: minus_tok.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                TernaryLiteral(int_p) => {
+                    let advanced: ParserState = advance(after_minus)
+                    ParseLiteralPatternStep {
+                        state: advanced,
+                        literal: TernaryLit(-int_p.literal.value),
+                        span_start: minus_tok.span_start,
+                        span_end: nt.span_end,
+                    }
+                },
+                _ => ~- make_unexpected_token_err(after_minus, "integer literal after `-`"),
+            }
+        },
+    }
+
+    // Optional range continuation.
+    let nx_range: SpannedToken? = peek(lit_step.state)
+    let range_kind: Integer = match nx_range {
+        ~0 => 0,
+        _ => {
+            let nt: SpannedToken = nx_range!!
+            if is_dotdoteq(nt.token) {
+                2
+            } else {
+                if is_dotdot(nt.token) {
+                    1
+                } else {
+                    0
+                }
+            }
+        },
+    }
+    if range_kind == 0 {
+        let res: AllocResult = alloc_pattern(
+            lit_step.state.arena,
+            spanned_pattern(LiteralPat(lit_step.literal), lit_step.span_start, lit_step.span_end),
+        )
+        ~+ ParsePatternStep {
+            state: ParserState { tokens: lit_step.state.tokens, cursor: lit_step.state.cursor, arena: res.arena },
+            pattern_id: res.id,
+        }
+    } else {
+        let inclusive: Trilean! = range_kind == 2
+        let after_op: ParserState = advance(lit_step.state)
+        let end_step: ParseLiteralPatternStep = parse_literal_pattern_payload(after_op) ~? |err| ~- err
+        let res: AllocResult = alloc_pattern(
+            end_step.state.arena,
+            spanned_pattern(
+                RangePat(RangePatternPayload {
+                    range_start: lit_step.literal,
+                    range_end: end_step.literal,
+                    inclusive: inclusive,
+                }),
+                lit_step.span_start,
+                end_step.span_end,
+            ),
+        )
+        ~+ ParsePatternStep {
+            state: ParserState { tokens: end_step.state.tokens, cursor: end_step.state.cursor, arena: res.arena },
+            pattern_id: res.id,
+        }
+    }
+}
+
+// Pull a literal value (with optional leading `-`) and its span.
+// Used by both `parse_literal_or_range_pattern` and as the range-
+// end parser.
+function parse_literal_pattern_payload(s: ParserState) -> ParseLiteralPatternStep~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "literal"),
+        ~+ nt => {
+            // Leading `-` allowed (e.g. range `-5..=5`).
+            if is_minus(nt.token) {
+                let after_minus: ParserState = advance(s)
+                let nx2: SpannedToken? = peek(after_minus)
+                match nx2 {
+                    ~0 => ~- make_unexpected_eof_err(after_minus, "literal after `-`"),
+                    ~+ nt2 => {
+                        match nt2.token {
+                            IntegerLiteral(int_p) => {
+                                let advanced: ParserState = advance(after_minus)
+                                ~+ ParseLiteralPatternStep {
+                                    state: advanced,
+                                    literal: IntegerLit(LiteralIntegerPattern {
+                                        value: -int_p.literal.value,
+                                        suffix: int_p.literal.suffix,
+                                    }),
+                                    span_start: nt.span_start,
+                                    span_end: nt2.span_end,
+                                }
+                            },
+                            TernaryLiteral(int_p) => {
+                                let advanced: ParserState = advance(after_minus)
+                                ~+ ParseLiteralPatternStep {
+                                    state: advanced,
+                                    literal: TernaryLit(-int_p.literal.value),
+                                    span_start: nt.span_start,
+                                    span_end: nt2.span_end,
+                                }
+                            },
+                            _ => ~- make_unexpected_token_err(after_minus, "integer literal"),
+                        }
+                    },
+                }
+            } else {
+                match nt.token {
+                    IntegerLiteral(int_p) => {
+                        let advanced: ParserState = advance(s)
+                        ~+ ParseLiteralPatternStep {
+                            state: advanced,
+                            literal: IntegerLit(LiteralIntegerPattern {
+                                value: int_p.literal.value,
+                                suffix: int_p.literal.suffix,
+                            }),
+                            span_start: nt.span_start,
+                            span_end: nt.span_end,
+                        }
+                    },
+                    TernaryLiteral(int_p) => {
+                        let advanced: ParserState = advance(s)
+                        ~+ ParseLiteralPatternStep {
+                            state: advanced,
+                            literal: TernaryLit(int_p.literal.value),
+                            span_start: nt.span_start,
+                            span_end: nt.span_end,
+                        }
+                    },
+                    StringLiteral(p) => {
+                        let advanced: ParserState = advance(s)
+                        ~+ ParseLiteralPatternStep {
+                            state: advanced,
+                            literal: StringLit(p),
+                            span_start: nt.span_start,
+                            span_end: nt.span_end,
+                        }
+                    },
+                    TrueKw => {
+                        let advanced: ParserState = advance(s)
+                        ~+ ParseLiteralPatternStep {
+                            state: advanced,
+                            literal: TrileanLit(TrueValue),
+                            span_start: nt.span_start,
+                            span_end: nt.span_end,
+                        }
+                    },
+                    FalseKw => {
+                        let advanced: ParserState = advance(s)
+                        ~+ ParseLiteralPatternStep {
+                            state: advanced,
+                            literal: TrileanLit(FalseValue),
+                            span_start: nt.span_start,
+                            span_end: nt.span_end,
+                        }
+                    },
+                    UnknownKw => {
+                        let advanced: ParserState = advance(s)
+                        ~+ ParseLiteralPatternStep {
+                            state: advanced,
+                            literal: TrileanLit(UnknownValue),
+                            span_start: nt.span_start,
+                            span_end: nt.span_end,
+                        }
+                    },
+                    _ => ~- make_unexpected_token_err(s, "literal"),
+                }
+            }
+        },
+    }
+}
+
+// `~+ subpattern` or `~- subpattern` outcome arm pattern with payload.
+function parse_outcome_arm_pattern_with_payload(
+    s: ParserState,
+    arm: OutcomeArm,
+) -> ParsePatternStep~ParseError = {
+    let op_tok: SpannedToken = peek(s)!!
+    let advanced: ParserState = advance(s)
+    let payload_step: ParsePatternStep = parse_pattern_no_or(advanced) ~? |err| ~- err
+    let payload_sp: SpannedPattern = get_pattern(payload_step.state.arena, payload_step.pattern_id)
+    let res: AllocResult = alloc_pattern(
+        payload_step.state.arena,
+        spanned_pattern(
+            OutcomeArmPat(OutcomeArmPatternPayload { arm: arm, payload: payload_step.pattern_id }),
+            op_tok.span_start,
+            payload_sp.span_end,
+        ),
+    )
+    ~+ ParsePatternStep {
+        state: ParserState { tokens: payload_step.state.tokens, cursor: payload_step.state.cursor, arena: res.arena },
+        pattern_id: res.id,
     }
 }
 
@@ -4424,8 +5088,65 @@ public function format_pattern(a: Arena, id: Integer) -> String = {
     match sp.node {
         WildcardPattern => "_",
         IdentifierPattern(p) => p.text,
+        LiteralPat(lit) => format_literal_pattern(lit),
+        NullPat => "null",
+        TuplePat(elems) => {
+            let mutable out: String = "("
+            let n: Integer = length(elems)
+            let mutable i: Integer = 0
+            while i < n {
+                if i > 0 {
+                    out = concat(out, ",")
+                }
+                let elem_id: Integer = get(elems, i)!!
+                out = concat(out, format_pattern(a, elem_id))
+                i = i + 1
+            }
+            concat(out, ")")
+        },
+        OrPat(alts) => {
+            let mutable out: String = "(or"
+            let n: Integer = length(alts)
+            let mutable i: Integer = 0
+            while i < n {
+                let alt_id: Integer = get(alts, i)!!
+                out = concat(out, concat(" ", format_pattern(a, alt_id)))
+                i = i + 1
+            }
+            concat(out, ")")
+        },
+        RangePat(p) => {
+            let op: String = if p.inclusive {
+                "..="
+            } else {
+                ".."
+            }
+            concat("(range ", concat(format_literal_pattern(p.range_start), concat(op, concat(format_literal_pattern(p.range_end), ")"))))
+        },
+        EnumVariantPat(p) => {
+            let payload_str: String = match p.payload {
+                ~0 => "",
+                _ => concat(" ", format_pattern(a, p.payload!!)),
+            }
+            concat("(", concat(p.variant_name, concat(payload_str, ")")))
+        },
+        OutcomeArmPat(p) => {
+            let arm_str: String = outcome_arm_name(p.arm)
+            match p.payload {
+                ~0 => arm_str,
+                _ => concat("(", concat(arm_str, concat(" ", concat(format_pattern(a, p.payload!!), ")")))),
+            }
+        },
     }
 }
+
+function format_literal_pattern(lit: LiteralPattern) -> String =
+    match lit {
+        IntegerLit(p) => from_integer(p.value),
+        TernaryLit(v) => from_integer(v),
+        StringLit(p) => concat("\"", concat(p.text, "\"")),
+        TrileanLit(v) => trilean_name(v),
+    }
 
 public function format_type(a: Arena, id: Integer) -> String = {
     let sp: SpannedTypeExpr = get_type(a, id)
@@ -4859,6 +5580,27 @@ function assert_parse_type(source: String, expected: String) -> Unit = {
     assert(printed == expected)
 }
 
+// ── v0.7.5.5b pattern-level smoke helpers ───────────────────────
+
+function parse_pattern_or_fail(source: String) -> ParsePatternStep = {
+    let toks: Vector<SpannedToken> = lex_or_fail(source)
+    let st: ParserState = parser_new(toks)
+    let outcome: ParsePatternStep~ParseError = parse_pattern(st)
+    match outcome {
+        ~+ step => step,
+        ~- _ => {
+            assert(false)
+            ParsePatternStep { state: parser_new(new()), pattern_id: 0 }
+        },
+    }
+}
+
+function assert_parse_pattern(source: String, expected: String) -> Unit = {
+    let step: ParsePatternStep = parse_pattern_or_fail(source)
+    let printed: String = format_pattern(step.state.arena, step.pattern_id)
+    assert(printed == expected)
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Entry — exercises the Pratt parser + statement + item layers
 // ─────────────────────────────────────────────────────────────────
@@ -5050,5 +5792,34 @@ function main() -> Unit = {
     assert_parse_type("Integer?~ParseError", "Integer?~ParseError")
     assert_parse_type("Vector<Token>~LexError", "Vector<Token>~LexError")
 
-    println("v0.7.5.5a item + type smoke passed")
+    // v0.7.5.5b — full pattern grammar
+    assert_parse_pattern("_", "_")
+    assert_parse_pattern("x", "x")
+    assert_parse_pattern("null", "null")
+    assert_parse_pattern("42", "42")
+    assert_parse_pattern("\"hello\"", "\"hello\"")
+    assert_parse_pattern("true", "true")
+    assert_parse_pattern("unknown", "unknown")
+    assert_parse_pattern("-5", "-5")
+    assert_parse_pattern("0..10", "(range 0..10)")
+    assert_parse_pattern("0..=9", "(range 0..=9)")
+    assert_parse_pattern("-5..=5", "(range -5..=5)")
+    assert_parse_pattern("(a, b)", "(a,b)")
+    assert_parse_pattern("(a, _, c)", "(a,_,c)")
+    assert_parse_pattern("(x,)", "(x)")
+    assert_parse_pattern("(x)", "x")
+    assert_parse_pattern("1 | 2 | 3", "(or 1 2 3)")
+    assert_parse_pattern("Some(x)", "(Some x)")
+    assert_parse_pattern("None", "None")
+    assert_parse_pattern("Some(_)", "(Some _)")
+    // Multi-element variant payload uses an explicit tuple wrap —
+    // enum variants take exactly one payload per Triết grammar, so
+    // `Cell((c, d))` matches a `Cell((Integer, Integer))` shape.
+    assert_parse_pattern("Cell((c, d))", "(Cell (c,d))")
+    assert_parse_pattern("~+ value", "(~+ value)")
+    assert_parse_pattern("~- err", "(~- err)")
+    assert_parse_pattern("~0", "~0")
+    assert_parse_pattern("~+ _", "(~+ _)")
+
+    println("v0.7.5.5b item + type + pattern smoke passed")
 }
