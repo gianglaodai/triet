@@ -22,6 +22,18 @@
 // arena)` functionally and parse helpers return `ParseStep~ParseError`
 // (wrapper struct, not a tuple — IR tuple returns defer post-v1.0).
 //
+// v0.7.5.3 — Statements + bindings. Brings the parser up to
+// crates/triet-parser/src/stmt.rs: `Block`, the `Stmt` enum
+// (`Let` / `Constant` / `Return` / `Break` / `Continue` / `For` /
+// `While` / `While?` / `Loop` / `Assign` / `ExpressionStmt`),
+// plus the brace-delimited `parse_block` driver that flips an
+// element between `Statement` and the block's `FinalExpression`
+// via `parse_statement_or_final_expr`. `parse_pattern` lands in
+// minimal form (`Identifier` / `_`) — just enough for `let x = …`,
+// `let _ = …` and `for i in …`. Tuple destructuring, the full
+// type grammar, items, and parser-level error recovery stay
+// deferred to v0.7.5.{4, 5, 6}.
+//
 // AllocResult / ParseStep wrap (arena, id) / (state, expr_id) because
 // IR tuple returns are deferred post-v1.0 per SPEC §95 — without
 // tuple returns, the alloc helpers can't expose Rust's
@@ -188,13 +200,20 @@ public enum Expr {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Pattern / TypeExpr / Stmt — still placeholder surfaces from
-// v0.7.5.1. Expanded in v0.7.5.{3, 5}.
+// Pattern — v0.7.5.3 grows the surface to `Wildcard` + `Identifier`
+// (the minimum the statement layer needs for `let name = …`, `for
+// name in …`, `for _ in …`). Tuple / enum-variant / literal /
+// outcome patterns still defer to v0.7.5.5.
 // ─────────────────────────────────────────────────────────────────
 
 public enum Pattern {
     WildcardPattern,
+    IdentifierPattern(StringPayload),
 }
+
+// ─────────────────────────────────────────────────────────────────
+// TypeExpr — placeholder. Expanded in v0.7.5.5.
+// ─────────────────────────────────────────────────────────────────
 
 public struct NamedTypePayload {
     name: String,
@@ -204,11 +223,81 @@ public enum TypeExpr {
     NamedType(NamedTypePayload),
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Block — brace-delimited body shared by `for` / `while` / `loop`
+// and (later, when block expressions land) Expr::BlockExpr. Mirrors
+// triet-syntax::stmt::Block: a list of statement IDs plus an
+// optional trailing expression that produces the block's value.
+// ─────────────────────────────────────────────────────────────────
+
+public struct Block {
+    block_statements: Vector<Integer>,
+    block_final: Integer?,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Stmt — v0.7.5.3 brings the parser up to the full Rust shape:
+// Let / Constant / Return / Break / Continue / For / While / Loop /
+// Assign / ExpressionStmt. Each multi-field variant carries its own
+// payload struct because Triết enum variants take a single payload.
+// ─────────────────────────────────────────────────────────────────
+
+public struct LetStmtPayload {
+    name: String,
+    is_mutable: Trilean!,
+    type_annotation: Integer?,
+    value: Integer,
+}
+
+public struct ConstantStmtPayload {
+    name: String,
+    type_annotation: Integer?,
+    value: Integer,
+}
+
+public struct ReturnStmtPayload {
+    value: Integer?,
+}
+
+public struct BreakStmtPayload {
+    value: Integer?,
+}
+
+public struct ForStmtPayload {
+    variable: Integer,
+    iterable: Integer,
+    body: Block,
+}
+
+public struct WhileStmtPayload {
+    condition: Integer,
+    body: Block,
+    treat_unknown_as_false: Trilean!,
+}
+
+public struct LoopStmtPayload {
+    body: Block,
+}
+
+public struct AssignStmtPayload {
+    target: String,
+    value: Integer,
+}
+
 public struct ExpressionStmtPayload {
     expression: Integer,
 }
 
 public enum Stmt {
+    LetStmt(LetStmtPayload),
+    ConstantStmt(ConstantStmtPayload),
+    ReturnStmt(ReturnStmtPayload),
+    BreakStmt(BreakStmtPayload),
+    ContinueStmt,
+    ForStmt(ForStmtPayload),
+    WhileStmt(WhileStmtPayload),
+    LoopStmt(LoopStmtPayload),
+    AssignStmt(AssignStmtPayload),
     ExpressionStmt(ExpressionStmtPayload),
 }
 
@@ -387,6 +476,39 @@ public struct ParseStep {
     expr_id: Integer,
 }
 
+// ── v0.7.5.3 step wrappers ──────────────────────────────────────
+
+public struct ParseStmtStep {
+    state: ParserState,
+    stmt_id: Integer,
+}
+
+public struct ParsePatternStep {
+    state: ParserState,
+    pattern_id: Integer,
+}
+
+public struct ParseBlockStep {
+    state: ParserState,
+    block: Block,
+}
+
+// `parse_statement_or_final_expr` may return either a finished
+// statement (allocated into the arena) or an expression that turned
+// out to be the block's final value (no trailing `;`). Triết's
+// enum-with-payload models the tagged union; `BlockElementStep`
+// wraps the (state, BlockElement) pair so the loop in `parse_block`
+// can advance the cursor regardless of which branch fired.
+public enum BlockElement {
+    StatementElem(Integer),
+    FinalExprElem(Integer),
+}
+
+public struct BlockElementStep {
+    state: ParserState,
+    element: BlockElement,
+}
+
 public function parser_new(tokens: Vector<SpannedToken>) -> ParserState =
     ParserState { tokens: tokens, cursor: 0, arena: arena_new() }
 
@@ -556,6 +678,149 @@ function make_unexpected_eof_err(s: ParserState, expected: String) -> ParseError
         span_end: pos,
     }
     UnexpectedEofErr(detail)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Token predicates / expect helpers — v0.7.5.3.
+//
+// Triết doesn't expose a structural-equality compare over the
+// `Token` enum (variants carry distinct payloads), so each
+// kind-check is its own match arm. `expect_*` helpers consume the
+// token if its kind matches, otherwise propagate a `ParseError`
+// outcome — matching the Rust impl's `Parser::expect`. `eat_*`
+// returns the advanced state if the token matched and the input
+// state otherwise, so callers can express the "optional `;`" /
+// "optional `mutable`" patterns idiomatically.
+// ─────────────────────────────────────────────────────────────────
+
+function is_semi(t: Token) -> Trilean! =
+    match t {
+        Semi => true,
+        _ => false,
+    }
+
+function is_rbrace(t: Token) -> Trilean! =
+    match t {
+        RBrace => true,
+        _ => false,
+    }
+
+function is_assign_token(t: Token) -> Trilean! =
+    match t {
+        Assign => true,
+        _ => false,
+    }
+
+function is_comma(t: Token) -> Trilean! =
+    match t {
+        Comma => true,
+        _ => false,
+    }
+
+function is_mutable_kw(t: Token) -> Trilean! =
+    match t {
+        MutableKw => true,
+        _ => false,
+    }
+
+function is_while_q_kw(t: Token) -> Trilean! =
+    match t {
+        WhileQKw => true,
+        _ => false,
+    }
+
+// `return` / `break` look ahead to decide whether a value follows;
+// the value is absent when the next token is `;`, `}`, `,`, or EOF.
+// (Mirrors the Rust `matches!(peek_token(), None | Some(Token::Semi
+// | Token::RBrace | Token::Comma))` guard.)
+function is_value_terminator(t: Token) -> Trilean! =
+    match t {
+        Semi => true,
+        RBrace => true,
+        Comma => true,
+        _ => false,
+    }
+
+function eat_semi(s: ParserState) -> ParserState = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => s,
+        _ => if is_semi(nx!!.token) { advance(s) } else { s },
+    }
+}
+
+public struct EatFlagStep {
+    state: ParserState,
+    was_present: Trilean!,
+}
+
+function eat_mutable(s: ParserState) -> EatFlagStep = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => EatFlagStep { state: s, was_present: false },
+        _ => if is_mutable_kw(nx!!.token) {
+            EatFlagStep { state: advance(s), was_present: true }
+        } else {
+            EatFlagStep { state: s, was_present: false }
+        },
+    }
+}
+
+function expect_assign(s: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "`=`"),
+        _ => if is_assign_token(nx!!.token) {
+            ~+ advance(s)
+        } else {
+            ~- make_unexpected_token_err(s, "`=`")
+        },
+    }
+}
+
+function expect_lbrace(s: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "`{`"),
+        _ => match nx!!.token {
+            LBrace => ~+ advance(s),
+            _ => ~- make_unexpected_token_err(s, "`{`"),
+        },
+    }
+}
+
+function expect_rbrace(s: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "`}`"),
+        _ => if is_rbrace(nx!!.token) {
+            ~+ advance(s)
+        } else {
+            ~- make_unexpected_token_err(s, "`}`")
+        },
+    }
+}
+
+function expect_in_kw(s: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "`in`"),
+        _ => match nx!!.token {
+            InKw => ~+ advance(s),
+            _ => ~- make_unexpected_token_err(s, "`in`"),
+        },
+    }
+}
+
+function expect_colon(s: ParserState) -> ParserState~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~- make_unexpected_eof_err(s, "`:`"),
+        _ => match nx!!.token {
+            Colon => ~+ advance(s),
+            _ => ~- make_unexpected_token_err(s, "`:`"),
+        },
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -973,7 +1238,7 @@ function parse_postfix(s: ParserState, lhs: Integer) -> ParseStep~ParseError = {
         BangBang => parse_bangbang_postfix(s, lhs, next),
         TildeQuestion => parse_outcome_propagate_postfix(s, lhs),
         TildeColon => parse_outcome_default_postfix(s, lhs),
-        QuestionDot => ~- make_unexpected_token_err(s, "operator (safe access `?.` deferred to v0.7.5.3)"),
+        QuestionDot => ~- make_unexpected_token_err(s, "operator (safe access `?.` deferred to v0.7.5.4)"),
         _ => ~- make_unexpected_token_err(s, "postfix operator"),
     }
 }
@@ -1260,6 +1525,611 @@ function parse_outcome_default_postfix(s: ParserState, lhs: Integer) -> ParseSte
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Pattern parsing — minimal `Identifier | _` surface for v0.7.5.3.
+// Tuple / enum-variant / literal patterns land in v0.7.5.5.
+// ─────────────────────────────────────────────────────────────────
+
+function spanned_pattern(node: Pattern, start: Integer, end: Integer) -> SpannedPattern =
+    SpannedPattern { node: node, span_start: start, span_end: end }
+
+public function parse_pattern(s: ParserState) -> ParsePatternStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(s)
+    match nx_opt {
+        ~0 => ~- make_unexpected_eof_err(s, "pattern (identifier or `_`)"),
+        ~+ nx => {
+            match nx.token {
+                Identifier(p) => {
+                    let advanced: ParserState = advance(s)
+                    let res: AllocResult = alloc_pattern(
+                        advanced.arena,
+                        spanned_pattern(IdentifierPattern(p), nx.span_start, nx.span_end),
+                    )
+                    ~+ ParsePatternStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        pattern_id: res.id,
+                    }
+                },
+                Underscore => {
+                    let advanced: ParserState = advance(s)
+                    let res: AllocResult = alloc_pattern(
+                        advanced.arena,
+                        spanned_pattern(WildcardPattern, nx.span_start, nx.span_end),
+                    )
+                    ~+ ParsePatternStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        pattern_id: res.id,
+                    }
+                },
+                _ => ~- make_unexpected_token_err(s, "pattern (identifier or `_`)"),
+            }
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Statement parsing — `let`, `constant`, `return`, `break`,
+// `continue`, `for`, `while` / `while?`, `loop`, plus the assign
+// vs expr-stmt vs final-expression dispatch handled by
+// `parse_statement_or_final_expr`. Mirrors
+// crates/triet-parser/src/stmt.rs.
+// ─────────────────────────────────────────────────────────────────
+
+function spanned_stmt(node: Stmt, start: Integer, end: Integer) -> SpannedStmt =
+    SpannedStmt { node: node, span_start: start, span_end: end }
+
+// `let [mutable] name (: T)? = expr ;?`
+function parse_let(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let after_let: ParserState = advance(s)
+
+    let mut_step: EatFlagStep = eat_mutable(after_let)
+    let after_mut: ParserState = mut_step.state
+    let is_mut: Trilean! = mut_step.was_present
+
+    let name_opt: SpannedToken? = peek(after_mut)
+    let parsed_name: StringPayload = match name_opt {
+        ~0 => ~- make_unexpected_eof_err(after_mut, "identifier after `let`"),
+        _ => {
+            let nt: SpannedToken = name_opt!!
+            match nt.token {
+                Identifier(p) => p,
+                _ => ~- make_unexpected_token_err(after_mut, "identifier"),
+            }
+        },
+    }
+    let after_name: ParserState = advance(after_mut)
+
+    // Optional `: TypeExpr`. v0.7.5.3 parses the annotation as a
+    // bare identifier and allocates a NamedType node — full type
+    // grammar lands in v0.7.5.5.
+    let ann_step: ParseLetAnnotation = parse_optional_type_annotation(after_name) ~? |err| ~- err
+    let after_ann: ParserState = ann_step.state
+    let type_annotation: Integer? = ann_step.annotation_id
+
+    let after_eq: ParserState = expect_assign(after_ann) ~? |err| ~- err
+    let val_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(val_step.state)
+
+    let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
+    let payload: LetStmtPayload = LetStmtPayload {
+        name: parsed_name.text,
+        is_mutable: is_mut,
+        type_annotation: type_annotation,
+        value: val_step.expr_id,
+    }
+    let res: AllocResult = alloc_statement(
+        after_semi.arena,
+        spanned_stmt(LetStmt(payload), head_start, val_sp.span_end),
+    )
+    ~+ ParseStmtStep {
+        state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+        stmt_id: res.id,
+    }
+}
+
+// `constant NAME (: T)? = expr ;?`
+function parse_constant(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let after_kw: ParserState = advance(s)
+
+    let name_opt: SpannedToken? = peek(after_kw)
+    let parsed_name: StringPayload = match name_opt {
+        ~0 => ~- make_unexpected_eof_err(after_kw, "identifier after `constant`"),
+        _ => {
+            let nt: SpannedToken = name_opt!!
+            match nt.token {
+                Identifier(p) => p,
+                _ => ~- make_unexpected_token_err(after_kw, "identifier"),
+            }
+        },
+    }
+    let after_name: ParserState = advance(after_kw)
+
+    let ann_step: ParseLetAnnotation = parse_optional_type_annotation(after_name) ~? |err| ~- err
+    let after_ann: ParserState = ann_step.state
+    let type_annotation: Integer? = ann_step.annotation_id
+
+    let after_eq: ParserState = expect_assign(after_ann) ~? |err| ~- err
+    let val_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(val_step.state)
+
+    let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
+    let payload: ConstantStmtPayload = ConstantStmtPayload {
+        name: parsed_name.text,
+        type_annotation: type_annotation,
+        value: val_step.expr_id,
+    }
+    let res: AllocResult = alloc_statement(
+        after_semi.arena,
+        spanned_stmt(ConstantStmt(payload), head_start, val_sp.span_end),
+    )
+    ~+ ParseStmtStep {
+        state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+        stmt_id: res.id,
+    }
+}
+
+// Helper for the shared `let` / `constant` annotation slot.
+public struct ParseLetAnnotation {
+    state: ParserState,
+    annotation_id: Integer?,
+}
+
+function parse_optional_type_annotation(s: ParserState) -> ParseLetAnnotation~ParseError = {
+    let nx: SpannedToken? = peek(s)
+    match nx {
+        ~0 => ~+ ParseLetAnnotation { state: s, annotation_id: ~0 },
+        _ => {
+            let nt: SpannedToken = nx!!
+            match nt.token {
+                Colon => {
+                    let after_colon: ParserState = advance(s)
+                    let ty_step: ParseTypeStep = parse_type_minimal(after_colon) ~? |err| ~- err
+                    ~+ ParseLetAnnotation { state: ty_step.state, annotation_id: ty_step.type_id }
+                },
+                _ => ~+ ParseLetAnnotation { state: s, annotation_id: ~0 },
+            }
+        },
+    }
+}
+
+public struct ParseTypeStep {
+    state: ParserState,
+    type_id: Integer,
+}
+
+// v0.7.5.3 only needs the type-annotation slot of `let`/`constant`,
+// so this is a placeholder that accepts a single Identifier and
+// allocates a `NamedType`. Full grammar (generics, `T?`, `T~E`,
+// function types) lands with v0.7.5.5.
+function parse_type_minimal(s: ParserState) -> ParseTypeStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(s)
+    match nx_opt {
+        ~0 => ~- make_unexpected_eof_err(s, "type name"),
+        ~+ nx => {
+            match nx.token {
+                Identifier(p) => {
+                    let advanced: ParserState = advance(s)
+                    let res: AllocResult = alloc_type(
+                        advanced.arena,
+                        SpannedTypeExpr {
+                            node: NamedType(NamedTypePayload { name: p.text }),
+                            span_start: nx.span_start,
+                            span_end: nx.span_end,
+                        },
+                    )
+                    ~+ ParseTypeStep {
+                        state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
+                        type_id: res.id,
+                    }
+                },
+                _ => ~- make_unexpected_token_err(s, "type name"),
+            }
+        },
+    }
+}
+
+// `return [expr] ;?` — value absent when next is `;`, `}`, `,`, or EOF.
+function parse_return(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let head_end: Integer = head_tok.span_end
+    let after_kw: ParserState = advance(s)
+
+    let has_value: Trilean! = {
+        let nx: SpannedToken? = peek(after_kw)
+        match nx {
+            ~0 => false,
+            _ => if is_value_terminator(nx!!.token) { false } else { true },
+        }
+    }
+
+    if has_value {
+        let val_step: ParseStep = parse_expression(after_kw) ~? |err| ~- err
+        let after_semi: ParserState = eat_semi(val_step.state)
+        let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
+        let payload: ReturnStmtPayload = ReturnStmtPayload { value: val_step.expr_id }
+        let res: AllocResult = alloc_statement(
+            after_semi.arena,
+            spanned_stmt(ReturnStmt(payload), head_start, val_sp.span_end),
+        )
+        ~+ ParseStmtStep {
+            state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+            stmt_id: res.id,
+        }
+    } else {
+        let after_semi: ParserState = eat_semi(after_kw)
+        let payload: ReturnStmtPayload = ReturnStmtPayload { value: ~0 }
+        let res: AllocResult = alloc_statement(
+            after_semi.arena,
+            spanned_stmt(ReturnStmt(payload), head_start, head_end),
+        )
+        ~+ ParseStmtStep {
+            state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+            stmt_id: res.id,
+        }
+    }
+}
+
+// `break [expr] ;?` — same value-absence rule as `return`.
+function parse_break(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let head_end: Integer = head_tok.span_end
+    let after_kw: ParserState = advance(s)
+
+    let has_value: Trilean! = {
+        let nx: SpannedToken? = peek(after_kw)
+        match nx {
+            ~0 => false,
+            _ => if is_value_terminator(nx!!.token) { false } else { true },
+        }
+    }
+
+    if has_value {
+        let val_step: ParseStep = parse_expression(after_kw) ~? |err| ~- err
+        let after_semi: ParserState = eat_semi(val_step.state)
+        let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
+        let payload: BreakStmtPayload = BreakStmtPayload { value: val_step.expr_id }
+        let res: AllocResult = alloc_statement(
+            after_semi.arena,
+            spanned_stmt(BreakStmt(payload), head_start, val_sp.span_end),
+        )
+        ~+ ParseStmtStep {
+            state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+            stmt_id: res.id,
+        }
+    } else {
+        let after_semi: ParserState = eat_semi(after_kw)
+        let payload: BreakStmtPayload = BreakStmtPayload { value: ~0 }
+        let res: AllocResult = alloc_statement(
+            after_semi.arena,
+            spanned_stmt(BreakStmt(payload), head_start, head_end),
+        )
+        ~+ ParseStmtStep {
+            state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+            stmt_id: res.id,
+        }
+    }
+}
+
+function parse_continue(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let after_kw: ParserState = advance(s)
+    let after_semi: ParserState = eat_semi(after_kw)
+    let res: AllocResult = alloc_statement(
+        after_semi.arena,
+        spanned_stmt(ContinueStmt, head_tok.span_start, head_tok.span_end),
+    )
+    ~+ ParseStmtStep {
+        state: ParserState { tokens: after_semi.tokens, cursor: after_semi.cursor, arena: res.arena },
+        stmt_id: res.id,
+    }
+}
+
+// `for pattern in expr { ... }`.
+function parse_for(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let after_kw: ParserState = advance(s)
+
+    let pat_step: ParsePatternStep = parse_pattern(after_kw) ~? |err| ~- err
+    let after_in: ParserState = expect_in_kw(pat_step.state) ~? |err| ~- err
+    let iter_step: ParseStep = parse_expression(after_in) ~? |err| ~- err
+    let body_step: ParseBlockStep = parse_block(iter_step.state) ~? |err| ~- err
+
+    // span end = previous-token-end after parse_block consumed `}`
+    let prev_end: Integer = previous_token_end(body_step.state, head_tok.span_end)
+    let payload: ForStmtPayload = ForStmtPayload {
+        variable: pat_step.pattern_id,
+        iterable: iter_step.expr_id,
+        body: body_step.block,
+    }
+    let res: AllocResult = alloc_statement(
+        body_step.state.arena,
+        spanned_stmt(ForStmt(payload), head_start, prev_end),
+    )
+    ~+ ParseStmtStep {
+        state: ParserState {
+            tokens: body_step.state.tokens,
+            cursor: body_step.state.cursor,
+            arena: res.arena,
+        },
+        stmt_id: res.id,
+    }
+}
+
+// `while expr { ... }` / `while? expr { ... }`.
+function parse_while(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let unknown_as_false: Trilean! = is_while_q_kw(head_tok.token)
+    let after_kw: ParserState = advance(s)
+
+    let cond_step: ParseStep = parse_expression(after_kw) ~? |err| ~- err
+    let body_step: ParseBlockStep = parse_block(cond_step.state) ~? |err| ~- err
+
+    let prev_end: Integer = previous_token_end(body_step.state, head_tok.span_end)
+    let payload: WhileStmtPayload = WhileStmtPayload {
+        condition: cond_step.expr_id,
+        body: body_step.block,
+        treat_unknown_as_false: unknown_as_false,
+    }
+    let res: AllocResult = alloc_statement(
+        body_step.state.arena,
+        spanned_stmt(WhileStmt(payload), head_start, prev_end),
+    )
+    ~+ ParseStmtStep {
+        state: ParserState {
+            tokens: body_step.state.tokens,
+            cursor: body_step.state.cursor,
+            arena: res.arena,
+        },
+        stmt_id: res.id,
+    }
+}
+
+// `loop { ... }`.
+function parse_loop_stmt(s: ParserState) -> ParseStmtStep~ParseError = {
+    let head_tok: SpannedToken = peek(s)!!
+    let head_start: Integer = head_tok.span_start
+    let after_kw: ParserState = advance(s)
+    let body_step: ParseBlockStep = parse_block(after_kw) ~? |err| ~- err
+    let prev_end: Integer = previous_token_end(body_step.state, head_tok.span_end)
+    let payload: LoopStmtPayload = LoopStmtPayload { body: body_step.block }
+    let res: AllocResult = alloc_statement(
+        body_step.state.arena,
+        spanned_stmt(LoopStmt(payload), head_start, prev_end),
+    )
+    ~+ ParseStmtStep {
+        state: ParserState {
+            tokens: body_step.state.tokens,
+            cursor: body_step.state.cursor,
+            arena: res.arena,
+        },
+        stmt_id: res.id,
+    }
+}
+
+// `previous_token_end` mirrors Parser::previous_token_end — returns
+// the `span_end` of the token immediately before the current
+// cursor, falling back to `default_end` when we're at the start.
+function previous_token_end(s: ParserState, default_end: Integer) -> Integer = {
+    if s.cursor == 0 {
+        default_end
+    } else {
+        let prev: SpannedToken = get(s.tokens, s.cursor - 1)!!
+        prev.span_end
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Block parser — `{ stmts* final-expr? }`. Mirrors
+// triet-parser::expr::parse_block. Each iteration calls
+// `parse_statement_or_final_expr`; a `FinalExprElem` terminates
+// the loop before the closing brace.
+// ─────────────────────────────────────────────────────────────────
+
+public function parse_block(s: ParserState) -> ParseBlockStep~ParseError = {
+    let after_open: ParserState = expect_lbrace(s) ~? |err| ~- err
+    let mutable state: ParserState = after_open
+    let mutable stmts: Vector<Integer> = new()
+    let mutable final_expr: Integer? = ~0
+    let mutable should_continue: Trilean! = true
+    let mutable err_slot: ParseError? = ~0
+
+    while should_continue {
+        let nx: SpannedToken? = peek(state)
+        match nx {
+            ~0 => {
+                err_slot = make_unexpected_eof_err(state, "`}`")
+                should_continue = false
+            },
+            _ => {
+                if is_rbrace(nx!!.token) {
+                    should_continue = false
+                } else {
+                    let outcome: BlockElementStep~ParseError = parse_statement_or_final_expr(state)
+                    match outcome {
+                        ~+ step => {
+                            state = step.state
+                            match step.element {
+                                StatementElem(sid) => {
+                                    stmts = push(stmts, sid)
+                                },
+                                FinalExprElem(eid) => {
+                                    final_expr = eid
+                                    should_continue = false
+                                },
+                            }
+                        },
+                        ~- e => {
+                            err_slot = e
+                            should_continue = false
+                        },
+                    }
+                }
+            },
+        }
+    }
+
+    match err_slot {
+        ~+ e => ~- e,
+        ~0 => {
+            let after_close: ParserState = expect_rbrace(state) ~? |err| ~- err
+            ~+ ParseBlockStep {
+                state: after_close,
+                block: Block { block_statements: stmts, block_final: final_expr },
+            }
+        },
+    }
+}
+
+// Decide whether the next block element is a keyword statement
+// (`let`/`return`/…), an expression-statement (`expr ;`), an
+// assignment (`ident = expr ;?`), or the block's final expression
+// (`expr` followed by `}`).
+public function parse_statement_or_final_expr(s: ParserState) -> BlockElementStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(s)
+    match nx_opt {
+        ~0 => ~- make_unexpected_eof_err(s, "statement or expression"),
+        ~+ nx => {
+            match nx.token {
+                LetKw => {
+                    let stmt_step: ParseStmtStep = parse_let(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                ConstantKw => {
+                    let stmt_step: ParseStmtStep = parse_constant(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                ReturnKw => {
+                    let stmt_step: ParseStmtStep = parse_return(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                BreakKw => {
+                    let stmt_step: ParseStmtStep = parse_break(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                ContinueKw => {
+                    let stmt_step: ParseStmtStep = parse_continue(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                ForKw => {
+                    let stmt_step: ParseStmtStep = parse_for(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                WhileKw => {
+                    let stmt_step: ParseStmtStep = parse_while(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                WhileQKw => {
+                    let stmt_step: ParseStmtStep = parse_while(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                LoopKw => {
+                    let stmt_step: ParseStmtStep = parse_loop_stmt(s) ~? |err| ~- err
+                    ~+ BlockElementStep { state: stmt_step.state, element: StatementElem(stmt_step.stmt_id) }
+                },
+                _ => parse_expression_or_final(s),
+            }
+        },
+    }
+}
+
+// Expression-position dispatch: after `parse_expression`, check
+// for `=` (assignment), `;` (expr-stmt), `}` / EOF (final expr),
+// or fall through to expr-stmt with no semicolon.
+function parse_expression_or_final(s: ParserState) -> BlockElementStep~ParseError = {
+    let expr_step: ParseStep = parse_expression(s) ~? |err| ~- err
+    let after_expr: ParserState = expr_step.state
+    let expr_id: Integer = expr_step.expr_id
+
+    let nx: SpannedToken? = peek(after_expr)
+    match nx {
+        ~0 => ~+ BlockElementStep {
+            state: after_expr,
+            element: FinalExprElem(expr_id),
+        },
+        ~+ tok => {
+            if is_assign_token(tok.token) {
+                parse_assignment_after_target(after_expr, expr_id)
+            } else {
+                if is_semi(tok.token) {
+                    let after_semi: ParserState = advance(after_expr)
+                    let expr_sp: SpannedExpr = get_expression(after_semi.arena, expr_id)
+                    let payload: ExpressionStmtPayload = ExpressionStmtPayload { expression: expr_id }
+                    let res: AllocResult = alloc_statement(
+                        after_semi.arena,
+                        spanned_stmt(ExpressionStmt(payload), expr_sp.span_start, expr_sp.span_end),
+                    )
+                    ~+ BlockElementStep {
+                        state: ParserState {
+                            tokens: after_semi.tokens,
+                            cursor: after_semi.cursor,
+                            arena: res.arena,
+                        },
+                        element: StatementElem(res.id),
+                    }
+                } else {
+                    if is_rbrace(tok.token) {
+                        ~+ BlockElementStep { state: after_expr, element: FinalExprElem(expr_id) }
+                    } else {
+                        // No semi and more content follows — treat as expr-stmt anyway.
+                        let expr_sp: SpannedExpr = get_expression(after_expr.arena, expr_id)
+                        let payload: ExpressionStmtPayload = ExpressionStmtPayload { expression: expr_id }
+                        let res: AllocResult = alloc_statement(
+                            after_expr.arena,
+                            spanned_stmt(ExpressionStmt(payload), expr_sp.span_start, expr_sp.span_end),
+                        )
+                        ~+ BlockElementStep {
+                            state: ParserState {
+                                tokens: after_expr.tokens,
+                                cursor: after_expr.cursor,
+                                arena: res.arena,
+                            },
+                            element: StatementElem(res.id),
+                        }
+                    }
+                }
+            }
+        },
+    }
+}
+
+// `target = value ;?` — validate `target` is an identifier (SPEC §5).
+// Tuple / field / index targets are reserved for future spec work.
+function parse_assignment_after_target(s: ParserState, target_expr: Integer) -> BlockElementStep~ParseError = {
+    let target_sp: SpannedExpr = get_expression(s.arena, target_expr)
+    let target_name: String = match target_sp.node {
+        IdentifierExpr(p) => p.text,
+        _ => ~- make_unexpected_token_err(s, "identifier on left of `=`"),
+    }
+    let after_eq: ParserState = expect_assign(s) ~? |err| ~- err
+    let val_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
+    let after_semi: ParserState = eat_semi(val_step.state)
+    let val_sp: SpannedExpr = get_expression(after_semi.arena, val_step.expr_id)
+    let payload: AssignStmtPayload = AssignStmtPayload {
+        target: target_name,
+        value: val_step.expr_id,
+    }
+    let res: AllocResult = alloc_statement(
+        after_semi.arena,
+        spanned_stmt(AssignStmt(payload), target_sp.span_start, val_sp.span_end),
+    )
+    ~+ BlockElementStep {
+        state: ParserState {
+            tokens: after_semi.tokens,
+            cursor: after_semi.cursor,
+            arena: res.arena,
+        },
+        element: StatementElem(res.id),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Pretty-printer — s-expression form, used by smoke tests to
 // eyeball the parsed AST shape. Mirrors v0.7.5.1 with the new
 // variants wired in.
@@ -1392,6 +2262,96 @@ function format_args(a: Arena, args: Vector<Integer>) -> String = {
     out
 }
 
+// ── v0.7.5.3 pattern / type / stmt / block pretty-printers ──────
+
+public function format_pattern(a: Arena, id: Integer) -> String = {
+    let sp: SpannedPattern = get_pattern(a, id)
+    match sp.node {
+        WildcardPattern => "_",
+        IdentifierPattern(p) => p.text,
+    }
+}
+
+public function format_type(a: Arena, id: Integer) -> String = {
+    let sp: SpannedTypeExpr = get_type(a, id)
+    match sp.node {
+        NamedType(p) => p.name,
+    }
+}
+
+public function format_block(a: Arena, b: Block) -> String = {
+    let mutable out: String = "(block"
+    let stmts: Vector<Integer> = b.block_statements
+    let n: Integer = length(stmts)
+    let mutable i: Integer = 0
+    while i < n {
+        let sid: Integer = get(stmts, i)!!
+        out = concat(out, concat(" ", format_stmt(a, sid)))
+        i = i + 1
+    }
+    match b.block_final {
+        ~0 => {},
+        _ => {
+            let eid: Integer = b.block_final!!
+            out = concat(out, concat(" (final ", concat(format_expr(a, eid), ")")))
+        },
+    }
+    concat(out, ")")
+}
+
+public function format_stmt(a: Arena, id: Integer) -> String = {
+    let sp: SpannedStmt = get_statement(a, id)
+    match sp.node {
+        LetStmt(p) => {
+            let head: String = if p.is_mutable {
+                "(let-mut "
+            } else {
+                "(let "
+            }
+            let ann: String = match p.type_annotation {
+                ~0 => "",
+                _ => concat(" :", format_type(a, p.type_annotation!!)),
+            }
+            concat(head, concat(p.name, concat(ann, concat(" ", concat(format_expr(a, p.value), ")")))))
+        },
+        ConstantStmt(p) => {
+            let ann: String = match p.type_annotation {
+                ~0 => "",
+                _ => concat(" :", format_type(a, p.type_annotation!!)),
+            }
+            concat("(const ", concat(p.name, concat(ann, concat(" ", concat(format_expr(a, p.value), ")")))))
+        },
+        ReturnStmt(p) => match p.value {
+            ~0 => "(return)",
+            _ => concat("(return ", concat(format_expr(a, p.value!!), ")")),
+        },
+        BreakStmt(p) => match p.value {
+            ~0 => "(break)",
+            _ => concat("(break ", concat(format_expr(a, p.value!!), ")")),
+        },
+        ContinueStmt => "(continue)",
+        ForStmt(p) => {
+            let var_str: String = format_pattern(a, p.variable)
+            let iter_str: String = format_expr(a, p.iterable)
+            let body_str: String = format_block(a, p.body)
+            concat("(for ", concat(var_str, concat(" ", concat(iter_str, concat(" ", concat(body_str, ")"))))))
+        },
+        WhileStmt(p) => {
+            let head: String = if p.treat_unknown_as_false {
+                "(while? "
+            } else {
+                "(while "
+            }
+            let cond_str: String = format_expr(a, p.condition)
+            let body_str: String = format_block(a, p.body)
+            concat(head, concat(cond_str, concat(" ", concat(body_str, ")"))))
+        },
+        LoopStmt(p) => concat("(loop ", concat(format_block(a, p.body), ")")),
+        AssignStmt(p) => concat("(assign ", concat(p.target, concat(" ", concat(format_expr(a, p.value), ")")))),
+        ExpressionStmt(p) => concat("(expr ", concat(format_expr(a, p.expression), ")")),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Smoke harness — lex+parse a source snippet, compare its s-expr
 // against the expected shape. Each call asserts; failures panic
@@ -1428,8 +2388,27 @@ function assert_parse(source: String, expected: String) -> Unit = {
     assert(printed == expected)
 }
 
+function parse_block_or_fail(source: String) -> ParseBlockStep = {
+    let toks: Vector<SpannedToken> = lex_or_fail(source)
+    let st: ParserState = parser_new(toks)
+    let outcome: ParseBlockStep~ParseError = parse_block(st)
+    match outcome {
+        ~+ step => step,
+        ~- _ => {
+            assert(false)
+            ParseBlockStep { state: parser_new(new()), block: Block { block_statements: new(), block_final: ~0 } }
+        },
+    }
+}
+
+function assert_parse_block(source: String, expected: String) -> Unit = {
+    let step: ParseBlockStep = parse_block_or_fail(source)
+    let printed: String = format_block(step.state.arena, step.block)
+    assert(printed == expected)
+}
+
 // ─────────────────────────────────────────────────────────────────
-// Entry — exercises the Pratt parser across the supported surface
+// Entry — exercises the Pratt parser + v0.7.5.3 statement layer
 // ─────────────────────────────────────────────────────────────────
 
 function main() -> Unit = {
@@ -1460,5 +2439,27 @@ function main() -> Unit = {
     assert_parse("0..10", "(.. 0 10)")
     assert_parse("0..=10", "(..= 0 10)")
 
-    println("v0.7.5.2 Pratt smoke passed")
+    // v0.7.5.3 — block + statement layer
+    assert_parse_block("{ }", "(block)")
+    assert_parse_block("{ 42 }", "(block (final 42))")
+    assert_parse_block("{ let x = 5 }", "(block (let x 5))")
+    assert_parse_block("{ let mutable y = 0 }", "(block (let-mut y 0))")
+    assert_parse_block("{ let x: Integer = 5 }", "(block (let x :Integer 5))")
+    assert_parse_block("{ constant PI = 3 }", "(block (const PI 3))")
+    assert_parse_block("{ return }", "(block (return))")
+    assert_parse_block("{ return 7 }", "(block (return 7))")
+    assert_parse_block("{ break }", "(block (break))")
+    assert_parse_block("{ break 9 }", "(block (break 9))")
+    assert_parse_block("{ continue }", "(block (continue))")
+    assert_parse_block("{ count = count + 1 }", "(block (assign count (+ count 1)))")
+    assert_parse_block("{ for i in 0..10 { } }", "(block (for i (.. 0 10) (block)))")
+    assert_parse_block("{ for _ in xs { } }", "(block (for _ xs (block)))")
+    assert_parse_block("{ while running { } }", "(block (while running (block)))")
+    assert_parse_block("{ while? maybe { } }", "(block (while? maybe (block)))")
+    assert_parse_block("{ loop { } }", "(block (loop (block)))")
+    assert_parse_block("{ let x = 5 x + 1 }", "(block (let x 5) (final (+ x 1)))")
+    assert_parse_block("{ f(x); g(y) }", "(block (expr (call f x)) (final (call g y)))")
+    assert_parse_block("{ let x = 1 let y = 2 x + y }", "(block (let x 1) (let y 2) (final (+ x y)))")
+
+    println("v0.7.5.3 statement smoke passed")
 }
