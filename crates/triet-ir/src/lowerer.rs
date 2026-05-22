@@ -35,7 +35,7 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
     let mut ctx = LowerCtx::new(program);
     // Pass 1a: register all struct + enum definitions FIRST. Done
     // before function declaration so `declare_function` can resolve
-    // user-struct return types (per `func_return_struct` doc).
+    // user-struct return types via `func_return_kind` (per ADR-0023).
     for (module_idx, module) in program.modules.iter().enumerate() {
         ctx.current_module_idx = module_idx;
         for item in &module.items {
@@ -62,11 +62,12 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
     }
     // Pass 1a.2 — resolve which enum variants carry a struct payload so
     // `bind_pattern_vars` (Pattern::EnumVariant) can propagate the
-    // struct identity onto the post-`EnumPayload` SSA value. Without
-    // this, `match e { Bin(p) => p.left }` always reads field slot 0
-    // because `value_struct_types[payload_val]` is empty and
-    // `FieldAccess` falls back to its placeholder. Parallel to the
-    // OutcomeArm propagation in `bind_pattern_vars` ([v0.7.4.3-debt.2]).
+    // struct identity onto the post-`EnumPayload` SSA value via
+    // `set_value_kind(payload_val, ValueKind::Struct { name })`.
+    // Without this, `match e { Bin(p) => p.left }` would always read
+    // field slot 0 because the bound payload's kind defaults to
+    // `Other` and `FieldAccess` falls back accordingly. Parallel to
+    // the OutcomeArm propagation in `bind_pattern_vars` (ADR-0023).
     // Requires struct_fields populated by Pass 1a (above) so we can
     // distinguish struct-typed Named payloads from primitives.
     for module in &program.modules {
@@ -152,6 +153,62 @@ struct LoopContext {
     continue_target: BlockId,
 }
 
+// ── Value kind (ADR-0023) ───────────────────────────────────────────
+
+/// Per-SSA-value kind that the lowerer consults to resolve `FieldGet`'s
+/// `field_idx` and propagate identity through unwraps / phis / pattern
+/// bindings. Distinct from `TypeTag` (wire-format-bound) — `ValueKind`
+/// lives purely in the lowerer crate.
+///
+/// Per [ADR-0023], replaces four parallel `HashMap` tracking patterns
+/// (`value_struct_types`, `value_outcome_value_struct`, plus inline
+/// nullable tracking introduced v0.7.5.6b) with a single recursive
+/// enum. Every propagation site collapses to one `set_value_kind`
+/// call, and `FieldGet` resolution traverses transparent wrapper
+/// layers (`Nullable` / `Outcome`) until it lands on a `Struct`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ValueKind {
+    /// User-defined struct. `field_idx` resolved via
+    /// `struct_fields[name]`.
+    Struct { name: String },
+
+    /// `T~E` / `T?~E` outcome wrapping `inner`. Pattern-unwrap via
+    /// `~+ pat =>` (or `~?` / `~:` operator) produces a value bound
+    /// to `inner_kind`.
+    Outcome { inner_kind: Box<Self> },
+
+    /// `T?` nullable. Triết bare-stores T at runtime (no boxing
+    /// wrapper), so field access on a non-null `T?` resolves as if
+    /// the value were `T` directly. Pattern-unwrap via `~+ pat =>`
+    /// or `!!` produces a value bound to `inner_kind`.
+    Nullable { inner_kind: Box<Self> },
+
+    /// Any value whose layout doesn't need field-index tracking:
+    /// primitives (`Trit` / `Tryte` / `Integer` / `Long` / `Trilean`
+    /// / `String` / `Unit`), collections (`Vector` / `HashMap`),
+    /// generic param slots (type-erased per ADR-0019 §A7.1), etc.
+    Other,
+}
+
+impl ValueKind {
+    /// Strip one `Outcome` wrapper layer if present. Used at
+    /// `~?` / `~:` unwrap and pattern-bind `~+ pat`.
+    fn unwrap_outcome(&self) -> Self {
+        match self {
+            Self::Outcome { inner_kind } => (**inner_kind).clone(),
+            other => other.clone(),
+        }
+    }
+
+    /// Strip one `Nullable` wrapper layer if present. Used at `!!`.
+    fn unwrap_nullable(&self) -> Self {
+        match self {
+            Self::Nullable { inner_kind } => (**inner_kind).clone(),
+            other => other.clone(),
+        }
+    }
+}
+
 // ── Lowering context ────────────────────────────────────────────────
 
 struct LowerCtx<'a> {
@@ -181,9 +238,10 @@ struct LowerCtx<'a> {
     /// `BinaryOp → BinaryOpPayload`). Populated in Pass 1a.2 so
     /// `bind_pattern_vars` can propagate struct identity onto the SSA
     /// value bound by `match Variant(p) => ...`, fixing the v0.7.5.1
-    /// repro where `p.field` always reads slot 0. Parallel to
-    /// `value_outcome_value_struct` (which covers the `~?` /
-    /// `OutcomeArm` path).
+    /// repro where `p.field` always reads slot 0. Used together with
+    /// the `value_kinds` map (per ADR-0023) — the lookup table stores
+    /// the static variant→struct association; the per-value map
+    /// stores the actual SSA value's kind.
     variant_payload_struct: HashMap<String, String>,
 
     /// Struct definitions table: struct name → ordered field names in
@@ -207,35 +265,28 @@ struct LowerCtx<'a> {
     /// `struct_fields`.
     struct_field_types: HashMap<(String, String), String>,
 
-    /// Per-function map of which SSA values carry struct payloads,
-    /// indexed by struct name. Populated as struct values flow through
-    /// `StructLiteral`, function params, calls returning structs, and
-    /// pattern destructuring. `FieldAccess` consults this map to find
-    /// the correct field index. Reset for each function (same lifecycle
-    /// as `value_counter` / `blocks`).
-    value_struct_types: HashMap<ValueId, String>,
+    /// Per-function map: `ValueId` → its `ValueKind` (per [ADR-0023]).
+    /// Single source of truth for struct identity / outcome wrapping /
+    /// nullable wrapping. Reset for each function (same lifecycle as
+    /// `value_counter` / `blocks`).
+    ///
+    /// Replaces v0.7.5-era parallel maps `value_struct_types` +
+    /// `value_outcome_value_struct` (plus the inline nullable
+    /// tracking introduced v0.7.5.6b). Every value-creation site
+    /// calls `set_value_kind` exactly once; every consumer reads
+    /// via `kind_of_value`.
+    ///
+    /// [ADR-0023]: ../../../../docs/decisions/0023-lowerer-ssa-struct-tracking.md
+    value_kinds: HashMap<ValueId, ValueKind>,
 
-    /// Per-function map for SSA values that hold an Outcome whose
-    /// success-arm payload is a known struct. Distinct from
-    /// `value_struct_types` because the outcome itself is not the
-    /// struct — only the unwrapped payload is. Lets `~?` / `~:` /
-    /// match-arm `OutcomeUnwrapValue` propagate struct tracking onto
-    /// the unwrap result so field access through the post-unwrap
-    /// value resolves the correct field index per
-    /// [v0.7.4.3-debt.2 / WA-2].
-    value_outcome_value_struct: HashMap<ValueId, String>,
-
-    /// Function-level return-type registry: `FuncId` → struct name (if
-    /// the function returns a `UserStruct`). Populated in pass 1
-    /// alongside `func_table`. `CallLocal` / `CallCrossModule` consult
-    /// this to propagate struct-typing into the dest `ValueId`.
-    func_return_struct: HashMap<FuncId, String>,
-
-    /// Function-level registry for the success-arm struct of functions
-    /// declared `-> T~E` / `-> T?~E` where T is a known struct.
-    /// Populated in pass 1; consulted at call sites to seed
-    /// `value_outcome_value_struct`. Parallel to `func_return_struct`.
-    func_return_outcome_value_struct: HashMap<FuncId, String>,
+    /// Function-level return-kind registry: `FuncId` → `ValueKind` of
+    /// the declared return type. Populated in pass 1 alongside
+    /// `func_table`. `CallLocal` / `CallCrossModule` consult this to
+    /// seed the dest `ValueId`'s `ValueKind`.
+    ///
+    /// Replaces v0.7-era parallel maps `func_return_struct` +
+    /// `func_return_outcome_value_struct` per [ADR-0023].
+    func_return_kind: HashMap<FuncId, ValueKind>,
 
     // Per-function state (reset for each function)
     value_counter: u32,
@@ -266,10 +317,8 @@ impl<'a> LowerCtx<'a> {
             variant_payload_struct: HashMap::new(),
             struct_fields: HashMap::new(),
             struct_field_types: HashMap::new(),
-            value_struct_types: HashMap::new(),
-            value_outcome_value_struct: HashMap::new(),
-            func_return_struct: HashMap::new(),
-            func_return_outcome_value_struct: HashMap::new(),
+            value_kinds: HashMap::new(),
+            func_return_kind: HashMap::new(),
             value_counter: 0,
             block_counter: 0,
             blocks: BTreeMap::new(),
@@ -460,111 +509,122 @@ impl<'a> LowerCtx<'a> {
         // sites can propagate struct-typing into the dest `ValueId`
         // (needed for `FieldAccess` resolution per ADR-0007 §field).
         if let Some(rt) = fd.return_type {
-            // v0.7.5.6b — first try the direct case (T returns), then
-            // fall back to `T?` (nullable returns where Triết stores
-            // the value as bare T at runtime). Both produce a value
-            // whose field-access layout matches T's struct.
-            let direct = self.type_expr_to_struct_name(rt, module);
-            let nullable_inner = self.nullable_inner_struct_name(rt, module);
-            if let Some(struct_name) = direct.or(nullable_inner) {
-                self.func_return_struct.insert(id, struct_name);
-            }
-            // v0.7.4.3-debt.2 (WA-2): functions returning `T~E` /
-            // `T?~E` where T is a known struct also need tracking so
-            // the success-arm unwrap (~? / ~: / match-arm) can
-            // propagate the struct identity onto the unwrapped value.
-            if let Some(struct_name) = self.outcome_value_struct_name(rt, module) {
-                self.func_return_outcome_value_struct
-                    .insert(id, struct_name);
+            // ADR-0023: a single recursive `type_expr_to_value_kind`
+            // call handles every shape the return type can take —
+            // direct struct (T returns), nullable (`T?` bare-stores
+            // T at runtime), outcome (`T~E` / `T?~E`), and
+            // wrappers-of-wrappers.
+            let kind = self.type_expr_to_value_kind(rt, module);
+            if !matches!(kind, ValueKind::Other) {
+                self.func_return_kind.insert(id, kind);
             }
         }
     }
 
-    /// Peer into a `TypeExpr::Outcome { value_type, .. }` and return
-    /// the success-arm struct name when `value_type` is a known
-    /// user-struct. Returns `None` for any other shape (non-Outcome,
-    /// Outcome wrapping a primitive, etc.). Mirrors
-    /// `type_expr_to_struct_name` but unwraps one Outcome layer
-    /// first. Per [v0.7.4.3-debt.2 / WA-2].
-    fn outcome_value_struct_name(
-        &self,
-        type_id: triet_syntax::arena::TypeId,
-        module: &Module,
-    ) -> Option<String> {
-        let arena = &self.program.arenas[module.arena_id.0];
-        let type_expr = &arena.type_expression(type_id).node;
-        if let triet_syntax::type_ast::TypeExpr::Outcome { value_type, .. } = type_expr {
-            return self.type_expr_to_struct_name(*value_type, module);
-        }
-        None
-    }
+    // ── ValueKind helpers (ADR-0023) ────────────────────────────
 
-    /// Peer into `TypeExpr::Nullable(T)` and return the inner struct
-    /// name when `T` is a known user-struct. Returns `None` for any
-    /// other shape (non-nullable, nullable-of-primitive, etc.).
+    /// Resolve a `TypeExpr` to its lowerer `ValueKind`. Recurses
+    /// through `Nullable` / `Outcome` to find the inner user-struct
+    /// (if any). Returns `ValueKind::Other` for primitives /
+    /// collections / generic param slots.
     ///
-    /// Used by v0.7.5.6b — `peek(s) -> SpannedToken?` and similar
-    /// nullable-returning getters need their result tracked so a
-    /// subsequent `~+ next => next.field` pattern destructure
-    /// resolves field indices correctly. Triết represents `T?` as
-    /// bare `T` (or `Null`) at runtime — no wrapper struct — so the
-    /// outer value's `value_struct_types` slot carrying the inner
-    /// struct's name is the right model: field accesses on a
-    /// non-null `T?` work as if it were `T`; null check via
-    /// `match` / `!!` is the user's responsibility.
-    fn nullable_inner_struct_name(
+    /// Pass 1 is permitted to call this during function declaration
+    /// since `struct_fields` is registered first — the iteration
+    /// order across `Item`s within a module may interleave structs
+    /// and functions, but both register before any function bodies
+    /// are lowered.
+    fn type_expr_to_value_kind(
         &self,
         type_id: triet_syntax::arena::TypeId,
         module: &Module,
-    ) -> Option<String> {
+    ) -> ValueKind {
         let arena = &self.program.arenas[module.arena_id.0];
-        let type_expr = &arena.type_expression(type_id).node;
-        if let triet_syntax::type_ast::TypeExpr::Nullable(inner) = type_expr {
-            return self.type_expr_to_struct_name(*inner, module);
+        match &arena.type_expression(type_id).node {
+            triet_syntax::type_ast::TypeExpr::Named(name)
+                if self.struct_fields.contains_key(name) =>
+            {
+                ValueKind::Struct { name: name.clone() }
+            }
+            triet_syntax::type_ast::TypeExpr::Nullable(inner) => {
+                let inner_kind = self.type_expr_to_value_kind(*inner, module);
+                ValueKind::Nullable {
+                    inner_kind: Box::new(inner_kind),
+                }
+            }
+            triet_syntax::type_ast::TypeExpr::Outcome { value_type, .. } => {
+                let inner_kind = self.type_expr_to_value_kind(*value_type, module);
+                ValueKind::Outcome {
+                    inner_kind: Box::new(inner_kind),
+                }
+            }
+            _ => ValueKind::Other,
         }
-        None
+    }
+
+    /// Record a value's kind. No-op for `ValueKind::Other` — the map
+    /// stays sparse, callers can assume missing entries mean `Other`.
+    fn set_value_kind(&mut self, value_id: ValueId, kind: ValueKind) {
+        if !matches!(kind, ValueKind::Other) {
+            self.value_kinds.insert(value_id, kind);
+        }
+    }
+
+    /// Look up a value's kind. Returns `ValueKind::Other` for
+    /// untracked values (the lowerer's default for primitive flows).
+    fn kind_of_value(&self, value_id: ValueId) -> ValueKind {
+        self.value_kinds
+            .get(&value_id)
+            .cloned()
+            .unwrap_or(ValueKind::Other)
+    }
+
+    /// Walk a value's kind chain through transparent wrappers
+    /// (Nullable / Outcome) and return the underlying `Struct` name
+    /// if one exists. Returns `None` for `Other` or for wrappers
+    /// around non-Struct kinds.
+    fn underlying_struct_name(&self, value: ValueId) -> Option<String> {
+        let mut kind = self.kind_of_value(value);
+        loop {
+            match kind {
+                ValueKind::Struct { name } => return Some(name),
+                ValueKind::Nullable { inner_kind } | ValueKind::Outcome { inner_kind } => {
+                    kind = *inner_kind;
+                }
+                ValueKind::Other => return None,
+            }
+        }
     }
 
     /// Look up the field index for `field_name` on a `ValueId` known
-    /// to carry a struct payload. Falls back to `0` for values whose
-    /// struct type isn't tracked (e.g. struct flowed through a path
-    /// the lowerer doesn't yet propagate through, or the struct's
-    /// definition isn't in scope) — preserves legacy single-field
-    /// behavior so we don't regress existing tests.
+    /// to carry struct-shaped data. Traverses transparent wrapper
+    /// layers (`Nullable` / `Outcome`) until landing on a `Struct`
+    /// because Triết bare-stores those at runtime — a non-null `T?`
+    /// or a `~+` success-arm Outcome holds the underlying T directly.
+    ///
+    /// Falls back to `0` for `ValueKind::Other` and for unknown
+    /// fields, preserving legacy single-field behavior for type-
+    /// erased generic param slots (ADR-0019 §A7.1). Future tightening
+    /// (e.g. `panic!` on Other) requires v0.7.7 typecheck.tri
+    /// integration so per-expression types reach the lowerer
+    /// — see [ADR-0023] §6.
     fn resolve_struct_field_idx(&self, value: ValueId, field_name: &str) -> u32 {
-        let Some(struct_name) = self.value_struct_types.get(&value) else {
-            return 0;
-        };
-        let Some(fields) = self.struct_fields.get(struct_name) else {
-            return 0;
-        };
-        fields
-            .iter()
-            .position(|n| n == field_name)
-            .and_then(|i| u32::try_from(i).ok())
-            .unwrap_or(0)
-    }
-
-    /// Resolve a `TypeId` to its struct name if it refers to a known
-    /// user-defined struct. Returns `None` for primitive types,
-    /// nullables, generics, etc. Pass 1 is permitted to call this
-    /// during function declaration since `struct_fields` is registered
-    /// alongside (the iteration order across `Item`s within a module
-    /// may interleave structs and functions, but both register first
-    /// before any function bodies are lowered).
-    fn type_expr_to_struct_name(
-        &self,
-        type_id: triet_syntax::arena::TypeId,
-        module: &Module,
-    ) -> Option<String> {
-        let arena = &self.program.arenas[module.arena_id.0];
-        let type_expr = &arena.type_expression(type_id).node;
-        if let triet_syntax::type_ast::TypeExpr::Named(name) = type_expr
-            && self.struct_fields.contains_key(name)
-        {
-            return Some(name.clone());
+        let mut kind = self.kind_of_value(value);
+        loop {
+            match kind {
+                ValueKind::Struct { name } => {
+                    return self
+                        .struct_fields
+                        .get(&name)
+                        .and_then(|fields| fields.iter().position(|n| n == field_name))
+                        .and_then(|i| u32::try_from(i).ok())
+                        .unwrap_or(0);
+                }
+                ValueKind::Nullable { inner_kind } | ValueKind::Outcome { inner_kind } => {
+                    kind = *inner_kind;
+                }
+                ValueKind::Other => return 0,
+            }
         }
-        None
     }
 
     fn resolve_func(&self, name: &str) -> Option<FuncId> {
@@ -578,24 +638,23 @@ impl<'a> LowerCtx<'a> {
         self.func_table.get(&local_path).copied()
     }
 
-    /// Helper for v0.7.5.4a phi propagation. Returns `Some(name)`
-    /// if every `value_ids` entry maps to the same key under
-    /// `tracker`. Returns `None` if any entry is missing (so any
-    /// arm with no struct identity poisons the merge) or if the
-    /// entries disagree (the lowerer never asserts a struct identity
-    /// on a value that mixes types across paths).
-    fn shared_struct_identity(
-        tracker: &HashMap<ValueId, String>,
-        value_ids: impl IntoIterator<Item = ValueId>,
-    ) -> Option<String> {
-        let mut shared: Option<String> = None;
+    /// Phi-merge helper: returns `Some(kind)` only when every value
+    /// in `value_ids` maps to the same non-`Other` kind. Returns
+    /// `None` if any entry is `Other` (so a mixed-tracking merge
+    /// stays `Other` rather than asserting a kind that doesn't
+    /// hold on every path).
+    fn shared_kind_identity(&self, value_ids: impl IntoIterator<Item = ValueId>) -> Option<ValueKind> {
+        let mut shared: Option<ValueKind> = None;
         let mut any = false;
         for v in value_ids {
             any = true;
-            let s = tracker.get(&v)?;
+            let kind = self.kind_of_value(v);
+            if matches!(kind, ValueKind::Other) {
+                return None;
+            }
             match &shared {
-                None => shared = Some(s.clone()),
-                Some(existing) if existing == s => {}
+                None => shared = Some(kind),
+                Some(existing) if *existing == kind => {}
                 _ => return None,
             }
         }
@@ -667,8 +726,7 @@ impl<'a> LowerCtx<'a> {
         self.scopes = Vec::new();
         self.loop_stack = Vec::new();
         self.params = HashMap::new();
-        self.value_struct_types = HashMap::new();
-        self.value_outcome_value_struct = HashMap::new();
+        self.value_kinds = HashMap::new();
         self.current_func_id = func_id;
         self.current_return_type = fd
             .return_type
@@ -681,16 +739,17 @@ impl<'a> LowerCtx<'a> {
         let entry_id = self.fresh_block();
         self.start_block(entry_id, Some("entry".into()));
 
-        // Allocate parameter ValueIds. Record struct-typed parameters in
-        // `value_struct_types` so `FieldAccess` inside the function body
-        // can resolve `param.field` to the correct field index.
+        // Allocate parameter ValueIds + record their kinds (ADR-0023)
+        // so `FieldAccess` inside the function body can resolve
+        // `param.field` to the correct slot. Recursive
+        // `type_expr_to_value_kind` handles Struct / Nullable<Struct>
+        // / Outcome<Struct, _> uniformly.
         let mut param_specs: Vec<(String, TypeTag)> = Vec::new();
         for p in &fd.parameters {
             let v = self.fresh_value();
             let pty = self.type_expr_to_tag(p.type_annotation);
-            if let Some(struct_name) = self.type_expr_to_struct_name(p.type_annotation, module) {
-                self.value_struct_types.insert(v, struct_name);
-            }
+            let kind = self.type_expr_to_value_kind(p.type_annotation, module);
+            self.set_value_kind(v, kind);
             self.params.insert(p.name.clone(), v);
             self.bind_var(p.name.clone(), v);
             param_specs.push((p.name.clone(), pty));
@@ -738,26 +797,22 @@ impl<'a> LowerCtx<'a> {
                 value,
             } => {
                 let val = self.lower_expr(*value);
-                // v0.7.5.4a + v0.7.5.6b — seed value_struct_types
-                // from the let's type annotation when the value
-                // doesn't already have struct tracking. Covers:
+                // ADR-0023 — seed value_kinds from the let's type
+                // annotation when the RHS doesn't already carry a
+                // kind. Covers:
                 // (a) `let p: FunctionParam = get(params, i)!!` —
-                //     Vector<T> element extraction is opaque, but
-                //     the annotation tells us T.
+                //     Vector<T> element extraction is opaque to the
+                //     lowerer (generic over T), but the annotation
+                //     tells us T.
                 // (b) `let next_opt: SpannedToken? = peek(s)` —
-                //     nullable-of-struct: same struct identity at
-                //     the value level, since T? bare-stores T at
-                //     runtime (Triết has no boxing wrapper).
+                //     nullable-of-struct: annotation resolves to
+                //     `ValueKind::Nullable { inner: Struct {…} }`.
                 if let Some(ty_id) = type_annotation
-                    && !self.value_struct_types.contains_key(&val)
+                    && matches!(self.kind_of_value(val), ValueKind::Other)
                 {
                     let module_clone = self.program.modules[self.current_module_idx].clone();
-                    let struct_name = self
-                        .type_expr_to_struct_name(*ty_id, &module_clone)
-                        .or_else(|| self.nullable_inner_struct_name(*ty_id, &module_clone));
-                    if let Some(name) = struct_name {
-                        self.value_struct_types.insert(val, name);
-                    }
+                    let kind = self.type_expr_to_value_kind(*ty_id, &module_clone);
+                    self.set_value_kind(val, kind);
                 }
                 self.bind_var(name.clone(), val);
             }
@@ -993,17 +1048,21 @@ impl<'a> LowerCtx<'a> {
                     object: Operand::Value(obj_val),
                     field_idx,
                 });
-                // v0.7.5.2: propagate struct identity onto the FieldGet
-                // dest when the accessed field is itself a named struct.
-                // Without this, chained accesses like `step.state.arena`
-                // lose track at the intermediate `step.state` value.
-                if let Some(obj_struct) = self.value_struct_types.get(&obj_val).cloned()
+                // ADR-0023: propagate struct identity onto the
+                // FieldGet dest when the accessed field is itself a
+                // named struct. Walks the value's kind chain through
+                // transparent wrappers (Nullable / Outcome) to find
+                // the carrier Struct, then looks up
+                // `struct_field_types[(carrier, field)]`. Without
+                // this, chained accesses like `step.state.arena`
+                // lose track at the intermediate `step.state`.
+                if let Some(carrier) = self.underlying_struct_name(obj_val)
                     && let Some(field_struct) = self
                         .struct_field_types
-                        .get(&(obj_struct, field.clone()))
+                        .get(&(carrier, field.clone()))
                         .cloned()
                 {
-                    self.value_struct_types.insert(dest, field_struct);
+                    self.set_value_kind(dest, ValueKind::Struct { name: field_struct });
                 }
                 dest
             }
@@ -1111,8 +1170,10 @@ impl<'a> LowerCtx<'a> {
                 });
                 // The unwrapped value carries the same struct typing as
                 // the original (Nullable peels off cleanly). Look up the
-                // field index via the original object — `value_struct_types`
-                // entry was populated when the struct was constructed.
+                // field index via the original object — its `value_kinds`
+                // entry was populated when the struct was constructed,
+                // and `resolve_struct_field_idx` walks through the
+                // Nullable wrapper transparently per ADR-0023.
                 let field_idx = self.resolve_struct_field_idx(obj_val, field);
                 let dest = self.fresh_value();
                 self.emit(Instruction::FieldGet {
@@ -1253,14 +1314,12 @@ impl<'a> LowerCtx<'a> {
                     dest,
                     nullable: Operand::Value(val),
                 });
-                // v0.7.5.6b — propagate struct identity through `!!`.
-                // For `T?` where T is a known struct, the inner value
-                // tracking IS the outer value tracking (Triết bare-
-                // stores T at runtime). The unwrapped result inherits
-                // the same struct identity.
-                if let Some(s) = self.value_struct_types.get(&val).cloned() {
-                    self.value_struct_types.insert(dest, s);
-                }
+                // ADR-0023: `!!` strips one `Nullable` layer. If
+                // `val` is `Nullable<X>`, dest gets X. Otherwise
+                // dest inherits val's kind unchanged (defensive —
+                // matches old behavior when T? bare-stored T).
+                let unwrapped = self.kind_of_value(val).unwrap_nullable();
+                self.set_value_kind(dest, unwrapped);
                 dest
             }
 
@@ -1349,10 +1408,10 @@ impl<'a> LowerCtx<'a> {
                     dest,
                     fields: field_values,
                 });
-                // Track which struct the dest carries so downstream
-                // `FieldAccess` can resolve `name.field` to the right
-                // index in the declared field list.
-                self.value_struct_types.insert(dest, name.clone());
+                // ADR-0023: dest's kind is `Struct { name }` so
+                // downstream `FieldAccess` resolves `name.field` to
+                // the right index in the declared field list.
+                self.set_value_kind(dest, ValueKind::Struct { name: name.clone() });
                 dest
             }
 
@@ -1416,16 +1475,19 @@ impl<'a> LowerCtx<'a> {
             OutcomeArm::Positive => {
                 let payload_val =
                     self.lower_expr(payload.expect("typecheck guarantees ~+ has a payload"));
-                // v0.7.5.4a — propagate struct identity from the
-                // success payload onto the constructed Outcome value's
-                // `value_outcome_value_struct` slot, so a subsequent
-                // `~?` / `~:` / match-arm unwrap can recover that
-                // identity on the unwrapped value. Parallel to the
-                // `func_return_outcome_value_struct` seeding at call
-                // sites; this is the missing literal-side analogue.
-                if let Some(s) = self.value_struct_types.get(&payload_val).cloned() {
-                    self.value_outcome_value_struct.insert(dest, s);
-                }
+                // ADR-0023: wrap payload's kind in `Outcome { … }`
+                // so a subsequent `~?` / `~:` / match-arm unwrap
+                // recovers the inner kind on the unwrapped value.
+                // Mirrors the literal-side analogue of the call-
+                // site `func_return_kind` seeding for outcome-
+                // returning functions.
+                let payload_kind = self.kind_of_value(payload_val);
+                self.set_value_kind(
+                    dest,
+                    ValueKind::Outcome {
+                        inner_kind: Box::new(payload_kind),
+                    },
+                );
                 self.emit(Instruction::OutcomeNewPositive {
                     dest,
                     payload: Operand::Value(payload_val),
@@ -1495,10 +1557,9 @@ impl<'a> LowerCtx<'a> {
             dest: success_val,
             source: Operand::Value(inner_val),
         });
-        // v0.7.4.3-debt.2 (WA-2): propagate success-arm struct identity.
-        if let Some(s) = self.value_outcome_value_struct.get(&inner_val).cloned() {
-            self.value_struct_types.insert(success_val, s);
-        }
+        // ADR-0023: strip one Outcome layer from inner_val's kind.
+        let success_kind = self.kind_of_value(inner_val).unwrap_outcome();
+        self.set_value_kind(success_val, success_kind);
         self.emit(Instruction::Br {
             target: merge_block,
         });
@@ -1528,17 +1589,13 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
-        // v0.7.4.3-debt.2 (WA-2): if both branches resolve to the same
-        // struct identity, the merge inherits it. When the fallback
-        // produces an unrelated type (Integer default for a struct
-        // success arm), we leave the merge untracked — caller must
-        // not access struct fields on a value of mixed type.
-        if let (Some(s1), Some(s2)) = (
-            self.value_struct_types.get(&success_val).cloned(),
-            self.value_struct_types.get(&fallback_val).cloned(),
-        ) && s1 == s2
-        {
-            self.value_struct_types.insert(merged, s1);
+        // ADR-0023: if both branches resolve to the same kind, the
+        // merge inherits it. When the fallback produces an unrelated
+        // type (e.g. Integer default for a struct success arm), the
+        // merge stays Other — caller must not access struct fields
+        // on a value of mixed type.
+        if let Some(merged_kind) = self.shared_kind_identity([success_val, fallback_val]) {
+            self.set_value_kind(merged, merged_kind);
         }
         merged
     }
@@ -1593,13 +1650,9 @@ impl<'a> LowerCtx<'a> {
             dest: success_val,
             source: Operand::Value(inner_val),
         });
-        // v0.7.4.3-debt.2 (WA-2): if the inner outcome's success arm
-        // was a known struct, propagate that identity onto the
-        // unwrapped value so subsequent field access resolves the
-        // correct index.
-        if let Some(s) = self.value_outcome_value_struct.get(&inner_val).cloned() {
-            self.value_struct_types.insert(success_val, s);
-        }
+        // ADR-0023: strip one Outcome layer from inner_val's kind.
+        let success_kind = self.kind_of_value(inner_val).unwrap_outcome();
+        self.set_value_kind(success_val, success_kind);
         self.emit(Instruction::Br {
             target: merge_block,
         });
@@ -1653,13 +1706,12 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
-        // v0.7.4.3-debt.2 (WA-2): merged carries the same struct as
-        // the success arm. The null branch can never reach a field
-        // access without an upstream null-check, so attributing the
-        // struct identity is correct on the success-reachable subset.
-        if let Some(s) = self.value_struct_types.get(&success_val).cloned() {
-            self.value_struct_types.insert(merged, s);
-        }
+        // ADR-0023: merged carries the same kind as the success
+        // arm. The null branch can never reach a field access
+        // without an upstream null-check, so attributing the kind
+        // is correct on the success-reachable subset.
+        let success_kind = self.kind_of_value(success_val);
+        self.set_value_kind(merged, success_kind);
         merged
     }
 
@@ -1896,27 +1948,12 @@ impl<'a> LowerCtx<'a> {
         // Merge block with phi for the if's result value.
         self.start_block(merge_block_id, Some("merge".into()));
         let merge_dest = self.fresh_value();
-        // v0.7.5.4a — propagate value_struct_types and
-        // value_outcome_value_struct onto merge_dest when both
-        // branches agree. Parallel to lower_match_expr +
-        // lower_outcome_default + lower_while_loop. Without this, an
-        // `if cond { ~+ X } else { ~+ X }` loses outcome-payload
-        // tracking, so a chained `~?` unwrap drops X's struct
-        // identity at the caller.
-        let merge_struct: Option<String> = match (
-            self.value_struct_types.get(&then_val).cloned(),
-            self.value_struct_types.get(&else_val).cloned(),
-        ) {
-            (Some(s1), Some(s2)) if s1 == s2 => Some(s1),
-            _ => None,
-        };
-        let merge_outcome_struct: Option<String> = match (
-            self.value_outcome_value_struct.get(&then_val).cloned(),
-            self.value_outcome_value_struct.get(&else_val).cloned(),
-        ) {
-            (Some(s1), Some(s2)) if s1 == s2 => Some(s1),
-            _ => None,
-        };
+        // ADR-0023: single shared_kind_identity call covers both
+        // Struct-merging and Outcome-wrapping-merging. The recursive
+        // ValueKind enum naturally encodes `Outcome { Struct }` so
+        // a chained `if cond { ~+ X } else { ~+ X }` keeps full
+        // identity through to the caller's `~?` unwrap.
+        let merge_kind = self.shared_kind_identity([then_val, else_val]);
         self.emit(Instruction::Phi {
             dest: merge_dest,
             incoming: vec![
@@ -1930,11 +1967,8 @@ impl<'a> LowerCtx<'a> {
                 },
             ],
         });
-        if let Some(s) = merge_struct {
-            self.value_struct_types.insert(merge_dest, s);
-        }
-        if let Some(s) = merge_outcome_struct {
-            self.value_outcome_value_struct.insert(merge_dest, s);
+        if let Some(kind) = merge_kind {
+            self.set_value_kind(merge_dest, kind);
         }
         // Emit one phi per mutated variable so the post-if scope sees
         // a single merged SSA value for each name. Skip names that the
@@ -2009,19 +2043,17 @@ impl<'a> LowerCtx<'a> {
                     block: pre_loop_block,
                 }],
             });
-            // v0.7.5.4a — propagate value_struct_types from the
-            // pre-loop incoming onto phi_dest UP-FRONT (before the
-            // body lowers). The user-declared `let mutable name: T`
-            // contract guarantees rebinds preserve T's struct
-            // identity, so we can assume the body's body_val will
-            // also carry T. This is needed because match-phi
-            // propagation inside the body uses the *current* tracking
-            // of phi_dest — if it's untracked, every nested-match
+            // ADR-0023: propagate the pre-loop incoming's kind onto
+            // phi_dest UP-FRONT (before the body lowers). The user-
+            // declared `let mutable name: T` contract guarantees
+            // rebinds preserve T's identity, so the body's body_val
+            // will also carry T. Required because match-phi
+            // propagation inside the body uses the *current* kind
+            // of phi_dest — if it's Other, every nested-match
             // mutation phi loses identity, and `name.field` in the
             // tail block falls back to field_idx=0.
-            if let Some(s) = self.value_struct_types.get(&pre).cloned() {
-                self.value_struct_types.insert(phi_dest, s);
-            }
+            let pre_kind = self.kind_of_value(pre);
+            self.set_value_kind(phi_dest, pre_kind);
             // Bind the phi as the new live value for `name` inside the loop.
             // v0.7.4.4: rebind into the declaring scope (not innermost),
             // so an intermediate `Expr::Block` scope around the while —
@@ -2096,27 +2128,21 @@ impl<'a> LowerCtx<'a> {
                 }
             }
         }
-        // v0.7.5.4a — propagate value_struct_types onto each phi_dest
-        // when both incoming edges (pre-loop + body-end) agree on the
-        // same struct identity. Mirrors the merge-phi propagation in
-        // `lower_match_expr` (~L2441) and `lower_outcome_default`
-        // (~L1441). Without this, `let mutable state: T = … ; while …
-        // { state = step.state }` loses struct tracking on `state`
-        // across the phi, so post-loop `state.field` falls back to
-        // field_idx=0 and `FieldGet` reads the wrong slot.
+        // ADR-0023: propagate ValueKind onto each phi_dest when
+        // both incoming edges (pre-loop + body-end) agree. The
+        // up-front pre-loop seeding above handles in-body reads;
+        // this post-body pass confirms the body didn't introduce
+        // a divergent kind (which would invalidate the optimistic
+        // pre-seed and demand `Other`).
         let pre_map: HashMap<&str, ValueId> = pre_loop_vals
             .iter()
             .filter_map(|(n, v)| v.map(|val| (n.as_str(), val)))
             .collect();
         for (name, phi_dest, body_val) in &post_body_vals {
             if let Some(pre_val) = pre_map.get(name.as_str())
-                && let (Some(s1), Some(s2)) = (
-                    self.value_struct_types.get(pre_val).cloned(),
-                    self.value_struct_types.get(body_val).cloned(),
-                )
-                && s1 == s2
+                && let Some(kind) = self.shared_kind_identity([*pre_val, *body_val])
             {
-                self.value_struct_types.insert(*phi_dest, s1);
+                self.set_value_kind(*phi_dest, kind);
             }
         }
         // Only branch back if not already terminated.
@@ -2605,33 +2631,19 @@ impl<'a> LowerCtx<'a> {
 
         // Merge block.
         self.start_block(merge_block_id, Some("match_merge".into()));
-        // v0.7.5.4a — propagate value_struct_types AND
-        // value_outcome_value_struct onto merge_dest when every arm's
-        // body produced the same identity. Parallel to
-        // lower_outcome_default + the per-arm mutated-var phi
-        // propagation below + the while-loop phi propagation in
-        // lower_while_loop. Without this, a `match … => struct-typed
-        // value` loses struct identity at the merge point, so later
-        // `result.field` accesses fall back to field_idx=0; and a
-        // `match … => ~+ X` chain loses outcome-payload tracking so a
-        // subsequent `~?` unwrap drops `X`'s struct identity.
-        let merge_dest_struct = Self::shared_struct_identity(
-            &self.value_struct_types,
-            phi_incoming.iter().map(|pi| pi.value),
-        );
-        let merge_dest_outcome_struct = Self::shared_struct_identity(
-            &self.value_outcome_value_struct,
-            phi_incoming.iter().map(|pi| pi.value),
-        );
+        // ADR-0023: single shared_kind_identity call covers Struct
+        // merges, Outcome-wrapping merges, and Nullable merges
+        // uniformly. Without this, `match … => struct-typed` loses
+        // struct identity at the merge; and `match … => ~+ X`
+        // loses outcome-payload tracking so a subsequent `~?`
+        // unwrap drops X's identity.
+        let merge_kind = self.shared_kind_identity(phi_incoming.iter().map(|pi| pi.value));
         self.emit(Instruction::Phi {
             dest: merge_dest,
             incoming: phi_incoming,
         });
-        if let Some(s) = merge_dest_struct {
-            self.value_struct_types.insert(merge_dest, s);
-        }
-        if let Some(s) = merge_dest_outcome_struct {
-            self.value_outcome_value_struct.insert(merge_dest, s);
+        if let Some(kind) = merge_kind {
+            self.set_value_kind(merge_dest, kind);
         }
 
         // v0.7.4.3-debt.5: emit one phi per mutated outer-scope var so
@@ -2659,20 +2671,12 @@ impl<'a> LowerCtx<'a> {
                 dest: phi_dest,
                 incoming: incoming.clone(),
             });
-            // v0.7.5.4a — propagate value_struct_types when every
-            // incoming edge agrees on the same struct identity.
-            // Parallel to the while-loop phi propagation in
-            // `lower_while_loop` and the merge-phi propagation in
-            // `lower_outcome_default`. Without this, a `mutable`
-            // variable reassigned inside one match arm
-            // (`state = step.state`) loses struct tracking across
-            // the merge, so post-match `state.field` falls back to
-            // field_idx=0.
-            if let Some(s) = Self::shared_struct_identity(
-                &self.value_struct_types,
-                incoming.iter().map(|pi| pi.value),
-            ) {
-                self.value_struct_types.insert(phi_dest, s);
+            // ADR-0023: propagate ValueKind when every incoming
+            // edge agrees. Without this, a `mutable` variable
+            // reassigned inside one match arm (`state = step.state`)
+            // loses kind tracking across the merge.
+            if let Some(kind) = self.shared_kind_identity(incoming.iter().map(|pi| pi.value)) {
+                self.set_value_kind(phi_dest, kind);
             }
             self.rebind_var(name, phi_dest);
         }
@@ -2908,12 +2912,11 @@ impl<'a> LowerCtx<'a> {
                     dest: payload_val,
                     scrutinee: Operand::Value(scrutinee),
                 });
-                // v0.7.5.1: propagate the variant's struct payload
-                // identity onto the bound SSA value so field access
-                // through `p.field` in the arm body resolves the right
-                // slot (mirrors the OutcomeArm propagation below).
-                if let Some(s) = self.variant_payload_struct.get(variant_name).cloned() {
-                    self.value_struct_types.insert(payload_val, s);
+                // ADR-0023: propagate the variant's struct payload
+                // kind onto the bound SSA value so field access via
+                // `p.field` in the arm body resolves correctly.
+                if let Some(struct_name) = self.variant_payload_struct.get(variant_name).cloned() {
+                    self.set_value_kind(payload_val, ValueKind::Struct { name: struct_name });
                 }
                 self.bind_pattern_vars(&inner_pat, payload_val);
             }
@@ -2956,23 +2959,15 @@ impl<'a> LowerCtx<'a> {
                     }
                 };
                 self.emit(unwrap);
-                // v0.7.4.3-debt.2 (WA-2) + v0.7.5.6b: propagate
-                // success-arm struct identity onto the bound payload.
-                // Two cases:
-                //   - Outcome (`T~E` / `T?~E`): look up
-                //     `value_outcome_value_struct` for the scrutinee.
-                //   - Nullable (`T?`): the scrutinee's value-level
-                //     tracking IS the inner struct identity (Triết
-                //     bare-stores T at runtime — no wrapper).
+                // ADR-0023: positive arm strips one Outcome wrapper.
+                // The `unwrap_outcome` helper also handles the `T?`
+                // case correctly — for a Nullable scrutinee, the
+                // method returns the kind unchanged (Triết bare-
+                // stores T at runtime), which matches the legacy
+                // value_struct_types-on-scrutinee fallback.
                 if matches!(arm, OutcomeArm::Positive) {
-                    let propagated = self
-                        .value_outcome_value_struct
-                        .get(&scrutinee)
-                        .cloned()
-                        .or_else(|| self.value_struct_types.get(&scrutinee).cloned());
-                    if let Some(s) = propagated {
-                        self.value_struct_types.insert(payload_val, s);
-                    }
+                    let inner_kind = self.kind_of_value(scrutinee).unwrap_outcome();
+                    self.set_value_kind(payload_val, inner_kind);
                 }
                 self.bind_pattern_vars(&inner_pat, payload_val);
             }
@@ -3027,24 +3022,13 @@ impl<'a> LowerCtx<'a> {
                 // placeholder body that ships in `std/*.tri`.
                 if let Some(abs_path) = self.current_module().bindings.get(name).cloned() {
                     let dest = self.fresh_value();
-                    // Propagate struct-typing if the imported callee
-                    // returns a struct. The callee's `FuncId` is in
-                    // `func_table`; check `func_return_struct` for the
-                    // associated struct name.
-                    if let Some(callee_id) = self.func_table.get(&abs_path).copied() {
-                        if let Some(s) = self.func_return_struct.get(&callee_id).cloned() {
-                            self.value_struct_types.insert(dest, s);
-                        }
-                        // v0.7.4.3-debt.2 (WA-2): also seed the
-                        // outcome-payload tracker for callees returning
-                        // `T~E` / `T?~E`.
-                        if let Some(s) = self
-                            .func_return_outcome_value_struct
-                            .get(&callee_id)
-                            .cloned()
-                        {
-                            self.value_outcome_value_struct.insert(dest, s);
-                        }
+                    // ADR-0023: seed dest's kind from the callee's
+                    // declared return kind. One map covers every
+                    // shape (Struct / Nullable<Struct> / Outcome<…>).
+                    if let Some(callee_id) = self.func_table.get(&abs_path).copied()
+                        && let Some(kind) = self.func_return_kind.get(&callee_id).cloned()
+                    {
+                        self.set_value_kind(dest, kind);
                     }
                     self.emit(Instruction::CallCrossModule {
                         dest: Some(dest),
@@ -3058,12 +3042,11 @@ impl<'a> LowerCtx<'a> {
                 // current module (not imported).
                 if let Some(func_id) = self.resolve_func(name) {
                     let dest = self.fresh_value();
-                    if let Some(s) = self.func_return_struct.get(&func_id).cloned() {
-                        self.value_struct_types.insert(dest, s);
-                    }
-                    // v0.7.4.3-debt.2 (WA-2): outcome-payload tracker.
-                    if let Some(s) = self.func_return_outcome_value_struct.get(&func_id).cloned() {
-                        self.value_outcome_value_struct.insert(dest, s);
+                    // ADR-0023: seed dest's kind from the function's
+                    // declared return kind (one map handles Struct,
+                    // Nullable<Struct>, Outcome<Struct, _>, etc.).
+                    if let Some(kind) = self.func_return_kind.get(&func_id).cloned() {
+                        self.set_value_kind(dest, kind);
                     }
                     self.emit(Instruction::CallLocal {
                         dest: Some(dest),
@@ -3105,8 +3088,8 @@ fn resolve_builtin(name: &str) -> Option<BuiltinName> {
 
 // (Removed v0.7.4.3-error.fix: `field_name_to_idx` placeholder.
 // Field resolution now uses `LowerCtx::resolve_struct_field_idx`
-// which consults the per-function `value_struct_types` map +
-// global `struct_fields` table populated in Pass 1a.)
+// which consults the per-function `value_kinds` map + global
+// `struct_fields` table populated in Pass 1a, per ADR-0023.)
 
 // ── Tests ───────────────────────────────────────────────────────────
 
@@ -3236,7 +3219,8 @@ mod tests {
     // so `point.y` lowered to `FieldGet { field_idx: 0 }` — silently
     // returning `point.x` instead. The fix wires struct definitions
     // into the lowerer via `LowerCtx::struct_fields` and a per-value
-    // `value_struct_types` map populated at StructLiteral / param /
+    // `value_kinds` map (now per ADR-0023; previously
+    // `value_struct_types`) populated at StructLiteral / param /
     // call sites. These tests pin the corrected behavior.
 
     /// Build a `Point { x: Integer, y: Integer }` struct definition.
