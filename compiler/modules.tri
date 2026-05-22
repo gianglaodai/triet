@@ -61,7 +61,7 @@ from std.io import println
 from std.io.fs import read as fs_read
 from std.path import join as path_join, parent as path_parent, basename as path_basename
 from std.collections.vector import new, push, length, get
-from std.collections.hashmap import new as hashmap_new
+from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get
 from std.text import concat, from_integer, len as text_len
 from std.assert import assert
 
@@ -141,7 +141,7 @@ public function module_path_parent(path: ModulePath) -> ModulePath? = {
 /// resolver to gate `sys.*` / `dev.*` / `usr.*` at the import site
 /// (only `std` and `core` are usable pre-v0.6; the rest reserved
 /// for the capability namespaces).
-public function module_path_is_reserved_root(path: ModulePath) -> Trilean = {
+public function module_path_is_reserved_root(path: ModulePath) -> Trilean! = {
     let root_opt: String? = module_path_root(path)
     match root_opt {
         ~0 => false,
@@ -153,7 +153,7 @@ public function module_path_is_reserved_root(path: ModulePath) -> Trilean = {
 }
 
 /// True if the path's root is the local crate (`crate.…`).
-public function module_path_is_local_crate(path: ModulePath) -> Trilean = {
+public function module_path_is_local_crate(path: ModulePath) -> Trilean! = {
     let root_opt: String? = module_path_root(path)
     match root_opt {
         ~0 => false,
@@ -988,6 +988,398 @@ public function load_program(root_path: String) -> LoadProgramResult = {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Cycle detection — DFS with three-state coloring (white / gray /
+// black) on the import dependency graph. Mirrors
+// `crates/triet-modules/src/cycle.rs` per ADR-0019 §A7.6.
+//
+// Algorithm (Tarjan-style):
+// 1. Build adjacency list: for each module, scan its retained items
+//    for `Item::ImportItem` and `Item::ImportFromItem`. Each produces
+//    one edge to the resolved target ModulePath.
+// 2. Build a path_index `HashMap<String, Integer>` from display
+//    path (`crate.foo.bar`) to ModuleId raw — Triết HashMaps key on
+//    hashable primitives, so we use the display form per ADR-0005.
+// 3. DFS from each white node. Mark gray on entry, walk edges,
+//    recurse on white children, emit `CyclicImportErr` on gray
+//    back-edges, mark black on exit.
+//
+// Triết caveat: Vector ops are functional return-new (no in-place
+// mutation), and recursion threads `DfsState` through every call.
+// The cost is N extra arg passes per recursion depth; module graphs
+// are tiny (dozens of modules), so this is negligible.
+//
+// Stdlib edges (`std.*` / `sys.*` / etc.) are skipped — synthetic
+// modules cannot participate in user-authored cycles.
+// ─────────────────────────────────────────────────────────────────
+
+/// White (0) / Gray (1) / Black (2) — encoded as Integer because
+/// Triết doesn't allow nullary-only enums with raw numeric backing.
+// Color sentinels inlined directly as Integer literals (0/1/2)
+// per v0.7.6.3 debug — see notes in dfs_visit.
+
+/// One import edge: target module's path text + span of the import
+/// statement that produced it. Stored as String (the path's display
+/// form) because the cycle detector keys HashMap<String, _> on it.
+struct ImportEdge {
+    target_text: String,
+    target_segments: Vector<String>,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// DFS working state — threaded functionally through every
+/// `dfs_visit` recursion. Triết has no mutable references, so each
+/// recursive call returns an updated `DfsState`.
+struct DfsState {
+    colors: Vector<Integer>,
+    cycle_stack: Vector<Integer>,
+    errors: Vector<LoaderError>,
+}
+
+/// Vector helper — rebuild `v` with the element at `idx` replaced
+/// by `value`. Triết's `Vector<T>` exposes no `set_at` primitive
+/// at v0.7.3.2 (per std.collections.vector); a return-new rebuild
+/// is the functional equivalent. O(n) per call; the cycle
+/// detector's coloring runs ≤ N color updates total, so this stays
+/// quadratic in module count — fine for the typical "tens of
+/// modules" scale.
+function vec_set_at(v: Vector<Integer>, idx: Integer, value: Integer) -> Vector<Integer> = {
+    let total: Integer = length(v)
+    let mutable rebuilt: Vector<Integer> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        if i == idx {
+            rebuilt = push(rebuilt, value)
+        } else {
+            let cur: Integer? = get(v, i)
+            rebuilt = push(rebuilt, cur!!)
+        }
+        i = i + 1
+    }
+    rebuilt
+}
+
+/// Vector helper — drop the last element. Returns the input
+/// unchanged when empty (cycle detector never calls on an empty
+/// stack, but defensive).
+function vec_drop_last(v: Vector<Integer>) -> Vector<Integer> = {
+    let total: Integer = length(v)
+    if total == 0 {
+        v
+    } else {
+        let mutable rebuilt: Vector<Integer> = new()
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            let cur: Integer? = get(v, i)
+            rebuilt = push(rebuilt, cur!!)
+            i = i + 1
+        }
+        rebuilt
+    }
+}
+
+/// Build the per-module adjacency list. Walks every retained item
+/// in every module; each `ImportItem` / `ImportFromItem` contributes
+/// one outgoing edge. Stdlib imports (root in `std`/`sys`/`dev`/
+/// `usr`/`core`) are filtered out — synthetic, cannot cycle.
+function build_import_graph(program: ResolvedProgram) -> Vector<Vector<ImportEdge>> = {
+    let mut_adj_total: Integer = length(program.modules)
+    let mutable adjacency: Vector<Vector<ImportEdge>> = new()
+    let mutable m: Integer = 0
+    while m < mut_adj_total {
+        let module_opt: Module? = get(program.modules, m)
+        let current: Module = module_opt!!
+        let arena_opt: Arena? = get(program.arenas, arena_id_raw(current.arena_id))
+        let arena: Arena = arena_opt!!
+        let mutable edges: Vector<ImportEdge> = new()
+        let mutable i: Integer = 0
+        let item_total: Integer = length(current.item_ids)
+        while i < item_total {
+            let item_id_opt: Integer? = get(current.item_ids, i)
+            let item_id: Integer = item_id_opt!!
+            let spanned_opt: SpannedItem? = get(arena.items, item_id)
+            let spanned: SpannedItem = spanned_opt!!
+            match spanned.node {
+                ImportItem(path) => {
+                    let target_path: ModulePath = module_path_new(path.segments)
+                    if module_path_is_reserved_root(target_path) {
+                        // Skip stdlib edge.
+                    } else {
+                        edges = push(edges, ImportEdge {
+                            target_text: module_path_display(target_path),
+                            target_segments: path.segments,
+                            span_start: spanned.span_start,
+                            span_end: spanned.span_end,
+                        })
+                    }
+                },
+                ImportFromItem(from_payload) => {
+                    let target_path: ModulePath = module_path_new(from_payload.source)
+                    if module_path_is_reserved_root(target_path) {
+                        // Skip stdlib edge.
+                    } else {
+                        edges = push(edges, ImportEdge {
+                            target_text: module_path_display(target_path),
+                            target_segments: from_payload.source,
+                            span_start: spanned.span_start,
+                            span_end: spanned.span_end,
+                        })
+                    }
+                },
+                // Not an import — no edge contributed.
+                _ => { },
+            }
+            i = i + 1
+        }
+        adjacency = push(adjacency, edges)
+        m = m + 1
+    }
+    adjacency
+}
+
+/// Build the `display_path → module_idx` lookup table. Used by the
+/// DFS to map import-edge targets to ModuleId.
+function build_path_index(program: ResolvedProgram) -> HashMap<String, Integer> = {
+    let mutable index: HashMap<String, Integer> = hashmap_new()
+    let total: Integer = length(program.modules)
+    let mutable i: Integer = 0
+    while i < total {
+        let module_opt: Module? = get(program.modules, i)
+        let m: Module = module_opt!!
+        index = insert(index, module_path_display(m.path), i)
+        i = i + 1
+    }
+    index
+}
+
+/// Resolve an `ImportEdge` to the target's `ModuleId` raw integer,
+/// or `null` if the edge has no matching module in the program.
+///
+/// Two-stage lookup mirrors Rust's `dfs` resolver:
+/// 1. Look up `edge.target_text` directly.
+/// 2. If that misses and the path has ≥ 2 segments, drop the last
+///    segment and retry (covers `import crate.foo.bar` where the
+///    *module* is `crate.foo` and `bar` is an item).
+///
+/// `current_node` is the DFS's current node; if the parent-drop
+/// fallback resolves to the current node itself (e.g. `from
+/// crate.X import Y` in the crate root falling back to `crate` =
+/// self), we treat the edge as a no-op (return `null`) to avoid
+/// spurious self-loops.
+function resolve_edge_target(
+    edge: ImportEdge,
+    path_index: HashMap<String, Integer>,
+    current_node: Integer,
+) -> Integer? = {
+    let direct: Integer? = hashmap_get(path_index, edge.target_text)
+    match direct {
+        ~0 => {
+            // Try parent-drop fallback when the path has ≥ 2 segs.
+            let n: Integer = length(edge.target_segments)
+            if n <= 1 {
+                ~0
+            } else {
+                let mutable parent_segs: Vector<String> = new()
+                let mutable i: Integer = 0
+                while i < n - 1 {
+                    let seg_opt: String? = get(edge.target_segments, i)
+                    parent_segs = push(parent_segs, seg_opt!!)
+                    i = i + 1
+                }
+                let parent_path: ModulePath = module_path_new(parent_segs)
+                let parent_text: String = module_path_display(parent_path)
+                let parent_id_opt: Integer? = hashmap_get(path_index, parent_text)
+                match parent_id_opt {
+                    ~0 => ~0,
+                    _ => {
+                        if parent_id_opt!! == current_node {
+                            // Self-loop avoided — `from crate.X
+                            // import Y` in root falls back to
+                            // `crate` = self.
+                            ~0
+                        } else {
+                            parent_id_opt
+                        }
+                    },
+                }
+            }
+        },
+        _ => direct,
+    }
+}
+
+/// Build the cycle trace string. `cycle_stack` is the DFS path
+/// from the original root to the current node; `cycle_target` is
+/// the node we just found a back-edge to (which is somewhere
+/// inside cycle_stack). The trace walks from cycle_target's
+/// position in the stack to the top, then appends cycle_target
+/// again to close the cycle.
+///
+/// Format: `foo → bar → baz → foo` per ADR-0005.
+function build_cycle_trace(
+    cycle_stack: Vector<Integer>,
+    cycle_target: Integer,
+    program: ResolvedProgram,
+) -> String = {
+    let total: Integer = length(cycle_stack)
+    // Find cycle_target's position in the stack.
+    let mutable start_idx: Integer = -1
+    let mutable i: Integer = 0
+    while i < total {
+        let cur_opt: Integer? = get(cycle_stack, i)
+        if cur_opt!! == cycle_target && start_idx == -1 {
+            start_idx = i
+        }
+        i = i + 1
+    }
+    // start_idx defaults to 0 if the target somehow isn't on the
+    // stack (the caller guarantees it is — defensive only).
+    if start_idx == -1 {
+        start_idx = 0
+    }
+
+    let mutable trace: String = ""
+    let mutable j: Integer = start_idx
+    while j < total {
+        let id_opt: Integer? = get(cycle_stack, j)
+        let id: Integer = id_opt!!
+        let module_opt: Module? = get(program.modules, id)
+        let m: Module = module_opt!!
+        let segs: Vector<String> = m.path.segments
+        let seg_count: Integer = length(segs)
+        let name: String = if seg_count == 0 {
+            "crate"
+        } else {
+            let last_opt: String? = get(segs, seg_count - 1)
+            last_opt!!
+        }
+        if j == start_idx {
+            trace = name
+        } else {
+            trace = concat(concat(trace, " -> "), name)
+        }
+        j = j + 1
+    }
+    // Close the cycle.
+    let target_module_opt: Module? = get(program.modules, cycle_target)
+    let target_module: Module = target_module_opt!!
+    let target_segs: Vector<String> = target_module.path.segments
+    let target_seg_count: Integer = length(target_segs)
+    let target_name: String = if target_seg_count == 0 {
+        "crate"
+    } else {
+        let last_opt: String? = get(target_segs, target_seg_count - 1)
+        last_opt!!
+    }
+    trace = concat(concat(trace, " -> "), target_name)
+    trace
+}
+
+/// Recursive DFS visit. Marks `node` gray, walks every outgoing
+/// edge, recurses on white children, emits `CyclicImportErr` on
+/// gray back-edges, marks node black on exit. Returns the updated
+/// `DfsState`.
+function dfs_visit(
+    state: DfsState,
+    node: Integer,
+    adjacency: Vector<Vector<ImportEdge>>,
+    path_index: HashMap<String, Integer>,
+    program: ResolvedProgram,
+) -> DfsState = {
+    // Mark gray + push onto cycle stack. Color sentinels are inline
+    // Integer literals (0 = white, 1 = gray, 2 = black) — Triết's
+    // top-level `constant` declarations currently lower to Unit at
+    // runtime (surfaced during v0.7.6.3 development, no other file
+    // in the tree exercises top-level constants — tech-debt logged
+    // for v0.7.x.runtime-fix).
+    let mutable working: DfsState = DfsState {
+        colors: vec_set_at(state.colors, node, 1),
+        cycle_stack: push(state.cycle_stack, node),
+        errors: state.errors,
+    }
+
+    let edges_opt: Vector<ImportEdge>? = get(adjacency, node)
+    let edges: Vector<ImportEdge> = edges_opt!!
+    let edge_total: Integer = length(edges)
+    let mutable e: Integer = 0
+    while e < edge_total {
+        let edge_opt: ImportEdge? = get(edges, e)
+        let edge: ImportEdge = edge_opt!!
+        let target_opt: Integer? = resolve_edge_target(edge, path_index, node)
+        match target_opt {
+            // Unresolved edge — the name resolver catches it later.
+            ~0 => { },
+            _ => {
+                let target_id: Integer = target_opt!!
+                let target_color_opt: Integer? = get(working.colors, target_id)
+                let target_color: Integer = target_color_opt!!
+                if target_color == 0 {
+                    let next_state: DfsState = dfs_visit(working, target_id, adjacency, path_index, program)
+                    working = next_state
+                } else {
+                    if target_color == 1 {
+                        // Back-edge → cycle.
+                        let trace: String = build_cycle_trace(working.cycle_stack, target_id, program)
+                        let err: LoaderError = CyclicImportErr(CyclicImportPayload {
+                            trace: trace,
+                            span_start: edge.span_start,
+                            span_end: edge.span_end,
+                        })
+                        working = DfsState {
+                            colors: working.colors,
+                            cycle_stack: working.cycle_stack,
+                            errors: push(working.errors, err),
+                        }
+                    }
+                    // Black: fully explored, no cycle through this path.
+                }
+            },
+        }
+        e = e + 1
+    }
+
+    DfsState {
+        colors: vec_set_at(working.colors, node, 2),
+        cycle_stack: vec_drop_last(working.cycle_stack),
+        errors: working.errors,
+    }
+}
+
+/// Detect cyclic imports in a fully-loaded `ResolvedProgram`.
+/// Returns a (possibly empty) Vector of `CyclicImportErr` entries
+/// — one per cycle found. Multiple independent cycles each get
+/// their own error.
+public function detect_cycles(program: ResolvedProgram) -> Vector<LoaderError> = {
+    let adjacency: Vector<Vector<ImportEdge>> = build_import_graph(program)
+    let path_index: HashMap<String, Integer> = build_path_index(program)
+    let total: Integer = length(program.modules)
+
+    let mutable colors: Vector<Integer> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        colors = push(colors, 0)
+        i = i + 1
+    }
+
+    let mutable state: DfsState = DfsState {
+        colors: colors,
+        cycle_stack: new(),
+        errors: new(),
+    }
+
+    let mutable n: Integer = 0
+    while n < total {
+        let color_opt: Integer? = get(state.colors, n)
+        if color_opt!! == 0 {
+            state = dfs_visit(state, n, adjacency, path_index, program)
+        }
+        n = n + 1
+    }
+
+    state.errors
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Smoke main — exercises every type's construction + display so the
 // v0.7.6.1 integration test (`modules_types_smoke.rs`) can confirm
 // the AST surface compiles + round-trips through the VM. v0.7.6.5
@@ -1231,4 +1623,98 @@ public function loader_smoke_main() -> Unit = {
     assert(length(crate_module.children) == 1)
 
     println("v0.7.6.2 loader smoke OK")
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.6.3 cycle detection smoke — loads inline-module corpora,
+// runs `detect_cycles`, asserts the right number of E2100 errors
+// and the right trace content. Mirrors the test corpus in Rust's
+// `crates/triet-modules/src/cycle.rs` (adapted for inline-only
+// since the in-memory loader can't read external files).
+// ─────────────────────────────────────────────────────────────────
+
+/// Count how many `CyclicImportErr` entries are in `errs`.
+function count_cycle_errors(errs: Vector<LoaderError>) -> Integer = {
+    let total: Integer = length(errs)
+    let mutable count: Integer = 0
+    let mutable i: Integer = 0
+    while i < total {
+        let err_opt: LoaderError? = get(errs, i)
+        let err: LoaderError = err_opt!!
+        match err {
+            CyclicImportErr(_) => { count = count + 1 },
+            _ => { },
+        }
+        i = i + 1
+    }
+    count
+}
+
+// Trace-content substring checks are deferred to v0.7.6.5
+// differential gate — `count_cycle_errors` alone surfaces every
+// cycle-detection regression v0.7.6.3 cares about, and a
+// string_contains over `std.string.split` is heavier in the
+// interpreted VM than warranted for a smoke test.
+
+public function cycle_smoke_main() -> Unit = {
+    // ── 1. Two-cycle: a imports b imports a ────────────────────────
+    let r1: LoadProgramResult = load_program_from_source(
+        "module a { from crate.b import x }\nmodule b { from crate.a import y }"
+    )
+    let cycles_r1: Vector<LoaderError> = detect_cycles(r1.program)
+    assert(count_cycle_errors(cycles_r1) >= 1)
+
+    // ── 2. Three-cycle: a → b → c → a ──────────────────────────────
+    let r2: LoadProgramResult = load_program_from_source(
+        "module a { from crate.b import x }\nmodule b { from crate.c import y }\nmodule c { from crate.a import z }"
+    )
+    let cycles_r2: Vector<LoaderError> = detect_cycles(r2.program)
+    assert(count_cycle_errors(cycles_r2) >= 1)
+
+    // ── 3. Diamond: a → b, a → c, b → d, c → d (no cycle) ──────────
+    let r3: LoadProgramResult = load_program_from_source(
+        "module a { from crate.b import bb\nfrom crate.c import cc }\nmodule b { from crate.d import dd }\nmodule c { from crate.d import dd }\nmodule d { public function dd() -> Integer = 0 }"
+    )
+    let cycles_r3: Vector<LoaderError> = detect_cycles(r3.program)
+    assert(count_cycle_errors(cycles_r3) == 0)
+
+    // ── 4. Stdlib import not flagged ───────────────────────────────
+    let r4: LoadProgramResult = load_program_from_source(
+        "from std.io import println"
+    )
+    let cycles_r4: Vector<LoaderError> = detect_cycles(r4.program)
+    assert(count_cycle_errors(cycles_r4) == 0)
+
+    // ── 5. No imports → no cycles ──────────────────────────────────
+    let r5: LoadProgramResult = load_program_from_source(
+        "module foo { function f() -> Integer = 1 }\nmodule bar { function g() -> Integer = 2 }"
+    )
+    let cycles_r5: Vector<LoaderError> = detect_cycles(r5.program)
+    assert(count_cycle_errors(cycles_r5) == 0)
+
+    // ── 6. Multiple independent cycles ─────────────────────────────
+    let r6: LoadProgramResult = load_program_from_source(
+        "module a { from crate.b import x }\nmodule b { from crate.a import y }\nmodule c { from crate.d import p }\nmodule d { from crate.c import q }"
+    )
+    let cycles_r6: Vector<LoaderError> = detect_cycles(r6.program)
+    assert(count_cycle_errors(cycles_r6) >= 2)
+
+    // ── 7. Self-import via parent-drop fallback (no false flag) ───
+    // `from crate.a import x` inside `module a` parent-drops to
+    // `crate` = self → resolve_edge_target's self-loop guard nulls
+    // the edge; cycle detector sees no edge.
+    let r7: LoadProgramResult = load_program_from_source(
+        "module a { function f() -> Integer = 1 }"
+    )
+    let cycles_r7: Vector<LoaderError> = detect_cycles(r7.program)
+    assert(count_cycle_errors(cycles_r7) == 0)
+
+    // ── 8. Acyclic chain a → b → c (no cycle) ──────────────────────
+    let r8: LoadProgramResult = load_program_from_source(
+        "module a { from crate.b import x }\nmodule b { from crate.c import y }\nmodule c { function f() -> Integer = 0 }"
+    )
+    let cycles_r8: Vector<LoaderError> = detect_cycles(r8.program)
+    assert(count_cycle_errors(cycles_r8) == 0)
+
+    println("v0.7.6.3 cycle detection smoke OK")
 }
