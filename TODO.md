@@ -194,7 +194,28 @@ Per ADR-0019 §A7.5: port crates/triet-parser/ (~6027 LOC across 9 files) to a T
 
 ### Remaining v0.7 sub-tasks after parser
 
-- [ ] **v0.7.6** — `compiler/modules.tri` + modules_differential test
+## v0.7.6 — `compiler/modules.tri` port (in progress)
+
+Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
+[ADR-0019 §A7.6], ships in 5 sub-tasks: types + LoaderError → loader
+(filesystem) → cycle detection → resolver (name resolution) →
+`modules_differential` NDJSON gate.
+
+- [x] **v0.7.6.1** — Types + LoaderError scaffolding (this commit)
+  - `compiler/modules.tri` (~600 LOC, new) — ports `crates/triet-modules/src/{path.rs, module.rs, error.rs}`. New data types: `ModulePath` (segments + crate_root / child / parent / display / is_reserved_root / is_local_crate per ADR-0005), `AbsolutePath` (module_path + name + display), `ModuleId` / `ArenaId` (Integer newtype wrappers — keeps the loader from cross-feeding indices), `Module` (path + source_path + arena_id + item_ids + bindings + parent + children — `item_ids: Vector<Integer>` mirrors the v0.7.5.4a `Program { arena, item_ids }` shape), `ResolvedProgram` (arenas + modules + root). `LoaderError` enum with 8 variants covering E2100 CyclicImport → E2107 AliasedVariantImport; each multi-field variant wraps its fields in a per-variant `*Payload` struct (Triết enum variants take exactly one payload — mirrors v0.7.5.3+ Stmt pattern). Helpers: `loader_error_code` → stable `triet::modules::EXXXX` strings, `loader_error_span` → `Vector<Integer>` 2-element start/end pair (IR tuple returns defer post-v1.0 per SPEC §95), `loader_error_message` → user-facing `#[error]` template strings for v0.7.6.5 byte-diff.
+  - **Design Q1-A (coupling)**: Hybrid — modules.tri declares its own type surface (mirror Rust crate boundary) but `Module.item_ids` references parser's Arena by integer ID. Long-term: `ResolvedProgram.arenas: Vector<crate.parser.Arena>`. Short-term placeholder `Vector<Integer>` because Triết's nested-search-dir loader resolution would require restructuring `compiler/parser.tri` + `compiler/lexer.tri` into a `compiler/parser/` nested layout to let modules.tri declare `module parser;` cleanly. That restructure lands in v0.7.6.2 alongside the actual loader logic (the real consumer of the Arena import).
+  - **Design Q2-A (error encoding)**: per-variant payload structs. 8 mini-payload structs (`CyclicImportPayload` / `FileNotFoundPayload` / `ReservedNamespacePayload` / `VisibilityViolationPayload` / `UnresolvedImportPayload` / `ChildParseErrorPayload` / `IoErrorPayload` / `AliasedVariantImportPayload`) + 8 enum variants. Matches the v0.7.5.3 / v0.7.5.5b pattern; verbose but type-safe.
+  - **One Triết-side gotcha recorded**: `module` is a reserved keyword (ADR-0005), so field names `module:` and parameter names `module:` parse as keyword-misuse. Renamed `AbsolutePath.module` → `AbsolutePath.module_path`, `ChildParseErrorPayload.module` → `ChildParseErrorPayload.module_path_text`. Dropped trivial `Module`-typed accessor functions (`module_path_of` / `module_arena_id` / `module_item_count`) — direct field access at call sites avoids needing to coin a non-keyword parameter name.
+  - 1 new integration test (`modules_types_smoke.rs`) loads `compiler/modules.tri` end-to-end (load → typecheck → lower → write `.triv` → round-trip read → run `main()` on VM) — same shape as `parser_*_smoke.rs`. Triết-side `main()` exercises every constructor + display / code / span / message helper across all variants. 1316 workspace tests pass (was 1315, +1); `cargo clippy --workspace --all-targets` clean.
+
+### Remaining v0.7.6 sub-tasks
+
+- [ ] **v0.7.6.2** — Loader (filesystem traversal, inline + file-bound modules, stdlib loading) + parser/lexer file layout restructure (move `compiler/{lexer,parser}.tri` → `compiler/parser/{lexer,parser}.tri` so nested-search-dir resolves correctly when `compiler/modules.tri` declares `module parser;`)
+- [ ] **v0.7.6.3** — Cycle detection (DFS over import graph)
+- [ ] **v0.7.6.4** — Resolver (name resolution + `from … import …` + visibility check)
+- [ ] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate (closes v0.7.6 umbrella per ADR-0019 §A7.6)
+
+### Remaining v0.7 sub-tasks after modules
 - [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
 - [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
 - [ ] **v0.7.9** — `compiler/pack_writer.tri` + `compiler/main.tri` + drop bridges

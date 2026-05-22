@@ -1,0 +1,651 @@
+// Triết-in-Triết modules port — bootstrap source for the self-
+// hosting compiler ([ADR-0019][adr-0019] §A7.6 v0.7.6 umbrella).
+//
+// v0.7.6.1 — Types + LoaderError scaffolding. Mirrors
+// crates/triet-modules/src/{path.rs, module.rs, error.rs}: declares
+// every data type the loader / cycle detector / resolver will
+// populate in v0.7.6.{2,3,4} and locks the public API surface for
+// the differential gate in v0.7.6.5.
+//
+// Types coverage:
+//   - ModulePath / AbsolutePath (path.rs) — dot-separated segments,
+//     `crate.foo.bar` display, reserved-root detection per
+//     ADR-0005.
+//   - ModuleId / ArenaId (module.rs) — Integer index wrappers; the
+//     loader uses ModuleId to index into ResolvedProgram.modules,
+//     ArenaId into ResolvedProgram.arenas.
+//   - Module (module.rs) — one module in the resolved program;
+//     holds its path + arena reference + item IDs + binding map +
+//     parent / children edges. `items` becomes a `Vector<Integer>`
+//     pointing into the per-module Arena (mirrors the existing
+//     `Program { arena, item_ids }` shape in compiler/parser.tri).
+//   - ResolvedProgram (module.rs) — the loader's output; flat
+//     `Vector<Module>` indexed by ModuleId + one Arena per parsed
+//     source file (`Vector<Arena>` indexed by ArenaId).
+//   - LoaderError (error.rs) — 8-variant enum covering E2100
+//     CyclicImport through E2107 AliasedVariantImport. Each
+//     variant carries a per-variant payload struct (Triết enum
+//     variants take exactly one payload, so multi-field variants
+//     wrap their fields in `*Payload` structs — mirrors the
+//     v0.7.5.3+ pattern in parser.tri).
+//
+// Span encoding mirrors compiler/parser.tri's `span_start: Integer
+// + span_end: Integer` pair — no `Range` wrapper since IR tuple
+// returns defer post-v1.0 per SPEC §95.
+//
+// Parser AST is logically imported but not yet wired in v0.7.6.1.
+// The Hybrid coupling decision (Q1-A) calls for `Module.item_ids`
+// to index into a `Vector<crate.parser.Arena>` held by
+// `ResolvedProgram.arenas`. Doing that today would require either
+// (a) restructuring `compiler/parser.tri` + `compiler/lexer.tri`
+//     under a nested `compiler/parser/` layout so the loader's
+//     `module foo;` nested-search-dir resolution finds lexer when
+//     parser is loaded as a child of modules — disruptive to
+//     v0.7.4/v0.7.5 smoke tests already loading those files
+//     directly; or
+// (b) introducing a `compiler/main.tri` umbrella that pre-declares
+//     every sibling — same disruption.
+// The restructure ships in v0.7.6.2 alongside the loader logic
+// itself (which is the real consumer of the Arena import). For
+// v0.7.6.1 we use a placeholder `Vector<Integer>` for the arenas
+// slot — types-level smoke doesn't need to construct Arena values.
+//
+// [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+
+from std.io import println
+from std.collections.vector import new, push, length, get
+from std.collections.hashmap import new as hashmap_new
+from std.text import concat, from_integer, len as text_len
+from std.assert import assert
+
+// ─────────────────────────────────────────────────────────────────
+// ModulePath — sequence of dot-separated segments (`crate.foo.bar`).
+//
+// First segment is significant: `crate` for the local root, or one
+// of `std` / `sys` / `dev` / `usr` / `core` for reserved stdlib
+// namespaces per ADR-0005. Empty paths are not permitted in the
+// resolved program; the root is always `["crate"]`.
+// ─────────────────────────────────────────────────────────────────
+
+public struct ModulePath {
+    segments: Vector<String>,
+}
+
+public function module_path_new(segments: Vector<String>) -> ModulePath =
+    ModulePath { segments: segments }
+
+public function module_path_crate_root() -> ModulePath =
+    ModulePath { segments: push(new(), "crate") }
+
+public function module_path_segments(path: ModulePath) -> Vector<String> =
+    path.segments
+
+public function module_path_len(path: ModulePath) -> Integer =
+    length(path.segments)
+
+public function module_path_is_empty(path: ModulePath) -> Trilean =
+    length(path.segments) == 0
+
+/// First segment of `path`, or `null` if the path is empty.
+public function module_path_root(path: ModulePath) -> String? = {
+    let n: Integer = length(path.segments)
+    if n == 0 {
+        ~0
+    } else {
+        get(path.segments, 0)
+    }
+}
+
+/// Append `segment` to `path` — `crate.foo.child("bar")` → `crate.foo.bar`.
+public function module_path_child(path: ModulePath, segment: String) -> ModulePath = {
+    let extended: Vector<String> = push(path.segments, segment)
+    ModulePath { segments: extended }
+}
+
+/// Drop the last segment. Returns `null` if `path` has at most one
+/// segment (the root has no parent).
+public function module_path_parent(path: ModulePath) -> ModulePath? = {
+    let n: Integer = length(path.segments)
+    if n <= 1 {
+        ~0
+    } else {
+        let mutable trimmed: Vector<String> = new()
+        let mutable i: Integer = 0
+        while i < n - 1 {
+            let seg_opt: String? = get(path.segments, i)
+            trimmed = push(trimmed, seg_opt!!)
+            i = i + 1
+        }
+        ModulePath { segments: trimmed }
+    }
+}
+
+/// True if the root segment names a reserved stdlib namespace per
+/// ADR-0005: `std` / `sys` / `dev` / `usr` / `core`. Used by the
+/// resolver to gate `sys.*` / `dev.*` / `usr.*` at the import site
+/// (only `std` and `core` are usable pre-v0.6; the rest reserved
+/// for the capability namespaces).
+public function module_path_is_reserved_root(path: ModulePath) -> Trilean = {
+    let root_opt: String? = module_path_root(path)
+    match root_opt {
+        ~0 => false,
+        _ => {
+            let r: String = root_opt!!
+            r == "std" || r == "sys" || r == "dev" || r == "usr" || r == "core"
+        },
+    }
+}
+
+/// True if the path's root is the local crate (`crate.…`).
+public function module_path_is_local_crate(path: ModulePath) -> Trilean = {
+    let root_opt: String? = module_path_root(path)
+    match root_opt {
+        ~0 => false,
+        _ => root_opt!! == "crate",
+    }
+}
+
+/// Render `path` as a dot-joined String. Mirrors the Rust
+/// `impl Display for ModulePath` — `["crate", "foo", "bar"]` →
+/// `"crate.foo.bar"`. Empty path renders as `""`.
+public function module_path_display(path: ModulePath) -> String = {
+    let n: Integer = length(path.segments)
+    let mutable buf: String = ""
+    let mutable i: Integer = 0
+    while i < n {
+        let seg_opt: String? = get(path.segments, i)
+        let seg: String = seg_opt!!
+        if i == 0 {
+            buf = seg
+        } else {
+            buf = concat(concat(buf, "."), seg)
+        }
+        i = i + 1
+    }
+    buf
+}
+
+// ─────────────────────────────────────────────────────────────────
+// AbsolutePath — fully-qualified item path: module path + item name.
+//
+// Example: function `bar` in `crate.foo` has absolute path
+// `crate.foo.bar`. Used as the canonical identity of every named
+// entity after name resolution; `Module.bindings` maps local names
+// to `AbsolutePath`.
+// ─────────────────────────────────────────────────────────────────
+
+public struct AbsolutePath {
+    module_path: ModulePath,
+    name: String,
+}
+
+public function absolute_path_new(module_path: ModulePath, name: String) -> AbsolutePath =
+    AbsolutePath { module_path: module_path, name: name }
+
+public function absolute_path_module(path: AbsolutePath) -> ModulePath =
+    path.module_path
+
+public function absolute_path_name(path: AbsolutePath) -> String =
+    path.name
+
+/// Render as `module.name`. Empty `module` renders as just `.name`
+/// (kept consistent with the Rust impl's `write!("{}.{}", …)`).
+public function absolute_path_display(path: AbsolutePath) -> String =
+    concat(concat(module_path_display(path.module_path), "."), path.name)
+
+// ─────────────────────────────────────────────────────────────────
+// ModuleId / ArenaId — Integer index wrappers.
+//
+// Two single-field structs (rather than bare `Integer`) so the
+// loader / resolver / typecheck cannot accidentally cross-feed a
+// ModuleId where an ArenaId is expected. Mirrors Rust's newtype
+// pattern; field access via `mid.raw` returns the underlying index.
+// ─────────────────────────────────────────────────────────────────
+
+public struct ModuleId {
+    raw: Integer,
+}
+
+public function module_id_new(raw: Integer) -> ModuleId =
+    ModuleId { raw: raw }
+
+public function module_id_raw(id: ModuleId) -> Integer =
+    id.raw
+
+public struct ArenaId {
+    raw: Integer,
+}
+
+public function arena_id_new(raw: Integer) -> ArenaId =
+    ArenaId { raw: raw }
+
+public function arena_id_raw(id: ArenaId) -> Integer =
+    id.raw
+
+// ─────────────────────────────────────────────────────────────────
+// Module — one module in the resolved program.
+//
+// Inline modules (`module foo { … }`) and file-bound modules
+// (`module foo` resolved from disk) are both represented as
+// `Module`. Differences:
+//   - `source_path` is `Some` only for file-bound modules tied to
+//     a real source file. `null` for inline / synthetic stdlib.
+//   - `arena_id` is unique per file-bound module; inline modules
+//     share their parent's arena (mirrors the Rust crate's "one
+//     arena per parsed source file" rule).
+//
+// `item_ids` references into `arenas[arena_id]` rather than owning
+// items directly — keeps the AST a single source of truth. The
+// loader populates `item_ids` from the parser's `Program.item_ids`
+// once a module's file is parsed.
+// ─────────────────────────────────────────────────────────────────
+
+public struct Module {
+    path: ModulePath,
+    source_path: String?,
+    arena_id: ArenaId,
+    item_ids: Vector<Integer>,
+    bindings: HashMap<String, AbsolutePath>,
+    parent: ModuleId?,
+    children: Vector<ModuleId>,
+}
+
+/// Build an empty Module. The loader populates `item_ids` /
+/// `bindings` / `children` after parse + resolve.
+public function module_new(
+    path: ModulePath,
+    source_path: String?,
+    arena_id: ArenaId,
+    parent: ModuleId?,
+) -> Module =
+    Module {
+        path: path,
+        source_path: source_path,
+        arena_id: arena_id,
+        item_ids: new(),
+        bindings: hashmap_new(),
+        parent: parent,
+        children: new(),
+    }
+
+// Module field accessors omitted — call sites use `target.path` /
+// `target.arena_id` / `length(target.item_ids)` inline. Triết's
+// `module` keyword is reserved (ADR-0005), so `module:` cannot be
+// a parameter name; rather than coining `module_value` / `target`
+// just to wrap a one-line field access, expose the fields directly.
+
+// ─────────────────────────────────────────────────────────────────
+// ResolvedProgram — output of the loader.
+//
+// Flat list of modules indexed by ModuleId + one Arena per parsed
+// source file (`arenas[arena_id]`). The root is the crate root —
+// where `main` is looked up. Type-check and lowerer consume this
+// instead of a bare Program (mirrors the Rust crate's
+// `ResolvedProgram` shape).
+// ─────────────────────────────────────────────────────────────────
+
+public struct ResolvedProgram {
+    // v0.7.6.1 placeholder — `Vector<Integer>` promotes to
+    // `Vector<crate.parser.Arena>` once the loader restructure
+    // lands in v0.7.6.2. See the file header for the deferral
+    // rationale.
+    arenas: Vector<Integer>,
+    modules: Vector<Module>,
+    root: ModuleId,
+}
+
+public function resolved_program_new(
+    arenas: Vector<Integer>,
+    modules: Vector<Module>,
+    root: ModuleId,
+) -> ResolvedProgram =
+    ResolvedProgram { arenas: arenas, modules: modules, root: root }
+
+public function resolved_program_module_count(program: ResolvedProgram) -> Integer =
+    length(program.modules)
+
+public function resolved_program_arena_count(program: ResolvedProgram) -> Integer =
+    length(program.arenas)
+
+public function resolved_program_root(program: ResolvedProgram) -> ModuleId =
+    program.root
+
+// ─────────────────────────────────────────────────────────────────
+// LoaderError — 8 variants covering E2100–E2107.
+//
+// Per the v0.7.6.1 design Q2-A decision, each multi-field variant
+// wraps its fields in a per-variant `*Payload` struct (Triết enum
+// variants take exactly one payload). Mirrors v0.7.5.3+ Stmt /
+// v0.7.5.5b Pattern encoding in compiler/parser.tri.
+//
+// Span encoding: `span_start: Integer + span_end: Integer` pair —
+// matches compiler/parser.tri convention; IR tuple returns defer
+// post-v1.0 per SPEC §95.
+// ─────────────────────────────────────────────────────────────────
+
+/// E2100 — cyclic module dependency detected during DFS over imports.
+public struct CyclicImportPayload {
+    trace: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2101 — `module foo` declared but no `foo.tri` / `foo/foo.tri` found.
+public struct FileNotFoundPayload {
+    module_name: String,
+    searched_primary: String,
+    searched_nested: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2102 — import path roots in a namespace not yet usable in this
+/// version per ADR-0005 (`sys` / `dev` / `usr` reserved for v0.6
+/// capability namespaces).
+public struct ReservedNamespacePayload {
+    root: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2103 — name exists in target module but is not `public`.
+public struct VisibilityViolationPayload {
+    name: String,
+    actual_visibility: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2104 — import path or name does not resolve to anything.
+public struct UnresolvedImportPayload {
+    path: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2105 — child module file failed to parse.
+public struct ChildParseErrorPayload {
+    module_path_text: String,
+    message: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2106 — I/O error reading a module source file.
+public struct IoErrorPayload {
+    path: String,
+    message: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// E2107 — `from X import Variant as Alias` for an enum variant
+/// (variant aliasing not supported per ADR-0005).
+public struct AliasedVariantImportPayload {
+    variant: String,
+    enum_name: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public enum LoaderError {
+    CyclicImportErr(CyclicImportPayload),
+    FileNotFoundErr(FileNotFoundPayload),
+    ReservedNamespaceErr(ReservedNamespacePayload),
+    VisibilityViolationErr(VisibilityViolationPayload),
+    UnresolvedImportErr(UnresolvedImportPayload),
+    ChildParseErrorErr(ChildParseErrorPayload),
+    IoErrorErr(IoErrorPayload),
+    AliasedVariantImportErr(AliasedVariantImportPayload),
+}
+
+/// Stable error code string — used by the CLI's JSON emitter and
+/// by the v0.7.6.5 differential gate to assert byte-identical
+/// error emission against the Rust impl.
+public function loader_error_code(err: LoaderError) -> String = {
+    match err {
+        CyclicImportErr(_) => "triet::modules::E2100",
+        FileNotFoundErr(_) => "triet::modules::E2101",
+        ReservedNamespaceErr(_) => "triet::modules::E2102",
+        VisibilityViolationErr(_) => "triet::modules::E2103",
+        UnresolvedImportErr(_) => "triet::modules::E2104",
+        ChildParseErrorErr(_) => "triet::modules::E2105",
+        IoErrorErr(_) => "triet::modules::E2106",
+        AliasedVariantImportErr(_) => "triet::modules::E2107",
+    }
+}
+
+/// Extract the labelled span as a `(start, end)` pair encoded as a
+/// 2-element Vector. Two-Integer-return is the v0.7.5+ idiom since
+/// IR tuple returns defer post-v1.0 per SPEC §95.
+public function loader_error_span(err: LoaderError) -> Vector<Integer> = {
+    let mutable out: Vector<Integer> = new()
+    match err {
+        CyclicImportErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        FileNotFoundErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        ReservedNamespaceErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        VisibilityViolationErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        UnresolvedImportErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        ChildParseErrorErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        IoErrorErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+        AliasedVariantImportErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
+    }
+    out
+}
+
+/// Render the user-facing error message. Mirrors the Rust impl's
+/// `#[error("…")]` template strings — used by the differential
+/// gate to assert byte-identical message emission.
+public function loader_error_message(err: LoaderError) -> String = {
+    match err {
+        CyclicImportErr(p) => concat("cyclic module dependency: ", p.trace),
+        FileNotFoundErr(p) => concat(concat("module file not found for `", p.module_name), "`"),
+        ReservedNamespaceErr(p) => concat(concat("namespace `", p.root), "` is reserved and not yet usable"),
+        VisibilityViolationErr(p) => concat(concat("`", p.name), "` is not visible from this module"),
+        UnresolvedImportErr(p) => concat(concat("unresolved import: `", p.path), "`"),
+        ChildParseErrorErr(p) => concat(concat("parse error in module `", p.module_path_text), "`"),
+        IoErrorErr(p) => concat(concat(concat(concat("could not read module file `", p.path), "`: "), p.message), ""),
+        AliasedVariantImportErr(p) => concat(concat("enum variant `", p.variant), "` cannot be imported under an alias"),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Smoke main — exercises every type's construction + display so the
+// v0.7.6.1 integration test (`modules_types_smoke.rs`) can confirm
+// the AST surface compiles + round-trips through the VM. v0.7.6.5
+// supersedes this with the byte-diff `modules_differential` gate.
+// ─────────────────────────────────────────────────────────────────
+
+function assert_string_eq(actual: String, expected: String) -> Unit =
+    assert(actual == expected)
+
+public function main() -> Unit = {
+    // ── ModulePath ────────────────────────────────────────────────
+    let root: ModulePath = module_path_crate_root()
+    assert_string_eq(module_path_display(root), "crate")
+    assert(module_path_len(root) == 1)
+    assert(module_path_is_empty(root) == false)
+    assert(module_path_is_local_crate(root) == true)
+    assert(module_path_is_reserved_root(root) == false)
+
+    let foo: ModulePath = module_path_child(root, "foo")
+    assert_string_eq(module_path_display(foo), "crate.foo")
+    assert(module_path_len(foo) == 2)
+
+    let foo_bar: ModulePath = module_path_child(foo, "bar")
+    assert_string_eq(module_path_display(foo_bar), "crate.foo.bar")
+    assert(module_path_len(foo_bar) == 3)
+
+    // parent traversal
+    let foo_bar_parent_opt: ModulePath? = module_path_parent(foo_bar)
+    match foo_bar_parent_opt {
+        ~0 => assert(false),
+        _ => assert_string_eq(module_path_display(foo_bar_parent_opt!!), "crate.foo"),
+    }
+
+    let root_parent_opt: ModulePath? = module_path_parent(root)
+    match root_parent_opt {
+        ~0 => assert(true),
+        _ => assert(false),
+    }
+
+    // Reserved roots
+    let std_path: ModulePath = module_path_new(push(new(), "std"))
+    assert(module_path_is_reserved_root(std_path) == true)
+    assert(module_path_is_local_crate(std_path) == false)
+    assert_string_eq(module_path_display(std_path), "std")
+
+    let sys_path: ModulePath = module_path_new(push(new(), "sys"))
+    assert(module_path_is_reserved_root(sys_path) == true)
+
+    let dev_path: ModulePath = module_path_new(push(new(), "dev"))
+    assert(module_path_is_reserved_root(dev_path) == true)
+
+    let usr_path: ModulePath = module_path_new(push(new(), "usr"))
+    assert(module_path_is_reserved_root(usr_path) == true)
+
+    let core_path: ModulePath = module_path_new(push(new(), "core"))
+    assert(module_path_is_reserved_root(core_path) == true)
+
+    // Empty-path edge case
+    let empty: ModulePath = module_path_new(new())
+    assert(module_path_is_empty(empty) == true)
+    assert(module_path_len(empty) == 0)
+    assert(module_path_is_local_crate(empty) == false)
+    assert(module_path_is_reserved_root(empty) == false)
+
+    // ── AbsolutePath ──────────────────────────────────────────────
+    let std_io: ModulePath = module_path_child(std_path, "io")
+    let println_abs: AbsolutePath = absolute_path_new(std_io, "println")
+    assert_string_eq(absolute_path_display(println_abs), "std.io.println")
+    assert_string_eq(absolute_path_name(println_abs), "println")
+
+    let bar_abs: AbsolutePath = absolute_path_new(foo, "bar")
+    assert_string_eq(absolute_path_display(bar_abs), "crate.foo.bar")
+
+    // ── ModuleId / ArenaId ────────────────────────────────────────
+    let mid: ModuleId = module_id_new(7)
+    assert(module_id_raw(mid) == 7)
+    let aid: ArenaId = arena_id_new(3)
+    assert(arena_id_raw(aid) == 3)
+
+    // ── Module + ResolvedProgram ──────────────────────────────────
+    let root_module: Module = module_new(root, ~0, arena_id_new(0), ~0)
+    assert(length(root_module.item_ids) == 0)
+    assert_string_eq(module_path_display(root_module.path), "crate")
+    assert(arena_id_raw(root_module.arena_id) == 0)
+
+    let modules_vec: Vector<Module> = push(new(), root_module)
+    let arenas_vec: Vector<Integer> = new()
+    let program: ResolvedProgram = resolved_program_new(arenas_vec, modules_vec, module_id_new(0))
+    assert(resolved_program_module_count(program) == 1)
+    assert(resolved_program_arena_count(program) == 0)
+    assert(module_id_raw(resolved_program_root(program)) == 0)
+
+    // ── LoaderError construction + code + span + message ──────────
+    let cyclic: LoaderError = CyclicImportErr(CyclicImportPayload {
+        trace: "foo -> bar -> foo",
+        span_start: 0,
+        span_end: 10,
+    })
+    assert_string_eq(loader_error_code(cyclic), "triet::modules::E2100")
+    let cyclic_span: Vector<Integer> = loader_error_span(cyclic)
+    assert(length(cyclic_span) == 2)
+    assert(get(cyclic_span, 0)!! == 0)
+    assert(get(cyclic_span, 1)!! == 10)
+    assert_string_eq(loader_error_message(cyclic), "cyclic module dependency: foo -> bar -> foo")
+
+    let file_nf: LoaderError = FileNotFoundErr(FileNotFoundPayload {
+        module_name: "foo",
+        searched_primary: "foo.tri",
+        searched_nested: "foo/foo.tri",
+        span_start: 5,
+        span_end: 15,
+    })
+    assert_string_eq(loader_error_code(file_nf), "triet::modules::E2101")
+    assert_string_eq(loader_error_message(file_nf), "module file not found for `foo`")
+
+    let reserved: LoaderError = ReservedNamespaceErr(ReservedNamespacePayload {
+        root: "sys",
+        span_start: 0,
+        span_end: 3,
+    })
+    assert_string_eq(loader_error_code(reserved), "triet::modules::E2102")
+    assert_string_eq(loader_error_message(reserved), "namespace `sys` is reserved and not yet usable")
+
+    let visibility: LoaderError = VisibilityViolationErr(VisibilityViolationPayload {
+        name: "secret",
+        actual_visibility: "private",
+        span_start: 20,
+        span_end: 26,
+    })
+    assert_string_eq(loader_error_code(visibility), "triet::modules::E2103")
+    assert_string_eq(loader_error_message(visibility), "`secret` is not visible from this module")
+
+    let unresolved: LoaderError = UnresolvedImportErr(UnresolvedImportPayload {
+        path: "crate.nope",
+        span_start: 30,
+        span_end: 40,
+    })
+    assert_string_eq(loader_error_code(unresolved), "triet::modules::E2104")
+    assert_string_eq(loader_error_message(unresolved), "unresolved import: `crate.nope`")
+
+    let child_err: LoaderError = ChildParseErrorErr(ChildParseErrorPayload {
+        module_path_text: "crate.broken",
+        message: "expected `}` at offset 42",
+        span_start: 50,
+        span_end: 60,
+    })
+    assert_string_eq(loader_error_code(child_err), "triet::modules::E2105")
+    assert_string_eq(loader_error_message(child_err), "parse error in module `crate.broken`")
+
+    let io_err: LoaderError = IoErrorErr(IoErrorPayload {
+        path: "/nope.tri",
+        message: "no such file",
+        span_start: 70,
+        span_end: 80,
+    })
+    assert_string_eq(loader_error_code(io_err), "triet::modules::E2106")
+    assert_string_eq(loader_error_message(io_err), "could not read module file `/nope.tri`: no such file")
+
+    let aliased: LoaderError = AliasedVariantImportErr(AliasedVariantImportPayload {
+        variant: "Some",
+        enum_name: "Option",
+        span_start: 90,
+        span_end: 100,
+    })
+    assert_string_eq(loader_error_code(aliased), "triet::modules::E2107")
+    assert_string_eq(loader_error_message(aliased), "enum variant `Some` cannot be imported under an alias")
+
+    // ── Span uniform extraction across every variant ──────────────
+    let span_check: Vector<Integer> = loader_error_span(aliased)
+    assert(length(span_check) == 2)
+    assert(get(span_check, 0)!! == 90)
+    assert(get(span_check, 1)!! == 100)
+
+    println("v0.7.6.1 modules types smoke OK")
+}
