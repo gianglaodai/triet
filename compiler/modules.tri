@@ -33,30 +33,46 @@
 // + span_end: Integer` pair — no `Range` wrapper since IR tuple
 // returns defer post-v1.0 per SPEC §95.
 //
-// Parser AST is logically imported but not yet wired in v0.7.6.1.
-// The Hybrid coupling decision (Q1-A) calls for `Module.item_ids`
-// to index into a `Vector<crate.parser.Arena>` held by
-// `ResolvedProgram.arenas`. Doing that today would require either
-// (a) restructuring `compiler/parser.tri` + `compiler/lexer.tri`
-//     under a nested `compiler/parser/` layout so the loader's
-//     `module foo;` nested-search-dir resolution finds lexer when
-//     parser is loaded as a child of modules — disruptive to
-//     v0.7.4/v0.7.5 smoke tests already loading those files
-//     directly; or
-// (b) introducing a `compiler/main.tri` umbrella that pre-declares
-//     every sibling — same disruption.
-// The restructure ships in v0.7.6.2 alongside the loader logic
-// itself (which is the real consumer of the Arena import). For
-// v0.7.6.1 we use a placeholder `Vector<Integer>` for the arenas
-// slot — types-level smoke doesn't need to construct Arena values.
+// v0.7.6.2 — Loader (filesystem + in-memory) + file layout
+// restructure. `compiler/lexer.tri` + `compiler/parser.tri` move
+// to `compiler/parser/{lexer,parser}.tri` so the loader's nested-
+// search-dir resolution finds them as siblings when modules.tri
+// declares `module parser;` (parser.tri then sees its own
+// `module lexer;` resolve correctly to `compiler/parser/lexer.tri`).
+// `ResolvedProgram.arenas` promotes `Vector<Integer>` placeholder
+// to `Vector<Arena>` (real parser.tri arena type) now that the
+// import wires up.
+//
+// Loader scope: builds the module dependency graph by walking
+// `module foo;` declarations starting from a root file (or in-
+// memory source). Sibling-then-nested filesystem resolution per
+// ADR-0005 §"File resolution". Inline `module foo { … }` bodies
+// recurse sharing the parent's Arena; file-bound declarations get
+// a fresh Arena. Cycle detection ships in v0.7.6.3; name
+// resolution / visibility check ship in v0.7.6.4; stdlib pre-load
+// ships alongside the resolver in v0.7.6.4 (loader's only job is
+// the file walk — stdlib injection is a resolver concern).
 //
 // [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
 
+module parser;
+
 from std.io import println
+from std.io.fs import read as fs_read
+from std.path import join as path_join, parent as path_parent, basename as path_basename
 from std.collections.vector import new, push, length, get
 from std.collections.hashmap import new as hashmap_new
 from std.text import concat, from_integer, len as text_len
 from std.assert import assert
+
+from crate.parser import Arena, Program, ParseProgramStep, ParserState
+from crate.parser import parser_new, parse_program
+from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem
+from crate.parser import StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
+from crate.parser import ModuleDecl, ModuleContent, ExternalContent, InlineContent
+from crate.parser import SpannedItem, ParseError, ParseErrorDetail, ReservedNameDetail
+from crate.parser import UnexpectedTokenErr, UnexpectedEofErr, LexerFailedErr, ReservedItemNameErr
+from crate.parser.lexer import SpannedToken, LexError, lex
 
 // ─────────────────────────────────────────────────────────────────
 // ModulePath — sequence of dot-separated segments (`crate.foo.bar`).
@@ -285,17 +301,13 @@ public function module_new(
 // ─────────────────────────────────────────────────────────────────
 
 public struct ResolvedProgram {
-    // v0.7.6.1 placeholder — `Vector<Integer>` promotes to
-    // `Vector<crate.parser.Arena>` once the loader restructure
-    // lands in v0.7.6.2. See the file header for the deferral
-    // rationale.
-    arenas: Vector<Integer>,
+    arenas: Vector<Arena>,
     modules: Vector<Module>,
     root: ModuleId,
 }
 
 public function resolved_program_new(
-    arenas: Vector<Integer>,
+    arenas: Vector<Arena>,
     modules: Vector<Module>,
     root: ModuleId,
 ) -> ResolvedProgram =
@@ -474,6 +486,508 @@ public function loader_error_message(err: LoaderError) -> String = {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Loader — builds the module dependency graph from a root file (or
+// in-memory source) per ADR-0019 §A7.6.
+//
+// Triết has no mutable references, so the loader's working state
+// (arenas + modules + errors accumulator) threads functionally
+// through every helper via `LoaderContext`. Each recursive call
+// returns an updated context + the newly-allocated `ModuleId` (or
+// `null` if parsing failed).
+//
+// Stdlib pre-loading defers to v0.7.6.4 (the resolver wires
+// `std.*` import paths to filesystem `<workspace>/std/*.tri`
+// files). v0.7.6.2 loader's only job is the `module foo;` walk —
+// `from X import Y` is not a load trigger.
+// ─────────────────────────────────────────────────────────────────
+
+/// Mutable loader state threaded functionally through every
+/// recursive helper. After the top-level call completes, the
+/// `LoadProgramResult` is built by combining `arenas` + `modules` +
+/// `root_id` into a `ResolvedProgram` plus the accumulated `errors`.
+public struct LoaderContext {
+    arenas: Vector<Arena>,
+    modules: Vector<Module>,
+    errors: Vector<LoaderError>,
+    root_id: ModuleId,
+}
+
+public function loader_context_new() -> LoaderContext =
+    LoaderContext {
+        arenas: new(),
+        modules: new(),
+        errors: new(),
+        root_id: module_id_new(0),
+    }
+
+/// Result of `load_program` / `load_program_from_source`. Both
+/// always return a `ResolvedProgram` (possibly partial — built
+/// from whatever loaded successfully) plus an accumulated error
+/// list. Callers fail-closed on `length(errors) > 0`.
+public struct LoadProgramResult {
+    program: ResolvedProgram,
+    errors: Vector<LoaderError>,
+}
+
+/// Loader recursion result — updated context + new module's ID
+/// (or `null` if parsing failed and no module was allocated).
+struct LoadOneResult {
+    context: LoaderContext,
+    module_id: ModuleId?,
+}
+
+/// Convert a parser `ParseError` to a `LoaderError::ChildParseError`
+/// so the loader can accumulate parse failures uniformly with its
+/// own E2100–E2107 namespace.
+function parse_error_to_loader_error(
+    err: ParseError,
+    module_path_text: String,
+) -> LoaderError = {
+    match err {
+        UnexpectedTokenErr(d) => ChildParseErrorErr(ChildParseErrorPayload {
+            module_path_text: module_path_text,
+            message: concat(concat("expected ", d.expected), concat(", found ", d.found)),
+            span_start: d.span_start,
+            span_end: d.span_end,
+        }),
+        UnexpectedEofErr(d) => ChildParseErrorErr(ChildParseErrorPayload {
+            module_path_text: module_path_text,
+            message: concat("unexpected end of file: expected ", d.expected),
+            span_start: d.span_start,
+            span_end: d.span_end,
+        }),
+        LexerFailedErr(d) => ChildParseErrorErr(ChildParseErrorPayload {
+            module_path_text: module_path_text,
+            message: concat("lexer failure: ", d.found),
+            span_start: d.span_start,
+            span_end: d.span_end,
+        }),
+        ReservedItemNameErr(d) => ChildParseErrorErr(ChildParseErrorPayload {
+            module_path_text: module_path_text,
+            message: concat(concat("reserved item name `", d.name), "`"),
+            span_start: d.span_start,
+            span_end: d.span_end,
+        }),
+    }
+}
+
+/// Append every `ParseError` produced for the current module as a
+/// LoaderError::ChildParseError. Returns the updated context.
+function push_parse_errors(
+    context: LoaderContext,
+    parse_errors: Vector<ParseError>,
+    module_path_text: String,
+) -> LoaderContext = {
+    let mutable ctx: LoaderContext = context
+    let mutable i: Integer = 0
+    let total: Integer = length(parse_errors)
+    while i < total {
+        let err_opt: ParseError? = get(parse_errors, i)
+        let loader_err: LoaderError = parse_error_to_loader_error(err_opt!!, module_path_text)
+        ctx = LoaderContext {
+            arenas: ctx.arenas,
+            modules: ctx.modules,
+            errors: push(ctx.errors, loader_err),
+            root_id: ctx.root_id,
+        }
+        i = i + 1
+    }
+    ctx
+}
+
+/// Reserve a `ModuleId` and push an empty `Module` into the
+/// context. The caller fills in `item_ids` + `children` after
+/// recursing. Mirrors Rust's `LoaderState::allocate_module`.
+function allocate_module(
+    context: LoaderContext,
+    path: ModulePath,
+    source_path: String?,
+    arena_id: ArenaId,
+    parent: ModuleId?,
+) -> LoadOneResult = {
+    let new_id: ModuleId = module_id_new(length(context.modules))
+    let mod_value: Module = module_new(path, source_path, arena_id, parent)
+    let new_modules: Vector<Module> = push(context.modules, mod_value)
+    let new_root: ModuleId = match parent {
+        ~0 => new_id,
+        _ => context.root_id,
+    }
+    let new_ctx: LoaderContext = LoaderContext {
+        arenas: context.arenas,
+        modules: new_modules,
+        errors: context.errors,
+        root_id: new_root,
+    }
+    LoadOneResult { context: new_ctx, module_id: new_id }
+}
+
+/// Replace the module at `module_id` with a new value carrying
+/// updated `item_ids` + `children` lists. Triết lacks in-place
+/// mutation; the rebuild walks the `modules` Vector and swaps the
+/// target slot.
+function update_module_items(
+    context: LoaderContext,
+    module_id: ModuleId,
+    item_ids: Vector<Integer>,
+    children: Vector<ModuleId>,
+) -> LoaderContext = {
+    let target_raw: Integer = module_id_raw(module_id)
+    let total: Integer = length(context.modules)
+    let mutable rebuilt: Vector<Module> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let m_opt: Module? = get(context.modules, i)
+        let m: Module = m_opt!!
+        if i == target_raw {
+            rebuilt = push(rebuilt, Module {
+                path: m.path,
+                source_path: m.source_path,
+                arena_id: m.arena_id,
+                item_ids: item_ids,
+                bindings: m.bindings,
+                parent: m.parent,
+                children: children,
+            })
+        } else {
+            rebuilt = push(rebuilt, m)
+        }
+        i = i + 1
+    }
+    LoaderContext {
+        arenas: context.arenas,
+        modules: rebuilt,
+        errors: context.errors,
+        root_id: context.root_id,
+    }
+}
+
+/// Parse `source` into an Arena + item IDs, register a fresh
+/// arena in the context, and recurse on the parsed `Item::Module`
+/// declarations. Returns the updated context + the newly allocated
+/// module's ID (or `null` if parse errors prevented module
+/// allocation).
+///
+/// `search_dir` is `Some` whenever the module's children may
+/// resolve against the filesystem. A child of an in-memory root
+/// stays `None` — its `ExternalContent` declarations fire
+/// FileNotFound errors.
+function load_from_source(
+    context: LoaderContext,
+    path: ModulePath,
+    source_path: String?,
+    search_dir: String?,
+    source: String,
+    parent: ModuleId?,
+) -> LoadOneResult = {
+    // Lex + parse the source.
+    let lex_outcome: Vector<SpannedToken>~LexError = lex(source)
+    let tokens: Vector<SpannedToken> = lex_outcome ~: new()
+    let parse_step: ParseProgramStep = parse_program(parser_new(tokens))
+    let path_text: String = module_path_display(path)
+
+    // Surface any parse errors as ChildParseError.
+    let mutable ctx: LoaderContext = push_parse_errors(context, parse_step.errors, path_text)
+
+    // Register the arena (always — even if items are partial, we
+    // need the arena present for the module to point at).
+    let arena_idx: Integer = length(ctx.arenas)
+    let new_arenas: Vector<Arena> = push(ctx.arenas, parse_step.program.arena)
+    ctx = LoaderContext {
+        arenas: new_arenas,
+        modules: ctx.modules,
+        errors: ctx.errors,
+        root_id: ctx.root_id,
+    }
+    let arena_id: ArenaId = arena_id_new(arena_idx)
+
+    // Allocate the module slot.
+    let allocated: LoadOneResult = allocate_module(ctx, path, source_path, arena_id, parent)
+    ctx = allocated.context
+    let module_id: ModuleId = allocated.module_id!!
+
+    // Walk the parsed item IDs separating ModuleItem (recurse) from
+    // every other item (retain in module.item_ids).
+    let items_processed: ProcessItemsResult = process_items(
+        ctx,
+        path,
+        arena_id,
+        search_dir,
+        module_id,
+        parse_step.program.arena,
+        parse_step.program.item_ids,
+    )
+    ctx = items_processed.context
+
+    // Patch the allocated module slot with the retained item IDs +
+    // children IDs that recursion produced.
+    ctx = update_module_items(ctx, module_id, items_processed.retained_items, items_processed.children)
+
+    LoadOneResult { context: ctx, module_id: module_id }
+}
+
+/// Inline submodule load — items are already parsed into the
+/// parent's Arena, so this allocates a fresh module slot pointing
+/// at the same `parent_arena_id` and recurses on the inline items.
+function load_inline(
+    context: LoaderContext,
+    path: ModulePath,
+    parent_arena_id: ArenaId,
+    parent_arena: Arena,
+    search_dir: String?,
+    parent: ModuleId,
+    inline_item_ids: Vector<Integer>,
+) -> LoadOneResult = {
+    let allocated: LoadOneResult = allocate_module(context, path, ~0, parent_arena_id, parent)
+    let mutable ctx: LoaderContext = allocated.context
+    let module_id: ModuleId = allocated.module_id!!
+
+    let items_processed: ProcessItemsResult = process_items(
+        ctx,
+        path,
+        parent_arena_id,
+        search_dir,
+        module_id,
+        parent_arena,
+        inline_item_ids,
+    )
+    ctx = items_processed.context
+    ctx = update_module_items(ctx, module_id, items_processed.retained_items, items_processed.children)
+    LoadOneResult { context: ctx, module_id: module_id }
+}
+
+struct ProcessItemsResult {
+    context: LoaderContext,
+    retained_items: Vector<Integer>,
+    children: Vector<ModuleId>,
+}
+
+/// Walk `item_ids` separating `Item::ModuleItem` declarations
+/// (recurse into them) from every other item (retain in the parent
+/// module's item_ids list). Mirrors Rust's
+/// `LoaderState::process_items`.
+function process_items(
+    context: LoaderContext,
+    parent_path: ModulePath,
+    parent_arena_id: ArenaId,
+    parent_search_dir: String?,
+    parent_id: ModuleId,
+    parent_arena: Arena,
+    item_ids: Vector<Integer>,
+) -> ProcessItemsResult = {
+    let mutable ctx: LoaderContext = context
+    let mutable retained: Vector<Integer> = new()
+    let mutable children: Vector<ModuleId> = new()
+    let mutable i: Integer = 0
+    let total: Integer = length(item_ids)
+    while i < total {
+        let id_opt: Integer? = get(item_ids, i)
+        let item_id: Integer = id_opt!!
+        let spanned_item_opt: SpannedItem? = get(parent_arena.items, item_id)
+        let spanned_item: SpannedItem = spanned_item_opt!!
+        match spanned_item.node {
+            ModuleItem(decl) => {
+                let child_outcome: LoadOneResult = process_module_decl(
+                    ctx,
+                    parent_path,
+                    parent_arena_id,
+                    parent_arena,
+                    parent_search_dir,
+                    parent_id,
+                    decl,
+                    spanned_item.span_start,
+                    spanned_item.span_end,
+                )
+                ctx = child_outcome.context
+                match child_outcome.module_id {
+                    // Parse failed — the error was already pushed onto
+                    // the context's accumulator; skip the missing child.
+                    ~0 => { },
+                    _ => { children = push(children, child_outcome.module_id!!) },
+                }
+            },
+            _ => { retained = push(retained, item_id) },
+        }
+        i = i + 1
+    }
+    ProcessItemsResult { context: ctx, retained_items: retained, children: children }
+}
+
+/// Process one `module foo;` (external) or `module foo { items }`
+/// (inline) declaration. Routes to `load_inline` or
+/// `resolve_external` based on `decl.content`.
+function process_module_decl(
+    context: LoaderContext,
+    parent_path: ModulePath,
+    parent_arena_id: ArenaId,
+    parent_arena: Arena,
+    parent_search_dir: String?,
+    parent_id: ModuleId,
+    decl: ModuleDecl,
+    span_start: Integer,
+    span_end: Integer,
+) -> LoadOneResult = {
+    let child_path: ModulePath = module_path_child(parent_path, decl.name)
+    let child_search_dir: String? = match parent_search_dir {
+        ~0 => ~0,
+        _ => path_join(parent_search_dir!!, decl.name),
+    }
+    match decl.content {
+        InlineContent(inline_item_ids) => load_inline(
+            context,
+            child_path,
+            parent_arena_id,
+            parent_arena,
+            child_search_dir,
+            parent_id,
+            inline_item_ids,
+        ),
+        ExternalContent => {
+            match parent_search_dir {
+                ~0 => {
+                    // No filesystem context — root loaded from
+                    // in-memory source or inside an inline parent.
+                    let err: LoaderError = FileNotFoundErr(FileNotFoundPayload {
+                        module_name: decl.name,
+                        searched_primary: "(no filesystem context - root loaded from in-memory source or inside an inline parent)",
+                        searched_nested: "",
+                        span_start: span_start,
+                        span_end: span_end,
+                    })
+                    let updated_errors: Vector<LoaderError> = push(context.errors, err)
+                    let updated_ctx: LoaderContext = LoaderContext {
+                        arenas: context.arenas,
+                        modules: context.modules,
+                        errors: updated_errors,
+                        root_id: context.root_id,
+                    }
+                    LoadOneResult { context: updated_ctx, module_id: ~0 }
+                },
+                _ => resolve_external(
+                    context,
+                    child_path,
+                    decl.name,
+                    parent_search_dir!!,
+                    parent_id,
+                    span_start,
+                    span_end,
+                ),
+            }
+        },
+    }
+}
+
+/// Resolve an external `module foo;` declaration: read the sibling
+/// `<dir>/<name>.tri` first; if that's missing, fall back to the
+/// nested `<dir>/<name>/<name>.tri`. Recurse on whichever exists.
+/// Mirrors Rust's `LoaderState::resolve_external`.
+function resolve_external(
+    context: LoaderContext,
+    child_path: ModulePath,
+    name: String,
+    search_dir: String,
+    parent: ModuleId,
+    span_start: Integer,
+    span_end: Integer,
+) -> LoadOneResult = {
+    let flat: String = path_join(search_dir, concat(name, ".tri"))
+    let nested_dir: String = path_join(search_dir, name)
+    let nested: String = path_join(nested_dir, concat(name, ".tri"))
+
+    let flat_content: String? = fs_read(flat)
+    match flat_content {
+        ~0 => {
+            let nested_content: String? = fs_read(nested)
+            match nested_content {
+                ~0 => {
+                    let err: LoaderError = FileNotFoundErr(FileNotFoundPayload {
+                        module_name: name,
+                        searched_primary: flat,
+                        searched_nested: nested,
+                        span_start: span_start,
+                        span_end: span_end,
+                    })
+                    let updated_errors: Vector<LoaderError> = push(context.errors, err)
+                    let updated_ctx: LoaderContext = LoaderContext {
+                        arenas: context.arenas,
+                        modules: context.modules,
+                        errors: updated_errors,
+                        root_id: context.root_id,
+                    }
+                    LoadOneResult { context: updated_ctx, module_id: ~0 }
+                },
+                _ => load_from_source(
+                    context,
+                    child_path,
+                    nested,
+                    nested_dir,
+                    nested_content!!,
+                    parent,
+                ),
+            }
+        },
+        _ => load_from_source(
+            context,
+            child_path,
+            flat,
+            search_dir,
+            flat_content!!,
+            parent,
+        ),
+    }
+}
+
+/// In-memory entry point. Loads a single-file program from `source`
+/// with no filesystem context — external `module foo;` declarations
+/// fire FileNotFound errors. Useful for tests / REPL.
+public function load_program_from_source(source: String) -> LoadProgramResult = {
+    let root_path: ModulePath = module_path_crate_root()
+    let initial_ctx: LoaderContext = loader_context_new()
+    let outcome: LoadOneResult = load_from_source(initial_ctx, root_path, ~0, ~0, source, ~0)
+    let ctx: LoaderContext = outcome.context
+    let program: ResolvedProgram = resolved_program_new(ctx.arenas, ctx.modules, ctx.root_id)
+    LoadProgramResult { program: program, errors: ctx.errors }
+}
+
+/// Filesystem entry point. Reads `root_path`, builds the module
+/// graph by recursively walking `module foo;` declarations. External
+/// children resolve sibling-then-nested under `dirname(root_path)`.
+/// Stdlib pre-load defers to v0.7.6.4 — for now the loader's only
+/// job is the explicit `module foo;` walk.
+public function load_program(root_path: String) -> LoadProgramResult = {
+    let source_opt: String? = fs_read(root_path)
+    match source_opt {
+        ~0 => {
+            // IO error reading the root file.
+            let err: LoaderError = IoErrorErr(IoErrorPayload {
+                path: root_path,
+                message: "could not read file (null returned from std.io.fs.read)",
+                span_start: 0,
+                span_end: 0,
+            })
+            let empty: ResolvedProgram = resolved_program_new(new(), new(), module_id_new(0))
+            LoadProgramResult { program: empty, errors: push(new(), err) }
+        },
+        _ => {
+            let source: String = source_opt!!
+            let root_dir_opt: String? = path_parent(root_path)
+            let root_dir: String = root_dir_opt ~: "."
+            let initial_ctx: LoaderContext = loader_context_new()
+            let outcome: LoadOneResult = load_from_source(
+                initial_ctx,
+                module_path_crate_root(),
+                root_path,
+                root_dir,
+                source,
+                ~0,
+            )
+            let ctx: LoaderContext = outcome.context
+            let program: ResolvedProgram = resolved_program_new(ctx.arenas, ctx.modules, ctx.root_id)
+            LoadProgramResult { program: program, errors: ctx.errors }
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Smoke main — exercises every type's construction + display so the
 // v0.7.6.1 integration test (`modules_types_smoke.rs`) can confirm
 // the AST surface compiles + round-trips through the VM. v0.7.6.5
@@ -560,7 +1074,7 @@ public function main() -> Unit = {
     assert(arena_id_raw(root_module.arena_id) == 0)
 
     let modules_vec: Vector<Module> = push(new(), root_module)
-    let arenas_vec: Vector<Integer> = new()
+    let arenas_vec: Vector<Arena> = new()
     let program: ResolvedProgram = resolved_program_new(arenas_vec, modules_vec, module_id_new(0))
     assert(resolved_program_module_count(program) == 1)
     assert(resolved_program_arena_count(program) == 0)
@@ -648,4 +1162,73 @@ public function main() -> Unit = {
     assert(get(span_check, 1)!! == 100)
 
     println("v0.7.6.1 modules types smoke OK")
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.6.2 loader smoke — exercises `load_program_from_source` on a
+// small corpus covering: empty crate, single-item crate, single
+// inline submodule, nested inline submodules, external-in-memory
+// (FileNotFound expected). Filesystem `load_program` exercise lands
+// at v0.7.6.5 (modules_differential).
+// ─────────────────────────────────────────────────────────────────
+
+public function loader_smoke_main() -> Unit = {
+    // Empty source — crate root only, 1 arena, 0 errors.
+    let r1: LoadProgramResult = load_program_from_source("")
+    assert(resolved_program_module_count(r1.program) == 1)
+    assert(resolved_program_arena_count(r1.program) == 1)
+    assert(length(r1.errors) == 0)
+
+    // Single function — crate root with 1 item.
+    let r2: LoadProgramResult = load_program_from_source("function f() -> Integer = 0")
+    assert(resolved_program_module_count(r2.program) == 1)
+    assert(resolved_program_arena_count(r2.program) == 1)
+    assert(length(r2.errors) == 0)
+
+    // Single inline submodule — 2 modules sharing 1 arena.
+    let r3: LoadProgramResult = load_program_from_source(
+        "module foo { function bar() -> Integer = 0 }"
+    )
+    assert(resolved_program_module_count(r3.program) == 2)
+    assert(resolved_program_arena_count(r3.program) == 1)
+    assert(length(r3.errors) == 0)
+
+    // Nested inline submodules — 3 modules sharing 1 arena.
+    let r4: LoadProgramResult = load_program_from_source(
+        "module outer { module inner { function f() -> Integer = 0 } }"
+    )
+    assert(resolved_program_module_count(r4.program) == 3)
+    assert(resolved_program_arena_count(r4.program) == 1)
+    assert(length(r4.errors) == 0)
+
+    // External declaration in in-memory mode — FileNotFound expected,
+    // no child module allocated (only the crate root).
+    let r5: LoadProgramResult = load_program_from_source("module external")
+    assert(resolved_program_module_count(r5.program) == 1)
+    assert(length(r5.errors) == 1)
+    let e5: LoaderError? = get(r5.errors, 0)
+    assert_string_eq(loader_error_code(e5!!), "triet::modules::E2101")
+
+    // Sibling inline modules — 3 modules total (crate + foo + bar).
+    let r6: LoadProgramResult = load_program_from_source(
+        "module foo { } module bar { }"
+    )
+    assert(resolved_program_module_count(r6.program) == 3)
+    assert(length(r6.errors) == 0)
+
+    // Mix of items and modules — non-Module items remain in the
+    // crate's item_ids; only the Module item produces a child.
+    let r7: LoadProgramResult = load_program_from_source(
+        "function f() -> Integer = 0\nmodule m { }\nconstant K: Integer = 1"
+    )
+    assert(resolved_program_module_count(r7.program) == 2)
+    assert(length(r7.errors) == 0)
+    let crate_module_opt: Module? = get(r7.program.modules, 0)
+    let crate_module: Module = crate_module_opt!!
+    // crate has 2 retained items (function + constant). Module item
+    // recursed into the child.
+    assert(length(crate_module.item_ids) == 2)
+    assert(length(crate_module.children) == 1)
+
+    println("v0.7.6.2 loader smoke OK")
 }

@@ -168,8 +168,8 @@ from std.text import from_integer, concat, len
 from std.string import substring
 from std.assert import assert
 
-from crate.lexer import NumericSuffix, IntLiteral, Token, SpannedToken
-from crate.lexer import StringPayload, IntPayload, LexError, lex
+from self.lexer import NumericSuffix, IntLiteral, Token, SpannedToken
+from self.lexer import StringPayload, IntPayload, LexError, lex
 
 // ─────────────────────────────────────────────────────────────────
 // Trilean AST value — not in the lexer (the lexer emits the

@@ -1,6 +1,6 @@
 //! v0.7.5.2 — integration tests for two pre-existing bugs that
-//! surfaced while wiring `compiler/parser.tri` to import from
-//! `compiler/lexer.tri`:
+//! surfaced while wiring `compiler/parser/parser.tri` to import from
+//! `compiler/parser/lexer.tri`:
 //!
 //! 1. **Typecheck — cross-module user type fields resolve to
 //!    Unknown.** Pass 1 of `check_resolved` collected struct/enum

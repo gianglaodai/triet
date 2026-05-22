@@ -6,7 +6,7 @@
 //! `bind_pattern_vars` for `Pattern::EnumVariant` extracted the
 //! payload via `EnumPayload` but never set `value_struct_types` on
 //! the bound SSA value. Surfaced while drafting the
-//! `compiler/parser.tri` arena scaffolding (`BinaryOp(p) =>
+//! `compiler/parser/parser.tri` arena scaffolding (`BinaryOp(p) =>
 //! format_expr(a, p.left)` returned the operator enum, not the
 //! left-operand ID, blowing up downstream `get_expression`).
 //!
@@ -120,7 +120,7 @@ fn field_access_through_enum_payload_with_mixed_field_types() {
 
 /// Nested arena pattern: enum variant holds an index, and the body
 /// uses that index to look up another enum value via `get`. Mirrors
-/// `compiler/parser.tri`'s `BinaryOp(p) => format_expr(a, p.left)`
+/// `compiler/parser/parser.tri`'s `BinaryOp(p) => format_expr(a, p.left)`
 /// recursive lookup.
 #[test]
 fn enum_payload_index_drives_arena_lookup() {

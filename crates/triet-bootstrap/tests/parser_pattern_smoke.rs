@@ -1,5 +1,5 @@
 //! v0.7.5.5b — smoke test for the Triết-in-Triết full pattern
-//! grammar at `compiler/parser.tri`.
+//! grammar at `compiler/parser/parser.tri`.
 //!
 //! Builds the source to `.triv`, round-trips through the wire
 //! reader, then runs `main()` end-to-end on the VM. Beyond the
@@ -39,10 +39,10 @@ fn compiler_path(name: &str) -> PathBuf {
 fn parser_pattern_smoke_main_passes_all_asserts() {
     use miette::Diagnostic;
 
-    let path = compiler_path("parser");
+    let path = compiler_path("parser/parser");
     assert!(
         path.is_file(),
-        "missing compiler/parser.tri at {}",
+        "missing compiler/parser/parser.tri at {}",
         path.display()
     );
 
@@ -54,14 +54,14 @@ fn parser_pattern_smoke_main_passes_all_asserts() {
         .collect();
     assert!(
         blocking.is_empty(),
-        "type errors in compiler/parser.tri: {blocking:#?}",
+        "type errors in compiler/parser/parser.tri: {blocking:#?}",
     );
 
     let ir = lower_program(&resolved);
     let bytes = write_program(&ir);
     let restored = read_program(&bytes).expect("read .triv round-trip");
 
-    // parser.tri imports `compiler/lexer.tri` via `module lexer;`,
+    // parser.tri imports `compiler/parser/lexer.tri` via `module lexer;`,
     // so both files contribute a `main()`. The entry module's
     // items come first; picking the first matching function selects
     // parser.tri's smoke main, which now runs the v0.7.5.{1..5b}
@@ -71,10 +71,10 @@ fn parser_pattern_smoke_main_passes_all_asserts() {
         .iter()
         .flat_map(|m| &m.functions)
         .find(|f| f.name.as_deref() == Some("main"))
-        .expect("missing main() in compiler/parser.tri")
+        .expect("missing main() in compiler/parser/parser.tri")
         .id;
 
     let mut vm = Vm::new(restored);
     vm.execute(main_id, vec![])
-        .expect("compiler/parser.tri smoke main() must complete without VM error");
+        .expect("compiler/parser/parser.tri smoke main() must complete without VM error");
 }

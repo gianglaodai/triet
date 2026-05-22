@@ -1,5 +1,5 @@
 //! v0.7.5.1 — smoke test for the Triết-in-Triết parser arena
-//! scaffolding at `compiler/parser.tri`.
+//! scaffolding at `compiler/parser/parser.tri`.
 //!
 //! Builds the source to `.triv`, round-trips through the wire
 //! reader, then runs `main()` end-to-end on the VM. The Triết-side
@@ -33,10 +33,10 @@ fn compiler_path(name: &str) -> PathBuf {
 fn parser_arena_smoke_main_passes_all_asserts() {
     use miette::Diagnostic;
 
-    let path = compiler_path("parser");
+    let path = compiler_path("parser/parser");
     assert!(
         path.is_file(),
-        "missing compiler/parser.tri at {}",
+        "missing compiler/parser/parser.tri at {}",
         path.display()
     );
 
@@ -48,7 +48,7 @@ fn parser_arena_smoke_main_passes_all_asserts() {
         .collect();
     assert!(
         blocking.is_empty(),
-        "type errors in compiler/parser.tri: {blocking:#?}",
+        "type errors in compiler/parser/parser.tri: {blocking:#?}",
     );
 
     let ir = lower_program(&resolved);
@@ -60,10 +60,10 @@ fn parser_arena_smoke_main_passes_all_asserts() {
         .iter()
         .flat_map(|m| &m.functions)
         .find(|f| f.name.as_deref() == Some("main"))
-        .expect("missing main() in compiler/parser.tri")
+        .expect("missing main() in compiler/parser/parser.tri")
         .id;
 
     let mut vm = Vm::new(restored);
     vm.execute(main_id, vec![])
-        .expect("compiler/parser.tri smoke main() must complete without VM error");
+        .expect("compiler/parser/parser.tri smoke main() must complete without VM error");
 }

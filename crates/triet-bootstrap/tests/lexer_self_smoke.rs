@@ -1,5 +1,5 @@
 //! v0.7.4.3 — smoke test for the hand-rolled Triết-in-Triết lexer at
-//! `compiler/lexer.tri`. Builds the source to `.triv` and runs it
+//! `compiler/parser/lexer.tri`. Builds the source to `.triv` and runs it
 //! through the VM end-to-end. The Triết-side `main()` exercises 8
 //! token-shape scenarios and asserts each via `assert(...)`, so any
 //! mismatch panics with E2205 — surfacing failure as a test error
@@ -30,17 +30,17 @@ fn compiler_path(name: &str) -> PathBuf {
         .join(format!("{name}.tri"))
 }
 
-/// Build `compiler/lexer.tri` to bytes and round-trip through the VM
+/// Build `compiler/parser/lexer.tri` to bytes and round-trip through the VM
 /// reader to confirm `.triv` survives the wire format. Then run
 /// `main()` — the Triết-side asserts gate correctness.
 #[test]
 fn lexer_self_smoke_main_passes_all_asserts() {
     use miette::Diagnostic;
 
-    let path = compiler_path("lexer");
+    let path = compiler_path("parser/lexer");
     assert!(
         path.is_file(),
-        "missing compiler/lexer.tri at {}",
+        "missing compiler/parser/lexer.tri at {}",
         path.display()
     );
 
@@ -52,7 +52,7 @@ fn lexer_self_smoke_main_passes_all_asserts() {
         .collect();
     assert!(
         blocking.is_empty(),
-        "type errors in compiler/lexer.tri: {blocking:#?}",
+        "type errors in compiler/parser/lexer.tri: {blocking:#?}",
     );
 
     let ir = lower_program(&resolved);
@@ -64,10 +64,10 @@ fn lexer_self_smoke_main_passes_all_asserts() {
         .iter()
         .flat_map(|m| &m.functions)
         .find(|f| f.name.as_deref() == Some("main"))
-        .expect("missing main() in compiler/lexer.tri")
+        .expect("missing main() in compiler/parser/lexer.tri")
         .id;
 
     let mut vm = Vm::new(restored);
     vm.execute(main_id, vec![])
-        .expect("compiler/lexer.tri smoke main() must complete without VM error");
+        .expect("compiler/parser/lexer.tri smoke main() must complete without VM error");
 }

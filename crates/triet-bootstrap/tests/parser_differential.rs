@@ -3,7 +3,7 @@
 //!
 //! For each corpus source, runs the Rust impl
 //! [`triet_parser::parse`] and the Triết-in-Triết port at
-//! `compiler/parser.tri::dump_program_ndjson` over the same input.
+//! `compiler/parser/parser.tri::dump_program_ndjson` over the same input.
 //! Both sides emit the same line-delimited JSON shape (one node per
 //! line, pre-order traversal) and the test asserts byte-equality.
 //!
@@ -18,7 +18,7 @@
 //! span + leaf metadata + child counts; children appear immediately
 //! after in declared source order. Full per-kind spec is in the
 //! NDJSON dump comment block at the head of
-//! `compiler/parser.tri`'s dump section.
+//! `compiler/parser/parser.tri`'s dump section.
 //!
 //! On parse failure (one or more `ParseError` accumulated) each
 //! error emits a trailing sibling line:
@@ -71,7 +71,7 @@ use triet_syntax::{
 use triet_typecheck::check_resolved;
 
 // ─────────────────────────────────────────────────────────────────
-// Triết-side: compile `compiler/parser.tri` once + run
+// Triết-side: compile `compiler/parser/parser.tri` once + run
 // `dump_program_ndjson(source)`. Mirrors lexer_differential's
 // `lexer_ir()` cache.
 // ─────────────────────────────────────────────────────────────────
@@ -82,6 +82,7 @@ fn compiler_parser_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("compiler")
+        .join("parser")
         .join("parser.tri")
 }
 
@@ -91,7 +92,7 @@ fn parser_ir() -> &'static IrProgram {
         let path = compiler_parser_path();
         assert!(
             path.is_file(),
-            "missing compiler/parser.tri at {}",
+            "missing compiler/parser/parser.tri at {}",
             path.display()
         );
         let resolved = load_program(&path).expect("load_program");
@@ -102,7 +103,7 @@ fn parser_ir() -> &'static IrProgram {
             .collect();
         assert!(
             blocking.is_empty(),
-            "type errors in compiler/parser.tri: {blocking:#?}",
+            "type errors in compiler/parser/parser.tri: {blocking:#?}",
         );
         let ir = lower_program(&resolved);
         let bytes = write_program(&ir);
@@ -115,7 +116,7 @@ fn lookup_func(ir: &IrProgram, name: &str) -> FuncId {
         .iter()
         .flat_map(|m| &m.functions)
         .find(|f| f.name.as_deref() == Some(name))
-        .unwrap_or_else(|| panic!("missing function `{name}` in compiler/parser.tri"))
+        .unwrap_or_else(|| panic!("missing function `{name}` in compiler/parser/parser.tri"))
         .id
 }
 
@@ -125,7 +126,7 @@ fn triet_dump(source: &str) -> String {
     let mut vm = Vm::new(ir);
     let result = vm
         .execute(func_id, vec![RuntimeValue::String(source.to_owned())])
-        .expect("compiler/parser.tri::dump_program_ndjson must execute without VM error");
+        .expect("compiler/parser/parser.tri::dump_program_ndjson must execute without VM error");
     match result {
         RuntimeValue::String(s) => s,
         other => panic!("expected String from dump_program_ndjson, got {other:?}"),
@@ -1282,7 +1283,7 @@ fn realistic_function_with_let_outcome_propagation() {
 //    Triết-side typically records more errors per source-level
 //    mistake than Rust does (defensive force-advance lands on
 //    sync-stop tokens that fail another parse_item attempt). The
-//    behavior is documented in compiler/parser.tri's v0.7.5.6a
+//    behavior is documented in compiler/parser/parser.tri's v0.7.5.6a
 //    header comment.
 //
 // 2. "found" token label format. Rust formats the offending token

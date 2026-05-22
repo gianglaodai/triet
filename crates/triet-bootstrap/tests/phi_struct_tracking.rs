@@ -1,7 +1,7 @@
 //! v0.7.5.4a — integration tests for five pre-existing
 //! `value_struct_types` / `value_outcome_value_struct` propagation
 //! gaps in the lowerer that surfaced wiring `parse_program` into
-//! `compiler/parser.tri`:
+//! `compiler/parser/parser.tri`:
 //!
 //! 1. **While-loop phi.** `let mutable state: T = …; while … {
 //!    state = step.state }` — the phi at the loop header didn't

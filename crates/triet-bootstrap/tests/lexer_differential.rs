@@ -2,11 +2,11 @@
 //! umbrella per [ADR-0019 §A7.4]).
 //!
 //! For each corpus source, runs the Rust impl [`triet_lexer::lex`] and
-//! the Triết-in-Triết port at `compiler/lexer.tri::dump_ndjson` over
+//! the Triết-in-Triết port at `compiler/parser/lexer.tri::dump_ndjson` over
 //! the same input. Both sides emit the same line-delimited JSON shape
 //! (one token per line) and the test asserts byte-equality.
 //!
-//! Format (matches the in-source spec at the head of `compiler/lexer.tri`'s
+//! Format (matches the in-source spec at the head of `compiler/parser/lexer.tri`'s
 //! NDJSON dump section):
 //!
 //! ```text
@@ -49,7 +49,7 @@ use triet_modules::load_program;
 use triet_typecheck::check_resolved;
 
 // ─────────────────────────────────────────────────────────────────
-// Triết-side: compile `compiler/lexer.tri` once + run `dump_ndjson`
+// Triết-side: compile `compiler/parser/lexer.tri` once + run `dump_ndjson`
 // ─────────────────────────────────────────────────────────────────
 
 fn compiler_lexer_path() -> PathBuf {
@@ -58,10 +58,11 @@ fn compiler_lexer_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("compiler")
+        .join("parser")
         .join("lexer.tri")
 }
 
-/// Build `compiler/lexer.tri` once, including the `.triv` round-trip.
+/// Build `compiler/parser/lexer.tri` once, including the `.triv` round-trip.
 /// Subsequent calls clone from the cached `IrProgram` so each VM run
 /// gets a fresh frame stack while the (slow) typecheck + lower work
 /// runs only once per test binary.
@@ -71,7 +72,7 @@ fn lexer_ir() -> &'static IrProgram {
         let path = compiler_lexer_path();
         assert!(
             path.is_file(),
-            "missing compiler/lexer.tri at {}",
+            "missing compiler/parser/lexer.tri at {}",
             path.display()
         );
         let resolved = load_program(&path).expect("load_program");
@@ -82,7 +83,7 @@ fn lexer_ir() -> &'static IrProgram {
             .collect();
         assert!(
             blocking.is_empty(),
-            "type errors in compiler/lexer.tri: {blocking:#?}",
+            "type errors in compiler/parser/lexer.tri: {blocking:#?}",
         );
         let ir = lower_program(&resolved);
         // Round-trip through `.triv` so the bytecode the differential
@@ -97,7 +98,7 @@ fn lookup_func(ir: &IrProgram, name: &str) -> FuncId {
         .iter()
         .flat_map(|m| &m.functions)
         .find(|f| f.name.as_deref() == Some(name))
-        .unwrap_or_else(|| panic!("missing function `{name}` in compiler/lexer.tri"))
+        .unwrap_or_else(|| panic!("missing function `{name}` in compiler/parser/lexer.tri"))
         .id
 }
 
@@ -109,7 +110,7 @@ fn triet_dump(source: &str) -> String {
     let mut vm = Vm::new(ir);
     let result = vm
         .execute(func_id, vec![RuntimeValue::String(source.to_owned())])
-        .expect("compiler/lexer.tri::dump_ndjson must execute without VM error");
+        .expect("compiler/parser/lexer.tri::dump_ndjson must execute without VM error");
     match result {
         RuntimeValue::String(s) => s,
         other => panic!("expected String from dump_ndjson, got {other:?}"),

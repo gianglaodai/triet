@@ -1,5 +1,5 @@
 //! v0.7.5.2 — smoke test for the Triết-in-Triết Pratt expression
-//! parser at `compiler/parser.tri`.
+//! parser at `compiler/parser/parser.tri`.
 //!
 //! Builds the source to `.triv`, round-trips through the wire
 //! reader, then runs `main()` end-to-end on the VM. The Triết-side
@@ -32,10 +32,10 @@ fn compiler_path(name: &str) -> PathBuf {
 fn parser_expr_smoke_main_passes_all_asserts() {
     use miette::Diagnostic;
 
-    let path = compiler_path("parser");
+    let path = compiler_path("parser/parser");
     assert!(
         path.is_file(),
-        "missing compiler/parser.tri at {}",
+        "missing compiler/parser/parser.tri at {}",
         path.display()
     );
 
@@ -47,14 +47,14 @@ fn parser_expr_smoke_main_passes_all_asserts() {
         .collect();
     assert!(
         blocking.is_empty(),
-        "type errors in compiler/parser.tri: {blocking:#?}",
+        "type errors in compiler/parser/parser.tri: {blocking:#?}",
     );
 
     let ir = lower_program(&resolved);
     let bytes = write_program(&ir);
     let restored = read_program(&bytes).expect("read .triv round-trip");
 
-    // parser.tri imports `compiler/lexer.tri` via `module lexer;`, so
+    // parser.tri imports `compiler/parser/lexer.tri` via `module lexer;`, so
     // both files contribute a `main()` to the lowered program. The
     // loader places the entry module's items first, so picking the
     // first matching function selects parser.tri's smoke main. If
@@ -66,10 +66,10 @@ fn parser_expr_smoke_main_passes_all_asserts() {
         .iter()
         .flat_map(|m| &m.functions)
         .find(|f| f.name.as_deref() == Some("main"))
-        .expect("missing main() in compiler/parser.tri")
+        .expect("missing main() in compiler/parser/parser.tri")
         .id;
 
     let mut vm = Vm::new(restored);
     vm.execute(main_id, vec![])
-        .expect("compiler/parser.tri smoke main() must complete without VM error");
+        .expect("compiler/parser/parser.tri smoke main() must complete without VM error");
 }
