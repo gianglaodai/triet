@@ -233,22 +233,27 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
   - **Triết-side gotcha recorded**: `_ignored: Integer = …` doesn't parse — Triết's identifier grammar rejects names starting with `_` followed by characters (the bare `_` is wildcard pattern only). Worked around by dropping the unused local binding entirely (the value wasn't needed).
   - 1 new integration test (`modules_resolver_smoke.rs`) — runs `resolver_smoke_main()` against 8 corpus cases: own function bound, child module bound in parent, from-import absolute path, alias binding, visibility violation (private import), unresolved import (nonexistent module), reserved namespace `sys.io`, `self.X` keyword expansion inside submodule. 1319 workspace tests pass (was 1318, +1); `cargo clippy --workspace --all-targets` clean. Verified under `ulimit -v 8388608` — finishes in <1 s.
 
-### Remaining v0.7.6 sub-tasks
+- [x] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate (this commit, closes v0.7.6 umbrella per ADR-0019 §A7.6)
+  - `compiler/modules.tri` (+~280 LOC, ~2720 LOC total) — adds `dump_resolved_program_ndjson(source: String) -> String` plus helpers: `json_escape`, `quote_string`, `json_int`, `json_parent_path`, `is_stdlib_module`, `dump_module_line`, `dump_error_line`, `count_user_modules`, `sort_string_vector` (O(N²) insertion-sort — Triết Vector exposes no built-in sort at v0.7.3.2; the differential corpus runs on tens of modules so quadratic is fine), `string_less_than` + `ascii_char_lt` (Triết has no String ordering primitive at v0.7.3.3, so we do a printable-ASCII lookup-table compare suited to dot-paths). Pipeline mirrors Rust `LoaderState::finish`: aggregate loader errors → cycle errors → (skip resolver if pre-resolver errors exist) → resolver errors. Drops the partial program when any error exists to match Rust's `Result::Err` arm.
+  - Schema is **path-based**, not idx-based: `Module` lines carry `path` + `parent` (as path text or `null`) + `children` (sorted list of child paths) + `items` count + sorted `bindings` array. `idx`/`arena`/`ModuleId.raw` are deliberately omitted because Rust pre-loads stdlib (occupying idx 0..10) and Triết doesn't — the raw indices would differ for byte-identical user programs. Path identity is implementation-neutral.
+  - Stdlib filter: both sides skip modules whose root segment is `std` / `sys` / `dev` / `usr` / `core`. This is the same filter the resolver applies for reserved-namespace checks. Full stdlib pre-load in Triết defers to v0.7.10 alongside CLI wiring per ADR-0019 §A7.10 — the gate uses a user-modules-only diff for now.
+  - 1 new integration test (`modules_differential.rs`) — Rust mirror walks `triet_modules::ResolvedProgram`, drives Triết dump via VM (same `_ir()` cache + lookup pattern as `parser_differential.rs`). 13 corpus cases covering empty / single-function / child-module / nested / sibling / from-import-absolute / from-import-with-alias / visibility-violation / unresolved / reserved-namespace / `self.X` keyword / 2-cycle / mixed-items-and-modules.
+  - **Triết-side gotcha recorded**: `~+ T` mixed with `~- T` in match arms — when one arm returns `~+ resolve_names(…)` and another `~- err`, the typecheck rejects with E1006-style "outcome arm type mismatch". Worked around by lifting the resolver call into an `if/else` that returns the same `ResolveResult` struct on both paths (no Outcome wrapping).
+  - 1332 workspace tests pass (was 1319, +13 differential cases); `cargo clippy --workspace --all-targets` clean. Verified under `ulimit -v 8388608`.
 
-- [ ] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate + stdlib pre-load (closes v0.7.6 umbrella per ADR-0019 §A7.6). Stdlib pre-load and the byte-diff gate ship together since the byte-diff needs stdlib bindings to compare against Rust output.
+### Remaining v0.7 sub-tasks after modules
+
+- [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
+- [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
+- [ ] **v0.7.9** — `compiler/pack_writer.tri` + `compiler/main.tri` + drop bridges
+- [ ] **v0.7.10** — CLI wiring carry-over (project layout + cap-aware build + DevTtyPrompt + E2208.CapabilityDivergence) **+ Triết-side stdlib pre-load** (deferred from v0.7.6.2 + v0.7.6.4 + v0.7.6.5 — needs an env-var-read builtin or equivalent CLI-side resolution of the workspace `std/` path)
+- [ ] **v0.7.11** — Stage 1 → Stage 2 bootstrap script + CI integration
+- [ ] **v0.7.12** — Stage 2 → Stage 3 + bit-identical gate verify
+- [ ] **v0.7.13** — Verify gate ADR-0009 §A/B/C/D + workspace version 0.6.0 → 0.7.0 + SPEC v0.6 → v0.7 + docs sync
 
 ### Deferred runtime bugs
 
 - [ ] **v0.7.x.runtime-fix.const-items** — `crates/triet-ir/src/lowerer.rs` is missing an `Item::Const` lowering arm; top-level `constant NAME: T = expr` declarations silently evaluate to `Unit` at runtime. Surfaced during v0.7.6.3 development (cycle detection used `constant COLOR_WHITE: Integer = 0` as a sentinel; reads via `get(vec, idx)` returned `Unit` instead of the declared integer, causing infinite recursion because the gray-mark check never saw the actual color). Workaround in v0.7.6.3: inline the literal at every use site. Fix scope: extend `lower_program`'s item-walk to register `Item::Const` values into the constant pool + emit them when referenced from function bodies. Tests: add `crates/triet-bootstrap/tests/const_item_smoke.tri` once fixed. Not blocking v0.7.6.4+ since other sub-tasks haven't needed top-level constants either.
-
-### Remaining v0.7 sub-tasks after modules
-- [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
-- [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
-- [ ] **v0.7.9** — `compiler/pack_writer.tri` + `compiler/main.tri` + drop bridges
-- [ ] **v0.7.10** — CLI wiring carry-over (project layout + cap-aware build + DevTtyPrompt + E2208.CapabilityDivergence)
-- [ ] **v0.7.11** — Stage 1 → Stage 2 bootstrap script + CI integration
-- [ ] **v0.7.12** — Stage 2 → Stage 3 + bit-identical gate verify
-- [ ] **v0.7.13** — Verify gate ADR-0009 §A/B/C/D + workspace version 0.6.0 → 0.7.0 + SPEC v0.6 → v0.7 + docs sync
 
 ---
 
