@@ -1763,9 +1763,28 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         // ParseInteger (v0.7.3.4, ID 26). Paired with `from_integer`
         // in `std.text` per Q2-A symmetry.
         "std.text.parse_integer" => Some(BuiltinName::ParseInteger),
+        "std.text.into_bytes" => Some(BuiltinName::TextIntoBytes),
+        "std.text.from_bytes" => Some(BuiltinName::TextFromBytes),
+        "std.crypto.blake3_hash" => Some(BuiltinName::Blake3Hash),
 
         _ => None,
     }
+}
+
+/// Validate a `Vector<Integer>` as a byte array — every element must be
+/// a `RuntimeValue::Integer` in 0..=255. Returns `None` on any non-byte
+/// element so callers can map to a domain-level null/error.
+fn vector_to_byte_array(elements: &[RuntimeValue]) -> Option<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(elements.len());
+    for elem in elements {
+        let RuntimeValue::Integer(i) = elem else {
+            return None;
+        };
+        let raw = i.to_i64();
+        let byte = u8::try_from(raw).ok()?;
+        bytes.push(byte);
+    }
+    Some(bytes)
 }
 
 fn execute_builtin(
@@ -2353,6 +2372,65 @@ fn execute_builtin(
                 Trilean::False
             };
             Ok(RuntimeValue::Trilean(present))
+        }
+        BuiltinName::TextIntoBytes => {
+            let s_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let s = match s_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let bytes = s
+                .into_bytes()
+                .into_iter()
+                .map(|b| RuntimeValue::Integer(triet_core::Integer::new(i64::from(b)).unwrap()))
+                .collect();
+            Ok(RuntimeValue::Vector(bytes))
+        }
+        BuiltinName::TextFromBytes => {
+            let v_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let v = match v_arg {
+                RuntimeValue::Vector(v) => v,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Vector(Box::new(TypeTag::Integer)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let Some(bytes) = vector_to_byte_array(&v) else {
+                return Ok(RuntimeValue::Null);
+            };
+            String::from_utf8(bytes).map_or(Ok(RuntimeValue::Null), |s| Ok(RuntimeValue::String(s)))
+        }
+        BuiltinName::Blake3Hash => {
+            let v_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let v = match v_arg {
+                RuntimeValue::Vector(v) => v,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Vector(Box::new(TypeTag::Integer)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let Some(bytes) = vector_to_byte_array(&v) else {
+                return Ok(RuntimeValue::Null);
+            };
+            let hash = blake3::hash(&bytes);
+            let result_bytes = hash
+                .as_bytes()
+                .iter()
+                .map(|&b| RuntimeValue::Integer(triet_core::Integer::new(i64::from(b)).unwrap()))
+                .collect();
+            Ok(RuntimeValue::Vector(result_bytes))
         }
     }
 }

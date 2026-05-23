@@ -1,0 +1,697 @@
+// `.triv` byte writer + reader, v0.7.9.1 scope: LEB128 primitives +
+// TypeTag arena round-trip + ConstantPool round-trip. Instruction
+// encoder + function table + full IrProgram writer land in v0.7.9.2.
+//
+// Wire format per crates/triet-ir/src/serde.rs:
+// - LEB128 varints for lengths + indices.
+// - i16 / i64 little-endian for Tryte / Integer / Long constants.
+// - Type table: varint count + N type tags (post-order; composites
+//   reference earlier entries by index).
+// - Constant pool: varint count + N (varint type_index + body).
+//
+// Triết-side gotcha: Vector is functionally pure (per ADR-0019 §5 +
+// Addendum §A4 Q1-A). `push(buf, x)` returns a NEW vector — it does
+// NOT mutate `buf`. Every `write_X(...)` helper here threads the
+// buffer through its return value so callers can chain
+// `buf = write_X(buf, ...)`. Rust's `&mut Vec<u8>` idiom doesn't
+// translate; Triết's mirror is whole-buffer return.
+
+module parser;
+module ir_lowerer;
+
+from std.collections.vector import new, push, length, get
+from std.text import into_bytes, from_bytes
+from crate.ir_lowerer import TypeTag, TritTag, TryteTag, IntegerTag, LongTag, TrileanTag, StringTag, UnitTag, NullableTag, VectorTag, HashMapTag, OutcomeTag
+from crate.ir_lowerer import TypeTagArena, AllocTagResult, PrimitiveMarker
+from crate.ir_lowerer import TypeTagNullablePayload, TypeTagVectorPayload, TypeTagHashMapPayload, TypeTagOutcomePayload
+from crate.ir_lowerer import Constant, TritConst, TryteConst, IntegerConst, LongConst, TrileanConst, StringConst, UnitConst, NullConst
+from crate.ir_lowerer import ConstantTritPayload, ConstantTrytePayload, ConstantIntegerPayload, ConstantLongPayload, ConstantTrileanPayload, ConstantStringPayload
+from crate.ir_lowerer import ConstantPool
+from crate.ir_lowerer import type_tag_arena_new, get_type_tag, constant_pool_new, constant_type_tag
+from crate.ir_lowerer import alloc_tag_trit, alloc_tag_tryte, alloc_tag_integer, alloc_tag_long, alloc_tag_trilean, alloc_tag_string, alloc_tag_unit, alloc_tag_nullable, alloc_tag_vector, alloc_tag_hashmap, alloc_tag_outcome
+
+// ── Errors ─────────────────────────────────────────────────────────
+
+public struct TrivErrorCorrupted { message: String }
+public struct TrivErrorUnsupportedVersion { found: Integer, max_supported: Integer }
+public struct TrivErrorUnknownTypeDiscriminant { disc: Integer }
+
+public enum TrivError {
+    Corrupted(TrivErrorCorrupted),
+    UnsupportedVersion(TrivErrorUnsupportedVersion),
+    UnknownTypeDiscriminant(TrivErrorUnknownTypeDiscriminant),
+}
+
+public function primitive_marker() -> PrimitiveMarker =
+    PrimitiveMarker { placeholder: 0 }
+
+// ── LEB128 + low-level byte helpers ────────────────────────────────
+
+public function write_leb128(buf: Vector<Integer>, value: Integer) -> Vector<Integer> = {
+    // Recursive form: single-byte fast path + tail recursion for
+    // multi-byte values. Avoids the `let mutable out` + `loop {}`
+    // pattern whose post-loop scope handling appears to drop the
+    // latest rebind under v0.7.8.3 lowering (write_u8 was receiving
+    // Unit instead of the threaded Vector). Recursion ends cleanly
+    // because each level returns a fresh Vector.
+    let byte: Integer = value %% 128
+    let rest: Integer = value / 128
+    if rest == 0 {
+        push(buf, byte)
+    } else {
+        let next: Vector<Integer> = push(buf, byte + 128)
+        write_leb128(next, rest)
+    }
+}
+
+public struct ReadResultInteger {
+    value: Integer,
+    next_pos: Integer,
+}
+
+public function read_leb128(data: Vector<Integer>, pos: Integer) -> ReadResultInteger~TrivError = {
+    let mutable result: Integer = 0
+    let mutable shift: Integer = 0
+    let mutable current_pos: Integer = pos
+    let mutable multiplier: Integer = 1
+    let mutable continue_loop: Trilean! = true
+
+    // `while` form (not `loop {}`) — the v0.7.8.3b phi-stitching at
+    // the while header makes mutable rebinds visible after the loop.
+    // Pure `loop {}` skips that path and the lowerer leaves stale
+    // pre-loop bindings live at the exit block.
+    while continue_loop {
+        if current_pos >= length(data) {
+            return ~- Corrupted(TrivErrorCorrupted { message: "truncated LEB128" })
+        }
+        let byte: Integer = get(data, current_pos)!!
+        current_pos = current_pos + 1
+
+        let val: Integer = byte %% 128
+        result = result + val * multiplier
+
+        if byte < 128 {
+            return ~+ ReadResultInteger { value: result, next_pos: current_pos }
+        }
+
+        shift = shift + 7
+        if shift >= 35 {
+            return ~- Corrupted(TrivErrorCorrupted { message: "LEB128 overflow" })
+        }
+        multiplier = multiplier * 128
+    }
+    ~- Corrupted(TrivErrorCorrupted { message: "unreachable" })
+}
+
+public function write_varint(buf: Vector<Integer>, value: Integer) -> Vector<Integer> =
+    write_leb128(buf, value)
+
+public function read_varint(data: Vector<Integer>, pos: Integer) -> ReadResultInteger~TrivError =
+    read_leb128(data, pos)
+
+public function write_bytes(buf: Vector<Integer>, bytes: Vector<Integer>) -> Vector<Integer> =
+    write_bytes_from(buf, bytes, 0)
+
+function write_bytes_from(buf: Vector<Integer>, bytes: Vector<Integer>, i: Integer) -> Vector<Integer> = {
+    if i >= length(bytes) {
+        buf
+    } else {
+        let next: Vector<Integer> = push(buf, get(bytes, i)!!)
+        write_bytes_from(next, bytes, i + 1)
+    }
+}
+
+public function write_u8(buf: Vector<Integer>, value: Integer) -> Vector<Integer> =
+    push(buf, value)
+
+public struct ReadResultU8 {
+    value: Integer,
+    next_pos: Integer,
+}
+
+public function read_u8(data: Vector<Integer>, pos: Integer) -> ReadResultU8~TrivError = {
+    if pos >= length(data) {
+        ~- Corrupted(TrivErrorCorrupted { message: "unexpected EOF" })
+    } else {
+        let byte: Integer = get(data, pos)!!
+        ~+ ReadResultU8 { value: byte, next_pos: pos + 1 }
+    }
+}
+
+public function write_u32_le(buf: Vector<Integer>, value: Integer) -> Vector<Integer> = {
+    let b0: Integer = value %% 256
+    let b1: Integer = (value / 256) %% 256
+    let b2: Integer = (value / 65536) %% 256
+    let b3: Integer = (value / 16777216) %% 256
+    let s1: Vector<Integer> = push(buf, b0)
+    let s2: Vector<Integer> = push(s1, b1)
+    let s3: Vector<Integer> = push(s2, b2)
+    push(s3, b3)
+}
+
+public function read_u32_le(data: Vector<Integer>, pos: Integer) -> ReadResultInteger~TrivError = {
+    if pos + 4 > length(data) {
+        ~- Corrupted(TrivErrorCorrupted { message: "unexpected EOF reading u32" })
+    } else {
+        let b0: Integer = get(data, pos)!!
+        let b1: Integer = get(data, pos + 1)!!
+        let b2: Integer = get(data, pos + 2)!!
+        let b3: Integer = get(data, pos + 3)!!
+        let val: Integer = b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+        ~+ ReadResultInteger { value: val, next_pos: pos + 4 }
+    }
+}
+
+public function write_i16_le(buf: Vector<Integer>, value: Integer) -> Vector<Integer> = {
+    let unsigned: Integer = if value < 0 { value + 65536 } else { value }
+    let b0: Integer = unsigned %% 256
+    let b1: Integer = (unsigned / 256) %% 256
+    let s1: Vector<Integer> = push(buf, b0)
+    push(s1, b1)
+}
+
+public function read_i16_le(data: Vector<Integer>, pos: Integer) -> ReadResultInteger~TrivError = {
+    if pos + 2 > length(data) {
+        ~- Corrupted(TrivErrorCorrupted { message: "unexpected EOF reading i16" })
+    } else {
+        let b0: Integer = get(data, pos)!!
+        let b1: Integer = get(data, pos + 1)!!
+        let val: Integer = b0 + b1 * 256
+        let signed: Integer = if val >= 32768 { val - 65536 } else { val }
+        ~+ ReadResultInteger { value: signed, next_pos: pos + 2 }
+    }
+}
+
+public function write_i64_le(buf: Vector<Integer>, value: Integer) -> Vector<Integer> =
+    write_i64_le_at(buf, value, 0)
+
+function write_i64_le_at(buf: Vector<Integer>, value: Integer, i: Integer) -> Vector<Integer> = {
+    if i >= 8 {
+        buf
+    } else {
+        let byte: Integer = value %% 256
+        let normalised: Integer = if byte < 0 { byte + 256 } else { byte }
+        let next: Vector<Integer> = push(buf, normalised)
+        write_i64_le_at(next, (value - normalised) / 256, i + 1)
+    }
+}
+
+public function read_i64_le(data: Vector<Integer>, pos: Integer) -> ReadResultInteger~TrivError = {
+    if pos + 8 > length(data) {
+        ~- Corrupted(TrivErrorCorrupted { message: "unexpected EOF reading i64" })
+    } else {
+        let b0: Integer = get(data, pos)!!
+        let b1: Integer = get(data, pos + 1)!!
+        let b2: Integer = get(data, pos + 2)!!
+        let b3: Integer = get(data, pos + 3)!!
+        let b4: Integer = get(data, pos + 4)!!
+        let b5: Integer = get(data, pos + 5)!!
+        let b6: Integer = get(data, pos + 6)!!
+        let b7: Integer = get(data, pos + 7)!!
+        // Triết's Integer caps at 3_812_798_742_493 (3^27 / 2). Values
+        // outside ±2^31 can't round-trip into Integer at v0.7.9.1 —
+        // bail out. v0.7.9.2 will widen `ReadResult*` to Long when
+        // the lowerer can carry both shapes through the type table.
+        let high_all_zero: Trilean! = b4 == 0 && b5 == 0 && b6 == 0 && b7 == 0
+        let high_all_one: Trilean! = b4 == 255 && b5 == 255 && b6 == 255 && b7 == 255
+        if !(high_all_zero || high_all_one) {
+            ~- Corrupted(TrivErrorCorrupted { message: "i64 value outside Integer range at v0.7.9.1" })
+        } else {
+            let low: Integer = b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+            // Sign-extend the 32-bit window. If the high bytes are all
+            // 0xFF the original value is negative, so we subtract 2^32.
+            let signed: Integer = if high_all_one { low - 4_294_967_295 - 1 } else { low }
+            ~+ ReadResultInteger { value: signed, next_pos: pos + 8 }
+        }
+    }
+}
+
+public function write_string(buf: Vector<Integer>, s: String) -> Vector<Integer> = {
+    let bytes: Vector<Integer> = into_bytes(s)
+    let s1: Vector<Integer> = write_varint(buf, length(bytes))
+    write_bytes(s1, bytes)
+}
+
+public struct ReadResultString {
+    value: String,
+    next_pos: Integer,
+}
+
+public function read_string(data: Vector<Integer>, pos: Integer) -> ReadResultString~TrivError = {
+    let len_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let len_val: Integer = len_res.value
+    let current_pos: Integer = len_res.next_pos
+
+    if current_pos + len_val > length(data) {
+        ~- Corrupted(TrivErrorCorrupted { message: "truncated string" })
+    } else {
+        let mutable bytes: Vector<Integer> = new()
+        let mutable i: Integer = 0
+        while i < len_val {
+            bytes = push(bytes, get(data, current_pos + i)!!)
+            i = i + 1
+        }
+        let s: String = from_bytes(bytes) ~: ""
+        ~+ ReadResultString { value: s, next_pos: current_pos + len_val }
+    }
+}
+
+// ── TypeTag table ──────────────────────────────────────────────────
+//
+// Wire format: varint(count) + count × type_tag. Each tag is one
+// discriminator byte (0..10) plus inner varint refs for composites
+// (Nullable / Vector / HashMap / Outcome). The arena is post-order —
+// every composite's inner index points at a strictly earlier slot.
+
+constant TYPE_TAG_TRIT: Integer = 0
+constant TYPE_TAG_TRYTE: Integer = 1
+constant TYPE_TAG_INTEGER: Integer = 2
+constant TYPE_TAG_LONG: Integer = 3
+constant TYPE_TAG_TRILEAN: Integer = 4
+constant TYPE_TAG_STRING: Integer = 5
+constant TYPE_TAG_UNIT: Integer = 6
+constant TYPE_TAG_NULLABLE: Integer = 7
+constant TYPE_TAG_VECTOR: Integer = 8
+constant TYPE_TAG_HASHMAP: Integer = 9
+constant TYPE_TAG_OUTCOME: Integer = 10
+
+public function write_type_table(buf: Vector<Integer>, arena: TypeTagArena) -> Vector<Integer> = {
+    let header: Vector<Integer> = write_varint(buf, length(arena.tags))
+    write_type_tags_from(header, arena.tags, 0)
+}
+
+function write_type_tags_from(buf: Vector<Integer>, tags: Vector<TypeTag>, i: Integer) -> Vector<Integer> = {
+    if i >= length(tags) {
+        buf
+    } else {
+        let next: Vector<Integer> = write_type_tag(buf, get(tags, i)!!)
+        write_type_tags_from(next, tags, i + 1)
+    }
+}
+
+public function write_type_tag(buf: Vector<Integer>, ty: TypeTag) -> Vector<Integer> = {
+    match ty {
+        TritTag(_) => write_u8(buf, TYPE_TAG_TRIT),
+        TryteTag(_) => write_u8(buf, TYPE_TAG_TRYTE),
+        IntegerTag(_) => write_u8(buf, TYPE_TAG_INTEGER),
+        LongTag(_) => write_u8(buf, TYPE_TAG_LONG),
+        TrileanTag(_) => write_u8(buf, TYPE_TAG_TRILEAN),
+        StringTag(_) => write_u8(buf, TYPE_TAG_STRING),
+        UnitTag(_) => write_u8(buf, TYPE_TAG_UNIT),
+        NullableTag(p) => {
+            let s1: Vector<Integer> = write_u8(buf, TYPE_TAG_NULLABLE)
+            write_varint(s1, p.inner)
+        },
+        VectorTag(p) => {
+            let s1: Vector<Integer> = write_u8(buf, TYPE_TAG_VECTOR)
+            write_varint(s1, p.inner)
+        },
+        HashMapTag(p) => {
+            let s1: Vector<Integer> = write_u8(buf, TYPE_TAG_HASHMAP)
+            let s2: Vector<Integer> = write_varint(s1, p.key)
+            write_varint(s2, p.value)
+        },
+        OutcomeTag(p) => {
+            let s1: Vector<Integer> = write_u8(buf, TYPE_TAG_OUTCOME)
+            let null_byte: Integer = if p.allow_null_state { 1 } else { 0 }
+            let s2: Vector<Integer> = write_u8(s1, null_byte)
+            let s3: Vector<Integer> = write_varint(s2, p.value_type)
+            write_varint(s3, p.error_type)
+        },
+    }
+}
+
+public struct ReadResultArena {
+    value: TypeTagArena,
+    next_pos: Integer,
+}
+
+public function read_type_table(data: Vector<Integer>, pos: Integer) -> ReadResultArena~TrivError = {
+    let count_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let count: Integer = count_res.value
+    let mutable p: Integer = count_res.next_pos
+    let mutable tags: Vector<TypeTag> = new()
+    let mutable i: Integer = 0
+    while i < count {
+        let t_res: ReadResultTypeTag = read_type_tag(data, p) ~? |err| ~- err
+        tags = push(tags, t_res.value)
+        p = t_res.next_pos
+        i = i + 1
+    }
+    ~+ ReadResultArena { value: TypeTagArena { tags: tags }, next_pos: p }
+}
+
+public struct ReadResultTypeTag {
+    value: TypeTag,
+    next_pos: Integer,
+}
+
+public function read_type_tag(data: Vector<Integer>, pos: Integer) -> ReadResultTypeTag~TrivError = {
+    let disc_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+    let disc: Integer = disc_res.value
+    let p: Integer = disc_res.next_pos
+    if disc == TYPE_TAG_TRIT {
+        ~+ ReadResultTypeTag { value: TritTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_TRYTE {
+        ~+ ReadResultTypeTag { value: TryteTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_INTEGER {
+        ~+ ReadResultTypeTag { value: IntegerTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_LONG {
+        ~+ ReadResultTypeTag { value: LongTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_TRILEAN {
+        ~+ ReadResultTypeTag { value: TrileanTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_STRING {
+        ~+ ReadResultTypeTag { value: StringTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_UNIT {
+        ~+ ReadResultTypeTag { value: UnitTag(primitive_marker()), next_pos: p }
+    } else if disc == TYPE_TAG_NULLABLE {
+        let inner_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        ~+ ReadResultTypeTag {
+            value: NullableTag(TypeTagNullablePayload { inner: inner_res.value }),
+            next_pos: inner_res.next_pos,
+        }
+    } else if disc == TYPE_TAG_VECTOR {
+        let inner_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        ~+ ReadResultTypeTag {
+            value: VectorTag(TypeTagVectorPayload { inner: inner_res.value }),
+            next_pos: inner_res.next_pos,
+        }
+    } else if disc == TYPE_TAG_HASHMAP {
+        let key_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        let val_res: ReadResultInteger = read_varint(data, key_res.next_pos) ~? |err| ~- err
+        ~+ ReadResultTypeTag {
+            value: HashMapTag(TypeTagHashMapPayload {
+                key: key_res.value,
+                value: val_res.value,
+            }),
+            next_pos: val_res.next_pos,
+        }
+    } else if disc == TYPE_TAG_OUTCOME {
+        let null_res: ReadResultU8 = read_u8(data, p) ~? |err| ~- err
+        let val_res: ReadResultInteger = read_varint(data, null_res.next_pos) ~? |err| ~- err
+        let err_res: ReadResultInteger = read_varint(data, val_res.next_pos) ~? |err| ~- err
+        let allow_null: Trilean! = null_res.value != 0
+        ~+ ReadResultTypeTag {
+            value: OutcomeTag(TypeTagOutcomePayload {
+                value_type: val_res.value,
+                error_type: err_res.value,
+                allow_null_state: allow_null,
+            }),
+            next_pos: err_res.next_pos,
+        }
+    } else {
+        ~- UnknownTypeDiscriminant(TrivErrorUnknownTypeDiscriminant { disc: disc })
+    }
+}
+
+// ── Constant pool ──────────────────────────────────────────────────
+//
+// Wire format: varint(count) + count × constant. Each constant emits
+// a varint type-index into the type table, then variant-specific body
+// bytes. Mirrors `triet_ir::serde::write_constants`.
+//
+// Trit encoding (per ADR-0010): 0 → Negative, 1 → Zero, 2 → Positive.
+// Trilean encoding: 0 → False, 1 → Unknown, 2 → True.
+
+constant TRIT_BYTE_NEGATIVE: Integer = 0
+constant TRIT_BYTE_ZERO: Integer = 1
+constant TRIT_BYTE_POSITIVE: Integer = 2
+
+constant TRILEAN_BYTE_FALSE: Integer = 0
+constant TRILEAN_BYTE_UNKNOWN: Integer = 1
+constant TRILEAN_BYTE_TRUE: Integer = 2
+
+// Trit / Trilean value extraction via `if?` chains. `Trit == Trit`
+// + `Trilean == Trilean` return generic `Trilean` per ADR-0021
+// (Unknown propagates), but for concrete Trit values the Unknown
+// branch is never taken at runtime. `if?` treats Unknown as false,
+// which is safe here — the final `else` arm acts as the default.
+
+function trit_to_byte(t: Trit) -> Integer = {
+    if? t == -1_trit { TRIT_BYTE_NEGATIVE }
+    else if? t == 0_trit { TRIT_BYTE_ZERO }
+    else { TRIT_BYTE_POSITIVE }
+}
+
+function byte_to_trit(b: Integer) -> Trit = {
+    if b == TRIT_BYTE_NEGATIVE { -1_trit }
+    else if b == TRIT_BYTE_ZERO { 0_trit }
+    else { 1_trit }
+}
+
+function trilean_to_byte(tl: Trilean) -> Integer = {
+    if? tl == false { TRILEAN_BYTE_FALSE }
+    else if? tl == unknown { TRILEAN_BYTE_UNKNOWN }
+    else { TRILEAN_BYTE_TRUE }
+}
+
+function byte_to_trilean(b: Integer) -> Trilean = {
+    if b == TRILEAN_BYTE_FALSE { false }
+    else if b == TRILEAN_BYTE_UNKNOWN { unknown }
+    else { true }
+}
+
+public function write_constant(buf: Vector<Integer>, c: Constant, type_idx: Integer) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_varint(buf, type_idx)
+    match c {
+        TritConst(p) => write_u8(s1, trit_to_byte(p.value)),
+        TryteConst(p) => write_i16_le(s1, p.value.to_integer()),
+        IntegerConst(p) => write_i64_le(s1, p.value),
+        LongConst(p) => write_i64_le(s1, p.value.to_integer()),
+        TrileanConst(p) => write_u8(s1, trilean_to_byte(p.value)),
+        StringConst(p) => write_string(s1, p.value),
+        UnitConst(_) => s1,
+        NullConst(_) => s1,
+    }
+}
+
+public struct ConstantPoolWriteResult {
+    buf: Vector<Integer>,
+    arena: TypeTagArena,
+}
+
+/// Write the constant pool while populating the type-table arena with
+/// each constant's declared type. Returns both the updated buffer and
+/// the updated arena so the caller can serialize the type table
+/// afterwards (the type table must include every constant's tag for
+/// the reader to decode).
+public function write_constants(
+    buf: Vector<Integer>,
+    pool: ConstantPool,
+    arena: TypeTagArena,
+) -> ConstantPoolWriteResult = {
+    let header: Vector<Integer> = write_varint(buf, length(pool.entries))
+    write_constants_from(header, pool.entries, arena, 0)
+}
+
+function write_constants_from(
+    buf: Vector<Integer>,
+    entries: Vector<Constant>,
+    arena: TypeTagArena,
+    i: Integer,
+) -> ConstantPoolWriteResult = {
+    if i >= length(entries) {
+        ConstantPoolWriteResult { buf: buf, arena: arena }
+    } else {
+        let c: Constant = get(entries, i)!!
+        let alloc: AllocTagResult = constant_type_tag(arena, c)
+        let next: Vector<Integer> = write_constant(buf, c, alloc.tag_id)
+        write_constants_from(next, entries, alloc.arena, i + 1)
+    }
+}
+
+public struct ReadResultConstant {
+    value: Constant,
+    next_pos: Integer,
+}
+
+public function read_constant(
+    data: Vector<Integer>,
+    pos: Integer,
+    arena: TypeTagArena,
+) -> ReadResultConstant~TrivError = {
+    let idx_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let type_idx: Integer = idx_res.value
+    let p: Integer = idx_res.next_pos
+    let tag_opt: TypeTag? = get_type_tag(arena, type_idx)
+    // Outer match dispatches on null-vs-present so the function's
+    // Outcome return type unifies cleanly. `return ~- ...` inside a
+    // pattern arm makes Triết's typechecker mis-infer the arm as Unit
+    // (it has no Never type), which trips E1013 against the rest of
+    // the match; the outer-match shape avoids the mixed-type arm.
+    match tag_opt {
+        ~0 => ~- Corrupted(TrivErrorCorrupted { message: "invalid type index in constant" }),
+        _ => read_constant_for_tag(data, p, tag_opt!!),
+    }
+}
+
+function read_constant_for_tag(
+    data: Vector<Integer>,
+    p: Integer,
+    tag: TypeTag,
+) -> ReadResultConstant~TrivError = {
+    match tag {
+        TritTag(_) => {
+            let b_res: ReadResultU8 = read_u8(data, p) ~? |err| ~- err
+            ~+ ReadResultConstant {
+                value: TritConst(ConstantTritPayload { value: byte_to_trit(b_res.value) }),
+                next_pos: b_res.next_pos,
+            }
+        },
+        TryteTag(_) => {
+            let v_res: ReadResultInteger = read_i16_le(data, p) ~? |err| ~- err
+            ~+ ReadResultConstant {
+                value: TryteConst(ConstantTrytePayload { value: v_res.value.to_tryte() }),
+                next_pos: v_res.next_pos,
+            }
+        },
+        IntegerTag(_) => {
+            let v_res: ReadResultInteger = read_i64_le(data, p) ~? |err| ~- err
+            ~+ ReadResultConstant {
+                value: IntegerConst(ConstantIntegerPayload { value: v_res.value }),
+                next_pos: v_res.next_pos,
+            }
+        },
+        LongTag(_) => {
+            let v_res: ReadResultInteger = read_i64_le(data, p) ~? |err| ~- err
+            ~+ ReadResultConstant {
+                value: LongConst(ConstantLongPayload { value: v_res.value.to_long() }),
+                next_pos: v_res.next_pos,
+            }
+        },
+        TrileanTag(_) => {
+            let b_res: ReadResultU8 = read_u8(data, p) ~? |err| ~- err
+            ~+ ReadResultConstant {
+                value: TrileanConst(ConstantTrileanPayload { value: byte_to_trilean(b_res.value) }),
+                next_pos: b_res.next_pos,
+            }
+        },
+        StringTag(_) => {
+            let s_res: ReadResultString = read_string(data, p) ~? |err| ~- err
+            ~+ ReadResultConstant {
+                value: StringConst(ConstantStringPayload { value: s_res.value }),
+                next_pos: s_res.next_pos,
+            }
+        },
+        UnitTag(_) => ~+ ReadResultConstant {
+            value: UnitConst(primitive_marker()),
+            next_pos: p,
+        },
+        NullableTag(_) => ~+ ReadResultConstant {
+            value: NullConst(primitive_marker()),
+            next_pos: p,
+        },
+        _ => ~- Corrupted(TrivErrorCorrupted { message: "Vector/HashMap/Outcome have no constant-pool encoding" }),
+    }
+}
+
+public struct ReadResultConstantPool {
+    value: ConstantPool,
+    next_pos: Integer,
+}
+
+public function read_constants(
+    data: Vector<Integer>,
+    pos: Integer,
+    arena: TypeTagArena,
+) -> ReadResultConstantPool~TrivError = {
+    let count_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let count: Integer = count_res.value
+    let mutable p: Integer = count_res.next_pos
+    let mutable entries: Vector<Constant> = new()
+    let mutable i: Integer = 0
+    while i < count {
+        let c_res: ReadResultConstant = read_constant(data, p, arena) ~? |err| ~- err
+        entries = push(entries, c_res.value)
+        p = c_res.next_pos
+        i = i + 1
+    }
+    ~+ ReadResultConstantPool { value: ConstantPool { entries: entries }, next_pos: p }
+}
+
+// ── Smoke entry — synthetic round-trip per v0.7.9.1 acceptance ─────
+//
+// Build a synthetic arena (covers every TypeTag discriminator
+// 0..10) and a synthetic ConstantPool (covers every Constant variant
+// 0..7). Encode → decode → re-encode → assert byte-identical at every
+// hop. Returns `~+ true` on full round-trip success; the Rust smoke
+// invokes this via the VM and asserts the result is `Outcome::Positive`
+// carrying `Trilean::True`. Outcome shape lets us thread `~?` through
+// the read paths without manually unwrapping each step.
+
+public function pack_writer_smoke_main() -> Trilean!~TrivError = {
+    // Build the arena post-order. Discriminator 0..6 are primitives.
+    let a0: AllocTagResult = alloc_tag_trit(type_tag_arena_new())
+    let a1: AllocTagResult = alloc_tag_tryte(a0.arena)
+    let a2: AllocTagResult = alloc_tag_integer(a1.arena)
+    let a3: AllocTagResult = alloc_tag_long(a2.arena)
+    let a4: AllocTagResult = alloc_tag_trilean(a3.arena)
+    let a5: AllocTagResult = alloc_tag_string(a4.arena)
+    let a6: AllocTagResult = alloc_tag_unit(a5.arena)
+    let a7: AllocTagResult = alloc_tag_nullable(a6.arena, a6.tag_id)
+    let a8: AllocTagResult = alloc_tag_vector(a7.arena, a2.tag_id)
+    let a9: AllocTagResult = alloc_tag_hashmap(a8.arena, a5.tag_id, a2.tag_id)
+    let a10: AllocTagResult = alloc_tag_outcome(a9.arena, a2.tag_id, a5.tag_id, true)
+    let arena: TypeTagArena = a10.arena
+
+    // Encode → decode the arena and assert exact length match.
+    let type_bytes: Vector<Integer> = write_type_table(new(), arena)
+    let parsed: ReadResultArena = read_type_table(type_bytes, 0) ~? |err| ~- err
+    if length(parsed.value.tags) != length(arena.tags) {
+        return ~- Corrupted(TrivErrorCorrupted { message: "arena length mismatch after round-trip" })
+    }
+
+    // Re-encode the decoded arena and assert byte-identical against
+    // the first emission (the v0.7.9.1 acceptance criterion).
+    let type_bytes_2: Vector<Integer> = write_type_table(new(), parsed.value)
+    if !vectors_equal(type_bytes, type_bytes_2) {
+        return ~- Corrupted(TrivErrorCorrupted { message: "type-table bytes diverged" })
+    }
+
+    // Constant pool covering all 8 variants. Vector mutation is
+    // functional in Triết — `entries = push(entries, c)` rebinds.
+    let mutable entries: Vector<Constant> = new()
+    entries = push(entries, TritConst(ConstantTritPayload { value: 1_trit }))
+    entries = push(entries, TryteConst(ConstantTrytePayload { value: 5.to_tryte() }))
+    entries = push(entries, IntegerConst(ConstantIntegerPayload { value: 42 }))
+    entries = push(entries, LongConst(ConstantLongPayload { value: 100.to_long() }))
+    entries = push(entries, TrileanConst(ConstantTrileanPayload { value: unknown }))
+    entries = push(entries, StringConst(ConstantStringPayload { value: "hello" }))
+    entries = push(entries, UnitConst(primitive_marker()))
+    entries = push(entries, NullConst(primitive_marker()))
+    let pool: ConstantPool = ConstantPool { entries: entries }
+
+    let cw: ConstantPoolWriteResult = write_constants(new(), pool, type_tag_arena_new())
+    let parsed_pool: ReadResultConstantPool = read_constants(cw.buf, 0, cw.arena) ~? |err| ~- err
+    if length(parsed_pool.value.entries) != length(pool.entries) {
+        return ~- Corrupted(TrivErrorCorrupted { message: "pool length mismatch after round-trip" })
+    }
+
+    // Round-trip the pool: re-encode the decoded pool and compare
+    // byte-for-byte. The arena that the re-encode produces should
+    // match the first arena's length (every tag re-interned).
+    let cw_2: ConstantPoolWriteResult = write_constants(new(), parsed_pool.value, type_tag_arena_new())
+    if !vectors_equal(cw.buf, cw_2.buf) {
+        return ~- Corrupted(TrivErrorCorrupted { message: "constant-pool bytes diverged" })
+    }
+    if length(cw.arena.tags) != length(cw_2.arena.tags) {
+        return ~- Corrupted(TrivErrorCorrupted { message: "re-encode arena length mismatch" })
+    }
+
+    ~+ true
+}
+
+function vectors_equal(a: Vector<Integer>, b: Vector<Integer>) -> Trilean! = {
+    let la: Integer = length(a)
+    let lb: Integer = length(b)
+    if la != lb { return false }
+    let mutable i: Integer = 0
+    let mutable equal: Trilean! = true
+    while i < la && equal {
+        if get(a, i)!! != get(b, i)!! {
+            equal = false
+        }
+        i = i + 1
+    }
+    equal
+}

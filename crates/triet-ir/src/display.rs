@@ -321,6 +321,9 @@ impl fmt::Display for BuiltinName {
             Self::StringSplit => write!(f, "string_split"),
             Self::StringIndexOf => write!(f, "string_index_of"),
             Self::ParseInteger => write!(f, "parse_integer"),
+            Self::TextIntoBytes => write!(f, "into_bytes"),
+            Self::TextFromBytes => write!(f, "from_bytes"),
+            Self::Blake3Hash => write!(f, "blake3_hash"),
         }
     }
 }

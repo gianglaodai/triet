@@ -406,6 +406,9 @@ public enum BuiltinName {
     StringSplitBuiltin(PrimitiveMarker),
     StringIndexOfBuiltin(PrimitiveMarker),
     ParseIntegerBuiltin(PrimitiveMarker),
+    TextIntoBytesBuiltin(PrimitiveMarker),
+    TextFromBytesBuiltin(PrimitiveMarker),
+    Blake3HashBuiltin(PrimitiveMarker),
 }
 
 public function builtin_name_display(name: BuiltinName) -> String =
@@ -437,6 +440,9 @@ public function builtin_name_display(name: BuiltinName) -> String =
         StringSplitBuiltin(_) => "string_split",
         StringIndexOfBuiltin(_) => "string_index_of",
         ParseIntegerBuiltin(_) => "parse_integer",
+        TextIntoBytesBuiltin(_) => "into_bytes",
+        TextFromBytesBuiltin(_) => "from_bytes",
+        Blake3HashBuiltin(_) => "blake3_hash",
     }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1802,6 +1808,8 @@ function resolve_builtin_name(name: String) -> BuiltinName? = {
     if name == "split" { return StringSplitBuiltin(primitive_marker()) }
     if name == "index_of" { return StringIndexOfBuiltin(primitive_marker()) }
     if name == "parse_integer" { return ParseIntegerBuiltin(primitive_marker()) }
+    if name == "into_bytes" { return TextIntoBytesBuiltin(primitive_marker()) }
+    if name == "from_bytes" { return TextFromBytesBuiltin(primitive_marker()) }
     ~0
 }
 

@@ -93,7 +93,7 @@ pub enum LoaderError {
     /// E2105 — child module file failed to parse. The inner parse error
     /// is rendered separately by the CLI; this variant lets the loader
     /// attribute the failure to a specific module.
-    #[error("parse error in module `{module}`")]
+    #[error("parse error in module `{module}`: {message}")]
     #[diagnostic(code(triet::modules::E2105))]
     ChildParseError {
         /// Full module path that failed to parse.

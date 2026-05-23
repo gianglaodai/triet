@@ -531,4 +531,10 @@ pub enum BuiltinName {
     /// parse failure (non-digit, overflow, empty string, whitespace).
     /// Refuse-over-guess: no lenient parsing.
     ParseInteger,
+    /// `std.text.into_bytes(s) -> Vector<Integer>` — convert string to utf-8 bytes.
+    TextIntoBytes,
+    /// `std.text.from_bytes(v) -> String?` — convert utf-8 bytes to string, `Null` if invalid utf-8.
+    TextFromBytes,
+    /// `std.crypto.blake3_hash(v) -> Vector<Integer>` — calculate BLAKE3 hash.
+    Blake3Hash,
 }
