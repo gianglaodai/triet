@@ -22,6 +22,7 @@ module ir_lowerer;
 from std.collections.vector import new, push, length, get
 from std.text import into_bytes, from_bytes, concat, len as text_len
 from std.string import substring
+from std.crypto import blake3_hash
 from crate.ir_lowerer import TypeTag, TritTag, TryteTag, IntegerTag, LongTag, TrileanTag, StringTag, UnitTag, NullableTag, VectorTag, HashMapTag, OutcomeTag
 from crate.ir_lowerer import TypeTagArena, AllocTagResult, PrimitiveMarker
 from crate.ir_lowerer import TypeTagNullablePayload, TypeTagVectorPayload, TypeTagHashMapPayload, TypeTagOutcomePayload
@@ -2404,4 +2405,466 @@ function vectors_equal(a: Vector<Integer>, b: Vector<Integer>) -> Trilean! = {
         i = i + 1
     }
     equal
+}
+
+// ═════════════════════════════════════════════════════════════════
+// v0.7.9.3 — `.tripack` container writer + reader
+//
+// Wraps the `.triv` IR payload (from `write_program` above) with an
+// ABI metadata header per ADR-0011 + ADR-0014 3-cấp hash tree.
+//
+// Wire format (mirrors crates/triet-pack/src/serde.rs byte layout):
+//   magic = "trip" (4 bytes)
+//   pack_version = 1 (u32 LE)
+//   section_count = 2 (u32 LE)  // ABI metadata + IR code
+//   sections: each = sec_id (u8) + sec_len (u32 LE) + payload
+//
+// ABI metadata payload (v0.7.9.3 minimal — empty types/exports/
+// deps/caps tables; v0.7.9.4 populates them from the lowered IR):
+//   abi_version = 2 (u32 LE)
+//   pkg_name (lp string)
+//   pkg_version: SemVer (3× u32 LE)
+//   iface_hash: 32-byte BLAKE3
+//   impl_hash: 32-byte BLAKE3
+//   modules / types / exports / deps / caps tables (each varint(0)
+//   for v0.7.9.3)
+//
+// Co-located with the .triv writer because the parent-search-dir
+// nesting rule (`<parent>/<name>.tri`) means tripack_writer.tri as a
+// separate file would force `compiler/pack_writer/parser.tri` lookup
+// when loaded transitively. Keeping both in one file dodges that.
+// ═════════════════════════════════════════════════════════════════
+
+// ── Magic + version constants ────────────────────────────────────
+
+constant TRIPACK_MAGIC_T: Integer = 116
+constant TRIPACK_MAGIC_R: Integer = 114
+constant TRIPACK_MAGIC_I: Integer = 105
+constant TRIPACK_MAGIC_P: Integer = 112
+
+constant TRIPACK_PACK_VERSION: Integer = 1
+constant TRIPACK_ABI_VERSION: Integer = 2
+
+constant TRIPACK_SEC_ABI_METADATA: Integer = 1
+constant TRIPACK_SEC_IR_CODE: Integer = 2
+
+constant HASH_LEN: Integer = 32
+
+// ── Domain separators (ADR-0014 §6) ──────────────────────────────
+//
+// Each separator is exactly 16 bytes of ASCII + trailing NUL pad.
+// MUST match `crates/triet-pack/src/hash.rs` byte-for-byte —
+// changing one byte invalidates every hash ever computed.
+
+// "triet/term-i  \0\0"
+public function domain_term_iface() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    b = push(b, 116) b = push(b, 114) b = push(b, 105) b = push(b, 101)
+    b = push(b, 116) b = push(b, 47)  b = push(b, 116) b = push(b, 101)
+    b = push(b, 114) b = push(b, 109) b = push(b, 45)  b = push(b, 105)
+    b = push(b, 32)  b = push(b, 32)  b = push(b, 0)   b = push(b, 0)
+    b
+}
+
+// "triet/term-m  \0\0"
+public function domain_term_impl() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    b = push(b, 116) b = push(b, 114) b = push(b, 105) b = push(b, 101)
+    b = push(b, 116) b = push(b, 47)  b = push(b, 116) b = push(b, 101)
+    b = push(b, 114) b = push(b, 109) b = push(b, 45)  b = push(b, 109)
+    b = push(b, 32)  b = push(b, 32)  b = push(b, 0)   b = push(b, 0)
+    b
+}
+
+// "triet/mod-i   \0\0"
+public function domain_mod_iface() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    b = push(b, 116) b = push(b, 114) b = push(b, 105) b = push(b, 101)
+    b = push(b, 116) b = push(b, 47)  b = push(b, 109) b = push(b, 111)
+    b = push(b, 100) b = push(b, 45)  b = push(b, 105) b = push(b, 32)
+    b = push(b, 32)  b = push(b, 32)  b = push(b, 0)   b = push(b, 0)
+    b
+}
+
+// "triet/mod-m   \0\0"
+public function domain_mod_impl() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    b = push(b, 116) b = push(b, 114) b = push(b, 105) b = push(b, 101)
+    b = push(b, 116) b = push(b, 47)  b = push(b, 109) b = push(b, 111)
+    b = push(b, 100) b = push(b, 45)  b = push(b, 109) b = push(b, 32)
+    b = push(b, 32)  b = push(b, 32)  b = push(b, 0)   b = push(b, 0)
+    b
+}
+
+// "triet/pkg-i   \0\0"
+public function domain_pkg_iface() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    b = push(b, 116) b = push(b, 114) b = push(b, 105) b = push(b, 101)
+    b = push(b, 116) b = push(b, 47)  b = push(b, 112) b = push(b, 107)
+    b = push(b, 103) b = push(b, 45)  b = push(b, 105) b = push(b, 32)
+    b = push(b, 32)  b = push(b, 32)  b = push(b, 0)   b = push(b, 0)
+    b
+}
+
+// "triet/pkg-m   \0\0"
+public function domain_pkg_impl() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    b = push(b, 116) b = push(b, 114) b = push(b, 105) b = push(b, 101)
+    b = push(b, 116) b = push(b, 47)  b = push(b, 112) b = push(b, 107)
+    b = push(b, 103) b = push(b, 45)  b = push(b, 109) b = push(b, 32)
+    b = push(b, 32)  b = push(b, 32)  b = push(b, 0)   b = push(b, 0)
+    b
+}
+
+// ── SemVer ───────────────────────────────────────────────────────
+
+public struct SemVer {
+    major: Integer,
+    minor: Integer,
+    patch: Integer,
+}
+
+public function semver_zero() -> SemVer = SemVer { major: 0, minor: 0, patch: 0 }
+
+public function write_semver(buf: Vector<Integer>, v: SemVer) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u32_le(buf, v.major)
+    let s2: Vector<Integer> = write_u32_le(s1, v.minor)
+    write_u32_le(s2, v.patch)
+}
+
+public struct ReadResultSemVer {
+    value: SemVer,
+    next_pos: Integer,
+}
+
+public function read_semver(data: Vector<Integer>, pos: Integer) -> ReadResultSemVer~TrivError = {
+    let maj_res: ReadResultInteger = read_u32_le(data, pos) ~? |err| ~- err
+    let min_res: ReadResultInteger = read_u32_le(data, maj_res.next_pos) ~? |err| ~- err
+    let pat_res: ReadResultInteger = read_u32_le(data, min_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultSemVer {
+        value: SemVer { major: maj_res.value, minor: min_res.value, patch: pat_res.value },
+        next_pos: pat_res.next_pos,
+    }
+}
+
+// ── ABI metadata (minimal v0.7.9.3 shape) ────────────────────────
+
+public struct AbiMetadata {
+    abi_version: Integer,
+    pkg_name: String,
+    pkg_version: SemVer,
+    iface_hash: Vector<Integer>,  // 32 bytes
+    impl_hash: Vector<Integer>,   // 32 bytes
+    // Empty for v0.7.9.3 — modules / types / exports / deps / caps
+    // tables are all []; the writer + reader serialize them as
+    // `varint(0)`. v0.7.9.4 populates real types/exports when
+    // `compiler/main.tri` walks the lowered IR.
+}
+
+public function abi_metadata_empty(pkg_name: String, pkg_version: SemVer) -> AbiMetadata =
+    AbiMetadata {
+        abi_version: TRIPACK_ABI_VERSION,
+        pkg_name: pkg_name,
+        pkg_version: pkg_version,
+        iface_hash: zero_hash(),
+        impl_hash: zero_hash(),
+    }
+
+public function zero_hash() -> Vector<Integer> = {
+    let mutable b: Vector<Integer> = new()
+    let mutable i: Integer = 0
+    while i < HASH_LEN {
+        b = push(b, 0)
+        i = i + 1
+    }
+    b
+}
+
+// ── BLAKE3 helpers ───────────────────────────────────────────────
+//
+// All hashes flow through the `blake3_hash` builtin added in
+// v0.7.9.1 (Vector<Integer> → 32-byte Vector<Integer>). Domain
+// separators are prepended to the input bytes so each hash level
+// stays distinct.
+
+public function blake3_with_domain(domain: Vector<Integer>, payload: Vector<Integer>) -> Vector<Integer> = {
+    let mutable input: Vector<Integer> = new()
+    input = append_bytes_to(input, domain)
+    input = append_bytes_to(input, payload)
+    blake3_hash(input)
+}
+
+function append_bytes_to(dest: Vector<Integer>, src: Vector<Integer>) -> Vector<Integer> = {
+    let mutable out: Vector<Integer> = dest
+    let total: Integer = length(src)
+    let mutable i: Integer = 0
+    while i < total {
+        out = push(out, get(src, i)!!)
+        i = i + 1
+    }
+    out
+}
+
+// ── Canonical encoders for hash inputs ───────────────────────────
+
+/// Encode the empty deps table for the iface hash. Matches Rust
+/// `serde::encode_deps_for_hash(&[])` = `varint(0)` = 1 byte (0x00).
+public function encode_deps_for_hash_empty() -> Vector<Integer> =
+    write_varint(new(), 0)
+
+/// Encode the empty caps table for the iface hash. Matches
+/// `serde::encode_caps_for_hash(&[])` = `varint(0)` = 1 byte.
+public function encode_caps_for_hash_empty() -> Vector<Integer> =
+    write_varint(new(), 0)
+
+// ── Package hash chain ──────────────────────────────────────────
+//
+// For v0.7.9.3 minimal (empty types/exports/deps/caps): the iface
+// hash collapses to `BLAKE3(domain ‖ lp_pkg_name ‖ 0_modules_count
+// ‖ empty_deps ‖ empty_caps)` and impl is
+// `BLAKE3(domain ‖ iface ‖ code_section)`.
+
+public function compute_iface_hash_empty(pkg_name: String) -> Vector<Integer> = {
+    let mutable payload: Vector<Integer> = new()
+    payload = write_string(payload, pkg_name)
+    payload = write_varint(payload, 0)  // 0 modules
+    payload = append_bytes_to(payload, encode_deps_for_hash_empty())
+    payload = append_bytes_to(payload, encode_caps_for_hash_empty())
+    blake3_with_domain(domain_pkg_iface(), payload)
+}
+
+public function compute_impl_hash(iface: Vector<Integer>, code_section: Vector<Integer>) -> Vector<Integer> = {
+    let mutable payload: Vector<Integer> = new()
+    payload = append_bytes_to(payload, iface)
+    payload = append_bytes_to(payload, code_section)
+    blake3_with_domain(domain_pkg_impl(), payload)
+}
+
+// ── ABI metadata serialization ────────────────────────────────────
+
+public function write_abi_metadata(buf: Vector<Integer>, meta: AbiMetadata) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u32_le(buf, meta.abi_version)
+    let s2: Vector<Integer> = write_string(s1, meta.pkg_name)
+    let s3: Vector<Integer> = write_semver(s2, meta.pkg_version)
+    let s4: Vector<Integer> = append_bytes_to(s3, meta.iface_hash)
+    let s5: Vector<Integer> = append_bytes_to(s4, meta.impl_hash)
+    // Empty tables: varint(0) for modules / types / exports / deps / caps.
+    let s6: Vector<Integer> = write_varint(s5, 0)
+    let s7: Vector<Integer> = write_varint(s6, 0)
+    let s8: Vector<Integer> = write_varint(s7, 0)
+    let s9: Vector<Integer> = write_varint(s8, 0)
+    write_varint(s9, 0)
+}
+
+public struct ReadResultAbiMetadata {
+    value: AbiMetadata,
+    next_pos: Integer,
+}
+
+public function read_abi_metadata(data: Vector<Integer>, pos: Integer) -> ReadResultAbiMetadata~TrivError = {
+    let abi_res: ReadResultInteger = read_u32_le(data, pos) ~? |err| ~- err
+    if abi_res.value != TRIPACK_ABI_VERSION {
+        return ~- Corrupted(TrivErrorCorrupted { message: "unsupported abi_version" })
+    }
+    let name_res: ReadResultString = read_string(data, abi_res.next_pos) ~? |err| ~- err
+    let ver_res: ReadResultSemVer = read_semver(data, name_res.next_pos) ~? |err| ~- err
+    let iface_res: ReadResultHash = read_hash(data, ver_res.next_pos) ~? |err| ~- err
+    let impl_res: ReadResultHash = read_hash(data, iface_res.next_pos) ~? |err| ~- err
+    // Skip empty tables (5× varint=0).
+    let m_res: ReadResultInteger = read_varint(data, impl_res.next_pos) ~? |err| ~- err
+    if m_res.value != 0 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "v0.7.9.3 expects empty modules table" })
+    }
+    let t_res: ReadResultInteger = read_varint(data, m_res.next_pos) ~? |err| ~- err
+    if t_res.value != 0 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "v0.7.9.3 expects empty types table" })
+    }
+    let e_res: ReadResultInteger = read_varint(data, t_res.next_pos) ~? |err| ~- err
+    if e_res.value != 0 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "v0.7.9.3 expects empty exports table" })
+    }
+    let d_res: ReadResultInteger = read_varint(data, e_res.next_pos) ~? |err| ~- err
+    if d_res.value != 0 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "v0.7.9.3 expects empty deps table" })
+    }
+    let c_res: ReadResultInteger = read_varint(data, d_res.next_pos) ~? |err| ~- err
+    if c_res.value != 0 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "v0.7.9.3 expects empty caps table" })
+    }
+    ~+ ReadResultAbiMetadata {
+        value: AbiMetadata {
+            abi_version: abi_res.value,
+            pkg_name: name_res.value,
+            pkg_version: ver_res.value,
+            iface_hash: iface_res.value,
+            impl_hash: impl_res.value,
+        },
+        next_pos: c_res.next_pos,
+    }
+}
+
+public struct ReadResultHash {
+    value: Vector<Integer>,
+    next_pos: Integer,
+}
+
+public function read_hash(data: Vector<Integer>, pos: Integer) -> ReadResultHash~TrivError = {
+    if pos + HASH_LEN > length(data) {
+        ~- Corrupted(TrivErrorCorrupted { message: "truncated hash" })
+    } else {
+        let mutable bytes: Vector<Integer> = new()
+        let mutable i: Integer = 0
+        while i < HASH_LEN {
+            bytes = push(bytes, get(data, pos + i)!!)
+            i = i + 1
+        }
+        ~+ ReadResultHash { value: bytes, next_pos: pos + HASH_LEN }
+    }
+}
+
+// ── Top-level write_tripack ──────────────────────────────────────
+
+public function write_tripack(meta: AbiMetadata, code_section: Vector<Integer>) -> Vector<Integer> = {
+    // Compute canonical hashes BEFORE writing the metadata block —
+    // the on-disk iface_hash + impl_hash fields must reflect the
+    // final values, not the user-provided sentinels.
+    let iface: Vector<Integer> = compute_iface_hash_empty(meta.pkg_name)
+    let impl_h: Vector<Integer> = compute_impl_hash(iface, code_section)
+    let final_meta: AbiMetadata = AbiMetadata {
+        abi_version: meta.abi_version,
+        pkg_name: meta.pkg_name,
+        pkg_version: meta.pkg_version,
+        iface_hash: iface,
+        impl_hash: impl_h,
+    }
+    let meta_payload: Vector<Integer> = write_abi_metadata(new(), final_meta)
+
+    let mutable buf: Vector<Integer> = new()
+    buf = push(buf, TRIPACK_MAGIC_T)
+    buf = push(buf, TRIPACK_MAGIC_R)
+    buf = push(buf, TRIPACK_MAGIC_I)
+    buf = push(buf, TRIPACK_MAGIC_P)
+    buf = write_u32_le(buf, TRIPACK_PACK_VERSION)
+    buf = write_u32_le(buf, 2)  // 2 sections: ABI metadata + IR code
+    buf = write_section(buf, TRIPACK_SEC_ABI_METADATA, meta_payload)
+    buf = write_section(buf, TRIPACK_SEC_IR_CODE, code_section)
+    buf
+}
+
+public struct TripackRead {
+    metadata: AbiMetadata,
+    code_section: Vector<Integer>,
+}
+
+public struct ReadSectionsResult {
+    metadata: AbiMetadata?,
+    code_section: Vector<Integer>,
+}
+
+public function read_tripack(data: Vector<Integer>) -> TripackRead~TrivError = {
+    if length(data) < 12 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "file too small" })
+    }
+    if get(data, 0)!! != TRIPACK_MAGIC_T
+        || get(data, 1)!! != TRIPACK_MAGIC_R
+        || get(data, 2)!! != TRIPACK_MAGIC_I
+        || get(data, 3)!! != TRIPACK_MAGIC_P
+    {
+        return ~- Corrupted(TrivErrorCorrupted { message: "bad magic (expected trip)" })
+    }
+    let ver_res: ReadResultInteger = read_u32_le(data, 4) ~? |err| ~- err
+    if ver_res.value > TRIPACK_PACK_VERSION {
+        return ~- Corrupted(TrivErrorCorrupted { message: "unsupported pack_version" })
+    }
+    let count_res: ReadResultInteger = read_u32_le(data, ver_res.next_pos) ~? |err| ~- err
+    let sec_result: ReadSectionsResult = read_sections(data, count_res.next_pos, count_res.value) ~? |err| ~- err
+    match sec_result.metadata {
+        ~0 => ~- Corrupted(TrivErrorCorrupted { message: "missing ABI metadata section" }),
+        _ => ~+ TripackRead {
+            metadata: sec_result.metadata!!,
+            code_section: sec_result.code_section,
+        },
+    }
+}
+
+function read_sections(
+    data: Vector<Integer>,
+    start_pos: Integer,
+    count: Integer,
+) -> ReadSectionsResult~TrivError = {
+    let mutable pos: Integer = start_pos
+    let mutable meta: AbiMetadata? = ~0
+    let mutable code: Vector<Integer> = new()
+    let mutable i: Integer = 0
+    while i < count {
+        let id_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+        let sec_id: Integer = id_res.value
+        let len_res: ReadResultInteger = read_u32_le(data, id_res.next_pos) ~? |err| ~- err
+        let sec_len: Integer = len_res.value
+        let payload_start: Integer = len_res.next_pos
+        let payload_end: Integer = payload_start + sec_len
+        if payload_end > length(data) {
+            return ~- Corrupted(TrivErrorCorrupted { message: "section runs past EOF" })
+        }
+        if sec_id == TRIPACK_SEC_ABI_METADATA {
+            let abi_res: ReadResultAbiMetadata = read_abi_metadata(data, payload_start) ~? |err| ~- err
+            meta = abi_res.value
+        } else if sec_id == TRIPACK_SEC_IR_CODE {
+            code = slice_bytes(data, payload_start, payload_end)
+        }
+        // Unknown sections are skipped per ADR-0011 (forward-compat).
+        pos = payload_end
+        i = i + 1
+    }
+    ~+ ReadSectionsResult { metadata: meta, code_section: code }
+}
+
+function slice_bytes(data: Vector<Integer>, start: Integer, end_idx: Integer) -> Vector<Integer> = {
+    let mutable out: Vector<Integer> = new()
+    let mutable i: Integer = start
+    while i < end_idx {
+        out = push(out, get(data, i)!!)
+        i = i + 1
+    }
+    out
+}
+
+// ── Source → tripack convenience entry ───────────────────────────
+
+public function serialize_source_to_tripack(source: String, pkg_name: String) -> Vector<Integer> = {
+    let ir: IrProgram = lower_source(source)
+    let code: Vector<Integer> = write_program(ir)
+    let meta: AbiMetadata = abi_metadata_empty(pkg_name, semver_zero())
+    write_tripack(meta, code)
+}
+
+// ── Smoke entry — round-trip per v0.7.9.3 acceptance ─────────────
+//
+// Returns `~+ true` when:
+//   1. tripack writes successfully for `function f() -> Integer = 42`,
+//   2. read_tripack round-trips it,
+//   3. pkg_name + abi_version + iface_hash length match,
+//   4. extracted code section is non-empty (= the embedded .triv).
+
+public function tripack_smoke_main() -> Trilean!~TrivError = {
+    let source: String = "function f() -> Integer = 42"
+    let pkg_name: String = "compiler"
+    let bytes: Vector<Integer> = serialize_source_to_tripack(source, pkg_name)
+    let parsed: TripackRead = read_tripack(bytes) ~? |err| ~- err
+    if parsed.metadata.abi_version != TRIPACK_ABI_VERSION {
+        return ~- Corrupted(TrivErrorCorrupted { message: "abi_version round-trip mismatch" })
+    }
+    if parsed.metadata.pkg_name != pkg_name {
+        return ~- Corrupted(TrivErrorCorrupted { message: "pkg_name round-trip mismatch" })
+    }
+    if length(parsed.metadata.iface_hash) != HASH_LEN {
+        return ~- Corrupted(TrivErrorCorrupted { message: "iface_hash length mismatch" })
+    }
+    if length(parsed.metadata.impl_hash) != HASH_LEN {
+        return ~- Corrupted(TrivErrorCorrupted { message: "impl_hash length mismatch" })
+    }
+    if length(parsed.code_section) <= 12 {
+        return ~- Corrupted(TrivErrorCorrupted { message: "code section too small (missing triv header)" })
+    }
+    ~+ true
 }

@@ -1,0 +1,14 @@
+// Triết standard library — std.crypto
+//
+// Cryptographic primitives shipped as VM builtins. Stubs satisfy
+// typecheck + module resolution; the actual hashing is done by
+// `path_to_builtin` dispatch in `crates/triet-ir/src/vm.rs`.
+
+from std.collections.vector import new
+
+/// BLAKE3 hash over the input byte sequence. Returns the 32-byte
+/// digest. Per ADR-0019 §A4 Q4: added as a VM builtin in v0.7.9.1 to
+/// unlock the CAS write path for `.tripack` (`iface_hash` +
+/// `impl_hash`) without paying the cost of a pure-Triết BLAKE3
+/// implementation at the v0.7 VM tier.
+public function blake3_hash(bytes: Vector<Integer>) -> Vector<Integer> = new()

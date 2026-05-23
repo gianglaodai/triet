@@ -130,9 +130,8 @@ impl LoaderState {
         // builtins shipped in v0.7.3. Function names within these
         // modules follow existing precedent (`std.io.println` not
         // `std.io.io_println`) — no module-name repetition.
-        let source =
-            "module io\nmodule text\nmodule assert\nmodule result\n\
-             module collections\nmodule path\nmodule string";
+        let source = "module io\nmodule text\nmodule assert\nmodule result\n\
+             module collections\nmodule path\nmodule string\nmodule crypto";
 
         // Resolve std/ relative to the workspace root (for dev/production).
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -375,9 +374,11 @@ mod tests {
     /// Stdlib module count baseline. Updated by v0.7.4.2 from 5 → 11
     /// (added: collections, collections.vector, collections.hashmap,
     /// io.fs, path, string). Crate root contributes +1 → 12 modules
-    /// for an empty program. Centralized here so future stdlib
+    /// for an empty program. v0.7.9.3 adds `crypto` (carrying the
+    /// `blake3_hash` stub) for the .tripack writer's iface/impl
+    /// hash chain → 13 modules. Centralized here so future stdlib
     /// expansions only touch one place.
-    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 12;
+    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 13;
 
     #[test]
     fn empty_root_creates_one_module() {
@@ -405,7 +406,10 @@ mod tests {
             }
         ";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 1);
+        assert_eq!(
+            result.modules.len(),
+            STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 1
+        );
 
         let root = result.root_module();
         assert!(root.items.is_empty(), "module decl should be lifted out");
@@ -430,7 +434,10 @@ mod tests {
             }
         ";
         let result = load_in_memory(source).unwrap();
-        assert_eq!(result.modules.len(), STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 2);
+        assert_eq!(
+            result.modules.len(),
+            STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 2
+        );
 
         let outer_id = result.root_module().children[0];
         let outer = result.module(outer_id);
@@ -461,12 +468,12 @@ mod tests {
         }
     }
 
-    /// Stdlib arenas: 1 (std synthetic root) + 10 (one per stdlib
+    /// Stdlib arenas: 1 (std synthetic root) + 11 (one per stdlib
     /// .tri file: io, io/fs, text, assert, result, collections,
-    /// collections/vector, collections/hashmap, path, string).
-    /// Crate root contributes +1 = 12 total when inline modules
+    /// collections/vector, collections/hashmap, path, string, crypto).
+    /// Crate root contributes +1 = 13 total when inline modules
     /// share the crate's arena.
-    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 12;
+    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 13;
 
     #[test]
     fn inline_modules_share_root_arena() {
@@ -527,15 +534,18 @@ mod tests {
             ("helper.tri", "public function aid() = 7"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 1);
+        assert_eq!(
+            result.modules.len(),
+            STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 1
+        );
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.path.to_string(), "crate.helper");
         assert_eq!(helper.items.len(), 1);
         // External child gets its own arena.
         assert_ne!(helper.arena_id, result.root_module().arena_id);
-        // Stdlib arenas (11: std synthetic + 10 .tri files) + crate
-        // root arena + external child file arena = 13.
-        assert_eq!(result.arenas.len(), 13);
+        // Stdlib arenas (12: std synthetic + 11 .tri files) + crate
+        // root arena + external child file arena = 14.
+        assert_eq!(result.arenas.len(), 14);
     }
 
     #[test]
@@ -546,7 +556,10 @@ mod tests {
             ("helper/inner.tri", "public function ping() = 1"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 2);
+        assert_eq!(
+            result.modules.len(),
+            STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 2
+        );
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.children.len(), 1);
         let inner = result.module(helper.children[0]);
@@ -584,7 +597,10 @@ mod tests {
             ("a/b/c/c.tri", "function leaf() = 0"),
         ])
         .unwrap();
-        assert_eq!(result.modules.len(), STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 3);
+        assert_eq!(
+            result.modules.len(),
+            STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 3
+        );
         let leaf = result
             .find_module(&ModulePath::new(
                 ["crate", "a", "b", "c"]
