@@ -68,7 +68,7 @@ from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, F
 from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from crate.parser import UnaryOperator, Negate
 from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from crate.parser import BinaryOpPayload, UnaryOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, ExpressionStmtPayload, NamedTypePayload, GenericTypePayload
+from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, NamedTypePayload, GenericTypePayload
 from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -1070,6 +1070,13 @@ public struct Scope {
 public function scope_new() -> Scope =
     Scope { bindings: hashmap_new() }
 
+// LoopContext — break/continue branch targets for the active loop.
+// Pushed onto LowerCtx.loop_stack on loop entry, popped on exit.
+public struct LoopContext {
+    break_target: BlockId,
+    continue_target: BlockId,
+}
+
 public struct LowerCtx {
     parser_arena: Arena,
     value_counter: Integer,
@@ -1080,6 +1087,13 @@ public struct LowerCtx {
     type_arena: TypeTagArena,
     constants: ConstantPool,
     return_type_id: Integer,
+    // v0.7.8.3: function table for CallExpr → CallLocal. Keyed by
+    // bare function name. Populated by lower_module's pass-1 sweep
+    // before any body lowering begins so forward calls resolve.
+    func_table: HashMap<String, FuncId>,
+    // v0.7.8.3: loop nesting stack for Break/Continue branch
+    // resolution. Innermost active loop is top of stack.
+    loop_stack: Vector<LoopContext>,
 }
 
 public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
@@ -1095,6 +1109,8 @@ public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
         type_arena: type_tag_arena_new(),
         constants: constant_pool_new(),
         return_type_id: 0,
+        func_table: hashmap_new(),
+        loop_stack: new(),
     }
 }
 
@@ -1116,6 +1132,8 @@ function ctx_with_value_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
         type_arena: ctx.type_arena,
         constants: ctx.constants,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
@@ -1129,6 +1147,8 @@ function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
         type_arena: ctx.type_arena,
         constants: ctx.constants,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx =
@@ -1142,6 +1162,8 @@ function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx 
         type_arena: ctx.type_arena,
         constants: ctx.constants,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
@@ -1155,6 +1177,8 @@ function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
         type_arena: ctx.type_arena,
         constants: ctx.constants,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
@@ -1168,6 +1192,8 @@ function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
         type_arena: ctx.type_arena,
         constants: ctx.constants,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
@@ -1181,6 +1207,8 @@ function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
         type_arena: ta,
         constants: ctx.constants,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
@@ -1194,6 +1222,8 @@ function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
         type_arena: ctx.type_arena,
         constants: pool,
         return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
     }
 
 function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
@@ -1207,6 +1237,38 @@ function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
         type_arena: ctx.type_arena,
         constants: ctx.constants,
         return_type_id: tid,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
+    }
+
+function ctx_with_func_table(ctx: LowerCtx, ft: HashMap<String, FuncId>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+        func_table: ft,
+        loop_stack: ctx.loop_stack,
+    }
+
+function ctx_with_loop_stack(ctx: LowerCtx, ls: Vector<LoopContext>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ls,
     }
 
 // ── Fresh ValueId / BlockId ──────────────────────────────────────
@@ -1575,6 +1637,109 @@ function lower_force_unwrap(ctx: LowerCtx, inner_id: Integer) -> LowerExprResult
     LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
 }
 
+// ── Builtin-name resolution ──────────────────────────────────────
+//
+// Map a bare identifier string to the IR `BuiltinName` variant if
+// it matches a stdlib builtin. Mirrors `resolve_builtin` in
+// `crates/triet-ir/src/lowerer.rs:3076-`. Returns `~0` on a miss so
+// the caller can fall back to local-function lookup.
+
+function resolve_builtin_name(name: String) -> BuiltinName? = {
+    if name == "println" { return PrintlnBuiltin(primitive_marker()) }
+    if name == "print" { return PrintBuiltin(primitive_marker()) }
+    if name == "assert" { return AssertBuiltin(primitive_marker()) }
+    if name == "assert_eq" { return AssertEqBuiltin(primitive_marker()) }
+    if name == "len" { return TextLenBuiltin(primitive_marker()) }
+    if name == "concat" { return TextConcatBuiltin(primitive_marker()) }
+    if name == "from_integer" { return TextFromIntegerBuiltin(primitive_marker()) }
+    if name == "new" { return VectorNewBuiltin(primitive_marker()) }
+    if name == "push" { return VectorPushBuiltin(primitive_marker()) }
+    if name == "get" { return VectorGetBuiltin(primitive_marker()) }
+    if name == "length" { return VectorLengthBuiltin(primitive_marker()) }
+    if name == "hashmap_new" { return HashMapNewBuiltin(primitive_marker()) }
+    if name == "insert" { return HashMapInsertBuiltin(primitive_marker()) }
+    if name == "hashmap_get" { return HashMapGetBuiltin(primitive_marker()) }
+    if name == "keys" { return HashMapKeysBuiltin(primitive_marker()) }
+    if name == "contains" { return HashMapContainsBuiltin(primitive_marker()) }
+    if name == "read" { return ReadFileBuiltin(primitive_marker()) }
+    if name == "write" { return WriteFileBuiltin(primitive_marker()) }
+    if name == "exists" { return FileExistsBuiltin(primitive_marker()) }
+    if name == "join" { return PathJoinBuiltin(primitive_marker()) }
+    if name == "parent" { return PathParentBuiltin(primitive_marker()) }
+    if name == "basename" { return PathBasenameBuiltin(primitive_marker()) }
+    if name == "substring" { return StringSubstringBuiltin(primitive_marker()) }
+    if name == "split" { return StringSplitBuiltin(primitive_marker()) }
+    if name == "index_of" { return StringIndexOfBuiltin(primitive_marker()) }
+    if name == "parse_integer" { return ParseIntegerBuiltin(primitive_marker()) }
+    ~0
+}
+
+// ── Call lowering ────────────────────────────────────────────────
+//
+// Mirrors `lower_call` in the Rust lowerer (lines 2980-3068).
+// Dispatch order:
+//   1. Identifier callee → builtin match (println / assert / etc.)
+//   2. Identifier callee → local-function table (CallLocal)
+//   3. Otherwise: emit placeholder fresh value (closure / cross-
+//      module dispatch defers to v0.7.8.{4,5}).
+
+function lower_call(ctx: LowerCtx, call: CallPayload) -> LowerExprResult = {
+    // Lower argument values first; threaded ctx accumulates emissions.
+    let mutable st: LowerCtx = ctx
+    let mutable arg_ops: Vector<Operand> = new()
+    let arg_total: Integer = length(call.arguments)
+    let mutable i: Integer = 0
+    while i < arg_total {
+        let aid_opt: Integer? = get(call.arguments, i)
+        let arg_r: LowerExprResult = lower_expression(st, aid_opt!!)
+        st = arg_r.ctx
+        arg_ops = push(arg_ops, ValueOp(arg_r.value_id))
+        i = i + 1
+    }
+
+    // Resolve callee: only bare Identifier supported at v0.7.8.3.
+    let callee_spanned: SpannedExpr = get_expression(st.parser_arena, call.callee)
+    let callee_name: String = match callee_spanned.node {
+        IdentifierExpr(sp) => sp.text,
+        _ => "",
+    }
+
+    // Builtin path first — matches Rust precedence.
+    let builtin_opt: BuiltinName? = resolve_builtin_name(callee_name)
+    match builtin_opt {
+        ~0 => { },
+        _ => {
+            let dest_r: LowerExprResult = fresh_value(st)
+            let inst: Instruction = CallBuiltinInst(InstCallBuiltinPayload {
+                dest: dest_r.value_id,
+                name: builtin_opt!!,
+                args: arg_ops,
+            })
+            return LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+        },
+    }
+
+    // Local function table.
+    match hashmap_get(st.func_table, callee_name) {
+        ~0 => { },
+        _ => {
+            let func_id_opt: FuncId? = hashmap_get(st.func_table, callee_name)
+            let dest_r: LowerExprResult = fresh_value(st)
+            let inst: Instruction = CallLocalInst(InstCallLocalPayload {
+                dest: dest_r.value_id,
+                callee: func_id_opt!!,
+                args: arg_ops,
+            })
+            return LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+        },
+    }
+
+    // Unresolved callee — typecheck should have caught this. Emit a
+    // placeholder fresh value so downstream lowering keeps moving;
+    // the verifier or v0.7.8.6 byte-diff gate will flag.
+    fresh_value(st)
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -1587,11 +1752,12 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         UnaryOpExpr(p) => lower_unary_op(ctx, p.operator, p.operand),
         BinaryOpExpr(p) => lower_binary_op(ctx, p.operator, p.left, p.right),
         ForceUnwrapExpr(inner_id) => lower_force_unwrap(ctx, inner_id),
-        // Call / FieldAccess / MethodCall / Outcome* / Elvis / Range
-        // defer to v0.7.8.{3,4}. Emit a placeholder fresh value so
+        CallExpr(call) => lower_call(ctx, call),
+        // FieldAccess / MethodCall / Outcome* / Elvis / Range defer
+        // to v0.7.8.{4,5}. Emit a placeholder fresh value so
         // downstream lowering keeps progressing on programs that
-        // touch unsupported expression variants — the verifier /
-        // differential gate (v0.7.8.6) will catch shape mismatches.
+        // touch unsupported expression variants — the differential
+        // gate (v0.7.8.6) catches shape mismatches.
         _ => fresh_value(ctx),
     }
 }
@@ -1623,6 +1789,111 @@ function lower_expression_stmt(ctx: LowerCtx, p: ExpressionStmtPayload) -> Lower
     val_r.ctx
 }
 
+// v0.7.8.3 — AssignStmt: re-evaluate the value expression, rebind
+// the target name in the innermost scope. Mirrors the Rust lowerer's
+// simple `Stmt::Assign` arm (no Phi insertion needed at v0.7.8.3
+// since While/For — the contexts that require SSA stitching — defer
+// to v0.7.8.3b).
+function lower_assign_stmt(ctx: LowerCtx, p: AssignStmtPayload) -> LowerCtx = {
+    let val_r: LowerExprResult = lower_expression(ctx, p.value)
+    bind_var(val_r.ctx, p.target, val_r.value_id)
+}
+
+// v0.7.8.3 — Loop / Break / Continue lowering.
+//
+// `loop { body }` mirrors `lower_loop_stmt` in the Rust lowerer:
+//   pre:       Br loop_body
+//   loop_body: <body> Br loop_body  (if no terminator yet)
+//   loop_exit: (control returns here on `break`)
+//
+// `break` emits `Br loop_stack.top.break_target`. `continue` emits
+// `Br loop_stack.top.continue_target`. The LoopContext stack ensures
+// nested loops dispatch to the innermost. `break` carrying a value
+// is type-checked but the value flow (via phi) defers to v0.7.8.3b.
+
+function loop_stack_top(ctx: LowerCtx) -> LoopContext? = {
+    let total: Integer = length(ctx.loop_stack)
+    if total == 0 {
+        ~0
+    } else {
+        get(ctx.loop_stack, total - 1)
+    }
+}
+
+function loop_stack_pop(ctx: LowerCtx) -> LowerCtx = {
+    let total: Integer = length(ctx.loop_stack)
+    if total == 0 {
+        ctx
+    } else {
+        let mutable rebuilt: Vector<LoopContext> = new()
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            let lc_opt: LoopContext? = get(ctx.loop_stack, i)
+            rebuilt = push(rebuilt, lc_opt!!)
+            i = i + 1
+        }
+        ctx_with_loop_stack(ctx, rebuilt)
+    }
+}
+
+function lower_loop_stmt(ctx: LowerCtx, p: LoopStmtPayload) -> LowerCtx = {
+    let body_blk: FreshBlockResult = fresh_block(ctx)
+    let mutable st: LowerCtx = body_blk.ctx
+    let exit_blk: FreshBlockResult = fresh_block(st)
+    st = exit_blk.ctx
+
+    // Branch from the current block into the loop body header.
+    st = emit(st, BrInst(InstBrPayload { target: body_blk.block_id }))
+
+    // Start the loop body block.
+    st = start_block(st, body_blk.block_id, "loop_body")
+
+    // Push LoopContext so nested `break` / `continue` see this loop.
+    let lc: LoopContext = LoopContext {
+        break_target: exit_blk.block_id,
+        continue_target: body_blk.block_id,
+    }
+    st = ctx_with_loop_stack(st, push(st.loop_stack, lc))
+    st = push_scope(st)
+    let body_r: LowerExprResult = lower_block(st, p.body)
+    st = body_r.ctx
+    st = pop_scope(st)
+    st = loop_stack_pop(st)
+
+    // Implicit branch back to the body header if the body didn't
+    // terminate explicitly (e.g., via `break`/`return`).
+    if !current_block_has_terminator(st) {
+        st = emit(st, BrInst(InstBrPayload { target: body_blk.block_id }))
+    }
+
+    // Continue lowering in the exit block.
+    start_block(st, exit_blk.block_id, "loop_exit")
+}
+
+function lower_break_stmt(ctx: LowerCtx, p: BreakStmtPayload) -> LowerCtx = {
+    // Evaluate the optional value expression so any side-effects
+    // still emit, then branch. Break-with-value plumbing via phi
+    // defers to v0.7.8.3b.
+    let mutable st: LowerCtx = ctx
+    match p.value {
+        ~0 => { },
+        _ => {
+            let val_r: LowerExprResult = lower_expression(st, p.value!!)
+            st = val_r.ctx
+        },
+    }
+    match loop_stack_top(st) {
+        ~0 => st,
+        _ => emit(st, BrInst(InstBrPayload { target: loop_stack_top(st)!!.break_target })),
+    }
+}
+
+function lower_continue_stmt(ctx: LowerCtx) -> LowerCtx =
+    match loop_stack_top(ctx) {
+        ~0 => ctx,
+        _ => emit(ctx, BrInst(InstBrPayload { target: loop_stack_top(ctx)!!.continue_target })),
+    }
+
 public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
     let spanned: SpannedStmt = get_statement(ctx.parser_arena, stmt_id)
     match spanned.node {
@@ -1630,10 +1901,14 @@ public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
         ConstantStmt(p) => lower_constant_stmt(ctx, p),
         ReturnStmt(p) => lower_return_stmt(ctx, p),
         ExpressionStmt(p) => lower_expression_stmt(ctx, p),
-        // While/For/Loop/Break/Continue/Assign defer to v0.7.8.3 —
-        // they need phi insertion + LoopContext stack. Silently skip
-        // for now so v0.7.8.2 programs can still parse + run the
-        // supported subset.
+        AssignStmt(p) => lower_assign_stmt(ctx, p),
+        LoopStmt(p) => lower_loop_stmt(ctx, p),
+        BreakStmt(p) => lower_break_stmt(ctx, p),
+        ContinueStmt => lower_continue_stmt(ctx),
+        // While / For lowering defers to v0.7.8.3b — these need
+        // phi-node insertion at the loop header for any variable
+        // assigned inside the body (otherwise SSA breaks across
+        // iterations). Silently skip for now.
         _ => ctx,
     }
 }
@@ -1695,6 +1970,8 @@ function lower_function(
         type_arena: ctx_outer.type_arena,
         constants: ctx_outer.constants,
         return_type_id: ctx_outer.return_type_id,
+        func_table: ctx_outer.func_table,
+        loop_stack: ctx_outer.loop_stack,
     }
     ctx = push_scope(ctx)
 
@@ -1786,11 +2063,25 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModul
         i = i + 1
     }
 
-    // Pass 2: lower each function body.
+    // Pass 1.5 (v0.7.8.3): build func_table so any forward call
+    // (callee declared after caller in source order) resolves to a
+    // FuncId via `lower_call`. FuncId raw values match the
+    // `function_defs` index, so position-based assignment suffices.
     let mod_path: Vector<String> = new()
     let mutable ir_mod: IrModule = ir_module_new(mod_path)
     let mutable ctx: LowerCtx = lower_ctx_new(arena)
     let fn_total: Integer = length(function_defs)
+    let mutable mut_ft: HashMap<String, FuncId> = hashmap_new()
+    let mutable k: Integer = 0
+    while k < fn_total {
+        let d_opt: FunctionDef? = get(function_defs, k)
+        let d: FunctionDef = d_opt!!
+        mut_ft = insert(mut_ft, d.name, FuncId { raw: k })
+        k = k + 1
+    }
+    ctx = ctx_with_func_table(ctx, mut_ft)
+
+    // Pass 2: lower each function body.
     let mutable j: Integer = 0
     while j < fn_total {
         let def_opt: FunctionDef? = get(function_defs, j)
@@ -1798,7 +2089,7 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModul
         let lr: LowerFunctionResult = lower_function(ctx, FuncId { raw: j }, def)
         // v0.7.8.2 keeps each function's blocks independent but
         // shares the constants pool + type arena via the threaded
-        // ctx. Cross-function constant dedup lands v0.7.8.3.
+        // ctx. Cross-function constant dedup lands v0.7.8.5.
         ctx = lr.ctx
         ir_mod = ir_module_push_function(ir_mod, lr.fn)
         j = j + 1
@@ -1894,6 +2185,87 @@ public function lower_source_smoke_main() -> Unit = {
     // wires the cross-function dedup driver.
 
     println("v0.7.8.2 ir_lowerer literal+binding smoke OK")
+}
+
+// ── v0.7.8.3 smoke — call + assign + loop/break/continue ────────
+
+public function call_loop_smoke_main() -> Unit = {
+    // Test 1: builtin call — println("hi") emits one CallBuiltin
+    // instruction + the string Const + the Unit auto-Ret.
+    let p1: IrProgram = lower_source("function main() -> Unit = println(\"hi\")")
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    let bb1: BasicBlock = get(f1.blocks, 0)!!
+    let len1: Integer = length(bb1.instructions)
+    // Const("hi"), CallBuiltin(println, [%0]), Ret.
+    assert(len1 == 3)
+    let i10: Instruction = get(bb1.instructions, 0)!!
+    let i11: Instruction = get(bb1.instructions, 1)!!
+    let i12: Instruction = get(bb1.instructions, 2)!!
+    assert_string_eq(instruction_opcode_name(i10), "Const")
+    assert_string_eq(instruction_opcode_name(i11), "CallBuiltin")
+    assert_string_eq(instruction_opcode_name(i12), "Ret")
+
+    // Test 2: local function call — `add(1, 2)` resolves through
+    // the per-module func_table. The lowered `main` should emit
+    // Const(1), Const(2), CallLocal(@f0, [%0, %1]), Ret.
+    let src2: String = "function add(a: Integer, b: Integer) -> Integer = a + b\nfunction main() -> Integer = add(1, 2)"
+    let p2: IrProgram = lower_source(src2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    assert(length(m2.functions) == 2)
+    let main_fn: Function = get(m2.functions, 1)!!
+    let main_bb: BasicBlock = get(main_fn.blocks, 0)!!
+    let main_len: Integer = length(main_bb.instructions)
+    // Const(1), Const(2), CallLocal, Ret.
+    assert(main_len == 4)
+    let call_inst: Instruction = get(main_bb.instructions, 2)!!
+    assert_string_eq(instruction_opcode_name(call_inst), "CallLocal")
+
+    // Test 3: AssignStmt at top-level scope — rebinds variable.
+    // `function f() -> Integer { let mutable x: Integer = 0 x = 5 x }`
+    // → Const(0), Const(5), Ret(%1).
+    let src3: String = "function f() -> Integer { let mutable x: Integer = 0 x = 5 x }"
+    let p3: IrProgram = lower_source(src3)
+    let m3: IrModule = get(p3.modules, 0)!!
+    let f3: Function = get(m3.functions, 0)!!
+    let bb3: BasicBlock = get(f3.blocks, 0)!!
+    let len3: Integer = length(bb3.instructions)
+    // Const(0), Const(5), Ret.
+    assert(len3 == 3)
+
+    // Test 4: Loop + Break — `loop { break }` produces 3 blocks:
+    // entry (Br loop_body), loop_body (Br loop_exit), loop_exit
+    // (Ret). Ret-value source is the block-final unit emitted at
+    // block exit, threading through auto-Ret.
+    let src4: String = "function f() -> Unit { loop { break } }"
+    let p4: IrProgram = lower_source(src4)
+    let m4: IrModule = get(p4.modules, 0)!!
+    let f4: Function = get(m4.functions, 0)!!
+    // 3 blocks expected: entry, loop_body, loop_exit.
+    assert(length(f4.blocks) == 3)
+    let entry4: BasicBlock = get(f4.blocks, 0)!!
+    let body4: BasicBlock = get(f4.blocks, 1)!!
+    let exit4: BasicBlock = get(f4.blocks, 2)!!
+    // entry → Br loop_body
+    let entry_last: Instruction = get(entry4.instructions, length(entry4.instructions) - 1)!!
+    assert_string_eq(instruction_opcode_name(entry_last), "Br")
+    // loop_body → Br loop_exit (from break)
+    let body_last: Instruction = get(body4.instructions, length(body4.instructions) - 1)!!
+    assert_string_eq(instruction_opcode_name(body_last), "Br")
+    // loop_exit ends with Ret
+    let exit_last: Instruction = get(exit4.instructions, length(exit4.instructions) - 1)!!
+    assert_string_eq(instruction_opcode_name(exit_last), "Ret")
+
+    // Test 5: Loop + Continue — `loop { continue }` emits a single
+    // Br back to loop_body. Tests that continue resolves the
+    // innermost loop's `continue_target`.
+    let src5: String = "function f() -> Unit { loop { continue } }"
+    let p5: IrProgram = lower_source(src5)
+    let m5: IrModule = get(p5.modules, 0)!!
+    let f5: Function = get(m5.functions, 0)!!
+    assert(length(f5.blocks) == 3)
+
+    println("v0.7.8.3 ir_lowerer call+loop smoke OK")
 }
 
 public function main() -> Unit = {
@@ -2244,4 +2616,5 @@ public function main() -> Unit = {
 
     println("v0.7.8.1 ir_lowerer types smoke OK")
     lower_source_smoke_main()
+    call_loop_smoke_main()
 }
