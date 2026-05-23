@@ -42,6 +42,7 @@ from std.io import println
 from std.collections.vector import new, push, length, get
 from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, contains as hashmap_contains, keys as hashmap_keys
 from std.text import concat, from_integer, len as text_len
+from std.string import substring
 from std.assert import assert
 
 from crate.parser.lexer import SpannedToken, LexError, lex
@@ -3256,6 +3257,225 @@ public function check_source(source: String) -> Vector<TypeError> = {
         },
         ~- _ => new(),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.7.5 — typecheck_differential NDJSON dump
+//
+// Closes the v0.7.7 umbrella per ADR-0019 §A7.7. Walks the
+// TypeError list produced by `check_source(source)` and emits a
+// stable line-delimited JSON shape so a Rust mirror can do a
+// byte-equality diff against `triet_typecheck::check_resolved`'s
+// output.
+//
+// Schema:
+//   {"k":"Errors","count":N}
+//   {"k":"Error","code":"<E1xxx|W2xxx>","span":[<start>,<end>]}
+//   …
+//
+// Errors are sorted by (span_start, span_end, code) so the two
+// sides produce identical bytes even when traversal order in the
+// Triết-side two-pass driver and the Rust two-pass driver diverge
+// on intermediate work (which they do — e.g., declare-pass first
+// vs. body-pass first signature resolution surfaces the same
+// WrongArity twice in both impls but in different relative order).
+//
+// NDJSON is a transient bridge per ADR-0019 §A2 — slated for
+// removal at v0.7.9 once the Triết-side compiler driver wires
+// in-memory.
+// ─────────────────────────────────────────────────────────────────
+
+// ASCII codepoint lookup — true iff `a` precedes `b` in standard
+// printable-ASCII order. Ports modules.tri's `ascii_char_lt`
+// (Triết has no String→Integer codepoint cast at v0.7.3.3 —
+// see ADR-0005). Restricted to printable ASCII (0x20..0x7E)
+// which the corpus stays within.
+function tc_ascii_char_lt(a: String, b: String) -> Trilean! = {
+    let order: String = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    let total: Integer = text_len(order)
+    let mutable ia: Integer = -1
+    let mutable ib: Integer = -1
+    let mutable i: Integer = 0
+    while i < total {
+        let c: String = substring(order, i, i + 1)
+        if c == a && ia == -1 {
+            ia = i
+        }
+        if c == b && ib == -1 {
+            ib = i
+        }
+        i = i + 1
+    }
+    ia < ib
+}
+
+// Lex-order String compare. Mirrors modules.tri's `string_less_than`.
+function tc_string_less_than(a: String, b: String) -> Trilean! = {
+    let la: Integer = text_len(a)
+    let lb: Integer = text_len(b)
+    let mutable i: Integer = 0
+    let mutable result: Trilean! = false
+    let mutable done: Trilean! = false
+    while i < la && i < lb && !done {
+        let ca: String = substring(a, i, i + 1)
+        let cb: String = substring(b, i, i + 1)
+        if ca == cb {
+            // continue
+        } else {
+            result = tc_ascii_char_lt(ca, cb)
+            done = true
+        }
+        i = i + 1
+    }
+    if !done {
+        result = la < lb
+    }
+    result
+}
+
+function tc_json_escape(s: String) -> String = {
+    let total: Integer = text_len(s)
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    while i < total {
+        let ch: String = substring(s, i, i + 1)
+        if ch == "\\" {
+            out = concat(out, "\\\\")
+        } else if ch == "\"" {
+            out = concat(out, "\\\"")
+        } else if ch == "\n" {
+            out = concat(out, "\\n")
+        } else if ch == "\t" {
+            out = concat(out, "\\t")
+        } else {
+            out = concat(out, ch)
+        }
+        i = i + 1
+    }
+    out
+}
+
+function tc_quote_string(s: String) -> String =
+    concat(concat("\"", tc_json_escape(s)), "\"")
+
+// Order key for an error: pads (span_start, span_end) into a
+// fixed-width zero-padded decimal so we can stable-sort errors
+// by lexicographic key comparison alone (Triết has no struct
+// ordering primitive at v0.7.3.3 — same workaround as
+// `modules.tri::sort_string_vector`).
+function tc_pad_left(value: Integer, width: Integer) -> String = {
+    let s: String = from_integer(value)
+    let pad_len: Integer = width - text_len(s)
+    let mutable out: String = ""
+    let mutable i: Integer = 0
+    while i < pad_len {
+        out = concat(out, "0")
+        i = i + 1
+    }
+    concat(out, s)
+}
+
+function tc_sort_key(err: TypeError) -> String = {
+    let span: Vector<Integer> = type_error_span(err)
+    let s_start: Integer = get(span, 0)!!
+    let s_end: Integer = get(span, 1)!!
+    let code: String = type_error_code(err)
+    concat(concat(concat(tc_pad_left(s_start, 10), "|"), concat(tc_pad_left(s_end, 10), "|")), code)
+}
+
+// O(N²) insertion sort over the TypeError vector keyed by
+// `tc_sort_key`. Corpus sizes here are tens of errors, fine.
+function tc_sort_errors(errors: Vector<TypeError>) -> Vector<TypeError> = {
+    let total: Integer = length(errors)
+    let mutable indices: Vector<Integer> = new()
+    let mutable keys: Vector<String> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let e_opt: TypeError? = get(errors, i)
+        keys = push(keys, tc_sort_key(e_opt!!))
+        indices = push(indices, i)
+        i = i + 1
+    }
+    // Insertion sort on `indices` (and the parallel `keys` for
+    // comparison) — bubble the new element into place each pass.
+    let mutable a: Integer = 1
+    while a < total {
+        let mutable b: Integer = a
+        while b > 0 {
+            let key_b: String = get(keys, b)!!
+            let key_prev: String = get(keys, b - 1)!!
+            if tc_string_less_than(key_b, key_prev) {
+                // Swap indices[b-1] ↔ indices[b], same for keys.
+                let tmp_idx: Integer = get(indices, b - 1)!!
+                let cur_idx: Integer = get(indices, b)!!
+                let tmp_key: String = key_prev
+                let cur_key: String = key_b
+                // Rebuild vectors with swapped elements at b-1 and b.
+                let mutable new_idx: Vector<Integer> = new()
+                let mutable new_keys: Vector<String> = new()
+                let mutable k: Integer = 0
+                while k < total {
+                    if k == b - 1 {
+                        new_idx = push(new_idx, cur_idx)
+                        new_keys = push(new_keys, cur_key)
+                    } else if k == b {
+                        new_idx = push(new_idx, tmp_idx)
+                        new_keys = push(new_keys, tmp_key)
+                    } else {
+                        new_idx = push(new_idx, get(indices, k)!!)
+                        new_keys = push(new_keys, get(keys, k)!!)
+                    }
+                    k = k + 1
+                }
+                indices = new_idx
+                keys = new_keys
+                b = b - 1
+            } else {
+                b = 0
+            }
+        }
+        a = a + 1
+    }
+    // Materialize sorted vector from `indices`.
+    let mutable out: Vector<TypeError> = new()
+    let mutable m: Integer = 0
+    while m < total {
+        let pos: Integer = get(indices, m)!!
+        let e_opt: TypeError? = get(errors, pos)
+        out = push(out, e_opt!!)
+        m = m + 1
+    }
+    out
+}
+
+public function dump_typecheck_errors_ndjson(source: String) -> String = {
+    let errors: Vector<TypeError> = check_source(source)
+    let sorted: Vector<TypeError> = tc_sort_errors(errors)
+    let total: Integer = length(sorted)
+
+    let mutable out: String = "{\"k\":\"Errors\",\"count\":"
+    out = concat(out, from_integer(total))
+    out = concat(out, "}\n")
+
+    let mutable i: Integer = 0
+    while i < total {
+        let e_opt: TypeError? = get(sorted, i)
+        let err: TypeError = e_opt!!
+        let span: Vector<Integer> = type_error_span(err)
+        let s_start: Integer = get(span, 0)!!
+        let s_end: Integer = get(span, 1)!!
+        let code: String = type_error_code(err)
+        let mutable line: String = "{\"k\":\"Error\",\"code\":"
+        line = concat(line, tc_quote_string(code))
+        line = concat(line, ",\"span\":[")
+        line = concat(line, from_integer(s_start))
+        line = concat(line, ",")
+        line = concat(line, from_integer(s_end))
+        line = concat(line, "]}\n")
+        out = concat(out, line)
+        i = i + 1
+    }
+    out
 }
 
 // ── v0.7.7.2 smoke — literals + bindings + control flow ──────────
