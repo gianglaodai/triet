@@ -261,6 +261,12 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
 ### Remaining v0.7 sub-tasks after typecheck
 
 - [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
+  - [x] **v0.7.8.1** — IR types + Instruction enum scaffolding. Ports `crates/triet-ir/src/{types.rs, constant.rs, instr.rs, module.rs}` foundations: 4 ID wrappers (`ValueId` / `BlockId` / `FuncId` / `ConstId` with `*_display`), recursive `TypeTag` via `TypeTagArena` (12 variants — primitives + Nullable / Vector / HashMap / Outcome with recursive Display), `Constant` enum (8 variants) + `ConstantPool` (Vector-backed, linear-scan intern stub), `Operand` (ValueOp / ConstOp), the full 53-variant `Instruction` enum (Const / 7 arithmetic / 5 Ł3 logic / 3 K3 logic / 6 comparisons / 5 conversions / 3 struct / 3 enum / 3 nullable / 4 call / 2 closure / 5 control-flow / Phi / 6 Outcome) with per-variant payload structs, `BuiltinName` (27 variants), `PhiIncoming`, `BasicBlock` + `Function` + `IrModule` + `IrProgram` containers, `instruction_is_terminator` / `instruction_destination` / `instruction_opcode_name` helpers, `function_is_well_formed`. 1 new bootstrap test (`ir_lowerer_types_smoke.rs`). Triết-side gotcha: field name `constant:` conflicts with the `constant` keyword — renamed to `const_id:`.
+  - [ ] **v0.7.8.2** — Literal + binding + control-flow lowering (entry block + Const / Add / Br / Ret / BrTrilean emission).
+  - [ ] **v0.7.8.3** — Function + call lowering (CallLocal / CallCrossModule / CallBuiltin + Phi merging).
+  - [ ] **v0.7.8.4** — Struct + enum + pattern + outcome lowering (StructNew / FieldGet / EnumNew / EnumTag / Outcome* opcodes).
+  - [ ] **v0.7.8.5** — Wire format `read_program` / `write_program` (`.triv` serde port).
+  - [ ] **v0.7.8.6** — `lowerer_differential` byte-diff gate (closes v0.7.8 umbrella).
 - [ ] **v0.7.9** — `compiler/pack_writer.tri` + `compiler/main.tri` + drop bridges
 - [ ] **v0.7.10** — CLI wiring carry-over (project layout + cap-aware build + DevTtyPrompt + E2208.CapabilityDivergence) **+ Triết-side stdlib pre-load** (deferred from v0.7.6.2 + v0.7.6.4 + v0.7.6.5 — needs an env-var-read builtin or equivalent CLI-side resolution of the workspace `std/` path)
 - [ ] **v0.7.11** — Stage 1 → Stage 2 bootstrap script + CI integration

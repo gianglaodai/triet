@@ -1,0 +1,1351 @@
+// Triết-in-Triết IR lowerer port — bootstrap source for the
+// self-hosting compiler ([ADR-0019][adr-0019] §A7.8 v0.7.8 umbrella).
+//
+// v0.7.8.1 — IR types + Instruction enum scaffolding. Mirrors
+// crates/triet-ir/src/{types.rs, constant.rs, instr.rs, module.rs}:
+// declares the SSA value / block / function / constant ID wrappers,
+// the recursive `TypeTag` (via arena because Triết enum variants
+// can't recursively contain themselves), the `Constant` value
+// enum, the `Operand` union, the full 53-variant `Instruction`
+// enum, the `BuiltinName` enum, and the `BasicBlock` / `Function`
+// / `IrModule` / `IrProgram` containers. v0.7.8.{2..5} build the
+// `lower_program` driver, the wire-format `read_program` /
+// `write_program`, and the `lowerer_differential` byte-diff gate
+// on top of this surface.
+//
+// Types coverage:
+//   - 4 ID wrappers (`ValueId` / `BlockId` / `FuncId` / `ConstId`),
+//     each carrying a `raw: Integer` payload + `*_display` helper
+//     that reproduces Rust's `impl Display` (`%n` / `bn` / `@fn` /
+//     `cn`).
+//   - `TypeTag` (12 variants — Trit / Tryte / Integer / Long /
+//     Trilean / String / Unit / Nullable / Vector / HashMap /
+//     Outcome). Recursive references go through `TypeArena` (same
+//     pattern as parser.tri / typecheck.tri).
+//   - `Constant` (8 variants — Trit / Tryte / Integer / Long /
+//     Trilean / String / Unit / Null) + `ConstantPool` (Vector +
+//     identity-string index map for dedup).
+//   - `Operand` 2-variant union (ValueOp / ConstOp).
+//   - `Instruction` — 53 variants covering ADR-0007's full opcode
+//     set: Const, 7 arithmetic, 5 Ł3 logic, 3 K3 logic, 6
+//     comparisons, 5 conversions, 3 struct ops, 3 enum ops, 3
+//     nullable ops, 4 call ops, 2 closure ops, 5 control-flow
+//     terminators, Phi, 6 Outcome ops.
+//   - `BuiltinName` (~24 variants — io / text / vector / hashmap /
+//     string / path / fs / parse / assert).
+//   - `PhiIncoming` carrier struct.
+//   - `BasicBlock { id, name, instructions }`,
+//     `Function { id, name, parameters, return_type, blocks }`,
+//     `IrModule { path_segments, functions }`,
+//     `IrProgram { modules, constants, witness_tables }`.
+//
+// v0.7.8.1 is types-only: no `lower_*` driver yet. Smoke main
+// exercises construction + display of every Instruction variant +
+// the IR program containers so the integration test
+// (`ir_lowerer_types_smoke.rs`) can confirm the surface compiles +
+// round-trips through the VM. v0.7.8.{2..5} build the actual
+// lowerer logic on this foundation.
+//
+// [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+
+from std.io import println
+from std.collections.vector import new, push, length, get
+from std.text import concat, from_integer, len as text_len
+from std.assert import assert
+
+// ─────────────────────────────────────────────────────────────────
+// ID wrappers — Triết enum payloads need a struct, so each ID
+// gets a single-field carrier with `raw: Integer`. Display helpers
+// match Rust's `impl Display`: `%n` / `bn` / `@fn` / `cn`.
+// ─────────────────────────────────────────────────────────────────
+
+public struct ValueId {
+    raw: Integer,
+}
+
+public struct BlockId {
+    raw: Integer,
+}
+
+public struct FuncId {
+    raw: Integer,
+}
+
+public struct ConstId {
+    raw: Integer,
+}
+
+public function value_id_display(id: ValueId) -> String =
+    concat("%", from_integer(id.raw))
+
+public function block_id_display(id: BlockId) -> String =
+    concat("b", from_integer(id.raw))
+
+public function func_id_display(id: FuncId) -> String =
+    concat("@f", from_integer(id.raw))
+
+public function const_id_display(id: ConstId) -> String =
+    concat("c", from_integer(id.raw))
+
+// ─────────────────────────────────────────────────────────────────
+// TypeTag — discriminator for the IR's per-register type tag.
+//
+// Recursive variants (Nullable / Vector / HashMap / Outcome) hold
+// arena IDs into the parallel `TypeTagArena.tags` Vector, mirroring
+// the parser.tri / typecheck.tri pattern.
+// ─────────────────────────────────────────────────────────────────
+
+public struct PrimitiveMarker {
+    placeholder: Integer,
+}
+
+public struct TypeTagNullablePayload {
+    inner: Integer,
+}
+
+public struct TypeTagVectorPayload {
+    inner: Integer,
+}
+
+public struct TypeTagHashMapPayload {
+    key: Integer,
+    value: Integer,
+}
+
+public struct TypeTagOutcomePayload {
+    value_type: Integer,
+    error_type: Integer,
+    allow_null_state: Trilean!,
+}
+
+public enum TypeTag {
+    TritTag(PrimitiveMarker),
+    TryteTag(PrimitiveMarker),
+    IntegerTag(PrimitiveMarker),
+    LongTag(PrimitiveMarker),
+    TrileanTag(PrimitiveMarker),
+    StringTag(PrimitiveMarker),
+    UnitTag(PrimitiveMarker),
+    NullableTag(TypeTagNullablePayload),
+    VectorTag(TypeTagVectorPayload),
+    HashMapTag(TypeTagHashMapPayload),
+    OutcomeTag(TypeTagOutcomePayload),
+}
+
+public struct TypeTagArena {
+    tags: Vector<TypeTag>,
+}
+
+public struct AllocTagResult {
+    arena: TypeTagArena,
+    tag_id: Integer,
+}
+
+public function type_tag_arena_new() -> TypeTagArena =
+    TypeTagArena { tags: new() }
+
+public function alloc_type_tag(arena: TypeTagArena, tag: TypeTag) -> AllocTagResult = {
+    let next_id: Integer = length(arena.tags)
+    let updated: TypeTagArena = TypeTagArena { tags: push(arena.tags, tag) }
+    AllocTagResult { arena: updated, tag_id: next_id }
+}
+
+public function get_type_tag(arena: TypeTagArena, tag_id: Integer) -> TypeTag? =
+    get(arena.tags, tag_id)
+
+function primitive_marker() -> PrimitiveMarker =
+    PrimitiveMarker { placeholder: 0 }
+
+public function alloc_tag_trit(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, TritTag(primitive_marker()))
+
+public function alloc_tag_tryte(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, TryteTag(primitive_marker()))
+
+public function alloc_tag_integer(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, IntegerTag(primitive_marker()))
+
+public function alloc_tag_long(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, LongTag(primitive_marker()))
+
+public function alloc_tag_trilean(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, TrileanTag(primitive_marker()))
+
+public function alloc_tag_string(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, StringTag(primitive_marker()))
+
+public function alloc_tag_unit(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, UnitTag(primitive_marker()))
+
+public function alloc_tag_nullable(arena: TypeTagArena, inner: Integer) -> AllocTagResult =
+    alloc_type_tag(arena, NullableTag(TypeTagNullablePayload { inner: inner }))
+
+public function alloc_tag_vector(arena: TypeTagArena, inner: Integer) -> AllocTagResult =
+    alloc_type_tag(arena, VectorTag(TypeTagVectorPayload { inner: inner }))
+
+public function alloc_tag_hashmap(arena: TypeTagArena, key: Integer, value: Integer) -> AllocTagResult =
+    alloc_type_tag(arena, HashMapTag(TypeTagHashMapPayload { key: key, value: value }))
+
+public function alloc_tag_outcome(
+    arena: TypeTagArena,
+    value_type: Integer,
+    error_type: Integer,
+    allow_null_state: Trilean!,
+) -> AllocTagResult =
+    alloc_type_tag(arena, OutcomeTag(TypeTagOutcomePayload {
+        value_type: value_type,
+        error_type: error_type,
+        allow_null_state: allow_null_state,
+    }))
+
+/// Recursive type tag printer. Mirrors Rust's `impl Display for TypeTag`.
+public function type_tag_display(arena: TypeTagArena, tag_id: Integer) -> String = {
+    let node_opt: TypeTag? = get_type_tag(arena, tag_id)
+    match node_opt {
+        ~0 => "?",
+        _ => {
+            match node_opt!! {
+                TritTag(_) => "Trit",
+                TryteTag(_) => "Tryte",
+                IntegerTag(_) => "Integer",
+                LongTag(_) => "Long",
+                TrileanTag(_) => "Trilean",
+                StringTag(_) => "String",
+                UnitTag(_) => "Unit",
+                NullableTag(p) => concat(type_tag_display(arena, p.inner), "?"),
+                VectorTag(p) => concat(concat("Vector<", type_tag_display(arena, p.inner)), ">"),
+                HashMapTag(p) => {
+                    let k_str: String = type_tag_display(arena, p.key)
+                    let v_str: String = type_tag_display(arena, p.value)
+                    concat(concat(concat(concat("HashMap<", k_str), ", "), v_str), ">")
+                },
+                OutcomeTag(p) => {
+                    let v_str: String = type_tag_display(arena, p.value_type)
+                    let e_str: String = type_tag_display(arena, p.error_type)
+                    let sep: String = if p.allow_null_state { "?~" } else { "~" }
+                    concat(concat(v_str, sep), e_str)
+                },
+            }
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Constant — compile-time known values referenced inline via
+// `ConstId`. Per-variant payload struct because Triết enum
+// variants take exactly one payload.
+// ─────────────────────────────────────────────────────────────────
+
+public struct ConstantTritPayload {
+    value: Trit,
+}
+
+public struct ConstantTrytePayload {
+    value: Tryte,
+}
+
+public struct ConstantIntegerPayload {
+    value: Integer,
+}
+
+public struct ConstantLongPayload {
+    value: Long,
+}
+
+public struct ConstantTrileanPayload {
+    value: Trilean,
+}
+
+public struct ConstantStringPayload {
+    value: String,
+}
+
+public enum Constant {
+    TritConst(ConstantTritPayload),
+    TryteConst(ConstantTrytePayload),
+    IntegerConst(ConstantIntegerPayload),
+    LongConst(ConstantLongPayload),
+    TrileanConst(ConstantTrileanPayload),
+    StringConst(ConstantStringPayload),
+    UnitConst(PrimitiveMarker),
+    NullConst(PrimitiveMarker),
+}
+
+/// `Constant` → `TypeTag` mapping. Mirrors Rust `Constant::type_tag`
+/// — `NullConst` returns `Nullable<Unit>` because the constant
+/// pool's canonical null carries no inner type info; the lowerer
+/// witnesses the actual `T?` shape at the call site via
+/// `NullWrap`/`NullCheck` operand context.
+public function constant_type_tag(arena: TypeTagArena, c: Constant) -> AllocTagResult =
+    match c {
+        TritConst(_) => alloc_tag_trit(arena),
+        TryteConst(_) => alloc_tag_tryte(arena),
+        IntegerConst(_) => alloc_tag_integer(arena),
+        LongConst(_) => alloc_tag_long(arena),
+        TrileanConst(_) => alloc_tag_trilean(arena),
+        StringConst(_) => alloc_tag_string(arena),
+        UnitConst(_) => alloc_tag_unit(arena),
+        NullConst(_) => {
+            let inner: AllocTagResult = alloc_tag_unit(arena)
+            alloc_tag_nullable(inner.arena, inner.tag_id)
+        },
+    }
+
+/// Interned constant pool. The simpler shape than Rust's
+/// HashMap-backed dedup index — for v0.7.8.1 scaffolding we
+/// expose the entries vector directly and add a linear-scan
+/// `intern` helper. v0.7.8.{2..} can swap the lookup to a
+/// hashmap if profile-pressure justifies it.
+public struct ConstantPool {
+    entries: Vector<Constant>,
+}
+
+public function constant_pool_new() -> ConstantPool =
+    ConstantPool { entries: new() }
+
+public function constant_pool_get(pool: ConstantPool, id: ConstId) -> Constant? =
+    get(pool.entries, id.raw)
+
+public function constant_pool_count(pool: ConstantPool) -> Integer =
+    length(pool.entries)
+
+public struct InternResult {
+    pool: ConstantPool,
+    id: ConstId,
+}
+
+/// Append a constant to the pool, returning its `ConstId`. v0.7.8.1
+/// does NOT dedup (the linear-scan equality across `Constant` values
+/// would require a generic equality helper that Triết doesn't yet
+/// expose). Re-interning the same value yields a fresh id — the
+/// lowerer can layer dedup on top once needed.
+public function constant_pool_intern(pool: ConstantPool, c: Constant) -> InternResult = {
+    let next_id: Integer = length(pool.entries)
+    let updated: ConstantPool = ConstantPool { entries: push(pool.entries, c) }
+    InternResult { pool: updated, id: ConstId { raw: next_id } }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Operand — instruction inputs are either an SSA virtual register
+// reference (`ValueOp`) or a constant-pool reference (`ConstOp`).
+// ─────────────────────────────────────────────────────────────────
+
+public enum Operand {
+    ValueOp(ValueId),
+    ConstOp(ConstId),
+}
+
+public function operand_display(op: Operand) -> String =
+    match op {
+        ValueOp(v) => value_id_display(v),
+        ConstOp(c) => const_id_display(c),
+    }
+
+// ─────────────────────────────────────────────────────────────────
+// PhiIncoming — `(value, predecessor block)` pair for SSA φ-nodes.
+// ─────────────────────────────────────────────────────────────────
+
+public struct PhiIncoming {
+    value: ValueId,
+    block: BlockId,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// BuiltinName — enumerated names of VM-side builtin functions.
+// Mirrors the Rust `BuiltinName` enum (instr.rs:421-534). Each
+// variant is a unit (zero-field) marker via `PrimitiveMarker`.
+// ─────────────────────────────────────────────────────────────────
+
+public enum BuiltinName {
+    PrintlnBuiltin(PrimitiveMarker),
+    PrintBuiltin(PrimitiveMarker),
+    AssertBuiltin(PrimitiveMarker),
+    AssertEqBuiltin(PrimitiveMarker),
+    FStringConcatBuiltin(PrimitiveMarker),
+    TextLenBuiltin(PrimitiveMarker),
+    TextConcatBuiltin(PrimitiveMarker),
+    TextFromIntegerBuiltin(PrimitiveMarker),
+    VectorNewBuiltin(PrimitiveMarker),
+    VectorPushBuiltin(PrimitiveMarker),
+    VectorGetBuiltin(PrimitiveMarker),
+    VectorLengthBuiltin(PrimitiveMarker),
+    HashMapNewBuiltin(PrimitiveMarker),
+    HashMapInsertBuiltin(PrimitiveMarker),
+    HashMapGetBuiltin(PrimitiveMarker),
+    HashMapKeysBuiltin(PrimitiveMarker),
+    HashMapContainsBuiltin(PrimitiveMarker),
+    ReadFileBuiltin(PrimitiveMarker),
+    WriteFileBuiltin(PrimitiveMarker),
+    FileExistsBuiltin(PrimitiveMarker),
+    PathJoinBuiltin(PrimitiveMarker),
+    PathParentBuiltin(PrimitiveMarker),
+    PathBasenameBuiltin(PrimitiveMarker),
+    StringSubstringBuiltin(PrimitiveMarker),
+    StringSplitBuiltin(PrimitiveMarker),
+    StringIndexOfBuiltin(PrimitiveMarker),
+    ParseIntegerBuiltin(PrimitiveMarker),
+}
+
+public function builtin_name_display(name: BuiltinName) -> String =
+    match name {
+        PrintlnBuiltin(_) => "println",
+        PrintBuiltin(_) => "print",
+        AssertBuiltin(_) => "assert",
+        AssertEqBuiltin(_) => "assert_eq",
+        FStringConcatBuiltin(_) => "fstring_concat",
+        TextLenBuiltin(_) => "text_len",
+        TextConcatBuiltin(_) => "text_concat",
+        TextFromIntegerBuiltin(_) => "text_from_integer",
+        VectorNewBuiltin(_) => "vector_new",
+        VectorPushBuiltin(_) => "vector_push",
+        VectorGetBuiltin(_) => "vector_get",
+        VectorLengthBuiltin(_) => "vector_length",
+        HashMapNewBuiltin(_) => "hashmap_new",
+        HashMapInsertBuiltin(_) => "hashmap_insert",
+        HashMapGetBuiltin(_) => "hashmap_get",
+        HashMapKeysBuiltin(_) => "hashmap_keys",
+        HashMapContainsBuiltin(_) => "hashmap_contains",
+        ReadFileBuiltin(_) => "read_file",
+        WriteFileBuiltin(_) => "write_file",
+        FileExistsBuiltin(_) => "file_exists",
+        PathJoinBuiltin(_) => "path_join",
+        PathParentBuiltin(_) => "path_parent",
+        PathBasenameBuiltin(_) => "path_basename",
+        StringSubstringBuiltin(_) => "string_substring",
+        StringSplitBuiltin(_) => "string_split",
+        StringIndexOfBuiltin(_) => "string_index_of",
+        ParseIntegerBuiltin(_) => "parse_integer",
+    }
+
+// ─────────────────────────────────────────────────────────────────
+// Instruction payload structs — one per variant. Triết enum
+// variants carry a single payload struct, so multi-field opcodes
+// get a named carrier.
+//
+// Categories mirror ADR-0007 §"Phân nhóm instruction":
+//   - Const
+//   - Arithmetic (7)
+//   - Ł3 Logic (5)
+//   - K3 Logic (3)
+//   - Comparison (6)
+//   - Conversion (5)
+//   - Struct (3)
+//   - Enum (3)
+//   - Nullable (3)
+//   - Call (4)
+//   - Closure (2)
+//   - Control flow (5)
+//   - Phi
+//   - Outcome (6)
+// ─────────────────────────────────────────────────────────────────
+
+public struct InstConstPayload {
+    dest: ValueId,
+    const_id: ConstId,
+}
+
+// Binary-op shape: dest + lhs + rhs. Used by Add/Sub/Mul/Div/Mod/
+// LukAnd/LukOr/LukImplies/LukXor/LukIff/KleeneImplies/KleeneXor/
+// KleeneIff/Eq/Ne/Lt/Le/Gt/Ge.
+public struct InstBinaryOpPayload {
+    dest: ValueId,
+    lhs: Operand,
+    rhs: Operand,
+}
+
+// Pow shape: dest + base + exp (named differently from generic
+// lhs/rhs for readability).
+public struct InstPowPayload {
+    dest: ValueId,
+    base: Operand,
+    exp: Operand,
+}
+
+// Unary-op shape: dest + operand. Used by Neg/ToInteger/ToTryte/
+// ToLong/ToTrit/ToTrilean.
+public struct InstUnaryOpPayload {
+    dest: ValueId,
+    operand: Operand,
+}
+
+public struct InstStructNewPayload {
+    dest: ValueId,
+    fields: Vector<Operand>,
+}
+
+public struct InstFieldGetPayload {
+    dest: ValueId,
+    object: Operand,
+    field_idx: Integer,
+}
+
+public struct InstFieldSetPayload {
+    dest: ValueId,
+    object: Operand,
+    field_idx: Integer,
+    value: Operand,
+}
+
+public struct InstEnumNewPayload {
+    dest: ValueId,
+    variant_idx: Integer,
+    payload: Operand?,
+}
+
+public struct InstEnumTagPayload {
+    dest: ValueId,
+    scrutinee: Operand,
+}
+
+public struct InstEnumPayloadPayload {
+    dest: ValueId,
+    scrutinee: Operand,
+}
+
+public struct InstNullWrapPayload {
+    dest: ValueId,
+    value: Operand,
+}
+
+public struct InstNullUnwrapPayload {
+    dest: ValueId,
+    nullable: Operand,
+}
+
+public struct InstNullCheckPayload {
+    dest: ValueId,
+    nullable: Operand,
+}
+
+public struct InstCallLocalPayload {
+    dest: ValueId?,
+    callee: FuncId,
+    args: Vector<Operand>,
+}
+
+// Cross-module / witness calls carry an `AbsolutePath` in the
+// Rust impl. v0.7.8.1 stores it as a path-segments Vector<String>
+// (re-use the same encoding modules.tri uses) — the lowerer can
+// reconstruct the `AbsolutePath` shape from this when emitting.
+public struct InstCallCrossModulePayload {
+    dest: ValueId?,
+    path_segments: Vector<String>,
+    args: Vector<Operand>,
+}
+
+public struct InstWitnessCallPayload {
+    dest: ValueId?,
+    path_segments: Vector<String>,
+    witness_idx: Integer,
+    args: Vector<Operand>,
+}
+
+public struct InstCallBuiltinPayload {
+    dest: ValueId?,
+    name: BuiltinName,
+    args: Vector<Operand>,
+}
+
+public struct InstClosureNewPayload {
+    dest: ValueId,
+    lambda: FuncId,
+    captures: Vector<ValueId>,
+}
+
+public struct InstClosureCallPayload {
+    dest: ValueId?,
+    closure: Operand,
+    args: Vector<Operand>,
+}
+
+public struct InstBrPayload {
+    target: BlockId,
+}
+
+public struct InstBrIfPayload {
+    cond: Operand,
+    then_block: BlockId,
+    else_block: BlockId,
+}
+
+public struct InstBrTrileanPayload {
+    cond: Operand,
+    true_block: BlockId,
+    unknown_block: BlockId,
+    false_block: BlockId,
+}
+
+public struct InstRetPayload {
+    value: Operand?,
+}
+
+public struct InstPhiPayload {
+    dest: ValueId,
+    incoming: Vector<PhiIncoming>,
+}
+
+// Outcome-op shape: dest + source. Used by OutcomeDiscriminant /
+// OutcomeUnwrapValue / OutcomeUnwrapError.
+public struct InstOutcomeUnaryPayload {
+    dest: ValueId,
+    source: Operand,
+}
+
+// Outcome constructor shape: dest + payload. Used by
+// OutcomeNewPositive / OutcomeNewNegative.
+public struct InstOutcomeCtorPayload {
+    dest: ValueId,
+    payload: Operand,
+}
+
+public struct InstOutcomeNewNullPayload {
+    dest: ValueId,
+}
+
+public enum Instruction {
+    ConstInst(InstConstPayload),
+    AddInst(InstBinaryOpPayload),
+    SubInst(InstBinaryOpPayload),
+    MulInst(InstBinaryOpPayload),
+    DivInst(InstBinaryOpPayload),
+    ModInst(InstBinaryOpPayload),
+    PowInst(InstPowPayload),
+    NegInst(InstUnaryOpPayload),
+    LukAndInst(InstBinaryOpPayload),
+    LukOrInst(InstBinaryOpPayload),
+    LukImpliesInst(InstBinaryOpPayload),
+    LukXorInst(InstBinaryOpPayload),
+    LukIffInst(InstBinaryOpPayload),
+    KleeneImpliesInst(InstBinaryOpPayload),
+    KleeneXorInst(InstBinaryOpPayload),
+    KleeneIffInst(InstBinaryOpPayload),
+    EqInst(InstBinaryOpPayload),
+    NeInst(InstBinaryOpPayload),
+    LtInst(InstBinaryOpPayload),
+    LeInst(InstBinaryOpPayload),
+    GtInst(InstBinaryOpPayload),
+    GeInst(InstBinaryOpPayload),
+    ToIntegerInst(InstUnaryOpPayload),
+    ToTryteInst(InstUnaryOpPayload),
+    ToLongInst(InstUnaryOpPayload),
+    ToTritInst(InstUnaryOpPayload),
+    ToTrileanInst(InstUnaryOpPayload),
+    StructNewInst(InstStructNewPayload),
+    FieldGetInst(InstFieldGetPayload),
+    FieldSetInst(InstFieldSetPayload),
+    EnumNewInst(InstEnumNewPayload),
+    EnumTagInst(InstEnumTagPayload),
+    EnumPayloadInst(InstEnumPayloadPayload),
+    NullWrapInst(InstNullWrapPayload),
+    NullUnwrapInst(InstNullUnwrapPayload),
+    NullCheckInst(InstNullCheckPayload),
+    CallLocalInst(InstCallLocalPayload),
+    CallCrossModuleInst(InstCallCrossModulePayload),
+    WitnessCallInst(InstWitnessCallPayload),
+    CallBuiltinInst(InstCallBuiltinPayload),
+    ClosureNewInst(InstClosureNewPayload),
+    ClosureCallInst(InstClosureCallPayload),
+    BrInst(InstBrPayload),
+    BrIfInst(InstBrIfPayload),
+    BrTrileanInst(InstBrTrileanPayload),
+    RetInst(InstRetPayload),
+    UnreachableInst(PrimitiveMarker),
+    PhiInst(InstPhiPayload),
+    OutcomeNewPositiveInst(InstOutcomeCtorPayload),
+    OutcomeNewNegativeInst(InstOutcomeCtorPayload),
+    OutcomeNewNullInst(InstOutcomeNewNullPayload),
+    OutcomeDiscriminantInst(InstOutcomeUnaryPayload),
+    OutcomeUnwrapValueInst(InstOutcomeUnaryPayload),
+    OutcomeUnwrapErrorInst(InstOutcomeUnaryPayload),
+}
+
+/// True iff `inst` is a basic-block terminator (Br / BrIf /
+/// BrTrilean / Ret / Unreachable). Used by the verifier to assert
+/// each block ends with exactly one terminator.
+public function instruction_is_terminator(inst: Instruction) -> Trilean! =
+    match inst {
+        BrInst(_) => true,
+        BrIfInst(_) => true,
+        BrTrileanInst(_) => true,
+        RetInst(_) => true,
+        UnreachableInst(_) => true,
+        _ => false,
+    }
+
+/// Return the destination `ValueId` if `inst` produces a value,
+/// `~0` otherwise. Mirrors Rust `Instruction::destination`.
+/// Defensive on `Call*` arms: those carry `ValueId?` — when the
+/// call's return value is unused we return `~0` (matching Rust's
+/// `None` arm).
+public function instruction_destination(inst: Instruction) -> ValueId? =
+    match inst {
+        ConstInst(p) => p.dest,
+        AddInst(p) => p.dest,
+        SubInst(p) => p.dest,
+        MulInst(p) => p.dest,
+        DivInst(p) => p.dest,
+        ModInst(p) => p.dest,
+        PowInst(p) => p.dest,
+        NegInst(p) => p.dest,
+        LukAndInst(p) => p.dest,
+        LukOrInst(p) => p.dest,
+        LukImpliesInst(p) => p.dest,
+        LukXorInst(p) => p.dest,
+        LukIffInst(p) => p.dest,
+        KleeneImpliesInst(p) => p.dest,
+        KleeneXorInst(p) => p.dest,
+        KleeneIffInst(p) => p.dest,
+        EqInst(p) => p.dest,
+        NeInst(p) => p.dest,
+        LtInst(p) => p.dest,
+        LeInst(p) => p.dest,
+        GtInst(p) => p.dest,
+        GeInst(p) => p.dest,
+        ToIntegerInst(p) => p.dest,
+        ToTryteInst(p) => p.dest,
+        ToLongInst(p) => p.dest,
+        ToTritInst(p) => p.dest,
+        ToTrileanInst(p) => p.dest,
+        StructNewInst(p) => p.dest,
+        FieldGetInst(p) => p.dest,
+        FieldSetInst(p) => p.dest,
+        EnumNewInst(p) => p.dest,
+        EnumTagInst(p) => p.dest,
+        EnumPayloadInst(p) => p.dest,
+        NullWrapInst(p) => p.dest,
+        NullUnwrapInst(p) => p.dest,
+        NullCheckInst(p) => p.dest,
+        CallLocalInst(p) => p.dest,
+        CallCrossModuleInst(p) => p.dest,
+        WitnessCallInst(p) => p.dest,
+        CallBuiltinInst(p) => p.dest,
+        ClosureNewInst(p) => p.dest,
+        ClosureCallInst(p) => p.dest,
+        BrInst(_) => ~0,
+        BrIfInst(_) => ~0,
+        BrTrileanInst(_) => ~0,
+        RetInst(_) => ~0,
+        UnreachableInst(_) => ~0,
+        PhiInst(p) => p.dest,
+        OutcomeNewPositiveInst(p) => p.dest,
+        OutcomeNewNegativeInst(p) => p.dest,
+        OutcomeNewNullInst(p) => p.dest,
+        OutcomeDiscriminantInst(p) => p.dest,
+        OutcomeUnwrapValueInst(p) => p.dest,
+        OutcomeUnwrapErrorInst(p) => p.dest,
+    }
+
+/// Opcode discriminator name. Useful for debug dumps + the
+/// v0.7.8.6 byte-diff gate.
+public function instruction_opcode_name(inst: Instruction) -> String =
+    match inst {
+        ConstInst(_) => "Const",
+        AddInst(_) => "Add",
+        SubInst(_) => "Sub",
+        MulInst(_) => "Mul",
+        DivInst(_) => "Div",
+        ModInst(_) => "Mod",
+        PowInst(_) => "Pow",
+        NegInst(_) => "Neg",
+        LukAndInst(_) => "LukAnd",
+        LukOrInst(_) => "LukOr",
+        LukImpliesInst(_) => "LukImplies",
+        LukXorInst(_) => "LukXor",
+        LukIffInst(_) => "LukIff",
+        KleeneImpliesInst(_) => "KleeneImplies",
+        KleeneXorInst(_) => "KleeneXor",
+        KleeneIffInst(_) => "KleeneIff",
+        EqInst(_) => "Eq",
+        NeInst(_) => "Ne",
+        LtInst(_) => "Lt",
+        LeInst(_) => "Le",
+        GtInst(_) => "Gt",
+        GeInst(_) => "Ge",
+        ToIntegerInst(_) => "ToInteger",
+        ToTryteInst(_) => "ToTryte",
+        ToLongInst(_) => "ToLong",
+        ToTritInst(_) => "ToTrit",
+        ToTrileanInst(_) => "ToTrilean",
+        StructNewInst(_) => "StructNew",
+        FieldGetInst(_) => "FieldGet",
+        FieldSetInst(_) => "FieldSet",
+        EnumNewInst(_) => "EnumNew",
+        EnumTagInst(_) => "EnumTag",
+        EnumPayloadInst(_) => "EnumPayload",
+        NullWrapInst(_) => "NullWrap",
+        NullUnwrapInst(_) => "NullUnwrap",
+        NullCheckInst(_) => "NullCheck",
+        CallLocalInst(_) => "CallLocal",
+        CallCrossModuleInst(_) => "CallCrossModule",
+        WitnessCallInst(_) => "WitnessCall",
+        CallBuiltinInst(_) => "CallBuiltin",
+        ClosureNewInst(_) => "ClosureNew",
+        ClosureCallInst(_) => "ClosureCall",
+        BrInst(_) => "Br",
+        BrIfInst(_) => "BrIf",
+        BrTrileanInst(_) => "BrTrilean",
+        RetInst(_) => "Ret",
+        UnreachableInst(_) => "Unreachable",
+        PhiInst(_) => "Phi",
+        OutcomeNewPositiveInst(_) => "OutcomeNewPositive",
+        OutcomeNewNegativeInst(_) => "OutcomeNewNegative",
+        OutcomeNewNullInst(_) => "OutcomeNewNull",
+        OutcomeDiscriminantInst(_) => "OutcomeDiscriminant",
+        OutcomeUnwrapValueInst(_) => "OutcomeUnwrapValue",
+        OutcomeUnwrapErrorInst(_) => "OutcomeUnwrapError",
+    }
+
+// ─────────────────────────────────────────────────────────────────
+// BasicBlock / Function / IrModule / IrProgram containers.
+// Mirrors crates/triet-ir/src/module.rs.
+// ─────────────────────────────────────────────────────────────────
+
+public struct BasicBlock {
+    id: BlockId,
+    name: String?,
+    instructions: Vector<Instruction>,
+}
+
+public function basic_block_new(id: BlockId, name: String?) -> BasicBlock =
+    BasicBlock { id: id, name: name, instructions: new() }
+
+public function basic_block_push(block: BasicBlock, inst: Instruction) -> BasicBlock =
+    BasicBlock {
+        id: block.id,
+        name: block.name,
+        instructions: push(block.instructions, inst),
+    }
+
+/// Return the terminator instruction if the block ends in one, else
+/// `~0`. Used by the verifier to assert well-formedness.
+public function basic_block_terminator(block: BasicBlock) -> Instruction? = {
+    let total: Integer = length(block.instructions)
+    if total == 0 {
+        ~0
+    } else {
+        let last_opt: Instruction? = get(block.instructions, total - 1)
+        match last_opt {
+            ~0 => ~0,
+            _ => {
+                let last: Instruction = last_opt!!
+                if instruction_is_terminator(last) {
+                    last_opt
+                } else {
+                    ~0
+                }
+            },
+        }
+    }
+}
+
+/// Function-parameter pair: `(name, type_tag_id)`. Type IDs index
+/// the function's owning `IrModule.type_arena`.
+public struct IrFunctionParam {
+    name: String,
+    type_tag_id: Integer,
+}
+
+public struct Function {
+    id: FuncId,
+    name: String?,
+    parameters: Vector<IrFunctionParam>,
+    return_type_id: Integer,
+    blocks: Vector<BasicBlock>,
+}
+
+public function function_new(
+    id: FuncId,
+    name: String?,
+    parameters: Vector<IrFunctionParam>,
+    return_type_id: Integer,
+) -> Function =
+    Function {
+        id: id,
+        name: name,
+        parameters: parameters,
+        return_type_id: return_type_id,
+        blocks: new(),
+    }
+
+public function function_push_block(fn: Function, block: BasicBlock) -> Function =
+    Function {
+        id: fn.id,
+        name: fn.name,
+        parameters: fn.parameters,
+        return_type_id: fn.return_type_id,
+        blocks: push(fn.blocks, block),
+    }
+
+/// True iff every block ends with a terminator and there's at
+/// least one block. Mirrors Rust `Function::is_well_formed`.
+public function function_is_well_formed(fn: Function) -> Trilean! = {
+    let total: Integer = length(fn.blocks)
+    if total == 0 {
+        false
+    } else {
+        let mutable i: Integer = 0
+        let mutable all_ok: Trilean! = true
+        while i < total {
+            let b_opt: BasicBlock? = get(fn.blocks, i)
+            let b: BasicBlock = b_opt!!
+            match basic_block_terminator(b) {
+                ~0 => { all_ok = false },
+                _ => { },
+            }
+            i = i + 1
+        }
+        all_ok
+    }
+}
+
+public struct IrModule {
+    path_segments: Vector<String>,
+    functions: Vector<Function>,
+    type_arena: TypeTagArena,
+}
+
+public function ir_module_new(path_segments: Vector<String>) -> IrModule =
+    IrModule {
+        path_segments: path_segments,
+        functions: new(),
+        type_arena: type_tag_arena_new(),
+    }
+
+public function ir_module_push_function(m: IrModule, fn: Function) -> IrModule =
+    IrModule {
+        path_segments: m.path_segments,
+        functions: push(m.functions, fn),
+        type_arena: m.type_arena,
+    }
+
+public function ir_module_with_type_arena(m: IrModule, arena: TypeTagArena) -> IrModule =
+    IrModule {
+        path_segments: m.path_segments,
+        functions: m.functions,
+        type_arena: arena,
+    }
+
+/// Witness table — type args bound at link time per ADR-0012. Stub
+/// in v0.7.8.1 (carries only the type tag IDs of the
+/// instantiation); v0.7.8.{3,4} populate as cross-package generic
+/// dispatch lands.
+public struct WitnessTable {
+    type_args: Vector<Integer>,
+}
+
+public struct IrProgram {
+    modules: Vector<IrModule>,
+    constants: ConstantPool,
+    witness_tables: Vector<WitnessTable>,
+}
+
+public function ir_program_new() -> IrProgram =
+    IrProgram {
+        modules: new(),
+        constants: constant_pool_new(),
+        witness_tables: new(),
+    }
+
+public function ir_program_push_module(p: IrProgram, m: IrModule) -> IrProgram =
+    IrProgram {
+        modules: push(p.modules, m),
+        constants: p.constants,
+        witness_tables: p.witness_tables,
+    }
+
+public function ir_program_with_constants(p: IrProgram, pool: ConstantPool) -> IrProgram =
+    IrProgram {
+        modules: p.modules,
+        constants: pool,
+        witness_tables: p.witness_tables,
+    }
+
+/// Total function count across all modules. Mirrors Rust
+/// `IrProgram::function_count`.
+public function ir_program_function_count(p: IrProgram) -> Integer = {
+    let mod_total: Integer = length(p.modules)
+    let mutable sum: Integer = 0
+    let mutable i: Integer = 0
+    while i < mod_total {
+        let m_opt: IrModule? = get(p.modules, i)
+        let m: IrModule = m_opt!!
+        sum = sum + length(m.functions)
+        i = i + 1
+    }
+    sum
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Smoke main — exercises ID display, TypeTag construction +
+// display, Constant + ConstantPool, every Instruction variant
+// constructor, BasicBlock / Function / IrModule / IrProgram
+// container builders + terminator detection + function well-
+// formedness. The v0.7.8.1 integration test
+// (`ir_lowerer_types_smoke.rs`) confirms the surface compiles +
+// round-trips through the VM. v0.7.8.{2..6} build the actual
+// `lower_program` driver on top.
+// ─────────────────────────────────────────────────────────────────
+
+function assert_string_eq(actual: String, expected: String) -> Unit =
+    assert(actual == expected)
+
+function assert_some_value_id(opt: ValueId?, expected_raw: Integer) -> Unit =
+    match opt {
+        ~0 => assert(false),
+        _ => assert(opt!!.raw == expected_raw),
+    }
+
+function assert_none_value_id(opt: ValueId?) -> Unit =
+    match opt {
+        ~0 => assert(true),
+        _ => assert(false),
+    }
+
+public function main() -> Unit = {
+    // ── ID display ────────────────────────────────────────────────
+    assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
+    assert_string_eq(value_id_display(ValueId { raw: 42 }), "%42")
+    assert_string_eq(block_id_display(BlockId { raw: 7 }), "b7")
+    assert_string_eq(func_id_display(FuncId { raw: 3 }), "@f3")
+    assert_string_eq(const_id_display(ConstId { raw: 99 }), "c99")
+
+    // ── TypeTag construction + display ────────────────────────────
+    let a0: TypeTagArena = type_tag_arena_new()
+    let r_int: AllocTagResult = alloc_tag_integer(a0)
+    assert_string_eq(type_tag_display(r_int.arena, r_int.tag_id), "Integer")
+
+    let r_str: AllocTagResult = alloc_tag_string(r_int.arena)
+    assert_string_eq(type_tag_display(r_str.arena, r_str.tag_id), "String")
+
+    let r_unit: AllocTagResult = alloc_tag_unit(r_str.arena)
+    assert_string_eq(type_tag_display(r_unit.arena, r_unit.tag_id), "Unit")
+
+    let r_trit: AllocTagResult = alloc_tag_trit(r_unit.arena)
+    let r_tri: AllocTagResult = alloc_tag_trilean(r_trit.arena)
+    let r_long: AllocTagResult = alloc_tag_long(r_tri.arena)
+    let r_tryte: AllocTagResult = alloc_tag_tryte(r_long.arena)
+    assert_string_eq(type_tag_display(r_tryte.arena, r_trit.tag_id), "Trit")
+    assert_string_eq(type_tag_display(r_tryte.arena, r_tri.tag_id), "Trilean")
+    assert_string_eq(type_tag_display(r_tryte.arena, r_long.tag_id), "Long")
+    assert_string_eq(type_tag_display(r_tryte.arena, r_tryte.tag_id), "Tryte")
+
+    let r_null_int: AllocTagResult = alloc_tag_nullable(r_tryte.arena, r_int.tag_id)
+    assert_string_eq(type_tag_display(r_null_int.arena, r_null_int.tag_id), "Integer?")
+
+    let r_vec_int: AllocTagResult = alloc_tag_vector(r_null_int.arena, r_int.tag_id)
+    assert_string_eq(type_tag_display(r_vec_int.arena, r_vec_int.tag_id), "Vector<Integer>")
+
+    let r_map: AllocTagResult = alloc_tag_hashmap(r_vec_int.arena, r_str.tag_id, r_int.tag_id)
+    assert_string_eq(type_tag_display(r_map.arena, r_map.tag_id), "HashMap<String, Integer>")
+
+    let r_out_bin: AllocTagResult = alloc_tag_outcome(r_map.arena, r_int.tag_id, r_str.tag_id, false)
+    assert_string_eq(type_tag_display(r_out_bin.arena, r_out_bin.tag_id), "Integer~String")
+    let r_out_tri: AllocTagResult = alloc_tag_outcome(r_out_bin.arena, r_int.tag_id, r_str.tag_id, true)
+    assert_string_eq(type_tag_display(r_out_tri.arena, r_out_tri.tag_id), "Integer?~String")
+
+    // ── Constant + ConstantPool ───────────────────────────────────
+    let pool0: ConstantPool = constant_pool_new()
+    let int_const: Constant = IntegerConst(ConstantIntegerPayload { value: 42 })
+    let i1: InternResult = constant_pool_intern(pool0, int_const)
+    assert(i1.id.raw == 0)
+
+    let str_const: Constant = StringConst(ConstantStringPayload { value: "hello" })
+    let i2: InternResult = constant_pool_intern(i1.pool, str_const)
+    assert(i2.id.raw == 1)
+
+    let null_const: Constant = NullConst(primitive_marker())
+    let i3: InternResult = constant_pool_intern(i2.pool, null_const)
+    assert(i3.id.raw == 2)
+    assert(constant_pool_count(i3.pool) == 3)
+
+    // Constant → TypeTag mapping
+    let a1: TypeTagArena = type_tag_arena_new()
+    let r_int_ty: AllocTagResult = constant_type_tag(a1, int_const)
+    assert_string_eq(type_tag_display(r_int_ty.arena, r_int_ty.tag_id), "Integer")
+    let r_null_ty: AllocTagResult = constant_type_tag(r_int_ty.arena, null_const)
+    assert_string_eq(type_tag_display(r_null_ty.arena, r_null_ty.tag_id), "Unit?")
+
+    // ── Operand display ───────────────────────────────────────────
+    assert_string_eq(operand_display(ValueOp(ValueId { raw: 5 })), "%5")
+    assert_string_eq(operand_display(ConstOp(ConstId { raw: 2 })), "c2")
+
+    // ── BuiltinName display ───────────────────────────────────────
+    assert_string_eq(builtin_name_display(PrintlnBuiltin(primitive_marker())), "println")
+    assert_string_eq(builtin_name_display(VectorPushBuiltin(primitive_marker())), "vector_push")
+    assert_string_eq(builtin_name_display(HashMapKeysBuiltin(primitive_marker())), "hashmap_keys")
+    assert_string_eq(builtin_name_display(ParseIntegerBuiltin(primitive_marker())), "parse_integer")
+
+    // ── Instruction construction + helpers ────────────────────────
+    let v0: ValueId = ValueId { raw: 0 }
+    let v1: ValueId = ValueId { raw: 1 }
+    let v2: ValueId = ValueId { raw: 2 }
+    let v3: ValueId = ValueId { raw: 3 }
+    let b0: BlockId = BlockId { raw: 0 }
+    let b1: BlockId = BlockId { raw: 1 }
+    let c0: ConstId = ConstId { raw: 0 }
+
+    let const_inst: Instruction = ConstInst(InstConstPayload { dest: v0, const_id: c0 })
+    assert_string_eq(instruction_opcode_name(const_inst), "Const")
+    assert(!instruction_is_terminator(const_inst))
+    assert_some_value_id(instruction_destination(const_inst), 0)
+
+    let add_inst: Instruction = AddInst(InstBinaryOpPayload {
+        dest: v1,
+        lhs: ValueOp(v0),
+        rhs: ConstOp(c0),
+    })
+    assert_string_eq(instruction_opcode_name(add_inst), "Add")
+    assert_some_value_id(instruction_destination(add_inst), 1)
+
+    let neg_inst: Instruction = NegInst(InstUnaryOpPayload {
+        dest: v2,
+        operand: ValueOp(v1),
+    })
+    assert_string_eq(instruction_opcode_name(neg_inst), "Neg")
+
+    let pow_inst: Instruction = PowInst(InstPowPayload {
+        dest: v3,
+        base: ValueOp(v0),
+        exp: ConstOp(c0),
+    })
+    assert_string_eq(instruction_opcode_name(pow_inst), "Pow")
+
+    let luk_and_inst: Instruction = LukAndInst(InstBinaryOpPayload {
+        dest: v1,
+        lhs: ValueOp(v0),
+        rhs: ValueOp(v2),
+    })
+    assert_string_eq(instruction_opcode_name(luk_and_inst), "LukAnd")
+
+    let kleene_implies_inst: Instruction = KleeneImpliesInst(InstBinaryOpPayload {
+        dest: v1,
+        lhs: ValueOp(v0),
+        rhs: ValueOp(v2),
+    })
+    assert_string_eq(instruction_opcode_name(kleene_implies_inst), "KleeneImplies")
+
+    let eq_inst: Instruction = EqInst(InstBinaryOpPayload {
+        dest: v1,
+        lhs: ValueOp(v0),
+        rhs: ValueOp(v2),
+    })
+    assert_string_eq(instruction_opcode_name(eq_inst), "Eq")
+
+    let to_int_inst: Instruction = ToIntegerInst(InstUnaryOpPayload {
+        dest: v2,
+        operand: ValueOp(v1),
+    })
+    assert_string_eq(instruction_opcode_name(to_int_inst), "ToInteger")
+
+    // ── Struct / Enum / Nullable opcodes ──────────────────────────
+    let mutable fields: Vector<Operand> = new()
+    fields = push(fields, ValueOp(v0))
+    fields = push(fields, ConstOp(c0))
+    let struct_new_inst: Instruction = StructNewInst(InstStructNewPayload {
+        dest: v1,
+        fields: fields,
+    })
+    assert_string_eq(instruction_opcode_name(struct_new_inst), "StructNew")
+
+    let field_get_inst: Instruction = FieldGetInst(InstFieldGetPayload {
+        dest: v2,
+        object: ValueOp(v1),
+        field_idx: 0,
+    })
+    assert_string_eq(instruction_opcode_name(field_get_inst), "FieldGet")
+
+    let enum_new_inst: Instruction = EnumNewInst(InstEnumNewPayload {
+        dest: v3,
+        variant_idx: 1,
+        payload: ValueOp(v0),
+    })
+    assert_string_eq(instruction_opcode_name(enum_new_inst), "EnumNew")
+
+    let enum_tag_inst: Instruction = EnumTagInst(InstEnumTagPayload {
+        dest: v1,
+        scrutinee: ValueOp(v3),
+    })
+    assert_string_eq(instruction_opcode_name(enum_tag_inst), "EnumTag")
+
+    let null_wrap_inst: Instruction = NullWrapInst(InstNullWrapPayload {
+        dest: v1,
+        value: ValueOp(v0),
+    })
+    assert_string_eq(instruction_opcode_name(null_wrap_inst), "NullWrap")
+
+    let null_check_inst: Instruction = NullCheckInst(InstNullCheckPayload {
+        dest: v2,
+        nullable: ValueOp(v1),
+    })
+    assert_string_eq(instruction_opcode_name(null_check_inst), "NullCheck")
+
+    // ── Call opcodes ──────────────────────────────────────────────
+    let mutable call_args: Vector<Operand> = new()
+    call_args = push(call_args, ValueOp(v0))
+    call_args = push(call_args, ConstOp(c0))
+    let call_local_inst: Instruction = CallLocalInst(InstCallLocalPayload {
+        dest: v1,
+        callee: FuncId { raw: 2 },
+        args: call_args,
+    })
+    assert_string_eq(instruction_opcode_name(call_local_inst), "CallLocal")
+
+    let call_local_void: Instruction = CallLocalInst(InstCallLocalPayload {
+        dest: ~0,
+        callee: FuncId { raw: 5 },
+        args: new(),
+    })
+    // Void call: destination should be `~0`.
+    assert_none_value_id(instruction_destination(call_local_void))
+
+    let mutable path_segs: Vector<String> = new()
+    path_segs = push(path_segs, "std")
+    path_segs = push(path_segs, "io")
+    path_segs = push(path_segs, "println")
+    let call_cross_inst: Instruction = CallCrossModuleInst(InstCallCrossModulePayload {
+        dest: ~0,
+        path_segments: path_segs,
+        args: new(),
+    })
+    assert_string_eq(instruction_opcode_name(call_cross_inst), "CallCrossModule")
+
+    let call_builtin_inst: Instruction = CallBuiltinInst(InstCallBuiltinPayload {
+        dest: ~0,
+        name: PrintlnBuiltin(primitive_marker()),
+        args: new(),
+    })
+    assert_string_eq(instruction_opcode_name(call_builtin_inst), "CallBuiltin")
+
+    // ── Closure opcodes ───────────────────────────────────────────
+    let mutable captures: Vector<ValueId> = new()
+    captures = push(captures, v0)
+    let closure_new_inst: Instruction = ClosureNewInst(InstClosureNewPayload {
+        dest: v1,
+        lambda: FuncId { raw: 7 },
+        captures: captures,
+    })
+    assert_string_eq(instruction_opcode_name(closure_new_inst), "ClosureNew")
+
+    let closure_call_inst: Instruction = ClosureCallInst(InstClosureCallPayload {
+        dest: v2,
+        closure: ValueOp(v1),
+        args: new(),
+    })
+    assert_string_eq(instruction_opcode_name(closure_call_inst), "ClosureCall")
+
+    // ── Control-flow terminators ──────────────────────────────────
+    let br_inst: Instruction = BrInst(InstBrPayload { target: b1 })
+    assert_string_eq(instruction_opcode_name(br_inst), "Br")
+    assert(instruction_is_terminator(br_inst))
+
+    let br_if_inst: Instruction = BrIfInst(InstBrIfPayload {
+        cond: ValueOp(v0),
+        then_block: b0,
+        else_block: b1,
+    })
+    assert(instruction_is_terminator(br_if_inst))
+
+    let br_trilean_inst: Instruction = BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(v0),
+        true_block: b0,
+        unknown_block: b1,
+        false_block: b1,
+    })
+    assert(instruction_is_terminator(br_trilean_inst))
+    assert_string_eq(instruction_opcode_name(br_trilean_inst), "BrTrilean")
+
+    let ret_inst: Instruction = RetInst(InstRetPayload { value: ValueOp(v0) })
+    assert(instruction_is_terminator(ret_inst))
+
+    let ret_void: Instruction = RetInst(InstRetPayload { value: ~0 })
+    assert(instruction_is_terminator(ret_void))
+
+    let unreachable_inst: Instruction = UnreachableInst(primitive_marker())
+    assert(instruction_is_terminator(unreachable_inst))
+
+    // ── Phi node ──────────────────────────────────────────────────
+    let mutable incoming: Vector<PhiIncoming> = new()
+    incoming = push(incoming, PhiIncoming { value: v0, block: b0 })
+    incoming = push(incoming, PhiIncoming { value: v1, block: b1 })
+    let phi_inst: Instruction = PhiInst(InstPhiPayload { dest: v2, incoming: incoming })
+    assert_string_eq(instruction_opcode_name(phi_inst), "Phi")
+    assert_some_value_id(instruction_destination(phi_inst), 2)
+
+    // ── Outcome opcodes ───────────────────────────────────────────
+    let ocn_pos: Instruction = OutcomeNewPositiveInst(InstOutcomeCtorPayload {
+        dest: v0,
+        payload: ConstOp(c0),
+    })
+    assert_string_eq(instruction_opcode_name(ocn_pos), "OutcomeNewPositive")
+
+    let ocn_neg: Instruction = OutcomeNewNegativeInst(InstOutcomeCtorPayload {
+        dest: v1,
+        payload: ValueOp(v0),
+    })
+    assert_string_eq(instruction_opcode_name(ocn_neg), "OutcomeNewNegative")
+
+    let ocn_null: Instruction = OutcomeNewNullInst(InstOutcomeNewNullPayload { dest: v2 })
+    assert_string_eq(instruction_opcode_name(ocn_null), "OutcomeNewNull")
+
+    let oc_discr: Instruction = OutcomeDiscriminantInst(InstOutcomeUnaryPayload {
+        dest: v3,
+        source: ValueOp(v0),
+    })
+    assert_string_eq(instruction_opcode_name(oc_discr), "OutcomeDiscriminant")
+
+    let oc_unwrap_val: Instruction = OutcomeUnwrapValueInst(InstOutcomeUnaryPayload {
+        dest: v0,
+        source: ValueOp(v1),
+    })
+    assert_string_eq(instruction_opcode_name(oc_unwrap_val), "OutcomeUnwrapValue")
+
+    let oc_unwrap_err: Instruction = OutcomeUnwrapErrorInst(InstOutcomeUnaryPayload {
+        dest: v0,
+        source: ValueOp(v1),
+    })
+    assert_string_eq(instruction_opcode_name(oc_unwrap_err), "OutcomeUnwrapError")
+
+    // ── BasicBlock + terminator detection ─────────────────────────
+    let bb0: BasicBlock = basic_block_new(b0, "entry")
+    assert(length(bb0.instructions) == 0)
+    match basic_block_terminator(bb0) {
+        ~0 => assert(true),
+        _ => assert(false),
+    }
+    let bb1: BasicBlock = basic_block_push(bb0, const_inst)
+    let bb2: BasicBlock = basic_block_push(bb1, RetInst(InstRetPayload { value: ValueOp(v0) }))
+    assert(length(bb2.instructions) == 2)
+    match basic_block_terminator(bb2) {
+        ~0 => assert(false),
+        _ => assert(true),
+    }
+
+    // ── Function + well-formedness ────────────────────────────────
+    let arena1: TypeTagArena = type_tag_arena_new()
+    let ret_tag: AllocTagResult = alloc_tag_integer(arena1)
+    let mutable params: Vector<IrFunctionParam> = new()
+    params = push(params, IrFunctionParam { name: "x", type_tag_id: ret_tag.tag_id })
+    let fn0: Function = function_new(FuncId { raw: 0 }, "identity", params, ret_tag.tag_id)
+    assert(length(fn0.blocks) == 0)
+    assert(!function_is_well_formed(fn0))
+    let fn1: Function = function_push_block(fn0, bb2)
+    assert(function_is_well_formed(fn1))
+
+    // ── IrModule + IrProgram ──────────────────────────────────────
+    let mutable mod_path: Vector<String> = new()
+    mod_path = push(mod_path, "crate")
+    let mod0: IrModule = ir_module_new(mod_path)
+    let mod1: IrModule = ir_module_push_function(mod0, fn1)
+    let mod2: IrModule = ir_module_with_type_arena(mod1, ret_tag.arena)
+    assert(length(mod2.functions) == 1)
+    assert(length(mod2.type_arena.tags) == 1)
+
+    let prog0: IrProgram = ir_program_new()
+    let prog1: IrProgram = ir_program_push_module(prog0, mod2)
+    let prog2: IrProgram = ir_program_with_constants(prog1, i3.pool)
+    assert(length(prog2.modules) == 1)
+    assert(ir_program_function_count(prog2) == 1)
+    assert(constant_pool_count(prog2.constants) == 3)
+
+    println("v0.7.8.1 ir_lowerer types smoke OK")
+}
