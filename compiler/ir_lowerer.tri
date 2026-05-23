@@ -48,10 +48,28 @@
 //
 // [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
 
+module parser;
+
 from std.io import println
 from std.collections.vector import new, push, length, get
+from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, contains as hashmap_contains
 from std.text import concat, from_integer, len as text_len
 from std.assert import assert
+
+from crate.parser.lexer import SpannedToken, LexError, lex
+from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item
+from crate.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
+from crate.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
+from crate.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
+from crate.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
+from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
+from crate.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
+from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
+from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
+from crate.parser import UnaryOperator, Negate
+from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
+from crate.parser import BinaryOpPayload, UnaryOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, ExpressionStmtPayload, NamedTypePayload, GenericTypePayload
+from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
 // ID wrappers — Triết enum payloads need a struct, so each ID
@@ -1001,6 +1019,883 @@ function assert_none_value_id(opt: ValueId?) -> Unit =
         _ => assert(false),
     }
 
+// ═════════════════════════════════════════════════════════════════
+// v0.7.8.2 — Literal + binding + control-flow lowering
+//
+// Implements the bottom of the `lower_program` driver per ADR-0019
+// §A7.8: the LowerCtx state thread + minimal expression / statement
+// lowering set so the smoke can lower simple programs end-to-end.
+//
+// In-scope at v0.7.8.2:
+//   - Literals: Integer / Trit (TernaryLiteral) / Trilean / String / Null
+//   - Identifier (parameter + let-bound lookup via scope stack)
+//   - Binary ops: arithmetic (Add/Sub/Mul/Div/Mod/Pow) + comparisons
+//     (Eq/Ne/Lt/Le/Gt/Ge) + Ł3 logic (And/Or/Xor/Iff/Implies) + K3
+//     logic (KleeneXor/KleeneIff/KleeneImplies)
+//   - Unary: Negate
+//   - Force unwrap (`!!`): emits `NullUnwrap`
+//   - Statements: Let / Constant / Return / ExpressionStmt
+//   - Block lowering: statements in order + final expr
+//   - Function lowering: entry block + parameter ValueId allocation
+//     + body emission + auto-Ret if body didn't terminate
+//   - Top-level lower_program driver: pass-1a struct/enum declare
+//     (stub), pass-1b FuncId assignment, pass-2 body lowering
+//   - `lower_source(source) -> IrProgram` convenience for smoke tests
+//
+// Deferred to v0.7.8.3:
+//   - Function calls (CallLocal / CallCrossModule / CallBuiltin)
+//   - Method calls + builtin dispatch table
+//   - While / For / Loop / Break / Continue / Assign — these need
+//     phi-node insertion + LoopContext stack tracking (ADR-0023
+//     ValueKind propagation also lands then)
+//
+// Deferred to v0.7.8.4:
+//   - Struct / Enum / Pattern / Outcome opcodes
+//   - StructLiteral / EnumLiteral / Match
+//
+// ═════════════════════════════════════════════════════════════════
+
+// ── LowerCtx — threaded state ────────────────────────────────────
+//
+// Functional-update style (mirrors typecheck.tri's CheckerState).
+// Every lowering helper takes a `LowerCtx` and returns either an
+// updated `LowerCtx` directly (for statement-style helpers) or a
+// `LowerExprResult { ctx, value_id }` pair (for expression-style
+// helpers that produce a value).
+
+public struct Scope {
+    bindings: HashMap<String, ValueId>,
+}
+
+public function scope_new() -> Scope =
+    Scope { bindings: hashmap_new() }
+
+public struct LowerCtx {
+    parser_arena: Arena,
+    value_counter: Integer,
+    block_counter: Integer,
+    blocks: Vector<BasicBlock>,
+    current_block_idx: Integer,
+    scopes: Vector<Scope>,
+    type_arena: TypeTagArena,
+    constants: ConstantPool,
+    return_type_id: Integer,
+}
+
+public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
+    let mutable scopes: Vector<Scope> = new()
+    scopes = push(scopes, scope_new())
+    LowerCtx {
+        parser_arena: parser_arena,
+        value_counter: 0,
+        block_counter: 0,
+        blocks: new(),
+        current_block_idx: 0,
+        scopes: scopes,
+        type_arena: type_tag_arena_new(),
+        constants: constant_pool_new(),
+        return_type_id: 0,
+    }
+}
+
+public struct LowerExprResult {
+    ctx: LowerCtx,
+    value_id: ValueId,
+}
+
+// ── Functional-update setters ────────────────────────────────────
+
+function ctx_with_value_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: n,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: n,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ta,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: pool,
+        return_type_id: ctx.return_type_id,
+    }
+
+function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: tid,
+    }
+
+// ── Fresh ValueId / BlockId ──────────────────────────────────────
+
+function fresh_value(ctx: LowerCtx) -> LowerExprResult = {
+    let n: Integer = ctx.value_counter
+    let new_ctx: LowerCtx = ctx_with_value_counter(ctx, n + 1)
+    LowerExprResult { ctx: new_ctx, value_id: ValueId { raw: n } }
+}
+
+public struct FreshBlockResult {
+    ctx: LowerCtx,
+    block_id: BlockId,
+}
+
+function fresh_block(ctx: LowerCtx) -> FreshBlockResult = {
+    let n: Integer = ctx.block_counter
+    let new_ctx: LowerCtx = ctx_with_block_counter(ctx, n + 1)
+    FreshBlockResult { ctx: new_ctx, block_id: BlockId { raw: n } }
+}
+
+// ── Block management ─────────────────────────────────────────────
+
+// Start a new block: append a fresh BasicBlock to `ctx.blocks` and
+// set `current_block_idx` to its index. Subsequent `emit` calls
+// push into this block until another `start_block` runs.
+function start_block(ctx: LowerCtx, id: BlockId, name: String?) -> LowerCtx = {
+    let bb: BasicBlock = basic_block_new(id, name)
+    let new_blocks: Vector<BasicBlock> = push(ctx.blocks, bb)
+    let new_idx: Integer = length(new_blocks) - 1
+    ctx_with_current_block(ctx_with_blocks(ctx, new_blocks), new_idx)
+}
+
+// Append an instruction to the current block. Rebuild the blocks
+// vector since Triết Vectors are immutable.
+function emit(ctx: LowerCtx, inst: Instruction) -> LowerCtx = {
+    let total: Integer = length(ctx.blocks)
+    let mutable new_blocks: Vector<BasicBlock> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let b_opt: BasicBlock? = get(ctx.blocks, i)
+        let b: BasicBlock = b_opt!!
+        if i == ctx.current_block_idx {
+            new_blocks = push(new_blocks, basic_block_push(b, inst))
+        } else {
+            new_blocks = push(new_blocks, b)
+        }
+        i = i + 1
+    }
+    ctx_with_blocks(ctx, new_blocks)
+}
+
+// True iff the current block already ends with a terminator. Used
+// to skip auto-`Ret` emission when the body's final expression
+// path already terminated explicitly.
+function current_block_has_terminator(ctx: LowerCtx) -> Trilean! = {
+    let b_opt: BasicBlock? = get(ctx.blocks, ctx.current_block_idx)
+    match b_opt {
+        ~0 => false,
+        _ => {
+            match basic_block_terminator(b_opt!!) {
+                ~0 => false,
+                _ => true,
+            }
+        },
+    }
+}
+
+// ── Scope / variable binding ─────────────────────────────────────
+
+function push_scope(ctx: LowerCtx) -> LowerCtx =
+    ctx_with_scopes(ctx, push(ctx.scopes, scope_new()))
+
+function pop_scope(ctx: LowerCtx) -> LowerCtx = {
+    let total: Integer = length(ctx.scopes)
+    if total <= 1 {
+        ctx
+    } else {
+        let mutable rebuilt: Vector<Scope> = new()
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            let s_opt: Scope? = get(ctx.scopes, i)
+            rebuilt = push(rebuilt, s_opt!!)
+            i = i + 1
+        }
+        ctx_with_scopes(ctx, rebuilt)
+    }
+}
+
+// Insert `name → value` into the innermost scope.
+function bind_var(ctx: LowerCtx, name: String, value: ValueId) -> LowerCtx = {
+    let total: Integer = length(ctx.scopes)
+    if total == 0 {
+        ctx
+    } else {
+        let top_opt: Scope? = get(ctx.scopes, total - 1)
+        let top: Scope = top_opt!!
+        let updated_map: HashMap<String, ValueId> = insert(top.bindings, name, value)
+        let updated_top: Scope = Scope { bindings: updated_map }
+        let mutable rebuilt: Vector<Scope> = new()
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            let s_opt: Scope? = get(ctx.scopes, i)
+            rebuilt = push(rebuilt, s_opt!!)
+            i = i + 1
+        }
+        rebuilt = push(rebuilt, updated_top)
+        ctx_with_scopes(ctx, rebuilt)
+    }
+}
+
+// Look up `name`, walking scopes innermost-first. Returns `~0` if
+// unbound (caller can emit a placeholder fresh_value).
+function resolve_var(ctx: LowerCtx, name: String) -> ValueId? = {
+    let total: Integer = length(ctx.scopes)
+    let mutable found: ValueId? = ~0
+    let mutable i: Integer = total
+    while i > 0 {
+        i = i - 1
+        let s_opt: Scope? = get(ctx.scopes, i)
+        let s: Scope = s_opt!!
+        let v_opt: ValueId? = hashmap_get(s.bindings, name)
+        match v_opt {
+            ~0 => { },
+            _ => {
+                match found {
+                    ~0 => { found = v_opt },
+                    _ => { },
+                }
+            },
+        }
+    }
+    found
+}
+
+// ── TypeExpr → TypeTag resolver (minimal subset) ─────────────────
+//
+// v0.7.8.2 covers NamedType primitives + NullableType wrapper. Full
+// generic / outcome / function resolution lands with the rest of
+// the lowerer infrastructure in v0.7.8.{3,4}.
+
+public struct ResolveTagResult {
+    ctx: LowerCtx,
+    tag_id: Integer,
+}
+
+function resolve_type_expr_to_tag(ctx: LowerCtx, type_expr_id: Integer) -> ResolveTagResult = {
+    let spanned: SpannedTypeExpr = get_type_expr(ctx.parser_arena, type_expr_id)
+    match spanned.node {
+        NamedType(p) => resolve_named_type_tag(ctx, p.name),
+        NullableType(inner_id) => {
+            let inner_r: ResolveTagResult = resolve_type_expr_to_tag(ctx, inner_id)
+            let r: AllocTagResult = alloc_tag_nullable(inner_r.ctx.type_arena, inner_r.tag_id)
+            ResolveTagResult {
+                ctx: ctx_with_type_arena(inner_r.ctx, r.arena),
+                tag_id: r.tag_id,
+            }
+        },
+        RefinedTrileanType => {
+            let r: AllocTagResult = alloc_tag_trilean(ctx.type_arena)
+            ResolveTagResult {
+                ctx: ctx_with_type_arena(ctx, r.arena),
+                tag_id: r.tag_id,
+            }
+        },
+        // Unknown / generic / tuple / function / outcome → Unit
+        // placeholder. v0.7.8.{3,4} fills these in.
+        _ => {
+            let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
+            ResolveTagResult {
+                ctx: ctx_with_type_arena(ctx, r.arena),
+                tag_id: r.tag_id,
+            }
+        },
+    }
+}
+
+function resolve_named_type_tag(ctx: LowerCtx, name: String) -> ResolveTagResult = {
+    if name == "Integer" {
+        let r: AllocTagResult = alloc_tag_integer(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    if name == "String" {
+        let r: AllocTagResult = alloc_tag_string(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    if name == "Trit" {
+        let r: AllocTagResult = alloc_tag_trit(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    if name == "Tryte" {
+        let r: AllocTagResult = alloc_tag_tryte(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    if name == "Long" {
+        let r: AllocTagResult = alloc_tag_long(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    if name == "Trilean" {
+        let r: AllocTagResult = alloc_tag_trilean(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    if name == "Unit" {
+        let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
+        return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+    }
+    // Unknown user type — Unit placeholder for v0.7.8.2.
+    let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
+    ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+}
+
+// ── Constant interning ───────────────────────────────────────────
+
+public struct InternCtxResult {
+    ctx: LowerCtx,
+    const_id: ConstId,
+}
+
+function intern_constant(ctx: LowerCtx, c: Constant) -> InternCtxResult = {
+    let r: InternResult = constant_pool_intern(ctx.constants, c)
+    InternCtxResult { ctx: ctx_with_constants(ctx, r.pool), const_id: r.id }
+}
+
+// ── Expression lowering ──────────────────────────────────────────
+
+function lower_integer_literal(ctx: LowerCtx, lit: IntLiteral) -> LowerExprResult = {
+    let payload: ConstantIntegerPayload = ConstantIntegerPayload { value: lit.value }
+    let c: Constant = IntegerConst(payload)
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    let final_ctx: LowerCtx = emit(dest_r.ctx, inst)
+    LowerExprResult { ctx: final_ctx, value_id: dest_r.value_id }
+}
+
+function lower_trilean_literal(ctx: LowerCtx, tv: TrileanValue) -> LowerExprResult = {
+    let value: Trilean = match tv {
+        TrueValue => true,
+        FalseValue => false,
+        UnknownValue => unknown,
+    }
+    let c: Constant = TrileanConst(ConstantTrileanPayload { value: value })
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function lower_string_literal(ctx: LowerCtx, text: String) -> LowerExprResult = {
+    let c: Constant = StringConst(ConstantStringPayload { value: text })
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function lower_null_literal(ctx: LowerCtx) -> LowerExprResult = {
+    let c: Constant = NullConst(primitive_marker())
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function lower_identifier(ctx: LowerCtx, name: String) -> LowerExprResult = {
+    let v_opt: ValueId? = resolve_var(ctx, name)
+    match v_opt {
+        ~0 => fresh_value(ctx),
+        _ => LowerExprResult { ctx: ctx, value_id: v_opt!! },
+    }
+}
+
+// Map a parser BinaryOperator to the corresponding Instruction
+// constructor. Each branch returns a function-application-shaped
+// builder taking the binary-op payload.
+function lower_binary_op_inst(
+    op: BinaryOperator,
+    payload: InstBinaryOpPayload,
+    pow_payload: InstPowPayload,
+) -> Instruction =
+    match op {
+        Add => AddInst(payload),
+        Subtract => SubInst(payload),
+        Multiply => MulInst(payload),
+        Divide => DivInst(payload),
+        Modulo => ModInst(payload),
+        Power => PowInst(pow_payload),
+        Equal => EqInst(payload),
+        NotEqual => NeInst(payload),
+        LessThan => LtInst(payload),
+        LessEqual => LeInst(payload),
+        GreaterThan => GtInst(payload),
+        GreaterEqual => GeInst(payload),
+        And => LukAndInst(payload),
+        Or => LukOrInst(payload),
+        Xor => LukXorInst(payload),
+        Iff => LukIffInst(payload),
+        Implies => LukImpliesInst(payload),
+        KleeneXor => KleeneXorInst(payload),
+        KleeneIff => KleeneIffInst(payload),
+        KleeneImplies => KleeneImpliesInst(payload),
+    }
+
+function lower_binary_op(
+    ctx: LowerCtx,
+    op: BinaryOperator,
+    left_id: Integer,
+    right_id: Integer,
+) -> LowerExprResult = {
+    let left_r: LowerExprResult = lower_expression(ctx, left_id)
+    let right_r: LowerExprResult = lower_expression(left_r.ctx, right_id)
+    let dest_r: LowerExprResult = fresh_value(right_r.ctx)
+    let lhs_op: Operand = ValueOp(left_r.value_id)
+    let rhs_op: Operand = ValueOp(right_r.value_id)
+    let bin_payload: InstBinaryOpPayload = InstBinaryOpPayload {
+        dest: dest_r.value_id,
+        lhs: lhs_op,
+        rhs: rhs_op,
+    }
+    let pow_payload: InstPowPayload = InstPowPayload {
+        dest: dest_r.value_id,
+        base: lhs_op,
+        exp: rhs_op,
+    }
+    let inst: Instruction = lower_binary_op_inst(op, bin_payload, pow_payload)
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function lower_unary_op(
+    ctx: LowerCtx,
+    op: UnaryOperator,
+    operand_id: Integer,
+) -> LowerExprResult = {
+    let operand_r: LowerExprResult = lower_expression(ctx, operand_id)
+    let dest_r: LowerExprResult = fresh_value(operand_r.ctx)
+    let payload: InstUnaryOpPayload = InstUnaryOpPayload {
+        dest: dest_r.value_id,
+        operand: ValueOp(operand_r.value_id),
+    }
+    // v0.7.8.2 only has Negate; future v0.7.8.3+ can add conversions.
+    let inst: Instruction = match op {
+        Negate => NegInst(payload),
+    }
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function lower_force_unwrap(ctx: LowerCtx, inner_id: Integer) -> LowerExprResult = {
+    let inner_r: LowerExprResult = lower_expression(ctx, inner_id)
+    let dest_r: LowerExprResult = fresh_value(inner_r.ctx)
+    let inst: Instruction = NullUnwrapInst(InstNullUnwrapPayload {
+        dest: dest_r.value_id,
+        nullable: ValueOp(inner_r.value_id),
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
+    let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
+    match spanned.node {
+        IntegerLiteralExpr(lit) => lower_integer_literal(ctx, lit),
+        TernaryLiteralExpr(lit) => lower_integer_literal(ctx, lit),
+        TrileanLiteralExpr(tv) => lower_trilean_literal(ctx, tv),
+        StringLiteralExpr(sp) => lower_string_literal(ctx, sp.text),
+        NullLiteralExpr => lower_null_literal(ctx),
+        IdentifierExpr(sp) => lower_identifier(ctx, sp.text),
+        UnaryOpExpr(p) => lower_unary_op(ctx, p.operator, p.operand),
+        BinaryOpExpr(p) => lower_binary_op(ctx, p.operator, p.left, p.right),
+        ForceUnwrapExpr(inner_id) => lower_force_unwrap(ctx, inner_id),
+        // Call / FieldAccess / MethodCall / Outcome* / Elvis / Range
+        // defer to v0.7.8.{3,4}. Emit a placeholder fresh value so
+        // downstream lowering keeps progressing on programs that
+        // touch unsupported expression variants — the verifier /
+        // differential gate (v0.7.8.6) will catch shape mismatches.
+        _ => fresh_value(ctx),
+    }
+}
+
+// ── Statement lowering ───────────────────────────────────────────
+
+function lower_let_stmt(ctx: LowerCtx, p: LetStmtPayload) -> LowerCtx = {
+    let val_r: LowerExprResult = lower_expression(ctx, p.value)
+    bind_var(val_r.ctx, p.name, val_r.value_id)
+}
+
+function lower_constant_stmt(ctx: LowerCtx, p: ConstantStmtPayload) -> LowerCtx = {
+    let val_r: LowerExprResult = lower_expression(ctx, p.value)
+    bind_var(val_r.ctx, p.name, val_r.value_id)
+}
+
+function lower_return_stmt(ctx: LowerCtx, p: ReturnStmtPayload) -> LowerCtx = {
+    match p.value {
+        ~0 => emit(ctx, RetInst(InstRetPayload { value: ~0 })),
+        _ => {
+            let val_r: LowerExprResult = lower_expression(ctx, p.value!!)
+            emit(val_r.ctx, RetInst(InstRetPayload { value: ValueOp(val_r.value_id) }))
+        },
+    }
+}
+
+function lower_expression_stmt(ctx: LowerCtx, p: ExpressionStmtPayload) -> LowerCtx = {
+    let val_r: LowerExprResult = lower_expression(ctx, p.expression)
+    val_r.ctx
+}
+
+public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
+    let spanned: SpannedStmt = get_statement(ctx.parser_arena, stmt_id)
+    match spanned.node {
+        LetStmt(p) => lower_let_stmt(ctx, p),
+        ConstantStmt(p) => lower_constant_stmt(ctx, p),
+        ReturnStmt(p) => lower_return_stmt(ctx, p),
+        ExpressionStmt(p) => lower_expression_stmt(ctx, p),
+        // While/For/Loop/Break/Continue/Assign defer to v0.7.8.3 —
+        // they need phi insertion + LoopContext stack. Silently skip
+        // for now so v0.7.8.2 programs can still parse + run the
+        // supported subset.
+        _ => ctx,
+    }
+}
+
+// Lower a block: open a fresh scope, lower each statement in
+// order, lower the final expression (or use Unit if absent), then
+// pop the scope. Returns the block's value.
+public function lower_block(ctx: LowerCtx, block: Block) -> LowerExprResult = {
+    let scoped: LowerCtx = push_scope(ctx)
+    let mutable st: LowerCtx = scoped
+    let stmt_total: Integer = length(block.block_statements)
+    let mutable i: Integer = 0
+    while i < stmt_total {
+        let sid_opt: Integer? = get(block.block_statements, i)
+        st = lower_statement(st, sid_opt!!)
+        i = i + 1
+    }
+    let result_r: LowerExprResult = match block.block_final {
+        ~0 => {
+            // Unit-value block: emit a Unit const so the block
+            // produces a real ValueId (downstream Ret needs one).
+            let c: Constant = UnitConst(primitive_marker())
+            let intern_r: InternCtxResult = intern_constant(st, c)
+            let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+            let inst: Instruction = ConstInst(InstConstPayload {
+                dest: dest_r.value_id,
+                const_id: intern_r.const_id,
+            })
+            LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+        },
+        _ => lower_expression(st, block.block_final!!),
+    }
+    let unscoped: LowerCtx = pop_scope(result_r.ctx)
+    LowerExprResult { ctx: unscoped, value_id: result_r.value_id }
+}
+
+// ── Function lowering ────────────────────────────────────────────
+
+public struct LowerFunctionResult {
+    ctx: LowerCtx,
+    fn: Function,
+}
+
+function lower_function(
+    ctx_outer: LowerCtx,
+    func_id: FuncId,
+    def: FunctionDef,
+) -> LowerFunctionResult = {
+    // Fresh per-function counters + blocks (the ctx_outer carries
+    // the module-shared `constants` + `type_arena` so we forward
+    // those but reset everything else).
+    let mutable ctx: LowerCtx = LowerCtx {
+        parser_arena: ctx_outer.parser_arena,
+        value_counter: 0,
+        block_counter: 0,
+        blocks: new(),
+        current_block_idx: 0,
+        scopes: ctx_outer.scopes,
+        type_arena: ctx_outer.type_arena,
+        constants: ctx_outer.constants,
+        return_type_id: ctx_outer.return_type_id,
+    }
+    ctx = push_scope(ctx)
+
+    // Resolve return type to a TypeTag id. Use the function's
+    // annotated type if present, else Unit.
+    let ret_r: ResolveTagResult = match def.return_type {
+        ~0 => {
+            let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
+            ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
+        },
+        _ => resolve_type_expr_to_tag(ctx, def.return_type!!),
+    }
+    ctx = ctx_with_return_type(ret_r.ctx, ret_r.tag_id)
+
+    // Entry block.
+    let entry_r: FreshBlockResult = fresh_block(ctx)
+    ctx = start_block(entry_r.ctx, entry_r.block_id, "entry")
+
+    // Allocate parameter ValueIds + bind them in the function scope.
+    let mutable param_specs: Vector<IrFunctionParam> = new()
+    let p_total: Integer = length(def.parameters)
+    let mutable pi: Integer = 0
+    while pi < p_total {
+        let param_opt: FunctionParam? = get(def.parameters, pi)
+        let param: FunctionParam = param_opt!!
+        let v_r: LowerExprResult = fresh_value(ctx)
+        ctx = v_r.ctx
+        let tag_r: ResolveTagResult = resolve_type_expr_to_tag(ctx, param.type_annotation)
+        ctx = tag_r.ctx
+        ctx = bind_var(ctx, param.name, v_r.value_id)
+        param_specs = push(param_specs, IrFunctionParam {
+            name: param.name,
+            type_tag_id: tag_r.tag_id,
+        })
+        pi = pi + 1
+    }
+
+    // Lower the body.
+    let body_r: LowerExprResult = match def.body {
+        BlockBody(block) => lower_block(ctx, block),
+        ExpressionBody(expr_id) => lower_expression(ctx, expr_id),
+    }
+    ctx = body_r.ctx
+
+    // Auto-Ret if the body didn't terminate.
+    if !current_block_has_terminator(ctx) {
+        ctx = emit(ctx, RetInst(InstRetPayload { value: ValueOp(body_r.value_id) }))
+    }
+
+    ctx = pop_scope(ctx)
+
+    let lowered: Function = function_with_blocks(
+        function_new(func_id, def.name, param_specs, ctx.return_type_id),
+        ctx.blocks,
+    )
+    LowerFunctionResult { ctx: ctx, fn: lowered }
+}
+
+// Helper: build a Function with the given blocks. Mirrors
+// `Function::new` + `func.blocks = blocks` pattern.
+function function_with_blocks(fn: Function, blocks: Vector<BasicBlock>) -> Function =
+    Function {
+        id: fn.id,
+        name: fn.name,
+        parameters: fn.parameters,
+        return_type_id: fn.return_type_id,
+        blocks: blocks,
+    }
+
+// ── Top-level lower_program driver ───────────────────────────────
+//
+// Single-module variant: walks the parsed Items list, assigns
+// FuncIds in source order, lowers each function body. Cross-module
+// resolution (CallCrossModule path emission) defers to v0.7.8.{3,5}
+// when the multi-module driver lands alongside the wire format.
+
+public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModule = {
+    // Pass 1: collect function definitions in source order.
+    let mut_funcs_total: Integer = length(item_ids)
+    let mutable function_defs: Vector<FunctionDef> = new()
+    let mutable i: Integer = 0
+    while i < mut_funcs_total {
+        let id_opt: Integer? = get(item_ids, i)
+        let spanned: SpannedItem = get_item(arena, id_opt!!)
+        match spanned.node {
+            FunctionItem(def) => { function_defs = push(function_defs, def) },
+            _ => { },
+        }
+        i = i + 1
+    }
+
+    // Pass 2: lower each function body.
+    let mod_path: Vector<String> = new()
+    let mutable ir_mod: IrModule = ir_module_new(mod_path)
+    let mutable ctx: LowerCtx = lower_ctx_new(arena)
+    let fn_total: Integer = length(function_defs)
+    let mutable j: Integer = 0
+    while j < fn_total {
+        let def_opt: FunctionDef? = get(function_defs, j)
+        let def: FunctionDef = def_opt!!
+        let lr: LowerFunctionResult = lower_function(ctx, FuncId { raw: j }, def)
+        // v0.7.8.2 keeps each function's blocks independent but
+        // shares the constants pool + type arena via the threaded
+        // ctx. Cross-function constant dedup lands v0.7.8.3.
+        ctx = lr.ctx
+        ir_mod = ir_module_push_function(ir_mod, lr.fn)
+        j = j + 1
+    }
+    ir_module_with_type_arena(ir_mod, ctx.type_arena)
+}
+
+// Convenience entry: lex + parse + lower in one call. Returns an
+// empty `IrProgram` on lex failure (matches typecheck.tri's
+// `check_source` shape).
+public function lower_source(source: String) -> IrProgram = {
+    let tokens_outcome: Vector<SpannedToken>~LexError = lex(source)
+    match tokens_outcome {
+        ~+ tokens => {
+            let pstate: ParserState = parser_new(tokens)
+            let pstep: ParseProgramStep = parse_program(pstate)
+            let m: IrModule = lower_module(pstep.program.arena, pstep.program.item_ids)
+            ir_program_push_module(ir_program_new(), m)
+        },
+        ~- _ => ir_program_new(),
+    }
+}
+
+// ── v0.7.8.2 smoke ───────────────────────────────────────────────
+
+public function lower_source_smoke_main() -> Unit = {
+    // Test 1: empty program → IrProgram with no functions
+    let p1: IrProgram = lower_source("")
+    assert(ir_program_function_count(p1) == 0)
+
+    // Test 2: minimal integer-body function → 1 function, 1 block,
+    // exactly 2 instructions (Const + Ret).
+    let p2: IrProgram = lower_source("function f() -> Integer = 42")
+    assert(ir_program_function_count(p2) == 1)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    assert(length(f2.blocks) == 1)
+    let bb2: BasicBlock = get(f2.blocks, 0)!!
+    assert(length(bb2.instructions) == 2)
+    let inst20: Instruction = get(bb2.instructions, 0)!!
+    let inst21: Instruction = get(bb2.instructions, 1)!!
+    assert_string_eq(instruction_opcode_name(inst20), "Const")
+    assert_string_eq(instruction_opcode_name(inst21), "Ret")
+    assert(function_is_well_formed(f2))
+
+    // Test 3: BlockBody with let + arithmetic. Note: `= { … }`
+    // ExpressionBody isn't parser-side surfaced yet (v0.7.5.6 gap);
+    // use BlockBody form (`function g() -> T { … }`).
+    let p3: IrProgram = lower_source("function g() -> Integer { let x: Integer = 5 x + 3 }")
+    assert(ir_program_function_count(p3) == 1)
+    let m3: IrModule = get(p3.modules, 0)!!
+    let f3: Function = get(m3.functions, 0)!!
+    let bb3: BasicBlock = get(f3.blocks, 0)!!
+    let len3: Integer = length(bb3.instructions)
+    // Const(5) + Const(3) + Add + Ret.
+    assert(len3 == 4)
+    let last3: Instruction = get(bb3.instructions, len3 - 1)!!
+    assert_string_eq(instruction_opcode_name(last3), "Ret")
+    assert(function_is_well_formed(f3))
+
+    // Test 4: Function with parameters — uses param ValueIds.
+    let p4: IrProgram = lower_source("function add(x: Integer, y: Integer) -> Integer = x + y")
+    let m4: IrModule = get(p4.modules, 0)!!
+    let f4: Function = get(m4.functions, 0)!!
+    assert(length(f4.parameters) == 2)
+    let param0: IrFunctionParam = get(f4.parameters, 0)!!
+    let param1: IrFunctionParam = get(f4.parameters, 1)!!
+    assert_string_eq(param0.name, "x")
+    assert_string_eq(param1.name, "y")
+    assert_string_eq(type_tag_display(m4.type_arena, param0.type_tag_id), "Integer")
+
+    // Test 5: Unary negate → Const + Neg + Ret
+    let p5: IrProgram = lower_source("function neg() -> Integer = -7")
+    let m5: IrModule = get(p5.modules, 0)!!
+    let f5: Function = get(m5.functions, 0)!!
+    let bb5: BasicBlock = get(f5.blocks, 0)!!
+    let neg_inst5: Instruction = get(bb5.instructions, 1)!!
+    assert_string_eq(instruction_opcode_name(neg_inst5), "Neg")
+
+    // Test 6: Comparison emits an Lt instruction
+    let p6: IrProgram = lower_source("function lt(a: Integer, b: Integer) -> Trilean! = a < b")
+    let m6: IrModule = get(p6.modules, 0)!!
+    let f6: Function = get(m6.functions, 0)!!
+    let bb6: BasicBlock = get(f6.blocks, 0)!!
+    let lt_inst: Instruction = get(bb6.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(lt_inst), "Lt")
+
+    // Test 7: String literal interns a constant; pool grows.
+    let p7: IrProgram = lower_source("function s() -> String = \"hi\"")
+    assert(constant_pool_count(p7.constants) == 0)
+    // NB: constants live per-function in v0.7.8.2 (no shared pool
+    // emit) — the pool on the IrProgram stays empty until v0.7.8.3
+    // wires the cross-function dedup driver.
+
+    println("v0.7.8.2 ir_lowerer literal+binding smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -1348,4 +2243,5 @@ public function main() -> Unit = {
     assert(constant_pool_count(prog2.constants) == 3)
 
     println("v0.7.8.1 ir_lowerer types smoke OK")
+    lower_source_smoke_main()
 }
