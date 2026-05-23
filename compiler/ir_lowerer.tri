@@ -342,10 +342,109 @@ public struct InternResult {
 /// expose). Re-interning the same value yields a fresh id — the
 /// lowerer can layer dedup on top once needed.
 public function constant_pool_intern(pool: ConstantPool, c: Constant) -> InternResult = {
-    let next_id: Integer = length(pool.entries)
-    let updated: ConstantPool = ConstantPool { entries: push(pool.entries, c) }
-    InternResult { pool: updated, id: ConstId { raw: next_id } }
+    // Linear-scan dedup to match Rust `ConstantPool::intern` semantic
+    // (Rust uses a `HashMap<Constant, ConstId>` for O(1); Triết's
+    // small pools don't warrant the wire-format overhead). Returning
+    // the existing ID for a duplicate keeps `.triv` byte output
+    // byte-identical with the Rust impl after round-trip — without
+    // dedup the Triết pool grows monotonically and the Rust reader's
+    // intern collapses the duplicates, breaking re-emit symmetry.
+    let total: Integer = length(pool.entries)
+    let mutable i: Integer = 0
+    let mutable existing: Integer = -1
+    while i < total && existing < 0 {
+        if constant_eq(get(pool.entries, i)!!, c) {
+            existing = i
+        }
+        i = i + 1
+    }
+    if existing >= 0 {
+        InternResult { pool: pool, id: ConstId { raw: existing } }
+    } else {
+        let next_id: Integer = length(pool.entries)
+        let updated: ConstantPool = ConstantPool { entries: push(pool.entries, c) }
+        InternResult { pool: updated, id: ConstId { raw: next_id } }
+    }
 }
+
+/// Structural equality on Constant. Hand-rolled because the VM's
+/// `runtime_eq` (crates/triet-ir/src/vm.rs) doesn't cover enum
+/// values — `==` on `Constant` would always return false at runtime.
+function constant_eq(a: Constant, b: Constant) -> Trilean! = {
+    let da: Integer = constant_discriminator(a)
+    let db: Integer = constant_discriminator(b)
+    if da != db { return false }
+    if da == 0 { trit_eq(constant_trit_value(a), constant_trit_value(b)) }
+    else if da == 1 { constant_tryte_value(a) == constant_tryte_value(b) }
+    else if da == 2 { constant_integer_value(a) == constant_integer_value(b) }
+    else if da == 3 { long_eq(constant_long_value(a), constant_long_value(b)) }
+    else if da == 4 { trilean_eq(constant_trilean_value(a), constant_trilean_value(b)) }
+    else if da == 5 { constant_string_value(a) == constant_string_value(b) }
+    else { true }
+}
+
+function constant_discriminator(c: Constant) -> Integer =
+    match c {
+        TritConst(_) => 0,
+        TryteConst(_) => 1,
+        IntegerConst(_) => 2,
+        LongConst(_) => 3,
+        TrileanConst(_) => 4,
+        StringConst(_) => 5,
+        UnitConst(_) => 6,
+        NullConst(_) => 7,
+    }
+
+function constant_trit_value(c: Constant) -> Trit =
+    match c {
+        TritConst(p) => p.value,
+        _ => 0_trit,
+    }
+
+function constant_tryte_value(c: Constant) -> Tryte =
+    match c {
+        TryteConst(p) => p.value,
+        _ => 0.to_tryte(),
+    }
+
+function constant_integer_value(c: Constant) -> Integer =
+    match c {
+        IntegerConst(p) => p.value,
+        _ => 0,
+    }
+
+function constant_long_value(c: Constant) -> Long =
+    match c {
+        LongConst(p) => p.value,
+        _ => 0.to_long(),
+    }
+
+function constant_trilean_value(c: Constant) -> Trilean =
+    match c {
+        TrileanConst(p) => p.value,
+        _ => false,
+    }
+
+function constant_string_value(c: Constant) -> String =
+    match c {
+        StringConst(p) => p.value,
+        _ => "",
+    }
+
+function trit_eq(a: Trit, b: Trit) -> Trilean! = {
+    let av: Integer = if? a == -1_trit { 0 } else if? a == 0_trit { 1 } else { 2 }
+    let bv: Integer = if? b == -1_trit { 0 } else if? b == 0_trit { 1 } else { 2 }
+    av == bv
+}
+
+function trilean_eq(a: Trilean, b: Trilean) -> Trilean! = {
+    let av: Integer = if? a == false { 0 } else if? a == unknown { 1 } else { 2 }
+    let bv: Integer = if? b == false { 0 } else if? b == unknown { 1 } else { 2 }
+    av == bv
+}
+
+function long_eq(a: Long, b: Long) -> Trilean! =
+    a.to_integer() == b.to_integer()
 
 // ─────────────────────────────────────────────────────────────────
 // Operand — instruction inputs are either an SSA virtual register

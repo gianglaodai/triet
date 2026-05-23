@@ -6,7 +6,7 @@ expression: summary
 std: 0 items, 7 children
 std.io: 3 items, 1 children
 std.io.fs: 3 items, 0 children
-std.text: 4 items, 0 children
+std.text: 7 items, 0 children
 std.assert: 2 items, 0 children
 std.result: 1 items, 0 children
 std.collections: 0 items, 2 children

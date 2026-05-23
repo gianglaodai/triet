@@ -20,15 +20,41 @@ module parser;
 module ir_lowerer;
 
 from std.collections.vector import new, push, length, get
-from std.text import into_bytes, from_bytes
+from std.text import into_bytes, from_bytes, concat, len as text_len
+from std.string import substring
 from crate.ir_lowerer import TypeTag, TritTag, TryteTag, IntegerTag, LongTag, TrileanTag, StringTag, UnitTag, NullableTag, VectorTag, HashMapTag, OutcomeTag
 from crate.ir_lowerer import TypeTagArena, AllocTagResult, PrimitiveMarker
 from crate.ir_lowerer import TypeTagNullablePayload, TypeTagVectorPayload, TypeTagHashMapPayload, TypeTagOutcomePayload
 from crate.ir_lowerer import Constant, TritConst, TryteConst, IntegerConst, LongConst, TrileanConst, StringConst, UnitConst, NullConst
 from crate.ir_lowerer import ConstantTritPayload, ConstantTrytePayload, ConstantIntegerPayload, ConstantLongPayload, ConstantTrileanPayload, ConstantStringPayload
 from crate.ir_lowerer import ConstantPool
-from crate.ir_lowerer import type_tag_arena_new, get_type_tag, constant_pool_new, constant_type_tag
+from crate.ir_lowerer import type_tag_arena_new, get_type_tag, constant_pool_new, constant_type_tag, alloc_type_tag
 from crate.ir_lowerer import alloc_tag_trit, alloc_tag_tryte, alloc_tag_integer, alloc_tag_long, alloc_tag_trilean, alloc_tag_string, alloc_tag_unit, alloc_tag_nullable, alloc_tag_vector, alloc_tag_hashmap, alloc_tag_outcome
+from crate.ir_lowerer import ValueId, BlockId, FuncId, ConstId
+from crate.ir_lowerer import Operand, ValueOp, ConstOp, PhiIncoming
+from crate.ir_lowerer import BuiltinName, PrintlnBuiltin, PrintBuiltin, AssertBuiltin, AssertEqBuiltin, FStringConcatBuiltin, TextLenBuiltin, TextConcatBuiltin, TextFromIntegerBuiltin, VectorNewBuiltin, VectorPushBuiltin, VectorGetBuiltin, VectorLengthBuiltin, HashMapNewBuiltin, HashMapInsertBuiltin, HashMapGetBuiltin, HashMapKeysBuiltin, HashMapContainsBuiltin, ReadFileBuiltin, WriteFileBuiltin, FileExistsBuiltin, PathJoinBuiltin, PathParentBuiltin, PathBasenameBuiltin, StringSubstringBuiltin, StringSplitBuiltin, StringIndexOfBuiltin, ParseIntegerBuiltin, TextIntoBytesBuiltin, TextFromBytesBuiltin, Blake3HashBuiltin
+from crate.ir_lowerer import Instruction
+from crate.ir_lowerer import ConstInst, AddInst, SubInst, MulInst, DivInst, ModInst, PowInst, NegInst
+from crate.ir_lowerer import LukAndInst, LukOrInst, LukImpliesInst, LukXorInst, LukIffInst, KleeneImpliesInst, KleeneXorInst, KleeneIffInst
+from crate.ir_lowerer import EqInst, NeInst, LtInst, LeInst, GtInst, GeInst
+from crate.ir_lowerer import ToIntegerInst, ToTryteInst, ToLongInst, ToTritInst, ToTrileanInst
+from crate.ir_lowerer import StructNewInst, FieldGetInst, FieldSetInst
+from crate.ir_lowerer import EnumNewInst, EnumTagInst, EnumPayloadInst
+from crate.ir_lowerer import NullWrapInst, NullUnwrapInst, NullCheckInst
+from crate.ir_lowerer import CallLocalInst, CallCrossModuleInst, WitnessCallInst, CallBuiltinInst
+from crate.ir_lowerer import ClosureNewInst, ClosureCallInst
+from crate.ir_lowerer import BrInst, BrIfInst, BrTrileanInst, RetInst, UnreachableInst, PhiInst
+from crate.ir_lowerer import OutcomeNewPositiveInst, OutcomeNewNegativeInst, OutcomeNewNullInst, OutcomeDiscriminantInst, OutcomeUnwrapValueInst, OutcomeUnwrapErrorInst
+from crate.ir_lowerer import InstConstPayload, InstBinaryOpPayload, InstPowPayload, InstUnaryOpPayload
+from crate.ir_lowerer import InstStructNewPayload, InstFieldGetPayload, InstFieldSetPayload
+from crate.ir_lowerer import InstEnumNewPayload, InstEnumTagPayload, InstEnumPayloadPayload
+from crate.ir_lowerer import InstNullWrapPayload, InstNullUnwrapPayload, InstNullCheckPayload
+from crate.ir_lowerer import InstCallLocalPayload, InstCallCrossModulePayload, InstWitnessCallPayload, InstCallBuiltinPayload
+from crate.ir_lowerer import InstClosureNewPayload, InstClosureCallPayload
+from crate.ir_lowerer import InstBrPayload, InstBrIfPayload, InstBrTrileanPayload, InstRetPayload, InstPhiPayload
+from crate.ir_lowerer import InstOutcomeUnaryPayload, InstOutcomeCtorPayload, InstOutcomeNewNullPayload
+from crate.ir_lowerer import BasicBlock, IrFunctionParam, Function, IrModule, IrProgram, WitnessTable
+from crate.ir_lowerer import lower_source
 
 // ── Errors ─────────────────────────────────────────────────────────
 
@@ -607,6 +633,1690 @@ public function read_constants(
         i = i + 1
     }
     ~+ ReadResultConstantPool { value: ConstantPool { entries: entries }, next_pos: p }
+}
+
+// ═════════════════════════════════════════════════════════════════
+// v0.7.9.2 — Instruction + Function + Code + Program encoders
+//
+// Wire format byte layout mirrors crates/triet-ir/src/serde.rs.
+// Opcode constants per [ADR-0008] (4-bit category prefix + sequence
+// within category).
+// ═════════════════════════════════════════════════════════════════
+
+// ── Opcode table ─────────────────────────────────────────────────
+
+constant OPCODE_CONST: Integer = 0
+constant OPCODE_ADD: Integer = 16
+constant OPCODE_SUB: Integer = 17
+constant OPCODE_MUL: Integer = 18
+constant OPCODE_DIV: Integer = 19
+constant OPCODE_MOD: Integer = 20
+constant OPCODE_POW: Integer = 21
+constant OPCODE_NEG: Integer = 22
+constant OPCODE_LUK_AND: Integer = 32
+constant OPCODE_LUK_OR: Integer = 33
+constant OPCODE_LUK_IMPLIES: Integer = 34
+constant OPCODE_LUK_XOR: Integer = 35
+constant OPCODE_LUK_IFF: Integer = 36
+constant OPCODE_KLEENE_IMPLIES: Integer = 48
+constant OPCODE_KLEENE_XOR: Integer = 49
+constant OPCODE_KLEENE_IFF: Integer = 50
+constant OPCODE_EQ: Integer = 64
+constant OPCODE_NE: Integer = 65
+constant OPCODE_LT: Integer = 66
+constant OPCODE_LE: Integer = 67
+constant OPCODE_GT: Integer = 68
+constant OPCODE_GE: Integer = 69
+constant OPCODE_TO_INTEGER: Integer = 80
+constant OPCODE_TO_TRYTE: Integer = 81
+constant OPCODE_TO_LONG: Integer = 82
+constant OPCODE_TO_TRIT: Integer = 83
+constant OPCODE_TO_TRILEAN: Integer = 84
+constant OPCODE_STRUCT_NEW: Integer = 96
+constant OPCODE_FIELD_GET: Integer = 97
+constant OPCODE_FIELD_SET: Integer = 98
+constant OPCODE_ENUM_NEW: Integer = 112
+constant OPCODE_ENUM_TAG: Integer = 113
+constant OPCODE_ENUM_PAYLOAD: Integer = 114
+constant OPCODE_NULL_WRAP: Integer = 128
+constant OPCODE_NULL_UNWRAP: Integer = 129
+constant OPCODE_NULL_CHECK: Integer = 130
+constant OPCODE_CALL_LOCAL: Integer = 144
+constant OPCODE_CALL_CROSS_MODULE: Integer = 145
+constant OPCODE_CALL_BUILTIN: Integer = 146
+constant OPCODE_WITNESS_CALL: Integer = 147
+constant OPCODE_CLOSURE_NEW: Integer = 160
+constant OPCODE_CLOSURE_CALL: Integer = 161
+constant OPCODE_BR: Integer = 176
+constant OPCODE_BR_IF: Integer = 177
+constant OPCODE_RET: Integer = 178
+constant OPCODE_UNREACHABLE: Integer = 179
+constant OPCODE_BR_TRILEAN: Integer = 180
+constant OPCODE_PHI: Integer = 192
+constant OPCODE_OUTCOME_NEW_POSITIVE: Integer = 193
+constant OPCODE_OUTCOME_NEW_NEGATIVE: Integer = 194
+constant OPCODE_OUTCOME_NEW_NULL: Integer = 195
+constant OPCODE_OUTCOME_DISCRIMINANT: Integer = 196
+constant OPCODE_OUTCOME_UNWRAP_VALUE: Integer = 197
+constant OPCODE_OUTCOME_UNWRAP_ERROR: Integer = 198
+
+constant OPERAND_CONST: Integer = 0
+constant OPERAND_VALUE: Integer = 1
+
+// ── Section IDs + magic + version ────────────────────────────────
+
+constant SEC_TYPES: Integer = 1
+constant SEC_CONSTANTS: Integer = 2
+constant SEC_FUNCTIONS: Integer = 3
+constant SEC_CODE: Integer = 4
+constant SEC_WITNESS_TABLES: Integer = 5
+
+constant TRIV_VERSION: Integer = 5
+constant TRIV_MAGIC_T: Integer = 116
+constant TRIV_MAGIC_R: Integer = 114
+constant TRIV_MAGIC_I: Integer = 105
+constant TRIV_MAGIC_V: Integer = 118
+
+// ── Builtin ID encoding ──────────────────────────────────────────
+//
+// Mirrors `crates/triet-ir/src/serde.rs::write_builtin`. IDs 0–29
+// shipped through v0.7.9.1 (Blake3Hash latest); future additions
+// extend additively per ADR-0019 Addendum §A1 (no `.triv` version
+// bump since the CallBuiltin opcode byte is unchanged).
+
+public function builtin_to_byte(b: BuiltinName) -> Integer =
+    match b {
+        PrintlnBuiltin(_) => 0,
+        PrintBuiltin(_) => 1,
+        AssertBuiltin(_) => 2,
+        AssertEqBuiltin(_) => 3,
+        FStringConcatBuiltin(_) => 4,
+        TextLenBuiltin(_) => 5,
+        TextConcatBuiltin(_) => 6,
+        TextFromIntegerBuiltin(_) => 7,
+        VectorNewBuiltin(_) => 8,
+        VectorPushBuiltin(_) => 9,
+        VectorGetBuiltin(_) => 10,
+        VectorLengthBuiltin(_) => 11,
+        HashMapNewBuiltin(_) => 12,
+        HashMapInsertBuiltin(_) => 13,
+        HashMapGetBuiltin(_) => 14,
+        HashMapKeysBuiltin(_) => 15,
+        HashMapContainsBuiltin(_) => 16,
+        ReadFileBuiltin(_) => 17,
+        WriteFileBuiltin(_) => 18,
+        FileExistsBuiltin(_) => 19,
+        PathJoinBuiltin(_) => 20,
+        PathParentBuiltin(_) => 21,
+        PathBasenameBuiltin(_) => 22,
+        StringSubstringBuiltin(_) => 23,
+        StringSplitBuiltin(_) => 24,
+        StringIndexOfBuiltin(_) => 25,
+        ParseIntegerBuiltin(_) => 26,
+        TextIntoBytesBuiltin(_) => 27,
+        TextFromBytesBuiltin(_) => 28,
+        Blake3HashBuiltin(_) => 29,
+    }
+
+public function byte_to_builtin(b: Integer) -> BuiltinName~TrivError = {
+    if b == 0 { ~+ PrintlnBuiltin(primitive_marker()) }
+    else if b == 1 { ~+ PrintBuiltin(primitive_marker()) }
+    else if b == 2 { ~+ AssertBuiltin(primitive_marker()) }
+    else if b == 3 { ~+ AssertEqBuiltin(primitive_marker()) }
+    else if b == 4 { ~+ FStringConcatBuiltin(primitive_marker()) }
+    else if b == 5 { ~+ TextLenBuiltin(primitive_marker()) }
+    else if b == 6 { ~+ TextConcatBuiltin(primitive_marker()) }
+    else if b == 7 { ~+ TextFromIntegerBuiltin(primitive_marker()) }
+    else if b == 8 { ~+ VectorNewBuiltin(primitive_marker()) }
+    else if b == 9 { ~+ VectorPushBuiltin(primitive_marker()) }
+    else if b == 10 { ~+ VectorGetBuiltin(primitive_marker()) }
+    else if b == 11 { ~+ VectorLengthBuiltin(primitive_marker()) }
+    else if b == 12 { ~+ HashMapNewBuiltin(primitive_marker()) }
+    else if b == 13 { ~+ HashMapInsertBuiltin(primitive_marker()) }
+    else if b == 14 { ~+ HashMapGetBuiltin(primitive_marker()) }
+    else if b == 15 { ~+ HashMapKeysBuiltin(primitive_marker()) }
+    else if b == 16 { ~+ HashMapContainsBuiltin(primitive_marker()) }
+    else if b == 17 { ~+ ReadFileBuiltin(primitive_marker()) }
+    else if b == 18 { ~+ WriteFileBuiltin(primitive_marker()) }
+    else if b == 19 { ~+ FileExistsBuiltin(primitive_marker()) }
+    else if b == 20 { ~+ PathJoinBuiltin(primitive_marker()) }
+    else if b == 21 { ~+ PathParentBuiltin(primitive_marker()) }
+    else if b == 22 { ~+ PathBasenameBuiltin(primitive_marker()) }
+    else if b == 23 { ~+ StringSubstringBuiltin(primitive_marker()) }
+    else if b == 24 { ~+ StringSplitBuiltin(primitive_marker()) }
+    else if b == 25 { ~+ StringIndexOfBuiltin(primitive_marker()) }
+    else if b == 26 { ~+ ParseIntegerBuiltin(primitive_marker()) }
+    else if b == 27 { ~+ TextIntoBytesBuiltin(primitive_marker()) }
+    else if b == 28 { ~+ TextFromBytesBuiltin(primitive_marker()) }
+    else if b == 29 { ~+ Blake3HashBuiltin(primitive_marker()) }
+    else { ~- Corrupted(TrivErrorCorrupted { message: "unknown builtin id" }) }
+}
+
+public function write_builtin(buf: Vector<Integer>, b: BuiltinName) -> Vector<Integer> =
+    write_u8(buf, builtin_to_byte(b))
+
+public struct ReadResultBuiltin {
+    value: BuiltinName,
+    next_pos: Integer,
+}
+
+public function read_builtin(data: Vector<Integer>, pos: Integer) -> ReadResultBuiltin~TrivError = {
+    let b_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+    let name: BuiltinName = byte_to_builtin(b_res.value) ~? |err| ~- err
+    ~+ ReadResultBuiltin { value: name, next_pos: b_res.next_pos }
+}
+
+// ── Operand encoding ─────────────────────────────────────────────
+
+public function write_operand(buf: Vector<Integer>, op: Operand) -> Vector<Integer> =
+    match op {
+        ConstOp(c) => {
+            let s1: Vector<Integer> = write_u8(buf, OPERAND_CONST)
+            write_varint(s1, c.raw)
+        },
+        ValueOp(v) => {
+            let s1: Vector<Integer> = write_u8(buf, OPERAND_VALUE)
+            write_varint(s1, v.raw)
+        },
+    }
+
+public struct ReadResultOperand {
+    value: Operand,
+    next_pos: Integer,
+}
+
+public function read_operand(data: Vector<Integer>, pos: Integer) -> ReadResultOperand~TrivError = {
+    let tag_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+    let tag: Integer = tag_res.value
+    let p: Integer = tag_res.next_pos
+    if tag == OPERAND_CONST {
+        let id_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        ~+ ReadResultOperand {
+            value: ConstOp(ConstId { raw: id_res.value }),
+            next_pos: id_res.next_pos,
+        }
+    } else if tag == OPERAND_VALUE {
+        let id_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        ~+ ReadResultOperand {
+            value: ValueOp(ValueId { raw: id_res.value }),
+            next_pos: id_res.next_pos,
+        }
+    } else {
+        ~- Corrupted(TrivErrorCorrupted { message: "unknown operand tag" })
+    }
+}
+
+// ── Optional ValueId (for call dest) ─────────────────────────────
+
+public function write_option_value(buf: Vector<Integer>, dest: ValueId?) -> Vector<Integer> =
+    match dest {
+        ~0 => write_u8(buf, 0),
+        _ => {
+            let s1: Vector<Integer> = write_u8(buf, 1)
+            write_varint(s1, dest!!.raw)
+        },
+    }
+
+public struct ReadResultOptionValue {
+    value: ValueId?,
+    next_pos: Integer,
+}
+
+public function read_option_value(data: Vector<Integer>, pos: Integer) -> ReadResultOptionValue~TrivError = {
+    let has_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+    let has: Integer = has_res.value
+    let p: Integer = has_res.next_pos
+    if has == 0 {
+        ~+ ReadResultOptionValue { value: ~0, next_pos: p }
+    } else if has == 1 {
+        let id_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        ~+ ReadResultOptionValue {
+            value: ValueId { raw: id_res.value },
+            next_pos: id_res.next_pos,
+        }
+    } else {
+        ~- Corrupted(TrivErrorCorrupted { message: "invalid option value byte" })
+    }
+}
+
+// ── Optional Operand (for Ret value, EnumNew payload) ────────────
+
+public function write_option_operand(buf: Vector<Integer>, op: Operand?) -> Vector<Integer> =
+    match op {
+        ~0 => write_u8(buf, 0),
+        _ => {
+            let s1: Vector<Integer> = write_u8(buf, 1)
+            write_operand(s1, op!!)
+        },
+    }
+
+public struct ReadResultOptionOperand {
+    value: Operand?,
+    next_pos: Integer,
+}
+
+public function read_option_operand(data: Vector<Integer>, pos: Integer) -> ReadResultOptionOperand~TrivError = {
+    let has_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+    let has: Integer = has_res.value
+    let p: Integer = has_res.next_pos
+    if has == 0 {
+        ~+ ReadResultOptionOperand { value: ~0, next_pos: p }
+    } else if has == 1 {
+        let op_res: ReadResultOperand = read_operand(data, p) ~? |err| ~- err
+        ~+ ReadResultOptionOperand {
+            value: op_res.value,
+            next_pos: op_res.next_pos,
+        }
+    } else {
+        ~- Corrupted(TrivErrorCorrupted { message: "invalid option operand byte" })
+    }
+}
+
+// ── Vector<Operand> + Vector<ValueId> serialization ──────────────
+
+public function write_operand_list(buf: Vector<Integer>, ops: Vector<Operand>) -> Vector<Integer> = {
+    let header: Vector<Integer> = write_varint(buf, length(ops))
+    write_operand_list_from(header, ops, 0)
+}
+
+function write_operand_list_from(buf: Vector<Integer>, ops: Vector<Operand>, i: Integer) -> Vector<Integer> = {
+    if i >= length(ops) {
+        buf
+    } else {
+        let next: Vector<Integer> = write_operand(buf, get(ops, i)!!)
+        write_operand_list_from(next, ops, i + 1)
+    }
+}
+
+public struct ReadResultOperandList {
+    value: Vector<Operand>,
+    next_pos: Integer,
+}
+
+public function read_operand_list(data: Vector<Integer>, pos: Integer) -> ReadResultOperandList~TrivError = {
+    let count_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let count: Integer = count_res.value
+    let mutable p: Integer = count_res.next_pos
+    let mutable ops: Vector<Operand> = new()
+    let mutable i: Integer = 0
+    while i < count {
+        let op_res: ReadResultOperand = read_operand(data, p) ~? |err| ~- err
+        ops = push(ops, op_res.value)
+        p = op_res.next_pos
+        i = i + 1
+    }
+    ~+ ReadResultOperandList { value: ops, next_pos: p }
+}
+
+public function write_value_id_list(buf: Vector<Integer>, ids: Vector<ValueId>) -> Vector<Integer> = {
+    let header: Vector<Integer> = write_varint(buf, length(ids))
+    write_value_id_list_from(header, ids, 0)
+}
+
+function write_value_id_list_from(buf: Vector<Integer>, ids: Vector<ValueId>, i: Integer) -> Vector<Integer> = {
+    if i >= length(ids) {
+        buf
+    } else {
+        let id: ValueId = get(ids, i)!!
+        let next: Vector<Integer> = write_varint(buf, id.raw)
+        write_value_id_list_from(next, ids, i + 1)
+    }
+}
+
+public struct ReadResultValueIdList {
+    value: Vector<ValueId>,
+    next_pos: Integer,
+}
+
+public function read_value_id_list(data: Vector<Integer>, pos: Integer) -> ReadResultValueIdList~TrivError = {
+    let count_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let count: Integer = count_res.value
+    let mutable p: Integer = count_res.next_pos
+    let mutable ids: Vector<ValueId> = new()
+    let mutable i: Integer = 0
+    while i < count {
+        let id_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        ids = push(ids, ValueId { raw: id_res.value })
+        p = id_res.next_pos
+        i = i + 1
+    }
+    ~+ ReadResultValueIdList { value: ids, next_pos: p }
+}
+
+// ── PhiIncoming list ─────────────────────────────────────────────
+
+public function write_phi_incoming_list(buf: Vector<Integer>, incs: Vector<PhiIncoming>) -> Vector<Integer> = {
+    let header: Vector<Integer> = write_varint(buf, length(incs))
+    write_phi_incoming_list_from(header, incs, 0)
+}
+
+function write_phi_incoming_list_from(buf: Vector<Integer>, incs: Vector<PhiIncoming>, i: Integer) -> Vector<Integer> = {
+    if i >= length(incs) {
+        buf
+    } else {
+        let inc: PhiIncoming = get(incs, i)!!
+        let s1: Vector<Integer> = write_varint(buf, inc.value.raw)
+        let s2: Vector<Integer> = write_varint(s1, inc.block.raw)
+        write_phi_incoming_list_from(s2, incs, i + 1)
+    }
+}
+
+public struct ReadResultPhiIncomingList {
+    value: Vector<PhiIncoming>,
+    next_pos: Integer,
+}
+
+public function read_phi_incoming_list(data: Vector<Integer>, pos: Integer) -> ReadResultPhiIncomingList~TrivError = {
+    let count_res: ReadResultInteger = read_varint(data, pos) ~? |err| ~- err
+    let count: Integer = count_res.value
+    let mutable p: Integer = count_res.next_pos
+    let mutable incs: Vector<PhiIncoming> = new()
+    let mutable i: Integer = 0
+    while i < count {
+        let v_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+        let b_res: ReadResultInteger = read_varint(data, v_res.next_pos) ~? |err| ~- err
+        incs = push(incs, PhiIncoming {
+            value: ValueId { raw: v_res.value },
+            block: BlockId { raw: b_res.value },
+        })
+        p = b_res.next_pos
+        i = i + 1
+    }
+    ~+ ReadResultPhiIncomingList { value: incs, next_pos: p }
+}
+
+// ── Absolute-path (cross-module call) encoding ───────────────────
+//
+// Rust serde encodes `AbsolutePath` via `to_string()` which produces
+// `<crate>.<seg1>.<seg2>...::<name>`. The Triết-side IR stores the
+// path as `Vector<String>` where the LAST segment is the name and
+// the preceding ones are the module path. Mirror Rust's `Display`:
+// dot-separated module segments, then `::`, then the name.
+
+public function absolute_path_to_string(segments: Vector<String>) -> String = {
+    let total: Integer = length(segments)
+    if total == 0 {
+        ""
+    } else {
+        let name: String = get(segments, total - 1)!!
+        let mutable mod_str: String = ""
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            if i > 0 {
+                mod_str = concat(mod_str, ".")
+            }
+            mod_str = concat(mod_str, get(segments, i)!!)
+            i = i + 1
+        }
+        if total == 1 {
+            concat("::", name)
+        } else {
+            concat(concat(mod_str, "::"), name)
+        }
+    }
+}
+
+/// Parse a Rust-format AbsolutePath ("a.b.c::name") back to the
+/// segments + name shape the Triết IR uses (`Vector<String>` with
+/// name as last entry). The `::` separator marks the name boundary.
+public function string_to_absolute_path(s: String) -> Vector<String> = {
+    let sep_idx: Integer? = find_double_colon(s, 0)
+    let mutable segments: Vector<String> = new()
+    match sep_idx {
+        ~0 => {
+            // No `::` — treat the whole string as a single name.
+            push(segments, s)
+        },
+        _ => {
+            let idx: Integer = sep_idx!!
+            let mod_str: String = substring(s, 0, idx)
+            let name: String = substring(s, idx + 2, text_len(s))
+            // Split mod_str on '.'
+            let mod_segments: Vector<String> = split_on_dot(mod_str)
+            let mutable j: Integer = 0
+            while j < length(mod_segments) {
+                segments = push(segments, get(mod_segments, j)!!)
+                j = j + 1
+            }
+            push(segments, name)
+        },
+    }
+}
+
+// Helpers — text_len / substring / split provided by std.
+// (Triết-side has no `String::find` etc.; loop over chars.)
+
+function find_double_colon(s: String, start: Integer) -> Integer? = {
+    let total: Integer = text_len(s)
+    let mutable i: Integer = start
+    let mutable result: Integer? = ~0
+    let mutable found: Trilean! = false
+    while i + 1 < total && !found {
+        let pair: String = substring(s, i, i + 2)
+        if pair == "::" {
+            result = i
+            found = true
+        }
+        i = i + 1
+    }
+    result
+}
+
+function split_on_dot(s: String) -> Vector<String> = {
+    let total: Integer = text_len(s)
+    let mutable segments: Vector<String> = new()
+    let mutable start: Integer = 0
+    let mutable i: Integer = 0
+    while i < total {
+        let ch: String = substring(s, i, i + 1)
+        if ch == "." {
+            segments = push(segments, substring(s, start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start <= total {
+        segments = push(segments, substring(s, start, total))
+    }
+    segments
+}
+
+// ── Instruction encoder ──────────────────────────────────────────
+
+public function write_instruction(buf: Vector<Integer>, instr: Instruction) -> Vector<Integer> = {
+    match instr {
+        ConstInst(p) => write_inst_const(buf, p),
+        AddInst(p) => write_binary_inst(buf, OPCODE_ADD, p),
+        SubInst(p) => write_binary_inst(buf, OPCODE_SUB, p),
+        MulInst(p) => write_binary_inst(buf, OPCODE_MUL, p),
+        DivInst(p) => write_binary_inst(buf, OPCODE_DIV, p),
+        ModInst(p) => write_binary_inst(buf, OPCODE_MOD, p),
+        PowInst(p) => write_inst_pow(buf, p),
+        NegInst(p) => write_unary_inst(buf, OPCODE_NEG, p),
+        LukAndInst(p) => write_binary_inst(buf, OPCODE_LUK_AND, p),
+        LukOrInst(p) => write_binary_inst(buf, OPCODE_LUK_OR, p),
+        LukImpliesInst(p) => write_binary_inst(buf, OPCODE_LUK_IMPLIES, p),
+        LukXorInst(p) => write_binary_inst(buf, OPCODE_LUK_XOR, p),
+        LukIffInst(p) => write_binary_inst(buf, OPCODE_LUK_IFF, p),
+        KleeneImpliesInst(p) => write_binary_inst(buf, OPCODE_KLEENE_IMPLIES, p),
+        KleeneXorInst(p) => write_binary_inst(buf, OPCODE_KLEENE_XOR, p),
+        KleeneIffInst(p) => write_binary_inst(buf, OPCODE_KLEENE_IFF, p),
+        EqInst(p) => write_binary_inst(buf, OPCODE_EQ, p),
+        NeInst(p) => write_binary_inst(buf, OPCODE_NE, p),
+        LtInst(p) => write_binary_inst(buf, OPCODE_LT, p),
+        LeInst(p) => write_binary_inst(buf, OPCODE_LE, p),
+        GtInst(p) => write_binary_inst(buf, OPCODE_GT, p),
+        GeInst(p) => write_binary_inst(buf, OPCODE_GE, p),
+        ToIntegerInst(p) => write_unary_inst(buf, OPCODE_TO_INTEGER, p),
+        ToTryteInst(p) => write_unary_inst(buf, OPCODE_TO_TRYTE, p),
+        ToLongInst(p) => write_unary_inst(buf, OPCODE_TO_LONG, p),
+        ToTritInst(p) => write_unary_inst(buf, OPCODE_TO_TRIT, p),
+        ToTrileanInst(p) => write_unary_inst(buf, OPCODE_TO_TRILEAN, p),
+        StructNewInst(p) => write_inst_struct_new(buf, p),
+        FieldGetInst(p) => write_inst_field_get(buf, p),
+        FieldSetInst(p) => write_inst_field_set(buf, p),
+        EnumNewInst(p) => write_inst_enum_new(buf, p),
+        EnumTagInst(p) => write_inst_enum_unary(buf, OPCODE_ENUM_TAG, p.dest, p.scrutinee),
+        EnumPayloadInst(p) => write_inst_enum_payload(buf, p),
+        NullWrapInst(p) => write_inst_null_wrap(buf, p),
+        NullUnwrapInst(p) => write_inst_null_unwrap(buf, p),
+        NullCheckInst(p) => write_inst_null_check(buf, p),
+        CallLocalInst(p) => write_inst_call_local(buf, p),
+        CallCrossModuleInst(p) => write_inst_call_cross_module(buf, p),
+        WitnessCallInst(p) => write_inst_witness_call(buf, p),
+        CallBuiltinInst(p) => write_inst_call_builtin(buf, p),
+        ClosureNewInst(p) => write_inst_closure_new(buf, p),
+        ClosureCallInst(p) => write_inst_closure_call(buf, p),
+        BrInst(p) => write_inst_br(buf, p),
+        BrIfInst(p) => write_inst_br_if(buf, p),
+        BrTrileanInst(p) => write_inst_br_trilean(buf, p),
+        RetInst(p) => write_inst_ret(buf, p),
+        UnreachableInst(_) => write_u8(buf, OPCODE_UNREACHABLE),
+        PhiInst(p) => write_inst_phi(buf, p),
+        OutcomeNewPositiveInst(p) => write_outcome_ctor(buf, OPCODE_OUTCOME_NEW_POSITIVE, p),
+        OutcomeNewNegativeInst(p) => write_outcome_ctor(buf, OPCODE_OUTCOME_NEW_NEGATIVE, p),
+        OutcomeNewNullInst(p) => write_outcome_new_null(buf, p),
+        OutcomeDiscriminantInst(p) => write_outcome_unary(buf, OPCODE_OUTCOME_DISCRIMINANT, p),
+        OutcomeUnwrapValueInst(p) => write_outcome_unary(buf, OPCODE_OUTCOME_UNWRAP_VALUE, p),
+        OutcomeUnwrapErrorInst(p) => write_outcome_unary(buf, OPCODE_OUTCOME_UNWRAP_ERROR, p),
+    }
+}
+
+function write_inst_const(buf: Vector<Integer>, p: InstConstPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_CONST)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_varint(s2, p.const_id.raw)
+}
+
+function write_binary_inst(buf: Vector<Integer>, opcode: Integer, p: InstBinaryOpPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, opcode)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    let s3: Vector<Integer> = write_operand(s2, p.lhs)
+    write_operand(s3, p.rhs)
+}
+
+function write_inst_pow(buf: Vector<Integer>, p: InstPowPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_POW)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    let s3: Vector<Integer> = write_operand(s2, p.base)
+    write_operand(s3, p.exp)
+}
+
+function write_unary_inst(buf: Vector<Integer>, opcode: Integer, p: InstUnaryOpPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, opcode)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.operand)
+}
+
+function write_inst_struct_new(buf: Vector<Integer>, p: InstStructNewPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_STRUCT_NEW)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand_list(s2, p.fields)
+}
+
+function write_inst_field_get(buf: Vector<Integer>, p: InstFieldGetPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_FIELD_GET)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    let s3: Vector<Integer> = write_operand(s2, p.object)
+    write_varint(s3, p.field_idx)
+}
+
+function write_inst_field_set(buf: Vector<Integer>, p: InstFieldSetPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_FIELD_SET)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    let s3: Vector<Integer> = write_operand(s2, p.object)
+    let s4: Vector<Integer> = write_varint(s3, p.field_idx)
+    write_operand(s4, p.value)
+}
+
+function write_inst_enum_new(buf: Vector<Integer>, p: InstEnumNewPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_ENUM_NEW)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    let s3: Vector<Integer> = write_varint(s2, p.variant_idx)
+    write_option_operand(s3, p.payload)
+}
+
+function write_inst_enum_unary(buf: Vector<Integer>, opcode: Integer, dest: ValueId, scrutinee: Operand) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, opcode)
+    let s2: Vector<Integer> = write_varint(s1, dest.raw)
+    write_operand(s2, scrutinee)
+}
+
+function write_inst_enum_payload(buf: Vector<Integer>, p: InstEnumPayloadPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_ENUM_PAYLOAD)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.scrutinee)
+}
+
+function write_inst_null_wrap(buf: Vector<Integer>, p: InstNullWrapPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_NULL_WRAP)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.value)
+}
+
+function write_inst_null_unwrap(buf: Vector<Integer>, p: InstNullUnwrapPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_NULL_UNWRAP)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.nullable)
+}
+
+function write_inst_null_check(buf: Vector<Integer>, p: InstNullCheckPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_NULL_CHECK)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.nullable)
+}
+
+function write_inst_call_local(buf: Vector<Integer>, p: InstCallLocalPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_CALL_LOCAL)
+    let s2: Vector<Integer> = write_option_value(s1, p.dest)
+    let s3: Vector<Integer> = write_varint(s2, p.callee.raw)
+    write_operand_list(s3, p.args)
+}
+
+function write_inst_call_cross_module(buf: Vector<Integer>, p: InstCallCrossModulePayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_CALL_CROSS_MODULE)
+    let s2: Vector<Integer> = write_option_value(s1, p.dest)
+    let s3: Vector<Integer> = write_string(s2, absolute_path_to_string(p.path_segments))
+    write_operand_list(s3, p.args)
+}
+
+function write_inst_witness_call(buf: Vector<Integer>, p: InstWitnessCallPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_WITNESS_CALL)
+    let s2: Vector<Integer> = write_option_value(s1, p.dest)
+    let s3: Vector<Integer> = write_string(s2, absolute_path_to_string(p.path_segments))
+    let s4: Vector<Integer> = write_varint(s3, p.witness_idx)
+    write_operand_list(s4, p.args)
+}
+
+function write_inst_call_builtin(buf: Vector<Integer>, p: InstCallBuiltinPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_CALL_BUILTIN)
+    let s2: Vector<Integer> = write_option_value(s1, p.dest)
+    let s3: Vector<Integer> = write_builtin(s2, p.name)
+    write_operand_list(s3, p.args)
+}
+
+function write_inst_closure_new(buf: Vector<Integer>, p: InstClosureNewPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_CLOSURE_NEW)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    let s3: Vector<Integer> = write_varint(s2, p.lambda.raw)
+    write_value_id_list(s3, p.captures)
+}
+
+function write_inst_closure_call(buf: Vector<Integer>, p: InstClosureCallPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_CLOSURE_CALL)
+    let s2: Vector<Integer> = write_option_value(s1, p.dest)
+    let s3: Vector<Integer> = write_operand(s2, p.closure)
+    write_operand_list(s3, p.args)
+}
+
+function write_inst_br(buf: Vector<Integer>, p: InstBrPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_BR)
+    write_varint(s1, p.target.raw)
+}
+
+function write_inst_br_if(buf: Vector<Integer>, p: InstBrIfPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_BR_IF)
+    let s2: Vector<Integer> = write_operand(s1, p.cond)
+    let s3: Vector<Integer> = write_varint(s2, p.then_block.raw)
+    write_varint(s3, p.else_block.raw)
+}
+
+function write_inst_br_trilean(buf: Vector<Integer>, p: InstBrTrileanPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_BR_TRILEAN)
+    let s2: Vector<Integer> = write_operand(s1, p.cond)
+    let s3: Vector<Integer> = write_varint(s2, p.true_block.raw)
+    let s4: Vector<Integer> = write_varint(s3, p.unknown_block.raw)
+    write_varint(s4, p.false_block.raw)
+}
+
+function write_inst_ret(buf: Vector<Integer>, p: InstRetPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_RET)
+    write_option_operand(s1, p.value)
+}
+
+function write_inst_phi(buf: Vector<Integer>, p: InstPhiPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_PHI)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_phi_incoming_list(s2, p.incoming)
+}
+
+function write_outcome_ctor(buf: Vector<Integer>, opcode: Integer, p: InstOutcomeCtorPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, opcode)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.payload)
+}
+
+function write_outcome_new_null(buf: Vector<Integer>, p: InstOutcomeNewNullPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, OPCODE_OUTCOME_NEW_NULL)
+    write_varint(s1, p.dest.raw)
+}
+
+function write_outcome_unary(buf: Vector<Integer>, opcode: Integer, p: InstOutcomeUnaryPayload) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, opcode)
+    let s2: Vector<Integer> = write_varint(s1, p.dest.raw)
+    write_operand(s2, p.source)
+}
+
+// ── Instruction decoder ──────────────────────────────────────────
+
+public struct ReadResultInstruction {
+    value: Instruction,
+    next_pos: Integer,
+}
+
+public function read_instruction(data: Vector<Integer>, pos: Integer) -> ReadResultInstruction~TrivError = {
+    let op_res: ReadResultU8 = read_u8(data, pos) ~? |err| ~- err
+    let opcode: Integer = op_res.value
+    let p: Integer = op_res.next_pos
+    if opcode == OPCODE_CONST { read_inst_const(data, p) }
+    else if opcode == OPCODE_ADD { read_binary_inst(data, p, OPCODE_ADD) }
+    else if opcode == OPCODE_SUB { read_binary_inst(data, p, OPCODE_SUB) }
+    else if opcode == OPCODE_MUL { read_binary_inst(data, p, OPCODE_MUL) }
+    else if opcode == OPCODE_DIV { read_binary_inst(data, p, OPCODE_DIV) }
+    else if opcode == OPCODE_MOD { read_binary_inst(data, p, OPCODE_MOD) }
+    else if opcode == OPCODE_POW { read_inst_pow(data, p) }
+    else if opcode == OPCODE_NEG { read_unary_inst(data, p, OPCODE_NEG) }
+    else if opcode == OPCODE_LUK_AND { read_binary_inst(data, p, OPCODE_LUK_AND) }
+    else if opcode == OPCODE_LUK_OR { read_binary_inst(data, p, OPCODE_LUK_OR) }
+    else if opcode == OPCODE_LUK_IMPLIES { read_binary_inst(data, p, OPCODE_LUK_IMPLIES) }
+    else if opcode == OPCODE_LUK_XOR { read_binary_inst(data, p, OPCODE_LUK_XOR) }
+    else if opcode == OPCODE_LUK_IFF { read_binary_inst(data, p, OPCODE_LUK_IFF) }
+    else if opcode == OPCODE_KLEENE_IMPLIES { read_binary_inst(data, p, OPCODE_KLEENE_IMPLIES) }
+    else if opcode == OPCODE_KLEENE_XOR { read_binary_inst(data, p, OPCODE_KLEENE_XOR) }
+    else if opcode == OPCODE_KLEENE_IFF { read_binary_inst(data, p, OPCODE_KLEENE_IFF) }
+    else if opcode == OPCODE_EQ { read_binary_inst(data, p, OPCODE_EQ) }
+    else if opcode == OPCODE_NE { read_binary_inst(data, p, OPCODE_NE) }
+    else if opcode == OPCODE_LT { read_binary_inst(data, p, OPCODE_LT) }
+    else if opcode == OPCODE_LE { read_binary_inst(data, p, OPCODE_LE) }
+    else if opcode == OPCODE_GT { read_binary_inst(data, p, OPCODE_GT) }
+    else if opcode == OPCODE_GE { read_binary_inst(data, p, OPCODE_GE) }
+    else if opcode == OPCODE_TO_INTEGER { read_unary_inst(data, p, OPCODE_TO_INTEGER) }
+    else if opcode == OPCODE_TO_TRYTE { read_unary_inst(data, p, OPCODE_TO_TRYTE) }
+    else if opcode == OPCODE_TO_LONG { read_unary_inst(data, p, OPCODE_TO_LONG) }
+    else if opcode == OPCODE_TO_TRIT { read_unary_inst(data, p, OPCODE_TO_TRIT) }
+    else if opcode == OPCODE_TO_TRILEAN { read_unary_inst(data, p, OPCODE_TO_TRILEAN) }
+    else if opcode == OPCODE_STRUCT_NEW { read_inst_struct_new(data, p) }
+    else if opcode == OPCODE_FIELD_GET { read_inst_field_get(data, p) }
+    else if opcode == OPCODE_FIELD_SET { read_inst_field_set(data, p) }
+    else if opcode == OPCODE_ENUM_NEW { read_inst_enum_new(data, p) }
+    else if opcode == OPCODE_ENUM_TAG { read_inst_enum_tag(data, p) }
+    else if opcode == OPCODE_ENUM_PAYLOAD { read_inst_enum_payload(data, p) }
+    else if opcode == OPCODE_NULL_WRAP { read_inst_null_wrap(data, p) }
+    else if opcode == OPCODE_NULL_UNWRAP { read_inst_null_unwrap(data, p) }
+    else if opcode == OPCODE_NULL_CHECK { read_inst_null_check(data, p) }
+    else if opcode == OPCODE_CALL_LOCAL { read_inst_call_local(data, p) }
+    else if opcode == OPCODE_CALL_CROSS_MODULE { read_inst_call_cross_module(data, p) }
+    else if opcode == OPCODE_CALL_BUILTIN { read_inst_call_builtin(data, p) }
+    else if opcode == OPCODE_WITNESS_CALL { read_inst_witness_call(data, p) }
+    else if opcode == OPCODE_CLOSURE_NEW { read_inst_closure_new(data, p) }
+    else if opcode == OPCODE_CLOSURE_CALL { read_inst_closure_call(data, p) }
+    else if opcode == OPCODE_BR { read_inst_br(data, p) }
+    else if opcode == OPCODE_BR_IF { read_inst_br_if(data, p) }
+    else if opcode == OPCODE_RET { read_inst_ret(data, p) }
+    else if opcode == OPCODE_UNREACHABLE { ~+ ReadResultInstruction { value: UnreachableInst(primitive_marker()), next_pos: p } }
+    else if opcode == OPCODE_BR_TRILEAN { read_inst_br_trilean(data, p) }
+    else if opcode == OPCODE_PHI { read_inst_phi(data, p) }
+    else if opcode == OPCODE_OUTCOME_NEW_POSITIVE { read_outcome_ctor(data, p, OPCODE_OUTCOME_NEW_POSITIVE) }
+    else if opcode == OPCODE_OUTCOME_NEW_NEGATIVE { read_outcome_ctor(data, p, OPCODE_OUTCOME_NEW_NEGATIVE) }
+    else if opcode == OPCODE_OUTCOME_NEW_NULL { read_outcome_new_null(data, p) }
+    else if opcode == OPCODE_OUTCOME_DISCRIMINANT { read_outcome_unary(data, p, OPCODE_OUTCOME_DISCRIMINANT) }
+    else if opcode == OPCODE_OUTCOME_UNWRAP_VALUE { read_outcome_unary(data, p, OPCODE_OUTCOME_UNWRAP_VALUE) }
+    else if opcode == OPCODE_OUTCOME_UNWRAP_ERROR { read_outcome_unary(data, p, OPCODE_OUTCOME_UNWRAP_ERROR) }
+    else { ~- Corrupted(TrivErrorCorrupted { message: "unknown opcode" }) }
+}
+
+function read_inst_const(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let c_res: ReadResultInteger = read_varint(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: ConstInst(InstConstPayload {
+            dest: ValueId { raw: dest_res.value },
+            const_id: ConstId { raw: c_res.value },
+        }),
+        next_pos: c_res.next_pos,
+    }
+}
+
+function read_binary_inst(data: Vector<Integer>, p: Integer, opcode: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let lhs_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let rhs_res: ReadResultOperand = read_operand(data, lhs_res.next_pos) ~? |err| ~- err
+    let payload: InstBinaryOpPayload = InstBinaryOpPayload {
+        dest: ValueId { raw: dest_res.value },
+        lhs: lhs_res.value,
+        rhs: rhs_res.value,
+    }
+    let inst: Instruction = construct_binary_inst(opcode, payload)
+    ~+ ReadResultInstruction { value: inst, next_pos: rhs_res.next_pos }
+}
+
+function construct_binary_inst(opcode: Integer, payload: InstBinaryOpPayload) -> Instruction = {
+    if opcode == OPCODE_ADD { AddInst(payload) }
+    else if opcode == OPCODE_SUB { SubInst(payload) }
+    else if opcode == OPCODE_MUL { MulInst(payload) }
+    else if opcode == OPCODE_DIV { DivInst(payload) }
+    else if opcode == OPCODE_MOD { ModInst(payload) }
+    else if opcode == OPCODE_LUK_AND { LukAndInst(payload) }
+    else if opcode == OPCODE_LUK_OR { LukOrInst(payload) }
+    else if opcode == OPCODE_LUK_IMPLIES { LukImpliesInst(payload) }
+    else if opcode == OPCODE_LUK_XOR { LukXorInst(payload) }
+    else if opcode == OPCODE_LUK_IFF { LukIffInst(payload) }
+    else if opcode == OPCODE_KLEENE_IMPLIES { KleeneImpliesInst(payload) }
+    else if opcode == OPCODE_KLEENE_XOR { KleeneXorInst(payload) }
+    else if opcode == OPCODE_KLEENE_IFF { KleeneIffInst(payload) }
+    else if opcode == OPCODE_EQ { EqInst(payload) }
+    else if opcode == OPCODE_NE { NeInst(payload) }
+    else if opcode == OPCODE_LT { LtInst(payload) }
+    else if opcode == OPCODE_LE { LeInst(payload) }
+    else if opcode == OPCODE_GT { GtInst(payload) }
+    else if opcode == OPCODE_GE { GeInst(payload) }
+    else { AddInst(payload) }
+}
+
+function read_inst_pow(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let base_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let exp_res: ReadResultOperand = read_operand(data, base_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: PowInst(InstPowPayload {
+            dest: ValueId { raw: dest_res.value },
+            base: base_res.value,
+            exp: exp_res.value,
+        }),
+        next_pos: exp_res.next_pos,
+    }
+}
+
+function read_unary_inst(data: Vector<Integer>, p: Integer, opcode: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let op_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let payload: InstUnaryOpPayload = InstUnaryOpPayload {
+        dest: ValueId { raw: dest_res.value },
+        operand: op_res.value,
+    }
+    let inst: Instruction = construct_unary_inst(opcode, payload)
+    ~+ ReadResultInstruction { value: inst, next_pos: op_res.next_pos }
+}
+
+function construct_unary_inst(opcode: Integer, payload: InstUnaryOpPayload) -> Instruction = {
+    if opcode == OPCODE_NEG { NegInst(payload) }
+    else if opcode == OPCODE_TO_INTEGER { ToIntegerInst(payload) }
+    else if opcode == OPCODE_TO_TRYTE { ToTryteInst(payload) }
+    else if opcode == OPCODE_TO_LONG { ToLongInst(payload) }
+    else if opcode == OPCODE_TO_TRIT { ToTritInst(payload) }
+    else if opcode == OPCODE_TO_TRILEAN { ToTrileanInst(payload) }
+    else { NegInst(payload) }
+}
+
+function read_inst_struct_new(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let fields_res: ReadResultOperandList = read_operand_list(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: StructNewInst(InstStructNewPayload {
+            dest: ValueId { raw: dest_res.value },
+            fields: fields_res.value,
+        }),
+        next_pos: fields_res.next_pos,
+    }
+}
+
+function read_inst_field_get(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let obj_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let idx_res: ReadResultInteger = read_varint(data, obj_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: FieldGetInst(InstFieldGetPayload {
+            dest: ValueId { raw: dest_res.value },
+            object: obj_res.value,
+            field_idx: idx_res.value,
+        }),
+        next_pos: idx_res.next_pos,
+    }
+}
+
+function read_inst_field_set(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let obj_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let idx_res: ReadResultInteger = read_varint(data, obj_res.next_pos) ~? |err| ~- err
+    let val_res: ReadResultOperand = read_operand(data, idx_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: FieldSetInst(InstFieldSetPayload {
+            dest: ValueId { raw: dest_res.value },
+            object: obj_res.value,
+            field_idx: idx_res.value,
+            value: val_res.value,
+        }),
+        next_pos: val_res.next_pos,
+    }
+}
+
+function read_inst_enum_new(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let idx_res: ReadResultInteger = read_varint(data, dest_res.next_pos) ~? |err| ~- err
+    let pay_res: ReadResultOptionOperand = read_option_operand(data, idx_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: EnumNewInst(InstEnumNewPayload {
+            dest: ValueId { raw: dest_res.value },
+            variant_idx: idx_res.value,
+            payload: pay_res.value,
+        }),
+        next_pos: pay_res.next_pos,
+    }
+}
+
+function read_inst_enum_tag(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let scr_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: EnumTagInst(InstEnumTagPayload {
+            dest: ValueId { raw: dest_res.value },
+            scrutinee: scr_res.value,
+        }),
+        next_pos: scr_res.next_pos,
+    }
+}
+
+function read_inst_enum_payload(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let scr_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: EnumPayloadInst(InstEnumPayloadPayload {
+            dest: ValueId { raw: dest_res.value },
+            scrutinee: scr_res.value,
+        }),
+        next_pos: scr_res.next_pos,
+    }
+}
+
+function read_inst_null_wrap(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let val_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: NullWrapInst(InstNullWrapPayload {
+            dest: ValueId { raw: dest_res.value },
+            value: val_res.value,
+        }),
+        next_pos: val_res.next_pos,
+    }
+}
+
+function read_inst_null_unwrap(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let val_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: NullUnwrapInst(InstNullUnwrapPayload {
+            dest: ValueId { raw: dest_res.value },
+            nullable: val_res.value,
+        }),
+        next_pos: val_res.next_pos,
+    }
+}
+
+function read_inst_null_check(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let val_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: NullCheckInst(InstNullCheckPayload {
+            dest: ValueId { raw: dest_res.value },
+            nullable: val_res.value,
+        }),
+        next_pos: val_res.next_pos,
+    }
+}
+
+function read_inst_call_local(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultOptionValue = read_option_value(data, p) ~? |err| ~- err
+    let callee_res: ReadResultInteger = read_varint(data, dest_res.next_pos) ~? |err| ~- err
+    let args_res: ReadResultOperandList = read_operand_list(data, callee_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: CallLocalInst(InstCallLocalPayload {
+            dest: dest_res.value,
+            callee: FuncId { raw: callee_res.value },
+            args: args_res.value,
+        }),
+        next_pos: args_res.next_pos,
+    }
+}
+
+function read_inst_call_cross_module(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultOptionValue = read_option_value(data, p) ~? |err| ~- err
+    let path_res: ReadResultString = read_string(data, dest_res.next_pos) ~? |err| ~- err
+    let args_res: ReadResultOperandList = read_operand_list(data, path_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: CallCrossModuleInst(InstCallCrossModulePayload {
+            dest: dest_res.value,
+            path_segments: string_to_absolute_path(path_res.value),
+            args: args_res.value,
+        }),
+        next_pos: args_res.next_pos,
+    }
+}
+
+function read_inst_call_builtin(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultOptionValue = read_option_value(data, p) ~? |err| ~- err
+    let name_res: ReadResultBuiltin = read_builtin(data, dest_res.next_pos) ~? |err| ~- err
+    let args_res: ReadResultOperandList = read_operand_list(data, name_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: CallBuiltinInst(InstCallBuiltinPayload {
+            dest: dest_res.value,
+            name: name_res.value,
+            args: args_res.value,
+        }),
+        next_pos: args_res.next_pos,
+    }
+}
+
+function read_inst_witness_call(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultOptionValue = read_option_value(data, p) ~? |err| ~- err
+    let path_res: ReadResultString = read_string(data, dest_res.next_pos) ~? |err| ~- err
+    let widx_res: ReadResultInteger = read_varint(data, path_res.next_pos) ~? |err| ~- err
+    let args_res: ReadResultOperandList = read_operand_list(data, widx_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: WitnessCallInst(InstWitnessCallPayload {
+            dest: dest_res.value,
+            path_segments: string_to_absolute_path(path_res.value),
+            witness_idx: widx_res.value,
+            args: args_res.value,
+        }),
+        next_pos: args_res.next_pos,
+    }
+}
+
+function read_inst_closure_new(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let lam_res: ReadResultInteger = read_varint(data, dest_res.next_pos) ~? |err| ~- err
+    let caps_res: ReadResultValueIdList = read_value_id_list(data, lam_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: ClosureNewInst(InstClosureNewPayload {
+            dest: ValueId { raw: dest_res.value },
+            lambda: FuncId { raw: lam_res.value },
+            captures: caps_res.value,
+        }),
+        next_pos: caps_res.next_pos,
+    }
+}
+
+function read_inst_closure_call(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultOptionValue = read_option_value(data, p) ~? |err| ~- err
+    let clo_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let args_res: ReadResultOperandList = read_operand_list(data, clo_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: ClosureCallInst(InstClosureCallPayload {
+            dest: dest_res.value,
+            closure: clo_res.value,
+            args: args_res.value,
+        }),
+        next_pos: args_res.next_pos,
+    }
+}
+
+function read_inst_br(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let tgt_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: BrInst(InstBrPayload { target: BlockId { raw: tgt_res.value } }),
+        next_pos: tgt_res.next_pos,
+    }
+}
+
+function read_inst_br_if(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let cond_res: ReadResultOperand = read_operand(data, p) ~? |err| ~- err
+    let then_res: ReadResultInteger = read_varint(data, cond_res.next_pos) ~? |err| ~- err
+    let else_res: ReadResultInteger = read_varint(data, then_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: BrIfInst(InstBrIfPayload {
+            cond: cond_res.value,
+            then_block: BlockId { raw: then_res.value },
+            else_block: BlockId { raw: else_res.value },
+        }),
+        next_pos: else_res.next_pos,
+    }
+}
+
+function read_inst_br_trilean(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let cond_res: ReadResultOperand = read_operand(data, p) ~? |err| ~- err
+    let true_res: ReadResultInteger = read_varint(data, cond_res.next_pos) ~? |err| ~- err
+    let unk_res: ReadResultInteger = read_varint(data, true_res.next_pos) ~? |err| ~- err
+    let false_res: ReadResultInteger = read_varint(data, unk_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: BrTrileanInst(InstBrTrileanPayload {
+            cond: cond_res.value,
+            true_block: BlockId { raw: true_res.value },
+            unknown_block: BlockId { raw: unk_res.value },
+            false_block: BlockId { raw: false_res.value },
+        }),
+        next_pos: false_res.next_pos,
+    }
+}
+
+function read_inst_ret(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let val_res: ReadResultOptionOperand = read_option_operand(data, p) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: RetInst(InstRetPayload { value: val_res.value }),
+        next_pos: val_res.next_pos,
+    }
+}
+
+function read_inst_phi(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let incs_res: ReadResultPhiIncomingList = read_phi_incoming_list(data, dest_res.next_pos) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: PhiInst(InstPhiPayload {
+            dest: ValueId { raw: dest_res.value },
+            incoming: incs_res.value,
+        }),
+        next_pos: incs_res.next_pos,
+    }
+}
+
+function read_outcome_ctor(data: Vector<Integer>, p: Integer, opcode: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let pay_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let payload: InstOutcomeCtorPayload = InstOutcomeCtorPayload {
+        dest: ValueId { raw: dest_res.value },
+        payload: pay_res.value,
+    }
+    let inst: Instruction = if opcode == OPCODE_OUTCOME_NEW_POSITIVE {
+        OutcomeNewPositiveInst(payload)
+    } else {
+        OutcomeNewNegativeInst(payload)
+    }
+    ~+ ReadResultInstruction { value: inst, next_pos: pay_res.next_pos }
+}
+
+function read_outcome_new_null(data: Vector<Integer>, p: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    ~+ ReadResultInstruction {
+        value: OutcomeNewNullInst(InstOutcomeNewNullPayload { dest: ValueId { raw: dest_res.value } }),
+        next_pos: dest_res.next_pos,
+    }
+}
+
+function read_outcome_unary(data: Vector<Integer>, p: Integer, opcode: Integer) -> ReadResultInstruction~TrivError = {
+    let dest_res: ReadResultInteger = read_varint(data, p) ~? |err| ~- err
+    let src_res: ReadResultOperand = read_operand(data, dest_res.next_pos) ~? |err| ~- err
+    let payload: InstOutcomeUnaryPayload = InstOutcomeUnaryPayload {
+        dest: ValueId { raw: dest_res.value },
+        source: src_res.value,
+    }
+    let inst: Instruction = if opcode == OPCODE_OUTCOME_DISCRIMINANT {
+        OutcomeDiscriminantInst(payload)
+    } else if opcode == OPCODE_OUTCOME_UNWRAP_VALUE {
+        OutcomeUnwrapValueInst(payload)
+    } else {
+        OutcomeUnwrapErrorInst(payload)
+    }
+    ~+ ReadResultInstruction { value: inst, next_pos: src_res.next_pos }
+}
+
+// ── Global type-table collection across all modules ──────────────
+//
+// Mirrors `collect_type_table` in Rust serde: walks every function's
+// param + return type plus every constant's tag, building a flat
+// de-duplicated `TypeTagArena` keyed by index. Composites recurse
+// post-order so an inner type always lands before its container.
+// First entry is always `Unit` (index 0).
+
+/// Walk a type from its OWNING arena (`source`) and insert it (plus
+/// every transitive inner reference) into the GLOBAL arena `dest`.
+/// Composite tags rebuild their `inner` field to point at the global
+/// arena's index rather than the source arena's. Returns the updated
+/// global arena.
+function add_type(dest: TypeTagArena, source: TypeTagArena, ty: TypeTag) -> TypeTagArena =
+    match ty {
+        NullableTag(p) => {
+            let inner_ty: TypeTag = lookup_or_unit(source, p.inner)
+            let after: TypeTagArena = add_type(dest, source, inner_ty)
+            let inner_idx: Integer = global_type_index(after, inner_ty)
+            let remapped: TypeTag = NullableTag(TypeTagNullablePayload { inner: inner_idx })
+            intern_global_type(after, remapped)
+        },
+        VectorTag(p) => {
+            let inner_ty: TypeTag = lookup_or_unit(source, p.inner)
+            let after: TypeTagArena = add_type(dest, source, inner_ty)
+            let inner_idx: Integer = global_type_index(after, inner_ty)
+            let remapped: TypeTag = VectorTag(TypeTagVectorPayload { inner: inner_idx })
+            intern_global_type(after, remapped)
+        },
+        HashMapTag(p) => {
+            let k_ty: TypeTag = lookup_or_unit(source, p.key)
+            let v_ty: TypeTag = lookup_or_unit(source, p.value)
+            let a1: TypeTagArena = add_type(dest, source, k_ty)
+            let a2: TypeTagArena = add_type(a1, source, v_ty)
+            let k_idx: Integer = global_type_index(a2, k_ty)
+            let v_idx: Integer = global_type_index(a2, v_ty)
+            let remapped: TypeTag = HashMapTag(TypeTagHashMapPayload { key: k_idx, value: v_idx })
+            intern_global_type(a2, remapped)
+        },
+        OutcomeTag(p) => {
+            let v_ty: TypeTag = lookup_or_unit(source, p.value_type)
+            let e_ty: TypeTag = lookup_or_unit(source, p.error_type)
+            let a1: TypeTagArena = add_type(dest, source, v_ty)
+            let a2: TypeTagArena = add_type(a1, source, e_ty)
+            let v_idx: Integer = global_type_index(a2, v_ty)
+            let e_idx: Integer = global_type_index(a2, e_ty)
+            let remapped: TypeTag = OutcomeTag(TypeTagOutcomePayload {
+                value_type: v_idx,
+                error_type: e_idx,
+                allow_null_state: p.allow_null_state,
+            })
+            intern_global_type(a2, remapped)
+        },
+        _ => intern_global_type(dest, ty),
+    }
+
+/// Insert a primitive or already-remapped composite into the global
+/// arena. Idempotent — no-op if the tag is already present.
+function intern_global_type(arena: TypeTagArena, ty: TypeTag) -> TypeTagArena = {
+    if global_type_index(arena, ty) < 0 {
+        let res: AllocTagResult = alloc_type_tag(arena, ty)
+        res.arena
+    } else {
+        arena
+    }
+}
+
+function lookup_or_unit(arena: TypeTagArena, idx: Integer) -> TypeTag = {
+    let opt: TypeTag? = get_type_tag(arena, idx)
+    match opt {
+        ~0 => UnitTag(primitive_marker()),
+        _ => opt!!,
+    }
+}
+
+/// Linear-scan index lookup. Returns -1 if absent. Uses TypeTag
+/// structural equality (Triết's `==` on enums).
+function global_type_index(arena: TypeTagArena, ty: TypeTag) -> Integer = {
+    let total: Integer = length(arena.tags)
+    let mutable i: Integer = 0
+    let mutable found: Integer = -1
+    while i < total && found < 0 {
+        if type_tag_eq(get(arena.tags, i)!!, ty) {
+            found = i
+        }
+        i = i + 1
+    }
+    found
+}
+
+/// Triết-side VM has no structural `==` for enum values (see
+/// `runtime_eq` in crates/triet-ir/src/vm.rs), so we hand-roll the
+/// comparison by discriminator-byte + payload fields. For composite
+/// types the inner Integer indices are compared directly — this is
+/// safe because `add_type` rewrites composites to GLOBAL indices
+/// BEFORE handing them to `intern_global_type`.
+function type_tag_eq(a: TypeTag, b: TypeTag) -> Trilean! = {
+    let da: Integer = type_tag_discriminator(a)
+    let db: Integer = type_tag_discriminator(b)
+    if da != db { return false }
+    if da == TYPE_TAG_NULLABLE { type_tag_nullable_inner(a) == type_tag_nullable_inner(b) }
+    else if da == TYPE_TAG_VECTOR { type_tag_vector_inner(a) == type_tag_vector_inner(b) }
+    else if da == TYPE_TAG_HASHMAP {
+        type_tag_hashmap_key(a) == type_tag_hashmap_key(b)
+            && type_tag_hashmap_value(a) == type_tag_hashmap_value(b)
+    }
+    else if da == TYPE_TAG_OUTCOME {
+        type_tag_outcome_value(a) == type_tag_outcome_value(b)
+            && type_tag_outcome_error(a) == type_tag_outcome_error(b)
+            && type_tag_outcome_allow_null(a) == type_tag_outcome_allow_null(b)
+    }
+    else { true }
+}
+
+function type_tag_discriminator(ty: TypeTag) -> Integer =
+    match ty {
+        TritTag(_) => TYPE_TAG_TRIT,
+        TryteTag(_) => TYPE_TAG_TRYTE,
+        IntegerTag(_) => TYPE_TAG_INTEGER,
+        LongTag(_) => TYPE_TAG_LONG,
+        TrileanTag(_) => TYPE_TAG_TRILEAN,
+        StringTag(_) => TYPE_TAG_STRING,
+        UnitTag(_) => TYPE_TAG_UNIT,
+        NullableTag(_) => TYPE_TAG_NULLABLE,
+        VectorTag(_) => TYPE_TAG_VECTOR,
+        HashMapTag(_) => TYPE_TAG_HASHMAP,
+        OutcomeTag(_) => TYPE_TAG_OUTCOME,
+    }
+
+function type_tag_nullable_inner(ty: TypeTag) -> Integer =
+    match ty {
+        NullableTag(p) => p.inner,
+        _ => -1,
+    }
+
+function type_tag_vector_inner(ty: TypeTag) -> Integer =
+    match ty {
+        VectorTag(p) => p.inner,
+        _ => -1,
+    }
+
+function type_tag_hashmap_key(ty: TypeTag) -> Integer =
+    match ty {
+        HashMapTag(p) => p.key,
+        _ => -1,
+    }
+
+function type_tag_hashmap_value(ty: TypeTag) -> Integer =
+    match ty {
+        HashMapTag(p) => p.value,
+        _ => -1,
+    }
+
+function type_tag_outcome_value(ty: TypeTag) -> Integer =
+    match ty {
+        OutcomeTag(p) => p.value_type,
+        _ => -1,
+    }
+
+function type_tag_outcome_error(ty: TypeTag) -> Integer =
+    match ty {
+        OutcomeTag(p) => p.error_type,
+        _ => -1,
+    }
+
+function type_tag_outcome_allow_null(ty: TypeTag) -> Trilean! =
+    match ty {
+        OutcomeTag(p) => p.allow_null_state,
+        _ => false,
+    }
+
+/// Build the global type table from an IrProgram. Each function's
+/// param + return type tag IDs reference the OWNING MODULE's local
+/// `type_arena`; we resolve them to concrete TypeTags then re-intern
+/// into the global arena (rewriting composite inner indices).
+public function collect_type_table(program: IrProgram) -> TypeTagArena = {
+    let mutable arena: TypeTagArena = type_tag_arena_new()
+    arena = alloc_type_tag(arena, UnitTag(primitive_marker())).arena
+    let m_total: Integer = length(program.modules)
+    let mutable m_idx: Integer = 0
+    while m_idx < m_total {
+        let m: IrModule = get(program.modules, m_idx)!!
+        let f_total: Integer = length(m.functions)
+        let mutable f_idx: Integer = 0
+        while f_idx < f_total {
+            let f: Function = get(m.functions, f_idx)!!
+            let p_total: Integer = length(f.parameters)
+            let mutable p_idx: Integer = 0
+            while p_idx < p_total {
+                let param: IrFunctionParam = get(f.parameters, p_idx)!!
+                let pty: TypeTag = lookup_or_unit(m.type_arena, param.type_tag_id)
+                arena = add_type(arena, m.type_arena, pty)
+                p_idx = p_idx + 1
+            }
+            let rty: TypeTag = lookup_or_unit(m.type_arena, f.return_type_id)
+            arena = add_type(arena, m.type_arena, rty)
+            f_idx = f_idx + 1
+        }
+        m_idx = m_idx + 1
+    }
+    // Constants: each constant's type tag is a primitive (or
+    // Nullable<Unit> for NullConst); inner is always Unit which is
+    // already at index 0 by construction. We build the tag in a
+    // scratch arena (for shape) then add it via the dest path.
+    let c_total: Integer = length(program.constants.entries)
+    let mutable c_idx: Integer = 0
+    while c_idx < c_total {
+        let c: Constant = get(program.constants.entries, c_idx)!!
+        let scratch: AllocTagResult = constant_type_tag(type_tag_arena_new(), c)
+        let scratch_arena: TypeTagArena = scratch.arena
+        let ctag: TypeTag = get_type_tag(scratch_arena, scratch.tag_id)!!
+        arena = add_type(arena, scratch_arena, ctag)
+        c_idx = c_idx + 1
+    }
+    arena
+}
+
+// ── Function table + Code section ────────────────────────────────
+
+public function write_function_table(buf: Vector<Integer>, program: IrProgram, types: TypeTagArena) -> Vector<Integer> = {
+    let count: Integer = total_function_count(program)
+    let header: Vector<Integer> = write_varint(buf, count)
+    write_function_metas(header, program, types, 0)
+}
+
+// Helper: count total functions across all modules. Bound to its own
+// function to dodge a Triết lowerer ValueKind-tracking gap where
+// `get(vec, i)!!.field` inline chains lose struct identity.
+public function total_function_count(program: IrProgram) -> Integer = {
+    let mutable count: Integer = 0
+    let m_total: Integer = length(program.modules)
+    let mutable m_idx: Integer = 0
+    while m_idx < m_total {
+        let m: IrModule = get(program.modules, m_idx)!!
+        count = count + length(m.functions)
+        m_idx = m_idx + 1
+    }
+    count
+}
+
+function write_function_metas(buf: Vector<Integer>, program: IrProgram, types: TypeTagArena, m_idx: Integer) -> Vector<Integer> = {
+    if m_idx >= length(program.modules) {
+        buf
+    } else {
+        let m: IrModule = get(program.modules, m_idx)!!
+        let mod_path: String = module_path_display(m.path_segments)
+        let after_funcs: Vector<Integer> = write_module_funcs(buf, m, mod_path, types, 0)
+        write_function_metas(after_funcs, program, types, m_idx + 1)
+    }
+}
+
+function write_module_funcs(buf: Vector<Integer>, m: IrModule, mod_path: String, types: TypeTagArena, f_idx: Integer) -> Vector<Integer> = {
+    if f_idx >= length(m.functions) {
+        buf
+    } else {
+        let f: Function = get(m.functions, f_idx)!!
+        let s1: Vector<Integer> = write_string(buf, mod_path)
+        let s2: Vector<Integer> = match f.name {
+            ~0 => write_u8(s1, 0),
+            _ => {
+                let h: Vector<Integer> = write_u8(s1, 1)
+                write_string(h, f.name!!)
+            },
+        }
+        let s3: Vector<Integer> = write_varint(s2, length(f.parameters))
+        let s4: Vector<Integer> = write_func_params(s3, m, f.parameters, types, 0)
+        let ret_ty: TypeTag = lookup_or_unit(m.type_arena, f.return_type_id)
+        let ret_idx: Integer = lookup_global_index(types, m.type_arena, ret_ty)
+        let s5: Vector<Integer> = write_varint(s4, ret_idx)
+        write_module_funcs(s5, m, mod_path, types, f_idx + 1)
+    }
+}
+
+function write_func_params(buf: Vector<Integer>, m: IrModule, params: Vector<IrFunctionParam>, types: TypeTagArena, p_idx: Integer) -> Vector<Integer> = {
+    if p_idx >= length(params) {
+        buf
+    } else {
+        let p: IrFunctionParam = get(params, p_idx)!!
+        let s1: Vector<Integer> = write_string(buf, p.name)
+        let pty: TypeTag = lookup_or_unit(m.type_arena, p.type_tag_id)
+        let p_idx_global: Integer = lookup_global_index(types, m.type_arena, pty)
+        let s2: Vector<Integer> = write_varint(s1, p_idx_global)
+        write_func_params(s2, m, params, types, p_idx + 1)
+    }
+}
+
+/// Look up a source-arena TypeTag's index in the global arena.
+/// Walks the composite tree to remap inner indices from source to
+/// global, then performs a structural-equality scan.
+function lookup_global_index(global: TypeTagArena, source: TypeTagArena, ty: TypeTag) -> Integer = {
+    let remapped: TypeTag = remap_to_global(global, source, ty)
+    global_type_index(global, remapped)
+}
+
+function remap_to_global(global: TypeTagArena, source: TypeTagArena, ty: TypeTag) -> TypeTag =
+    match ty {
+        NullableTag(p) => {
+            let inner_ty: TypeTag = lookup_or_unit(source, p.inner)
+            let inner_remapped: TypeTag = remap_to_global(global, source, inner_ty)
+            let inner_idx: Integer = global_type_index(global, inner_remapped)
+            NullableTag(TypeTagNullablePayload { inner: inner_idx })
+        },
+        VectorTag(p) => {
+            let inner_ty: TypeTag = lookup_or_unit(source, p.inner)
+            let inner_remapped: TypeTag = remap_to_global(global, source, inner_ty)
+            let inner_idx: Integer = global_type_index(global, inner_remapped)
+            VectorTag(TypeTagVectorPayload { inner: inner_idx })
+        },
+        HashMapTag(p) => {
+            let k_ty: TypeTag = lookup_or_unit(source, p.key)
+            let v_ty: TypeTag = lookup_or_unit(source, p.value)
+            let k_remapped: TypeTag = remap_to_global(global, source, k_ty)
+            let v_remapped: TypeTag = remap_to_global(global, source, v_ty)
+            let k_idx: Integer = global_type_index(global, k_remapped)
+            let v_idx: Integer = global_type_index(global, v_remapped)
+            HashMapTag(TypeTagHashMapPayload { key: k_idx, value: v_idx })
+        },
+        OutcomeTag(p) => {
+            let v_ty: TypeTag = lookup_or_unit(source, p.value_type)
+            let e_ty: TypeTag = lookup_or_unit(source, p.error_type)
+            let v_remapped: TypeTag = remap_to_global(global, source, v_ty)
+            let e_remapped: TypeTag = remap_to_global(global, source, e_ty)
+            let v_idx: Integer = global_type_index(global, v_remapped)
+            let e_idx: Integer = global_type_index(global, e_remapped)
+            OutcomeTag(TypeTagOutcomePayload {
+                value_type: v_idx,
+                error_type: e_idx,
+                allow_null_state: p.allow_null_state,
+            })
+        },
+        _ => ty,
+    }
+
+/// Module path display matching Rust's `AbsolutePath::to_string` for
+/// the per-module sentinel `AbsolutePath { module_path: segments,
+/// name: "" }`. Rust display is `"{segments.join('.')}.{name}"` —
+/// empty segments + empty name yields `.` (one byte).
+public function module_path_display(segments: Vector<String>) -> String = {
+    let total: Integer = length(segments)
+    let mutable mod_str: String = ""
+    let mutable i: Integer = 0
+    while i < total {
+        if i > 0 {
+            mod_str = concat(mod_str, ".")
+        }
+        mod_str = concat(mod_str, get(segments, i)!!)
+        i = i + 1
+    }
+    // Append `.{name}` per Rust AbsolutePath::Display. Name is always
+    // "" for the IR module sentinel, so result = "<mod>.".
+    concat(mod_str, ".")
+}
+
+// ── Code section ─────────────────────────────────────────────────
+
+public function write_code(buf: Vector<Integer>, program: IrProgram) -> Vector<Integer> = {
+    let count: Integer = total_function_count(program)
+    let header: Vector<Integer> = write_varint(buf, count)
+    write_code_modules(header, program, 0)
+}
+
+function write_code_modules(buf: Vector<Integer>, program: IrProgram, m_idx: Integer) -> Vector<Integer> = {
+    if m_idx >= length(program.modules) {
+        buf
+    } else {
+        let m: IrModule = get(program.modules, m_idx)!!
+        let after: Vector<Integer> = write_code_module_funcs(buf, m, 0)
+        write_code_modules(after, program, m_idx + 1)
+    }
+}
+
+function write_code_module_funcs(buf: Vector<Integer>, m: IrModule, f_idx: Integer) -> Vector<Integer> = {
+    if f_idx >= length(m.functions) {
+        buf
+    } else {
+        let f: Function = get(m.functions, f_idx)!!
+        let s1: Vector<Integer> = write_varint(buf, length(f.blocks))
+        let s2: Vector<Integer> = write_blocks(s1, f.blocks, 0)
+        write_code_module_funcs(s2, m, f_idx + 1)
+    }
+}
+
+function write_blocks(buf: Vector<Integer>, blocks: Vector<BasicBlock>, i: Integer) -> Vector<Integer> = {
+    if i >= length(blocks) {
+        buf
+    } else {
+        let b: BasicBlock = get(blocks, i)!!
+        let s1: Vector<Integer> = write_varint(buf, b.id.raw)
+        let name_str: String = match b.name {
+            ~0 => "",
+            _ => b.name!!,
+        }
+        let s2: Vector<Integer> = write_string(s1, name_str)
+        let s3: Vector<Integer> = write_varint(s2, length(b.instructions))
+        let s4: Vector<Integer> = write_instructions(s3, b.instructions, 0)
+        write_blocks(s4, blocks, i + 1)
+    }
+}
+
+function write_instructions(buf: Vector<Integer>, instrs: Vector<Instruction>, i: Integer) -> Vector<Integer> = {
+    if i >= length(instrs) {
+        buf
+    } else {
+        let next: Vector<Integer> = write_instruction(buf, get(instrs, i)!!)
+        write_instructions(next, instrs, i + 1)
+    }
+}
+
+// ── Top-level write_program ──────────────────────────────────────
+
+public function write_program(program: IrProgram) -> Vector<Integer> = {
+    let types: TypeTagArena = collect_type_table(program)
+    let type_payload: Vector<Integer> = write_type_table(new(), types)
+    let cw: ConstantPoolWriteResult = write_constants_with_types(new(), program.constants, types)
+    let const_payload: Vector<Integer> = cw.buf
+    let func_payload: Vector<Integer> = write_function_table(new(), program, types)
+    let code_payload: Vector<Integer> = write_code(new(), program)
+
+    let mutable buf: Vector<Integer> = new()
+    buf = push(buf, TRIV_MAGIC_T)
+    buf = push(buf, TRIV_MAGIC_R)
+    buf = push(buf, TRIV_MAGIC_I)
+    buf = push(buf, TRIV_MAGIC_V)
+    buf = write_u32_le(buf, TRIV_VERSION)
+    // Witness tables empty for single-package builds at v0.7.9 — 4 sections.
+    buf = write_u32_le(buf, 4)
+    buf = write_section(buf, SEC_TYPES, type_payload)
+    buf = write_section(buf, SEC_CONSTANTS, const_payload)
+    buf = write_section(buf, SEC_FUNCTIONS, func_payload)
+    buf = write_section(buf, SEC_CODE, code_payload)
+    buf
+}
+
+/// Variant of `write_constants` that takes a pre-built global types
+/// arena (instead of building incrementally). Each constant's type
+/// index is looked up against the global table — matching Rust's
+/// `write_constants(buf, pool, &types)` flow.
+public function write_constants_with_types(
+    buf: Vector<Integer>,
+    pool: ConstantPool,
+    types: TypeTagArena,
+) -> ConstantPoolWriteResult = {
+    let header: Vector<Integer> = write_varint(buf, length(pool.entries))
+    let final_buf: Vector<Integer> = write_constants_with_types_from(header, pool.entries, types, 0)
+    ConstantPoolWriteResult { buf: final_buf, arena: types }
+}
+
+function write_constants_with_types_from(
+    buf: Vector<Integer>,
+    entries: Vector<Constant>,
+    types: TypeTagArena,
+    i: Integer,
+) -> Vector<Integer> = {
+    if i >= length(entries) {
+        buf
+    } else {
+        let c: Constant = get(entries, i)!!
+        let scratch: AllocTagResult = constant_type_tag(type_tag_arena_new(), c)
+        let scratch_arena: TypeTagArena = scratch.arena
+        let tag: TypeTag = get_type_tag(scratch_arena, scratch.tag_id)!!
+        let idx: Integer = lookup_global_index(types, scratch_arena, tag)
+        let next: Vector<Integer> = write_constant(buf, c, idx)
+        write_constants_with_types_from(next, entries, types, i + 1)
+    }
+}
+
+public function write_section(buf: Vector<Integer>, section_id: Integer, payload: Vector<Integer>) -> Vector<Integer> = {
+    let s1: Vector<Integer> = write_u8(buf, section_id)
+    let s2: Vector<Integer> = write_u32_le(s1, length(payload))
+    write_bytes(s2, payload)
+}
+
+// ── Entry: source → bytes ────────────────────────────────────────
+
+public function serialize_source_to_triv(source: String) -> Vector<Integer> = {
+    let ir: IrProgram = lower_source(source)
+    write_program(ir)
+}
+
+public function debug_function_table(source: String) -> Vector<Integer> = {
+    let ir: IrProgram = lower_source(source)
+    let types: TypeTagArena = collect_type_table(ir)
+    write_function_table(new(), ir, types)
+}
+
+public function debug_function_count(source: String) -> Integer = {
+    let ir: IrProgram = lower_source(source)
+    let mutable count: Integer = 0
+    let m_total: Integer = length(ir.modules)
+    let mutable m_idx: Integer = 0
+    while m_idx < m_total {
+        count = count + length(get(ir.modules, m_idx)!!.functions)
+        m_idx = m_idx + 1
+    }
+    count
+}
+
+public function debug_program_shape(source: String) -> Integer = {
+    let ir: IrProgram = lower_source(source)
+    let m_count: Integer = length(ir.modules)
+    let mutable fn_total: Integer = 0
+    let mutable i: Integer = 0
+    while i < m_count {
+        let m: IrModule = get(ir.modules, i)!!
+        fn_total = fn_total + length(m.functions)
+        i = i + 1
+    }
+    // Encoding: m_count * 1000 + fn_total
+    m_count * 1000 + fn_total
 }
 
 // ── Smoke entry — synthetic round-trip per v0.7.9.1 acceptance ─────
