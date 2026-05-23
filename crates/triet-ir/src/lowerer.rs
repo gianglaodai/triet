@@ -1996,6 +1996,8 @@ impl<'a> LowerCtx<'a> {
                     },
                 ],
             });
+            let pre_kind = self.kind_of_value(pre_val);
+            self.set_value_kind(phi_dest, pre_kind);
             self.rebind_var(name, phi_dest);
         }
         merge_dest
