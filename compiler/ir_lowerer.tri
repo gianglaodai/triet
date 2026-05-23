@@ -57,7 +57,7 @@ from std.text import concat, from_integer, len as text_len
 from std.assert import assert
 
 from crate.parser.lexer import SpannedToken, LexError, lex
-from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item
+from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
 from crate.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
 from crate.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
 from crate.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
@@ -65,10 +65,13 @@ from crate.parser import TypeExpr, NamedType, GenericType, TupleType, NullableTy
 from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
 from crate.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
 from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
+from crate.parser import StructDef, StructField, EnumDef, EnumVariant
+from crate.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
+from crate.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern
 from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from crate.parser import UnaryOperator, Negate
 from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, NamedTypePayload, GenericTypePayload
+from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, RangePayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -1077,6 +1080,15 @@ public struct LoopContext {
     continue_target: BlockId,
 }
 
+// v0.7.8.4: per-enum variant resolution. Looking up a bare
+// variant name (e.g. `Some` in `enum Option { None, Some(I) }`)
+// returns the parent enum name + 0-based variant index, so the
+// lowerer can emit `EnumNew { variant_idx, … }`.
+public struct VariantInfo {
+    enum_name: String,
+    variant_idx: Integer,
+}
+
 public struct LowerCtx {
     parser_arena: Arena,
     value_counter: Integer,
@@ -1094,6 +1106,18 @@ public struct LowerCtx {
     // v0.7.8.3: loop nesting stack for Break/Continue branch
     // resolution. Innermost active loop is top of stack.
     loop_stack: Vector<LoopContext>,
+    // v0.7.8.4: struct-name → ordered field-name vector. Resolves
+    // `FieldGet`'s `field_idx` from the source-level field name.
+    struct_fields: HashMap<String, Vector<String>>,
+    // v0.7.8.4: bare variant name → owning enum + position.
+    // Bare-identifier callee form (`Some(42)`) and tuple-variant
+    // call resolution land alongside StructLiteral parser surface
+    // in v0.7.8.4+.
+    variant_index: HashMap<String, VariantInfo>,
+    // v0.7.8.4: enum-name → ordered variant-name vector. Mirrors
+    // `struct_fields` shape so the same `EnumTag` resolution flow
+    // can index into it.
+    enum_variants: HashMap<String, Vector<String>>,
 }
 
 public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
@@ -1111,6 +1135,9 @@ public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
         return_type_id: 0,
         func_table: hashmap_new(),
         loop_stack: new(),
+        struct_fields: hashmap_new(),
+        variant_index: hashmap_new(),
+        enum_variants: hashmap_new(),
     }
 }
 
@@ -1134,6 +1161,9 @@ function ctx_with_value_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
@@ -1149,6 +1179,9 @@ function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx =
@@ -1164,6 +1197,9 @@ function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx 
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
@@ -1179,6 +1215,9 @@ function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
@@ -1194,6 +1233,9 @@ function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
@@ -1209,6 +1251,9 @@ function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
@@ -1224,6 +1269,9 @@ function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
@@ -1239,6 +1287,9 @@ function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
         return_type_id: tid,
         func_table: ctx.func_table,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_func_table(ctx: LowerCtx, ft: HashMap<String, FuncId>) -> LowerCtx =
@@ -1254,6 +1305,9 @@ function ctx_with_func_table(ctx: LowerCtx, ft: HashMap<String, FuncId>) -> Lowe
         return_type_id: ctx.return_type_id,
         func_table: ft,
         loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
     }
 
 function ctx_with_loop_stack(ctx: LowerCtx, ls: Vector<LoopContext>) -> LowerCtx =
@@ -1269,6 +1323,63 @@ function ctx_with_loop_stack(ctx: LowerCtx, ls: Vector<LoopContext>) -> LowerCtx
         return_type_id: ctx.return_type_id,
         func_table: ctx.func_table,
         loop_stack: ls,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
+    }
+
+function ctx_with_struct_fields(ctx: LowerCtx, sf: HashMap<String, Vector<String>>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
+        struct_fields: sf,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
+    }
+
+function ctx_with_variant_index(ctx: LowerCtx, vi: HashMap<String, VariantInfo>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: vi,
+        enum_variants: ctx.enum_variants,
+    }
+
+function ctx_with_enum_variants(ctx: LowerCtx, ev: HashMap<String, Vector<String>>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ev,
     }
 
 // ── Fresh ValueId / BlockId ──────────────────────────────────────
@@ -1548,7 +1659,26 @@ function lower_null_literal(ctx: LowerCtx) -> LowerExprResult = {
 function lower_identifier(ctx: LowerCtx, name: String) -> LowerExprResult = {
     let v_opt: ValueId? = resolve_var(ctx, name)
     match v_opt {
-        ~0 => fresh_value(ctx),
+        ~0 => {
+            // v0.7.8.4: bare-identifier referring to a unit enum
+            // variant (e.g. `None` in `enum Option { None, Some(I) }`).
+            // The parser leaves it as `IdentifierExpr`; we promote
+            // to `EnumNew { variant_idx, payload: ~0 }`. Mirrors
+            // Rust lowerer.rs:1015-1033.
+            match hashmap_get(ctx.variant_index, name) {
+                ~0 => fresh_value(ctx),
+                _ => {
+                    let info: VariantInfo = hashmap_get(ctx.variant_index, name)!!
+                    let dest_r: LowerExprResult = fresh_value(ctx)
+                    let inst: Instruction = EnumNewInst(InstEnumNewPayload {
+                        dest: dest_r.value_id,
+                        variant_idx: info.variant_idx,
+                        payload: ~0,
+                    })
+                    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+                },
+            }
+        },
         _ => LowerExprResult { ctx: ctx, value_id: v_opt!! },
     }
 }
@@ -1704,6 +1834,29 @@ function lower_call(ctx: LowerCtx, call: CallPayload) -> LowerExprResult = {
         _ => "",
     }
 
+    // v0.7.8.4: tuple-variant promotion. `Some(42)` parses as
+    // `CallExpr { callee: Identifier("Some"), args: [42] }`; the
+    // type-checker resolves it but the parser doesn't rewrite the
+    // node. Promote to `EnumNew` here so the IR carries proper
+    // variant identity. Mirrors lowerer.rs:2996-3005.
+    match hashmap_get(st.variant_index, callee_name) {
+        ~0 => { },
+        _ => {
+            let info: VariantInfo = hashmap_get(st.variant_index, callee_name)!!
+            let mutable payload_opt: Operand? = ~0
+            if arg_total > 0 {
+                payload_opt = get(arg_ops, 0)
+            }
+            let dest_r: LowerExprResult = fresh_value(st)
+            let inst: Instruction = EnumNewInst(InstEnumNewPayload {
+                dest: dest_r.value_id,
+                variant_idx: info.variant_idx,
+                payload: payload_opt,
+            })
+            return LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+        },
+    }
+
     // Builtin path first — matches Rust precedence.
     let builtin_opt: BuiltinName? = resolve_builtin_name(callee_name)
     match builtin_opt {
@@ -1740,6 +1893,120 @@ function lower_call(ctx: LowerCtx, call: CallPayload) -> LowerExprResult = {
     fresh_value(st)
 }
 
+// ── v0.7.8.4: struct field access, outcome constructors ──────────
+
+// Resolve a struct's field index by name. Linear scan over the
+// ordered field-name vector populated by lower_module pass 1.
+// Returns 0 on a miss — `FieldGet` with an invalid field_idx
+// is a typecheck-caught condition.
+function resolve_field_idx(ctx: LowerCtx, struct_name: String, field_name: String) -> Integer = {
+    let fields_opt: Vector<String>? = hashmap_get(ctx.struct_fields, struct_name)
+    match fields_opt {
+        ~0 => 0,
+        _ => {
+            let fields: Vector<String> = fields_opt!!
+            let total: Integer = length(fields)
+            let mutable idx: Integer = 0
+            let mutable found: Trilean! = false
+            while idx < total && !found {
+                let n_opt: String? = get(fields, idx)
+                if n_opt!! == field_name {
+                    found = true
+                } else {
+                    idx = idx + 1
+                }
+            }
+            if found { idx } else { 0 }
+        },
+    }
+}
+
+// `lower_field_access` — emits `FieldGet { object, field_idx }`.
+// `field_idx` resolution defers to v0.7.8.4 follow-up when the
+// ValueKind tracking machinery (ADR-0023) lands; for now we walk
+// the parser-side type information attached to the object's
+// expression — if the object is a bare `Identifier` whose declared
+// type is a known struct, look up the field index from
+// `struct_fields`. Otherwise emit `field_idx = 0` as a placeholder.
+function lower_field_access(ctx: LowerCtx, p: FieldAccessPayload) -> LowerExprResult = {
+    let obj_r: LowerExprResult = lower_expression(ctx, p.object)
+    // TODO(v0.7.8.4 followup, ADR-0023): the Rust impl tracks
+    // per-ValueId ValueKind to walk struct identity through
+    // Nullable/Outcome wrappers. v0.7.8.4 ports the declaration
+    // tables but not the ValueKind tracker — field_idx falls back
+    // to 0 here. Once ValueKind lands, callers will resolve the
+    // correct slot via `resolve_field_idx(carrier, p.field)`.
+    let dest_r: LowerExprResult = fresh_value(obj_r.ctx)
+    let inst: Instruction = FieldGetInst(InstFieldGetPayload {
+        dest: dest_r.value_id,
+        object: ValueOp(obj_r.value_id),
+        field_idx: 0,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+// `lower_outcome_constructor` — emits the appropriate Outcome
+// opcode based on the constructor arm. `~+ x` →
+// `OutcomeNewPositive`, `~- x` → `OutcomeNewNegative`, `~0` →
+// `OutcomeNewNull` (no payload). Mirrors Rust lowerer's
+// `Expr::OutcomeConstructor` arm.
+function lower_outcome_constructor(
+    ctx: LowerCtx,
+    p: OutcomeConstructorPayload,
+) -> LowerExprResult = {
+    match p.arm {
+        ZeroArm => {
+            let dest_r: LowerExprResult = fresh_value(ctx)
+            let inst: Instruction = OutcomeNewNullInst(InstOutcomeNewNullPayload {
+                dest: dest_r.value_id,
+            })
+            LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+        },
+        PositiveArm => {
+            match p.payload {
+                ~0 => fresh_value(ctx),
+                _ => {
+                    let pay_r: LowerExprResult = lower_expression(ctx, p.payload!!)
+                    let dest_r: LowerExprResult = fresh_value(pay_r.ctx)
+                    let inst: Instruction = OutcomeNewPositiveInst(InstOutcomeCtorPayload {
+                        dest: dest_r.value_id,
+                        payload: ValueOp(pay_r.value_id),
+                    })
+                    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+                },
+            }
+        },
+        NegativeArm => {
+            match p.payload {
+                ~0 => fresh_value(ctx),
+                _ => {
+                    let pay_r: LowerExprResult = lower_expression(ctx, p.payload!!)
+                    let dest_r: LowerExprResult = fresh_value(pay_r.ctx)
+                    let inst: Instruction = OutcomeNewNegativeInst(InstOutcomeCtorPayload {
+                        dest: dest_r.value_id,
+                        payload: ValueOp(pay_r.value_id),
+                    })
+                    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+                },
+            }
+        },
+    }
+}
+
+// `lower_range_expr` — emits the two endpoint expressions and
+// returns the END value (a Range value itself has no runtime
+// representation pre-iterator; the For-loop driver consumes the
+// start/end pair directly when it sees `Iterable = Range`). The
+// IR encoding is the lowerer's responsibility; v0.7.8.4 emits a
+// placeholder fresh value for now — full range materialization
+// (StructNew of a `Range { start, end, inclusive }` aggregate)
+// defers alongside StructLiteralExpr parser surface.
+function lower_range_expr(ctx: LowerCtx, p: RangePayload) -> LowerExprResult = {
+    let start_r: LowerExprResult = lower_expression(ctx, p.range_start)
+    let end_r: LowerExprResult = lower_expression(start_r.ctx, p.range_end)
+    fresh_value(end_r.ctx)
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -1753,8 +2020,11 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         BinaryOpExpr(p) => lower_binary_op(ctx, p.operator, p.left, p.right),
         ForceUnwrapExpr(inner_id) => lower_force_unwrap(ctx, inner_id),
         CallExpr(call) => lower_call(ctx, call),
-        // FieldAccess / MethodCall / Outcome* / Elvis / Range defer
-        // to v0.7.8.{4,5}. Emit a placeholder fresh value so
+        FieldAccessExpr(p) => lower_field_access(ctx, p),
+        OutcomeConstructorExpr(p) => lower_outcome_constructor(ctx, p),
+        RangeExpr(p) => lower_range_expr(ctx, p),
+        // MethodCall / OutcomePropagate / OutcomeDefault / Elvis
+        // defer to v0.7.8.{5,6}. Emit a placeholder fresh value so
         // downstream lowering keeps progressing on programs that
         // touch unsupported expression variants — the differential
         // gate (v0.7.8.6) catches shape mismatches.
@@ -1853,7 +2123,7 @@ function lower_loop_stmt(ctx: LowerCtx, p: LoopStmtPayload) -> LowerCtx = {
         break_target: exit_blk.block_id,
         continue_target: body_blk.block_id,
     }
-    st = ctx_with_loop_stack(st, push(st.loop_stack, lc))
+    st = ctx_with_loop_stack(st, push(ctx_loop_stack(st), lc))
     st = push_scope(st)
     let body_r: LowerExprResult = lower_block(st, p.body)
     st = body_r.ctx
@@ -2004,6 +2274,15 @@ function emit_phi_placeholder(
     LowerExprResult { ctx: st, value_id: dest_r.value_id }
 }
 
+// Read-only field accessors. Defining these so the lowerer's
+// `field_idx` resolution (driven by ValueKind tracking — see
+// ADR-0023) stays accurate even after `st = result.ctx` rebinds
+// that lose the LowerCtx kind tag. Calling
+// `ctx_current_block_idx(st)` re-enters a typed-parameter context.
+function ctx_current_block_idx(ctx: LowerCtx) -> Integer = ctx.current_block_idx
+function ctx_blocks(ctx: LowerCtx) -> Vector<BasicBlock> = ctx.blocks
+function ctx_loop_stack(ctx: LowerCtx) -> Vector<LoopContext> = ctx.loop_stack
+
 // Get the BlockId of the block at the given index. Defensive `~0`
 // fallback shouldn't fire — callers always pass a valid index from
 // `current_block_idx`.
@@ -2055,7 +2334,7 @@ function lower_while_loop(ctx: LowerCtx, p: WhileStmtPayload) -> LowerCtx = {
     // Step 4: header block — emit Phi placeholders. Same sentinel
     // pattern for `phi_dests` (raw = -1 → no phi for this slot).
     st = start_block(st, header_r.block_id, "while_header")
-    let header_block_idx: Integer = st.current_block_idx
+    let header_block_idx: Integer = ctx_current_block_idx(st)
     let mutable phi_dests: Vector<ValueId> = new()
     i = 0
     while i < mutated_total {
@@ -2110,9 +2389,9 @@ function lower_while_loop(ctx: LowerCtx, p: WhileStmtPayload) -> LowerCtx = {
     st = pop_scope(st)
 
     // Step 8: patch header's Phi placeholders with body-end edges.
-    let body_end_block_idx: Integer = st.current_block_idx
+    let body_end_block_idx: Integer = ctx_current_block_idx(st)
     let body_end_block_id: BlockId = block_id_at(st, body_end_block_idx)
-    let mutable patched_blocks: Vector<BasicBlock> = st.blocks
+    let mutable patched_blocks: Vector<BasicBlock> = ctx_blocks(st)
     i = 0
     while i < mutated_total {
         let pd_e_opt: ValueId? = get(phi_dests, i)
@@ -2158,6 +2437,234 @@ function lower_while_loop(ctx: LowerCtx, p: WhileStmtPayload) -> LowerCtx = {
     start_block(st, exit_r.block_id, "while_exit")
 }
 
+// ── v0.7.8.4: For loop over Range ────────────────────────────────
+//
+// Mirrors `lower_for_loop` in the Rust lowerer (lines 2179+),
+// specialized to the Range case (the general iterator protocol
+// defers post-v0.7.8 since it needs closures or a state machine
+// value per ADR-0019 §A7.8).
+//
+// Shape:
+//   pre:        Const(start) → %s, Const(end) → %e, Br header
+//   header:     %c = Phi [(%s, pre)], cond = %c < %e,
+//               BrTrilean cond → body | exit | exit
+//   body:       bind pattern.var → %c
+//               <body>
+//               %c_next = Add %c, Const(1)
+//               Br header  (with phi patched [(%s, pre), (%c_next, body_end)])
+//   exit:       (new current block)
+//
+// Variable assigned inside the body get their own phi nodes too,
+// via the same `collect_assigned_vars` machinery as While.
+
+// Extract identifier name from a pattern. Returns "" for
+// wildcard or any non-identifier pattern (those don't bind a
+// name; the counter SSA value just flows through unused).
+function pattern_var_name(arena: Arena, pattern_id: Integer) -> String = {
+    let spanned: SpannedPattern = get_pattern(arena, pattern_id)
+    match spanned.node {
+        IdentifierPattern(sp) => sp.text,
+        _ => "",
+    }
+}
+
+function lower_for_loop(ctx: LowerCtx, p: ForStmtPayload) -> LowerCtx = {
+    let arena: Arena = ctx.parser_arena
+
+    // Only Range iterables supported at v0.7.8.4. Other iterators
+    // (Vector, generic iterator protocol) defer post-v0.7.8.
+    let iter_spanned: SpannedExpr = get_expression(arena, p.iterable)
+    let mutable st: LowerCtx = ctx
+    let mutable start_val: ValueId = ValueId { raw: 0 }
+    let mutable end_val: ValueId = ValueId { raw: 0 }
+    let mutable is_range: Trilean! = false
+    match iter_spanned.node {
+        RangeExpr(rp) => {
+            let s_r: LowerExprResult = lower_expression(st, rp.range_start)
+            st = s_r.ctx
+            start_val = s_r.value_id
+            let e_r: LowerExprResult = lower_expression(st, rp.range_end)
+            st = e_r.ctx
+            end_val = e_r.value_id
+            is_range = true
+        },
+        _ => {
+            // Non-range iterable — defer to v0.7.8.4 followup. For
+            // now still lower the iterable (side-effects) but the
+            // For body runs once with an Unknown counter value.
+            let dummy_r: LowerExprResult = lower_expression(st, p.iterable)
+            st = dummy_r.ctx
+        },
+    }
+
+    if !is_range {
+        // Lower the body once as straight-line code (without
+        // counter / phi), then bail. Matches the v0.7.7.4 pattern-
+        // binding-only behavior.
+        st = push_scope(st)
+        let body_r: LowerExprResult = lower_block(st, p.body)
+        st = body_r.ctx
+        return pop_scope(st)
+    }
+
+    // Pattern variable name (for binding inside body).
+    let var_name: String = pattern_var_name(arena, p.variable)
+
+    // Collect mutated vars in body (Phi candidates beyond the counter).
+    let mutated: Vector<String> = collect_assigned_vars(arena, p.body)
+    let mutated_total: Integer = length(mutated)
+
+    let pre_block_idx: Integer = ctx_current_block_idx(st)
+    let pre_block_id: BlockId = block_id_at(st, pre_block_idx)
+    let mutable pre_vals: Vector<ValueId> = new()
+    let mutable mi: Integer = 0
+    while mi < mutated_total {
+        let n_opt: String? = get(mutated, mi)
+        let v_opt: ValueId? = resolve_var(st, n_opt!!)
+        let pre_v: ValueId = match v_opt {
+            ~0 => ValueId { raw: -1 },
+            _ => v_opt!!,
+        }
+        pre_vals = push(pre_vals, pre_v)
+        mi = mi + 1
+    }
+
+    // Spawn header / body / exit blocks.
+    let header_r: FreshBlockResult = fresh_block(st)
+    st = header_r.ctx
+    let body_blk_r: FreshBlockResult = fresh_block(st)
+    st = body_blk_r.ctx
+    let exit_r: FreshBlockResult = fresh_block(st)
+    st = exit_r.ctx
+
+    // Br from pre-block into header.
+    st = emit(st, BrInst(InstBrPayload { target: header_r.block_id }))
+
+    // Header block: counter phi + body-var phis + cond check.
+    st = start_block(st, header_r.block_id, "for_header")
+    let header_block_idx: Integer = ctx_current_block_idx(st)
+
+    // Counter phi (always present for Range).
+    let counter_phi: LowerExprResult = emit_phi_placeholder(st, start_val, pre_block_id)
+    st = counter_phi.ctx
+
+    // Body-mutated var phis.
+    let mutable phi_dests: Vector<ValueId> = new()
+    mi = 0
+    while mi < mutated_total {
+        let pre_v_e_opt: ValueId? = get(pre_vals, mi)
+        let pre_v: ValueId = pre_v_e_opt!!
+        if pre_v.raw < 0 {
+            phi_dests = push(phi_dests, ValueId { raw: -1 })
+        } else {
+            let phi_r: LowerExprResult = emit_phi_placeholder(st, pre_v, pre_block_id)
+            st = phi_r.ctx
+            phi_dests = push(phi_dests, phi_r.value_id)
+            let n_opt: String? = get(mutated, mi)
+            st = bind_var(st, n_opt!!, phi_r.value_id)
+        }
+        mi = mi + 1
+    }
+
+    // Condition: counter < end. Emit Lt instruction.
+    let cond_r: LowerExprResult = fresh_value(st)
+    st = cond_r.ctx
+    st = emit(st, LtInst(InstBinaryOpPayload {
+        dest: cond_r.value_id,
+        lhs: ValueOp(counter_phi.value_id),
+        rhs: ValueOp(end_val),
+    }))
+
+    // BrTrilean (cond) → body | exit | exit (Lt always produces a
+    // Trilean! so Unknown branch is unreachable but the opcode
+    // requires three targets).
+    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(cond_r.value_id),
+        true_block: body_blk_r.block_id,
+        unknown_block: exit_r.block_id,
+        false_block: exit_r.block_id,
+    }))
+
+    // Body block: bind counter to pattern var, lower body, increment.
+    st = start_block(st, body_blk_r.block_id, "for_body")
+    if var_name != "" {
+        st = bind_var(st, var_name, counter_phi.value_id)
+    }
+    // Push LoopContext for break/continue.
+    let lc: LoopContext = LoopContext {
+        break_target: exit_r.block_id,
+        continue_target: header_r.block_id,
+    }
+    st = ctx_with_loop_stack(st, push(ctx_loop_stack(st), lc))
+    st = push_scope(st)
+    let body_r: LowerExprResult = lower_block(st, p.body)
+    st = body_r.ctx
+    st = pop_scope(st)
+    st = loop_stack_pop(st)
+
+    // Increment counter: %c_next = %c + 1.
+    let one_intern: InternCtxResult = intern_constant(st, IntegerConst(ConstantIntegerPayload { value: 1 }))
+    st = one_intern.ctx
+    let one_dest: LowerExprResult = fresh_value(st)
+    st = emit(one_dest.ctx, ConstInst(InstConstPayload {
+        dest: one_dest.value_id,
+        const_id: one_intern.const_id,
+    }))
+    let inc_dest: LowerExprResult = fresh_value(st)
+    st = emit(inc_dest.ctx, AddInst(InstBinaryOpPayload {
+        dest: inc_dest.value_id,
+        lhs: ValueOp(counter_phi.value_id),
+        rhs: ValueOp(one_dest.value_id),
+    }))
+
+    // Patch phi placeholders with body-end edges. Counter phi
+    // gets [(start_val, pre_block), (inc_dest, body_end_block)];
+    // user-var phis get [(pre_val, pre_block), (cur_val,
+    // body_end_block)].
+    let body_end_block_idx: Integer = ctx_current_block_idx(st)
+    let body_end_block_id: BlockId = block_id_at(st, body_end_block_idx)
+    let mutable patched_blocks: Vector<BasicBlock> = ctx_blocks(st)
+
+    // Counter phi patch.
+    let mutable counter_inc: Vector<PhiIncoming> = new()
+    counter_inc = push(counter_inc, PhiIncoming { value: start_val, block: pre_block_id })
+    counter_inc = push(counter_inc, PhiIncoming { value: inc_dest.value_id, block: body_end_block_id })
+    patched_blocks = patch_phi_incoming(patched_blocks, header_block_idx, counter_phi.value_id, counter_inc)
+
+    // User-var phi patches.
+    mi = 0
+    while mi < mutated_total {
+        let pd_e_opt: ValueId? = get(phi_dests, mi)
+        let phi_d: ValueId = pd_e_opt!!
+        if phi_d.raw >= 0 {
+            let nm_opt: String? = get(mutated, mi)
+            let nm: String = nm_opt!!
+            let cur_v_opt: ValueId? = resolve_var(st, nm)
+            match cur_v_opt {
+                ~0 => { },
+                _ => {
+                    let pre_v_e_opt2: ValueId? = get(pre_vals, mi)
+                    let pre_v: ValueId = pre_v_e_opt2!!
+                    let mutable inc_list: Vector<PhiIncoming> = new()
+                    inc_list = push(inc_list, PhiIncoming { value: pre_v, block: pre_block_id })
+                    inc_list = push(inc_list, PhiIncoming { value: cur_v_opt!!, block: body_end_block_id })
+                    patched_blocks = patch_phi_incoming(patched_blocks, header_block_idx, phi_d, inc_list)
+                },
+            }
+        }
+        mi = mi + 1
+    }
+    st = ctx_with_blocks(st, patched_blocks)
+
+    // Br back to header.
+    if !current_block_has_terminator(st) {
+        st = emit(st, BrInst(InstBrPayload { target: header_r.block_id }))
+    }
+
+    // Start exit block.
+    start_block(st, exit_r.block_id, "for_exit")
+}
+
 public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
     let spanned: SpannedStmt = get_statement(ctx.parser_arena, stmt_id)
     match spanned.node {
@@ -2170,9 +2677,7 @@ public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
         BreakStmt(p) => lower_break_stmt(ctx, p),
         ContinueStmt => lower_continue_stmt(ctx),
         WhileStmt(p) => lower_while_loop(ctx, p),
-        // For lowering defers to v0.7.8.3c — needs Range counter
-        // synthesis on top of the same phi-insertion primitive
-        // landed here.
+        ForStmt(p) => lower_for_loop(ctx, p),
         _ => ctx,
     }
 }
@@ -2236,6 +2741,9 @@ function lower_function(
         return_type_id: ctx_outer.return_type_id,
         func_table: ctx_outer.func_table,
         loop_stack: ctx_outer.loop_stack,
+        struct_fields: ctx_outer.struct_fields,
+        variant_index: ctx_outer.variant_index,
+        enum_variants: ctx_outer.enum_variants,
     }
     ctx = push_scope(ctx)
 
@@ -2313,14 +2821,57 @@ function function_with_blocks(fn: Function, blocks: Vector<BasicBlock>) -> Funct
 // when the multi-module driver lands alongside the wire format.
 
 public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModule = {
-    // Pass 1: collect function definitions in source order.
-    let mut_funcs_total: Integer = length(item_ids)
-    let mutable function_defs: Vector<FunctionDef> = new()
-    let mutable i: Integer = 0
-    while i < mut_funcs_total {
-        let id_opt: Integer? = get(item_ids, i)
+    // Pass 1a (v0.7.8.4): register struct + enum declarations so
+    // FieldGet's `field_idx` and EnumNew's `variant_idx` resolve
+    // by source-level name. Mirrors lowerer.rs:39-62 (Pass 1a).
+    let item_total: Integer = length(item_ids)
+    let mutable struct_fields: HashMap<String, Vector<String>> = hashmap_new()
+    let mutable enum_variants: HashMap<String, Vector<String>> = hashmap_new()
+    let mutable variant_index: HashMap<String, VariantInfo> = hashmap_new()
+    let mutable items_i: Integer = 0
+    while items_i < item_total {
+        let id_opt: Integer? = get(item_ids, items_i)
         let spanned: SpannedItem = get_item(arena, id_opt!!)
         match spanned.node {
+            StructItem(sd) => {
+                let mutable names: Vector<String> = new()
+                let f_total: Integer = length(sd.fields)
+                let mutable fi: Integer = 0
+                while fi < f_total {
+                    let f_opt: StructField? = get(sd.fields, fi)
+                    names = push(names, f_opt!!.name)
+                    fi = fi + 1
+                }
+                struct_fields = insert(struct_fields, sd.name, names)
+            },
+            EnumItem(ed) => {
+                let mutable vnames: Vector<String> = new()
+                let v_total: Integer = length(ed.variants)
+                let mutable vi: Integer = 0
+                while vi < v_total {
+                    let v_opt: EnumVariant? = get(ed.variants, vi)
+                    let v: EnumVariant = v_opt!!
+                    vnames = push(vnames, v.name)
+                    variant_index = insert(variant_index, v.name, VariantInfo {
+                        enum_name: ed.name,
+                        variant_idx: vi,
+                    })
+                    vi = vi + 1
+                }
+                enum_variants = insert(enum_variants, ed.name, vnames)
+            },
+            _ => { },
+        }
+        items_i = items_i + 1
+    }
+
+    // Pass 1b: collect function definitions in source order.
+    let mutable function_defs: Vector<FunctionDef> = new()
+    let mutable i: Integer = 0
+    while i < item_total {
+        let id_opt2: Integer? = get(item_ids, i)
+        let spanned2: SpannedItem = get_item(arena, id_opt2!!)
+        match spanned2.node {
             FunctionItem(def) => { function_defs = push(function_defs, def) },
             _ => { },
         }
@@ -2334,6 +2885,9 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModul
     let mod_path: Vector<String> = new()
     let mutable ir_mod: IrModule = ir_module_new(mod_path)
     let mutable ctx: LowerCtx = lower_ctx_new(arena)
+    ctx = ctx_with_struct_fields(ctx, struct_fields)
+    ctx = ctx_with_variant_index(ctx, variant_index)
+    ctx = ctx_with_enum_variants(ctx, enum_variants)
     let fn_total: Integer = length(function_defs)
     let mutable mut_ft: HashMap<String, FuncId> = hashmap_new()
     let mutable k: Integer = 0
@@ -2578,6 +3132,86 @@ public function while_phi_smoke_main() -> Unit = {
     assert_string_eq(instruction_opcode_name(header_last), "BrTrilean")
 
     println("v0.7.8.3b ir_lowerer while+phi smoke OK")
+}
+
+// ── v0.7.8.4 smoke — struct/enum/outcome/for ─────────────────────
+
+public function struct_enum_outcome_smoke_main() -> Unit = {
+    // Test 1: struct declaration registers fields. Lowering a
+    // program with just `struct Point { x: Integer, y: Integer }`
+    // (plus a placeholder main) succeeds with 0 functions in
+    // user code apart from main.
+    let s1: String = "struct Point { x: Integer, y: Integer }\nfunction main() -> Integer = 0"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    assert(length(m1.functions) == 1)
+
+    // Test 2: enum declaration + unit-variant identifier promotes
+    // to EnumNew. `None` referenced bare → `EnumNew { variant_idx: 0 }`.
+    let s2: String = "enum Maybe { None, Some(Integer) }\nfunction f() -> Maybe = None"
+    let p2: IrProgram = lower_source(s2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    let bb2: BasicBlock = get(f2.blocks, 0)!!
+    let i20: Instruction = get(bb2.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(i20), "EnumNew")
+
+    // Test 3: tuple-variant call (e.g. `Some(42)`) promotes to
+    // EnumNew with a payload operand. Const(42) + EnumNew + Ret.
+    let s3: String = "enum Maybe { None, Some(Integer) }\nfunction f() -> Maybe = Some(42)"
+    let p3: IrProgram = lower_source(s3)
+    let m3: IrModule = get(p3.modules, 0)!!
+    let f3: Function = get(m3.functions, 0)!!
+    let bb3: BasicBlock = get(f3.blocks, 0)!!
+    let len3: Integer = length(bb3.instructions)
+    // Const(42), EnumNew, Ret.
+    assert(len3 == 3)
+    let i31: Instruction = get(bb3.instructions, 1)!!
+    assert_string_eq(instruction_opcode_name(i31), "EnumNew")
+
+    // Test 4: Outcome constructor — success arm `~+ 42` →
+    // `Const + OutcomeNewPositive + Ret`.
+    let s4: String = "function ok() -> Integer~String = ~+ 42"
+    let p4: IrProgram = lower_source(s4)
+    let m4: IrModule = get(p4.modules, 0)!!
+    let f4: Function = get(m4.functions, 0)!!
+    let bb4: BasicBlock = get(f4.blocks, 0)!!
+    let i41: Instruction = get(bb4.instructions, 1)!!
+    assert_string_eq(instruction_opcode_name(i41), "OutcomeNewPositive")
+
+    // Test 5: Outcome constructor — error arm `~- "bad"`.
+    let s5: String = "function bad() -> Integer~String = ~- \"bad\""
+    let p5: IrProgram = lower_source(s5)
+    let m5: IrModule = get(p5.modules, 0)!!
+    let f5: Function = get(m5.functions, 0)!!
+    let bb5: BasicBlock = get(f5.blocks, 0)!!
+    let i51: Instruction = get(bb5.instructions, 1)!!
+    assert_string_eq(instruction_opcode_name(i51), "OutcomeNewNegative")
+
+    // Test 6: Outcome constructor — null arm `~0` → no payload,
+    // single OutcomeNewNull + Ret.
+    let s6: String = "function none_val() -> Integer?~String = ~0"
+    let p6: IrProgram = lower_source(s6)
+    let m6: IrModule = get(p6.modules, 0)!!
+    let f6: Function = get(m6.functions, 0)!!
+    let bb6: BasicBlock = get(f6.blocks, 0)!!
+    let i60: Instruction = get(bb6.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(i60), "OutcomeNewNull")
+
+    // Test 7: For loop over Range with no body assigns. Shape:
+    // entry → for_header (counter phi + Lt + BrTrilean) → for_body
+    // (Br header) → for_exit. 4 blocks.
+    let s7: String = "function f() -> Unit { for i in 0..10 { } }"
+    let p7: IrProgram = lower_source(s7)
+    let m7: IrModule = get(p7.modules, 0)!!
+    let f7: Function = get(m7.functions, 0)!!
+    assert(length(f7.blocks) == 4)
+    let h7: BasicBlock = get(f7.blocks, 1)!!
+    // Header's first instruction is the counter Phi.
+    let h7_first: Instruction = get(h7.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(h7_first), "Phi")
+
+    println("v0.7.8.4 ir_lowerer struct+enum+outcome+for smoke OK")
 }
 
 public function main() -> Unit = {
@@ -2930,4 +3564,5 @@ public function main() -> Unit = {
     lower_source_smoke_main()
     call_loop_smoke_main()
     while_phi_smoke_main()
+    struct_enum_outcome_smoke_main()
 }
