@@ -223,10 +223,19 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
   - **One Triết-side runtime bug surfaced and worked around**: top-level `constant NAME: T = expr` declarations lower silently to `Unit` at runtime. Searching the workspace confirms NO existing `.tri` file uses top-level constants (parser.tri, lexer.tri, examples/, std/ all use local `let` bindings + literals); cycle detection was the first user. Workaround: inline the color sentinels (0/1/2) as Integer literals at every use site, no `constant` decl. Lowerer is missing an `Item::Const` arm — the AST + parser + modules-resolver all carry the variant, but `crates/triet-ir/src/lowerer.rs` skips it. Logged as **v0.7.x.runtime-fix.const-items** below for a future audit pass; not blocking v0.7.6.x.
   - 1 new integration test (`modules_cycle_smoke.rs`) — runs Triết-side `cycle_smoke_main()` against the 8-case corpus. 1318 workspace tests pass (was 1317, +1); `cargo clippy --workspace --all-targets` clean. Verified under `ulimit -v 8388608` (8 GB RAM cap) — finishes in <1 s, confirming the v0.7.6.3 RAM-blowup debugging round (which earlier saw 20 GB+ as the constant-items bug caused infinite recursion) is fully resolved.
 
+- [x] **v0.7.6.4** — Resolver (name resolution + visibility check) (this commit)
+  - `compiler/modules.tri` (+~700 LOC, ~2440 LOC total) — ports `crates/triet-modules/src/resolver.rs` (~727 Rust LOC). New public surface: `resolve_names(program) -> ResolveResult { program, errors }`. Two-phase algorithm: (1) bind own definitions (function / struct / enum / constant / type-alias) + child modules into each module's `bindings: HashMap<String, AbsolutePath>`; (2) resolve `import X.Y.Z` and `from X import a, b as c` declarations against the loaded module graph, with `crate.` / `self.` / `super.` path keyword expansion via `resolve_path_keywords`.
+  - Visibility check (`is_visible`): `PublicVis` + `PackageVis` visible everywhere (cross-crate pack visibility lands v0.4+); `PrivateVis` only inside the defining module. Wrong-visibility import raises E2103 `VisibilityViolation`.
+  - Reserved namespace check (`is_reserved_unusable`): `sys` / `dev` / `usr` import roots raise E2102 — reserved for v0.6 capability namespaces per ADR-0005. `std` / `core` are usable.
+  - Enum variant lookup (`find_enum_owning_variant`): `from std.result import Ok` resolves `Ok` to its parent enum `Result` so the variant constructor is in scope. Aliasing a variant import raises E2107 `AliasedVariantImport` per ADR-0005.
+  - Triết-side caveats: HashMaps + structs are immutable, so updating `Module.bindings` rebuilds the Module, then `Vector<Module>`, then `ResolvedProgram` (`module_with_bindings` + `program_with_module` helpers). Same functional-rebuild pattern as v0.7.6.2 loader + v0.7.6.3 cycle detector.
+  - **Stdlib pre-load remains deferred to v0.7.6.5** — Triết still lacks an env-var-read builtin; the workspace `std/` path can't be discovered from inside the VM. v0.7.6.4 smoke uses a non-stdlib corpus.
+  - **Triết-side gotcha recorded**: `_ignored: Integer = …` doesn't parse — Triết's identifier grammar rejects names starting with `_` followed by characters (the bare `_` is wildcard pattern only). Worked around by dropping the unused local binding entirely (the value wasn't needed).
+  - 1 new integration test (`modules_resolver_smoke.rs`) — runs `resolver_smoke_main()` against 8 corpus cases: own function bound, child module bound in parent, from-import absolute path, alias binding, visibility violation (private import), unresolved import (nonexistent module), reserved namespace `sys.io`, `self.X` keyword expansion inside submodule. 1319 workspace tests pass (was 1318, +1); `cargo clippy --workspace --all-targets` clean. Verified under `ulimit -v 8388608` — finishes in <1 s.
+
 ### Remaining v0.7.6 sub-tasks
 
-- [ ] **v0.7.6.4** — Resolver (name resolution + `from … import …` + visibility check) + stdlib pre-load (deferred from v0.7.6.2)
-- [ ] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate (closes v0.7.6 umbrella per ADR-0019 §A7.6)
+- [ ] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate + stdlib pre-load (closes v0.7.6 umbrella per ADR-0019 §A7.6). Stdlib pre-load and the byte-diff gate ship together since the byte-diff needs stdlib bindings to compare against Rust output.
 
 ### Deferred runtime bugs
 

@@ -61,7 +61,7 @@ from std.io import println
 from std.io.fs import read as fs_read
 from std.path import join as path_join, parent as path_parent, basename as path_basename
 from std.collections.vector import new, push, length, get
-from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get
+from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, contains as hashmap_contains
 from std.text import concat, from_integer, len as text_len
 from std.assert import assert
 
@@ -70,6 +70,10 @@ from crate.parser import parser_new, parse_program
 from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem
 from crate.parser import StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
 from crate.parser import ModuleDecl, ModuleContent, ExternalContent, InlineContent
+from crate.parser import Visibility, PrivateVis, PublicVis, PackageVis
+from crate.parser import FunctionDef, ConstantItemPayload, TypeAliasPayload
+from crate.parser import StructDef, EnumDef, EnumVariant
+from crate.parser import ImportPath, ImportName, ImportFromPayload
 from crate.parser import SpannedItem, ParseError, ParseErrorDetail, ReservedNameDetail
 from crate.parser import UnexpectedTokenErr, UnexpectedEofErr, LexerFailedErr, ReservedItemNameErr
 from crate.parser.lexer import SpannedToken, LexError, lex
@@ -1380,6 +1384,719 @@ public function detect_cycles(program: ResolvedProgram) -> Vector<LoaderError> =
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Name resolver — binds each module's own definitions + resolves
+// `import X` / `from X import Y` declarations against the loaded
+// module graph. Mirrors `crates/triet-modules/src/resolver.rs` per
+// ADR-0019 §A7.6.
+//
+// Two-phase algorithm (mirrors Rust impl):
+//
+// 1. **Bind own definitions** — every function / struct / enum /
+//    constant / type alias declared in a module goes into its
+//    `bindings` map keyed by name, with an `AbsolutePath` rooted at
+//    the module's path. Child modules also get bound under their
+//    last-segment name.
+//
+// 2. **Resolve imports** — `import X` binds X's last segment;
+//    `from X import a, b as c` resolves source path then binds each
+//    name (or alias). `crate.` / `self.` / `super.` path keywords
+//    expand relative to the importing module. Visibility check:
+//    Public + PublicPackage visible everywhere; Private only inside
+//    defining module. Reserved namespaces (`sys.*`/`dev.*`/`usr.*`)
+//    raise E2102 — reserved for v0.6 capability namespaces.
+//
+// Triết caveats:
+// - HashMaps + structs are immutable; updating Module.bindings
+//   means rebuilding the Module, the Vector<Module>, and the
+//   ResolvedProgram. The `program_set_module_bindings` helper
+//   centralises that pattern.
+// - Vector<ImportName> structure-traversal mirrors the cycle
+//   detector's pattern.
+//
+// Stdlib pre-load defers to v0.7.6.5 — the workspace `std/` path
+// can't be discovered from inside the Triết VM without an
+// env-var-read builtin (Rust impl uses compile-time
+// `env!("CARGO_MANIFEST_DIR")`). For v0.7.6.4 smoke we use a
+// non-stdlib corpus.
+// ─────────────────────────────────────────────────────────────────
+
+/// Public result type — paired (program, errors) so callers can
+/// inspect partial resolution + every error in one call.
+public struct ResolveResult {
+    program: ResolvedProgram,
+    errors: Vector<LoaderError>,
+}
+
+/// Internal: a single import statement extracted from a module's
+/// items, paired with its source span for diagnostics.
+struct ImportInfoEntry {
+    is_whole: Trilean!,
+    whole_segments: Vector<String>,
+    from_source: Vector<String>,
+    from_names: Vector<ImportName>,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+/// Visibility code: PrivateVis = 0, PublicVis = 1, PackageVis = 2.
+/// Used in `LoaderError::VisibilityViolation.actual_visibility` so
+/// the byte-diff gate can compare against Rust's
+/// `impl Display for Visibility`.
+function visibility_text(vis: Visibility) -> String = {
+    match vis {
+        PrivateVis => "private",
+        PublicVis => "public",
+        PackageVis => "public(package)",
+    }
+}
+
+/// Extract (name, visibility) for items that define a named entity
+/// (function / const / type alias / struct / enum). Returns `~0`
+/// for items that don't bind names (Import / ImportFrom / Module).
+struct NameVisEntry {
+    name: String,
+    visibility: Visibility,
+}
+
+function item_name_and_visibility(item: Item) -> NameVisEntry? = {
+    match item {
+        FunctionItem(f) => NameVisEntry { name: f.name, visibility: f.visibility },
+        ConstantItem(c) => NameVisEntry { name: c.name, visibility: c.visibility },
+        TypeAliasItem(t) => NameVisEntry { name: t.name, visibility: t.visibility },
+        StructItem(s) => NameVisEntry { name: s.name, visibility: s.visibility },
+        EnumItem(e) => NameVisEntry { name: e.name, visibility: e.visibility },
+        ImportItem(_) => ~0,
+        ImportFromItem(_) => ~0,
+        ModuleItem(_) => ~0,
+    }
+}
+
+/// Find the visibility of an item named `name` declared in
+/// `target`. Returns `~0` if no such item exists.
+function find_item_visibility(
+    target: Module,
+    arena: Arena,
+    name: String,
+) -> Visibility? = {
+    let total: Integer = length(target.item_ids)
+    let mutable i: Integer = 0
+    let mutable result: Visibility? = ~0
+    while i < total {
+        let id_opt: Integer? = get(target.item_ids, i)
+        let item_id: Integer = id_opt!!
+        let spanned_opt: SpannedItem? = get(arena.items, item_id)
+        let spanned: SpannedItem = spanned_opt!!
+        let entry_opt: NameVisEntry? = item_name_and_visibility(spanned.node)
+        match entry_opt {
+            ~0 => { },
+            _ => {
+                let entry: NameVisEntry = entry_opt!!
+                if entry.name == name {
+                    result = entry.visibility
+                }
+            },
+        }
+        i = i + 1
+    }
+    result
+}
+
+struct EnumOwnerEntry {
+    enum_name: String,
+    enum_visibility: Visibility,
+}
+
+/// Find the enum in `module` that declares a variant named
+/// `variant_name` — returns the enum's name + visibility so the
+/// caller can bind a `from X import Variant` to its parent enum
+/// per the Rust resolver's `find_enum_owning_variant`.
+function find_enum_owning_variant(
+    target: Module,
+    arena: Arena,
+    variant_name: String,
+) -> EnumOwnerEntry? = {
+    let total: Integer = length(target.item_ids)
+    let mutable i: Integer = 0
+    let mutable result: EnumOwnerEntry? = ~0
+    while i < total {
+        let id_opt: Integer? = get(target.item_ids, i)
+        let item_id: Integer = id_opt!!
+        let spanned_opt: SpannedItem? = get(arena.items, item_id)
+        let spanned: SpannedItem = spanned_opt!!
+        match spanned.node {
+            EnumItem(e) => {
+                let variant_total: Integer = length(e.variants)
+                let mutable vi: Integer = 0
+                let mutable matched: Trilean! = false
+                while vi < variant_total && !matched {
+                    let v_opt: EnumVariant? = get(e.variants, vi)
+                    let v: EnumVariant = v_opt!!
+                    if v.name == variant_name {
+                        matched = true
+                    }
+                    vi = vi + 1
+                }
+                if matched {
+                    result = EnumOwnerEntry {
+                        enum_name: e.name,
+                        enum_visibility: e.visibility,
+                    }
+                }
+            },
+            _ => { },
+        }
+        i = i + 1
+    }
+    result
+}
+
+/// Visibility check: Public + PublicPackage visible everywhere
+/// (cross-crate visibility lands in v0.4+ pack linker); Private
+/// only inside the defining module.
+function is_visible(
+    vis: Visibility,
+    importer_id: ModuleId,
+    target_id: ModuleId,
+) -> Trilean! = {
+    match vis {
+        PublicVis => true,
+        PackageVis => true,
+        PrivateVis => module_id_raw(importer_id) == module_id_raw(target_id),
+    }
+}
+
+/// Expand `crate.` / `self.` / `super.` path keywords to absolute
+/// segments. `crate.X` stays as-is; `self.X` expands to importer's
+/// own path + remainder; `super.X` expands to importer's parent +
+/// remainder. Unknown prefix (e.g. `std.*` or bare name) returns
+/// segments unchanged.
+function resolve_path_keywords(
+    program: ResolvedProgram,
+    importer_id: ModuleId,
+    segments: Vector<String>,
+) -> Vector<String> = {
+    let total: Integer = length(segments)
+    if total == 0 {
+        new()
+    } else {
+        let first_opt: String? = get(segments, 0)
+        let first: String = first_opt!!
+        let importer_opt: Module? = get(program.modules, module_id_raw(importer_id))
+        let importer: Module = importer_opt!!
+        if first == "self" {
+            // self.X → <importer's path>.X
+            let mutable expanded: Vector<String> = new()
+            let importer_segs: Vector<String> = importer.path.segments
+            let imp_total: Integer = length(importer_segs)
+            let mutable i: Integer = 0
+            while i < imp_total {
+                let s_opt: String? = get(importer_segs, i)
+                expanded = push(expanded, s_opt!!)
+                i = i + 1
+            }
+            let mutable j: Integer = 1
+            while j < total {
+                let s_opt: String? = get(segments, j)
+                expanded = push(expanded, s_opt!!)
+                j = j + 1
+            }
+            expanded
+        } else {
+            if first == "super" {
+                // super.X → <importer's parent>.X
+                let parent_opt: ModulePath? = module_path_parent(importer.path)
+                match parent_opt {
+                    ~0 => segments,
+                    _ => {
+                        let mutable expanded: Vector<String> = new()
+                        let parent_segs: Vector<String> = parent_opt!!.segments
+                        let p_total: Integer = length(parent_segs)
+                        let mutable i: Integer = 0
+                        while i < p_total {
+                            let s_opt: String? = get(parent_segs, i)
+                            expanded = push(expanded, s_opt!!)
+                            i = i + 1
+                        }
+                        let mutable j: Integer = 1
+                        while j < total {
+                            let s_opt: String? = get(segments, j)
+                            expanded = push(expanded, s_opt!!)
+                            j = j + 1
+                        }
+                        expanded
+                    },
+                }
+            } else {
+                // Already absolute or stdlib/bare — return as-is.
+                segments
+            }
+        }
+    }
+}
+
+/// Rebuild a `Module` with `bindings` replaced. Functional update.
+function module_with_bindings(
+    old_module: Module,
+    new_bindings: HashMap<String, AbsolutePath>,
+) -> Module =
+    Module {
+        path: old_module.path,
+        source_path: old_module.source_path,
+        arena_id: old_module.arena_id,
+        item_ids: old_module.item_ids,
+        bindings: new_bindings,
+        parent: old_module.parent,
+        children: old_module.children,
+    }
+
+/// Replace the module at `module_id` in `program` with `new_module`
+/// — functional rebuild of `program.modules`. Mirrors
+/// `update_module_items` from v0.7.6.2 loader.
+function program_with_module(
+    program: ResolvedProgram,
+    module_id: ModuleId,
+    new_module: Module,
+) -> ResolvedProgram = {
+    let target_raw: Integer = module_id_raw(module_id)
+    let total: Integer = length(program.modules)
+    let mutable rebuilt: Vector<Module> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let m_opt: Module? = get(program.modules, i)
+        if i == target_raw {
+            rebuilt = push(rebuilt, new_module)
+        } else {
+            rebuilt = push(rebuilt, m_opt!!)
+        }
+        i = i + 1
+    }
+    ResolvedProgram {
+        arenas: program.arenas,
+        modules: rebuilt,
+        root: program.root,
+    }
+}
+
+/// Phase 1 — bind each module's own items + child modules into
+/// `bindings`. Returns the updated ResolvedProgram.
+function bind_own_definitions(program: ResolvedProgram) -> ResolvedProgram = {
+    let total: Integer = length(program.modules)
+    let mutable working: ResolvedProgram = program
+    let mutable mi: Integer = 0
+    while mi < total {
+        let mod_opt: Module? = get(working.modules, mi)
+        let current: Module = mod_opt!!
+        let arena_opt: Arena? = get(working.arenas, arena_id_raw(current.arena_id))
+        let arena: Arena = arena_opt!!
+        let mutable bindings: HashMap<String, AbsolutePath> = current.bindings
+
+        // Bind own items.
+        let item_total: Integer = length(current.item_ids)
+        let mutable ii: Integer = 0
+        while ii < item_total {
+            let id_opt: Integer? = get(current.item_ids, ii)
+            let item_id: Integer = id_opt!!
+            let spanned_opt: SpannedItem? = get(arena.items, item_id)
+            let spanned: SpannedItem = spanned_opt!!
+            let entry_opt: NameVisEntry? = item_name_and_visibility(spanned.node)
+            match entry_opt {
+                ~0 => { },
+                _ => {
+                    let entry: NameVisEntry = entry_opt!!
+                    let abs_path: AbsolutePath = absolute_path_new(current.path, entry.name)
+                    bindings = insert(bindings, entry.name, abs_path)
+                },
+            }
+            ii = ii + 1
+        }
+
+        // Bind child modules under their last-segment name.
+        let child_total: Integer = length(current.children)
+        let mutable ci: Integer = 0
+        while ci < child_total {
+            let child_id_opt: ModuleId? = get(current.children, ci)
+            let child_id: ModuleId = child_id_opt!!
+            let child_opt: Module? = get(working.modules, module_id_raw(child_id))
+            let child: Module = child_opt!!
+            let child_segs: Vector<String> = child.path.segments
+            let seg_count: Integer = length(child_segs)
+            if seg_count > 0 {
+                let last_opt: String? = get(child_segs, seg_count - 1)
+                let child_name: String = last_opt!!
+                let abs_path: AbsolutePath = absolute_path_new(current.path, child_name)
+                bindings = insert(bindings, child_name, abs_path)
+            }
+            ci = ci + 1
+        }
+
+        let updated: Module = module_with_bindings(current, bindings)
+        working = program_with_module(working, module_id_new(mi), updated)
+        mi = mi + 1
+    }
+    working
+}
+
+/// Find a module by its segment path. Linear scan O(N) — fine for
+/// the typical tens-of-modules scale.
+function find_module_by_path(
+    program: ResolvedProgram,
+    target_segs: Vector<String>,
+) -> ModuleId? = {
+    let target_text: String = module_path_display(module_path_new(target_segs))
+    let total: Integer = length(program.modules)
+    let mutable i: Integer = 0
+    let mutable result: ModuleId? = ~0
+    while i < total {
+        let m_opt: Module? = get(program.modules, i)
+        let m: Module = m_opt!!
+        if module_path_display(m.path) == target_text {
+            result = module_id_new(i)
+        }
+        i = i + 1
+    }
+    result
+}
+
+/// Bind a single from-import name (with optional alias) into
+/// `bindings`. Looks up the name in target_mod's items, falls back
+/// to child-module / enum-variant lookup. Emits VisibilityViolation,
+/// AliasedVariantImport, or UnresolvedImport as appropriate.
+struct ResolveOneNameResult {
+    bindings: HashMap<String, AbsolutePath>,
+    errors: Vector<LoaderError>,
+}
+
+function resolve_one_from_name(
+    program: ResolvedProgram,
+    importer_id: ModuleId,
+    target_id: ModuleId,
+    target_segs: Vector<String>,
+    source_text: String,
+    import_name: ImportName,
+    span_start: Integer,
+    span_end: Integer,
+    in_bindings: HashMap<String, AbsolutePath>,
+    in_errors: Vector<LoaderError>,
+) -> ResolveOneNameResult = {
+    let mutable bindings: HashMap<String, AbsolutePath> = in_bindings
+    let mutable errors: Vector<LoaderError> = in_errors
+
+    let target_opt: Module? = get(program.modules, module_id_raw(target_id))
+    let target_module: Module = target_opt!!
+    let arena_opt: Arena? = get(program.arenas, arena_id_raw(target_module.arena_id))
+    let target_arena: Arena = arena_opt!!
+    let target_path: ModulePath = module_path_new(target_segs)
+
+    // 1. Try direct item lookup.
+    let vis_opt: Visibility? = find_item_visibility(target_module, target_arena, import_name.name)
+    match vis_opt {
+        ~0 => {
+            // 2. Try child module lookup — `from std.io import fs`
+            //    where `fs` is a child module of `std.io`.
+            let child_segs: Vector<String> = push(target_segs, import_name.name)
+            let child_id_opt: ModuleId? = find_module_by_path(program, child_segs)
+            match child_id_opt {
+                ~0 => {
+                    // 3. Try enum variant lookup — `from … import Variant`.
+                    let enum_owner_opt: EnumOwnerEntry? = find_enum_owning_variant(
+                        target_module, target_arena, import_name.name
+                    )
+                    match enum_owner_opt {
+                        ~0 => {
+                            // Unresolved.
+                            errors = push(errors, UnresolvedImportErr(UnresolvedImportPayload {
+                                path: concat(concat(source_text, "."), import_name.name),
+                                span_start: span_start,
+                                span_end: span_end,
+                            }))
+                        },
+                        _ => {
+                            let owner: EnumOwnerEntry = enum_owner_opt!!
+                            // Aliasing a variant is rejected (E2107).
+                            match import_name.alias {
+                                ~0 => {
+                                    if is_visible(owner.enum_visibility, importer_id, target_id) {
+                                        let abs: AbsolutePath = absolute_path_new(target_path, owner.enum_name)
+                                        bindings = insert(bindings, import_name.name, abs)
+                                    } else {
+                                        errors = push(errors, VisibilityViolationErr(VisibilityViolationPayload {
+                                            name: import_name.name,
+                                            actual_visibility: visibility_text(owner.enum_visibility),
+                                            span_start: span_start,
+                                            span_end: span_end,
+                                        }))
+                                    }
+                                },
+                                _ => {
+                                    errors = push(errors, AliasedVariantImportErr(AliasedVariantImportPayload {
+                                        variant: import_name.name,
+                                        enum_name: owner.enum_name,
+                                        span_start: span_start,
+                                        span_end: span_end,
+                                    }))
+                                },
+                            }
+                        },
+                    }
+                },
+                _ => {
+                    // Child module — bind it.
+                    let abs: AbsolutePath = absolute_path_new(target_path, import_name.name)
+                    let bind_name: String = match import_name.alias {
+                        ~0 => import_name.name,
+                        _ => import_name.alias!!,
+                    }
+                    bindings = insert(bindings, bind_name, abs)
+                },
+            }
+        },
+        _ => {
+            let vis: Visibility = vis_opt!!
+            if is_visible(vis, importer_id, target_id) {
+                let abs: AbsolutePath = absolute_path_new(target_path, import_name.name)
+                let bind_name: String = match import_name.alias {
+                    ~0 => import_name.name,
+                    _ => import_name.alias!!,
+                }
+                bindings = insert(bindings, bind_name, abs)
+            } else {
+                errors = push(errors, VisibilityViolationErr(VisibilityViolationPayload {
+                    name: import_name.name,
+                    actual_visibility: visibility_text(vis),
+                    span_start: span_start,
+                    span_end: span_end,
+                }))
+            }
+        },
+    }
+
+    ResolveOneNameResult { bindings: bindings, errors: errors }
+}
+
+/// True if `root` is a v0.6 reserved-but-not-yet-usable namespace
+/// (`sys`, `dev`, `usr`). `std`/`core` are usable in v0.2.x+.
+function is_reserved_unusable(root: String) -> Trilean! =
+    root == "sys" || root == "dev" || root == "usr"
+
+struct ResolveImportsForOneResult {
+    bindings: HashMap<String, AbsolutePath>,
+    errors: Vector<LoaderError>,
+}
+
+/// Process every Whole + From import in `importer`'s items.
+/// Returns the updated bindings + accumulated errors.
+function resolve_imports_for_module(
+    program: ResolvedProgram,
+    importer_id: ModuleId,
+    initial_errors: Vector<LoaderError>,
+) -> ResolveImportsForOneResult = {
+    let importer_opt: Module? = get(program.modules, module_id_raw(importer_id))
+    let importer: Module = importer_opt!!
+    let arena_opt: Arena? = get(program.arenas, arena_id_raw(importer.arena_id))
+    let arena: Arena = arena_opt!!
+    let mutable bindings: HashMap<String, AbsolutePath> = importer.bindings
+    let mutable errors: Vector<LoaderError> = initial_errors
+
+    let total: Integer = length(importer.item_ids)
+    let mutable ii: Integer = 0
+    while ii < total {
+        let id_opt: Integer? = get(importer.item_ids, ii)
+        let item_id: Integer = id_opt!!
+        let spanned_opt: SpannedItem? = get(arena.items, item_id)
+        let spanned: SpannedItem = spanned_opt!!
+        let span_start: Integer = spanned.span_start
+        let span_end: Integer = spanned.span_end
+
+        match spanned.node {
+            ImportItem(path) => {
+                // `import X.Y.Z` — bind under last segment.
+                let raw_segs: Vector<String> = path.segments
+                let resolved_segs: Vector<String> = resolve_path_keywords(program, importer_id, raw_segs)
+                let seg_count: Integer = length(resolved_segs)
+                if seg_count == 0 {
+                    // Empty path — skip (parser shouldn't produce this).
+                } else {
+                    let root_opt: String? = get(resolved_segs, 0)
+                    let root: String = root_opt!!
+                    if is_reserved_unusable(root) {
+                        errors = push(errors, ReservedNamespaceErr(ReservedNamespacePayload {
+                            root: root,
+                            span_start: span_start,
+                            span_end: span_end,
+                        }))
+                    } else {
+                        // Try as module path first.
+                        let target_id_opt: ModuleId? = find_module_by_path(program, resolved_segs)
+                        match target_id_opt {
+                            ~0 => {
+                                // Try parent-drop: module.item form.
+                                if seg_count > 1 {
+                                    let mutable parent_segs: Vector<String> = new()
+                                    let mutable pi: Integer = 0
+                                    while pi < seg_count - 1 {
+                                        let s_opt: String? = get(resolved_segs, pi)
+                                        parent_segs = push(parent_segs, s_opt!!)
+                                        pi = pi + 1
+                                    }
+                                    let parent_id_opt: ModuleId? = find_module_by_path(program, parent_segs)
+                                    let last_opt: String? = get(resolved_segs, seg_count - 1)
+                                    let item_name: String = last_opt!!
+                                    let raw_last_opt: String? = get(raw_segs, length(raw_segs) - 1)
+                                    let bind_name: String = raw_last_opt!!
+                                    match parent_id_opt {
+                                        ~0 => {
+                                            errors = push(errors, UnresolvedImportErr(UnresolvedImportPayload {
+                                                path: module_path_display(module_path_new(raw_segs)),
+                                                span_start: span_start,
+                                                span_end: span_end,
+                                            }))
+                                        },
+                                        _ => {
+                                            let parent_id: ModuleId = parent_id_opt!!
+                                            let parent_mod_opt: Module? = get(program.modules, module_id_raw(parent_id))
+                                            let parent_mod: Module = parent_mod_opt!!
+                                            let parent_arena_opt: Arena? = get(program.arenas, arena_id_raw(parent_mod.arena_id))
+                                            let parent_arena: Arena = parent_arena_opt!!
+                                            let vis_opt2: Visibility? = find_item_visibility(parent_mod, parent_arena, item_name)
+                                            match vis_opt2 {
+                                                ~0 => {
+                                                    errors = push(errors, UnresolvedImportErr(UnresolvedImportPayload {
+                                                        path: module_path_display(module_path_new(raw_segs)),
+                                                        span_start: span_start,
+                                                        span_end: span_end,
+                                                    }))
+                                                },
+                                                _ => {
+                                                    let v: Visibility = vis_opt2!!
+                                                    if is_visible(v, importer_id, parent_id) {
+                                                        let abs: AbsolutePath = absolute_path_new(module_path_new(parent_segs), item_name)
+                                                        bindings = insert(bindings, bind_name, abs)
+                                                    } else {
+                                                        errors = push(errors, VisibilityViolationErr(VisibilityViolationPayload {
+                                                            name: item_name,
+                                                            actual_visibility: visibility_text(v),
+                                                            span_start: span_start,
+                                                            span_end: span_end,
+                                                        }))
+                                                    }
+                                                },
+                                            }
+                                        },
+                                    }
+                                } else {
+                                    errors = push(errors, UnresolvedImportErr(UnresolvedImportPayload {
+                                        path: module_path_display(module_path_new(raw_segs)),
+                                        span_start: span_start,
+                                        span_end: span_end,
+                                    }))
+                                }
+                            },
+                            _ => {
+                                let target_id: ModuleId = target_id_opt!!
+                                let raw_last_opt: String? = get(raw_segs, length(raw_segs) - 1)
+                                let bind_name: String = raw_last_opt!!
+                                let abs: AbsolutePath = absolute_path_new(module_path_new(resolved_segs), bind_name)
+                                // `target_id` already resolved above —
+                                // binding doesn't carry the ModuleId,
+                                // just the AbsolutePath.
+                                bindings = insert(bindings, bind_name, abs)
+                            },
+                        }
+                    }
+                }
+            },
+            ImportFromItem(from_payload) => {
+                // `from X import a, b as c`
+                let raw_segs: Vector<String> = from_payload.source
+                let resolved_segs: Vector<String> = resolve_path_keywords(program, importer_id, raw_segs)
+                let seg_count: Integer = length(resolved_segs)
+                if seg_count == 0 {
+                    // Empty source — skip.
+                } else {
+                    let root_opt: String? = get(resolved_segs, 0)
+                    let root: String = root_opt!!
+                    if is_reserved_unusable(root) {
+                        errors = push(errors, ReservedNamespaceErr(ReservedNamespacePayload {
+                            root: root,
+                            span_start: span_start,
+                            span_end: span_end,
+                        }))
+                    } else {
+                        let target_id_opt: ModuleId? = find_module_by_path(program, resolved_segs)
+                        match target_id_opt {
+                            ~0 => {
+                                errors = push(errors, UnresolvedImportErr(UnresolvedImportPayload {
+                                    path: module_path_display(module_path_new(raw_segs)),
+                                    span_start: span_start,
+                                    span_end: span_end,
+                                }))
+                            },
+                            _ => {
+                                let target_id: ModuleId = target_id_opt!!
+                                let names: Vector<ImportName> = from_payload.names
+                                let name_total: Integer = length(names)
+                                let mutable ni: Integer = 0
+                                let source_text: String = module_path_display(module_path_new(resolved_segs))
+                                while ni < name_total {
+                                    let n_opt: ImportName? = get(names, ni)
+                                    let n: ImportName = n_opt!!
+                                    let outcome: ResolveOneNameResult = resolve_one_from_name(
+                                        program,
+                                        importer_id,
+                                        target_id,
+                                        resolved_segs,
+                                        source_text,
+                                        n,
+                                        span_start,
+                                        span_end,
+                                        bindings,
+                                        errors,
+                                    )
+                                    bindings = outcome.bindings
+                                    errors = outcome.errors
+                                    ni = ni + 1
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+            _ => { },
+        }
+
+        ii = ii + 1
+    }
+
+    ResolveImportsForOneResult { bindings: bindings, errors: errors }
+}
+
+/// Public entrypoint — run name resolution over every module in
+/// `program`. Returns the updated program (with populated
+/// `bindings` maps on every module) + the accumulated diagnostic
+/// list.
+public function resolve_names(program: ResolvedProgram) -> ResolveResult = {
+    // Phase 1: bind own definitions + children.
+    let mutable working: ResolvedProgram = bind_own_definitions(program)
+
+    // Phase 2: resolve imports.
+    let mutable errors: Vector<LoaderError> = new()
+    let module_total: Integer = length(working.modules)
+    let mutable mi: Integer = 0
+    while mi < module_total {
+        let outcome: ResolveImportsForOneResult = resolve_imports_for_module(
+            working, module_id_new(mi), errors
+        )
+        let mod_opt: Module? = get(working.modules, mi)
+        let updated: Module = module_with_bindings(mod_opt!!, outcome.bindings)
+        working = program_with_module(working, module_id_new(mi), updated)
+        errors = outcome.errors
+        mi = mi + 1
+    }
+
+    ResolveResult { program: working, errors: errors }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Smoke main — exercises every type's construction + display so the
 // v0.7.6.1 integration test (`modules_types_smoke.rs`) can confirm
 // the AST surface compiles + round-trips through the VM. v0.7.6.5
@@ -1717,4 +2434,169 @@ public function cycle_smoke_main() -> Unit = {
     assert(count_cycle_errors(cycles_r8) == 0)
 
     println("v0.7.6.3 cycle detection smoke OK")
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.6.4 resolver smoke — loads inline-module corpora, runs
+// `resolve_names`, asserts (a) the crate's `bindings` HashMap is
+// populated for own items + children, (b) `from … import …` resolves
+// to the correct AbsolutePath, (c) visibility violations + unresolved
+// imports + reserved namespaces surface as the right error code.
+// ─────────────────────────────────────────────────────────────────
+
+/// Count how many errors of a given E-code variant the resolver
+/// emitted. Pattern-matches the variant tag, ignores payload.
+function count_visibility_errors(errs: Vector<LoaderError>) -> Integer = {
+    let total: Integer = length(errs)
+    let mutable count: Integer = 0
+    let mutable i: Integer = 0
+    while i < total {
+        let err_opt: LoaderError? = get(errs, i)
+        let err: LoaderError = err_opt!!
+        match err {
+            VisibilityViolationErr(_) => { count = count + 1 },
+            _ => { },
+        }
+        i = i + 1
+    }
+    count
+}
+
+function count_unresolved_errors(errs: Vector<LoaderError>) -> Integer = {
+    let total: Integer = length(errs)
+    let mutable count: Integer = 0
+    let mutable i: Integer = 0
+    while i < total {
+        let err_opt: LoaderError? = get(errs, i)
+        let err: LoaderError = err_opt!!
+        match err {
+            UnresolvedImportErr(_) => { count = count + 1 },
+            _ => { },
+        }
+        i = i + 1
+    }
+    count
+}
+
+function count_reserved_errors(errs: Vector<LoaderError>) -> Integer = {
+    let total: Integer = length(errs)
+    let mutable count: Integer = 0
+    let mutable i: Integer = 0
+    while i < total {
+        let err_opt: LoaderError? = get(errs, i)
+        let err: LoaderError = err_opt!!
+        match err {
+            ReservedNamespaceErr(_) => { count = count + 1 },
+            _ => { },
+        }
+        i = i + 1
+    }
+    count
+}
+
+/// Lookup a binding by name in a module's bindings HashMap and
+/// return its absolute path display, or `~0` if not bound. Used to
+/// assert resolver output without needing direct HashMap access.
+function lookup_binding_display(target: Module, name: String) -> String? = {
+    let abs_opt: AbsolutePath? = hashmap_get(target.bindings, name)
+    match abs_opt {
+        ~0 => ~0,
+        _ => absolute_path_display(abs_opt!!),
+    }
+}
+
+public function resolver_smoke_main() -> Unit = {
+    // ── 1. Own function bound in crate root ───────────────────────
+    let r1: LoadProgramResult = load_program_from_source("function f() -> Integer = 0")
+    let resolved_r1: ResolveResult = resolve_names(r1.program)
+    assert(length(resolved_r1.errors) == 0)
+    let crate_r1_opt: Module? = get(resolved_r1.program.modules, 0)
+    let crate_r1: Module = crate_r1_opt!!
+    let f_path_opt: String? = lookup_binding_display(crate_r1, "f")
+    match f_path_opt {
+        ~0 => assert(false),
+        _ => assert(f_path_opt!! == "crate.f"),
+    }
+
+    // ── 2. Child module bound in parent ───────────────────────────
+    let r2: LoadProgramResult = load_program_from_source(
+        "module helper { function aid() -> Integer = 1 }"
+    )
+    let resolved_r2: ResolveResult = resolve_names(r2.program)
+    assert(length(resolved_r2.errors) == 0)
+    let crate_r2_opt: Module? = get(resolved_r2.program.modules, 0)
+    let crate_r2: Module = crate_r2_opt!!
+    let helper_path_opt: String? = lookup_binding_display(crate_r2, "helper")
+    match helper_path_opt {
+        ~0 => assert(false),
+        _ => assert(helper_path_opt!! == "crate.helper"),
+    }
+
+    // ── 3. from-import binds with absolute path ───────────────────
+    let r3: LoadProgramResult = load_program_from_source(
+        "module helper { public function aid() -> Integer = 1 }\nfrom crate.helper import aid"
+    )
+    let resolved_r3: ResolveResult = resolve_names(r3.program)
+    assert(length(resolved_r3.errors) == 0)
+    let crate_r3_opt: Module? = get(resolved_r3.program.modules, 0)
+    let crate_r3: Module = crate_r3_opt!!
+    let aid_path_opt: String? = lookup_binding_display(crate_r3, "aid")
+    match aid_path_opt {
+        ~0 => assert(false),
+        _ => assert(aid_path_opt!! == "crate.helper.aid"),
+    }
+
+    // ── 4. from-import with alias binds to alias name ─────────────
+    let r4: LoadProgramResult = load_program_from_source(
+        "module helper { public function aid() -> Integer = 1 }\nfrom crate.helper import aid as helper_aid"
+    )
+    let resolved_r4: ResolveResult = resolve_names(r4.program)
+    assert(length(resolved_r4.errors) == 0)
+    let crate_r4_opt: Module? = get(resolved_r4.program.modules, 0)
+    let crate_r4: Module = crate_r4_opt!!
+    let alias_path_opt: String? = lookup_binding_display(crate_r4, "helper_aid")
+    match alias_path_opt {
+        ~0 => assert(false),
+        _ => assert(alias_path_opt!! == "crate.helper.aid"),
+    }
+
+    // ── 5. Visibility violation: importing a private item ─────────
+    let r5: LoadProgramResult = load_program_from_source(
+        "module helper { function secret() -> Integer = 1 }\nfrom crate.helper import secret"
+    )
+    let resolved_r5: ResolveResult = resolve_names(r5.program)
+    assert(count_visibility_errors(resolved_r5.errors) >= 1)
+
+    // ── 6. Unresolved import: module doesn't exist ────────────────
+    let r6: LoadProgramResult = load_program_from_source(
+        "from crate.nonexistent import foo"
+    )
+    let resolved_r6: ResolveResult = resolve_names(r6.program)
+    assert(count_unresolved_errors(resolved_r6.errors) >= 1)
+
+    // ── 7. Reserved namespace: sys.* not usable in v0.6 ───────────
+    let r7: LoadProgramResult = load_program_from_source(
+        "from sys.io import openf"
+    )
+    let resolved_r7: ResolveResult = resolve_names(r7.program)
+    assert(count_reserved_errors(resolved_r7.errors) >= 1)
+
+    // ── 8. self.X path keyword expansion ──────────────────────────
+    // Inside `module outer`, `from self.inner import b` resolves
+    // to crate.outer.inner.b.
+    let r8: LoadProgramResult = load_program_from_source(
+        "module outer { module inner { public function b() -> Integer = 1 }\nfrom self.inner import b }"
+    )
+    let resolved_r8: ResolveResult = resolve_names(r8.program)
+    assert(length(resolved_r8.errors) == 0)
+    // Find the outer module (idx 1 — after crate root at 0).
+    let outer_opt: Module? = get(resolved_r8.program.modules, 1)
+    let outer: Module = outer_opt!!
+    let b_path_opt: String? = lookup_binding_display(outer, "b")
+    match b_path_opt {
+        ~0 => assert(false),
+        _ => assert(b_path_opt!! == "crate.outer.inner.b"),
+    }
+
+    println("v0.7.6.4 resolver smoke OK")
 }
