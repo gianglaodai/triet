@@ -2821,7 +2821,17 @@ function function_with_blocks(fn: Function, blocks: Vector<BasicBlock>) -> Funct
 // resolution (CallCrossModule path emission) defers to v0.7.8.{3,5}
 // when the multi-module driver lands alongside the wire format.
 
-public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModule = {
+// Result of `lower_module`: the `IrModule` itself plus the
+// threaded `ConstantPool` that accumulated across all functions in
+// the module. The caller (`lower_source`) lifts the pool onto the
+// final `IrProgram` so per-function `Const` instructions can
+// resolve their `ConstId` references.
+public struct LowerModuleResult {
+    ir_module: IrModule,
+    constants: ConstantPool,
+}
+
+public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> LowerModuleResult = {
     // Pass 1a (v0.7.8.4): register struct + enum declarations so
     // FieldGet's `field_idx` and EnumNew's `variant_idx` resolve
     // by source-level name. Mirrors lowerer.rs:39-62 (Pass 1a).
@@ -2913,7 +2923,8 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> IrModul
         ir_mod = ir_module_push_function(ir_mod, lr.fn)
         j = j + 1
     }
-    ir_module_with_type_arena(ir_mod, ctx.type_arena)
+    let final_mod: IrModule = ir_module_with_type_arena(ir_mod, ctx.type_arena)
+    LowerModuleResult { ir_module: final_mod, constants: ctx.constants }
 }
 
 // Convenience entry: lex + parse + lower in one call. Returns an
@@ -2925,10 +2936,11 @@ public function lower_source(source: String) -> IrProgram = {
         ~+ tokens => {
             let pstate: ParserState = parser_new(tokens)
             let pstep: ParseProgramStep = parse_program(pstate)
-            let m: IrModule = lower_module(pstep.program.arena, pstep.program.item_ids)
-            ir_program_push_module(ir_program_new(), m)
+            let lr: LowerModuleResult = lower_module(pstep.program.arena, pstep.program.item_ids)
+            let prog: IrProgram = ir_program_push_module(ir_program_new(), lr.ir_module)
+            ir_program_with_constants(prog, lr.constants)
         },
-        ~- _ => ir_program_new(),
+    ~- _ => ir_program_new(),
     }
 }
 
@@ -3071,21 +3083,13 @@ function constant_display(c: Constant) -> String =
         NullConst(_) => "Null",
     }
 
-// Read-only constants pool accessor. Defensive against the
-// "rebound local loses kind tag" Triết VM quirk: a bare
-// `prog.constants` after `let prog: IrProgram = …` returns Unit
-// instead of `ConstantPool` because the SSA rebind doesn't
-// propagate ValueKind through cross-call returns. The typed
-// helper restores the kind.
-function ir_program_constants(prog: IrProgram) -> ConstantPool = prog.constants
-function constant_pool_entries(pool: ConstantPool) -> Vector<Constant> = pool.entries
-
-// Look up the constant value for a ConstId.
-function lookup_constant(prog: IrProgram, cid: ConstId) -> Constant? = {
-    let pool: ConstantPool = ir_program_constants(prog)
-    let entries: Vector<Constant> = constant_pool_entries(pool)
-    get(entries, cid.raw)
-}
+// Look up the constant value for a ConstId. v0.7.x.runtime-fix
+// investigation showed the standalone Rust test cases all pass —
+// the previously-pinned "rebound local loses kind tag" theory
+// doesn't reproduce in isolation. Restored direct field access;
+// any future regression should reopen with a more specific repro.
+function lookup_constant(prog: IrProgram, cid: ConstId) -> Constant? =
+    get(prog.constants.entries, cid.raw)
 
 function dump_const_value(prog: IrProgram, cid: ConstId) -> String =
     match lookup_constant(prog, cid) {
@@ -3558,11 +3562,12 @@ public function lower_source_smoke_main() -> Unit = {
     assert_string_eq(instruction_opcode_name(lt_inst), "Lt")
 
     // Test 7: String literal interns a constant; pool grows.
+    // (Post-runtime-fix: `lower_source` now propagates the threaded
+    // ConstantPool from `lower_module` to the final `IrProgram`,
+    // so the pool exposes the interned string + the auto-emitted
+    // Unit for the block's value.)
     let p7: IrProgram = lower_source("function s() -> String = \"hi\"")
-    assert(constant_pool_count(p7.constants) == 0)
-    // NB: constants live per-function in v0.7.8.2 (no shared pool
-    // emit) — the pool on the IrProgram stays empty until v0.7.8.3
-    // wires the cross-function dedup driver.
+    assert(constant_pool_count(p7.constants) >= 1)
 
     println("v0.7.8.2 ir_lowerer literal+binding smoke OK")
 }
@@ -3780,33 +3785,37 @@ public function struct_enum_outcome_smoke_main() -> Unit = {
 
 public function ir_dump_smoke_main() -> Unit = {
     // Test 1: empty program — wraps an empty module per
-    // `lower_source` shape (1 module / 0 functions). Exact
-    // byte-equality works for the empty case because no
-    // accessor-rebind path is exercised.
+    // `lower_source` shape (1 module / 0 functions).
     let d1: String = dump_ir_program_ndjson("")
     let mutable expected1: String = "{\"k\":\"Program\",\"modules\":1}\n"
     expected1 = concat(expected1, "{\"k\":\"Module\",\"functions\":0}\n")
     assert_string_eq(d1, expected1)
 
-    // Test 2: simple integer return — verify length + non-empty
-    // produces output (full opcode-sequence assertion lives in
-    // the v0.7.8.6 lowerer_differential corpus). The Triết-side
-    // `prog.constants` accessor pattern (the rebind/kind-tag
-    // issue documented at v0.7.8.4) makes byte-for-byte VM-side
-    // assertions brittle until v0.7.9 resolves the ValueKind
-    // propagation gap.
+    // Test 2: simple integer return — exact expected NDJSON.
     let d2: String = dump_ir_program_ndjson("function f() -> Integer = 42")
-    assert(text_len(d2) > 0)
+    let mutable expected2: String = "{\"k\":\"Program\",\"modules\":1}\n"
+    expected2 = concat(expected2, "{\"k\":\"Module\",\"functions\":1}\n")
+    expected2 = concat(expected2, "{\"k\":\"Function\",\"name\":\"f\",\"params\":0,\"return\":\"Integer\",\"blocks\":1}\n")
+    expected2 = concat(expected2, "{\"k\":\"Block\",\"id\":\"b0\",\"name\":\"entry\",\"insts\":2}\n")
+    expected2 = concat(expected2, "{\"k\":\"Inst\",\"op\":\"Const\",\"dest\":\"%0\",\"const\":\"Integer(42)\"}\n")
+    expected2 = concat(expected2, "{\"k\":\"Inst\",\"op\":\"Ret\",\"value\":\"%0\"}\n")
+    assert_string_eq(d2, expected2)
 
     // Test 3: dump is deterministic across two calls.
     let d3a: String = dump_ir_program_ndjson("function f() -> Integer = 42")
     let d3b: String = dump_ir_program_ndjson("function f() -> Integer = 42")
     assert_string_eq(d3a, d3b)
 
-    // Test 4: arithmetic + parameters — non-empty output.
+    // Test 4: arithmetic + parameters — exact expected NDJSON.
     let s4: String = "function add(x: Integer, y: Integer) -> Integer = x + y"
     let d4: String = dump_ir_program_ndjson(s4)
-    assert(text_len(d4) > 0)
+    let mutable expected4: String = "{\"k\":\"Program\",\"modules\":1}\n"
+    expected4 = concat(expected4, "{\"k\":\"Module\",\"functions\":1}\n")
+    expected4 = concat(expected4, "{\"k\":\"Function\",\"name\":\"add\",\"params\":2,\"return\":\"Integer\",\"blocks\":1}\n")
+    expected4 = concat(expected4, "{\"k\":\"Block\",\"id\":\"b0\",\"name\":\"entry\",\"insts\":2}\n")
+    expected4 = concat(expected4, "{\"k\":\"Inst\",\"op\":\"Add\",\"dest\":\"%2\",\"lhs\":\"%0\",\"rhs\":\"%1\"}\n")
+    expected4 = concat(expected4, "{\"k\":\"Inst\",\"op\":\"Ret\",\"value\":\"%2\"}\n")
+    assert_string_eq(d4, expected4)
 
     // Test 5: outcome constructor — non-empty output.
     let s5: String = "function ok() -> Integer~String = ~+ 42"
