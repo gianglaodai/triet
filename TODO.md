@@ -252,8 +252,8 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
 
 ### Remaining v0.7.7 sub-tasks
 
-- [x] **v0.7.7.2** — Literal + binding + control-flow checking (Stmt::Let / Const / Return / Break / Continue / Assign / If / While + Expr literals + binary/unary ops). Lands `check_resolved` driver + prelude.
-- [x] **v0.7.7.3** — Function + call + generic Rust-style inference (FunctionDef typecheck + CallExpr resolution + TypeParam substitution per ADR-0019 §A7.1).
+- [x] **v0.7.7.2** — Literal + binding + control-flow checking (Stmt::Let / Const / Return / Break / Continue / Assign / If / While + Expr literals + binary/unary ops). Lands `check_resolved` driver + prelude. (commit af57187)
+- [x] **v0.7.7.3** — Function + call + generic Rust-style inference (FunctionDef typecheck + CallExpr resolution + TypeParam substitution per ADR-0019 §A7.1). (commit af57187)
 - [ ] **v0.7.7.4** — Structs + enums + patterns + outcome (StructItem/EnumItem typecheck + Pattern arms + OutcomeArm constructors + Match exhaustiveness).
 - [ ] **v0.7.7.5** — `typecheck_differential` NDJSON byte-diff gate (closes v0.7.7 umbrella per ADR-0019 §A7.7).
 
