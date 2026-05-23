@@ -68,7 +68,7 @@ from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, F
 from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from crate.parser import UnaryOperator, Negate
 from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, NamedTypePayload, GenericTypePayload
+from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, NamedTypePayload, GenericTypePayload
 from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -1894,6 +1894,270 @@ function lower_continue_stmt(ctx: LowerCtx) -> LowerCtx =
         _ => emit(ctx, BrInst(InstBrPayload { target: loop_stack_top(ctx)!!.continue_target })),
     }
 
+// ── v0.7.8.3b: While + phi-node insertion ────────────────────────
+//
+// Patch helper: rebuild `blocks` with the specified block's `Phi`
+// instruction (matching `phi_dest`) replaced to carry
+// `new_incoming`. Used after the loop body has lowered, when we
+// finally know the body-end SSA value + block ID for each phi'd
+// var. Triết Vectors are immutable so every layer must rebuild —
+// O(N²) but the corpus is tens of blocks at worst.
+
+function patch_phi_incoming(
+    blocks: Vector<BasicBlock>,
+    block_idx: Integer,
+    phi_dest: ValueId,
+    new_incoming: Vector<PhiIncoming>,
+) -> Vector<BasicBlock> = {
+    let total: Integer = length(blocks)
+    let mutable new_blocks: Vector<BasicBlock> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let b_opt: BasicBlock? = get(blocks, i)
+        let b: BasicBlock = b_opt!!
+        if i == block_idx {
+            let inst_total: Integer = length(b.instructions)
+            let mutable new_insts: Vector<Instruction> = new()
+            let mutable j: Integer = 0
+            while j < inst_total {
+                let inst_opt: Instruction? = get(b.instructions, j)
+                let inst: Instruction = inst_opt!!
+                let patched: Instruction = match inst {
+                    PhiInst(p) => {
+                        if p.dest.raw == phi_dest.raw {
+                            PhiInst(InstPhiPayload {
+                                dest: p.dest,
+                                incoming: new_incoming,
+                            })
+                        } else {
+                            inst
+                        }
+                    },
+                    _ => inst,
+                }
+                new_insts = push(new_insts, patched)
+                j = j + 1
+            }
+            new_blocks = push(new_blocks, BasicBlock {
+                id: b.id,
+                name: b.name,
+                instructions: new_insts,
+            })
+        } else {
+            new_blocks = push(new_blocks, b)
+        }
+        i = i + 1
+    }
+    new_blocks
+}
+
+// Walk a Block's statements and collect target names of every
+// `AssignStmt` for phi-node planning. Dedupes via linear scan
+// (corpus has a handful of distinct names — fine).
+function collect_assigned_vars(arena: Arena, body: Block) -> Vector<String> = {
+    let mutable names: Vector<String> = new()
+    let total: Integer = length(body.block_statements)
+    let mutable i: Integer = 0
+    while i < total {
+        let sid_opt: Integer? = get(body.block_statements, i)
+        let spanned: SpannedStmt = get_statement(arena, sid_opt!!)
+        match spanned.node {
+            AssignStmt(p) => {
+                let mutable found: Trilean! = false
+                let n_total: Integer = length(names)
+                let mutable k: Integer = 0
+                while k < n_total {
+                    let existing_opt: String? = get(names, k)
+                    if existing_opt!! == p.target {
+                        found = true
+                    }
+                    k = k + 1
+                }
+                if !found {
+                    names = push(names, p.target)
+                }
+            },
+            _ => { },
+        }
+        i = i + 1
+    }
+    names
+}
+
+// Build a 1-incoming Phi placeholder. Patched by
+// `patch_phi_incoming` after the body has lowered.
+function emit_phi_placeholder(
+    ctx: LowerCtx,
+    pre_value: ValueId,
+    pre_block_id: BlockId,
+) -> LowerExprResult = {
+    let dest_r: LowerExprResult = fresh_value(ctx)
+    let mut_inc: Vector<PhiIncoming> = new()
+    let single_inc: Vector<PhiIncoming> = push(
+        mut_inc,
+        PhiIncoming { value: pre_value, block: pre_block_id },
+    )
+    let st: LowerCtx = emit(dest_r.ctx, PhiInst(InstPhiPayload {
+        dest: dest_r.value_id,
+        incoming: single_inc,
+    }))
+    LowerExprResult { ctx: st, value_id: dest_r.value_id }
+}
+
+// Get the BlockId of the block at the given index. Defensive `~0`
+// fallback shouldn't fire — callers always pass a valid index from
+// `current_block_idx`.
+function block_id_at(ctx: LowerCtx, idx: Integer) -> BlockId = {
+    let b_opt: BasicBlock? = get(ctx.blocks, idx)
+    match b_opt {
+        ~0 => BlockId { raw: 0 },
+        _ => b_opt!!.id,
+    }
+}
+
+function lower_while_loop(ctx: LowerCtx, p: WhileStmtPayload) -> LowerCtx = {
+    let arena: Arena = ctx.parser_arena
+
+    // Step 1: collect mutated vars + snapshot pre-loop SSA bindings.
+    // Use a sentinel `ValueId { raw: -1 }` to mark "var not bound
+    // pre-loop, skip phi" — avoids `Vector<ValueId?>` (which Triết
+    // wraps as `Vector<Nullable<ValueId>>` and `get` returns
+    // `Nullable<Nullable<ValueId>>`, mismatching the slot
+    // annotation).
+    let mutated: Vector<String> = collect_assigned_vars(arena, p.body)
+    let mutated_total: Integer = length(mutated)
+    let pre_block_idx: Integer = ctx.current_block_idx
+    let pre_block_id: BlockId = block_id_at(ctx, pre_block_idx)
+    let mutable pre_vals: Vector<ValueId> = new()
+    let mutable i: Integer = 0
+    while i < mutated_total {
+        let n_opt: String? = get(mutated, i)
+        let v_opt: ValueId? = resolve_var(ctx, n_opt!!)
+        let pre_v: ValueId = match v_opt {
+            ~0 => ValueId { raw: -1 },
+            _ => v_opt!!,
+        }
+        pre_vals = push(pre_vals, pre_v)
+        i = i + 1
+    }
+
+    // Step 2: spawn header / body / exit blocks.
+    let header_r: FreshBlockResult = fresh_block(ctx)
+    let mutable st: LowerCtx = header_r.ctx
+    let body_r: FreshBlockResult = fresh_block(st)
+    st = body_r.ctx
+    let exit_r: FreshBlockResult = fresh_block(st)
+    st = exit_r.ctx
+
+    // Step 3: branch from pre-loop block into header.
+    st = emit(st, BrInst(InstBrPayload { target: header_r.block_id }))
+
+    // Step 4: header block — emit Phi placeholders. Same sentinel
+    // pattern for `phi_dests` (raw = -1 → no phi for this slot).
+    st = start_block(st, header_r.block_id, "while_header")
+    let header_block_idx: Integer = st.current_block_idx
+    let mutable phi_dests: Vector<ValueId> = new()
+    i = 0
+    while i < mutated_total {
+        let pre_v_e_opt: ValueId? = get(pre_vals, i)
+        let pre_v: ValueId = pre_v_e_opt!!
+        if pre_v.raw < 0 {
+            // Pre-loop unbound — skip phi for this slot.
+            phi_dests = push(phi_dests, ValueId { raw: -1 })
+        } else {
+            let phi_r: LowerExprResult = emit_phi_placeholder(st, pre_v, pre_block_id)
+            st = phi_r.ctx
+            phi_dests = push(phi_dests, phi_r.value_id)
+            let n_opt: String? = get(mutated, i)
+            st = bind_var(st, n_opt!!, phi_r.value_id)
+        }
+        i = i + 1
+    }
+
+    // Step 5: lower the condition (reads phi'd values).
+    let cond_r: LowerExprResult = lower_expression(st, p.condition)
+    st = cond_r.ctx
+
+    // Step 6: compute unknown_target for BrTrilean.
+    // - `while cond { … }` → panic on Unknown (spawn a fresh
+    //   block holding `Unreachable`, branch there)
+    // - `while? cond { … }` → treat as False (branch to exit)
+    let mutable unk_target: BlockId = exit_r.block_id
+    if !p.treat_unknown_as_false {
+        let unk_r: FreshBlockResult = fresh_block(st)
+        st = unk_r.ctx
+        // Switch to unknown block, emit Unreachable, switch back.
+        st = start_block(st, unk_r.block_id, "while_unknown_panic")
+        st = emit(st, UnreachableInst(primitive_marker()))
+        st = ctx_with_current_block(st, header_block_idx)
+        unk_target = unk_r.block_id
+    }
+
+    // Emit BrTrilean from the header. current_block_idx is still
+    // header (we switched back after possibly spawning unknown).
+    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(cond_r.value_id),
+        true_block: body_r.block_id,
+        unknown_block: unk_target,
+        false_block: exit_r.block_id,
+    }))
+
+    // Step 7: lower body.
+    st = start_block(st, body_r.block_id, "while_body")
+    st = push_scope(st)
+    let body_res: LowerExprResult = lower_block(st, p.body)
+    st = body_res.ctx
+    st = pop_scope(st)
+
+    // Step 8: patch header's Phi placeholders with body-end edges.
+    let body_end_block_idx: Integer = st.current_block_idx
+    let body_end_block_id: BlockId = block_id_at(st, body_end_block_idx)
+    let mutable patched_blocks: Vector<BasicBlock> = st.blocks
+    i = 0
+    while i < mutated_total {
+        let pd_e_opt: ValueId? = get(phi_dests, i)
+        let phi_d: ValueId = pd_e_opt!!
+        if phi_d.raw >= 0 {
+            let nm_opt: String? = get(mutated, i)
+            let nm: String = nm_opt!!
+            let cur_v_opt: ValueId? = resolve_var(st, nm)
+            match cur_v_opt {
+                ~0 => { },
+                _ => {
+                    let pre_v_e_opt2: ValueId? = get(pre_vals, i)
+                    let pre_v: ValueId = pre_v_e_opt2!!
+                    let mutable new_inc: Vector<PhiIncoming> = new()
+                    new_inc = push(new_inc, PhiIncoming {
+                        value: pre_v,
+                        block: pre_block_id,
+                    })
+                    new_inc = push(new_inc, PhiIncoming {
+                        value: cur_v_opt!!,
+                        block: body_end_block_id,
+                    })
+                    patched_blocks = patch_phi_incoming(
+                        patched_blocks,
+                        header_block_idx,
+                        phi_d,
+                        new_inc,
+                    )
+                },
+            }
+        }
+        i = i + 1
+    }
+    st = ctx_with_blocks(st, patched_blocks)
+
+    // Step 9: Br back to header (if body didn't terminate via
+    // explicit `break` / `return`).
+    if !current_block_has_terminator(st) {
+        st = emit(st, BrInst(InstBrPayload { target: header_r.block_id }))
+    }
+
+    // Step 10: start exit block as the new current block.
+    start_block(st, exit_r.block_id, "while_exit")
+}
+
 public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
     let spanned: SpannedStmt = get_statement(ctx.parser_arena, stmt_id)
     match spanned.node {
@@ -1905,10 +2169,10 @@ public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
         LoopStmt(p) => lower_loop_stmt(ctx, p),
         BreakStmt(p) => lower_break_stmt(ctx, p),
         ContinueStmt => lower_continue_stmt(ctx),
-        // While / For lowering defers to v0.7.8.3b — these need
-        // phi-node insertion at the loop header for any variable
-        // assigned inside the body (otherwise SSA breaks across
-        // iterations). Silently skip for now.
+        WhileStmt(p) => lower_while_loop(ctx, p),
+        // For lowering defers to v0.7.8.3c — needs Range counter
+        // synthesis on top of the same phi-insertion primitive
+        // landed here.
         _ => ctx,
     }
 }
@@ -2268,6 +2532,54 @@ public function call_loop_smoke_main() -> Unit = {
     println("v0.7.8.3 ir_lowerer call+loop smoke OK")
 }
 
+// ── v0.7.8.3b smoke — While loop + phi-node insertion ────────────
+
+public function while_phi_smoke_main() -> Unit = {
+    // Test 1: empty-body `while?` over a Trilean condition → no
+    // mutated vars, no phi. Canonical 4-block shape: entry,
+    // while_header, while_body, while_exit. With treat_unknown_as_false
+    // (the `while?` form), unknown branches to exit (no panic block).
+    let s1: String = "function f() -> Unit { while? unknown { } }"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    assert(length(f1.blocks) == 4)
+
+    // Test 2: plain `while` produces an extra `unknown_panic`
+    // block (5 blocks total: entry, header, unknown_panic, body,
+    // exit). The order of body / unknown_panic depends on
+    // spawn timing; we just assert the total count.
+    let s2: String = "function f() -> Unit { let mutable i: Integer = 0 while i < 10 { i = i + 1 } }"
+    let p2: IrProgram = lower_source(s2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    assert(length(f2.blocks) == 5)
+
+    // Test 3: header block carries a Phi for the assigned var `i`.
+    // Inspect block at index 1 (header) — first instruction should
+    // be a Phi.
+    let header2: BasicBlock = get(f2.blocks, 1)!!
+    let first_inst: Instruction = get(header2.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(first_inst), "Phi")
+
+    // Test 4: the Phi has 2 incoming edges (pre-loop entry +
+    // body-end after assign). Patching from the v0.7.8.3b
+    // `patch_phi_incoming` helper makes both edges visible.
+    let phi_count: Integer = match first_inst {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    // Test 5: header's terminator is BrTrilean (3-way branch on
+    // the Trilean condition, ADR-0010).
+    let header_inst_total: Integer = length(header2.instructions)
+    let header_last: Instruction = get(header2.instructions, header_inst_total - 1)!!
+    assert_string_eq(instruction_opcode_name(header_last), "BrTrilean")
+
+    println("v0.7.8.3b ir_lowerer while+phi smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -2617,4 +2929,5 @@ public function main() -> Unit = {
     println("v0.7.8.1 ir_lowerer types smoke OK")
     lower_source_smoke_main()
     call_loop_smoke_main()
+    while_phi_smoke_main()
 }
