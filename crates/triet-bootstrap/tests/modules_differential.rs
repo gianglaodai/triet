@@ -12,7 +12,7 @@
 //! ## Format
 //!
 //! ```text
-//! {"k":"Program","modules":N,"errors":E}
+//! {"k":"Program","modules_root":N,"errors":E}
 //! {"k":"Module","idx":I,"path":"<dot.path>","arena":A,"parent":<I|null>,"children":[…],"items":N,"bindings":[["name","abs"],…]}
 //! …
 //! {"k":"Error","code":"<E21xx>","span":[<start>,<end>]}
@@ -61,7 +61,7 @@ fn compiler_modules_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("compiler")
-        .join("modules.tri")
+        .join("modules_root.tri")
 }
 
 fn modules_ir() -> &'static IrProgram {

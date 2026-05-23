@@ -236,19 +236,13 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
 - [x] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate (this commit, closes v0.7.6 umbrella per ADR-0019 §A7.6)
   - `compiler/modules.tri` (+~280 LOC, ~2720 LOC total) — adds `dump_resolved_program_ndjson(source: String) -> String` plus helpers: `json_escape`, `quote_string`, `json_int`, `json_parent_path`, `is_stdlib_module`, `dump_module_line`, `dump_error_line`, `count_user_modules`, `sort_string_vector` (O(N²) insertion-sort — Triết Vector exposes no built-in sort at v0.7.3.2; the differential corpus runs on tens of modules so quadratic is fine), `string_less_than` + `ascii_char_lt` (Triết has no String ordering primitive at v0.7.3.3, so we do a printable-ASCII lookup-table compare suited to dot-paths). Pipeline mirrors Rust `LoaderState::finish`: aggregate loader errors → cycle errors → (skip resolver if pre-resolver errors exist) → resolver errors. Drops the partial program when any error exists to match Rust's `Result::Err` arm.
   - Schema is **path-based**, not idx-based: `Module` lines carry `path` + `parent` (as path text or `null`) + `children` (sorted list of child paths) + `items` count + sorted `bindings` array. `idx`/`arena`/`ModuleId.raw` are deliberately omitted because Rust pre-loads stdlib (occupying idx 0..10) and Triết doesn't — the raw indices would differ for byte-identical user programs. Path identity is implementation-neutral.
-  - Stdlib filter: both sides skip modules whose root segment is `std` / `sys` / `dev` / `usr` / `core`. This is the same filter the resolver applies for reserved-namespace checks. Full stdlib pre-load in Triết defers to v0.7.10 alongside CLI wiring per ADR-0019 §A7.10 — the gate uses a user-modules-only diff for now.
-  - 1 new integration test (`modules_differential.rs`) — Rust mirror walks `triet_modules::ResolvedProgram`, drives Triết dump via VM (same `_ir()` cache + lookup pattern as `parser_differential.rs`). 13 corpus cases covering empty / single-function / child-module / nested / sibling / from-import-absolute / from-import-with-alias / visibility-violation / unresolved / reserved-namespace / `self.X` keyword / 2-cycle / mixed-items-and-modules.
-  - **Triết-side gotcha recorded**: `~+ T` mixed with `~- T` in match arms — when one arm returns `~+ resolve_names(…)` and another `~- err`, the typecheck rejects with E1006-style "outcome arm type mismatch". Worked around by lifting the resolver call into an `if/else` that returns the same `ResolveResult` struct on both paths (no Outcome wrapping).
-  - 1332 workspace tests pass (was 1319, +13 differential cases); `cargo clippy --workspace --all-targets` clean. Verified under `ulimit -v 8388608`.
+- [x] **v0.7.6.1** — Types + LoaderError scaffolding
+- [x] **v0.7.6.2** — Loader (filesystem + in-memory) + file layout restructure
+- [x] **v0.7.6.3** — Cycle detection (DFS over import graph)
+- [x] **v0.7.6.4** — Resolver (name resolution + visibility check)
+- [x] **v0.7.6.5** — `modules_differential` NDJSON byte-diff gate (closes v0.7.6 umbrella)
 
 ## v0.7.7 — `compiler/typecheck.tri` port (in progress)
-
-Mirrors `crates/triet-typecheck/` (4976 Rust LOC across 9 files —
-largest sub-task of v0.7 self-host). Per author cadence (v0.7.5
-split into 6 commits, v0.7.6 into 5), splits into 5 sub-tasks:
-types + Env scaffolding → literals + bindings + control flow →
-functions + calls + generic inference → structs + enums + patterns
-+ outcome → capability_check + `typecheck_differential` gate.
 
 - [x] **v0.7.7.1** — Types + TypeError + Env scaffolding (this commit)
   - `compiler/typecheck.tri` (~1000 LOC, new) — ports `crates/triet-typecheck/src/{types.rs, error.rs, env.rs}` (~1150 Rust LOC combined). New types: `TypeKind` (16 variants — Trit / Tryte / Integer / Long / Trilean+refined / String / Unit / Nullable / Tuple / Function / Range / UserStruct / UserEnum / TypeParam / Outcome / Unknown), `TypeArena` (Vector<TypeNode> keyed by Integer ID — Triết enum variants can't recursively contain themselves so `Box<Type>` becomes arena ID, mirrors parser.tri's Arena pattern), `TypeError` (27 variants covering E1001 UnknownType → E1034 TrileanReturnNotRefined + W2001 NullDeprecated, each with per-variant payload struct), `TypeEnvironment` (Vector<Frame> scope stack, `Binding { type_id, is_mutable }`). Helpers: `alloc_*` constructors for every TypeKind variant, `type_display` (recursive type printer matching Rust's `impl Display for Type` — `Integer?`, `(Integer, String)`, `function(…) -> R`, `Range<T>`, `Integer~String`, `Integer?~String`), `type_is_numeric` / `type_is_trilean` / `type_is_refined_trilean` predicates, `type_error_code` / `type_error_span` for the v0.7.7.5 byte-diff gate, `type_env_new` / `push_frame` / `pop_frame` / `declare` / `declare_with_mut` / `lookup_binding` / `lookup_type`.
@@ -258,8 +252,8 @@ functions + calls + generic inference → structs + enums + patterns
 
 ### Remaining v0.7.7 sub-tasks
 
-- [ ] **v0.7.7.2** — Literal + binding + control-flow checking (Stmt::Let / Const / Return / Break / Continue / Assign / If / While + Expr literals + binary/unary ops). Lands `check_resolved` driver + prelude.
-- [ ] **v0.7.7.3** — Function + call + generic Rust-style inference (FunctionDef typecheck + CallExpr resolution + TypeParam substitution per ADR-0019 §A7.1).
+- [x] **v0.7.7.2** — Literal + binding + control-flow checking (Stmt::Let / Const / Return / Break / Continue / Assign / If / While + Expr literals + binary/unary ops). Lands `check_resolved` driver + prelude.
+- [x] **v0.7.7.3** — Function + call + generic Rust-style inference (FunctionDef typecheck + CallExpr resolution + TypeParam substitution per ADR-0019 §A7.1).
 - [ ] **v0.7.7.4** — Structs + enums + patterns + outcome (StructItem/EnumItem typecheck + Pattern arms + OutcomeArm constructors + Match exhaustiveness).
 - [ ] **v0.7.7.5** — `typecheck_differential` NDJSON byte-diff gate (closes v0.7.7 umbrella per ADR-0019 §A7.7).
 

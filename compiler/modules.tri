@@ -55,7 +55,7 @@
 //
 // [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
 
-module parser;
+
 
 from std.io import println
 from std.io.fs import read as fs_read
@@ -1739,7 +1739,7 @@ function bind_own_definitions(program: ResolvedProgram) -> ResolvedProgram = {
 
 /// Find a module by its segment path. Linear scan O(N) — fine for
 /// the typical tens-of-modules scale.
-function find_module_by_path(
+public function find_module_by_path(
     program: ResolvedProgram,
     target_segs: Vector<String>,
 ) -> ModuleId? = {

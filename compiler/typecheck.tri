@@ -35,11 +35,36 @@
 //
 // [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
 
+module parser;
+module modules;
+
 from std.io import println
 from std.collections.vector import new, push, length, get
 from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, contains as hashmap_contains, keys as hashmap_keys
 from std.text import concat, from_integer, len as text_len
 from std.assert import assert
+
+from crate.parser.lexer import SpannedToken, LexError, lex
+from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload
+from crate.parser.lexer import NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
+from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item
+from crate.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
+from crate.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
+from crate.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
+from crate.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
+from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
+from crate.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
+from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
+from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
+from crate.parser import UnaryOperator, Negate
+from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
+from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, WhileStmtPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, ForStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload
+from crate.parser import NamedTypePayload, GenericTypePayload
+from crate.parser import FunctionTypePayload as ParseFunctionTypePayload, OutcomeTypePayload as ParseOutcomeTypePayload
+
+from crate.modules import ResolvedProgram, Module, ModuleId, ArenaId, ModulePath, AbsolutePath
+from crate.modules import resolved_program_module_count, resolved_program_arena_count, resolved_program_root
+from crate.modules import module_id_raw, arena_id_raw, absolute_path_module, absolute_path_name, find_module_by_path
 
 // ─────────────────────────────────────────────────────────────────
 // TypeKind — discriminator for the resolved-type representation.
@@ -68,13 +93,13 @@ public struct TuplePayload {
     elements: Vector<Integer>,
 }
 
-public struct FunctionTypePayload {
+public struct TypeFunctionPayload {
     type_params: Vector<String>,
     parameters: Vector<Integer>,
     return_type: Integer,
 }
 
-public struct RangePayload {
+public struct TypeRangePayload {
     element: Integer,
 }
 
@@ -121,8 +146,8 @@ public enum TypeKind {
     UnknownKind(PrimitiveMarker),
     NullableKind(NullablePayload),
     TupleKind(TuplePayload),
-    FunctionKind(FunctionTypePayload),
-    RangeKind(RangePayload),
+    FunctionKind(TypeFunctionPayload),
+    RangeKind(TypeRangePayload),
     UserStructKind(UserStructPayload),
     UserEnumKind(UserEnumPayload),
     TypeParamKind(TypeParamPayload),
@@ -212,7 +237,7 @@ public function alloc_function(
     return_type: Integer,
 ) -> AllocTypeResult =
     alloc_type(arena, TypeNode {
-        kind: FunctionKind(FunctionTypePayload {
+        kind: FunctionKind(TypeFunctionPayload {
             type_params: type_params,
             parameters: parameters,
             return_type: return_type,
@@ -220,7 +245,7 @@ public function alloc_function(
     })
 
 public function alloc_range(arena: TypeArena, element: Integer) -> AllocTypeResult =
-    alloc_type(arena, TypeNode { kind: RangeKind(RangePayload { element: element }) })
+    alloc_type(arena, TypeNode { kind: RangeKind(TypeRangePayload { element: element }) })
 
 public function alloc_user_struct(
     arena: TypeArena,
@@ -375,7 +400,7 @@ function format_tuple_display(arena: TypeArena, elements: Vector<Integer>) -> St
     concat(out, ")")
 }
 
-function format_function_display(arena: TypeArena, payload: FunctionTypePayload) -> String = {
+function format_function_display(arena: TypeArena, payload: TypeFunctionPayload) -> String = {
     let mutable out: String = "function("
     let total: Integer = length(payload.parameters)
     let mutable i: Integer = 0
@@ -806,6 +831,1778 @@ public function lookup_type(env: TypeEnvironment, name: String) -> Integer? = {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// v0.7.7.2 — Literal + binding + control-flow checking.
+//
+// Mirrors crates/triet-typecheck/src/check.rs +
+// crates/triet-typecheck/src/check/exprs.rs +
+// crates/triet-typecheck/src/env.rs (prelude).
+//
+// CheckerState threads all mutable context functionally (same pattern
+// as modules.tri's LoaderState). InferResult pairs the updated state
+// with the inferred type arena id.
+// ─────────────────────────────────────────────────────────────────
+
+// ── CheckerState ─────────────────────────────────────────────────
+
+public struct CheckerState {
+    type_arena: TypeArena,
+    env: TypeEnvironment,
+    errors: Vector<TypeError>,
+    return_type_id: Integer?,
+    in_loop: Trilean!,
+    parser_arena: Arena,
+}
+
+public struct InferResult {
+    state: CheckerState,
+    type_id: Integer,
+}
+
+function checker_with_type_arena(state: CheckerState, ta: TypeArena) -> CheckerState =
+    CheckerState {
+        type_arena: ta,
+        env: state.env,
+        errors: state.errors,
+        return_type_id: state.return_type_id,
+        in_loop: state.in_loop,
+        parser_arena: state.parser_arena,
+    }
+
+function checker_with_env(state: CheckerState, env: TypeEnvironment) -> CheckerState =
+    CheckerState {
+        type_arena: state.type_arena,
+        env: env,
+        errors: state.errors,
+        return_type_id: state.return_type_id,
+        in_loop: state.in_loop,
+        parser_arena: state.parser_arena,
+    }
+
+function checker_push_error(state: CheckerState, err: TypeError) -> CheckerState =
+    CheckerState {
+        type_arena: state.type_arena,
+        env: state.env,
+        errors: push(state.errors, err),
+        return_type_id: state.return_type_id,
+        in_loop: state.in_loop,
+        parser_arena: state.parser_arena,
+    }
+
+function checker_with_return_type(state: CheckerState, type_id: Integer) -> CheckerState =
+    CheckerState {
+        type_arena: state.type_arena,
+        env: state.env,
+        errors: state.errors,
+        return_type_id: type_id,
+        in_loop: state.in_loop,
+        parser_arena: state.parser_arena,
+    }
+
+function checker_clear_return_type(state: CheckerState) -> CheckerState =
+    CheckerState {
+        type_arena: state.type_arena,
+        env: state.env,
+        errors: state.errors,
+        return_type_id: ~0,
+        in_loop: state.in_loop,
+        parser_arena: state.parser_arena,
+    }
+
+function checker_enter_loop(state: CheckerState) -> CheckerState =
+    CheckerState {
+        type_arena: state.type_arena,
+        env: state.env,
+        errors: state.errors,
+        return_type_id: state.return_type_id,
+        in_loop: true,
+        parser_arena: state.parser_arena,
+    }
+
+function checker_exit_loop(state: CheckerState) -> CheckerState =
+    CheckerState {
+        type_arena: state.type_arena,
+        env: state.env,
+        errors: state.errors,
+        return_type_id: state.return_type_id,
+        in_loop: false,
+        parser_arena: state.parser_arena,
+    }
+
+// ── Prelude ───────────────────────────────────────────────────────
+
+public struct PreludeResult {
+    type_arena: TypeArena,
+    env: TypeEnvironment,
+}
+
+public function with_prelude() -> PreludeResult = {
+    let a0: TypeArena = type_arena_new()
+    let r_int: AllocTypeResult = alloc_integer(a0)
+    let int_id: Integer = r_int.type_id
+    let r_str: AllocTypeResult = alloc_string(r_int.arena)
+    let str_id: Integer = r_str.type_id
+    let r_unit: AllocTypeResult = alloc_unit(r_str.arena)
+    let unit_id: Integer = r_unit.type_id
+    let r_tryte: AllocTypeResult = alloc_tryte(r_unit.arena)
+    let tryte_id: Integer = r_tryte.type_id
+    let r_long: AllocTypeResult = alloc_long(r_tryte.arena)
+    let long_id: Integer = r_long.type_id
+    let r_tri: AllocTypeResult = alloc_trilean(r_long.arena, false)
+    let trilean_id: Integer = r_tri.type_id
+
+    let mutable str_vec: Vector<Integer> = new()
+    str_vec = push(str_vec, str_id)
+    let mutable tryte_vec: Vector<Integer> = new()
+    tryte_vec = push(tryte_vec, tryte_id)
+    let mutable long_vec: Vector<Integer> = new()
+    long_vec = push(long_vec, long_id)
+    let mutable int_vec: Vector<Integer> = new()
+    int_vec = push(int_vec, int_id)
+    let mutable tri_vec: Vector<Integer> = new()
+    tri_vec = push(tri_vec, trilean_id)
+
+    let r_print: AllocTypeResult = alloc_function(r_tri.arena, new(), str_vec, unit_id)
+    let r_println: AllocTypeResult = alloc_function(r_print.arena, new(), str_vec, unit_id)
+    let r_read: AllocTypeResult = alloc_function(r_println.arena, new(), new(), str_id)
+    let r_to_str: AllocTypeResult = alloc_function(r_read.arena, new(), int_vec, str_id)
+    let r_tryte_str: AllocTypeResult = alloc_function(r_to_str.arena, new(), tryte_vec, str_id)
+    let r_long_str: AllocTypeResult = alloc_function(r_tryte_str.arena, new(), long_vec, str_id)
+    let r_tri_str: AllocTypeResult = alloc_function(r_long_str.arena, new(), tri_vec, str_id)
+    let r_len: AllocTypeResult = alloc_function(r_tri_str.arena, new(), str_vec, int_id)
+    let final_arena: TypeArena = r_len.arena
+
+    let env0: TypeEnvironment = type_env_new()
+    let env1: TypeEnvironment = declare(env0, "print", r_print.type_id)
+    let env2: TypeEnvironment = declare(env1, "println", r_println.type_id)
+    let env3: TypeEnvironment = declare(env2, "read_line", r_read.type_id)
+    let env4: TypeEnvironment = declare(env3, "to_string", r_to_str.type_id)
+    let env5: TypeEnvironment = declare(env4, "tryte_to_string", r_tryte_str.type_id)
+    let env6: TypeEnvironment = declare(env5, "long_to_string", r_long_str.type_id)
+    let env7: TypeEnvironment = declare(env6, "trilean_to_string", r_tri_str.type_id)
+    let env8: TypeEnvironment = declare(env7, "length", r_len.type_id)
+
+    PreludeResult { type_arena: final_arena, env: env8 }
+}
+
+// ── Type helpers ──────────────────────────────────────────────────
+
+function type_is_unknown_id(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => true,
+        _ => {
+            match node_opt!!.kind {
+                UnknownKind(_) => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+function type_is_nullable(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => false,
+        _ => {
+            match node_opt!!.kind {
+                NullableKind(_) => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+function type_is_trit(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => false,
+        _ => {
+            match node_opt!!.kind {
+                TritKind(_) => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+function type_is_outcome(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => false,
+        _ => {
+            match node_opt!!.kind {
+                OutcomeKind(_) => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+function nullable_inner(arena: TypeArena, type_id: Integer) -> Integer? = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => ~0,
+        _ => {
+            match node_opt!!.kind {
+                NullableKind(p) => p.inner,
+                _ => ~0,
+            }
+        },
+    }
+}
+
+function types_match(arena: TypeArena, expected_id: Integer, found_id: Integer) -> Trilean! = {
+    if type_is_unknown_id(arena, expected_id) { return true }
+    if type_is_unknown_id(arena, found_id) { return true }
+    if type_is_trilean(arena, expected_id) && type_is_trilean(arena, found_id) {
+        let self_r: Trilean! = type_is_refined_trilean(arena, expected_id)
+        let other_r: Trilean! = type_is_refined_trilean(arena, found_id)
+        return !self_r || other_r
+    }
+    let exp_inner: Integer? = nullable_inner(arena, expected_id)
+    let found_inner: Integer? = nullable_inner(arena, found_id)
+    match exp_inner {
+        ~0 => { },
+        _ => {
+            match found_inner {
+                ~0 => {
+                    let exp_display: String = type_display(arena, exp_inner!!)
+                    let found_display: String = type_display(arena, found_id)
+                    return exp_display == found_display
+                },
+                _ => {
+                    return types_match(arena, exp_inner!!, found_inner!!)
+                },
+            }
+        },
+    }
+    let exp_str: String = type_display(arena, expected_id)
+    let found_str: String = type_display(arena, found_id)
+    exp_str == found_str
+}
+
+// ── TypeExpr resolution ───────────────────────────────────────────
+
+function infer_unknown(state: CheckerState) -> InferResult = {
+    let r: AllocTypeResult = alloc_unknown(state.type_arena)
+    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+}
+
+function resolve_named_type(state: CheckerState, name: String, ss: Integer, se: Integer) -> InferResult = {
+    if name == "Integer" {
+        let r: AllocTypeResult = alloc_integer(state.type_arena)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    if name == "String" {
+        let r: AllocTypeResult = alloc_string(state.type_arena)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    if name == "Trit" {
+        let r: AllocTypeResult = alloc_trit(state.type_arena)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    if name == "Tryte" {
+        let r: AllocTypeResult = alloc_tryte(state.type_arena)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    if name == "Long" {
+        let r: AllocTypeResult = alloc_long(state.type_arena)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    if name == "Unit" {
+        let r: AllocTypeResult = alloc_unit(state.type_arena)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    if name == "Trilean" {
+        let r: AllocTypeResult = alloc_trilean(state.type_arena, false)
+        return InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+    // Generic containers and unknown user types → Unknown for v0.7.7.2
+    let env_type: Integer? = lookup_type(state.env, name)
+    match env_type {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unknown(state.type_arena)
+            let st2: CheckerState = checker_with_type_arena(state, r.arena)
+            InferResult {
+                state: checker_push_error(st2, UnknownTypeErr(UnknownTypePayload {
+                    name: name,
+                    span_start: ss,
+                    span_end: se,
+                })),
+                type_id: r.type_id,
+            }
+        },
+        _ => InferResult { state: state, type_id: env_type!! },
+    }
+}
+
+function resolve_type_expr(state: CheckerState, type_expr_id: Integer) -> InferResult = {
+    let spanned: SpannedTypeExpr = get_type_expr(state.parser_arena, type_expr_id)
+    match spanned.node {
+        NamedType(p) => resolve_named_type(state, p.name, spanned.span_start, spanned.span_end),
+        GenericType(p) => resolve_named_type(state, p.name, spanned.span_start, spanned.span_end),
+        TupleType(_) => infer_unknown(state),
+        NullableType(inner_id) => {
+            let inner_r: InferResult = resolve_type_expr(state, inner_id)
+            let r: AllocTypeResult = alloc_nullable(inner_r.state.type_arena, inner_r.type_id)
+            InferResult {
+                state: checker_with_type_arena(inner_r.state, r.arena),
+                type_id: r.type_id,
+            }
+        },
+        FunctionType(p) => {
+            let mutable st: CheckerState = state
+            let mutable param_ids: Vector<Integer> = new()
+            let total: Integer = length(p.parameters)
+            let mutable i: Integer = 0
+            while i < total {
+                let pid_opt: Integer? = get(p.parameters, i)
+                let pr: InferResult = resolve_type_expr(st, pid_opt!!)
+                st = pr.state
+                param_ids = push(param_ids, pr.type_id)
+                i = i + 1
+            }
+            let ret_r: InferResult = resolve_type_expr(st, p.return_type)
+            st = ret_r.state
+            let fn_r: AllocTypeResult = alloc_function(st.type_arena, new(), param_ids, ret_r.type_id)
+            InferResult {
+                state: checker_with_type_arena(st, fn_r.arena),
+                type_id: fn_r.type_id,
+            }
+        },
+        OutcomeType(p) => {
+            let val_r: InferResult = resolve_type_expr(state, p.value_type)
+            let err_r: InferResult = resolve_type_expr(val_r.state, p.error_type)
+            let out_r: AllocTypeResult = alloc_outcome(err_r.state.type_arena, val_r.type_id, err_r.type_id, p.allow_null_state)
+            InferResult {
+                state: checker_with_type_arena(err_r.state, out_r.arena),
+                type_id: out_r.type_id,
+            }
+        },
+        RefinedTrileanType => {
+            let r: AllocTypeResult = alloc_trilean(state.type_arena, true)
+            InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+        },
+    }
+}
+
+// ── Binary op helpers ─────────────────────────────────────────────
+
+function binary_op_symbol(op: BinaryOperator) -> String = {
+    match op {
+        Add => "+",
+        Subtract => "-",
+        Multiply => "*",
+        Divide => "/",
+        Modulo => "%",
+        Power => "**",
+        Equal => "==",
+        NotEqual => "!=",
+        LessThan => "<",
+        LessEqual => "<=",
+        GreaterThan => ">",
+        GreaterEqual => ">=",
+        And => "&&",
+        Or => "||",
+        Xor => "^",
+        Iff => "<=>",
+        Implies => "=>",
+        KleeneXor => "~^",
+        KleeneIff => "<~>",
+        KleeneImplies => "~>",
+    }
+}
+
+function eq_result_type(state: CheckerState, left_tid: Integer, right_tid: Integer) -> InferResult = {
+    let ta: TypeArena = state.type_arena
+    let left_nullable: Trilean! = type_is_nullable(ta, left_tid)
+    let right_nullable: Trilean! = type_is_nullable(ta, right_tid)
+    let left_trit: Trilean! = type_is_trit(ta, left_tid)
+    let right_trit: Trilean! = type_is_trit(ta, right_tid)
+    let left_outcome: Trilean! = type_is_outcome(ta, left_tid)
+    let right_outcome: Trilean! = type_is_outcome(ta, right_tid)
+
+    let refined: Trilean! = if left_nullable || right_nullable || left_outcome || right_outcome || left_trit || right_trit {
+        false
+    } else {
+        let left_tri: Trilean! = type_is_trilean(ta, left_tid)
+        let right_tri: Trilean! = type_is_trilean(ta, right_tid)
+        if left_tri || right_tri {
+            let left_ref: Trilean! = if left_tri { type_is_refined_trilean(ta, left_tid) } else { true }
+            let right_ref: Trilean! = if right_tri { type_is_refined_trilean(ta, right_tid) } else { true }
+            left_ref && right_ref
+        } else {
+            true
+        }
+    }
+    let r: AllocTypeResult = alloc_trilean(ta, refined)
+    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+}
+
+function check_arithmetic_op(
+    state: CheckerState,
+    op: BinaryOperator,
+    left_tid: Integer,
+    right_tid: Integer,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    let ta: TypeArena = state.type_arena
+    let left_ok: Trilean! = type_is_numeric(ta, left_tid) || type_is_unknown_id(ta, left_tid)
+    let right_ok: Trilean! = type_is_numeric(ta, right_tid) || type_is_unknown_id(ta, right_tid)
+    let types_ok: Trilean! = types_match(ta, left_tid, right_tid)
+    if !left_ok || !right_ok || !types_ok {
+        let st2: CheckerState = checker_push_error(state, InvalidOperandsErr(InvalidOperandsPayload {
+            operator: binary_op_symbol(op),
+            expected_description: "two numeric operands of the same type",
+            left: left_tid,
+            right: right_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+        infer_unknown(st2)
+    } else {
+        InferResult { state: state, type_id: left_tid }
+    }
+}
+
+function check_equality_op(
+    state: CheckerState,
+    op: BinaryOperator,
+    left_tid: Integer,
+    right_tid: Integer,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    if !types_match(state.type_arena, left_tid, right_tid) {
+        let st2: CheckerState = checker_push_error(state, InvalidOperandsErr(InvalidOperandsPayload {
+            operator: binary_op_symbol(op),
+            expected_description: "two operands of the same type",
+            left: left_tid,
+            right: right_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+        infer_unknown(st2)
+    } else {
+        eq_result_type(state, left_tid, right_tid)
+    }
+}
+
+function check_ordering_op(
+    state: CheckerState,
+    op: BinaryOperator,
+    left_tid: Integer,
+    right_tid: Integer,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    let ta: TypeArena = state.type_arena
+    let left_ok: Trilean! = type_is_numeric(ta, left_tid) || type_is_unknown_id(ta, left_tid)
+    let right_ok: Trilean! = type_is_numeric(ta, right_tid) || type_is_unknown_id(ta, right_tid)
+    let types_ok: Trilean! = types_match(ta, left_tid, right_tid)
+    if !left_ok || !right_ok || !types_ok {
+        let st2: CheckerState = checker_push_error(state, InvalidOperandsErr(InvalidOperandsPayload {
+            operator: binary_op_symbol(op),
+            expected_description: "two numeric operands of the same type",
+            left: left_tid,
+            right: right_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+        infer_unknown(st2)
+    } else {
+        let r: AllocTypeResult = alloc_trilean(ta, true)
+        InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+}
+
+function check_logic_op(
+    state: CheckerState,
+    op: BinaryOperator,
+    left_tid: Integer,
+    right_tid: Integer,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    let ta: TypeArena = state.type_arena
+    let left_ok: Trilean! = type_is_trilean(ta, left_tid) || type_is_unknown_id(ta, left_tid)
+    let right_ok: Trilean! = type_is_trilean(ta, right_tid) || type_is_unknown_id(ta, right_tid)
+    if !left_ok || !right_ok {
+        let st2: CheckerState = checker_push_error(state, InvalidOperandsErr(InvalidOperandsPayload {
+            operator: binary_op_symbol(op),
+            expected_description: "two `Trilean` operands",
+            left: left_tid,
+            right: right_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+        infer_unknown(st2)
+    } else {
+        let both_refined: Trilean! = type_is_refined_trilean(ta, left_tid) && type_is_refined_trilean(ta, right_tid)
+        let r: AllocTypeResult = alloc_trilean(ta, both_refined)
+        InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+    }
+}
+
+function check_binary_op(
+    state: CheckerState,
+    op: BinaryOperator,
+    left_id: Integer,
+    right_id: Integer,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    let left_r: InferResult = infer_expression(state, left_id)
+    let right_r: InferResult = infer_expression(left_r.state, right_id)
+    let st: CheckerState = right_r.state
+    let left_tid: Integer = left_r.type_id
+    let right_tid: Integer = right_r.type_id
+    match op {
+        Add => check_arithmetic_op(st, op, left_tid, right_tid, ss, se),
+        Subtract => check_arithmetic_op(st, op, left_tid, right_tid, ss, se),
+        Multiply => check_arithmetic_op(st, op, left_tid, right_tid, ss, se),
+        Divide => check_arithmetic_op(st, op, left_tid, right_tid, ss, se),
+        Modulo => check_arithmetic_op(st, op, left_tid, right_tid, ss, se),
+        Power => check_arithmetic_op(st, op, left_tid, right_tid, ss, se),
+        Equal => check_equality_op(st, op, left_tid, right_tid, ss, se),
+        NotEqual => check_equality_op(st, op, left_tid, right_tid, ss, se),
+        LessThan => check_ordering_op(st, op, left_tid, right_tid, ss, se),
+        LessEqual => check_ordering_op(st, op, left_tid, right_tid, ss, se),
+        GreaterThan => check_ordering_op(st, op, left_tid, right_tid, ss, se),
+        GreaterEqual => check_ordering_op(st, op, left_tid, right_tid, ss, se),
+        And => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        Or => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        Xor => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        Iff => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        Implies => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        KleeneXor => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        KleeneIff => check_logic_op(st, op, left_tid, right_tid, ss, se),
+        KleeneImplies => check_logic_op(st, op, left_tid, right_tid, ss, se),
+    }
+}
+
+function check_unary_negate(state: CheckerState, operand_id: Integer, ss: Integer, se: Integer) -> InferResult = {
+    let operand_r: InferResult = infer_expression(state, operand_id)
+    let st: CheckerState = operand_r.state
+    let operand_tid: Integer = operand_r.type_id
+    let ta: TypeArena = st.type_arena
+    if type_is_numeric(ta, operand_tid) || type_is_trilean(ta, operand_tid) || type_is_unknown_id(ta, operand_tid) {
+        InferResult { state: st, type_id: operand_tid }
+    } else {
+        let st2: CheckerState = checker_push_error(st, InvalidUnaryErr(InvalidUnaryPayload {
+            operator: "-/!/not",
+            operand: operand_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+        infer_unknown(st2)
+    }
+}
+
+// ── Expression inference ──────────────────────────────────────────
+
+function infer_integer_literal(state: CheckerState, lit: IntLiteral) -> InferResult = {
+    let suf_opt: NumericSuffix? = lit.suffix
+    match suf_opt {
+        ~0 => {
+            let r: AllocTypeResult = alloc_integer(state.type_arena)
+            InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+        },
+        _ => {
+            match suf_opt!! {
+                TritSuffix => {
+                    let r: AllocTypeResult = alloc_trit(state.type_arena)
+                    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+                },
+                TryteSuffix => {
+                    let r: AllocTypeResult = alloc_tryte(state.type_arena)
+                    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+                },
+                IntegerSuffix => {
+                    let r: AllocTypeResult = alloc_integer(state.type_arena)
+                    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+                },
+                LongSuffix => {
+                    let r: AllocTypeResult = alloc_long(state.type_arena)
+                    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+                },
+            }
+        },
+    }
+}
+
+function infer_trilean_literal(state: CheckerState, tv: TrileanValue) -> InferResult = {
+    let refined: Trilean! = match tv {
+        TrueValue => true,
+        FalseValue => true,
+        UnknownValue => false,
+    }
+    let r: AllocTypeResult = alloc_trilean(state.type_arena, refined)
+    InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+}
+
+function infer_null_literal(state: CheckerState, ss: Integer, se: Integer) -> InferResult = {
+    let r_unk: AllocTypeResult = alloc_unknown(state.type_arena)
+    let st1: CheckerState = checker_with_type_arena(state, r_unk.arena)
+    let r_null: AllocTypeResult = alloc_nullable(st1.type_arena, r_unk.type_id)
+    let st2: CheckerState = checker_with_type_arena(st1, r_null.arena)
+    let st3: CheckerState = checker_push_error(st2, NullDeprecatedErr(NullDeprecatedPayload {
+        span_start: ss,
+        span_end: se,
+    }))
+    InferResult { state: st3, type_id: r_null.type_id }
+}
+
+function infer_identifier(state: CheckerState, name: String, ss: Integer, se: Integer) -> InferResult = {
+    let type_id_opt: Integer? = lookup_type(state.env, name)
+    match type_id_opt {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unknown(state.type_arena)
+            InferResult {
+                state: checker_push_error(
+                    checker_with_type_arena(state, r.arena),
+                    UndefinedNameErr(UndefinedNamePayload {
+                        name: name,
+                        span_start: ss,
+                        span_end: se,
+                    })
+                ),
+                type_id: r.type_id,
+            }
+        },
+        _ => InferResult { state: state, type_id: type_id_opt!! },
+    }
+}
+
+function infer_force_unwrap(state: CheckerState, inner_id: Integer, ss: Integer, se: Integer) -> InferResult = {
+    let inner_r: InferResult = infer_expression(state, inner_id)
+    let inner_inner: Integer? = nullable_inner(inner_r.state.type_arena, inner_r.type_id)
+    match inner_inner {
+        ~0 => {
+            if type_is_unknown_id(inner_r.state.type_arena, inner_r.type_id) {
+                inner_r
+            } else {
+                let r: AllocTypeResult = alloc_unknown(inner_r.state.type_arena)
+                InferResult {
+                    state: checker_push_error(
+                        checker_with_type_arena(inner_r.state, r.arena),
+                        NotNullableErr(NotNullablePayload {
+                            operator: "!!",
+                            found: inner_r.type_id,
+                            span_start: ss,
+                            span_end: se,
+                        })
+                    ),
+                    type_id: r.type_id,
+                }
+            }
+        },
+        _ => InferResult { state: inner_r.state, type_id: inner_inner!! },
+    }
+}
+
+function extract_type_params(
+    arena: TypeArena,
+    param_id: Integer,
+    arg_id: Integer,
+    sub_map: HashMap<String, Integer>,
+) -> HashMap<String, Integer> = {
+    let p_node_opt: TypeNode? = get_type(arena, param_id)
+    match p_node_opt {
+        ~0 => { return sub_map },
+        _ => { },
+    }
+    let a_node_opt: TypeNode? = get_type(arena, arg_id)
+    match a_node_opt {
+        ~0 => { return sub_map },
+        _ => { },
+    }
+    let p: TypeNode = p_node_opt!!
+    let a: TypeNode = a_node_opt!!
+
+    match p.kind {
+        TypeParamKind(tp) => {
+            let name: String = tp.name
+            match hashmap_get(sub_map, name) {
+                ~0 => {
+                    insert(sub_map, name, arg_id)
+                },
+                _ => {
+                    let existing: Integer = hashmap_get(sub_map, name)!!
+                    let ext_node_opt: TypeNode? = get_type(arena, existing)
+                    match ext_node_opt {
+                        ~0 => { sub_map },
+                        _ => {
+                            let ext_node: TypeNode = ext_node_opt!!
+                            match ext_node.kind {
+                                TypeParamKind(_) => {
+                                    match a.kind {
+                                        TypeParamKind(_) => { sub_map },
+                                        _ => {
+                                            insert(sub_map, name, arg_id)
+                                        },
+                                    }
+                                },
+                                _ => { sub_map },
+                            }
+                        },
+                    }
+                },
+            }
+        },
+        NullableKind(pn) => {
+            match a.kind {
+                NullableKind(an) => {
+                    extract_type_params(arena, pn.inner, an.inner, sub_map)
+                },
+                _ => {
+                    extract_type_params(arena, pn.inner, arg_id, sub_map)
+                },
+            }
+        },
+        TupleKind(pt) => {
+            match a.kind {
+                TupleKind(at) => {
+                    if length(pt.elements) == length(at.elements) {
+                        let mutable m: HashMap<String, Integer> = sub_map
+                        let mutable i: Integer = 0
+                        while i < length(pt.elements) {
+                            let p_elem: Integer = get(pt.elements, i)!!
+                            let a_elem: Integer = get(at.elements, i)!!
+                            m = extract_type_params(arena, p_elem, a_elem, m)
+                            i = i + 1
+                        }
+                        m
+                    } else {
+                        sub_map
+                    }
+                },
+                _ => { sub_map },
+            }
+        },
+        RangeKind(pr) => {
+            match a.kind {
+                RangeKind(ar) => {
+                    extract_type_params(arena, pr.element, ar.element, sub_map)
+                },
+                _ => { sub_map },
+            }
+        },
+        UserStructKind(ps) => {
+            match a.kind {
+                UserStructKind(a_struct) => {
+                    if ps.name == a_struct.name && length(ps.fields) == length(a_struct.fields) {
+                        let mutable m: HashMap<String, Integer> = sub_map
+                        let mutable i: Integer = 0
+                        while i < length(ps.fields) {
+                            let pf: UserStructFieldPayload = get(ps.fields, i)!!
+                            let af: UserStructFieldPayload = get(a_struct.fields, i)!!
+                            m = extract_type_params(arena, pf.type_id, af.type_id, m)
+                            i = i + 1
+                        }
+                        m
+                    } else {
+                        sub_map
+                    }
+                },
+                _ => { sub_map },
+            }
+        },
+        UserEnumKind(pe) => {
+            match a.kind {
+                UserEnumKind(ae) => {
+                    if pe.name == ae.name && length(pe.variants) == length(ae.variants) {
+                        let mutable m: HashMap<String, Integer> = sub_map
+                        let mutable i: Integer = 0
+                        while i < length(pe.variants) {
+                            let pv: UserEnumVariantPayload = get(pe.variants, i)!!
+                            let av: UserEnumVariantPayload = get(ae.variants, i)!!
+                            match pv.payload_type {
+                                ~0 => { },
+                                _ => {
+                                    match av.payload_type {
+                                        ~0 => { },
+                                        _ => {
+                                            m = extract_type_params(arena, pv.payload_type!!, av.payload_type!!, m)
+                                        },
+                                    }
+                                },
+                            }
+                            i = i + 1
+                        }
+                        m
+                    } else {
+                        sub_map
+                    }
+                },
+                _ => { sub_map },
+            }
+        },
+        FunctionKind(pf) => {
+            match a.kind {
+                FunctionKind(af) => {
+                    if length(pf.parameters) == length(af.parameters) {
+                        let mutable m: HashMap<String, Integer> = sub_map
+                        let mutable i: Integer = 0
+                        while i < length(pf.parameters) {
+                            let pp: Integer = get(pf.parameters, i)!!
+                            let ap: Integer = get(af.parameters, i)!!
+                            m = extract_type_params(arena, pp, ap, m)
+                            i = i + 1
+                        }
+                        extract_type_params(arena, pf.return_type, af.return_type, m)
+                    } else {
+                        sub_map
+                    }
+                },
+                _ => { sub_map },
+            }
+        },
+        OutcomeKind(po) => {
+            match a.kind {
+                OutcomeKind(ao) => {
+                    if po.allow_null_state == ao.allow_null_state {
+                        let mutable m: HashMap<String, Integer> = sub_map
+                        m = extract_type_params(arena, po.value_type, ao.value_type, m)
+                        extract_type_params(arena, po.error_type, ao.error_type, m)
+                    } else {
+                        sub_map
+                    }
+                },
+                _ => { sub_map },
+            }
+        },
+        _ => { sub_map },
+    }
+}
+
+function type_substitute(
+    arena: TypeArena,
+    type_id: Integer,
+    sub_map: HashMap<String, Integer>,
+) -> AllocTypeResult = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => { return AllocTypeResult { arena: arena, type_id: type_id } },
+        _ => { },
+    }
+    let node: TypeNode = node_opt!!
+    match node.kind {
+        TypeParamKind(tp) => {
+            let name: String = tp.name
+            match hashmap_get(sub_map, name) {
+                ~0 => { AllocTypeResult { arena: arena, type_id: type_id } },
+                _ => {
+                    let sub_id: Integer = hashmap_get(sub_map, name)!!
+                    AllocTypeResult { arena: arena, type_id: sub_id }
+                },
+            }
+        },
+        NullableKind(n) => {
+            let r: AllocTypeResult = type_substitute(arena, n.inner, sub_map)
+            alloc_nullable(r.arena, r.type_id)
+        },
+        TupleKind(t) => {
+            let mutable st_arena: TypeArena = arena
+            let mutable new_elems: Vector<Integer> = new()
+            let mutable i: Integer = 0
+            while i < length(t.elements) {
+                let e: Integer = get(t.elements, i)!!
+                let r: AllocTypeResult = type_substitute(st_arena, e, sub_map)
+                st_arena = r.arena
+                new_elems = push(new_elems, r.type_id)
+                i = i + 1
+            }
+            alloc_tuple(st_arena, new_elems)
+        },
+        FunctionKind(f) => {
+            let mutable st_arena: TypeArena = arena
+            let mutable new_params: Vector<Integer> = new()
+            let mutable i: Integer = 0
+            while i < length(f.parameters) {
+                let p: Integer = get(f.parameters, i)!!
+                let r: AllocTypeResult = type_substitute(st_arena, p, sub_map)
+                st_arena = r.arena
+                new_params = push(new_params, r.type_id)
+                i = i + 1
+            }
+            let ret_r: AllocTypeResult = type_substitute(st_arena, f.return_type, sub_map)
+            st_arena = ret_r.arena
+            alloc_function(st_arena, f.type_params, new_params, ret_r.type_id)
+        },
+        RangeKind(rg) => {
+            let r: AllocTypeResult = type_substitute(arena, rg.element, sub_map)
+            alloc_range(r.arena, r.type_id)
+        },
+        UserStructKind(us) => {
+            let mutable st_arena: TypeArena = arena
+            let mutable new_fields: Vector<UserStructFieldPayload> = new()
+            let mutable local_map: HashMap<String, Integer> = sub_map
+            // type_params are replaced with empty vec
+            let mutable i: Integer = 0
+            while i < length(us.type_params) {
+                let p: String = get(us.type_params, i)!!
+                match hashmap_get(sub_map, p) {
+                    ~0 => {
+                        let uk: AllocTypeResult = alloc_unknown(st_arena)
+                        st_arena = uk.arena
+                        local_map = insert(local_map, p, uk.type_id)
+                    },
+                    _ => {
+                        let sub_id: Integer = hashmap_get(sub_map, p)!!
+                        local_map = insert(local_map, p, sub_id)
+                    },
+                }
+                i = i + 1
+            }
+            let mutable j: Integer = 0
+            while j < length(us.fields) {
+                let f: UserStructFieldPayload = get(us.fields, j)!!
+                let r: AllocTypeResult = type_substitute(st_arena, f.type_id, local_map)
+                st_arena = r.arena
+                new_fields = push(new_fields, UserStructFieldPayload { name: f.name, type_id: r.type_id })
+                j = j + 1
+            }
+            let empty_tp: Vector<String> = new()
+            alloc_user_struct(st_arena, us.name, empty_tp, new_fields)
+        },
+        UserEnumKind(ue) => {
+            let mutable st_arena: TypeArena = arena
+            let mutable new_variants: Vector<UserEnumVariantPayload> = new()
+            let mutable local_map: HashMap<String, Integer> = sub_map
+            let mutable i: Integer = 0
+            while i < length(ue.type_params) {
+                let p: String = get(ue.type_params, i)!!
+                match hashmap_get(sub_map, p) {
+                    ~0 => {
+                        let uk: AllocTypeResult = alloc_unknown(st_arena)
+                        st_arena = uk.arena
+                        local_map = insert(local_map, p, uk.type_id)
+                    },
+                    _ => {
+                        let sub_id: Integer = hashmap_get(sub_map, p)!!
+                        local_map = insert(local_map, p, sub_id)
+                    },
+                }
+                i = i + 1
+            }
+            let mutable j: Integer = 0
+            while j < length(ue.variants) {
+                let v: UserEnumVariantPayload = get(ue.variants, j)!!
+                match v.payload_type {
+                    ~0 => {
+                        new_variants = push(new_variants, UserEnumVariantPayload { name: v.name, payload_type: ~0 })
+                    },
+                    _ => {
+                        let r: AllocTypeResult = type_substitute(st_arena, v.payload_type!!, local_map)
+                        st_arena = r.arena
+                        new_variants = push(new_variants, UserEnumVariantPayload { name: v.name, payload_type: r.type_id })
+                    },
+                }
+                j = j + 1
+            }
+            let empty_tp: Vector<String> = new()
+            alloc_user_enum(st_arena, ue.name, empty_tp, new_variants)
+        },
+        OutcomeKind(o) => {
+            let r_val: AllocTypeResult = type_substitute(arena, o.value_type, sub_map)
+            let r_err: AllocTypeResult = type_substitute(r_val.arena, o.error_type, sub_map)
+            alloc_outcome(r_err.arena, r_val.type_id, r_err.type_id, o.allow_null_state)
+        },
+        _ => { AllocTypeResult { arena: arena, type_id: type_id } },
+    }
+}
+
+function infer_call(
+    state: CheckerState,
+    call: CallPayload,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    let callee_r: InferResult = infer_expression(state, call.callee)
+    let mutable st: CheckerState = callee_r.state
+    let callee_ty_opt: TypeNode? = get_type(st.type_arena, callee_r.type_id)
+    match callee_ty_opt {
+        ~0 => { return infer_unknown(st) },
+        _ => { },
+    }
+    let callee_ty: TypeNode = callee_ty_opt!!
+
+    match callee_ty.kind {
+        FunctionKind(f) => {
+            if length(call.arguments) != length(f.parameters) {
+                let err: TypeError = WrongArityErr(WrongArityPayload {
+                    expected: length(f.parameters),
+                    found: length(call.arguments),
+                    span_start: ss,
+                    span_end: se,
+                })
+                st = checker_push_error(st, err)
+            }
+            let mutable sub_map: HashMap<String, Integer> = hashmap_new()
+            let mutable i: Integer = 0
+            while i < length(call.arguments) {
+                let arg_id: Integer = get(call.arguments, i)!!
+                let arg_r: InferResult = infer_expression(st, arg_id)
+                st = arg_r.state
+                let expected_opt: Integer? = get(f.parameters, i)
+                match expected_opt {
+                    ~0 => { },
+                    _ => {
+                        let expected: Integer = expected_opt!!
+                        if length(f.type_params) > 0 {
+                            sub_map = extract_type_params(st.type_arena, expected, arg_r.type_id, sub_map)
+                        }
+                        let exp_sub_r: AllocTypeResult = type_substitute(st.type_arena, expected, sub_map)
+                        st = checker_with_type_arena(st, exp_sub_r.arena)
+                        if !types_match(st.type_arena, exp_sub_r.type_id, arg_r.type_id) {
+                            let arg_spanned: SpannedExpr = get_expression(st.parser_arena, arg_id)
+                            let err2: TypeError = MismatchErr(MismatchPayload {
+                                expected: exp_sub_r.type_id,
+                                found: arg_r.type_id,
+                                span_start: arg_spanned.span_start,
+                                span_end: arg_spanned.span_end,
+                            })
+                            st = checker_push_error(st, err2)
+                        }
+                    },
+                }
+                i = i + 1
+            }
+            if length(f.type_params) == 0 {
+                return InferResult { state: st, type_id: f.return_type }
+            }
+            let ret_sub_r: AllocTypeResult = type_substitute(st.type_arena, f.return_type, sub_map)
+            InferResult { state: checker_with_type_arena(st, ret_sub_r.arena), type_id: ret_sub_r.type_id }
+        },
+        UnknownKind(_) => {
+            InferResult { state: st, type_id: callee_r.type_id }
+        },
+        _ => {
+            let err: TypeError = NotCallableErr(NotCallablePayload {
+                found: callee_r.type_id,
+                span_start: ss,
+                span_end: se,
+            })
+            st = checker_push_error(st, err)
+            infer_unknown(st)
+        },
+    }
+}
+
+
+public function infer_expression(state: CheckerState, expr_id: Integer) -> InferResult = {
+    let spanned: SpannedExpr = get_expression(state.parser_arena, expr_id)
+    let ss: Integer = spanned.span_start
+    let se: Integer = spanned.span_end
+    match spanned.node {
+        IntegerLiteralExpr(lit) => infer_integer_literal(state, lit),
+        TernaryLiteralExpr(_) => {
+            let r: AllocTypeResult = alloc_integer(state.type_arena)
+            InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+        },
+        TrileanLiteralExpr(tv) => infer_trilean_literal(state, tv),
+        StringLiteralExpr(_) => {
+            let r: AllocTypeResult = alloc_string(state.type_arena)
+            InferResult { state: checker_with_type_arena(state, r.arena), type_id: r.type_id }
+        },
+        NullLiteralExpr => infer_null_literal(state, ss, se),
+        IdentifierExpr(sp) => infer_identifier(state, sp.text, ss, se),
+        UnaryOpExpr(p) => check_unary_negate(state, p.operand, ss, se),
+        BinaryOpExpr(p) => check_binary_op(state, p.operator, p.left, p.right, ss, se),
+        ForceUnwrapExpr(inner_id) => infer_force_unwrap(state, inner_id, ss, se),
+        CallExpr(call) => infer_call(state, call, ss, se),
+        FieldAccessExpr(_) => infer_unknown(state),
+        MethodCallExpr(_) => infer_unknown(state),
+        OutcomeConstructorExpr(_) => infer_unknown(state),
+        OutcomePropagateExpr(_) => infer_unknown(state),
+        OutcomeDefaultExpr(_) => infer_unknown(state),
+        ElvisOpExpr(_) => infer_unknown(state),
+        RangeExpr(_) => infer_unknown(state),
+    }
+}
+
+// ── Statement checking ────────────────────────────────────────────
+
+function push_return_mismatch(
+    state: CheckerState,
+    expected_tid: Integer,
+    found_tid: Integer,
+    ss: Integer,
+    se: Integer,
+) -> CheckerState = {
+    if type_is_refined_trilean(state.type_arena, expected_tid) && type_is_trilean(state.type_arena, found_tid) && !type_is_refined_trilean(state.type_arena, found_tid) {
+        checker_push_error(state, TrileanReturnNotRefinedErr(TrileanReturnNotRefinedPayload {
+            span_start: ss,
+            span_end: se,
+        }))
+    } else {
+        checker_push_error(state, MismatchErr(MismatchPayload {
+            expected: expected_tid,
+            found: found_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+    }
+}
+
+function check_condition_type(
+    state: CheckerState,
+    cond_tid: Integer,
+    treat_unknown_as_false: Trilean!,
+    ss: Integer,
+    se: Integer,
+) -> CheckerState = {
+    if type_is_unknown_id(state.type_arena, cond_tid) {
+        state
+    } else if type_is_refined_trilean(state.type_arena, cond_tid) {
+        state
+    } else if type_is_trilean(state.type_arena, cond_tid) {
+        if treat_unknown_as_false {
+            state
+        } else {
+            checker_push_error(state, PossiblyUnknownConditionErr(PossiblyUnknownConditionPayload {
+                span_start: ss,
+                span_end: se,
+            }))
+        }
+    } else {
+        checker_push_error(state, NonTrileanConditionErr(NonTrileanConditionPayload {
+            found: cond_tid,
+            span_start: ss,
+            span_end: se,
+        }))
+    }
+}
+
+function check_block(state: CheckerState, block: Block) -> InferResult = {
+    let mutable st: CheckerState = checker_with_env(state, push_frame(state.env))
+    let stmt_total: Integer = length(block.block_statements)
+    let mutable i: Integer = 0
+    while i < stmt_total {
+        let sid_opt: Integer? = get(block.block_statements, i)
+        st = check_statement(st, sid_opt!!)
+        i = i + 1
+    }
+    let mutable val_tid: Integer = 0
+    match block.block_final {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unit(st.type_arena)
+            st = checker_with_type_arena(st, r.arena)
+            val_tid = r.type_id
+        },
+        _ => {
+            let final_r: InferResult = infer_expression(st, block.block_final!!)
+            st = final_r.state
+            val_tid = final_r.type_id
+        },
+    }
+    st = checker_with_env(st, pop_frame(st.env))
+    InferResult { state: st, type_id: val_tid }
+}
+
+function check_initializer(
+    state: CheckerState,
+    type_ann: Integer?,
+    value_expr_id: Integer,
+) -> InferResult = {
+    let mutable st: CheckerState = state
+    let mutable has_ann: Trilean! = false
+    let mutable ann_tid: Integer = 0
+    match type_ann {
+        ~0 => { },
+        _ => {
+            let ann_r: InferResult = resolve_type_expr(st, type_ann!!)
+            st = ann_r.state
+            ann_tid = ann_r.type_id
+            has_ann = true
+        },
+    }
+    let inferred_r: InferResult = infer_expression(st, value_expr_id)
+    st = inferred_r.state
+    let inferred_tid: Integer = inferred_r.type_id
+    if has_ann {
+        if !types_match(st.type_arena, ann_tid, inferred_tid) {
+            let val_spanned: SpannedExpr = get_expression(st.parser_arena, value_expr_id)
+            st = checker_push_error(st, MismatchErr(MismatchPayload {
+                expected: ann_tid,
+                found: inferred_tid,
+                span_start: val_spanned.span_start,
+                span_end: val_spanned.span_end,
+            }))
+        }
+        InferResult { state: st, type_id: ann_tid }
+    } else {
+        InferResult { state: st, type_id: inferred_tid }
+    }
+}
+
+function check_return(
+    state: CheckerState,
+    value_opt: Integer?,
+    stmt_ss: Integer,
+    stmt_se: Integer,
+) -> CheckerState = {
+    let mutable st: CheckerState = state
+    let mutable actual_tid: Integer = 0
+    let mutable val_ss: Integer = stmt_ss
+    let mutable val_se: Integer = stmt_se
+    match value_opt {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unit(st.type_arena)
+            st = checker_with_type_arena(st, r.arena)
+            actual_tid = r.type_id
+        },
+        _ => {
+            let val_r: InferResult = infer_expression(st, value_opt!!)
+            st = val_r.state
+            actual_tid = val_r.type_id
+            let val_spanned: SpannedExpr = get_expression(st.parser_arena, value_opt!!)
+            val_ss = val_spanned.span_start
+            val_se = val_spanned.span_end
+        },
+    }
+    match st.return_type_id {
+        ~0 => st,
+        _ => {
+            let expected_tid: Integer = st.return_type_id!!
+            if !types_match(st.type_arena, expected_tid, actual_tid) {
+                push_return_mismatch(st, expected_tid, actual_tid, val_ss, val_se)
+            } else {
+                st
+            }
+        },
+    }
+}
+
+function check_assignment(
+    state: CheckerState,
+    target: String,
+    value_expr_id: Integer,
+    stmt_ss: Integer,
+    stmt_se: Integer,
+) -> CheckerState = {
+    let value_r: InferResult = infer_expression(state, value_expr_id)
+    let mutable st: CheckerState = value_r.state
+    let value_tid: Integer = value_r.type_id
+    let val_spanned: SpannedExpr = get_expression(st.parser_arena, value_expr_id)
+    let binding_opt: Binding? = lookup_binding(st.env, target)
+    match binding_opt {
+        ~0 => {
+            st = checker_push_error(st, UndefinedNameErr(UndefinedNamePayload {
+                name: target,
+                span_start: stmt_ss,
+                span_end: stmt_se,
+            }))
+        },
+        _ => {
+            let binding: Binding = binding_opt!!
+            if !binding.is_mutable {
+                st = checker_push_error(st, AssignToImmutableErr(AssignToImmutablePayload {
+                    name: target,
+                    span_start: stmt_ss,
+                    span_end: stmt_se,
+                }))
+            }
+            if !types_match(st.type_arena, binding.type_id, value_tid) {
+                st = checker_push_error(st, MismatchErr(MismatchPayload {
+                    expected: binding.type_id,
+                    found: value_tid,
+                    span_start: val_spanned.span_start,
+                    span_end: val_spanned.span_end,
+                }))
+            }
+        },
+    }
+    st
+}
+
+function check_while(state: CheckerState, p: WhileStmtPayload) -> CheckerState = {
+    let cond_r: InferResult = infer_expression(state, p.condition)
+    let mutable st: CheckerState = cond_r.state
+    let cond_tid: Integer = cond_r.type_id
+    let cond_spanned: SpannedExpr = get_expression(st.parser_arena, p.condition)
+    st = check_condition_type(st, cond_tid, p.treat_unknown_as_false, cond_spanned.span_start, cond_spanned.span_end)
+    let loop_st: CheckerState = checker_enter_loop(st)
+    let body_r: InferResult = check_block(loop_st, p.body)
+    checker_exit_loop(body_r.state)
+}
+
+function check_for(state: CheckerState, p: ForStmtPayload) -> CheckerState = {
+    let iter_r: InferResult = infer_expression(state, p.iterable)
+    let loop_st: CheckerState = checker_enter_loop(iter_r.state)
+    // Variable binding deferred to v0.7.7.4 (pattern support)
+    let body_r: InferResult = check_block(loop_st, p.body)
+    checker_exit_loop(body_r.state)
+}
+
+function check_statement(state: CheckerState, stmt_id: Integer) -> CheckerState = {
+    let spanned: SpannedStmt = get_statement(state.parser_arena, stmt_id)
+    let ss: Integer = spanned.span_start
+    let se: Integer = spanned.span_end
+    match spanned.node {
+        LetStmt(p) => {
+            let init_r: InferResult = check_initializer(state, p.type_annotation, p.value)
+            let new_env: TypeEnvironment = declare_with_mut(init_r.state.env, p.name, init_r.type_id, p.is_mutable)
+            checker_with_env(init_r.state, new_env)
+        },
+        ConstantStmt(p) => {
+            let init_r: InferResult = check_initializer(state, p.type_annotation, p.value)
+            let new_env: TypeEnvironment = declare(init_r.state.env, p.name, init_r.type_id)
+            checker_with_env(init_r.state, new_env)
+        },
+        ReturnStmt(p) => check_return(state, p.value, ss, se),
+        BreakStmt(p) => {
+            match p.value {
+                ~0 => state,
+                _ => {
+                    let r: InferResult = infer_expression(state, p.value!!)
+                    r.state
+                },
+            }
+        },
+        ContinueStmt => state,
+        ForStmt(p) => check_for(state, p),
+        WhileStmt(p) => check_while(state, p),
+        LoopStmt(p) => {
+            let loop_st: CheckerState = checker_enter_loop(state)
+            let body_r: InferResult = check_block(loop_st, p.body)
+            checker_exit_loop(body_r.state)
+        },
+        AssignStmt(p) => check_assignment(state, p.target, p.value, ss, se),
+        ExpressionStmt(p) => {
+            let expr_r: InferResult = infer_expression(state, p.expression)
+            expr_r.state
+        },
+    }
+}
+
+// ── Item declaration (pass 1) ─────────────────────────────────────
+
+function declare_function_signature(
+    state: CheckerState,
+    def: FunctionDef,
+    ss: Integer,
+    se: Integer,
+) -> CheckerState = {
+    let mutable st: CheckerState = checker_with_env(state, push_frame(state.env))
+    let tp_total: Integer = length(def.type_params)
+    let mutable ti: Integer = 0
+    while ti < tp_total {
+        let tp_opt: String? = get(def.type_params, ti)
+        let tp: String = tp_opt!!
+        let r: AllocTypeResult = alloc_type_param(st.type_arena, tp)
+        st = checker_with_type_arena(st, r.arena)
+        st = checker_with_env(st, declare(st.env, tp, r.type_id))
+        ti = ti + 1
+    }
+    let mutable param_ids: Vector<Integer> = new()
+    let param_total: Integer = length(def.parameters)
+    let mutable pi: Integer = 0
+    while pi < param_total {
+        let param_opt: FunctionParam? = get(def.parameters, pi)
+        let param: FunctionParam = param_opt!!
+        let pr: InferResult = resolve_type_expr(st, param.type_annotation)
+        st = pr.state
+        param_ids = push(param_ids, pr.type_id)
+        pi = pi + 1
+    }
+    let mutable ret_id: Integer = 0
+    match def.return_type {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unit(st.type_arena)
+            st = checker_with_type_arena(st, r.arena)
+            ret_id = r.type_id
+        },
+        _ => {
+            let ret_r: InferResult = resolve_type_expr(st, def.return_type!!)
+            st = ret_r.state
+            ret_id = ret_r.type_id
+        },
+    }
+    st = checker_with_env(st, pop_frame(st.env))
+    let fn_r: AllocTypeResult = alloc_function(st.type_arena, def.type_params, param_ids, ret_id)
+    st = checker_with_type_arena(st, fn_r.arena)
+    checker_with_env(st, declare(st.env, def.name, fn_r.type_id))
+}
+
+function declare_constant_signature(
+    state: CheckerState,
+    p: ConstantItemPayload,
+) -> CheckerState = {
+    let mutable st: CheckerState = state
+    let mutable type_id: Integer = 0
+    let mutable has_ann: Trilean! = false
+    match p.type_annotation {
+        ~0 => { },
+        _ => {
+            let r: InferResult = resolve_type_expr(st, p.type_annotation!!)
+            st = r.state
+            type_id = r.type_id
+            has_ann = true
+        },
+    }
+    if !has_ann {
+        let r: AllocTypeResult = alloc_unknown(st.type_arena)
+        st = checker_with_type_arena(st, r.arena)
+        type_id = r.type_id
+    }
+    checker_with_env(st, declare(st.env, p.name, type_id))
+}
+
+function declare_item_pass1(state: CheckerState, item_id: Integer) -> CheckerState = {
+    let spanned: SpannedItem = get_item(state.parser_arena, item_id)
+    let ss: Integer = spanned.span_start
+    let se: Integer = spanned.span_end
+    match spanned.node {
+        FunctionItem(def) => declare_function_signature(state, def, ss, se),
+        ConstantItem(p) => declare_constant_signature(state, p),
+        StructItem(_) => state,
+        EnumItem(_) => state,
+        TypeAliasItem(_) => state,
+        ImportItem(_) => state,
+        ImportFromItem(_) => state,
+        ModuleItem(_) => state,
+    }
+}
+
+// ── Item checking (pass 2) ────────────────────────────────────────
+
+function check_function(
+    state: CheckerState,
+    def: FunctionDef,
+    item_ss: Integer,
+    item_se: Integer,
+) -> CheckerState = {
+    let mutable st: CheckerState = checker_with_env(state, push_frame(state.env))
+    let tp_total: Integer = length(def.type_params)
+    let mutable ti: Integer = 0
+    while ti < tp_total {
+        let tp_opt: String? = get(def.type_params, ti)
+        let tp: String = tp_opt!!
+        let r: AllocTypeResult = alloc_type_param(st.type_arena, tp)
+        st = checker_with_type_arena(st, r.arena)
+        st = checker_with_env(st, declare(st.env, tp, r.type_id))
+        ti = ti + 1
+    }
+    let mutable ret_id: Integer = 0
+    match def.return_type {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unit(st.type_arena)
+            st = checker_with_type_arena(st, r.arena)
+            ret_id = r.type_id
+        },
+        _ => {
+            let ret_r: InferResult = resolve_type_expr(st, def.return_type!!)
+            st = ret_r.state
+            ret_id = ret_r.type_id
+        },
+    }
+    st = checker_with_return_type(st, ret_id)
+    let param_total: Integer = length(def.parameters)
+    let mutable pi: Integer = 0
+    while pi < param_total {
+        let param_opt: FunctionParam? = get(def.parameters, pi)
+        let param: FunctionParam = param_opt!!
+        let pr: InferResult = resolve_type_expr(st, param.type_annotation)
+        st = pr.state
+        st = checker_with_env(st, declare(st.env, param.name, pr.type_id))
+        pi = pi + 1
+    }
+    let mutable body_tid: Integer = 0
+    let mutable body_ss: Integer = item_ss
+    let mutable body_se: Integer = item_se
+    match def.body {
+        BlockBody(block) => {
+            let body_r: InferResult = check_block(st, block)
+            st = body_r.state
+            body_tid = body_r.type_id
+        },
+        ExpressionBody(expr_id) => {
+            let body_r: InferResult = infer_expression(st, expr_id)
+            st = body_r.state
+            body_tid = body_r.type_id
+            let expr_spanned: SpannedExpr = get_expression(st.parser_arena, expr_id)
+            body_ss = expr_spanned.span_start
+            body_se = expr_spanned.span_end
+        },
+    }
+    if !types_match(st.type_arena, ret_id, body_tid) {
+        st = push_return_mismatch(st, ret_id, body_tid, body_ss, body_se)
+    }
+    st = checker_clear_return_type(st)
+    checker_with_env(st, pop_frame(st.env))
+}
+
+function check_item_pass2(state: CheckerState, item_id: Integer) -> CheckerState = {
+    let spanned: SpannedItem = get_item(state.parser_arena, item_id)
+    match spanned.node {
+        FunctionItem(def) => check_function(state, def, spanned.span_start, spanned.span_end),
+        _ => state,
+    }
+}
+
+// ── Two-pass checker ──────────────────────────────────────────────
+
+function check_program(state: CheckerState, item_ids: Vector<Integer>) -> CheckerState = {
+    let total: Integer = length(item_ids)
+    let mutable st: CheckerState = state
+    let mutable i: Integer = 0
+    while i < total {
+        let id_opt: Integer? = get(item_ids, i)
+        st = declare_item_pass1(st, id_opt!!)
+        i = i + 1
+    }
+    let mutable j: Integer = 0
+    while j < total {
+        let id_opt: Integer? = get(item_ids, j)
+        st = check_item_pass2(st, id_opt!!)
+        j = j + 1
+    }
+    st
+}
+
+public function check_resolved(program: ResolvedProgram) -> Vector<TypeError> = {
+    let mutable mut_errors: Vector<TypeError> = new()
+    let max_modules: Integer = resolved_program_module_count(program)
+    let mutable module_types: Vector<HashMap<String, Integer>> = new()
+
+    let prelude: PreludeResult = with_prelude()
+    let mutable global_arena: TypeArena = prelude.type_arena
+    let root_id: Integer = module_id_raw(resolved_program_root(program))
+
+    // Pass 1: Collect declared types per module.
+    // For v0.7.7.2 we just do 1 iteration since we don't have UserStruct fields to resolve yet.
+    let mutable mi: Integer = 0
+    while mi < max_modules {
+        let mod: Module = get(program.modules, mi)!!
+        let arena: Arena = get(program.arenas, arena_id_raw(mod.arena_id))!!
+        let initial_state: CheckerState = CheckerState {
+            type_arena: global_arena,
+            env: type_env_new(),
+            errors: new(),
+            return_type_id: ~0,
+            in_loop: false,
+            parser_arena: arena,
+        }
+        let items_len: Integer = length(mod.item_ids)
+        let mutable ii: Integer = 0
+        let mutable st: CheckerState = initial_state
+        while ii < items_len {
+            st = declare_item_pass1(st, get(mod.item_ids, ii)!!)
+            ii = ii + 1
+        }
+        let frame: Frame = get(st.env.frames, 0)!!
+        let mutable local_types: HashMap<String, Integer> = hashmap_new()
+        let keys: Vector<String> = hashmap_keys(frame.names)
+        let keys_len: Integer = length(keys)
+        let mutable ki: Integer = 0
+        while ki < keys_len {
+            let k: String = get(keys, ki)!!
+            let binding: Binding = hashmap_get(frame.names, k)!!
+            insert(local_types, k, binding.type_id)
+            ki = ki + 1
+        }
+        module_types = push(module_types, local_types)
+        global_arena = st.type_arena
+        mi = mi + 1
+    }
+
+    // Pass 2: Check each module with seeded environment.
+    mi = 0
+    while mi < max_modules {
+        let mod: Module = get(program.modules, mi)!!
+        let arena: Arena = get(program.arenas, arena_id_raw(mod.arena_id))!!
+        let mutable initial_env: TypeEnvironment = if mi == root_id { prelude.env } else { type_env_new() }
+
+        let bindings_keys: Vector<String> = hashmap_keys(mod.bindings)
+        let bindings_len: Integer = length(bindings_keys)
+        let mutable bi: Integer = 0
+        while bi < bindings_len {
+            let local_name: String = get(bindings_keys, bi)!!
+            let abs_path: AbsolutePath = hashmap_get(mod.bindings, local_name)!!
+            let src_path: ModulePath = absolute_path_module(abs_path)
+            let item_name: String = absolute_path_name(abs_path)
+
+            // TODO: In Triết module path matching, if source_path == mod.path, continue.
+            let src_id_opt: ModuleId? = find_module_by_path(program, src_path.segments)
+            match src_id_opt {
+                ~0 => { },
+                _ => {
+                    let src_idx: Integer = module_id_raw(src_id_opt!!)
+                    if src_idx != mi {
+                        let src_types: HashMap<String, Integer> = get(module_types, src_idx)!!
+                        match hashmap_contains(src_types, item_name) {
+                            true => {
+                                let ty_id: Integer = hashmap_get(src_types, item_name)!!
+                                initial_env = declare(initial_env, local_name, ty_id)
+                            },
+                            _ => { },
+                        }
+                    }
+                },
+            }
+            bi = bi + 1
+        }
+
+        let initial: CheckerState = CheckerState {
+            type_arena: global_arena,
+            env: initial_env,
+            errors: new(),
+            return_type_id: ~0,
+            in_loop: false,
+            parser_arena: arena,
+        }
+        let final_state: CheckerState = check_program(initial, mod.item_ids)
+        let err_len: Integer = length(final_state.errors)
+        let mutable ei: Integer = 0
+        while ei < err_len {
+            mut_errors = push(mut_errors, get(final_state.errors, ei)!!)
+            ei = ei + 1
+        }
+        global_arena = final_state.type_arena
+        mi = mi + 1
+    }
+
+    mut_errors
+}
+
+function check_module(is_root: Trilean!, arena: Arena, item_ids: Vector<Integer>) -> Vector<TypeError> = {
+    let prelude: PreludeResult = with_prelude()
+    let initial_env: TypeEnvironment = if is_root { prelude.env } else { type_env_new() }
+    let initial: CheckerState = CheckerState {
+        type_arena: prelude.type_arena,
+        env: initial_env,
+        errors: new(),
+        return_type_id: ~0,
+        in_loop: false,
+        parser_arena: arena,
+    }
+    let final_state: CheckerState = check_program(initial, item_ids)
+    final_state.errors
+}
+
+/// Type-check a Triết source string, returning all errors (empty on success).
+public function check_source(source: String) -> Vector<TypeError> = {
+    let tokens_outcome: Vector<SpannedToken>~LexError = lex(source)
+    match tokens_outcome {
+        ~+ tokens => {
+            let pstate: ParserState = parser_new(tokens)
+            let pstep: ParseProgramStep = parse_program(pstate)
+            check_module(true, pstep.program.arena, pstep.program.item_ids)
+        },
+        ~- _ => new(),
+    }
+}
+
+// ── v0.7.7.2 smoke — literals + bindings + control flow ──────────
+
+public function control_flow_smoke_main() -> Unit = {
+    // Test 1: empty program → no errors
+    let e1: Vector<TypeError> = check_source("")
+    assert(length(e1) == 0)
+
+    // Test 2: simple integer return expression body → no errors
+    let e2: Vector<TypeError> = check_source("function f() -> Integer = 42")
+    assert(length(e2) == 0)
+
+    // Test 3: let binding + arithmetic block body → no errors
+    let e3: Vector<TypeError> = check_source("function f() -> Integer { let x: Integer = 5 x + 3 }")
+    assert(length(e3) == 0)
+
+    // Test 4: return type mismatch (Integer body, String declared) → 1 error
+    let e4: Vector<TypeError> = check_source("function f() -> String = 42")
+    assert(length(e4) == 1)
+
+    // Test 5: undefined name → 1 error
+    let e5: Vector<TypeError> = check_source("function f() -> Integer = no_such_name")
+    assert(length(e5) == 1)
+
+    // Test 6: while loop with Trilean! condition and mutable counter → no errors
+    let src6: String = "function f() -> Unit { let mutable i: Integer = 0 while i < 10 { i = i + 1 } }"
+    let e6: Vector<TypeError> = check_source(src6)
+    assert(length(e6) == 0)
+
+    // Test 7: assign to immutable → 1 error
+    let src7: String = "function f() -> Unit { let x: Integer = 0 x = 1 }"
+    let e7: Vector<TypeError> = check_source(src7)
+    assert(length(e7) == 1)
+
+    // Test 8: Trilean literal types — true/false are Trilean!, unknown is Trilean
+    let src8: String = "function f() -> Trilean! = true"
+    let e8: Vector<TypeError> = check_source(src8)
+    assert(length(e8) == 0)
+
+    // Test 9: arithmetic on mixed numeric types (Integer + Long) → ≥1 error
+    let src9: String = "function f() -> Long = 1 + 2_long"
+    let e9: Vector<TypeError> = check_source(src9)
+    assert(length(e9) >= 1)
+
+    // Test 10: ordering produces Trilean! — usable directly in `while`
+    let src10: String = "function f() -> Integer = { let mutable x: Integer = 0 while x < 3 { x = x + 1 } x }"
+    let e10: Vector<TypeError> = check_source(src10)
+    assert(length(e10) == 0)
+
+    // Test 11: let binding + unary negate
+    let src11: String = "function f() -> Integer = { let c: Integer = 7 -c }"
+    let e11: Vector<TypeError> = check_source(src11)
+    assert(length(e11) == 0)
+
+    // Test 12: Trilean (unknown) condition without `while?` → E1033 PossiblyUnknownCondition
+    let src12: String = "function f() -> Unit { while unknown { } }"
+    let e12: Vector<TypeError> = check_source(src12)
+    assert(length(e12) == 1)
+
+    println("v0.7.7.2 typecheck control-flow smoke OK")
+}
+
+// ── v0.7.7.3 smoke — function calls + generic inference ──────────
+
+public function generic_smoke_main() -> Unit = {
+    // Test 1: prelude call — `println` accepts a String → no errors
+    let g1: Vector<TypeError> = check_source("function main() -> Unit = println(\"hi\")")
+    assert(length(g1) == 0)
+
+    // Test 2: user-defined function + correct call → no errors
+    let src2: String = "function add(x: Integer, y: Integer) -> Integer = x + y\nfunction main() -> Integer = add(1, 2)"
+    let g2: Vector<TypeError> = check_source(src2)
+    assert(length(g2) == 0)
+
+    // Test 3: wrong arity (1 arg, expected 2) → 1 error
+    let src3: String = "function add(x: Integer, y: Integer) -> Integer = x + y\nfunction main() -> Integer = add(1)"
+    let g3: Vector<TypeError> = check_source(src3)
+    assert(length(g3) == 1)
+
+    // Test 4: argument type mismatch (String for Integer) → 1 error
+    let src4: String = "function add(x: Integer, y: Integer) -> Integer = x + y\nfunction main() -> Integer = add(1, \"two\")"
+    let g4: Vector<TypeError> = check_source(src4)
+    assert(length(g4) == 1)
+
+    // Test 5: calling a non-function value → ≥1 error (NotCallable)
+    let src5: String = "function main() -> Integer = (5)(1)"
+    let g5: Vector<TypeError> = check_source(src5)
+    assert(length(g5) >= 1)
+
+    // Test 6: generic function — single TypeParam, return inferred from argument
+    let src6: String = "function identity<T>(value: T) -> T = value\nfunction main() -> Integer = identity(42)"
+    let g6: Vector<TypeError> = check_source(src6)
+    assert(length(g6) == 0)
+
+    // Test 7: generic function — return type mismatch after substitution
+    let src7: String = "function identity<T>(value: T) -> T = value\nfunction main() -> String = identity(42)"
+    let g7: Vector<TypeError> = check_source(src7)
+    assert(length(g7) == 1)
+
+    // Test 8: prelude `to_string` (Integer -> String) round-trips
+    let src8: String = "function main() -> String = to_string(7)"
+    let g8: Vector<TypeError> = check_source(src8)
+    assert(length(g8) == 0)
+
+    println("v0.7.7.3 typecheck generic-call smoke OK")
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Smoke main — exercises Type construction + display, TypeError
 // code/span emission, TypeEnvironment push/pop/declare/lookup so
 // the v0.7.7.1 integration test (`typecheck_types_smoke.rs`) can
@@ -1002,4 +2799,6 @@ public function main() -> Unit = {
     assert(length(env6.frames) == 1)
 
     println("v0.7.7.1 typecheck types smoke OK")
+    control_flow_smoke_main()
+    generic_smoke_main()
 }

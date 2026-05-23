@@ -33,7 +33,7 @@ fn compiler_path(name: &str) -> PathBuf {
 fn modules_types_smoke_main_passes_all_asserts() {
     use miette::Diagnostic;
 
-    let path = compiler_path("modules");
+    let path = compiler_path("modules_root");
     assert!(
         path.is_file(),
         "missing compiler/modules.tri at {}",

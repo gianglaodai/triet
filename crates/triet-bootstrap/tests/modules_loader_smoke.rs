@@ -28,7 +28,7 @@ fn compiler_modules_path() -> PathBuf {
         .join("..")
         .join("..")
         .join("compiler")
-        .join("modules.tri")
+        .join("modules_root.tri")
 }
 
 #[test]
