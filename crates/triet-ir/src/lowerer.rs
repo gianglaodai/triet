@@ -11,6 +11,7 @@ use triet_logic::Trilean;
 use triet_modules::{AbsolutePath, Module, ResolvedProgram};
 use triet_syntax::{
     Arena,
+    arena::ExprId,
     expr::{BinaryOperator, Expr, MatchArm, OutcomeArm},
     item::{FunctionBody, FunctionDef, Item},
     numeric::{NumericSuffix, TrileanValue},
@@ -93,7 +94,8 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
             // real struct (not a primitive shadowed by the same name).
             if let Item::Struct(sd) = &item.node {
                 for field in &sd.fields {
-                    if let TypeExpr::Named(name) = &arena.type_expression(field.type_annotation).node
+                    if let TypeExpr::Named(name) =
+                        &arena.type_expression(field.type_annotation).node
                         && ctx.struct_fields.contains_key(name)
                     {
                         ctx.struct_field_types
@@ -111,6 +113,29 @@ pub fn lower_program(program: &ResolvedProgram) -> IrProgram {
         for item in &module.items {
             if let Item::Function(fd) = &item.node {
                 ctx.declare_function(module, fd);
+            }
+        }
+    }
+    // Pass 1c: collect top-level `constant NAME: T = expr` initializers.
+    // Each constant's literal value is interned into the shared pool and
+    // `constant_items[name] = ConstId` is recorded. `lower_identifier`
+    // consults this map after local-scope resolution, so a reference to
+    // `NAME` emits an `Instruction::Const { dest, constant: ConstId }`.
+    //
+    // v0.7.x.runtime-fix.const-items scope: only literal initializers
+    // (Integer / Tryte / Trit / Long / Trilean / String / Null) are
+    // evaluated. Non-literal initializers (e.g. `constant X = Y + 1`)
+    // silently skip — the name is left undeclared at the lowerer level
+    // and a reference will surface as a typecheck or runtime failure.
+    // Const-folding of richer expressions is a post-v0.7 concern.
+    for module in &program.modules {
+        let arena = &program.arenas[module.arena_id.0];
+        for item in &module.items {
+            if let Item::Const { name, value, .. } = &item.node
+                && let Some(c) = LowerCtx::try_eval_const_expr(arena, *value)
+            {
+                let const_id = ctx.intern_constant(c);
+                ctx.constant_items.insert(name.clone(), const_id);
             }
         }
     }
@@ -288,6 +313,12 @@ struct LowerCtx<'a> {
     /// `func_return_outcome_value_struct` per [ADR-0023].
     func_return_kind: HashMap<FuncId, ValueKind>,
 
+    /// Top-level `constant NAME: T = LITERAL` table: bare-name → `ConstId`
+    /// in the shared pool. Populated in Pass 1c, consulted by
+    /// `lower_identifier` after local-scope resolution. Literal-only
+    /// initializers — see Pass 1c docs.
+    constant_items: HashMap<String, ConstId>,
+
     // Per-function state (reset for each function)
     value_counter: u32,
     block_counter: u32,
@@ -319,6 +350,7 @@ impl<'a> LowerCtx<'a> {
             struct_field_types: HashMap::new(),
             value_kinds: HashMap::new(),
             func_return_kind: HashMap::new(),
+            constant_items: HashMap::new(),
             value_counter: 0,
             block_counter: 0,
             blocks: BTreeMap::new(),
@@ -347,6 +379,42 @@ impl<'a> LowerCtx<'a> {
 
     fn intern_constant(&mut self, c: Constant) -> ConstId {
         self.constants.intern(c)
+    }
+
+    /// Evaluate a constant initializer expression at lowering time.
+    /// Returns `Some(Constant)` for literal-only expressions (Integer /
+    /// Tryte / Trit / Long / Trilean / String / Null), `None` for any
+    /// non-literal expression.
+    fn try_eval_const_expr(arena: &Arena, expr_id: ExprId) -> Option<Constant> {
+        match &arena.expression(expr_id).node {
+            Expr::IntegerLiteral { value, suffix } => match suffix {
+                Some(NumericSuffix::Trit) => {
+                    let v = i8::try_from(*value).ok()?;
+                    Trit::from_i8(v).map(Constant::Trit)
+                }
+                Some(NumericSuffix::Tryte) => {
+                    let v = i16::try_from(*value).ok()?;
+                    Tryte::new(v).map(Constant::Tryte)
+                }
+                Some(NumericSuffix::Long) => Some(Constant::Long(Long::from_i128(*value))),
+                Some(NumericSuffix::Integer) | None => {
+                    let v = i64::try_from(*value).ok()?;
+                    Integer::new(v).map(Constant::Integer)
+                }
+            },
+            Expr::TernaryLiteral { value } => {
+                let v = i64::try_from(*value).ok()?;
+                Integer::new(v).map(Constant::Integer)
+            }
+            Expr::TrileanLiteral(tv) => Some(Constant::Trilean(match tv {
+                TrileanValue::True => Trilean::True,
+                TrileanValue::False => Trilean::False,
+                TrileanValue::Unknown => Trilean::Unknown,
+            })),
+            Expr::StringLiteral(s) => Some(Constant::String(s.clone())),
+            Expr::NullLiteral => Some(Constant::Null),
+            _ => None,
+        }
     }
 
     /// Emit an instruction into the current block.
@@ -643,7 +711,10 @@ impl<'a> LowerCtx<'a> {
     /// `None` if any entry is `Other` (so a mixed-tracking merge
     /// stays `Other` rather than asserting a kind that doesn't
     /// hold on every path).
-    fn shared_kind_identity(&self, value_ids: impl IntoIterator<Item = ValueId>) -> Option<ValueKind> {
+    fn shared_kind_identity(
+        &self,
+        value_ids: impl IntoIterator<Item = ValueId>,
+    ) -> Option<ValueKind> {
         let mut shared: Option<ValueKind> = None;
         let mut any = false;
         for v in value_ids {
@@ -1016,6 +1087,16 @@ impl<'a> LowerCtx<'a> {
                 // Function parameters (shadowed by local vars).
                 if let Some(v) = self.resolve_var(name) {
                     return v;
+                }
+                // Top-level `constant NAME: T = LITERAL` (Pass 1c).
+                // Emit a `Const` instruction loading from the shared pool.
+                if let Some(const_id) = self.constant_items.get(name).copied() {
+                    let dest = self.fresh_value();
+                    self.emit(Instruction::Const {
+                        dest,
+                        constant: const_id,
+                    });
+                    return dest;
                 }
                 // Bare identifier referring to a unit enum variant (e.g.
                 // `None` for `enum MaybeInt { Some(Integer), None }`).
