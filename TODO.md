@@ -241,9 +241,30 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
   - **Triết-side gotcha recorded**: `~+ T` mixed with `~- T` in match arms — when one arm returns `~+ resolve_names(…)` and another `~- err`, the typecheck rejects with E1006-style "outcome arm type mismatch". Worked around by lifting the resolver call into an `if/else` that returns the same `ResolveResult` struct on both paths (no Outcome wrapping).
   - 1332 workspace tests pass (was 1319, +13 differential cases); `cargo clippy --workspace --all-targets` clean. Verified under `ulimit -v 8388608`.
 
-### Remaining v0.7 sub-tasks after modules
+## v0.7.7 — `compiler/typecheck.tri` port (in progress)
 
-- [ ] **v0.7.7** — `compiler/typecheck.tri` + typecheck_differential test
+Mirrors `crates/triet-typecheck/` (4976 Rust LOC across 9 files —
+largest sub-task of v0.7 self-host). Per author cadence (v0.7.5
+split into 6 commits, v0.7.6 into 5), splits into 5 sub-tasks:
+types + Env scaffolding → literals + bindings + control flow →
+functions + calls + generic inference → structs + enums + patterns
++ outcome → capability_check + `typecheck_differential` gate.
+
+- [x] **v0.7.7.1** — Types + TypeError + Env scaffolding (this commit)
+  - `compiler/typecheck.tri` (~1000 LOC, new) — ports `crates/triet-typecheck/src/{types.rs, error.rs, env.rs}` (~1150 Rust LOC combined). New types: `TypeKind` (16 variants — Trit / Tryte / Integer / Long / Trilean+refined / String / Unit / Nullable / Tuple / Function / Range / UserStruct / UserEnum / TypeParam / Outcome / Unknown), `TypeArena` (Vector<TypeNode> keyed by Integer ID — Triết enum variants can't recursively contain themselves so `Box<Type>` becomes arena ID, mirrors parser.tri's Arena pattern), `TypeError` (27 variants covering E1001 UnknownType → E1034 TrileanReturnNotRefined + W2001 NullDeprecated, each with per-variant payload struct), `TypeEnvironment` (Vector<Frame> scope stack, `Binding { type_id, is_mutable }`). Helpers: `alloc_*` constructors for every TypeKind variant, `type_display` (recursive type printer matching Rust's `impl Display for Type` — `Integer?`, `(Integer, String)`, `function(…) -> R`, `Range<T>`, `Integer~String`, `Integer?~String`), `type_is_numeric` / `type_is_trilean` / `type_is_refined_trilean` predicates, `type_error_code` / `type_error_span` for the v0.7.7.5 byte-diff gate, `type_env_new` / `push_frame` / `pop_frame` / `declare` / `declare_with_mut` / `lookup_binding` / `lookup_type`.
+  - **Triết-side gotcha recorded**: `mutable` is a keyword (used in `let mutable x`), so `mutable: Trilean!` can't be a field name and `binding.mutable` can't be a field access. Renamed `Binding.mutable` → `Binding.is_mutable` consistently — matches v0.7.5.3 precedent (`LetStmtPayload.is_mutable`).
+  - **Note on `with_prelude`**: Rust's `env.rs` ships a `with_prelude()` that pre-binds `print` / `println` / `to_string` / etc. v0.7.7.1 omits this — the prelude depends on resolver stdlib pre-load (deferred to v0.7.10) and on Function/Tuple type construction sites which mature in v0.7.7.{2,3}. Lands alongside the checker driver in v0.7.7.2.
+  - 1 new integration test (`typecheck_types_smoke.rs`) loads `compiler/typecheck.tri` end-to-end (load → typecheck → lower → write `.triv` → round-trip read → run `main()` on VM). Triết-side `main()` exercises every constructor + display / code / span helper across all variants + Env push/pop/declare/lookup. 1333 workspace tests pass (was 1332, +1); `cargo clippy --workspace --all-targets` clean.
+
+### Remaining v0.7.7 sub-tasks
+
+- [ ] **v0.7.7.2** — Literal + binding + control-flow checking (Stmt::Let / Const / Return / Break / Continue / Assign / If / While + Expr literals + binary/unary ops). Lands `check_resolved` driver + prelude.
+- [ ] **v0.7.7.3** — Function + call + generic Rust-style inference (FunctionDef typecheck + CallExpr resolution + TypeParam substitution per ADR-0019 §A7.1).
+- [ ] **v0.7.7.4** — Structs + enums + patterns + outcome (StructItem/EnumItem typecheck + Pattern arms + OutcomeArm constructors + Match exhaustiveness).
+- [ ] **v0.7.7.5** — `typecheck_differential` NDJSON byte-diff gate (closes v0.7.7 umbrella per ADR-0019 §A7.7).
+
+### Remaining v0.7 sub-tasks after typecheck
+
 - [ ] **v0.7.8** — `compiler/ir_lowerer.tri` + lowerer_differential test
 - [ ] **v0.7.9** — `compiler/pack_writer.tri` + `compiler/main.tri` + drop bridges
 - [ ] **v0.7.10** — CLI wiring carry-over (project layout + cap-aware build + DevTtyPrompt + E2208.CapabilityDivergence) **+ Triết-side stdlib pre-load** (deferred from v0.7.6.2 + v0.7.6.4 + v0.7.6.5 — needs an env-var-read builtin or equivalent CLI-side resolution of the workspace `std/` path)

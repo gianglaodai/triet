@@ -1,0 +1,1005 @@
+// Triết-in-Triết typechecker port — bootstrap source for the
+// self-hosting compiler ([ADR-0019][adr-0019] §A7.7 v0.7.7
+// umbrella).
+//
+// v0.7.7.1 — Types + TypeError + Env scaffolding. Mirrors
+// crates/triet-typecheck/src/{types.rs, error.rs, env.rs}:
+// declares the resolved-type representation, the 27-variant
+// `TypeError` enum (E1001 → E1034 + W2001), and the scoped
+// `TypeEnvironment` (frame stack + Binding) that subsequent
+// v0.7.7.{2..4} sub-tasks will populate from `check_resolved`.
+//
+// Types coverage:
+//   - `TypeKind` (semantic types) — 16 variants covering primitives
+//     (Trit / Tryte / Integer / Long / Trilean / String / Unit),
+//     recursive wrappers (Nullable / Tuple / Function / Range /
+//     Outcome), user-defined (Struct / Enum), generic-param slots
+//     (TypeParam), and the recovery placeholder (Unknown).
+//   - `TypeArena` — `Vector<TypeNode>` keyed by Integer ID. Mirrors
+//     compiler/parser/parser.tri's Arena: Triết enum variants
+//     can't recursively contain themselves (no `Box<Self>`), so
+//     every `Box<Type>` field becomes an arena ID. `alloc_type` +
+//     `get_type` are the read/write API.
+//   - `TypeError` (27 variants) — E1001 UnknownType through E1034
+//     TrileanReturnNotRefined + W2001 NullDeprecated. Per-variant
+//     payload struct pattern (matches modules.tri's LoaderError).
+//   - `TypeEnvironment` — Vector<Frame> scope stack + per-frame
+//     `HashMap<String, Binding>`. `Binding` carries arena type id
+//     + mutable flag.
+//
+// v0.7.7.1 is types-only: no `check_*` driver yet. Smoke main
+// exercises construction + display + Env push/pop/lookup so the
+// integration test (`typecheck_types_smoke.rs`) can confirm the
+// surface compiles + round-trips through the VM. v0.7.7.{2..5}
+// build the actual checker on this foundation.
+//
+// [adr-0019]: ../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+
+from std.io import println
+from std.collections.vector import new, push, length, get
+from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, contains as hashmap_contains, keys as hashmap_keys
+from std.text import concat, from_integer, len as text_len
+from std.assert import assert
+
+// ─────────────────────────────────────────────────────────────────
+// TypeKind — discriminator for the resolved-type representation.
+//
+// Each variant carries a payload struct (Triết enum variants take
+// exactly one payload). Recursive references (`Box<Type>` in Rust)
+// become Integer arena IDs into a `TypeArena.types` vector.
+// ─────────────────────────────────────────────────────────────────
+
+// Marker payloads (zero-field) for primitive variants — Triết
+// enum variants require a payload, so we use a unit-shaped
+// marker for the "no extra data" cases.
+public struct PrimitiveMarker {
+    placeholder: Integer,
+}
+
+public struct TrileanPayload {
+    refined: Trilean!,
+}
+
+public struct NullablePayload {
+    inner: Integer,
+}
+
+public struct TuplePayload {
+    elements: Vector<Integer>,
+}
+
+public struct FunctionTypePayload {
+    type_params: Vector<String>,
+    parameters: Vector<Integer>,
+    return_type: Integer,
+}
+
+public struct RangePayload {
+    element: Integer,
+}
+
+public struct UserStructFieldPayload {
+    name: String,
+    type_id: Integer,
+}
+
+public struct UserStructPayload {
+    name: String,
+    type_params: Vector<String>,
+    fields: Vector<UserStructFieldPayload>,
+}
+
+public struct UserEnumVariantPayload {
+    name: String,
+    payload_type: Integer?,
+}
+
+public struct UserEnumPayload {
+    name: String,
+    type_params: Vector<String>,
+    variants: Vector<UserEnumVariantPayload>,
+}
+
+public struct TypeParamPayload {
+    name: String,
+}
+
+public struct OutcomeTypePayload {
+    value_type: Integer,
+    error_type: Integer,
+    allow_null_state: Trilean!,
+}
+
+public enum TypeKind {
+    TritKind(PrimitiveMarker),
+    TryteKind(PrimitiveMarker),
+    IntegerKind(PrimitiveMarker),
+    LongKind(PrimitiveMarker),
+    TrileanKind(TrileanPayload),
+    StringKind(PrimitiveMarker),
+    UnitKind(PrimitiveMarker),
+    UnknownKind(PrimitiveMarker),
+    NullableKind(NullablePayload),
+    TupleKind(TuplePayload),
+    FunctionKind(FunctionTypePayload),
+    RangeKind(RangePayload),
+    UserStructKind(UserStructPayload),
+    UserEnumKind(UserEnumPayload),
+    TypeParamKind(TypeParamPayload),
+    OutcomeKind(OutcomeTypePayload),
+}
+
+/// A single arena-allocated type node. Wrapped in a struct so the
+/// arena can grow Vector<TypeNode> without losing the per-node
+/// discriminator.
+public struct TypeNode {
+    kind: TypeKind,
+}
+
+/// Type arena. Recursive type references (Nullable inner, Tuple
+/// elements, Function parameters/return, Outcome value/error, etc.)
+/// are Integer IDs into `types`. Mirrors compiler/parser/parser.tri
+/// `Arena` pattern.
+public struct TypeArena {
+    types: Vector<TypeNode>,
+}
+
+public struct AllocTypeResult {
+    arena: TypeArena,
+    type_id: Integer,
+}
+
+public function type_arena_new() -> TypeArena =
+    TypeArena { types: new() }
+
+/// Allocate `node` into `arena`, returning the updated arena + the
+/// newly-allocated type ID. Caller carries the new arena forward.
+public function alloc_type(arena: TypeArena, node: TypeNode) -> AllocTypeResult = {
+    let next_id: Integer = length(arena.types)
+    let updated: TypeArena = TypeArena { types: push(arena.types, node) }
+    AllocTypeResult { arena: updated, type_id: next_id }
+}
+
+/// Fetch a type node by id. Returns `null` for out-of-bounds.
+/// Caller should `!!` when the id is known valid (recently
+/// returned from `alloc_type`).
+public function get_type(arena: TypeArena, type_id: Integer) -> TypeNode? =
+    get(arena.types, type_id)
+
+// ─────────────────────────────────────────────────────────────────
+// Type construction helpers — convenience constructors that match
+// the v0.7.7.{2..4} call-site ergonomics. All take + return a
+// `TypeArena` (functional update).
+// ─────────────────────────────────────────────────────────────────
+
+function primitive_marker() -> PrimitiveMarker =
+    PrimitiveMarker { placeholder: 0 }
+
+public function alloc_trit(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: TritKind(primitive_marker()) })
+
+public function alloc_tryte(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: TryteKind(primitive_marker()) })
+
+public function alloc_integer(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: IntegerKind(primitive_marker()) })
+
+public function alloc_long(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: LongKind(primitive_marker()) })
+
+public function alloc_string(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: StringKind(primitive_marker()) })
+
+public function alloc_unit(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: UnitKind(primitive_marker()) })
+
+public function alloc_unknown(arena: TypeArena) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: UnknownKind(primitive_marker()) })
+
+public function alloc_trilean(arena: TypeArena, refined: Trilean!) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: TrileanKind(TrileanPayload { refined: refined }) })
+
+public function alloc_nullable(arena: TypeArena, inner: Integer) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: NullableKind(NullablePayload { inner: inner }) })
+
+public function alloc_tuple(arena: TypeArena, elements: Vector<Integer>) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: TupleKind(TuplePayload { elements: elements }) })
+
+public function alloc_function(
+    arena: TypeArena,
+    type_params: Vector<String>,
+    parameters: Vector<Integer>,
+    return_type: Integer,
+) -> AllocTypeResult =
+    alloc_type(arena, TypeNode {
+        kind: FunctionKind(FunctionTypePayload {
+            type_params: type_params,
+            parameters: parameters,
+            return_type: return_type,
+        })
+    })
+
+public function alloc_range(arena: TypeArena, element: Integer) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: RangeKind(RangePayload { element: element }) })
+
+public function alloc_user_struct(
+    arena: TypeArena,
+    name: String,
+    type_params: Vector<String>,
+    fields: Vector<UserStructFieldPayload>,
+) -> AllocTypeResult =
+    alloc_type(arena, TypeNode {
+        kind: UserStructKind(UserStructPayload {
+            name: name,
+            type_params: type_params,
+            fields: fields,
+        })
+    })
+
+public function alloc_user_enum(
+    arena: TypeArena,
+    name: String,
+    type_params: Vector<String>,
+    variants: Vector<UserEnumVariantPayload>,
+) -> AllocTypeResult =
+    alloc_type(arena, TypeNode {
+        kind: UserEnumKind(UserEnumPayload {
+            name: name,
+            type_params: type_params,
+            variants: variants,
+        })
+    })
+
+public function alloc_type_param(arena: TypeArena, name: String) -> AllocTypeResult =
+    alloc_type(arena, TypeNode { kind: TypeParamKind(TypeParamPayload { name: name }) })
+
+public function alloc_outcome(
+    arena: TypeArena,
+    value_type: Integer,
+    error_type: Integer,
+    allow_null_state: Trilean!,
+) -> AllocTypeResult =
+    alloc_type(arena, TypeNode {
+        kind: OutcomeKind(OutcomeTypePayload {
+            value_type: value_type,
+            error_type: error_type,
+            allow_null_state: allow_null_state,
+        })
+    })
+
+// ─────────────────────────────────────────────────────────────────
+// Type predicates — mirror Rust's `impl Type` const fns.
+// ─────────────────────────────────────────────────────────────────
+
+/// True for any of Trit / Tryte / Integer / Long.
+public function type_is_numeric(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => false,
+        _ => {
+            let node: TypeNode = node_opt!!
+            match node.kind {
+                TritKind(_) => true,
+                TryteKind(_) => true,
+                IntegerKind(_) => true,
+                LongKind(_) => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+/// True for any Trilean (refined or generic). Mirrors
+/// `Type::is_trilean`.
+public function type_is_trilean(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => false,
+        _ => {
+            let node: TypeNode = node_opt!!
+            match node.kind {
+                TrileanKind(_) => true,
+                _ => false,
+            }
+        },
+    }
+}
+
+/// True for refined `Trilean!`. Mirrors `Type::is_refined_trilean`.
+public function type_is_refined_trilean(arena: TypeArena, type_id: Integer) -> Trilean! = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => false,
+        _ => {
+            let node: TypeNode = node_opt!!
+            match node.kind {
+                TrileanKind(p) => p.refined,
+                _ => false,
+            }
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Type display — produces a String matching Rust's `impl Display
+// for Type`. Used by error messages + the v0.7.7.5 differential
+// gate so both sides can compare error.message byte-for-byte.
+// ─────────────────────────────────────────────────────────────────
+
+public function type_display(arena: TypeArena, type_id: Integer) -> String = {
+    let node_opt: TypeNode? = get_type(arena, type_id)
+    match node_opt {
+        ~0 => "?",
+        _ => {
+            let node: TypeNode = node_opt!!
+            match node.kind {
+                TritKind(_) => "Trit",
+                TryteKind(_) => "Tryte",
+                IntegerKind(_) => "Integer",
+                LongKind(_) => "Long",
+                TrileanKind(p) => {
+                    if p.refined {
+                        "Trilean!"
+                    } else {
+                        "Trilean"
+                    }
+                },
+                StringKind(_) => "String",
+                UnitKind(_) => "Unit",
+                UnknownKind(_) => "?",
+                NullableKind(p) => concat(type_display(arena, p.inner), "?"),
+                TupleKind(p) => format_tuple_display(arena, p.elements),
+                FunctionKind(p) => format_function_display(arena, p),
+                RangeKind(p) => concat(concat("Range<", type_display(arena, p.element)), ">"),
+                UserStructKind(p) => p.name,
+                UserEnumKind(p) => p.name,
+                TypeParamKind(p) => p.name,
+                OutcomeKind(p) => format_outcome_display(arena, p),
+            }
+        },
+    }
+}
+
+function format_tuple_display(arena: TypeArena, elements: Vector<Integer>) -> String = {
+    let total: Integer = length(elements)
+    let mutable out: String = "("
+    let mutable i: Integer = 0
+    while i < total {
+        let e_opt: Integer? = get(elements, i)
+        if i > 0 {
+            out = concat(out, ", ")
+        }
+        out = concat(out, type_display(arena, e_opt!!))
+        i = i + 1
+    }
+    concat(out, ")")
+}
+
+function format_function_display(arena: TypeArena, payload: FunctionTypePayload) -> String = {
+    let mutable out: String = "function("
+    let total: Integer = length(payload.parameters)
+    let mutable i: Integer = 0
+    while i < total {
+        let p_opt: Integer? = get(payload.parameters, i)
+        if i > 0 {
+            out = concat(out, ", ")
+        }
+        out = concat(out, type_display(arena, p_opt!!))
+        i = i + 1
+    }
+    out = concat(out, ") -> ")
+    concat(out, type_display(arena, payload.return_type))
+}
+
+function format_outcome_display(arena: TypeArena, payload: OutcomeTypePayload) -> String = {
+    let value_str: String = type_display(arena, payload.value_type)
+    let error_str: String = type_display(arena, payload.error_type)
+    let sep: String = if payload.allow_null_state { "?~" } else { "~" }
+    concat(concat(value_str, sep), error_str)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// TypeError — 27 variants covering E1001–E1034 + W2001.
+//
+// Per-variant payload struct (Triết enum variants take a single
+// payload). Spans encoded as `span_start: Integer + span_end:
+// Integer` pair per compiler/parser/parser.tri convention.
+// ─────────────────────────────────────────────────────────────────
+
+public struct UnknownTypePayload {
+    name: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct UndefinedNamePayload {
+    name: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct MismatchPayload {
+    expected: Integer,
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct InvalidOperandsPayload {
+    operator: String,
+    expected_description: String,
+    left: Integer,
+    right: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct InvalidUnaryPayload {
+    operator: String,
+    operand: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct WrongArityPayload {
+    expected: Integer,
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NotCallablePayload {
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct AmbiguousConditionPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NonTrileanConditionPayload {
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct DuplicateNamePayload {
+    name: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NullLiteralInNonNullableContextPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NotNullablePayload {
+    operator: String,
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct MatchArmMismatchPayload {
+    expected: Integer,
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct TupleIndexOutOfRangePayload {
+    index: Integer,
+    length: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct UnknownMemberPayload {
+    member: String,
+    found: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct AssignToImmutablePayload {
+    name: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NullableErrorInOutcomeTypePayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NullStateInBinaryOutcomePayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NonExhaustiveOutcomeMatchPayload {
+    missing: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct OutcomeTypeMismatchPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct PropagateInNonFallibleContextPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct ErrorTypeMismatchPayload {
+    inner_error: Integer,
+    outer_error: Integer,
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct OutcomePropagateMissingCapturePayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct OutcomePropagateMalformedReturnPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct PatternMissingExplicitConstructorPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct PossiblyUnknownConditionPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct TrileanReturnNotRefinedPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public struct NullDeprecatedPayload {
+    span_start: Integer,
+    span_end: Integer,
+}
+
+public enum TypeError {
+    UnknownTypeErr(UnknownTypePayload),
+    UndefinedNameErr(UndefinedNamePayload),
+    MismatchErr(MismatchPayload),
+    InvalidOperandsErr(InvalidOperandsPayload),
+    InvalidUnaryErr(InvalidUnaryPayload),
+    WrongArityErr(WrongArityPayload),
+    NotCallableErr(NotCallablePayload),
+    AmbiguousConditionErr(AmbiguousConditionPayload),
+    NonTrileanConditionErr(NonTrileanConditionPayload),
+    DuplicateNameErr(DuplicateNamePayload),
+    NullLiteralInNonNullableContextErr(NullLiteralInNonNullableContextPayload),
+    NotNullableErr(NotNullablePayload),
+    MatchArmMismatchErr(MatchArmMismatchPayload),
+    TupleIndexOutOfRangeErr(TupleIndexOutOfRangePayload),
+    UnknownMemberErr(UnknownMemberPayload),
+    AssignToImmutableErr(AssignToImmutablePayload),
+    NullableErrorInOutcomeTypeErr(NullableErrorInOutcomeTypePayload),
+    NullStateInBinaryOutcomeErr(NullStateInBinaryOutcomePayload),
+    NonExhaustiveOutcomeMatchErr(NonExhaustiveOutcomeMatchPayload),
+    OutcomeTypeMismatchErr(OutcomeTypeMismatchPayload),
+    PropagateInNonFallibleContextErr(PropagateInNonFallibleContextPayload),
+    ErrorTypeMismatchErr(ErrorTypeMismatchPayload),
+    OutcomePropagateMissingCaptureErr(OutcomePropagateMissingCapturePayload),
+    OutcomePropagateMalformedReturnErr(OutcomePropagateMalformedReturnPayload),
+    PatternMissingExplicitConstructorErr(PatternMissingExplicitConstructorPayload),
+    PossiblyUnknownConditionErr(PossiblyUnknownConditionPayload),
+    TrileanReturnNotRefinedErr(TrileanReturnNotRefinedPayload),
+    NullDeprecatedErr(NullDeprecatedPayload),
+}
+
+/// Stable error code string — mirrors Rust's `impl LoaderError::code`
+/// shape for the differential gate.
+public function type_error_code(err: TypeError) -> String = {
+    match err {
+        UnknownTypeErr(_) => "triet::typecheck::E1001",
+        UndefinedNameErr(_) => "triet::typecheck::E1002",
+        MismatchErr(_) => "triet::typecheck::E1003",
+        InvalidOperandsErr(_) => "triet::typecheck::E1004",
+        InvalidUnaryErr(_) => "triet::typecheck::E1005",
+        WrongArityErr(_) => "triet::typecheck::E1006",
+        NotCallableErr(_) => "triet::typecheck::E1007",
+        AmbiguousConditionErr(_) => "triet::typecheck::E1008",
+        NonTrileanConditionErr(_) => "triet::typecheck::E1009",
+        DuplicateNameErr(_) => "triet::typecheck::E1010",
+        NullLiteralInNonNullableContextErr(_) => "triet::typecheck::E1011",
+        NotNullableErr(_) => "triet::typecheck::E1012",
+        MatchArmMismatchErr(_) => "triet::typecheck::E1013",
+        TupleIndexOutOfRangeErr(_) => "triet::typecheck::E1014",
+        UnknownMemberErr(_) => "triet::typecheck::E1015",
+        AssignToImmutableErr(_) => "triet::typecheck::E1016",
+        NullableErrorInOutcomeTypeErr(_) => "triet::typecheck::E1024",
+        NullStateInBinaryOutcomeErr(_) => "triet::typecheck::E1025",
+        NonExhaustiveOutcomeMatchErr(_) => "triet::typecheck::E1026",
+        OutcomeTypeMismatchErr(_) => "triet::typecheck::E1027",
+        PropagateInNonFallibleContextErr(_) => "triet::typecheck::E1028",
+        ErrorTypeMismatchErr(_) => "triet::typecheck::E1029",
+        OutcomePropagateMissingCaptureErr(_) => "triet::typecheck::E1030",
+        OutcomePropagateMalformedReturnErr(_) => "triet::typecheck::E1031",
+        PatternMissingExplicitConstructorErr(_) => "triet::typecheck::E1032",
+        PossiblyUnknownConditionErr(_) => "triet::typecheck::E1033",
+        TrileanReturnNotRefinedErr(_) => "triet::typecheck::E1034",
+        NullDeprecatedErr(_) => "triet::typecheck::W2001",
+    }
+}
+
+/// Extract the labelled span as a `(start, end)` Vector pair.
+/// IR tuple returns defer post-v1.0 per SPEC §95 — same idiom as
+/// modules.tri's `loader_error_span`.
+public function type_error_span(err: TypeError) -> Vector<Integer> = {
+    let mutable out: Vector<Integer> = new()
+    match err {
+        UnknownTypeErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        UndefinedNameErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        MismatchErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        InvalidOperandsErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        InvalidUnaryErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        WrongArityErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NotCallableErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        AmbiguousConditionErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NonTrileanConditionErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        DuplicateNameErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NullLiteralInNonNullableContextErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NotNullableErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        MatchArmMismatchErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        TupleIndexOutOfRangeErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        UnknownMemberErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        AssignToImmutableErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NullableErrorInOutcomeTypeErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NullStateInBinaryOutcomeErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NonExhaustiveOutcomeMatchErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        OutcomeTypeMismatchErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        PropagateInNonFallibleContextErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        ErrorTypeMismatchErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        OutcomePropagateMissingCaptureErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        OutcomePropagateMalformedReturnErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        PatternMissingExplicitConstructorErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        PossiblyUnknownConditionErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        TrileanReturnNotRefinedErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+        NullDeprecatedErr(p) => { out = push(out, p.span_start) out = push(out, p.span_end) },
+    }
+    out
+}
+
+// ─────────────────────────────────────────────────────────────────
+// TypeEnvironment — scoped variable bindings + frame stack.
+//
+// Mirrors crates/triet-typecheck/src/env.rs but Triết structs are
+// immutable, so `declare` / `push_frame` / `pop_frame` return new
+// `TypeEnvironment` values rather than mutating in place. Callers
+// thread the updated env through.
+// ─────────────────────────────────────────────────────────────────
+
+public struct Binding {
+    type_id: Integer,
+    is_mutable: Trilean!,
+}
+
+public struct Frame {
+    names: HashMap<String, Binding>,
+}
+
+public struct TypeEnvironment {
+    frames: Vector<Frame>,
+}
+
+public function frame_new() -> Frame =
+    Frame { names: hashmap_new() }
+
+public function type_env_new() -> TypeEnvironment = {
+    let initial: Frame = frame_new()
+    TypeEnvironment { frames: push(new(), initial) }
+}
+
+/// Push an empty frame onto the env's stack — entering a new scope.
+public function push_frame(env: TypeEnvironment) -> TypeEnvironment = {
+    let new_frame: Frame = frame_new()
+    TypeEnvironment { frames: push(env.frames, new_frame) }
+}
+
+/// Pop the top frame — leaving a scope. Returns the env unchanged
+/// if only the root frame remains (defensive — the Rust impl
+/// asserts but Triết's smoke test exercises both branches).
+public function pop_frame(env: TypeEnvironment) -> TypeEnvironment = {
+    let total: Integer = length(env.frames)
+    if total <= 1 {
+        env
+    } else {
+        let mutable rebuilt: Vector<Frame> = new()
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            let f_opt: Frame? = get(env.frames, i)
+            rebuilt = push(rebuilt, f_opt!!)
+            i = i + 1
+        }
+        TypeEnvironment { frames: rebuilt }
+    }
+}
+
+/// Bind `name → (type_id, mutable)` in the top frame. Functional
+/// rebuild: returns a new env with the top frame replaced.
+public function declare_with_mut(
+    env: TypeEnvironment,
+    name: String,
+    type_id: Integer,
+    mutable_flag: Trilean!,
+) -> TypeEnvironment = {
+    let total: Integer = length(env.frames)
+    if total == 0 {
+        env
+    } else {
+        let top_opt: Frame? = get(env.frames, total - 1)
+        let top: Frame = top_opt!!
+        let updated_names: HashMap<String, Binding> = insert(top.names, name, Binding {
+            type_id: type_id,
+            is_mutable: mutable_flag,
+        })
+        let updated_top: Frame = Frame { names: updated_names }
+        let mutable rebuilt: Vector<Frame> = new()
+        let mutable i: Integer = 0
+        while i < total - 1 {
+            let f_opt: Frame? = get(env.frames, i)
+            rebuilt = push(rebuilt, f_opt!!)
+            i = i + 1
+        }
+        rebuilt = push(rebuilt, updated_top)
+        TypeEnvironment { frames: rebuilt }
+    }
+}
+
+/// Immutable variant of `declare_with_mut` — convenience wrapper.
+public function declare(
+    env: TypeEnvironment,
+    name: String,
+    type_id: Integer,
+) -> TypeEnvironment =
+    declare_with_mut(env, name, type_id, false)
+
+/// Look up `name`, walking frames innermost-first. Returns the
+/// matching `Binding` or `null`.
+public function lookup_binding(env: TypeEnvironment, name: String) -> Binding? = {
+    let total: Integer = length(env.frames)
+    let mutable found: Binding? = ~0
+    let mutable i: Integer = total
+    while i > 0 {
+        i = i - 1
+        let frame_opt: Frame? = get(env.frames, i)
+        let frame: Frame = frame_opt!!
+        let bind_opt: Binding? = hashmap_get(frame.names, name)
+        match bind_opt {
+            ~0 => { },
+            _ => {
+                match found {
+                    ~0 => { found = bind_opt },
+                    _ => { },
+                }
+            },
+        }
+    }
+    found
+}
+
+/// Look up `name`, returning just the `type_id` (or `null` if
+/// unbound). Mirrors Rust `TypeEnvironment::lookup`.
+public function lookup_type(env: TypeEnvironment, name: String) -> Integer? = {
+    let b_opt: Binding? = lookup_binding(env, name)
+    match b_opt {
+        ~0 => ~0,
+        _ => b_opt!!.type_id,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Smoke main — exercises Type construction + display, TypeError
+// code/span emission, TypeEnvironment push/pop/declare/lookup so
+// the v0.7.7.1 integration test (`typecheck_types_smoke.rs`) can
+// confirm the surface compiles + round-trips through the VM.
+// v0.7.7.5 supersedes this with the byte-diff `typecheck_differential`
+// gate.
+// ─────────────────────────────────────────────────────────────────
+
+function assert_string_eq(actual: String, expected: String) -> Unit =
+    assert(actual == expected)
+
+public function main() -> Unit = {
+    // ── Type arena + primitive allocation ─────────────────────────
+    let arena0: TypeArena = type_arena_new()
+    let r1: AllocTypeResult = alloc_integer(arena0)
+    assert(r1.type_id == 0)
+    assert_string_eq(type_display(r1.arena, r1.type_id), "Integer")
+
+    let r2: AllocTypeResult = alloc_string(r1.arena)
+    assert(r2.type_id == 1)
+    assert_string_eq(type_display(r2.arena, r2.type_id), "String")
+
+    let r3: AllocTypeResult = alloc_trit(r2.arena)
+    assert_string_eq(type_display(r3.arena, r3.type_id), "Trit")
+
+    let r4: AllocTypeResult = alloc_tryte(r3.arena)
+    assert_string_eq(type_display(r4.arena, r4.type_id), "Tryte")
+
+    let r5: AllocTypeResult = alloc_long(r4.arena)
+    assert_string_eq(type_display(r5.arena, r5.type_id), "Long")
+
+    let r6: AllocTypeResult = alloc_unit(r5.arena)
+    assert_string_eq(type_display(r6.arena, r6.type_id), "Unit")
+
+    let r7: AllocTypeResult = alloc_unknown(r6.arena)
+    assert_string_eq(type_display(r7.arena, r7.type_id), "?")
+
+    // ── Trilean refinement ────────────────────────────────────────
+    let r8: AllocTypeResult = alloc_trilean(r7.arena, false)
+    assert_string_eq(type_display(r8.arena, r8.type_id), "Trilean")
+    let r9: AllocTypeResult = alloc_trilean(r8.arena, true)
+    assert_string_eq(type_display(r9.arena, r9.type_id), "Trilean!")
+    assert(type_is_trilean(r9.arena, r9.type_id) == true)
+    assert(type_is_refined_trilean(r9.arena, r9.type_id) == true)
+    assert(type_is_refined_trilean(r9.arena, r8.type_id) == false)
+
+    // ── Numeric predicate ─────────────────────────────────────────
+    assert(type_is_numeric(r9.arena, r1.type_id) == true)
+    assert(type_is_numeric(r9.arena, r2.type_id) == false)
+    assert(type_is_numeric(r9.arena, r3.type_id) == true)
+    assert(type_is_numeric(r9.arena, r9.type_id) == false)
+
+    // ── Recursive types: Nullable, Tuple, Range ───────────────────
+    let r10: AllocTypeResult = alloc_nullable(r9.arena, r1.type_id)
+    assert_string_eq(type_display(r10.arena, r10.type_id), "Integer?")
+
+    let mutable tuple_elems: Vector<Integer> = new()
+    tuple_elems = push(tuple_elems, r1.type_id)
+    tuple_elems = push(tuple_elems, r2.type_id)
+    let r11: AllocTypeResult = alloc_tuple(r10.arena, tuple_elems)
+    assert_string_eq(type_display(r11.arena, r11.type_id), "(Integer, String)")
+
+    let r12: AllocTypeResult = alloc_range(r11.arena, r1.type_id)
+    assert_string_eq(type_display(r12.arena, r12.type_id), "Range<Integer>")
+
+    // ── Function type ─────────────────────────────────────────────
+    let mutable fn_params: Vector<Integer> = new()
+    fn_params = push(fn_params, r1.type_id)
+    fn_params = push(fn_params, r2.type_id)
+    let r13: AllocTypeResult = alloc_function(r12.arena, new(), fn_params, r6.type_id)
+    assert_string_eq(type_display(r13.arena, r13.type_id), "function(Integer, String) -> Unit")
+
+    // ── Outcome ───────────────────────────────────────────────────
+    let r14: AllocTypeResult = alloc_outcome(r13.arena, r1.type_id, r2.type_id, false)
+    assert_string_eq(type_display(r14.arena, r14.type_id), "Integer~String")
+    let r15: AllocTypeResult = alloc_outcome(r14.arena, r1.type_id, r2.type_id, true)
+    assert_string_eq(type_display(r15.arena, r15.type_id), "Integer?~String")
+
+    // ── User struct / enum / type param ───────────────────────────
+    let mutable fields: Vector<UserStructFieldPayload> = new()
+    fields = push(fields, UserStructFieldPayload { name: "x", type_id: r1.type_id })
+    fields = push(fields, UserStructFieldPayload { name: "y", type_id: r1.type_id })
+    let r16: AllocTypeResult = alloc_user_struct(r15.arena, "Point", new(), fields)
+    assert_string_eq(type_display(r16.arena, r16.type_id), "Point")
+
+    let mutable variants: Vector<UserEnumVariantPayload> = new()
+    variants = push(variants, UserEnumVariantPayload { name: "None", payload_type: ~0 })
+    variants = push(variants, UserEnumVariantPayload { name: "Some", payload_type: r1.type_id })
+    let r17: AllocTypeResult = alloc_user_enum(r16.arena, "Option", new(), variants)
+    assert_string_eq(type_display(r17.arena, r17.type_id), "Option")
+
+    let r18: AllocTypeResult = alloc_type_param(r17.arena, "T")
+    assert_string_eq(type_display(r18.arena, r18.type_id), "T")
+
+    // ── TypeError construction + code + span ──────────────────────
+    let unknown_err: TypeError = UnknownTypeErr(UnknownTypePayload {
+        name: "Foo",
+        span_start: 0,
+        span_end: 3,
+    })
+    assert_string_eq(type_error_code(unknown_err), "triet::typecheck::E1001")
+    let unknown_span: Vector<Integer> = type_error_span(unknown_err)
+    assert(length(unknown_span) == 2)
+    assert(get(unknown_span, 0)!! == 0)
+    assert(get(unknown_span, 1)!! == 3)
+
+    let undef_err: TypeError = UndefinedNameErr(UndefinedNamePayload {
+        name: "bar",
+        span_start: 10,
+        span_end: 13,
+    })
+    assert_string_eq(type_error_code(undef_err), "triet::typecheck::E1002")
+
+    let mismatch_err: TypeError = MismatchErr(MismatchPayload {
+        expected: r1.type_id,
+        found: r2.type_id,
+        span_start: 20,
+        span_end: 30,
+    })
+    assert_string_eq(type_error_code(mismatch_err), "triet::typecheck::E1003")
+
+    let dup_err: TypeError = DuplicateNameErr(DuplicateNamePayload {
+        name: "x",
+        span_start: 40,
+        span_end: 41,
+    })
+    assert_string_eq(type_error_code(dup_err), "triet::typecheck::E1010")
+
+    let possibly_unknown: TypeError = PossiblyUnknownConditionErr(PossiblyUnknownConditionPayload {
+        span_start: 100,
+        span_end: 110,
+    })
+    assert_string_eq(type_error_code(possibly_unknown), "triet::typecheck::E1033")
+
+    let trilean_return: TypeError = TrileanReturnNotRefinedErr(TrileanReturnNotRefinedPayload {
+        span_start: 200,
+        span_end: 210,
+    })
+    assert_string_eq(type_error_code(trilean_return), "triet::typecheck::E1034")
+
+    let null_dep: TypeError = NullDeprecatedErr(NullDeprecatedPayload {
+        span_start: 300,
+        span_end: 304,
+    })
+    assert_string_eq(type_error_code(null_dep), "triet::typecheck::W2001")
+
+    // ── TypeEnvironment push/pop/declare/lookup ───────────────────
+    let env0: TypeEnvironment = type_env_new()
+    assert(length(env0.frames) == 1)
+
+    let env1: TypeEnvironment = declare(env0, "x", r1.type_id)
+    let bx_opt: Binding? = lookup_binding(env1, "x")
+    match bx_opt {
+        ~0 => assert(false),
+        _ => {
+            let bx: Binding = bx_opt!!
+            assert(bx.type_id == r1.type_id)
+            assert(bx.is_mutable == false)
+        },
+    }
+
+    let env2: TypeEnvironment = declare_with_mut(env1, "y", r2.type_id, true)
+    let by_opt: Binding? = lookup_binding(env2, "y")
+    match by_opt {
+        ~0 => assert(false),
+        _ => {
+            let by: Binding = by_opt!!
+            assert(by.type_id == r2.type_id)
+            assert(by.is_mutable == true)
+        },
+    }
+
+    // Push a new frame, shadow `x`, pop, original visible again.
+    let env3: TypeEnvironment = push_frame(env2)
+    assert(length(env3.frames) == 2)
+    let env4: TypeEnvironment = declare(env3, "x", r3.type_id)
+    let shadow_id_opt: Integer? = lookup_type(env4, "x")
+    assert(shadow_id_opt!! == r3.type_id)
+
+    let env5: TypeEnvironment = pop_frame(env4)
+    assert(length(env5.frames) == 1)
+    let restored_id_opt: Integer? = lookup_type(env5, "x")
+    assert(restored_id_opt!! == r1.type_id)
+
+    // Missing name returns null.
+    let missing_opt: Integer? = lookup_type(env5, "no_such_name")
+    match missing_opt {
+        ~0 => assert(true),
+        _ => assert(false),
+    }
+
+    // Pop on root frame is a no-op (defensive).
+    let env6: TypeEnvironment = pop_frame(env5)
+    assert(length(env6.frames) == 1)
+
+    println("v0.7.7.1 typecheck types smoke OK")
+}
