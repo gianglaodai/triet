@@ -254,7 +254,8 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
 
 - [x] **v0.7.7.2** — Literal + binding + control-flow checking (Stmt::Let / Const / Return / Break / Continue / Assign / If / While + Expr literals + binary/unary ops). Lands `check_resolved` driver + prelude. (commit af57187)
 - [x] **v0.7.7.3** — Function + call + generic Rust-style inference (FunctionDef typecheck + CallExpr resolution + TypeParam substitution per ADR-0019 §A7.1). (commit af57187)
-- [ ] **v0.7.7.4** — Structs + enums + patterns + outcome (StructItem/EnumItem typecheck + Pattern arms + OutcomeArm constructors + Match exhaustiveness).
+- [x] **v0.7.7.4a** — Structs + enums + tuple/generic types + For-loop pattern binding. Lands `StructItem` / `EnumItem` declaration (pass 1), full `TupleType` resolution, `Vector<T>` / `HashMap<K,V>` built-in shells (per ADR-0019 Addendum §A7), generic user-type arity check + `TypeParam` substitution, and `bind_pattern` for For-loop variables (`Wildcard` / `Identifier` / `Tuple` / `Or` / `EnumVariant` / `OutcomeArm` / `Range` / `Literal` / `Null`). `MatchExpr`-driven pattern binding + Match exhaustiveness + `StructLiteralExpr` / `EnumLiteralExpr` / `OutcomeConstructorExpr` body inference defer to v0.7.7.4b — Triết-side parser doesn't yet surface `Expr::Match` / `Expr::StructLiteral` / `Expr::EnumLiteral` (gap noted under v0.7.5.6).
+- [ ] **v0.7.7.4b** — `OutcomeConstructorExpr` / `OutcomePropagateExpr` / `OutcomeDefaultExpr` / `ElvisOpExpr` / `RangeExpr` / `FieldAccessExpr` body-side inference (currently `infer_unknown` placeholders). Pattern binding from match arms once parser surfaces `Expr::Match`.
 - [ ] **v0.7.7.5** — `typecheck_differential` NDJSON byte-diff gate (closes v0.7.7 umbrella per ADR-0019 §A7.7).
 
 ### Remaining v0.7 sub-tasks after typecheck

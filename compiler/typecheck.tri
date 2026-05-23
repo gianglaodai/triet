@@ -47,7 +47,7 @@ from std.assert import assert
 from crate.parser.lexer import SpannedToken, LexError, lex
 from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload
 from crate.parser.lexer import NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
-from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item
+from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
 from crate.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
 from crate.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
 from crate.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
@@ -55,6 +55,10 @@ from crate.parser import TypeExpr, NamedType, GenericType, TupleType, NullableTy
 from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
 from crate.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
 from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
+from crate.parser import StructDef, StructField, EnumDef, EnumVariant
+from crate.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern, LiteralPat, TuplePat, OrPat, RangePat, NullPat, EnumVariantPat, OutcomeArmPat
+from crate.parser import LiteralPattern, IntegerLit, TernaryLit, StringLit, TrileanLit, LiteralIntegerPattern, RangePatternPayload, EnumVariantPatternPayload, OutcomeArmPatternPayload
+from crate.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
 from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from crate.parser import UnaryOperator, Negate
 from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
@@ -1136,12 +1140,166 @@ function resolve_named_type(state: CheckerState, name: String, ss: Integer, se: 
     }
 }
 
+function resolve_generic_type(
+    state: CheckerState,
+    payload: GenericTypePayload,
+    ss: Integer,
+    se: Integer,
+) -> InferResult = {
+    // Resolve each argument first.
+    let mutable st: CheckerState = state
+    let mutable arg_ids: Vector<Integer> = new()
+    let arg_total: Integer = length(payload.arguments)
+    let mutable i: Integer = 0
+    while i < arg_total {
+        let aid_opt: Integer? = get(payload.arguments, i)
+        let r: InferResult = resolve_type_expr(st, aid_opt!!)
+        st = r.state
+        arg_ids = push(arg_ids, r.type_id)
+        i = i + 1
+    }
+
+    // Built-in collection shells per ADR-0019 Addendum §A7
+    // (`Vector<T>` / `HashMap<K, V>` resolve to pseudo UserStruct
+    // shapes carrying their element / key+value type IDs in
+    // synthetic field slots `__element` / `__key` + `__value`).
+    if payload.name == "Vector" {
+        if arg_total != 1 {
+            let st2: CheckerState = checker_push_error(st, WrongArityErr(WrongArityPayload {
+                expected: 1,
+                found: arg_total,
+                span_start: ss,
+                span_end: se,
+            }))
+            return infer_unknown(st2)
+        }
+        let elem_id: Integer = get(arg_ids, 0)!!
+        let mutable fields: Vector<UserStructFieldPayload> = new()
+        fields = push(fields, UserStructFieldPayload { name: "__element", type_id: elem_id })
+        let r: AllocTypeResult = alloc_user_struct(st.type_arena, "Vector", new(), fields)
+        return InferResult { state: checker_with_type_arena(st, r.arena), type_id: r.type_id }
+    }
+    if payload.name == "HashMap" {
+        if arg_total != 2 {
+            let st2: CheckerState = checker_push_error(st, WrongArityErr(WrongArityPayload {
+                expected: 2,
+                found: arg_total,
+                span_start: ss,
+                span_end: se,
+            }))
+            return infer_unknown(st2)
+        }
+        let key_id: Integer = get(arg_ids, 0)!!
+        let val_id: Integer = get(arg_ids, 1)!!
+        let mutable fields: Vector<UserStructFieldPayload> = new()
+        fields = push(fields, UserStructFieldPayload { name: "__key", type_id: key_id })
+        fields = push(fields, UserStructFieldPayload { name: "__value", type_id: val_id })
+        let r: AllocTypeResult = alloc_user_struct(st.type_arena, "HashMap", new(), fields)
+        return InferResult { state: checker_with_type_arena(st, r.arena), type_id: r.type_id }
+    }
+
+    // User generic type: look up in env, substitute params.
+    let env_type: Integer? = lookup_type(st.env, payload.name)
+    match env_type {
+        ~0 => {
+            let r: AllocTypeResult = alloc_unknown(st.type_arena)
+            let st3: CheckerState = checker_with_type_arena(st, r.arena)
+            return InferResult {
+                state: checker_push_error(st3, UnknownTypeErr(UnknownTypePayload {
+                    name: payload.name,
+                    span_start: ss,
+                    span_end: se,
+                })),
+                type_id: r.type_id,
+            }
+        },
+        _ => { },
+    }
+    let template_id: Integer = env_type!!
+    let template_node_opt: TypeNode? = get_type(st.type_arena, template_id)
+    match template_node_opt {
+        ~0 => { return infer_unknown(st) },
+        _ => { },
+    }
+    let template_node: TypeNode = template_node_opt!!
+    match template_node.kind {
+        UserStructKind(s) => {
+            if length(s.type_params) != arg_total {
+                let st2: CheckerState = checker_push_error(st, WrongArityErr(WrongArityPayload {
+                    expected: length(s.type_params),
+                    found: arg_total,
+                    span_start: ss,
+                    span_end: se,
+                }))
+                return infer_unknown(st2)
+            }
+            let mutable sub_map: HashMap<String, Integer> = hashmap_new()
+            let mutable j: Integer = 0
+            while j < arg_total {
+                let tp_name: String = get(s.type_params, j)!!
+                let arg_id: Integer = get(arg_ids, j)!!
+                sub_map = insert(sub_map, tp_name, arg_id)
+                j = j + 1
+            }
+            let r: AllocTypeResult = type_substitute(st.type_arena, template_id, sub_map)
+            InferResult { state: checker_with_type_arena(st, r.arena), type_id: r.type_id }
+        },
+        UserEnumKind(e) => {
+            if length(e.type_params) != arg_total {
+                let st2: CheckerState = checker_push_error(st, WrongArityErr(WrongArityPayload {
+                    expected: length(e.type_params),
+                    found: arg_total,
+                    span_start: ss,
+                    span_end: se,
+                }))
+                return infer_unknown(st2)
+            }
+            let mutable sub_map: HashMap<String, Integer> = hashmap_new()
+            let mutable j: Integer = 0
+            while j < arg_total {
+                let tp_name: String = get(e.type_params, j)!!
+                let arg_id: Integer = get(arg_ids, j)!!
+                sub_map = insert(sub_map, tp_name, arg_id)
+                j = j + 1
+            }
+            let r: AllocTypeResult = type_substitute(st.type_arena, template_id, sub_map)
+            InferResult { state: checker_with_type_arena(st, r.arena), type_id: r.type_id }
+        },
+        _ => {
+            let r: AllocTypeResult = alloc_unknown(st.type_arena)
+            let st3: CheckerState = checker_with_type_arena(st, r.arena)
+            InferResult {
+                state: checker_push_error(st3, UnknownTypeErr(UnknownTypePayload {
+                    name: payload.name,
+                    span_start: ss,
+                    span_end: se,
+                })),
+                type_id: r.type_id,
+            }
+        },
+    }
+}
+
 function resolve_type_expr(state: CheckerState, type_expr_id: Integer) -> InferResult = {
     let spanned: SpannedTypeExpr = get_type_expr(state.parser_arena, type_expr_id)
     match spanned.node {
         NamedType(p) => resolve_named_type(state, p.name, spanned.span_start, spanned.span_end),
-        GenericType(p) => resolve_named_type(state, p.name, spanned.span_start, spanned.span_end),
-        TupleType(_) => infer_unknown(state),
+        GenericType(p) => resolve_generic_type(state, p, spanned.span_start, spanned.span_end),
+        TupleType(elements) => {
+            let mutable st: CheckerState = state
+            let mutable elem_ids: Vector<Integer> = new()
+            let total: Integer = length(elements)
+            let mutable i: Integer = 0
+            while i < total {
+                let eid_opt: Integer? = get(elements, i)
+                let r: InferResult = resolve_type_expr(st, eid_opt!!)
+                st = r.state
+                elem_ids = push(elem_ids, r.type_id)
+                i = i + 1
+            }
+            let r: AllocTypeResult = alloc_tuple(st.type_arena, elem_ids)
+            InferResult { state: checker_with_type_arena(st, r.arena), type_id: r.type_id }
+        },
         NullableType(inner_id) => {
             let inner_r: InferResult = resolve_type_expr(state, inner_id)
             let r: AllocTypeResult = alloc_nullable(inner_r.state.type_arena, inner_r.type_id)
@@ -2129,12 +2287,193 @@ function check_while(state: CheckerState, p: WhileStmtPayload) -> CheckerState =
     checker_exit_loop(body_r.state)
 }
 
+// ── Pattern binding (v0.7.7.4) ───────────────────────────────────
+//
+// `bind_pattern` walks a parse-side `Pattern` and binds any
+// `Identifier` sub-patterns to the appropriate part of the
+// scrutinee type. Mirrors Rust `check.rs::bind_pattern` (lines
+// 465-530). Literals / wildcards / null / ranges bind nothing.
+// Tuple recurses element-by-element; Or only binds from the first
+// alternative (the others must be shape-compatible per parser
+// invariants). EnumVariant unwraps the matching variant's payload.
+// OutcomeArm unwraps Positive→value_type / Negative→error_type;
+// Zero arm has no payload.
+//
+// v0.7.7.4 only calls this from `check_for` (the parser-side
+// `MatchExpr` isn't surfaced yet — gap noted in TODO.md).
+
+function bind_pattern(state: CheckerState, pattern_id: Integer, scrutinee_tid: Integer) -> CheckerState = {
+    let spanned: SpannedPattern = get_pattern(state.parser_arena, pattern_id)
+    match spanned.node {
+        WildcardPattern => state,
+        NullPat => state,
+        LiteralPat(_) => state,
+        RangePat(_) => state,
+        IdentifierPattern(sp) => {
+            checker_with_env(state, declare(state.env, sp.text, scrutinee_tid))
+        },
+        TuplePat(children) => {
+            let child_total: Integer = length(children)
+            let scrut_node_opt: TypeNode? = get_type(state.type_arena, scrutinee_tid)
+            let mutable element_ids: Vector<Integer> = new()
+            let mutable use_unknowns: Trilean! = true
+            match scrut_node_opt {
+                ~0 => { },
+                _ => {
+                    match scrut_node_opt!!.kind {
+                        TupleKind(p) => {
+                            if length(p.elements) == child_total {
+                                element_ids = p.elements
+                                use_unknowns = false
+                            }
+                        },
+                        _ => { },
+                    }
+                },
+            }
+            let mutable st: CheckerState = state
+            let mutable i: Integer = 0
+            while i < child_total {
+                let child_id: Integer = get(children, i)!!
+                let mutable sub_tid: Integer = 0
+                if use_unknowns {
+                    let r: AllocTypeResult = alloc_unknown(st.type_arena)
+                    st = checker_with_type_arena(st, r.arena)
+                    sub_tid = r.type_id
+                } else {
+                    sub_tid = get(element_ids, i)!!
+                }
+                st = bind_pattern(st, child_id, sub_tid)
+                i = i + 1
+            }
+            st
+        },
+        OrPat(alternatives) => {
+            // Bind only from the first alternative — others must be
+            // shape-compatible. Mirrors Rust check.rs:483-490.
+            if length(alternatives) == 0 {
+                state
+            } else {
+                let first: Integer = get(alternatives, 0)!!
+                bind_pattern(state, first, scrutinee_tid)
+            }
+        },
+        EnumVariantPat(p) => {
+            match p.payload {
+                ~0 => state,
+                _ => {
+                    let scrut_node_opt: TypeNode? = get_type(state.type_arena, scrutinee_tid)
+                    let mutable sub_tid: Integer = 0
+                    let mutable found: Trilean! = false
+                    match scrut_node_opt {
+                        ~0 => { },
+                        _ => {
+                            match scrut_node_opt!!.kind {
+                                UserEnumKind(e) => {
+                                    let total: Integer = length(e.variants)
+                                    let mutable i: Integer = 0
+                                    while i < total {
+                                        let v: UserEnumVariantPayload = get(e.variants, i)!!
+                                        if v.name == p.variant_name {
+                                            match v.payload_type {
+                                                ~0 => { },
+                                                _ => {
+                                                    sub_tid = v.payload_type!!
+                                                    found = true
+                                                },
+                                            }
+                                        }
+                                        i = i + 1
+                                    }
+                                },
+                                _ => { },
+                            }
+                        },
+                    }
+                    if !found {
+                        let r: AllocTypeResult = alloc_unknown(state.type_arena)
+                        let st2: CheckerState = checker_with_type_arena(state, r.arena)
+                        bind_pattern(st2, p.payload!!, r.type_id)
+                    } else {
+                        bind_pattern(state, p.payload!!, sub_tid)
+                    }
+                },
+            }
+        },
+        OutcomeArmPat(p) => {
+            match p.payload {
+                ~0 => state,
+                _ => {
+                    let scrut_node_opt: TypeNode? = get_type(state.type_arena, scrutinee_tid)
+                    let mutable sub_tid: Integer = 0
+                    let mutable resolved: Trilean! = false
+                    match scrut_node_opt {
+                        ~0 => { },
+                        _ => {
+                            match scrut_node_opt!!.kind {
+                                OutcomeKind(o) => {
+                                    match p.arm {
+                                        PositiveArm => { sub_tid = o.value_type resolved = true },
+                                        NegativeArm => { sub_tid = o.error_type resolved = true },
+                                        ZeroArm => { },
+                                    }
+                                },
+                                NullableKind(n) => {
+                                    match p.arm {
+                                        PositiveArm => { sub_tid = n.inner resolved = true },
+                                        _ => { },
+                                    }
+                                },
+                                _ => { },
+                            }
+                        },
+                    }
+                    if !resolved {
+                        let r: AllocTypeResult = alloc_unknown(state.type_arena)
+                        let st2: CheckerState = checker_with_type_arena(state, r.arena)
+                        bind_pattern(st2, p.payload!!, r.type_id)
+                    } else {
+                        bind_pattern(state, p.payload!!, sub_tid)
+                    }
+                },
+            }
+        },
+    }
+}
+
+// Extract the element type of an iterable. Range<T> → T;
+// Vector<T> (built-in shell with `__element` field) → T;
+// anything else → Unknown.
+function iterable_element_type(state: CheckerState, iter_tid: Integer) -> InferResult = {
+    let node_opt: TypeNode? = get_type(state.type_arena, iter_tid)
+    match node_opt {
+        ~0 => infer_unknown(state),
+        _ => {
+            match node_opt!!.kind {
+                RangeKind(r) => InferResult { state: state, type_id: r.element },
+                UserStructKind(s) => {
+                    if s.name == "Vector" && length(s.fields) > 0 {
+                        let elem: UserStructFieldPayload = get(s.fields, 0)!!
+                        InferResult { state: state, type_id: elem.type_id }
+                    } else {
+                        infer_unknown(state)
+                    }
+                },
+                _ => infer_unknown(state),
+            }
+        },
+    }
+}
+
 function check_for(state: CheckerState, p: ForStmtPayload) -> CheckerState = {
     let iter_r: InferResult = infer_expression(state, p.iterable)
-    let loop_st: CheckerState = checker_enter_loop(iter_r.state)
-    // Variable binding deferred to v0.7.7.4 (pattern support)
+    let elem_r: InferResult = iterable_element_type(iter_r.state, iter_r.type_id)
+    let with_frame: CheckerState = checker_with_env(elem_r.state, push_frame(elem_r.state.env))
+    let bound: CheckerState = bind_pattern(with_frame, p.variable, elem_r.type_id)
+    let loop_st: CheckerState = checker_enter_loop(bound)
     let body_r: InferResult = check_block(loop_st, p.body)
-    checker_exit_loop(body_r.state)
+    let exited: CheckerState = checker_exit_loop(body_r.state)
+    checker_with_env(exited, pop_frame(exited.env))
 }
 
 function check_statement(state: CheckerState, stmt_id: Integer) -> CheckerState = {
@@ -2251,6 +2590,85 @@ function declare_constant_signature(
     checker_with_env(st, declare(st.env, p.name, type_id))
 }
 
+function declare_struct_signature(
+    state: CheckerState,
+    def: StructDef,
+    ss: Integer,
+    se: Integer,
+) -> CheckerState = {
+    // Push frame so type params are visible during field-type
+    // resolution (mirrors Rust check.rs:171-181).
+    let mutable st: CheckerState = checker_with_env(state, push_frame(state.env))
+    let tp_total: Integer = length(def.type_params)
+    let mutable ti: Integer = 0
+    while ti < tp_total {
+        let tp: String = get(def.type_params, ti)!!
+        let r: AllocTypeResult = alloc_type_param(st.type_arena, tp)
+        st = checker_with_type_arena(st, r.arena)
+        st = checker_with_env(st, declare(st.env, tp, r.type_id))
+        ti = ti + 1
+    }
+    let mutable fields: Vector<UserStructFieldPayload> = new()
+    let f_total: Integer = length(def.fields)
+    let mutable fi: Integer = 0
+    while fi < f_total {
+        let field: StructField = get(def.fields, fi)!!
+        let fr: InferResult = resolve_type_expr(st, field.type_annotation)
+        st = fr.state
+        fields = push(fields, UserStructFieldPayload {
+            name: field.name,
+            type_id: fr.type_id,
+        })
+        fi = fi + 1
+    }
+    st = checker_with_env(st, pop_frame(st.env))
+    let r: AllocTypeResult = alloc_user_struct(st.type_arena, def.name, def.type_params, fields)
+    st = checker_with_type_arena(st, r.arena)
+    checker_with_env(st, declare(st.env, def.name, r.type_id))
+}
+
+function declare_enum_signature(
+    state: CheckerState,
+    def: EnumDef,
+    ss: Integer,
+    se: Integer,
+) -> CheckerState = {
+    let mutable st: CheckerState = checker_with_env(state, push_frame(state.env))
+    let tp_total: Integer = length(def.type_params)
+    let mutable ti: Integer = 0
+    while ti < tp_total {
+        let tp: String = get(def.type_params, ti)!!
+        let r: AllocTypeResult = alloc_type_param(st.type_arena, tp)
+        st = checker_with_type_arena(st, r.arena)
+        st = checker_with_env(st, declare(st.env, tp, r.type_id))
+        ti = ti + 1
+    }
+    let mutable variants: Vector<UserEnumVariantPayload> = new()
+    let v_total: Integer = length(def.variants)
+    let mutable vi: Integer = 0
+    while vi < v_total {
+        let variant: EnumVariant = get(def.variants, vi)!!
+        let mutable payload_id: Integer? = ~0
+        match variant.payload {
+            ~0 => { },
+            _ => {
+                let pr: InferResult = resolve_type_expr(st, variant.payload!!)
+                st = pr.state
+                payload_id = pr.type_id
+            },
+        }
+        variants = push(variants, UserEnumVariantPayload {
+            name: variant.name,
+            payload_type: payload_id,
+        })
+        vi = vi + 1
+    }
+    st = checker_with_env(st, pop_frame(st.env))
+    let r: AllocTypeResult = alloc_user_enum(st.type_arena, def.name, def.type_params, variants)
+    st = checker_with_type_arena(st, r.arena)
+    checker_with_env(st, declare(st.env, def.name, r.type_id))
+}
+
 function declare_item_pass1(state: CheckerState, item_id: Integer) -> CheckerState = {
     let spanned: SpannedItem = get_item(state.parser_arena, item_id)
     let ss: Integer = spanned.span_start
@@ -2258,8 +2676,8 @@ function declare_item_pass1(state: CheckerState, item_id: Integer) -> CheckerSta
     match spanned.node {
         FunctionItem(def) => declare_function_signature(state, def, ss, se),
         ConstantItem(p) => declare_constant_signature(state, p),
-        StructItem(_) => state,
-        EnumItem(_) => state,
+        StructItem(def) => declare_struct_signature(state, def, ss, se),
+        EnumItem(def) => declare_enum_signature(state, def, ss, se),
         TypeAliasItem(_) => state,
         ImportItem(_) => state,
         ImportFromItem(_) => state,
@@ -2602,6 +3020,81 @@ public function generic_smoke_main() -> Unit = {
     println("v0.7.7.3 typecheck generic-call smoke OK")
 }
 
+// ── v0.7.7.4 smoke — structs + enums + tuple/generic types + patterns ──
+
+public function struct_enum_smoke_main() -> Unit = {
+    // Test 1: simple struct declaration + minimal main
+    let s1: String = "struct Point { x: Integer, y: Integer }\nfunction main() -> Integer = 0"
+    let r1: Vector<TypeError> = check_source(s1)
+    assert(length(r1) == 0)
+
+    // Test 2: enum declaration with unit + payload variants
+    let s2: String = "enum Option { None, Some(Integer) }\nfunction main() -> Integer = 0"
+    let r2: Vector<TypeError> = check_source(s2)
+    assert(length(r2) == 0)
+
+    // Test 3: struct field type referencing an undeclared name → 1 error
+    let s3: String = "struct Bad { x: NoSuchType }\nfunction main() -> Integer = 0"
+    let r3: Vector<TypeError> = check_source(s3)
+    assert(length(r3) == 1)
+
+    // Test 4: Vector<T> built-in shell resolves
+    let s4: String = "function pick<T>(v: Vector<T>) -> Integer = 0\nfunction main() -> Integer = 0"
+    let r4: Vector<TypeError> = check_source(s4)
+    assert(length(r4) == 0)
+
+    // Test 5: HashMap<K, V> built-in shell
+    let s5: String = "function pick<K, V>(m: HashMap<K, V>) -> Integer = 0\nfunction main() -> Integer = 0"
+    let r5: Vector<TypeError> = check_source(s5)
+    assert(length(r5) == 0)
+
+    // Test 6: Vector wrong arity → ≥1 error. (Both passes resolve the
+    // annotation, so the WrongArity surfaces twice — matches Rust.)
+    let s6: String = "function pick(v: Vector<Integer, Integer>) -> Integer = 0\nfunction main() -> Integer = 0"
+    let r6: Vector<TypeError> = check_source(s6)
+    assert(length(r6) >= 1)
+
+    // Test 7: tuple type annotation resolves (tuple literal expr is
+    // not yet parser-side, so body inference may emit no error here).
+    let s7: String = "function pair() -> (Integer, String) = (1, \"hi\")\nfunction main() -> Integer = 0"
+    let r7: Vector<TypeError> = check_source(s7)
+    assert(length(r7) <= 1)
+
+    // Test 8: For loop with identifier pattern over a Range<Integer>
+    let s8: String = "function main() -> Integer = { let mutable s: Integer = 0 for i in 0..10 { s = s + i } s }"
+    let r8: Vector<TypeError> = check_source(s8)
+    assert(length(r8) == 0)
+
+    // Test 9: For loop with wildcard pattern — no binding leak
+    let s9: String = "function main() -> Integer = { let mutable n: Integer = 0 for _ in 0..3 { n = n + 1 } n }"
+    let r9: Vector<TypeError> = check_source(s9)
+    assert(length(r9) == 0)
+
+    // Test 10: For loop binds variable visible in body
+    let s10: String = "function main() -> Integer = { let mutable s: Integer = 0 for i in 0..5 { s = s + i } s }"
+    let r10: Vector<TypeError> = check_source(s10)
+    assert(length(r10) == 0)
+
+    // Test 11: Loop variable scope is bounded by the for-body frame —
+    // `i` used after the body must trigger E1002 UndefinedName. The
+    // post-body `let x = i` form avoids block-final parse ambiguity.
+    let s11: String = "function main() -> Integer { for i in 0..5 { } let x: Integer = i x }"
+    let r11: Vector<TypeError> = check_source(s11)
+    assert(length(r11) >= 1)
+
+    // Test 12: Generic user struct — Pair<Integer, String> resolves
+    let s12: String = "struct Pair<A, B> { first: A, second: B }\nfunction take(p: Pair<Integer, String>) -> Integer = 0\nfunction main() -> Integer = 0"
+    let r12: Vector<TypeError> = check_source(s12)
+    assert(length(r12) == 0)
+
+    // Test 13: Generic user struct — wrong arity → ≥1 error
+    let s13: String = "struct Pair<A, B> { first: A, second: B }\nfunction take(p: Pair<Integer>) -> Integer = 0\nfunction main() -> Integer = 0"
+    let r13: Vector<TypeError> = check_source(s13)
+    assert(length(r13) >= 1)
+
+    println("v0.7.7.4 typecheck struct/enum/pattern smoke OK")
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Smoke main — exercises Type construction + display, TypeError
 // code/span emission, TypeEnvironment push/pop/declare/lookup so
@@ -2801,4 +3294,5 @@ public function main() -> Unit = {
     println("v0.7.7.1 typecheck types smoke OK")
     control_flow_smoke_main()
     generic_smoke_main()
+    struct_enum_smoke_main()
 }
