@@ -277,7 +277,8 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
 ### Deferred runtime bugs
 
 - [ ] **v0.7.x.runtime-fix.const-items** — `crates/triet-ir/src/lowerer.rs` is missing an `Item::Const` lowering arm; top-level `constant NAME: T = expr` declarations silently evaluate to `Unit` at runtime. Surfaced during v0.7.6.3 development (cycle detection used `constant COLOR_WHITE: Integer = 0` as a sentinel; reads via `get(vec, idx)` returned `Unit` instead of the declared integer, causing infinite recursion because the gray-mark check never saw the actual color). Workaround in v0.7.6.3: inline the literal at every use site. Fix scope: extend `lower_program`'s item-walk to register `Item::Const` values into the constant pool + emit them when referenced from function bodies. Tests: add `crates/triet-bootstrap/tests/const_item_smoke.tri` once fixed. Not blocking v0.7.6.4+ since other sub-tasks haven't needed top-level constants either.
-
+- [x] **v0.7.x.runtime-fix.propagate-capture** — Fixed struct identity loss across if-expr phi merges in `crates/triet-ir/src/lowerer.rs`.
+- [x] **v0.7.9 prep** — Investigated pre-flight bugs, removed the check-box, and confirmed design decisions.
 ---
 
 ## How to update this file
