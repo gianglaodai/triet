@@ -72,7 +72,7 @@ from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPatte
 from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from khi.parser import UnaryOperator, Negate
 from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -2305,6 +2305,87 @@ function lower_elvis_op(ctx: LowerCtx, p: ElvisOpPayload) -> LowerExprResult = {
     LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
 }
 
+// ── v0.7.11.1b: Outcome default `inner ~: default` ───────────────
+//
+// Mirrors `lower_outcome_default` in `crates/triet-ir/src/lowerer.rs`
+// (line 1608): discriminate the outcome, success → unwrap value,
+// Zero/Negative → evaluate default, then Phi-merge.
+//
+// BrTrilean reads the discriminator: Positive → True (success arm),
+// Zero → Unknown (fallback), Negative → False (fallback). Both null
+// and failure paths land in `oc_default_fallback`.
+function lower_outcome_default(
+    ctx: LowerCtx,
+    p: OutcomeDefaultPayload,
+) -> LowerExprResult = {
+    // Step 1: lower the inner outcome expression.
+    let inner_r: LowerExprResult = lower_expression(ctx, p.inner)
+    let mutable st: LowerCtx = inner_r.ctx
+    let inner_val: ValueId = inner_r.value_id
+
+    // Step 2: emit OutcomeDiscriminant — Positive/Zero/Negative Trit.
+    let disc_r: LowerExprResult = fresh_value(st)
+    st = disc_r.ctx
+    st = emit(st, OutcomeDiscriminantInst(InstOutcomeUnaryPayload {
+        dest: disc_r.value_id,
+        source: ValueOp(inner_val),
+    }))
+
+    // Step 3: spawn success / fallback / merge blocks.
+    let success_r: FreshBlockResult = fresh_block(st)
+    st = success_r.ctx
+    let fallback_r: FreshBlockResult = fresh_block(st)
+    st = fallback_r.ctx
+    let merge_r: FreshBlockResult = fresh_block(st)
+    st = merge_r.ctx
+
+    // Step 4: BrTrilean — True → success, Zero/Negative → fallback.
+    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(disc_r.value_id),
+        true_block: success_r.block_id,
+        unknown_block: fallback_r.block_id,
+        false_block: fallback_r.block_id,
+    }))
+
+    // Step 5: success block — OutcomeUnwrapValue then Br merge.
+    st = start_block(st, success_r.block_id, "oc_default_success")
+    let unwrap_r: LowerExprResult = fresh_value(st)
+    st = unwrap_r.ctx
+    st = emit(st, OutcomeUnwrapValueInst(InstOutcomeUnaryPayload {
+        dest: unwrap_r.value_id,
+        source: ValueOp(inner_val),
+    }))
+    st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    let success_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 6: fallback block — lower default expression, Br merge.
+    st = start_block(st, fallback_r.block_id, "oc_default_fallback")
+    let default_r: LowerExprResult = lower_expression(st, p.default_expr)
+    st = default_r.ctx
+    st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    let fallback_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 7: merge block — Phi { success_unwrapped, fallback_default }.
+    st = start_block(st, merge_r.block_id, "oc_default_merge")
+    let merge_dest_r: LowerExprResult = fresh_value(st)
+    st = merge_dest_r.ctx
+    let mutable incoming: Vector<PhiIncoming> = new()
+    incoming = push(incoming, PhiIncoming {
+        value: unwrap_r.value_id,
+        block: success_end_id,
+    })
+    incoming = push(incoming, PhiIncoming {
+        value: default_r.value_id,
+        block: fallback_end_id,
+    })
+    st = emit(st, PhiInst(InstPhiPayload {
+        dest: merge_dest_r.value_id,
+        incoming: incoming,
+    }))
+
+    LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -2322,8 +2403,9 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         OutcomeConstructorExpr(p) => lower_outcome_constructor(ctx, p),
         RangeExpr(p) => lower_range_expr(ctx, p),
         ElvisOpExpr(p) => lower_elvis_op(ctx, p),
-        // MethodCall / OutcomePropagate / OutcomeDefault / If / Match
-        // defer to v0.7.11.1{b..f}. Emit a placeholder fresh value so
+        OutcomeDefaultExpr(p) => lower_outcome_default(ctx, p),
+        // MethodCall / OutcomePropagate / If / Match defer to
+        // v0.7.11.1{c..f}. Emit a placeholder fresh value so
         // downstream lowering keeps progressing on programs that
         // touch unsupported expression variants.
         _ => fresh_value(ctx),
@@ -3641,6 +3723,59 @@ public function elvis_smoke_main() -> Unit = {
     println("v0.7.11.1a ir_lowerer elvis smoke OK")
 }
 
+// ── v0.7.11.1b smoke — Outcome default (`~:`) ────────────────────
+
+public function outcome_default_smoke_main() -> Unit = {
+    // Test 1: `x ~: 0` over `Integer~String` parameter — canonical
+    // 4-block shape (entry, oc_default_success, oc_default_fallback,
+    // oc_default_merge).
+    let s1: String = "function f(x: Integer~String) -> Integer = x ~: 0"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    assert(length(f1.blocks) == 4)
+
+    // Test 2: entry block — OutcomeDiscriminant immediately precedes
+    // the BrTrilean terminator. BrTrilean routes Positive→success,
+    // Zero/Negative→fallback (both unknown_block and false_block
+    // target the same fallback block — mirrors the Elvis arm).
+    let entry1: BasicBlock = get(f1.blocks, 0)!!
+    let entry_total: Integer = length(entry1.instructions)
+    let entry_last: Instruction = get(entry1.instructions, entry_total - 1)!!
+    assert_string_eq(instruction_opcode_name(entry_last), "BrTrilean")
+    let entry_pen: Instruction = get(entry1.instructions, entry_total - 2)!!
+    assert_string_eq(instruction_opcode_name(entry_pen), "OutcomeDiscriminant")
+
+    // Test 3: oc_default_success block (index 1) starts with
+    // OutcomeUnwrapValue.
+    let succ1: BasicBlock = get(f1.blocks, 1)!!
+    let succ_first: Instruction = get(succ1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(succ_first), "OutcomeUnwrapValue")
+
+    // Test 4: oc_default_merge block (index 3) — first instruction
+    // is Phi with exactly 2 incoming edges.
+    let merge1: BasicBlock = get(f1.blocks, 3)!!
+    let merge_first: Instruction = get(merge1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge_first), "Phi")
+    let phi_count: Integer = match merge_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    // Test 5: BrTrilean's unknown_block ≡ false_block (both route to
+    // the fallback arm — Zero ≡ null path and Negative ≡ error path
+    // share the same default-evaluation block).
+    match entry_last {
+        BrTrileanInst(p) => {
+            assert(p.unknown_block.raw == p.false_block.raw)
+        },
+        _ => { },
+    }
+
+    println("v0.7.11.1b ir_lowerer outcome-default smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -3993,4 +4128,5 @@ public function main() -> Unit = {
     while_phi_smoke_main()
     struct_enum_outcome_smoke_main()
     elvis_smoke_main()
+    outcome_default_smoke_main()
 }
