@@ -271,31 +271,10 @@ public struct RangePayload {
     inclusive: Trilean!,
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Expr — v0.7.5.2 surface. Block / If / Match / Lambda / Tuple /
-// FStringLiteral / StructLiteral / EnumLiteral / Safe* operators /
-// TupleIndex defer to subsequent sub-tasks per the umbrella plan.
-// ─────────────────────────────────────────────────────────────────
-
-public enum Expr {
-    IntegerLiteralExpr(IntLiteral),
-    TernaryLiteralExpr(IntLiteral),
-    TrileanLiteralExpr(TrileanValue),
-    StringLiteralExpr(StringPayload),
-    NullLiteralExpr,
-    IdentifierExpr(StringPayload),
-    UnaryOpExpr(UnaryOpPayload),
-    BinaryOpExpr(BinaryOpPayload),
-    ForceUnwrapExpr(Integer),
-    CallExpr(CallPayload),
-    FieldAccessExpr(FieldAccessPayload),
-    MethodCallExpr(MethodCallPayload),
-    OutcomeConstructorExpr(OutcomeConstructorPayload),
-    OutcomePropagateExpr(OutcomePropagatePayload),
-    OutcomeDefaultExpr(OutcomeDefaultPayload),
-    ElvisOpExpr(ElvisOpPayload),
-    RangeExpr(RangePayload),
-}
+// Expr enum is declared after `Block` (see ~line 410) because its
+// IfExpr variant carries an `IfExprPayload` whose body holds a
+// `Block`. All non-Block-carrying payload structs are declared
+// above; Block-dependent ones follow.
 
 // ─────────────────────────────────────────────────────────────────
 // Pattern — v0.7.5.5b expands the v0.7.5.3 minimal surface
@@ -396,6 +375,55 @@ public enum TypeExpr {
 public struct Block {
     block_statements: Vector<Integer>,
     block_final: Integer?,
+}
+
+// v0.7.11.1e1 — if-expression with optional else branch. Mirrors
+// Rust `Expr::If` (crates/triet-syntax). `treat_unknown_as_false`
+// is True for the `if?` form (Unknown branches to else); False for
+// plain `if` (Unknown panics per SPEC §7.1.1 / ADR-0010). Per
+// `parse_if_expression`, an `else if` chain is encoded as an else
+// branch whose block has zero statements and a final-expression
+// that is another `If` — keeps the grammar tail-recursive without
+// a dedicated `ElseIf` shape. Declared here (not next to other
+// expression payloads) because Triết requires structs that
+// reference `Block` to come after `Block`'s declaration.
+public struct IfExprPayload {
+    condition: Integer,
+    then_branch: Block,
+    else_branch: Block?,
+    treat_unknown_as_false: Trilean!,
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Expr — v0.7.5.2 + v0.7.11.1e1 (IfExpr). Match / Lambda / Tuple /
+// FStringLiteral / StructLiteral / EnumLiteral / Safe* / TupleIndex
+// defer to subsequent sub-tasks per the umbrella plan.
+//
+// Declared after Block + IfExprPayload (above) because IfExpr
+// transitively embeds Block. The other payloads (BinaryOp, Call,
+// FieldAccess, Range, OutcomeCtor/Propagate/Default, Elvis,
+// MethodCall) live ~150 lines above with primitive-only fields.
+// ─────────────────────────────────────────────────────────────────
+
+public enum Expr {
+    IntegerLiteralExpr(IntLiteral),
+    TernaryLiteralExpr(IntLiteral),
+    TrileanLiteralExpr(TrileanValue),
+    StringLiteralExpr(StringPayload),
+    NullLiteralExpr,
+    IdentifierExpr(StringPayload),
+    UnaryOpExpr(UnaryOpPayload),
+    BinaryOpExpr(BinaryOpPayload),
+    ForceUnwrapExpr(Integer),
+    CallExpr(CallPayload),
+    FieldAccessExpr(FieldAccessPayload),
+    MethodCallExpr(MethodCallPayload),
+    OutcomeConstructorExpr(OutcomeConstructorPayload),
+    OutcomePropagateExpr(OutcomePropagatePayload),
+    OutcomeDefaultExpr(OutcomeDefaultPayload),
+    ElvisOpExpr(ElvisOpPayload),
+    RangeExpr(RangePayload),
+    IfExpr(IfExprPayload),
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1492,6 +1520,8 @@ function parse_prefix(state: ParserState) -> ParseStep~ParseError = {
                 TildePlus => parse_outcome_ctor_payloaded(state, PositiveArm),
                 TildeMinus => parse_outcome_ctor_payloaded(state, NegativeArm),
                 TildeZero => parse_outcome_ctor_zero(state),
+                IfKw => parse_if_expression(state),
+                IfQKw => parse_if_expression(state),
                 _ => ~- make_unexpected_token_err(state, "expression"),
             }
         },
@@ -1589,6 +1619,109 @@ function parse_outcome_ctor_zero(state: ParserState) -> ParseStep~ParseError = {
     ~+ ParseStep {
         state: ParserState { tokens: advanced.tokens, cursor: advanced.cursor, arena: res.arena },
         expr_id: res.id,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.11.1e1 — if-expression parsing
+// ─────────────────────────────────────────────────────────────────
+
+// Intermediate result for `parse_if_else_branch` — Block? signals
+// "no else branch present" via `~0`; `~+ Block` carries the parsed
+// else-arm block.
+struct ParseElseBranchStep {
+    state: ParserState,
+    branch: Block?,
+}
+
+// Consume an optional `else` arm. Returns `branch: ~0` if no else
+// present. For `else if` / `else if?`, recursively parse the inner
+// if-expression and wrap it as `Block { statements: [], final:
+// inner }` per Rust impl precedent — the if-chain stays
+// tail-recursive without a dedicated ElseIf shape.
+function parse_if_else_branch(state: ParserState) -> ParseElseBranchStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(state)
+    match nx_opt {
+        ~0 => ~+ ParseElseBranchStep { state: state, branch: ~0 },
+        _ => {
+            let nx: SpannedToken = nx_opt!!
+            match nx.token {
+                ElseKw => {
+                    let after_else: ParserState = advance(state)
+                    let nxe_opt: SpannedToken? = peek(after_else)
+                    match nxe_opt {
+                        ~0 => ~- make_unexpected_eof_err(after_else, "block or `if` after `else`"),
+                        _ => {
+                            let nxe: SpannedToken = nxe_opt!!
+                            match nxe.token {
+                                IfKw => {
+                                    let inner: ParseStep = parse_if_expression(after_else) ~? |err| ~- err
+                                    let wrap: Block = Block {
+                                        block_statements: new(),
+                                        block_final: inner.expr_id,
+                                    }
+                                    ~+ ParseElseBranchStep { state: inner.state, branch: wrap }
+                                },
+                                IfQKw => {
+                                    let inner: ParseStep = parse_if_expression(after_else) ~? |err| ~- err
+                                    let wrap: Block = Block {
+                                        block_statements: new(),
+                                        block_final: inner.expr_id,
+                                    }
+                                    ~+ ParseElseBranchStep { state: inner.state, branch: wrap }
+                                },
+                                _ => {
+                                    let blk: ParseBlockStep = parse_block(after_else) ~? |err| ~- err
+                                    ~+ ParseElseBranchStep { state: blk.state, branch: blk.block }
+                                },
+                            }
+                        },
+                    }
+                },
+                _ => ~+ ParseElseBranchStep { state: state, branch: ~0 },
+            }
+        },
+    }
+}
+
+// Parse `if cond { then } [else { else }]` or `if? …`. Caller must
+// have peeked `IfKw` / `IfQKw`; this function consumes the keyword
+// itself. Mirrors `crates/triet-parser/src/expr.rs::parse_if_expression`.
+function parse_if_expression(state: ParserState) -> ParseStep~ParseError = {
+    let head_opt: SpannedToken? = peek(state)
+    match head_opt {
+        ~0 => ~- make_unexpected_eof_err(state, "`if` or `if?`"),
+        _ => {
+            let head: SpannedToken = head_opt!!
+            let treat_unk: Trilean! = match head.token {
+                IfQKw => true,
+                _ => false,
+            }
+            let after_kw: ParserState = advance(state)
+            let cond_step: ParseStep = parse_expression(after_kw) ~? |err| ~- err
+            let then_step: ParseBlockStep = parse_block(cond_step.state) ~? |err| ~- err
+            let else_step: ParseElseBranchStep = parse_if_else_branch(then_step.state) ~? |err| ~- err
+
+            let payload: IfExprPayload = IfExprPayload {
+                condition: cond_step.expr_id,
+                then_branch: then_step.block,
+                else_branch: else_step.branch,
+                treat_unknown_as_false: treat_unk,
+            }
+            let end_pos: Integer = previous_token_end(else_step.state, head.span_end)
+            let res: AllocResult = alloc_expression(
+                else_step.state.arena,
+                spanned_expr(IfExpr(payload), head.span_start, end_pos),
+            )
+            ~+ ParseStep {
+                state: ParserState {
+                    tokens: else_step.state.tokens,
+                    cursor: else_step.state.cursor,
+                    arena: res.arena,
+                },
+                expr_id: res.id,
+            }
+        },
     }
 }
 
@@ -5187,6 +5320,20 @@ public function format_expr(arena: Arena, id: Integer) -> String = {
             }
             concat("(", concat(op, concat(" ", concat(l, concat(" ", concat(r, ")"))))))
         },
+        IfExpr(p) => {
+            let head: String = match p.treat_unknown_as_false {
+                true => "(if? ",
+                false => "(if ",
+                unknown => "(if ",
+            }
+            let cond: String = format_expr(arena, p.condition)
+            let then_str: String = format_block(arena, p.then_branch)
+            let else_str: String = match p.else_branch {
+                ~0 => "",
+                _ => concat(" ", format_block(arena, p.else_branch!!)),
+            }
+            concat(head, concat(cond, concat(" ", concat(then_str, concat(else_str, ")")))))
+        },
     }
 }
 
@@ -5921,6 +6068,30 @@ function main() -> Unit = {
     assert_parse_program(
         "public(package) module data { struct Cell { v: Integer } }",
         "(program public(package) (module data (inline (struct Cell (v:Integer)))))",
+    )
+
+    // v0.7.11.1e1 — if-expression parser surface.
+    // Bare `if cond { then }` — no else.
+    assert_parse_program(
+        "function f() -> Integer = if true { 1 }",
+        "(program (fn f () ->Integer (= (if true (block (final 1))))))",
+    )
+    // `if cond { then } else { else }` — full form.
+    assert_parse_program(
+        "function f() -> Integer = if true { 1 } else { 0 }",
+        "(program (fn f () ->Integer (= (if true (block (final 1)) (block (final 0))))))",
+    )
+    // `if?` (Unknown→else per ADR-0010).
+    assert_parse_program(
+        "function f() -> Integer = if? unknown { 1 } else { 0 }",
+        "(program (fn f () ->Integer (= (if? unknown (block (final 1)) (block (final 0))))))",
+    )
+    // `else if` chain — Rust impl wraps the inner `if` as a block
+    // whose final expression is the recursive if. Triết encoding
+    // matches: outer else_branch is Block { stmts: [], final: <inner-if> }.
+    assert_parse_program(
+        "function f(x: Integer) -> Integer = if x == 0 { 1 } else if x == 1 { 2 } else { 3 }",
+        "(program (fn f (x:Integer) ->Integer (= (if (== x 0) (block (final 1)) (block (final (if (== x 1) (block (final 2)) (block (final 3)))))))))",
     )
 
     // v0.7.5.5a — full type grammar (atom-level, exercised directly
