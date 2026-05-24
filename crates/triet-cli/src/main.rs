@@ -23,6 +23,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use miette::Report;
 use triet_interpreter::RuntimeError;
+use triet_pack::PackageManifest;
 use triet_typecheck::TypeError;
 
 use crate::fmt::fmt_command;
@@ -432,9 +433,10 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
     // v0.7.10: discover dao.package by walking up from the source file's
     // parent directory. Mirrors `cargo` convention per ADR-0019 §8.
     let source_path = Path::new(path);
-    let _manifest = source_path
+    let manifest = source_path
         .parent()
-        .and_then(triet_pack::PackageManifest::discover);
+        .and_then(PackageManifest::discover)
+        .and_then(|p| PackageManifest::load(&p).ok());
 
     let resolved = match triet_modules::load_program(Path::new(path)) {
         Ok(p) => p,
@@ -488,6 +490,13 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
         }
     }
 
+    // v0.7.10: run capability check if manifest was found.
+    if let Some(ref m) = manifest
+        && !run_capability_check(&resolved, m, display_path, json)
+    {
+        return ExitCode::from(5);
+    }
+
     let ir = triet_ir::lower_program(&resolved);
     let bytes = triet_ir::write_program(&ir);
 
@@ -514,6 +523,40 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
             ExitCode::from(5)
         }
     }
+}
+
+/// v0.7.10: run capability check against the discovered manifest.
+/// Returns `true` if no errors, `false` if errors were emitted.
+fn run_capability_check(
+    program: &triet_modules::ResolvedProgram,
+    manifest: &PackageManifest,
+    display_path: &str,
+    json: bool,
+) -> bool {
+    let cap_errors = triet_typecheck::check_capabilities(program, manifest);
+    if cap_errors.is_empty() {
+        return true;
+    }
+    if json {
+        let mut emitter = JsonEmitter::new();
+        for error in &cap_errors {
+            // CapabilityError carries placeholder Span{0..0} until
+            // import-site span tracking ships (deferred post-v0.6).
+            emitter.emit(
+                &error.to_string(),
+                "triet::capability::E22XX",
+                &(0..0),
+                display_path,
+            );
+        }
+        emitter.finish();
+    } else {
+        for error in cap_errors {
+            let report = miette::Report::new(error);
+            eprintln!("{report:?}");
+        }
+    }
+    false
 }
 
 // ── run bytecode (.triv) ───────────────────────────────────────────────
