@@ -941,12 +941,50 @@ function resolve_external(
     }
 }
 
+// v0.7.10: pre-load stdlib modules. Creates a synthetic `std`
+// module root with nine external-child declarations, then resolves
+// each against the filesystem `std/` directory.
+//
+// Path discovery: hardcoded "std" (CWD-relative). The Rust host CLI
+// should `cd` to the workspace root before invoking `main()`, or set
+// `DAO_STDLIB_PATH` env var for the v0.7.10.1 `get_env` builtin to
+// use (deferred until the import cycle is resolved).
+function load_stdlib(ctx: LoaderContext) -> LoaderContext = {
+    let std_path: ModulePath = module_path_new(push(new(), "std"))
+    let std_dir: String = "std"
+    // Synthetic std root — nine module declarations, one per line.
+    // Must use multi-line string literal because Triết does not
+    // process \n escape in source-level string literals.
+    let outcome: LoadOneResult = load_from_source(ctx, std_path, ~0, std_dir, "module io
+module text
+module assert
+module result
+module collections
+module path
+module string
+module crypto
+module env", ~0)
+    outcome.context
+}
+
 /// In-memory entry point. Loads a single-file program from `source`
 /// with no filesystem context — external `module foo;` declarations
 /// fire FileNotFound errors. Useful for tests / REPL.
 public function load_program_from_source(source: String) -> LoadProgramResult = {
     let root_path: ModulePath = module_path_crate_root()
     let initial_ctx: LoaderContext = loader_context_new()
+    let outcome: LoadOneResult = load_from_source(initial_ctx, root_path, ~0, ~0, source, ~0)
+    let ctx: LoaderContext = outcome.context
+    let program: ResolvedProgram = resolved_program_new(ctx.arenas, ctx.modules, ctx.root_id)
+    LoadProgramResult { program: program, errors: ctx.errors }
+}
+
+/// Like [`load_program_from_source`] but pre-loads stdlib modules.
+/// v0.7.10: the self-hosted compiler driver (`compiler/main.tri`)
+/// calls this to enable `from std.io import println` in user code.
+public function load_program_from_source_with_stdlib(source: String) -> LoadProgramResult = {
+    let root_path: ModulePath = module_path_crate_root()
+    let initial_ctx: LoaderContext = load_stdlib(loader_context_new())
     let outcome: LoadOneResult = load_from_source(initial_ctx, root_path, ~0, ~0, source, ~0)
     let ctx: LoaderContext = outcome.context
     let program: ResolvedProgram = resolved_program_new(ctx.arenas, ctx.modules, ctx.root_id)
