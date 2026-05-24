@@ -60,7 +60,7 @@ from std.assert import assert
 from khi.parser.lexer import SpannedToken, LexError, lex
 from khi.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
 from khi.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
-from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
+from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr, IfExpr
 from khi.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
 from khi.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
 from khi.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
@@ -72,7 +72,7 @@ from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPatte
 from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from khi.parser import UnaryOperator, Negate
 from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, MethodCallPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, MethodCallPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, IfExprPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -2572,6 +2572,225 @@ function lower_method_call(ctx: LowerCtx, p: MethodCallPayload) -> LowerExprResu
     lower_expression(ctx, p.receiver)
 }
 
+// ── v0.7.11.1e2: If-expression with phi-stitch ───────────────────
+//
+// Mirrors `lower_if_expr` in `crates/triet-ir/src/lowerer.rs`
+// (line 1931). Canonical 3-block shape (entry / then / else / merge)
+// for `if?` (Unknown → else), 4-block shape for plain `if` (Unknown
+// → fresh panic block holding Unreachable per ADR-0010 / SPEC
+// §7.1.1). Phi at merge for the if's value AND for each variable
+// mutated by either branch.
+//
+// Triết scope discipline (mirrors v0.7.x.runtime-fix.while-body-
+// scope-pop-order): wrap each branch's body with explicit
+// push_scope / lower_block_inline / snapshot via resolve_var /
+// pop_scope. This way the body's AssignStmt rebinds land in the
+// inner scope and `resolve_var` (called BEFORE pop) captures the
+// body-end SSA value. After pop the outer scope's bindings are
+// unchanged — so the else-branch starts from the same dominator
+// state as then (no manual "restore pre-if bindings" pass needed,
+// unlike Rust's `rebind_var` walk-up-chain semantics).
+function lower_if_expr(ctx: LowerCtx, p: IfExprPayload) -> LowerExprResult = {
+    let arena: Arena = ctx.parser_arena
+
+    // Step 1: collect mutated vars from BOTH branches (union; dedup
+    // via linear scan since mutated counts are small).
+    let mutable mutated: Vector<String> = collect_assigned_vars(arena, p.then_branch)
+    match p.else_branch {
+        ~0 => { },
+        _ => {
+            let else_muts: Vector<String> = collect_assigned_vars(arena, p.else_branch!!)
+            let etotal: Integer = length(else_muts)
+            let mutable k: Integer = 0
+            while k < etotal {
+                let nm_opt: String? = get(else_muts, k)
+                let nm: String = nm_opt!!
+                let mtotal: Integer = length(mutated)
+                let mutable found: Trilean! = false
+                let mutable j: Integer = 0
+                while j < mtotal {
+                    let existing_opt: String? = get(mutated, j)
+                    if existing_opt!! == nm {
+                        found = true
+                    }
+                    j = j + 1
+                }
+                if !found {
+                    mutated = push(mutated, nm)
+                }
+                k = k + 1
+            }
+        },
+    }
+    let mut_total: Integer = length(mutated)
+
+    // Step 2: snapshot pre-if values (sentinel raw=-1 for unbound).
+    let mutable pre_vals: Vector<ValueId> = new()
+    let mutable i: Integer = 0
+    while i < mut_total {
+        let n_opt: String? = get(mutated, i)
+        let v_opt: ValueId? = resolve_var(ctx, n_opt!!)
+        let pv: ValueId = match v_opt {
+            ~0 => ValueId { raw: -1 },
+            _ => v_opt!!,
+        }
+        pre_vals = push(pre_vals, pv)
+        i = i + 1
+    }
+
+    // Step 3: lower the condition.
+    let cond_r: LowerExprResult = lower_expression(ctx, p.condition)
+    let mutable st: LowerCtx = cond_r.ctx
+
+    // Step 4: spawn then / else / merge blocks. For plain `if`
+    // (Unknown panic), also spawn the panic block now.
+    let then_r: FreshBlockResult = fresh_block(st)
+    st = then_r.ctx
+    let else_r: FreshBlockResult = fresh_block(st)
+    st = else_r.ctx
+    let merge_r: FreshBlockResult = fresh_block(st)
+    st = merge_r.ctx
+
+    let mutable unk_target: BlockId = else_r.block_id
+    if !p.treat_unknown_as_false {
+        let unk_r: FreshBlockResult = fresh_block(st)
+        st = unk_r.ctx
+        unk_target = unk_r.block_id
+    }
+
+    // Step 5: BrTrilean. For `if?`, Unknown→else; for plain `if`,
+    // Unknown→panic block (filled below with Unreachable).
+    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(cond_r.value_id),
+        true_block: then_r.block_id,
+        unknown_block: unk_target,
+        false_block: else_r.block_id,
+    }))
+
+    // Step 5b: materialize the unknown-panic block now if plain `if`.
+    if !p.treat_unknown_as_false {
+        st = start_block(st, unk_target, "if_unknown_panic")
+        st = emit(st, UnreachableInst(primitive_marker()))
+    }
+
+    // Step 6: then block — push inner scope so body AssignStmts
+    // land there; snapshot then-end values BEFORE pop_scope.
+    st = start_block(st, then_r.block_id, "then")
+    st = push_scope(st)
+    let then_body_r: LowerExprResult = lower_block_inline(st, p.then_branch)
+    st = then_body_r.ctx
+    let mutable then_vals: Vector<ValueId> = new()
+    i = 0
+    while i < mut_total {
+        let n_opt2: String? = get(mutated, i)
+        let v2_opt: ValueId? = resolve_var(st, n_opt2!!)
+        let tv: ValueId = match v2_opt {
+            ~0 => ValueId { raw: -1 },
+            _ => v2_opt!!,
+        }
+        then_vals = push(then_vals, tv)
+        i = i + 1
+    }
+    st = pop_scope(st)
+    if !current_block_has_terminator(st) {
+        st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    }
+    let then_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 7: else block — same shape. If no else_branch present,
+    // emit a Unit const as the produced value (matches Rust).
+    st = start_block(st, else_r.block_id, "else")
+    st = push_scope(st)
+    let else_body_r: LowerExprResult = match p.else_branch {
+        ~0 => {
+            let cu: Constant = UnitConst(primitive_marker())
+            let intern_r: InternCtxResult = intern_constant(st, cu)
+            let unit_dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+            let inst: Instruction = ConstInst(InstConstPayload {
+                dest: unit_dest_r.value_id,
+                const_id: intern_r.const_id,
+            })
+            LowerExprResult { ctx: emit(unit_dest_r.ctx, inst), value_id: unit_dest_r.value_id }
+        },
+        _ => lower_block_inline(st, p.else_branch!!),
+    }
+    st = else_body_r.ctx
+    let mutable else_vals: Vector<ValueId> = new()
+    i = 0
+    while i < mut_total {
+        let n_opt3: String? = get(mutated, i)
+        let v3_opt: ValueId? = resolve_var(st, n_opt3!!)
+        let ev: ValueId = match v3_opt {
+            ~0 => ValueId { raw: -1 },
+            _ => v3_opt!!,
+        }
+        else_vals = push(else_vals, ev)
+        i = i + 1
+    }
+    st = pop_scope(st)
+    if !current_block_has_terminator(st) {
+        st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    }
+    let else_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 8: merge block — Phi for the if's value first.
+    st = start_block(st, merge_r.block_id, "merge")
+    let merge_dest_r: LowerExprResult = fresh_value(st)
+    st = merge_dest_r.ctx
+    let mutable v_incoming: Vector<PhiIncoming> = new()
+    v_incoming = push(v_incoming, PhiIncoming {
+        value: then_body_r.value_id,
+        block: then_end_id,
+    })
+    v_incoming = push(v_incoming, PhiIncoming {
+        value: else_body_r.value_id,
+        block: else_end_id,
+    })
+    st = emit(st, PhiInst(InstPhiPayload {
+        dest: merge_dest_r.value_id,
+        incoming: v_incoming,
+    }))
+
+    // Step 9: Phi per mutated variable. Branch that didn't write to
+    // the name uses the pre-if value as its incoming. Skip names
+    // the pre-if scope didn't define (typecheck rejects those
+    // anyway; defensive).
+    i = 0
+    while i < mut_total {
+        let pre_opt: ValueId? = get(pre_vals, i)
+        let pre: ValueId = pre_opt!!
+        if pre.raw >= 0 {
+            let then_opt: ValueId? = get(then_vals, i)
+            let then_v_raw: ValueId = then_opt!!
+            let then_v: ValueId = if then_v_raw.raw < 0 { pre } else { then_v_raw }
+            let else_opt: ValueId? = get(else_vals, i)
+            let else_v_raw: ValueId = else_opt!!
+            let else_v: ValueId = if else_v_raw.raw < 0 { pre } else { else_v_raw }
+            // Both branches left the value untouched — rebind to pre,
+            // no phi needed.
+            if then_v.raw == pre.raw && else_v.raw == pre.raw {
+                let n_opt4: String? = get(mutated, i)
+                st = bind_var(st, n_opt4!!, pre)
+            } else {
+                let phi_r: LowerExprResult = fresh_value(st)
+                st = phi_r.ctx
+                let mutable inc: Vector<PhiIncoming> = new()
+                inc = push(inc, PhiIncoming { value: then_v, block: then_end_id })
+                inc = push(inc, PhiIncoming { value: else_v, block: else_end_id })
+                st = emit(st, PhiInst(InstPhiPayload {
+                    dest: phi_r.value_id,
+                    incoming: inc,
+                }))
+                let n_opt5: String? = get(mutated, i)
+                st = bind_var(st, n_opt5!!, phi_r.value_id)
+            }
+        }
+        i = i + 1
+    }
+
+    LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -2592,7 +2811,8 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         ElvisOpExpr(p) => lower_elvis_op(ctx, p),
         OutcomeDefaultExpr(p) => lower_outcome_default(ctx, p),
         OutcomePropagateExpr(p) => lower_outcome_propagate(ctx, p),
-        // If / Match defer to v0.7.11.1{e..f}.
+        IfExpr(p) => lower_if_expr(ctx, p),
+        // Match defers to v0.7.11.1f2.
         _ => fresh_value(ctx),
     }
 }
@@ -4098,6 +4318,70 @@ public function method_call_smoke_main() -> Unit = {
     println("v0.7.11.1d ir_lowerer method-call smoke OK")
 }
 
+// ── v0.7.11.1e2 smoke — IfExpr with phi-stitch ───────────────────
+
+public function if_expr_smoke_main() -> Unit = {
+    // Test 1: `if cond { 1 } else { 0 }` with plain `if` (Unknown
+    // → panic block). Canonical 5-block shape: entry + then + else
+    // + merge + if_unknown_panic.
+    let s1: String = "function f(cond: Trilean!) -> Integer = if cond { 1 } else { 0 }"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    assert(length(f1.blocks) == 5)
+
+    // Test 2: entry block — last instruction is BrTrilean.
+    let entry1: BasicBlock = get(f1.blocks, 0)!!
+    let entry_total: Integer = length(entry1.instructions)
+    let entry_last: Instruction = get(entry1.instructions, entry_total - 1)!!
+    assert_string_eq(instruction_opcode_name(entry_last), "BrTrilean")
+
+    // Test 3: BrTrilean for plain `if` — true_block != unknown_block,
+    // unknown_block != false_block (3 distinct targets).
+    match entry_last {
+        BrTrileanInst(p) => {
+            assert(p.true_block.raw != p.unknown_block.raw)
+            assert(p.unknown_block.raw != p.false_block.raw)
+        },
+        _ => { },
+    }
+
+    // Test 4: merge block starts with Phi for the if's value, with
+    // EXACTLY 2 incoming edges (then-end + else-end). Block order
+    // in `f1.blocks` is determined by `start_block` calls in
+    // `lower_if_expr`: for plain `if` the sequence is entry (0) →
+    // if_unknown_panic (1) → then (2) → else (3) → merge (4).
+    let merge1: BasicBlock = get(f1.blocks, 4)!!
+    let merge_first: Instruction = get(merge1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge_first), "Phi")
+    let phi_count: Integer = match merge_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    // Test 5: `if?` form — no panic block, 4-block shape.
+    let s2: String = "function f(cond: Trilean) -> Integer = if? cond { 1 } else { 0 }"
+    let p2: IrProgram = lower_source(s2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    assert(length(f2.blocks) == 4)
+
+    // Test 6: `if?` BrTrilean's unknown_block ≡ false_block (both
+    // route to else per ADR-0010 treat_unknown_as_false).
+    let entry2: BasicBlock = get(f2.blocks, 0)!!
+    let entry2_total: Integer = length(entry2.instructions)
+    let entry2_last: Instruction = get(entry2.instructions, entry2_total - 1)!!
+    match entry2_last {
+        BrTrileanInst(p) => {
+            assert(p.unknown_block.raw == p.false_block.raw)
+        },
+        _ => { },
+    }
+
+    println("v0.7.11.1e2 ir_lowerer if-expr smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -4453,4 +4737,5 @@ public function main() -> Unit = {
     outcome_default_smoke_main()
     outcome_propagate_smoke_main()
     method_call_smoke_main()
+    if_expr_smoke_main()
 }
