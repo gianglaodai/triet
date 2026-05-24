@@ -69,7 +69,7 @@ pub enum ResolveError {
     #[error("no installed version of `{pkg_name}` satisfies the dep range")]
     #[diagnostic(
         code(triet::pack::E2380),
-        help("install the dependency: `triet store import path/to/{pkg_name}.tripack`")
+        help("install the dependency: `triet store import path/to/{pkg_name}.khi`")
     )]
     NoMatchingVersion {
         /// Package the caller asked for.
@@ -308,7 +308,7 @@ fn parse_manifest_for_iface(
     manifest_bytes: &[u8],
 ) -> Result<crate::hash::IfaceHash, crate::error::PackError> {
     // Wrap the manifest in a minimal pack envelope so we can reuse
-    // `read_tripack`. Same trick the store uses in `parse_manifest_only`.
+    // `read_khi`. Same trick the store uses in `parse_manifest_only`.
     let mut wrap = Vec::with_capacity(manifest_bytes.len() + 20);
     wrap.extend_from_slice(&[0x74, 0x72, 0x69, 0x70]); // MAGIC
     wrap.extend_from_slice(&1u32.to_le_bytes()); // pack_version
@@ -316,7 +316,7 @@ fn parse_manifest_for_iface(
     wrap.push(1); // ABI_METADATA section id
     wrap.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
     wrap.extend_from_slice(manifest_bytes);
-    let (meta, _code) = crate::serde::read_tripack(&wrap)?;
+    let (meta, _code) = crate::serde::read_khi(&wrap)?;
     Ok(meta.iface_hash)
 }
 
@@ -326,7 +326,7 @@ fn parse_manifest_for_iface(
 mod tests {
     use super::*;
     use crate::hash::{IFACE_HASH_LEN, IfaceHash, TermIfaceHash, TermImplHash};
-    use crate::serde::write_tripack;
+    use crate::serde::write_khi;
     use crate::types::{AbiMetadata, FunctionExport, Param, TypeRef, Visibility};
     use tempfile::TempDir;
 
@@ -348,7 +348,7 @@ mod tests {
         });
         // Distinct body bytes per version so each pack has its own
         // impl_hash even with identical ABI surface.
-        write_tripack(&meta, &[body_suffix])
+        write_khi(&meta, &[body_suffix])
     }
 
     fn dep_range(name: &str, min: SemVer, max: SemVer) -> Dep {

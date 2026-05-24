@@ -1,7 +1,7 @@
-//! Triết crate-pack format (`.tripack`) and cross-package linker.
+//! Triết crate-pack format (`.khi`) and cross-package linker.
 //!
 //! Per [ADR-0011], this crate defines the binary format that carries an
-//! ABI surface across crate boundaries. `.tripack` is the unit of
+//! ABI surface across crate boundaries. `.khi` is the unit of
 //! distribution: it bundles an ABI metadata section, one or more `.triv`
 //! IR code units (per [ADR-0008]), a dependency manifest, and a slot
 //! reserved for capability claims (v0.6).
@@ -15,7 +15,7 @@
 //! |---|---|
 //! | [`types`] | `AbiMetadata`, `TypeDef`, `FunctionExport`, `Dep` |
 //! | [`hash`] | BLAKE3 helpers for `iface_hash` + `impl_hash` |
-//! | [`serde`] | `.tripack` binary serializer/deserializer |
+//! | [`serde`] | `.khi` binary serializer/deserializer |
 //! | [`error`] | E2300–E2399 linker diagnostics |
 //!
 //! [ADR-0008]: ../../../docs/decisions/0008-triv-binary-format.md
@@ -28,7 +28,7 @@
 // the redundant_pub_crate lint to keep the trade-off consistent
 // across the workspace (matches `triet-ir`, `triet-parser`, etc.).
 #![allow(clippy::redundant_pub_crate)]
-// `.tripack` uses fixed-width u32 fields for many index/length values
+// `.khi` uses fixed-width u32 fields for many index/length values
 // derived from `usize` counters. A package with > 2^32 exports or
 // dependencies is not a realistic input.
 #![allow(clippy::cast_possible_truncation)]
@@ -84,12 +84,12 @@ pub use tty_prompt::{
     DepChainEntry, DevTtyPrompt, LockfileMatch, PackageInfo, PromptCallback, PromptChoice,
     PromptContext, context_from_request, non_interactive_callback, prompt_loop, render_prompt,
 };
-// `compute_impl_hash` is only needed inside `serde::write_tripack` for
+// `compute_impl_hash` is only needed inside `serde::write_khi` for
 // now; we'll promote it to the public API when the linker (v0.4.5)
 // needs to validate a downloaded pack against an externally-claimed
 // hash. Until then, keeping it `pub(crate)` avoids advertising an
 // API surface we haven't committed to.
-pub use serde::{read_tripack, write_tripack};
+pub use serde::{read_khi, write_khi};
 pub use types::{
     AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDef, FieldDef, FunctionExport, Module,
     Param, SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,

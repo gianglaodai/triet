@@ -29,7 +29,7 @@ from std.collections.vector import new, push, length, get
 from std.text import concat, len as text_len, from_integer
 
 from khi.typecheck import check_source, TypeError
-from khi.pack_writer import serialize_source_to_tripack
+from khi.pack_writer import serialize_source_to_khi
 
 // ── Subcommand + Args ────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ public struct Args {
 
 function exit_ok() -> Trit = 1_trit
 function exit_err() -> Trit = -1_trit
-function default_output_path() -> String = "out.tripack"
+function default_output_path() -> String = "out.khi"
 function default_pkg_name() -> String = "khi"
 
 // ── parse_args ───────────────────────────────────────────────────
@@ -70,7 +70,7 @@ function default_pkg_name() -> String = "khi"
 //   argv[0]  = subcommand ("check" | "build")
 //   argv[1]  = source file path (required)
 //   argv[2+] = optional flags:
-//                -o <path>     output `.tripack` path (build only)
+//                -o <path>     output `.khi` path (build only)
 //                --pkg <name>  package name to embed (build only)
 //
 // Unknown flags are silently skipped. Missing required positional
@@ -193,8 +193,8 @@ public function check_command(args: Args) -> Trit = {
 // ── build_command ────────────────────────────────────────────────
 //
 // Reads source, runs the lex → parse → modules → typecheck → lower
-// → pack-write pipeline via `serialize_source_to_tripack`, then
-// writes the resulting `.tripack` byte vector to disk via the new
+// → pack-write pipeline via `serialize_source_to_khi`, then
+// writes the resulting `.khi` byte vector to disk via the new
 // v0.7.9.4 `write_bytes` builtin. Returns Trit::Positive on a
 // successful write, Trit::Negative on any I/O failure or read
 // failure. Currently does NOT run typecheck before lowering —
@@ -209,7 +209,7 @@ public function build_command(args: Args) -> Trit = {
             exit_err()
         }
         SourceLoaded(source) => {
-            let bytes: Vector<Integer> = serialize_source_to_tripack(
+            let bytes: Vector<Integer> = serialize_source_to_khi(
                 source,
                 args.pkg_name,
             )
@@ -268,14 +268,14 @@ public function main_smoke() -> Trilean! = {
     argv = push(argv, "build")
     argv = push(argv, "/dev/null/source.tri")
     argv = push(argv, "-o")
-    argv = push(argv, "/dev/null/out.tripack")
+    argv = push(argv, "/dev/null/out.khi")
     argv = push(argv, "--pkg")
     argv = push(argv, "smoke_pkg")
     let args: Args = parse_args(argv)
     match args.sub {
         BuildCmd => {
             if args.source_path != "/dev/null/source.tri" { false }
-            else if args.output_path != "/dev/null/out.tripack" { false }
+            else if args.output_path != "/dev/null/out.khi" { false }
             else if args.pkg_name != "smoke_pkg" { false }
             else { true }
         }

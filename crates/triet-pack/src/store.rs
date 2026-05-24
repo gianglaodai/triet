@@ -33,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::error::{StoreError, StoreResult};
 use crate::hash::{IMPL_HASH_LEN, ImplHash, ModuleImplHash};
 use crate::serde::{
-    canonical_term_signature_function, canonical_term_signature_type, read_tripack,
+    canonical_term_signature_function, canonical_term_signature_type, read_khi,
 };
 use crate::types::{AbiMetadata, SemVer};
 
@@ -122,11 +122,11 @@ impl Store {
         &self.root
     }
 
-    /// Install a `.tripack` into the store. Returns the pack's
+    /// Install a `.khi` into the store. Returns the pack's
     /// `impl_hash` (its CAS address).
     ///
     /// Side effects:
-    /// - `pkg/<hex(impl_hash_pkg)>/pack.tripack` + `manifest.bin`
+    /// - `pkg/<hex(impl_hash_pkg)>/pack.khi` + `manifest.bin`
     /// - `mod/<hex(impl_hash_mod)>/index.bin` for every module
     /// - `term/<hex(impl_hash_term)>/iface.bin` for every type +
     ///   export (canonical signature bytes — body.bin written once the
@@ -139,10 +139,10 @@ impl Store {
     ///
     /// # Errors
     /// Returns [`StoreError::Pack`] if `pack_bytes` doesn't parse as a
-    /// valid `.tripack`, or [`StoreError::Io`] if any filesystem
+    /// valid `.khi`, or [`StoreError::Io`] if any filesystem
     /// operation (write, rename, mkdir) fails.
     pub fn install_pack(&self, pack_bytes: &[u8]) -> StoreResult<ImplHash> {
-        let (meta, _code) = read_tripack(pack_bytes)?;
+        let (meta, _code) = read_khi(pack_bytes)?;
         let impl_hash = meta.impl_hash;
 
         // ── pkg/<hash>/ ─────────────────────────────────────────────
@@ -150,7 +150,7 @@ impl Store {
         if !pkg_target.exists() {
             let manifest_bytes = extract_manifest_section(pack_bytes)?;
             self.atomic_install_dir(&pkg_target, |tmp| {
-                write_file(&tmp.join("pack.tripack"), pack_bytes)?;
+                write_file(&tmp.join("pack.khi"), pack_bytes)?;
                 write_file(&tmp.join("manifest.bin"), &manifest_bytes)?;
                 Ok(())
             })?;
@@ -184,12 +184,12 @@ impl Store {
     /// Returns [`StoreError::Io`] for filesystem read failures other
     /// than NotFound (NotFound maps to `Ok(None)`).
     pub fn resolve_pack(&self, impl_hash: &ImplHash) -> StoreResult<Option<Vec<u8>>> {
-        let path = self.pkg_dir(impl_hash).join("pack.tripack");
+        let path = self.pkg_dir(impl_hash).join("pack.khi");
         read_optional_file(&path)
     }
 
     /// Read the extracted manifest (`manifest.bin`) for a pack. Cheap
-    /// alternative to parsing the full `pack.tripack` when callers
+    /// alternative to parsing the full `pack.khi` when callers
     /// only need the metadata.
     ///
     /// # Errors
@@ -768,11 +768,11 @@ fn sweep_hash_dir(
     Ok(removed)
 }
 
-/// Pull the ABI metadata section bytes back out of a `.tripack`.
+/// Pull the ABI metadata section bytes back out of a `.khi`.
 /// Used to populate `pkg/<hash>/manifest.bin` so the resolver can
 /// re-read the metadata without parsing the whole pack.
 fn extract_manifest_section(pack_bytes: &[u8]) -> StoreResult<Vec<u8>> {
-    // The `.tripack` header layout: MAGIC(4) + pack_version(4) +
+    // The `.khi` header layout: MAGIC(4) + pack_version(4) +
     // section_count(4) + (section_id(1) + size(4) + body) repeated.
     // ABI_METADATA section_id is 1. We do a minimal walk here rather
     // than expose serde internals.
@@ -812,10 +812,10 @@ fn extract_manifest_section(pack_bytes: &[u8]) -> StoreResult<Vec<u8>> {
 }
 
 /// Parse a manifest.bin (ABI metadata section bytes) without needing
-/// the surrounding `.tripack` framing. Reused by gc().
+/// the surrounding `.khi` framing. Reused by gc().
 fn parse_manifest_only(manifest_bytes: &[u8]) -> Result<AbiMetadata, crate::error::PackError> {
     // Wrap the manifest in a minimal pack envelope so we can reuse
-    // read_tripack. Cheap because we control both producer + consumer.
+    // read_khi. Cheap because we control both producer + consumer.
     let mut wrap = Vec::with_capacity(manifest_bytes.len() + 20);
     wrap.extend_from_slice(&[0x74, 0x72, 0x69, 0x70]); // MAGIC
     wrap.extend_from_slice(&1u32.to_le_bytes()); // pack_version
@@ -823,7 +823,7 @@ fn parse_manifest_only(manifest_bytes: &[u8]) -> Result<AbiMetadata, crate::erro
     wrap.push(1); // ABI_METADATA section id
     wrap.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
     wrap.extend_from_slice(manifest_bytes);
-    let (meta, _code) = read_tripack(&wrap)?;
+    let (meta, _code) = read_khi(&wrap)?;
     Ok(meta)
 }
 
@@ -881,7 +881,7 @@ fn invalid_data(msg: &'static str) -> io::Error {
 mod tests {
     use super::*;
     use crate::hash::{TermIfaceHash, TermImplHash};
-    use crate::serde::write_tripack;
+    use crate::serde::write_khi;
     use crate::types::{FunctionExport, Param, SemVer, TypeRef, Visibility};
     use tempfile::TempDir;
 
@@ -903,7 +903,7 @@ mod tests {
                 impl_hash_term: TermImplHash::default(),
             });
         }
-        write_tripack(&meta, &[0xDE, 0xAD, 0xBE, 0xEF])
+        write_khi(&meta, &[0xDE, 0xAD, 0xBE, 0xEF])
     }
 
     #[test]
@@ -934,7 +934,7 @@ mod tests {
 
         // term iface bytes were installed (dirs keyed by impl_hash per
         // ADR-0015 §2; iface.bin lives inside).
-        let (meta, _) = read_tripack(&bytes).unwrap();
+        let (meta, _) = read_khi(&bytes).unwrap();
         for e in &meta.exports {
             let iface = store
                 .root()
@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_tripack_bytes() {
+    fn rejects_non_khi_bytes() {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();
         let err = store.install_pack(&[0, 0, 0, 0]).unwrap_err();

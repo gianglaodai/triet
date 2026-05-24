@@ -477,7 +477,7 @@ mod tests {
     /// (added: collections, collections.vector, collections.hashmap,
     /// io.fs, path, string). Crate root contributes +1 → 12 modules
     /// for an empty program. v0.7.9.3 adds `crypto` (carrying the
-    /// `blake3_hash` stub) for the .tripack writer's iface/impl
+    /// `blake3_hash` stub) for the .khi writer's iface/impl
     /// hash chain → 13 modules. Centralized here so future stdlib
     /// expansions only touch one place.
     const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 13;

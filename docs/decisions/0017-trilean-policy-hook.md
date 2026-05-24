@@ -273,7 +273,7 @@ ADR-0017 chỉ commit: resolution **xảy ra** với contract ở §4 algorithm;
 
 ### Cho v0.5 hash scheme
 
-`triet.policy` **không tham gia** vào `iface_hash` hay `impl_hash` của package. Policy là deployment-environment concern, không phải package-content. Hai user chạy cùng `.tripack` với different `triet.policy` → cùng hash, khác behavior runtime — đúng spec.
+`triet.policy` **không tham gia** vào `iface_hash` hay `impl_hash` của package. Policy là deployment-environment concern, không phải package-content. Hai user chạy cùng `.khi` với different `triet.policy` → cùng hash, khác behavior runtime — đúng spec.
 
 ### Cho ABI metadata ([ADR-0011](0011-abi-metadata-format.md))
 

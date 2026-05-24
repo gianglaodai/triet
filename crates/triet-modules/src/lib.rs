@@ -84,7 +84,7 @@ pub fn load_program_from_source(source: &str) -> Result<ResolvedProgram, Vec<Loa
 /// Used by the v0.7.9.5 self-compile gate
 /// (`crates/triet-bootstrap/tests/bootstrap_self_compile.rs`) so
 /// both sides drive the **same** module shape (1 user module, no
-/// stdlib) and the resulting `.tripack` bytes can be compared
+/// stdlib) and the resulting `.khi` bytes can be compared
 /// byte-for-byte.
 ///
 /// # Errors

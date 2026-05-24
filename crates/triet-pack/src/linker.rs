@@ -4,7 +4,7 @@
 //! The linker is intentionally *side-effect free*: callers provide
 //! already-decoded `AbiMetadata` values, and the linker returns a
 //! [`LinkPlan`] describing what would happen if these packs were
-//! linked together. Driving I/O (reading `.tripack` files) lives in
+//! linked together. Driving I/O (reading `.khi` files) lives in
 //! the CLI layer.
 //!
 //! [ADR-0013]: ../../../docs/decisions/0013-semver-linking-policy.md

@@ -2,15 +2,15 @@
 //!
 //! Compiles `compiler/factorial.tri` through both pipelines and
 //! asserts the Rust-side toolchain accepts the Triết-side
-//! `.tripack` output as semantically equivalent:
+//! `.khi` output as semantically equivalent:
 //!
 //!   - **Rust side**: `parse → load_program_from_source_no_stdlib →
 //!     lower_program → write_program → AbiMetadata::empty →
-//!     write_tripack` (the no-stdlib variant exists for parity with
+//!     write_khi` (the no-stdlib variant exists for parity with
 //!     the Triết loader, which doesn't pre-load stdlib until v0.7.10).
 //!   - **Triết side**: load `compiler/main.tri` IR once, invoke
 //!     `main(["build", source, "-o", out, "--pkg", "compiler"])`,
-//!     read back the written `.tripack` bytes.
+//!     read back the written `.khi` bytes.
 //!
 //! Acceptance per Q1-A (decided 2026-05-24): **strict byte-identical**
 //! on a stripped fixture. v0.7.9.5 originally landed with a content-
@@ -59,7 +59,7 @@ use tempfile::TempDir;
 use triet_core::Trit;
 use triet_ir::{FuncId, IrProgram, RuntimeValue, Vm, lower_program, write_program};
 use triet_modules::load_program_from_source_no_stdlib;
-use triet_pack::{AbiMetadata, SemVer, read_tripack, write_tripack};
+use triet_pack::{AbiMetadata, SemVer, read_khi, write_khi};
 use triet_typecheck::check_resolved;
 
 fn workspace_root() -> PathBuf {
@@ -124,7 +124,7 @@ fn triet_emit_factorial(pkg_name: &str) -> Vec<u8> {
     let source = fs::read_to_string(factorial_source_path()).expect("read factorial.tri");
     let temp = TempDir::new().expect("tempdir");
     let source_path = temp.path().join("factorial.tri");
-    let out_path = temp.path().join("factorial.tripack");
+    let out_path = temp.path().join("factorial.khi");
     fs::write(&source_path, &source).expect("stage factorial source");
 
     let ir = main_ir().clone();
@@ -150,24 +150,24 @@ fn triet_emit_factorial(pkg_name: &str) -> Vec<u8> {
         other => panic!("expected Trit::Positive from main, got {other:?}"),
     }
 
-    fs::read(&out_path).expect("read emitted .tripack")
+    fs::read(&out_path).expect("read emitted .khi")
 }
 
-/// Mirror the Triết-side `serialize_source_to_tripack` shape in
+/// Mirror the Triết-side `serialize_source_to_khi` shape in
 /// Rust: lex+parse+lower a single user module (no stdlib, no
 /// typecheck), encode to `.triv`, wrap with empty ABI metadata,
-/// emit `.tripack`.
+/// emit `.khi`.
 fn rust_emit_factorial(source: &str, pkg_name: &str) -> Vec<u8> {
     let resolved = load_program_from_source_no_stdlib(source)
         .expect("no-stdlib loader must accept factorial fixture");
     let ir = lower_program(&resolved);
     let code = write_program(&ir);
     let meta = AbiMetadata::empty(pkg_name, SemVer::new(0, 0, 0));
-    write_tripack(&meta, &code)
+    write_khi(&meta, &code)
 }
 
 /// The umbrella gate. Asserts the Rust-emitted and Triết-emitted
-/// `.tripack` outputs over `compiler/factorial.tri` are byte-for-
+/// `.khi` outputs over `compiler/factorial.tri` are byte-for-
 /// byte identical. If this assertion ever fires, the Triết-impl
 /// compiler has drifted from the Rust-impl compiler — investigate
 /// before bumping the v0.7 phase.
@@ -212,7 +212,7 @@ fn triet_emit_is_deterministic() {
 fn triet_emit_decodes_via_rust_reader() {
     let bytes = triet_emit_factorial("compiler");
     let (metadata, code_section) =
-        read_tripack(&bytes).expect("Rust read_tripack must accept Triết output");
+        read_khi(&bytes).expect("Rust read_khi must accept Triết output");
     assert_eq!(metadata.pkg_name, "compiler");
     assert_eq!(metadata.abi_version, 2);
     assert!(!metadata.iface_hash.is_zero());

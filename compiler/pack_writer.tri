@@ -2465,7 +2465,7 @@ function vectors_equal(a: Vector<Integer>, b: Vector<Integer>) -> Trilean! = {
 }
 
 // ═════════════════════════════════════════════════════════════════
-// v0.7.9.3 — `.tripack` container writer + reader
+// v0.7.9.3 — `.khi` container writer + reader
 //
 // Wraps the `.triv` IR payload (from `write_program` above) with an
 // ABI metadata header per ADR-0011 + ADR-0014 3-cấp hash tree.
@@ -2494,16 +2494,16 @@ function vectors_equal(a: Vector<Integer>, b: Vector<Integer>) -> Trilean! = {
 
 // ── Magic + version constants ────────────────────────────────────
 
-constant TRIPACK_MAGIC_T: Integer = 116
-constant TRIPACK_MAGIC_R: Integer = 114
-constant TRIPACK_MAGIC_I: Integer = 105
-constant TRIPACK_MAGIC_P: Integer = 112
+constant KHI_MAGIC_T: Integer = 116
+constant KHI_MAGIC_R: Integer = 114
+constant KHI_MAGIC_I: Integer = 105
+constant KHI_MAGIC_P: Integer = 112
 
-constant TRIPACK_PACK_VERSION: Integer = 1
-constant TRIPACK_ABI_VERSION: Integer = 2
+constant KHI_PACK_VERSION: Integer = 1
+constant KHI_ABI_VERSION: Integer = 2
 
-constant TRIPACK_SEC_ABI_METADATA: Integer = 1
-constant TRIPACK_SEC_IR_CODE: Integer = 2
+constant KHI_SEC_ABI_METADATA: Integer = 1
+constant KHI_SEC_IR_CODE: Integer = 2
 
 constant HASH_LEN: Integer = 32
 
@@ -2620,7 +2620,7 @@ public struct AbiMetadata {
 
 public function abi_metadata_empty(pkg_name: String, pkg_version: SemVer) -> AbiMetadata =
     AbiMetadata {
-        abi_version: TRIPACK_ABI_VERSION,
+        abi_version: KHI_ABI_VERSION,
         pkg_name: pkg_name,
         pkg_version: pkg_version,
         iface_hash: zero_hash(),
@@ -2733,7 +2733,7 @@ public struct ReadResultAbiMetadata {
 
 public function read_abi_metadata(data: Vector<Integer>, pos: Integer) -> ReadResultAbiMetadata~TrivError = {
     let abi_res: ReadResultInteger = read_u32_le(data, pos) ~? |err| ~- err
-    if abi_res.value != TRIPACK_ABI_VERSION {
+    if abi_res.value != KHI_ABI_VERSION {
         return ~- Corrupted(TrivErrorCorrupted { message: "unsupported abi_version" })
     }
     let name_res: ReadResultString = read_string(data, abi_res.next_pos) ~? |err| ~- err
@@ -2792,9 +2792,9 @@ public function read_hash(data: Vector<Integer>, pos: Integer) -> ReadResultHash
     }
 }
 
-// ── Top-level write_tripack ──────────────────────────────────────
+// ── Top-level write_khi ──────────────────────────────────────
 
-public function write_tripack(meta: AbiMetadata, code_section: Vector<Integer>) -> Vector<Integer> = {
+public function write_khi(meta: AbiMetadata, code_section: Vector<Integer>) -> Vector<Integer> = {
     // Compute canonical hashes BEFORE writing the metadata block —
     // the on-disk iface_hash + impl_hash fields must reflect the
     // final values, not the user-provided sentinels.
@@ -2810,18 +2810,18 @@ public function write_tripack(meta: AbiMetadata, code_section: Vector<Integer>) 
     let meta_payload: Vector<Integer> = write_abi_metadata(new(), final_meta)
 
     let mutable buf: Vector<Integer> = new()
-    buf = push(buf, TRIPACK_MAGIC_T)
-    buf = push(buf, TRIPACK_MAGIC_R)
-    buf = push(buf, TRIPACK_MAGIC_I)
-    buf = push(buf, TRIPACK_MAGIC_P)
-    buf = write_u32_le(buf, TRIPACK_PACK_VERSION)
+    buf = push(buf, KHI_MAGIC_T)
+    buf = push(buf, KHI_MAGIC_R)
+    buf = push(buf, KHI_MAGIC_I)
+    buf = push(buf, KHI_MAGIC_P)
+    buf = write_u32_le(buf, KHI_PACK_VERSION)
     buf = write_u32_le(buf, 2)  // 2 sections: ABI metadata + IR code
-    buf = write_section(buf, TRIPACK_SEC_ABI_METADATA, meta_payload)
-    buf = write_section(buf, TRIPACK_SEC_IR_CODE, code_section)
+    buf = write_section(buf, KHI_SEC_ABI_METADATA, meta_payload)
+    buf = write_section(buf, KHI_SEC_IR_CODE, code_section)
     buf
 }
 
-public struct TripackRead {
+public struct KhiRead {
     metadata: AbiMetadata,
     code_section: Vector<Integer>,
 }
@@ -2831,26 +2831,26 @@ public struct ReadSectionsResult {
     code_section: Vector<Integer>,
 }
 
-public function read_tripack(data: Vector<Integer>) -> TripackRead~TrivError = {
+public function read_khi(data: Vector<Integer>) -> KhiRead~TrivError = {
     if length(data) < 12 {
         return ~- Corrupted(TrivErrorCorrupted { message: "file too small" })
     }
-    if get(data, 0)!! != TRIPACK_MAGIC_T
-        || get(data, 1)!! != TRIPACK_MAGIC_R
-        || get(data, 2)!! != TRIPACK_MAGIC_I
-        || get(data, 3)!! != TRIPACK_MAGIC_P
+    if get(data, 0)!! != KHI_MAGIC_T
+        || get(data, 1)!! != KHI_MAGIC_R
+        || get(data, 2)!! != KHI_MAGIC_I
+        || get(data, 3)!! != KHI_MAGIC_P
     {
         return ~- Corrupted(TrivErrorCorrupted { message: "bad magic (expected trip)" })
     }
     let ver_res: ReadResultInteger = read_u32_le(data, 4) ~? |err| ~- err
-    if ver_res.value > TRIPACK_PACK_VERSION {
+    if ver_res.value > KHI_PACK_VERSION {
         return ~- Corrupted(TrivErrorCorrupted { message: "unsupported pack_version" })
     }
     let count_res: ReadResultInteger = read_u32_le(data, ver_res.next_pos) ~? |err| ~- err
     let sec_result: ReadSectionsResult = read_sections(data, count_res.next_pos, count_res.value) ~? |err| ~- err
     match sec_result.metadata {
         ~0 => ~- Corrupted(TrivErrorCorrupted { message: "missing ABI metadata section" }),
-        _ => ~+ TripackRead {
+        _ => ~+ KhiRead {
             metadata: sec_result.metadata!!,
             code_section: sec_result.code_section,
         },
@@ -2876,10 +2876,10 @@ function read_sections(
         if payload_end > length(data) {
             return ~- Corrupted(TrivErrorCorrupted { message: "section runs past EOF" })
         }
-        if sec_id == TRIPACK_SEC_ABI_METADATA {
+        if sec_id == KHI_SEC_ABI_METADATA {
             let abi_res: ReadResultAbiMetadata = read_abi_metadata(data, payload_start) ~? |err| ~- err
             meta = abi_res.value
-        } else if sec_id == TRIPACK_SEC_IR_CODE {
+        } else if sec_id == KHI_SEC_IR_CODE {
             code = slice_bytes(data, payload_start, payload_end)
         }
         // Unknown sections are skipped per ADR-0011 (forward-compat).
@@ -2901,27 +2901,27 @@ function slice_bytes(data: Vector<Integer>, start: Integer, end_idx: Integer) ->
 
 // ── Source → tripack convenience entry ───────────────────────────
 
-public function serialize_source_to_tripack(source: String, pkg_name: String) -> Vector<Integer> = {
+public function serialize_source_to_khi(source: String, pkg_name: String) -> Vector<Integer> = {
     let ir: IrProgram = lower_source(source)
     let code: Vector<Integer> = write_program(ir)
     let meta: AbiMetadata = abi_metadata_empty(pkg_name, semver_zero())
-    write_tripack(meta, code)
+    write_khi(meta, code)
 }
 
 // ── Smoke entry — round-trip per v0.7.9.3 acceptance ─────────────
 //
 // Returns `~+ true` when:
 //   1. tripack writes successfully for `function f() -> Integer = 42`,
-//   2. read_tripack round-trips it,
+//   2. read_khi round-trips it,
 //   3. pkg_name + abi_version + iface_hash length match,
 //   4. extracted code section is non-empty (= the embedded .triv).
 
-public function tripack_smoke_main() -> Trilean!~TrivError = {
+public function khi_smoke_main() -> Trilean!~TrivError = {
     let source: String = "function f() -> Integer = 42"
     let pkg_name: String = "compiler"
-    let bytes: Vector<Integer> = serialize_source_to_tripack(source, pkg_name)
-    let parsed: TripackRead = read_tripack(bytes) ~? |err| ~- err
-    if parsed.metadata.abi_version != TRIPACK_ABI_VERSION {
+    let bytes: Vector<Integer> = serialize_source_to_khi(source, pkg_name)
+    let parsed: KhiRead = read_khi(bytes) ~? |err| ~- err
+    if parsed.metadata.abi_version != KHI_ABI_VERSION {
         return ~- Corrupted(TrivErrorCorrupted { message: "abi_version round-trip mismatch" })
     }
     if parsed.metadata.pkg_name != pkg_name {

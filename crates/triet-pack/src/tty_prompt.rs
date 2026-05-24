@@ -621,7 +621,7 @@ mod tests {
                     "91b3d8e2a4c7d935a8e6f0b2d4c97186a3e5f8d2c0b4a791e2f5c8d9a04af5b6".into(),
                 ),
                 store_path: Some(
-                    "~/.triet/store/pkg/91b3d8e2a4c7d935a8e6f0b2d4c97186a3e5f8d2c0b4a791e2f5c8d9a04af5b6/pack.tripack"
+                    "~/.triet/store/pkg/91b3d8e2a4c7d935a8e6f0b2d4c97186a3e5f8d2c0b4a791e2f5c8d9a04af5b6/pack.khi"
                         .into(),
                 ),
                 lockfile_match: Some(LockfileMatch::Match),

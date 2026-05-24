@@ -27,7 +27,7 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.tripack`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.7.4.3-error (design locked, implementation pending)** — v0.6 Capability System shipped; v0.7 Self-hosting Compiler in progress (umbrella sub-tasks v0.7.1 → v0.7.4.2 shipped, lexer port v0.7.4.3 next). Interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0.
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.7.4.3-error (design locked, implementation pending)** — v0.6 Capability System shipped; v0.7 Self-hosting Compiler in progress (umbrella sub-tasks v0.7.1 → v0.7.4.2 shipped, lexer port v0.7.4.3 next). Interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0.
 
 Source-of-truth docs:
 - `SPEC.md` — language semantics (authoritative; header v0.6 stable, v0.7 design locked per ADR-0019 + ADR-0020 + ADR-0021 — header bumps at v0.7.13 verify gate)
@@ -128,7 +128,7 @@ Compilation pipeline (each stage = one crate):
     ▼  triet-typecheck    type errors
     ▼  triet-ir           register-SSA IR + lowerer + bytecode VM
     ▼  triet-interpreter  tree-walking runtime values (dev tier)
-    ▼  triet-pack         .tripack format + cross-package linker
+    ▼  triet-pack         .khi format + cross-package linker
     ▼  triet-cli          binary, miette diagnostics, JSON output
 ```
 
@@ -152,14 +152,14 @@ Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-log
 ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing"). **Post-ADR-0021** (v0.7.4.3-error.3c), strict `if cond` Unknown-handling moved from *runtime panic via BrTrilean unknown_block* (primary safety) to *compile-time E1033 `PossiblyUnknownCondition`* (primary safety); the unknown_block panic stays as defense-in-depth for `if?`/match/untrusted `.triv` consumers — see [ADR-0010 Addendum §C](docs/decisions/0010-ternary-native-ir.md).
 
 ### Crate-Pack distribution (shipped v0.4; ADR-0011/0012/0013)
-`triet-pack` defines `.tripack` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash at pack level: `iface_hash` (ABI surface) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
+`triet-pack` defines `.khi` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash at pack level: `iface_hash` (ABI surface) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
 
 Linker decisions land in the E2300–E2399 namespace: `MajorVersionMismatch` (E2320), `VersionBelowMinimum` (E2321), `IfaceHashDrift` (E2310 advisory). `iface_hash_pin` is the final arbiter — semver triple is *declaration*, hash is *proof*. Auto-shim is explicitly NOT promised.
 
 ### CAS Packaging (shipped v0.5; ADR-0014/0015)
-Extends the pack-level hash from v0.4 into a **3-cấp hash tree**: term + module + package. Each level has its own `iface_hash` (signature-only) + `impl_hash` (covers body bytes), with 16-byte ASCII domain separators per level to prevent cross-level collisions. `abi_version` bumped 1 → 2 (additive — `.tripack` v=1 explicitly refused per ADR-0014 §5, no shim).
+Extends the pack-level hash from v0.4 into a **3-cấp hash tree**: term + module + package. Each level has its own `iface_hash` (signature-only) + `impl_hash` (covers body bytes), with 16-byte ASCII domain separators per level to prevent cross-level collisions. `abi_version` bumped 1 → 2 (additive — `.khi` v=1 explicitly refused per ADR-0014 §5, no shim).
 
-Package store lives at `~/.triet/store/` (override via `$TRIET_STORE`). Three branches mirror the hash tree: `term/<impl_hash>/{iface.bin, body.bin}`, `mod/<impl_hash>/index.bin`, `pkg/<impl_hash>/{pack.tripack, manifest.bin}`. Plus `names/<pkg>/<semver>.link` (symbolic alias → hash), `roots/<project_id>.root` (GC roots), `tmp/<uid>/` (atomic install staging). Atomic install protocol: write to tmp dir → `rename()` (POSIX atomic; EEXIST = race-lost = success). Manual `triet store gc` (mark-and-sweep). E2360–E2382 namespace covers store I/O + lockfile + resolver errors.
+Package store lives at `~/.triet/store/` (override via `$TRIET_STORE`). Three branches mirror the hash tree: `term/<impl_hash>/{iface.bin, body.bin}`, `mod/<impl_hash>/index.bin`, `pkg/<impl_hash>/{pack.khi, manifest.bin}`. Plus `names/<pkg>/<semver>.link` (symbolic alias → hash), `roots/<project_id>.root` (GC roots), `tmp/<uid>/` (atomic install staging). Atomic install protocol: write to tmp dir → `rename()` (POSIX atomic; EEXIST = race-lost = success). Manual `triet store gc` (mark-and-sweep). E2360–E2382 namespace covers store I/O + lockfile + resolver errors.
 
 `triet.lock` hand-rolled line format (`format_version 1` + `pkg <name> <maj>.<min>.<pat> <iface_hex> <impl_hash_hex>`) — sort-by-name canonical, diff-friendly, no serde dep. `Resolver` (lockfile authoritative when present + still in store; dep `iface_hash_pin` overrides cache).
 

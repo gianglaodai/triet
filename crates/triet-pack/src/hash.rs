@@ -229,7 +229,7 @@ pub fn compute_iface_hash(meta: &AbiMetadata) -> IfaceHash {
 /// code_section)` so the digest still reflects code-section changes
 /// even while per-term bodies aren't extractable. v0.5.4 will switch
 /// to the ADR-0014 §4 module rollup once `.triv` v4 lands per-term
-/// offsets — same 32-byte slot in `.tripack`, no format churn.
+/// offsets — same 32-byte slot in `.khi`, no format churn.
 #[must_use]
 pub(crate) fn compute_impl_hash(iface: &IfaceHash, code_section: &[u8]) -> ImplHash {
     let mut h = blake3::Hasher::new();

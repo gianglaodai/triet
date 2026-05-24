@@ -20,8 +20,8 @@ pub type PackResult<T> = Result<T, PackError>;
 /// and policy-level (linker refusing).
 #[derive(Clone, Debug, Diagnostic, Error, PartialEq, Eq)]
 pub enum PackError {
-    /// The file isn't a `.tripack` (magic bytes don't match).
-    #[error("not a .tripack file: magic bytes mismatch")]
+    /// The file isn't a `.khi` (magic bytes don't match).
+    #[error("not a .khi file: magic bytes mismatch")]
     #[diagnostic(
         code(triet::pack::E2300),
         help("the file may be corrupted or it's a `.triv` IR file (not a packaged crate)")
@@ -33,7 +33,7 @@ pub enum PackError {
     #[diagnostic(
         code(triet::pack::E2301),
         help(
-            "update the Triết toolchain — this `.tripack` was produced by a newer compiler that knows fields this reader does not"
+            "update the Triết toolchain — this `.khi` was produced by a newer compiler that knows fields this reader does not"
         )
     )]
     UnsupportedAbiVersion {
@@ -45,7 +45,7 @@ pub enum PackError {
 
     /// Structural corruption: truncated section, bad UTF-8, varint
     /// overflow, etc. Free-form message because the cause varies.
-    #[error("corrupted .tripack: {0}")]
+    #[error("corrupted .khi: {0}")]
     #[diagnostic(
         code(triet::pack::E2302),
         help(
@@ -96,7 +96,7 @@ pub enum StoreError {
 
     /// The pack bytes didn't parse — wraps a [`PackError`] surfaced
     /// while reading metadata before installing.
-    #[error("invalid .tripack handed to store: {0}")]
+    #[error("invalid .khi handed to store: {0}")]
     #[diagnostic(transparent)]
     Pack(#[from] PackError),
 

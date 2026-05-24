@@ -21,7 +21,7 @@ Lowerer phân biệt **at compile time** dựa trên callee location:
 | Callsite | Callee location | Dispatch | Lý do |
 |---|---|---|---|
 | `foo(x: T)` trong cùng package | Local | Monomorphize per instantiation | Hot path, full inline opportunity |
-| `foo(x: T)` từ package khác | External `.tripack` | Witness call qua table | ABI stability, recompile cha không phá con |
+| `foo(x: T)` từ package khác | External `.khi` | Witness call qua table | ABI stability, recompile cha không phá con |
 
 Đây là **decision tại compile time**, không phải runtime — không có cost phân biệt khi dispatch.
 
@@ -41,7 +41,7 @@ Witness table cho call site `f<Integer>(x)` từ package consumer:
 └────────────────────────────────────────────────────────────┘
 ```
 
-Caller build witness table **at link time** (compile-time của caller package, khi resolve cross-pkg call). Witness table sống trong data section của caller `.tripack`, reference ABI metadata của callee package.
+Caller build witness table **at link time** (compile-time của caller package, khi resolve cross-pkg call). Witness table sống trong data section của caller `.khi`, reference ABI metadata của callee package.
 
 ### 3. New IR instruction: `WitnessCall`
 
@@ -69,7 +69,7 @@ VM dispatch:
 3. Push frame với args + witness table as implicit last arg.
 4. Callee có thể read type info qua intrinsic `__witness_type(0)` (slot 0 = T's metadata).
 
-### 4. Encoding trong `.tripack`
+### 4. Encoding trong `.khi`
 
 ABI metadata exports table (ADR-0011 §3) đã có `type_param_count`. Khi caller resolve generic call:
 
@@ -149,7 +149,7 @@ Khi callee thay đổi ABI surface của generic function (param/return type), i
 
 - Build witness table cho mỗi unique (callee_path, type_args).
 - Dedup tables across call sites.
-- Output witness tables vào caller's `.tripack` data section.
+- Output witness tables vào caller's `.khi` data section.
 
 ### Đối với JIT (v0.9) và LLVM AOT (v2.0)
 

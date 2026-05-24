@@ -37,10 +37,10 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 ✅ Benchmark harness: criterion, VM 1.26× interpreter (baseline)
 ✅ Cargo workspace `version = 0.4.0` đồng bộ với SPEC v0.4 (ADR-0009 § C)
 ✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch (ADR-0009 § B)
-✅ **Crate-Pack format** `.tripack` per ADR-0011 — ABI metadata + IR code section + dedicated linker section IDs
+✅ **Crate-Pack format** `.khi` per ADR-0011 — ABI metadata + IR code section + dedicated linker section IDs
 ✅ **Witness table dispatch** per ADR-0012 — IR-level support, VM dispatch, `.triv` v3 wire format
 ✅ **Semver linking policy** per ADR-0013 — E2300-2399 decision matrix, refuse-to-link on major bump, iface_hash drift warnings
-✅ **`triet-pack` crate**: write_tripack/read_tripack + plan_link, 26 unit + 7 integration tests
+✅ **`triet-pack` crate**: write_khi/read_khi + plan_link, 26 unit + 7 integration tests
 ✅ **Stdlib `std.result`**: canonical `Result<T, E>` enum; SPEC §2.5 promotes `T?` as primary nullable
 ✅ 867 tests workspace-wide ở v0.4, → **918 tests ở v0.5** (0 ignored), snapshot tests cho IR + diagnostics
 ✅ **CAS Packaging** per ADR-0014/0015 — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install protocol, mark-and-sweep GC
@@ -232,7 +232,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 | v0.4.1 | ADR-0011 ABI metadata format | `8e9cfce` |
 | v0.4.2 | ADR-0012 Witness table dispatch | `d600f73` |
 | v0.4.3 | ADR-0013 Semver linking policy | `c76b89c` |
-| v0.4.4 | `triet-pack` crate + `.tripack` serde (11 round-trip tests) | `09b155d` |
+| v0.4.4 | `triet-pack` crate + `.khi` serde (11 round-trip tests) | `09b155d` |
 | v0.4.5 | Cross-package linker + decision matrix (8 tests) | `b1f9f83` |
 | v0.4.6 | `WitnessCall` opcode + `.triv` v3 wire format + VM dispatch | `8360036` |
 | v0.4.7 | `std.result` + SPEC `T?` primary | `06d7129` |
@@ -285,7 +285,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 
 **Không làm (defer khỏi v0.5):**
 - **Lowerer emit `WitnessCall` cho cross-package generics** (Item 2 carry-over) — cần package-aware lowering, multi-week milestone. Reschedules cùng multi-package compile path hoặc v0.7 self-hosting.
-- **v=1 `.tripack` lossy migration** (ADR-0015 §9) — hiện chưa có v=1 packs trong wild; lands on demand.
+- **v=1 `.khi` lossy migration** (ADR-0015 §9) — hiện chưa có v=1 packs trong wild; lands on demand.
 - **Body-level RAM dedup** (`term/<hash>/body.bin`) — chờ lowerer per-term IR body split. Iface-level dedup proven; body-level deferred to v0.6+ alongside lowerer work.
 - **Distributed registry / network fetch** — local store đủ; defer v1.0+.
 - **Auto-GC** — manual `triet store gc` đủ; "refuse over guess" policy.
@@ -350,7 +350,7 @@ TTY prompt.
 - ✅ 924 → 1079 tests, clippy `-D warnings` clean, `abi_version` stays `2` (ADR-0016 §4 promise honored).
 
 **Không làm (defer khỏi v0.6):**
-- **CLI wiring** (`triet check` reading `triet.package` from project root, cap-aware build pipeline emitting `.tripack` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
+- **CLI wiring** (`triet check` reading `triet.package` from project root, cap-aware build pipeline emitting `.khi` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
 - **E2208.PreV06Reader** — gated by future `abi_version` bump.
 - **E2208.CapabilityDivergence** — fires when lowerer actually populates caps section from `triet.package`; defer with lowerer work.
 - **Per-function cap granularity** — defer post-v1.0 (ADR-0016 "Không làm").
@@ -401,7 +401,7 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 - Triết-impl divergent semantics from Rust-impl — goal là 1:1 reimplementation.
 
 **Gate (recalibrated by ADR-0019 §7):**
-- **Functional:** Bit-identical Stage 2 ≡ Stage 3 (`cmp compiler-stage2.tripack compiler-stage3.tripack` exit 0).
+- **Functional:** Bit-identical Stage 2 ≡ Stage 3 (`cmp compiler-stage2.khi compiler-stage3.khi` exit 0).
 - **Coverage:** Tất cả `examples/*.tri` + module-system demo + capability tests pass via self-hosted compiler.
 - **Performance:** Full 3-stage bootstrap loop hoàn thành **< 10 phút** trên developer hardware (8-core modern laptop). 2× parity với Rust impl **defer sang v0.9 JIT** — Triết-on-VM là dev tier per [VISION §4.3](VISION.md); JIT/AOT là production tier.
 - **Hygiene:** ADR-0009 §A/B/C/D gates applied trong sub-task v0.7.13.
@@ -437,7 +437,7 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 - Bench ≥10× so với v0.3 bytecode trên numeric-heavy programs.
 - Self-hosted compiler bootstrap loop ≤ 2× Rust impl runtime trên same hardware (carry-forward từ v0.7 perf gate per [ADR-0019 §7](docs/decisions/0019-self-hosting-compiler-bootstrap.md)).
 
----
+---&t=2059s
 
 ## v1.0 — Production Stability
 

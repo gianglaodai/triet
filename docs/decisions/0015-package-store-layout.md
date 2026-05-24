@@ -84,7 +84,7 @@ Example:
 - `index.bin` — sorted list of `(term_name_len, term_name_bytes, impl_hash_term)`. Cho phép resolve "module này gồm term nào" mà không load parent pkg.
 
 **`pkg/<hash>/`:**
-- `pack.tripack` — full container đã ship (ABI metadata + IR code + manifest, per ADR-0011).
+- `pack.khi` — full container đã ship (ABI metadata + IR code + manifest, per ADR-0011).
 - `manifest.bin` — extracted ABI metadata bytes (re-read cheap; pack.tripack chỉ load khi cần code).
 
 **`names/<pkg_name>/<semver>.link`:**

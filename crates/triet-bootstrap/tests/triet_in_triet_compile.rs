@@ -2,12 +2,12 @@
 //!
 //! Loads `compiler/main.tri`, the self-hosted CLI driver, invokes
 //! its `main(argv)` with the `build` subcommand, and asserts the
-//! resulting `.tripack` file is decoded cleanly by the Rust
-//! `triet_pack::read_tripack`.
+//! resulting `.khi` file is decoded cleanly by the Rust
+//! `triet_pack::read_khi`.
 //!
 //! Per Q2 (decided): minimal end-to-end gate — pipeline runs +
 //! Rust decoder accepts the output. Byte-identical comparison with
-//! Rust `serialize_source_to_tripack` defers to v0.7.9.5 because
+//! Rust `serialize_source_to_khi` defers to v0.7.9.5 because
 //! Triết still doesn't pre-load the stdlib (deferred to v0.7.10),
 //! so the constant-pool offsets and stdlib-side function IDs
 //! diverge from the Rust toolchain.
@@ -22,7 +22,7 @@ use triet_core::Trit;
 use triet_ir::{FuncId, IrProgram, RuntimeValue, Vm, lower_program};
 use triet_logic::Trilean;
 use triet_modules::load_program;
-use triet_pack::read_tripack;
+use triet_pack::read_khi;
 use triet_typecheck::check_resolved;
 
 fn compiler_main_path() -> PathBuf {
@@ -91,15 +91,15 @@ fn main_smoke_dispatches_args_correctly() {
 }
 
 /// End-to-end gate: build subcommand reads a source file, emits a
-/// `.tripack`, and the Rust decoder agrees the result is a valid
+/// `.khi`, and the Rust decoder agrees the result is a valid
 /// pack. This is the v0.7.9.4 acceptance bar — full byte-identical
 /// comparison is v0.7.9.5 after the stdlib-preload divergence
 /// closes.
 #[test]
-fn main_build_emits_readable_tripack() {
+fn main_build_emits_readable_khi() {
     let temp = TempDir::new().expect("tempdir");
     let source_path = temp.path().join("source.tri");
-    let out_path = temp.path().join("out.tripack");
+    let out_path = temp.path().join("out.khi");
     fs::write(&source_path, "function f() -> Integer = 42").expect("write source");
 
     let ir = main_ir().clone();
@@ -126,11 +126,11 @@ fn main_build_emits_readable_tripack() {
 
     assert!(
         out_path.exists(),
-        "main(build) did not write the `.tripack` file at {}",
+        "main(build) did not write the `.khi` file at {}",
         out_path.display()
     );
 
-    let bytes = fs::read(&out_path).expect("read out.tripack");
+    let bytes = fs::read(&out_path).expect("read out.khi");
     assert_eq!(
         &bytes[..4],
         b"trip",
@@ -138,7 +138,7 @@ fn main_build_emits_readable_tripack() {
     );
 
     let (metadata, code_section) =
-        read_tripack(&bytes).expect("Rust read_tripack must accept Triết main(build) output");
+        read_khi(&bytes).expect("Rust read_khi must accept Triết main(build) output");
     assert_eq!(metadata.pkg_name, "selfhost_test");
     assert_eq!(
         metadata.abi_version, 2,

@@ -49,7 +49,7 @@ use std::fs;
 use tempfile::TempDir;
 use triet_pack::{
     AbiMetadata, Dep, FunctionExport, IfaceHash, Param, SemVer, Store, TermIfaceHash, TermImplHash,
-    TypeRef, Visibility, read_tripack, write_tripack,
+    TypeRef, Visibility, read_khi, write_khi,
 };
 
 /// Build the canonical `std.text` package shared by both apps.
@@ -77,7 +77,7 @@ fn build_std_pkg() -> Vec<u8> {
         iface_hash_term: TermIfaceHash::default(),
         impl_hash_term: TermImplHash::default(),
     });
-    write_tripack(&meta, &[0xC0, 0xDE])
+    write_khi(&meta, &[0xC0, 0xDE])
 }
 
 /// Build an app package that re-exports `format` (same canonical
@@ -133,7 +133,7 @@ fn build_app_pkg(name: &str, body_suffix: u8) -> Vec<u8> {
         iface_hash_pin: IfaceHash::default(),
     });
 
-    write_tripack(&meta, &[body_suffix])
+    write_khi(&meta, &[body_suffix])
 }
 
 /// Count subdirectories under `parent` whose names look like 64-hex
@@ -158,8 +158,8 @@ fn shared_format_dedups_to_one_term_dir() {
     let app_a_bytes = build_app_pkg("app_a", 0x01);
     let app_b_bytes = build_app_pkg("app_b", 0x02);
 
-    let (app_a_meta, _) = read_tripack(&app_a_bytes).unwrap();
-    let (app_b_meta, _) = read_tripack(&app_b_bytes).unwrap();
+    let (app_a_meta, _) = read_khi(&app_a_bytes).unwrap();
+    let (app_b_meta, _) = read_khi(&app_b_bytes).unwrap();
 
     // The `format` export's iface_hash_term must match across apps —
     // it's a function of canonical signature bytes only.
@@ -203,8 +203,8 @@ fn shared_module_dedups_when_contents_match() {
 
     let app_a_bytes = build_app_pkg("app_a", 0x01);
     let app_b_bytes = build_app_pkg("app_b", 0x02);
-    let (app_a_meta, _) = read_tripack(&app_a_bytes).unwrap();
-    let (app_b_meta, _) = read_tripack(&app_b_bytes).unwrap();
+    let (app_a_meta, _) = read_khi(&app_a_bytes).unwrap();
+    let (app_b_meta, _) = read_khi(&app_b_bytes).unwrap();
 
     // Both apps have a `std.text` module containing only `format`.
     // Modules rollup → identical impl_hash_mod for that module.
@@ -259,8 +259,8 @@ fn standalone_std_pack_installs_and_resolves() {
     let std_hash = store.install_pack(&build_std_pkg()).unwrap();
 
     // Now two apps come along, both depending on std @ ≥0.5.0 <1.0.0.
-    let (app_a_meta, _) = read_tripack(&build_app_pkg("app_a", 0x01)).unwrap();
-    let (app_b_meta, _) = read_tripack(&build_app_pkg("app_b", 0x02)).unwrap();
+    let (app_a_meta, _) = read_khi(&build_app_pkg("app_a", 0x01)).unwrap();
+    let (app_b_meta, _) = read_khi(&build_app_pkg("app_b", 0x02)).unwrap();
     let _ = store.install_pack(&build_app_pkg("app_a", 0x01)).unwrap();
     let _ = store.install_pack(&build_app_pkg("app_b", 0x02)).unwrap();
 

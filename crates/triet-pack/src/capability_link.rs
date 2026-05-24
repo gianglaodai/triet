@@ -32,8 +32,8 @@
 //! **Span / source location:** none. [`AbiMetadata`] is a binary wire
 //! format with no source tracking — link-time diagnostics are
 //! package-level. The diagnostic surfaces `requester_pkgs` so the
-//! user can find which `.tripack` is asking; ADR-0018 §5 spans on
-//! `.tripack` byte offsets land when the loader actually parses
+//! user can find which `.khi` is asking; ADR-0018 §5 spans on
+//! `.khi` byte offsets land when the loader actually parses
 //! per-section bytes (v0.6.x.cleanup or later).
 //!
 //! **What this check does NOT do:**
@@ -41,7 +41,7 @@
 //! - E2208.PreV06Reader — gated by a future `abi_version` bump
 //!   (currently `v=2` understands caps natively).
 //! - E2208.CapabilityDivergence — requires comparing source
-//!   `triet.package` against emitted `.tripack`. Lands when the
+//!   `triet.package` against emitted `.khi`. Lands when the
 //!   writer actually populates caps from manifest (v0.6.x).
 //! - E2205 sub-variants — runtime resolver (v0.6.9+).
 //!

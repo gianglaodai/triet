@@ -1,13 +1,13 @@
 # ADR 0019 — Self-hosting compiler bootstrap (3-stage chain + canonical emission + Rust-shim stdlib)
 
-**Trạng thái:** Quyết định. Áp dụng cho phase v0.7 — compiler Triết viết bằng Triết. Recalibrate perf gate v0.7 (defer 2× parity sang v0.9 JIT). Không đổi IR shape ([ADR-0007](0007-ir-design.md)), không đổi `.triv` wire format ([ADR-0008](0008-triv-binary-format.md) v3 + [ADR-0010](0010-ternary-native-ir.md) + [ADR-0012](0012-witness-table-dispatch.md)), không đổi `.tripack` ABI ([ADR-0011](0011-abi-metadata-format.md)), không đổi CAS scheme ([ADR-0014](0014-hash-scheme-refinement.md)), không đổi capability semantics ([ADR-0016](0016-capability-type-system.md)/[ADR-0017](0017-trilean-policy-hook.md)/[ADR-0018](0018-capability-loader-semantics.md)). Lock author direction confirmed 2026-05-17 (Q1-B, Q2-B, Q3-A, Q4-A, Q5-C, Q6-C, Q7-defer).
+**Trạng thái:** Quyết định. Áp dụng cho phase v0.7 — compiler Triết viết bằng Triết. Recalibrate perf gate v0.7 (defer 2× parity sang v0.9 JIT). Không đổi IR shape ([ADR-0007](0007-ir-design.md)), không đổi `.triv` wire format ([ADR-0008](0008-triv-binary-format.md) v3 + [ADR-0010](0010-ternary-native-ir.md) + [ADR-0012](0012-witness-table-dispatch.md)), không đổi `.khi` ABI ([ADR-0011](0011-abi-metadata-format.md)), không đổi CAS scheme ([ADR-0014](0014-hash-scheme-refinement.md)), không đổi capability semantics ([ADR-0016](0016-capability-type-system.md)/[ADR-0017](0017-trilean-policy-hook.md)/[ADR-0018](0018-capability-loader-semantics.md)). Lock author direction confirmed 2026-05-17 (Q1-B, Q2-B, Q3-A, Q4-A, Q5-C, Q6-C, Q7-defer).
 
 **Issue:** [ROADMAP §v0.7](../../ROADMAP.md) đặt mục tiêu *"Compiler Triết viết bằng Triết. Bootstrap đầy đủ"* với gate *"Bit-identical bootstrap qua 2 vòng tự build"*. Nhưng để hở 7 vùng kiến trúc cần lock TRƯỚC khi viết dòng Triết-compiler nào:
 
 1. **Bootstrap chain shape** — single-stage vs 2-stage vs 3-stage? Mỗi chọn lựa có gate khác nhau.
 2. **Component order** — big-bang rewrite hay incremental component-by-component? Cadence sub-task ảnh hưởng trực tiếp.
-3. **Version skew handling** — Rust impl emit `.tripack` có thể khác Triết-in-Triết impl emit. Làm sao verify bit-identical?
-4. **Gate semantics** — so sánh gì cho "bit-identical"? `.tripack` bytes, IR bytes, hash, hay semantic output?
+3. **Version skew handling** — Rust impl emit `.khi` có thể khác Triết-in-Triết impl emit. Làm sao verify bit-identical?
+4. **Gate semantics** — so sánh gì cho "bit-identical"? `.khi` bytes, IR bytes, hash, hay semantic output?
 5. **Stdlib status** — self-host compiler cần `Vec`, `HashMap`, file IO. Hiện stdlib chỉ 32 dòng. Extend toàn diện hay shim?
 6. **Testing strategy** — per-component differential, end-to-end, hay bootstrap-loop CI?
 7. **Performance gate** — ROADMAP nói "2× parity với Rust impl". Triết-on-VM thực tế 50-200× chậm hơn Rust-native. Recalibrate?
@@ -27,13 +27,13 @@ Stage 1  (Rust impl, v0.6)
 
 Stage 2  (Triết-in-Triết, built by Stage 1)
   └─ input: compiler-source/*.tri (SAME source)
-  └─ output: compiler-stage2.tripack
+  └─ output: compiler-stage2.khi
 
 Stage 3  (Triết-in-Triết, built by Stage 2)
   └─ input: compiler-source/*.tri (SAME source)
-  └─ output: compiler-stage3.tripack
+  └─ output: compiler-stage3.khi
 
-GATE: cmp compiler-stage2.tripack compiler-stage3.tripack → exit 0
+GATE: cmp compiler-stage2.khi compiler-stage3.khi → exit 0
 ```
 
 **Lý do:**
@@ -48,7 +48,7 @@ GATE: cmp compiler-stage2.tripack compiler-stage3.tripack → exit 0
 | Aspect | Decision | Lý do |
 |---|---|---|
 | Stage count | 3 (1 Rust + 2 Triết-in-Triết) | Fixed-point proof requires ≥2 Triết-in-Triết stages |
-| Gate operator | `cmp` (byte equality) | Strongest valid equality cho `.tripack` |
+| Gate operator | `cmp` (byte equality) | Strongest valid equality cho `.khi` |
 | Stage 1 status | Bootstrap loader, NOT in gate | Stage 1 có thể có bug compatibility nhưng Stage 2 ≡ Stage 3 vẫn proof Triết-impl converged |
 | Stage 3 → Stage 4 sanity (optional) | Run nếu Stage 2 ≢ Stage 3 fails | Debug aid — narrow down nondeterminism source |
 
@@ -108,7 +108,7 @@ Bridges chỉ tồn tại trong sub-task v0.7.4–v0.7.8 transitional period. v0
 **Invariants required:**
 
 1. **No HashMap iteration in output path.** Replace với `BTreeMap` HOẶC sort-before-serialize. Hiện ADR-0011 §6 đã lock sort-by-name cho ABI metadata; áp dụng cùng nguyên tắc cho IR body emission.
-2. **No timestamps anywhere** trong `.tripack` / `.triv` output. Compile time, file mtime → forbid.
+2. **No timestamps anywhere** trong `.khi` / `.triv` output. Compile time, file mtime → forbid.
 3. **No random / process-state-dependent IDs.** `ValueId` / `BlockId` / `FuncId` deterministic per source structure.
 4. **No env-var leak.** `$PWD`, `$USER`, `$HOSTNAME` không bao giờ ảnh hưởng output.
 5. **File scan order: sorted by path.** Module loader walks filesystem → sort entries by name BEFORE process.
@@ -125,11 +125,11 @@ Bridges chỉ tồn tại trong sub-task v0.7.4–v0.7.8 transitional period. v0
 
 **Lý do:** [ADR-0014 §4](0014-hash-scheme-refinement.md) đã promise canonical encoding cho CAS hash stability. Self-hosting bootstrap = stricter test cùng invariant. Nếu Stage 2 ≢ Stage 3 fails, **chắc chắn** là nondeterminism somewhere trong emission path — debug khó vì compiler-in-Triết và compiler-in-Rust chia sẻ rất ít code.
 
-**Webapp analogy:** "Microservice API response phải reproducible — không timestamp, không random UUID, không server hostname trong payload". Đây là cùng nguyên tắc cho `.tripack`.
+**Webapp analogy:** "Microservice API response phải reproducible — không timestamp, không random UUID, không server hostname trong payload". Đây là cùng nguyên tắc cho `.khi`.
 
-## §4 — Bit-identical gate semantics: full `.tripack` bytes
+## §4 — Bit-identical gate semantics: full `.khi` bytes
 
-**Quyết định:** Gate = `cmp compiler-stage2.tripack compiler-stage3.tripack` byte-identical. Không loosen, không hash-only, không semantic-equivalence fallback.
+**Quyết định:** Gate = `cmp compiler-stage2.khi compiler-stage3.khi` byte-identical. Không loosen, không hash-only, không semantic-equivalence fallback.
 
 **Lý do:**
 
@@ -217,8 +217,8 @@ crates/triet-bootstrap/tests/
 ```
 
 Mỗi test:
-1. Build Triết-component qua Stage 1 → `.tripack`.
-2. Run `.tripack` via VM on every `examples/*.tri` + module-system demo + v0.6 capability test fixtures.
+1. Build Triết-component qua Stage 1 → `.khi`.
+2. Run `.khi` via VM on every `examples/*.tri` + module-system demo + v0.6 capability test fixtures.
 3. Compare output (token stream / AST / type errors / `.triv` bytes) với Rust impl reference.
 4. Pass iff byte-identical (cho `.triv`) hoặc structurally equal (token/AST/error).
 
@@ -229,9 +229,9 @@ Mỗi `examples/*.tri` compile-and-run via Triết-compiler-in-Triết, output �
 ### Layer 3 — Bootstrap loop CI test
 
 `crates/triet-bootstrap/tests/bootstrap_loop.rs`:
-1. Stage 1 (Rust) build `compiler/*.tri` → `compiler-stage2.tripack`.
-2. Stage 2 (`compiler-stage2.tripack` on VM) build `compiler/*.tri` → `compiler-stage3.tripack`.
-3. `cmp compiler-stage2.tripack compiler-stage3.tripack` → must exit 0.
+1. Stage 1 (Rust) build `compiler/*.tri` → `compiler-stage2.khi`.
+2. Stage 2 (`compiler-stage2.khi` on VM) build `compiler/*.tri` → `compiler-stage3.khi`.
+3. `cmp compiler-stage2.khi compiler-stage3.khi` → must exit 0.
 
 Run in CI on every commit từ sub-task v0.7.11 trở đi. Earlier sub-tasks (v0.7.4–v0.7.10) chạy được nhưng KHÔNG gate ở Layer 3 vì compiler chưa complete.
 
@@ -271,7 +271,7 @@ Run in CI on every commit từ sub-task v0.7.11 trở đi. Earlier sub-tasks (v0
 | Carry-over item | Sub-task placement |
 |---|---|
 | `triet check` đọc `triet.package` từ project root | v0.7.10 (CLI integration) |
-| `triet build` populate `.tripack` caps section từ manifest | v0.7.10 (CLI integration) |
+| `triet build` populate `.khi` caps section từ manifest | v0.7.10 (CLI integration) |
 | Loader integration với `DevTtyPrompt` | v0.7.10 (CLI integration) |
 | `E2208.CapabilityDivergence` — fires khi lowerer populate caps section | v0.7.10 (cùng pipeline) |
 

@@ -1,4 +1,4 @@
-//! Binary serializer/deserializer for `.tripack` files.
+//! Binary serializer/deserializer for `.khi` files.
 //!
 //! Encoding rules follow [ADR-0011 §6] (canonical encoding) and
 //! [ADR-0014] (3-cấp hash tree + format bump `abi_version` 1 → 2):
@@ -25,7 +25,7 @@ use crate::types::{
 
 // ── Constants ──────────────────────────────────────────────────────
 
-/// Magic bytes "trip" (ASCII) — distinguishes `.tripack` from `.triv`.
+/// Magic bytes "trip" (ASCII) — distinguishes `.khi` from `.triv`.
 const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x70];
 
 /// Top-level pack format version (separate from `abi_version` inside
@@ -51,7 +51,7 @@ mod term_kind {
     pub(super) const GENERIC_SHELL: u8 = 3;
 }
 
-/// Section IDs inside a `.tripack`. Section IDs unknown to a reader
+/// Section IDs inside a `.khi`. Section IDs unknown to a reader
 /// MUST be skipped (forward-compat per ADR-0011). The constants for
 /// not-yet-emitted sections are intentionally retained so future
 /// sub-tasks (v0.5 manifest, v0.6 capabilities) can plug in without
@@ -69,7 +69,7 @@ mod section {
 
 // ── Public API ─────────────────────────────────────────────────────
 
-/// Serialize a `.tripack` file from its ABI metadata + IR code bytes.
+/// Serialize a `.khi` file from its ABI metadata + IR code bytes.
 ///
 /// `code_section` is the canonical bytes of the IR section (an entire
 /// `.triv` payload, or just the code body — caller decides format).
@@ -85,7 +85,7 @@ mod section {
 ///    and `impl_hash` over `iface_hash ‖ code_section` (v0.5.3 carry-
 ///    over from v0.4; switches to module rollup at v0.5.4).
 #[must_use]
-pub fn write_tripack(meta: &AbiMetadata, code_section: &[u8]) -> Vec<u8> {
+pub fn write_khi(meta: &AbiMetadata, code_section: &[u8]) -> Vec<u8> {
     let canon = canonicalize_for_hash(meta);
     let iface = crate::hash::compute_iface_hash(&canon);
     let impl_h = crate::hash::compute_impl_hash(&iface, code_section);
@@ -112,17 +112,17 @@ pub fn write_tripack(meta: &AbiMetadata, code_section: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Parse a `.tripack` file into `(metadata, code_section_bytes)`.
+/// Parse a `.khi` file into `(metadata, code_section_bytes)`.
 ///
 /// # Errors
 ///
-/// Returns [`PackError::BadMagic`] for non-`.tripack` input,
+/// Returns [`PackError::BadMagic`] for non-`.khi` input,
 /// [`PackError::UnsupportedAbiVersion`] when the file's `abi_version`
 /// differs from this reader's (v0.5 = `2` — strict, no shim for v=1
 /// per ADR-0014 §5), and [`PackError::Corrupted`] /
 /// [`PackError::UnknownDiscriminant`] for structural problems found
 /// while decoding.
-pub fn read_tripack(data: &[u8]) -> PackResult<(AbiMetadata, Vec<u8>)> {
+pub fn read_khi(data: &[u8]) -> PackResult<(AbiMetadata, Vec<u8>)> {
     let mut pos = 0usize;
     if data.len() < 4 || data[..4] != MAGIC {
         return Err(PackError::BadMagic);
@@ -192,7 +192,7 @@ struct ModuleTerms {
 ///   so stale entries can't leak into the hash).
 ///
 /// Pkg-level `iface_hash` / `impl_hash` fields are left zero here —
-/// they're filled in by `write_tripack` from `compute_iface_hash` and
+/// they're filled in by `write_khi` from `compute_iface_hash` and
 /// `compute_impl_hash` after this function returns.
 pub(crate) fn canonicalize_for_hash(meta: &AbiMetadata) -> AbiMetadata {
     let mut out = meta.clone();
@@ -378,7 +378,7 @@ fn read_abi_metadata(data: &[u8]) -> PackResult<AbiMetadata> {
 fn write_module_table(buf: &mut Vec<u8>, modules: &[Module]) {
     // Canonical sort-at-boundary per ADR-0011 §6 + ADR-0019 §3:
     // on-disk byte order must match hash-input order so two runs over
-    // the same logical input produce byte-identical `.tripack`.
+    // the same logical input produce byte-identical `.khi`.
     let mut sorted: Vec<&Module> = modules.iter().collect();
     sorted.sort_by(|a, b| a.path.cmp(&b.path));
     write_varint(buf, sorted.len() as u32);
@@ -703,7 +703,7 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
             // reserved. v0.6 populated the *package-level* caps
             // section (ADR-0016 §4); per-function granularity was
             // explicitly deferred post-v1.0 (ADR-0016 "Không làm").
-            // A forward-compat `.tripack` arriving with per-export
+            // A forward-compat `.khi` arriving with per-export
             // claims is treated as corruption until the future ADR
             // specifies the wire shape.
             return Err(PackError::Corrupted(
@@ -946,8 +946,8 @@ mod tests {
     #[test]
     fn empty_pack_round_trip() {
         let meta = AbiMetadata::empty("foo", SemVer::new(1, 0, 0));
-        let bytes = write_tripack(&meta, &[]);
-        let (decoded, code) = read_tripack(&bytes).unwrap();
+        let bytes = write_khi(&meta, &[]);
+        let (decoded, code) = read_khi(&bytes).unwrap();
         assert_eq!(decoded.abi_version, 2);
         assert_eq!(decoded.pkg_name, "foo");
         assert_eq!(decoded.pkg_version, SemVer::new(1, 0, 0));
@@ -1006,8 +1006,8 @@ mod tests {
             iface_hash_term: TermIfaceHash::default(),
             impl_hash_term: TermImplHash::default(),
         });
-        let bytes = write_tripack(&meta, &[0xDE, 0xAD, 0xBE, 0xEF]);
-        let (decoded, code) = read_tripack(&bytes).unwrap();
+        let bytes = write_khi(&meta, &[0xDE, 0xAD, 0xBE, 0xEF]);
+        let (decoded, code) = read_khi(&bytes).unwrap();
         assert_eq!(decoded.types.len(), 1);
         assert_eq!(decoded.types[0].name, "Vec2");
         // Term iface hash populated by canonical pass.
@@ -1032,8 +1032,8 @@ mod tests {
         b.module_path = "app.util".into();
         meta.exports.push(a);
         meta.exports.push(b);
-        let bytes = write_tripack(&meta, &[]);
-        let (decoded, _) = read_tripack(&bytes).unwrap();
+        let bytes = write_khi(&meta, &[]);
+        let (decoded, _) = read_khi(&bytes).unwrap();
         assert_eq!(decoded.modules.len(), 2);
         let paths: Vec<&str> = decoded.modules.iter().map(|m| m.path.as_str()).collect();
         assert_eq!(paths, vec!["app.core", "app.util"]);
@@ -1065,8 +1065,8 @@ mod tests {
             iface_hash_term: TermIfaceHash::default(),
             impl_hash_term: TermImplHash::default(),
         });
-        let bytes = write_tripack(&meta, &[]);
-        let (decoded, _) = read_tripack(&bytes).unwrap();
+        let bytes = write_khi(&meta, &[]);
+        let (decoded, _) = read_khi(&bytes).unwrap();
         assert_eq!(decoded.types.len(), 1);
         let opt = &decoded.types[0];
         assert_eq!(opt.name, "Option");
@@ -1091,8 +1091,8 @@ mod tests {
             version_max_exclusive: SemVer::new(2, 0, 0),
             iface_hash_pin: IfaceHash::from_bytes(pin_bytes),
         });
-        let bytes = write_tripack(&meta, &[]);
-        let (decoded, _) = read_tripack(&bytes).unwrap();
+        let bytes = write_khi(&meta, &[]);
+        let (decoded, _) = read_khi(&bytes).unwrap();
         assert_eq!(decoded.deps.len(), 1);
         assert_eq!(decoded.deps[0].pkg_name, "math");
         assert_eq!(decoded.deps[0].iface_hash_pin.0, pin_bytes);
@@ -1108,10 +1108,10 @@ mod tests {
         a.exports.push(mk_export("beta"));
         let mut b = a.clone();
         b.exports.reverse();
-        let bytes_a = write_tripack(&a, &[]);
-        let bytes_b = write_tripack(&b, &[]);
-        let (da, _) = read_tripack(&bytes_a).unwrap();
-        let (db, _) = read_tripack(&bytes_b).unwrap();
+        let bytes_a = write_khi(&a, &[]);
+        let bytes_b = write_khi(&b, &[]);
+        let (da, _) = read_khi(&bytes_a).unwrap();
+        let (db, _) = read_khi(&bytes_b).unwrap();
         assert_eq!(da.iface_hash, db.iface_hash);
     }
 
@@ -1124,8 +1124,8 @@ mod tests {
         let mut b = a.clone();
         b.exports[0].name = "renamed".into();
 
-        let (da, _) = read_tripack(&write_tripack(&a, &[])).unwrap();
-        let (db, _) = read_tripack(&write_tripack(&b, &[])).unwrap();
+        let (da, _) = read_khi(&write_khi(&a, &[])).unwrap();
+        let (db, _) = read_khi(&write_khi(&b, &[])).unwrap();
 
         assert_ne!(da.exports[0].iface_hash_term, db.exports[0].iface_hash_term);
         assert_ne!(da.modules[0].iface_hash_mod, db.modules[0].iface_hash_mod);
@@ -1136,7 +1136,7 @@ mod tests {
     #[test]
     fn bad_magic_rejected() {
         let bytes = vec![0u8; 64];
-        let err = read_tripack(&bytes).unwrap_err();
+        let err = read_khi(&bytes).unwrap_err();
         assert_eq!(err, PackError::BadMagic);
     }
 
@@ -1145,7 +1145,7 @@ mod tests {
     #[test]
     fn truncated_input_rejected() {
         let bytes = vec![0x74, 0x72]; // only 2 bytes
-        assert_eq!(read_tripack(&bytes).unwrap_err(), PackError::BadMagic);
+        assert_eq!(read_khi(&bytes).unwrap_err(), PackError::BadMagic);
     }
 
     /// Unsupported pack format version produces the dedicated error
@@ -1157,7 +1157,7 @@ mod tests {
         bytes.extend_from_slice(&MAGIC);
         bytes.extend_from_slice(&999u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
-        let err = read_tripack(&bytes).unwrap_err();
+        let err = read_khi(&bytes).unwrap_err();
         assert!(matches!(err, PackError::UnsupportedAbiVersion { .. }));
     }
 

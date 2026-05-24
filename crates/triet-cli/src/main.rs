@@ -4,7 +4,7 @@
 //! - `triet run <path>` — run a .tri source or .triv bytecode file.
 //! - `triet check <path>` — parse + type-check only, no execution.
 //! - `triet build <path>` — compile .tri source to .triv bytecode.
-//! - `triet store import <path>` — install a .tripack into the CAS store.
+//! - `triet store import <path>` — install a .khi into the CAS store.
 //! - `triet store list` — list installed packs.
 //! - `triet store gc` — garbage-collect unreferenced packs.
 //! - `triet fmt --migrate-null [--write] <path>` — apply source-level
@@ -104,9 +104,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum StoreCommand {
-    /// Install a .tripack into the CAS store.
+    /// Install a .khi into the CAS store.
     Import {
-        /// Path to .tripack file.
+        /// Path to .khi file.
         path: String,
     },
     /// List packages currently installed in the store.

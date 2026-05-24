@@ -7,7 +7,7 @@
 //!
 //! This test walks the full distribution pipeline:
 //!
-//! 1. Each package is built into a `.tripack` (ABI metadata + IR code
+//! 1. Each package is built into a `.khi` (ABI metadata + IR code
 //!    section bytes — IR is opaque to this test).
 //! 2. Both packs are read back and the linker (`plan_link`) decides
 //!    accept / refuse based on ADR-0013 §2 decision matrix.
@@ -28,7 +28,7 @@
 
 use triet_pack::{
     AbiMetadata, Dep, FunctionExport, LinkError, Param, SemVer, TermIfaceHash, TermImplHash,
-    TypeRef, Visibility, plan_link, read_tripack, write_tripack,
+    TypeRef, Visibility, plan_link, read_khi, write_khi,
 };
 
 /// Build the `math` package's ABI metadata. v1.0.0 publishes
@@ -86,13 +86,13 @@ fn build_app_pkg() -> AbiMetadata {
     meta
 }
 
-/// Serialize a metadata block into a `.tripack` file, then decode it
+/// Serialize a metadata block into a `.khi` file, then decode it
 /// back. This proves both the wire format and the round-trip
 /// invariants from ADR-0011 §6 (canonical hash).
 fn round_trip(meta: &AbiMetadata) -> AbiMetadata {
     // Empty code section is fine — this test focuses on metadata.
-    let bytes = write_tripack(meta, &[]);
-    let (decoded, _code) = read_tripack(&bytes).expect("decode .tripack");
+    let bytes = write_khi(meta, &[]);
+    let (decoded, _code) = read_khi(&bytes).expect("decode .khi");
     decoded
 }
 

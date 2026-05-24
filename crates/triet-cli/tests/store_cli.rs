@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 use triet_pack::{
     AbiMetadata, FunctionExport, Param, SemVer, TermIfaceHash, TermImplHash, TypeRef, Visibility,
-    write_tripack,
+    write_khi,
 };
 
 /// Run the `triet` binary with the given args + `TRIET_STORE` env.
@@ -39,7 +39,7 @@ fn mk_pack(name: &str, version: SemVer, body_suffix: u8) -> Vec<u8> {
         iface_hash_term: TermIfaceHash::default(),
         impl_hash_term: TermImplHash::default(),
     });
-    write_tripack(&meta, &[body_suffix])
+    write_khi(&meta, &[body_suffix])
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn empty_store_list_prints_placeholder() {
 #[test]
 fn import_then_list_shows_pack() {
     let store = TempDir::new().unwrap();
-    let pack_path = store.path().join("foo.tripack");
+    let pack_path = store.path().join("foo.khi");
     fs::write(&pack_path, mk_pack("foo", SemVer::new(1, 2, 3), 0x42)).unwrap();
 
     let import_out = run_cli(
@@ -89,7 +89,7 @@ fn import_then_list_shows_pack() {
 #[test]
 fn import_emits_error_on_missing_file() {
     let store = TempDir::new().unwrap();
-    let out = run_cli(&["store", "import", "ghost.tripack"], store.path());
+    let out = run_cli(&["store", "import", "ghost.khi"], store.path());
     assert!(!out.status.success(), "expected non-zero exit");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -111,7 +111,7 @@ fn gc_runs_on_empty_store() {
 #[test]
 fn list_full_flag_shows_long_hash() {
     let store = TempDir::new().unwrap();
-    let pack_path = store.path().join("bar.tripack");
+    let pack_path = store.path().join("bar.khi");
     fs::write(&pack_path, mk_pack("bar", SemVer::new(0, 1, 0), 0x01)).unwrap();
     let _ = run_cli(
         &["store", "import", pack_path.to_str().unwrap()],
@@ -144,9 +144,7 @@ fn list_full_flag_shows_long_hash() {
 /// `$HOME/.triet/store` fallback path in `resolve_store_root`.
 fn run_cli_with_home(args: &[&str], home: &std::path::Path) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
-    cmd.args(args)
-        .env_remove("TRIET_STORE")
-        .env("HOME", home);
+    cmd.args(args).env_remove("TRIET_STORE").env("HOME", home);
     cmd.output().expect("CLI to execute")
 }
 
@@ -194,7 +192,7 @@ fn store_root_errors_when_both_env_unset() {
 #[test]
 fn json_list_emits_one_object_per_line() {
     let store = TempDir::new().unwrap();
-    let pack_path = store.path().join("baz.tripack");
+    let pack_path = store.path().join("baz.khi");
     fs::write(&pack_path, mk_pack("baz", SemVer::new(2, 0, 0), 0x99)).unwrap();
     let _ = run_cli(
         &["store", "import", pack_path.to_str().unwrap()],

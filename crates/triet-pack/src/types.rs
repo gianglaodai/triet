@@ -1,5 +1,5 @@
 //! ABI metadata data structures — the in-memory shape of what
-//! `.tripack` files carry.
+//! `.khi` files carry.
 //!
 //! Each struct mirrors one table from [ADR-0011 §2–5], extended at v0.5
 //! by [ADR-0014] with a 3-cấp hash tree: term → module → package.
@@ -152,7 +152,7 @@ pub struct TypeDef {
     pub struct_body: Option<StructDef>,
     /// Enum body, if `kind == Enum`.
     pub enum_body: Option<EnumDef>,
-    /// ADR-0014 §2 term iface hash. Populated by `write_tripack`
+    /// ADR-0014 §2 term iface hash. Populated by `write_khi`
     /// before serialization; left zero in user-built metadata.
     pub iface_hash_term: TermIfaceHash,
     /// ADR-0014 §2 term impl hash. v0.5.3 computes this with empty
@@ -213,7 +213,7 @@ pub struct Dep {
 }
 
 /// A module entry — one logical namespace inside the package. Hash
-/// fields are populated by `write_tripack`'s canonical pass from the
+/// fields are populated by `write_khi`'s canonical pass from the
 /// terms (types + exports) sharing the same `module_path`.
 ///
 /// ADR-0014 §3.
@@ -229,7 +229,7 @@ pub struct Module {
     pub impl_hash_mod: ModuleImplHash,
 }
 
-/// The full ABI metadata for one `.tripack`. This is what the linker
+/// The full ABI metadata for one `.khi`. This is what the linker
 /// loads to decide refuse-to-link, before touching code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AbiMetadata {
@@ -252,7 +252,7 @@ pub struct AbiMetadata {
     /// v0.4 formula until `.triv` v4 lands per-term bodies.
     pub impl_hash: ImplHash,
     /// Modules in this package. Populated automatically by
-    /// `write_tripack`'s canonical pass from the unique
+    /// `write_khi`'s canonical pass from the unique
     /// `module_path` values across `types` + `exports`.
     pub modules: Vec<Module>,
     /// User-defined types referenced by exports.

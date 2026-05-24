@@ -11,9 +11,9 @@
 //!    full `parse → resolve → typecheck → lower → write_program`
 //!    pipeline 3 times and assert all 3 output buffers are byte-equal.
 //!    3 runs × 11 examples = 33 builds per CI invocation (Q4-B).
-//! 2. **`.tripack` sort-at-boundary** — construct equivalent
+//! 2. **`.khi` sort-at-boundary** — construct equivalent
 //!    `AbiMetadata` values with `types`/`exports`/`deps` shuffled into
-//!    two different orders, run `write_tripack` on both, assert
+//!    two different orders, run `write_khi` on both, assert
 //!    byte-equal. This pins the v0.7.2 fix (sort-at-boundary in
 //!    `write_module_table` / `write_type_table` / `write_export_table`
 //!    / `write_dep_table`) against future regressions.
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use triet_pack::{
     AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, FieldDef, FunctionExport, IfaceHash,
     Module, ModuleIfaceHash, ModuleImplHash, Param, SemVer, StructDef, TermIfaceHash, TermImplHash,
-    TypeDef, TypeKind, TypeRef, Visibility, write_tripack,
+    TypeDef, TypeKind, TypeRef, Visibility, write_khi,
 };
 
 /// Number of rebuilds per example per Q4-B decision. Nondeterminism
@@ -127,7 +127,7 @@ fn triv_emission_byte_identical_across_rebuilds() {
 }
 
 /// Build the same logical `AbiMetadata` in two different input
-/// orderings. The on-disk `.tripack` bytes must be byte-equal because
+/// orderings. The on-disk `.khi` bytes must be byte-equal because
 /// the writers sort at the boundary per ADR-0019 §3 / Q2-C / commit
 /// landing in v0.7.2.
 fn build_meta_v1() -> AbiMetadata {
@@ -310,14 +310,14 @@ fn build_meta_v2_reordered() -> AbiMetadata {
 }
 
 #[test]
-fn tripack_writer_sorts_at_boundary() {
-    let bytes_v1 = write_tripack(&build_meta_v1(), &[]);
-    let bytes_v2 = write_tripack(&build_meta_v2_reordered(), &[]);
+fn khi_writer_sorts_at_boundary() {
+    let bytes_v1 = write_khi(&build_meta_v1(), &[]);
+    let bytes_v2 = write_khi(&build_meta_v2_reordered(), &[]);
 
     assert_eq!(
         bytes_v1.len(),
         bytes_v2.len(),
-        ".tripack length diverged between equivalent inputs in \
+        ".khi length diverged between equivalent inputs in \
          different insertion orders ({} vs {} bytes) — \
          sort-at-boundary regression (ADR-0019 §3, v0.7.2 fix)",
         bytes_v1.len(),
@@ -325,22 +325,22 @@ fn tripack_writer_sorts_at_boundary() {
     );
     assert_eq!(
         bytes_v1, bytes_v2,
-        ".tripack bytes diverged between equivalent inputs in \
+        ".khi bytes diverged between equivalent inputs in \
          different insertion orders — sort-at-boundary regression \
          (ADR-0019 §3, v0.7.2 fix)",
     );
 }
 
 #[test]
-fn tripack_writer_byte_identical_across_rebuilds() {
+fn khi_writer_byte_identical_across_rebuilds() {
     let meta = build_meta_v1();
-    let baseline = write_tripack(&meta, &[]);
+    let baseline = write_khi(&meta, &[]);
 
     for run in 1..REBUILDS_PER_EXAMPLE {
-        let again = write_tripack(&meta, &[]);
+        let again = write_khi(&meta, &[]);
         assert_eq!(
             baseline, again,
-            ".tripack bytes diverged on rebuild #{run} \
+            ".khi bytes diverged on rebuild #{run} \
              — emit-path nondeterminism (ADR-0019 §3)",
         );
     }

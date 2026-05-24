@@ -1,12 +1,12 @@
 # ADR 0014 — Hash scheme refinement (3-cấp hash tree)
 
-**Trạng thái:** Quyết định. Áp dụng cho v0.5 CAS Packaging và mọi tool đọc cấu trúc hash trong `.tripack` kể từ v0.5. Extend [ADR-0011 §6](0011-abi-metadata-format.md) (canonical encoding) và section table layout của ABI metadata; **không phá** invariants của [ADR-0013](0013-semver-linking-policy.md) (iface_hash vẫn là final arbiter).
+**Trạng thái:** Quyết định. Áp dụng cho v0.5 CAS Packaging và mọi tool đọc cấu trúc hash trong `.khi` kể từ v0.5. Extend [ADR-0011 §6](0011-abi-metadata-format.md) (canonical encoding) và section table layout của ABI metadata; **không phá** invariants của [ADR-0013](0013-semver-linking-policy.md) (iface_hash vẫn là final arbiter).
 
 **Issue:** v0.4 land hash scheme 2 cấp **per-package**: `iface_hash` (ABI surface) + `impl_hash` (ABI + IR code). Đủ cho cross-package linking refuse/accept, nhưng **không đủ** cho lời hứa [VISION §3.1](../../VISION.md):
 
 > *"10 ứng dụng dùng `String.format` chỉ load 1 bản vào RAM."*
 
-Pack-level hash ≠ function-level identity. Hai `.tripack` khác nhau cùng chứa byte-identical `std.text.format` → 2 `impl_hash` khác nhau → CAS store load 2 bản. VISION §3.1 yêu cầu dedup ở mức term, không phải pack.
+Pack-level hash ≠ function-level identity. Hai `.khi` khác nhau cùng chứa byte-identical `std.text.format` → 2 `impl_hash` khác nhau → CAS store load 2 bản. VISION §3.1 yêu cầu dedup ở mức term, không phải pack.
 
 Bốn câu hỏi ADR phải khoá trước khi viết CAS store (ADR-0015):
 
@@ -93,7 +93,7 @@ Replace ADR-0011 §6 hash inputs. **Cùng output shape (32 bytes)**, cùng field
 
 **`impl_hash_pkg`** = `BLAKE3(domain_sep_pkg_impl ‖ iface_hash_pkg ‖ sorted impl_hash_mod sequence)`
 
-### 5. Encoding thay đổi trong `.tripack` (abi_version bump 1 → 2)
+### 5. Encoding thay đổi trong `.khi` (abi_version bump 1 → 2)
 
 Additive — v1 readers gặp `abi_version = 2` phải refuse với E2301 (per ADR-0013 §3). Không có shim đọc partial v2 — Triết là **refuse over guess**.
 
@@ -167,7 +167,7 @@ Test invariant cho `triet-pack`: round-trip một AbiMetadata → encode → has
 - Filesystem layout có thể address ở 3 cấp:
   - `~/.triet/store/term/<hex(impl_hash_term)>/code.bin` — function-level dedup
   - `~/.triet/store/mod/<hex(impl_hash_mod)>/index.bin` — module-level metadata
-  - `~/.triet/store/pkg/<hex(impl_hash_pkg)>/pack.tripack` — pack-level distribution unit
+  - `~/.triet/store/pkg/<hex(impl_hash_pkg)>/pack.khi` — pack-level distribution unit
 - VISION §3.1 gate đạt được: `std.text.format` chia sẻ qua N apps lookup-by-term-hash.
 
 ### Cho v0.6 Capability

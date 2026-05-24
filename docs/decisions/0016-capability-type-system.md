@@ -19,7 +19,7 @@ Quyết định ở đây là **prerequisite** cho [ADR-0017](0017-trilean-polic
 
 ### 1. Capability sống ở **namespace + manifest**, không phải runtime value
 
-Capability là **thuộc tính của module path** (`AbsolutePath` từ [triet-modules](../../crates/triet-modules)), declared ở `.tripack` manifest của package, không phải giá trị runtime pass qua function argument và không phải annotation per-function.
+Capability là **thuộc tính của module path** (`AbsolutePath` từ [triet-modules](../../crates/triet-modules)), declared ở `.khi` manifest của package, không phải giá trị runtime pass qua function argument và không phải annotation per-function.
 
 ```triet
 // Source code SẠCH — không thread token, không annotate effect:

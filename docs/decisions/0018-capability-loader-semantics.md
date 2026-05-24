@@ -261,17 +261,17 @@ Then re-prompt.
 
 | Code | Variant | Stage | Khi nào |
 |---|---|---|---|
-| `E2208.PreV06Reader` | Reader pre-v0.6 sees `cap_count > 0` in `.tripack` ABI metadata | Step 6a load-time | Forward-compat refusal — pre-v0.6 binary can't validate caps |
+| `E2208.PreV06Reader` | Reader pre-v0.6 sees `cap_count > 0` in `.khi` ABI metadata | Step 6a load-time | Forward-compat refusal — pre-v0.6 binary can't validate caps |
 | `E2208.ManifestParse` | `triet.package` source file syntax error | Pre-build (compiler reads source) | Whitelist parser refuse-to-load |
-| `E2208.CapabilityDivergence` | `triet.package` declares `requires` lines nhưng `.tripack` `caps_count = 0` (writer bug) | Step 6a load-time | Writer/reader divergence detection |
+| `E2208.CapabilityDivergence` | `triet.package` declares `requires` lines nhưng `.khi` `caps_count = 0` (writer bug) | Step 6a load-time | Writer/reader divergence detection |
 
 **Stage table:**
 
 - Sub-variant 1 fires ở loader **Step 6a** (after dep resolve, before policy hook). Refuse entire link.
-- Sub-variant 2 fires **pre-build** (compiler reading source before emitting `.tripack`). Refuse compilation.
+- Sub-variant 2 fires **pre-build** (compiler reading source before emitting `.khi`). Refuse compilation.
 - Sub-variant 3 fires ở loader **Step 6a**. Refuse entire link.
 
-**Diagnostic format:** miette with primary span on `.tripack` byte offset (sub-variant 1, 3) hoặc `triet.package:line:col` (sub-variant 2). Format mirrors §3 E2205 conventions.
+**Diagnostic format:** miette with primary span on `.khi` byte offset (sub-variant 1, 3) hoặc `triet.package:line:col` (sub-variant 2). Format mirrors §3 E2205 conventions.
 
 **Not E2208** (already covered by other codes):
 - E2202 `UnresolvedCapabilityPath` (ADR-0016 §6) — cap path không match dep export. Fires ở Step 6a but uses E2202.

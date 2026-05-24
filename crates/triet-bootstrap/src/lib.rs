@@ -5,14 +5,14 @@
 //! invariants:
 //!
 //! - **`bootstrap_determinism`** — every commit must produce
-//!   byte-identical `.triv` and `.tripack` output for the same input
+//!   byte-identical `.triv` and `.khi` output for the same input
 //!   across N rebuilds. Catches HashMap-iteration leaks, env-dep
 //!   state, timestamp injections, and sort-at-boundary regressions.
 //! - **Per-component differential tests** (v0.7.4 → v0.7.8) — Triết-in-Triết
 //!   `lexer/parser/modules/typecheck/lowerer` outputs ≡ Rust impl.
 //! - **`bootstrap_loop`** (v0.7.11 → v0.7.12) — full 3-stage chain:
 //!   Stage 1 (Rust) → Stage 2 (Triết-built-by-Stage-1) → Stage 3
-//!   (Triết-built-by-Stage-2); gate `cmp stage2.tripack stage3.tripack`
+//!   (Triết-built-by-Stage-2); gate `cmp stage2.khi stage3.khi`
 //!   exit 0.
 //!
 //! The library surface is intentionally empty at v0.7.2 — tests live

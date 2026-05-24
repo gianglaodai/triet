@@ -2087,7 +2087,7 @@ fn execute_builtin(
             }))
         }
         BuiltinName::WriteFileBytes => {
-            // Binary-mode write for `.tripack` output. Capability
+            // Binary-mode write for `.khi` output. Capability
             // gating deferred per ADR-0019 Addendum §A7 — v0.7.10 CLI
             // wiring will resolve `sys.fs.write` against
             // CapabilityResolver before reaching the VM.
