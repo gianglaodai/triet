@@ -216,16 +216,13 @@ fn resolve_whole_import(
 
     let resolved = resolve_path_keywords(program, importer_id, segments);
 
-    // Check reserved namespace (sys/dev/usr — not yet usable).
-    if let Some(root) = resolved.first()
-        && matches!(root.as_str(), "sys" | "dev" | "usr")
-    {
-        errors.push(LoaderError::ReservedNamespace {
-            root: root.clone(),
-            span,
-        });
-        return;
-    }
+    // v0.7.11.7: E2102 reserved-namespace check superseded by
+    // capability enforcement (E2200 MissingCapabilityClaim). The
+    // `sys`/`dev`/`usr` roots are now governed by `dao.package`
+    // `requires` claims per ADR-0016. Imports that lack a matching
+    // grant are caught by `check_capabilities` at build time.
+    // (Previously these namespaces were unconditionally blocked
+    // here — the v0.6 capability system unlocks them.)
 
     let target_path = ModulePath::new(resolved.clone());
 
@@ -286,16 +283,8 @@ fn resolve_from_import(
 
     let resolved = resolve_path_keywords(program, importer_id, source);
 
-    // Check reserved namespace.
-    if let Some(root) = resolved.first()
-        && matches!(root.as_str(), "sys" | "dev" | "usr")
-    {
-        errors.push(LoaderError::ReservedNamespace {
-            root: root.clone(),
-            span,
-        });
-        return;
-    }
+    // v0.7.11.7: E2102 check removed — capability enforcement
+    // (E2200) supersedes. See `resolve_whole_import` for rationale.
 
     let target_path = ModulePath::new(resolved);
 
@@ -744,16 +733,28 @@ mod tests {
         assert!(root.bindings.contains_key("helper"));
     }
 
-    // ── Reserved namespace ──────────────────────────────────────────
+    // ── v0.7.11.7 — sys/dev/usr no longer blocked ──────────────────
 
     #[test]
-    fn reserved_namespace_errors() {
+    fn sys_import_no_longer_fires_reserved_namespace() {
+        // v0.7.11.7 removed unconditional E2102 for sys/dev/usr roots.
+        // The import now resolves (or fires E2104 if the target module
+        // doesn't exist). Capability enforcement (E2200/E2201) catches
+        // unauthorized access at build time via `check_capabilities`.
         let errors = load_in_memory_result("from sys.cap import read").unwrap_err();
+        // Should NOT contain E2102 — that check is retired.
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::ReservedNamespace { .. })),
+            "E2102 should no longer fire; got: {errors:?}"
+        );
+        // Without a real `sys` module, E2104 UnresolvedImport fires instead.
         assert!(
             errors
                 .iter()
-                .any(|e| matches!(e, LoaderError::ReservedNamespace { root, .. } if root == "sys")),
-            "reserved namespace should error: {errors:?}"
+                .any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
+            "expected E2104 UnresolvedImport; got: {errors:?}"
         );
     }
 

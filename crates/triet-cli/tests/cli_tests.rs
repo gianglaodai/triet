@@ -378,3 +378,31 @@ fn fmt_migrate_null_recurses_into_directory() {
         "uses null word freely",
     );
 }
+
+// ── v0.7.11.7 — resolver-order E2E ──────────────────────────────
+
+#[test]
+fn sys_import_no_longer_blocked_by_e2102() {
+    // v0.7.11.7 removed the unconditional E2102 barrier for
+    // sys/dev/usr roots from the resolver. An import of
+    // `from sys.io import ping` should NO longer produce E2102.
+    // Since no real module exists at `sys.io`, the import will
+    // produce E2104 (UnresolvedImport) instead — which is the
+    // expected "module not found" error, not "reserved namespace".
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("prog.tri"),
+        "from sys.io import ping\nfunction main() -> Integer = 1",
+    )
+    .unwrap();
+    let build = run_cli(&["build", "prog.tri"], temp.path());
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    // E2102 must NOT appear.
+    assert!(
+        !stderr.contains("E2102") && !stderr.contains("reserved"),
+        "E2102 should not fire; stderr: {stderr}"
+    );
+    // Build fails because the import can't resolve (no module at
+    // sys.io), not because of a namespace barrier.
+    assert!(!build.status.success(), "build should fail (no module)");
+}
