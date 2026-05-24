@@ -394,13 +394,34 @@ public struct IfExprPayload {
     treat_unknown_as_false: Trilean!,
 }
 
+// v0.7.11.1f1 — match arm. `pattern` is a parser-arena pattern ID;
+// `body` is a parser-arena expression ID. Match guards (`pattern
+// if cond => body`) are NOT included in v0.7.11.1f1 — none of the
+// compiler/*.tri sources use them; lifts when a future sub-task
+// demands. Mirrors Rust `MatchArm` (crates/triet-syntax).
+public struct MatchArm {
+    pattern: Integer,
+    body: Integer,
+}
+
+// v0.7.11.1f1 — match expression. `scrutinee` is the value being
+// matched; `arms` is the ordered arm list. Triết matches are
+// first-match-wins (no exhaustiveness check at parser tier — that
+// lifts to typecheck in `compiler/typecheck.tri`).
+public struct MatchExprPayload {
+    scrutinee: Integer,
+    arms: Vector<MatchArm>,
+}
+
 // ─────────────────────────────────────────────────────────────────
-// Expr — v0.7.5.2 + v0.7.11.1e1 (IfExpr). Match / Lambda / Tuple /
-// FStringLiteral / StructLiteral / EnumLiteral / Safe* / TupleIndex
-// defer to subsequent sub-tasks per the umbrella plan.
+// Expr — v0.7.5.2 + v0.7.11.1e1 (IfExpr) + v0.7.11.1f1 (MatchExpr).
+// Lambda / Tuple / FStringLiteral / StructLiteral / EnumLiteral /
+// Safe* / TupleIndex defer to subsequent sub-tasks per the umbrella
+// plan.
 //
-// Declared after Block + IfExprPayload (above) because IfExpr
-// transitively embeds Block. The other payloads (BinaryOp, Call,
+// Declared after Block + IfExprPayload + MatchArm + MatchExprPayload
+// (above) because those Block-/MatchArm-carrying payloads need to
+// be declared first. The other payloads (BinaryOp, Call,
 // FieldAccess, Range, OutcomeCtor/Propagate/Default, Elvis,
 // MethodCall) live ~150 lines above with primitive-only fields.
 // ─────────────────────────────────────────────────────────────────
@@ -424,6 +445,7 @@ public enum Expr {
     ElvisOpExpr(ElvisOpPayload),
     RangeExpr(RangePayload),
     IfExpr(IfExprPayload),
+    MatchExpr(MatchExprPayload),
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1522,6 +1544,7 @@ function parse_prefix(state: ParserState) -> ParseStep~ParseError = {
                 TildeZero => parse_outcome_ctor_zero(state),
                 IfKw => parse_if_expression(state),
                 IfQKw => parse_if_expression(state),
+                MatchKw => parse_match_expression(state),
                 _ => ~- make_unexpected_token_err(state, "expression"),
             }
         },
@@ -1717,6 +1740,107 @@ function parse_if_expression(state: ParserState) -> ParseStep~ParseError = {
                 state: ParserState {
                     tokens: else_step.state.tokens,
                     cursor: else_step.state.cursor,
+                    arena: res.arena,
+                },
+                expr_id: res.id,
+            }
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.11.1f1 — match-expression parsing
+// ─────────────────────────────────────────────────────────────────
+
+// `match scrutinee { pattern => body, pattern => body, … }`.
+// Mirrors `crates/triet-parser/src/expr.rs::parse_match_expression`.
+// Caller must have peeked `MatchKw`; this consumes the keyword.
+// Guards (`pattern if cond => body`) NOT supported at v0.7.11.1f1
+// — lift when a future sub-task demands. Trailing comma allowed.
+function parse_match_expression(state: ParserState) -> ParseStep~ParseError = {
+    let head_opt: SpannedToken? = peek(state)
+    match head_opt {
+        ~0 => ~- make_unexpected_eof_err(state, "`match`"),
+        _ => {
+            let head: SpannedToken = head_opt!!
+            let after_kw: ParserState = advance(state)
+            let scrutinee_step: ParseStep = parse_expression(after_kw) ~? |err| ~- err
+            let after_lbrace: ParserState = expect_lbrace(scrutinee_step.state) ~? |err| ~- err
+
+            // Loop collecting arms until `}` or EOF. Each arm
+            // parse is wrapped in a single outcome expression so
+            // both branches agree on type (ParserState~ParseError);
+            // `~? |err| ~- err` then propagates errors up to the
+            // outer match function. Mirrors v0.7.5.3 ParseStep
+            // chaining pattern used by parse_function /
+            // parse_pattern etc.
+            let mutable st: ParserState = after_lbrace
+            let mutable arms: Vector<MatchArm> = new()
+            let mutable done: Trilean! = false
+            while !done {
+                let nx_opt: SpannedToken? = peek(st)
+                let should_stop: Trilean! = match nx_opt {
+                    ~0 => true,
+                    _ => is_rbrace(nx_opt!!.token),
+                }
+                if should_stop {
+                    done = true
+                } else {
+                    // Pattern.
+                    let pat_step: ParsePatternStep = parse_pattern(st) ~? |err| ~- err
+                    st = pat_step.state
+
+                    // Expect `=>` via a small outcome wrapper.
+                    let fat_outcome: ParserState~ParseError = {
+                        let nxa_opt: SpannedToken? = peek(st)
+                        match nxa_opt {
+                            ~0 => ~- make_unexpected_eof_err(st, "`=>`"),
+                            _ => {
+                                let nxa: SpannedToken = nxa_opt!!
+                                match nxa.token {
+                                    FatArrow => ~+ advance(st),
+                                    _ => ~- make_unexpected_token_err(st, "`=>`"),
+                                }
+                            },
+                        }
+                    }
+                    st = fat_outcome ~? |err| ~- err
+
+                    // Body expression.
+                    let body_step: ParseStep = parse_expression(st) ~? |err| ~- err
+                    st = body_step.state
+
+                    arms = push(arms, MatchArm {
+                        pattern: pat_step.pattern_id,
+                        body: body_step.expr_id,
+                    })
+
+                    // Optional trailing comma between arms.
+                    let nxc_opt: SpannedToken? = peek(st)
+                    let should_eat_comma: Trilean! = match nxc_opt {
+                        ~0 => false,
+                        _ => is_comma(nxc_opt!!.token),
+                    }
+                    if should_eat_comma {
+                        st = advance(st)
+                    }
+                }
+            }
+
+            let after_rbrace: ParserState = expect_rbrace(st) ~? |err| ~- err
+            let end_pos: Integer = previous_token_end(after_rbrace, head.span_end)
+            let payload: MatchExprPayload = MatchExprPayload {
+                scrutinee: scrutinee_step.expr_id,
+                arms: arms,
+            }
+            let res: AllocResult = alloc_expression(
+                after_rbrace.arena,
+                spanned_expr(MatchExpr(payload), head.span_start, end_pos),
+            )
+            ~+ ParseStep {
+                state: ParserState {
+                    tokens: after_rbrace.tokens,
+                    cursor: after_rbrace.cursor,
                     arena: res.arena,
                 },
                 expr_id: res.id,
@@ -5334,6 +5458,20 @@ public function format_expr(arena: Arena, id: Integer) -> String = {
             }
             concat(head, concat(cond, concat(" ", concat(then_str, concat(else_str, ")")))))
         },
+        MatchExpr(p) => {
+            let scr: String = format_expr(arena, p.scrutinee)
+            let mutable arms_str: String = ""
+            let mutable i: Integer = 0
+            let n: Integer = length(p.arms)
+            while i < n {
+                let arm: MatchArm = get(p.arms, i)!!
+                let pat: String = format_pattern(arena, arm.pattern)
+                let body: String = format_expr(arena, arm.body)
+                arms_str = concat(arms_str, concat(" (arm ", concat(pat, concat(" ", concat(body, ")")))))
+                i = i + 1
+            }
+            concat("(match ", concat(scr, concat(arms_str, ")")))
+        },
     }
 }
 
@@ -6092,6 +6230,23 @@ function main() -> Unit = {
     assert_parse_program(
         "function f(x: Integer) -> Integer = if x == 0 { 1 } else if x == 1 { 2 } else { 3 }",
         "(program (fn f (x:Integer) ->Integer (= (if (== x 0) (block (final 1)) (block (final (if (== x 1) (block (final 2)) (block (final 3)))))))))",
+    )
+
+    // v0.7.11.1f1 — match-expression parser surface.
+    // Two-arm match with wildcard.
+    assert_parse_program(
+        "function f(x: Integer) -> Integer = match x { 0 => 100 _ => 0 }",
+        "(program (fn f (x:Integer) ->Integer (= (match x (arm 0 100) (arm _ 0)))))",
+    )
+    // Trailing comma allowed.
+    assert_parse_program(
+        "function f(x: Integer) -> Integer = match x { 0 => 100, _ => 0, }",
+        "(program (fn f (x:Integer) ->Integer (= (match x (arm 0 100) (arm _ 0)))))",
+    )
+    // Identifier-pattern binding.
+    assert_parse_program(
+        "function f(x: Integer) -> Integer = match x { n => n }",
+        "(program (fn f (x:Integer) ->Integer (= (match x (arm n n)))))",
     )
 
     // v0.7.5.5a — full type grammar (atom-level, exercised directly
