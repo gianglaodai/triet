@@ -73,3 +73,25 @@ pub fn load_program(root_path: &Path) -> Result<ResolvedProgram, Vec<LoaderError
 pub fn load_program_from_source(source: &str) -> Result<ResolvedProgram, Vec<LoaderError>> {
     loader::load_in_memory(source)
 }
+
+/// Like [`load_program_from_source`] but skips stdlib pre-load.
+///
+/// Mirrors the Triết-side `compiler/ir_lowerer.tri::lower_source`
+/// pipeline (lex + parse + lower a single user module), where the
+/// Triết loader has no stdlib injection — env-var-read builtin is
+/// missing per ADR-0019 §A7.10 (lands v0.7.10 alongside CLI wiring).
+///
+/// Used by the v0.7.9.5 self-compile gate
+/// (`crates/triet-bootstrap/tests/bootstrap_self_compile.rs`) so
+/// both sides drive the **same** module shape (1 user module, no
+/// stdlib) and the resulting `.tripack` bytes can be compared
+/// byte-for-byte.
+///
+/// # Errors
+///
+/// Same error semantics as [`load_program_from_source`].
+pub fn load_program_from_source_no_stdlib(
+    source: &str,
+) -> Result<ResolvedProgram, Vec<LoaderError>> {
+    loader::load_in_memory_no_stdlib(source)
+}

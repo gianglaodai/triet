@@ -67,6 +67,19 @@ pub(crate) fn load_in_memory(source: &str) -> Result<ResolvedProgram, Vec<Loader
     state.finish()
 }
 
+/// In-memory loader without stdlib pre-load. Single-user-module
+/// output mirrors Triết-side `lower_source` shape for the v0.7.9.5
+/// self-compile byte-identical gate. See
+/// [`crate::load_program_from_source_no_stdlib`] for the public
+/// entry point + rationale.
+pub(crate) fn load_in_memory_no_stdlib(
+    source: &str,
+) -> Result<ResolvedProgram, Vec<LoaderError>> {
+    let mut state = LoaderState::new();
+    state.load_from_source(&ModulePath::crate_root(), None, None, source, None);
+    state.finish()
+}
+
 /// Mutable state threaded through the recursive load.
 struct LoaderState {
     program: ResolvedProgram,

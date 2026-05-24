@@ -26,9 +26,9 @@ module pack_writer
 from std.io import println
 from std.io.fs import read, write_bytes
 from std.collections.vector import new, push, length, get
-from std.text import concat, len as text_len
+from std.text import concat, len as text_len, from_integer
 
-from crate.typecheck import dump_typecheck_errors_ndjson
+from crate.typecheck import check_source, TypeError
 from crate.pack_writer import serialize_source_to_tripack
 
 // ── Subcommand + Args ────────────────────────────────────────────
@@ -141,47 +141,49 @@ function classify_subcommand(raw: String) -> Subcommand = {
 // gotcha), so each match-arm body produces its own arm value and
 // the outer function consumes the whole match as its result.
 
+// Per `triet_struct_in_enum_payload_identity` (discovered v0.7.9.5):
+// `SourceLoaded(StringPayload)` destructured as `SourceLoaded(p)`
+// then `p.value` returns an empty String even when the variant was
+// constructed with a non-empty String. Workaround: use String
+// directly as the enum variant payload — Triết's primitive payloads
+// round-trip correctly through enum-variant pattern destructure.
 public enum SourceResult {
-    SourceLoaded(StringPayload),
-    SourceFailed(StringPayload),
+    SourceLoaded(String),
+    SourceFailed(String),
 }
 
 function load_source_or_fail(path: String) -> SourceResult = {
     if text_len(path) == 0 {
-        return SourceFailed(StringPayload {
-            value: "error: missing source file argument",
-        })
+        return SourceFailed("error: missing source file argument")
     }
     let opt: String? = read(path)
     match opt {
-        ~0 => SourceFailed(StringPayload {
-            value: concat("error: cannot read source file: ", path),
-        })
-        _ => SourceLoaded(StringPayload { value: opt!! })
+        ~0 => SourceFailed(concat("error: cannot read source file: ", path))
+        _ => SourceLoaded(opt!!)
     }
 }
 
 // ── check_command ────────────────────────────────────────────────
 //
 // Returns Trit::Positive on clean typecheck, Trit::Negative on any
-// diagnostic (loader / cycle / resolve / typecheck error). Emits
-// the NDJSON diagnostic dump to stdout for downstream tooling —
-// the v0.7.9.5 NDJSON-bridge removal will replace this with a
-// human-readable formatter.
+// diagnostic. Post-v0.7.9.5 the NDJSON bridge is gone; this prints
+// a terse `error: N typecheck error(s)` summary. Human-readable
+// per-error rendering ships alongside v0.7.10 CLI wiring.
 
 public function check_command(args: Args) -> Trit = {
     let res: SourceResult = load_source_or_fail(args.source_path)
     match res {
-        SourceFailed(err) => {
-            println(err.value)
+        SourceFailed(msg) => {
+            println(msg)
             exit_err()
         }
-        SourceLoaded(payload) => {
-            let diagnostics: String = dump_typecheck_errors_ndjson(payload.value)
-            if text_len(diagnostics) == 0 {
+        SourceLoaded(source) => {
+            let errors: Vector<TypeError> = check_source(source)
+            let n: Integer = length(errors)
+            if n == 0 {
                 exit_ok()
             } else {
-                println(diagnostics)
+                println(concat("error: ", concat(from_integer(n), " typecheck error(s)")))
                 exit_err()
             }
         }
@@ -202,13 +204,13 @@ public function check_command(args: Args) -> Trit = {
 public function build_command(args: Args) -> Trit = {
     let res: SourceResult = load_source_or_fail(args.source_path)
     match res {
-        SourceFailed(err) => {
-            println(err.value)
+        SourceFailed(msg) => {
+            println(msg)
             exit_err()
         }
-        SourceLoaded(payload) => {
+        SourceLoaded(source) => {
             let bytes: Vector<Integer> = serialize_source_to_tripack(
-                payload.value,
+                source,
                 args.pkg_name,
             )
             let ok: Trilean = write_bytes(args.output_path, bytes)
