@@ -51,7 +51,7 @@ mod tests {
         let source = "function let mutable constant type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
                       kleene_implies kleene_xor kleene_iff import from as module public owned \
-                      struct enum crate self super";
+                      struct enum khi self super";
         let tokens = lex_only(source);
         assert_eq!(
             tokens,
@@ -92,7 +92,7 @@ mod tests {
                 Owned,
                 Token::Struct,
                 Token::Enum,
-                Token::Crate,
+                Token::Khi,
                 Token::SelfKw,
                 Token::Super,
             ],
@@ -101,8 +101,9 @@ mod tests {
 
     #[test]
     fn path_keywords_are_distinct_from_identifiers() {
-        // `crate`/`self`/`super` are reserved path keywords (ADR-0005).
-        assert_eq!(lex_only("crate"), vec![Token::Crate]);
+        // `khi`/`self`/`super` are reserved path keywords
+        // (ADR-0005 + ADR-0024 — `khi` replaces `crate`).
+        assert_eq!(lex_only("khi"), vec![Token::Khi]);
         assert_eq!(lex_only("self"), vec![Token::SelfKw]);
         assert_eq!(lex_only("super"), vec![Token::Super]);
         // But identifiers that *contain* these as substrings stay

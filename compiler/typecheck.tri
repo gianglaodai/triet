@@ -45,32 +45,32 @@ from std.text import concat, from_integer, len as text_len
 from std.string import substring
 from std.assert import assert
 
-from crate.parser.lexer import SpannedToken, LexError, lex
-from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload
-from crate.parser.lexer import NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
-from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
-from crate.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
-from crate.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
-from crate.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
-from crate.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
-from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
-from crate.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
-from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
-from crate.parser import StructDef, StructField, EnumDef, EnumVariant
-from crate.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern, LiteralPat, TuplePat, OrPat, RangePat, NullPat, EnumVariantPat, OutcomeArmPat
-from crate.parser import LiteralPattern, IntegerLit, TernaryLit, StringLit, TrileanLit, LiteralIntegerPattern, RangePatternPayload, EnumVariantPatternPayload, OutcomeArmPatternPayload
-from crate.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
-from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
-from crate.parser import UnaryOperator, Negate
-from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, WhileStmtPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, ForStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload
-from crate.parser import FieldAccessPayload, OutcomeConstructorPayload, OutcomePropagatePayload, OutcomeDefaultPayload, ElvisOpPayload, RangePayload
-from crate.parser import NamedTypePayload, GenericTypePayload
-from crate.parser import FunctionTypePayload as ParseFunctionTypePayload, OutcomeTypePayload as ParseOutcomeTypePayload
+from khi.parser.lexer import SpannedToken, LexError, lex
+from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload
+from khi.parser.lexer import NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
+from khi.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
+from khi.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
+from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
+from khi.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
+from khi.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
+from khi.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
+from khi.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
+from khi.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
+from khi.parser import StructDef, StructField, EnumDef, EnumVariant
+from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern, LiteralPat, TuplePat, OrPat, RangePat, NullPat, EnumVariantPat, OutcomeArmPat
+from khi.parser import LiteralPattern, IntegerLit, TernaryLit, StringLit, TrileanLit, LiteralIntegerPattern, RangePatternPayload, EnumVariantPatternPayload, OutcomeArmPatternPayload
+from khi.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
+from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
+from khi.parser import UnaryOperator, Negate
+from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, WhileStmtPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, ForStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload
+from khi.parser import FieldAccessPayload, OutcomeConstructorPayload, OutcomePropagatePayload, OutcomeDefaultPayload, ElvisOpPayload, RangePayload
+from khi.parser import NamedTypePayload, GenericTypePayload
+from khi.parser import FunctionTypePayload as ParseFunctionTypePayload, OutcomeTypePayload as ParseOutcomeTypePayload
 
-from crate.modules import ResolvedProgram, Module, ModuleId, ArenaId, ModulePath, AbsolutePath
-from crate.modules import resolved_program_module_count, resolved_program_arena_count, resolved_program_root
-from crate.modules import module_id_raw, arena_id_raw, absolute_path_module, absolute_path_name, find_module_by_path
+from khi.modules import ResolvedProgram, Module, ModuleId, ArenaId, ModulePath, AbsolutePath
+from khi.modules import resolved_program_module_count, resolved_program_arena_count, resolved_program_root
+from khi.modules import module_id_raw, arena_id_raw, absolute_path_module, absolute_path_name, find_module_by_path
 
 // ─────────────────────────────────────────────────────────────────
 // TypeKind — discriminator for the resolved-type representation.

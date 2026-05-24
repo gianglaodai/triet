@@ -497,7 +497,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function::new(
@@ -543,7 +543,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![valid, invalid],
@@ -813,7 +813,7 @@ mod tests {
             modules: vec![
                 IrModule {
                     path: triet_modules::AbsolutePath::new(
-                        triet_modules::ModulePath::crate_root(),
+                        triet_modules::ModulePath::khi_root(),
                         "root".into(),
                     ),
                     functions: vec![Function::new(
@@ -825,7 +825,7 @@ mod tests {
                 },
                 IrModule {
                     path: triet_modules::AbsolutePath::new(
-                        triet_modules::ModulePath::crate_root().child("utils"),
+                        triet_modules::ModulePath::khi_root().child("utils"),
                         "utils".into(),
                     ),
                     functions: vec![

@@ -24,9 +24,9 @@
 use std::path::{Path, PathBuf};
 
 use triet_pack::{
-    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, FunctionExport, IfaceHash, Module,
-    ModuleIfaceHash, ModuleImplHash, Param, SemVer, StructDef, FieldDef, TermIfaceHash,
-    TermImplHash, TypeDef, TypeKind, TypeRef, Visibility, write_tripack,
+    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, FieldDef, FunctionExport, IfaceHash,
+    Module, ModuleIfaceHash, ModuleImplHash, Param, SemVer, StructDef, TermIfaceHash, TermImplHash,
+    TypeDef, TypeKind, TypeRef, Visibility, write_tripack,
 };
 
 /// Number of rebuilds per example per Q4-B decision. Nondeterminism
@@ -134,24 +134,24 @@ fn build_meta_v1() -> AbiMetadata {
     let mut meta = AbiMetadata::empty("multi", SemVer::new(0, 1, 0));
     // modules — three with non-sorted paths
     meta.modules.push(Module {
-        path: "crate.helper".into(),
+        path: "khi.helper".into(),
         iface_hash_mod: ModuleIfaceHash::default(),
         impl_hash_mod: ModuleImplHash::default(),
     });
     meta.modules.push(Module {
-        path: "crate".into(),
+        path: "khi".into(),
         iface_hash_mod: ModuleIfaceHash::default(),
         impl_hash_mod: ModuleImplHash::default(),
     });
     meta.modules.push(Module {
-        path: "crate.aux".into(),
+        path: "khi.aux".into(),
         iface_hash_mod: ModuleIfaceHash::default(),
         impl_hash_mod: ModuleImplHash::default(),
     });
     // types — two structs with non-sorted names
     meta.types.push(TypeDef {
         name: "Zebra".into(),
-        module_path: "crate".into(),
+        module_path: "khi".into(),
         kind: TypeKind::Struct,
         type_params: Vec::new(),
         struct_body: Some(StructDef {
@@ -167,7 +167,7 @@ fn build_meta_v1() -> AbiMetadata {
     });
     meta.types.push(TypeDef {
         name: "Apple".into(),
-        module_path: "crate".into(),
+        module_path: "khi".into(),
         kind: TypeKind::Struct,
         type_params: Vec::new(),
         struct_body: Some(StructDef {
@@ -186,7 +186,7 @@ fn build_meta_v1() -> AbiMetadata {
     for name in ["zoo", "alpha", "middle"] {
         meta.exports.push(FunctionExport {
             name: name.into(),
-            module_path: "crate".into(),
+            module_path: "khi".into(),
             visibility: Visibility::Public,
             type_params: Vec::new(),
             params: vec![Param {
@@ -227,23 +227,23 @@ fn build_meta_v2_reordered() -> AbiMetadata {
     // contract in the writers must collapse these to identical bytes.
     let mut meta = AbiMetadata::empty("multi", SemVer::new(0, 1, 0));
     meta.modules.push(Module {
-        path: "crate.aux".into(),
+        path: "khi.aux".into(),
         iface_hash_mod: ModuleIfaceHash::default(),
         impl_hash_mod: ModuleImplHash::default(),
     });
     meta.modules.push(Module {
-        path: "crate.helper".into(),
+        path: "khi.helper".into(),
         iface_hash_mod: ModuleIfaceHash::default(),
         impl_hash_mod: ModuleImplHash::default(),
     });
     meta.modules.push(Module {
-        path: "crate".into(),
+        path: "khi".into(),
         iface_hash_mod: ModuleIfaceHash::default(),
         impl_hash_mod: ModuleImplHash::default(),
     });
     meta.types.push(TypeDef {
         name: "Apple".into(),
-        module_path: "crate".into(),
+        module_path: "khi".into(),
         kind: TypeKind::Struct,
         type_params: Vec::new(),
         struct_body: Some(StructDef {
@@ -259,7 +259,7 @@ fn build_meta_v2_reordered() -> AbiMetadata {
     });
     meta.types.push(TypeDef {
         name: "Zebra".into(),
-        module_path: "crate".into(),
+        module_path: "khi".into(),
         kind: TypeKind::Struct,
         type_params: Vec::new(),
         struct_body: Some(StructDef {
@@ -277,7 +277,7 @@ fn build_meta_v2_reordered() -> AbiMetadata {
     for name in ["middle", "zoo", "alpha"] {
         meta.exports.push(FunctionExport {
             name: name.into(),
-            module_path: "crate".into(),
+            module_path: "khi".into(),
             visibility: Visibility::Public,
             type_params: Vec::new(),
             params: vec![Param {

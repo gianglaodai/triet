@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn root_module_lookup() {
-        let root_path = ModulePath::crate_root();
+        let root_path = ModulePath::khi_root();
         let program = ResolvedProgram {
             arenas: vec![Arena::new()],
             modules: vec![empty_module(root_path.clone(), None)],
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn find_module_by_path() {
-        let root_path = ModulePath::crate_root();
+        let root_path = ModulePath::khi_root();
         let foo_path = root_path.child("foo");
         let program = ResolvedProgram {
             arenas: vec![Arena::new(), Arena::new()],
@@ -195,10 +195,10 @@ mod tests {
     fn find_module_returns_none_for_missing() {
         let program = ResolvedProgram {
             arenas: vec![Arena::new()],
-            modules: vec![empty_module(ModulePath::crate_root(), None)],
+            modules: vec![empty_module(ModulePath::khi_root(), None)],
             root: ModuleId(0),
         };
-        let missing = ModulePath::crate_root().child("nope");
+        let missing = ModulePath::khi_root().child("nope");
         assert!(program.find_module(&missing).is_none());
     }
 
@@ -212,8 +212,8 @@ mod tests {
         a1.alloc_type(Sp::new(TypeExpr::Named("Marker".to_owned()), 0..6));
         let program = ResolvedProgram {
             arenas: vec![a0, a1],
-            modules: vec![empty_module(ModulePath::crate_root(), None), {
-                let mut m = empty_module(ModulePath::crate_root().child("foo"), Some(ModuleId(0)));
+            modules: vec![empty_module(ModulePath::khi_root(), None), {
+                let mut m = empty_module(ModulePath::khi_root().child("foo"), Some(ModuleId(0)));
                 m.arena_id = ArenaId(1);
                 m
             }],

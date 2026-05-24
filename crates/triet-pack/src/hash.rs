@@ -317,8 +317,8 @@ mod tests {
             "beta".to_owned(),
             TermIfaceHash::from_bytes([2u8; IFACE_HASH_LEN]),
         );
-        let h1 = compute_module_iface_hash("crate.foo", &[alpha.clone(), beta.clone()]);
-        let h2 = compute_module_iface_hash("crate.foo", &[beta, alpha]);
+        let h1 = compute_module_iface_hash("khi.foo", &[alpha.clone(), beta.clone()]);
+        let h2 = compute_module_iface_hash("khi.foo", &[beta, alpha]);
         assert_eq!(h1, h2);
     }
 
@@ -330,8 +330,8 @@ mod tests {
             "f".to_owned(),
             TermIfaceHash::from_bytes([3u8; IFACE_HASH_LEN]),
         );
-        let h1 = compute_module_iface_hash("crate.foo", std::slice::from_ref(&term));
-        let h2 = compute_module_iface_hash("crate.bar", &[term]);
+        let h1 = compute_module_iface_hash("khi.foo", std::slice::from_ref(&term));
+        let h2 = compute_module_iface_hash("khi.bar", &[term]);
         assert_ne!(h1, h2);
     }
 

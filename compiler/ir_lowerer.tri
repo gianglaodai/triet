@@ -57,23 +57,23 @@ from std.text import concat, from_integer, len as text_len
 from std.string import substring
 from std.assert import assert
 
-from crate.parser.lexer import SpannedToken, LexError, lex
-from crate.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
-from crate.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
-from crate.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
-from crate.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
-from crate.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
-from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
-from crate.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
-from crate.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
-from crate.parser import StructDef, StructField, EnumDef, EnumVariant
-from crate.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
-from crate.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern
-from crate.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
-from crate.parser import UnaryOperator, Negate
-from crate.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from crate.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, RangePayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
-from crate.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
+from khi.parser.lexer import SpannedToken, LexError, lex
+from khi.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
+from khi.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
+from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr
+from khi.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
+from khi.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
+from khi.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
+from khi.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, SpannedItem
+from khi.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
+from khi.parser import StructDef, StructField, EnumDef, EnumVariant
+from khi.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
+from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern
+from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
+from khi.parser import UnaryOperator, Negate
+from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, RangePayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
 // ID wrappers — Triết enum payloads need a struct, so each ID
@@ -3041,14 +3041,14 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> LowerMo
     // FuncId via `lower_call`. FuncId raw values match the
     // `function_defs` index, so position-based assignment suffices.
     //
-    // Path segments start at `["crate"]` to mirror Rust's
+    // Path segments start at `["khi"]` to mirror Rust's
     // `ModulePath::crate_root()` — `write_function_table`
     // serializes `module.path.to_string()` which renders
-    // `"crate"` for the local-crate root. Empty segments here
+    // `"khi"` for the local-crate root. Empty segments here
     // emit `"."` instead, breaking byte-identical against the
     // Rust pipeline (tracked as the now-closed
     // `v0.7.x.runtime-fix.write-function-table-module-prefix`).
-    let mod_path: Vector<String> = push(new(), "crate")
+    let mod_path: Vector<String> = push(new(), "khi")
     let mutable ir_mod: IrModule = ir_module_new(mod_path)
     let mutable ctx: LowerCtx = lower_ctx_new(arena)
     ctx = ctx_with_struct_fields(ctx, struct_fields)
@@ -3716,7 +3716,7 @@ public function main() -> Unit = {
 
     // ── IrModule + IrProgram ──────────────────────────────────────
     let mutable mod_path: Vector<String> = new()
-    mod_path = push(mod_path, "crate")
+    mod_path = push(mod_path, "khi")
     let mod0: IrModule = ir_module_new(mod_path)
     let mod1: IrModule = ir_module_push_function(mod0, fn1)
     let mod2: IrModule = ir_module_with_type_arena(mod1, ret_tag.arena)

@@ -50,7 +50,7 @@ pub(crate) fn load_filesystem(root_path: &Path) -> Result<ResolvedProgram, Vec<L
     state.load_stdlib();
     let root_chain = vec![root_dir];
     state.load_from_source(
-        &ModulePath::crate_root(),
+        &ModulePath::khi_root(),
         Some(root_path.to_path_buf()),
         Some(&root_chain),
         &source,
@@ -63,7 +63,7 @@ pub(crate) fn load_filesystem(root_path: &Path) -> Result<ResolvedProgram, Vec<L
 pub(crate) fn load_in_memory(source: &str) -> Result<ResolvedProgram, Vec<LoaderError>> {
     let mut state = LoaderState::new();
     state.load_stdlib();
-    state.load_from_source(&ModulePath::crate_root(), None, None, source, None);
+    state.load_from_source(&ModulePath::khi_root(), None, None, source, None);
     state.finish()
 }
 
@@ -76,7 +76,7 @@ pub(crate) fn load_in_memory_no_stdlib(
     source: &str,
 ) -> Result<ResolvedProgram, Vec<LoaderError>> {
     let mut state = LoaderState::new();
-    state.load_from_source(&ModulePath::crate_root(), None, None, source, None);
+    state.load_from_source(&ModulePath::khi_root(), None, None, source, None);
     state.finish()
 }
 
@@ -486,7 +486,7 @@ mod tests {
     fn empty_root_creates_one_module() {
         let result = load_in_memory("").unwrap();
         assert_eq!(result.modules.len(), STDLIB_MODULE_COUNT_WITH_CRATE_ROOT);
-        assert_eq!(result.root_module().path, ModulePath::crate_root());
+        assert_eq!(result.root_module().path, ModulePath::khi_root());
         assert!(result.root_module().items.is_empty());
         assert!(result.root_module().children.is_empty());
     }
@@ -519,7 +519,7 @@ mod tests {
 
         let child_id = root.children[0];
         let child = result.module(child_id);
-        assert_eq!(child.path.to_string(), "crate.helper");
+        assert_eq!(child.path.to_string(), "khi.helper");
         assert_eq!(child.items.len(), 1);
         assert_eq!(child.parent, Some(result.root));
         // Inline child shares parent's arena.
@@ -543,12 +543,12 @@ mod tests {
 
         let outer_id = result.root_module().children[0];
         let outer = result.module(outer_id);
-        assert_eq!(outer.path.to_string(), "crate.outer");
+        assert_eq!(outer.path.to_string(), "khi.outer");
         assert_eq!(outer.children.len(), 1);
 
         let inner_id = outer.children[0];
         let inner = result.module(inner_id);
-        assert_eq!(inner.path.to_string(), "crate.outer.inner");
+        assert_eq!(inner.path.to_string(), "khi.outer.inner");
         assert_eq!(inner.parent, Some(outer_id));
     }
 
@@ -566,7 +566,7 @@ mod tests {
         let errors = load_in_memory(source).unwrap_err();
         assert!(matches!(errors[0], LoaderError::ChildParseError { .. }));
         if let LoaderError::ChildParseError { module, .. } = &errors[0] {
-            assert_eq!(module, "crate");
+            assert_eq!(module, "khi");
         }
     }
 
@@ -641,7 +641,7 @@ mod tests {
             STDLIB_MODULE_COUNT_WITH_CRATE_ROOT + 1
         );
         let helper = result.module(result.root_module().children[0]);
-        assert_eq!(helper.path.to_string(), "crate.helper");
+        assert_eq!(helper.path.to_string(), "khi.helper");
         assert_eq!(helper.items.len(), 1);
         // External child gets its own arena.
         assert_ne!(helper.arena_id, result.root_module().arena_id);
@@ -665,7 +665,7 @@ mod tests {
         let helper = result.module(result.root_module().children[0]);
         assert_eq!(helper.children.len(), 1);
         let inner = result.module(helper.children[0]);
-        assert_eq!(inner.path.to_string(), "crate.helper.inner");
+        assert_eq!(inner.path.to_string(), "khi.helper.inner");
     }
 
     #[test]
@@ -686,7 +686,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(errors[0], LoaderError::ChildParseError { .. }));
         if let LoaderError::ChildParseError { module, .. } = &errors[0] {
-            assert_eq!(module, "crate.broken");
+            assert_eq!(module, "khi.broken");
         }
     }
 
@@ -705,7 +705,7 @@ mod tests {
         );
         let leaf = result
             .find_module(&ModulePath::new(
-                ["crate", "a", "b", "c"]
+                ["khi", "a", "b", "c"]
                     .iter()
                     .map(|s| (*s).to_owned())
                     .collect(),
@@ -739,12 +739,12 @@ mod tests {
         ])
         .unwrap();
         let pack_writer = result.module(result.root_module().children[0]);
-        assert_eq!(pack_writer.path.to_string(), "crate.pack_writer");
+        assert_eq!(pack_writer.path.to_string(), "khi.pack_writer");
         assert_eq!(pack_writer.children.len(), 2);
         let ir_lowerer = result.module(pack_writer.children[0]);
-        assert_eq!(ir_lowerer.path.to_string(), "crate.pack_writer.ir_lowerer");
+        assert_eq!(ir_lowerer.path.to_string(), "khi.pack_writer.ir_lowerer");
         let typecheck = result.module(pack_writer.children[1]);
-        assert_eq!(typecheck.path.to_string(), "crate.pack_writer.typecheck");
+        assert_eq!(typecheck.path.to_string(), "khi.pack_writer.typecheck");
     }
 
     /// The conventional nested layout (`std/collections.tri` with
@@ -764,7 +764,7 @@ mod tests {
         .unwrap();
         let pkg = result.module(result.root_module().children[0]);
         let child = result.module(pkg.children[0]);
-        assert_eq!(child.path.to_string(), "crate.pkg.child");
+        assert_eq!(child.path.to_string(), "khi.pkg.child");
         // The picked file is the nested one, not the decoy sibling.
         assert!(
             child

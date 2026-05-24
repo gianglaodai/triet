@@ -263,7 +263,10 @@ fn resolve_type_expr_with_params(
                 .collect(),
         ),
         TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr_with_params(
-            arena, *inner, type_params, name_table,
+            arena,
+            *inner,
+            type_params,
+            name_table,
         ))),
         TypeExpr::Function {
             parameters,
@@ -413,7 +416,7 @@ mod tests {
         let errors = check_filesystem(&[
             (
                 "main.tri",
-                "module helper\nfrom crate.helper import greet\nfunction main() -> Integer = greet()",
+                "module helper\nfrom khi.helper import greet\nfunction main() -> Integer = greet()",
             ),
             ("helper.tri", "public function greet() -> Integer = 42"),
         ]);
@@ -426,7 +429,7 @@ mod tests {
             (
                 "main.tri",
                 "module helper
-from crate.helper import greet
+from khi.helper import greet
 function main() -> String = greet()",
             ),
             ("helper.tri", "public function greet() -> Integer = 42"),
@@ -641,7 +644,7 @@ function main() = println("hello")"#,
             (
                 "main.tri",
                 "module lib
-from crate.lib import Token, Spanned, IntPayload
+from khi.lib import Token, Spanned, IntPayload
 function describe(sp: Spanned) -> Integer = match sp.token {
     IntLit(p) => p.value,
     Kw => -1,
@@ -670,7 +673,7 @@ public struct Spanned { token: Token, span_start: Integer }",
             (
                 "main.tri",
                 "module lib
-from crate.lib import Outer, Inner
+from khi.lib import Outer, Inner
 function read(o: Outer) -> Integer = o.inner.leaf
 function main() -> Integer = read(Outer { inner: Inner { leaf: 9 }, tag: 0 })",
             ),

@@ -2505,7 +2505,7 @@ mod tests {
     fn make_simple_program(func: Function) -> IrProgram {
         IrProgram {
             modules: vec![IrModule {
-                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
                 functions: vec![func],
             }],
             constants: ConstantPool::new(),
@@ -3655,7 +3655,7 @@ mod tests {
 
         let prog = IrProgram {
             modules: vec![IrModule {
-                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
                 functions: vec![
                     build_func(FuncId(0), c_idx_in, "get_in_range"),
                     build_func(FuncId(1), c_idx_oor, "get_over_length"),
@@ -3949,7 +3949,7 @@ mod tests {
 
         let prog = IrProgram {
             modules: vec![IrModule {
-                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
                 functions: vec![
                     build(FuncId(0), c_key_present, "get_hit"),
                     build(FuncId(1), c_key_absent, "get_miss"),
@@ -4115,7 +4115,7 @@ mod tests {
 
         let prog = IrProgram {
             modules: vec![IrModule {
-                path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+                path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
                 functions: vec![
                     build(FuncId(0), c_key_present, "contains_hit"),
                     build(FuncId(1), c_key_absent, "contains_miss"),

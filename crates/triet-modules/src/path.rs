@@ -1,19 +1,21 @@
 //! Module and item paths.
 //!
-//! Triết uses dot-separated paths (`crate.foo.bar`) per ADR-0005. This
-//! module gives those paths a typed representation: [`ModulePath`] points
-//! at a module, [`AbsolutePath`] at a specific item inside one. Both are
-//! sequences of segments under the hood; the wrappers exist so the rest
-//! of the loader can't accidentally mix them up.
+//! Triết uses dot-separated paths (`khi.foo.bar`) per ADR-0005 +
+//! ADR-0024 (Khí + Đạo identity naming — `khi` replaces `crate` as
+//! the local-package path keyword). This module gives those paths a
+//! typed representation: [`ModulePath`] points at a module,
+//! [`AbsolutePath`] at a specific item inside one. Both are sequences
+//! of segments under the hood; the wrappers exist so the rest of the
+//! loader can't accidentally mix them up.
 
 use std::fmt;
 
 /// A path identifying a module — sequence of segments from a root.
 ///
-/// The first segment is significant: `"crate"` for the local crate root,
-/// `"std"` / `"sys"` / `"dev"` / `"usr"` / `"core"` for reserved
-/// namespaces (per ADR-0005). Empty paths are not permitted in the
-/// resolved program — the root module is `["crate"]`.
+/// The first segment is significant: `"khi"` for the local khí
+/// (package) root, `"std"` / `"sys"` / `"dev"` / `"usr"` / `"core"`
+/// for reserved namespaces (per ADR-0005). Empty paths are not
+/// permitted in the resolved program — the root module is `["khi"]`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModulePath {
     segments: Vec<String>,
@@ -27,11 +29,12 @@ impl ModulePath {
         Self { segments }
     }
 
-    /// The root path of the local crate — `["crate"]`.
+    /// The root path of the local khí (package) — `["khi"]`.
+    /// Per ADR-0024 (formerly `crate_root`).
     #[must_use]
-    pub fn crate_root() -> Self {
+    pub fn khi_root() -> Self {
         Self {
-            segments: vec!["crate".to_owned()],
+            segments: vec!["khi".to_owned()],
         }
     }
 
@@ -60,7 +63,7 @@ impl ModulePath {
         }
     }
 
-    /// Append a child segment — `crate.foo`.child("bar") = `crate.foo.bar`.
+    /// Append a child segment — `khi.foo`.child("bar") = `khi.foo.bar`.
     #[must_use]
     pub fn child(&self, name: &str) -> Self {
         let mut segments = self.segments.clone();
@@ -89,10 +92,11 @@ impl ModulePath {
         matches!(self.root(), Some("std" | "sys" | "dev" | "usr" | "core"))
     }
 
-    /// True if the path's root is the local crate (`crate.…`).
+    /// True if the path's root is the local khí (`khi.…`).
+    /// Per ADR-0024 (formerly `is_local_khi`).
     #[must_use]
-    pub fn is_local_crate(&self) -> bool {
-        matches!(self.root(), Some("crate"))
+    pub fn is_local_khi(&self) -> bool {
+        matches!(self.root(), Some("khi"))
     }
 }
 
@@ -104,8 +108,8 @@ impl fmt::Display for ModulePath {
 
 /// A fully-qualified path to an item — module path plus item name.
 ///
-/// Example: in module `crate.foo`, the function `bar` has absolute path
-/// `crate.foo.bar`. Used as the canonical identity of every named
+/// Example: in module `khi.foo`, the function `bar` has absolute path
+/// `khi.foo.bar`. Used as the canonical identity of every named
 /// entity after name resolution; binding maps in [`crate::Module`] map
 /// local names to `AbsolutePath`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -148,34 +152,34 @@ mod tests {
 
     #[test]
     fn module_path_displays_with_dots() {
-        let path = ModulePath::new(vec!["crate".to_owned(), "foo".to_owned(), "bar".to_owned()]);
-        assert_eq!(path.to_string(), "crate.foo.bar");
+        let path = ModulePath::new(vec!["khi".to_owned(), "foo".to_owned(), "bar".to_owned()]);
+        assert_eq!(path.to_string(), "khi.foo.bar");
     }
 
     #[test]
-    fn crate_root_is_single_segment() {
-        let root = ModulePath::crate_root();
-        assert_eq!(root.to_string(), "crate");
+    fn khi_root_is_single_segment() {
+        let root = ModulePath::khi_root();
+        assert_eq!(root.to_string(), "khi");
         assert_eq!(root.len(), 1);
     }
 
     #[test]
     fn parent_of_root_is_none() {
-        let root = ModulePath::crate_root();
+        let root = ModulePath::khi_root();
         assert!(root.parent().is_none());
     }
 
     #[test]
     fn parent_drops_last_segment() {
-        let path = ModulePath::crate_root().child("foo").child("bar");
+        let path = ModulePath::khi_root().child("foo").child("bar");
         let parent = path.parent().unwrap();
-        assert_eq!(parent.to_string(), "crate.foo");
+        assert_eq!(parent.to_string(), "khi.foo");
     }
 
     #[test]
     fn child_appends_segment() {
-        let path = ModulePath::crate_root().child("io");
-        assert_eq!(path.to_string(), "crate.io");
+        let path = ModulePath::khi_root().child("io");
+        assert_eq!(path.to_string(), "khi.io");
     }
 
     #[test]
@@ -184,13 +188,13 @@ mod tests {
             let path = ModulePath::new(vec![root.to_owned()]);
             assert!(path.is_reserved_root(), "{root} should be reserved");
         }
-        assert!(!ModulePath::crate_root().is_reserved_root());
+        assert!(!ModulePath::khi_root().is_reserved_root());
     }
 
     #[test]
-    fn local_crate_recognized() {
-        assert!(ModulePath::crate_root().is_local_crate());
-        assert!(!ModulePath::new(vec!["std".to_owned()]).is_local_crate());
+    fn local_khi_recognized() {
+        assert!(ModulePath::khi_root().is_local_khi());
+        assert!(!ModulePath::new(vec!["std".to_owned()]).is_local_khi());
     }
 
     #[test]

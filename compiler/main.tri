@@ -11,7 +11,7 @@
 //
 // Top-level `module X` declarations at this file mirror the
 // crate-rooted absolute paths used by the existing compiler files
-// (`from crate.parser import …` etc.). Each file additionally
+// (`from khi.parser import …` etc.). Each file additionally
 // declares its own siblings, so the same files get loaded once per
 // declaration — wasteful but correct. A future cleanup converts
 // the inner declarations to `self.X` form to dedupe.
@@ -28,8 +28,8 @@ from std.io.fs import read, write_bytes
 from std.collections.vector import new, push, length, get
 from std.text import concat, len as text_len, from_integer
 
-from crate.typecheck import check_source, TypeError
-from crate.pack_writer import serialize_source_to_tripack
+from khi.typecheck import check_source, TypeError
+from khi.pack_writer import serialize_source_to_tripack
 
 // ── Subcommand + Args ────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ public struct Args {
 function exit_ok() -> Trit = 1_trit
 function exit_err() -> Trit = -1_trit
 function default_output_path() -> String = "out.tripack"
-function default_pkg_name() -> String = "crate"
+function default_pkg_name() -> String = "khi"
 
 // ── parse_args ───────────────────────────────────────────────────
 //

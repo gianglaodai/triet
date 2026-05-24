@@ -3192,7 +3192,7 @@ mod tests {
 
     /// Build a minimal `ResolvedProgram` with one module and one function.
     fn make_program(arena: Arena, items: Vec<Spanned<Item>>) -> ResolvedProgram {
-        let root_path = ModulePath::crate_root();
+        let root_path = ModulePath::khi_root();
         let module = Module {
             path: root_path,
             source_path: None,
@@ -4361,7 +4361,7 @@ mod tests {
         let body = FunctionBody::Expression(call);
         let item = make_function_def("wrapper", vec![], None, body);
 
-        let root_path = ModulePath::crate_root();
+        let root_path = ModulePath::khi_root();
         let mut bindings = HashMap::new();
         bindings.insert(
             "external_func".to_owned(),
@@ -4738,7 +4738,7 @@ mod tests {
         let val = int_lit(&mut arena0, 42);
         let main_item = make_function_def("main", vec![], None, FunctionBody::Expression(val));
 
-        let root_path = ModulePath::crate_root();
+        let root_path = ModulePath::khi_root();
         let module0 = Module {
             path: root_path.clone(),
             source_path: None,
@@ -4806,7 +4806,7 @@ mod tests {
 
     #[test]
     fn lower_empty_program_yields_empty_ir() {
-        let root_path = ModulePath::crate_root();
+        let root_path = ModulePath::khi_root();
         let module = Module {
             path: root_path,
             source_path: None,

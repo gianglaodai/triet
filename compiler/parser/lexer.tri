@@ -102,7 +102,7 @@ public enum Token {
     OwnedKw,
     StructKw,
     EnumKw,
-    CrateKw,
+    KhiKw,
     SelfKw,
     SuperKw,
     LtEqGt,
@@ -332,7 +332,7 @@ function keyword_for(ident: String) -> Token? = {
     else if ident == "owned" { OwnedKw }
     else if ident == "struct" { StructKw }
     else if ident == "enum" { EnumKw }
-    else if ident == "crate" { CrateKw }
+    else if ident == "khi" { KhiKw }
     else if ident == "self" { SelfKw }
     else if ident == "super" { SuperKw }
     else { ~0 }

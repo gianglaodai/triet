@@ -133,7 +133,7 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
 ///   The target *module* is `std.io` (drop the terminal item name).
 ///   But if the full path matches a known module, use it as-is.
 ///
-/// - `from crate.foo import bar` → source `["crate", "foo"]`. The
+/// - `from khi.foo import bar` → source `["khi", "foo"]`. The
 ///   target module is `crate.foo`.
 ///
 /// - `self.X` expands relative to the current module. At this stage
@@ -182,7 +182,7 @@ fn dfs(
                             Some(&id) => {
                                 // If fallback resolves to the same
                                 // module, it's not a real dependency
-                                // edge — skip. E.g. `from crate.X
+                                // edge — skip. E.g. `from khi.X
                                 // import Y` in root falls back to
                                 // `crate` = self.
                                 if id == node {
@@ -264,7 +264,7 @@ fn display_module_name(program: &ResolvedProgram, id: ModuleId) -> String {
         segments
             .last()
             .cloned()
-            .unwrap_or_else(|| "crate".to_owned())
+            .unwrap_or_else(|| "khi".to_owned())
     } else {
         segments.last().cloned().unwrap_or_default()
     }
@@ -318,8 +318,8 @@ mod tests {
     fn two_cycle_a_imports_b_imports_a() {
         let errors = load_filesystem_errors(&[
             ("main.tri", "module foo\nmodule bar"),
-            ("foo.tri", "from crate.bar import something"),
-            ("bar.tri", "from crate.foo import something"),
+            ("foo.tri", "from khi.bar import something"),
+            ("bar.tri", "from khi.foo import something"),
         ]);
         let traces: Vec<&str> = errors
             .iter()
@@ -341,9 +341,9 @@ mod tests {
     fn three_cycle_with_correct_trace() {
         let errors = load_filesystem_errors(&[
             ("main.tri", "module foo\nmodule bar\nmodule baz"),
-            ("foo.tri", "from crate.bar import x"),
-            ("bar.tri", "from crate.baz import y"),
-            ("baz.tri", "from crate.foo import z"),
+            ("foo.tri", "from khi.bar import x"),
+            ("bar.tri", "from khi.baz import y"),
+            ("baz.tri", "from khi.foo import z"),
         ]);
         let trace = errors
             .iter()
@@ -387,9 +387,9 @@ mod tests {
         // A → B, A → C, B → D, C → D — no cycle.
         let errors = load_filesystem_errors(&[
             ("main.tri", "module a\nmodule b\nmodule c\nmodule d"),
-            ("a.tri", "from crate.b import fb\nfrom crate.c import fc"),
-            ("b.tri", "public function fb() = 1\nfrom crate.d import fd"),
-            ("c.tri", "public function fc() = 2\nfrom crate.d import fd"),
+            ("a.tri", "from khi.b import fb\nfrom khi.c import fc"),
+            ("b.tri", "public function fb() = 1\nfrom khi.d import fd"),
+            ("c.tri", "public function fc() = 2\nfrom khi.d import fd"),
             ("d.tri", "public function fd() = 0"),
         ]);
         assert!(
@@ -412,10 +412,10 @@ mod tests {
         // Two separate cycles: foo↔bar and baz↔qux.
         let errors = load_filesystem_errors(&[
             ("main.tri", "module foo\nmodule bar\nmodule baz\nmodule qux"),
-            ("foo.tri", "from crate.bar import x"),
-            ("bar.tri", "from crate.foo import y"),
-            ("baz.tri", "from crate.qux import a"),
-            ("qux.tri", "from crate.baz import b"),
+            ("foo.tri", "from khi.bar import x"),
+            ("bar.tri", "from khi.foo import y"),
+            ("baz.tri", "from khi.qux import a"),
+            ("qux.tri", "from khi.baz import b"),
         ]);
         let cycle_count = errors
             .iter()

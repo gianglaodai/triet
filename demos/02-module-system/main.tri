@@ -16,20 +16,20 @@ module utils;
 
 from std.io import println
 from std.assert import assert
-from crate.gates import and_gate, or_gate, xor_gate, not_gate
-from crate.gates import implies_gate, nand_gate, nor_gate, xnor_gate
-from crate.gates import kleene_implies_gate, kleene_xor_gate, kleene_iff_gate
-from crate.gates import majority, mux2
-from crate.alu import half_sum, half_carry, full_sum, full_carry
-from crate.alu import increment, decrement, tri_eq, tri_gt
-from crate.memory import Register, new_register, read, write
-from crate.memory import Latch, new_latch, latch_read, latch_write
-from crate.memory import Counter, new_counter, tick, counter_value
-from crate.memory import Bank, new_bank, bank_read, bank_write
-from crate.utils.advanced import cube, trilean_abs, is_definite, safe_divide
-from crate.utils import identity, step_ring
-from crate.utils.print import format_trilean, format_trilean_word
-from crate.utils.print import banner, print_row, print_table_header
+from khi.gates import and_gate, or_gate, xor_gate, not_gate
+from khi.gates import implies_gate, nand_gate, nor_gate, xnor_gate
+from khi.gates import kleene_implies_gate, kleene_xor_gate, kleene_iff_gate
+from khi.gates import majority, mux2
+from khi.alu import half_sum, half_carry, full_sum, full_carry
+from khi.alu import increment, decrement, tri_eq, tri_gt
+from khi.memory import Register, new_register, read, write
+from khi.memory import Latch, new_latch, latch_read, latch_write
+from khi.memory import Counter, new_counter, tick, counter_value
+from khi.memory import Bank, new_bank, bank_read, bank_write
+from khi.utils.advanced import cube, trilean_abs, is_definite, safe_divide
+from khi.utils import identity, step_ring
+from khi.utils.print import format_trilean, format_trilean_word
+from khi.utils.print import banner, print_row, print_table_header
 
 // ═══════════════════════════════════════════════════════════════════
 // Main entry point

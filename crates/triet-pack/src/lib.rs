@@ -61,12 +61,6 @@ mod strict_parser;
 mod tty_prompt;
 mod types;
 
-pub use error::{PackError, PackResult, StoreError, StoreResult};
-pub use hash::{
-    IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash,
-    TermIfaceHash, TermImplHash, compute_iface_hash, compute_module_iface_hash,
-    compute_module_impl_hash, compute_term_iface_hash, compute_term_impl_hash,
-};
 pub use capability_link::{
     CapabilityLinkError, CapabilityLinkReport, DeferredCap, RootRefusalLevel,
     check_link_capabilities,
@@ -74,9 +68,11 @@ pub use capability_link::{
 pub use capability_resolver::{
     CachedDecision, CapabilityResolver, DecisionSource, PolicyRequest, ResolverError,
 };
-pub use tty_prompt::{
-    DepChainEntry, DevTtyPrompt, LockfileMatch, PackageInfo, PromptCallback, PromptChoice,
-    PromptContext, context_from_request, non_interactive_callback, prompt_loop, render_prompt,
+pub use error::{PackError, PackResult, StoreError, StoreResult};
+pub use hash::{
+    IFACE_HASH_LEN, IMPL_HASH_LEN, IfaceHash, ImplHash, ModuleIfaceHash, ModuleImplHash,
+    TermIfaceHash, TermImplHash, compute_iface_hash, compute_module_iface_hash,
+    compute_module_impl_hash, compute_term_iface_hash, compute_term_impl_hash,
 };
 pub use linker::{LinkError, LinkPlan, LinkWarning, ResolvedDep, plan_link};
 pub use lockfile::{LockEntry, Lockfile, LockfileError};
@@ -84,6 +80,10 @@ pub use package_manifest::{PackageManifest, PackageManifestError};
 pub use policy::{Decision, OriginMatcher, PolicyError, PolicyRule, PolicyRules};
 pub use resolver::{Resolution, ResolutionOrigin, ResolveError, ResolveResult, Resolver};
 pub use store::{GcReport, RootEntry, Store};
+pub use tty_prompt::{
+    DepChainEntry, DevTtyPrompt, LockfileMatch, PackageInfo, PromptCallback, PromptChoice,
+    PromptContext, context_from_request, non_interactive_callback, prompt_loop, render_prompt,
+};
 // `compute_impl_hash` is only needed inside `serde::write_tripack` for
 // now; we'll promote it to the public API when the linker (v0.4.5)
 // needs to validate a downloaded pack against an externally-claimed

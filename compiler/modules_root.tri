@@ -1,11 +1,11 @@
 module parser;
 module modules;
 
-from crate.modules import main as mod_main
-from crate.modules import cycle_smoke_main as mod_cycle_smoke_main
-from crate.modules import loader_smoke_main as mod_loader_smoke_main
-from crate.modules import resolver_smoke_main as mod_resolver_smoke_main
-from crate.modules import ResolvedProgram
+from khi.modules import main as mod_main
+from khi.modules import cycle_smoke_main as mod_cycle_smoke_main
+from khi.modules import loader_smoke_main as mod_loader_smoke_main
+from khi.modules import resolver_smoke_main as mod_resolver_smoke_main
+from khi.modules import ResolvedProgram
 
 public function main() -> Unit =
     mod_main()

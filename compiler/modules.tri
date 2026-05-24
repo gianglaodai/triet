@@ -9,7 +9,7 @@
 //
 // Types coverage:
 //   - ModulePath / AbsolutePath (path.rs) — dot-separated segments,
-//     `crate.foo.bar` display, reserved-root detection per
+//     `khi.foo.bar` display, reserved-root detection per
 //     ADR-0005.
 //   - ModuleId / ArenaId (module.rs) — Integer index wrappers; the
 //     loader uses ModuleId to index into ResolvedProgram.modules,
@@ -66,26 +66,26 @@ from std.text import concat, from_integer, len as text_len
 from std.string import substring as std_string_substring
 from std.assert import assert
 
-from crate.parser import Arena, Program, ParseProgramStep, ParserState
-from crate.parser import parser_new, parse_program
-from crate.parser import Item, FunctionItem, ConstantItem, TypeAliasItem
-from crate.parser import StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
-from crate.parser import ModuleDecl, ModuleContent, ExternalContent, InlineContent
-from crate.parser import Visibility, PrivateVis, PublicVis, PackageVis
-from crate.parser import FunctionDef, ConstantItemPayload, TypeAliasPayload
-from crate.parser import StructDef, EnumDef, EnumVariant
-from crate.parser import ImportPath, ImportName, ImportFromPayload
-from crate.parser import SpannedItem, ParseError, ParseErrorDetail, ReservedNameDetail
-from crate.parser import UnexpectedTokenErr, UnexpectedEofErr, LexerFailedErr, ReservedItemNameErr
-from crate.parser.lexer import SpannedToken, LexError, lex
+from khi.parser import Arena, Program, ParseProgramStep, ParserState
+from khi.parser import parser_new, parse_program
+from khi.parser import Item, FunctionItem, ConstantItem, TypeAliasItem
+from khi.parser import StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
+from khi.parser import ModuleDecl, ModuleContent, ExternalContent, InlineContent
+from khi.parser import Visibility, PrivateVis, PublicVis, PackageVis
+from khi.parser import FunctionDef, ConstantItemPayload, TypeAliasPayload
+from khi.parser import StructDef, EnumDef, EnumVariant
+from khi.parser import ImportPath, ImportName, ImportFromPayload
+from khi.parser import SpannedItem, ParseError, ParseErrorDetail, ReservedNameDetail
+from khi.parser import UnexpectedTokenErr, UnexpectedEofErr, LexerFailedErr, ReservedItemNameErr
+from khi.parser.lexer import SpannedToken, LexError, lex
 
 // ─────────────────────────────────────────────────────────────────
-// ModulePath — sequence of dot-separated segments (`crate.foo.bar`).
+// ModulePath — sequence of dot-separated segments (`khi.foo.bar`).
 //
 // First segment is significant: `crate` for the local root, or one
 // of `std` / `sys` / `dev` / `usr` / `core` for reserved stdlib
 // namespaces per ADR-0005. Empty paths are not permitted in the
-// resolved program; the root is always `["crate"]`.
+// resolved program; the root is always `["khi"]`.
 // ─────────────────────────────────────────────────────────────────
 
 public struct ModulePath {
@@ -96,7 +96,7 @@ public function module_path_new(segments: Vector<String>) -> ModulePath =
     ModulePath { segments: segments }
 
 public function module_path_crate_root() -> ModulePath =
-    ModulePath { segments: push(new(), "crate") }
+    ModulePath { segments: push(new(), "khi") }
 
 public function module_path_segments(path: ModulePath) -> Vector<String> =
     path.segments
@@ -117,7 +117,7 @@ public function module_path_root(path: ModulePath) -> String? = {
     }
 }
 
-/// Append `segment` to `path` — `crate.foo.child("bar")` → `crate.foo.bar`.
+/// Append `segment` to `path` — `khi.foo.child("bar")` → `khi.foo.bar`.
 public function module_path_child(path: ModulePath, segment: String) -> ModulePath = {
     let extended: Vector<String> = push(path.segments, segment)
     ModulePath { segments: extended }
@@ -157,18 +157,18 @@ public function module_path_is_reserved_root(path: ModulePath) -> Trilean! = {
     }
 }
 
-/// True if the path's root is the local crate (`crate.…`).
+/// True if the path's root is the local crate (`khi.…`).
 public function module_path_is_local_crate(path: ModulePath) -> Trilean! = {
     let root_opt: String? = module_path_root(path)
     match root_opt {
         ~0 => false,
-        _ => root_opt!! == "crate",
+        _ => root_opt!! == "khi",
     }
 }
 
 /// Render `path` as a dot-joined String. Mirrors the Rust
-/// `impl Display for ModulePath` — `["crate", "foo", "bar"]` →
-/// `"crate.foo.bar"`. Empty path renders as `""`.
+/// `impl Display for ModulePath` — `["khi", "foo", "bar"]` →
+/// `"khi.foo.bar"`. Empty path renders as `""`.
 public function module_path_display(path: ModulePath) -> String = {
     let n: Integer = length(path.segments)
     let mutable buf: String = ""
@@ -189,8 +189,8 @@ public function module_path_display(path: ModulePath) -> String = {
 // ─────────────────────────────────────────────────────────────────
 // AbsolutePath — fully-qualified item path: module path + item name.
 //
-// Example: function `bar` in `crate.foo` has absolute path
-// `crate.foo.bar`. Used as the canonical identity of every named
+// Example: function `bar` in `khi.foo` has absolute path
+// `khi.foo.bar`. Used as the canonical identity of every named
 // entity after name resolution; `Module.bindings` maps local names
 // to `AbsolutePath`.
 // ─────────────────────────────────────────────────────────────────
@@ -1002,7 +1002,7 @@ public function load_program(root_path: String) -> LoadProgramResult = {
 //    for `Item::ImportItem` and `Item::ImportFromItem`. Each produces
 //    one edge to the resolved target ModulePath.
 // 2. Build a path_index `HashMap<String, Integer>` from display
-//    path (`crate.foo.bar`) to ModuleId raw — Triết HashMaps key on
+//    path (`khi.foo.bar`) to ModuleId raw — Triết HashMaps key on
 //    hashable primitives, so we use the display form per ADR-0005.
 // 3. DFS from each white node. Mark gray on entry, walk edges,
 //    recurse on white children, emit `CyclicImportErr` on gray
@@ -1163,12 +1163,12 @@ function build_path_index(program: ResolvedProgram) -> HashMap<String, Integer> 
 /// Two-stage lookup mirrors Rust's `dfs` resolver:
 /// 1. Look up `edge.target_text` directly.
 /// 2. If that misses and the path has ≥ 2 segments, drop the last
-///    segment and retry (covers `import crate.foo.bar` where the
-///    *module* is `crate.foo` and `bar` is an item).
+///    segment and retry (covers `import khi.foo.bar` where the
+///    *module* is `khi.foo` and `bar` is an item).
 ///
 /// `current_node` is the DFS's current node; if the parent-drop
 /// fallback resolves to the current node itself (e.g. `from
-/// crate.X import Y` in the crate root falling back to `crate` =
+/// khi.X import Y` in the crate root falling back to `crate` =
 /// self), we treat the edge as a no-op (return `null`) to avoid
 /// spurious self-loops.
 function resolve_edge_target(
@@ -1198,7 +1198,7 @@ function resolve_edge_target(
                     ~0 => ~0,
                     _ => {
                         if parent_id_opt!! == current_node {
-                            // Self-loop avoided — `from crate.X
+                            // Self-loop avoided — `from khi.X
                             // import Y` in root falls back to
                             // `crate` = self.
                             ~0
@@ -1253,7 +1253,7 @@ function build_cycle_trace(
         let segs: Vector<String> = m.path.segments
         let seg_count: Integer = length(segs)
         let name: String = if seg_count == 0 {
-            "crate"
+            "khi"
         } else {
             let last_opt: String? = get(segs, seg_count - 1)
             last_opt!!
@@ -1271,7 +1271,7 @@ function build_cycle_trace(
     let target_segs: Vector<String> = target_module.path.segments
     let target_seg_count: Integer = length(target_segs)
     let target_name: String = if target_seg_count == 0 {
-        "crate"
+        "khi"
     } else {
         let last_opt: String? = get(target_segs, target_seg_count - 1)
         last_opt!!
@@ -1400,7 +1400,7 @@ public function detect_cycles(program: ResolvedProgram) -> Vector<LoaderError> =
 //
 // 2. **Resolve imports** — `import X` binds X's last segment;
 //    `from X import a, b as c` resolves source path then binds each
-//    name (or alias). `crate.` / `self.` / `super.` path keywords
+//    name (or alias). `khi.` / `self.` / `super.` path keywords
 //    expand relative to the importing module. Visibility check:
 //    Public + PublicPackage visible everywhere; Private only inside
 //    defining module. Reserved namespaces (`sys.*`/`dev.*`/`usr.*`)
@@ -1566,8 +1566,8 @@ function is_visible(
     }
 }
 
-/// Expand `crate.` / `self.` / `super.` path keywords to absolute
-/// segments. `crate.X` stays as-is; `self.X` expands to importer's
+/// Expand `khi.` / `self.` / `super.` path keywords to absolute
+/// segments. `khi.X` stays as-is; `self.X` expands to importer's
 /// own path + remainder; `super.X` expands to importer's parent +
 /// remainder. Unknown prefix (e.g. `std.*` or bare name) returns
 /// segments unchanged.
@@ -2111,25 +2111,25 @@ function assert_string_eq(actual: String, expected: String) -> Unit =
 public function main() -> Unit = {
     // ── ModulePath ────────────────────────────────────────────────
     let root: ModulePath = module_path_crate_root()
-    assert_string_eq(module_path_display(root), "crate")
+    assert_string_eq(module_path_display(root), "khi")
     assert(module_path_len(root) == 1)
     assert(module_path_is_empty(root) == false)
     assert(module_path_is_local_crate(root) == true)
     assert(module_path_is_reserved_root(root) == false)
 
     let foo: ModulePath = module_path_child(root, "foo")
-    assert_string_eq(module_path_display(foo), "crate.foo")
+    assert_string_eq(module_path_display(foo), "khi.foo")
     assert(module_path_len(foo) == 2)
 
     let foo_bar: ModulePath = module_path_child(foo, "bar")
-    assert_string_eq(module_path_display(foo_bar), "crate.foo.bar")
+    assert_string_eq(module_path_display(foo_bar), "khi.foo.bar")
     assert(module_path_len(foo_bar) == 3)
 
     // parent traversal
     let foo_bar_parent_opt: ModulePath? = module_path_parent(foo_bar)
     match foo_bar_parent_opt {
         ~0 => assert(false),
-        _ => assert_string_eq(module_path_display(foo_bar_parent_opt!!), "crate.foo"),
+        _ => assert_string_eq(module_path_display(foo_bar_parent_opt!!), "khi.foo"),
     }
 
     let root_parent_opt: ModulePath? = module_path_parent(root)
@@ -2170,7 +2170,7 @@ public function main() -> Unit = {
     assert_string_eq(absolute_path_name(println_abs), "println")
 
     let bar_abs: AbsolutePath = absolute_path_new(foo, "bar")
-    assert_string_eq(absolute_path_display(bar_abs), "crate.foo.bar")
+    assert_string_eq(absolute_path_display(bar_abs), "khi.foo.bar")
 
     // ── ModuleId / ArenaId ────────────────────────────────────────
     let mid: ModuleId = module_id_new(7)
@@ -2181,7 +2181,7 @@ public function main() -> Unit = {
     // ── Module + ResolvedProgram ──────────────────────────────────
     let root_module: Module = module_new(root, ~0, arena_id_new(0), ~0)
     assert(length(root_module.item_ids) == 0)
-    assert_string_eq(module_path_display(root_module.path), "crate")
+    assert_string_eq(module_path_display(root_module.path), "khi")
     assert(arena_id_raw(root_module.arena_id) == 0)
 
     let modules_vec: Vector<Module> = push(new(), root_module)
@@ -2232,21 +2232,21 @@ public function main() -> Unit = {
     assert_string_eq(loader_error_message(visibility), "`secret` is not visible from this module")
 
     let unresolved: LoaderError = UnresolvedImportErr(UnresolvedImportPayload {
-        path: "crate.nope",
+        path: "khi.nope",
         span_start: 30,
         span_end: 40,
     })
     assert_string_eq(loader_error_code(unresolved), "triet::modules::E2104")
-    assert_string_eq(loader_error_message(unresolved), "unresolved import: `crate.nope`")
+    assert_string_eq(loader_error_message(unresolved), "unresolved import: `khi.nope`")
 
     let child_err: LoaderError = ChildParseErrorErr(ChildParseErrorPayload {
-        module_path_text: "crate.broken",
+        module_path_text: "khi.broken",
         message: "expected `}` at offset 42",
         span_start: 50,
         span_end: 60,
     })
     assert_string_eq(loader_error_code(child_err), "triet::modules::E2105")
-    assert_string_eq(loader_error_message(child_err), "parse error in module `crate.broken`")
+    assert_string_eq(loader_error_message(child_err), "parse error in module `khi.broken`")
 
     let io_err: LoaderError = IoErrorErr(IoErrorPayload {
         path: "/nope.tri",
@@ -2378,21 +2378,21 @@ function count_cycle_errors(errs: Vector<LoaderError>) -> Integer = {
 public function cycle_smoke_main() -> Unit = {
     // ── 1. Two-cycle: a imports b imports a ────────────────────────
     let r1: LoadProgramResult = load_program_from_source(
-        "module a { from crate.b import x }\nmodule b { from crate.a import y }"
+        "module a { from khi.b import x }\nmodule b { from khi.a import y }"
     )
     let cycles_r1: Vector<LoaderError> = detect_cycles(r1.program)
     assert(count_cycle_errors(cycles_r1) >= 1)
 
     // ── 2. Three-cycle: a → b → c → a ──────────────────────────────
     let r2: LoadProgramResult = load_program_from_source(
-        "module a { from crate.b import x }\nmodule b { from crate.c import y }\nmodule c { from crate.a import z }"
+        "module a { from khi.b import x }\nmodule b { from khi.c import y }\nmodule c { from khi.a import z }"
     )
     let cycles_r2: Vector<LoaderError> = detect_cycles(r2.program)
     assert(count_cycle_errors(cycles_r2) >= 1)
 
     // ── 3. Diamond: a → b, a → c, b → d, c → d (no cycle) ──────────
     let r3: LoadProgramResult = load_program_from_source(
-        "module a { from crate.b import bb\nfrom crate.c import cc }\nmodule b { from crate.d import dd }\nmodule c { from crate.d import dd }\nmodule d { public function dd() -> Integer = 0 }"
+        "module a { from khi.b import bb\nfrom khi.c import cc }\nmodule b { from khi.d import dd }\nmodule c { from khi.d import dd }\nmodule d { public function dd() -> Integer = 0 }"
     )
     let cycles_r3: Vector<LoaderError> = detect_cycles(r3.program)
     assert(count_cycle_errors(cycles_r3) == 0)
@@ -2413,13 +2413,13 @@ public function cycle_smoke_main() -> Unit = {
 
     // ── 6. Multiple independent cycles ─────────────────────────────
     let r6: LoadProgramResult = load_program_from_source(
-        "module a { from crate.b import x }\nmodule b { from crate.a import y }\nmodule c { from crate.d import p }\nmodule d { from crate.c import q }"
+        "module a { from khi.b import x }\nmodule b { from khi.a import y }\nmodule c { from khi.d import p }\nmodule d { from khi.c import q }"
     )
     let cycles_r6: Vector<LoaderError> = detect_cycles(r6.program)
     assert(count_cycle_errors(cycles_r6) >= 2)
 
     // ── 7. Self-import via parent-drop fallback (no false flag) ───
-    // `from crate.a import x` inside `module a` parent-drops to
+    // `from khi.a import x` inside `module a` parent-drops to
     // `crate` = self → resolve_edge_target's self-loop guard nulls
     // the edge; cycle detector sees no edge.
     let r7: LoadProgramResult = load_program_from_source(
@@ -2430,7 +2430,7 @@ public function cycle_smoke_main() -> Unit = {
 
     // ── 8. Acyclic chain a → b → c (no cycle) ──────────────────────
     let r8: LoadProgramResult = load_program_from_source(
-        "module a { from crate.b import x }\nmodule b { from crate.c import y }\nmodule c { function f() -> Integer = 0 }"
+        "module a { from khi.b import x }\nmodule b { from khi.c import y }\nmodule c { function f() -> Integer = 0 }"
     )
     let cycles_r8: Vector<LoaderError> = detect_cycles(r8.program)
     assert(count_cycle_errors(cycles_r8) == 0)
@@ -2517,7 +2517,7 @@ public function resolver_smoke_main() -> Unit = {
     let f_path_opt: String? = lookup_binding_display(crate_r1, "f")
     match f_path_opt {
         ~0 => assert(false),
-        _ => assert(f_path_opt!! == "crate.f"),
+        _ => assert(f_path_opt!! == "khi.f"),
     }
 
     // ── 2. Child module bound in parent ───────────────────────────
@@ -2531,12 +2531,12 @@ public function resolver_smoke_main() -> Unit = {
     let helper_path_opt: String? = lookup_binding_display(crate_r2, "helper")
     match helper_path_opt {
         ~0 => assert(false),
-        _ => assert(helper_path_opt!! == "crate.helper"),
+        _ => assert(helper_path_opt!! == "khi.helper"),
     }
 
     // ── 3. from-import binds with absolute path ───────────────────
     let r3: LoadProgramResult = load_program_from_source(
-        "module helper { public function aid() -> Integer = 1 }\nfrom crate.helper import aid"
+        "module helper { public function aid() -> Integer = 1 }\nfrom khi.helper import aid"
     )
     let resolved_r3: ResolveResult = resolve_names(r3.program)
     assert(length(resolved_r3.errors) == 0)
@@ -2545,12 +2545,12 @@ public function resolver_smoke_main() -> Unit = {
     let aid_path_opt: String? = lookup_binding_display(crate_r3, "aid")
     match aid_path_opt {
         ~0 => assert(false),
-        _ => assert(aid_path_opt!! == "crate.helper.aid"),
+        _ => assert(aid_path_opt!! == "khi.helper.aid"),
     }
 
     // ── 4. from-import with alias binds to alias name ─────────────
     let r4: LoadProgramResult = load_program_from_source(
-        "module helper { public function aid() -> Integer = 1 }\nfrom crate.helper import aid as helper_aid"
+        "module helper { public function aid() -> Integer = 1 }\nfrom khi.helper import aid as helper_aid"
     )
     let resolved_r4: ResolveResult = resolve_names(r4.program)
     assert(length(resolved_r4.errors) == 0)
@@ -2559,19 +2559,19 @@ public function resolver_smoke_main() -> Unit = {
     let alias_path_opt: String? = lookup_binding_display(crate_r4, "helper_aid")
     match alias_path_opt {
         ~0 => assert(false),
-        _ => assert(alias_path_opt!! == "crate.helper.aid"),
+        _ => assert(alias_path_opt!! == "khi.helper.aid"),
     }
 
     // ── 5. Visibility violation: importing a private item ─────────
     let r5: LoadProgramResult = load_program_from_source(
-        "module helper { function secret() -> Integer = 1 }\nfrom crate.helper import secret"
+        "module helper { function secret() -> Integer = 1 }\nfrom khi.helper import secret"
     )
     let resolved_r5: ResolveResult = resolve_names(r5.program)
     assert(count_visibility_errors(resolved_r5.errors) >= 1)
 
     // ── 6. Unresolved import: module doesn't exist ────────────────
     let r6: LoadProgramResult = load_program_from_source(
-        "from crate.nonexistent import foo"
+        "from khi.nonexistent import foo"
     )
     let resolved_r6: ResolveResult = resolve_names(r6.program)
     assert(count_unresolved_errors(resolved_r6.errors) >= 1)
@@ -2585,7 +2585,7 @@ public function resolver_smoke_main() -> Unit = {
 
     // ── 8. self.X path keyword expansion ──────────────────────────
     // Inside `module outer`, `from self.inner import b` resolves
-    // to crate.outer.inner.b.
+    // to khi.outer.inner.b.
     let r8: LoadProgramResult = load_program_from_source(
         "module outer { module inner { public function b() -> Integer = 1 }\nfrom self.inner import b }"
     )
@@ -2597,7 +2597,7 @@ public function resolver_smoke_main() -> Unit = {
     let b_path_opt: String? = lookup_binding_display(outer, "b")
     match b_path_opt {
         ~0 => assert(false),
-        _ => assert(b_path_opt!! == "crate.outer.inner.b"),
+        _ => assert(b_path_opt!! == "khi.outer.inner.b"),
     }
 
     println("v0.7.6.4 resolver smoke OK")

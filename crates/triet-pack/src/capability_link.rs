@@ -267,11 +267,13 @@ pub fn check_link_capabilities(
         let root_claim = root.caps.iter().find(|c| c.cap_path == cap_path);
 
         match root_claim {
-            None => report.errors.push(CapabilityLinkError::MissingCapabilityClaim {
-                cap_path,
-                requester_pkgs,
-                root_pkg: root.pkg_name.clone(),
-            }),
+            None => report
+                .errors
+                .push(CapabilityLinkError::MissingCapabilityClaim {
+                    cap_path,
+                    requester_pkgs,
+                    root_pkg: root.pkg_name.clone(),
+                }),
             Some(claim) => match claim.level {
                 CapabilityLevel::Grant => {} // accept silently
                 CapabilityLevel::Defer => report.deferrals.push(DeferredCap {
@@ -345,7 +347,11 @@ mod tests {
     #[test]
     fn root_self_grant_with_module_passes() {
         // Root claims sys.io grant, and sys.io is a real module on root.
-        let root = pkg("root", vec![module("sys.io")], vec![cap("sys.io", CapabilityLevel::Grant)]);
+        let root = pkg(
+            "root",
+            vec![module("sys.io")],
+            vec![cap("sys.io", CapabilityLevel::Grant)],
+        );
         let report = check_link_capabilities(&root, &[]);
         assert!(report.is_acceptable(), "errors: {:?}", report.errors);
     }
@@ -414,15 +420,11 @@ mod tests {
         let dep_b = pkg("beta", vec![], vec![cap("sys.io", CapabilityLevel::Grant)]);
         let report = check_link_capabilities(&root, &[dep_a, dep_b]);
         assert_eq!(report.errors.len(), 1);
-        if let CapabilityLinkError::MissingCapabilityClaim {
-            requester_pkgs, ..
-        } = &report.errors[0]
+        if let CapabilityLinkError::MissingCapabilityClaim { requester_pkgs, .. } =
+            &report.errors[0]
         {
             // BTreeSet → sorted iteration.
-            assert_eq!(
-                requester_pkgs,
-                &vec!["alpha".to_owned(), "beta".to_owned()],
-            );
+            assert_eq!(requester_pkgs, &vec!["alpha".to_owned(), "beta".to_owned()],);
         } else {
             panic!("expected E2200");
         }
@@ -447,9 +449,8 @@ mod tests {
 
         let report = check_link_capabilities(&root, &[dep_z, dep_a, dep_b]);
         assert_eq!(report.errors.len(), 1);
-        if let CapabilityLinkError::MissingCapabilityClaim {
-            requester_pkgs, ..
-        } = &report.errors[0]
+        if let CapabilityLinkError::MissingCapabilityClaim { requester_pkgs, .. } =
+            &report.errors[0]
         {
             assert_eq!(
                 requester_pkgs,
@@ -486,7 +487,11 @@ mod tests {
         // Path doesn't resolve AND root would deny. Only E2202 emitted —
         // structural problem dominates; emitting both for the same path
         // is noisy.
-        let root = pkg("root", vec![], vec![cap("sys.notexist", CapabilityLevel::Deny)]);
+        let root = pkg(
+            "root",
+            vec![],
+            vec![cap("sys.notexist", CapabilityLevel::Deny)],
+        );
         let report = check_link_capabilities(&root, &[]);
         assert_eq!(report.errors.len(), 1);
         assert!(matches!(
@@ -499,11 +504,7 @@ mod tests {
 
     #[test]
     fn root_deny_with_dep_request_fires_e2203_deny() {
-        let root = pkg(
-            "root",
-            vec![],
-            vec![cap("dev.disk", CapabilityLevel::Deny)],
-        );
+        let root = pkg("root", vec![], vec![cap("dev.disk", CapabilityLevel::Deny)]);
         let dep = pkg(
             "diskutil",
             vec![module("dev.disk")],
@@ -626,11 +627,7 @@ mod tests {
     fn mixed_grant_refuse_defer_aggregated() {
         let root = pkg(
             "root",
-            vec![
-                module("sys.io"),
-                module("dev.disk"),
-                module("sys.net.dns"),
-            ],
+            vec![module("sys.io"), module("dev.disk"), module("sys.net.dns")],
             vec![
                 cap("sys.io", CapabilityLevel::Grant),
                 cap("dev.disk", CapabilityLevel::Deny),

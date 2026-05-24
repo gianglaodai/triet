@@ -10,7 +10,7 @@
 //   per ADR-0021 §2.2). Plain `if` accepts the refined Trilean
 //   without raising E1033.
 
-from crate.errors import ConfigError, config_error
+from khi.errors import ConfigError, config_error
 from std.text import len as text_length
 
 // Age must be strictly positive. `age > 0` returns `Trilean!` so the

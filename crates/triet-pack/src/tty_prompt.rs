@@ -267,7 +267,11 @@ pub fn render_prompt<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
             }
             match (&entry.origin, entry.is_root) {
                 (Some(o), false) => {
-                    let marker = if o == "Fresh" { "    !! NOT in lockfile" } else { "" };
+                    let marker = if o == "Fresh" {
+                        "    !! NOT in lockfile"
+                    } else {
+                        ""
+                    };
                     writeln!(writer, "         origin={o}{marker}")?;
                 }
                 (_, true) => writeln!(writer, "         (root)")?,
@@ -286,7 +290,10 @@ pub fn render_prompt<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
             writer,
             "  !! Fresh deps were added since the last lockfile commit.",
         )?;
-        writeln!(writer, "  !! Verify hash against your records before granting.")?;
+        writeln!(
+            writer,
+            "  !! Verify hash against your records before granting."
+        )?;
         writeln!(writer)?;
     }
 
@@ -330,12 +337,18 @@ fn print_explanation<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
         writer,
         "    1. A triet.policy rule matched `(cap_path, origin)` and said `prompt`.",
     )?;
-    writeln!(writer, "    2. No rule matched and the resolver fell back to default.")?;
+    writeln!(
+        writer,
+        "    2. No rule matched and the resolver fell back to default."
+    )?;
     writeln!(
         writer,
         "  Grant once (g/d) for this session only, or permanent (G/D) to",
     )?;
-    writeln!(writer, "  write the rule to triet.policy for future sessions.")?;
+    writeln!(
+        writer,
+        "  write the rule to triet.policy for future sessions."
+    )?;
     writeln!(writer)?;
     writer.flush()
 }
@@ -356,7 +369,10 @@ fn print_hash_help<W: Write>(writer: &mut W) -> io::Result<()> {
         writer,
         "  Hash mismatch = different package even if the name is the same. Refuse",
     )?;
-    writeln!(writer, "  if unsure — typosquatters reuse names but cannot fake hashes.")?;
+    writeln!(
+        writer,
+        "  if unsure — typosquatters reuse names but cannot fake hashes."
+    )?;
     writeln!(writer)?;
     writer.flush()
 }
@@ -385,7 +401,10 @@ pub fn prompt_loop<R: BufRead, W: Write>(
             RawChoice::Explain => print_explanation(writer, ctx)?,
             RawChoice::ShowHashHelp => print_hash_help(writer)?,
             RawChoice::Invalid => {
-                writeln!(writer, "  !! invalid choice — please pick one of g/d/G/D/?/h")?;
+                writeln!(
+                    writer,
+                    "  !! invalid choice — please pick one of g/d/G/D/?/h"
+                )?;
                 writeln!(writer)?;
             }
         }
@@ -415,7 +434,11 @@ pub fn context_from_request(req: &PolicyRequest) -> PromptContext {
         .map(|(idx, name)| DepChainEntry {
             name_version: name.clone(),
             iface_hash: None,
-            origin: if idx == 0 { None } else { Some(origin_label.into()) },
+            origin: if idx == 0 {
+                None
+            } else {
+                Some(origin_label.into())
+            },
             is_root: idx == 0,
         })
         .collect();
@@ -731,8 +754,8 @@ mod tests {
     fn render_mismatch_shows_both_hashes() {
         let mut ctx = rich_ctx();
         ctx.requester.lockfile_match = Some(LockfileMatch::Mismatch {
-            lockfile_hash:
-                "aaaaaaaa11111111bbbbbbbb22222222cccccccc33333333dddddddd44444444".into(),
+            lockfile_hash: "aaaaaaaa11111111bbbbbbbb22222222cccccccc33333333dddddddd44444444"
+                .into(),
         });
         let mut buf = Vec::new();
         render_prompt(&mut buf, &ctx).unwrap();
@@ -851,8 +874,7 @@ mod tests {
     #[test]
     fn dev_tty_prompt_non_interactive_returns_unsupported() {
         let dir = tempfile::tempdir().unwrap();
-        let mut prompt =
-            DevTtyPrompt::new(dir.path().join("triet.policy")).non_interactive(true);
+        let mut prompt = DevTtyPrompt::new(dir.path().join("triet.policy")).non_interactive(true);
         let err = prompt
             .prompt(&req("sys.io", "myapp", ResolutionOrigin::Fresh))
             .expect_err("non-interactive must fail-closed");

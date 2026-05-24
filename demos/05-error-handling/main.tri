@@ -12,9 +12,9 @@ module registry;
 from std.io import println
 from std.text import from_integer
 
-from crate.errors import ConfigError
-from crate.validators import validate_age, validate_nickname, validate_age_range
-from crate.registry import find_user_role
+from khi.errors import ConfigError
+from khi.validators import validate_age, validate_nickname, validate_age_range
+from khi.registry import find_user_role
 
 // Final shape produced by a successful registration.
 public struct UserAccount {

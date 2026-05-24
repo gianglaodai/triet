@@ -13,7 +13,7 @@
 // the value as the Zero arm even though the runtime carrier is
 // `RuntimeValue::Null`.
 
-from crate.errors import ConfigError, config_error
+from khi.errors import ConfigError, config_error
 
 // In-memory "registry" — toy lookup matching specific user IDs.
 // Real code would consult a database or HashMap; the toy shape is

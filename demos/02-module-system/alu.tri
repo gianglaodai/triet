@@ -2,7 +2,7 @@
 // Implements half-adder, full-adder, comparator, multiplexer,
 // increment/decrement (ring counter), and a 3-trit ripple-carry adder.
 
-from crate.gates import and_gate, or_gate, xor_gate, not_gate, majority
+from khi.gates import and_gate, or_gate, xor_gate, not_gate, majority
 
 // ── Half adder ────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@
 // each enum as parser features land.
 //
 // v0.7.5.2 — Pratt expressions + atoms. Wires up compiler/lexer.tri
-// via `module lexer;` + `from crate.lexer import …` and grows the
+// via `module lexer;` + `from khi.lexer import …` and grows the
 // parser surface to cover: literals (Integer / Ternary / Trilean /
 // String / NullLiteral / Identifier), parenthesised expressions,
 // unary `Negate`, the full 17-variant `BinaryOperator` Pratt
@@ -138,7 +138,7 @@
 //
 // Variant names carry an `Expr` / `Pattern` / `Type` / `Stmt`
 // suffix to avoid collisions with the Token enum's variants once
-// `crate.lexer` is in scope — Triết binds enum variants into a
+// `khi.lexer` is in scope — Triết binds enum variants into a
 // single global namespace (last-write-wins). Confirmed via the
 // E1003 typecheck error a bare `Add` raises when both `FooKind`
 // and `BarKind` declare it.
@@ -940,7 +940,7 @@ function token_kind_label(token: Token) -> String =
         OwnedKw => "owned",
         StructKw => "struct",
         EnumKw => "enum",
-        CrateKw => "crate",
+        KhiKw => "khi",
         SelfKw => "self",
         SuperKw => "super",
         LtEqGt => "<=>",
@@ -4248,7 +4248,7 @@ function is_as_kw(token: Token) -> Trilean! =
 
 function is_crate_kw(token: Token) -> Trilean! =
     match token {
-        CrateKw => true,
+        KhiKw => true,
         _ => false,
     }
 
@@ -4520,11 +4520,11 @@ function parse_dot_path_root(state: ParserState, what: String) -> ParseIdentStep
                         span_end: nt.span_end,
                     }
                 },
-                CrateKw => {
+                KhiKw => {
                     let advanced: ParserState = advance(state)
                     ~+ ParseIdentStep {
                         state: advanced,
-                        text: "crate",
+                        text: "khi",
                         span_start: nt.span_start,
                         span_end: nt.span_end,
                     }
@@ -5860,8 +5860,8 @@ function main() -> Unit = {
         "(program (import std.io))",
     )
     assert_parse_program(
-        "import crate.lexer",
-        "(program (import crate.lexer))",
+        "import khi.lexer",
+        "(program (import khi.lexer))",
     )
     assert_parse_program(
         "from std.io import println",

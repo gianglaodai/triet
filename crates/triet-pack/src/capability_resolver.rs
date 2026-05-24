@@ -174,9 +174,7 @@ pub enum ResolverError {
     ///
     /// Kept exhaustive so downstream matches don't grow stale
     /// silently when v0.6.10 wires the actual prompt path.
-    #[error(
-        "cap `{cap_path}`: TTY prompt I/O error: {os_error} — treating as Deny"
-    )]
+    #[error("cap `{cap_path}`: TTY prompt I/O error: {os_error} — treating as Deny")]
     #[diagnostic(
         code(triet::capability::E2205),
         help("retry from a working terminal; check terminal capabilities. ADR-0017 §6.")
@@ -544,8 +542,7 @@ mod tests {
             "format_version 1\n\
              rule sys.io fresh prompt\n",
         );
-        let mut r = CapabilityResolver::new(rules)
-            .with_prompt_callback(Box::new(CrashingCallback));
+        let mut r = CapabilityResolver::new(rules).with_prompt_callback(Box::new(CrashingCallback));
         let d = r.resolve(&req("sys.io", "myapp", ResolutionOrigin::Fresh));
         assert_eq!(d.outcome, Trit::Negative);
         match &d.source {

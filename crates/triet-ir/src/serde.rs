@@ -1893,10 +1893,10 @@ fn group_into_modules(functions: &[Function], metas: &[FunctionMeta]) -> Vec<IrM
             let idx = modules.len();
             seen.insert(meta.module_path.clone(), idx);
             // The module_path string is already the AbsolutePath of the module
-            // as an item (e.g., "crate.test" → AbsolutePath { module: ["crate"], name: "test" }).
+            // as an item (e.g., "khi.test" → AbsolutePath { module: ["khi"], name: "test" }).
             let module_path = parse_absolute_path(&meta.module_path).unwrap_or_else(|_| {
                 triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "unknown".into(),
                 )
             });
@@ -1991,7 +1991,7 @@ mod tests {
         IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "add_one".into(),
                 ),
                 functions: vec![function],
@@ -2064,14 +2064,14 @@ mod tests {
             modules: vec![
                 IrModule {
                     path: triet_modules::AbsolutePath::new(
-                        triet_modules::ModulePath::crate_root(),
+                        triet_modules::ModulePath::khi_root(),
                         "lib".into(),
                     ),
                     functions: vec![func_a],
                 },
                 IrModule {
                     path: triet_modules::AbsolutePath::new(
-                        triet_modules::ModulePath::crate_root(),
+                        triet_modules::ModulePath::khi_root(),
                         "main".into(),
                     ),
                     functions: vec![func_b],
@@ -2093,7 +2093,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![
@@ -2153,7 +2153,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![
@@ -2238,7 +2238,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![
@@ -2340,7 +2340,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2419,7 +2419,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2480,7 +2480,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2567,7 +2567,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2626,7 +2626,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2678,7 +2678,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2714,7 +2714,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -2763,7 +2763,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "main".into(),
                 ),
                 functions: vec![Function {
@@ -2862,7 +2862,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     String::new(),
                 ),
                 functions: vec![Function {
@@ -3026,7 +3026,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -3057,7 +3057,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -3110,7 +3110,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -3141,7 +3141,7 @@ mod tests {
         let program = IrProgram {
             modules: vec![IrModule {
                 path: triet_modules::AbsolutePath::new(
-                    triet_modules::ModulePath::crate_root(),
+                    triet_modules::ModulePath::khi_root(),
                     "test".into(),
                 ),
                 functions: vec![Function {
@@ -3233,14 +3233,14 @@ mod tests {
 
         let metas = vec![
             FunctionMeta {
-                module_path: "crate.bar".into(),
+                module_path: "khi.bar".into(),
                 name: Some("g".into()),
                 params: vec![],
                 return_type: TypeTag::Unit,
                 func_id: FuncId(0),
             },
             FunctionMeta {
-                module_path: "crate.foo".into(),
+                module_path: "khi.foo".into(),
                 name: Some("f".into()),
                 params: vec![],
                 return_type: TypeTag::Unit,

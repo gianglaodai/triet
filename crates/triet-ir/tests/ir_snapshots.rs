@@ -85,7 +85,7 @@ fn make_factorial_ir() -> IrProgram {
 
     IrProgram {
         modules: vec![IrModule {
-            path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+            path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
             functions: vec![func],
         }],
         constants: pool,
@@ -163,7 +163,7 @@ fn make_if_else_ir() -> IrProgram {
 
     IrProgram {
         modules: vec![IrModule {
-            path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+            path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
             functions: vec![func],
         }],
         constants: pool,
@@ -228,7 +228,7 @@ fn make_while_loop_ir() -> IrProgram {
 
     IrProgram {
         modules: vec![IrModule {
-            path: AbsolutePath::new(ModulePath::crate_root(), "test".into()),
+            path: AbsolutePath::new(ModulePath::khi_root(), "test".into()),
             functions: vec![func],
         }],
         constants: pool,

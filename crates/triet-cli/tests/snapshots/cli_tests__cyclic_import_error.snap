@@ -1,9 +1,10 @@
 ---
 source: crates/triet-cli/tests/cli_tests.rs
+assertion_line: 89
 expression: stderr
 ---
 triet::modules::E2100
 
-  × cyclic module dependency: crate → b → crate
+  × cyclic module dependency: khi → b → khi
   help: modules cannot import each other; refactor shared definitions into a
         third module

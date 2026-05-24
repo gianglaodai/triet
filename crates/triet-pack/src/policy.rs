@@ -835,26 +835,34 @@ mod tests {
     #[test]
     fn rejects_bom() {
         let err = PolicyRules::parse("\u{FEFF}format_version 1\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("BOM")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("BOM"))
+        );
     }
 
     #[test]
     fn rejects_crlf() {
         let err = PolicyRules::parse("format_version 1\r\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("CRLF")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("CRLF"))
+        );
     }
 
     #[test]
     fn rejects_inline_comment() {
         let err = PolicyRules::parse("format_version 1 # nope\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("inline")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("inline"))
+        );
     }
 
     #[test]
     fn rejects_unicode_whitespace() {
         let err = PolicyRules::parse("format_version 1\nrule\u{00A0}sys.io lockfile +1\n")
             .expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("non-ASCII")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("non-ASCII"))
+        );
     }
 
     // ── Policy-specific errors ────────────────────────────────────
@@ -874,8 +882,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_decision() {
-        let err = PolicyRules::parse("format_version 1\nrule sys.io * maybe\n")
-            .expect_err("must reject");
+        let err =
+            PolicyRules::parse("format_version 1\nrule sys.io * maybe\n").expect_err("must reject");
         assert!(matches!(
             err,
             PolicyError::UnknownDecision {
@@ -919,34 +927,46 @@ mod tests {
 
     #[test]
     fn rejects_default_prompt() {
-        let err = PolicyRules::parse("format_version 1\ndefault prompt\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("static")));
+        let err =
+            PolicyRules::parse("format_version 1\ndefault prompt\n").expect_err("must reject");
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("static"))
+        );
     }
 
     #[test]
     fn rejects_duplicate_default() {
-        let err =
-            PolicyRules::parse("format_version 1\ndefault +1\ndefault -1\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 3, ref reason } if reason.contains("duplicate")));
+        let err = PolicyRules::parse("format_version 1\ndefault +1\ndefault -1\n")
+            .expect_err("must reject");
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 3, ref reason } if reason.contains("duplicate"))
+        );
     }
 
     #[test]
     fn rejects_unknown_directive() {
-        let err = PolicyRules::parse("format_version 1\nfrobnicate yes\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("frobnicate")));
+        let err =
+            PolicyRules::parse("format_version 1\nfrobnicate yes\n").expect_err("must reject");
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("frobnicate"))
+        );
     }
 
     #[test]
     fn rejects_directive_before_format_version() {
         let err = PolicyRules::parse("rule sys.io * +1\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("precedes")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 1, ref reason } if reason.contains("precedes"))
+        );
     }
 
     #[test]
     fn rejects_duplicate_format_version() {
         let err =
             PolicyRules::parse("format_version 1\nformat_version 1\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("duplicate")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("duplicate"))
+        );
     }
 
     #[test]
@@ -973,7 +993,9 @@ mod tests {
     fn rejects_cap_path_with_invalid_segments() {
         let err =
             PolicyRules::parse("format_version 1\nrule sys..io * +1\n").expect_err("must reject");
-        assert!(matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("empty segment")));
+        assert!(
+            matches!(err, PolicyError::ConfigParse { line: 2, ref reason } if reason.contains("empty segment"))
+        );
     }
 
     #[test]
@@ -1062,7 +1084,10 @@ mod tests {
             origin: OriginMatcher::Lockfile,
             decision: Decision::Plus1,
         });
-        assert!(inserted, "fresh slot expected — dev.gpu absent from happy_path");
+        assert!(
+            inserted,
+            "fresh slot expected — dev.gpu absent from happy_path"
+        );
 
         p.save(&path).expect("save ok");
         let p2 = PolicyRules::load(&path).expect("load ok");

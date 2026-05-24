@@ -173,10 +173,11 @@ pub enum Token {
     /// `enum` — enum definition (v0.2+).
     #[token("enum")]
     Enum,
-    /// `crate` — path keyword: refers to the current crate root.
-    /// Reserved per ADR-0005; path syntax usage lands in v0.2.x.5.
-    #[token("crate")]
-    Crate,
+    /// `khi` — path keyword: refers to the current khí (package) root.
+    /// Reserved per ADR-0005 (formerly `crate`) + ADR-0024 (Khí + Đạo
+    /// identity naming, Đạo Đức Kinh §28 phác tán tắc vi khí).
+    #[token("khi")]
+    Khi,
     /// `self` — path keyword: refers to the current module.
     /// Reserved per ADR-0005; path syntax usage lands in v0.2.x.5.
     #[token("self")]

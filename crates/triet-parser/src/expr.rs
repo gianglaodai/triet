@@ -572,10 +572,13 @@ fn parse_outcome_propagate(parser: &mut Parser<'_>, inner: ExprId) -> Result<Exp
     // Expect `|name|` closure-capture marker (single `|` token).
     parser.expect(&Token::Pipe, "`|` (closure capture for ~?)")?;
     let (capture_token, capture_span) =
-        parser.peek().cloned().ok_or_else(|| ParseError::UnexpectedEof {
-            expected: "binding name or `_`".to_owned(),
-            span: parser.eof_span(),
-        })?;
+        parser
+            .peek()
+            .cloned()
+            .ok_or_else(|| ParseError::UnexpectedEof {
+                expected: "binding name or `_`".to_owned(),
+                span: parser.eof_span(),
+            })?;
     let capture_name = match capture_token {
         Token::Identifier(name) => {
             parser.advance();
@@ -615,10 +618,9 @@ fn parse_outcome_default(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprI
     parser.expect(&Token::TildeColon, "`~:`")?;
     let default = parse_expression_bp(parser, 0)?;
     let span = arena_span(parser, inner).start..arena_span(parser, default).end;
-    Ok(parser.arena.alloc_expression(Spanned::new(
-        Expr::OutcomeDefault { inner, default },
-        span,
-    )))
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::OutcomeDefault { inner, default }, span)))
 }
 
 fn parse_dot_postfix(

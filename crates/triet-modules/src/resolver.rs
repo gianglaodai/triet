@@ -367,8 +367,8 @@ fn resolve_path_keywords(
     let importer = program.module(importer_id);
 
     match segments[0].as_str() {
-        "crate" => {
-            // Already absolute — return as-is.
+        "khi" => {
+            // Already absolute per ADR-0024 — return as-is.
             segments.to_vec()
         }
         "self" => {
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     fn from_import_public_function() {
         let program = load_filesystem_result(&[
-            ("main.tri", "module helper\nfrom crate.helper import greet"),
+            ("main.tri", "module helper\nfrom khi.helper import greet"),
             ("helper.tri", "public function greet() = 1"),
         ])
         .unwrap();
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn from_import_private_function_errors() {
         let errors = load_filesystem_result(&[
-            ("main.tri", "module helper\nfrom crate.helper import secret"),
+            ("main.tri", "module helper\nfrom khi.helper import secret"),
             ("helper.tri", "function secret() = 42"),
         ])
         .unwrap_err();
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn from_import_nonexistent_name_errors() {
         let errors = load_filesystem_result(&[
-            ("main.tri", "module helper\nfrom crate.helper import nope"),
+            ("main.tri", "module helper\nfrom khi.helper import nope"),
             ("helper.tri", "public function greet() = 1"),
         ])
         .unwrap_err();
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn from_import_nonexistent_module_errors() {
-        let errors = load_in_memory_result("from crate.ghost import thing").unwrap_err();
+        let errors = load_in_memory_result("from khi.ghost import thing").unwrap_err();
         assert!(
             errors
                 .iter()

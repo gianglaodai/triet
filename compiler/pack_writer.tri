@@ -23,39 +23,39 @@ from std.collections.vector import new, push, length, get
 from std.text import into_bytes, from_bytes, concat, len as text_len
 from std.string import substring
 from std.crypto import blake3_hash
-from crate.ir_lowerer import TypeTag, TritTag, TryteTag, IntegerTag, LongTag, TrileanTag, StringTag, UnitTag, NullableTag, VectorTag, HashMapTag, OutcomeTag
-from crate.ir_lowerer import TypeTagArena, AllocTagResult, PrimitiveMarker
-from crate.ir_lowerer import TypeTagNullablePayload, TypeTagVectorPayload, TypeTagHashMapPayload, TypeTagOutcomePayload
-from crate.ir_lowerer import Constant, TritConst, TryteConst, IntegerConst, LongConst, TrileanConst, StringConst, UnitConst, NullConst
-from crate.ir_lowerer import ConstantTritPayload, ConstantTrytePayload, ConstantIntegerPayload, ConstantLongPayload, ConstantTrileanPayload, ConstantStringPayload
-from crate.ir_lowerer import ConstantPool
-from crate.ir_lowerer import type_tag_arena_new, get_type_tag, constant_pool_new, constant_type_tag, alloc_type_tag
-from crate.ir_lowerer import alloc_tag_trit, alloc_tag_tryte, alloc_tag_integer, alloc_tag_long, alloc_tag_trilean, alloc_tag_string, alloc_tag_unit, alloc_tag_nullable, alloc_tag_vector, alloc_tag_hashmap, alloc_tag_outcome
-from crate.ir_lowerer import ValueId, BlockId, FuncId, ConstId
-from crate.ir_lowerer import Operand, ValueOp, ConstOp, PhiIncoming
-from crate.ir_lowerer import BuiltinName, PrintlnBuiltin, PrintBuiltin, AssertBuiltin, AssertEqBuiltin, FStringConcatBuiltin, TextLenBuiltin, TextConcatBuiltin, TextFromIntegerBuiltin, VectorNewBuiltin, VectorPushBuiltin, VectorGetBuiltin, VectorLengthBuiltin, HashMapNewBuiltin, HashMapInsertBuiltin, HashMapGetBuiltin, HashMapKeysBuiltin, HashMapContainsBuiltin, ReadFileBuiltin, WriteFileBuiltin, FileExistsBuiltin, PathJoinBuiltin, PathParentBuiltin, PathBasenameBuiltin, StringSubstringBuiltin, StringSplitBuiltin, StringIndexOfBuiltin, ParseIntegerBuiltin, TextIntoBytesBuiltin, TextFromBytesBuiltin, Blake3HashBuiltin, WriteFileBytesBuiltin
-from crate.ir_lowerer import Instruction
-from crate.ir_lowerer import ConstInst, AddInst, SubInst, MulInst, DivInst, ModInst, PowInst, NegInst
-from crate.ir_lowerer import LukAndInst, LukOrInst, LukImpliesInst, LukXorInst, LukIffInst, KleeneImpliesInst, KleeneXorInst, KleeneIffInst
-from crate.ir_lowerer import EqInst, NeInst, LtInst, LeInst, GtInst, GeInst
-from crate.ir_lowerer import ToIntegerInst, ToTryteInst, ToLongInst, ToTritInst, ToTrileanInst
-from crate.ir_lowerer import StructNewInst, FieldGetInst, FieldSetInst
-from crate.ir_lowerer import EnumNewInst, EnumTagInst, EnumPayloadInst
-from crate.ir_lowerer import NullWrapInst, NullUnwrapInst, NullCheckInst
-from crate.ir_lowerer import CallLocalInst, CallCrossModuleInst, WitnessCallInst, CallBuiltinInst
-from crate.ir_lowerer import ClosureNewInst, ClosureCallInst
-from crate.ir_lowerer import BrInst, BrIfInst, BrTrileanInst, RetInst, UnreachableInst, PhiInst
-from crate.ir_lowerer import OutcomeNewPositiveInst, OutcomeNewNegativeInst, OutcomeNewNullInst, OutcomeDiscriminantInst, OutcomeUnwrapValueInst, OutcomeUnwrapErrorInst
-from crate.ir_lowerer import InstConstPayload, InstBinaryOpPayload, InstPowPayload, InstUnaryOpPayload
-from crate.ir_lowerer import InstStructNewPayload, InstFieldGetPayload, InstFieldSetPayload
-from crate.ir_lowerer import InstEnumNewPayload, InstEnumTagPayload, InstEnumPayloadPayload
-from crate.ir_lowerer import InstNullWrapPayload, InstNullUnwrapPayload, InstNullCheckPayload
-from crate.ir_lowerer import InstCallLocalPayload, InstCallCrossModulePayload, InstWitnessCallPayload, InstCallBuiltinPayload
-from crate.ir_lowerer import InstClosureNewPayload, InstClosureCallPayload
-from crate.ir_lowerer import InstBrPayload, InstBrIfPayload, InstBrTrileanPayload, InstRetPayload, InstPhiPayload
-from crate.ir_lowerer import InstOutcomeUnaryPayload, InstOutcomeCtorPayload, InstOutcomeNewNullPayload
-from crate.ir_lowerer import BasicBlock, IrFunctionParam, Function, IrModule, IrProgram, WitnessTable
-from crate.ir_lowerer import lower_source
+from khi.ir_lowerer import TypeTag, TritTag, TryteTag, IntegerTag, LongTag, TrileanTag, StringTag, UnitTag, NullableTag, VectorTag, HashMapTag, OutcomeTag
+from khi.ir_lowerer import TypeTagArena, AllocTagResult, PrimitiveMarker
+from khi.ir_lowerer import TypeTagNullablePayload, TypeTagVectorPayload, TypeTagHashMapPayload, TypeTagOutcomePayload
+from khi.ir_lowerer import Constant, TritConst, TryteConst, IntegerConst, LongConst, TrileanConst, StringConst, UnitConst, NullConst
+from khi.ir_lowerer import ConstantTritPayload, ConstantTrytePayload, ConstantIntegerPayload, ConstantLongPayload, ConstantTrileanPayload, ConstantStringPayload
+from khi.ir_lowerer import ConstantPool
+from khi.ir_lowerer import type_tag_arena_new, get_type_tag, constant_pool_new, constant_type_tag, alloc_type_tag
+from khi.ir_lowerer import alloc_tag_trit, alloc_tag_tryte, alloc_tag_integer, alloc_tag_long, alloc_tag_trilean, alloc_tag_string, alloc_tag_unit, alloc_tag_nullable, alloc_tag_vector, alloc_tag_hashmap, alloc_tag_outcome
+from khi.ir_lowerer import ValueId, BlockId, FuncId, ConstId
+from khi.ir_lowerer import Operand, ValueOp, ConstOp, PhiIncoming
+from khi.ir_lowerer import BuiltinName, PrintlnBuiltin, PrintBuiltin, AssertBuiltin, AssertEqBuiltin, FStringConcatBuiltin, TextLenBuiltin, TextConcatBuiltin, TextFromIntegerBuiltin, VectorNewBuiltin, VectorPushBuiltin, VectorGetBuiltin, VectorLengthBuiltin, HashMapNewBuiltin, HashMapInsertBuiltin, HashMapGetBuiltin, HashMapKeysBuiltin, HashMapContainsBuiltin, ReadFileBuiltin, WriteFileBuiltin, FileExistsBuiltin, PathJoinBuiltin, PathParentBuiltin, PathBasenameBuiltin, StringSubstringBuiltin, StringSplitBuiltin, StringIndexOfBuiltin, ParseIntegerBuiltin, TextIntoBytesBuiltin, TextFromBytesBuiltin, Blake3HashBuiltin, WriteFileBytesBuiltin
+from khi.ir_lowerer import Instruction
+from khi.ir_lowerer import ConstInst, AddInst, SubInst, MulInst, DivInst, ModInst, PowInst, NegInst
+from khi.ir_lowerer import LukAndInst, LukOrInst, LukImpliesInst, LukXorInst, LukIffInst, KleeneImpliesInst, KleeneXorInst, KleeneIffInst
+from khi.ir_lowerer import EqInst, NeInst, LtInst, LeInst, GtInst, GeInst
+from khi.ir_lowerer import ToIntegerInst, ToTryteInst, ToLongInst, ToTritInst, ToTrileanInst
+from khi.ir_lowerer import StructNewInst, FieldGetInst, FieldSetInst
+from khi.ir_lowerer import EnumNewInst, EnumTagInst, EnumPayloadInst
+from khi.ir_lowerer import NullWrapInst, NullUnwrapInst, NullCheckInst
+from khi.ir_lowerer import CallLocalInst, CallCrossModuleInst, WitnessCallInst, CallBuiltinInst
+from khi.ir_lowerer import ClosureNewInst, ClosureCallInst
+from khi.ir_lowerer import BrInst, BrIfInst, BrTrileanInst, RetInst, UnreachableInst, PhiInst
+from khi.ir_lowerer import OutcomeNewPositiveInst, OutcomeNewNegativeInst, OutcomeNewNullInst, OutcomeDiscriminantInst, OutcomeUnwrapValueInst, OutcomeUnwrapErrorInst
+from khi.ir_lowerer import InstConstPayload, InstBinaryOpPayload, InstPowPayload, InstUnaryOpPayload
+from khi.ir_lowerer import InstStructNewPayload, InstFieldGetPayload, InstFieldSetPayload
+from khi.ir_lowerer import InstEnumNewPayload, InstEnumTagPayload, InstEnumPayloadPayload
+from khi.ir_lowerer import InstNullWrapPayload, InstNullUnwrapPayload, InstNullCheckPayload
+from khi.ir_lowerer import InstCallLocalPayload, InstCallCrossModulePayload, InstWitnessCallPayload, InstCallBuiltinPayload
+from khi.ir_lowerer import InstClosureNewPayload, InstClosureCallPayload
+from khi.ir_lowerer import InstBrPayload, InstBrIfPayload, InstBrTrileanPayload, InstRetPayload, InstPhiPayload
+from khi.ir_lowerer import InstOutcomeUnaryPayload, InstOutcomeCtorPayload, InstOutcomeNewNullPayload
+from khi.ir_lowerer import BasicBlock, IrFunctionParam, Function, IrModule, IrProgram, WitnessTable
+from khi.ir_lowerer import lower_source
 
 // ── Errors ─────────────────────────────────────────────────────────
 

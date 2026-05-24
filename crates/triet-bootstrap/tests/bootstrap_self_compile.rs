@@ -24,7 +24,7 @@
 //!      `SourceLoaded(StringPayload)` lost the String content;
 //!      switched to direct `SourceLoaded(String)`).
 //!   2. `v0.7.x.runtime-fix.write-function-table-module-prefix`
-//!      (Triết-side `lower_module` now seeds `["crate"]` segments).
+//!      (Triết-side `lower_module` now seeds `["khi"]` segments).
 //!   3. `v0.7.x.runtime-fix.block-emission-order`
 //!      (Triết-side `write_code_module_funcs` now sorts blocks by
 //!      `id.raw` before serialization, matching Rust's

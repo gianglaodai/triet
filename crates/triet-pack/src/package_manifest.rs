@@ -160,10 +160,12 @@ impl PackageManifest {
                             reason: "duplicate `name` directive".into(),
                         });
                     }
-                    let n = parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                        line: line_no,
-                        reason: "missing pkg name".into(),
-                    })?;
+                    let n = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: "missing pkg name".into(),
+                        })?;
                     if parts.next().is_some() {
                         return Err(PackageManifestError::Malformed {
                             line: line_no,
@@ -190,10 +192,12 @@ impl PackageManifest {
                             reason: "duplicate `version` directive".into(),
                         });
                     }
-                    let v_str = parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                        line: line_no,
-                        reason: "missing version".into(),
-                    })?;
+                    let v_str = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: "missing version".into(),
+                        })?;
                     if parts.next().is_some() {
                         return Err(PackageManifestError::Malformed {
                             line: line_no,
@@ -209,16 +213,19 @@ impl PackageManifest {
 
                 "requires" => {
                     require_format_version(format_version_seen, line_no)?;
-                    let cap_path =
-                        parts.next().ok_or_else(|| PackageManifestError::Malformed {
+                    let cap_path = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
                             line: line_no,
                             reason: "missing cap_path".into(),
                         })?;
                     let level_tok =
-                        parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                            line: line_no,
-                            reason: "missing level after cap_path".into(),
-                        })?;
+                        parts
+                            .next()
+                            .ok_or_else(|| PackageManifestError::Malformed {
+                                line: line_no,
+                                reason: "missing level after cap_path".into(),
+                            })?;
                     if parts.next().is_some() {
                         return Err(PackageManifestError::Malformed {
                             line: line_no,
@@ -226,16 +233,15 @@ impl PackageManifest {
                         });
                     }
                     validate_cap_path(cap_path, line_no)?;
-                    let level =
-                        parse_level_token(level_tok).ok_or_else(|| {
-                            PackageManifestError::Malformed {
-                                line: line_no,
-                                reason: format!(
-                                    "unknown level `{level_tok}` — expected one of: \
+                    let level = parse_level_token(level_tok).ok_or_else(|| {
+                        PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: format!(
+                                "unknown level `{level_tok}` — expected one of: \
                                      grant, ambient, deny, defer"
-                                ),
-                            }
-                        })?;
+                            ),
+                        }
+                    })?;
                     if requires.iter().any(|c| c.cap_path == cap_path) {
                         return Err(PackageManifestError::Malformed {
                             line: line_no,
@@ -250,22 +256,30 @@ impl PackageManifest {
 
                 "dep" => {
                     require_format_version(format_version_seen, line_no)?;
-                    let dep_name = parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                        line: line_no,
-                        reason: "missing dep name".into(),
-                    })?;
-                    let min_str = parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                        line: line_no,
-                        reason: "missing dep min version".into(),
-                    })?;
-                    let max_str = parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                        line: line_no,
-                        reason: "missing dep max_excl version".into(),
-                    })?;
-                    let hash_str = parts.next().ok_or_else(|| PackageManifestError::Malformed {
-                        line: line_no,
-                        reason: "missing dep iface_hash".into(),
-                    })?;
+                    let dep_name = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: "missing dep name".into(),
+                        })?;
+                    let min_str = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: "missing dep min version".into(),
+                        })?;
+                    let max_str = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: "missing dep max_excl version".into(),
+                        })?;
+                    let hash_str = parts
+                        .next()
+                        .ok_or_else(|| PackageManifestError::Malformed {
+                            line: line_no,
+                            reason: "missing dep iface_hash".into(),
+                        })?;
                     if parts.next().is_some() {
                         return Err(PackageManifestError::Malformed {
                             line: line_no,
@@ -281,18 +295,16 @@ impl PackageManifest {
                             ),
                         });
                     }
-                    let min = parse_semver(min_str).ok_or_else(|| {
-                        PackageManifestError::Malformed {
+                    let min =
+                        parse_semver(min_str).ok_or_else(|| PackageManifestError::Malformed {
                             line: line_no,
                             reason: format!("bad dep min version `{min_str}`"),
-                        }
-                    })?;
-                    let max = parse_semver(max_str).ok_or_else(|| {
-                        PackageManifestError::Malformed {
+                        })?;
+                    let max =
+                        parse_semver(max_str).ok_or_else(|| PackageManifestError::Malformed {
                             line: line_no,
                             reason: format!("bad dep max version `{max_str}`"),
-                        }
-                    })?;
+                        })?;
                     let hash_bytes = parse_hash::<IFACE_HASH_LEN>(hash_str).ok_or_else(|| {
                         PackageManifestError::Malformed {
                             line: line_no,
@@ -411,8 +423,8 @@ impl PackageManifest {
     /// [`StoreError::PackageManifest`] when the file parses with a
     /// rule violation.
     pub fn load(path: &Path) -> StoreResult<Self> {
-        let text = fs::read_to_string(path)
-            .map_err(|e| StoreError::io(path.display().to_string(), e))?;
+        let text =
+            fs::read_to_string(path).map_err(|e| StoreError::io(path.display().to_string(), e))?;
         Self::parse(&text).map_err(StoreError::from)
     }
 
@@ -554,7 +566,9 @@ fn validate_cap_path(s: &str, line: usize) -> Result<(), PackageManifestError> {
     if segments.iter().any(|seg| seg.is_empty()) {
         return Err(PackageManifestError::Malformed {
             line,
-            reason: format!("malformed cap_path `{s}` — empty segment (double `.` or trailing `.`?)"),
+            reason: format!(
+                "malformed cap_path `{s}` — empty segment (double `.` or trailing `.`?)"
+            ),
         });
     }
     for seg in &segments {
@@ -741,21 +755,27 @@ mod tests {
     fn rejects_bom() {
         let text = "\u{FEFF}format_version 1\nname x\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject BOM");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 1, ref reason } if reason.contains("BOM")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 1, ref reason } if reason.contains("BOM"))
+        );
     }
 
     #[test]
     fn rejects_crlf() {
         let text = "format_version 1\r\nname x\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject CRLF");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 1, ref reason } if reason.contains("CRLF")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 1, ref reason } if reason.contains("CRLF"))
+        );
     }
 
     #[test]
     fn rejects_inline_comment() {
         let text = "format_version 1\nname x # inline\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject inline #");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("inline")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("inline"))
+        );
     }
 
     #[test]
@@ -763,7 +783,9 @@ mod tests {
         // U+00A0 NBSP between tokens.
         let text = "format_version 1\nname\u{00A0}x\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject NBSP");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("non-ASCII")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("non-ASCII"))
+        );
     }
 
     #[test]
@@ -773,7 +795,9 @@ mod tests {
         text.push_str(&"a".repeat(MAX_LINE_LEN));
         text.push('\n');
         let err = PackageManifest::parse(&text).expect_err("must reject long line");
-        assert!(matches!(err, PackageManifestError::Malformed { ref reason, .. } if reason.contains("line exceeds")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { ref reason, .. } if reason.contains("line exceeds"))
+        );
     }
 
     #[test]
@@ -781,14 +805,18 @@ mod tests {
         let mut text = String::from("format_version 1\n");
         text.push_str(&"# pad\n".repeat(MAX_FILE_SIZE / 6 + 1));
         let err = PackageManifest::parse(&text).expect_err("must reject big file");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 0, ref reason } if reason.contains("file exceeds")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 0, ref reason } if reason.contains("file exceeds"))
+        );
     }
 
     #[test]
     fn rejects_unknown_directive() {
         let text = "format_version 1\nfrobnicate yes\nname x\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject unknown");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("frobnicate")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("frobnicate"))
+        );
     }
 
     #[test]
@@ -796,14 +824,18 @@ mod tests {
         let text = "name x\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
         // First "name" line fires `directive precedes format_version`.
-        assert!(matches!(err, PackageManifestError::Malformed { line: 1, ref reason } if reason.contains("precedes")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 1, ref reason } if reason.contains("precedes"))
+        );
     }
 
     #[test]
     fn rejects_duplicate_format_version() {
         let text = "format_version 1\nformat_version 1\nname x\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject dup");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("duplicate")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 2, ref reason } if reason.contains("duplicate"))
+        );
     }
 
     #[test]
@@ -823,14 +855,18 @@ mod tests {
     fn rejects_missing_name() {
         let text = "format_version 1\nversion 0.1.0\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 0, ref reason } if reason.contains("missing `name`")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 0, ref reason } if reason.contains("missing `name`"))
+        );
     }
 
     #[test]
     fn rejects_missing_version() {
         let text = "format_version 1\nname x\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 0, ref reason } if reason.contains("missing `version`")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 0, ref reason } if reason.contains("missing `version`"))
+        );
     }
 
     // ── Capability path validation ──────────────────────────────────
@@ -852,21 +888,27 @@ mod tests {
     fn rejects_empty_cap_segment() {
         let text = "format_version 1\nname x\nversion 0.1.0\nrequires sys..io grant\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("empty segment")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("empty segment"))
+        );
     }
 
     #[test]
     fn rejects_duplicate_requires() {
         let text = "format_version 1\nname x\nversion 0.1.0\nrequires sys.io grant\nrequires sys.io deny\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 5, ref reason } if reason.contains("duplicate")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 5, ref reason } if reason.contains("duplicate"))
+        );
     }
 
     #[test]
     fn rejects_unknown_level_token() {
         let text = "format_version 1\nname x\nversion 0.1.0\nrequires sys.io frobnicate\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("unknown level")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("unknown level"))
+        );
     }
 
     #[test]
@@ -891,10 +933,11 @@ mod tests {
 
     #[test]
     fn rejects_bad_hash_hex() {
-        let text =
-            "format_version 1\nname x\nversion 0.1.0\ndep libx 1.0.0 2.0.0 not_hex\n";
+        let text = "format_version 1\nname x\nversion 0.1.0\ndep libx 1.0.0 2.0.0 not_hex\n";
         let err = PackageManifest::parse(text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("iface_hash")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("iface_hash"))
+        );
     }
 
     #[test]
@@ -905,7 +948,9 @@ mod tests {
              dep libx 1.0.0 2.0.0 {h}\ndep libx 1.1.0 2.0.0 {h}\n",
         );
         let err = PackageManifest::parse(&text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 5, ref reason } if reason.contains("duplicate")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 5, ref reason } if reason.contains("duplicate"))
+        );
     }
 
     #[test]
@@ -913,11 +958,12 @@ mod tests {
         // Canonical form is lowercase hex; uppercase is a refuse-to-load.
         let mut upper = hex_encode(&sample_hash());
         upper.make_ascii_uppercase();
-        let text = format!(
-            "format_version 1\nname x\nversion 0.1.0\ndep libx 1.0.0 2.0.0 {upper}\n"
-        );
+        let text =
+            format!("format_version 1\nname x\nversion 0.1.0\ndep libx 1.0.0 2.0.0 {upper}\n");
         let err = PackageManifest::parse(&text).expect_err("must reject");
-        assert!(matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("iface_hash")));
+        assert!(
+            matches!(err, PackageManifestError::Malformed { line: 4, ref reason } if reason.contains("iface_hash"))
+        );
     }
 
     // ── File I/O round-trip ─────────────────────────────────────────

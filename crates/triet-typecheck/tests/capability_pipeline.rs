@@ -56,7 +56,7 @@ fn user_program_with_imports(imports: &[(&str, &str)]) -> ResolvedProgram {
         );
     }
     let module = Module {
-        path: ModulePath::crate_root(),
+        path: ModulePath::khi_root(),
         source_path: None,
         arena_id: ArenaId(0),
         items: Vec::new(),
@@ -89,11 +89,7 @@ fn manifest(requires: Vec<(&str, CapabilityLevel)>) -> PackageManifest {
 
 /// Build an `AbiMetadata` with the given name + module paths + caps.
 /// Used to simulate a `.tripack` for the link-stage check.
-fn pack(
-    name: &str,
-    module_paths: &[&str],
-    caps: Vec<(&str, CapabilityLevel)>,
-) -> AbiMetadata {
+fn pack(name: &str, module_paths: &[&str], caps: Vec<(&str, CapabilityLevel)>) -> AbiMetadata {
     let mut m = AbiMetadata::empty(name, SemVer::new(0, 1, 0));
     m.modules = module_paths
         .iter()
@@ -224,11 +220,7 @@ fn link_root_deny_with_dep_request_fires_e2203() {
     // Root authoritatively refuses a path some dep wants — refuse-to-
     // link with E2203. Mirrors `apt`'s "package X depends on Y but Y
     // is held back" but at the capability layer.
-    let root = pack(
-        "myapp",
-        &[],
-        vec![("dev.disk", CapabilityLevel::Deny)],
-    );
+    let root = pack("myapp", &[], vec![("dev.disk", CapabilityLevel::Deny)]);
     let disk_lib = pack(
         "diskutil",
         &["dev.disk"],

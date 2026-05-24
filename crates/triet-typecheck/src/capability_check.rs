@@ -164,10 +164,7 @@ pub fn check_capabilities(
             }
 
             // ADR-0016 §2 — exact match, no path inheritance.
-            let claim = manifest
-                .requires
-                .iter()
-                .find(|c| c.cap_path == cap_path);
+            let claim = manifest.requires.iter().find(|c| c.cap_path == cap_path);
 
             match claim {
                 None => errors.push(CapabilityError::MissingCapabilityClaim {
@@ -235,7 +232,7 @@ mod tests {
             );
         }
         let module = Module {
-            path: ModulePath::crate_root(),
+            path: ModulePath::khi_root(),
             source_path: None,
             arena_id: ArenaId(0),
             items: Vec::new(),
@@ -293,7 +290,7 @@ mod tests {
 
     #[test]
     fn crate_imports_skip_check() {
-        let program = program_with_imports(&[("helper", "crate.util.helper")]);
+        let program = program_with_imports(&[("helper", "khi.util.helper")]);
         let manifest = manifest_with(vec![]);
         assert!(check_capabilities(&program, &manifest).is_empty());
     }
@@ -431,9 +428,7 @@ mod tests {
         let paths: HashSet<String> = errs
             .iter()
             .filter_map(|e| match e {
-                CapabilityError::MissingCapabilityClaim { cap_path, .. } => {
-                    Some(cap_path.clone())
-                }
+                CapabilityError::MissingCapabilityClaim { cap_path, .. } => Some(cap_path.clone()),
                 CapabilityError::SelfContradictoryCapability { .. } => None,
             })
             .collect();
@@ -445,10 +440,10 @@ mod tests {
     #[test]
     fn mixed_passing_and_failing_imports() {
         let program = program_with_imports(&[
-            ("ok_print", "sys.io.println"),       // claim present
-            ("std_print", "std.io.println"),      // ambient, skip
-            ("crate_helper", "crate.util.h"),     // intra-pkg, skip
-            ("missing", "dev.disk.read"),         // no claim → E2200
+            ("ok_print", "sys.io.println"),   // claim present
+            ("std_print", "std.io.println"),  // ambient, skip
+            ("crate_helper", "khi.util.h"), // intra-pkg, skip
+            ("missing", "dev.disk.read"),     // no claim → E2200
         ]);
         let manifest = manifest_with(vec![("sys.io", PackLevel::Grant)]);
         let errs = check_capabilities(&program, &manifest);

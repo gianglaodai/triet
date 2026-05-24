@@ -416,7 +416,7 @@ fn parse_dot_path_root(parser: &mut Parser<'_>, what: &str) -> Result<String, Pa
         })?;
     let name = match token {
         Token::Identifier(name) => name,
-        Token::Crate => "crate".to_owned(),
+        Token::Khi => "khi".to_owned(),
         Token::SelfKw => "self".to_owned(),
         Token::Super => "super".to_owned(),
         other => {
@@ -1030,9 +1030,9 @@ mod tests {
     }
 
     #[test]
-    fn fn_named_crate_is_rejected_via_unexpected_token() {
-        // `crate` lexes as Token::Crate, not Token::Identifier.
-        let result = try_parse("function crate() { }");
+    fn fn_named_khi_is_rejected_via_unexpected_token() {
+        // `khi` lexes as Token::Khi, not Token::Identifier (ADR-0024).
+        let result = try_parse("function khi() { }");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
@@ -1313,12 +1313,12 @@ mod tests {
 
     #[test]
     fn parses_from_import_with_path_keyword_root() {
-        // `crate.` as path root is valid per ADR-0005.
-        let (_, item) = parse("from crate.utils import helper");
+        // `khi.` as path root is valid per ADR-0005 + ADR-0024.
+        let (_, item) = parse("from khi.utils import helper");
         let Item::ImportFrom(import) = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.source, vec!["crate", "utils"]);
+        assert_eq!(import.source, vec!["khi", "utils"]);
     }
 
     #[test]
@@ -1376,11 +1376,11 @@ mod tests {
 
     #[test]
     fn import_with_path_keyword_root_is_accepted() {
-        // ADR-0005 allows `crate.` / `self.` / `super.` as path roots.
-        let (_, item) = parse("import crate.utils.helper");
+        // ADR-0005 + ADR-0024 allow `khi.` / `self.` / `super.` as path roots.
+        let (_, item) = parse("import khi.utils.helper");
         let Item::Import(path) = &item.node else {
             panic!("expected Import")
         };
-        assert_eq!(path.segments, vec!["crate", "utils", "helper"]);
+        assert_eq!(path.segments, vec!["khi", "utils", "helper"]);
     }
 }
