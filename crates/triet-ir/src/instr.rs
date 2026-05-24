@@ -545,4 +545,6 @@ pub enum BuiltinName {
     TextFromBytes,
     /// `std.crypto.blake3_hash(v) -> Vector<Integer>` — calculate BLAKE3 hash.
     Blake3Hash,
+    /// `std.env.get(key) -> String?` — read environment variable, `Null` if unset.
+    GetEnv,
 }

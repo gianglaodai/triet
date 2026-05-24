@@ -509,6 +509,7 @@ public enum BuiltinName {
     TextFromBytesBuiltin(PrimitiveMarker),
     Blake3HashBuiltin(PrimitiveMarker),
     WriteFileBytesBuiltin(PrimitiveMarker),
+    EnvGetBuiltin(PrimitiveMarker),
 }
 
 public function builtin_name_display(name: BuiltinName) -> String =
@@ -544,6 +545,7 @@ public function builtin_name_display(name: BuiltinName) -> String =
         TextFromBytesBuiltin(_) => "from_bytes",
         Blake3HashBuiltin(_) => "blake3_hash",
         WriteFileBytesBuiltin(_) => "write_file_bytes",
+        EnvGetBuiltin(_) => "get_env",
     }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1903,6 +1905,7 @@ function resolve_builtin_name(name: String) -> BuiltinName? = {
     if name == "write" { return WriteFileBuiltin(primitive_marker()) }
     if name == "write_bytes" { return WriteFileBytesBuiltin(primitive_marker()) }
     if name == "exists" { return FileExistsBuiltin(primitive_marker()) }
+    if name == "get" { return EnvGetBuiltin(primitive_marker()) }
     if name == "join" { return PathJoinBuiltin(primitive_marker()) }
     if name == "parent" { return PathParentBuiltin(primitive_marker()) }
     if name == "basename" { return PathBasenameBuiltin(primitive_marker()) }

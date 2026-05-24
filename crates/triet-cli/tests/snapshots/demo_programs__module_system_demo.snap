@@ -3,7 +3,7 @@ source: crates/triet-cli/tests/demo_programs.rs
 assertion_line: 503
 expression: summary
 ---
-std: 0 items, 8 children
+std: 0 items, 9 children
 std.io: 3 items, 1 children
 std.io.fs: 4 items, 0 children
 std.text: 7 items, 0 children
@@ -15,6 +15,7 @@ std.collections.hashmap: 5 items, 0 children
 std.path: 3 items, 0 children
 std.string: 3 items, 0 children
 std.crypto: 2 items, 0 children
+std.env: 1 items, 0 children
 khi: 33 items, 4 children
 khi.gates: 14 items, 0 children
 khi.alu: 11 items, 0 children
@@ -22,5 +23,5 @@ khi.memory: 18 items, 0 children
 khi.utils: 2 items, 2 children
 khi.utils.print: 7 items, 0 children
 khi.utils.advanced: 4 items, 0 children
-total: 19 modules, 18 arenas
+total: 20 modules, 19 arenas
 result: OK

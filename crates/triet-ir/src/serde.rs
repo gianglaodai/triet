@@ -569,6 +569,7 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::TextFromBytes => 28,
         BuiltinName::Blake3Hash => 29,
         BuiltinName::WriteFileBytes => 30,
+        BuiltinName::GetEnv => 31,
     };
     write_u8(buf, id);
 }
@@ -607,6 +608,7 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         28 => Ok(BuiltinName::TextFromBytes),
         29 => Ok(BuiltinName::Blake3Hash),
         30 => Ok(BuiltinName::WriteFileBytes),
+        31 => Ok(BuiltinName::GetEnv),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }

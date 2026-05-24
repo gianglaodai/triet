@@ -325,6 +325,7 @@ impl fmt::Display for BuiltinName {
             Self::TextIntoBytes => write!(f, "into_bytes"),
             Self::TextFromBytes => write!(f, "from_bytes"),
             Self::Blake3Hash => write!(f, "blake3_hash"),
+            Self::GetEnv => write!(f, "get_env"),
         }
     }
 }

@@ -155,7 +155,7 @@ impl LoaderState {
         // modules follow existing precedent (`std.io.println` not
         // `std.io.io_println`) — no module-name repetition.
         let source = "module io\nmodule text\nmodule assert\nmodule result\n\
-             module collections\nmodule path\nmodule string\nmodule crypto";
+             module collections\nmodule path\nmodule string\nmodule crypto\nmodule env";
 
         // Resolve std/ relative to the workspace root (for dev/production).
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -480,7 +480,7 @@ mod tests {
     /// `blake3_hash` stub) for the .khi writer's iface/impl
     /// hash chain → 13 modules. Centralized here so future stdlib
     /// expansions only touch one place.
-    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 13;
+    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 14;
 
     #[test]
     fn empty_root_creates_one_module() {
@@ -570,12 +570,12 @@ mod tests {
         }
     }
 
-    /// Stdlib arenas: 1 (std synthetic root) + 11 (one per stdlib
+    /// Stdlib arenas: 1 (std synthetic root) + 12 (one per stdlib
     /// .tri file: io, io/fs, text, assert, result, collections,
-    /// collections/vector, collections/hashmap, path, string, crypto).
-    /// Crate root contributes +1 = 13 total when inline modules
+    /// collections/vector, collections/hashmap, path, string, crypto,
+    /// env). Crate root contributes +1 = 14 total when inline modules
     /// share the crate's arena.
-    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 13;
+    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 14;
 
     #[test]
     fn inline_modules_share_root_arena() {

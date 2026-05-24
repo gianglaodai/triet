@@ -1767,6 +1767,7 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         "std.text.into_bytes" => Some(BuiltinName::TextIntoBytes),
         "std.text.from_bytes" => Some(BuiltinName::TextFromBytes),
         "std.crypto.blake3_hash" => Some(BuiltinName::Blake3Hash),
+        "std.env.get" => Some(BuiltinName::GetEnv),
 
         _ => None,
     }
@@ -2483,6 +2484,20 @@ fn execute_builtin(
                 .map(|&b| RuntimeValue::Integer(triet_core::Integer::new(i64::from(b)).unwrap()))
                 .collect();
             Ok(RuntimeValue::Vector(result_bytes))
+        }
+        BuiltinName::GetEnv => {
+            let key_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let key = match key_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            Ok(std::env::var(&key).map_or(RuntimeValue::Null, RuntimeValue::String))
         }
     }
 }

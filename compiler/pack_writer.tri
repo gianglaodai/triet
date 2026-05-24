@@ -758,6 +758,7 @@ public function builtin_to_byte(b: BuiltinName) -> Integer =
         TextFromBytesBuiltin(_) => 28,
         Blake3HashBuiltin(_) => 29,
         WriteFileBytesBuiltin(_) => 30,
+        EnvGetBuiltin(_) => 31,
     }
 
 public function byte_to_builtin(b: Integer) -> BuiltinName~TrivError = {
@@ -792,6 +793,7 @@ public function byte_to_builtin(b: Integer) -> BuiltinName~TrivError = {
     else if b == 28 { ~+ TextFromBytesBuiltin(primitive_marker()) }
     else if b == 29 { ~+ Blake3HashBuiltin(primitive_marker()) }
     else if b == 30 { ~+ WriteFileBytesBuiltin(primitive_marker()) }
+    else if b == 31 { ~+ EnvGetBuiltin(primitive_marker()) }
     else { ~- Corrupted(TrivErrorCorrupted { message: "unknown builtin id" }) }
 }
 
