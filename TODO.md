@@ -55,7 +55,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.7.4.3-error.3c | ADR-0021 `Trilean!` refinement + SPEC §7.1.1 fix + ADR-0010 Addendum §C | `f4fa78e` |
 | v0.7.4.3-error.3d | `Trilean!` refinement type + E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` + 15 typecheck tests | `c3eb126` |
 | v0.7.4.3-error.3e | Migrate corpus `if (trilean == lit)` → `match` (alu/memory/utils/print) | `6e4db80` |
-| v0.7.4.3-error.4a | `triet fmt --migrate-null` tool (lexer-based, idempotent, dry-run-by-default + `--write`) | `e49d389` |
+| v0.7.4.3-error.4a | `dao fmt --migrate-null` tool (lexer-based, idempotent, dry-run-by-default + `--write`) | `e49d389` |
 | v0.7.4.3-error.4b | Apply migration to 6 stdlib stubs (`examples/nullable.tri` deferred pending outcome-null runtime unification) | `be7532d` |
 | v0.7.4.3-error.6a | Outcome-null runtime unification — ADR-0010 Addendum §D + lowerer + 4 cross-tolerant VM opcodes + 6 tests | `ffcf6de` |
 | v0.7.4.3-error.6b | Interpreter parity for `~0` + migrate `examples/nullable.tri` (closes `.4b` deferred) | `a48c275` |
@@ -277,7 +277,7 @@ Mirrors `crates/triet-modules/` (2487 Rust LOC across 7 files). Per
 - [ ] **v0.7.x.identity** — Khí + Đạo identity rename (per [ADR-0024](docs/decisions/0024-khi-dao-identity-naming.md)). 5-stage commit series ship trước v0.7.10 mở: (A) path keyword `crate` → `khi` (lexer + parser + ~114 user-source + snapshots), (B) wire format `.khi` → `.khi`, (C) CLI binary `triet` → `dao`, (D) manifest `triet.package` → `dao.package` + lockfile `triet.lock` → `dao.lock`, (E) Vietnamese subcommand aliases `dao tao/kiem/chay/kho`. Hard cutover, no transition compat (v0.7 chưa có external users).
   - [ ] **v0.7.x.identity.adr** — ADR-0024 commit (this — documents the decision, no code change).
   - [x] **v0.7.x.identity.A** — Path keyword `crate` → `khi` (41 files, 61860b4).
-  - [ ] **v0.7.x.identity.B** — Wire format `.khi` → `.khi`.
+  - [x] **v0.7.x.identity.B** — Wire format `.tripack` → `.khi` (43 files, d88a943 + f004034 fixup).
   - [ ] **v0.7.x.identity.C** — CLI binary `triet` → `dao`.
   - [ ] **v0.7.x.identity.D** — Manifest + lockfile rename.
   - [ ] **v0.7.x.identity.E** — Vietnamese subcommand aliases.

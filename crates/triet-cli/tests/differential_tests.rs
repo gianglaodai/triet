@@ -15,12 +15,12 @@ struct ProgramOutput {
     exit_code: i32,
 }
 
-/// Run a program through the interpreter: `triet run <path>`.
+/// Run a program through the interpreter: `dao run <path>`.
 fn run_interpreter(binary: &str, path: &str) -> ProgramOutput {
     let output = Command::new(binary)
         .args(["run", path])
         .output()
-        .expect("failed to execute triet");
+        .expect("failed to execute dao");
     ProgramOutput {
         stdout: output.stdout,
         stderr: output.stderr,
@@ -28,13 +28,13 @@ fn run_interpreter(binary: &str, path: &str) -> ProgramOutput {
     }
 }
 
-/// Run a program through the VM: `triet build <path> -o <tmp> && triet run <tmp>`.
+/// Run a program through the VM: `dao build <path> -o <tmp> && dao run <tmp>`.
 fn run_vm(binary: &str, path: &str, tmp: &str) -> ProgramOutput {
     // Build the .triv file.
     let build = Command::new(binary)
         .args(["build", path, "-o", tmp])
         .output()
-        .expect("failed to execute triet build");
+        .expect("failed to execute dao build");
     if !build.status.success() {
         return ProgramOutput {
             stdout: build.stdout,
@@ -46,7 +46,7 @@ fn run_vm(binary: &str, path: &str, tmp: &str) -> ProgramOutput {
     let run = Command::new(binary)
         .args(["run", tmp])
         .output()
-        .expect("failed to execute triet run");
+        .expect("failed to execute dao run");
     ProgramOutput {
         stdout: run.stdout,
         stderr: run.stderr,
@@ -91,8 +91,8 @@ fn assert_output_eq(interp: &ProgramOutput, vm: &ProgramOutput, name: &str) {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-/// Get the path to the triet binary for testing.
-fn triet_binary() -> String {
+/// Get the path to the dao binary for testing.
+fn dao_binary() -> String {
     std::env::var("TRIET_BINARY").unwrap_or_else(|_| {
         // Default: look for the release binary relative to the workspace root.
         // Tests run from the workspace root, so CWD should be the repo root.
@@ -100,7 +100,7 @@ fn triet_binary() -> String {
         let cwd = cwd.to_str().unwrap();
         // If we're in crates/triet-cli/, go up two levels.
         if cwd.ends_with("triet-cli") {
-            format!("{cwd}/../../target/release/triet")
+            format!("{cwd}/../../target/release/dao")
         } else {
             format!("{cwd}/target/release/triet")
         }
@@ -111,7 +111,7 @@ macro_rules! diff_test {
     ($name:ident, $example:expr) => {
         #[test]
         fn $name() {
-            let binary = triet_binary();
+            let binary = dao_binary();
             let example_path = $example;
             // Resolve the example path relative to the workspace root.
             let cwd = std::env::current_dir().unwrap();

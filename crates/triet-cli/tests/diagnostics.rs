@@ -3,7 +3,7 @@
 //! Covers: error codes, span accuracy, exit-code boundaries. Tests
 //! call the library functions directly (parse, check, run) and verify
 //! that the miette-derived error types carry correct metadata — the
-//! CLI binary (`triet check --json ...`) exercises the rendering path,
+//! CLI binary (`dao check --json ...`) exercises the rendering path,
 //! which is covered by `demo_programs.rs` integration tests plus
 //! manual inspection.
 

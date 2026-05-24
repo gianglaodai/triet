@@ -1,15 +1,15 @@
-//! Triết CLI — entry point for the `triet` binary.
+//! Triết CLI — entry point for the `dao` binary.
 //!
 //! Subcommands:
-//! - `triet run <path>` — run a .tri source or .triv bytecode file.
-//! - `triet check <path>` — parse + type-check only, no execution.
-//! - `triet build <path>` — compile .tri source to .triv bytecode.
-//! - `triet store import <path>` — install a .khi into the CAS store.
-//! - `triet store list` — list installed packs.
-//! - `triet store gc` — garbage-collect unreferenced packs.
-//! - `triet fmt --migrate-null [--write] <path>` — apply source-level
+//! - `dao run <path>` — run a .tri source or .triv bytecode file.
+//! - `dao check <path>` — parse + type-check only, no execution.
+//! - `dao build <path>` — compile .tri source to .triv bytecode.
+//! - `dao store import <path>` — install a .khi into the CAS store.
+//! - `dao store list` — list installed packs.
+//! - `dao store gc` — garbage-collect unreferenced packs.
+//! - `dao fmt --migrate-null [--write] <path>` — apply source-level
 //!   migrations (currently: ADR-0020 `null` → `~0`).
-//! - `triet info` — version and project info.
+//! - `dao info` — version and project info.
 //!
 //! Global flags:
 //! - `--json` — machine-readable JSON diagnostics.
@@ -31,7 +31,7 @@ use crate::fmt::fmt_command;
 
 #[derive(Parser)]
 #[command(
-    name = "triet",
+    name = "dao",
     version,
     about = "Triết — AI-first balanced-ternary language"
 )]
@@ -85,7 +85,7 @@ enum Command {
     /// Currently exposes a single migration rule via `--migrate-null`
     /// (ADR-0020 §10): rewrite the deprecated `null` keyword to its
     /// canonical `~0` form. Other rules will land alongside future
-    /// deprecations and reuse the same `triet fmt` entry point.
+    /// deprecations and reuse the same `dao fmt` entry point.
     Fmt {
         /// Apply the `null` → `~0` migration (ADR-0020 §10).
         #[arg(long)]
@@ -575,9 +575,9 @@ fn find_entry_function(ir: &triet_ir::IrProgram) -> triet_ir::FuncId {
     first.unwrap_or(triet_ir::FuncId(0))
 }
 
-// ── `triet store` subcommands ───────────────────────────────────────
+// ── `dao store` subcommands ───────────────────────────────────────
 
-/// Top-level handler for `triet store <subcommand>`.
+/// Top-level handler for `dao store <subcommand>`.
 fn store_command(cmd: StoreCommand, json: bool) -> ExitCode {
     let root = match resolve_store_root() {
         Ok(p) => p,

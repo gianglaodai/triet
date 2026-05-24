@@ -67,7 +67,7 @@ Linker không chỉ dựa vào semver triple — **iface_hash mismatch luôn là
   
   This usually means `foo` was rebuilt after consumer was last compiled.
   
-  hint: rebuild consumer with `triet build --force` to refresh iface_hash
+  hint: rebuild consumer with `dao build --force` to refresh iface_hash
   hint: or pin dep với hash: "1.3.5+0xa1b2c3d4" if intentional
 ```
 

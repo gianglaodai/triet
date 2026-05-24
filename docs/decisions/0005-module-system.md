@@ -234,7 +234,7 @@ Diagnostic chỉ rõ chu trình giúp dev fix nhanh.
 5. **Name resolver:** new pass trước typecheck. Resolve `from X import Y` paths to absolute. Validate visibility.
 6. **Typecheck:** chạy per-module với resolved names. Type definitions + functions cross-module qua name resolver.
 7. **Interpreter:** runtime đã có symbol table phẳng — extend thành module-aware (path-based lookup).
-8. **CLI:** `triet check` + `triet run` accept root file, tự load module tree.
+8. **CLI:** `dao check` + `dao run` accept root file, tự load module tree.
 9. **Stdlib migration:** chuyển `std.io`, `std.text` thành proper module với `module` declarations.
 10. **Demo lớn:** viết 1 demo (~500 dòng) chia 5+ module để validate end-to-end.
 

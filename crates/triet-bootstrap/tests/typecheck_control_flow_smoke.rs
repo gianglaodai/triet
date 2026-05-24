@@ -63,7 +63,6 @@ fn typecheck_control_flow_smoke_main_passes_all_asserts() {
         .id;
 
     let mut vm = Vm::new(restored);
-    vm.execute(smoke_id, vec![]).expect(
-        "compiler/typecheck.tri control_flow_smoke_main() must complete without VM error",
-    );
+    vm.execute(smoke_id, vec![])
+        .expect("compiler/typecheck.tri control_flow_smoke_main() must complete without VM error");
 }

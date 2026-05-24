@@ -123,12 +123,12 @@ The `~+`, `~-`, `~0` constructors **MUST be written with a space** between the m
 
 ```triet
 return ~+ value          // GOOD
-return ~+value           // PARSER OK, STYLE-GUIDE VIOLATION (rejected by `triet fmt`)
+return ~+value           // PARSER OK, STYLE-GUIDE VIOLATION (rejected by `dao fmt`)
 
 return ~- IoError::Invalid(path)  // GOOD
 
 return ~+ -1             // GOOD — `~+` constructs outcome, `-1` is the negative integer payload
-return ~+-1              // CONFUSING (parser accepts but rejected by `triet fmt`)
+return ~+-1              // CONFUSING (parser accepts but rejected by `dao fmt`)
 ```
 
 Lexer treats `~+`, `~-`, `~0` as compound prefix tokens — whitespace inside compound is forbidden (`~ +` is not the same as `~+`). Style guide enforces space *after* the compound prefix.
@@ -569,23 +569,23 @@ match lookup_result {
 - Parser normalizes both to the same AST node (`Expr::TritZero` or equivalent — implementation chooses).
 - Typecheck emits warning **W2001 NullDeprecated** at every `null` token site with fix-hint *"replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10)"*.
 - Existing code (examples, demos, stdlib stubs, anywhere using `null`) **continues to compile and run** with warnings.
-- `triet fmt --fix --migrate-null` flag introduced — auto-rewrites every `null` → `~0` across a project tree.
+- `dao fmt --fix --migrate-null` flag introduced — auto-rewrites every `null` → `~0` across a project tree.
 
 **v1.0 (production stability cutoff):**
 
 - `null` keyword **removed** from grammar.
 - Warning W2001 promoted to error **E2002 NullRemoved** with same fix-hint.
-- Migration tool (`triet fmt --fix --migrate-null`) ships with v1.0 release for one-shot cleanup of legacy codebases.
+- Migration tool (`dao fmt --fix --migrate-null`) ships with v1.0 release for one-shot cleanup of legacy codebases.
 
 ```text
 W2001 NullDeprecated
     `null` keyword is deprecated. Replace with `~0` (canonical Trit::Zero
     literal per ADR-0020 §10). This warning becomes error E2002 at v1.0.
-    Auto-fix: run `triet fmt --fix --migrate-null`.
+    Auto-fix: run `dao fmt --fix --migrate-null`.
 
 E2002 NullRemoved    (active at v1.0+)
     `null` keyword is no longer valid. Use `~0` (canonical Trit::Zero
-    literal per ADR-0020 §10). Auto-fix: run `triet fmt --fix --migrate-null`.
+    literal per ADR-0020 §10). Auto-fix: run `dao fmt --fix --migrate-null`.
 ```
 
 Per [ADR-0009 version gate policy](0009-version-gate-policy.md), no behavior breakage on minor bumps within v0.7.x — `null` keeps working until v1.0 freeze. This matches Triết's "stability over speed" principle: long migration window, automated tooling.
@@ -622,14 +622,14 @@ E1032 PatternMissingExplicitConstructor
     Replace `<binding>` with `~+ <binding>`.
 ```
 
-### 10.5 — `triet fmt --fix --migrate-null` specification
+### 10.5 — `dao fmt --fix --migrate-null` specification
 
 The migration tool is a **non-trivial requirement** of this ADR — it carries the cost of unification across all user codebases. Implementation locked here:
 
 1. **Token-level rewrite:** `null` → `~0` everywhere. No semantic analysis required (the unification is exact).
-2. **Preserve formatting:** spaces, comments, line breaks adjacent to `null` token are preserved verbatim. Only the 4 characters `null` change to the 2 characters `~0` (with surrounding spaces handled per the existing `triet fmt` rules).
+2. **Preserve formatting:** spaces, comments, line breaks adjacent to `null` token are preserved verbatim. Only the 4 characters `null` change to the 2 characters `~0` (with surrounding spaces handled per the existing `dao fmt` rules).
 3. **In-place by default**, with `--dry-run` option for preview.
-4. **Recursive directory traversal** when given a directory argument; respects `.gitignore` (mirror existing `triet fmt` behavior).
+4. **Recursive directory traversal** when given a directory argument; respects `.gitignore` (mirror existing `dao fmt` behavior).
 5. **Idempotent:** running `--migrate-null` twice produces no further changes.
 6. **No-op on already-canonical files:** emit `No migration needed: <path>` per file with zero `null` tokens.
 7. **W2001 warnings suppressed during migration run** — the tool's purpose is to fix them, no need to also report them.
@@ -739,7 +739,7 @@ Same as JIT. LLVM IR types for Outcome: `{ i8, [N x i8] }` where N = max payload
 - **`.value` / `.error` field access** without panic-message argument. Property access must be 100% safe contract per [`feedback_explicit_strictness.md`](../../README.md).
 - **Implicit `error` binding in `~?` form.** Author 2026-05-17 rejection. Every variable in scope must trace to an explicit declaration site (`let` / function param / `|capture|`). No magic.
 - **Whitespace-tolerant `?~` compound** (e.g. accepting `T ? ~ E` with internal space). Author 2026-05-17: compound tokens must be adjacent at the lexer level.
-- **Preserving `null` keyword permanently** (Q2 rejection). `null` is deprecated v0.7.4.3-error onward and removed at v1.0 per §10.3 timeline. Migration tool `triet fmt --fix --migrate-null` automates the cleanup. Refuse-over-guess: one canonical Trit::Zero literal across the language.
+- **Preserving `null` keyword permanently** (Q2 rejection). `null` is deprecated v0.7.4.3-error onward and removed at v1.0 per §10.3 timeline. Migration tool `dao fmt --fix --migrate-null` automates the cleanup. Refuse-over-guess: one canonical Trit::Zero literal across the language.
 - **Pattern-arm implicit widening** (Q3 lock). Pattern match arms for T? / T?~E must use explicit `~+ binding` constructor. No implicit `T → T?` widening inside patterns — patterns operate on discriminator state, not on widening rules. Implicit widening at expression position stays (allowed for terseness).
 - **Unifying Trilean `unknown` with `~0`.** Trilean is a different domain (Ł3 logic truth values, not outcome discriminator). `true`/`false`/`unknown` literals stay per SPEC §1.5.2 — no unification across domains. See §10.6.
 - **Implicit `From` conversion** (Rust's `?` operator semantics). Authors writing `~? return ~- E_outer::from(error)` is explicit. Refuse over guess — no silent type conversion.

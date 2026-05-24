@@ -36,7 +36,7 @@ fn run_program_via_vm(source: &str) -> String {
     let ir = lower_program(&resolved);
     let bytes = write_program(&ir);
 
-    // Round-trip through .triv → VM (matches `triet build` + `triet run`
+    // Round-trip through .triv → VM (matches `dao build` + `dao run`
     // path exactly). Reading back proves the wire format survives
     // the new builtin IDs end-to-end.
     let restored = triet_ir::read_program(&bytes).expect("read .triv");

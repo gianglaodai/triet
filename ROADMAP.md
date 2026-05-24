@@ -32,7 +32,7 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 ✅ Lowerer: AST → IR cho toàn bộ v0.2 features bao gồm SSA phi cho mutable vars (loops + if), enum payload + variant tag dispatch, tuple/literal pattern match, `.enumerate()` adapter, `?.` / `?:` / `!!` nullable ops, stdlib text builtins
 ✅ `.triv` binary format v3: ADR-0008 + ADR-0010 (BR_TRILEAN) + ADR-0012 (WITNESS_CALL + witness section)
 ✅ `BrTrilean` 3-way branch + strict `if` Unknown→panic + Ł3-aware Eq (ADR-0010)
-✅ CLI `triet build foo.tri -o foo.triv` + `triet run foo.triv`
+✅ CLI `dao build foo.tri -o foo.triv` + `dao run foo.triv`
 ✅ Differential tests: **11/11 examples byte-identical VM vs interpreter** (gate ADR-0009 § A đạt)
 ✅ Benchmark harness: criterion, VM 1.26× interpreter (baseline)
 ✅ Cargo workspace `version = 0.4.0` đồng bộ với SPEC v0.4 (ADR-0009 § C)
@@ -45,7 +45,7 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 ✅ 867 tests workspace-wide ở v0.4, → **918 tests ở v0.5** (0 ignored), snapshot tests cho IR + diagnostics
 ✅ **CAS Packaging** per ADR-0014/0015 — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install protocol, mark-and-sweep GC
 ✅ **Resolver + lockfile** — hash-pinned dep resolution, `triet.lock` line format
-✅ **`triet store` CLI** — `import`, `list`, `gc` subcommands
+✅ **`dao store` CLI** — `import`, `list`, `gc` subcommands
 ✅ **Shared loading demo** — VISION §3.1 gate hit at iface level (term iface dedup proven; body-level RAM dedup queued behind lowerer per-term split)
 ✅ **Cross-module enum variant import** — `from std.result import Ok, Err` closed pre-existing v0.2.x gap; E2107 cho aliased variant import
 🔜 Tiếp theo: v0.6 — Capability System (`sys.*` / `dev.*` / `usr.*` enforce, Trit-level capability, Ł3 policy hook)
@@ -126,7 +126,7 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 | v0.3.7 | Differential tests: VM vs interpreter (3/11 pass, 8 deferred) | `2c57a50` |
 | v0.3.8 | ADR-0008: .triv bytecode binary format | `117c20d` |
 | v0.3.9 | Serialize/deserialize: .triv reader/writer (24 tests) | `52cee51` |
-| v0.3.10 | CLI: `triet build` + .triv execution + VM CallCrossModule | `3b94bbf` |
+| v0.3.10 | CLI: `dao build` + .triv execution + VM CallCrossModule | `3b94bbf` |
 | v0.3.11 | Benchmark harness (criterion) + BENCHMARKS.md | `4dab69a` |
 
 **Lowerer f-string + for-loop fixes (v0.3.7 cycle):**
@@ -158,7 +158,7 @@ mọi version bump tương lai, không chỉ v0.3 → v0.4.
 | Sub-task | Description | Commit |
 |---|---|---|
 | v0.3.x.cleanup.1 | ADR-0009 — version gate policy | `6a8a6b1` |
-| v0.3.x.cleanup.2 | Bump Cargo workspace 0.1.0 → 0.3.0 + `triet info` | `b86b0be` |
+| v0.3.x.cleanup.2 | Bump Cargo workspace 0.1.0 → 0.3.0 + `dao info` | `b86b0be` |
 | v0.3.x.cleanup.3 | README.md sync với v0.3 status + workspace structure | `a3df90f` |
 | v0.3.x.cleanup.4 | Clippy `-D warnings` sạch (109 → 0 warnings) | `84fea6c` |
 | v0.3.x.cleanup.5 | Enum payload + variant tag dispatch (maybe, generic) | `e3726c0` |
@@ -169,7 +169,7 @@ mọi version bump tương lai, không chỉ v0.3 → v0.4.
 **Gate đã đạt (ADR-0009):**
 - ✅ Gate A — Functional: 11/11 differential, 0 `#[ignore]`, 0 `TODO(v0.3...)`.
 - ✅ Gate B — Hygiene: 835 tests pass / 0 fail / 0 ignored; clippy `-D warnings` sạch.
-- ✅ Gate C — Docs: SPEC v0.3, Cargo 0.3.0, `triet info` đồng bộ, README cập nhật, ADRs 0001–0009.
+- ✅ Gate C — Docs: SPEC v0.3, Cargo 0.3.0, `dao info` đồng bộ, README cập nhật, ADRs 0001–0009.
 - ✅ Gate D — Self-consistency: 11/11 examples chạy interpreter & VM, demo 6-file module-system chạy.
 
 **Không làm:**
@@ -273,7 +273,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 | v0.5.4 | Package store filesystem + atomic install + GC | `2425e25` |
 | v0.5.5 | Hash-based resolver + `triet.lock` format | `2c43e69` |
 | v0.5.6 | Shared loading demo + term dir keyed by impl_hash | `6291bc1` |
-| v0.5.7 | `triet store {import,list,gc}` CLI | `8b4ce12` |
+| v0.5.7 | `dao store {import,list,gc}` CLI | `8b4ce12` |
 | v0.5.8 | Cross-module enum variant import (`from X import Variant`) | `07323a1` |
 | v0.5.9 | Verify gate (ADR-0009) + bump 0.4.0 → 0.5.0 + docs sync | this commit |
 
@@ -288,7 +288,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 - **v=1 `.khi` lossy migration** (ADR-0015 §9) — hiện chưa có v=1 packs trong wild; lands on demand.
 - **Body-level RAM dedup** (`term/<hash>/body.bin`) — chờ lowerer per-term IR body split. Iface-level dedup proven; body-level deferred to v0.6+ alongside lowerer work.
 - **Distributed registry / network fetch** — local store đủ; defer v1.0+.
-- **Auto-GC** — manual `triet store gc` đủ; "refuse over guess" policy.
+- **Auto-GC** — manual `dao store gc` đủ; "refuse over guess" policy.
 
 ---
 
@@ -350,7 +350,7 @@ TTY prompt.
 - ✅ 924 → 1079 tests, clippy `-D warnings` clean, `abi_version` stays `2` (ADR-0016 §4 promise honored).
 
 **Không làm (defer khỏi v0.6):**
-- **CLI wiring** (`triet check` reading `triet.package` from project root, cap-aware build pipeline emitting `.khi` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
+- **CLI wiring** (`dao check` reading `triet.package` from project root, cap-aware build pipeline emitting `.khi` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
 - **E2208.PreV06Reader** — gated by future `abi_version` bump.
 - **E2208.CapabilityDivergence** — fires when lowerer actually populates caps section from `triet.package`; defer with lowerer work.
 - **Per-function cap granularity** — defer post-v1.0 (ADR-0016 "Không làm").
@@ -389,7 +389,7 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 - `compiler/lexer.tri` + `parser.tri` + `modules.tri` + `typecheck.tri` + `ir_lowerer.tri` + `pack_writer.tri` + `main.tri` — Triết-in-Triết compiler source, 1:1 mirror crate boundaries của Rust impl.
 - Bootstrap chain 3-stage: Stage 1 (Rust impl) → Stage 2 (Triết-built-by-Stage-1) → Stage 3 (Triết-built-by-Stage-2).
 - Builtin opcodes 4–26 (Vec / HashMap / file IO / path / string ops) trong VM dispatcher per ADR-0019 §5 Rust-shim approach.
-- CLI wiring carry-over từ v0.6: project layout discovery (`triet.package` walk-upward), `triet check`/`build`/`run` cap-aware, loader integration với `DevTtyPrompt`, `E2208.CapabilityDivergence` fires.
+- CLI wiring carry-over từ v0.6: project layout discovery (`triet.package` walk-upward), `dao check`/`build`/`run` cap-aware, loader integration với `DevTtyPrompt`, `E2208.CapabilityDivergence` fires.
 - Three-layer testing: per-component differential test (5) + end-to-end semantic regression + bootstrap-loop CI gate.
 - Canonical emission determinism CI test (`bootstrap_determinism`) — `examples/*.tri` × 10 builds byte-identical.
 

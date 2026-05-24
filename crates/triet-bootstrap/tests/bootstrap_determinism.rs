@@ -75,7 +75,7 @@ fn example_path(name: &str) -> PathBuf {
 /// Filters out Warning-severity diagnostics (W2001 `NullDeprecated`
 /// per ADR-0020 §10.3) — these do not block compile until v1.0. The
 /// `examples/*.tri` files still use legacy `null` syntax until the
-/// `triet fmt --fix --migrate-null` tool ships in v0.7.4.3-error.4.
+/// `dao fmt --fix --migrate-null` tool ships in v0.7.4.3-error.4.
 fn build_triv(path: &Path) -> Vec<u8> {
     use miette::Diagnostic;
     let resolved = triet_modules::load_program(path).expect("load_program");

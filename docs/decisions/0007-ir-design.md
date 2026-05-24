@@ -207,7 +207,7 @@ Triết IR là **buffer giữa Triết source và mọi backend** — bắt bu�
 **Migration strategy:**
 - v0.2 baseline: tree-walking interpreter. Giữ nguyên cho differential test ở v0.3.7.
 - v0.3.1–v0.3.7: scaffold IR + lowerer + VM. Tree-walker là oracle, VM phải match byte-by-byte.
-- v0.3.8+: bytecode binary format `.triv`. CLI thêm `triet build` subcommand.
+- v0.3.8+: bytecode binary format `.triv`. CLI thêm `dao build` subcommand.
 - v0.4+: ABI metadata + CAS hash đọc từ IR/`.triv`.
 - v0.7: self-hosting compiler emit cùng IR shape.
 - v0.9: Cranelift backend cho JIT — mới, không thay IR.
@@ -232,7 +232,7 @@ Chi tiết sub-tasks ở [TODO.md § v0.3](../../TODO.md). Outline:
 Sau đó:
 - **v0.3.8 — ADR-0008** (sẽ viết) — bytecode binary format `.triv`.
 - **v0.3.9 — Serializer/deserializer** — round-trip IR ↔ `.triv`.
-- **v0.3.10 — CLI rewire** — `triet build` + `.triv` execution.
+- **v0.3.10 — CLI rewire** — `dao build` + `.triv` execution.
 - **v0.3.11 — Benchmark + gate verification** — bench ≥3× tree-walker.
 
 ## References

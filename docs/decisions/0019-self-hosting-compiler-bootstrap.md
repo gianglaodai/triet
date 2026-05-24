@@ -12,7 +12,7 @@
 6. **Testing strategy** — per-component differential, end-to-end, hay bootstrap-loop CI?
 7. **Performance gate** — ROADMAP nói "2× parity với Rust impl". Triết-on-VM thực tế 50-200× chậm hơn Rust-native. Recalibrate?
 
-Plus: **carry-over từ v0.6** — CLI wiring (`triet check` đọc `triet.package`, `triet build` populate caps section, loader integration với `DevTtyPrompt`) defer khỏi v0.6 với note *"lands cleaner với v0.7 self-hosting"* ([SPEC §0.7 non-goals](../../SPEC.md#07-non-goals-của-v06)). ADR-0019 fold carry-over này vào scope v0.7.
+Plus: **carry-over từ v0.6** — CLI wiring (`dao check` đọc `triet.package`, `dao build` populate caps section, loader integration với `DevTtyPrompt`) defer khỏi v0.6 với note *"lands cleaner với v0.7 self-hosting"* ([SPEC §0.7 non-goals](../../SPEC.md#07-non-goals-của-v06)). ADR-0019 fold carry-over này vào scope v0.7.
 
 ADR này lock 7 vùng + carry-over, đóng frame cho sub-task v0.7.2 trở đi.
 
@@ -270,8 +270,8 @@ Run in CI on every commit từ sub-task v0.7.11 trở đi. Earlier sub-tasks (v0
 
 | Carry-over item | Sub-task placement |
 |---|---|
-| `triet check` đọc `triet.package` từ project root | v0.7.10 (CLI integration) |
-| `triet build` populate `.khi` caps section từ manifest | v0.7.10 (CLI integration) |
+| `dao check` đọc `triet.package` từ project root | v0.7.10 (CLI integration) |
+| `dao build` populate `.khi` caps section từ manifest | v0.7.10 (CLI integration) |
 | Loader integration với `DevTtyPrompt` | v0.7.10 (CLI integration) |
 | `E2208.CapabilityDivergence` — fires khi lowerer populate caps section | v0.7.10 (cùng pipeline) |
 
@@ -290,7 +290,7 @@ Run in CI on every commit từ sub-task v0.7.11 trở đi. Earlier sub-tasks (v0
 └── ...
 ```
 
-`triet check` / `triet build` / `triet run` walk upward từ `cwd` tìm `triet.package` (mirrors `cargo` discovery pattern). Nếu không có → error E2208.ManifestMissing (new sub-variant, additive to E2208).
+`dao check` / `dao build` / `dao run` walk upward từ `cwd` tìm `triet.package` (mirrors `cargo` discovery pattern). Nếu không có → error E2208.ManifestMissing (new sub-variant, additive to E2208).
 
 ## Hệ quả
 
@@ -316,7 +316,7 @@ Self-hosted parser cho `triet.package` + `triet.policy` phải emit byte-identic
 
 ### Cho `triet-cli`
 
-Project layout discovery (§8) lands trong v0.7.10. Subcommands `triet check` / `triet build` / `triet run` walk-upward-find-manifest convention.
+Project layout discovery (§8) lands trong v0.7.10. Subcommands `dao check` / `dao build` / `dao run` walk-upward-find-manifest convention.
 
 ### Cho stdlib expansion
 
@@ -365,7 +365,7 @@ Outline. Per-sub-task design questions (3-5 A/B/C) lands khi sub-task open per a
 | **v0.7.7** | `compiler/typecheck.tri` + typecheck_differential test | `compiler/typecheck.tri`, typecheck_differential.rs |
 | **v0.7.8** | `compiler/ir_lowerer.tri` + lowerer_differential test | `compiler/ir_lowerer.tri`, lowerer_differential.rs |
 | **v0.7.9** | `compiler/pack_writer.tri` + `compiler/main.tri` + wire all components in Triết (drop bridges) | `compiler/`, end-to-end test |
-| **v0.7.10** | CLI wiring carry-over: project layout discovery + `triet check/build/run` cap-aware + DevTtyPrompt loader integration + E2208.CapabilityDivergence fires | `triet-cli`, `triet-pack` (loader) |
+| **v0.7.10** | CLI wiring carry-over: project layout discovery + `dao check/build/run` cap-aware + DevTtyPrompt loader integration + E2208.CapabilityDivergence fires | `triet-cli`, `triet-pack` (loader) |
 | **v0.7.11** | Stage 1 → Stage 2 bootstrap script + CI integration | `crates/triet-bootstrap/tests/bootstrap_loop.rs` Stage 2 only |
 | **v0.7.12** | Stage 2 → Stage 3 + bit-identical gate verify in CI | `bootstrap_loop.rs` full 3-stage + `cmp` assertion |
 | **v0.7.13** | Verify gate (ADR-0009 §A/B/C/D) + bump 0.6.0 → 0.7.0 + docs sync (SPEC v0.7, README, CLAUDE.md) | Version + docs |
@@ -570,7 +570,7 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 |---|---|---|
 | ~~**Stdlib `.tri` stubs for Vector builtins**~~ (`std/collections/vector.tri`, `std/collections/hashmap.tri`, `std/io/fs.tri`, `std/path.tri`, `std/string.tri`) | ~~Unblocked by v0.7.4.1.~~ | **Shipped in v0.7.4.2.** 5 new stdlib files + `std/text.tri` extended with `parse_integer`. Java-aesthetic per-namespace organization (no module-name repetition in function names). |
 | ~~**`path_to_builtin` entries for Vector/HashMap/IO/path/string ops**~~ | ~~Unblocked by v0.7.4.1.~~ | **Shipped in v0.7.4.2.** 19 entries added to `vm.rs::path_to_builtin`. |
-| **Interpreter parity for v0.7.3 builtins** (`Vector`/`HashMap`/IO/path/string ops not callable via tree-walking interpreter) | `triet-interpreter::builtins::install` only registers the v0.2 prelude (print/println/length/assert/...). The 19 v0.7.3 builtins are VM-dispatched via `path_to_builtin`; interpreter has no equivalent intercept. v0.7.4.2 stdlib stubs work via `triet build` + `triet run .triv` (VM path) but `triet run file.tri` (interpreter path) fails with `UndefinedName`. | **post-v0.7** — VISION §4.3 marks interpreter as development tier; self-host compiler doesn't need it once VM path covers all examples. Bridging would require duplicating 19 builtin implementations in `triet-interpreter::builtins.rs`. Either ship that parity in `v0.7.x.review`, OR drop interpreter entirely when v0.9 JIT lands (faster than tree-walker anyway). |
+| **Interpreter parity for v0.7.3 builtins** (`Vector`/`HashMap`/IO/path/string ops not callable via tree-walking interpreter) | `triet-interpreter::builtins::install` only registers the v0.2 prelude (print/println/length/assert/...). The 19 v0.7.3 builtins are VM-dispatched via `path_to_builtin`; interpreter has no equivalent intercept. v0.7.4.2 stdlib stubs work via `dao build` + `dao run .triv` (VM path) but `dao run file.tri` (interpreter path) fails with `UndefinedName`. | **post-v0.7** — VISION §4.3 marks interpreter as development tier; self-host compiler doesn't need it once VM path covers all examples. Bridging would require duplicating 19 builtin implementations in `triet-interpreter::builtins.rs`. Either ship that parity in `v0.7.x.review`, OR drop interpreter entirely when v0.9 JIT lands (faster than tree-walker anyway). |
 | ~~**Generic function syntax in AST/parser**~~ (`function vector_new<T>() -> Vector<T>`) | ~~`FunctionDef` struct lacks `type_params` field; parser does not consume `<T>`.~~ | **Shipped in v0.7.4.1** (this sub-task). Parser + AST + typecheck (Rust-style inference per Q2-A) + lowerer all wired. **Deviation from Q3-A locked in §A7.1 below: lowerer uses type erasure** (TypeTag::Unit for generic param slots) instead of clone-per-instantiation. |
 | **`vector_pop(v) -> (Vector<T>, T?)`** | Functional return-new semantic (Q1-A) requires tuple return; Triết IR lacks first-class tuple opcodes. Self-host compiler doesn't need pop (symbol tables grow monotonically). | post-v1.0 — alongside tuple opcode + slice support |
 | **Tuple opcodes in IR** (`TupleNew`, `TupleGet`, `TupleLength`) | Triết has tuple values in SPEC §8 but no IR opcodes — current lowerer represents tuples via struct workaround. Blocks `vector_pop`, multi-return functions, structural pattern matching. | post-v1.0 (post-self-host, when language stability allows IR additions) |
@@ -578,13 +578,13 @@ Consolidated list of every item punted by v0.7.3.1 + v0.7.3.2 decisions, with ta
 | **`Iterator<T>` / `Iterable<T>` traits in stdlib + user-extensible iterator protocol** | ADR-0003 status: locked but not implemented. v0.1 hardcoded `Range`+`Enumerate` still in use; refactor to trait pending. | v0.8 (revisit alongside concurrency primitives) or earlier if v0.7.x sub-task forces it |
 | **`vector_iterator` adapter chains** (`map`/`filter`/`take`/`zip`) | Depends on Iterator trait. | Same as Iterator trait above |
 | **Error handling primitive — recovery / try-catch / supervisor** | Triết currently has **no mechanism** for user code to catch runtime panics. `VmError` (E22XX) aborts execution; only domain errors (`T?`, `Result<T, E>`, `Trilean::Unknown`) are recoverable. v0.7.3.3 surfaced this via Q2-B: invalid HashMap key types → panic, not recovery. Decision locked because self-host compiler doesn't need recovery (bugs are bugs). But future application code, actor supervisors (v0.8), and microkernel boundary (v3.0) will. | **Future ADR-0020 candidate** — "Error handling discipline: panic vs Result vs Trilean, recovery story". Likely v0.8 alongside concurrency model (actor supervisor patterns force the question). Write ADR-0020 when v0.8 phase opens or when an earlier sub-task demands recovery. |
-| **IO builtin capability gating** (`sys.fs.read`, `sys.fs.write` etc.) | v0.7.3.4 Q1-A: `ReadFile`/`WriteFile`/`FileExists` dispatch directly via `std::fs::*` with no `CapabilityResolver` consultation. Self-host compiler bootstrap context is trusted, but future user code calling these builtins must go through v0.6 capability machinery. | **v0.7.10** — paired with CLI wiring carry-over (ADR-0019 §8 project layout discovery). `triet run` flow will resolve `sys.fs.*` capabilities against root manifest before instantiating the VM. |
+| **IO builtin capability gating** (`sys.fs.read`, `sys.fs.write` etc.) | v0.7.3.4 Q1-A: `ReadFile`/`WriteFile`/`FileExists` dispatch directly via `std::fs::*` with no `CapabilityResolver` consultation. Self-host compiler bootstrap context is trusted, but future user code calling these builtins must go through v0.6 capability machinery. | **v0.7.10** — paired with CLI wiring carry-over (ADR-0019 §8 project layout discovery). `dao run` flow will resolve `sys.fs.*` capabilities against root manifest before instantiating the VM. |
 | **Windows path semantics** | v0.7.3.4 Q2-A: `PathJoin`/`PathParent`/`PathBasename` hardcode POSIX `/` separator for byte-identical bootstrap determinism. Windows backslash + drive-letter handling deferred. Matches existing POSIX-first precedent ([ADR-0018 DevTtyPrompt POSIX-only](0018-capability-loader-semantics.md)). | **post-v1.0** — alongside Windows ConPTY TTY support and broader cross-platform pass. Currently no Triết user has demanded it; bootstrap loop must be byte-identical, and per-OS-variant output would break that. |
 | **IO write atomicity** (`WriteFile` is not atomic — partial writes possible on crash mid-write) | v0.7.3.4 uses `std::fs::write` which is **not** atomic. Crash between truncate and full write leaves a truncated/empty file. Self-host compiler bootstrap doesn't need atomicity (any crash invalidates the build run). | **post-v0.7** — when first user-facing application demands it. Pattern would mirror [ADR-0015 §5 atomic install protocol](0015-package-store-layout.md) (write to tmp + rename). |
 | **`StringSubstring` byte-index variant** | v0.7.3.4 Q3-A: only char-index version shipped (Vietnamese-safe). Byte-index could be ~100× faster for ASCII-heavy code paths. Self-host compiler doesn't benchmark that hot yet. | **post-v0.9 JIT** — measure self-host compiler hot path; add `StringSubstringBytes` builtin only if profiled bottleneck. Refuse-over-guess: don't add until evidence demands. |
 | **Outcome type implementation** (`T~E` / `T?~E` parser + AST + typecheck + lowerer + VM dispatch + tests + SPEC §2.5 rewrite) | ADR-0020 docs-only at v0.7.4.3-error. Full implementation lifts the design from ADR to working code: lexer accepts `~+`/`~0`/`~-`/`?~` compound tokens, parser builds `TypeTag::Outcome` + new AST nodes, typecheck enforces exhaustiveness + closure-capture form, lowerer emits opcodes 0xC1–0xC6, VM dispatches outcome ops with mandatory deallocation contract. | **v0.7.4.3-error sub-task** (next sub-commit in v0.7.4.3 umbrella) — implementation phase of ADR-0020. Estimated 2-3 weeks. |
 | **`null` keyword deprecation (W2001) + `~0` literal acceptance** | ADR-0020 §10 unifies `null` and `~0` source syntax. Lexer accepts both tokens; parser produces same AST node; typecheck emits W2001 for every `null` site with fix-hint. Removal scheduled v1.0 (W2001 → E2002). | **v0.7.4.3-error sub-task** (same sub-commit as outcome impl above) |
-| **`triet fmt --fix --migrate-null` migration tool** | Token-level rewrite of `null` → `~0` recursively. Idempotent, in-place by default with `--dry-run` option, respects .gitignore. ADR-0020 §10.5 spec. | **v0.7.4.3-error sub-task** (same sub-commit) |
+| **`dao fmt --fix --migrate-null` migration tool** | Token-level rewrite of `null` → `~0` recursively. Idempotent, in-place by default with `--dry-run` option, respects .gitignore. ADR-0020 §10.5 spec. | **v0.7.4.3-error sub-task** (same sub-commit) |
 
 **Maintenance rule (per author 2026-05-17 feedback):** When future v0.7.x.review audits identify additional deferred items, append to this table. When a deferred item ships, mark with strikethrough + commit hash rather than removing — preserves the history of *what was once missing* for future readers.
 

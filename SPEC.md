@@ -53,7 +53,7 @@ CAS packaging trên nền tảng v0.4 ABI metadata. v0.5 land:
 - 3-cấp hash tree (term + module + package) per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md). `abi_version` 1 → 2.
 - Package store layout `~/.triet/store/{term,mod,pkg,names,roots,tmp}/` per [ADR-0015](docs/decisions/0015-package-store-layout.md). Atomic install protocol.
 - Hash-based resolver + `triet.lock` format (hand-rolled line format, no serde dep).
-- CLI: `triet store {import,list,gc}`.
+- CLI: `dao store {import,list,gc}`.
 - Shared loading demo — VISION §3.1 gate hit at iface level (body-level RAM dedup chờ lowerer per-term body extraction).
 - Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap từ v0.2.x closed; aliased variant imports rejected với E2107.
 
@@ -62,7 +62,7 @@ CAS packaging trên nền tảng v0.4 ABI metadata. v0.5 land:
 Capability system — trụ cột bản sắc #5 (VISION §3.5 + §5). 3 ADRs ([0016](docs/decisions/0016-capability-type-system.md), [0017](docs/decisions/0017-trilean-policy-hook.md), [0018](docs/decisions/0018-capability-loader-semantics.md)) lock the contract; 11 sub-tasks land the machinery:
 
 - **Capability declaration:** namespace-level claims in `triet.package` source manifest (ADR-0018 §1). 4-state `CapabilityLevel`: `Grant` / `Ambient` / `Deny` (Trit) + `Defer` (`Trilean::Unknown`).
-- **Wire format:** `caps section` of `.tripack` ABI metadata populated (ADR-0016 §4). `abi_version` stays `2` (no bump — slot was reserved since v0.4 per ADR-0011 §5).
+- **Wire format:** `caps section` of `.khi` ABI metadata populated (ADR-0016 §4). `abi_version` stays `2` (no bump — slot was reserved since v0.4 per ADR-0011 §5).
 - **Compile-stage enforcement** (`triet-typecheck::check_capabilities`): cross-root imports (`sys.*`/`dev.*`/`usr.*`) require manifest claim. E2200 `MissingCapabilityClaim` + E2201 `SelfContradictoryCapability`. `std.*`/`core.*` ambient (skip); `crate.*`/`self.*`/`super.*` intra-pkg (skip).
 - **Link-stage enforcement** (`triet-pack::check_link_capabilities`, ADR-0018 §2 Step 6a): root manifest is sole authority over the dep closure (ADR-0016 §7). E2202 `UnresolvedCapabilityPath`, E2203 `CapabilityRefused`. `Defer` collected into `CapabilityLinkReport::deferrals`.
 - **Runtime resolution** (`triet-pack::CapabilityResolver`, ADR-0017 §4 + ADR-0018 §2 Step 6b): `triet.policy` rules indexed by `(cap_path, origin)` with exact > wildcard precedence. Per-session cache, monotonicity invariant (ADR-0017 §5). E2205 sub-variants for runtime errors.
@@ -74,18 +74,18 @@ Capability system — trụ cột bản sắc #5 (VISION §3.5 + §5). 3 ADRs ([
 
 Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** thuộc v0.6:
 
-- **CLI wiring** (`triet check` reading `triet.package` from project root, `triet build` populating `.tripack` caps section from manifest, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner với v0.7 self-hosting.
+- **CLI wiring** (`dao check` reading `triet.package` from project root, `dao build` populating `.khi` caps section from manifest, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner với v0.7 self-hosting.
 - **Hiệu năng tối ưu** — production runtime AOT đến v2.0 (LLVM). VM + tree-walker đều là development tiers per [VISION §4.3](VISION.md).
 - **Concurrency/async** — phase v0.8.
 - **Lowerer emit `WitnessCall` cho cross-package generics** — defer khỏi v0.6. Cần package-aware `ResolvedProgram` + generic-instantiation tracking; multi-week architectural milestone. Lands cùng multi-package compile path hoặc v0.7 self-hosting.
-- **v=1 `.tripack` lossy migration** (ADR-0015 §9) — defer. Hiện chưa có v=1 packs trong wild.
+- **v=1 `.khi` lossy migration** (ADR-0015 §9) — defer. Hiện chưa có v=1 packs trong wild.
 - **Self-hosting compiler** — phase v0.7.
 - **Per-function capability granularity** — defer post-v1.0 (ADR-0016 "Không làm"). Workaround: stdlib author splits modules.
 - **Wildcard cap claims** (`sys.* grant`) — refuse-over-guess; explicit > implicit (ADR-0016).
 - **Windows ConPTY** for TTY prompt — POSIX-first; Windows defer.
 - **ANSI colour + Unicode box-drawing** in TTY prompt — usability win, defer post-security-floor.
 - **JIT** — phase v0.9 (Cranelift backend đọc cùng Triết IR). **Native AOT compile** — phase v2.0 (LLVM backend đọc cùng Triết IR). **Trytecode native** — phase v∞ khi phần cứng tam phân xuất hiện.
-- **FFI với C/Rust runtime** — `.tripack` format đã ready host FFI signatures, wire encoding cho FFI thunks defer.
+- **FFI với C/Rust runtime** — `.khi` format đã ready host FFI signatures, wire encoding cho FFI thunks defer.
 - **Distributed registry** — local store đủ; network fetch + signature/provenance là v1.0+ work.
 
 ### Carry-over từ v0.7.3 (per ADR-0019 Addendum §A7)
@@ -201,7 +201,7 @@ Lock semantics đầy đủ ở [ADR-0020](docs/decisions/0020-outcome-error-han
 Timeline:
 - **v0.7.4.3-error → v0.7.x:** lexer chấp nhận cả `null` lẫn `~0`; mỗi `null` token sinh **W2001 NullDeprecated** warning với fix-hint *"replace `null` with `~0`"*.
 - **v1.0:** `null` keyword bị xóa khỏi grammar; W2001 → **E2002 NullRemoved**.
-- Migration tự động: `triet fmt --fix --migrate-null` rewrite tất cả `null` → `~0` recursively trong project tree.
+- Migration tự động: `dao fmt --fix --migrate-null` rewrite tất cả `null` → `~0` recursively trong project tree.
 
 #### 1.5.4 String (string)
 
@@ -840,20 +840,34 @@ Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: asse
 
 ## 10. Memory model
 
-Triết theo **Mojo-style memory model** — mục tiêu: cú pháp đơn giản gần Java/Python, performance gần Rust, ít cognitive overhead.
+Triết sử dụng mô hình **Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)** — mục tiêu: đạt được sự an toàn và zero-cost abstraction của Rust khi viết Kernel/Hệ điều hành, nhưng giữ được cú pháp đơn giản nhờ luật loại trừ Lifetimes (`<'a>`).
 
-### 10.1 Triết lý
+### 10.1 Triết lý cốt lõi: Con trỏ Tam phân
 
-| Aspect | Quyết định |
-|---|---|
-| Stack types | Value semantics — copy mặc định khi gán/truyền |
-| Heap types | ARC (Automatic Reference Counting) ngầm — không phải tracing GC, không phải explicit `Arc<T>` |
-| Lifetime annotations | **KHÔNG** trong source code — compiler infer cho 99% trường hợp |
-| Borrow checker | Đơn giản hóa: kiểm tra "no aliasing while mutable" tại scope-level |
+Con trỏ trong Triết có 3 trạng thái tại Compile-time, đại diện bằng ký tự `&`:
 
-**KHÔNG** theo Rust: ownership/lifetime annotations explicit (`'a`), `&T` vs `&mut T` tỉ mỉ, `String/&str/Cow/Box<str>` zoo. Mojo đã chứng minh rằng 90% safety của Rust đạt được mà không cần phức tạp đó.
+1. **`&+` (Strong Owner - Chủ sở hữu):** Mang quyền sở hữu (`+1`). Vùng nhớ tuyệt đối an toàn, không bị giải phóng. (Tương đương `Arc` / `Box`).
+2. **`&-` (Weak Observer - Kẻ quan sát):** Liên kết yếu (`-1`). Dùng để phá vỡ chu trình (memory leaks). Bắt buộc phải kiểm tra tồn tại (upgrade) trước khi đọc. (Tương đương `Weak`).
+3. **`&0` (Neutral Borrow - Mượn trung lập):** Mượn tạm thời trong Scope (`0`). Không làm thay đổi Reference Count ở Runtime (Zero-cost). (Tương đương `&T`).
 
-### 10.2 Phân loại type
+**KHÔNG theo Rust:** Triết loại bỏ hoàn toàn các ký hiệu Lifetime (`'a`). Bạn không bao giờ phải chứng minh vòng đời con trỏ với trình biên dịch nhờ 2 quy tắc cứng:
+- **Luật Cấm `&0` trong Struct:** Không bao giờ được lưu con trỏ mượn `&0` vào bộ nhớ dài hạn (Struct). Buộc phải dùng `&+` hoặc `&-`.
+- **Luật Ngắt Chu trình (Cycle Breaking):** Cấm tạo ra các chu trình khép kín toàn `&+` (gây memory leak). Lập trình viên phải dùng ít nhất một con trỏ `&-` để ngắt các chu trình vòng (ví dụ: tham chiếu parent trong cấu trúc Tree).
+
+### 10.2 Sự phân tầng Mặc định (Sensible Defaults)
+
+Để giữ lại sự thoải mái (Mojo-style) cho lập trình viên ứng dụng, Triết áp dụng các luật ngầm định (Infer) dựa trên Không gian (Namespace):
+
+**Tại không gian Application (`usr::`):**
+- Khi khai báo biến lưu trữ trong Struct, trình biên dịch ngầm hiểu là `&+`.
+- Khi truyền tham số vào Hàm, trình biên dịch ngầm hiểu là `&0`.
+-> 95% thời gian, bạn không cần gõ `&`, code trông sạch sẽ như Python/Java. Trình biên dịch sẽ tự báo lỗi nếu bạn vô tình tạo chu trình (Memory Leak) và yêu cầu bạn sửa 1 con trỏ thành `&-`.
+
+**Tại không gian System (`sys::`, `dev::`):**
+- Các quy tắc ngầm định bị vô hiệu hóa.
+- Lập trình viên bị ép phải gõ rành mạch `&+`, `&0`, `&-` để quản lý chặt chẽ từng cycle của CPU và ngăn ngừa lỗi nghiêm trọng.
+
+### 10.3 Phân loại type
 
 Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**:
 
@@ -864,17 +878,15 @@ Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**
 - Tuples `(T1, T2, ...)`
 - `T?` (nullable: T + 1-trit discriminator)
 
-**Heap-allocated** (ARC-managed):
-- `String` (UTF-8 owned, mutable qua `let mutable`)
+**Heap-allocated**:
+- Được quản lý theo vòng đời của các con trỏ `&+` và `&-`.
+- `String` (UTF-8 owned)
 - `Result<T, E>` ✅ (v0.4 stdlib — `std.result`; canonical error-handling type per §2.5)
-- `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections — defer to v0.5+)
+- `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections)
 
-`Option<T>` đã **deprecated trong stdlib** từ v0.4 (xem §2.5): `T?` là cách chính tắc cho "value may be absent" — `T?` đã có discriminator 1-trit bẩm sinh, wrapper `Option<T>` redundant. Local user-defined `enum MyOption<T> { Some(T), None }` vẫn hợp lệ nhưng không khuyến khích.
+`Option<T>` đã **deprecated trong stdlib** từ v0.4 (xem §2.5): `T?` là cách chính tắc cho "value may be absent".
 
-**Stack view** (composite, không sở hữu):
-- `StringSlice` (post-v0.4 — view vào String, immutable, lifetime infer)
-
-### 10.3 Function parameter conventions (Mojo-style)
+### 10.4 Function parameter conventions
 
 ```triet
 // Mặc định: borrowed (read-only reference, không annotation)

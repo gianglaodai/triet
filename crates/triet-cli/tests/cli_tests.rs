@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 /// Helper to run the `triet` CLI binary.
 fn run_cli(args: &[&str], cwd: &std::path::Path) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dao"));
     cmd.args(args).current_dir(cwd);
     cmd.output().expect("failed to execute CLI")
 }
@@ -55,7 +55,7 @@ fn multi_file_success() {
     // main.tri
     fs::write(
         temp.path().join("main.tri"),
-        "module helper\nfrom crate.helper import VALUE\nfunction main() -> Integer = VALUE",
+        "module helper\nfrom khi.helper import VALUE\nfunction main() -> Integer = VALUE",
     )
     .unwrap();
 
@@ -75,13 +75,13 @@ fn cyclic_import_error() {
 
     fs::write(
         temp.path().join("a.tri"),
-        "module b\nfrom crate.b import VALUE\npublic constant VALUE: Integer = 1",
+        "module b\nfrom khi.b import VALUE\npublic constant VALUE: Integer = 1",
     )
     .unwrap();
 
     fs::write(
         temp.path().join("b.tri"),
-        "module a\nfrom crate.a import VALUE\npublic constant VALUE: Integer = 2",
+        "module a\nfrom khi.a import VALUE\npublic constant VALUE: Integer = 2",
     )
     .unwrap();
 
@@ -115,7 +115,7 @@ fn visibility_violation() {
 
     fs::write(
         temp.path().join("main.tri"),
-        "module secret\nfrom crate.secret import HIDDEN\nfunction main() -> Integer = HIDDEN",
+        "module secret\nfrom khi.secret import HIDDEN\nfunction main() -> Integer = HIDDEN",
     )
     .unwrap();
 
@@ -293,7 +293,7 @@ fn aliased_variant_import_rejected_by_cli() {
     );
 }
 
-// ── `triet fmt --migrate-null` (v0.7.4.3-error.4a) ──────────────────
+// ── `dao fmt --migrate-null` (v0.7.4.3-error.4a) ──────────────────
 
 /// Dry-run does not modify the file on disk.
 #[test]
@@ -303,12 +303,19 @@ fn fmt_migrate_null_dry_run_preserves_file() {
     let original = "function lookup(id: Integer) -> User? = null\n";
     fs::write(&file, original).unwrap();
     let output = run_cli(&["fmt", "--migrate-null", "main.tri"], temp.path());
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let after = fs::read_to_string(&file).unwrap();
     assert_eq!(after, original, "dry-run must not touch disk");
     // Dry-run reports the file count in stderr.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("1 of 1 file(s) would change"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("1 of 1 file(s) would change"),
+        "stderr: {stderr}"
+    );
 }
 
 /// `--write` persists the `null` → `~0` rewrite.
@@ -330,7 +337,11 @@ fn fmt_migrate_null_write_rewrites_file() {
 #[test]
 fn fmt_without_rule_flag_exits_with_help() {
     let temp = TempDir::new().unwrap();
-    fs::write(temp.path().join("main.tri"), "function main() -> Integer = 0").unwrap();
+    fs::write(
+        temp.path().join("main.tri"),
+        "function main() -> Integer = 0",
+    )
+    .unwrap();
     let output = run_cli(&["fmt", "main.tri"], temp.path());
     assert!(!output.status.success(), "expected non-zero exit");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -353,7 +364,10 @@ fn fmt_migrate_null_recurses_into_directory() {
 
     let output = run_cli(&["fmt", "--migrate-null", "--write", "."], root);
     assert!(output.status.success());
-    assert_eq!(fs::read_to_string(root.join("a.tri")).unwrap(), "let x = ~0\n");
+    assert_eq!(
+        fs::read_to_string(root.join("a.tri")).unwrap(),
+        "let x = ~0\n"
+    );
     assert_eq!(
         fs::read_to_string(root.join("sub").join("b.tri")).unwrap(),
         "let y = ~0\n",

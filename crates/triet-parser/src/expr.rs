@@ -262,7 +262,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
 ///
 /// Style guide mandates space between the prefix and payload, but the
 /// lexer emits them as separate tokens regardless of whitespace —
-/// `triet fmt` enforces the space at format-time.
+/// `dao fmt` enforces the space at format-time.
 fn parse_outcome_constructor(
     parser: &mut Parser<'_>,
     arm: OutcomeArm,

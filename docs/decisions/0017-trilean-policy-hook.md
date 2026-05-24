@@ -377,7 +377,7 @@ Audit window post-decision, mirror precedent [ADR-0015 Addendum](0015-package-st
 
 ### §B — TTY input source: `/dev/tty`, không phải stdin (strengthen §7)
 
-§7 chỉ check `isatty(stderr)` và §4 pseudo-code `prompt_user(req)` không specify input source. Blind spot: default đọc stdin → attack `echo G | triet run` auto-grant Defer cap. Classic pipe spoofing.
+§7 chỉ check `isatty(stderr)` và §4 pseudo-code `prompt_user(req)` không specify input source. Blind spot: default đọc stdin → attack `echo G | dao run` auto-grant Defer cap. Classic pipe spoofing.
 
 **Fix:**
 
@@ -387,7 +387,7 @@ Audit window post-decision, mirror precedent [ADR-0015 Addendum](0015-package-st
 2. **Cả input + output bind vào terminal handle mới mở**, KHÔNG qua stdin/stdout/stderr. Display PolicyRequest details và đọc user choice (g/d/G/D/?) đều qua `/dev/tty` fd.
 3. **`isatty(stderr)` là fast pre-screen optimization**, không authoritative. Skip optimization → correctness identical. Loader có thể chọn pre-screen hoặc luôn thử mở `/dev/tty`.
 4. **`--non-interactive` CLI flag** (ADR-0018 TBD) force skip terminal open → E2205.NonTTYDefer dù TTY available. Cho script attended.
-5. **Authorized wrapper inheritance:** Nếu user chạy `triet run` bên trong wrapper script wrap `/dev/tty` qua FIFO/expect → đây là **authorized spoofing** (user owns wrapper). ADR-0017 KHÔNG cố ngăn case này; chỉ ngăn **unauthorized pipe injection** từ untrusted caller redirect stdin.
+5. **Authorized wrapper inheritance:** Nếu user chạy `dao run` bên trong wrapper script wrap `/dev/tty` qua FIFO/expect → đây là **authorized spoofing** (user owns wrapper). ADR-0017 KHÔNG cố ngăn case này; chỉ ngăn **unauthorized pipe injection** từ untrusted caller redirect stdin.
 
 Prior art reference: `sudo(8)` AUTHENTICATION section — `/dev/tty` bypass mọi password prompt cho cùng lý do.
 

@@ -16,8 +16,8 @@
 //!    capability sai.** — covered by `full_pipeline_*` tests that
 //!    walk compile → link → resolve on the same package shape.
 //!
-//! The CLI integration (`triet check` reading `triet.package` from a
-//! project root, building real `.tripack`s with caps populated, wiring
+//! The CLI integration (`dao check` reading `triet.package` from a
+//! project root, building real `.khi`s with caps populated, wiring
 //! `DevTtyPrompt` into the run path) is **deferred** — it needs a
 //! project-layout discovery convention that lands cleaner with v0.7
 //! self-hosting. The integration tests below construct synthetic data
@@ -88,7 +88,7 @@ fn manifest(requires: Vec<(&str, CapabilityLevel)>) -> PackageManifest {
 }
 
 /// Build an `AbiMetadata` with the given name + module paths + caps.
-/// Used to simulate a `.tripack` for the link-stage check.
+/// Used to simulate a `.khi` for the link-stage check.
 fn pack(name: &str, module_paths: &[&str], caps: Vec<(&str, CapabilityLevel)>) -> AbiMetadata {
     let mut m = AbiMetadata::empty(name, SemVer::new(0, 1, 0));
     m.modules = module_paths
@@ -478,7 +478,7 @@ fn full_pipeline_capstone_refuse_path() {
     ));
 
     // No need to proceed to link/resolve — compile stage already
-    // refused. This matches the "fail fast" UX of `triet build` /
-    // `triet check`: the user sees the diagnostic and fixes the
+    // refused. This matches the "fail fast" UX of `dao build` /
+    // `dao check`: the user sees the diagnostic and fixes the
     // manifest before any link work happens.
 }

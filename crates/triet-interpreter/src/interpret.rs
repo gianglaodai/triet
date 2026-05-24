@@ -597,8 +597,8 @@ impl<'p> Interpreter<'p> {
             | Expr::OutcomePropagate { .. }
             | Expr::OutcomeDefault { .. } => Err(RuntimeError::TypeError {
                 message: "outcome operators (~+, ~-, ~?, ~:) not supported by the interpreter — \
-                          pending interpreter parity per ADR-0019 Addendum §A7 (use `triet build` \
-                          + `triet run .triv` path for now). `~0` is supported and unifies with \
+                          pending interpreter parity per ADR-0019 Addendum §A7 (use `dao build` \
+                          + `dao run .triv` path for now). `~0` is supported and unifies with \
                           the legacy `null` literal per ADR-0010 Addendum §D."
                     .into(),
                 span,

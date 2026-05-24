@@ -68,4 +68,4 @@ match maybe_user {
 }
 ```
 
-**Migration:** `triet fmt --fix --migrate-null` auto-rewrites both literal and pattern occurrences. See [ADR-0020 §10.5](0020-outcome-error-handling.md) for tool specification.
+**Migration:** `dao fmt --fix --migrate-null` auto-rewrites both literal and pattern occurrences. See [ADR-0020 §10.5](0020-outcome-error-handling.md) for tool specification.

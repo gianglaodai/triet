@@ -75,7 +75,6 @@ fn typecheck_outcome_field_smoke_main_passes_all_asserts() {
         .id;
 
     let mut vm = Vm::new(restored);
-    vm.execute(smoke_id, vec![]).expect(
-        "compiler/typecheck.tri outcome_field_smoke_main() must complete without VM error",
-    );
+    vm.execute(smoke_id, vec![])
+        .expect("compiler/typecheck.tri outcome_field_smoke_main() must complete without VM error");
 }

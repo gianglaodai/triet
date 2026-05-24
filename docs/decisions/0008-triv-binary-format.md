@@ -460,8 +460,8 @@ unknown), nhưng design type encoding riêng cho Triết.
 **Implementation plan:**
 - v0.3.9: `triet-ir` module `serde.rs` — `write_program(&IrProgram) →
   Vec<u8>`, `read_program(&[u8]) -> Result<IrProgram, TrivError>`.
-- v0.3.10: CLI `triet build` — parse + lower + serialize → `.triv` file;
-  `triet run foo.triv` — deserialize + execute.
+- v0.3.10: CLI `dao build` — parse + lower + serialize → `.triv` file;
+  `dao run foo.triv` — deserialize + execute.
 - v0.3.11: Round-trip tests: mọi `examples/*.tri` parse → lower → serialize →
   deserialize → execute → same output.
 

@@ -430,7 +430,7 @@ pub enum TypeError {
         severity(Warning),
         code(triet::typecheck::W2001),
         help(
-            "replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10). Auto-fix: `triet fmt --fix --migrate-null`"
+            "replace `null` with `~0` (canonical Trit::Zero literal per ADR-0020 §10). Auto-fix: `dao fmt --fix --migrate-null`"
         )
     )]
     NullDeprecated {

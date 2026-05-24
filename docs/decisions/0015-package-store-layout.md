@@ -91,11 +91,11 @@ Example:
 - File text 1 dòng: 64-hex của `impl_hash_pkg`. Là **alias từ symbolic name → CAS hash**. Resolver tra `names/foo/1.2.3.link` → đọc hash → `cd pkg/<hash>/`.
 
 **`roots/<project_id>.root`:**
-- File text n dòng. Mỗi dòng: 1 `impl_hash_pkg` mà project đang reference. Là **GC root** — `triet store gc` không xoá hash trong roots.
+- File text n dòng. Mỗi dòng: 1 `impl_hash_pkg` mà project đang reference. Là **GC root** — `dao store gc` không xoá hash trong roots.
 - `<project_id>` = BLAKE3 hash của absolute path tới project root (anonymous, deterministic per-project).
 
 **`tmp/`:**
-- Staging cho atomic install (xem §6). Cleaned up by `triet store gc`.
+- Staging cho atomic install (xem §6). Cleaned up by `dao store gc`.
 
 ### 5. Symbolic name resolution flow
 
@@ -128,7 +128,7 @@ Tương đương cho `term/` và `mod/`. **No locks** — rename atomicity đủ
 
 ### 7. Garbage collection
 
-CLI command: `triet store gc` (manual, v0.5 không auto).
+CLI command: `dao store gc` (manual, v0.5 không auto).
 
 ```
 Mark phase:
@@ -156,7 +156,7 @@ V0.5 không guarantee GC strong consistency với concurrent install. Future v0.
 
 ### 9. Migration path
 
-CLI: `triet store import <path/to/foo.tripack>`:
+CLI: `dao store import <path/to/foo.tripack>`:
 ```
 1. Read foo.tripack.
 2. Verify abi_version compatible (≥1 — v0.4 reads OK at pkg level).
@@ -180,7 +180,7 @@ CLI: `triet store import <path/to/foo.tripack>`:
 ### Cho v0.5 deliverables
 
 - `triet-pack` crate gains `Store` API: `Store::open()`, `Store::install_pack()`, `Store::resolve_term()`, `Store::gc()`.
-- CLI new subcommands: `triet store {add, list, import, gc, root}`.
+- CLI new subcommands: `dao store {add, list, import, gc, root}`.
 - Resolver (v0.5.5) uses `Store::resolve_*` instead of filesystem walk.
 
 ### Cho VISION §3.1 (shared loading)
@@ -207,7 +207,7 @@ CLI: `triet store import <path/to/foo.tripack>`:
 
 ## Không làm
 
-- **Không network fetch** ở v0.5. Tất cả install là local (qua `triet store import` hoặc per-project rebuild). Distributed registry là v1.0+ topic.
+- **Không network fetch** ở v0.5. Tất cả install là local (qua `dao store import` hoặc per-project rebuild). Distributed registry là v1.0+ topic.
 - **Không content compression**. body.bin là raw IR bytes. Compression (zstd) là disk-saving optimization defer cho v0.8+ nếu cần.
 - **Không auto-GC**. User control. v0.5 nguyên tắc *Refuse over guess* (VISION §6) — auto-delete code là dangerous default.
 - **Không filesystem encryption**. Store không chứa secret. User responsibility nếu cần (disk-level encryption đủ).

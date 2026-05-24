@@ -65,11 +65,11 @@ pub struct Resolution {
 pub enum ResolveError {
     /// No version of `pkg_name` in the store matches the dep's
     /// declared range — caller needs to install the package first
-    /// (via `triet store import` or a build of the dep).
+    /// (via `dao store import` or a build of the dep).
     #[error("no installed version of `{pkg_name}` satisfies the dep range")]
     #[diagnostic(
         code(triet::pack::E2380),
-        help("install the dependency: `triet store import path/to/{pkg_name}.khi`")
+        help("install the dependency: `dao store import path/to/{pkg_name}.khi`")
     )]
     NoMatchingVersion {
         /// Package the caller asked for.

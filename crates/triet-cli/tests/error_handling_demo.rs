@@ -1,6 +1,6 @@
 //! End-to-end integration tests for the v0.7.4.3-error capstone
 //! (`demos/05-error-handling/`). Runs the demo through the production
-//! VM path (`triet build` → `triet run .triv`) and verifies each
+//! VM path (`dao build` → `dao run .triv`) and verifies each
 //! pipeline arm produces the expected output line.
 //!
 //! Per the demo's README, the interpreter tier only supports `~0` —
@@ -27,19 +27,18 @@ fn demo_main() -> PathBuf {
 /// Path to the release-built `triet` binary. Tests assume
 /// `cargo build --release` has run; the CI harness does this before
 /// the test pass per `differential_tests.rs` precedent.
-fn triet_bin() -> PathBuf {
+fn dao_bin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("target")
         .join("release")
-        .join("triet")
+        .join("dao")
 }
 
 #[test]
 fn error_handling_demo_loads_and_typechecks() {
-    let resolved =
-        triet_modules::load_program(&demo_main()).expect("demo should parse + resolve");
+    let resolved = triet_modules::load_program(&demo_main()).expect("demo should parse + resolve");
     let diagnostics = triet_typecheck::check_resolved(&resolved);
     let hard_errors: Vec<_> = diagnostics
         .iter()
@@ -56,16 +55,16 @@ fn error_handling_demo_builds_to_triv() {
     let demo = demo_main();
     let tempdir = tempfile::tempdir().expect("tempdir");
     let output_triv = tempdir.path().join("capstone.triv");
-    let exit = Command::new(triet_bin())
+    let exit = Command::new(dao_bin())
         .arg("build")
         .arg(&demo)
         .arg("-o")
         .arg(&output_triv)
         .output()
-        .expect("failed to execute triet build");
+        .expect("failed to execute dao build");
     assert!(
         exit.status.success(),
-        "triet build failed.\nstdout: {}\nstderr: {}",
+        "dao build failed.\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&exit.stdout),
         String::from_utf8_lossy(&exit.stderr),
     );
@@ -85,20 +84,20 @@ fn error_handling_demo_runs_and_emits_expected_lines() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let output_triv = tempdir.path().join("capstone.triv");
 
-    let build = Command::new(triet_bin())
+    let build = Command::new(dao_bin())
         .arg("build")
         .arg(&demo)
         .arg("-o")
         .arg(&output_triv)
         .output()
-        .expect("failed to execute triet build");
+        .expect("failed to execute dao build");
     assert!(build.status.success(), "build failed: {build:?}");
 
-    let run = Command::new(triet_bin())
+    let run = Command::new(dao_bin())
         .arg("run")
         .arg(&output_triv)
         .output()
-        .expect("failed to execute triet run");
+        .expect("failed to execute dao run");
     assert!(
         run.status.success(),
         "run failed.\nstdout: {}\nstderr: {}",
@@ -138,14 +137,14 @@ fn error_handling_demo_stdout_lines_in_expected_order() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let output_triv = tempdir.path().join("capstone.triv");
 
-    Command::new(triet_bin())
+    Command::new(dao_bin())
         .arg("build")
         .arg(&demo)
         .arg("-o")
         .arg(&output_triv)
         .output()
         .expect("build");
-    let run = Command::new(triet_bin())
+    let run = Command::new(dao_bin())
         .arg("run")
         .arg(&output_triv)
         .output()
@@ -158,6 +157,9 @@ fn error_handling_demo_stdout_lines_in_expected_order() {
     let pos_range = stdout.find("range :").expect("missing 'range' line");
 
     assert!(pos_ok < pos_age, "success line should precede failures");
-    assert!(pos_age < pos_admin, "register_user block precedes role-lookup block");
+    assert!(
+        pos_age < pos_admin,
+        "register_user block precedes role-lookup block"
+    );
     assert!(pos_admin < pos_range, "role-lookup arms in declared order");
 }

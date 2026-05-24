@@ -24,13 +24,13 @@ use std::process::ExitCode;
 
 use triet_lexer::{Token, lex};
 
-/// Top-level handler for `triet fmt`. Dispatches to the requested
+/// Top-level handler for `dao fmt`. Dispatches to the requested
 /// migration rule (currently only `--migrate-null`) and either writes
 /// changes back to disk or prints a diff preview to stdout.
 pub(crate) fn fmt_command(path: &str, migrate_null: bool, write: bool) -> ExitCode {
     if !migrate_null {
         eprintln!(
-            "error: `triet fmt` currently requires at least one rule flag.\n\
+            "error: `dao fmt` currently requires at least one rule flag.\n\
              available rules: --migrate-null (ADR-0020 §10: rewrite `null` → `~0`)"
         );
         return ExitCode::from(2);
@@ -93,10 +93,7 @@ fn collect_tri_files(root: &Path) -> Result<Vec<PathBuf>, String> {
         if root.extension().and_then(|ext| ext.to_str()) == Some("tri") {
             acc.push(root.to_path_buf());
         } else {
-            return Err(format!(
-                "file is not a .tri source: {}",
-                root.display()
-            ));
+            return Err(format!("file is not a .tri source: {}", root.display()));
         }
         return Ok(acc);
     }
@@ -124,8 +121,7 @@ fn walk_directory(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 /// `Ok(false)` if no changes were needed, `Err(_)` on I/O / lex
 /// failure.
 fn process_file(path: &Path, migrate_null: bool, write: bool) -> Result<bool, String> {
-    let source = fs::read_to_string(path)
-        .map_err(|err| format!("cannot read: {err}"))?;
+    let source = fs::read_to_string(path).map_err(|err| format!("cannot read: {err}"))?;
     let rewritten = if migrate_null {
         rewrite_null_to_tilde_zero(&source)?
     } else {

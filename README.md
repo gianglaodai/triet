@@ -13,34 +13,34 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.6 — implementation v0.6.0 — v0.7 Self-hosting Compiler IN PROGRESS.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format (currently v4, [ADR-0008 §Version history](docs/decisions/0008-triv-binary-format.md)). **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.tripack`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree, atomic install, hash-pinned `triet.lock`. **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md) — `sys.*`/`dev.*`/`usr.*` enforce, 4-state `CapabilityLevel`, `triet.package` + `triet.policy` + `/dev/tty` provenance prompt. **v0.7 Self-hosting Compiler in progress** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — 3-stage bootstrap chain, canonical emission invariants, Rust-shim stdlib (19 builtins shipped v0.7.3), generic function syntax shipped v0.7.4.1, stdlib stubs `.tri` shipped v0.7.4.2. **Outcome error handling** design locked per [ADR-0020](docs/decisions/0020-outcome-error-handling.md) — `T~E` / `T?~E` trit-encoded fallibility, implementation pending v0.7.4.3-error. 1129 tests pass workspace-wide.
+🟢 **Language SPEC v0.6 — implementation v0.6.0 — v0.7 Self-hosting Compiler IN PROGRESS.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format (currently v4, [ADR-0008 §Version history](docs/decisions/0008-triv-binary-format.md)). **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.khi`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree, atomic install, hash-pinned `triet.lock`. **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md) — `sys.*`/`dev.*`/`usr.*` enforce, 4-state `CapabilityLevel`, `triet.package` + `triet.policy` + `/dev/tty` provenance prompt. **v0.7 Self-hosting Compiler in progress** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — 3-stage bootstrap chain, canonical emission invariants, Rust-shim stdlib (19 builtins shipped v0.7.3), generic function syntax shipped v0.7.4.1, stdlib stubs `.tri` shipped v0.7.4.2. **Outcome error handling** design locked per [ADR-0020](docs/decisions/0020-outcome-error-handling.md) — `T~E` / `T?~E` trit-encoded fallibility, implementation pending v0.7.4.3-error. 1129 tests pass workspace-wide.
 
 ```bash
 cargo build --release
 
 # Tree-walking interpreter (production tier hiện tại)
-./target/release/triet run examples/fizzbuzz.tri
-./target/release/triet run examples/measles_risk.tri
-./target/release/triet run examples/factorial.tri
-./target/release/triet run examples/lukasiewicz_vs_kleene.tri
-./target/release/triet run examples/counter.tri
-./target/release/triet run examples/long_arithmetic.tri
-./target/release/triet run examples/enumerate.tri
-./target/release/triet run examples/nullable.tri
-./target/release/triet run examples/while_polling.tri
-./target/release/triet run examples/maybe.tri
-./target/release/triet run examples/generic.tri
+./target/release/dao run examples/fizzbuzz.tri
+./target/release/dao run examples/measles_risk.tri
+./target/release/dao run examples/factorial.tri
+./target/release/dao run examples/lukasiewicz_vs_kleene.tri
+./target/release/dao run examples/counter.tri
+./target/release/dao run examples/long_arithmetic.tri
+./target/release/dao run examples/enumerate.tri
+./target/release/dao run examples/nullable.tri
+./target/release/dao run examples/while_polling.tri
+./target/release/dao run examples/maybe.tri
+./target/release/dao run examples/generic.tri
 
 # Module system demo (704 dòng, 6 module file-bound + nested + inline)
-./target/release/triet run demos/02-module-system/main.tri
+./target/release/dao run demos/02-module-system/main.tri
 
 # Capability system walkthrough (v0.6 — shipped, illustrative manifest + policy)
 cat demos/04-capability-system/README.md
 cat demos/04-capability-system/triet.package
 
 # Compile → bytecode → VM execution
-./target/release/triet build examples/factorial.tri -o /tmp/factorial.triv
-./target/release/triet run /tmp/factorial.triv
+./target/release/dao build examples/factorial.tri -o /tmp/factorial.triv
+./target/release/dao run /tmp/factorial.triv
 ```
 
 ## Triết lý thiết kế
@@ -122,17 +122,17 @@ cargo fmt --all          # format
 cargo build --release
 
 # Chạy chương trình .tri (tree-walker)
-./target/release/triet run examples/fizzbuzz.tri
+./target/release/dao run examples/fizzbuzz.tri
 
 # Type-check không thực thi
-./target/release/triet check examples/fizzbuzz.tri
+./target/release/dao check examples/fizzbuzz.tri
 
 # Compile → bytecode → VM
-./target/release/triet build examples/fizzbuzz.tri -o /tmp/fizzbuzz.triv
-./target/release/triet run /tmp/fizzbuzz.triv
+./target/release/dao build examples/fizzbuzz.tri -o /tmp/fizzbuzz.triv
+./target/release/dao run /tmp/fizzbuzz.triv
 
 # Thông tin phiên bản
-./target/release/triet info
+./target/release/dao info
 ```
 
 ## Roadmap (tóm tắt)

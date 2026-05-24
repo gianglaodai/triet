@@ -108,9 +108,9 @@ cargo fmt --all                          # format
 
 # Run a .tri program (build the binary first)
 cargo build --release
-./target/release/triet run examples/fizzbuzz.tri
-./target/release/triet check examples/fizzbuzz.tri    # parse+typecheck only
-./target/release/triet --json run examples/foo.tri    # machine-readable diagnostics
+./target/release/dao run examples/fizzbuzz.tri
+./target/release/dao check examples/fizzbuzz.tri    # parse+typecheck only
+./target/release/dao --json run examples/foo.tri    # machine-readable diagnostics
 ```
 
 Tests must be **green before any commit**. The user's "stability over speed" principle is non-negotiable — do not bypass failing checks with `--no-verify`, `#[allow]`, or `#[ignore]`.
@@ -159,11 +159,11 @@ Linker decisions land in the E2300–E2399 namespace: `MajorVersionMismatch` (E2
 ### CAS Packaging (shipped v0.5; ADR-0014/0015)
 Extends the pack-level hash from v0.4 into a **3-cấp hash tree**: term + module + package. Each level has its own `iface_hash` (signature-only) + `impl_hash` (covers body bytes), with 16-byte ASCII domain separators per level to prevent cross-level collisions. `abi_version` bumped 1 → 2 (additive — `.khi` v=1 explicitly refused per ADR-0014 §5, no shim).
 
-Package store lives at `~/.triet/store/` (override via `$TRIET_STORE`). Three branches mirror the hash tree: `term/<impl_hash>/{iface.bin, body.bin}`, `mod/<impl_hash>/index.bin`, `pkg/<impl_hash>/{pack.khi, manifest.bin}`. Plus `names/<pkg>/<semver>.link` (symbolic alias → hash), `roots/<project_id>.root` (GC roots), `tmp/<uid>/` (atomic install staging). Atomic install protocol: write to tmp dir → `rename()` (POSIX atomic; EEXIST = race-lost = success). Manual `triet store gc` (mark-and-sweep). E2360–E2382 namespace covers store I/O + lockfile + resolver errors.
+Package store lives at `~/.triet/store/` (override via `$TRIET_STORE`). Three branches mirror the hash tree: `term/<impl_hash>/{iface.bin, body.bin}`, `mod/<impl_hash>/index.bin`, `pkg/<impl_hash>/{pack.khi, manifest.bin}`. Plus `names/<pkg>/<semver>.link` (symbolic alias → hash), `roots/<project_id>.root` (GC roots), `tmp/<uid>/` (atomic install staging). Atomic install protocol: write to tmp dir → `rename()` (POSIX atomic; EEXIST = race-lost = success). Manual `dao store gc` (mark-and-sweep). E2360–E2382 namespace covers store I/O + lockfile + resolver errors.
 
 `triet.lock` hand-rolled line format (`format_version 1` + `pkg <name> <maj>.<min>.<pat> <iface_hex> <impl_hash_hex>`) — sort-by-name canonical, diff-friendly, no serde dep. `Resolver` (lockfile authoritative when present + still in store; dep `iface_hash_pin` overrides cache).
 
-CLI: `triet store {import,list,gc}` (lossy v=1 migration deferred until v=1 packs exist in the wild). Body-level RAM dedup (`body.bin`) chờ lowerer per-term IR body split — iface-level dedup proven via `tests/shared_loading.rs`.
+CLI: `dao store {import,list,gc}` (lossy v=1 migration deferred until v=1 packs exist in the wild). Body-level RAM dedup (`body.bin`) chờ lowerer per-term IR body split — iface-level dedup proven via `tests/shared_loading.rs`.
 
 ### Capability System (shipped v0.6; ADR-0016/0017/0018)
 Trụ cột bản sắc #5 (VISION §3.5 + §5). Capability is a **namespace attribute** declared in `triet.package` source manifest (ADR-0018 §1) — phương án C picked over capability-as-runtime-token (Pony) and capability-as-effect-annotation (Koka). 4-state `CapabilityLevel`: `Grant`/`Ambient`/`Deny` (Trit) + `Defer` (`Trilean::Unknown`). Wire format reuses `caps section` reserved since v0.4 ABI metadata; `abi_version` stays `2` (ADR-0016 §4 promise: populate-not-bump).
@@ -245,7 +245,7 @@ When a decision affects future architecture (module shape, ABI, type system), wr
 Sample programs in `examples/*.tri` exercise specific features. Useful as smoke tests when changing parser/typecheck/interpreter:
 
 ```bash
-for f in examples/*.tri; do ./target/release/triet run "$f" || echo "FAILED: $f"; done
+for f in examples/*.tri; do ./target/release/dao run "$f" || echo "FAILED: $f"; done
 ```
 
 Demos shipped through v0.7.4.2: 12 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic, generic_function — all 12/12 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases). 1 shared-loading demo (`crates/triet-pack/tests/shared_loading.rs` — 4 integration tests proving CAS dedup at term + module level). 1 store CLI smoke test suite (`crates/triet-cli/tests/store_cli.rs` — 8 integration tests including `$TRIET_STORE` fallback chain). 1 capability system demo (`demos/04-capability-system/` illustrative files + `crates/triet-typecheck/tests/capability_pipeline.rs` — 12 integration tests proving ROADMAP §v0.6 gates). v0.7 bootstrap test infrastructure (`crates/triet-bootstrap/tests/`): determinism gate + stdlib stub VM round-trips.

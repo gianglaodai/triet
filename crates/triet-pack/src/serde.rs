@@ -1162,7 +1162,7 @@ mod tests {
     }
 
     /// v0.4 `abi_version = 1` packs are explicitly refused per
-    /// ADR-0014 §5 — no shim. Migration is via `triet store import`
+    /// ADR-0014 §5 — no shim. Migration is via `dao store import`
     /// (v0.5.7) which handles the lossy upgrade.
     #[test]
     fn legacy_abi_version_1_rejected() {

@@ -63,7 +63,7 @@ const RESERVED_CAP_ROOTS: &[&str] = &["sys", "dev", "usr"];
 
 /// Parsed source manifest for one package. Mirrors the wire-side
 /// [`crate::AbiMetadata`] but at the *source* layer — what the author
-/// writes, what `triet build` would read before emitting a `.khi`.
+/// writes, what `dao build` would read before emitting a `.khi`.
 ///
 /// ADR-0018 §1.
 #[derive(Clone, Debug, PartialEq, Eq)]

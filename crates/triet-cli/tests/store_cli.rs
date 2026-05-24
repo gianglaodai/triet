@@ -1,4 +1,4 @@
-//! Integration tests for `triet store` subcommands.
+//! Integration tests for `dao store` subcommands.
 //!
 //! Each test points the CLI at a fresh `$TRIET_STORE` (`TempDir`) so
 //! cases run in isolation and never touch the user's real store.
@@ -14,7 +14,7 @@ use triet_pack::{
 
 /// Run the `triet` binary with the given args + `TRIET_STORE` env.
 fn run_cli(args: &[&str], store: &std::path::Path) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dao"));
     cmd.args(args)
         .env("TRIET_STORE", store)
         // Don't let HOME affect store resolution if TRIET_STORE is set —
@@ -143,7 +143,7 @@ fn list_full_flag_shows_long_hash() {
 /// Run with a custom `$HOME` and no `$TRIET_STORE` — exercises the
 /// `$HOME/.triet/store` fallback path in `resolve_store_root`.
 fn run_cli_with_home(args: &[&str], home: &std::path::Path) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dao"));
     cmd.args(args).env_remove("TRIET_STORE").env("HOME", home);
     cmd.output().expect("CLI to execute")
 }
@@ -176,7 +176,7 @@ fn store_root_falls_back_to_home_when_env_unset() {
 fn store_root_errors_when_both_env_unset() {
     // Neither $TRIET_STORE nor $HOME → `resolve_store_root` returns
     // an explicit error rather than silently picking a default.
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_triet"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dao"));
     cmd.args(["store", "list"])
         .env_remove("TRIET_STORE")
         .env_remove("HOME");

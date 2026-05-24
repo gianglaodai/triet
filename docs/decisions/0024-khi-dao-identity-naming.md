@@ -91,7 +91,7 @@ Tổng = ~320 files modified across 5 commits + 1 ADR commit = 6 commits ship tr
 **Stage ordering rationale:**
 
 - **A trước** vì path keyword là user-facing nhất + ảnh hưởng Triết source code; nếu rollback phải thì rollback A một mình rẻ.
-- **B trước C** vì `.khi` wire format không phụ thuộc CLI binary name; có thể test `triet build -o foo.khi` ở giai đoạn middle.
+- **B trước C** vì `.khi` wire format không phụ thuộc CLI binary name; có thể test `dao build -o foo.khi` ở giai đoạn middle.
 - **C + D** thường ship cùng nhau (CLI rename + manifest rename liên quan chặt) nhưng tách để diff dễ review.
 - **E sau cùng** vì aliases là additive (không thay primary commands).
 
@@ -102,7 +102,7 @@ Tổng = ~320 files modified across 5 commits + 1 ADR commit = 6 commits ship tr
 V0.7 chưa có external user / package registry / installed toolchain ngoài author's machine. Hard cutover hợp lý:
 
 - Không support legacy `crate.foo.bar` import — typecheck reject với E2207-equivalent.
-- Không support legacy `triet build` command — `dao build` exclusive.
+- Không support legacy `dao build` command — `dao build` exclusive.
 - Không support legacy `triet.package` manifest — loader chỉ tìm `dao.package`.
 - Không support legacy `.khi` reader — `read_tripack` xóa hoặc rename `read_khi`.
 

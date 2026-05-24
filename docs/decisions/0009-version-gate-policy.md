@@ -44,14 +44,14 @@ Một phase v0.N **chỉ có thể đóng** (và mở v0.(N+1)) khi **toàn bộ
 | `ROADMAP.md` § v0.N có đầy đủ sub-task changelog với commit hash | Manual |
 | `README.md` status, test count, workspace structure khớp thực tế | Manual diff vs `cargo test --workspace 2>&1 \| grep "test result"` |
 | `Cargo.toml workspace.package.version` = `0.N.0` | `grep version Cargo.toml` |
-| `triet info` CLI subcommand in đúng version | `./target/release/triet info` |
+| `dao info` CLI subcommand in đúng version | `./target/release/dao info` |
 | ADR cho mọi quyết định kiến trúc lớn của phase đã được merge | Manual cross-check |
 
 ### Gate D — Self-consistency
 
 | Tiêu chí | Đo bằng |
 |---|---|
-| Tất cả `.tri` files trong `examples/` chạy được qua tree-walker | `for f in examples/*.tri; do triet run "$f"; done` |
+| Tất cả `.tri` files trong `examples/` chạy được qua tree-walker | `for f in examples/*.tri; do dao run "$f"; done` |
 | Tất cả `.tri` files trong `demos/` chạy được qua tree-walker | Idem |
 | Mọi feature đã đặc tả trong SPEC được test ít nhất 1 lần | Manual cross-check SPEC chapters |
 
