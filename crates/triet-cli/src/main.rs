@@ -429,6 +429,13 @@ fn runtime_error_span(error: &RuntimeError) -> std::ops::Range<usize> {
 fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
     let display_path = path;
 
+    // v0.7.10: discover dao.package by walking up from the source file's
+    // parent directory. Mirrors `cargo` convention per ADR-0019 §8.
+    let source_path = Path::new(path);
+    let _manifest = source_path
+        .parent()
+        .and_then(triet_pack::PackageManifest::discover);
+
     let resolved = match triet_modules::load_program(Path::new(path)) {
         Ok(p) => p,
         Err(errors) => {

@@ -43,7 +43,7 @@
 //! [SPEC §1.3]: ../../../SPEC.md
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use miette::Diagnostic;
 use thiserror::Error;
@@ -426,6 +426,30 @@ impl PackageManifest {
         let text =
             fs::read_to_string(path).map_err(|e| StoreError::io(path.display().to_string(), e))?;
         Self::parse(&text).map_err(StoreError::from)
+    }
+
+    /// Walk up from `start_dir` until a `dao.package` file is found,
+    /// returning its absolute path. Stops at the filesystem root.
+    /// Returns `None` if no manifest is found before reaching `/`.
+    ///
+    /// Mirrors `cargo`'s manifest discovery convention (ADR-0019 §8).
+    #[must_use]
+    pub fn discover(start_dir: &Path) -> Option<PathBuf> {
+        let mut current = if start_dir.is_absolute() {
+            start_dir.to_path_buf()
+        } else {
+            std::env::current_dir().ok()?.join(start_dir)
+        };
+        loop {
+            let candidate = current.join("dao.package");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            if !current.pop() {
+                // Reached filesystem root — no manifest found.
+                return None;
+            }
+        }
     }
 
     /// Write the manifest to `path` atomically (sibling `.tmp` →
