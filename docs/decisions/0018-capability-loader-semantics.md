@@ -1,20 +1,20 @@
-# ADR 0018 — Capability loader semantics (`triet.package` + eager link-time check + provenance prompt)
+# ADR 0018 — Capability loader semantics (`dao.package` + eager link-time check + provenance prompt)
 
 **Trạng thái:** Quyết định. Áp dụng cho v0.6 Capability System loader stage. Lấp đầy `E2208` reserved trong [ADR-0016 §6](0016-capability-type-system.md). Hoàn thiện manifest source syntax đã defer từ [ADR-0016 §1](0016-capability-type-system.md). Hoàn thiện TTY prompt UX + parser implementation strategy đã defer từ [ADR-0017 §4](0017-trilean-policy-hook.md) + [Addendum §A/§B](0017-trilean-policy-hook.md#addendum--parser-strictness--tty-source--abstain-errata). Lock anti-typosquatting display per author constraint 2026-05-17 (commit `dd6b2f4`). Không bump `abi_version` (giữ `v=2`), không đổi `.triv` wire format, không đổi IR shape.
 
 **Issue:** ADR-0016 + ADR-0017 lock semantics + protocol nhưng để hở 5 vùng để ADR-0018 chốt:
 
-1. **Source manifest file** — concrete `triet.package` grammar (ADR-0016 §1 chỉ có pseudo-syntax)
+1. **Source manifest file** — concrete `dao.package` grammar (ADR-0016 §1 chỉ có pseudo-syntax)
 2. **Loader pipeline** — eager vs lazy + chèn step nào trong [ADR-0011 §8](0011-abi-metadata-format.md) workflow
-3. **`triet.policy` reader** — implementation strategy (parser, miette span, per-E2205 error format)
+3. **`dao.policy` reader** — implementation strategy (parser, miette span, per-E2205 error format)
 4. **TTY prompt UX** — provenance display + anti-typosquatting (author constraint 2026-05-17)
 5. **E2208 sub-variants** — loader refuse-to-load codes
 
 Plus: replace `Capability { name: String }` placeholder ở [`crates/triet-pack/src/types.rs`](../../crates/triet-pack/src/types.rs) với concrete `CapabilityClaim` struct shape.
 
-## §1 — `triet.package` source manifest
+## §1 — `dao.package` source manifest
 
-**File location:** project root, hand-rolled line format, mirror precedent [ADR-0015 §6](0015-package-store-layout.md) (`triet.lock`) + [ADR-0017 §3](0017-trilean-policy-hook.md) (`triet.policy`). Tên file: `triet.package` — parallel naming convention. Không serde dep.
+**File location:** project root, hand-rolled line format, mirror precedent [ADR-0015 §6](0015-package-store-layout.md) (`dao.lock`) + [ADR-0017 §3](0017-trilean-policy-hook.md) (`dao.policy`). Tên file: `dao.package` — parallel naming convention. Không serde dep.
 
 **Grammar:**
 
@@ -38,7 +38,7 @@ dep <name> <min> <max_excl> <iface_hash_hex>
 - `requires`: zero+ entries. `cap_path` = `AbsolutePath` ([ADR-0005](0005-module-system.md)); root MUST ∈ {sys, dev, usr} per [ADR-0016 §5 rule 3](0016-capability-type-system.md), violate → E2206 InvalidCapabilityRoot.
 - `dep`: zero+ entries. `min`/`max_excl` = semver triple. `iface_hash_hex` = 64 hex chars (BLAKE3, [ADR-0011 §4](0011-abi-metadata-format.md)). All-zero hex = no pin.
 
-**Level tokens** (textual, intent-revealing — distinguish khỏi `triet.policy` numeric tokens):
+**Level tokens** (textual, intent-revealing — distinguish khỏi `dao.policy` numeric tokens):
 
 | Token | CapabilityLevel | Wire encoding (ABI caps section) |
 |---|---|---|
@@ -47,12 +47,12 @@ dep <name> <min> <max_excl> <iface_hash_hex>
 | `deny` | Deny (Trit::Negative) | u8 `0x00` |
 | `defer` | Defer (Trilean::Unknown) | u8 `0x03` |
 
-**Token convention mixed với `triet.policy`** (chấp nhận trade-off):
+**Token convention mixed với `dao.policy`** (chấp nhận trade-off):
 
 | File | Tokens | Audience |
 |---|---|---|
-| `triet.package` | `grant` / `ambient` / `deny` / `defer` | Library author — textual, intent-revealing |
-| `triet.policy` | `+1` / `0` / `-1` / `prompt` | Sysadmin / security audit — numeric, audit-compact |
+| `dao.package` | `grant` / `ambient` / `deny` / `defer` | Library author — textual, intent-revealing |
+| `dao.policy` | `+1` / `0` / `-1` / `prompt` | Sysadmin / security audit — numeric, audit-compact |
 
 Lý do tách: 2 file 2 audience. Manifest written rare (publish-time); policy edited often (deploy-time). Tokens KHÔNG alias được — `0` ở manifest = Ambient nhưng `0` ở policy decision = Abstain. Semantic-distinct.
 
@@ -61,7 +61,7 @@ Lý do tách: 2 file 2 audience. Manifest written rare (publish-time); policy ed
 **Example:**
 
 ```text
-# triet.package — myapp v0.1.0
+# dao.package — myapp v0.1.0
 format_version 1
 name myapp
 version 0.1.0
@@ -130,7 +130,7 @@ for each cap in union(root.caps, transitive_deps.caps):
 
 Single Defer failure → per-key Deny + diagnostic (ADR-0017 §6 NonTTYDefer / PromptCrash semantics). Process tiếp tục với other caps. Step 7 chỉ fire khi cache fully warm.
 
-## §3 — `triet.policy` reader implementation strategy
+## §3 — `dao.policy` reader implementation strategy
 
 [ADR-0017 Addendum §A](0017-trilean-policy-hook.md#addendum--parser-strictness--tty-source--abstain-errata) đã spec **WHAT** (whitelist rules); ADR-0018 spec **HOW** (parser strategy + miette span + error format).
 
@@ -164,16 +164,16 @@ fn parse_policy(path: &Path) -> Result<PolicyRules, E2205> {
 
 | Sub-variant | Format |
 |---|---|
-| `E2205.ConfigParse` | `triet.policy:{line}:{col}: invalid {what} — {reason}` (+ hint khi applicable) |
-| `E2205.RuleConflict` | `triet.policy:{line}:{col}: duplicate rule for ({path}, {origin}) — first declared at line {first_line}` |
-| `E2205.UnknownOrigin` | `triet.policy:{line}:{col}: unknown origin '{token}' — expected: lockfile, ifacepin, fresh, *` |
-| `E2205.UnknownDecision` | `triet.policy:{line}:{col}: unknown decision '{token}' — expected: +1, 0, -1, prompt` |
-| `E2205.NonTTYDefer` | `cap '{cap_path}' (requester {pkg}@{ver}): policy returned 'prompt' but no TTY available — set explicit rule in triet.policy or run with TTY` |
+| `E2205.ConfigParse` | `dao.policy:{line}:{col}: invalid {what} — {reason}` (+ hint khi applicable) |
+| `E2205.RuleConflict` | `dao.policy:{line}:{col}: duplicate rule for ({path}, {origin}) — first declared at line {first_line}` |
+| `E2205.UnknownOrigin` | `dao.policy:{line}:{col}: unknown origin '{token}' — expected: lockfile, ifacepin, fresh, *` |
+| `E2205.UnknownDecision` | `dao.policy:{line}:{col}: unknown decision '{token}' — expected: +1, 0, -1, prompt` |
+| `E2205.NonTTYDefer` | `cap '{cap_path}' (requester {pkg}@{ver}): policy returned 'prompt' but no TTY available — set explicit rule in dao.policy or run with TTY` |
 | `E2205.PromptCrash` | `cap '{cap_path}': TTY prompt I/O error: {os_error} — treating as Deny` |
 
 **Memoization:** parse once per process, cache `PolicyRules` immutable. Re-parse on next process start (capability monotonicity invariant per [ADR-0017 §5](0017-trilean-policy-hook.md)).
 
-**Apply same strategy to `triet.package` parser** — share tokenizer code path; differ ở semantic validation. E2208.ManifestParse uses identical span + format conventions.
+**Apply same strategy to `dao.package` parser** — share tokenizer code path; differ ở semantic validation. E2208.ManifestParse uses identical span + format conventions.
 
 ## §4 — TTY prompt UX (provenance display + anti-typosquatting)
 
@@ -183,12 +183,12 @@ Lock format per author constraint 2026-05-17. **Full hash, no truncation anywher
 [triet] Capability decision required
 
   Capability:     sys.net.dns
-  Decision token: defer  (per triet.policy rule, origin=Fresh)
+  Decision token: defer  (per dao.policy rule, origin=Fresh)
 
   Requester (package asking):
     Name:        myapp@0.1.0
     iface_hash:  e7a1c4f0b2d8a629f4e8d0c7b3a51928f6e2d9c8a4b3f7e9d8c6a2b1f5e3d829
-                 (matches triet.lock OK)
+                 (matches dao.lock OK)
     impl_hash:   91b3d8e2a4c7d935a8e6f0b2d4c97186a3e5f8d2c0b4a791e2f5c8d9a04af5b6
     Store path:  ~/.triet/store/pkg/91b3d8e2a4c7d935a8e6f0b2d4c97186a3e5f8d2c0b4a791e2f5c8d9a04af5b6/pack.tripack
 
@@ -209,8 +209,8 @@ Lock format per author constraint 2026-05-17. **Full hash, no truncation anywher
   !! Verify hash against your records before granting.
 
   [g] grant once   [d] deny once
-  [G] grant permanent (write rule to triet.policy)
-  [D] deny permanent  (write rule to triet.policy)
+  [G] grant permanent (write rule to dao.policy)
+  [D] deny permanent  (write rule to dao.policy)
   [?] explain   [h] show hash help
 
   choice >
@@ -222,7 +222,7 @@ Lock format per author constraint 2026-05-17. **Full hash, no truncation anywher
 |---|---|---|
 | Hash display | **Full 64 hex chars, never truncate** | Security: short-SHA collision attack surface |
 | Hash line wrap | Single line nếu terminal width ≥ 100 cols; wrap to 2 lines of 32 chars nếu < 100 cols | Audit comparison friendly |
-| Lockfile cross-check | `(matches triet.lock OK)` / `(MISMATCH — was <full_hash>)` / `(not in lockfile)` | Strongest typosquatting signal — show full mismatch hash, not partial |
+| Lockfile cross-check | `(matches dao.lock OK)` / `(MISMATCH — was <full_hash>)` / `(not in lockfile)` | Strongest typosquatting signal — show full mismatch hash, not partial |
 | Origin per dep | Always shown: `origin=Fresh` / `origin=IfacePin` / `origin=Lockfile` — color-coded ANSI (Fresh=yellow, IfacePin=cyan, Lockfile=default) | Reinforces "new dep" warning |
 | Box-drawing | None ở mock (avoid overflow with full hash); indentation only. Implementation có thể dùng `┌─┐│└─┘` Unicode nếu `$TERM` supports (terminfo check), ASCII fallback ngược lại | Compatibility |
 | Color | ANSI 16-color default; disable per `$NO_COLOR` env spec | Standard convention |
@@ -231,15 +231,15 @@ Lock format per author constraint 2026-05-17. **Full hash, no truncation anywher
 | Input source | `/dev/tty` (POSIX) / ConPTY (Windows) per [ADR-0017 Addendum §B](0017-trilean-policy-hook.md#addendum--parser-strictness--tty-source--abstain-errata) | Anti-spoofing |
 | Output destination | `/dev/tty` (paired với input) | Consistency — không qua stderr redirect |
 
-**`G`/`D` write semantics:** append rule vào `triet.policy` BEFORE caching:
+**`G`/`D` write semantics:** append rule vào `dao.policy` BEFORE caching:
 
 ```text
-1. Open triet.policy for append. Missing → create với "format_version 1\n".
+1. Open dao.policy for append. Missing → create với "format_version 1\n".
 2. Append: rule <cap_path> <origin> <decision>
    - decision = "+1" cho G / "-1" cho D
    - origin = origin từ PolicyRequest
 3. fsync() để durable. Fail → fallback session-only cache + warning diagnostic.
-4. Re-sort atomically: write canonical sorted form to triet.policy.tmp, rename() to triet.policy.
+4. Re-sort atomically: write canonical sorted form to dao.policy.tmp, rename() to dao.policy.
    (Mirrors atomic install pattern ADR-0015 §5.)
 5. Cache decision in session.
 ```
@@ -247,7 +247,7 @@ Lock format per author constraint 2026-05-17. **Full hash, no truncation anywher
 **`[?] explain` action:** print expanded rationale:
 - Which dep declared this cap
 - Why Defer arose (no rule matched / explicit `prompt` decision in policy)
-- Suggested `triet.policy` entries to pre-grant for next session
+- Suggested `dao.policy` entries to pre-grant for next session
 Then re-prompt.
 
 **`[h] show hash help` action:** print BLAKE3 verification guide:
@@ -262,8 +262,8 @@ Then re-prompt.
 | Code | Variant | Stage | Khi nào |
 |---|---|---|---|
 | `E2208.PreV06Reader` | Reader pre-v0.6 sees `cap_count > 0` in `.khi` ABI metadata | Step 6a load-time | Forward-compat refusal — pre-v0.6 binary can't validate caps |
-| `E2208.ManifestParse` | `triet.package` source file syntax error | Pre-build (compiler reads source) | Whitelist parser refuse-to-load |
-| `E2208.CapabilityDivergence` | `triet.package` declares `requires` lines nhưng `.khi` `caps_count = 0` (writer bug) | Step 6a load-time | Writer/reader divergence detection |
+| `E2208.ManifestParse` | `dao.package` source file syntax error | Pre-build (compiler reads source) | Whitelist parser refuse-to-load |
+| `E2208.CapabilityDivergence` | `dao.package` declares `requires` lines nhưng `.khi` `caps_count = 0` (writer bug) | Step 6a load-time | Writer/reader divergence detection |
 
 **Stage table:**
 
@@ -271,7 +271,7 @@ Then re-prompt.
 - Sub-variant 2 fires **pre-build** (compiler reading source before emitting `.khi`). Refuse compilation.
 - Sub-variant 3 fires ở loader **Step 6a**. Refuse entire link.
 
-**Diagnostic format:** miette with primary span on `.khi` byte offset (sub-variant 1, 3) hoặc `triet.package:line:col` (sub-variant 2). Format mirrors §3 E2205 conventions.
+**Diagnostic format:** miette with primary span on `.khi` byte offset (sub-variant 1, 3) hoặc `dao.package:line:col` (sub-variant 2). Format mirrors §3 E2205 conventions.
 
 **Not E2208** (already covered by other codes):
 - E2202 `UnresolvedCapabilityPath` (ADR-0016 §6) — cap path không match dep export. Fires ở Step 6a but uses E2202.
@@ -323,15 +323,15 @@ ADR-0017 §4 pseudo-code `prompt_user(req)` → §4 mock locked đầy đủ. Ad
 Implementation targets (v0.6.4+ sub-tasks):
 - `crates/triet-pack/src/types.rs`: rename `Capability` → `CapabilityClaim`, add `CapabilityLevel` enum.
 - `crates/triet-pack/src/serde.rs`: extend writer/reader cho non-empty caps section.
-- New `crates/triet-pack/src/package_manifest.rs`: `triet.package` parser + writer (mirror `lockfile.rs` pattern).
-- New `crates/triet-pack/src/policy.rs`: `triet.policy` parser + writer (mirror `lockfile.rs` pattern).
+- New `crates/triet-pack/src/package_manifest.rs`: `dao.package` parser + writer (mirror `lockfile.rs` pattern).
+- New `crates/triet-pack/src/policy.rs`: `dao.policy` parser + writer (mirror `lockfile.rs` pattern).
 - New `crates/triet-pack/src/capability_resolver.rs`: PolicyCache + ADR-0017 §4 algorithm + ADR-0018 §2 loader steps 6a/6b.
 
 ### Cho `triet-cli`
 
 New subcommands (v0.6.4+):
-- `triet pack init` — emit boilerplate `triet.package`
-- `triet policy show` — render `triet.policy` rules table
+- `triet pack init` — emit boilerplate `dao.package`
+- `triet policy show` — render `dao.policy` rules table
 - `triet policy add <cap> <origin> <decision>` — append rule atomically
 - TTY prompt machinery wired into runtime link path
 
@@ -345,7 +345,7 @@ Không đổi. Cap check fires ở loader stage, không IR opcode mới.
 
 ### Cho v0.7 self-hosting
 
-Self-hosted parser cho `triet.package` + `triet.policy` phải emit byte-identical errors với Rust impl per §3 format table. Critical for bit-identical bootstrap (ROADMAP §v0.7 gate).
+Self-hosted parser cho `dao.package` + `dao.policy` phải emit byte-identical errors với Rust impl per §3 format table. Critical for bit-identical bootstrap (ROADMAP §v0.7 gate).
 
 ### Cho v0.8 concurrency
 
@@ -361,17 +361,17 @@ Cached decision authoritative; JIT lift across cap boundary đọc cache, không
 - **Source manifest implementation** — ADR-0018 lock grammar; writer/reader/CLI implementation = v0.6.4+ sub-tasks trong TODO.md. Split design vs implementation cadence.
 - **Multi-language manifest** — English only v0.6; i18n defer indefinitely (security context disallows ambiguity).
 - **Capability claim composition** (claim references another claim) — KHÔNG ở v0.6; mỗi entry self-contained.
-- **Versioning `triet.package` format** — `format_version 1` đủ; future ADR bump nếu cần additive field.
+- **Versioning `dao.package` format** — `format_version 1` đủ; future ADR bump nếu cần additive field.
 - **Persistent session cache across processes** — cache discarded process exit per ADR-0017 §5 monotonicity.
 - **TTY prompt timeout** — sync, no timeout per ADR-0017 §8 known limit.
 - **Hash truncation anywhere in UI** — full 64 hex chars always. Short-SHA = collision attack surface.
 - **Box-drawing chars ở core security display** — ASCII fallback markers (`!!` not `⚠`). Security message must render guaranteed.
-- **Auto-generate `triet.policy` rules** từ dep tree heuristics — refuse over guess. User must explicitly choose `G`/`D` ở prompt OR write rule manually.
+- **Auto-generate `dao.policy` rules** từ dep tree heuristics — refuse over guess. User must explicitly choose `G`/`D` ở prompt OR write rule manually.
 
 ## Prior art
 
-- **[`Cargo.toml`](https://doc.rust-lang.org/cargo/reference/manifest.html)** — Rust source manifest. Inspires `triet.package` field shape (name, version, deps); reject TOML format vì hand-rolled precedent stronger.
-- **[`go.mod` + `go.sum`](https://go.dev/ref/mod)** — hand-rolled module file with hash pins. Closer precedent — line format, no nested syntax, hash-as-trust-anchor. Direct inspiration cho `triet.package`.
+- **[`Cargo.toml`](https://doc.rust-lang.org/cargo/reference/manifest.html)** — Rust source manifest. Inspires `dao.package` field shape (name, version, deps); reject TOML format vì hand-rolled precedent stronger.
+- **[`go.mod` + `go.sum`](https://go.dev/ref/mod)** — hand-rolled module file with hash pins. Closer precedent — line format, no nested syntax, hash-as-trust-anchor. Direct inspiration cho `dao.package`.
 - **[npm `package.json` + `package-lock.json`](https://docs.npmjs.com/cli/v9/configuring-npm/package-json)** — JSON manifest. Reject vì JSON syntax invites silent typing errors (string-vs-number, missing-trailing-comma rendering ambiguous).
 - **[Android `<uses-permission>` + runtime grant dialog](https://developer.android.com/guide/topics/manifest/uses-permission-element)** — Manifest declares + OS prompts at runtime. Direct inspiration cho ADR-0018 §4 mock UI structure.
 - **`sudo(8)` AUTHENTICATION** — `/dev/tty` direct read, terminal-bound prompt. Direct precedent for ADR-0018 §4 lock decisions (input/output source).
@@ -392,9 +392,9 @@ Cached decision authoritative; JIT lift across cap boundary đọc cache, không
 - [ADR-0011 §4 (dep table), §5 (caps section), §8 (linker workflow)](0011-abi-metadata-format.md)
 - [ADR-0013 — Semver linking policy (E23XX series)](0013-semver-linking-policy.md)
 - [ADR-0014 §4 (impl_hash unforgeable trust anchor)](0014-hash-scheme-refinement.md)
-- [ADR-0015 §6 (hand-rolled file format precedent — `triet.lock`)](0015-package-store-layout.md)
+- [ADR-0015 §6 (hand-rolled file format precedent — `dao.lock`)](0015-package-store-layout.md)
 - [ADR-0016 §1 (manifest pseudo-syntax), §4 (caps section encoding), §6 (E22XX namespace)](0016-capability-type-system.md)
-- [ADR-0017 §3 (triet.policy grammar), §4 (resolution algorithm), §5 (monotonicity), Addendum §A (parser whitelist), Addendum §B (/dev/tty)](0017-trilean-policy-hook.md)
+- [ADR-0017 §3 (dao.policy grammar), §4 (resolution algorithm), §5 (monotonicity), Addendum §A (parser whitelist), Addendum §B (/dev/tty)](0017-trilean-policy-hook.md)
 - TODO.md v0.6.3 anti-typosquatting constraint (commit `dd6b2f4`)
 - [`crates/triet-pack/src/types.rs:272-277`](../../crates/triet-pack/src/types.rs) — placeholder being replaced
 - [`crates/triet-pack/src/lockfile.rs`](../../crates/triet-pack/src/lockfile.rs) — hand-rolled parser precedent to mirror

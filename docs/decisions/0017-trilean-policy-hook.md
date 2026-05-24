@@ -1,4 +1,4 @@
-# ADR 0017 — Trilean policy hook protocol (`triet.policy` + TTY fallback)
+# ADR 0017 — Trilean policy hook protocol (`dao.policy` + TTY fallback)
 
 **Trạng thái:** Quyết định. Áp dụng cho v0.6 Capability System runtime resolution. Phụ thuộc [ADR-0016 §3](0016-capability-type-system.md) (Defer slot trong CapabilityLevel) và [ADR-0016 §8](0016-capability-type-system.md) (ResolutionOrigin dispatch). Lấp đầy `E2205` reserved trong [ADR-0016 §6](0016-capability-type-system.md). Không bump `abi_version`, không đổi `.triv` wire format, không đổi IR shape.
 
@@ -15,7 +15,7 @@ ADR-0016 "Cho ADR-0017" list 4 câu phải chốt:
 
 ## Quyết định
 
-### 1. Phương án — Hybrid: `triet.policy` rules first, TTY prompt fallback, headless = fail-closed
+### 1. Phương án — Hybrid: `dao.policy` rules first, TTY prompt fallback, headless = fail-closed
 
 Hook resolution ở runtime đi qua 3 bước, theo thứ tự:
 
@@ -25,7 +25,7 @@ Hook resolution ở runtime đi qua 3 bước, theo thứ tự:
 │    Hit  → return cached Trit (O(1))                         │
 │    Miss → bước 2                                            │
 ├─────────────────────────────────────────────────────────────┤
-│  Bước 2: Match rule trong triet.policy                      │
+│  Bước 2: Match rule trong dao.policy                      │
 │    Match → resolve theo decision token, cache, return        │
 │    No match → bước 3                                        │
 ├─────────────────────────────────────────────────────────────┤
@@ -76,9 +76,9 @@ PolicyRequest {
 
 3 Trit + 1 Err = 4 outcomes preserved bản sắc tam phân ở runtime. `Trit::Zero` (Abstain) vs `Trit::Negative` (Deny) khác **diagnostic only**: Abstain = "policy không quyết được"; Deny = "policy chủ động refuse". Audit log distinguish — quan trọng cho post-incident review.
 
-### 3. `triet.policy` file format (hand-rolled, sort canonical)
+### 3. `dao.policy` file format (hand-rolled, sort canonical)
 
-Tên file: `triet.policy` ở project root (song song `triet.lock`). Hand-rolled line format, mirror precedent [ADR-0015 §6](0015-package-store-layout.md) — không serde dep, diff-friendly.
+Tên file: `dao.policy` ở project root (song song `dao.lock`). Hand-rolled line format, mirror precedent [ADR-0015 §6](0015-package-store-layout.md) — không serde dep, diff-friendly.
 
 ```text
 format_version 1
@@ -100,13 +100,13 @@ default <decision>
 - Sort by `(cap_path ASC, origin ASC)`. `origin` ordering: `lockfile < ifacepin < fresh < *`.
 - Whitespace giữa fields: 1+ space hoặc tab; ignored ở parser, normalized ở writer.
 - Comments: line starts với `#` ignored. KHÔNG inline comments (parser drops a line if any `#` outside string).
-- Encoding: UTF-8, LF line endings (CRLF rejected — match `triet.lock`).
+- Encoding: UTF-8, LF line endings (CRLF rejected — match `dao.lock`).
 - Duplicate `(cap_path, origin)` tuple → **E2205.RuleConflict** (refuse-to-load). KHÔNG có last-wins / merge semantics.
 
 **Example:**
 
 ```text
-# triet.policy v1
+# dao.policy v1
 format_version 1
 
 # Trusted: lockfile-pinned deps get auto-grant for std-adjacent paths
@@ -136,9 +136,9 @@ function resolve(req: PolicyRequest) -> Trit {
         return cache[key].outcome
     }
 
-    // Bước 2: try triet.policy rules
+    // Bước 2: try dao.policy rules
     if policy_file_exists {
-        let rules = load_and_parse(triet.policy)  // memoized after first call
+        let rules = load_and_parse(dao.policy)  // memoized after first call
         let matched = rules.find_exact(req.cap_path, req.origin)
                        or rules.find_exact(req.cap_path, Wildcard)
         if matched != null {
@@ -182,18 +182,18 @@ function resolve(req: PolicyRequest) -> Trit {
   Package:        myapp@0.1.0
   Requesting:     sys.net.dns
   Dep chain:      myapp → libdns@1.2.3 → libtls@0.4.1
-  Origin:         Fresh (newly resolved, not in triet.lock)
+  Origin:         Fresh (newly resolved, not in dao.lock)
 
   [g] grant once (this session)
   [d] deny once  (this session)
-  [G] grant permanent (write rule to triet.policy)
-  [D] deny permanent  (write rule to triet.policy)
+  [G] grant permanent (write rule to dao.policy)
+  [D] deny permanent  (write rule to dao.policy)
   [?] explain
 
   choice >
 ```
 
-`G`/`D` append rule vào `triet.policy` trước khi cache + return. `g`/`d` chỉ cache session. Implementation cụ thể ở ADR-0018.
+`G`/`D` append rule vào `dao.policy` trước khi cache + return. `g`/`d` chỉ cache session. Implementation cụ thể ở ADR-0018.
 
 ### 5. Cache scope + capability monotonicity invariant
 
@@ -211,7 +211,7 @@ Không bao gồm `origin` trong key vì:
 
 Hệ quả:
 - Re-evaluation triggers ONLY khi (path, pkg) chưa có entry.
-- Modify `triet.policy` mid-session → KHÔNG affect already-cached decisions. Next process start = re-read.
+- Modify `dao.policy` mid-session → KHÔNG affect already-cached decisions. Next process start = re-read.
 - User chọn `G`/`D` ở prompt → file update + cache update atomic. Next process start sẽ thấy rule mới ngay từ Bước 2.
 
 **Hot path optimization:** Cap check fire mỗi cross-namespace call. Cache lookup O(1) (HashMap by `(String, String)` key). Hook execution chỉ chạy 1 lần per unique key per session.
@@ -220,14 +220,14 @@ Hệ quả:
 
 | Code | Variant | Stage | Outcome runtime |
 |---|---|---|---|
-| `E2205.ConfigParse` | `triet.policy` syntax invalid | Load-time | Refuse-to-load entire binary, abort |
+| `E2205.ConfigParse` | `dao.policy` syntax invalid | Load-time | Refuse-to-load entire binary, abort |
 | `E2205.RuleConflict` | Duplicate `(path, origin)` trong rules | Load-time | Refuse-to-load entire binary, abort |
 | `E2205.UnknownOrigin` | `origin` field ∉ {lockfile, ifacepin, fresh, \*} | Load-time | Refuse-to-load entire binary, abort |
 | `E2205.UnknownDecision` | `decision` field ∉ {+1, 0, -1, prompt} | Load-time | Refuse-to-load entire binary, abort |
 | `E2205.NonTTYDefer` | Defer reached + no rule match + headless | First-call | Fail-closed Deny + cached + diagnostic |
 | `E2205.PromptCrash` | TTY closed mid-prompt / I/O error | First-call | Fail-closed Deny + cached + diagnostic |
 
-Load-time errors (ConfigParse/RuleConflict/UnknownOrigin/UnknownDecision): refuse-to-load **toàn bộ binary**. Reason: `triet.policy` corruption = không thể trust bất kỳ Defer resolution → safer to abort hơn là partial-run.
+Load-time errors (ConfigParse/RuleConflict/UnknownOrigin/UnknownDecision): refuse-to-load **toàn bộ binary**. Reason: `dao.policy` corruption = không thể trust bất kỳ Defer resolution → safer to abort hơn là partial-run.
 
 First-call errors (NonTTYDefer/PromptCrash): per-key Deny + diagnostic. Process tiếp tục — vì chỉ ảnh hưởng cap chưa resolve được; cap khác có thể đã grant ở Bước 2.
 
@@ -244,7 +244,7 @@ CI environment vars (`CI=true`, `GITHUB_ACTIONS=true`, ...) **không** được 
 ADR-0017 cố ý KHÔNG chốt các điểm sau, để phase sau lấp:
 
 - **Timeout enforcement:** Sync prompt, không timeout. Hostile prompt (e.g. malicious `stty` consumes input) có thể hang loader. Defer v0.8 actor model.
-- **Triết function callback** (Phương án 2 đã reject ở §1): defer additively post-v0.7. Thêm rule type mới (`rule X * call usr.myapp.policy.decide`) sẽ extend `triet.policy` v=1 → v=2 với additive field.
+- **Triết function callback** (Phương án 2 đã reject ở §1): defer additively post-v0.7. Thêm rule type mới (`rule X * call usr.myapp.policy.decide`) sẽ extend `dao.policy` v=1 → v=2 với additive field.
 - **Cross-process policy daemon:** policy file local-only. Distributed policy (system-wide cap server) defer v1.0+.
 - **Persistent cache across sessions:** không persist — process exit = cache gone. User pin decisions bằng cách chọn `G`/`D` (write rule vào file).
 - **Per-thread cache:** v0.6 single-threaded VM. v0.8 actor model lands → cache thread-safety chốt ở ADR concurrency.
@@ -266,14 +266,14 @@ ADR-0018 phải chốt:
 - Loader stage cụ thể nơi `resolve()` fires (link-time pre-cache vs lazy first-call).
 - TTY prompt UX implementation chi tiết (terminal escape sequences, color, multi-line render).
 - `--non-interactive` CLI flag spec.
-- `triet.policy` reader implementation (line tokenizer, error span reporting cho miette).
+- `dao.policy` reader implementation (line tokenizer, error span reporting cho miette).
 - Manifest source syntax cho `requires:` block (ADR-0016 §1 dùng pseudo-syntax).
 
 ADR-0017 chỉ commit: resolution **xảy ra** với contract ở §4 algorithm; lifecycle/UX detail = ADR-0018.
 
 ### Cho v0.5 hash scheme
 
-`triet.policy` **không tham gia** vào `iface_hash` hay `impl_hash` của package. Policy là deployment-environment concern, không phải package-content. Hai user chạy cùng `.khi` với different `triet.policy` → cùng hash, khác behavior runtime — đúng spec.
+`dao.policy` **không tham gia** vào `iface_hash` hay `impl_hash` của package. Policy là deployment-environment concern, không phải package-content. Hai user chạy cùng `.khi` với different `dao.policy` → cùng hash, khác behavior runtime — đúng spec.
 
 ### Cho ABI metadata ([ADR-0011](0011-abi-metadata-format.md))
 
@@ -285,7 +285,7 @@ Không đổi. Cap check site fire ở cross-module call dispatch — IR đã pr
 
 ### Cho v0.7 self-hosting
 
-Triết-rewritten compiler phải honor `triet.policy` parsing semantics + resolution algorithm. Test contract: bootstrap chain output must match Rust impl byte-identical cho `triet.policy` round-trip.
+Triết-rewritten compiler phải honor `dao.policy` parsing semantics + resolution algorithm. Test contract: bootstrap chain output must match Rust impl byte-identical cho `dao.policy` round-trip.
 
 ### Cho v0.8 concurrency
 
@@ -295,21 +295,21 @@ Cache thread-safety = open question đến v0.8. Hint sẵn: `Arc<RwLock<HashMap
 
 JIT lift function across cap boundary → check at lift-time (defer ADR-0018). Cached decision vẫn authoritative — lift không re-evaluate.
 
-AOT v2.0 baked-binary: cache initialized empty mỗi process start. `triet.policy` loaded same way — không AOT-bake (deployment-specific).
+AOT v2.0 baked-binary: cache initialized empty mỗi process start. `dao.policy` loaded same way — không AOT-bake (deployment-specific).
 
 ## Không làm
 
 - **Triết function callback** (Phương án 2 from proposal) — defer post-v0.7 additive. Bootstrap risk + sandbox concern + v0.6 VM hot-path performance.
 - **Glob trong `cap_path`** — vi phạm "Explicit > implicit". `default` line đủ cho blanket.
 - **Last-wins / merge cho duplicate rules** — refuse over guess. Duplicate = E2205.RuleConflict.
-- **Inline comments** trong `triet.policy` — `#` chỉ ở đầu line. Mirror `triet.lock`.
+- **Inline comments** trong `dao.policy` — `#` chỉ ở đầu line. Mirror `dao.lock`.
 - **CRLF line endings** — LF only.
-- **TOML / YAML / JSON syntax** — hand-rolled mirror `triet.lock` precedent ([ADR-0015 §6](0015-package-store-layout.md)). Không serde dep.
+- **TOML / YAML / JSON syntax** — hand-rolled mirror `dao.lock` precedent ([ADR-0015 §6](0015-package-store-layout.md)). Không serde dep.
 - **Timeout enforcement** ở v0.6 — hostile prompt có thể hang. Defer v0.8.
 - **Cross-process policy daemon** — local file only. Distributed defer v1.0+.
 - **Persistent session cache** — process exit = cache gone. Decisions persist qua user choosing `G`/`D` (write to file).
 - **Env-var-based headless detection** (`CI=true` etc.) — chỉ `isatty(stderr)`. Env unreliable.
-- **Auto-write `triet.policy`** trên Deny — only on user explicit `G`/`D`. Avoid silent grant accumulation.
+- **Auto-write `dao.policy`** trên Deny — only on user explicit `G`/`D`. Avoid silent grant accumulation.
 - **Re-eval khi config changes mid-session** — monotonicity invariant. Restart = new chance.
 
 ## Prior art
@@ -324,7 +324,7 @@ AOT v2.0 baked-binary: cache initialized empty mỗi process start. `triet.polic
 **Anti-prior-art:**
 
 - **Java SecurityManager** (deprecated JDK 17) — code-based, brittle stack inspection. Triết tránh bằng declarative + interactive.
-- **Polkit JS rules** — code execution ở privileged context; CVE history. Triết tránh bằng data-only `triet.policy`.
+- **Polkit JS rules** — code execution ở privileged context; CVE history. Triết tránh bằng data-only `dao.policy`.
 - **POSIX setuid + `cap_set_file`** — runtime cap với confused-deputy CVE history. Triết tránh bằng compile-time + link-time + load-time enforcement, runtime hook chỉ explicit Defer.
 
 ## Tham chiếu
@@ -334,7 +334,7 @@ AOT v2.0 baked-binary: cache initialized empty mỗi process start. `triet.polic
 - [VISION §6 — Refuse over guess, Explicit > implicit](../../VISION.md)
 - [SPEC §1.5.2 — Trilean type (`Unknown`)](../../SPEC.md)
 - [ADR-0011 §5 — `caps section` ABI metadata](0011-abi-metadata-format.md)
-- [ADR-0015 §6 — `triet.lock` hand-rolled format precedent](0015-package-store-layout.md)
+- [ADR-0015 §6 — `dao.lock` hand-rolled format precedent](0015-package-store-layout.md)
 - [ADR-0015 Addendum — ResolutionOrigin 3-state, dispatch hint](0015-package-store-layout.md#addendum--v05xreview-pre-v06-audit)
 - [ADR-0016 §3 — Defer slot trong CapabilityLevel](0016-capability-type-system.md)
 - [ADR-0016 §6 — E22XX namespace, E2205 reserved](0016-capability-type-system.md)
@@ -406,7 +406,7 @@ Prior art reference: `sudo(8)` AUTHENTICATION section — `/dev/tty` bypass mọ
 
 **Implementation hint:** code path cho `Zero` và `Negative` share cache-write logic; branch chỉ ở diagnostic emit step (line right before cache insert).
 
-**Restate monotonicity invariant** (đã ở §5, repeat cho clarity): cache discarded ở process exit. Re-eval next session áp dụng cho **mọi** outcome (Grant cũng re-evaluate ở next process start — không phải permanent grant ngoài session). Persistent grant = user chọn `G` ở prompt → write rule vào `triet.policy` file → next process đọc file = grant ngay từ Bước 2.
+**Restate monotonicity invariant** (đã ở §5, repeat cho clarity): cache discarded ở process exit. Re-eval next session áp dụng cho **mọi** outcome (Grant cũng re-evaluate ở next process start — không phải permanent grant ngoài session). Persistent grant = user chọn `G` ở prompt → write rule vào `dao.policy` file → next process đọc file = grant ngay từ Bước 2.
 
 ### Tham chiếu addendum
 

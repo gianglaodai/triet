@@ -12,7 +12,7 @@
 6. **Testing strategy** — per-component differential, end-to-end, hay bootstrap-loop CI?
 7. **Performance gate** — ROADMAP nói "2× parity với Rust impl". Triết-on-VM thực tế 50-200× chậm hơn Rust-native. Recalibrate?
 
-Plus: **carry-over từ v0.6** — CLI wiring (`dao check` đọc `triet.package`, `dao build` populate caps section, loader integration với `DevTtyPrompt`) defer khỏi v0.6 với note *"lands cleaner với v0.7 self-hosting"* ([SPEC §0.7 non-goals](../../SPEC.md#07-non-goals-của-v06)). ADR-0019 fold carry-over này vào scope v0.7.
+Plus: **carry-over từ v0.6** — CLI wiring (`dao check` đọc `dao.package`, `dao build` populate caps section, loader integration với `DevTtyPrompt`) defer khỏi v0.6 với note *"lands cleaner với v0.7 self-hosting"* ([SPEC §0.7 non-goals](../../SPEC.md#07-non-goals-của-v06)). ADR-0019 fold carry-over này vào scope v0.7.
 
 ADR này lock 7 vùng + carry-over, đóng frame cho sub-task v0.7.2 trở đi.
 
@@ -270,27 +270,27 @@ Run in CI on every commit từ sub-task v0.7.11 trở đi. Earlier sub-tasks (v0
 
 | Carry-over item | Sub-task placement |
 |---|---|
-| `dao check` đọc `triet.package` từ project root | v0.7.10 (CLI integration) |
+| `dao check` đọc `dao.package` từ project root | v0.7.10 (CLI integration) |
 | `dao build` populate `.khi` caps section từ manifest | v0.7.10 (CLI integration) |
 | Loader integration với `DevTtyPrompt` | v0.7.10 (CLI integration) |
 | `E2208.CapabilityDivergence` — fires khi lowerer populate caps section | v0.7.10 (cùng pipeline) |
 
-**Lý do fold v0.7.10:** Triết-compiler-in-Triết phải đọc `triet.package` (chính nó là project!) → manifest discovery convention ép phải decide ở v0.7. Lý do v0.6 defer = exactly đây. Sub-task v0.7.10 chốt convention + ship trong Rust impl side trước, sau đó Triết-side dùng cùng convention.
+**Lý do fold v0.7.10:** Triết-compiler-in-Triết phải đọc `dao.package` (chính nó là project!) → manifest discovery convention ép phải decide ở v0.7. Lý do v0.6 defer = exactly đây. Sub-task v0.7.10 chốt convention + ship trong Rust impl side trước, sau đó Triết-side dùng cùng convention.
 
 **Project layout convention** (locked):
 
 ```
 <project-root>/
-├── triet.package           # ADR-0018 §1 source manifest (REQUIRED for build)
-├── triet.lock              # ADR-0015 §6 lockfile (REQUIRED for build, auto-generated)
-├── triet.policy            # ADR-0017 §3 policy rules (OPTIONAL — fallback to default)
+├── dao.package           # ADR-0018 §1 source manifest (REQUIRED for build)
+├── dao.lock              # ADR-0015 §6 lockfile (REQUIRED for build, auto-generated)
+├── dao.policy            # ADR-0017 §3 policy rules (OPTIONAL — fallback to default)
 ├── src/
 │   ├── main.tri            # entry point
 │   └── ...
 └── ...
 ```
 
-`dao check` / `dao build` / `dao run` walk upward từ `cwd` tìm `triet.package` (mirrors `cargo` discovery pattern). Nếu không có → error E2208.ManifestMissing (new sub-variant, additive to E2208).
+`dao check` / `dao build` / `dao run` walk upward từ `cwd` tìm `dao.package` (mirrors `cargo` discovery pattern). Nếu không có → error E2208.ManifestMissing (new sub-variant, additive to E2208).
 
 ## Hệ quả
 
@@ -312,7 +312,7 @@ Không đổi. CAS scheme đã canonical → bootstrap byte-identical gate compa
 
 ### Cho ADR-0016/0017/0018 (capability)
 
-Self-hosted parser cho `triet.package` + `triet.policy` phải emit byte-identical errors với Rust impl per ADR-0018 §3 format table. Đã locked ở ADR-0018; v0.7 verifies it.
+Self-hosted parser cho `dao.package` + `dao.policy` phải emit byte-identical errors với Rust impl per ADR-0018 §3 format table. Đã locked ở ADR-0018; v0.7 verifies it.
 
 ### Cho `triet-cli`
 

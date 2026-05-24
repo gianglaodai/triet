@@ -1,8 +1,8 @@
 //! Shared whitelist-only line tokenizer for v0.6 capability files.
 //!
 //! [ADR-0017 Addendum §A] locks the structural rules for both
-//! [`PackageManifest`](crate::PackageManifest) (`triet.package`, v0.6.5)
-//! and the upcoming [`PolicyRules`](crate::PolicyRules) (`triet.policy`,
+//! [`PackageManifest`](crate::PackageManifest) (`dao.package`, v0.6.5)
+//! and the upcoming [`PolicyRules`](crate::PolicyRules) (`dao.policy`,
 //! v0.6.6). With two proven consumers, the line-level checks live here
 //! so the two parsers can't drift.
 //!
@@ -67,7 +67,7 @@ pub(crate) enum StrictParseViolation {
 
 impl StrictParseViolation {
     /// Human-readable reason — identical wording across consumers so
-    /// `triet.package` and `triet.policy` errors look uniform.
+    /// `dao.package` and `dao.policy` errors look uniform.
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::FileTooBig => format!("file exceeds {MAX_FILE_SIZE} byte cap"),

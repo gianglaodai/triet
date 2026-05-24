@@ -21,7 +21,7 @@
 //!   stub — Windows ConPTY (`CONIN$`/`CONOUT$`) is deferred.
 //! - **`G`/`D` permanent write** — DevTtyPrompt reuses
 //!   [`PolicyRules::save`](crate::PolicyRules::save) atomic-temp-rename
-//!   to append the user's choice to `triet.policy`. ADR-0018 §4
+//!   to append the user's choice to `dao.policy`. ADR-0018 §4
 //!   write-before-cache semantics.
 //!
 //! ## Security boundary decisions
@@ -74,7 +74,7 @@ pub struct PromptContext {
     /// "Decision token" sub-line of the prompt and the rule-key
     /// dimension when the user picks `G`/`D`.
     pub origin: OriginMatcher,
-    /// Human-readable reason the prompt fired (e.g. "per triet.policy
+    /// Human-readable reason the prompt fired (e.g. "per dao.policy
     /// rule" / "no rule matched"). Caller-provided.
     pub decision_reason: String,
     /// The package requesting the capability — the typosquatting
@@ -108,7 +108,7 @@ pub struct PackageInfo {
 }
 
 /// Outcome of cross-checking the requester's `iface_hash` against
-/// the project's `triet.lock`. Rendered as a parenthesised hint
+/// the project's `dao.lock`. Rendered as a parenthesised hint
 /// after the hash line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LockfileMatch {
@@ -118,7 +118,7 @@ pub enum LockfileMatch {
     /// signal) — full hex of the lockfile value carried for the
     /// diagnostic.
     Mismatch {
-        /// The hash recorded in `triet.lock` (full 64 hex).
+        /// The hash recorded in `dao.lock` (full 64 hex).
         lockfile_hash: String,
     },
     /// Package isn't in the lockfile — common for fresh deps.
@@ -150,9 +150,9 @@ pub enum PromptChoice {
     GrantOnce,
     /// `d` — deny for this session only.
     DenyOnce,
-    /// `G` — grant + write `rule … +1` to `triet.policy`.
+    /// `G` — grant + write `rule … +1` to `dao.policy`.
     GrantPermanent,
-    /// `D` — deny + write `rule … -1` to `triet.policy`.
+    /// `D` — deny + write `rule … -1` to `dao.policy`.
     DenyPermanent,
 }
 
@@ -233,8 +233,8 @@ pub fn render_prompt<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
     writeln!(writer, "    Name:        {pkg_label}")?;
     if let Some(h) = &ctx.requester.iface_hash {
         let suffix = match &ctx.requester.lockfile_match {
-            Some(LockfileMatch::Match) => "   (matches triet.lock OK)",
-            Some(LockfileMatch::Mismatch { .. }) => "   !! MISMATCH vs triet.lock",
+            Some(LockfileMatch::Match) => "   (matches dao.lock OK)",
+            Some(LockfileMatch::Mismatch { .. }) => "   !! MISMATCH vs dao.lock",
             Some(LockfileMatch::NotInLockfile) => "   (not in lockfile)",
             None => "",
         };
@@ -298,8 +298,8 @@ pub fn render_prompt<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
     }
 
     writeln!(writer, "  [g] grant once   [d] deny once")?;
-    writeln!(writer, "  [G] grant permanent (write rule to triet.policy)")?;
-    writeln!(writer, "  [D] deny permanent  (write rule to triet.policy)")?;
+    writeln!(writer, "  [G] grant permanent (write rule to dao.policy)")?;
+    writeln!(writer, "  [D] deny permanent  (write rule to dao.policy)")?;
     writeln!(writer, "  [?] explain   [h] show hash help")?;
     writeln!(writer)?;
     write!(writer, "  choice > ")?;
@@ -335,7 +335,7 @@ fn print_explanation<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
     writeln!(writer, "  rule resolved it. Possible reasons:")?;
     writeln!(
         writer,
-        "    1. A triet.policy rule matched `(cap_path, origin)` and said `prompt`.",
+        "    1. A dao.policy rule matched `(cap_path, origin)` and said `prompt`.",
     )?;
     writeln!(
         writer,
@@ -347,7 +347,7 @@ fn print_explanation<W: Write>(writer: &mut W, ctx: &PromptContext) -> io::Resul
     )?;
     writeln!(
         writer,
-        "  write the rule to triet.policy for future sessions."
+        "  write the rule to dao.policy for future sessions."
     )?;
     writeln!(writer)?;
     writer.flush()
@@ -445,7 +445,7 @@ pub fn context_from_request(req: &PolicyRequest) -> PromptContext {
     PromptContext {
         cap_path: req.cap_path.clone(),
         origin,
-        decision_reason: "per triet.policy rule".into(),
+        decision_reason: "per dao.policy rule".into(),
         requester: PackageInfo {
             name: req.requester_pkg.clone(),
             version: None,
@@ -460,7 +460,7 @@ pub fn context_from_request(req: &PolicyRequest) -> PromptContext {
 
 /// Production [`PromptCallback`] — opens `/dev/tty` per ADR-0017
 /// Addendum §B, renders the prompt, reads the user's choice, and
-/// writes back to `triet.policy` on `G`/`D`. Non-POSIX platforms
+/// writes back to `dao.policy` on `G`/`D`. Non-POSIX platforms
 /// return [`io::ErrorKind::Unsupported`].
 pub struct DevTtyPrompt {
     policy_path: PathBuf,
@@ -496,7 +496,7 @@ impl DevTtyPrompt {
     /// `GrantOnce` (ADR-0018 §4 "fallback session-only" hint).
     fn write_permanent(&self, req: &PolicyRequest, decision: Decision) -> io::Result<()> {
         let mut rules = PolicyRules::load(&self.policy_path)
-            .map_err(|e| io::Error::other(format!("triet.policy load: {e}")))?;
+            .map_err(|e| io::Error::other(format!("dao.policy load: {e}")))?;
         let origin = match req.origin {
             ResolutionOrigin::Lockfile => OriginMatcher::Lockfile,
             ResolutionOrigin::IfacePin => OriginMatcher::IfacePin,
@@ -509,7 +509,7 @@ impl DevTtyPrompt {
         });
         rules
             .save(&self.policy_path)
-            .map_err(|e| io::Error::other(format!("triet.policy save: {e}")))
+            .map_err(|e| io::Error::other(format!("dao.policy save: {e}")))
     }
 }
 
@@ -610,7 +610,7 @@ mod tests {
         PromptContext {
             cap_path: "sys.net.dns".into(),
             origin: OriginMatcher::Fresh,
-            decision_reason: "per triet.policy rule".into(),
+            decision_reason: "per dao.policy rule".into(),
             requester: PackageInfo {
                 name: "myapp".into(),
                 version: Some("0.1.0".into()),
@@ -692,7 +692,7 @@ mod tests {
         assert!(out.contains(
             "iface_hash:  e7a1c4f0b2d8a629f4e8d0c7b3a51928f6e2d9c8a4b3f7e9d8c6a2b1f5e3d829"
         ));
-        assert!(out.contains("(matches triet.lock OK)"));
+        assert!(out.contains("(matches dao.lock OK)"));
         assert!(out.contains(
             "impl_hash:   91b3d8e2a4c7d935a8e6f0b2d4c97186a3e5f8d2c0b4a791e2f5c8d9a04af5b6"
         ));
@@ -747,7 +747,7 @@ mod tests {
         assert!(!out.contains("iface_hash:"));
         assert!(!out.contains("impl_hash:"));
         assert!(!out.contains("Store path:"));
-        assert!(!out.contains("matches triet.lock"));
+        assert!(!out.contains("matches dao.lock"));
     }
 
     #[test]
@@ -760,7 +760,7 @@ mod tests {
         let mut buf = Vec::new();
         render_prompt(&mut buf, &ctx).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("MISMATCH vs triet.lock"));
+        assert!(out.contains("MISMATCH vs dao.lock"));
         assert!(out.contains(
             "lockfile was: aaaaaaaa11111111bbbbbbbb22222222cccccccc33333333dddddddd44444444"
         ));
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn dev_tty_prompt_non_interactive_returns_unsupported() {
         let dir = tempfile::tempdir().unwrap();
-        let mut prompt = DevTtyPrompt::new(dir.path().join("triet.policy")).non_interactive(true);
+        let mut prompt = DevTtyPrompt::new(dir.path().join("dao.policy")).non_interactive(true);
         let err = prompt
             .prompt(&req("sys.io", "myapp", ResolutionOrigin::Fresh))
             .expect_err("non-interactive must fail-closed");
@@ -884,7 +884,7 @@ mod tests {
     #[test]
     fn non_interactive_callback_factory_is_unsupported() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cb = non_interactive_callback(dir.path().join("triet.policy"));
+        let mut cb = non_interactive_callback(dir.path().join("dao.policy"));
         let err = cb
             .prompt(&req("sys.io", "myapp", ResolutionOrigin::Fresh))
             .expect_err("factory must build a non-interactive prompt");
@@ -896,7 +896,7 @@ mod tests {
     #[test]
     fn write_permanent_appends_to_empty_policy_file() {
         let dir = tempfile::tempdir().unwrap();
-        let policy_path = dir.path().join("triet.policy");
+        let policy_path = dir.path().join("dao.policy");
         let prompt = DevTtyPrompt::new(&policy_path);
         let r = req("sys.io", "myapp", ResolutionOrigin::Fresh);
         prompt.write_permanent(&r, Decision::Plus1).unwrap();
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn write_permanent_upserts_existing_rule() {
         let dir = tempfile::tempdir().unwrap();
-        let policy_path = dir.path().join("triet.policy");
+        let policy_path = dir.path().join("dao.policy");
         let prompt = DevTtyPrompt::new(&policy_path);
         let r = req("sys.io", "myapp", ResolutionOrigin::Fresh);
 
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn write_permanent_preserves_unrelated_rules() {
         let dir = tempfile::tempdir().unwrap();
-        let policy_path = dir.path().join("triet.policy");
+        let policy_path = dir.path().join("dao.policy");
 
         // Seed with a rule for a different path.
         let initial = "format_version 1\nrule dev.disk fresh -1\n";

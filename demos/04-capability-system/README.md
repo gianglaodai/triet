@@ -7,7 +7,7 @@ trụ cột of Triết per [VISION §5][vision-5]:
    `Trit::Positive` / `Zero` / `Negative`. Plus a fourth state
    `Defer` encoding `Trilean::Unknown` for runtime-resolved policy.
 2. **Łukasiewicz Ł3 runtime resolution** — `Defer` slots are decided
-   at load time by a `triet.policy` file or an interactive TTY prompt,
+   at load time by a `dao.policy` file or an interactive TTY prompt,
    per [ADR-0017][adr-0017].
 3. **OS-Native Capability Namespaces** — `sys.*` / `dev.*` / `usr.*`
    enforced at compile, link, and runtime stages.
@@ -20,7 +20,7 @@ app.tri` will NOT succeed yet, because:
   v0.6 wires real backing modules (`sys.io` etc. are conceptual at
   this stage).
 - No `triet build` step currently emits `.tripack`s with the `caps
-  section` populated from `triet.package`. The wire format is locked
+  section` populated from `dao.package`. The wire format is locked
   ([ADR-0016 §4][adr-0016]) and round-trip tested, but the lowerer
   side that feeds it is post-v0.6 work.
 
@@ -36,8 +36,8 @@ data matching the shape of this demo.
 
 | File | Purpose |
 |---|---|
-| [`triet.package`](triet.package) | Per-package source manifest (ADR-0018 §1). Declares the capabilities the source uses. |
-| [`triet.policy`](triet.policy) | Per-deploy resolution rules (ADR-0017 §3). Decides what `Defer` caps resolve to. |
+| [`dao.package`](dao.package) | Per-package source manifest (ADR-0018 §1). Declares the capabilities the source uses. |
+| [`dao.policy`](dao.policy) | Per-deploy resolution rules (ADR-0017 §3). Decides what `Defer` caps resolve to. |
 | [`app.tri`](app.tri) | Illustrative source with three cross-root imports. |
 
 ## The three ROADMAP §v0.6 gate scenarios
@@ -51,18 +51,18 @@ from dev.disk import read_block
 ```
 
 …without a corresponding `requires dev.disk grant` (or `defer`) in
-[`triet.package`](triet.package), the type-checker's
+[`dao.package`](dao.package), the type-checker's
 [`check_capabilities`][check-caps] pass refuses with **E2200
 `MissingCapabilityClaim`**:
 
 ```
-package `myapp` imports `dev.disk` but `triet.package` has no
+package `myapp` imports `dev.disk` but `dao.package` has no
 matching `requires` entry
-   help: add `requires dev.disk grant` (or `defer`) to `triet.package`.
+   help: add `requires dev.disk grant` (or `defer`) to `dao.package`.
          ADR-0016 §5 rule 1.
 ```
 
-The current `triet.package` declares `requires dev.disk deny`, so a
+The current `dao.package` declares `requires dev.disk deny`, so a
 `from dev.disk import …` would instead trigger **E2201
 `SelfContradictoryCapability`** — distinct code because the diagnostic
 points at the contradicting `deny` line rather than asking the user
@@ -74,11 +74,11 @@ and `compile_usr_imports_dev_with_deny_fires_e2201` in
 
 ### Gate 2 — Runtime policy hook hoạt động cho `Trilean::Unknown`
 
-`requires sys.net.dns defer` in [`triet.package`](triet.package) means
+`requires sys.net.dns defer` in [`dao.package`](dao.package) means
 "don't decide at compile time; ask the deploy-time policy". When the
 loader reaches `lookup("example.com")` at runtime, the resolver
 ([ADR-0017 §4][adr-0017]) finds the matching rule in
-[`triet.policy`](triet.policy):
+[`dao.policy`](dao.policy):
 
 ```
 rule sys.net.dns   fresh    prompt
@@ -90,8 +90,8 @@ BLAKE3 `iface_hash` + `impl_hash`, dep chain, and four choices:
 
 - `g` grant once (this session)
 - `d` deny once (this session)
-- `G` grant permanent — writes a fresh rule to `triet.policy`
-- `D` deny permanent — writes a fresh rule to `triet.policy`
+- `G` grant permanent — writes a fresh rule to `dao.policy`
+- `D` deny permanent — writes a fresh rule to `dao.policy`
 
 In headless mode (CI, no TTY available), the resolver fails closed
 with **E2205 `NonTTYDefer`** — refuse over guess per [VISION §6][vision-6].
@@ -121,7 +121,7 @@ Test reference: `full_pipeline_capstone_happy_path` and
 The CLI's `triet check <file.tri>` reads a single source file. Wiring
 caps end-to-end needs:
 
-1. Project-layout discovery — locate `triet.package` from a source
+1. Project-layout discovery — locate `dao.package` from a source
    file path.
 2. Cap-aware build pipeline — `triet build` must emit `.tripack`s
    with the `caps section` populated from manifest `requires` lines.
@@ -140,12 +140,12 @@ experience.
 - **Path inheritance** — `requires sys.io grant` does NOT cover
   `sys.io.async`. Each path is a separate declaration (ADR-0016 §2).
 - **Wildcard claims** — no `sys.* grant`. Explicit > implicit
-  (VISION §6). Use `default` in `triet.policy` for blanket policies.
+  (VISION §6). Use `default` in `dao.policy` for blanket policies.
 - **Auto-promotion through deps** — root manifest is the sole
   authority (ADR-0016 §7). A dep claiming `sys.io grant` does NOT
   grant root the same capability.
 - **TOML/YAML/JSON manifest syntax** — hand-rolled line format mirrors
-  `triet.lock` precedent (ADR-0015 §6).
+  `dao.lock` precedent (ADR-0015 §6).
 - **Hash truncation in TTY prompts** — full 64 hex always
   (ADR-0018 §4). Short-SHA is a collision attack surface for
   typosquatting.
@@ -155,10 +155,10 @@ experience.
 - [ADR-0016 — Capability type system][adr-0016] — namespace +
   manifest, Trit-level grant/deny/ambient, Trilean::Unknown defer.
 - [ADR-0017 — Trilean policy hook protocol][adr-0017] —
-  `triet.policy` grammar, resolution algorithm, monotonicity
+  `dao.policy` grammar, resolution algorithm, monotonicity
   invariant, E2205 sub-variants.
 - [ADR-0018 — Capability loader semantics][adr-0018] —
-  `triet.package` grammar, eager link-time check (Step 6a),
+  `dao.package` grammar, eager link-time check (Step 6a),
   TTY provenance prompt UX, E2208 sub-variants.
 
 [vision-5]: ../../VISION.md

@@ -102,7 +102,7 @@ Example:
 `use foo` trong source (ADR-0005 import) resolve qua:
 
 ```
-1. Đọc triet.lock (per-project): find dep `foo` → có (pkg_name, impl_hash_pkg pin).
+1. Đọc dao.lock (per-project): find dep `foo` → có (pkg_name, impl_hash_pkg pin).
 2. Lookup ~/.triet/store/pkg/<impl_hash_pkg>/manifest.bin.
 3. Nếu missing: trigger install (path-based source rebuild hoặc network fetch — v0.5 chỉ local).
 4. Manifest có module table → mỗi module có `impl_hash_mod` → resolve qua store/mod/.

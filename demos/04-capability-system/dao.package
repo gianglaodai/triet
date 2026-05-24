@@ -1,4 +1,4 @@
-# triet.package — generated, hand-editable.
+# dao.package — generated, hand-editable.
 # ADR-0018 §1 — capability claims + deps.
 format_version 1
 name myapp

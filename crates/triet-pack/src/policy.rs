@@ -1,20 +1,20 @@
-//! `triet.policy` — per-deploy capability resolution rules
+//! `dao.policy` — per-deploy capability resolution rules
 //! ([ADR-0017 §3]).
 //!
 //! Sibling of [`Lockfile`](crate::Lockfile) (per-project pinned
 //! resolution) and [`PackageManifest`](crate::PackageManifest)
-//! (per-package source manifest). Where `triet.package` declares
-//! *what a package needs*, `triet.policy` declares *what the deploy
+//! (per-package source manifest). Where `dao.package` declares
+//! *what a package needs*, `dao.policy` declares *what the deploy
 //! grants*. The hook fires whenever a manifest entry resolves to
 //! `Defer` ([`CapabilityLevel::Defer`](crate::CapabilityLevel)) —
 //! that's when this file's rules decide.
 //!
 //! ADR-0017 §3 locks the grammar. Hand-rolled — same precedent as
-//! `triet.lock` (ADR-0015 §6) and `triet.package` (ADR-0018 §1):
+//! `dao.lock` (ADR-0015 §6) and `dao.package` (ADR-0018 §1):
 //! no serde dep, diff-friendly, sort-canonical:
 //!
 //! ```text
-//! # triet.policy v1
+//! # dao.policy v1
 //! format_version 1
 //!
 //! rule sys.io      lockfile +1
@@ -28,12 +28,12 @@
 //!
 //! Token style: **numeric** (`+1`/`0`/`-1`/`prompt`) for sysadmin
 //! audit (compact, audit-grep-friendly). The audience-split with
-//! `triet.package` textual tokens (`grant`/`ambient`/`deny`/`defer`)
+//! `dao.package` textual tokens (`grant`/`ambient`/`deny`/`defer`)
 //! is intentional per ADR-0018 §1.
 //!
 //! The parser is **strict** per [ADR-0017 Addendum §A] — security
 //! boundary, whitelist-only. Same structural rules as
-//! `triet.package`: rejects BOM, CRLF, inline `#`, Unicode
+//! `dao.package`: rejects BOM, CRLF, inline `#`, Unicode
 //! whitespace, oversize line / file. Reused via the shared
 //! [`strict_parser`](crate::strict_parser) module.
 //!
@@ -61,7 +61,7 @@ use thiserror::Error;
 use crate::error::{StoreError, StoreResult};
 use crate::strict_parser::{LineViolation, for_each_directive_line};
 
-/// `triet.policy` format version. Bump on incompatible wire change.
+/// `dao.policy` format version. Bump on incompatible wire change.
 const FORMAT_VERSION: u32 = 1;
 
 /// Per-rule origin matcher — exact match for one of the three
@@ -69,10 +69,10 @@ const FORMAT_VERSION: u32 = 1;
 /// [`OriginMatcher::Any`] for the wildcard `*` token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OriginMatcher {
-    /// `lockfile` — dependency came from `triet.lock` pinning.
+    /// `lockfile` — dependency came from `dao.lock` pinning.
     Lockfile,
     /// `ifacepin` — dependency resolved by `iface_hash_pin` in
-    /// `triet.package`.
+    /// `dao.package`.
     IfacePin,
     /// `fresh` — dependency newly resolved this session.
     Fresh,
@@ -82,7 +82,7 @@ pub enum OriginMatcher {
 }
 
 impl OriginMatcher {
-    /// Source token as it appears in `triet.policy`.
+    /// Source token as it appears in `dao.policy`.
     #[must_use]
     pub const fn as_token(self) -> &'static str {
         match self {
@@ -118,7 +118,7 @@ impl OriginMatcher {
     }
 }
 
-/// One outcome a `triet.policy` rule (or the `default` line) can
+/// One outcome a `dao.policy` rule (or the `default` line) can
 /// resolve to. Three Trit values plus the `Prompt` token for runtime
 /// TTY fallback (ADR-0017 §4 Bước 3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -135,7 +135,7 @@ pub enum Decision {
 }
 
 impl Decision {
-    /// Source token as it appears in `triet.policy`.
+    /// Source token as it appears in `dao.policy`.
     #[must_use]
     pub const fn as_token(self) -> &'static str {
         match self {
@@ -173,7 +173,7 @@ pub struct PolicyRule {
     pub decision: Decision,
 }
 
-/// In-memory representation of a `triet.policy` file.
+/// In-memory representation of a `dao.policy` file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PolicyRules {
     rules: Vec<PolicyRule>,
@@ -184,7 +184,7 @@ pub struct PolicyRules {
 
 impl PolicyRules {
     /// Empty ruleset with implicit `default -1`. Equivalent to an
-    /// absent `triet.policy` file (ADR-0017 §3).
+    /// absent `dao.policy` file (ADR-0017 §3).
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -277,7 +277,7 @@ impl PolicyRules {
             .map(|r| r.decision)
     }
 
-    /// Parse a `triet.policy` source. See module docs for the format
+    /// Parse a `dao.policy` source. See module docs for the format
     /// and strict-whitelist enforcement.
     ///
     /// # Errors
@@ -462,7 +462,7 @@ impl PolicyRules {
     pub fn serialize(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
-        out.push_str("# triet.policy — capability resolution rules.\n");
+        out.push_str("# dao.policy — capability resolution rules.\n");
         out.push_str("# ADR-0017 §3 — sysadmin audit-friendly numeric tokens.\n");
         writeln!(&mut out, "format_version {FORMAT_VERSION}").expect("String write");
 
@@ -492,7 +492,7 @@ impl PolicyRules {
         out
     }
 
-    /// Read a `triet.policy` from disk. NotFound is treated as
+    /// Read a `dao.policy` from disk. NotFound is treated as
     /// `Ok(empty)` so the implicit-Deny default applies to
     /// projects that haven't opted in.
     ///
@@ -532,7 +532,7 @@ impl PolicyRules {
     }
 }
 
-/// Errors raised when parsing `triet.policy`. All four variants live
+/// Errors raised when parsing `dao.policy`. All four variants live
 /// in the [`triet::capability::E2205`] namespace (ADR-0017 §6 —
 /// six sub-variants total; the runtime-only `NonTTYDefer` /
 /// `PromptCrash` land with the policy resolver in v0.6.9 / v0.6.10).
@@ -541,10 +541,10 @@ impl PolicyRules {
 #[derive(Clone, Debug, Diagnostic, Error, PartialEq, Eq)]
 pub enum PolicyError {
     /// `format_version` is newer than this reader supports.
-    #[error("unsupported triet.policy format_version {found} (max supported: {supported})")]
+    #[error("unsupported dao.policy format_version {found} (max supported: {supported})")]
     #[diagnostic(
         code(triet::capability::E2205),
-        help("update the Triết toolchain — this `triet.policy` was written by a newer release")
+        help("update the Triết toolchain — this `dao.policy` was written by a newer release")
     )]
     UnsupportedFormatVersion {
         /// Version found in the file.
@@ -554,7 +554,7 @@ pub enum PolicyError {
     },
 
     /// Generic whitelist refusal — structural error or missing field.
-    #[error("malformed triet.policy at line {line}: {reason}")]
+    #[error("malformed dao.policy at line {line}: {reason}")]
     #[diagnostic(
         code(triet::capability::E2205),
         help(
@@ -640,7 +640,7 @@ fn require_format_version(seen: bool, line: usize) -> Result<(), PolicyError> {
 }
 
 /// Policy-side cap path validation — well-formed dotted ident only.
-/// Unlike `triet.package`, root is NOT restricted to {sys, dev, usr}:
+/// Unlike `dao.package`, root is NOT restricted to {sys, dev, usr}:
 /// sysadmins may write rules for any namespace they audit.
 fn validate_cap_path(s: &str, line: usize) -> Result<(), PolicyError> {
     if s.is_empty() {
@@ -687,7 +687,7 @@ mod tests {
     // ── Happy path / round-trip ────────────────────────────────────
 
     fn happy_path() -> &'static str {
-        "# triet.policy — capability resolution rules.\n\
+        "# dao.policy — capability resolution rules.\n\
          # ADR-0017 §3 — sysadmin audit-friendly numeric tokens.\n\
          format_version 1\n\
          \n\
@@ -1000,7 +1000,7 @@ mod tests {
 
     #[test]
     fn accepts_non_sys_dev_usr_root() {
-        // Unlike triet.package, policy doesn't restrict roots —
+        // Unlike dao.package, policy doesn't restrict roots —
         // sysadmins can write rules for std/core too.
         let p = PolicyRules::parse("format_version 1\nrule std.io * +1\n").expect("parse ok");
         assert_eq!(p.rules().len(), 1);
@@ -1055,7 +1055,7 @@ mod tests {
     #[test]
     fn save_load_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("triet.policy");
+        let path = dir.path().join("dao.policy");
         let p = PolicyRules::parse(happy_path()).expect("parse ok");
         p.save(&path).expect("save ok");
         let p2 = PolicyRules::load(&path).expect("load ok");
@@ -1076,7 +1076,7 @@ mod tests {
         // equal to the loaded state — but the rule survives, which is
         // the user-facing guarantee callers depend on.
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("triet.policy");
+        let path = dir.path().join("dao.policy");
 
         let mut p = PolicyRules::parse(happy_path()).expect("parse ok");
         let inserted = p.upsert_rule(PolicyRule {

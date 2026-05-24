@@ -59,14 +59,14 @@ pub enum CapabilityError {
     /// The source imports a cross-root path that the manifest doesn't
     /// declare. ADR-0016 §5 rule 1.
     #[error(
-        "package `{requester_pkg}` imports `{cap_path}` but `triet.package` has no \
+        "package `{requester_pkg}` imports `{cap_path}` but `dao.package` has no \
          matching `requires` entry"
     )]
     #[diagnostic(
         code(triet::capability::E2200),
         help(
             "add `requires {cap_path} grant` (or `defer` to leave it to the deploy-time \
-             policy) to `triet.package`. ADR-0016 §5 rule 1."
+             policy) to `dao.package`. ADR-0016 §5 rule 1."
         )
     )]
     MissingCapabilityClaim {
@@ -86,13 +86,13 @@ pub enum CapabilityError {
     /// The manifest itself contradicts the source — `requires <path>
     /// deny` but the source imports `<path>`. ADR-0016 §5 rule 2.
     #[error(
-        "package `{requester_pkg}` denies `{cap_path}` in `triet.package` but the \
+        "package `{requester_pkg}` denies `{cap_path}` in `dao.package` but the \
          source imports it"
     )]
     #[diagnostic(
         code(triet::capability::E2201),
         help(
-            "either remove the `requires {cap_path} deny` entry from `triet.package`, \
+            "either remove the `requires {cap_path} deny` entry from `dao.package`, \
              or remove the import. ADR-0016 §5 rule 2."
         )
     )]

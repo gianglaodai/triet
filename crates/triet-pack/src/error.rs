@@ -100,18 +100,18 @@ pub enum StoreError {
     #[diagnostic(transparent)]
     Pack(#[from] PackError),
 
-    /// Lockfile (`triet.lock`) format or version mismatch.
+    /// Lockfile (`dao.lock`) format or version mismatch.
     #[error("lockfile error: {0}")]
     #[diagnostic(transparent)]
     Lockfile(#[from] crate::lockfile::LockfileError),
 
-    /// Package manifest (`triet.package`) format or version mismatch
+    /// Package manifest (`dao.package`) format or version mismatch
     /// (v0.6.5+, ADR-0018 §1).
     #[error("package manifest error: {0}")]
     #[diagnostic(transparent)]
     PackageManifest(#[from] crate::package_manifest::PackageManifestError),
 
-    /// Policy file (`triet.policy`) format or version mismatch
+    /// Policy file (`dao.policy`) format or version mismatch
     /// (v0.6.6+, ADR-0017 §3).
     #[error("policy error: {0}")]
     #[diagnostic(transparent)]

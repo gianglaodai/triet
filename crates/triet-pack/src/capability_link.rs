@@ -41,7 +41,7 @@
 //! - E2208.PreV06Reader — gated by a future `abi_version` bump
 //!   (currently `v=2` understands caps natively).
 //! - E2208.CapabilityDivergence — requires comparing source
-//!   `triet.package` against emitted `.khi`. Lands when the
+//!   `dao.package` against emitted `.khi`. Lands when the
 //!   writer actually populates caps from manifest (v0.6.x).
 //! - E2205 sub-variants — runtime resolver (v0.6.9+).
 //!
@@ -129,7 +129,7 @@ pub enum CapabilityLinkError {
     #[diagnostic(
         code(triet::capability::E2200),
         help(
-            "add `requires <path> grant` (or `defer`) to the root's triet.package. Root is \
+            "add `requires <path> grant` (or `defer`) to the root's dao.package. Root is \
              the sole authority on cap decisions — transitive grants are not auto-promoted \
              (ADR-0016 §7)."
         )

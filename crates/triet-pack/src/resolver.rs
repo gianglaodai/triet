@@ -33,7 +33,7 @@ use crate::types::{Dep, SemVer};
 /// (pin-match vs. plain enumeration) into one.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ResolutionOrigin {
-    /// Pinned by an existing `triet.lock` entry whose hash is still
+    /// Pinned by an existing `dao.lock` entry whose hash is still
     /// installed. Authoritative — no enumeration was performed.
     Lockfile,
     /// `dep.iface_hash_pin` was non-zero. Resolver enumerated store
@@ -82,7 +82,7 @@ pub enum ResolveError {
     #[diagnostic(
         code(triet::pack::E2381),
         help(
-            "install the pinned pack, or delete `triet.lock` and re-run to resolve a fresh version"
+            "install the pinned pack, or delete `dao.lock` and re-run to resolve a fresh version"
         )
     )]
     LockfileHashMissing {

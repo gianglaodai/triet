@@ -1,14 +1,14 @@
-//! `triet.package` — per-package source manifest (ADR-0018 §1).
+//! `dao.package` — per-package source manifest (ADR-0018 §1).
 //!
-//! Sibling of `triet.lock` (per-project pinned resolution, [`Lockfile`])
-//! and `triet.policy` (per-deploy capability rules, v0.6.6).
+//! Sibling of `dao.lock` (per-project pinned resolution, [`Lockfile`])
+//! and `dao.policy` (per-deploy capability rules, v0.6.6).
 //!
 //! ADR-0018 §1 locks the grammar. Hand-rolled — same precedent as
 //! [`Lockfile`] (ADR-0015 §6): no serde dep, diff-friendly,
 //! sort-canonical:
 //!
 //! ```text
-//! # triet.package — generated, hand-editable.
+//! # dao.package — generated, hand-editable.
 //! format_version 1
 //! name myapp
 //! version 0.1.0
@@ -53,7 +53,7 @@ use crate::hash::{IFACE_HASH_LEN, IfaceHash};
 use crate::strict_parser::{LineViolation, for_each_directive_line};
 use crate::types::{CapabilityClaim, CapabilityLevel, Dep, SemVer};
 
-/// `triet.package` format version. Bump on incompatible wire change.
+/// `dao.package` format version. Bump on incompatible wire change.
 const FORMAT_VERSION: u32 = 1;
 
 /// Capability roots that require explicit grant (ADR-0016 §5 rule 3).
@@ -93,7 +93,7 @@ impl PackageManifest {
         }
     }
 
-    /// Parse a `triet.package` source. See module docs for the format
+    /// Parse a `dao.package` source. See module docs for the format
     /// and the strict-whitelist enforcement.
     ///
     /// # Errors
@@ -372,7 +372,7 @@ impl PackageManifest {
     pub fn serialize(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
-        out.push_str("# triet.package — generated, hand-editable.\n");
+        out.push_str("# dao.package — generated, hand-editable.\n");
         out.push_str("# ADR-0018 §1 — capability claims + deps.\n");
         writeln!(&mut out, "format_version {FORMAT_VERSION}").expect("String write");
         writeln!(&mut out, "name {}", self.name).expect("String write");
@@ -416,7 +416,7 @@ impl PackageManifest {
         out
     }
 
-    /// Read a `triet.package` from disk.
+    /// Read a `dao.package` from disk.
     ///
     /// # Errors
     /// Returns [`StoreError::Io`] for read failures or
@@ -451,7 +451,7 @@ impl PackageManifest {
     }
 }
 
-/// Errors raised when parsing `triet.package`. Wrapped by
+/// Errors raised when parsing `dao.package`. Wrapped by
 /// [`StoreError::PackageManifest`] when raised through
 /// [`PackageManifest::load`].
 ///
@@ -467,10 +467,10 @@ impl PackageManifest {
 #[derive(Clone, Debug, Diagnostic, Error, PartialEq, Eq)]
 pub enum PackageManifestError {
     /// `format_version` is newer than this reader supports.
-    #[error("unsupported triet.package format_version {found} (max supported: {supported})")]
+    #[error("unsupported dao.package format_version {found} (max supported: {supported})")]
     #[diagnostic(
         code(triet::capability::E2208),
-        help("update the Triết toolchain — this `triet.package` was written by a newer release")
+        help("update the Triết toolchain — this `dao.package` was written by a newer release")
     )]
     UnsupportedFormatVersion {
         /// Version found in the file.
@@ -482,7 +482,7 @@ pub enum PackageManifestError {
     /// A line failed to parse. Whitelist-only enforcement per
     /// ADR-0017 Addendum §A — any shape outside the locked grammar
     /// refuses-to-load.
-    #[error("malformed triet.package at line {line}: {reason}")]
+    #[error("malformed dao.package at line {line}: {reason}")]
     #[diagnostic(
         code(triet::capability::E2208),
         help(
@@ -666,7 +666,7 @@ mod tests {
 
     fn happy_path_text() -> String {
         format!(
-            "# triet.package — generated, hand-editable.\n\
+            "# dao.package — generated, hand-editable.\n\
              # ADR-0018 §1 — capability claims + deps.\n\
              format_version 1\n\
              name myapp\n\
@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn save_load_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("triet.package");
+        let path = dir.path().join("dao.package");
         let m = PackageManifest {
             name: "iodemo".into(),
             version: SemVer::new(2, 0, 1),

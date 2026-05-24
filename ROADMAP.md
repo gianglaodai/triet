@@ -44,7 +44,7 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 ✅ **Stdlib `std.result`**: canonical `Result<T, E>` enum; SPEC §2.5 promotes `T?` as primary nullable
 ✅ 867 tests workspace-wide ở v0.4, → **918 tests ở v0.5** (0 ignored), snapshot tests cho IR + diagnostics
 ✅ **CAS Packaging** per ADR-0014/0015 — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install protocol, mark-and-sweep GC
-✅ **Resolver + lockfile** — hash-pinned dep resolution, `triet.lock` line format
+✅ **Resolver + lockfile** — hash-pinned dep resolution, `dao.lock` line format
 ✅ **`dao store` CLI** — `import`, `list`, `gc` subcommands
 ✅ **Shared loading demo** — VISION §3.1 gate hit at iface level (term iface dedup proven; body-level RAM dedup queued behind lowerer per-term split)
 ✅ **Cross-module enum variant import** — `from std.result import Ok, Err` closed pre-existing v0.2.x gap; E2107 cho aliased variant import
@@ -271,7 +271,7 @@ này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze
 | v0.5.2 | ADR-0015 package store layout | `f7b49c8` |
 | v0.5.3 | 3-cấp hash tree implementation + abi_version 1 → 2 | `b6d170c` |
 | v0.5.4 | Package store filesystem + atomic install + GC | `2425e25` |
-| v0.5.5 | Hash-based resolver + `triet.lock` format | `2c43e69` |
+| v0.5.5 | Hash-based resolver + `dao.lock` format | `2c43e69` |
 | v0.5.6 | Shared loading demo + term dir keyed by impl_hash | `6291bc1` |
 | v0.5.7 | `dao store {import,list,gc}` CLI | `8b4ce12` |
 | v0.5.8 | Cross-module enum variant import (`from X import Variant`) | `07323a1` |
@@ -313,8 +313,8 @@ thay đổi spec gốc; thêm Addendum vào ADR-0015. 918 → 924 tests.
 ## v0.6 — Capability System (`sys.` / `dev.` / `usr.`) ✅ SHIPPED
 
 Trụ cột bản sắc #5 (VISION §3.5 + §5). Capability is a namespace
-attribute declared in the per-package `triet.package` manifest;
-runtime `Defer` slots resolve via `triet.policy` rules + optional
+attribute declared in the per-package `dao.package` manifest;
+runtime `Defer` slots resolve via `dao.policy` rules + optional
 TTY prompt.
 
 **3 ADRs locked + 1 Addendum:**
@@ -322,8 +322,8 @@ TTY prompt.
 | ADR | Title | Status |
 |---|---|---|
 | [0016](docs/decisions/0016-capability-type-system.md) | Capability type system (namespace + manifest, Trit + Trilean::Unknown) | Locked |
-| [0017](docs/decisions/0017-trilean-policy-hook.md) | Trilean policy hook protocol (`triet.policy` rules + TTY fallback) — *+ Addendum: parser strict + `/dev/tty` source + Abstain errata* | Locked |
-| [0018](docs/decisions/0018-capability-loader-semantics.md) | Loader semantics (`triet.package` grammar, eager Step 6a refuse, TTY provenance prompt, `CapabilityClaim`) | Locked |
+| [0017](docs/decisions/0017-trilean-policy-hook.md) | Trilean policy hook protocol (`dao.policy` rules + TTY fallback) — *+ Addendum: parser strict + `/dev/tty` source + Abstain errata* | Locked |
+| [0018](docs/decisions/0018-capability-loader-semantics.md) | Loader semantics (`dao.package` grammar, eager Step 6a refuse, TTY provenance prompt, `CapabilityClaim`) | Locked |
 
 **11 sub-tasks (v0.6.1–v0.6.11):**
 
@@ -334,8 +334,8 @@ TTY prompt.
 | v0.6.2.addendum | ADR-0017 Addendum (parser strict + `/dev/tty` + Abstain errata) | `d6d0aa3` |
 | v0.6.3 | ADR-0018 land | `6742948` |
 | v0.6.4 | `CapabilityClaim` + `CapabilityLevel` + wire format (ADR-0016 §4) | `22151a4` |
-| v0.6.5 | `triet.package` parser (ADR-0018 §1) | `cb8aa7b` |
-| v0.6.6 | `triet.policy` parser + shared `strict_parser` (ADR-0017 §3) | `2a3a6c6` |
+| v0.6.5 | `dao.package` parser (ADR-0018 §1) | `cb8aa7b` |
+| v0.6.6 | `dao.policy` parser + shared `strict_parser` (ADR-0017 §3) | `2a3a6c6` |
 | v0.6.7 | Type-check cross-root cap check (ADR-0016 §5 rules 1+2) | `b41d47e` |
 | v0.6.8 | Link-time cap check (ADR-0018 §2 Step 6a) | `24c34c3` |
 | v0.6.9 | Runtime resolver + per-session cache (ADR-0017 §4, ADR-0018 §2 Step 6b) | `6151399` |
@@ -344,15 +344,15 @@ TTY prompt.
 
 **Gate đạt:**
 - ✅ Compile-time E2200/E2201 fire khi `usr.*` imports `dev.*`/`sys.*` không cap claim — proven by [`compile_*` tests in `capability_pipeline.rs`](crates/triet-typecheck/tests/capability_pipeline.rs).
-- ✅ Runtime policy hook resolves `Trilean::Unknown` via `triet.policy` rules + TTY prompt — proven by `resolve_*` tests.
+- ✅ Runtime policy hook resolves `Trilean::Unknown` via `dao.policy` rules + TTY prompt — proven by `resolve_*` tests.
 - ✅ Demo capability-restricted program: accept path + refuse path both proven by `full_pipeline_capstone_*` tests + `demos/04-capability-system/` illustrative files.
 - ✅ E22XX namespace fully populated: E2200–E2208 (+ sub-variants) across parse/compile/link/runtime stages.
 - ✅ 924 → 1079 tests, clippy `-D warnings` clean, `abi_version` stays `2` (ADR-0016 §4 promise honored).
 
 **Không làm (defer khỏi v0.6):**
-- **CLI wiring** (`dao check` reading `triet.package` from project root, cap-aware build pipeline emitting `.khi` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
+- **CLI wiring** (`dao check` reading `dao.package` from project root, cap-aware build pipeline emitting `.khi` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
 - **E2208.PreV06Reader** — gated by future `abi_version` bump.
-- **E2208.CapabilityDivergence** — fires when lowerer actually populates caps section from `triet.package`; defer with lowerer work.
+- **E2208.CapabilityDivergence** — fires when lowerer actually populates caps section from `dao.package`; defer with lowerer work.
 - **Per-function cap granularity** — defer post-v1.0 (ADR-0016 "Không làm").
 - **Wildcard claims** in manifest — refuse-over-guess (ADR-0016 "Không làm").
 - **Windows ConPTY** for TTY prompt — POSIX-first; Windows defer.
@@ -389,7 +389,7 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 - `compiler/lexer.tri` + `parser.tri` + `modules.tri` + `typecheck.tri` + `ir_lowerer.tri` + `pack_writer.tri` + `main.tri` — Triết-in-Triết compiler source, 1:1 mirror crate boundaries của Rust impl.
 - Bootstrap chain 3-stage: Stage 1 (Rust impl) → Stage 2 (Triết-built-by-Stage-1) → Stage 3 (Triết-built-by-Stage-2).
 - Builtin opcodes 4–26 (Vec / HashMap / file IO / path / string ops) trong VM dispatcher per ADR-0019 §5 Rust-shim approach.
-- CLI wiring carry-over từ v0.6: project layout discovery (`triet.package` walk-upward), `dao check`/`build`/`run` cap-aware, loader integration với `DevTtyPrompt`, `E2208.CapabilityDivergence` fires.
+- CLI wiring carry-over từ v0.6: project layout discovery (`dao.package` walk-upward), `dao check`/`build`/`run` cap-aware, loader integration với `DevTtyPrompt`, `E2208.CapabilityDivergence` fires.
 - Three-layer testing: per-component differential test (5) + end-to-end semantic regression + bootstrap-loop CI gate.
 - Canonical emission determinism CI test (`bootstrap_determinism`) — `examples/*.tri` × 10 builds byte-identical.
 

@@ -5,7 +5,7 @@
 //! (Step 6a) refuses unsafe link configurations up front, this module
 //! decides what to do with cap paths the root manifest marked
 //! `Defer` (`Trilean::Unknown`). The decision uses
-//! [`PolicyRules`](crate::PolicyRules) — parsed `triet.policy` — plus
+//! [`PolicyRules`](crate::PolicyRules) — parsed `dao.policy` — plus
 //! an in-memory cache keyed by `(cap_path, requester_pkg)`.
 //!
 //! # Algorithm (ADR-0017 §4)
@@ -158,7 +158,7 @@ pub enum ResolverError {
     #[diagnostic(
         code(triet::capability::E2205),
         help(
-            "set an explicit rule (`+1`/`0`/`-1`) in triet.policy or run the binary with \
+            "set an explicit rule (`+1`/`0`/`-1`) in dao.policy or run the binary with \
              an interactive terminal. ADR-0017 §6."
         )
     )]
@@ -191,7 +191,7 @@ pub enum ResolverError {
 /// [`PolicyRules`] and a per-session decision cache.
 ///
 /// Owning the rules avoids lifetime gymnastics when the resolver
-/// outlives the parsed-file struct (`triet.policy` is read once at
+/// outlives the parsed-file struct (`dao.policy` is read once at
 /// loader start, then the rules object is conceptually owned by the
 /// resolver for the rest of the process). Callers wanting to swap
 /// rules mid-session must build a new resolver; ADR-0017 §5
@@ -302,7 +302,7 @@ impl CapabilityResolver {
     /// Callback outcomes map per ADR-0018 §4: `Grant{Once,Permanent}`
     /// → `Trit::Positive`, `Deny{Once,Permanent}` → `Trit::Negative`.
     /// The permanent-vs-session distinction is the callback's side
-    /// effect (writing to `triet.policy`); the resolver only records
+    /// effect (writing to `dao.policy`); the resolver only records
     /// the Trit outcome.
     ///
     /// I/O errors from the callback become
@@ -348,7 +348,7 @@ impl fmt::Debug for CapabilityResolver {
 }
 
 /// Translate `ResolutionOrigin` (which is "where did this dep come
-/// from") into `OriginMatcher` (which is "which `triet.policy` rule
+/// from") into `OriginMatcher` (which is "which `dao.policy` rule
 /// keys match"). The two enums are deliberately distinct types —
 /// `OriginMatcher` carries the wildcard `Any` while `ResolutionOrigin`
 /// is closed-set — but the three exact variants line up 1:1.

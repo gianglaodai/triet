@@ -52,7 +52,7 @@ Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn 
 CAS packaging trên nền tảng v0.4 ABI metadata. v0.5 land:
 - 3-cấp hash tree (term + module + package) per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md). `abi_version` 1 → 2.
 - Package store layout `~/.triet/store/{term,mod,pkg,names,roots,tmp}/` per [ADR-0015](docs/decisions/0015-package-store-layout.md). Atomic install protocol.
-- Hash-based resolver + `triet.lock` format (hand-rolled line format, no serde dep).
+- Hash-based resolver + `dao.lock` format (hand-rolled line format, no serde dep).
 - CLI: `dao store {import,list,gc}`.
 - Shared loading demo — VISION §3.1 gate hit at iface level (body-level RAM dedup chờ lowerer per-term body extraction).
 - Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap từ v0.2.x closed; aliased variant imports rejected với E2107.
@@ -61,11 +61,11 @@ CAS packaging trên nền tảng v0.4 ABI metadata. v0.5 land:
 
 Capability system — trụ cột bản sắc #5 (VISION §3.5 + §5). 3 ADRs ([0016](docs/decisions/0016-capability-type-system.md), [0017](docs/decisions/0017-trilean-policy-hook.md), [0018](docs/decisions/0018-capability-loader-semantics.md)) lock the contract; 11 sub-tasks land the machinery:
 
-- **Capability declaration:** namespace-level claims in `triet.package` source manifest (ADR-0018 §1). 4-state `CapabilityLevel`: `Grant` / `Ambient` / `Deny` (Trit) + `Defer` (`Trilean::Unknown`).
+- **Capability declaration:** namespace-level claims in `dao.package` source manifest (ADR-0018 §1). 4-state `CapabilityLevel`: `Grant` / `Ambient` / `Deny` (Trit) + `Defer` (`Trilean::Unknown`).
 - **Wire format:** `caps section` of `.khi` ABI metadata populated (ADR-0016 §4). `abi_version` stays `2` (no bump — slot was reserved since v0.4 per ADR-0011 §5).
 - **Compile-stage enforcement** (`triet-typecheck::check_capabilities`): cross-root imports (`sys.*`/`dev.*`/`usr.*`) require manifest claim. E2200 `MissingCapabilityClaim` + E2201 `SelfContradictoryCapability`. `std.*`/`core.*` ambient (skip); `crate.*`/`self.*`/`super.*` intra-pkg (skip).
 - **Link-stage enforcement** (`triet-pack::check_link_capabilities`, ADR-0018 §2 Step 6a): root manifest is sole authority over the dep closure (ADR-0016 §7). E2202 `UnresolvedCapabilityPath`, E2203 `CapabilityRefused`. `Defer` collected into `CapabilityLinkReport::deferrals`.
-- **Runtime resolution** (`triet-pack::CapabilityResolver`, ADR-0017 §4 + ADR-0018 §2 Step 6b): `triet.policy` rules indexed by `(cap_path, origin)` with exact > wildcard precedence. Per-session cache, monotonicity invariant (ADR-0017 §5). E2205 sub-variants for runtime errors.
+- **Runtime resolution** (`triet-pack::CapabilityResolver`, ADR-0017 §4 + ADR-0018 §2 Step 6b): `dao.policy` rules indexed by `(cap_path, origin)` with exact > wildcard precedence. Per-session cache, monotonicity invariant (ADR-0017 §5). E2205 sub-variants for runtime errors.
 - **TTY prompt** (`triet-pack::DevTtyPrompt`, ADR-0018 §4 + ADR-0017 Addendum §B): `/dev/tty` paired I/O bypassing stdin/stderr (anti-spoofing). Full 64-hex hashes (no truncation — security context). ASCII `!!` markers. `G`/`D` permanent-write via atomic `PolicyRules::save`.
 - **Error namespace:** `triet::capability::E22XX` (E2200–E2208 + sub-variants) — distinct from `triet::pack::E23XX` (semver linker) and `triet::modules::E21XX` (resolver).
 - **Demo + capstone test:** [`demos/04-capability-system/`](demos/04-capability-system/) illustrative files + [`capability_pipeline.rs`](crates/triet-typecheck/tests/capability_pipeline.rs) executable proof for the three ROADMAP §v0.6 gates.
@@ -74,7 +74,7 @@ Capability system — trụ cột bản sắc #5 (VISION §3.5 + §5). 3 ADRs ([
 
 Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** thuộc v0.6:
 
-- **CLI wiring** (`dao check` reading `triet.package` from project root, `dao build` populating `.khi` caps section from manifest, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner với v0.7 self-hosting.
+- **CLI wiring** (`dao check` reading `dao.package` from project root, `dao build` populating `.khi` caps section from manifest, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner với v0.7 self-hosting.
 - **Hiệu năng tối ưu** — production runtime AOT đến v2.0 (LLVM). VM + tree-walker đều là development tiers per [VISION §4.3](VISION.md).
 - **Concurrency/async** — phase v0.8.
 - **Lowerer emit `WitnessCall` cho cross-package generics** — defer khỏi v0.6. Cần package-aware `ResolvedProgram` + generic-instantiation tracking; multi-week architectural milestone. Lands cùng multi-package compile path hoặc v0.7 self-hosting.

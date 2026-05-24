@@ -1,4 +1,4 @@
-# triet.policy — capability resolution rules.
+# dao.policy — capability resolution rules.
 # ADR-0017 §3 — sysadmin audit-friendly numeric tokens.
 format_version 1
 
