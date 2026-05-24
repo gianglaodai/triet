@@ -72,6 +72,7 @@ fn ir_lowerer_outcome_default_smoke_main_passes_all_asserts() {
         .id;
 
     let mut vm = Vm::new(restored);
-    vm.execute(smoke_id, vec![])
-        .expect("compiler/ir_lowerer.tri outcome_default_smoke_main() must complete without VM error");
+    vm.execute(smoke_id, vec![]).expect(
+        "compiler/ir_lowerer.tri outcome_default_smoke_main() must complete without VM error",
+    );
 }

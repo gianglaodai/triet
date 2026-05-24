@@ -72,7 +72,7 @@ from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPatte
 from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from khi.parser import UnaryOperator, Negate
 from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -2386,6 +2386,131 @@ function lower_outcome_default(
     LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
 }
 
+// ── v0.7.11.1c: Outcome propagate `inner ~? |capture| early_return` ──
+//
+// Mirrors `lower_outcome_propagate` in `crates/triet-ir/src/lowerer.rs`
+// (line 1702). Semantics per ADR-0020 §3.1:
+//
+//   - Positive arm  → OutcomeUnwrapValue, fall through to merge.
+//   - Zero arm      → Const(Null), fall through to merge (only
+//                     reachable for `T?~E` shape; binary `T~E`
+//                     statically excludes it but the block stays
+//                     for verifier well-formedness).
+//   - Negative arm  → OutcomeUnwrapError into the capture binding,
+//                     lower the `early_return` expression, then
+//                     `Ret` it (divergent — does NOT branch back to
+//                     merge; typecheck E1031 enforces divergence).
+//
+// Merge collects only the Positive + Zero edges (Negative arm
+// terminates via Ret).
+function lower_outcome_propagate(
+    ctx: LowerCtx,
+    p: OutcomePropagatePayload,
+) -> LowerExprResult = {
+    // Step 1: lower the inner outcome expression.
+    let inner_r: LowerExprResult = lower_expression(ctx, p.inner)
+    let mutable st: LowerCtx = inner_r.ctx
+    let inner_val: ValueId = inner_r.value_id
+
+    // Step 2: emit OutcomeDiscriminant.
+    let disc_r: LowerExprResult = fresh_value(st)
+    st = disc_r.ctx
+    st = emit(st, OutcomeDiscriminantInst(InstOutcomeUnaryPayload {
+        dest: disc_r.value_id,
+        source: ValueOp(inner_val),
+    }))
+
+    // Step 3: spawn success / null / failure / merge blocks (4 total).
+    let success_r: FreshBlockResult = fresh_block(st)
+    st = success_r.ctx
+    let null_r: FreshBlockResult = fresh_block(st)
+    st = null_r.ctx
+    let failure_r: FreshBlockResult = fresh_block(st)
+    st = failure_r.ctx
+    let merge_r: FreshBlockResult = fresh_block(st)
+    st = merge_r.ctx
+
+    // Step 4: BrTrilean — distinct routing for each Trit (unlike
+    // Elvis / Default which collapsed null + failure).
+    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(disc_r.value_id),
+        true_block: success_r.block_id,
+        unknown_block: null_r.block_id,
+        false_block: failure_r.block_id,
+    }))
+
+    // Step 5: success block — OutcomeUnwrapValue then Br merge.
+    st = start_block(st, success_r.block_id, "oc_prop_success")
+    let unwrap_r: LowerExprResult = fresh_value(st)
+    st = unwrap_r.ctx
+    st = emit(st, OutcomeUnwrapValueInst(InstOutcomeUnaryPayload {
+        dest: unwrap_r.value_id,
+        source: ValueOp(inner_val),
+    }))
+    st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    let success_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 6: null block — Const(Null) then Br merge.
+    st = start_block(st, null_r.block_id, "oc_prop_null")
+    let null_const_r: InternCtxResult = intern_constant(st, NullConst(primitive_marker()))
+    st = null_const_r.ctx
+    let null_dest_r: LowerExprResult = fresh_value(st)
+    st = null_dest_r.ctx
+    st = emit(st, ConstInst(InstConstPayload {
+        dest: null_dest_r.value_id,
+        const_id: null_const_r.const_id,
+    }))
+    st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    let null_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 7: failure block — bind capture, lower early_return,
+    // then Ret. Push a fresh scope so the capture binding doesn't
+    // leak into the merge/exit paths.
+    st = start_block(st, failure_r.block_id, "oc_prop_failure")
+    st = push_scope(st)
+    let err_r: LowerExprResult = fresh_value(st)
+    st = err_r.ctx
+    st = emit(st, OutcomeUnwrapErrorInst(InstOutcomeUnaryPayload {
+        dest: err_r.value_id,
+        source: ValueOp(inner_val),
+    }))
+    // Bind capture name if present. `~0` arm first (Triết match is
+    // first-match-wins per memory).
+    match p.capture_name {
+        ~0 => { },
+        _ => {
+            st = bind_var(st, p.capture_name!!, err_r.value_id)
+        },
+    }
+    let early_r: LowerExprResult = lower_expression(st, p.early_return)
+    st = early_r.ctx
+    st = emit(st, RetInst(InstRetPayload {
+        value: ValueOp(early_r.value_id),
+    }))
+    st = pop_scope(st)
+
+    // Step 8: merge block — Phi with 2 incoming (success + null).
+    // The failure arm Ret-ed so its edge does NOT appear.
+    st = start_block(st, merge_r.block_id, "oc_prop_merge")
+    let merge_dest_r: LowerExprResult = fresh_value(st)
+    st = merge_dest_r.ctx
+    let mutable incoming: Vector<PhiIncoming> = new()
+    incoming = push(incoming, PhiIncoming {
+        value: unwrap_r.value_id,
+        block: success_end_id,
+    })
+    incoming = push(incoming, PhiIncoming {
+        value: null_dest_r.value_id,
+        block: null_end_id,
+    })
+    st = emit(st, PhiInst(InstPhiPayload {
+        dest: merge_dest_r.value_id,
+        incoming: incoming,
+    }))
+
+    LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -2404,10 +2529,8 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         RangeExpr(p) => lower_range_expr(ctx, p),
         ElvisOpExpr(p) => lower_elvis_op(ctx, p),
         OutcomeDefaultExpr(p) => lower_outcome_default(ctx, p),
-        // MethodCall / OutcomePropagate / If / Match defer to
-        // v0.7.11.1{c..f}. Emit a placeholder fresh value so
-        // downstream lowering keeps progressing on programs that
-        // touch unsupported expression variants.
+        OutcomePropagateExpr(p) => lower_outcome_propagate(ctx, p),
+        // MethodCall / If / Match defer to v0.7.11.1{d..f}.
         _ => fresh_value(ctx),
     }
 }
@@ -3776,6 +3899,70 @@ public function outcome_default_smoke_main() -> Unit = {
     println("v0.7.11.1b ir_lowerer outcome-default smoke OK")
 }
 
+// ── v0.7.11.1c smoke — Outcome propagate (`~?`) ──────────────────
+
+public function outcome_propagate_smoke_main() -> Unit = {
+    // Test 1: `x ~? |err| ~- err; ~+ v` over `Integer~String` —
+    // 5-block shape (entry + 4 spawned blocks: oc_prop_success,
+    // oc_prop_null, oc_prop_failure, oc_prop_merge). After merge,
+    // the outer function body continues into the same merge block
+    // with the OutcomeNewPositive + Ret tail.
+    //
+    // Note: function uses block-body form (no `=` before `{`) — the
+    // `function f() = { … }` form is blocked by
+    // v0.7.x.runtime-fix.parser-eq-block-body (closes in v0.7.11.1g).
+    let s1: String = "function read_value(x: Integer~String) -> Integer~String { let v: Integer = x ~? |err| ~- err ~+ v }"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    assert(length(f1.blocks) == 5)
+
+    // Test 2: entry — OutcomeDiscriminant + BrTrilean. Unlike Elvis
+    // and OutcomeDefault, propagate's BrTrilean has three DISTINCT
+    // target blocks (null and failure must not collapse — they have
+    // different runtime semantics: null carries through, failure
+    // Ret-s).
+    let entry1: BasicBlock = get(f1.blocks, 0)!!
+    let entry_total: Integer = length(entry1.instructions)
+    let entry_last: Instruction = get(entry1.instructions, entry_total - 1)!!
+    assert_string_eq(instruction_opcode_name(entry_last), "BrTrilean")
+    match entry_last {
+        BrTrileanInst(p) => {
+            assert(p.true_block.raw != p.unknown_block.raw)
+            assert(p.unknown_block.raw != p.false_block.raw)
+            assert(p.true_block.raw != p.false_block.raw)
+        },
+        _ => { },
+    }
+
+    // Test 3: oc_prop_failure (index 3) terminates via Ret. The
+    // failure arm is DIVERGENT (ADR-0020 §3.1) — no Br back to
+    // merge. Looking for Ret as the block's last instruction.
+    let fail1: BasicBlock = get(f1.blocks, 3)!!
+    let fail_total: Integer = length(fail1.instructions)
+    let fail_last: Instruction = get(fail1.instructions, fail_total - 1)!!
+    assert_string_eq(instruction_opcode_name(fail_last), "Ret")
+
+    // Test 4: oc_prop_failure starts with OutcomeUnwrapError to
+    // bind the `err` capture name.
+    let fail_first: Instruction = get(fail1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(fail_first), "OutcomeUnwrapError")
+
+    // Test 5: oc_prop_merge (index 4) first instruction is Phi
+    // with EXACTLY 2 incoming edges — success + null (failure
+    // Ret-ed so no third edge).
+    let merge1: BasicBlock = get(f1.blocks, 4)!!
+    let merge_first: Instruction = get(merge1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge_first), "Phi")
+    let phi_count: Integer = match merge_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    println("v0.7.11.1c ir_lowerer outcome-propagate smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -4129,4 +4316,5 @@ public function main() -> Unit = {
     struct_enum_outcome_smoke_main()
     elvis_smoke_main()
     outcome_default_smoke_main()
+    outcome_propagate_smoke_main()
 }
