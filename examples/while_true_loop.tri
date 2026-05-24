@@ -1,0 +1,17 @@
+// `while true` infinite-loop fixture — pin parse/lower behavior cho
+// vòng lặp có điều kiện hằng `true` (statically known truthy).
+//
+// Bài này không có `main()` runnable; chỉ giữ chữ ký function để
+// parser + lowerer xử lý `while true { … }` không panic, không tự
+// optimize-loop-away. `lower_while_loop` (v0.7.8.3b) emit canonical
+// 5-block shape (entry / header / body / exit / unknown_panic) bất
+// kể điều kiện có hằng hay không.
+//
+// Gốc: WIP fixture của tác giả trong working-tree root, move sang
+// `examples/` per v0.7.x.identity.F follow-up audit.
+
+function test() -> Unit = {
+    while true {
+        let x: Integer = 1
+    }
+}
