@@ -13,7 +13,7 @@
 //! happen later (#36.4).
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -48,10 +48,11 @@ pub(crate) fn load_filesystem(root_path: &Path) -> Result<ResolvedProgram, Vec<L
 
     let mut state = LoaderState::new();
     state.load_stdlib();
+    let root_chain = vec![root_dir];
     state.load_from_source(
         &ModulePath::crate_root(),
         Some(root_path.to_path_buf()),
-        Some(&root_dir),
+        Some(&root_chain),
         &source,
         None,
     );
@@ -70,10 +71,19 @@ pub(crate) fn load_in_memory(source: &str) -> Result<ResolvedProgram, Vec<Loader
 struct LoaderState {
     program: ResolvedProgram,
     errors: Vec<LoaderError>,
+    /// Canonicalized paths of files currently on the loading stack.
+    /// Used by [`Self::resolve_external`] to short-circuit when a
+    /// `module foo` declaration resolves to a file that is already
+    /// being loaded — without this guard the v0.7.x sibling-fallback
+    /// chain (e.g. `a.tri` declares `module b`, `b.tri` declares
+    /// `module a` and finds the root `a.tri` again) would recurse
+    /// indefinitely. The cycle is still reported via the existing
+    /// import-graph detector in [`crate::cycle`].
+    loading_files: HashSet<PathBuf>,
 }
 
 impl LoaderState {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             program: ResolvedProgram {
                 arenas: Vec::new(),
@@ -81,6 +91,7 @@ impl LoaderState {
                 root: ModuleId(0),
             },
             errors: Vec::new(),
+            loading_files: HashSet::new(),
         }
     }
 
@@ -145,7 +156,8 @@ impl LoaderState {
             PathBuf::from("std")
         };
 
-        self.load_from_source(&std_path, None, Some(&std_dir), source, None);
+        let std_chain = vec![std_dir];
+        self.load_from_source(&std_path, None, Some(&std_chain), source, None);
     }
 
     /// Parse `source`, allocate a fresh arena, slot a [`Module`] into
@@ -153,15 +165,16 @@ impl LoaderState {
     /// the new module's id, or `None` if parsing failed.
     ///
     /// `source_path` is `Some` for file-bound modules and `None` for
-    /// in-memory roots. `search_dir` is `Some` whenever the module's
+    /// in-memory roots. `search_chain` is `Some` whenever the module's
     /// children may be resolved against the filesystem; a child of an
     /// in-memory root cannot be external, so it stays `None` in that
-    /// case.
+    /// case. The chain is ordered most-specific first — see
+    /// [`Self::resolve_external`] for the resolution algorithm.
     fn load_from_source(
         &mut self,
         path: &ModulePath,
         source_path: Option<PathBuf>,
-        search_dir: Option<&Path>,
+        search_chain: Option<&[PathBuf]>,
         source: &str,
         parent: Option<ModuleId>,
     ) -> Option<ModuleId> {
@@ -177,17 +190,32 @@ impl LoaderState {
             return None;
         }
 
+        // Push the canonicalized file path onto the loading stack so
+        // any descendant `module foo` declaration that re-resolves to
+        // this same file is intercepted by `resolve_external`. Falls
+        // back to the original `PathBuf` if canonicalization fails
+        // (e.g. the file was moved between read and now); the guard
+        // still catches the textual identity in that case.
+        let guard_path = source_path.as_ref().map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
+        if let Some(ref gp) = guard_path {
+            self.loading_files.insert(gp.clone());
+        }
+
         let arena_id = ArenaId(self.program.arenas.len());
         self.program.arenas.push(parsed.arena);
 
         let module_id = self.allocate_module(path.clone(), source_path, arena_id, parent);
 
         let (items, children) =
-            self.process_items(path, arena_id, search_dir, module_id, parsed.items);
+            self.process_items(path, arena_id, search_chain, module_id, parsed.items);
 
         let module = self.program.module_mut(module_id);
         module.items = items;
         module.children = children;
+
+        if let Some(gp) = guard_path {
+            self.loading_files.remove(&gp);
+        }
 
         Some(module_id)
     }
@@ -199,14 +227,14 @@ impl LoaderState {
         &mut self,
         path: &ModulePath,
         parent_arena: ArenaId,
-        search_dir: Option<&Path>,
+        search_chain: Option<&[PathBuf]>,
         parent: ModuleId,
         inline_items: Vec<Spanned<Item>>,
     ) -> ModuleId {
         let module_id = self.allocate_module(path.clone(), None, parent_arena, Some(parent));
 
         let (items, children) =
-            self.process_items(path, parent_arena, search_dir, module_id, inline_items);
+            self.process_items(path, parent_arena, search_chain, module_id, inline_items);
 
         let module = self.program.module_mut(module_id);
         module.items = items;
@@ -246,7 +274,7 @@ impl LoaderState {
         &mut self,
         parent_path: &ModulePath,
         parent_arena: ArenaId,
-        parent_search_dir: Option<&Path>,
+        parent_search_chain: Option<&[PathBuf]>,
         parent_id: ModuleId,
         items: Vec<Spanned<Item>>,
     ) -> (Vec<Spanned<Item>>, Vec<ModuleId>) {
@@ -259,7 +287,7 @@ impl LoaderState {
                     if let Some(child_id) = self.process_module_decl(
                         parent_path,
                         parent_arena,
-                        parent_search_dir,
+                        parent_search_chain,
                         parent_id,
                         decl,
                         item.span.clone(),
@@ -278,25 +306,40 @@ impl LoaderState {
         &mut self,
         parent_path: &ModulePath,
         parent_arena: ArenaId,
-        parent_search_dir: Option<&Path>,
+        parent_search_chain: Option<&[PathBuf]>,
         parent_id: ModuleId,
         decl: ModuleDecl,
         decl_span: Span,
     ) -> Option<ModuleId> {
         let child_path = parent_path.child(&decl.name);
-        let child_search_dir = parent_search_dir.map(|directory| directory.join(&decl.name));
 
         match decl.content {
-            ModuleContent::Inline(inline_items) => Some(self.load_inline(
-                &child_path,
-                parent_arena,
-                child_search_dir.as_deref(),
-                parent_id,
-                inline_items,
-            )),
+            ModuleContent::Inline(inline_items) => {
+                // Inline `module inner` carves a virtual nested dir
+                // (`<primary>/<inner>/`) atop the parent chain so any
+                // external child of the inline scope resolves under
+                // that subdir first, then walks the chain.
+                let child_chain: Option<Vec<PathBuf>> = parent_search_chain.map(|chain| {
+                    let primary = chain
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    let mut new_chain = Vec::with_capacity(chain.len() + 1);
+                    new_chain.push(primary.join(&decl.name));
+                    new_chain.extend(chain.iter().cloned());
+                    new_chain
+                });
+                Some(self.load_inline(
+                    &child_path,
+                    parent_arena,
+                    child_chain.as_deref(),
+                    parent_id,
+                    inline_items,
+                ))
+            }
             ModuleContent::External => {
-                if let Some(directory) = parent_search_dir {
-                    self.resolve_external(&child_path, &decl.name, directory, parent_id, decl_span)
+                if let Some(chain) = parent_search_chain {
+                    self.resolve_external(&child_path, &decl.name, chain, parent_id, decl_span)
                 } else {
                     self.errors.push(LoaderError::FileNotFound {
                         module_name: decl.name,
@@ -310,33 +353,73 @@ impl LoaderState {
         }
     }
 
-    /// Resolve an external `module foo;` declaration: look for
-    /// `<dir>/<name>.tri`, then `<dir>/<name>/<name>.tri`. Read and
-    /// recurse on whichever exists.
+    /// Resolve an external `module foo;` declaration against an
+    /// ordered chain of search dirs. For each chain slot the loader
+    /// tries `<slot>/<name>.tri` (flat) then `<slot>/<name>/<name>.tri`
+    /// (nested); the first hit wins.
+    ///
+    /// The chain is built lazily as the loader descends: each child's
+    /// chain starts with its own nested dir (so its own children stay
+    /// in their conventional location) and then inherits the slots
+    /// from whichever ancestor's chain matched, so siblings further
+    /// up the tree remain reachable. This unlocks the
+    /// `compiler/main.tri` → `compiler/pack_writer.tri` → sibling
+    /// `compiler/ir_lowerer.tri` import pattern that pre-v0.7.9.4
+    /// would have failed at the second hop because the previous
+    /// loader nested unconditionally.
     fn resolve_external(
         &mut self,
         child_path: &ModulePath,
         name: &str,
-        search_dir: &Path,
+        parent_chain: &[PathBuf],
         parent: ModuleId,
         decl_span: Span,
     ) -> Option<ModuleId> {
-        let flat = search_dir.join(format!("{name}.tri"));
-        let nested = search_dir.join(name).join(format!("{name}.tri"));
+        let mut matched: Option<(usize, PathBuf)> = None;
+        let mut first_flat: Option<PathBuf> = None;
+        let mut first_nested: Option<PathBuf> = None;
 
-        let source_path = if flat.is_file() {
-            flat
-        } else if nested.is_file() {
-            nested
-        } else {
+        for (idx, search_dir) in parent_chain.iter().enumerate() {
+            let flat = search_dir.join(format!("{name}.tri"));
+            let nested = search_dir.join(name).join(format!("{name}.tri"));
+            if first_flat.is_none() {
+                first_flat = Some(flat.clone());
+            }
+            if first_nested.is_none() {
+                first_nested = Some(nested.clone());
+            }
+            if flat.is_file() {
+                matched = Some((idx, flat));
+                break;
+            }
+            if nested.is_file() {
+                matched = Some((idx, nested));
+                break;
+            }
+        }
+
+        let Some((matched_idx, source_path)) = matched else {
             self.errors.push(LoaderError::FileNotFound {
                 module_name: name.to_owned(),
-                searched_primary: flat.display().to_string(),
-                searched_nested: nested.display().to_string(),
+                searched_primary: first_flat.unwrap_or_default().display().to_string(),
+                searched_nested: first_nested.unwrap_or_default().display().to_string(),
                 span: decl_span,
             });
             return None;
         };
+
+        // If the resolved file is already loading we would recurse
+        // forever — skip silently and let the import-graph cycle
+        // detector in [`crate::cycle`] surface the actual cycle via
+        // `from crate.x import …` / `import crate.x` edges instead.
+        // A `module foo;` decl that maps back to an ancestor file is
+        // structurally the same cycle the from-import edges express.
+        let canonical_resolved = source_path
+            .canonicalize()
+            .unwrap_or_else(|_| source_path.clone());
+        if self.loading_files.contains(&canonical_resolved) {
+            return None;
+        }
 
         let source = match fs::read_to_string(&source_path) {
             Ok(text) => text,
@@ -350,15 +433,21 @@ impl LoaderState {
             }
         };
 
-        // Children of `name` live in `<search_dir>/<name>/`, regardless
-        // of whether `name` itself is backed by `<search_dir>/<name>.tri`
-        // (flat) or `<search_dir>/<name>/<name>.tri` (nested).
-        let child_search_dir = search_dir.join(name);
+        // Build the child's chain from the slot that matched. Drop the
+        // shorter slots ahead of `matched_idx`: they failed for this
+        // child, so its grandchildren should not waste a stat on them
+        // either. Children of `name` live first in the conventional
+        // `<matched_dir>/<name>/` subdir, then inherit the chain from
+        // `matched_dir` onwards.
+        let matched_dir = &parent_chain[matched_idx];
+        let mut child_chain: Vec<PathBuf> = Vec::with_capacity(parent_chain.len() - matched_idx + 1);
+        child_chain.push(matched_dir.join(name));
+        child_chain.extend(parent_chain[matched_idx..].iter().cloned());
 
         self.load_from_source(
             child_path,
             Some(source_path),
-            Some(&child_search_dir),
+            Some(&child_chain),
             &source,
             Some(parent),
         )
@@ -618,5 +707,61 @@ mod tests {
         let nonexistent = temp.path().join("nope.tri");
         let errors = load_filesystem(&nonexistent).unwrap_err();
         assert!(matches!(errors[0], LoaderError::IoError { .. }));
+    }
+
+    /// Regression for v0.7.x.runtime-fix.loader-nested-search. A flat
+    /// sibling that declares `module other` (another flat sibling)
+    /// used to fail because the loader hard-nested the search dir to
+    /// `<parent>/sibling/` even though `sibling` itself was found at
+    /// `<parent>/sibling.tri`. The fix walks an ordered chain of
+    /// search dirs and inherits siblings from whichever ancestor's
+    /// chain matched.
+    #[test]
+    fn filesystem_sibling_imports_other_sibling() {
+        let result = load_files(&[
+            ("main.tri", "module pack_writer"),
+            ("pack_writer.tri", "module ir_lowerer\nmodule typecheck"),
+            ("ir_lowerer.tri", "public function lower() = 1"),
+            ("typecheck.tri", "public function check() = 2"),
+        ])
+        .unwrap();
+        let pack_writer = result.module(result.root_module().children[0]);
+        assert_eq!(pack_writer.path.to_string(), "crate.pack_writer");
+        assert_eq!(pack_writer.children.len(), 2);
+        let ir_lowerer = result.module(pack_writer.children[0]);
+        assert_eq!(ir_lowerer.path.to_string(), "crate.pack_writer.ir_lowerer");
+        let typecheck = result.module(pack_writer.children[1]);
+        assert_eq!(typecheck.path.to_string(), "crate.pack_writer.typecheck");
+    }
+
+    /// The conventional nested layout (`std/collections.tri` with
+    /// children at `std/collections/vector.tri`) must keep winning
+    /// over the new sibling-fallback path — the chain prefers the
+    /// most-specific dir first.
+    #[test]
+    fn filesystem_nested_layout_still_preferred_over_sibling() {
+        let result = load_files(&[
+            ("main.tri", "module pkg"),
+            ("pkg.tri", "module child"),
+            ("pkg/child.tri", "public function nested() = 1"),
+            // Decoy sibling at the parent level — the conventional
+            // nested location should be preferred.
+            ("child.tri", "public function decoy() = 99"),
+        ])
+        .unwrap();
+        let pkg = result.module(result.root_module().children[0]);
+        let child = result.module(pkg.children[0]);
+        assert_eq!(child.path.to_string(), "crate.pkg.child");
+        // The picked file is the nested one, not the decoy sibling.
+        assert!(
+            child
+                .source_path
+                .as_ref()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("pkg/child.tri"),
+            "expected pkg/child.tri, got {:?}",
+            child.source_path
+        );
     }
 }

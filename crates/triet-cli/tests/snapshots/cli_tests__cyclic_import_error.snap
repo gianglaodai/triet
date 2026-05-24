@@ -2,11 +2,6 @@
 source: crates/triet-cli/tests/cli_tests.rs
 expression: stderr
 ---
-triet::modules::E2101
-
-  × module file not found for `a`
-  help: create `b/a.tri` or `b/a/a.tri`
-
 triet::modules::E2100
 
   × cyclic module dependency: crate → b → crate
