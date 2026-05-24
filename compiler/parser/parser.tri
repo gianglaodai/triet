@@ -4037,9 +4037,31 @@ function parse_function_body(state: ParserState) -> ParseFunctionBodyStep~ParseE
                     ~+ ParseFunctionBodyStep { state: block_step.state, body: BlockBody(block_step.block) }
                 },
                 Assign => {
+                    // After `=`, peek the next token. If it's `{`, parse
+                    // as a block body and wrap as `BlockBody`. Otherwise
+                    // parse as an expression. Closes
+                    // v0.7.x.runtime-fix.parser-eq-block-body — the
+                    // Rust impl accepts `function f() = { … }` form;
+                    // pre-fix Triết-side dispatched straight to
+                    // `parse_expression` which choked on the immediate
+                    // `{`.
                     let after_eq: ParserState = advance(state)
-                    let expr_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
-                    ~+ ParseFunctionBodyStep { state: expr_step.state, body: ExpressionBody(expr_step.expr_id) }
+                    let nx_after_eq: SpannedToken? = peek(after_eq)
+                    match nx_after_eq {
+                        ~0 => ~- make_unexpected_eof_err(after_eq, "expression or `{` after `=`"),
+                        ~+ nt2 => {
+                            match nt2.token {
+                                LBrace => {
+                                    let block_step2: ParseBlockStep = parse_block(after_eq) ~? |err| ~- err
+                                    ~+ ParseFunctionBodyStep { state: block_step2.state, body: BlockBody(block_step2.block) }
+                                },
+                                _ => {
+                                    let expr_step: ParseStep = parse_expression(after_eq) ~? |err| ~- err
+                                    ~+ ParseFunctionBodyStep { state: expr_step.state, body: ExpressionBody(expr_step.expr_id) }
+                                },
+                            }
+                        },
+                    }
                 },
                 _ => ~- make_unexpected_token_err(state, "function body (`{ … }` or `= expr`)"),
             }
@@ -5784,6 +5806,19 @@ function main() -> Unit = {
     assert_parse_program(
         "public function main() { 0 }",
         "(program public (fn main () (block (final 0))))",
+    )
+    // v0.7.11.1g — `function f() = { … }` mixed-form (Rust accepts;
+    // pre-fix Triết-side dispatched straight to parse_expression
+    // which choked on the immediate `{`). Now peeks past `=`, sees
+    // `{`, dispatches to parse_block and wraps as BlockBody — same
+    // shape as the bare-`{` arm.
+    assert_parse_program(
+        "function main() = { 0 }",
+        "(program (fn main () (block (final 0))))",
+    )
+    assert_parse_program(
+        "function main() = { let x: Integer = 1 x + 2 }",
+        "(program (fn main () (block (let x :Integer 1) (final (+ x 2)))))",
     )
     assert_parse_program(
         "public(package) function helper() = 1",

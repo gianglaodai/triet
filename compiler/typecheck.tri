@@ -3307,8 +3307,13 @@ public function control_flow_smoke_main() -> Unit = {
     let e10: Vector<TypeError> = check_source(src10)
     assert(length(e10) == 0)
 
-    // Test 11: let binding + unary negate
-    let src11: String = "function f() -> Integer = { let c: Integer = 7 -c }"
+    // Test 11: let binding + unary negate. Note: explicit `;`
+    // after the let binding to keep the parser from greedily
+    // consuming `-c` as a binary `7 - c`. Pre-v0.7.11.1g the
+    // `function f() = { … }` form rejected entirely so this
+    // ambiguity was masked; post-fix the test source must
+    // disambiguate explicitly.
+    let src11: String = "function f() -> Integer = { let c: Integer = 7; -c }"
     let e11: Vector<TypeError> = check_source(src11)
     assert(length(e11) == 0)
 
