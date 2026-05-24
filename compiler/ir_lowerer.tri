@@ -2493,10 +2493,40 @@ function lower_while_loop(ctx: LowerCtx, p: WhileStmtPayload) -> LowerCtx = {
     }))
 
     // Step 7: lower body.
+    //
+    // Mirrors Rust's `lower_while_loop`: push ONE scope for body
+    // rebinds, lower the body's stmts/final-expr (no nested scope
+    // push — `lower_block_inline` skips the push/pop that
+    // `lower_block` does), THEN snapshot the body-end values
+    // before popping. Pre-fix Triết called `lower_block` which
+    // pushes its own scope; combined with the outer `push_scope`
+    // here the AssignStmt rebinds landed in the inner scope which
+    // `lower_block` immediately popped, so `resolve_var` at step
+    // 7b resolved to the header-scope phi-dest — phi-incoming
+    // became a self-loop `[pre, %3@body]` instead of the correct
+    // `[pre, %6@body]`.
     st = start_block(st, body_r.block_id, "while_body")
     st = push_scope(st)
-    let body_res: LowerExprResult = lower_block(st, p.body)
+    let body_res: LowerExprResult = lower_block_inline(st, p.body)
     st = body_res.ctx
+
+    // Step 7b: snapshot the body-end SSA value of each mutated name
+    // BEFORE popping the body scope. Mirrors `lowerer.rs:2191-2196`
+    // — Rust's `post_body_vals` is collected pre-`pop_scope` so
+    // `resolve_var(name)` returns the body's latest rebind (the
+    // `Add` / `Mul` result) instead of the header-scope phi-dest.
+    let mutable body_end_vals: Vector<ValueId> = new()
+    i = 0
+    while i < mutated_total {
+        let nm_opt_pre: String? = get(mutated, i)
+        let resolved_pre: ValueId? = resolve_var(st, nm_opt_pre!!)
+        let captured: ValueId = match resolved_pre {
+            ~0 => ValueId { raw: -1 },
+            _ => resolved_pre!!,
+        }
+        body_end_vals = push(body_end_vals, captured)
+        i = i + 1
+    }
     st = pop_scope(st)
 
     // Step 8: patch header's Phi placeholders with body-end edges.
@@ -2508,30 +2538,26 @@ function lower_while_loop(ctx: LowerCtx, p: WhileStmtPayload) -> LowerCtx = {
         let pd_e_opt: ValueId? = get(phi_dests, i)
         let phi_d: ValueId = pd_e_opt!!
         if phi_d.raw >= 0 {
-            let nm_opt: String? = get(mutated, i)
-            let nm: String = nm_opt!!
-            let cur_v_opt: ValueId? = resolve_var(st, nm)
-            match cur_v_opt {
-                ~0 => { },
-                _ => {
-                    let pre_v_e_opt2: ValueId? = get(pre_vals, i)
-                    let pre_v: ValueId = pre_v_e_opt2!!
-                    let mutable new_inc: Vector<PhiIncoming> = new()
-                    new_inc = push(new_inc, PhiIncoming {
-                        value: pre_v,
-                        block: pre_block_id,
-                    })
-                    new_inc = push(new_inc, PhiIncoming {
-                        value: cur_v_opt!!,
-                        block: body_end_block_id,
-                    })
-                    patched_blocks = patch_phi_incoming(
-                        patched_blocks,
-                        header_block_idx,
-                        phi_d,
-                        new_inc,
-                    )
-                },
+            let body_v_opt: ValueId? = get(body_end_vals, i)
+            let body_v: ValueId = body_v_opt!!
+            if body_v.raw >= 0 {
+                let pre_v_e_opt2: ValueId? = get(pre_vals, i)
+                let pre_v: ValueId = pre_v_e_opt2!!
+                let mutable new_inc: Vector<PhiIncoming> = new()
+                new_inc = push(new_inc, PhiIncoming {
+                    value: pre_v,
+                    block: pre_block_id,
+                })
+                new_inc = push(new_inc, PhiIncoming {
+                    value: body_v,
+                    block: body_end_block_id,
+                })
+                patched_blocks = patch_phi_incoming(
+                    patched_blocks,
+                    header_block_idx,
+                    phi_d,
+                    new_inc,
+                )
             }
         }
         i = i + 1
@@ -2798,7 +2824,20 @@ public function lower_statement(ctx: LowerCtx, stmt_id: Integer) -> LowerCtx = {
 // pop the scope. Returns the block's value.
 public function lower_block(ctx: LowerCtx, block: Block) -> LowerExprResult = {
     let scoped: LowerCtx = push_scope(ctx)
-    let mutable st: LowerCtx = scoped
+    let stepped: LowerExprResult = lower_block_inline(scoped, block)
+    let unscoped: LowerCtx = pop_scope(stepped.ctx)
+    LowerExprResult { ctx: unscoped, value_id: stepped.value_id }
+}
+
+/// Lower the body of a block WITHOUT pushing or popping a scope.
+/// Used by `lower_while_loop` / `lower_for_loop` etc., which
+/// manage their own scope so they can snapshot body-end SSA
+/// values (`resolve_var(name)` for each mutated var) before the
+/// scope unwinds — mirrors Rust's `lower_block` (no internal
+/// push/pop) + `lower_while_loop`'s explicit `pop_scope` after
+/// the `post_body_vals` capture.
+function lower_block_inline(ctx: LowerCtx, block: Block) -> LowerExprResult = {
+    let mutable st: LowerCtx = ctx
     let stmt_total: Integer = length(block.block_statements)
     let mutable i: Integer = 0
     while i < stmt_total {
@@ -2806,7 +2845,7 @@ public function lower_block(ctx: LowerCtx, block: Block) -> LowerExprResult = {
         st = lower_statement(st, sid_opt!!)
         i = i + 1
     }
-    let result_r: LowerExprResult = match block.block_final {
+    match block.block_final {
         ~0 => {
             // Unit-value block: emit a Unit const so the block
             // produces a real ValueId (downstream Ret needs one).
@@ -2821,8 +2860,6 @@ public function lower_block(ctx: LowerCtx, block: Block) -> LowerExprResult = {
         },
         _ => lower_expression(st, block.block_final!!),
     }
-    let unscoped: LowerCtx = pop_scope(result_r.ctx)
-    LowerExprResult { ctx: unscoped, value_id: result_r.value_id }
 }
 
 // ── Function lowering ────────────────────────────────────────────

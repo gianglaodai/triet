@@ -2187,10 +2187,65 @@ function write_code_module_funcs(buf: Vector<Integer>, m: IrModule, f_idx: Integ
         buf
     } else {
         let f: Function = get(m.functions, f_idx)!!
-        let s1: Vector<Integer> = write_varint(buf, length(f.blocks))
-        let s2: Vector<Integer> = write_blocks(s1, f.blocks, 0)
+        // Rust-side stores blocks in `BTreeMap<BlockId, BasicBlock>`
+        // so the wire order is sorted by `block.id`. Triết-side
+        // uses a `Vector` with linear `push` from `start_block`,
+        // which can interleave control-flow auxiliary blocks
+        // (e.g. `while_unknown_panic` starts before `while_body`
+        // because `BrTrilean` needs its id as the `unknown_block`
+        // target). Sort by `id.raw` here to match Rust's wire
+        // order. Tracked as the now-closed
+        // `v0.7.x.runtime-fix.block-emission-order`.
+        let sorted: Vector<BasicBlock> = sort_blocks_by_id(f.blocks)
+        let s1: Vector<Integer> = write_varint(buf, length(sorted))
+        let s2: Vector<Integer> = write_blocks(s1, sorted, 0)
         write_code_module_funcs(s2, m, f_idx + 1)
     }
+}
+
+/// O(N²) insertion sort over BasicBlocks keyed by `id.raw`. Block
+/// counts are tiny (typically ≤8) so the quadratic cost stays
+/// negligible.
+function sort_blocks_by_id(blocks: Vector<BasicBlock>) -> Vector<BasicBlock> = {
+    let total: Integer = length(blocks)
+    let mutable out: Vector<BasicBlock> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let b_opt: BasicBlock? = get(blocks, i)
+        out = push(out, b_opt!!)
+        i = i + 1
+    }
+    let mutable a: Integer = 1
+    while a < total {
+        let mutable bi: Integer = a
+        while bi > 0 {
+            let cur_opt: BasicBlock? = get(out, bi)
+            let prev_opt: BasicBlock? = get(out, bi - 1)
+            let cur: BasicBlock = cur_opt!!
+            let prev: BasicBlock = prev_opt!!
+            if cur.id.raw < prev.id.raw {
+                let mutable rebuilt: Vector<BasicBlock> = new()
+                let mutable k: Integer = 0
+                while k < total {
+                    if k == bi - 1 {
+                        rebuilt = push(rebuilt, cur)
+                    } else if k == bi {
+                        rebuilt = push(rebuilt, prev)
+                    } else {
+                        let kth_opt: BasicBlock? = get(out, k)
+                        rebuilt = push(rebuilt, kth_opt!!)
+                    }
+                    k = k + 1
+                }
+                out = rebuilt
+                bi = bi - 1
+            } else {
+                bi = 0
+            }
+        }
+        a = a + 1
+    }
+    out
 }
 
 function write_blocks(buf: Vector<Integer>, blocks: Vector<BasicBlock>, i: Integer) -> Vector<Integer> = {
@@ -2627,9 +2682,22 @@ public function encode_caps_for_hash_empty() -> Vector<Integer> =
 // `BLAKE3(domain ‖ iface ‖ code_section)`.
 
 public function compute_iface_hash_empty(pkg_name: String) -> Vector<Integer> = {
+    // Mirrors `crates/triet-pack/src/hash.rs::compute_iface_hash`
+    // byte-for-byte: domain ‖ lp_string(pkg_name) ‖ <per-module entries
+    // — empty here> ‖ deps_bytes ‖ caps_bytes. Rust iterates the
+    // sorted-module slice with no count prefix, so we MUST NOT emit
+    // a leading `varint(0)` for the module count even though `payload`
+    // mirrors a write_varint shape elsewhere.
+    //
+    // CAVEAT: the hash-side length-prefix is `u32_le` (per
+    // `hash.rs::write_lp_string` line 249), NOT the LEB128 varint
+    // that the on-disk `write_string` uses. The two formats differ
+    // for any non-empty payload — `pkg_name = "compiler"` (8 chars)
+    // encodes as 12 bytes here (4 LE + 8) but only 9 bytes when
+    // written into the on-disk metadata block.
     let mutable payload: Vector<Integer> = new()
-    payload = write_string(payload, pkg_name)
-    payload = write_varint(payload, 0)  // 0 modules
+    payload = write_u32_le(payload, text_len(pkg_name))
+    payload = append_bytes_to(payload, into_bytes(pkg_name))
     payload = append_bytes_to(payload, encode_deps_for_hash_empty())
     payload = append_bytes_to(payload, encode_caps_for_hash_empty())
     blake3_with_domain(domain_pkg_iface(), payload)

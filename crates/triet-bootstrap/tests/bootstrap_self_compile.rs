@@ -12,27 +12,27 @@
 //!     `main(["build", source, "-o", out, "--pkg", "compiler"])`,
 //!     read back the written `.tripack` bytes.
 //!
-//! Acceptance per Q1-A (decided 2026-05-24): byte-identical on a
-//! stripped fixture. The current assertion is **content-equivalent**
-//! (same module count, function name + arity, block count) rather
-//! than strict byte-identical because three Triết-side encoder
-//! bugs surfaced during v0.7.9.5 implementation:
+//! Acceptance per Q1-A (decided 2026-05-24): **strict byte-identical**
+//! on a stripped fixture. v0.7.9.5 originally landed with a content-
+//! equivalent assertion (same module count, function name + arity,
+//! block count) because three Triết-side encoder bugs and one
+//! lowerer bug surfaced during gate implementation. All four are
+//! now closed:
 //!
 //!   1. `v0.7.x.runtime-fix.struct-in-enum-payload-identity`
 //!      (worked around in `compiler/main.tri::SourceResult` —
 //!      `SourceLoaded(StringPayload)` lost the String content;
 //!      switched to direct `SourceLoaded(String)`).
 //!   2. `v0.7.x.runtime-fix.write-function-table-module-prefix`
-//!      (Triết emits `"."` where Rust emits `"crate."`).
+//!      (Triết-side `lower_module` now seeds `["crate"]` segments).
 //!   3. `v0.7.x.runtime-fix.block-emission-order`
-//!      (Triết and Rust diverge on the order `while_body` /
-//!      `while_exit` / `while_unknown_panic` are written into the
-//!      function table).
-//!
-//! Strict byte-identical defers to whichever sub-task closes those
-//! three bugs. Today's content-equivalence assertion still proves
-//! the pipeline end-to-end, just without the byte-level fidelity
-//! claim.
+//!      (Triết-side `write_code_module_funcs` now sorts blocks by
+//!      `id.raw` before serialization, matching Rust's
+//!      `BTreeMap<BlockId, BasicBlock>` wire order).
+//!   4. `v0.7.x.runtime-fix.while-body-scope-pop-order`
+//!      (Triết-side `lower_while_loop` snapshots body-end SSA
+//!      values **before** popping the body scope, mirroring
+//!      Rust's `lowerer.rs:2191-2197` order).
 //!
 //! The fixture intentionally uses iterative factorial (`while` +
 //! `let mutable`) rather than recursive (`if cond { … } else { … }`)
@@ -166,67 +166,31 @@ fn rust_emit_factorial(source: &str, pkg_name: &str) -> Vec<u8> {
     write_tripack(&meta, &code)
 }
 
-/// The umbrella gate. Asserts content equivalence between the
-/// Rust-emitted and Triết-emitted `.tripack` outputs over the
-/// `compiler/factorial.tri` fixture. Strict byte-identical defers
-/// to follow-up `v0.7.x.runtime-fix.{write-function-table-module-prefix,
-/// block-emission-order}` closure.
+/// The umbrella gate. Asserts the Rust-emitted and Triết-emitted
+/// `.tripack` outputs over `compiler/factorial.tri` are byte-for-
+/// byte identical. If this assertion ever fires, the Triết-impl
+/// compiler has drifted from the Rust-impl compiler — investigate
+/// before bumping the v0.7 phase.
 #[test]
-fn factorial_self_compile_content_equivalent() {
+fn factorial_self_compile_byte_identical() {
     let source = fs::read_to_string(factorial_source_path()).expect("read factorial.tri");
     let pkg_name = "compiler";
 
     let rust_bytes = rust_emit_factorial(&source, pkg_name);
     let triet_bytes = triet_emit_factorial(pkg_name);
 
-    let (rust_meta, rust_code) = read_tripack(&rust_bytes).expect("decode rust pack");
-    let (triet_meta, triet_code) = read_tripack(&triet_bytes).expect("decode triet pack");
-
-    assert_eq!(rust_meta.pkg_name, triet_meta.pkg_name);
-    assert_eq!(rust_meta.abi_version, triet_meta.abi_version);
-    assert_eq!(rust_meta.pkg_version, triet_meta.pkg_version);
-
-    let rust_ir = triet_ir::read_program(&rust_code).expect("decode rust IR");
-    let triet_ir = triet_ir::read_program(&triet_code).expect("decode triet IR");
-
-    assert_eq!(
-        rust_ir.modules.len(),
-        triet_ir.modules.len(),
-        "module count must match"
-    );
-
-    let rust_fns: Vec<_> = rust_ir.modules.iter().flat_map(|m| &m.functions).collect();
-    let triet_fns: Vec<_> = triet_ir.modules.iter().flat_map(|m| &m.functions).collect();
-    assert_eq!(
-        rust_fns.len(),
-        triet_fns.len(),
-        "function count must match"
-    );
-
-    let rust_fn = rust_fns.first().expect("rust factorial function");
-    let triet_fn = triet_fns.first().expect("triet factorial function");
-    assert_eq!(rust_fn.name, triet_fn.name, "function name must match");
-    assert_eq!(
-        rust_fn.params.len(),
-        triet_fn.params.len(),
-        "param count must match"
-    );
-    assert_eq!(
-        rust_fn.blocks.len(),
-        triet_fn.blocks.len(),
-        "block count must match"
-    );
-
-    let rust_total_insts: usize = rust_fn.blocks.iter().map(|b| b.instructions.len()).sum();
-    let triet_total_insts: usize = triet_fn
-        .blocks
-        .iter()
-        .map(|b| b.instructions.len())
-        .sum();
-    assert_eq!(
-        rust_total_insts, triet_total_insts,
-        "total instruction count must match"
-    );
+    if rust_bytes != triet_bytes {
+        let first_diff = rust_bytes
+            .iter()
+            .zip(triet_bytes.iter())
+            .position(|(r, t)| r != t)
+            .unwrap_or_else(|| rust_bytes.len().min(triet_bytes.len()));
+        panic!(
+            "byte mismatch: rust={}B triet={}B, first differing byte at offset {first_diff}",
+            rust_bytes.len(),
+            triet_bytes.len()
+        );
+    }
 }
 
 /// Independent determinism check — two Triết-side runs of the same
