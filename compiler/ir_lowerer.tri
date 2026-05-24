@@ -72,7 +72,7 @@ from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPatte
 from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from khi.parser import UnaryOperator, Negate
 from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, MethodCallPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -2511,6 +2511,67 @@ function lower_outcome_propagate(
     LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
 }
 
+// ── v0.7.11.1d: Method call dispatch ─────────────────────────────
+//
+// Mirrors `lower_expr Expr::MethodCall` in `crates/triet-ir/src/lowerer.rs`
+// (line 1165). Covers the v0.2 stdlib surface — no full method-table
+// lookup yet:
+//
+//   - `<receiver>.length()` (zero args) → CallBuiltin(text_len).
+//     Receiver must be String; downstream typecheck enforces.
+//   - `<receiver>.unwrap_value(msg)` / `.unwrap_error(msg)` (one
+//     arg) per ADR-0020 §6 verbose strict-unwrap pairs. The `msg`
+//     argument is lowered for source-contract side effect but the
+//     VM does not consume it (E2210 panic uses a hardcoded label).
+//   - Other methods fall through to the receiver — matches Rust's
+//     current incomplete behavior. Future generic method-table
+//     dispatch lifts post-v0.7.
+function lower_method_call(ctx: LowerCtx, p: MethodCallPayload) -> LowerExprResult = {
+    let arg_count: Integer = length(p.arguments)
+
+    // `.length()` zero-arg → CallBuiltin(text_len) on the receiver.
+    if p.method == "length" && arg_count == 0 {
+        let recv_r: LowerExprResult = lower_expression(ctx, p.receiver)
+        let mutable st: LowerCtx = recv_r.ctx
+        let dest_r: LowerExprResult = fresh_value(st)
+        st = dest_r.ctx
+        let mutable args: Vector<Operand> = new()
+        args = push(args, ValueOp(recv_r.value_id))
+        st = emit(st, CallBuiltinInst(InstCallBuiltinPayload {
+            dest: dest_r.value_id,
+            name: TextLenBuiltin(primitive_marker()),
+            args: args,
+        }))
+        return LowerExprResult { ctx: st, value_id: dest_r.value_id }
+    }
+
+    // `.unwrap_value(msg)` / `.unwrap_error(msg)` — OutcomeUnwrap*.
+    // ADR-0020 §6: msg lowered for parity, ignored at VM.
+    if arg_count == 1 && (p.method == "unwrap_value" || p.method == "unwrap_error") {
+        let recv_r: LowerExprResult = lower_expression(ctx, p.receiver)
+        let msg_arg_opt: Integer? = get(p.arguments, 0)
+        let msg_r: LowerExprResult = lower_expression(recv_r.ctx, msg_arg_opt!!)
+        let mutable st: LowerCtx = msg_r.ctx
+        let dest_r: LowerExprResult = fresh_value(st)
+        st = dest_r.ctx
+        let payload: InstOutcomeUnaryPayload = InstOutcomeUnaryPayload {
+            dest: dest_r.value_id,
+            source: ValueOp(recv_r.value_id),
+        }
+        let inst: Instruction = if p.method == "unwrap_value" {
+            OutcomeUnwrapValueInst(payload)
+        } else {
+            OutcomeUnwrapErrorInst(payload)
+        }
+        st = emit(st, inst)
+        return LowerExprResult { ctx: st, value_id: dest_r.value_id }
+    }
+
+    // Fallback — unknown method, return the receiver value
+    // unchanged (matches Rust's current incomplete arm).
+    lower_expression(ctx, p.receiver)
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -2525,12 +2586,13 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         ForceUnwrapExpr(inner_id) => lower_force_unwrap(ctx, inner_id),
         CallExpr(call) => lower_call(ctx, call),
         FieldAccessExpr(p) => lower_field_access(ctx, p),
+        MethodCallExpr(p) => lower_method_call(ctx, p),
         OutcomeConstructorExpr(p) => lower_outcome_constructor(ctx, p),
         RangeExpr(p) => lower_range_expr(ctx, p),
         ElvisOpExpr(p) => lower_elvis_op(ctx, p),
         OutcomeDefaultExpr(p) => lower_outcome_default(ctx, p),
         OutcomePropagateExpr(p) => lower_outcome_propagate(ctx, p),
-        // MethodCall / If / Match defer to v0.7.11.1{d..f}.
+        // If / Match defer to v0.7.11.1{e..f}.
         _ => fresh_value(ctx),
     }
 }
@@ -3963,6 +4025,79 @@ public function outcome_propagate_smoke_main() -> Unit = {
     println("v0.7.11.1c ir_lowerer outcome-propagate smoke OK")
 }
 
+// ── v0.7.11.1d smoke — Method call dispatch ──────────────────────
+
+public function method_call_smoke_main() -> Unit = {
+    // Test 1: `.length()` zero-arg on a String → CallBuiltin(text_len).
+    let s1: String = "function f(s: String) -> Integer = s.length()"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    let entry1: BasicBlock = get(f1.blocks, 0)!!
+    // Walk instructions for the CallBuiltin.
+    let mutable found_call: Trilean! = false
+    let mutable found_builtin: BuiltinName = PrintlnBuiltin(primitive_marker())
+    let total1: Integer = length(entry1.instructions)
+    let mutable i: Integer = 0
+    while i < total1 {
+        let inst_opt: Instruction? = get(entry1.instructions, i)
+        let inst: Instruction = inst_opt!!
+        match inst {
+            CallBuiltinInst(cb) => {
+                found_call = true
+                found_builtin = cb.name
+            },
+            _ => { },
+        }
+        i = i + 1
+    }
+    assert(found_call)
+    assert_string_eq(builtin_name_display(found_builtin), "text_len")
+
+    // Test 2: `.unwrap_value("msg")` on a `T~E` receiver →
+    // OutcomeUnwrapValue. The message arg is lowered (constant
+    // string emitted) but the VM ignores it (E2210 uses hardcoded
+    // label). Single block; check for OutcomeUnwrapValue presence.
+    let s2: String = "function f(x: Integer~String) -> Integer = x.unwrap_value(\"oops\")"
+    let p2: IrProgram = lower_source(s2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    let entry2: BasicBlock = get(f2.blocks, 0)!!
+    let mutable found_unwrap_v: Trilean! = false
+    let total2: Integer = length(entry2.instructions)
+    i = 0
+    while i < total2 {
+        let inst2_opt: Instruction? = get(entry2.instructions, i)
+        let inst2: Instruction = inst2_opt!!
+        if instruction_opcode_name(inst2) == "OutcomeUnwrapValue" {
+            found_unwrap_v = true
+        }
+        i = i + 1
+    }
+    assert(found_unwrap_v)
+
+    // Test 3: `.unwrap_error("msg")` → OutcomeUnwrapError.
+    let s3: String = "function f(x: Integer~String) -> String = x.unwrap_error(\"oops\")"
+    let p3: IrProgram = lower_source(s3)
+    let m3: IrModule = get(p3.modules, 0)!!
+    let f3: Function = get(m3.functions, 0)!!
+    let entry3: BasicBlock = get(f3.blocks, 0)!!
+    let mutable found_unwrap_e: Trilean! = false
+    let total3: Integer = length(entry3.instructions)
+    i = 0
+    while i < total3 {
+        let inst3_opt: Instruction? = get(entry3.instructions, i)
+        let inst3: Instruction = inst3_opt!!
+        if instruction_opcode_name(inst3) == "OutcomeUnwrapError" {
+            found_unwrap_e = true
+        }
+        i = i + 1
+    }
+    assert(found_unwrap_e)
+
+    println("v0.7.11.1d ir_lowerer method-call smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -4317,4 +4452,5 @@ public function main() -> Unit = {
     elvis_smoke_main()
     outcome_default_smoke_main()
     outcome_propagate_smoke_main()
+    method_call_smoke_main()
 }
