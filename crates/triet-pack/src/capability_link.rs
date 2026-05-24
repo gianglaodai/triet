@@ -40,9 +40,6 @@
 //!
 //! - E2208.PreV06Reader — gated by a future `abi_version` bump
 //!   (currently `v=2` understands caps natively).
-//! - E2208.CapabilityDivergence — requires comparing source
-//!   `dao.package` against emitted `.khi`. Lands when the
-//!   writer actually populates caps from manifest (v0.6.x).
 //! - E2205 sub-variants — runtime resolver (v0.6.9+).
 //!
 //! [`linker::plan_link`]: crate::plan_link
@@ -189,6 +186,34 @@ pub enum CapabilityLinkError {
         /// Name of the root package whose manifest refused.
         root_pkg: String,
     },
+
+    /// E2208 — mismatch between the source `dao.package` `requires`
+    /// and the `.khi` binary's caps section. The manifest lists
+    /// claims that were never encoded into the binary, or the
+    /// binary carries claims absent from the manifest. Either
+    /// direction indicates writer corruption / tampering.
+    #[error(
+        "capability claims in `.khi` diverge from `dao.package` for root `{root_pkg}`: \
+         {} missing from binary, {} extra in binary",
+        missing_from_binary.join(", "),
+        extra_in_binary.join(", "),
+    )]
+    #[diagnostic(
+        code(triet::capability::E2208),
+        help(
+            "rebuild the `.khi` from the canonical `dao.package`. If the divergence \
+             persists, the writer (dao build / compiler) may have a bug in caps-section \
+             emission."
+        )
+    )]
+    CapabilityDivergence {
+        /// Caps present in manifest but not in binary.
+        missing_from_binary: Vec<String>,
+        /// Caps present in binary but not in manifest.
+        extra_in_binary: Vec<String>,
+        /// Root package name for diagnostics.
+        root_pkg: String,
+    },
 }
 
 /// Apply ADR-0018 §2 Step 6a to `root` plus its dep closure.
@@ -301,6 +326,60 @@ pub fn check_link_capabilities(
     }
 
     report
+}
+
+/// v0.7.11.6 — compare the source `dao.package` manifest's
+/// `requires` claims against the `.khi` binary's `caps` section.
+/// Returns `E2208.CapabilityDivergence` when claims differ between
+/// source and binary in either direction.
+///
+/// Canonical comparison uses `(cap_path, level)` as the identity key
+/// so reordered or duplicated entries don't flag. Claims in the
+/// manifest that are absent from the binary are "missing"; claims in
+/// the binary absent from the manifest are "extra". Both are sorted
+/// alphabetically for deterministic diagnostics.
+#[must_use]
+pub fn check_cap_divergence(
+    manifest_requires: &[crate::CapabilityClaim],
+    binary_caps: &[crate::CapabilityClaim],
+    root_pkg: &str,
+) -> Option<CapabilityLinkError> {
+    // Build (cap_path, level) → count from each side.
+    let manifest_set: HashSet<(String, u8)> = manifest_requires
+        .iter()
+        .map(|c| (c.cap_path.clone(), c.level as u8))
+        .collect();
+    let binary_set: HashSet<(String, u8)> = binary_caps
+        .iter()
+        .map(|c| (c.cap_path.clone(), c.level as u8))
+        .collect();
+
+    let mut missing_from_binary: Vec<String> = Vec::new();
+    let mut extra_in_binary: Vec<String> = Vec::new();
+
+    for (path, level) in &manifest_set {
+        if !binary_set.contains(&(path.clone(), *level)) {
+            missing_from_binary.push(path.clone());
+        }
+    }
+    for (path, level) in &binary_set {
+        if !manifest_set.contains(&(path.clone(), *level)) {
+            extra_in_binary.push(path.clone());
+        }
+    }
+
+    if missing_from_binary.is_empty() && extra_in_binary.is_empty() {
+        return None;
+    }
+
+    missing_from_binary.sort();
+    extra_in_binary.sort();
+
+    Some(CapabilityLinkError::CapabilityDivergence {
+        missing_from_binary,
+        extra_in_binary,
+        root_pkg: root_pkg.to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -666,5 +745,100 @@ mod tests {
         let stdlib = pkg("stdlib", vec![module("sys.io")], vec![]);
         let report = check_link_capabilities(&root, &[stdlib]);
         assert!(report.is_acceptable(), "errors: {:?}", report.errors);
+    }
+
+    // ── v0.7.11.6 — E2208 CapabilityDivergence ────────────────────
+
+    #[test]
+    fn manifest_and_binary_agree_returns_none() {
+        let manifest_caps = vec![
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("dev.disk", CapabilityLevel::Defer),
+        ];
+        let binary_caps = vec![
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("dev.disk", CapabilityLevel::Defer),
+        ];
+        let result = check_cap_divergence(&manifest_caps, &binary_caps, "root");
+        assert!(result.is_none(), "identical sets should not diverge");
+    }
+
+    #[test]
+    fn manifest_has_claim_binary_missing_fires_e2208() {
+        let manifest_caps = vec![
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("dev.disk", CapabilityLevel::Deny),
+        ];
+        let binary_caps = vec![cap("sys.io", CapabilityLevel::Grant)];
+        let result = check_cap_divergence(&manifest_caps, &binary_caps, "root");
+        assert!(result.is_some());
+        if let Some(CapabilityLinkError::CapabilityDivergence {
+            missing_from_binary,
+            extra_in_binary,
+            root_pkg,
+        }) = result
+        {
+            assert_eq!(missing_from_binary, vec!["dev.disk"]);
+            assert!(extra_in_binary.is_empty());
+            assert_eq!(root_pkg, "root");
+        } else {
+            panic!("expected E2208");
+        }
+    }
+
+    #[test]
+    fn binary_has_extra_claim_fires_e2208() {
+        let manifest_caps = vec![cap("sys.io", CapabilityLevel::Grant)];
+        let binary_caps = vec![
+            cap("sys.io", CapabilityLevel::Grant),
+            cap("sys.secret", CapabilityLevel::Grant),
+        ];
+        let result = check_cap_divergence(&manifest_caps, &binary_caps, "root");
+        assert!(result.is_some());
+        if let Some(CapabilityLinkError::CapabilityDivergence {
+            missing_from_binary,
+            extra_in_binary,
+            ..
+        }) = result
+        {
+            assert!(missing_from_binary.is_empty());
+            assert_eq!(extra_in_binary, vec!["sys.secret"]);
+        } else {
+            panic!("expected E2208");
+        }
+    }
+
+    #[test]
+    fn level_mismatch_fires_e2208() {
+        // Same cap_path, different level → divergence.
+        let manifest_caps = vec![cap("sys.io", CapabilityLevel::Grant)];
+        let binary_caps = vec![cap("sys.io", CapabilityLevel::Deny)];
+        let result = check_cap_divergence(&manifest_caps, &binary_caps, "root");
+        assert!(result.is_some(), "level mismatch must flag");
+    }
+
+    #[test]
+    fn both_missing_and_extra_reported() {
+        let manifest_caps = vec![
+            cap("a.first", CapabilityLevel::Grant),
+            cap("b.second", CapabilityLevel::Defer),
+        ];
+        let binary_caps = vec![
+            cap("a.first", CapabilityLevel::Grant),
+            cap("c.third", CapabilityLevel::Deny),
+        ];
+        let result = check_cap_divergence(&manifest_caps, &binary_caps, "root");
+        assert!(result.is_some());
+        if let Some(CapabilityLinkError::CapabilityDivergence {
+            missing_from_binary,
+            extra_in_binary,
+            ..
+        }) = result
+        {
+            assert_eq!(missing_from_binary, vec!["b.second"]);
+            assert_eq!(extra_in_binary, vec!["c.third"]);
+        } else {
+            panic!("expected E2208");
+        }
     }
 }

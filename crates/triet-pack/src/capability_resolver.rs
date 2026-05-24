@@ -380,6 +380,48 @@ const fn decision_to_trit_static(d: Decision) -> Trit {
     }
 }
 
+/// Resolve a batch of [`DeferredCap`](crate::DeferredCap)s from
+/// [`check_link_capabilities`](crate::check_link_capabilities).
+/// v0.7.11.6 — wires the "v0.6.11 loader integration" from the
+/// module docs.
+///
+/// For each deferred cap, each requester package gets its own
+/// [`PolicyRequest`] and is resolved independently via `resolver`.
+/// The `origin` is [`ResolutionOrigin::Fresh`] — boot-time resolution
+/// has no lockfile / pin context; future per-deferral origin tagging
+/// lifts when the resolver pipeline surfaces the upstream
+/// [`Resolver`](crate::Resolver) decision for each requested dep.
+///
+/// Returns `(granted, denied)` tuples so callers can surface
+/// diagnostics for denied deferrals. `Trit::Zero` (abstain) is
+/// treated as deny for the caller's purposes.
+#[must_use]
+pub fn resolve_deferrals(
+    deferrals: &[crate::DeferredCap],
+    resolver: &mut CapabilityResolver,
+) -> (Vec<CachedDecision>, Vec<CachedDecision>) {
+    let mut granted: Vec<CachedDecision> = Vec::new();
+    let mut denied: Vec<CachedDecision> = Vec::new();
+
+    for def in deferrals {
+        for requester in &def.requester_pkgs {
+            let req = PolicyRequest {
+                cap_path: def.cap_path.clone(),
+                requester_pkg: requester.clone(),
+                dep_chain: vec![],
+                origin: ResolutionOrigin::Fresh,
+            };
+            let decision = resolver.resolve(&req);
+            match decision.outcome {
+                Trit::Positive => granted.push(decision),
+                _ => denied.push(decision),
+            }
+        }
+    }
+
+    (granted, denied)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -68,7 +68,7 @@ fn error_handling_demo_builds_to_triv() {
         String::from_utf8_lossy(&exit.stdout),
         String::from_utf8_lossy(&exit.stderr),
     );
-    assert!(output_triv.exists(), ".khi output should exist after build",);
+    assert!(output_triv.exists(), ".khi output should exist after build");
 }
 
 /// Full-pipeline run through the VM path. Verifies that every line in

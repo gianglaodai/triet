@@ -62,11 +62,12 @@ mod tty_prompt;
 mod types;
 
 pub use capability_link::{
-    CapabilityLinkError, CapabilityLinkReport, DeferredCap, RootRefusalLevel,
+    CapabilityLinkError, CapabilityLinkReport, DeferredCap, RootRefusalLevel, check_cap_divergence,
     check_link_capabilities,
 };
 pub use capability_resolver::{
     CachedDecision, CapabilityResolver, DecisionSource, PolicyRequest, ResolverError,
+    resolve_deferrals,
 };
 pub use error::{PackError, PackResult, StoreError, StoreResult};
 pub use hash::{

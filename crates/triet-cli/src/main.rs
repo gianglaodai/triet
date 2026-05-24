@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use miette::Report;
 use triet_interpreter::RuntimeError;
-use triet_pack::{AbiMetadata, PackageManifest, SemVer, read_khi, write_khi};
+use triet_pack::{AbiMetadata, PackageManifest, SemVer, check_cap_divergence, read_khi, write_khi};
 use triet_typecheck::{CapabilityError, TypeError};
 
 use crate::fmt::fmt_command;
@@ -516,6 +516,17 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
             meta
         },
     );
+
+    // v0.7.11.6: verify the manifest's `requires` and the `.khi`'s
+    // caps section agree. Divergence indicates writer corruption or
+    // a stale binary; emit E2208 and refuse to write.
+    if let Some(ref m) = manifest
+        && let Some(divergence) = check_cap_divergence(&m.requires, &meta.caps, &meta.pkg_name)
+    {
+        emit_link_error(&divergence, "triet::capability::E2208", display_path, json);
+        return ExitCode::from(5);
+    }
+
     let bytes = write_khi(&meta, &code_section);
 
     let output_path = output.unwrap_or_else(|| {
@@ -558,8 +569,6 @@ fn run_capability_check(
     if json {
         let mut emitter = JsonEmitter::new();
         for error in &cap_errors {
-            // CapabilityError carries placeholder Span{0..0} until
-            // import-site span tracking ships (deferred post-v0.6).
             emitter.emit(
                 &error.to_string(),
                 capability_error_code(error),
@@ -575,6 +584,20 @@ fn run_capability_check(
         }
     }
     false
+}
+
+/// Emit a cap-link error as JSON or human-readable text.
+/// v0.7.11.6 extracted from the divergence check.
+fn emit_link_error(err: &triet_pack::CapabilityLinkError, code: &str, path: &str, json: bool) {
+    if json {
+        let mut emitter = JsonEmitter::new();
+        emitter.emit(&err.to_string(), code, &(0..0), path);
+        emitter.finish();
+    } else {
+        // `CapabilityLinkError: miette::Diagnostic` but not Clone,
+        // so format the string and render via miette's display.
+        eprintln!("{code}: {err}");
+    }
 }
 
 /// Stable JSON error code for each `CapabilityError` variant. CLAUDE.md
