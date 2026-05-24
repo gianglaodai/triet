@@ -23,16 +23,22 @@
 
 module parser;
 module modules;
+module typecheck;
 module ir_lowerer;
+module pack_writer;
 
 from std.collections.vector import new, push, length, get
 from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, keys as hashmap_keys
 from std.io import println
 from std.assert import assert
+from std.text import concat, from_integer
 
 from khi.parser import Arena
-from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_crate_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display
+from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_crate_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, ResolveResult, resolve_names, LoaderError, loader_error_message
+from khi.modules import detect_cycles
+from khi.typecheck import TypeError, check_resolved
 from khi.ir_lowerer import IrProgram, IrModule, ConstantPool, LowerModuleResult, lower_module_with_imports, ir_module_with_path, ir_program_new, ir_program_push_module, ir_program_with_constants, constant_pool_new, ir_program_function_count, Function, BasicBlock, Instruction, instruction_opcode_name
+from khi.pack_writer import AbiMetadata, abi_metadata_empty, semver_zero, write_khi, write_program
 from khi.parser.lexer import SpannedToken, LexError, lex
 from khi.parser import ParseProgramStep, parser_new, parse_program, ParserState
 
@@ -103,6 +109,93 @@ public function lower_program(program: ResolvedProgram) -> IrProgram = {
         mi = mi + 1
     }
     ir_program_with_constants(prog, shared_pool)
+}
+
+// v0.7.11.4 — multi-file pipeline driver. Mirrors Rust's
+// `dao build` end-to-end:
+//   1. `load_program_from_source(source)` — lex+parse+ load child
+//      modules. Stdlib pre-load **deferred to v0.7.11.5** — the
+//      CWD-relative `std/io.tri` reads fail when callers (e.g.
+//      bootstrap_self_compile.rs) stage source into a tempdir.
+//      Triết-side stdlib activation pairs with caps-table
+//      population so both can land alongside the `dao build` CLI
+//      wiring with proper CWD discipline.
+//   2. `detect_cycles` + `resolve_names` — fill bindings, detect
+//      import cycles + duplicate imports.
+//   3. `check_resolved(rp)` — Triết-side typecheck against the
+//      multi-module shape.
+//   4. `lower_program(rp)` — produce IrProgram.
+//   5. `write_program(ir)` + `write_khi(meta, code)` — serialize
+//      to `.khi` byte vector ready to write to disk.
+//
+// Returns a `BuildResult` carrying either the byte vector OR the
+// accumulated diagnostic messages. Caller (main.tri) prints
+// diagnostics + writes bytes.
+
+public struct BuildResult {
+    bytes: Vector<Integer>,
+    errors: Vector<String>,
+}
+
+// Aggregate diagnostic messages from a LoadProgramResult +
+// ResolveResult + typecheck error list into a single Vector<String>.
+function format_loader_errors(errors: Vector<LoaderError>) -> Vector<String> = {
+    let n: Integer = length(errors)
+    let mutable out: Vector<String> = new()
+    let mutable i: Integer = 0
+    while i < n {
+        let e_opt: LoaderError? = get(errors, i)
+        out = push(out, loader_error_message(e_opt!!))
+        i = i + 1
+    }
+    out
+}
+
+// Multi-file source → `.khi` bytes via the full pipeline. Returns
+// a `BuildResult` with either populated `bytes` (errors empty) or
+// populated `errors` (bytes empty).
+public function serialize_program_to_khi(source: String, pkg_name: String) -> BuildResult = {
+    // Stage 1: load + parse. Stdlib pre-load deferred to v0.7.11.5.
+    let load_r: LoadProgramResult = load_program_from_source(source)
+    let load_errs: Vector<String> = format_loader_errors(load_r.errors)
+    if length(load_errs) > 0 {
+        return BuildResult { bytes: new(), errors: load_errs }
+    }
+
+    // Stage 2: cycle detection.
+    let cycle_errs_raw: Vector<LoaderError> = detect_cycles(load_r.program)
+    let cycle_errs: Vector<String> = format_loader_errors(cycle_errs_raw)
+    if length(cycle_errs) > 0 {
+        return BuildResult { bytes: new(), errors: cycle_errs }
+    }
+
+    // Stage 3: name resolution (binds + E2108 duplicate-import).
+    let resolved: ResolveResult = resolve_names(load_r.program)
+    let resolve_errs: Vector<String> = format_loader_errors(resolved.errors)
+    if length(resolve_errs) > 0 {
+        return BuildResult { bytes: new(), errors: resolve_errs }
+    }
+
+    // Stage 4: typecheck. v0.7.11.4 prints a terse count rather
+    // than rendering each TypeError — full per-error rendering
+    // lifts when typecheck.tri exposes a `type_error_message`
+    // helper for Triết-side use.
+    let type_errs: Vector<TypeError> = check_resolved(resolved.program)
+    let type_err_count: Integer = length(type_errs)
+    if type_err_count > 0 {
+        let mutable msgs: Vector<String> = new()
+        msgs = push(msgs, concat("error: ", concat(from_integer(type_err_count), " typecheck error(s)")))
+        return BuildResult { bytes: new(), errors: msgs }
+    }
+
+    // Stage 5: lower to IR.
+    let ir: IrProgram = lower_program(resolved.program)
+
+    // Stage 6: serialize to `.triv` code section + wrap in `.khi`.
+    let code: Vector<Integer> = write_program(ir)
+    let meta: AbiMetadata = abi_metadata_empty(pkg_name, semver_zero())
+    let bytes: Vector<Integer> = write_khi(meta, code)
+    BuildResult { bytes: bytes, errors: new() }
 }
 
 // Smoke entry — builds a synthetic single-module ResolvedProgram

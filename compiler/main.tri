@@ -22,6 +22,7 @@ module modules
 module typecheck
 module ir_lowerer
 module pack_writer
+module driver
 
 from std.io import println
 from std.io.fs import read, write_bytes
@@ -29,7 +30,7 @@ from std.collections.vector import new, push, length, get
 from std.text import concat, len as text_len, from_integer
 
 from khi.typecheck import check_source, TypeError
-from khi.pack_writer import serialize_source_to_khi
+from khi.driver import BuildResult, serialize_program_to_khi
 
 // ── Subcommand + Args ────────────────────────────────────────────
 
@@ -190,16 +191,20 @@ public function check_command(args: Args) -> Trit = {
     }
 }
 
-// ── build_command ────────────────────────────────────────────────
+// ── build_command (v0.7.11.4: multi-file pipeline) ───────────────
 //
-// Reads source, runs the lex → parse → modules → typecheck → lower
-// → pack-write pipeline via `serialize_source_to_khi`, then
-// writes the resulting `.khi` byte vector to disk via the new
-// v0.7.9.4 `write_bytes` builtin. Returns Trit::Positive on a
-// successful write, Trit::Negative on any I/O failure or read
-// failure. Currently does NOT run typecheck before lowering —
-// v0.7.10 will add cap-aware diagnostics alongside. Minimal
-// v0.7.9.4 scope per Q2 (decided).
+// Reads source, runs the full multi-file pipeline via
+// `serialize_program_to_khi` (lex → parse → modules → cycle-detect
+// → resolve → typecheck → lower → pack-write), then writes the
+// resulting `.khi` byte vector to disk. Returns Trit::Positive on
+// successful write, Trit::Negative on any error path (read /
+// typecheck / I/O failure).
+//
+// Pre-v0.7.11.4 this called `serialize_source_to_khi` which used
+// single-file `lower_source` and skipped typecheck entirely.
+// Post-v0.7.11.4 typecheck errors are caught before lowering;
+// loader / resolver / cycle errors are also surfaced. Each
+// diagnostic prints as a separate line.
 
 public function build_command(args: Args) -> Trit = {
     let res: SourceResult = load_source_or_fail(args.source_path)
@@ -209,23 +214,31 @@ public function build_command(args: Args) -> Trit = {
             exit_err()
         }
         SourceLoaded(source) => {
-            let bytes: Vector<Integer> = serialize_source_to_khi(
+            let build: BuildResult = serialize_program_to_khi(
                 source,
                 args.pkg_name,
             )
-            let ok: Trilean = write_bytes(args.output_path, bytes)
-            // write_bytes is contracted strict 2-state (Q4-A), but
-            // Trilean exhaustiveness in Triết requires the third
-            // arm — treat Unknown as failure defensively.
-            match ok {
-                true => exit_ok()
-                false => {
-                    println(concat("error: write_bytes failed for ", args.output_path))
-                    exit_err()
+            let err_count: Integer = length(build.errors)
+            if err_count > 0 {
+                let mutable i: Integer = 0
+                while i < err_count {
+                    let m_opt: String? = get(build.errors, i)
+                    println(m_opt!!)
+                    i = i + 1
                 }
-                unknown => {
-                    println("error: write_bytes returned Unknown (should not happen)")
-                    exit_err()
+                exit_err()
+            } else {
+                let ok: Trilean = write_bytes(args.output_path, build.bytes)
+                match ok {
+                    true => exit_ok()
+                    false => {
+                        println(concat("error: write_bytes failed for ", args.output_path))
+                        exit_err()
+                    }
+                    unknown => {
+                        println("error: write_bytes returned Unknown (should not happen)")
+                        exit_err()
+                    }
                 }
             }
         }
