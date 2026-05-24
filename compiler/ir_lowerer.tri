@@ -1058,6 +1058,17 @@ public function ir_module_with_type_arena(m: IrModule, arena: TypeTagArena) -> I
         type_arena: arena,
     }
 
+/// v0.7.11.2: replace the path segments on an existing IrModule.
+/// Used by `lower_program` to patch each module's source-level path
+/// over the placeholder `["khi"]` that `lower_module_with_imports`
+/// always seeds.
+public function ir_module_with_path(m: IrModule, segments: Vector<String>) -> IrModule =
+    IrModule {
+        path_segments: segments,
+        functions: m.functions,
+        type_arena: m.type_arena,
+    }
+
 /// Witness table — type args bound at link time per ADR-0012. Stub
 /// in v0.7.8.1 (carries only the type tag IDs of the
 /// instantiation); v0.7.8.{3,4} populate as cross-package generic
@@ -4142,6 +4153,15 @@ public function lower_module_with_imports(
 // Convenience entry: lex + parse + lower in one call. Returns an
 // empty `IrProgram` on lex failure (matches typecheck.tri's
 // `check_source` shape).
+//
+// v0.7.11.2 note: the multi-file `lower_program(ResolvedProgram) ->
+// IrProgram` driver lives in `compiler/driver.tri` (NOT here)
+// because importing `ResolvedProgram` directly into ir_lowerer.tri
+// would force a `module modules;` declaration that cycles with
+// pack_writer.tri's existing `module ir_lowerer;` graph. driver.tri
+// declares both `module ir_lowerer;` and `module modules;` as
+// siblings — main.tri loads driver.tri and dispatches `dao build`
+// through it.
 public function lower_source(source: String) -> IrProgram = {
     let tokens_outcome: Vector<SpannedToken>~LexError = lex(source)
     match tokens_outcome {

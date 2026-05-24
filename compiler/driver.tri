@@ -1,0 +1,176 @@
+// ─────────────────────────────────────────────────────────────────
+// compiler/driver.tri — Multi-file `lower_program(ResolvedProgram)
+// → IrProgram` driver. Lives in a separate file (NOT ir_lowerer.tri)
+// because importing `ResolvedProgram` directly into ir_lowerer.tri
+// would force a `module modules;` declaration that cycles with
+// pack_writer.tri's existing `module ir_lowerer;` graph.
+//
+// driver.tri declares both `module ir_lowerer;` and `module
+// modules;` as siblings so the loader resolves them as flat
+// children of `khi` (the driver's crate root when loaded
+// standalone). When main.tri (v0.7.11.4+) becomes the actual root,
+// it'll declare the same set and dispatch `dao build` through
+// driver.tri.
+//
+// v0.7.11.2 scope: single-package, no cross-module `WitnessCall`
+// emission, no cross-module ConstId remap (each module's pool
+// remains independent; the last module's pool wins as the
+// IrProgram-level shared pool). Cross-module pool merging defers
+// to v0.7.11.{4..8} when Stage 2 self-compile demands it.
+//
+// See ADR-0019 §A7.11 + v0.7.10 deferral list.
+// ─────────────────────────────────────────────────────────────────
+
+module parser;
+module modules;
+module ir_lowerer;
+
+from std.collections.vector import new, push, length, get
+from std.collections.hashmap import new as hashmap_new, insert, get as hashmap_get, keys as hashmap_keys
+from std.io import println
+from std.assert import assert
+
+from khi.parser import Arena
+from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_crate_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display
+from khi.ir_lowerer import IrProgram, IrModule, ConstantPool, LowerModuleResult, lower_module_with_imports, ir_module_with_path, ir_program_new, ir_program_push_module, ir_program_with_constants, constant_pool_new, ir_program_function_count, Function, BasicBlock, Instruction, instruction_opcode_name
+from khi.parser.lexer import SpannedToken, LexError, lex
+from khi.parser import ParseProgramStep, parser_new, parse_program, ParserState
+
+// Convert a Module's `bindings: HashMap<String, AbsolutePath>` into
+// the `import_paths: HashMap<String, String>` shape that
+// `lower_module_with_imports` consumes (bare-name → dot-string).
+// `AbsolutePath` renders via `absolute_path_display` as
+// `path.segments.join(".") + "." + name`. Mirrors Rust's
+// `lower_program`'s implicit walk over `Module.bindings`.
+function bindings_to_import_paths(m: Module) -> HashMap<String, String> = {
+    let keys: Vector<String> = hashmap_keys(m.bindings)
+    let n: Integer = length(keys)
+    let mutable out: HashMap<String, String> = hashmap_new()
+    let mutable i: Integer = 0
+    while i < n {
+        let k_opt: String? = get(keys, i)
+        let key: String = k_opt!!
+        let v_opt: AbsolutePath? = hashmap_get(m.bindings, key)
+        match v_opt {
+            ~0 => { },
+            _ => {
+                let ap: AbsolutePath = v_opt!!
+                out = insert(out, key, absolute_path_display(ap))
+            },
+        }
+        i = i + 1
+    }
+    out
+}
+
+// v0.7.11.2 — multi-file lower_program driver. Mirrors
+// `lower_program` in `crates/triet-ir/src/lowerer.rs:35`. Walks
+// every module in the `ResolvedProgram`, calls
+// `lower_module_with_imports` per-module with the module's
+// `bindings` HashMap converted to `import_paths`, and aggregates
+// the per-module results into a single `IrProgram`. Each
+// IrModule.path_segments is patched from the source-level
+// `ModulePath` (not the placeholder `["khi"]`).
+public function lower_program(program: ResolvedProgram) -> IrProgram = {
+    let m_total: Integer = length(program.modules)
+    let mutable ir_modules: Vector<IrModule> = new()
+    let mutable shared_pool: ConstantPool = constant_pool_new()
+    let mutable i: Integer = 0
+    while i < m_total {
+        let m_opt: Module? = get(program.modules, i)
+        let m: Module = m_opt!!
+        let arena_idx: Integer = m.arena_id.raw
+        let a_opt: Arena? = get(program.arenas, arena_idx)
+        let arena: Arena = a_opt!!
+
+        let import_paths: HashMap<String, String> = bindings_to_import_paths(m)
+        let lr: LowerModuleResult = lower_module_with_imports(arena, m.item_ids, import_paths)
+
+        let mod_path: Vector<String> = module_path_segments(m.path)
+        let path_patched: IrModule = ir_module_with_path(lr.ir_module, mod_path)
+        ir_modules = push(ir_modules, path_patched)
+        shared_pool = lr.constants
+        i = i + 1
+    }
+
+    let prog_base: IrProgram = ir_program_new()
+    let mutable prog: IrProgram = prog_base
+    let mods_total: Integer = length(ir_modules)
+    let mutable mi: Integer = 0
+    while mi < mods_total {
+        let im_opt: IrModule? = get(ir_modules, mi)
+        prog = ir_program_push_module(prog, im_opt!!)
+        mi = mi + 1
+    }
+    ir_program_with_constants(prog, shared_pool)
+}
+
+// Smoke entry — builds a synthetic single-module ResolvedProgram
+// via lex+parse, runs `lower_program`, asserts the IrModule's path
+// got patched from the placeholder to `["khi"]` and the function
+// body contains the expected Add instruction.
+public function driver_smoke_main() -> Unit = {
+    let source: String = "function add(a: Integer, b: Integer) -> Integer = a + b"
+    let tokens_outcome: Vector<SpannedToken>~LexError = lex(source)
+    match tokens_outcome {
+        ~- _ => assert(false),
+        ~+ tokens => {
+            let pstate: ParserState = parser_new(tokens)
+            let pstep: ParseProgramStep = parse_program(pstate)
+
+            // Build single Module pointing at arena 0.
+            let shell: Module = module_new(
+                module_path_crate_root(),
+                ~0,
+                arena_id_new(0),
+                ~0,
+            )
+            let m_with_items: Module = Module {
+                path: shell.path,
+                source_path: shell.source_path,
+                arena_id: shell.arena_id,
+                item_ids: pstep.program.item_ids,
+                bindings: shell.bindings,
+                parent: shell.parent,
+                children: shell.children,
+            }
+            let mutable arenas: Vector<Arena> = new()
+            arenas = push(arenas, pstep.program.arena)
+            let mutable modules: Vector<Module> = new()
+            modules = push(modules, m_with_items)
+            let rp: ResolvedProgram = resolved_program_new(arenas, modules, module_id_new(0))
+
+            let ir: IrProgram = lower_program(rp)
+            // 1 module, 1 function.
+            assert(ir_program_function_count(ir) == 1)
+
+            // Path patched: should be ["khi"] (from
+            // module_path_crate_root, NOT the placeholder).
+            let ir_mod: IrModule = get(ir.modules, 0)!!
+            assert(length(ir_mod.path_segments) == 1)
+            let seg0_opt: String? = get(ir_mod.path_segments, 0)
+            assert(seg0_opt!! == "khi")
+
+            // Function body still emits Add.
+            let f0: Function = get(ir_mod.functions, 0)!!
+            let entry: BasicBlock = get(f0.blocks, 0)!!
+            let total: Integer = length(entry.instructions)
+            let mutable found_add: Trilean! = false
+            let mutable j: Integer = 0
+            while j < total {
+                let inst_opt: Instruction? = get(entry.instructions, j)
+                if instruction_opcode_name(inst_opt!!) == "Add" {
+                    found_add = true
+                }
+                j = j + 1
+            }
+            assert(found_add)
+        },
+    }
+
+    println("v0.7.11.2 driver smoke OK")
+}
+
+public function main() -> Unit = {
+    driver_smoke_main()
+}
