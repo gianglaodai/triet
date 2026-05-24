@@ -16,5 +16,12 @@ public function read(path: String) -> String? = ~0
 /// §A7 — pattern mirrors ADR-0015 §5 tmp+rename when needed).
 public function write(path: String, contents: String) -> Trilean = false
 
+/// Write raw `bytes` (each Integer must fit in `u8` / 0..=255) to
+/// `path`. Binary counterpart to `write` for the v0.7.9.4 bootstrap
+/// CLI which emits `.tripack` payloads (BLAKE3 hash bytes are not
+/// guaranteed UTF-8). Same strict 2-state semantics; any byte
+/// outside 0..=255 yields False without writing.
+public function write_bytes(path: String, bytes: Vector<Integer>) -> Trilean = false
+
 /// True if `path` resolves to an existing file. Strict 2-state.
 public function exists(path: String) -> Trilean = false

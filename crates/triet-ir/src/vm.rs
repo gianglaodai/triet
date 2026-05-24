@@ -1748,6 +1748,7 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         // §A7 → v0.7.10.
         "std.io.fs.read" => Some(BuiltinName::ReadFile),
         "std.io.fs.write" => Some(BuiltinName::WriteFile),
+        "std.io.fs.write_bytes" => Some(BuiltinName::WriteFileBytes),
         "std.io.fs.exists" => Some(BuiltinName::FileExists),
 
         // Path ops (v0.7.3.4, IDs 20-22). POSIX-only Q2-A.
@@ -2079,6 +2080,57 @@ fn execute_builtin(
                 }
             };
             let ok = std::fs::write(&path, &contents).is_ok();
+            Ok(RuntimeValue::Trilean(if ok {
+                Trilean::True
+            } else {
+                Trilean::False
+            }))
+        }
+        BuiltinName::WriteFileBytes => {
+            // Binary-mode write for `.tripack` output. Capability
+            // gating deferred per ADR-0019 Addendum §A7 — v0.7.10 CLI
+            // wiring will resolve `sys.fs.write` against
+            // CapabilityResolver before reaching the VM.
+            let path_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let bytes_arg = args.get(1).cloned().unwrap_or(RuntimeValue::Unit);
+            let path = match path_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let RuntimeValue::Vector(bytes_vec) = bytes_arg else {
+                return Err(VmError::TypeMismatch {
+                    expected: TypeTag::Vector(Box::new(TypeTag::Integer)),
+                    actual: format!("{:?}", bytes_arg.type_tag()),
+                    function: func_name.into(),
+                });
+            };
+            let mut buf: Vec<u8> = Vec::with_capacity(bytes_vec.len());
+            for v in bytes_vec {
+                let n = match v {
+                    RuntimeValue::Integer(i) => i.to_i64(),
+                    other => {
+                        return Err(VmError::TypeMismatch {
+                            expected: TypeTag::Integer,
+                            actual: format!("{:?}", other.type_tag()),
+                            function: func_name.into(),
+                        });
+                    }
+                };
+                // Per builtin docstring: out-of-byte-range yields
+                // strict `False`, not a runtime panic. Mirrors Q4-A
+                // refuse-over-guess for I/O failures.
+                let Ok(b) = u8::try_from(n) else {
+                    return Ok(RuntimeValue::Trilean(Trilean::False));
+                };
+                buf.push(b);
+            }
+            let ok = std::fs::write(&path, &buf).is_ok();
             Ok(RuntimeValue::Trilean(if ok {
                 Trilean::True
             } else {

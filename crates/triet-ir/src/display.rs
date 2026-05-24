@@ -313,6 +313,7 @@ impl fmt::Display for BuiltinName {
             Self::HashMapContains => write!(f, "hashmap_contains"),
             Self::ReadFile => write!(f, "read_file"),
             Self::WriteFile => write!(f, "write_file"),
+            Self::WriteFileBytes => write!(f, "write_file_bytes"),
             Self::FileExists => write!(f, "file_exists"),
             Self::PathJoin => write!(f, "path_join"),
             Self::PathParent => write!(f, "path_parent"),

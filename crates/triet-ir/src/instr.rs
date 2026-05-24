@@ -492,6 +492,14 @@ pub enum BuiltinName {
     /// `True` on success, `False` on any I/O error. Never `Unknown`.
     /// Capability gating deferred (same as `ReadFile`).
     WriteFile,
+    /// `write_file_bytes(path, bytes: Vector<Integer>) -> Trilean` —
+    /// binary-mode counterpart to [`Self::WriteFile`]. Each Integer
+    /// in `bytes` must fit in `u8` (0..=255) or the call fails with
+    /// `False`. Added in v0.7.9.4 so `compiler/main.tri::build_command`
+    /// can emit `.tripack` bytes (which contain non-UTF-8 hash bytes)
+    /// directly without round-tripping through a String. Same Q4-A
+    /// strict 2-state semantics + capability deferral.
+    WriteFileBytes,
     /// `file_exists(path) -> Trilean` — strict 2-state. `True` if
     /// path resolves to existing file, `False` otherwise.
     FileExists,

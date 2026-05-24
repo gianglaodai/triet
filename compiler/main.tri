@@ -1,0 +1,282 @@
+// ─────────────────────────────────────────────────────────────────
+// compiler/main.tri — v0.7.9.4 self-hosted CLI driver
+//
+// Wires the full Triết-side pipeline (lex → parse → modules →
+// typecheck → lower → pack_write) behind a minimal subcommand
+// dispatcher. Per the ADR-0019 §A7.9 plan, this is the FIRST
+// version of the Triết-impl CLI — only `check` and `build` ship
+// here. `run` (needs `vm_execute` builtin) defers to v0.7.11 per
+// design Q3-B; `dump` defers to v0.7.9.5 alongside the NDJSON
+// bridge removal.
+//
+// Top-level `module X` declarations at this file mirror the
+// crate-rooted absolute paths used by the existing compiler files
+// (`from crate.parser import …` etc.). Each file additionally
+// declares its own siblings, so the same files get loaded once per
+// declaration — wasteful but correct. A future cleanup converts
+// the inner declarations to `self.X` form to dedupe.
+// ─────────────────────────────────────────────────────────────────
+
+module parser
+module modules
+module typecheck
+module ir_lowerer
+module pack_writer
+
+from std.io import println
+from std.io.fs import read, write_bytes
+from std.collections.vector import new, push, length, get
+from std.text import concat, len as text_len
+
+from crate.typecheck import dump_typecheck_errors_ndjson
+from crate.pack_writer import serialize_source_to_tripack
+
+// ── Subcommand + Args ────────────────────────────────────────────
+
+public struct StringPayload {
+    value: String
+}
+
+public enum Subcommand {
+    CheckCmd,
+    BuildCmd,
+    UnknownCmd(StringPayload),
+    MissingCmd,
+}
+
+public struct Args {
+    sub: Subcommand,
+    source_path: String,
+    output_path: String,
+    pkg_name: String,
+}
+
+// Exit-code style outcome — Trit so the VM caller can pattern-match
+// on Positive (success) vs Negative (any error path). Trit::Zero
+// is reserved for future "compiled but skipped" reporting.
+//
+// Triết Trit literals: `1_trit`, `0_trit`, `-1_trit`. The
+// `0t+ / 0t- / 0t0` prefix form is balanced-ternary INTEGER per
+// SPEC §1.5.1, not Trit.
+
+function exit_ok() -> Trit = 1_trit
+function exit_err() -> Trit = -1_trit
+function default_output_path() -> String = "out.tripack"
+function default_pkg_name() -> String = "crate"
+
+// ── parse_args ───────────────────────────────────────────────────
+//
+// argv shape (positional):
+//   argv[0]  = subcommand ("check" | "build")
+//   argv[1]  = source file path (required)
+//   argv[2+] = optional flags:
+//                -o <path>     output `.tripack` path (build only)
+//                --pkg <name>  package name to embed (build only)
+//
+// Unknown flags are silently skipped. Missing required positional
+// arguments produce a sub=MissingCmd; the dispatcher reports.
+
+public function parse_args(argv: Vector<String>) -> Args = {
+    let argc: Integer = length(argv)
+    if argc == 0 {
+        return Args {
+            sub: MissingCmd,
+            source_path: "",
+            output_path: default_output_path(),
+            pkg_name: default_pkg_name(),
+        }
+    }
+
+    let raw_sub: String = get(argv, 0)!!
+    let sub: Subcommand = classify_subcommand(raw_sub)
+
+    let source_path: String = if argc >= 2 { get(argv, 1)!! } else { "" }
+
+    let mutable output_path: String = default_output_path()
+    let mutable pkg_name: String = default_pkg_name()
+    let mutable i: Integer = 2
+    while i < argc {
+        let flag: String = get(argv, i)!!
+        if flag == "-o" {
+            if i + 1 < argc {
+                output_path = get(argv, i + 1)!!
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+        } else if flag == "--pkg" {
+            if i + 1 < argc {
+                pkg_name = get(argv, i + 1)!!
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+        } else {
+            i = i + 1
+        }
+    }
+
+    Args {
+        sub: sub,
+        source_path: source_path,
+        output_path: output_path,
+        pkg_name: pkg_name,
+    }
+}
+
+function classify_subcommand(raw: String) -> Subcommand = {
+    if raw == "check" { return CheckCmd }
+    if raw == "build" { return BuildCmd }
+    UnknownCmd(StringPayload { value: raw })
+}
+
+// ── Source loading helper ────────────────────────────────────────
+//
+// Triết's `==` on a Nullable returns generic `Trilean`, so a bare
+// `if source_opt == ~0` would trip E1033. Use a small enum + match
+// instead. The helper also handles the "missing source path"
+// guard so subcommand bodies stay linear.
+//
+// `return` inside a match arm types as Unit (per the v0.7.9.2
+// gotcha), so each match-arm body produces its own arm value and
+// the outer function consumes the whole match as its result.
+
+public enum SourceResult {
+    SourceLoaded(StringPayload),
+    SourceFailed(StringPayload),
+}
+
+function load_source_or_fail(path: String) -> SourceResult = {
+    if text_len(path) == 0 {
+        return SourceFailed(StringPayload {
+            value: "error: missing source file argument",
+        })
+    }
+    let opt: String? = read(path)
+    match opt {
+        ~0 => SourceFailed(StringPayload {
+            value: concat("error: cannot read source file: ", path),
+        })
+        _ => SourceLoaded(StringPayload { value: opt!! })
+    }
+}
+
+// ── check_command ────────────────────────────────────────────────
+//
+// Returns Trit::Positive on clean typecheck, Trit::Negative on any
+// diagnostic (loader / cycle / resolve / typecheck error). Emits
+// the NDJSON diagnostic dump to stdout for downstream tooling —
+// the v0.7.9.5 NDJSON-bridge removal will replace this with a
+// human-readable formatter.
+
+public function check_command(args: Args) -> Trit = {
+    let res: SourceResult = load_source_or_fail(args.source_path)
+    match res {
+        SourceFailed(err) => {
+            println(err.value)
+            exit_err()
+        }
+        SourceLoaded(payload) => {
+            let diagnostics: String = dump_typecheck_errors_ndjson(payload.value)
+            if text_len(diagnostics) == 0 {
+                exit_ok()
+            } else {
+                println(diagnostics)
+                exit_err()
+            }
+        }
+    }
+}
+
+// ── build_command ────────────────────────────────────────────────
+//
+// Reads source, runs the lex → parse → modules → typecheck → lower
+// → pack-write pipeline via `serialize_source_to_tripack`, then
+// writes the resulting `.tripack` byte vector to disk via the new
+// v0.7.9.4 `write_bytes` builtin. Returns Trit::Positive on a
+// successful write, Trit::Negative on any I/O failure or read
+// failure. Currently does NOT run typecheck before lowering —
+// v0.7.10 will add cap-aware diagnostics alongside. Minimal
+// v0.7.9.4 scope per Q2 (decided).
+
+public function build_command(args: Args) -> Trit = {
+    let res: SourceResult = load_source_or_fail(args.source_path)
+    match res {
+        SourceFailed(err) => {
+            println(err.value)
+            exit_err()
+        }
+        SourceLoaded(payload) => {
+            let bytes: Vector<Integer> = serialize_source_to_tripack(
+                payload.value,
+                args.pkg_name,
+            )
+            let ok: Trilean = write_bytes(args.output_path, bytes)
+            // write_bytes is contracted strict 2-state (Q4-A), but
+            // Trilean exhaustiveness in Triết requires the third
+            // arm — treat Unknown as failure defensively.
+            match ok {
+                true => exit_ok()
+                false => {
+                    println(concat("error: write_bytes failed for ", args.output_path))
+                    exit_err()
+                }
+                unknown => {
+                    println("error: write_bytes returned Unknown (should not happen)")
+                    exit_err()
+                }
+            }
+        }
+    }
+}
+
+// ── main ─────────────────────────────────────────────────────────
+//
+// argv shape: positional dispatch over subcommand name. Returns
+// Trit:
+//   Positive — success
+//   Negative — any error path (unknown subcommand, missing arg,
+//              I/O failure, typecheck error)
+
+public function main(argv: Vector<String>) -> Trit = {
+    let args: Args = parse_args(argv)
+    match args.sub {
+        CheckCmd => check_command(args)
+        BuildCmd => build_command(args)
+        UnknownCmd(payload) => {
+            println(concat("error: unknown subcommand: ", payload.value))
+            exit_err()
+        }
+        MissingCmd => {
+            println("usage: triet <check|build> <source.tri> [-o <output>] [--pkg <name>]")
+            exit_err()
+        }
+    }
+}
+
+// ── Smoke entry — VM-side sanity for parse_args + dispatch ───────
+//
+// Exercised by the bootstrap test before invoking `main` with real
+// I/O paths. Verifies: (a) parse_args records the chosen sub +
+// source + flag pair, (b) classify_subcommand handles known +
+// unknown forms. No filesystem touch.
+
+public function main_smoke() -> Trilean! = {
+    let mutable argv: Vector<String> = new()
+    argv = push(argv, "build")
+    argv = push(argv, "/dev/null/source.tri")
+    argv = push(argv, "-o")
+    argv = push(argv, "/dev/null/out.tripack")
+    argv = push(argv, "--pkg")
+    argv = push(argv, "smoke_pkg")
+    let args: Args = parse_args(argv)
+    match args.sub {
+        BuildCmd => {
+            if args.source_path != "/dev/null/source.tri" { false }
+            else if args.output_path != "/dev/null/out.tripack" { false }
+            else if args.pkg_name != "smoke_pkg" { false }
+            else { true }
+        }
+        _ => false
+    }
+}

@@ -565,6 +565,10 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::StringSplit => 24,
         BuiltinName::StringIndexOf => 25,
         BuiltinName::ParseInteger => 26,
+        BuiltinName::TextIntoBytes => 27,
+        BuiltinName::TextFromBytes => 28,
+        BuiltinName::Blake3Hash => 29,
+        BuiltinName::WriteFileBytes => 30,
     };
     write_u8(buf, id);
 }
@@ -599,6 +603,10 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         24 => Ok(BuiltinName::StringSplit),
         25 => Ok(BuiltinName::StringIndexOf),
         26 => Ok(BuiltinName::ParseInteger),
+        27 => Ok(BuiltinName::TextIntoBytes),
+        28 => Ok(BuiltinName::TextFromBytes),
+        29 => Ok(BuiltinName::Blake3Hash),
+        30 => Ok(BuiltinName::WriteFileBytes),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }

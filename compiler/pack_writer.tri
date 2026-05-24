@@ -33,7 +33,7 @@ from crate.ir_lowerer import type_tag_arena_new, get_type_tag, constant_pool_new
 from crate.ir_lowerer import alloc_tag_trit, alloc_tag_tryte, alloc_tag_integer, alloc_tag_long, alloc_tag_trilean, alloc_tag_string, alloc_tag_unit, alloc_tag_nullable, alloc_tag_vector, alloc_tag_hashmap, alloc_tag_outcome
 from crate.ir_lowerer import ValueId, BlockId, FuncId, ConstId
 from crate.ir_lowerer import Operand, ValueOp, ConstOp, PhiIncoming
-from crate.ir_lowerer import BuiltinName, PrintlnBuiltin, PrintBuiltin, AssertBuiltin, AssertEqBuiltin, FStringConcatBuiltin, TextLenBuiltin, TextConcatBuiltin, TextFromIntegerBuiltin, VectorNewBuiltin, VectorPushBuiltin, VectorGetBuiltin, VectorLengthBuiltin, HashMapNewBuiltin, HashMapInsertBuiltin, HashMapGetBuiltin, HashMapKeysBuiltin, HashMapContainsBuiltin, ReadFileBuiltin, WriteFileBuiltin, FileExistsBuiltin, PathJoinBuiltin, PathParentBuiltin, PathBasenameBuiltin, StringSubstringBuiltin, StringSplitBuiltin, StringIndexOfBuiltin, ParseIntegerBuiltin, TextIntoBytesBuiltin, TextFromBytesBuiltin, Blake3HashBuiltin
+from crate.ir_lowerer import BuiltinName, PrintlnBuiltin, PrintBuiltin, AssertBuiltin, AssertEqBuiltin, FStringConcatBuiltin, TextLenBuiltin, TextConcatBuiltin, TextFromIntegerBuiltin, VectorNewBuiltin, VectorPushBuiltin, VectorGetBuiltin, VectorLengthBuiltin, HashMapNewBuiltin, HashMapInsertBuiltin, HashMapGetBuiltin, HashMapKeysBuiltin, HashMapContainsBuiltin, ReadFileBuiltin, WriteFileBuiltin, FileExistsBuiltin, PathJoinBuiltin, PathParentBuiltin, PathBasenameBuiltin, StringSubstringBuiltin, StringSplitBuiltin, StringIndexOfBuiltin, ParseIntegerBuiltin, TextIntoBytesBuiltin, TextFromBytesBuiltin, Blake3HashBuiltin, WriteFileBytesBuiltin
 from crate.ir_lowerer import Instruction
 from crate.ir_lowerer import ConstInst, AddInst, SubInst, MulInst, DivInst, ModInst, PowInst, NegInst
 from crate.ir_lowerer import LukAndInst, LukOrInst, LukImpliesInst, LukXorInst, LukIffInst, KleeneImpliesInst, KleeneXorInst, KleeneIffInst
@@ -757,6 +757,7 @@ public function builtin_to_byte(b: BuiltinName) -> Integer =
         TextIntoBytesBuiltin(_) => 27,
         TextFromBytesBuiltin(_) => 28,
         Blake3HashBuiltin(_) => 29,
+        WriteFileBytesBuiltin(_) => 30,
     }
 
 public function byte_to_builtin(b: Integer) -> BuiltinName~TrivError = {
@@ -790,6 +791,7 @@ public function byte_to_builtin(b: Integer) -> BuiltinName~TrivError = {
     else if b == 27 { ~+ TextIntoBytesBuiltin(primitive_marker()) }
     else if b == 28 { ~+ TextFromBytesBuiltin(primitive_marker()) }
     else if b == 29 { ~+ Blake3HashBuiltin(primitive_marker()) }
+    else if b == 30 { ~+ WriteFileBytesBuiltin(primitive_marker()) }
     else { ~- Corrupted(TrivErrorCorrupted { message: "unknown builtin id" }) }
 }
 
