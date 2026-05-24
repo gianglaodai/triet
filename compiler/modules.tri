@@ -405,6 +405,18 @@ public struct AliasedVariantImportPayload {
     span_end: Integer,
 }
 
+/// E2108 — same bare name imported under two different absolute
+/// paths in the same module. v0.7.10.6 added this to the Rust
+/// resolver to guarantee the lowerer's path-based builtin dispatch
+/// sees an unambiguous bare-name → AbsolutePath mapping. Re-bind
+/// to the same path is silently idempotent.
+public struct DuplicateImportPayload {
+    name: String,
+    prior_path: String,
+    span_start: Integer,
+    span_end: Integer,
+}
+
 public enum LoaderError {
     CyclicImportErr(CyclicImportPayload),
     FileNotFoundErr(FileNotFoundPayload),
@@ -414,6 +426,7 @@ public enum LoaderError {
     ChildParseErrorErr(ChildParseErrorPayload),
     IoErrorErr(IoErrorPayload),
     AliasedVariantImportErr(AliasedVariantImportPayload),
+    DuplicateImportErr(DuplicateImportPayload),
 }
 
 /// Stable error code string — used by the CLI's JSON emitter and
@@ -429,6 +442,7 @@ public function loader_error_code(err: LoaderError) -> String = {
         ChildParseErrorErr(_) => "triet::modules::E2105",
         IoErrorErr(_) => "triet::modules::E2106",
         AliasedVariantImportErr(_) => "triet::modules::E2107",
+        DuplicateImportErr(_) => "triet::modules::E2108",
     }
 }
 
@@ -470,6 +484,10 @@ public function loader_error_span(err: LoaderError) -> Vector<Integer> = {
             out = push(out, p.span_start)
             out = push(out, p.span_end)
         },
+        DuplicateImportErr(p) => {
+            out = push(out, p.span_start)
+            out = push(out, p.span_end)
+        },
     }
     out
 }
@@ -487,6 +505,7 @@ public function loader_error_message(err: LoaderError) -> String = {
         ChildParseErrorErr(p) => concat(concat("parse error in module `", p.module_path_text), "`"),
         IoErrorErr(p) => concat(concat(concat(concat("could not read module file `", p.path), "`: "), p.message), ""),
         AliasedVariantImportErr(p) => concat(concat("enum variant `", p.variant), "` cannot be imported under an alias"),
+        DuplicateImportErr(p) => concat(concat(concat(concat("name `", p.name), "` is already imported from `"), p.prior_path), "`"),
     }
 }
 
@@ -1604,6 +1623,7 @@ function is_visible(
     }
 }
 
+
 /// Expand `khi.` / `self.` / `super.` path keywords to absolute
 /// segments. `khi.X` stays as-is; `self.X` expands to importer's
 /// own path + remainder; `super.X` expands to importer's parent +
@@ -1805,6 +1825,44 @@ struct ResolveOneNameResult {
     errors: Vector<LoaderError>,
 }
 
+/// v0.7.11.3 — wrapper around `insert(bindings, name, abs)` that
+/// fires E2108 `DuplicateImport` when the name is already bound to
+/// a DIFFERENT AbsolutePath. Idempotent on same-path rebind.
+/// Mirrors Rust resolver.rs:42 `bind_import`. Returns the updated
+/// (bindings, errors) pair as `ResolveOneNameResult`.
+function bind_import(
+    bindings: HashMap<String, AbsolutePath>,
+    errors: Vector<LoaderError>,
+    name: String,
+    abs: AbsolutePath,
+    span_start: Integer,
+    span_end: Integer,
+) -> ResolveOneNameResult = {
+    let prior_opt: AbsolutePath? = hashmap_get(bindings, name)
+    match prior_opt {
+        ~0 => {
+            let new_bindings: HashMap<String, AbsolutePath> = insert(bindings, name, abs)
+            ResolveOneNameResult { bindings: new_bindings, errors: errors }
+        },
+        _ => {
+            let prior: AbsolutePath = prior_opt!!
+            // Idempotent re-bind to the same path.
+            if absolute_path_display(prior) == absolute_path_display(abs) {
+                ResolveOneNameResult { bindings: bindings, errors: errors }
+            } else {
+                let err: LoaderError = DuplicateImportErr(DuplicateImportPayload {
+                    name: name,
+                    prior_path: absolute_path_display(prior),
+                    span_start: span_start,
+                    span_end: span_end,
+                })
+                let new_errors: Vector<LoaderError> = push(errors, err)
+                ResolveOneNameResult { bindings: bindings, errors: new_errors }
+            }
+        },
+    }
+}
+
 function resolve_one_from_name(
     program: ResolvedProgram,
     importer_id: ModuleId,
@@ -1856,7 +1914,9 @@ function resolve_one_from_name(
                                 ~0 => {
                                     if is_visible(owner.enum_visibility, importer_id, target_id) {
                                         let abs: AbsolutePath = absolute_path_new(target_path, owner.enum_name)
-                                        bindings = insert(bindings, import_name.name, abs)
+                                        let r: ResolveOneNameResult = bind_import(bindings, errors, import_name.name, abs, span_start, span_end)
+                                        bindings = r.bindings
+                                        errors = r.errors
                                     } else {
                                         errors = push(errors, VisibilityViolationErr(VisibilityViolationPayload {
                                             name: import_name.name,
@@ -1885,7 +1945,9 @@ function resolve_one_from_name(
                         ~0 => import_name.name,
                         _ => import_name.alias!!,
                     }
-                    bindings = insert(bindings, bind_name, abs)
+                    let r: ResolveOneNameResult = bind_import(bindings, errors, bind_name, abs, span_start, span_end)
+                    bindings = r.bindings
+                    errors = r.errors
                 },
             }
         },
@@ -1897,7 +1959,9 @@ function resolve_one_from_name(
                     ~0 => import_name.name,
                     _ => import_name.alias!!,
                 }
-                bindings = insert(bindings, bind_name, abs)
+                let r: ResolveOneNameResult = bind_import(bindings, errors, bind_name, abs, span_start, span_end)
+                bindings = r.bindings
+                errors = r.errors
             } else {
                 errors = push(errors, VisibilityViolationErr(VisibilityViolationPayload {
                     name: import_name.name,
@@ -2009,7 +2073,9 @@ function resolve_imports_for_module(
                                                     let v: Visibility = vis_opt2!!
                                                     if is_visible(v, importer_id, parent_id) {
                                                         let abs: AbsolutePath = absolute_path_new(module_path_new(parent_segs), item_name)
-                                                        bindings = insert(bindings, bind_name, abs)
+                                                        let r: ResolveOneNameResult = bind_import(bindings, errors, bind_name, abs, span_start, span_end)
+                                                        bindings = r.bindings
+                                                        errors = r.errors
                                                     } else {
                                                         errors = push(errors, VisibilityViolationErr(VisibilityViolationPayload {
                                                             name: item_name,
@@ -2038,7 +2104,9 @@ function resolve_imports_for_module(
                                 // `target_id` already resolved above —
                                 // binding doesn't carry the ModuleId,
                                 // just the AbsolutePath.
-                                bindings = insert(bindings, bind_name, abs)
+                                let r: ResolveOneNameResult = bind_import(bindings, errors, bind_name, abs, span_start, span_end)
+                                bindings = r.bindings
+                                errors = r.errors
                             },
                         }
                     }
@@ -2534,6 +2602,22 @@ function count_reserved_errors(errs: Vector<LoaderError>) -> Integer = {
     count
 }
 
+function count_duplicate_import_errors(errs: Vector<LoaderError>) -> Integer = {
+    let total: Integer = length(errs)
+    let mutable count: Integer = 0
+    let mutable i: Integer = 0
+    while i < total {
+        let err_opt: LoaderError? = get(errs, i)
+        let err: LoaderError = err_opt!!
+        match err {
+            DuplicateImportErr(_) => { count = count + 1 },
+            _ => { },
+        }
+        i = i + 1
+    }
+    count
+}
+
 /// Lookup a binding by name in a module's bindings HashMap and
 /// return its absolute path display, or `~0` if not bound. Used to
 /// assert resolver output without needing direct HashMap access.
@@ -2637,6 +2721,24 @@ public function resolver_smoke_main() -> Unit = {
         ~0 => assert(false),
         _ => assert(b_path_opt!! == "khi.outer.inner.b"),
     }
+
+    // ── 9. v0.7.11.3 — E2108 DuplicateImport for two different
+    // imports of the same bare name. `value` imported from both
+    // `khi.a` and `khi.b`; the second `from` raises E2108. (The
+    // first binding sticks; the duplicate gets diagnosed.)
+    let r9: LoadProgramResult = load_program_from_source(
+        "module a { public function value() -> Integer = 1 }\nmodule b { public function value() -> Integer = 2 }\nfrom khi.a import value\nfrom khi.b import value"
+    )
+    let resolved_r9: ResolveResult = resolve_names(r9.program)
+    assert(count_duplicate_import_errors(resolved_r9.errors) >= 1)
+
+    // ── 10. v0.7.11.3 — Idempotent re-bind. `value` imported
+    // twice from the SAME path is silently allowed (no E2108).
+    let r10: LoadProgramResult = load_program_from_source(
+        "module a { public function value() -> Integer = 1 }\nfrom khi.a import value\nfrom khi.a import value"
+    )
+    let resolved_r10: ResolveResult = resolve_names(r10.program)
+    assert(count_duplicate_import_errors(resolved_r10.errors) == 0)
 
     println("v0.7.6.4 resolver smoke OK")
 }
