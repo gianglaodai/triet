@@ -3,7 +3,7 @@
 //! Subcommands (primary: English, alias: Vietnamese per ADR-0024):
 //! - `dao run <path>` / `chay` — run a .tri source or .triv bytecode file.
 //! - `dao check <path>` / `kiem` — parse + type-check only, no execution.
-//! - `dao build <path>` / `tao` — compile .tri source to .triv bytecode.
+//! - `dao build <path>` / `tao` — compile .tri source to .khi package.
 //! - `dao store import <path>` / `kho` — manage CAS package store (~/.triet/store/).
 //! - `dao fmt --migrate-null [--write] <path>` — apply source-level
 //!   migrations (currently: ADR-0020 `null` → `~0`).
@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use miette::Report;
 use triet_interpreter::RuntimeError;
-use triet_pack::PackageManifest;
+use triet_pack::{AbiMetadata, PackageManifest, SemVer, read_khi, write_khi};
 use triet_typecheck::{CapabilityError, TypeError};
 
 use crate::fmt::fmt_command;
@@ -56,10 +56,10 @@ enum ColorArg {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a Triết program (.tri source or .triv bytecode).
+    /// Run a Triết program (.tri source, .triv bytecode, or .khi package).
     #[command(alias = "chay")]
     Run {
-        /// Path to .tri or .triv file.
+        /// Path to .tri, .triv, or .khi file.
         path: String,
     },
     /// Parse and type-check a Triết program without running it.
@@ -68,12 +68,12 @@ enum Command {
         /// Path to .tri source file.
         path: String,
     },
-    /// Compile a .tri source file to .triv bytecode.
+    /// Compile a .tri source file to a .khi package.
     #[command(alias = "tao")]
     Build {
         /// Path to .tri source file.
         path: String,
-        /// Output path for .triv bytecode (default: <input>.triv).
+        /// Output path for .khi package (default: <input>.khi).
         #[arg(short = 'o', long)]
         output: Option<String>,
     },
@@ -144,9 +144,14 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Run { path } => {
-            // Convention: source files end in `.tri`, bytecode in `.triv`.
-            // Both are case-sensitive lowercase per ADR-0008.
-            if Path::new(&path).extension().and_then(|e| e.to_str()) == Some("triv") {
+            // Convention: source files end in `.tri`. Bytecode can be
+            // `.triv` (v0.3 wire format) or `.khi` (v0.4+ package format
+            // wrapping `.triv` code inside ABI metadata).
+            let ext = Path::new(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if ext == "triv" || ext == "khi" {
                 run_bytecode(&path, cli.json)
             } else {
                 run_program(&path, cli.json)
@@ -498,14 +503,27 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
     }
 
     let ir = triet_ir::lower_program(&resolved);
-    let bytes = triet_ir::write_program(&ir);
+    let code_section = triet_ir::write_program(&ir);
+
+    // v0.7.11.5: build AbiMetadata and emit `.khi` (not raw `.triv`).
+    // Caps section is populated from `dao.package`'s `requires` claims
+    // when a manifest is found; absent = empty caps (leaf library).
+    let meta = manifest.as_ref().map_or_else(
+        || AbiMetadata::empty(path, SemVer::new(0, 0, 0)),
+        |m| {
+            let mut meta = AbiMetadata::empty(&m.name, m.version);
+            meta.caps.clone_from(&m.requires);
+            meta
+        },
+    );
+    let bytes = write_khi(&meta, &code_section);
 
     let output_path = output.unwrap_or_else(|| {
         let p = Path::new(path);
         if p.extension().and_then(|e| e.to_str()) == Some("tri") {
-            p.with_extension("triv").to_string_lossy().into_owned()
+            p.with_extension("khi").to_string_lossy().into_owned()
         } else {
-            format!("{path}.triv")
+            format!("{path}.khi")
         }
     });
 
@@ -568,10 +586,10 @@ const fn capability_error_code(error: &CapabilityError) -> &'static str {
     }
 }
 
-// ── run bytecode (.triv) ───────────────────────────────────────────────
+// ── run bytecode (.triv or .khi) ──────────────────────────────────────
 
 fn run_bytecode(path: &str, json: bool) -> ExitCode {
-    let bytes = match std::fs::read(path) {
+    let file_bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("Error: cannot read {path}: {e}");
@@ -579,7 +597,28 @@ fn run_bytecode(path: &str, json: bool) -> ExitCode {
         }
     };
 
-    let ir = match triet_ir::read_program(&bytes) {
+    // v0.7.11.5: `.khi` files are package containers wrapping `.triv`
+    // code + ABI metadata. Extract the embedded code section before
+    // feeding to `read_program`. `.triv` files remain unchanged.
+    let code_bytes = if Path::new(path).extension().and_then(|e| e.to_str()) == Some("khi") {
+        match read_khi(&file_bytes) {
+            Ok((_meta, code)) => code,
+            Err(e) => {
+                if json {
+                    let mut emitter = JsonEmitter::new();
+                    emitter.emit(&e.to_string(), "triet::pack::E23XX", &(0..0), path);
+                    emitter.finish();
+                } else {
+                    eprintln!("Error: {e}");
+                }
+                return ExitCode::from(5);
+            }
+        }
+    } else {
+        file_bytes
+    };
+
+    let ir = match triet_ir::read_program(&code_bytes) {
         Ok(program) => program,
         Err(e) => {
             if json {

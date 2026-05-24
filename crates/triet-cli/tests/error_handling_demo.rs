@@ -1,6 +1,6 @@
 //! End-to-end integration tests for the v0.7.4.3-error capstone
 //! (`demos/05-error-handling/`). Runs the demo through the production
-//! VM path (`dao build` → `dao run .triv`) and verifies each
+//! VM path (`dao build` → `dao run .khi`) and verifies each
 //! pipeline arm produces the expected output line.
 //!
 //! Per the demo's README, the interpreter tier only supports `~0` —
@@ -54,7 +54,7 @@ fn error_handling_demo_loads_and_typechecks() {
 fn error_handling_demo_builds_to_triv() {
     let demo = demo_main();
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let output_triv = tempdir.path().join("capstone.triv");
+    let output_triv = tempdir.path().join("capstone.khi");
     let exit = Command::new(dao_bin())
         .arg("build")
         .arg(&demo)
@@ -68,10 +68,7 @@ fn error_handling_demo_builds_to_triv() {
         String::from_utf8_lossy(&exit.stdout),
         String::from_utf8_lossy(&exit.stderr),
     );
-    assert!(
-        output_triv.exists(),
-        ".triv output should exist after build",
-    );
+    assert!(output_triv.exists(), ".khi output should exist after build",);
 }
 
 /// Full-pipeline run through the VM path. Verifies that every line in
@@ -82,7 +79,7 @@ fn error_handling_demo_builds_to_triv() {
 fn error_handling_demo_runs_and_emits_expected_lines() {
     let demo = demo_main();
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let output_triv = tempdir.path().join("capstone.triv");
+    let output_triv = tempdir.path().join("capstone.khi");
 
     let build = Command::new(dao_bin())
         .arg("build")
@@ -135,7 +132,7 @@ fn error_handling_demo_runs_and_emits_expected_lines() {
 fn error_handling_demo_stdout_lines_in_expected_order() {
     let demo = demo_main();
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let output_triv = tempdir.path().join("capstone.triv");
+    let output_triv = tempdir.path().join("capstone.khi");
 
     Command::new(dao_bin())
         .arg("build")

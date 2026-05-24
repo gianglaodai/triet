@@ -174,7 +174,7 @@ fn runtime_error_exit_code_4() {
 }
 
 #[test]
-fn build_and_run_triv_round_trip() {
+fn build_and_run_khi_round_trip() {
     let temp = TempDir::new().unwrap();
     fs::write(
         temp.path().join("hello.tri"),
@@ -183,15 +183,15 @@ fn build_and_run_triv_round_trip() {
     .unwrap();
 
     // Build step.
-    let build = run_cli(&["build", "hello.tri", "-o", "hello.triv"], temp.path());
+    let build = run_cli(&["build", "hello.tri", "-o", "hello.khi"], temp.path());
     assert!(
         build.status.success(),
         "build failed: {:?}",
         String::from_utf8_lossy(&build.stderr)
     );
 
-    // Run the .triv file.
-    let run = run_cli(&["run", "hello.triv"], temp.path());
+    // Run the .khi file.
+    let run = run_cli(&["run", "hello.khi"], temp.path());
     assert!(
         run.status.success(),
         "run failed: {:?}",
@@ -216,8 +216,8 @@ fn build_default_output_name() {
         "build failed: {:?}",
         String::from_utf8_lossy(&build.stderr)
     );
-    // Default output should be prog.triv.
-    assert!(temp.path().join("prog.triv").exists());
+    // Default output should be prog.khi.
+    assert!(temp.path().join("prog.khi").exists());
 }
 
 #[test]

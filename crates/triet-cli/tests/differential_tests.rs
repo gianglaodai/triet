@@ -30,7 +30,7 @@ fn run_interpreter(binary: &str, path: &str) -> ProgramOutput {
 
 /// Run a program through the VM: `dao build <path> -o <tmp> && dao run <tmp>`.
 fn run_vm(binary: &str, path: &str, tmp: &str) -> ProgramOutput {
-    // Build the .triv file.
+    // Build the .khi file.
     let build = Command::new(binary)
         .args(["build", path, "-o", tmp])
         .output()
@@ -42,7 +42,7 @@ fn run_vm(binary: &str, path: &str, tmp: &str) -> ProgramOutput {
             exit_code: build.status.code().unwrap_or(-1),
         };
     }
-    // Run the .triv file.
+    // Run the .khi file.
     let run = Command::new(binary)
         .args(["run", tmp])
         .output()
@@ -122,7 +122,7 @@ macro_rules! diff_test {
                 cwd.to_string()
             };
             let full = format!("{workspace_root}/{example_path}");
-            let tmp = format!("/tmp/triet_diff_{}.triv", stringify!($name));
+            let tmp = format!("/tmp/triet_diff_{}.khi", stringify!($name));
             let interp = run_interpreter(&binary, &full);
             let vm = run_vm(&binary, &full, &tmp);
             assert_output_eq(&interp, &vm, &full);
