@@ -134,7 +134,7 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
 ///   But if the full path matches a known module, use it as-is.
 ///
 /// - `from khi.foo import bar` → source `["khi", "foo"]`. The
-///   target module is `crate.foo`.
+///   target module is `khi.foo`.
 ///
 /// - `self.X` expands relative to the current module. At this stage
 ///   the import edges use the raw segments; `self` as a single-segment
@@ -174,7 +174,7 @@ fn dfs(
             Some(&id) => id,
             None => {
                 // Target module not in the program — might be an item
-                // import like `import crate.foo.bar` where `crate.foo`
+                // import like `import khi.foo.bar` where `khi.foo`
                 // is the module. Try dropping the last segment.
                 if edge.target.len() > 1 {
                     if let Some(parent) = edge.target.parent() {
@@ -230,8 +230,8 @@ fn dfs(
 /// the sub-path from `cycle_target` to the current node (top of stack),
 /// then append `cycle_target` again to close the cycle.
 ///
-/// Example: stack = `[crate, crate.foo, crate.bar, crate.baz]`,
-/// `cycle_target` = `crate.foo` → trace = `foo → bar → baz → foo`.
+/// Example: stack = `[crate, khi.foo, khi.bar, khi.baz]`,
+/// `cycle_target` = `khi.foo` → trace = `foo → bar → baz → foo`.
 fn build_cycle_trace(
     stack: &[ModuleId],
     cycle_target: ModuleId,
@@ -254,7 +254,7 @@ fn build_cycle_trace(
 }
 
 /// Render a module name for the cycle trace. Uses the short name
-/// (last segment) for readability — `crate.foo.bar` → `bar`. For the
+/// (last segment) for readability — `khi.foo.bar` → `bar`. For the
 /// crate root, use `crate`.
 fn display_module_name(program: &ResolvedProgram, id: ModuleId) -> String {
     let module = program.module(id);

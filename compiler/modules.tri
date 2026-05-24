@@ -95,7 +95,7 @@ public struct ModulePath {
 public function module_path_new(segments: Vector<String>) -> ModulePath =
     ModulePath { segments: segments }
 
-public function module_path_crate_root() -> ModulePath =
+public function module_path_khi_root() -> ModulePath =
     ModulePath { segments: push(new(), "khi") }
 
 public function module_path_segments(path: ModulePath) -> Vector<String> =
@@ -158,7 +158,7 @@ public function module_path_is_reserved_root(path: ModulePath) -> Trilean! = {
 }
 
 /// True if the path's root is the local crate (`khi.…`).
-public function module_path_is_local_crate(path: ModulePath) -> Trilean! = {
+public function module_path_is_local_khi(path: ModulePath) -> Trilean! = {
     let root_opt: String? = module_path_root(path)
     match root_opt {
         ~0 => false,
@@ -990,7 +990,7 @@ module env", ~0)
 /// with no filesystem context — external `module foo;` declarations
 /// fire FileNotFound errors. Useful for tests / REPL.
 public function load_program_from_source(source: String) -> LoadProgramResult = {
-    let root_path: ModulePath = module_path_crate_root()
+    let root_path: ModulePath = module_path_khi_root()
     let initial_ctx: LoaderContext = loader_context_new()
     let outcome: LoadOneResult = load_from_source(initial_ctx, root_path, ~0, ~0, source, ~0)
     let ctx: LoaderContext = outcome.context
@@ -1002,7 +1002,7 @@ public function load_program_from_source(source: String) -> LoadProgramResult = 
 /// v0.7.10: the self-hosted compiler driver (`compiler/main.tri`)
 /// calls this to enable `from std.io import println` in user code.
 public function load_program_from_source_with_stdlib(source: String) -> LoadProgramResult = {
-    let root_path: ModulePath = module_path_crate_root()
+    let root_path: ModulePath = module_path_khi_root()
     let initial_ctx: LoaderContext = load_stdlib(loader_context_new())
     let outcome: LoadOneResult = load_from_source(initial_ctx, root_path, ~0, ~0, source, ~0)
     let ctx: LoaderContext = outcome.context
@@ -1036,7 +1036,7 @@ public function load_program(root_path: String) -> LoadProgramResult = {
             let initial_ctx: LoaderContext = loader_context_new()
             let outcome: LoadOneResult = load_from_source(
                 initial_ctx,
-                module_path_crate_root(),
+                module_path_khi_root(),
                 root_path,
                 root_dir,
                 source,
@@ -2216,11 +2216,11 @@ function assert_string_eq(actual: String, expected: String) -> Unit =
 
 public function main() -> Unit = {
     // ── ModulePath ────────────────────────────────────────────────
-    let root: ModulePath = module_path_crate_root()
+    let root: ModulePath = module_path_khi_root()
     assert_string_eq(module_path_display(root), "khi")
     assert(module_path_len(root) == 1)
     assert(module_path_is_empty(root) == false)
-    assert(module_path_is_local_crate(root) == true)
+    assert(module_path_is_local_khi(root) == true)
     assert(module_path_is_reserved_root(root) == false)
 
     let foo: ModulePath = module_path_child(root, "foo")
@@ -2247,7 +2247,7 @@ public function main() -> Unit = {
     // Reserved roots
     let std_path: ModulePath = module_path_new(push(new(), "std"))
     assert(module_path_is_reserved_root(std_path) == true)
-    assert(module_path_is_local_crate(std_path) == false)
+    assert(module_path_is_local_khi(std_path) == false)
     assert_string_eq(module_path_display(std_path), "std")
 
     let sys_path: ModulePath = module_path_new(push(new(), "sys"))
@@ -2266,7 +2266,7 @@ public function main() -> Unit = {
     let empty: ModulePath = module_path_new(new())
     assert(module_path_is_empty(empty) == true)
     assert(module_path_len(empty) == 0)
-    assert(module_path_is_local_crate(empty) == false)
+    assert(module_path_is_local_khi(empty) == false)
     assert(module_path_is_reserved_root(empty) == false)
 
     // ── AbsolutePath ──────────────────────────────────────────────

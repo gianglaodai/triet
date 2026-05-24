@@ -8,7 +8,7 @@
 //!   - Hand-built 1-module `ResolvedProgram` lowers via
 //!     `lower_program` to an `IrProgram` with one function (`add`).
 //!   - The resulting `IrModule.path_segments` is patched from the
-//!     source `ModulePath::crate_root()` (`["khi"]`), NOT the
+//!     source `ModulePath::khi_root()` (`["khi"]`), NOT the
 //!     `lower_module_with_imports` placeholder.
 //!   - The function body still contains the expected `Add`
 //!     instruction (baseline behavior preserved).

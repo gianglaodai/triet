@@ -57,7 +57,7 @@ impl ArenaId {
 /// - `arena_id` is unique for file-bound; shared with parent for inline.
 #[derive(Clone, Debug)]
 pub struct Module {
-    /// Fully-qualified path of this module — e.g. `crate.foo.bar`.
+    /// Fully-qualified path of this module — e.g. `khi.foo.bar`.
     pub path: ModulePath,
     /// Source file backing this module, if any. `None` for inline and
     /// synthetic modules.

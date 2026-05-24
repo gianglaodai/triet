@@ -34,7 +34,7 @@ from std.assert import assert
 from std.text import concat, from_integer
 
 from khi.parser import Arena
-from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_crate_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, ResolveResult, resolve_names, LoaderError, loader_error_message
+from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_khi_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, ResolveResult, resolve_names, LoaderError, loader_error_message
 from khi.modules import detect_cycles
 from khi.typecheck import TypeError, check_resolved
 from khi.ir_lowerer import IrProgram, IrModule, ConstantPool, LowerModuleResult, lower_module_with_imports, ir_module_with_path, ir_program_new, ir_program_push_module, ir_program_with_constants, constant_pool_new, ir_program_function_count, Function, BasicBlock, Instruction, instruction_opcode_name
@@ -213,7 +213,7 @@ public function driver_smoke_main() -> Unit = {
 
             // Build single Module pointing at arena 0.
             let shell: Module = module_new(
-                module_path_crate_root(),
+                module_path_khi_root(),
                 ~0,
                 arena_id_new(0),
                 ~0,
@@ -238,7 +238,7 @@ public function driver_smoke_main() -> Unit = {
             assert(ir_program_function_count(ir) == 1)
 
             // Path patched: should be ["khi"] (from
-            // module_path_crate_root, NOT the placeholder).
+            // module_path_khi_root, NOT the placeholder).
             let ir_mod: IrModule = get(ir.modules, 0)!!
             assert(length(ir_mod.path_segments) == 1)
             let seg0_opt: String? = get(ir_mod.path_segments, 0)

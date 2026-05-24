@@ -4109,9 +4109,9 @@ public function lower_module_with_imports(
     // `function_defs` index, so position-based assignment suffices.
     //
     // Path segments start at `["khi"]` to mirror Rust's
-    // `ModulePath::crate_root()` — `write_function_table`
+    // `ModulePath::khi_root()` — `write_function_table`
     // serializes `module.path.to_string()` which renders
-    // `"khi"` for the local-crate root. Empty segments here
+    // `"khi"` for the local-khi root. Empty segments here
     // emit `"."` instead, breaking byte-identical against the
     // Rust pipeline (tracked as the now-closed
     // `v0.7.x.runtime-fix.write-function-table-module-prefix`).

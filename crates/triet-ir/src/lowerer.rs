@@ -4749,7 +4749,7 @@ mod tests {
             children: vec![ModuleId(1)],
         };
 
-        // Module 1: crate.utils with helper()
+        // Module 1: khi.utils with helper()
         let mut arena1 = Arena::new();
         let helper_val = int_lit(&mut arena1, 7);
         let helper_item =

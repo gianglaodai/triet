@@ -9,7 +9,7 @@
 //!    [`AbsolutePath`] rooted at the module's path.
 //!
 //! 2. **Resolves imports** — rewrites `from X import Y` and `import X`
-//!    to absolute paths, resolving `crate.`, `self.`, and `super.`
+//!    to absolute paths, resolving `khi.`, `self.`, and `super.`
 //!    path keywords relative to the importing module. For `from`
 //!    imports, each imported name is bound into the importing module's
 //!    scope. For whole-module `import`, the module path is bound under
@@ -84,7 +84,7 @@ pub(crate) fn resolve_names(program: &mut ResolvedProgram) -> Vec<LoaderError> {
                 }
             }
             // Also bind child modules — `module foo` creates a name
-            // `foo` in the parent's scope pointing at `crate.foo`.
+            // `foo` in the parent's scope pointing at `khi.foo`.
             for &child_id in &module.children {
                 let child = &program.modules[child_id.raw()];
                 let child_name = child.path.segments().last().cloned().unwrap_or_default();
@@ -390,7 +390,7 @@ fn resolve_from_import(
     }
 }
 
-/// Resolve `crate.`, `self.`, `super.` path keywords to absolute
+/// Resolve `khi.`, `self.`, `super.` path keywords to absolute
 /// segments.
 fn resolve_path_keywords(
     program: &ResolvedProgram,

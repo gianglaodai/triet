@@ -8,10 +8,10 @@
 //! (adapted for inline-module-only since the in-memory loader
 //! can't read external files):
 //!
-//!   1. Own function bound in crate root (`function f()` → bindings[f] = crate.f)
-//!   2. Child module bound in parent (`module helper { … }` → bindings[helper] = crate.helper)
-//!   3. From-import binds with absolute path (`from crate.helper import aid`)
-//!   4. From-import with alias (`from crate.helper import aid as helper_aid`)
+//!   1. Own function bound in crate root (`function f()` → bindings[f] = khi.f)
+//!   2. Child module bound in parent (`module helper { … }` → bindings[helper] = khi.helper)
+//!   3. From-import binds with absolute path (`from khi.helper import aid`)
+//!   4. From-import with alias (`from khi.helper import aid as helper_aid`)
 //!   5. Visibility violation: importing a private item raises E2103
 //!   6. Unresolved import: module doesn't exist raises E2104
 //!   7. Reserved namespace `sys.*` raises E2102

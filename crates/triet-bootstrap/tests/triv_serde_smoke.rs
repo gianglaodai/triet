@@ -2,7 +2,7 @@
 //! primitives in `compiler/pack_writer.tri`.
 //!
 //! Loads `compiler/pack_writer.tri` from the filesystem (so its
-//! `from crate.ir_lowerer import …` resolves against the sibling
+//! `from khi.ir_lowerer import …` resolves against the sibling
 //! `compiler/ir_lowerer.tri`), compiles it via the full Rust
 //! pipeline, then invokes `pack_writer_smoke_main()` inside the VM.
 //! The Triết-side `main` builds a synthetic `TypeTag` arena (all 11
