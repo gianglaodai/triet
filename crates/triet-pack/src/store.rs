@@ -32,9 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{StoreError, StoreResult};
 use crate::hash::{IMPL_HASH_LEN, ImplHash, ModuleImplHash};
-use crate::serde::{
-    canonical_term_signature_function, canonical_term_signature_type, read_khi,
-};
+use crate::serde::{canonical_term_signature_function, canonical_term_signature_type, read_khi};
 use crate::types::{AbiMetadata, SemVer};
 
 /// Counter for tmp-dir uniqueness within one process. Combined with

@@ -134,14 +134,7 @@ fn triet_emit_factorial(pkg_name: &str) -> Vec<u8> {
     let source_str = source_path.to_str().expect("UTF-8 path").to_owned();
     let out_str = out_path.to_str().expect("UTF-8 path").to_owned();
 
-    let argv = string_vec(&[
-        "build",
-        &source_str,
-        "-o",
-        &out_str,
-        "--pkg",
-        pkg_name,
-    ]);
+    let argv = string_vec(&["build", &source_str, "-o", &out_str, "--pkg", pkg_name]);
     let result = vm
         .execute(func_id, vec![argv])
         .expect("main(build) must execute without VM error");

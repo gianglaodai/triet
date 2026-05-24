@@ -23,8 +23,8 @@ use triet_ir::{FuncId, RuntimeValue, Vm, lower_program};
 /// Parse + resolve + lower a single-source program, returning the
 /// VM's result from calling `main()` with no arguments.
 fn run(source: &str) -> RuntimeValue {
-    let resolved = triet_modules::load_program_from_source(source)
-        .expect("parse + resolve should succeed");
+    let resolved =
+        triet_modules::load_program_from_source(source).expect("parse + resolve should succeed");
     // Typecheck for parity with the CLI — surfaces regressions early.
     // Warnings (W2001 NullDeprecated) are allowed; hard errors fail.
     let errors = triet_typecheck::check_resolved(&resolved);
@@ -41,7 +41,8 @@ fn run(source: &str) -> RuntimeValue {
         .find(|f| f.name.as_deref() == Some("main"))
         .map_or(FuncId(0), |f| f.id);
     let mut vm = Vm::new(ir);
-    vm.execute(main_id, Vec::new()).expect("VM should not error")
+    vm.execute(main_id, Vec::new())
+        .expect("VM should not error")
 }
 
 // ── Constructors ────────────────────────────────────────────────────

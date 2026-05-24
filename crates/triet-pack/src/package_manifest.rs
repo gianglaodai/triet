@@ -1009,4 +1009,43 @@ mod tests {
         let m2 = PackageManifest::load(&path).expect("load ok");
         assert_eq!(m, m2);
     }
+
+    // ── discover (v0.7.10.3) ────────────────────────────────────────
+
+    /// `discover` finds the manifest sitting in the start directory.
+    #[test]
+    fn discover_finds_manifest_in_start_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = dir.path().join("dao.package");
+        std::fs::write(&manifest, "format_version 1\nname x\nversion 0.1.0\n")
+            .expect("write fixture");
+        let found = PackageManifest::discover(dir.path()).expect("must find");
+        assert_eq!(found, manifest);
+    }
+
+    /// `discover` walks up from a nested sub-directory until it
+    /// finds the manifest — mirrors `cargo`'s convention.
+    #[test]
+    fn discover_walks_up_from_nested_subdir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = dir.path().join("dao.package");
+        std::fs::write(&manifest, "format_version 1\nname x\nversion 0.1.0\n")
+            .expect("write fixture");
+        let nested = dir.path().join("src").join("inner");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        let found = PackageManifest::discover(&nested).expect("must walk up");
+        assert_eq!(found, manifest);
+    }
+
+    /// `discover` returns `None` when the walk reaches the filesystem
+    /// root without finding `dao.package`. Uses `/` as start — the
+    /// host root is unlikely to contain a `dao.package`.
+    #[test]
+    fn discover_returns_none_when_walk_hits_root() {
+        // Walking up from `/` should immediately reach root with
+        // no manifest and return None (assumes test host's `/`
+        // does not contain a `dao.package` file).
+        let root = std::path::Path::new("/");
+        assert!(PackageManifest::discover(root).is_none());
+    }
 }

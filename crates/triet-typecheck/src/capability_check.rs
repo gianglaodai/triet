@@ -440,10 +440,10 @@ mod tests {
     #[test]
     fn mixed_passing_and_failing_imports() {
         let program = program_with_imports(&[
-            ("ok_print", "sys.io.println"),   // claim present
-            ("std_print", "std.io.println"),  // ambient, skip
-            ("crate_helper", "khi.util.h"), // intra-pkg, skip
-            ("missing", "dev.disk.read"),     // no claim → E2200
+            ("ok_print", "sys.io.println"),  // claim present
+            ("std_print", "std.io.println"), // ambient, skip
+            ("crate_helper", "khi.util.h"),  // intra-pkg, skip
+            ("missing", "dev.disk.read"),    // no claim → E2200
         ]);
         let manifest = manifest_with(vec![("sys.io", PackLevel::Grant)]);
         let errs = check_capabilities(&program, &manifest);

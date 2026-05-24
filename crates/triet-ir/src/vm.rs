@@ -5494,6 +5494,59 @@ mod tests {
         assert!(matches!(result, RuntimeValue::Trit(Trit::Zero)));
     }
 
+    // ── Env (v0.7.10.1) ─────────────────────────────────────────
+
+    /// `std.env.get` returns the env variable's value as a String
+    /// when the variable is set. Uses `CARGO_MANIFEST_DIR` which
+    /// cargo guarantees is set during test execution — avoids the
+    /// Rust 2024 `unsafe std::env::set_var` policy clash with the
+    /// workspace's `unsafe_code = forbid` lint.
+    #[test]
+    fn vm_get_env_returns_string_when_set() {
+        let expected = std::env::var("CARGO_MANIFEST_DIR")
+            .expect("cargo sets CARGO_MANIFEST_DIR during tests");
+
+        let prog = build_builtin_program(
+            vec![("key".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::String)),
+            BuiltinName::GetEnv,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let r = vm
+            .execute(FuncId(0), vec![make_string("CARGO_MANIFEST_DIR")])
+            .unwrap();
+        match r {
+            RuntimeValue::String(s) => assert_eq!(s, expected),
+            other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    /// `std.env.get` returns Null (data-tier event, not panic) when
+    /// the variable is unset.
+    #[test]
+    fn vm_get_env_returns_null_when_unset() {
+        // PID-suffixed name to guarantee no parallel-test collision.
+        let key = format!("DAO_TEST_UNSET_VAR_{}", std::process::id());
+        assert!(
+            std::env::var(&key).is_err(),
+            "test precondition: {key} must not be set"
+        );
+
+        let prog = build_builtin_program(
+            vec![("key".into(), TypeTag::String)],
+            TypeTag::Nullable(Box::new(TypeTag::String)),
+            BuiltinName::GetEnv,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let r = vm.execute(FuncId(0), vec![make_string(&key)]).unwrap();
+        assert!(
+            matches!(r, RuntimeValue::Null),
+            "unset env must return Null, got {r:?}"
+        );
+    }
+
     /// `NullCheck` on a non-null `RuntimeValue::Outcome` (e.g. success
     /// arm) returns `Trit::Positive` — only the Zero state pair
     /// triggers the cross-tolerance.

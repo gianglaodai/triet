@@ -58,10 +58,7 @@ fn load_program(filename: &str) -> triet_syntax::Program {
         .iter()
         .filter(|err| err.severity() != Some(miette::Severity::Warning))
         .collect();
-    assert!(
-        blocking.is_empty(),
-        "{path:?} type errors: {blocking:#?}"
-    );
+    assert!(blocking.is_empty(), "{path:?} type errors: {blocking:#?}");
     program
 }
 

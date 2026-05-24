@@ -67,8 +67,9 @@ fn serialize_in_triet(source: &str) -> Vec<u8> {
         RuntimeValue::Vector(vec) => vec
             .iter()
             .map(|v| match v {
-                RuntimeValue::Integer(i) => u8::try_from(i.to_i64())
-                    .expect("byte vector element out of u8 range"),
+                RuntimeValue::Integer(i) => {
+                    u8::try_from(i.to_i64()).expect("byte vector element out of u8 range")
+                }
                 _ => panic!("Expected integer in vector, got {v:?}"),
             })
             .collect(),

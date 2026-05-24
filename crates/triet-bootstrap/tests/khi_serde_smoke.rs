@@ -28,7 +28,11 @@ fn pack_writer_ir() -> &'static IrProgram {
     static IR: OnceLock<IrProgram> = OnceLock::new();
     IR.get_or_init(|| {
         let path = compiler_pack_writer_path();
-        assert!(path.is_file(), "missing pack_writer.tri at {}", path.display());
+        assert!(
+            path.is_file(),
+            "missing pack_writer.tri at {}",
+            path.display()
+        );
         let resolved = load_program(&path).expect("load_program");
         let diagnostics = check_resolved(&resolved);
         let blocking: Vec<_> = diagnostics
@@ -105,9 +109,7 @@ fn rust_read_khi_decodes_triet_emitted_bytes() {
         RuntimeValue::Vector(vec) => vec
             .iter()
             .map(|v| match v {
-                RuntimeValue::Integer(i) => {
-                    u8::try_from(i.to_i64()).expect("byte out of u8 range")
-                }
+                RuntimeValue::Integer(i) => u8::try_from(i.to_i64()).expect("byte out of u8 range"),
                 other => panic!("expected Integer in byte vector, got {other:?}"),
             })
             .collect(),
@@ -122,10 +124,13 @@ fn rust_read_khi_decodes_triet_emitted_bytes() {
     );
 
     // Rust decodes the Triết bytes.
-    let (metadata, code_section) = read_khi(&bytes)
-        .expect("Rust read_khi must accept Triết-emitted .khi");
+    let (metadata, code_section) =
+        read_khi(&bytes).expect("Rust read_khi must accept Triết-emitted .khi");
 
-    assert_eq!(metadata.abi_version, 2, "abi_version stays at 2 per ADR-0014");
+    assert_eq!(
+        metadata.abi_version, 2,
+        "abi_version stays at 2 per ADR-0014"
+    );
     assert_eq!(metadata.pkg_name, pkg_name);
     assert_eq!(metadata.pkg_version.major, 0);
     assert_eq!(metadata.pkg_version.minor, 0);

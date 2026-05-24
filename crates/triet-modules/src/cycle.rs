@@ -261,10 +261,7 @@ fn display_module_name(program: &ResolvedProgram, id: ModuleId) -> String {
     let segments = module.path.segments();
     if segments.len() <= 1 {
         // Crate root or single-segment.
-        segments
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "khi".to_owned())
+        segments.last().cloned().unwrap_or_else(|| "khi".to_owned())
     } else {
         segments.last().cloned().unwrap_or_default()
     }
