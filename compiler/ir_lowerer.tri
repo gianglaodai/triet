@@ -1228,6 +1228,15 @@ public struct LowerCtx {
     // `struct_fields` shape so the same `EnumTag` resolution flow
     // can index into it.
     enum_variants: HashMap<String, Vector<String>>,
+    // v0.7.10 (post-audit fix): bare imported name → full
+    // dot-separated absolute path (e.g. `"get"` → `"std.env.get"`).
+    // Populated from `Module.bindings` by the multi-module
+    // `lower_program` driver. Empty for single-source `lower_source`
+    // smoke tests — those fall back to bare-name builtin match.
+    // Mirrors Rust's lowerer.rs:3106 `current_module().bindings`
+    // lookup so two builtins sharing the same bare name (`get` ↔
+    // `VectorGet` vs `EnvGet`) disambiguate by their import path.
+    import_paths: HashMap<String, String>,
 }
 
 public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
@@ -1248,6 +1257,7 @@ public function lower_ctx_new(parser_arena: Arena) -> LowerCtx = {
         struct_fields: hashmap_new(),
         variant_index: hashmap_new(),
         enum_variants: hashmap_new(),
+        import_paths: hashmap_new(),
     }
 }
 
@@ -1274,6 +1284,7 @@ function ctx_with_value_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
@@ -1292,6 +1303,7 @@ function ctx_with_block_counter(ctx: LowerCtx, n: Integer) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx =
@@ -1310,6 +1322,7 @@ function ctx_with_blocks(ctx: LowerCtx, blocks: Vector<BasicBlock>) -> LowerCtx 
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
@@ -1328,6 +1341,7 @@ function ctx_with_current_block(ctx: LowerCtx, idx: Integer) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
@@ -1346,6 +1360,7 @@ function ctx_with_scopes(ctx: LowerCtx, scopes: Vector<Scope>) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
@@ -1364,6 +1379,7 @@ function ctx_with_type_arena(ctx: LowerCtx, ta: TypeTagArena) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
@@ -1382,6 +1398,7 @@ function ctx_with_constants(ctx: LowerCtx, pool: ConstantPool) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
@@ -1400,6 +1417,7 @@ function ctx_with_return_type(ctx: LowerCtx, tid: Integer) -> LowerCtx =
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_func_table(ctx: LowerCtx, ft: HashMap<String, FuncId>) -> LowerCtx =
@@ -1418,6 +1436,7 @@ function ctx_with_func_table(ctx: LowerCtx, ft: HashMap<String, FuncId>) -> Lowe
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_loop_stack(ctx: LowerCtx, ls: Vector<LoopContext>) -> LowerCtx =
@@ -1436,6 +1455,7 @@ function ctx_with_loop_stack(ctx: LowerCtx, ls: Vector<LoopContext>) -> LowerCtx
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_struct_fields(ctx: LowerCtx, sf: HashMap<String, Vector<String>>) -> LowerCtx =
@@ -1454,6 +1474,7 @@ function ctx_with_struct_fields(ctx: LowerCtx, sf: HashMap<String, Vector<String
         struct_fields: sf,
         variant_index: ctx.variant_index,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_variant_index(ctx: LowerCtx, vi: HashMap<String, VariantInfo>) -> LowerCtx =
@@ -1472,6 +1493,7 @@ function ctx_with_variant_index(ctx: LowerCtx, vi: HashMap<String, VariantInfo>)
         struct_fields: ctx.struct_fields,
         variant_index: vi,
         enum_variants: ctx.enum_variants,
+        import_paths: ctx.import_paths,
     }
 
 function ctx_with_enum_variants(ctx: LowerCtx, ev: HashMap<String, Vector<String>>) -> LowerCtx =
@@ -1490,6 +1512,26 @@ function ctx_with_enum_variants(ctx: LowerCtx, ev: HashMap<String, Vector<String
         struct_fields: ctx.struct_fields,
         variant_index: ctx.variant_index,
         enum_variants: ev,
+        import_paths: ctx.import_paths,
+    }
+
+function ctx_with_import_paths(ctx: LowerCtx, ip: HashMap<String, String>) -> LowerCtx =
+    LowerCtx {
+        parser_arena: ctx.parser_arena,
+        value_counter: ctx.value_counter,
+        block_counter: ctx.block_counter,
+        blocks: ctx.blocks,
+        current_block_idx: ctx.current_block_idx,
+        scopes: ctx.scopes,
+        type_arena: ctx.type_arena,
+        constants: ctx.constants,
+        return_type_id: ctx.return_type_id,
+        func_table: ctx.func_table,
+        loop_stack: ctx.loop_stack,
+        struct_fields: ctx.struct_fields,
+        variant_index: ctx.variant_index,
+        enum_variants: ctx.enum_variants,
+        import_paths: ip,
     }
 
 // ── Fresh ValueId / BlockId ──────────────────────────────────────
@@ -1879,12 +1921,77 @@ function lower_force_unwrap(ctx: LowerCtx, inner_id: Integer) -> LowerExprResult
 
 // ── Builtin-name resolution ──────────────────────────────────────
 //
-// Map a bare identifier string to the IR `BuiltinName` variant if
-// it matches a stdlib builtin. Mirrors `resolve_builtin` in
-// `crates/triet-ir/src/lowerer.rs:3076-`. Returns `~0` on a miss so
-// the caller can fall back to local-function lookup.
+// Two-stage dispatch mirroring Rust's `path_to_builtin`
+// (`crates/triet-ir/src/vm.rs:1717`) + `resolve_builtin`
+// (`crates/triet-ir/src/lowerer.rs:3158`):
+//
+//   1. **Path-based** (v0.7.10 post-audit fix): look up the bare
+//      identifier in `LowerCtx.import_paths` to recover the fully-
+//      qualified absolute path (e.g. `"get"` → `"std.env.get"`),
+//      then match the full path against the known stdlib catalog.
+//      Disambiguates collisions like `get` ↔ `VectorGet` vs `EnvGet`.
+//   2. **Bare-name fallback** (single-source / prelude case): when
+//      no binding is present, fall back to bare-name match. Matches
+//      existing smoke-test behavior where `lower_source` programs
+//      use stdlib helpers without explicit imports.
 
-function resolve_builtin_name(name: String) -> BuiltinName? = {
+/// Resolve a builtin by fully-qualified absolute path (e.g.
+/// `"std.env.get"`). Mirrors Rust's `path_to_builtin` arms.
+function resolve_builtin_by_path(path: String) -> BuiltinName? = {
+    if path == "std.io.println" { return PrintlnBuiltin(primitive_marker()) }
+    if path == "std.io.print" { return PrintBuiltin(primitive_marker()) }
+    if path == "std.assert.assert" { return AssertBuiltin(primitive_marker()) }
+    if path == "std.assert.assert_eq" { return AssertEqBuiltin(primitive_marker()) }
+    if path == "std.text.len" { return TextLenBuiltin(primitive_marker()) }
+    if path == "std.text.concat" { return TextConcatBuiltin(primitive_marker()) }
+    if path == "std.text.from_integer" { return TextFromIntegerBuiltin(primitive_marker()) }
+    if path == "std.collections.vector.new" { return VectorNewBuiltin(primitive_marker()) }
+    if path == "std.collections.vector.push" { return VectorPushBuiltin(primitive_marker()) }
+    if path == "std.collections.vector.get" { return VectorGetBuiltin(primitive_marker()) }
+    if path == "std.collections.vector.length" { return VectorLengthBuiltin(primitive_marker()) }
+    if path == "std.collections.hashmap.new" { return HashMapNewBuiltin(primitive_marker()) }
+    if path == "std.collections.hashmap.insert" { return HashMapInsertBuiltin(primitive_marker()) }
+    if path == "std.collections.hashmap.get" { return HashMapGetBuiltin(primitive_marker()) }
+    if path == "std.collections.hashmap.keys" { return HashMapKeysBuiltin(primitive_marker()) }
+    if path == "std.collections.hashmap.contains" { return HashMapContainsBuiltin(primitive_marker()) }
+    if path == "std.io.fs.read" { return ReadFileBuiltin(primitive_marker()) }
+    if path == "std.io.fs.write" { return WriteFileBuiltin(primitive_marker()) }
+    if path == "std.io.fs.write_bytes" { return WriteFileBytesBuiltin(primitive_marker()) }
+    if path == "std.io.fs.exists" { return FileExistsBuiltin(primitive_marker()) }
+    if path == "std.path.join" { return PathJoinBuiltin(primitive_marker()) }
+    if path == "std.path.parent" { return PathParentBuiltin(primitive_marker()) }
+    if path == "std.path.basename" { return PathBasenameBuiltin(primitive_marker()) }
+    if path == "std.string.substring" { return StringSubstringBuiltin(primitive_marker()) }
+    if path == "std.string.split" { return StringSplitBuiltin(primitive_marker()) }
+    if path == "std.string.index_of" { return StringIndexOfBuiltin(primitive_marker()) }
+    if path == "std.text.parse_integer" { return ParseIntegerBuiltin(primitive_marker()) }
+    if path == "std.text.into_bytes" { return TextIntoBytesBuiltin(primitive_marker()) }
+    if path == "std.text.from_bytes" { return TextFromBytesBuiltin(primitive_marker()) }
+    if path == "std.crypto.blake3_hash" { return Blake3HashBuiltin(primitive_marker()) }
+    if path == "std.env.get" { return EnvGetBuiltin(primitive_marker()) }
+    ~0
+}
+
+/// Resolve a builtin from a bare identifier. Consults `import_paths`
+/// first to disambiguate collisions; falls back to bare-name match
+/// when no binding is present.
+function resolve_builtin_name(name: String, import_paths: HashMap<String, String>) -> BuiltinName? = {
+    // Stage 1: path-based dispatch (multi-module / import-bound).
+    let full_opt: String? = hashmap_get(import_paths, name)
+    match full_opt {
+        ~0 => { },
+        _ => {
+            let by_path: BuiltinName? = resolve_builtin_by_path(full_opt!!)
+            match by_path {
+                ~0 => { },
+                _ => { return by_path },
+            }
+        },
+    }
+
+    // Stage 2: bare-name fallback. `get` here resolves to VectorGet
+    // (the bootstrap-test consumer at this stage); `std.env.get`
+    // requires an explicit import and lands via Stage 1.
     if name == "println" { return PrintlnBuiltin(primitive_marker()) }
     if name == "print" { return PrintBuiltin(primitive_marker()) }
     if name == "assert" { return AssertBuiltin(primitive_marker()) }
@@ -1905,7 +2012,6 @@ function resolve_builtin_name(name: String) -> BuiltinName? = {
     if name == "write" { return WriteFileBuiltin(primitive_marker()) }
     if name == "write_bytes" { return WriteFileBytesBuiltin(primitive_marker()) }
     if name == "exists" { return FileExistsBuiltin(primitive_marker()) }
-    if name == "get" { return EnvGetBuiltin(primitive_marker()) }
     if name == "join" { return PathJoinBuiltin(primitive_marker()) }
     if name == "parent" { return PathParentBuiltin(primitive_marker()) }
     if name == "basename" { return PathBasenameBuiltin(primitive_marker()) }
@@ -1972,7 +2078,7 @@ function lower_call(ctx: LowerCtx, call: CallPayload) -> LowerExprResult = {
     }
 
     // Builtin path first — matches Rust precedence.
-    let builtin_opt: BuiltinName? = resolve_builtin_name(callee_name)
+    let builtin_opt: BuiltinName? = resolve_builtin_name(callee_name, st.import_paths)
     match builtin_opt {
         ~0 => { },
         _ => {
@@ -2895,6 +3001,7 @@ function lower_function(
         struct_fields: ctx_outer.struct_fields,
         variant_index: ctx_outer.variant_index,
         enum_variants: ctx_outer.enum_variants,
+        import_paths: ctx_outer.import_paths,
     }
     ctx = push_scope(ctx)
 
@@ -2981,7 +3088,18 @@ public struct LowerModuleResult {
     constants: ConstantPool,
 }
 
-public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> LowerModuleResult = {
+public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> LowerModuleResult =
+    lower_module_with_imports(arena, item_ids, hashmap_new())
+
+/// v0.7.10: like `lower_module` but seeds `LowerCtx.import_paths`
+/// from the resolved module's `bindings` map (converted to
+/// dot-string form). Enables path-based builtin disambiguation
+/// per Rust's `lowerer.rs:3106` semantics.
+public function lower_module_with_imports(
+    arena: Arena,
+    item_ids: Vector<Integer>,
+    import_paths: HashMap<String, String>,
+) -> LowerModuleResult = {
     // Pass 1a (v0.7.8.4): register struct + enum declarations so
     // FieldGet's `field_idx` and EnumNew's `variant_idx` resolve
     // by source-level name. Mirrors lowerer.rs:39-62 (Pass 1a).
@@ -3067,6 +3185,7 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> LowerMo
         k = k + 1
     }
     ctx = ctx_with_func_table(ctx, mut_ft)
+    ctx = ctx_with_import_paths(ctx, import_paths)
 
     // Pass 2: lower each function body.
     let mutable j: Integer = 0

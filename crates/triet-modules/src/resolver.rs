@@ -35,6 +35,32 @@ use crate::{
     path::{AbsolutePath, ModulePath},
 };
 
+/// Insert an import binding into the module's `bindings` map.
+/// Fires E2108 `DuplicateImport` if the name is already bound to a
+/// different path. A re-bind to the *same* path is silently
+/// idempotent (allows convenience re-imports).
+fn bind_import(
+    program: &mut ResolvedProgram,
+    importer_id: ModuleId,
+    name: String,
+    abs_path: AbsolutePath,
+    span: triet_syntax::Span,
+    errors: &mut Vec<LoaderError>,
+) {
+    let bindings = &mut program.modules[importer_id.raw()].bindings;
+    if let Some(prior) = bindings.get(&name)
+        && *prior != abs_path
+    {
+        errors.push(LoaderError::DuplicateImport {
+            prior_path: prior.to_string(),
+            name,
+            span,
+        });
+        return;
+    }
+    bindings.insert(name, abs_path);
+}
+
 /// Run name resolution on every module in the program.
 ///
 /// Populates each module's `bindings` map. Returns a (possibly empty)
@@ -208,9 +234,7 @@ fn resolve_whole_import(
         // Bind under the last segment name.
         let bind_name = segments.last().unwrap().clone();
         let abs_path = AbsolutePath::new(target_path, bind_name.clone());
-        program.modules[importer_id.raw()]
-            .bindings
-            .insert(bind_name, abs_path);
+        bind_import(program, importer_id, bind_name, abs_path, span, errors);
         return;
     }
 
@@ -234,9 +258,7 @@ fn resolve_whole_import(
                 }
                 let abs_path = AbsolutePath::new(module_path, item_name.clone());
                 let bind_name = segments.last().unwrap().clone();
-                program.modules[importer_id.raw()]
-                    .bindings
-                    .insert(bind_name, abs_path);
+                bind_import(program, importer_id, bind_name, abs_path, span, errors);
                 return;
             }
         }
@@ -294,9 +316,14 @@ fn resolve_from_import(
             if program.find_module(&child_path).is_some() {
                 let abs_path = AbsolutePath::new(target_path.clone(), name.clone());
                 let bind_name = alias.as_ref().unwrap_or(name).clone();
-                program.modules[importer_id.raw()]
-                    .bindings
-                    .insert(bind_name, abs_path);
+                bind_import(
+                    program,
+                    importer_id,
+                    bind_name,
+                    abs_path,
+                    span.clone(),
+                    errors,
+                );
                 continue;
             }
             // Check enum variants — `from std.result import Ok` should
@@ -323,9 +350,14 @@ fn resolve_from_import(
                     continue;
                 }
                 let abs_path = AbsolutePath::new(target_path.clone(), enum_name);
-                program.modules[importer_id.raw()]
-                    .bindings
-                    .insert(name.clone(), abs_path);
+                bind_import(
+                    program,
+                    importer_id,
+                    name.clone(),
+                    abs_path,
+                    span.clone(),
+                    errors,
+                );
                 continue;
             }
             errors.push(LoaderError::UnresolvedImport {
@@ -347,9 +379,14 @@ fn resolve_from_import(
 
         let abs_path = AbsolutePath::new(target_path.clone(), name.clone());
         let bind_name = alias.as_ref().unwrap_or(name).clone();
-        program.modules[importer_id.raw()]
-            .bindings
-            .insert(bind_name, abs_path);
+        bind_import(
+            program,
+            importer_id,
+            bind_name,
+            abs_path,
+            span.clone(),
+            errors,
+        );
     }
 }
 
@@ -636,6 +673,62 @@ mod tests {
                 .any(|e| matches!(e, LoaderError::UnresolvedImport { .. })),
             "missing module should produce UnresolvedImport: {errors:?}"
         );
+    }
+
+    // ── Duplicate-import detection (E2108) ──────────────────────────
+
+    /// Two distinct imports binding the same local name must fire
+    /// E2108 so the lowerer's path-based builtin dispatch sees an
+    /// unambiguous bare-name → `AbsolutePath` mapping.
+    #[test]
+    fn duplicate_from_import_distinct_paths_errors() {
+        let errors = load_filesystem_result(&[
+            (
+                "main.tri",
+                "module a\nmodule b\nfrom khi.a import value\nfrom khi.b import value",
+            ),
+            ("a.tri", "public function value() = 1"),
+            ("b.tri", "public function value() = 2"),
+        ])
+        .unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, LoaderError::DuplicateImport { name, .. } if name == "value")),
+            "two imports with same name must fire E2108: {errors:?}"
+        );
+    }
+
+    /// Aliased re-binding sidesteps the duplicate-import error.
+    #[test]
+    fn duplicate_from_import_with_alias_succeeds() {
+        let program = load_filesystem_result(&[
+            (
+                "main.tri",
+                "module a\nmodule b\nfrom khi.a import value\nfrom khi.b import value as v2",
+            ),
+            ("a.tri", "public function value() = 1"),
+            ("b.tri", "public function value() = 2"),
+        ])
+        .unwrap();
+        let root = program.root_module();
+        assert!(root.bindings.contains_key("value"));
+        assert!(root.bindings.contains_key("v2"));
+    }
+
+    /// Re-importing the *same* path is idempotent (silent) — the
+    /// check fires only when the prior binding's path differs.
+    #[test]
+    fn duplicate_from_import_same_path_idempotent() {
+        let program = load_filesystem_result(&[
+            (
+                "main.tri",
+                "module a\nfrom khi.a import value\nfrom khi.a import value",
+            ),
+            ("a.tri", "public function value() = 1"),
+        ])
+        .unwrap();
+        assert!(program.root_module().bindings.contains_key("value"));
     }
 
     // ── Path keyword resolution ─────────────────────────────────────

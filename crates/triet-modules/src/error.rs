@@ -138,6 +138,30 @@ pub enum LoaderError {
         #[label]
         span: Span,
     },
+
+    /// E2108 — two imports (or an import shadowing a local item)
+    /// bind the same local name. Distinct from re-imports of the
+    /// same path, which are silently idempotent. Required so the
+    /// lowerer's path-based builtin dispatch
+    /// (`compiler/ir_lowerer.tri::resolve_builtin_name`) sees an
+    /// unambiguous bare-name → `AbsolutePath` mapping per
+    /// `Module.bindings`.
+    #[error("duplicate import: name `{name}` already bound to `{prior_path}`")]
+    #[diagnostic(
+        code(triet::modules::E2108),
+        help(
+            "rename one of the two imports using `from X import a as b`, or remove the duplicate"
+        )
+    )]
+    DuplicateImport {
+        /// The local name that collided.
+        name: String,
+        /// The prior binding's fully-qualified path.
+        prior_path: String,
+        /// Span of the offending (second) import.
+        #[label]
+        span: Span,
+    },
 }
 
 impl LoaderError {
@@ -152,7 +176,8 @@ impl LoaderError {
             | Self::UnresolvedImport { span, .. }
             | Self::ChildParseError { span, .. }
             | Self::IoError { span, .. }
-            | Self::AliasedVariantImport { span, .. } => span.clone(),
+            | Self::AliasedVariantImport { span, .. }
+            | Self::DuplicateImport { span, .. } => span.clone(),
         }
     }
 
@@ -168,6 +193,7 @@ impl LoaderError {
             Self::ChildParseError { .. } => "triet::modules::E2105",
             Self::IoError { .. } => "triet::modules::E2106",
             Self::AliasedVariantImport { .. } => "triet::modules::E2107",
+            Self::DuplicateImport { .. } => "triet::modules::E2108",
         }
     }
 }
