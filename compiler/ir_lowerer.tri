@@ -72,7 +72,7 @@ from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPatte
 from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from khi.parser import UnaryOperator, Negate
 from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, RangePayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, OutcomeConstructorPayload, RangePayload, ElvisOpPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -2227,6 +2227,84 @@ function lower_range_expr(ctx: LowerCtx, p: RangePayload) -> LowerExprResult = {
     fresh_value(end_r.ctx)
 }
 
+// ── v0.7.11.1a: Elvis operator `obj ?: default` ──────────────────
+//
+// Mirrors `lower_expr Expr::ElvisOp` in `crates/triet-ir/src/lowerer.rs`
+// (line 1341): null-check the object, branch True → unwrap-and-use,
+// Unknown/False → use default, then Phi-merge at the join block.
+//
+// ADR-0010: null is `Trit::Zero` ≡ `Trilean::Unknown`, so the
+// BrTrilean's `unknown_block` and `false_block` both route to the
+// default-arm block.
+function lower_elvis_op(ctx: LowerCtx, p: ElvisOpPayload) -> LowerExprResult = {
+    // Step 1: lower the object expression.
+    let obj_r: LowerExprResult = lower_expression(ctx, p.object)
+    let mutable st: LowerCtx = obj_r.ctx
+    let obj_val: ValueId = obj_r.value_id
+
+    // Step 2: NullCheck — Trilean True iff non-null.
+    let nc_r: LowerExprResult = fresh_value(st)
+    st = nc_r.ctx
+    st = emit(st, NullCheckInst(InstNullCheckPayload {
+        dest: nc_r.value_id,
+        nullable: ValueOp(obj_val),
+    }))
+
+    // Step 3: spawn then / else / merge blocks.
+    let then_r: FreshBlockResult = fresh_block(st)
+    st = then_r.ctx
+    let else_r: FreshBlockResult = fresh_block(st)
+    st = else_r.ctx
+    let merge_r: FreshBlockResult = fresh_block(st)
+    st = merge_r.ctx
+
+    // Step 4: BrTrilean — True → then, Unknown/False → else.
+    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+        cond: ValueOp(nc_r.value_id),
+        true_block: then_r.block_id,
+        unknown_block: else_r.block_id,
+        false_block: else_r.block_id,
+    }))
+
+    // Step 5: then block — NullUnwrap then Br merge.
+    st = start_block(st, then_r.block_id, "elvis_some")
+    let unwrap_r: LowerExprResult = fresh_value(st)
+    st = unwrap_r.ctx
+    st = emit(st, NullUnwrapInst(InstNullUnwrapPayload {
+        dest: unwrap_r.value_id,
+        nullable: ValueOp(obj_val),
+    }))
+    st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    let then_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 6: else block — lower default expression, Br merge.
+    st = start_block(st, else_r.block_id, "elvis_default")
+    let default_r: LowerExprResult = lower_expression(st, p.default_expr)
+    st = default_r.ctx
+    st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+    let else_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+
+    // Step 7: merge block — Phi { then_unwrapped, else_default }.
+    st = start_block(st, merge_r.block_id, "elvis_merge")
+    let merge_dest_r: LowerExprResult = fresh_value(st)
+    st = merge_dest_r.ctx
+    let mutable incoming: Vector<PhiIncoming> = new()
+    incoming = push(incoming, PhiIncoming {
+        value: unwrap_r.value_id,
+        block: then_end_id,
+    })
+    incoming = push(incoming, PhiIncoming {
+        value: default_r.value_id,
+        block: else_end_id,
+    })
+    st = emit(st, PhiInst(InstPhiPayload {
+        dest: merge_dest_r.value_id,
+        incoming: incoming,
+    }))
+
+    LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -2243,11 +2321,11 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         FieldAccessExpr(p) => lower_field_access(ctx, p),
         OutcomeConstructorExpr(p) => lower_outcome_constructor(ctx, p),
         RangeExpr(p) => lower_range_expr(ctx, p),
-        // MethodCall / OutcomePropagate / OutcomeDefault / Elvis
-        // defer to v0.7.8.{5,6}. Emit a placeholder fresh value so
+        ElvisOpExpr(p) => lower_elvis_op(ctx, p),
+        // MethodCall / OutcomePropagate / OutcomeDefault / If / Match
+        // defer to v0.7.11.1{b..f}. Emit a placeholder fresh value so
         // downstream lowering keeps progressing on programs that
-        // touch unsupported expression variants — the differential
-        // gate (v0.7.8.6) catches shape mismatches.
+        // touch unsupported expression variants.
         _ => fresh_value(ctx),
     }
 }
@@ -3506,6 +3584,63 @@ public function struct_enum_outcome_smoke_main() -> Unit = {
     println("v0.7.8.4 ir_lowerer struct+enum+outcome+for smoke OK")
 }
 
+// ── v0.7.11.1a smoke — Elvis operator ────────────────────────────
+
+public function elvis_smoke_main() -> Unit = {
+    // Test 1: `x ?: 0` over `Integer?` parameter — canonical 4-block
+    // shape (entry, elvis_some, elvis_default, elvis_merge). Entry
+    // ends in BrTrilean; merge starts with Phi + ends with Ret.
+    let s1: String = "function f(x: Integer?) -> Integer = x ?: 0"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    assert(length(f1.blocks) == 4)
+
+    // Test 2: entry block (index 0) — last instruction is BrTrilean
+    // because Elvis's BrTrilean routes True→elvis_some,
+    // Unknown/False→elvis_default per ADR-0010 (null is Trit::Zero
+    // ≡ Trilean::Unknown).
+    let entry1: BasicBlock = get(f1.blocks, 0)!!
+    let entry_total: Integer = length(entry1.instructions)
+    let entry_last: Instruction = get(entry1.instructions, entry_total - 1)!!
+    assert_string_eq(instruction_opcode_name(entry_last), "BrTrilean")
+
+    // Test 3: entry block also carries the NullCheck (immediately
+    // before the BrTrilean).
+    let entry_pen: Instruction = get(entry1.instructions, entry_total - 2)!!
+    assert_string_eq(instruction_opcode_name(entry_pen), "NullCheck")
+
+    // Test 4: elvis_some block (index 1) starts with NullUnwrap.
+    let some1: BasicBlock = get(f1.blocks, 1)!!
+    let some_first: Instruction = get(some1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(some_first), "NullUnwrap")
+
+    // Test 5: elvis_merge block (index 3) — first instruction is
+    // Phi with exactly 2 incoming edges (then_end + else_end).
+    let merge1: BasicBlock = get(f1.blocks, 3)!!
+    let merge_first: Instruction = get(merge1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge_first), "Phi")
+    let phi_count: Integer = match merge_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    // Test 6: default arm is a non-null expression (Integer 0). The
+    // BrTrilean's unknown_block and false_block must both target
+    // elvis_default — meaning the BrTrilean's three target slots
+    // hold exactly two distinct block IDs.
+    let bt: Instruction = entry_last
+    match bt {
+        BrTrileanInst(p) => {
+            assert(p.unknown_block.raw == p.false_block.raw)
+        },
+        _ => { },
+    }
+
+    println("v0.7.11.1a ir_lowerer elvis smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -3857,4 +3992,5 @@ public function main() -> Unit = {
     call_loop_smoke_main()
     while_phi_smoke_main()
     struct_enum_outcome_smoke_main()
+    elvis_smoke_main()
 }
