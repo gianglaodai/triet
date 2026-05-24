@@ -60,7 +60,7 @@ from std.assert import assert
 from khi.parser.lexer import SpannedToken, LexError, lex
 from khi.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
 from khi.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
-from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr, IfExpr
+from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr, IfExpr, MatchExpr
 from khi.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
 from khi.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
 from khi.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
@@ -68,11 +68,13 @@ from khi.parser import Block, SpannedExpr, SpannedStmt, SpannedTypeExpr, Spanned
 from khi.parser import FunctionDef, FunctionBody, BlockBody, ExpressionBody, FunctionParam, ConstantItemPayload
 from khi.parser import StructDef, StructField, EnumDef, EnumVariant
 from khi.parser import OutcomeArm, PositiveArm, ZeroArm, NegativeArm
-from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern
+from khi.parser import Pattern, SpannedPattern, WildcardPattern, IdentifierPattern, LiteralPat, NullPat, EnumVariantPat, OutcomeArmPat
+from khi.parser import LiteralPattern, IntegerLit, TernaryLit, StringLit, TrileanLit, LiteralIntegerPattern
+from khi.parser import EnumVariantPatternPayload, OutcomeArmPatternPayload
 from khi.parser import BinaryOperator, Add, Subtract, Multiply, Divide, Modulo, Power, Equal, NotEqual, LessThan, LessEqual, GreaterThan, GreaterEqual, And, Or, Xor, Iff, Implies, KleeneXor, KleeneIff, KleeneImplies
 from khi.parser import UnaryOperator, Negate
 from khi.parser import TrileanValue, TrueValue, FalseValue, UnknownValue
-from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, MethodCallPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, IfExprPayload, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
+from khi.parser import BinaryOpPayload, UnaryOpPayload, CallPayload, FieldAccessPayload, MethodCallPayload, OutcomeConstructorPayload, OutcomeDefaultPayload, OutcomePropagatePayload, RangePayload, ElvisOpPayload, IfExprPayload, MatchExprPayload, MatchArm, LetStmtPayload, ConstantStmtPayload, ReturnStmtPayload, BreakStmtPayload, LoopStmtPayload, AssignStmtPayload, ExpressionStmtPayload, WhileStmtPayload, ForStmtPayload, NamedTypePayload, GenericTypePayload
 from khi.parser.lexer import IntLiteral, StringPayload as ParseStringPayload, NumericSuffix, TritSuffix, TryteSuffix, IntegerSuffix, LongSuffix
 
 // ─────────────────────────────────────────────────────────────────
@@ -2791,6 +2793,374 @@ function lower_if_expr(ctx: LowerCtx, p: IfExprPayload) -> LowerExprResult = {
     LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
 }
 
+// ── v0.7.11.1f2: Match-expression pattern test + binding ─────────
+//
+// Mirrors `lower_pattern_test` in `crates/triet-ir/src/lowerer.rs`
+// (line 2784). Returns `~0` to mean "pattern matches anything"
+// (wildcard / bare variable that doesn't shadow an enum variant),
+// otherwise a Trilean ValueId for the runtime check. ADR-0010:
+// Unknown maps to skip-to-next-test (same as False) in BrTrilean.
+
+// Result wrapper — a `ValueId?` paired with the ctx. `value: ~0`
+// signals unconditional match.
+struct PatternTestResult {
+    ctx: LowerCtx,
+    value: ValueId?,
+}
+
+function emit_const_int(ctx: LowerCtx, n: Integer) -> LowerExprResult = {
+    let c: Constant = IntegerConst(ConstantIntegerPayload { value: n })
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function emit_const_trit(ctx: LowerCtx, t: Trit) -> LowerExprResult = {
+    let c: Constant = TritConst(ConstantTritPayload { value: t })
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function emit_const_trilean(ctx: LowerCtx, tv: Trilean) -> LowerExprResult = {
+    let c: Constant = TrileanConst(ConstantTrileanPayload { value: tv })
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function emit_const_string(ctx: LowerCtx, s: String) -> LowerExprResult = {
+    let c: Constant = StringConst(ConstantStringPayload { value: s })
+    let intern_r: InternCtxResult = intern_constant(ctx, c)
+    let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+    let inst: Instruction = ConstInst(InstConstPayload {
+        dest: dest_r.value_id,
+        const_id: intern_r.const_id,
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+// Emit Eq(lhs, rhs) → Trilean. Used by literal / enum-tag / null
+// pattern tests.
+function emit_eq(ctx: LowerCtx, lhs: ValueId, rhs: ValueId) -> LowerExprResult = {
+    let dest_r: LowerExprResult = fresh_value(ctx)
+    let inst: Instruction = EqInst(InstBinaryOpPayload {
+        dest: dest_r.value_id,
+        lhs: ValueOp(lhs),
+        rhs: ValueOp(rhs),
+    })
+    LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+}
+
+function lower_pattern_test(
+    ctx: LowerCtx,
+    pattern: Pattern,
+    scrutinee: ValueId,
+) -> PatternTestResult = {
+    match pattern {
+        WildcardPattern => PatternTestResult { ctx: ctx, value: ~0 },
+        IdentifierPattern(sp) => {
+            // Bare identifier — disambiguate via variant_index. If
+            // the name resolves to a known unit-variant, treat as
+            // EnumVariant tag check; otherwise catch-all binding.
+            // Mirrors Rust lowerer.rs:2804-2829. Use match on
+            // hashmap_get's `T?` result (hashmap_contains returns
+            // generic Trilean and would trip E1033 inside a plain
+            // `if`).
+            match hashmap_get(ctx.variant_index, sp.text) {
+                ~0 => PatternTestResult { ctx: ctx, value: ~0 },
+                _ => {
+                    let info: VariantInfo = hashmap_get(ctx.variant_index, sp.text)!!
+                    let tag_r: LowerExprResult = fresh_value(ctx)
+                    let mutable st: LowerCtx = tag_r.ctx
+                    st = emit(st, EnumTagInst(InstEnumTagPayload {
+                        dest: tag_r.value_id,
+                        scrutinee: ValueOp(scrutinee),
+                    }))
+                    let idx_r: LowerExprResult = emit_const_int(st, info.variant_idx)
+                    st = idx_r.ctx
+                    let cmp_r: LowerExprResult = emit_eq(st, tag_r.value_id, idx_r.value_id)
+                    PatternTestResult { ctx: cmp_r.ctx, value: cmp_r.value_id }
+                },
+            }
+        },
+        NullPat => {
+            // NullCheck returns Trit: Zero = null. Compare against
+            // Trit::Zero. ADR-0010 §C unified null encoding.
+            let chk_r: LowerExprResult = fresh_value(ctx)
+            let mutable st: LowerCtx = chk_r.ctx
+            st = emit(st, NullCheckInst(InstNullCheckPayload {
+                dest: chk_r.value_id,
+                nullable: ValueOp(scrutinee),
+            }))
+            let zero_r: LowerExprResult = emit_const_trit(st, 0_trit)
+            st = zero_r.ctx
+            let cmp_r: LowerExprResult = emit_eq(st, chk_r.value_id, zero_r.value_id)
+            PatternTestResult { ctx: cmp_r.ctx, value: cmp_r.value_id }
+        },
+        LiteralPat(lit) => {
+            let lit_r: LowerExprResult = match lit {
+                IntegerLit(p) => emit_const_int(ctx, p.value),
+                TernaryLit(v) => emit_const_int(ctx, v),
+                StringLit(sp) => emit_const_string(ctx, sp.text),
+                TrileanLit(tv) => emit_const_trilean(ctx, match tv {
+                    TrueValue => true,
+                    FalseValue => false,
+                    UnknownValue => unknown,
+                }),
+            }
+            let cmp_r: LowerExprResult = emit_eq(lit_r.ctx, scrutinee, lit_r.value_id)
+            PatternTestResult { ctx: cmp_r.ctx, value: cmp_r.value_id }
+        },
+        EnumVariantPat(p) => {
+            // Tag check identical to bare-variant case.
+            let idx: Integer = match hashmap_get(ctx.variant_index, p.variant_name) {
+                ~0 => 0,
+                _ => hashmap_get(ctx.variant_index, p.variant_name)!!.variant_idx,
+            }
+            let tag_r: LowerExprResult = fresh_value(ctx)
+            let mutable st: LowerCtx = tag_r.ctx
+            st = emit(st, EnumTagInst(InstEnumTagPayload {
+                dest: tag_r.value_id,
+                scrutinee: ValueOp(scrutinee),
+            }))
+            let idx_r: LowerExprResult = emit_const_int(st, idx)
+            st = idx_r.ctx
+            let cmp_r: LowerExprResult = emit_eq(st, tag_r.value_id, idx_r.value_id)
+            PatternTestResult { ctx: cmp_r.ctx, value: cmp_r.value_id }
+        },
+        OutcomeArmPat(p) => {
+            // OutcomeDiscriminant → expected Trit. ADR-0020 §5.
+            let disc_r: LowerExprResult = fresh_value(ctx)
+            let mutable st: LowerCtx = disc_r.ctx
+            st = emit(st, OutcomeDiscriminantInst(InstOutcomeUnaryPayload {
+                dest: disc_r.value_id,
+                source: ValueOp(scrutinee),
+            }))
+            let expected: Trit = match p.arm {
+                PositiveArm => 1_trit,
+                ZeroArm => 0_trit,
+                NegativeArm => -1_trit,
+            }
+            let trit_r: LowerExprResult = emit_const_trit(st, expected)
+            st = trit_r.ctx
+            let cmp_r: LowerExprResult = emit_eq(st, disc_r.value_id, trit_r.value_id)
+            PatternTestResult { ctx: cmp_r.ctx, value: cmp_r.value_id }
+        },
+        // Tuple / Or / Range patterns deferred — not exercised by
+        // current compiler/*.tri match arms. Treat as match-all so
+        // the surrounding match's last-arm dispatch still works.
+        _ => PatternTestResult { ctx: ctx, value: ~0 },
+    }
+}
+
+// Bind variables introduced by pattern destructure. For wildcard
+// / literal / null / enum-tag-only / variant-without-payload, no
+// bindings. For Variable (non-variant), bind to scrutinee directly.
+// For EnumVariantPat with payload sub-pattern, extract via
+// EnumPayload then recurse. For OutcomeArmPat (Positive/Negative)
+// with payload, extract via OutcomeUnwrap{Value,Error}. `~0` has
+// no payload.
+function bind_pattern_vars(ctx: LowerCtx, pattern: Pattern, scrutinee: ValueId) -> LowerCtx = {
+    match pattern {
+        IdentifierPattern(sp) => {
+            // Skip if the name resolves to an enum variant (the
+            // pattern is a tag check, not a binding). Use match on
+            // hashmap_get for refined Trilean! at the branch.
+            match hashmap_get(ctx.variant_index, sp.text) {
+                ~0 => bind_var(ctx, sp.text, scrutinee),
+                _ => ctx,
+            }
+        },
+        EnumVariantPat(p) => {
+            match p.payload {
+                ~0 => ctx,
+                _ => {
+                    let inner_id: Integer = p.payload!!
+                    let inner_pat: Pattern = get_pattern(ctx.parser_arena, inner_id).node
+                    let pay_r: LowerExprResult = fresh_value(ctx)
+                    let st: LowerCtx = emit(pay_r.ctx, EnumPayloadInst(InstEnumPayloadPayload {
+                        dest: pay_r.value_id,
+                        scrutinee: ValueOp(scrutinee),
+                    }))
+                    bind_pattern_vars(st, inner_pat, pay_r.value_id)
+                },
+            }
+        },
+        OutcomeArmPat(p) => {
+            match p.payload {
+                ~0 => ctx,
+                _ => {
+                    let inner_id: Integer = p.payload!!
+                    let inner_pat: Pattern = get_pattern(ctx.parser_arena, inner_id).node
+                    match p.arm {
+                        ZeroArm => ctx,
+                        PositiveArm => {
+                            let pay_r: LowerExprResult = fresh_value(ctx)
+                            let st: LowerCtx = emit(pay_r.ctx, OutcomeUnwrapValueInst(InstOutcomeUnaryPayload {
+                                dest: pay_r.value_id,
+                                source: ValueOp(scrutinee),
+                            }))
+                            bind_pattern_vars(st, inner_pat, pay_r.value_id)
+                        },
+                        NegativeArm => {
+                            let pay_r: LowerExprResult = fresh_value(ctx)
+                            let st: LowerCtx = emit(pay_r.ctx, OutcomeUnwrapErrorInst(InstOutcomeUnaryPayload {
+                                dest: pay_r.value_id,
+                                source: ValueOp(scrutinee),
+                            }))
+                            bind_pattern_vars(st, inner_pat, pay_r.value_id)
+                        },
+                    }
+                },
+            }
+        },
+        _ => ctx,
+    }
+}
+
+// ── v0.7.11.1f2: Match expression ────────────────────────────────
+//
+// Mirrors `lower_match_expr` in `crates/triet-ir/src/lowerer.rs`
+// (line 2565). Each arm becomes test_block → arm_body_block →
+// merge. Per-mutated-var phi is OMITTED at v0.7.11.1f2 because the
+// Triết-side Expr enum has no Block expression yet — match arm
+// bodies can only be single expressions (no AssignStmt). When a
+// future sub-task adds BlockExpr to the parser, this lowerer will
+// need the v0.7.4.3-debt.5 mutation-phi pass; tracked as
+// `v0.7.x.runtime-fix.match-arm-mutation-phi-port` in the deferred
+// bugs section.
+function lower_match_expr(ctx: LowerCtx, p: MatchExprPayload) -> LowerExprResult = {
+    let scrutinee_r: LowerExprResult = lower_expression(ctx, p.scrutinee)
+    let mutable st: LowerCtx = scrutinee_r.ctx
+    let scrutinee_val: ValueId = scrutinee_r.value_id
+
+    let arm_total: Integer = length(p.arms)
+    if arm_total == 0 {
+        // Empty match — emit a Unit const so downstream has a real
+        // ValueId. Matches Rust line 2571.
+        let cu: Constant = UnitConst(primitive_marker())
+        let intern_r: InternCtxResult = intern_constant(st, cu)
+        let dest_r: LowerExprResult = fresh_value(intern_r.ctx)
+        let inst: Instruction = ConstInst(InstConstPayload {
+            dest: dest_r.value_id,
+            const_id: intern_r.const_id,
+        })
+        return LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
+    }
+
+    // Allocate merge block up front.
+    let merge_r: FreshBlockResult = fresh_block(st)
+    st = merge_r.ctx
+
+    let mutable arm_end_blocks: Vector<BlockId> = new()
+    let mutable arm_values: Vector<ValueId> = new()
+
+    let mutable i: Integer = 0
+    while i < arm_total {
+        let arm_opt: MatchArm? = get(p.arms, i)
+        let arm: MatchArm = arm_opt!!
+        let is_last: Trilean! = (i + 1) == arm_total
+
+        // Allocate the arm body block.
+        let body_blk_r: FreshBlockResult = fresh_block(st)
+        st = body_blk_r.ctx
+
+        // Allocate the next-test block iff this is NOT the last arm.
+        let next_test_id: BlockId = if is_last {
+            body_blk_r.block_id
+        } else {
+            let nt_r: FreshBlockResult = fresh_block(st)
+            st = nt_r.ctx
+            nt_r.block_id
+        }
+
+        // Pattern test in the CURRENT block. Last arm is
+        // unconditional (typecheck guarantees exhaustiveness).
+        if is_last {
+            st = emit(st, BrInst(InstBrPayload { target: body_blk_r.block_id }))
+        } else {
+            let pat_node: Pattern = get_pattern(st.parser_arena, arm.pattern).node
+            let test_r: PatternTestResult = lower_pattern_test(st, pat_node, scrutinee_val)
+            st = test_r.ctx
+            match test_r.value {
+                ~0 => {
+                    // Wildcard/variable: unconditional jump.
+                    st = emit(st, BrInst(InstBrPayload { target: body_blk_r.block_id }))
+                },
+                _ => {
+                    st = emit(st, BrTrileanInst(InstBrTrileanPayload {
+                        cond: ValueOp(test_r.value!!),
+                        true_block: body_blk_r.block_id,
+                        unknown_block: next_test_id,
+                        false_block: next_test_id,
+                    }))
+                },
+            }
+        }
+
+        // Lower the arm body.
+        let arm_name: String = concat("match_arm_", from_integer(i))
+        st = start_block(st, body_blk_r.block_id, arm_name)
+        st = push_scope(st)
+        let pat_node2: Pattern = get_pattern(st.parser_arena, arm.pattern).node
+        st = bind_pattern_vars(st, pat_node2, scrutinee_val)
+        let arm_body_r: LowerExprResult = lower_expression(st, arm.body)
+        st = arm_body_r.ctx
+        st = pop_scope(st)
+        let arm_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
+        if !current_block_has_terminator(st) {
+            st = emit(st, BrInst(InstBrPayload { target: merge_r.block_id }))
+        }
+        arm_end_blocks = push(arm_end_blocks, arm_end_id)
+        arm_values = push(arm_values, arm_body_r.value_id)
+
+        // Move to the next test block (already named "match_test_N"
+        // for non-last arms; last arm's "next_test" ≡ body_blk so we
+        // don't re-enter).
+        if !is_last {
+            let test_name: String = concat("match_test_", from_integer(i + 1))
+            st = start_block(st, next_test_id, test_name)
+        }
+
+        i = i + 1
+    }
+
+    // Merge block — Phi for the result value, one incoming per arm.
+    st = start_block(st, merge_r.block_id, "match_merge")
+    let merge_dest_r: LowerExprResult = fresh_value(st)
+    st = merge_dest_r.ctx
+    let mutable incoming: Vector<PhiIncoming> = new()
+    let mutable k: Integer = 0
+    while k < arm_total {
+        let end_opt: BlockId? = get(arm_end_blocks, k)
+        let val_opt: ValueId? = get(arm_values, k)
+        incoming = push(incoming, PhiIncoming {
+            value: val_opt!!,
+            block: end_opt!!,
+        })
+        k = k + 1
+    }
+    st = emit(st, PhiInst(InstPhiPayload {
+        dest: merge_dest_r.value_id,
+        incoming: incoming,
+    }))
+
+    LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
+}
+
 public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprResult = {
     let spanned: SpannedExpr = get_expression(ctx.parser_arena, expr_id)
     match spanned.node {
@@ -2812,7 +3182,7 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         OutcomeDefaultExpr(p) => lower_outcome_default(ctx, p),
         OutcomePropagateExpr(p) => lower_outcome_propagate(ctx, p),
         IfExpr(p) => lower_if_expr(ctx, p),
-        // Match defers to v0.7.11.1f2.
+        MatchExpr(p) => lower_match_expr(ctx, p),
         _ => fresh_value(ctx),
     }
 }
@@ -4382,6 +4752,64 @@ public function if_expr_smoke_main() -> Unit = {
     println("v0.7.11.1e2 ir_lowerer if-expr smoke OK")
 }
 
+// ── v0.7.11.1f2 smoke — MatchExpr ───────────────────────────────
+
+public function match_expr_smoke_main() -> Unit = {
+    // Test 1: 2-arm literal match → arm dispatch via Eq + BrTrilean
+    // for non-last, unconditional Br for last. Block shape:
+    //   entry → test → arm_0_body → arm_1_body → merge
+    // 4 spawned blocks (arm_0, test_1, arm_1, merge) + entry = 5
+    // total. Arm-0's pattern test uses Eq; non-last so emits
+    // BrTrilean. Last arm (wildcard) is unconditional Br.
+    let s1: String = "function f(x: Integer) -> Integer = match x { 0 => 100, _ => 0 }"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    assert(length(f1.blocks) == 5)
+
+    // Test 2: entry block ends with BrTrilean (first arm's test
+    // for non-last literal pattern).
+    let entry1: BasicBlock = get(f1.blocks, 0)!!
+    let entry_total: Integer = length(entry1.instructions)
+    let entry_last: Instruction = get(entry1.instructions, entry_total - 1)!!
+    assert_string_eq(instruction_opcode_name(entry_last), "BrTrilean")
+
+    // Test 3: the merge block (last in vector) starts with Phi
+    // carrying EXACTLY arm_count incoming edges.
+    let merge1: BasicBlock = get(f1.blocks, length(f1.blocks) - 1)!!
+    let merge_first: Instruction = get(merge1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge_first), "Phi")
+    let phi_count: Integer = match merge_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    // Test 4: outcome arm pattern — `match res { ~+ v => v, ~- _ =>
+    // -1, ~0 => 0 }`. Should spawn 3 arm bodies + 2 test blocks +
+    // merge + entry = 7 total. Last arm (~0) is unconditional, no
+    // separate test block.
+    let s2: String = "function f(res: Integer?~String) -> Integer = match res { ~+ v => v, ~- _ => -1, ~0 => 0 }"
+    let p2: IrProgram = lower_source(s2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    // entry + 3 arm bodies + 2 test blocks (between arms 1/2 and
+    // 2/3) + merge = 7.
+    assert(length(f2.blocks) == 7)
+
+    // Test 5: outcome match merge has 3 phi incoming.
+    let merge2: BasicBlock = get(f2.blocks, length(f2.blocks) - 1)!!
+    let merge2_first: Instruction = get(merge2.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge2_first), "Phi")
+    let phi2_count: Integer = match merge2_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi2_count == 3)
+
+    println("v0.7.11.1f2 ir_lowerer match-expr smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -4738,4 +5166,5 @@ public function main() -> Unit = {
     outcome_propagate_smoke_main()
     method_call_smoke_main()
     if_expr_smoke_main()
+    match_expr_smoke_main()
 }
