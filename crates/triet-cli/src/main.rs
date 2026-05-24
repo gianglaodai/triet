@@ -1,12 +1,10 @@
 //! Triết CLI — entry point for the `dao` binary.
 //!
-//! Subcommands:
-//! - `dao run <path>` — run a .tri source or .triv bytecode file.
-//! - `dao check <path>` — parse + type-check only, no execution.
-//! - `dao build <path>` — compile .tri source to .triv bytecode.
-//! - `dao store import <path>` — install a .khi into the CAS store.
-//! - `dao store list` — list installed packs.
-//! - `dao store gc` — garbage-collect unreferenced packs.
+//! Subcommands (primary: English, alias: Vietnamese per ADR-0024):
+//! - `dao run <path>` / `chay` — run a .tri source or .triv bytecode file.
+//! - `dao check <path>` / `kiem` — parse + type-check only, no execution.
+//! - `dao build <path>` / `tao` — compile .tri source to .triv bytecode.
+//! - `dao store import <path>` / `kho` — manage CAS package store (~/.triet/store/).
 //! - `dao fmt --migrate-null [--write] <path>` — apply source-level
 //!   migrations (currently: ADR-0020 `null` → `~0`).
 //! - `dao info` — version and project info.
@@ -58,16 +56,19 @@ enum ColorArg {
 #[derive(Subcommand)]
 enum Command {
     /// Run a Triết program (.tri source or .triv bytecode).
+    #[command(alias = "chay")]
     Run {
         /// Path to .tri or .triv file.
         path: String,
     },
     /// Parse and type-check a Triết program without running it.
+    #[command(alias = "kiem")]
     Check {
         /// Path to .tri source file.
         path: String,
     },
     /// Compile a .tri source file to .triv bytecode.
+    #[command(alias = "tao")]
     Build {
         /// Path to .tri source file.
         path: String,
@@ -76,6 +77,7 @@ enum Command {
         output: Option<String>,
     },
     /// Manage the local CAS package store (~/.triet/store/).
+    #[command(alias = "kho")]
     Store {
         #[command(subcommand)]
         subcommand: StoreCommand,
