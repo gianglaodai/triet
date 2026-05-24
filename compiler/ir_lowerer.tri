@@ -3003,7 +3003,15 @@ public function lower_module(arena: Arena, item_ids: Vector<Integer>) -> LowerMo
     // (callee declared after caller in source order) resolves to a
     // FuncId via `lower_call`. FuncId raw values match the
     // `function_defs` index, so position-based assignment suffices.
-    let mod_path: Vector<String> = new()
+    //
+    // Path segments start at `["crate"]` to mirror Rust's
+    // `ModulePath::crate_root()` — `write_function_table`
+    // serializes `module.path.to_string()` which renders
+    // `"crate"` for the local-crate root. Empty segments here
+    // emit `"."` instead, breaking byte-identical against the
+    // Rust pipeline (tracked as the now-closed
+    // `v0.7.x.runtime-fix.write-function-table-module-prefix`).
+    let mod_path: Vector<String> = push(new(), "crate")
     let mutable ir_mod: IrModule = ir_module_new(mod_path)
     let mutable ctx: LowerCtx = lower_ctx_new(arena)
     ctx = ctx_with_struct_fields(ctx, struct_fields)
