@@ -72,9 +72,7 @@ pub(crate) fn load_in_memory(source: &str) -> Result<ResolvedProgram, Vec<Loader
 /// self-compile byte-identical gate. See
 /// [`crate::load_program_from_source_no_stdlib`] for the public
 /// entry point + rationale.
-pub(crate) fn load_in_memory_no_stdlib(
-    source: &str,
-) -> Result<ResolvedProgram, Vec<LoaderError>> {
+pub(crate) fn load_in_memory_no_stdlib(source: &str) -> Result<ResolvedProgram, Vec<LoaderError>> {
     let mut state = LoaderState::new();
     state.load_from_source(&ModulePath::khi_root(), None, None, source, None);
     state.finish()
@@ -209,7 +207,9 @@ impl LoaderState {
         // back to the original `PathBuf` if canonicalization fails
         // (e.g. the file was moved between read and now); the guard
         // still catches the textual identity in that case.
-        let guard_path = source_path.as_ref().map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
+        let guard_path = source_path
+            .as_ref()
+            .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()));
         if let Some(ref gp) = guard_path {
             self.loading_files.insert(gp.clone());
         }
@@ -333,10 +333,7 @@ impl LoaderState {
                 // external child of the inline scope resolves under
                 // that subdir first, then walks the chain.
                 let child_chain: Option<Vec<PathBuf>> = parent_search_chain.map(|chain| {
-                    let primary = chain
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| PathBuf::from("."));
+                    let primary = chain.first().cloned().unwrap_or_else(|| PathBuf::from("."));
                     let mut new_chain = Vec::with_capacity(chain.len() + 1);
                     new_chain.push(primary.join(&decl.name));
                     new_chain.extend(chain.iter().cloned());
@@ -453,7 +450,8 @@ impl LoaderState {
         // `<matched_dir>/<name>/` subdir, then inherit the chain from
         // `matched_dir` onwards.
         let matched_dir = &parent_chain[matched_idx];
-        let mut child_chain: Vec<PathBuf> = Vec::with_capacity(parent_chain.len() - matched_idx + 1);
+        let mut child_chain: Vec<PathBuf> =
+            Vec::with_capacity(parent_chain.len() - matched_idx + 1);
         child_chain.push(matched_dir.join(name));
         child_chain.extend(parent_chain[matched_idx..].iter().cloned());
 
@@ -645,9 +643,9 @@ mod tests {
         assert_eq!(helper.items.len(), 1);
         // External child gets its own arena.
         assert_ne!(helper.arena_id, result.root_module().arena_id);
-        // Stdlib arenas (12: std synthetic + 11 .tri files) + crate
-        // root arena + external child file arena = 14.
-        assert_eq!(result.arenas.len(), 14);
+        // Stdlib arenas (13: std synthetic + 12 .tri files including env)
+        // + crate root arena + external child file arena = 15.
+        assert_eq!(result.arenas.len(), STDLIB_ARENA_COUNT_WITH_CRATE_ROOT + 1);
     }
 
     #[test]

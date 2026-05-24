@@ -24,7 +24,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use miette::Report;
 use triet_interpreter::RuntimeError;
 use triet_pack::PackageManifest;
-use triet_typecheck::TypeError;
+use triet_typecheck::{CapabilityError, TypeError};
 
 use crate::fmt::fmt_command;
 
@@ -544,7 +544,7 @@ fn run_capability_check(
             // import-site span tracking ships (deferred post-v0.6).
             emitter.emit(
                 &error.to_string(),
-                "triet::capability::E22XX",
+                capability_error_code(error),
                 &(0..0),
                 display_path,
             );
@@ -557,6 +557,15 @@ fn run_capability_check(
         }
     }
     false
+}
+
+/// Stable JSON error code for each `CapabilityError` variant. CLAUDE.md
+/// keep-in-sync rule: every new variant must extend this match.
+const fn capability_error_code(error: &CapabilityError) -> &'static str {
+    match error {
+        CapabilityError::MissingCapabilityClaim { .. } => "triet::capability::E2200",
+        CapabilityError::SelfContradictoryCapability { .. } => "triet::capability::E2201",
+    }
 }
 
 // ── run bytecode (.triv) ───────────────────────────────────────────────
@@ -850,4 +859,33 @@ fn short_hex(bytes: &[u8]) -> String {
     let mut s = full_hex(&bytes[..6]);
     s.push('…');
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.7.10 keep-in-sync gate (CLAUDE.md): every `CapabilityError`
+    /// variant must map to its specific E22XX code in the JSON emitter,
+    /// not a placeholder. If a new variant is added, this test forces
+    /// the mapper to extend.
+    #[test]
+    fn capability_error_code_maps_variants_to_stable_codes() {
+        let missing = CapabilityError::MissingCapabilityClaim {
+            requester_pkg: "myapp".into(),
+            cap_path: "sys.io".into(),
+            span: 0..0,
+        };
+        assert_eq!(capability_error_code(&missing), "triet::capability::E2200");
+
+        let contradictory = CapabilityError::SelfContradictoryCapability {
+            requester_pkg: "myapp".into(),
+            cap_path: "sys.fs".into(),
+            span: 0..0,
+        };
+        assert_eq!(
+            capability_error_code(&contradictory),
+            "triet::capability::E2201"
+        );
+    }
 }

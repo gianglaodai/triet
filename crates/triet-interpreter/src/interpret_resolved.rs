@@ -148,10 +148,11 @@ mod tests {
         let value = run_filesystem(&[
             (
                 "main.tri",
-                "module helper\nfrom crate.helper import greet\nfunction main() -> Integer = greet()",
+                "module helper\nfrom khi.helper import greet\nfunction main() -> Integer = greet()",
             ),
             ("helper.tri", "public function greet() -> Integer = 42"),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(value, Value::Integer(triet_core::Integer::new(42).unwrap()));
     }
 
@@ -160,10 +161,11 @@ mod tests {
         let value = run_filesystem(&[
             (
                 "main.tri",
-                "module helper\nfrom crate.helper import ANSWER\nfunction main() -> Integer = ANSWER",
+                "module helper\nfrom khi.helper import ANSWER\nfunction main() -> Integer = ANSWER",
             ),
             ("helper.tri", "public constant ANSWER: Integer = 100"),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(
             value,
             Value::Integer(triet_core::Integer::new(100).unwrap())

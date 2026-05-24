@@ -189,28 +189,6 @@ pub enum CapabilityLinkError {
         /// Name of the root package whose manifest refused.
         root_pkg: String,
     },
-
-    /// E2208 — the compiled `.khi` output's caps section diverges from
-    /// what the root `dao.package` declared. Fires when the lowerer
-    /// populates caps that don't match the manifest (e.g. the manifest
-    /// says `requires sys.fs grant` but the compiled output's caps
-    /// table contains `sys.fs deny` or omits `sys.fs` entirely).
-    /// v0.7.10: infrastructure — fires once the `.khi` writer populates
-    /// caps sections from the manifest (v0.7.11 cross-package linking).
-    #[error(
-        "capability divergence in compiled `.khi`: {reason}"
-    )]
-    #[diagnostic(
-        code(triet::capability::E2208),
-        help(
-            "the lowerer produced caps that differ from the source manifest. \
-             Rebuild from clean source or check for stale artifacts."
-        )
-    )]
-    CapabilityDivergence {
-        /// Human-readable description of what diverged.
-        reason: String,
-    },
 }
 
 /// Apply ADR-0018 §2 Step 6a to `root` plus its dep closure.
