@@ -25,3 +25,17 @@ public function write_bytes(path: String, bytes: Vector<Integer>) -> Trilean = f
 
 /// True if `path` resolves to an existing file. Strict 2-state.
 public function exists(path: String) -> Trilean = false
+
+/// Walk `root` recursively, return `[[relative_path, content], …]`
+/// for every `.tri` file found. v0.7.12.1: unlocks filesystem-aware
+/// module loading from inside the Triết VM (Stage 2 needs this to
+/// compile `compiler/main.tri`'s file-bound `module parser;`
+/// declarations).
+///
+/// Output shape: outer Vector of 2-element inner Vectors `[path,
+/// content]`. Path is POSIX-form (`/` separator) regardless of host
+/// OS. Content is UTF-8 String. I/O errors and non-UTF-8 files are
+/// silently skipped (data-tier — caller sees truncated results, not
+/// panic). Iteration order is sorted by relative path for
+/// determinism.
+public function read_dir_recursive(root: String) -> Vector<Vector<String>> = read_dir_recursive(root)

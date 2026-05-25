@@ -547,4 +547,13 @@ pub enum BuiltinName {
     Blake3Hash,
     /// `std.env.get(key) -> String?` — read environment variable, `Null` if unset.
     GetEnv,
+    /// `std.io.fs.read_dir_recursive(root) -> Vector<(String, String)>` —
+    /// walk `root` recursively, return `[(relative_path, file_content), …]`
+    /// for every `.tri` file. v0.7.12.1: unlocks filesystem-aware module
+    /// loading from inside the Triết VM (Stage 2 needs this to compile
+    /// `compiler/main.tri`'s file-bound `module parser;` declarations).
+    /// Path entries are POSIX-form (`/` separator); content is UTF-8
+    /// String. Returns empty Vector on I/O error. Iteration order is
+    /// sorted by relative path for determinism.
+    ReadDirRecursive,
 }

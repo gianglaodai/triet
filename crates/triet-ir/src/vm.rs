@@ -1769,6 +1769,10 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         "std.crypto.blake3_hash" => Some(BuiltinName::Blake3Hash),
         "std.env.get" => Some(BuiltinName::GetEnv),
 
+        // v0.7.12.1 — filesystem-aware module loader needs this
+        // to walk `compiler/` for self-hosting.
+        "std.io.fs.read_dir_recursive" => Some(BuiltinName::ReadDirRecursive),
+
         _ => None,
     }
 }
@@ -2498,6 +2502,74 @@ fn execute_builtin(
                 }
             };
             Ok(std::env::var(&key).map_or(RuntimeValue::Null, RuntimeValue::String))
+        }
+        BuiltinName::ReadDirRecursive => {
+            // v0.7.12.1: walk `root` recursively, return
+            // Vector<Vector<String>> where each inner is
+            // [relative_path, file_content] for `.tri` files only.
+            // Triết has no first-class tuple opcode so we represent
+            // the pair as a 2-element Vector<String>.
+            let root_arg = args.first().cloned().unwrap_or(RuntimeValue::Unit);
+            let root = match root_arg {
+                RuntimeValue::String(s) => s,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::String,
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let mut entries: Vec<(String, String)> = Vec::new();
+            walk_tri_files(std::path::Path::new(&root), std::path::Path::new(&root), &mut entries);
+            // Sort by relative path for determinism — `walk_tri_files`
+            // uses fs::read_dir which has platform-dependent order.
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let outer: Vec<RuntimeValue> = entries
+                .into_iter()
+                .map(|(path, content)| {
+                    RuntimeValue::Vector(vec![
+                        RuntimeValue::String(path),
+                        RuntimeValue::String(content),
+                    ])
+                })
+                .collect();
+            Ok(RuntimeValue::Vector(outer))
+        }
+    }
+}
+
+/// v0.7.12.1 helper for `BuiltinName::ReadDirRecursive`. Walks
+/// `dir` recursively (depth-first), collecting `(relative_path,
+/// content)` tuples for every `*.tri` file found. Relative paths
+/// use POSIX `/` separator regardless of host OS. I/O errors and
+/// non-UTF-8 files are silently skipped (data-tier — caller sees
+/// truncated results, not a panic).
+fn walk_tri_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<(String, String)>,
+) {
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_tri_files(root, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("tri") {
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let rel_str = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            out.push((rel_str, content));
         }
     }
 }
@@ -5545,6 +5617,81 @@ mod tests {
             matches!(r, RuntimeValue::Null),
             "unset env must return Null, got {r:?}"
         );
+    }
+
+    /// v0.7.12.1 — `read_dir_recursive` walks a directory tree
+    /// returning sorted `(rel_path, content)` pairs for `.tri` files.
+    #[test]
+    fn vm_read_dir_recursive_returns_sorted_tri_pairs() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        // Stage 3 files; only 2 are .tri so non-.tri is filtered.
+        fs::write(temp.path().join("alpha.tri"), "fn alpha").unwrap();
+        fs::write(temp.path().join("zebra.tri"), "fn zebra").unwrap();
+        fs::write(temp.path().join("README.md"), "not a tri file").unwrap();
+        // Nested .tri
+        fs::create_dir(temp.path().join("sub")).unwrap();
+        fs::write(temp.path().join("sub/beta.tri"), "fn beta").unwrap();
+
+        let prog = build_builtin_program(
+            vec![("root".into(), TypeTag::String)],
+            TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::String)))),
+            BuiltinName::ReadDirRecursive,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let r = vm
+            .execute(FuncId(0), vec![make_string(temp.path().to_str().unwrap())])
+            .unwrap();
+        let outer = match r {
+            RuntimeValue::Vector(v) => v,
+            other => panic!("expected Vector, got {other:?}"),
+        };
+        assert_eq!(outer.len(), 3, "expected 3 .tri entries (README skipped)");
+        // Extract (path, content) from each inner Vector.
+        let pairs: Vec<(String, String)> = outer
+            .into_iter()
+            .map(|elem| match elem {
+                RuntimeValue::Vector(v) => {
+                    let mut iter = v.into_iter();
+                    let path = match iter.next() {
+                        Some(RuntimeValue::String(s)) => s,
+                        other => panic!("expected String path, got {other:?}"),
+                    };
+                    let content = match iter.next() {
+                        Some(RuntimeValue::String(s)) => s,
+                        other => panic!("expected String content, got {other:?}"),
+                    };
+                    (path, content)
+                }
+                other => panic!("expected inner Vector, got {other:?}"),
+            })
+            .collect();
+        // Sorted by relative path: alpha.tri, sub/beta.tri, zebra.tri.
+        assert_eq!(pairs[0].0, "alpha.tri");
+        assert_eq!(pairs[0].1, "fn alpha");
+        assert_eq!(pairs[1].0, "sub/beta.tri");
+        assert_eq!(pairs[1].1, "fn beta");
+        assert_eq!(pairs[2].0, "zebra.tri");
+        assert_eq!(pairs[2].1, "fn zebra");
+    }
+
+    /// v0.7.12.1 — missing directory returns empty Vector (data-tier).
+    #[test]
+    fn vm_read_dir_recursive_missing_root_returns_empty() {
+        let key = format!("/tmp/dao_test_missing_dir_{}", std::process::id());
+        let prog = build_builtin_program(
+            vec![("root".into(), TypeTag::String)],
+            TypeTag::Vector(Box::new(TypeTag::Vector(Box::new(TypeTag::String)))),
+            BuiltinName::ReadDirRecursive,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let r = vm.execute(FuncId(0), vec![make_string(&key)]).unwrap();
+        match r {
+            RuntimeValue::Vector(v) => assert!(v.is_empty(), "missing dir → empty Vector"),
+            other => panic!("expected empty Vector, got {other:?}"),
+        }
     }
 
     /// `NullCheck` on a non-null `RuntimeValue::Outcome` (e.g. success

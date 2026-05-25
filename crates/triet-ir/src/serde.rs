@@ -570,6 +570,7 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::Blake3Hash => 29,
         BuiltinName::WriteFileBytes => 30,
         BuiltinName::GetEnv => 31,
+        BuiltinName::ReadDirRecursive => 32,
     };
     write_u8(buf, id);
 }
@@ -609,6 +610,7 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         29 => Ok(BuiltinName::Blake3Hash),
         30 => Ok(BuiltinName::WriteFileBytes),
         31 => Ok(BuiltinName::GetEnv),
+        32 => Ok(BuiltinName::ReadDirRecursive),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }
