@@ -60,7 +60,7 @@ from std.assert import assert
 from khi.parser.lexer import SpannedToken, LexError, lex
 from khi.parser import Arena, get_expression, get_statement, get_type as get_type_expr, get_item, get_pattern
 from khi.parser import Program, ParseProgramStep, parser_new, parse_program, ParserState
-from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr, IfExpr, MatchExpr
+from khi.parser import Expr, IntegerLiteralExpr, TernaryLiteralExpr, TrileanLiteralExpr, StringLiteralExpr, NullLiteralExpr, IdentifierExpr, UnaryOpExpr, BinaryOpExpr, ForceUnwrapExpr, CallExpr, FieldAccessExpr, MethodCallExpr, OutcomeConstructorExpr, OutcomePropagateExpr, OutcomeDefaultExpr, ElvisOpExpr, RangeExpr, IfExpr, MatchExpr, BlockExpr
 from khi.parser import Stmt, LetStmt, ConstantStmt, ReturnStmt, BreakStmt, ContinueStmt, ForStmt, WhileStmt, LoopStmt, AssignStmt, ExpressionStmt
 from khi.parser import TypeExpr, NamedType, GenericType, TupleType, NullableType, FunctionType, OutcomeType, RefinedTrileanType
 from khi.parser import Item, FunctionItem, ConstantItem, TypeAliasItem, StructItem, EnumItem, ImportItem, ImportFromItem, ModuleItem
@@ -3290,6 +3290,21 @@ public function lower_expression(ctx: LowerCtx, expr_id: Integer) -> LowerExprRe
         OutcomePropagateExpr(p) => lower_outcome_propagate(ctx, p),
         IfExpr(p) => lower_if_expr(ctx, p),
         MatchExpr(p) => lower_match_expr(ctx, p),
+        // v0.7.12.4 — BlockExpr lowers via `lower_block_inline`
+        // (no new scope push/pop). Rationale: AssignStmt rebinds
+        // inside the block must reach the enclosing scope so the
+        // v0.7.12.3 match-arm mutation-phi can snapshot them. Using
+        // `lower_block` (with scope) would drop the rebinds when
+        // the block pops, defeating mutation tracking.
+        //
+        // Trade-off accepted: BlockExpr-local `let` bindings leak
+        // to the enclosing scope at the IR level. This is harmless
+        // because typecheck enforces source-level scoping rules,
+        // and the enclosing scope itself pops shortly (match arm,
+        // function body, etc.). Full BlockExpr scope isolation
+        // requires Rust-style `rebind_var` walking semantics — a
+        // future sub-task.
+        BlockExpr(b) => lower_block_inline(ctx, b),
         _ => fresh_value(ctx),
     }
 }
@@ -3553,9 +3568,16 @@ function walk_expr_for_assigns(arena: Arena, expr_id: Integer) -> Vector<String>
                 i = i + 1
             }
         },
-        // BlockExpr arm activates in v0.7.12.4. Other Expr variants
-        // (literals, calls, ops) carry no AssignStmt and don't need
-        // recursion.
+        // v0.7.12.4 — BlockExpr arm: recurse into the block's stmts.
+        // This is the primary case the mutation-phi infrastructure
+        // from .3 was waiting for. Match arm bodies of the form
+        // `pattern => { stmt; stmt; expr }` now properly contribute
+        // mutated vars to the merge phi.
+        BlockExpr(b) => {
+            out = vec_extend_unique(out, walk_block_for_assigns(arena, b))
+        },
+        // Other Expr variants (literals, calls, ops) carry no
+        // AssignStmt and don't need recursion.
         _ => { },
     }
     out
@@ -5079,6 +5101,52 @@ public function match_mutation_phi_infra_smoke_main() -> Unit = {
     println("v0.7.12.3 ir_lowerer match-mutation-phi infra smoke OK")
 }
 
+// ── v0.7.12.4 — BlockExpr arm ───────────────────────────────────
+
+public function block_expr_smoke_main() -> Unit = {
+    // Test 1: BlockExpr as match arm body. v0.7.12.3 mutation-phi
+    // infra activates: arm body `{ x = x + 1; x }` mutates `x` so
+    // the merge gets one Phi for the result + one Phi for `x`.
+    let s1: String = "function f(c: Trilean!) -> Integer = { let mutable x: Integer = 0 match c { true => { x = x + 1 x }, _ => 0 } x }"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    // 5-block match shape (entry/arm0/test1/arm1/merge) — the
+    // outer fn body uses BlockBody (function f() = { ... }) so
+    // entry hosts the match scrutinee + match-test directly.
+    assert(length(f1.blocks) == 5)
+
+    // Find the match_merge block (last) and count Phi
+    // instructions. Result Phi + per-mutated-var Phi for `x` =
+    // 2 Phis total.
+    let merge1: BasicBlock = get(f1.blocks, 4)!!
+    let mutable phi_count: Integer = 0
+    let total1: Integer = length(merge1.instructions)
+    let mutable i: Integer = 0
+    while i < total1 {
+        let inst_opt: Instruction? = get(merge1.instructions, i)
+        if instruction_opcode_name(inst_opt!!) == "Phi" {
+            phi_count = phi_count + 1
+        }
+        i = i + 1
+    }
+    assert(phi_count == 2)
+
+    // Test 2: BlockExpr as let RHS. `let y = { let inner: Integer
+    // = 5  inner + 1 }` lowers the inner block via lower_block_inline
+    // — the let-binding for `inner` leaks to the outer scope at the
+    // IR level (per v0.7.12.4 design note), but `y` ends up bound
+    // to the BlockExpr's final value (inner + 1 = 6).
+    let s2: String = "function f() -> Integer = { let y: Integer = { let inner: Integer = 5 inner + 1 } y }"
+    let p2: IrProgram = lower_source(s2)
+    let m2: IrModule = get(p2.modules, 0)!!
+    let f2: Function = get(m2.functions, 0)!!
+    // Single block: no control flow.
+    assert(length(f2.blocks) == 1)
+
+    println("v0.7.12.4 ir_lowerer block-expr smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -5437,4 +5505,5 @@ public function main() -> Unit = {
     if_expr_smoke_main()
     match_expr_smoke_main()
     match_mutation_phi_infra_smoke_main()
+    block_expr_smoke_main()
 }

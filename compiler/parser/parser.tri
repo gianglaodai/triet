@@ -446,6 +446,13 @@ public enum Expr {
     RangeExpr(RangePayload),
     IfExpr(IfExprPayload),
     MatchExpr(MatchExprPayload),
+    // v0.7.12.4 — block expression `{ stmts; final_expr }` as a
+    // first-class Expr variant. Unlocks match arm block-bodies
+    // (`pattern => { stmt; stmt; expr }`) which are the last
+    // missing piece for Stage 2 to compile `compiler/main.tri`
+    // byte-identically (per v0.7.x.runtime-fix.lowerer-incomplete-
+    // expr's main.tri review note in v0.7.9.5).
+    BlockExpr(Block),
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1545,6 +1552,7 @@ function parse_prefix(state: ParserState) -> ParseStep~ParseError = {
                 IfKw => parse_if_expression(state),
                 IfQKw => parse_if_expression(state),
                 MatchKw => parse_match_expression(state),
+                LBrace => parse_block_expression(state),
                 _ => ~- make_unexpected_token_err(state, "expression"),
             }
         },
@@ -1841,6 +1849,38 @@ function parse_match_expression(state: ParserState) -> ParseStep~ParseError = {
                 state: ParserState {
                     tokens: after_rbrace.tokens,
                     cursor: after_rbrace.cursor,
+                    arena: res.arena,
+                },
+                expr_id: res.id,
+            }
+        },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// v0.7.12.4 — block-expression parsing
+// ─────────────────────────────────────────────────────────────────
+
+// Parse `{ stmts; final_expr? }` as a `BlockExpr`. Caller has peeked
+// LBrace; this delegates to `parse_block` (v0.7.5.3) and wraps the
+// result in a BlockExpr. Mirrors `Expr::Block(b) => self.lower_block(b)`
+// in Rust impl (crates/triet-ir/src/lowerer.rs:565).
+function parse_block_expression(state: ParserState) -> ParseStep~ParseError = {
+    let open_opt: SpannedToken? = peek(state)
+    match open_opt {
+        ~0 => ~- make_unexpected_eof_err(state, "`{` (block expression)"),
+        _ => {
+            let open: SpannedToken = open_opt!!
+            let block_step: ParseBlockStep = parse_block(state) ~? |err| ~- err
+            let end_pos: Integer = previous_token_end(block_step.state, open.span_end)
+            let res: AllocResult = alloc_expression(
+                block_step.state.arena,
+                spanned_expr(BlockExpr(block_step.block), open.span_start, end_pos),
+            )
+            ~+ ParseStep {
+                state: ParserState {
+                    tokens: block_step.state.tokens,
+                    cursor: block_step.state.cursor,
                     arena: res.arena,
                 },
                 expr_id: res.id,
@@ -5472,6 +5512,7 @@ public function format_expr(arena: Arena, id: Integer) -> String = {
             }
             concat("(match ", concat(scr, concat(arms_str, ")")))
         },
+        BlockExpr(b) => format_block(arena, b),
     }
 }
 
@@ -6247,6 +6288,23 @@ function main() -> Unit = {
     assert_parse_program(
         "function f(x: Integer) -> Integer = match x { n => n }",
         "(program (fn f (x:Integer) ->Integer (= (match x (arm n n)))))",
+    )
+
+    // v0.7.12.4 — BlockExpr parser surface.
+    // Match arm with block-body: `=> { stmts; expr }` now parses as
+    // BlockExpr instead of erroring on `{`.
+    assert_parse_program(
+        "function f(x: Integer) -> Integer = match x { 0 => { let y: Integer = 1 y + 2 }, _ => 0 }",
+        "(program (fn f (x:Integer) ->Integer (= (match x (arm 0 (block (let y :Integer 1) (final (+ y 2)))) (arm _ 0)))))",
+    )
+    // BlockExpr as a let RHS. v0.7.11.1g's `function f() = { … }`
+    // form parses as BlockBody (not ExpressionBody(BlockExpr)) so
+    // the explicit BlockExpr-as-expression assertion uses `let
+    // <name> = { … }` inside a function body where parse_expression
+    // dispatches LBrace to parse_block_expression.
+    assert_parse_program(
+        "function f() -> Integer = { let x: Integer = { 5 } x + 1 }",
+        "(program (fn f () ->Integer (block (let x :Integer (block (final 5))) (final (+ x 1)))))",
     )
 
     // v0.7.5.5a — full type grammar (atom-level, exercised directly
