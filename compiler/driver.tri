@@ -34,7 +34,7 @@ from std.assert import assert
 from std.text import concat, from_integer
 
 from khi.parser import Arena
-from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_khi_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, load_program, ResolveResult, resolve_names, LoaderError, loader_error_message
+from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_khi_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, load_program, load_program_with_stdlib, ResolveResult, resolve_names, LoaderError, loader_error_message
 from khi.modules import detect_cycles
 from khi.typecheck import TypeError, check_resolved
 from khi.ir_lowerer import IrProgram, IrModule, ConstantPool, LowerModuleResult, lower_module_with_imports, ir_module_with_path, ir_program_new, ir_program_push_module, ir_program_with_constants, constant_pool_new, ir_program_function_count, Function, BasicBlock, Instruction, instruction_opcode_name
@@ -212,8 +212,18 @@ public function serialize_program_to_khi(source: String, pkg_name: String) -> Bu
 // `serialize_program_to_khi` (in-memory variant above) stays for
 // single-file callers that already have the source string.
 public function serialize_program_path_to_khi(root_path: String, pkg_name: String) -> BuildResult = {
-    // Stage 1: filesystem load — walks `module foo;` declarations.
-    let load_r: LoadProgramResult = load_program(root_path)
+    // Stage 1: filesystem load + stdlib pre-load. v0.7.12.5 wires
+    // `load_program_with_stdlib` so user code can `from std.io
+    // import println` etc. (needed by main.tri).
+    //
+    // **CWD requirement**: `load_stdlib` looks for `std/X.tri`
+    // relative to CWD. Callers (tests, dao CLI) must set CWD to
+    // a directory containing the workspace `std/` tree before
+    // invoking. v0.7.12.5 leaves stdlib lookup CWD-relative;
+    // env-var-driven discovery (`DAO_STDLIB_PATH`) defers to a
+    // future sub-task once `std.env.get` is exposed inside the
+    // Triết-side stdlib loader.
+    let load_r: LoadProgramResult = load_program_with_stdlib(root_path)
     let load_errs: Vector<String> = format_loader_errors(load_r.errors)
     if length(load_errs) > 0 {
         return BuildResult { bytes: new(), errors: load_errs }

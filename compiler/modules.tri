@@ -983,7 +983,40 @@ module path
 module string
 module crypto
 module env", ~0)
-    outcome.context
+    // v0.7.12.5 — strip FileNotFound errors arising from stdlib
+    // pre-load. CWD may not contain `std/`; user code that doesn't
+    // import stdlib (e.g. factorial.tri) succeeds without it. If
+    // user code DOES import std.X but stdlib pre-load failed, the
+    // resolver step catches that as a separate UnresolvedImport
+    // error with the actual import-site span — which is more
+    // actionable than this loader-stage FileNotFound.
+    let new_ctx: LoaderContext = LoaderContext {
+        arenas: outcome.context.arenas,
+        modules: outcome.context.modules,
+        errors: filter_out_file_not_found(outcome.context.errors),
+        root_id: outcome.context.root_id,
+    }
+    new_ctx
+}
+
+/// v0.7.12.5 — remove `FileNotFoundErr` entries from a loader
+/// error list. Used to make stdlib pre-load best-effort (CWD may
+/// not contain `std/`; resolver step catches actual unresolved
+/// imports with better diagnostics).
+function filter_out_file_not_found(errs: Vector<LoaderError>) -> Vector<LoaderError> = {
+    let total: Integer = length(errs)
+    let mutable out: Vector<LoaderError> = new()
+    let mutable i: Integer = 0
+    while i < total {
+        let e_opt: LoaderError? = get(errs, i)
+        let e: LoaderError = e_opt!!
+        match e {
+            FileNotFoundErr(_) => { },
+            _ => { out = push(out, e) },
+        }
+        i = i + 1
+    }
+    out
 }
 
 /// In-memory entry point. Loads a single-file program from `source`
@@ -1016,6 +1049,25 @@ public function load_program_from_source_with_stdlib(source: String) -> LoadProg
 /// Stdlib pre-load defers to v0.7.6.4 — for now the loader's only
 /// job is the explicit `module foo;` walk.
 public function load_program(root_path: String) -> LoadProgramResult = {
+    load_program_with_initial_ctx(root_path, loader_context_new())
+}
+
+/// v0.7.12.5 — like [`load_program`] but pre-loads stdlib modules
+/// (matching the in-memory `load_program_from_source_with_stdlib`
+/// shape). `compiler/main.tri` imports from `std.io` / `std.text`
+/// / `std.collections.vector` etc., so Stage 2 self-compile needs
+/// stdlib resolved at the loader stage.
+public function load_program_with_stdlib(root_path: String) -> LoadProgramResult = {
+    load_program_with_initial_ctx(root_path, load_stdlib(loader_context_new()))
+}
+
+/// Internal helper shared by `load_program` and
+/// `load_program_with_stdlib`. Reads the root file, then runs the
+/// recursive loader starting from `initial_ctx`.
+function load_program_with_initial_ctx(
+    root_path: String,
+    initial_ctx: LoaderContext,
+) -> LoadProgramResult = {
     let source_opt: String? = fs_read(root_path)
     match source_opt {
         ~0 => {
@@ -1033,7 +1085,6 @@ public function load_program(root_path: String) -> LoadProgramResult = {
             let source: String = source_opt!!
             let root_dir_opt: String? = path_parent(root_path)
             let root_dir: String = root_dir_opt ~: "."
-            let initial_ctx: LoaderContext = loader_context_new()
             let outcome: LoadOneResult = load_from_source(
                 initial_ctx,
                 module_path_khi_root(),

@@ -213,8 +213,61 @@ fn stage2_factorial_decodes_via_rust_reader() {
     );
 }
 
-// Stage 2 self-compile of main.tri lands in v0.7.12.5 once the
-// blockers .3 (match-arm-mutation-phi-port) and .4 (BlockExpr)
-// are closed. v0.7.12.2 wires the filesystem-aware
-// `serialize_program_path_to_khi` driver entry; factorial.tri
-// still passes byte-identical (it uses neither blocker feature).
+// ── v0.7.12.5 — Stage 2 self-compiles main.tri via filesystem ────
+
+/// Stage 2 self-compile of `compiler/main.tri` (~9700 LOC across
+/// 6 module files). Marked `#[ignore]` because the VM dev tier
+/// runs ~50-200× slower than Rust-native (ADR-0019 §7), so
+/// compiling main.tri inside the VM takes minutes — too slow for
+/// per-commit CI. Run manually via:
+///
+/// ```text
+/// cargo test --release -p triet-bootstrap --test bootstrap_loop \
+///     -- --ignored stage2_self_compiles_main_tri
+/// ```
+///
+/// This is the test the v0.7.12.7 `cmp` gate will lift to non-
+/// ignored once Stage 3 production lands. Until then it serves as
+/// developer verification that the pipeline runs end-to-end.
+#[test]
+#[ignore = "slow: compiles ~9700 LOC inside VM, takes minutes per ADR-0019 §7 perf gate"]
+fn stage2_self_compiles_main_tri_via_filesystem() {
+    // v0.7.12.4 closed the last parser/lowerer blockers (BlockExpr +
+    // match-arm-mutation-phi). Combined with .2's filesystem-aware
+    // `serialize_program_path_to_khi`, Stage 2 (the VM running main.tri
+    // compiled by Stage 1) can now load its own siblings and produce
+    // a .khi for itself.
+    //
+    // Byte-identical comparison with Rust reference defers to v0.7.12.6
+    // — current scope verifies the pipeline runs end-to-end without
+    // VM error and emits a non-empty, structurally valid .khi.
+    let main_path = compiler_main_path();
+    let out_dir = TempDir::new().expect("tempdir");
+    let out_path = out_dir.path().join("main.khi");
+
+    let ir = main_ir().clone();
+    let func_id = lookup_func(&ir, "main");
+    let mut vm = Vm::new(ir);
+
+    let main_str = main_path.to_str().expect("UTF-8 path").to_owned();
+    let out_str = out_path.to_str().expect("UTF-8 path").to_owned();
+    let argv = string_vec(&["build", &main_str, "-o", &out_str, "--pkg", "compiler"]);
+    let result = vm
+        .execute(func_id, vec![argv])
+        .expect("Stage 2 main.tri self-build must execute without VM error");
+
+    match result {
+        RuntimeValue::Trit(trit) if trit.is_positive() => {}
+        other => {
+            panic!("Stage 2 self-build returned non-positive Trit: {other:?} (expected Positive)")
+        }
+    }
+
+    let emitted = std::fs::read(&out_path).expect("read self-compiled main.khi");
+    let (meta, code) = read_khi(&emitted).expect("self-compiled .khi must decode");
+    assert_eq!(meta.pkg_name, "compiler");
+    assert!(
+        !code.is_empty(),
+        "self-compiled code section must be non-empty"
+    );
+}
