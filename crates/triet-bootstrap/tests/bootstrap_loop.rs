@@ -219,16 +219,24 @@ fn stage2_factorial_decodes_via_rust_reader() {
 /// 6 module files). Marked `#[ignore]` because the VM dev tier
 /// runs ~50-200× slower than Rust-native (ADR-0019 §7), so
 /// compiling main.tri inside the VM takes minutes — too slow for
-/// per-commit CI. Run manually via:
+/// per-commit CI. **Empirically measured (v0.7.12.5 sanity sweep
+/// 2026-05-25, 60GB RAM 8-core developer hardware): exceeded 15
+/// minutes without completing.** Performance parity defers to v0.9
+/// JIT (Cranelift) per ADR-0019 §7 — at that point this gate
+/// becomes CI-required. Until then, this test verifies the
+/// pipeline is structurally wired; correctness verification ships
+/// via the `bootstrap_self_compile.rs` factorial.tri gate.
+///
+/// Run manually via:
 ///
 /// ```text
 /// cargo test --release -p triet-bootstrap --test bootstrap_loop \
-///     -- --ignored stage2_self_compiles_main_tri
+///     -- --ignored stage2_self_compiles_main_tri --nocapture
 /// ```
 ///
-/// This is the test the v0.7.12.7 `cmp` gate will lift to non-
-/// ignored once Stage 3 production lands. Until then it serves as
-/// developer verification that the pipeline runs end-to-end.
+/// `--nocapture` is helpful because cargo's per-test output buffer
+/// only flushes on completion; for a multi-minute test, intermediate
+/// progress would otherwise be invisible until the test ends.
 #[test]
 #[ignore = "slow: compiles ~9700 LOC inside VM, takes minutes per ADR-0019 §7 perf gate"]
 fn stage2_self_compiles_main_tri_via_filesystem() {
@@ -323,11 +331,16 @@ fn run_stage_build_main_tri(stage_ir: IrProgram, source_path: &str, pkg_name: &s
 /// **`#[ignore]` reason**: each VM run compiling ~9700 LOC takes
 /// minutes (ADR-0019 §7 — VM is dev tier, perf parity defers to
 /// v0.9 JIT). The full gate runs main.tri compile twice = double
-/// that. Run manually before promoting v0.7 to stable:
+/// that — empirically `.5` already exceeds 15 minutes for a
+/// single compile, so this gate's expected wall time is **30+
+/// minutes** on developer hardware. v0.9 JIT lifts this to
+/// CI-acceptable.
+///
+/// Run manually before promoting v0.7 to stable:
 ///
 /// ```text
 /// cargo test --release -p triet-bootstrap --test bootstrap_loop \
-///     -- --ignored stage2_eq_stage3
+///     -- --ignored stage2_eq_stage3 --nocapture
 /// ```
 ///
 /// When this passes, ROADMAP §v0.7 functional gate fires.
