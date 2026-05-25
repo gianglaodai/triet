@@ -2521,7 +2521,11 @@ fn execute_builtin(
                 }
             };
             let mut entries: Vec<(String, String)> = Vec::new();
-            walk_tri_files(std::path::Path::new(&root), std::path::Path::new(&root), &mut entries);
+            walk_tri_files(
+                std::path::Path::new(&root),
+                std::path::Path::new(&root),
+                &mut entries,
+            );
             // Sort by relative path for determinism — `walk_tri_files`
             // uses fs::read_dir which has platform-dependent order.
             entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2545,11 +2549,7 @@ fn execute_builtin(
 /// use POSIX `/` separator regardless of host OS. I/O errors and
 /// non-UTF-8 files are silently skipped (data-tier — caller sees
 /// truncated results, not a panic).
-fn walk_tri_files(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    out: &mut Vec<(String, String)>,
-) {
+fn walk_tri_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return;
     };

@@ -3072,12 +3072,44 @@ function lower_match_expr(ctx: LowerCtx, p: MatchExprPayload) -> LowerExprResult
         return LowerExprResult { ctx: emit(dest_r.ctx, inst), value_id: dest_r.value_id }
     }
 
+    // v0.7.12.3 — collect every var any arm body mutates so the merge
+    // can phi-merge across arms. Mirrors Rust lowerer.rs:2590. Pre-
+    // match values snapshotted via resolve_var; arms that don't touch
+    // a given var contribute the pre-match value to its phi.
+    let mutable mutated: Vector<String> = new()
+    let mutable mi: Integer = 0
+    while mi < arm_total {
+        let arm_opt0: MatchArm? = get(p.arms, mi)
+        let arm0: MatchArm = arm_opt0!!
+        let arm_muts: Vector<String> = walk_expr_for_assigns(st.parser_arena, arm0.body)
+        mutated = vec_extend_unique(mutated, arm_muts)
+        mi = mi + 1
+    }
+    let mut_total: Integer = length(mutated)
+    let mutable pre_vals: Vector<ValueId> = new()
+    let mutable pi: Integer = 0
+    while pi < mut_total {
+        let nm_opt: String? = get(mutated, pi)
+        let v_opt: ValueId? = resolve_var(st, nm_opt!!)
+        let pre_v: ValueId = match v_opt {
+            ~0 => ValueId { raw: -1 },
+            _ => v_opt!!,
+        }
+        pre_vals = push(pre_vals, pre_v)
+        pi = pi + 1
+    }
+
     // Allocate merge block up front.
     let merge_r: FreshBlockResult = fresh_block(st)
     st = merge_r.ctx
 
     let mutable arm_end_blocks: Vector<BlockId> = new()
     let mutable arm_values: Vector<ValueId> = new()
+    // Per-arm post-arm value for each mutated var. Index i × mut_total
+    // + m gives the value of mutated[m] at the end of arm i (or -1 if
+    // unbound). Flat layout because Triết has no Vec<Vec<ValueId>>
+    // generic ergonomics yet.
+    let mutable arm_mutated_vals: Vector<ValueId> = new()
 
     let mutable i: Integer = 0
     while i < arm_total {
@@ -3130,6 +3162,23 @@ function lower_match_expr(ctx: LowerCtx, p: MatchExprPayload) -> LowerExprResult
         st = bind_pattern_vars(st, pat_node2, scrutinee_val)
         let arm_body_r: LowerExprResult = lower_expression(st, arm.body)
         st = arm_body_r.ctx
+
+        // v0.7.12.3 — snapshot post-arm values for each mutated var
+        // BEFORE pop_scope (mirrors the v0.7.x.runtime-fix.while-body-
+        // scope-pop-order pattern). The arm body's AssignStmt rebinds
+        // live in the inner scope at this moment; after pop they vanish.
+        let mutable pm: Integer = 0
+        while pm < mut_total {
+            let nm2_opt: String? = get(mutated, pm)
+            let pv_opt: ValueId? = resolve_var(st, nm2_opt!!)
+            let post_v: ValueId = match pv_opt {
+                ~0 => ValueId { raw: -1 },
+                _ => pv_opt!!,
+            }
+            arm_mutated_vals = push(arm_mutated_vals, post_v)
+            pm = pm + 1
+        }
+
         st = pop_scope(st)
         let arm_end_id: BlockId = block_id_at(st, ctx_current_block_idx(st))
         if !current_block_has_terminator(st) {
@@ -3168,6 +3217,53 @@ function lower_match_expr(ctx: LowerCtx, p: MatchExprPayload) -> LowerExprResult
         dest: merge_dest_r.value_id,
         incoming: incoming,
     }))
+
+    // v0.7.12.3 — emit one Phi per mutated var so the post-match scope
+    // sees a single merged SSA value per name. Skip names that were
+    // pre-match unbound (raw=-1) or where every arm left the value
+    // untouched (== pre_val).
+    let mutable mvi: Integer = 0
+    while mvi < mut_total {
+        let pre_opt: ValueId? = get(pre_vals, mvi)
+        let pre_v: ValueId = pre_opt!!
+        if pre_v.raw >= 0 {
+            // Build the per-arm incoming list, defaulting arms that
+            // didn't touch the var (raw=-1) to the pre-match value.
+            let mutable any_diff: Trilean! = false
+            let mutable mut_inc: Vector<PhiIncoming> = new()
+            let mutable ai: Integer = 0
+            while ai < arm_total {
+                let flat_idx: Integer = ai * mut_total + mvi
+                let post_opt: ValueId? = get(arm_mutated_vals, flat_idx)
+                let post_raw: ValueId = post_opt!!
+                let arm_v: ValueId = if post_raw.raw < 0 { pre_v } else { post_raw }
+                if arm_v.raw != pre_v.raw {
+                    any_diff = true
+                }
+                let end2_opt: BlockId? = get(arm_end_blocks, ai)
+                mut_inc = push(mut_inc, PhiIncoming {
+                    value: arm_v,
+                    block: end2_opt!!,
+                })
+                ai = ai + 1
+            }
+            // No phi needed if every arm left the value identical to
+            // pre — re-bind to pre and skip the Phi instruction.
+            let nm3_opt: String? = get(mutated, mvi)
+            if !any_diff {
+                st = bind_var(st, nm3_opt!!, pre_v)
+            } else {
+                let phi_r: LowerExprResult = fresh_value(st)
+                st = phi_r.ctx
+                st = emit(st, PhiInst(InstPhiPayload {
+                    dest: phi_r.value_id,
+                    incoming: mut_inc,
+                }))
+                st = bind_var(st, nm3_opt!!, phi_r.value_id)
+            }
+        }
+        mvi = mvi + 1
+    }
 
     LowerExprResult { ctx: st, value_id: merge_dest_r.value_id }
 }
@@ -3418,6 +3514,126 @@ function collect_assigned_vars(arena: Arena, body: Block) -> Vector<String> = {
         i = i + 1
     }
     names
+}
+
+// v0.7.12.3 — walk an Expr (via arena ID) collecting names of every
+// var any nested AssignStmt mutates. Mirrors Rust impl
+// (`crates/triet-ir/src/lowerer.rs:547 walk_expr_for_assigns`). Used
+// by `lower_match_expr` to phi-merge mutations across arms; without
+// this, arms that rebind via inner `if` / nested `match` produce
+// last-write-wins semantics statically (corrupts e.g. Vector<T>
+// rebinds across arms).
+//
+// Currently handles `IfExpr` (then/else Blocks). `MatchExpr` recurses
+// into arm bodies. When `BlockExpr` lands (v0.7.12.4) the third arm
+// activates and match arm bodies become eligible for mutation
+// tracking. Until then this walker returns empty for arm bodies
+// that don't contain a nested IfExpr — but the infrastructure is
+// in place.
+function walk_expr_for_assigns(arena: Arena, expr_id: Integer) -> Vector<String> = {
+    let mutable out: Vector<String> = new()
+    let spanned: SpannedExpr = get_expression(arena, expr_id)
+    match spanned.node {
+        IfExpr(p) => {
+            out = vec_extend_unique(out, walk_block_for_assigns(arena, p.then_branch))
+            match p.else_branch {
+                ~0 => { },
+                _ => {
+                    out = vec_extend_unique(out, walk_block_for_assigns(arena, p.else_branch!!))
+                },
+            }
+        },
+        MatchExpr(p) => {
+            let total: Integer = length(p.arms)
+            let mutable i: Integer = 0
+            while i < total {
+                let arm_opt: MatchArm? = get(p.arms, i)
+                let arm: MatchArm = arm_opt!!
+                out = vec_extend_unique(out, walk_expr_for_assigns(arena, arm.body))
+                i = i + 1
+            }
+        },
+        // BlockExpr arm activates in v0.7.12.4. Other Expr variants
+        // (literals, calls, ops) carry no AssignStmt and don't need
+        // recursion.
+        _ => { },
+    }
+    out
+}
+
+// Walk a Block's statements: collect AssignStmt targets + recurse
+// into stmts that carry nested expressions / blocks. Combines
+// `collect_assigned_vars` (which only looks at top-level AssignStmt)
+// with recursion into stmt-level expressions where nested control
+// flow may hide more AssignStmt sites.
+function walk_block_for_assigns(arena: Arena, body: Block) -> Vector<String> = {
+    let mutable out: Vector<String> = collect_assigned_vars(arena, body)
+    let total: Integer = length(body.block_statements)
+    let mutable i: Integer = 0
+    while i < total {
+        let sid_opt: Integer? = get(body.block_statements, i)
+        let spanned: SpannedStmt = get_statement(arena, sid_opt!!)
+        match spanned.node {
+            // ExpressionStmt may wrap a nested IfExpr / MatchExpr that
+            // itself contains mutations.
+            ExpressionStmt(p) => {
+                out = vec_extend_unique(out, walk_expr_for_assigns(arena, p.expression))
+            },
+            // LetStmt's value expression — same recursion.
+            LetStmt(p) => {
+                out = vec_extend_unique(out, walk_expr_for_assigns(arena, p.value))
+            },
+            // AssignStmt's value expression — already collected the
+            // target via collect_assigned_vars; recurse to catch any
+            // RHS-nested mutations (e.g. `x = if cond { y = 1; 2 } else { 3 }`).
+            AssignStmt(p) => {
+                out = vec_extend_unique(out, walk_expr_for_assigns(arena, p.value))
+            },
+            // While/For/Loop bodies — recurse into their Blocks.
+            WhileStmt(p) => {
+                out = vec_extend_unique(out, walk_block_for_assigns(arena, p.body))
+            },
+            ForStmt(p) => {
+                out = vec_extend_unique(out, walk_block_for_assigns(arena, p.body))
+            },
+            LoopStmt(p) => {
+                out = vec_extend_unique(out, walk_block_for_assigns(arena, p.body))
+            },
+            // Return/Break/Continue carry no nested mutation surfaces
+            // we can't track via the existing flow.
+            _ => { },
+        }
+        i = i + 1
+    }
+    out
+}
+
+// Dedup-merge: append items from `src` to `dst` skipping any name
+// already present. Linear scan is fine — mutation counts stay
+// small per arm in practice.
+function vec_extend_unique(dst: Vector<String>, src: Vector<String>) -> Vector<String> = {
+    let mutable out: Vector<String> = dst
+    let total: Integer = length(src)
+    let mutable i: Integer = 0
+    while i < total {
+        let s_opt: String? = get(src, i)
+        let s: String = s_opt!!
+        let n_total: Integer = length(out)
+        let mutable found: Trilean! = false
+        let mutable k: Integer = 0
+        while k < n_total {
+            let existing_opt: String? = get(out, k)
+            if existing_opt!! == s {
+                found = true
+            }
+            k = k + 1
+        }
+        if !found {
+            out = push(out, s)
+        }
+        i = i + 1
+    }
+    out
 }
 
 // Build a 1-incoming Phi placeholder. Patched by
@@ -4830,6 +5046,39 @@ public function match_expr_smoke_main() -> Unit = {
     println("v0.7.11.1f2 ir_lowerer match-expr smoke OK")
 }
 
+// ── v0.7.12.3 — match-arm-mutation-phi infrastructure ───────────
+
+public function match_mutation_phi_infra_smoke_main() -> Unit = {
+    // v0.7.12.3 ports `walk_expr_for_assigns` + the per-mutated-var
+    // Phi pass from Rust `lower_match_expr`. Without BlockExpr in
+    // Triết's Expr enum (lands v0.7.12.4), match arm bodies are
+    // single expressions and the walker returns empty Vector — no
+    // observable IR change.
+    //
+    // This smoke verifies the walker runs without VM error on a
+    // typical match expression. Once .4 lands, match arms with
+    // block bodies will trigger the mutation-phi machinery.
+    let s1: String = "function f(x: Integer) -> Integer = match x { 0 => 100, _ => 0 }"
+    let p1: IrProgram = lower_source(s1)
+    let m1: IrModule = get(p1.modules, 0)!!
+    let f1: Function = get(m1.functions, 0)!!
+    // Block count unchanged from v0.7.11.1f2: 5 blocks for 2-arm match.
+    assert(length(f1.blocks) == 5)
+
+    // Merge block (index 4) still starts with the result-value Phi —
+    // mutation-phi pass adds no extra Phi when no arm mutates.
+    let merge1: BasicBlock = get(f1.blocks, 4)!!
+    let merge_first: Instruction = get(merge1.instructions, 0)!!
+    assert_string_eq(instruction_opcode_name(merge_first), "Phi")
+    let phi_count: Integer = match merge_first {
+        PhiInst(pp) => length(pp.incoming),
+        _ => 0,
+    }
+    assert(phi_count == 2)
+
+    println("v0.7.12.3 ir_lowerer match-mutation-phi infra smoke OK")
+}
+
 public function main() -> Unit = {
     // ── ID display ────────────────────────────────────────────────
     assert_string_eq(value_id_display(ValueId { raw: 0 }), "%0")
@@ -5187,4 +5436,5 @@ public function main() -> Unit = {
     method_call_smoke_main()
     if_expr_smoke_main()
     match_expr_smoke_main()
+    match_mutation_phi_infra_smoke_main()
 }
