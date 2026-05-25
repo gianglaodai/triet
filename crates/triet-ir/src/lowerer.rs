@@ -2241,17 +2241,93 @@ impl<'a> LowerCtx<'a> {
         let body_id = self.fresh_block();
         let exit_id = self.fresh_block();
 
+        // Collect mutable rebinds inside the loop body so we can
+        // phi-stitch them at the loop entry — the body-back edge
+        // carries the post-iteration values, the pre-loop edge
+        // carries the initial values. Without this, `loop { x =
+        // x + 1; break }` reads the stale pre-loop `x` on every
+        // iteration (never making progress, potentially hanging).
+        // Mirrors `lower_while_loop` phi machinery.
+        // v0.7.x.runtime-fix-debt.2.
+        let mutated: Vec<String> = self.collect_assigned_vars(body);
+        let pre_loop_block = self.current_block;
+        let pre_loop_vals: Vec<(String, Option<ValueId>)> = mutated
+            .iter()
+            .map(|n| (n.clone(), self.resolve_var(n)))
+            .collect();
+
         self.emit(Instruction::Br { target: body_id });
 
         self.start_block(body_id, Some("loop_body".into()));
+
+        // Emit phi placeholders for each mutated var: pre-loop edge
+        // is known now; body-end edge is patched after body lowers.
+        let mut phi_dests: Vec<(String, ValueId)> = Vec::new();
+        for (name, pre_val) in &pre_loop_vals {
+            let Some(pre) = *pre_val else { continue };
+            let phi_dest = self.fresh_value();
+            self.emit(Instruction::Phi {
+                dest: phi_dest,
+                incoming: vec![PhiIncoming {
+                    value: pre,
+                    block: pre_loop_block,
+                }],
+            });
+            let pre_kind = self.kind_of_value(pre);
+            self.set_value_kind(phi_dest, pre_kind);
+            self.rebind_var(name, phi_dest);
+            phi_dests.push((name.clone(), phi_dest));
+        }
+
         self.loop_stack.push(LoopContext {
             break_target: exit_id,
             continue_target: body_id,
         });
         self.push_scope();
+        // Re-bind phi values in the body scope so in-loop reads
+        // resolve to the phi dest (not the pre-loop value).
+        for (name, phi_dest) in &phi_dests {
+            self.bind_var(name.clone(), *phi_dest);
+        }
         self.lower_block(body);
+        // Snapshot the body-end SSA values BEFORE popping scope,
+        // so resolve_var finds the post-iteration binds.
+        let body_end_block = self.current_block;
+        let post_body_vals: Vec<(String, ValueId, ValueId)> = phi_dests
+            .iter()
+            .filter_map(|(name, phi_dest)| {
+                self.resolve_var(name).map(|v| (name.clone(), *phi_dest, v))
+            })
+            .collect();
         self.pop_scope();
         self.loop_stack.pop();
+        // Patch the phi nodes with the body-end edge.
+        if let Some(body_block) = self.blocks.get_mut(&body_id) {
+            for (_, phi_dest, body_val) in &post_body_vals {
+                for instr in &mut body_block.instructions {
+                    if let Instruction::Phi { dest, incoming } = instr
+                        && *dest == *phi_dest
+                    {
+                        incoming.push(PhiIncoming {
+                            value: *body_val,
+                            block: body_end_block,
+                        });
+                    }
+                }
+            }
+        }
+        // Re-verify ValueKind when both edges agree.
+        let pre_map: std::collections::HashMap<&str, ValueId> = pre_loop_vals
+            .iter()
+            .filter_map(|(n, v)| v.map(|val| (n.as_str(), val)))
+            .collect();
+        for (name, phi_dest, body_val) in &post_body_vals {
+            if let Some(pre_val) = pre_map.get(name.as_str())
+                && let Some(kind) = self.shared_kind_identity([*pre_val, *body_val])
+            {
+                self.set_value_kind(*phi_dest, kind);
+            }
+        }
         if self.blocks[&self.current_block].terminator().is_none() {
             self.emit(Instruction::Br { target: body_id });
         }
