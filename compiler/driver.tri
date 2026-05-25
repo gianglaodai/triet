@@ -34,7 +34,7 @@ from std.assert import assert
 from std.text import concat, from_integer
 
 from khi.parser import Arena
-from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_khi_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, ResolveResult, resolve_names, LoaderError, loader_error_message
+from khi.modules import ResolvedProgram, Module, ModulePath, ArenaId, ModuleId, module_path_segments, module_path_khi_root, module_new, module_id_new, arena_id_new, resolved_program_new, AbsolutePath, absolute_path_display, LoadProgramResult, load_program_from_source, load_program, ResolveResult, resolve_names, LoaderError, loader_error_message
 from khi.modules import detect_cycles
 from khi.typecheck import TypeError, check_resolved
 from khi.ir_lowerer import IrProgram, IrModule, ConstantPool, LowerModuleResult, lower_module_with_imports, ir_module_with_path, ir_program_new, ir_program_push_module, ir_program_with_constants, constant_pool_new, ir_program_function_count, Function, BasicBlock, Instruction, instruction_opcode_name
@@ -154,6 +154,11 @@ function format_loader_errors(errors: Vector<LoaderError>) -> Vector<String> = {
 // Multi-file source → `.khi` bytes via the full pipeline. Returns
 // a `BuildResult` with either populated `bytes` (errors empty) or
 // populated `errors` (bytes empty).
+//
+// Single-file in-memory entry point: `source` is the file content,
+// `module foo;` declarations CANNOT resolve siblings (no path
+// context). For multi-file programs use `serialize_program_path_to_khi`
+// instead.
 public function serialize_program_to_khi(source: String, pkg_name: String) -> BuildResult = {
     // Stage 1: load + parse. Stdlib pre-load deferred to v0.7.11.5.
     let load_r: LoadProgramResult = load_program_from_source(source)
@@ -192,6 +197,55 @@ public function serialize_program_to_khi(source: String, pkg_name: String) -> Bu
     let ir: IrProgram = lower_program(resolved.program)
 
     // Stage 6: serialize to `.triv` code section + wrap in `.khi`.
+    let code: Vector<Integer> = write_program(ir)
+    let meta: AbiMetadata = abi_metadata_empty(pkg_name, semver_zero())
+    let bytes: Vector<Integer> = write_khi(meta, code)
+    BuildResult { bytes: bytes, errors: new() }
+}
+
+// v0.7.12.2 — Multi-file `path → .khi` pipeline. Uses Triết-side
+// `load_program(root_path)` (filesystem-aware via `fs_read`) so
+// `module foo;` declarations resolve sibling files. This is the
+// entry point self-host needs to compile `compiler/main.tri` (which
+// has `module parser;` / `module modules;` / etc.).
+//
+// `serialize_program_to_khi` (in-memory variant above) stays for
+// single-file callers that already have the source string.
+public function serialize_program_path_to_khi(root_path: String, pkg_name: String) -> BuildResult = {
+    // Stage 1: filesystem load — walks `module foo;` declarations.
+    let load_r: LoadProgramResult = load_program(root_path)
+    let load_errs: Vector<String> = format_loader_errors(load_r.errors)
+    if length(load_errs) > 0 {
+        return BuildResult { bytes: new(), errors: load_errs }
+    }
+
+    // Stage 2: cycle detection.
+    let cycle_errs_raw: Vector<LoaderError> = detect_cycles(load_r.program)
+    let cycle_errs: Vector<String> = format_loader_errors(cycle_errs_raw)
+    if length(cycle_errs) > 0 {
+        return BuildResult { bytes: new(), errors: cycle_errs }
+    }
+
+    // Stage 3: name resolution.
+    let resolved: ResolveResult = resolve_names(load_r.program)
+    let resolve_errs: Vector<String> = format_loader_errors(resolved.errors)
+    if length(resolve_errs) > 0 {
+        return BuildResult { bytes: new(), errors: resolve_errs }
+    }
+
+    // Stage 4: typecheck.
+    let type_errs: Vector<TypeError> = check_resolved(resolved.program)
+    let type_err_count: Integer = length(type_errs)
+    if type_err_count > 0 {
+        let mutable msgs: Vector<String> = new()
+        msgs = push(msgs, concat("error: ", concat(from_integer(type_err_count), " typecheck error(s)")))
+        return BuildResult { bytes: new(), errors: msgs }
+    }
+
+    // Stage 5: lower to IR.
+    let ir: IrProgram = lower_program(resolved.program)
+
+    // Stage 6: serialize.
     let code: Vector<Integer> = write_program(ir)
     let meta: AbiMetadata = abi_metadata_empty(pkg_name, semver_zero())
     let bytes: Vector<Integer> = write_khi(meta, code)

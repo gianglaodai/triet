@@ -212,3 +212,9 @@ fn stage2_factorial_decodes_via_rust_reader() {
         "impl_hash must be non-zero"
     );
 }
+
+// Stage 2 self-compile of main.tri lands in v0.7.12.5 once the
+// blockers .3 (match-arm-mutation-phi-port) and .4 (BlockExpr)
+// are closed. v0.7.12.2 wires the filesystem-aware
+// `serialize_program_path_to_khi` driver entry; factorial.tri
+// still passes byte-identical (it uses neither blocker feature).

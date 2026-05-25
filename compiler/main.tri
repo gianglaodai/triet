@@ -30,7 +30,7 @@ from std.collections.vector import new, push, length, get
 from std.text import concat, len as text_len, from_integer
 
 from khi.typecheck import check_source, TypeError
-from khi.driver import BuildResult, serialize_program_to_khi
+from khi.driver import BuildResult, serialize_program_to_khi, serialize_program_path_to_khi
 
 // ── Subcommand + Args ────────────────────────────────────────────
 
@@ -207,39 +207,36 @@ public function check_command(args: Args) -> Trit = {
 // diagnostic prints as a separate line.
 
 public function build_command(args: Args) -> Trit = {
-    let res: SourceResult = load_source_or_fail(args.source_path)
-    match res {
-        SourceFailed(msg) => {
-            println(msg)
-            exit_err()
+    // v0.7.12.2 — use filesystem-aware `serialize_program_path_to_khi`
+    // so `module foo;` declarations resolve sibling files. Single-file
+    // sources still work (no `module foo;` decls = no sibling reads).
+    // Earlier code path used `serialize_program_to_khi(source, ...)`
+    // which couldn't see the file system; that path remains for
+    // in-memory callers (smoke tests, REPL).
+    let build: BuildResult = serialize_program_path_to_khi(
+        args.source_path,
+        args.pkg_name,
+    )
+    let err_count: Integer = length(build.errors)
+    if err_count > 0 {
+        let mutable i: Integer = 0
+        while i < err_count {
+            let m_opt: String? = get(build.errors, i)
+            println(m_opt!!)
+            i = i + 1
         }
-        SourceLoaded(source) => {
-            let build: BuildResult = serialize_program_to_khi(
-                source,
-                args.pkg_name,
-            )
-            let err_count: Integer = length(build.errors)
-            if err_count > 0 {
-                let mutable i: Integer = 0
-                while i < err_count {
-                    let m_opt: String? = get(build.errors, i)
-                    println(m_opt!!)
-                    i = i + 1
-                }
+        exit_err()
+    } else {
+        let ok: Trilean = write_bytes(args.output_path, build.bytes)
+        match ok {
+            true => exit_ok()
+            false => {
+                println(concat("error: write_bytes failed for ", args.output_path))
                 exit_err()
-            } else {
-                let ok: Trilean = write_bytes(args.output_path, build.bytes)
-                match ok {
-                    true => exit_ok()
-                    false => {
-                        println(concat("error: write_bytes failed for ", args.output_path))
-                        exit_err()
-                    }
-                    unknown => {
-                        println("error: write_bytes returned Unknown (should not happen)")
-                        exit_err()
-                    }
-                }
+            }
+            unknown => {
+                println("error: write_bytes returned Unknown (should not happen)")
+                exit_err()
             }
         }
     }
