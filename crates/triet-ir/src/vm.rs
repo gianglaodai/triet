@@ -1672,6 +1672,59 @@ fn runtime_eq(l: &RuntimeValue, r: &RuntimeValue) -> bool {
         (RuntimeValue::String(a), RuntimeValue::String(b)) => a == b,
         (RuntimeValue::Unit, RuntimeValue::Unit) => true,
         (RuntimeValue::Null, RuntimeValue::Null) => true,
+        // v0.7.x.runtime-fix-debt.3: user-defined types.
+        // Struct: element-wise equality in declaration order.
+        (RuntimeValue::Struct { fields: a }, RuntimeValue::Struct { fields: b }) => {
+            a.len() == b.len()
+                && a.iter().zip(b.iter()).all(|(l, r)| runtime_eq(l, r))
+        }
+        // Enum: variant index + optional payload must match.
+        (RuntimeValue::Enum {
+            variant: va,
+            payload: pa,
+        }, RuntimeValue::Enum {
+            variant: vb,
+            payload: pb,
+        }) => {
+            va == vb
+                && match (pa, pb) {
+                    (Some(la), Some(lb)) => runtime_eq(la, lb),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        // Outcome: discriminator + optional payload must match.
+        (RuntimeValue::Outcome {
+            discriminator: da,
+            payload: pa,
+        }, RuntimeValue::Outcome {
+            discriminator: db,
+            payload: pb,
+        }) => {
+            da == db
+                && match (pa, pb) {
+                    (Some(la), Some(lb)) => runtime_eq(la, lb),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        // Closure: function identity + captures must match.
+        (RuntimeValue::Closure {
+            func_id: fa,
+            captures: ca,
+        }, RuntimeValue::Closure {
+            func_id: fb,
+            captures: cb,
+        }) => {
+            fa == fb
+                && ca.len() == cb.len()
+                && ca.iter().zip(cb.iter()).all(|(l, r)| runtime_eq(l, r))
+        }
+        // Vector: element-wise equality.
+        (RuntimeValue::Vector(a), RuntimeValue::Vector(b)) => {
+            a.len() == b.len()
+                && a.iter().zip(b.iter()).all(|(l, r)| runtime_eq(l, r))
+        }
         _ => false,
     }
 }
