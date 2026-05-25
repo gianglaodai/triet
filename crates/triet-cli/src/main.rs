@@ -167,7 +167,7 @@ fn main() -> ExitCode {
         } => fmt_command(&path, migrate_null, write),
         Command::Info => {
             println!("Triết — balanced ternary, AI-first programming language");
-            println!("Language SPEC:     v0.5");
+            println!("Language SPEC:     v0.7");
             println!("Implementation:    v{}", env!("CARGO_PKG_VERSION"));
             println!("Spec doc:          SPEC.md");
             println!("Vision:            VISION.md");
