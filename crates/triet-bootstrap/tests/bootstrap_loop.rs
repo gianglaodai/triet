@@ -53,7 +53,7 @@ use std::{fs, panic};
 use miette::Diagnostic;
 use tempfile::TempDir;
 
-use triet_ir::{FuncId, IrProgram, RuntimeValue, Vm, lower_program, write_program};
+use triet_ir::{FuncId, IrProgram, RuntimeValue, Vm, lower_program, read_program, write_program};
 use triet_modules::load_program;
 use triet_pack::{AbiMetadata, SemVer, read_khi, write_khi};
 use triet_typecheck::check_resolved;
@@ -269,5 +269,100 @@ fn stage2_self_compiles_main_tri_via_filesystem() {
     assert!(
         !code.is_empty(),
         "self-compiled code section must be non-empty"
+    );
+}
+
+// ── v0.7.12.6 + .7 — Stage 2 ≡ Stage 3 byte-identical gate ──────
+
+/// Lower a Stage 2-emitted `.khi` back into an `IrProgram` suitable
+/// for booting another VM (Stage 3). Extracts the embedded `.triv`
+/// code section via `read_khi`, then decodes it via `read_program`.
+fn load_stage2_ir(stage2_khi: &[u8]) -> IrProgram {
+    let (_meta, code) = read_khi(stage2_khi).expect("Stage 2 .khi must decode");
+    read_program(&code).expect("Stage 2 code section must decode as IrProgram")
+}
+
+/// Drive a `main.tri::main(["build", ...])` invocation against the
+/// given IR (Stage 1 or Stage 2 binary) and return the emitted
+/// `.khi` bytes. Shared between Stage 2 and Stage 3 invocations.
+fn run_stage_build_main_tri(stage_ir: IrProgram, source_path: &str, pkg_name: &str) -> Vec<u8> {
+    let func_id = lookup_func(&stage_ir, "main");
+    let mut vm = Vm::new(stage_ir);
+
+    let temp = TempDir::new().expect("tempdir");
+    let out_path = temp.path().join("out.khi");
+    let out_str = out_path.to_str().expect("UTF-8 path").to_owned();
+
+    let argv = string_vec(&["build", source_path, "-o", &out_str, "--pkg", pkg_name]);
+    let result = vm
+        .execute(func_id, vec![argv])
+        .expect("main(build) must execute without VM error");
+    match result {
+        RuntimeValue::Trit(trit) if trit.is_positive() => {}
+        other => panic!("expected Trit::Positive from main(build), got {other:?}"),
+    }
+    fs::read(&out_path).expect("read emitted .khi")
+}
+
+/// **The v0.7.12 strict gate** per ADR-0019 §1: Stage 2 ≡ Stage 3
+/// byte-identical when both compile `compiler/main.tri`. Proves
+/// fixed-point convergence — the self-hosting compiler's output
+/// no longer depends on which compiler built it.
+///
+/// Pipeline:
+///
+/// ```text
+/// Stage 1 (Rust) ──compile main.tri──→ Stage 2 compiler IR
+/// Stage 2 (VM)  ──compile main.tri──→ Stage 2 output .khi
+/// Stage 3 (VM)  ──compile main.tri──→ Stage 3 output .khi
+///                                       (Stage 3 ran the Stage 2
+///                                        output as its bootloader)
+/// GATE: cmp Stage 2 output == Stage 3 output
+/// ```
+///
+/// **`#[ignore]` reason**: each VM run compiling ~9700 LOC takes
+/// minutes (ADR-0019 §7 — VM is dev tier, perf parity defers to
+/// v0.9 JIT). The full gate runs main.tri compile twice = double
+/// that. Run manually before promoting v0.7 to stable:
+///
+/// ```text
+/// cargo test --release -p triet-bootstrap --test bootstrap_loop \
+///     -- --ignored stage2_eq_stage3
+/// ```
+///
+/// When this passes, ROADMAP §v0.7 functional gate fires.
+#[test]
+#[ignore = "slow: runs main.tri compile twice inside VM (~minutes each per ADR-0019 §7)"]
+fn stage2_eq_stage3_main_tri_byte_identical() {
+    let main_path = compiler_main_path();
+    let main_str = main_path.to_str().expect("UTF-8 path").to_owned();
+
+    // Stage 2: run Stage 1's IR (= main_ir()) against main.tri.
+    let stage1_ir = main_ir().clone();
+    let stage2_khi = run_stage_build_main_tri(stage1_ir, &main_str, "compiler");
+    assert!(!stage2_khi.is_empty(), "Stage 2 .khi must be non-empty");
+
+    // Boot Stage 2's emitted .khi back into an IrProgram. This is
+    // the "Stage 2 compiler binary" — the same Triết source as
+    // main_ir() but built by Stage 1 and round-tripped through
+    // `.khi` serde. If the encoder is deterministic, this is
+    // observably equivalent to main_ir(); however reading it back
+    // from bytes is what makes the test prove "the bootstrap loop
+    // works at the wire-format level" (not just the in-memory IR).
+    let stage2_ir = load_stage2_ir(&stage2_khi);
+
+    // Stage 3: run Stage 2's IR against main.tri.
+    let stage3_khi = run_stage_build_main_tri(stage2_ir, &main_str, "compiler");
+
+    // The gate.
+    assert_eq!(
+        stage2_khi,
+        stage3_khi,
+        "Stage 2 ≡ Stage 3 byte-identical FAILED. \
+         Stage 2: {} bytes, Stage 3: {} bytes. \
+         Investigate per ADR-0019 §4 (nondeterminism source, \
+         likely HashMap iter, env var, or compile-time random ID).",
+        stage2_khi.len(),
+        stage3_khi.len(),
     );
 }
