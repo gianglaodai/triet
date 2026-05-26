@@ -410,19 +410,85 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 
 ---
 
-## v0.8 — Concurrency Model
+## v0.8 — Ownership Foundation + Concurrency Model
 
-**Mục tiêu:** Triết có model concurrency riêng, có lý thuyết.
+**Mục tiêu:** Lock memory model (S6) dưới dạng parser tokens + type system representation + test corpus dày. Actor model cơ bản ở compile-time (Send derivation). **KHÔNG mục tiêu:** NLL enforcement (→v0.9), actor runtime (→v1.0), full borrow checker (→v0.10).
 
-**Lựa chọn cần đánh giá ở phase này:**
-- Actor model (Pony, Erlang) — tự nhiên ăn nhập với capability namespace.
-- Async/await (Rust) — quen thuộc.
-- CSP / channels (Go) — đơn giản.
-- Structured concurrency (Trio, Project Loom) — modern.
+**Quyết định kiến trúc:** [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md) (S6 — 5-form reference, định lý vô-chu-trình, capability-as-unsafe), [ADR-0025](docs/decisions/0025-borrow-checker-rules.md) (borrow checker algorithm, NLL, elision 3 rules, no annotation policy, E24XX errors), [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md) (Send derivation, D6 refcount ngầm, D7 linear move, memory layout binary+ternary, E25XX errors), [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) (AI-first diagnostic format language-wide). Design session 2026-05-26 chốt S6: Rust-strict static + cú pháp tam phân + capability-as-unsafe + zero lifetime annotation syntax.
 
-**Quyết định:** ADR ở giai đoạn vào v0.8 (next ADR-NNNN khi land). Hiện tại favor **Actor + structured concurrency** vì alignment với capability model.
+### Sub-tasks
 
-**Gate:** Demo concurrent program chạy đúng dưới load + race detector pass.
+| Sub-task | Description | Target |
+|---|---|---|
+| v0.7.4.3-error.4 | Ternary operator family `~+>`/`~0>`/`~->` (lexer+parser+typecheck+lowerer stubs) | Shipped `ebb90a2` |
+| v0.8.1 | SPEC §10 rewrite — S6 ownership model lock | Shipped `c9b887f` |
+| v0.8.2 | ROADMAP §v0.8 detail (this sub-task) | In progress |
+| v0.8.3 | Object header memory layout — 8-byte header (refcount u32 + reserved u32) trên binary target. Atomic ops tại boundary. VM allocation update. ~15 tests. | Code |
+| v0.8.4 | Lexer tokens ownership — `&+`/`&0`/`&-` compound + keyword `mutable`. ~10 lexer tests. | Code |
+| v0.8.5 | Parser + AST ownership — `ReferenceForm` enum, 5 forms (struct field/param/return/let), default inference per namespace (E2430 fires). ~25 parser tests. | Code |
+| v0.8.6 | Type system ownership representation — tracks reference forms, display/canonical formatting. **No NLL enforcement.** ~15 typecheck tests. | Code |
+| v0.8.7 | Actor model lexer + parser — `actor`/`receive`/`send`/`spawn`/`ReplyTo` tokens + AST nodes. ~12 tests. | Code |
+| v0.8.8 | Send derivation algorithm — auto-derive Send for 13 type categories per ADR-0026 §2.1. E2500 fires. ~20 tests. | Code |
+| v0.8.9 | Capability registration — `dao.package` schema extended with 7 ownership-related capabilities (`dev::self_ref`, `dev::raw_memory`, `dev::reinterpret`, `dev::ffi`, `sys::io.memory`, `dev::custom_drop`, `dev::skip_gen_check`). ~10 tests. | Code |
+| v0.8.10 | Diagnostic format compliance — E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. ~30 diagnostic round-trip tests. | Code |
+| v0.8.11 | Demo + integration suite — actor model demo (counter actor + worker pool). Capability gate end-to-end (request `dev::self_ref` → grant → use offset pattern). ~25 integration tests. | Code |
+| v0.8.12 | Self-hosting compiler smoke — Triết-in-Triết parser handles new keywords (read-only). Bootstrap chain verify Stage 1 ≡ Stage 2 byte-identical. | Verify |
+| v0.8.13 | Verify gate + release — per ADR-0009 §A/B/C/D: tests pass (~1650+), clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated. | Verify |
+
+**Total estimate:** 14 sub-tasks (2 shipped, 1 docs in progress, 11 code/verify). ~245 new tests expected (1354 → ~1600).
+
+### Test corpus strategy
+
+| Category | Target tests |
+|---|---|
+| Lexer tokens (5 ref forms + actor keywords + arrow operators) | ~25 |
+| Parser AST (ownership + actor) | ~50 |
+| Type system representation | ~30 |
+| Send derivation (positive + negative) | ~30 |
+| Capability gate end-to-end | ~15 |
+| Diagnostic format compliance (E24XX + E25XX round-trip) | ~30 |
+| Memory layout binary (header bytes, refcount atomic ops, drop) | ~15 |
+| Actor model basic (4 patterns from ADR-0026 §7 + edge cases) | ~25 |
+| Integration + demos | ~25 |
+| **Total v0.8 new tests** | **~245** |
+
+### Gate criteria (at v0.8.13)
+
+- **Gate A (Functional):** 0 `TODO(v0.8)` markers, 2 `#[ignore]` carry-forward từ v0.7 (bootstrap loop Stage 2 ≡ Stage 3 + perf gate, lifts at v0.9 JIT). Tất cả sub-tasks shipped với test cover.
+- **Gate B (Hygiene):** ~1600 tests pass + 0 fail, clippy `-D warnings` clean, `cargo fmt --all --check` clean. No new files > 2000 lines.
+- **Gate C (Docs):** `Cargo.toml workspace.package.version` 0.7.0 → 0.8.0 + dep version pins. SPEC header v0.7 → v0.8. ROADMAP §v0.8 marked SHIPPED. README synced. `dao info` updated.
+- **Gate D (Consistency):** All `examples/*.tri` typecheck + build OK. Actor demo run OK under VM path. Diagnostic format compliance verified (spot-check 10 E24XX/E25XX errors parseable).
+- **Perf gate:** Not applicable — v0.8 không có enforcement runtime overhead (parser/typecheck only). Perf gates resume at v0.9 NLL enforcement + JIT.
+
+### Critical path
+
+```
+v0.7.4.3-error.4 ✅ → v0.8.1 ✅ → v0.8.2 (this) → v0.8.3 (memory layout)
+    ↓                           ↓
+v0.8.4 (lexer ownership) → v0.8.5 (parser) → v0.8.6 (type system)
+    ↓                           ↓
+v0.8.7 (actor lex/parse) → v0.8.8 (Send derivation)
+    ↓                           ↓
+v0.8.9 (capability reg) → v0.8.10 (diagnostics) → v0.8.11 (integration)
+    ↓
+v0.8.12 (self-host smoke) → v0.8.13 (release)
+```
+
+Sequential — mỗi sub-task build trên typed AST của trước. Không có parallel work khả thi.
+
+### Deferred to v0.9+
+
+| Feature | Reason |
+|---|---|
+| NLL borrow checker enforcement (E2440 fires) | Cần real-world Triết code corpus first |
+| Lifetime elision 3 rules (E2400 fires) | Cần monomorphization infra |
+| `&-` upgrade tracking (E2403 fires) | Cần escape analysis |
+| Drop order + `dev::custom_drop` (E2450+) | Destructor design needs separate ADR |
+| Move semantics enforcement (E2420 hard error) | Currently stub; hard error v0.10 |
+| Actor runtime (mailbox, scheduler, supervision) | Separate ADR needed |
+| ReplyTo channel mechanics (futures/await) | Separate ADR |
+| Self-hosting compiler uses ownership keywords | Stage 1 still Rust; Stage 2+ post-v0.8 |
+| Full auto-wrap lowerer (ADR-0020 §3.0) | v0.7.4.3-error.5 |
 
 ---
 
