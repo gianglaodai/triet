@@ -410,11 +410,11 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 
 ---
 
-## v0.8 — Ownership Foundation + Concurrency Model
+## v0.8 — Ownership Foundation + Concurrency Primitives (BYOS)
 
-**Mục tiêu:** Lock memory model (S6) dưới dạng parser tokens + type system representation + test corpus dày. Actor model cơ bản ở compile-time (Send derivation). **KHÔNG mục tiêu:** NLL enforcement (→v0.9), actor runtime (→v1.0), full borrow checker (→v0.10).
+**Mục tiêu:** Lock memory model (S6) + concurrency Send rules primitives. **KHÔNG mục tiêu:** scheduler/runtime trong core language (BYOS — Bring Your Own Scheduler per ADR-0026 v2). NLL enforcement (→v0.9). stdlib `std.concurrency.*` (→v0.10).
 
-**Quyết định kiến trúc:** [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md) (S6 — 5-form reference, định lý vô-chu-trình, capability-as-unsafe), [ADR-0025](docs/decisions/0025-borrow-checker-rules.md) (borrow checker algorithm, NLL, elision 3 rules, no annotation policy, E24XX errors), [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md) (Send derivation, D6 refcount ngầm, D7 linear move, memory layout binary+ternary, E25XX errors), [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) (AI-first diagnostic format language-wide). Design session 2026-05-26 chốt S6: Rust-strict static + cú pháp tam phân + capability-as-unsafe + zero lifetime annotation syntax.
+**Quyết định kiến trúc:** [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md) (S6 — 5-form reference, định lý vô-chu-trình, capability-as-unsafe), [ADR-0025](docs/decisions/0025-borrow-checker-rules.md) (borrow checker algorithm, NLL, elision 3 rules, no annotation policy, E24XX errors), [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md) (**BYOS** — Send rules universal, Atomic primitives, capability gates, refuse async/spawn/actor keywords, E25XX errors), [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) (AI-first diagnostic format language-wide). Design session 2026-05-26 chốt S6 ownership; cùng ngày pivot ADR-0026 v1 → v2 BYOS sau khi nhận ra v1 contradicts kernel-writability goal.
 
 ### Sub-tasks
 
@@ -422,59 +422,57 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 |---|---|---|
 | v0.7.4.3-error.4 | Ternary operator family `~+>`/`~0>`/`~->` (lexer+parser+typecheck+lowerer stubs) | Shipped `ebb90a2` |
 | v0.8.1 | SPEC §10 rewrite — S6 ownership model lock | Shipped `c9b887f` |
-| v0.8.2 | ROADMAP §v0.8 detail (this sub-task) | In progress |
-| v0.8.3 | Object header memory layout — 8-byte header (refcount u32 + reserved u32) trên binary target. Atomic ops tại boundary. VM allocation update. ~15 tests. | Code |
-| v0.8.4 | Lexer tokens ownership — `&+`/`&0`/`&-` compound + keyword `mutable`. ~10 lexer tests. | Code |
-| v0.8.5 | Parser + AST ownership — `ReferenceForm` enum, 5 forms (struct field/param/return/let), default inference per namespace (E2430 fires). ~25 parser tests. | Code |
-| v0.8.6 | Type system ownership representation — tracks reference forms, display/canonical formatting. **No NLL enforcement.** ~15 typecheck tests. | Code |
-| v0.8.7 | Actor model lexer + parser — `actor`/`receive`/`send`/`spawn`/`ReplyTo` tokens + AST nodes. ~12 tests. | Code |
-| v0.8.8 | Send derivation algorithm — auto-derive Send for 13 type categories per ADR-0026 §2.1. E2500 fires. ~20 tests. | Code |
-| v0.8.9 | Capability registration — `dao.package` schema extended with 7 ownership-related capabilities (`dev::self_ref`, `dev::raw_memory`, `dev::reinterpret`, `dev::ffi`, `sys::io.memory`, `dev::custom_drop`, `dev::skip_gen_check`). ~10 tests. | Code |
-| v0.8.10 | Diagnostic format compliance — E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. ~30 diagnostic round-trip tests. | Code |
-| v0.8.11 | Demo + integration suite — actor model demo (counter actor + worker pool). Capability gate end-to-end (request `dev::self_ref` → grant → use offset pattern). ~25 integration tests. | Code |
-| v0.8.12 | Self-hosting compiler smoke — Triết-in-Triết parser handles new keywords (read-only). Bootstrap chain verify Stage 1 ≡ Stage 2 byte-identical. | Verify |
-| v0.8.13 | Verify gate + release — per ADR-0009 §A/B/C/D: tests pass (~1650+), clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated. | Verify |
+| v0.8.2 | ROADMAP §v0.8 detail | Shipped `7225525` |
+| v0.8.3 | Object header memory layout — `triet-core::memory::ObjectHeader` (8-byte binary, 54-trit ternary, refcount atomic ops, sentinels). 11 tests. | Shipped `b2c7016` |
+| v0.8.4 | Lexer tokens ownership — `&+`/`&0`/`&-` compound + bare `&`. 10 tests. | Shipped `6379beb` |
+| v0.8.5 | Parser + AST ownership — `ReferenceForm` enum, 5 forms, postfix precedence (?/!/`~`/`?~` applies before reference wraps). 8 tests. | Shipped `dce9a3a` |
+| v0.8.6 | Type system reference tracking — TypeExpr::Reference resolves transparently; enforcement deferred v0.9+. | Shipped `f3b07ef` |
+| v0.8.7 | ~~Actor model lexer + parser~~ — **REVERTED** per BYOS (ADR-0026 v2 §6 refuse list). actor/spawn/receive/send là plain identifiers, không phải keywords. | Reverted `3f35027` |
+| v0.8.7-byos | ADR-0026 v2 rewrite — BYOS philosophy + Send rules universal + Atomic placeholder + capability gates + refuse scheduler keywords. | Shipped `dca6eb2` |
+| v0.8.8 | Send derivation algorithm — auto-derive Send for 13 type categories per ADR-0026 v2 §2.1. Type system tracks ReferenceForm (vs resolve transparently). E2500 fires. ~20 tests. | Code |
+| v0.8.9 | Capability registration — `dao.package` schema extended with concurrency capabilities (`sys::raw_thread`, `sys::atomic`, `dev::ffi`, `dev::raw_memory`, `dev::reinterpret`) + ownership ones (`dev::self_ref`, `dev::custom_drop`, etc.). ~10 tests. | Code |
+| v0.8.10 | Diagnostic format compliance — E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. ~30 tests. | Code |
+| v0.8.11 | Demo + integration suite — Atomic-based counter (no scheduler) + capability gate end-to-end (request `sys::raw_thread` → grant → declare-but-not-use placeholder). ~20 integration tests. | Code |
+| v0.8.12 | Self-hosting compiler smoke — Triết-in-Triết parser handles ownership tokens (read-only). Bootstrap chain verify Stage 1 ≡ Stage 2 byte-identical. | Verify |
+| v0.8.13 | Verify gate + release — per ADR-0009 §A/B/C/D: tests pass (~1550+), clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated. | Verify |
 
-**Total estimate:** 14 sub-tasks (2 shipped, 1 docs in progress, 11 code/verify). ~245 new tests expected (1354 → ~1600).
+**Total estimate:** 14 sub-tasks (8 shipped, 6 remaining). ~150 new tests expected (1354 → ~1550) — scaled down từ original ~245 vì BYOS removes actor demo/integration scope.
 
 ### Test corpus strategy
 
 | Category | Target tests |
 |---|---|
-| Lexer tokens (5 ref forms + actor keywords + arrow operators) | ~25 |
-| Parser AST (ownership + actor) | ~50 |
-| Type system representation | ~30 |
-| Send derivation (positive + negative) | ~30 |
-| Capability gate end-to-end | ~15 |
+| Lexer tokens (5 ref forms + `&` family) | ~10 (shipped) |
+| Parser AST (ownership) | ~10 (shipped) |
+| Memory layout binary (header bytes, refcount atomic ops, sentinels) | ~11 (shipped) |
+| Type system Reference tracking + Send derivation | ~30 |
+| Capability gate (concurrency capabilities declared) | ~10 |
 | Diagnostic format compliance (E24XX + E25XX round-trip) | ~30 |
-| Memory layout binary (header bytes, refcount atomic ops, drop) | ~15 |
-| Actor model basic (4 patterns from ADR-0026 §7 + edge cases) | ~25 |
-| Integration + demos | ~25 |
-| **Total v0.8 new tests** | **~245** |
+| Atomic primitive placeholder (type signatures only, no impl) | ~10 |
+| Integration + demos (no scheduler — Atomic counter, capability flow) | ~20 |
+| **Total v0.8 new tests** | **~150** (40 shipped + 110 remaining) |
 
 ### Gate criteria (at v0.8.13)
 
-- **Gate A (Functional):** 0 `TODO(v0.8)` markers, 2 `#[ignore]` carry-forward từ v0.7 (bootstrap loop Stage 2 ≡ Stage 3 + perf gate, lifts at v0.9 JIT). Tất cả sub-tasks shipped với test cover.
-- **Gate B (Hygiene):** ~1600 tests pass + 0 fail, clippy `-D warnings` clean, `cargo fmt --all --check` clean. No new files > 2000 lines.
+- **Gate A (Functional):** 0 `TODO(v0.8)` markers, 2 `#[ignore]` carry-forward từ v0.7. ADR-0026 v2 Send rules + Atomic placeholder + capability list **specced** (implementation may defer).
+- **Gate B (Hygiene):** ~1550 tests pass + 0 fail, clippy `-D warnings` clean, `cargo fmt --all --check` clean.
 - **Gate C (Docs):** `Cargo.toml workspace.package.version` 0.7.0 → 0.8.0 + dep version pins. SPEC header v0.7 → v0.8. ROADMAP §v0.8 marked SHIPPED. README synced. `dao info` updated.
-- **Gate D (Consistency):** All `examples/*.tri` typecheck + build OK. Actor demo run OK under VM path. Diagnostic format compliance verified (spot-check 10 E24XX/E25XX errors parseable).
-- **Perf gate:** Not applicable — v0.8 không có enforcement runtime overhead (parser/typecheck only). Perf gates resume at v0.9 NLL enforcement + JIT.
+- **Gate D (Consistency):** All `examples/*.tri` typecheck + build OK. Atomic counter demo run OK. Capability declaration flow end-to-end verified.
+- **Perf gate:** Not applicable — v0.8 không có enforcement runtime overhead (parser/typecheck only).
 
 ### Critical path
 
 ```
-v0.7.4.3-error.4 ✅ → v0.8.1 ✅ → v0.8.2 (this) → v0.8.3 (memory layout)
-    ↓                           ↓
-v0.8.4 (lexer ownership) → v0.8.5 (parser) → v0.8.6 (type system)
-    ↓                           ↓
-v0.8.7 (actor lex/parse) → v0.8.8 (Send derivation)
-    ↓                           ↓
-v0.8.9 (capability reg) → v0.8.10 (diagnostics) → v0.8.11 (integration)
-    ↓
-v0.8.12 (self-host smoke) → v0.8.13 (release)
+✅ v0.7.4.3-error.4 → v0.8.1 → v0.8.2 → v0.8.3 (memory layout)
+✅ v0.8.4 (lexer) → v0.8.5 (parser) → v0.8.6 (type ref tracking)
+✅ v0.8.7-byos (ADR-0026 v2 rewrite — pivot from actor model)
+   ↓
+v0.8.8 (Send derivation) → v0.8.9 (capability reg) → v0.8.10 (diagnostics)
+   ↓
+v0.8.11 (Atomic demo + capability flow) → v0.8.12 (self-host smoke)
+   ↓
+v0.8.13 (release)
 ```
-
-Sequential — mỗi sub-task build trên typed AST của trước. Không có parallel work khả thi.
 
 ### Deferred to v0.9+
 
@@ -485,10 +483,24 @@ Sequential — mỗi sub-task build trên typed AST của trước. Không có p
 | `&-` upgrade tracking (E2403 fires) | Cần escape analysis |
 | Drop order + `dev::custom_drop` (E2450+) | Destructor design needs separate ADR |
 | Move semantics enforcement (E2420 hard error) | Currently stub; hard error v0.10 |
-| Actor runtime (mailbox, scheduler, supervision) | Separate ADR needed |
-| ReplyTo channel mechanics (futures/await) | Separate ADR |
+| Atomic primitive implementation (ADR-0028) | v0.9 — full memory ordering enforcement |
+| stdlib `std.concurrency.*` reference impl (green-thread, channel, scope, actor as struct) | v0.10 |
+| Multiple alternative scheduler crates (triet-rtos, triet-linux, etc.) | v1.0+ — community-driven |
 | Self-hosting compiler uses ownership keywords | Stage 1 still Rust; Stage 2+ post-v0.8 |
 | Full auto-wrap lowerer (ADR-0020 §3.0) | v0.7.4.3-error.5 |
+| Custom scheduler examples (Linux kthread, RTOS) | post-v1.0 |
+
+### Pivot 2026-05-26: Why ADR-0026 v1 → v2
+
+Original v0.8 plan (commit `7225525`) included v0.8.7 actor model keywords (`actor`/`receive`/`send`/`spawn`) + v0.8.11 actor demo. Author 2026-05-26 raised kernel-writability concern: Linux Rust modules cannot use async runtime (must defer to C scheduler). Same problem applies to Triết v1 actor model — bakes runtime into core language.
+
+ADR-0026 rewrite v2 (commit `dca6eb2`) reframes: **BYOS** — Triết core provides Send rules + Atomic + capability gates; scheduler is stdlib (`std.concurrency.*` planned v0.10) or external (kernel/embedded use raw capability + FFI). Same compile-time safety regardless of scheduler choice.
+
+Test count revised down 245 → 150 because:
+- Actor demo removed (~25 tests cut)
+- Actor lexer/parser tests removed (~12 tests cut)
+- Actor integration scope cut (~25 tests reduced to atomic demo ~20)
+- Migration tests added (~10 — capability flow verification)
 
 ---
 
