@@ -1,29 +1,21 @@
-// Outcome propagate (`~?`) với divergent error arm — minh họa
-// ADR-0020 §3.1.
+// Outcome error-arm handler (`~->`) — minh họa ADR-0020 §3.3.
 //
 // `test_prop` nhận `Integer~String`:
-//   - thành công: unwrap value qua `v`, rồi `~+ v`.
-//   - thất bại: capture error `e`, `~- e` là divergent expression
-//     (typecheck E1031 enforces — phải là re-propagate `~-` /
-//     `return` / panic). `~- e` tự nó đã đóng vai trò early-return
-//     trong outcome flow; không cần thêm keyword `return`.
+//   - thành công: unwrap value qua `v`.
+//   - thất bại: capture error `e`, auto-wrap `~- e` (per §3.0).
+//     `~-> |e| e` với tail expression — không cần explicit `return`
+//     hay `~-` constructor, vì operator đã carry error-arm context.
 //
 // `main()` truyền vào failing outcome (`~- "error"`), kỳ vọng
 // match nhánh `~-` → return 0. Compile + run trả `Integer(0)`.
 //
-// Gốc: WIP fixture của tác giả trong working-tree root (tên cũ
-// `propagate_bug.tri`, dùng form `return ~- e` không hợp lệ vì
-// `return` là statement không phải expression). Move sang
-// `examples/` per v0.7.x.identity.F audit + sửa thành canonical
-// form `~- e` (matches `compiler/parser/parser.tri:1351` pattern).
-//
+// Migration từ `~?` (v0.7.4.3-error.4) — see ADR-0020 §3.7.
 // Lưu ý chạy: interpreter chưa support outcome ops (per ADR-0019
 // Addendum §A7); chạy qua `dao build + dao run .triv` (VM tier).
-// `dao check` parse + typecheck cleanly. `~0` đã có interpreter
-// parity (v0.7.4.3-error.6b); `~+/~-/~?/~:` defer.
+// `dao check` parse + typecheck cleanly.
 
 function test_prop(o: Integer~String) -> Integer~String = {
-    let v: Integer = o ~? |e| ~- e
+    let v: Integer = o ~-> |e| e
     ~+ v
 }
 

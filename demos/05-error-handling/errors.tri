@@ -3,8 +3,8 @@
 // Single shared `ConfigError` struct carries the failing stage label
 // plus a human-readable detail. The pipeline stages (`read_config`,
 // `parse_field`, `coerce_port`, `coerce_debug`) all produce outcomes
-// shaped `T~ConfigError`, so the `~?` propagate operator chains them
-// without converting between error types.
+// shaped `T~ConfigError`, so the `~->` error-handler operator chains
+// them without converting between error types.
 
 public struct ConfigError {
     stage: String,

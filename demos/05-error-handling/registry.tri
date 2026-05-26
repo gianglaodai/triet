@@ -35,10 +35,9 @@ public function find_user_role(user_id: Integer) -> String?~ConfigError = {
 }
 
 // Convenience wrapper: collapses null/error arms into a default.
-// `~:` (postfix default operator, ADR-0020 §3.2) evaluates the
-// success arm if present, else evaluates the default expression.
-// For `T?~E` the typed result is `T?` (callers may still observe
-// `~0` widening through). Chain with `?:` to collapse to bare `T`.
+// `~-> |_| default_value` (ternary error-arm handler per ADR-0020
+// §3.3) evaluates `~+ default_value` on failure, keeping the Success
+// state when present. For `T?~E`, the `~0` null passes through.
 public function role_or_guest(user_id: Integer) -> String? = {
-    find_user_role(user_id) ~: "guest"
+    find_user_role(user_id) ~-> |_| "guest"
 }
