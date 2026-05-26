@@ -212,9 +212,26 @@ pub enum Token {
     /// `>=` — greater than or equal.
     #[token(">=")]
     GtEq,
+    // === Ownership reference markers (v0.8 per ADR-0022 §2) ===
+    // Compound tokens MUST appear before bare `&` (Ampersand) for
+    // longest-match. `&-` also MUST appear before `&&` (both 2-char,
+    // logos resolves ties by declaration order).
+    /// `&+` — Strong owner (frozen) reference marker.
+    #[token("&+")]
+    AmpersandPlus,
+    /// `&0` — Neutral borrow reference marker.
+    #[token("&0")]
+    AmpersandZero,
+    /// `&-` — Weak observer reference marker.
+    #[token("&-")]
+    AmpersandMinus,
     /// `&&` — logical AND.
     #[token("&&")]
     AndAnd,
+    /// `&` — reference marker (ownership type prefix, borrow operator).
+    /// Must follow all compound `&X` tokens for longest-match.
+    #[token("&")]
+    Ampersand,
     /// `||` — logical OR.
     #[token("||")]
     OrOr,

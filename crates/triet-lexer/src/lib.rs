@@ -29,15 +29,16 @@ pub use token::{IntLiteral, NumericSuffix, Token};
 mod tests {
     use super::*;
     use Token::{
-        And, AndAnd, As, Assign, Bang, BangBang, Break, Caret, Colon, Comma, Constant, Continue,
-        Dot, DotDot, DotDotEq, Else, EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow,
-        For, From, Function, GtEq, Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral,
-        InterpolationEnd, InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace,
-        LBracket, LParen, Let, Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not,
-        NotEq, Null, Or, OrOr, Owned, PercentPercent, Pipe, Plus, Public, Question, QuestionColon,
-        QuestionDot, RBrace, RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral,
-        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore, Unknown, While,
-        WhileQ, Xor,
+        Ampersand, AmpersandMinus, AmpersandPlus, AmpersandZero, And, AndAnd, As, Assign, Bang,
+        BangBang, Break, Caret, Colon, Comma, Constant, Continue, Dot, DotDot, DotDotEq, Else,
+        EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow, For, From, Function, GtEq,
+        Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral, InterpolationEnd,
+        InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace, LBracket, LParen, Let,
+        Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not, NotEq, Null, Or, OrOr,
+        Owned, PercentPercent, Pipe, Plus, Public, Question, QuestionColon, QuestionDot, RBrace,
+        RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral, TernaryLiteral,
+        ThinArrow, TildeArrow, TildeCaret, TildeMinusGt, TildePlusGt, TildeZeroGt, True, Type,
+        Underscore, Unknown, While, WhileQ, Xor,
     };
 
     fn lex_only(source: &str) -> Vec<Token> {
@@ -706,5 +707,102 @@ mod tests {
                 Identifier("b".to_owned()),
             ],
         );
+    }
+
+    // ── v0.8 ownership tokens ────────────────────────────────────────
+
+    #[test]
+    fn lexes_ownership_compound_tokens() {
+        assert_eq!(
+            lex_only("&+ &0 &-"),
+            vec![AmpersandPlus, AmpersandZero, AmpersandMinus],
+        );
+    }
+
+    #[test]
+    fn ownership_compound_longest_match_over_bare_ampersand() {
+        // `&+` must lex as compound AmpersandPlus, not Ampersand + Plus.
+        assert_eq!(
+            lex_only("&+ &-"),
+            vec![AmpersandPlus, AmpersandMinus],
+        );
+    }
+
+    #[test]
+    fn lexes_bare_ampersand_with_space() {
+        // `& x` (with whitespace) → Ampersand, Identifier — not compound.
+        let tokens = lex_only("& x");
+        assert_eq!(tokens.len(), 2, "expected Ampersand + Identifier, got {tokens:?}");
+        assert!(matches!(tokens[0], Ampersand));
+    }
+
+    #[test]
+    fn lexes_ownership_in_type_expr() {
+        // `&+ mutable T` — realistic ownership type expression.
+        assert_eq!(
+            lex_only("&+ mutable T"),
+            vec![
+                AmpersandPlus,
+                Mutable,
+                Identifier("T".to_owned()),
+            ],
+        );
+    }
+
+    #[test]
+    fn ampersand_minus_preserved_over_and_and() {
+        // `&-` (2 chars) vs `&&` (also 2 chars). Logos resolves ties by
+        // declaration order — `&-` is defined before `&&` and must win.
+        assert_eq!(lex_only("&-"), vec![AmpersandMinus]);
+        assert_eq!(lex_only("&&"), vec![AndAnd]);
+    }
+
+    #[test]
+    fn lexes_strong_owner_fully_specified() {
+        // Realistic struct field declaration: `name: &+ mutable String`
+        let tokens = lex_only("&+ mutable String");
+        assert_eq!(tokens.len(), 3);
+        assert!(matches!(tokens[0], AmpersandPlus));
+        assert!(matches!(tokens[1], Mutable));
+        assert!(matches!(tokens[2], Identifier(_)));
+    }
+
+    #[test]
+    fn lexes_weak_observer_in_struct_field() {
+        // `parent: &- Process`
+        assert_eq!(
+            lex_only("&- Process"),
+            vec![AmpersandMinus, Identifier("Process".to_owned())],
+        );
+    }
+
+    #[test]
+    fn lexes_neutral_borrow_in_function_param() {
+        // `param: &0 T` — neutral borrow.
+        assert_eq!(
+            lex_only("&0 T"),
+            vec![AmpersandZero, Identifier("T".to_owned())],
+        );
+    }
+
+    #[test]
+    fn all_five_reference_forms_parse_separately() {
+        // Each of the 5 forms must lex correctly without ambiguity.
+        let cases: &[(&str, Token)] = &[
+            ("&+", AmpersandPlus),
+            ("&0", AmpersandZero),
+            ("&-", AmpersandMinus),
+        ];
+        for (input, expected) in cases {
+            let tokens = lex_only(input);
+            assert_eq!(tokens.len(), 1, "input {input:?}");
+            assert_eq!(tokens[0], *expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn mutable_keyword_lexes_as_token_not_identifier() {
+        let tokens = lex_only("mutable");
+        assert_eq!(tokens, vec![Mutable]);
     }
 }

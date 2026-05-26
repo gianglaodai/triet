@@ -71,7 +71,7 @@ v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
 - Stdlib reorganized as real filesystem files in `std/` directory: `std.io`, `std.text`, `std.assert`.
 - 704-dòng ternary ALU demo across 6 modules (file-bound + nested + inline) — exercises every feature.
 - Symbolic operators preferred convention (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`); keyword forms vẫn valid.
-
+claude --resume ab0ebffb-b35d-4110-b6f5-d3c9480a938e
 **Sub-task changelog (per-step commits):**
 
 | Sub-task | Description | Commit |
