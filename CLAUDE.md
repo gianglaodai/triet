@@ -185,13 +185,17 @@ Demo + capstone test: `demos/04-capability-system/` (illustrative) + `crates/tri
 ### Error code namespace
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
-- `triet::typecheck::E10XX` — type checker (E1024-E1032 ADR-0020 Outcome; E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` per ADR-0021)
+- `triet::typecheck::E10XX` — type checker (E1024-E1032 + E1037 + E1038 + E1039 ADR-0020 Outcome ternary operator family với auto-wrap §3.0; E1033 `PossiblyUnknownCondition` + E1034 `TrileanReturnNotRefined` per ADR-0021)
 - `triet::runtime::E20XX` — interpreter
 - `triet::modules::E21XX` — loader / resolver (E2100 = cyclic, E2101 = file-not-found, etc.)
 - `triet::capability::E22XX` — capability system (E2200 missing claim / E2201 self-contradictory / E2202 unresolved path / E2203 refused / E2204 dup decl / E2205 policy runtime / E2206 invalid root / E2207 invalid level / E2208 loader)
 - `triet::pack::E23XX` — semver linker (existing v0.4)
+- `triet::borrow::E24XX` — borrow checker (E2400 lifetime inference / E2410 mutability / E2420 move + use-after-move / E2430 namespace inference / E2440 NLL exclusivity / E2450+ reserved drop+custom-drop) per ADR-0025
+- `triet::actor::E25XX` — actor boundary + concurrency (E2500 Send derivation / E2510 scope-ref leakage / E2520 mutable-share anti-pattern / E2530+ reserved reply channel / supervision) per ADR-0026
 
 All errors implement `miette::Diagnostic`. The CLI's `--json` flag also needs each variant in `parse_error_code` / `type_error_code` / `runtime_error_code` mappers in `crates/triet-cli/src/main.rs` — keep them in sync when adding variants.
+
+**Diagnostic format:** all error/warning text follows the canonical AI-first format locked in [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) — header `EXXXX ErrorName` + body + optional span block + optional `[Fix N]` numbered fix blocks with imperative `Change/Wrap/Use/Add/Replace/Move X to Y`. Pure ASCII, no diff `-/+`. Retroactive scope: ADR-0020 + ADR-0025 already comply; ADRs introducing new diagnostics must follow §2 of ADR-0027.
 
 ## Language conventions (don't get these wrong)
 
