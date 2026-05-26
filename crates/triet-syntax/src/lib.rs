@@ -54,5 +54,5 @@ pub use numeric::{NumericSuffix, TrileanValue};
 pub use pattern::{LiteralPattern, Pattern};
 pub use span::{Span, Spanned};
 pub use stmt::{Block, Stmt};
-pub use type_ast::TypeExpr;
+pub use type_ast::{ReferenceForm, TypeExpr};
 pub use visibility::Visibility;

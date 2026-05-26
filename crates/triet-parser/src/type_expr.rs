@@ -6,7 +6,7 @@
 //! annotations) and within expressions (closure annotations).
 
 use triet_lexer::Token;
-use triet_syntax::{Spanned, TypeExpr, TypeId};
+use triet_syntax::{ReferenceForm, Spanned, TypeExpr, TypeId};
 
 use crate::{error::ParseError, parser::Parser};
 
@@ -29,6 +29,18 @@ fn parse_type_atom(parser: &mut Parser<'_>) -> Result<TypeId, ParseError> {
         });
     };
 
+    // Reference prefix: &+ / &0 / &- (v0.8 per ADR-0022 §2).
+    // Parses the full inner type including postfix operators so that
+    // `&+ String?` wraps the nullable, not the other way around.
+    if let Some(form) = try_parse_reference_prefix(parser) {
+        let inner = parse_type(parser)?; // includes postfix ?/! /~ /?~
+        let inner_span = parser.arena.type_expression(inner).span.clone();
+        let span = span.start..inner_span.end;
+        return Ok(parser
+            .arena
+            .alloc_type(Spanned::new(TypeExpr::Reference { form, inner }, span)));
+    }
+
     match token {
         Token::Identifier(name) => {
             parser.advance();
@@ -48,6 +60,38 @@ fn parse_type_atom(parser: &mut Parser<'_>) -> Result<TypeId, ParseError> {
             found: format!("{other:?}"),
             span,
         }),
+    }
+}
+
+/// Consume a reference prefix `&+` / `&0` / `&-` (with optional
+/// `mutable` keyword for `&+` and `&0`). Returns `Some(ReferenceForm)`
+/// or `None` when the next token is not a reference marker.
+fn try_parse_reference_prefix(parser: &mut Parser<'_>) -> Option<ReferenceForm> {
+    let token = parser.peek_token()?;
+    match token {
+        Token::AmpersandPlus => {
+            parser.advance();
+            Some(if parser.eat(&Token::Mutable) {
+                ReferenceForm::StrongMutable
+            } else {
+                ReferenceForm::StrongFrozen
+            })
+        }
+        Token::AmpersandZero => {
+            parser.advance();
+            Some(if parser.eat(&Token::Mutable) {
+                ReferenceForm::BorrowExclusiveMutable
+            } else {
+                ReferenceForm::BorrowReadOnly
+            })
+        }
+        Token::AmpersandMinus => {
+            parser.advance();
+            // `&-` is always immutable — `mutable` after `&-` is a parse
+            // error.
+            Some(ReferenceForm::WeakObserver)
+        }
+        _ => None,
     }
 }
 
@@ -627,6 +671,95 @@ mod tests {
                 }
             }
             other => panic!("expected Outcome, got {other:?}"),
+        }
+    }
+
+    // ── v0.8 reference types (ADR-0022 §2) ────────────────────────────
+
+    fn expect_reference(parser: &Parser<'_>, id: TypeId, expected: ReferenceForm) -> TypeId {
+        match &parser.arena.type_expression(id).node {
+            TypeExpr::Reference { form, inner } => {
+                assert_eq!(*form, expected, "expected {expected:?}, got {form:?}");
+                *inner
+            }
+            other => panic!("expected Reference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_strong_frozen_reference() {
+        let (parser, id) = parse("&+ String");
+        let inner = expect_reference(&parser, id, ReferenceForm::StrongFrozen);
+        expect_named(&parser, inner, "String");
+    }
+
+    #[test]
+    fn parses_strong_mutable_reference() {
+        let (parser, id) = parse("&+ mutable String");
+        let inner = expect_reference(&parser, id, ReferenceForm::StrongMutable);
+        expect_named(&parser, inner, "String");
+    }
+
+    #[test]
+    fn parses_neutral_borrow_reference() {
+        let (parser, id) = parse("&0 Integer");
+        let inner = expect_reference(&parser, id, ReferenceForm::BorrowReadOnly);
+        expect_named(&parser, inner, "Integer");
+    }
+
+    #[test]
+    fn parses_exclusive_mutable_borrow_reference() {
+        let (parser, id) = parse("&0 mutable Vector");
+        let inner = expect_reference(&parser, id, ReferenceForm::BorrowExclusiveMutable);
+        expect_named(&parser, inner, "Vector");
+    }
+
+    #[test]
+    fn parses_weak_observer_reference() {
+        let (parser, id) = parse("&- Process");
+        let inner = expect_reference(&parser, id, ReferenceForm::WeakObserver);
+        expect_named(&parser, inner, "Process");
+    }
+
+    #[test]
+    fn reference_composes_with_nullable() {
+        // `&+ String?` = reference to nullable string
+        let (parser, id) = parse("&+ String?");
+        let inner = expect_reference(&parser, id, ReferenceForm::StrongFrozen);
+        match &parser.arena.type_expression(inner).node {
+            TypeExpr::Nullable(n_inner) => expect_named(&parser, *n_inner, "String"),
+            other => panic!("expected Nullable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reference_composes_with_outcome() {
+        // `&0 mutable String~IoError` = exclusive borrow of outcome
+        let (parser, id) = parse("&0 mutable String~IoError");
+        let inner = expect_reference(&parser, id, ReferenceForm::BorrowExclusiveMutable);
+        match &parser.arena.type_expression(inner).node {
+            TypeExpr::Outcome {
+                allow_null_state, ..
+            } => {
+                assert!(!*allow_null_state, "binary outcome");
+            }
+            other => panic!("expected Outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_five_reference_forms_are_distinct() {
+        let cases: &[(&str, ReferenceForm)] = &[
+            ("&+ T", ReferenceForm::StrongFrozen),
+            ("&+ mutable T", ReferenceForm::StrongMutable),
+            ("&0 T", ReferenceForm::BorrowReadOnly),
+            ("&0 mutable T", ReferenceForm::BorrowExclusiveMutable),
+            ("&- T", ReferenceForm::WeakObserver),
+        ];
+        for (input, expected_form) in cases {
+            let (parser, id) = parse(input);
+            let inner = expect_reference(&parser, id, *expected_form);
+            expect_named(&parser, inner, "T");
         }
     }
 }

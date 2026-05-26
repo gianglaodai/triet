@@ -6,6 +6,52 @@
 
 use crate::arena::TypeId;
 
+/// Reference ownership form per ADR-0022 §2.
+///
+/// Each of the 5 reference forms maps to one arm of the trit-based
+/// ownership scheme. The `mutable` field distinguishes frozen vs mutable
+/// for `&+` (strong) and `&0` (neutral borrow) forms. `&-` (weak) is
+/// always immutable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReferenceForm {
+    /// `&+ T` — strong owner, frozen (immutable).
+    StrongFrozen,
+    /// `&+ mutable T` — strong owner, mutable.
+    StrongMutable,
+    /// `&0 T` — neutral borrow, read-only.
+    BorrowReadOnly,
+    /// `&0 mutable T` — neutral borrow, exclusive mutable.
+    BorrowExclusiveMutable,
+    /// `&- T` — weak observer, always immutable.
+    WeakObserver,
+}
+
+impl ReferenceForm {
+    /// Returns true when the reference permits mutation.
+    pub fn is_mutable(self) -> bool {
+        matches!(self, Self::StrongMutable | Self::BorrowExclusiveMutable)
+    }
+
+    /// Returns true when this is an owning reference (`&+` family).
+    pub fn is_owning(self) -> bool {
+        matches!(self, Self::StrongFrozen | Self::StrongMutable)
+    }
+
+    /// Returns true when this is a scope borrow (`&0` family).
+    pub fn is_borrow(self) -> bool {
+        matches!(self, Self::BorrowReadOnly | Self::BorrowExclusiveMutable)
+    }
+
+    /// Returns the trit polarity: +1 for strong, 0 for neutral, -1 for weak.
+    pub fn polarity_trit(self) -> i8 {
+        match self {
+            Self::StrongFrozen | Self::StrongMutable => 1,
+            Self::BorrowReadOnly | Self::BorrowExclusiveMutable => 0,
+            Self::WeakObserver => -1,
+        }
+    }
+}
+
 /// A type expression as written in source code.
 ///
 /// V0.1 supports: named types, single-level generics (parsed but not yet
@@ -67,4 +113,15 @@ pub enum TypeExpr {
     ///
     /// [ADR-0021]: ../../../../docs/decisions/0021-trilean-refinement.md
     RefinedTrilean,
+
+    /// Reference type per ADR-0022 §2. Wraps an inner type with one of
+    /// the 5 reference forms: `&+ T`, `&+ mutable T`, `&0 T`,
+    /// `&0 mutable T`, or `&- T`. V0.8 parses and stores the form;
+    /// enforcement is deferred to v0.9+ per ADR-0025 §12.
+    Reference {
+        /// Which reference form applies.
+        form: ReferenceForm,
+        /// The inner type (the payload behind the reference).
+        inner: TypeId,
+    },
 }

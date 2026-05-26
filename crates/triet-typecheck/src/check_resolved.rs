@@ -342,6 +342,10 @@ fn resolve_type_expr_with_params(
         },
         // v0.7.4.3-debt.1: `Trilean!` annotation per ADR-0021 §2.7.
         TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
+        // v0.8: reference forms. Enforcement deferred; strip to inner for now.
+        TypeExpr::Reference { inner, .. } => {
+            resolve_type_expr_with_params(arena, *inner, type_params, name_table)
+        }
     }
 }
 

@@ -674,10 +674,10 @@ impl<'p> Checker<'p> {
                 }
             }
             // v0.7.4.3-debt.1: `Trilean!` annotation per ADR-0021 §2.7.
-            // No arity / nesting checks needed — the parser already
-            // gates the `!` postfix to only apply after a bare
-            // `Trilean` identifier.
             TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
+            // v0.8: reference forms. Enforcement deferred to v0.9+;
+            // resolve transparently to the inner type for now.
+            TypeExpr::Reference { inner, .. } => self.resolve_type(inner),
         }
     }
 
