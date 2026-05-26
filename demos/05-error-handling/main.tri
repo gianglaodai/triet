@@ -23,10 +23,10 @@ public struct UserAccount {
 }
 
 // Pipeline composing three validators. Each call uses `~->` to
-// propagate the first failure verbatim — the `|err| err` closure
-// body auto-wraps into `~- err` per ADR-0020 §3.0, so the caller
-// observes a single chained `~- ConfigError` pointing at the
-// offending stage.
+// propagate the first failure verbatim. The body still writes `~-`
+// explicitly — auto-wrap (§3.0) is deferred to v0.7.4.3-error.5
+// when the lowerer supports it. The caller sees a single chained
+// `~- ConfigError` pointing at the offending stage.
 //
 // On the success path, every intermediate binding is `Integer` /
 // `String` (not the outcome) — `~->` peels the success arm off.
@@ -34,9 +34,9 @@ public function register_user(
     age: Integer,
     nickname: String,
 ) -> UserAccount~ConfigError = {
-    let valid_age: Integer = validate_age(age) ~-> |err| err
-    let in_range: Integer = validate_age_range(valid_age, 13, 130) ~-> |err| err
-    let valid_nick: String = validate_nickname(nickname) ~-> |err| err
+    let valid_age: Integer = validate_age(age) ~-> |err| ~- err
+    let in_range: Integer = validate_age_range(valid_age, 13, 130) ~-> |err| ~- err
+    let valid_nick: String = validate_nickname(nickname) ~-> |err| ~- err
     ~+ UserAccount { age: in_range, nickname: valid_nick }
 }
 

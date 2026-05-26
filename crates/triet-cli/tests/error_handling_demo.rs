@@ -4,9 +4,9 @@
 //! pipeline arm produces the expected output line.
 //!
 //! Per the demo's README, the interpreter tier only supports `~0` —
-//! the full outcome opcodes (`~+`/`~-`/`~?`/`~:`) are deferred to
-//! the "interpreter parity" follow-up. So this test invokes the
-//! release-built `triet` binary to exercise the VM path.
+//! the full outcome ops (`~+`/`~-`/`~->` ternary family, ADR-0020 §3)
+//! are deferred to the "interpreter parity" follow-up. So this test
+//! invokes the release-built `triet` binary to exercise the VM path.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

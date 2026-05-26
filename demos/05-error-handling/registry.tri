@@ -34,10 +34,10 @@ public function find_user_role(user_id: Integer) -> String?~ConfigError = {
     }
 }
 
-// Convenience wrapper: collapses null/error arms into a default.
-// `~-> |_| default_value` (ternary error-arm handler per ADR-0020
-// §3.3) evaluates `~+ default_value` on failure, keeping the Success
-// state when present. For `T?~E`, the `~0` null passes through.
+// Convenience wrapper: collapses error arm into a default.
+// Uses legacy `~:` for now — `~->` MAP mode stub in
+// v0.7.4.3-error.4 doesn't handle non-fallible contexts yet.
+// Will migrate to `~-> |_| "guest"` at v0.7.4.3-error.5.
 public function role_or_guest(user_id: Integer) -> String? = {
-    find_user_role(user_id) ~-> |_| "guest"
+    find_user_role(user_id) ~: "guest"
 }
