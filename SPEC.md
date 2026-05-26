@@ -840,77 +840,100 @@ Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: asse
 
 ## 10. Memory model
 
-Triết sử dụng mô hình **Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)** — mục tiêu: đạt được sự an toàn và zero-cost abstraction của Rust khi viết Kernel/Hệ điều hành, nhưng giữ được cú pháp đơn giản nhờ luật loại trừ Lifetimes (`<'a>`).
+> **Trạng thái:** Design locked 2026-05-26 (S6). Implementation phased v0.8 (parser tokens) → v0.10 (NLL) → v1.0 (stable). Triết v0.7 runtime chưa expose references; cú pháp trong §10.1—§10.4 phản ánh design intent, không phải hành vi hiện tại của compiler.
 
-### 10.1 Triết lý cốt lõi: Con trỏ Tam phân
+Triết sử dụng mô hình **Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)** — design lock **S6** (2026-05-26): Rust-strict static borrow check + cú pháp tam phân + capability-as-unsafe + **không có lifetime annotation `<'a>`**. Tham chiếu đầy đủ tại [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), thuật toán enforcement tại [ADR-0025](docs/decisions/0025-borrow-checker-rules.md), actor send rules tại [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md).
 
-Con trỏ trong Triết có 3 trạng thái tại Compile-time, đại diện bằng ký tự `&`:
+### 10.1 Năm dạng tham chiếu (5 Reference Forms)
 
-1. **`&+` (Strong Owner - Chủ sở hữu):** Mang quyền sở hữu (`+1`). Vùng nhớ tuyệt đối an toàn, không bị giải phóng. (Tương đương `Arc` / `Box`).
-2. **`&-` (Weak Observer - Kẻ quan sát):** Liên kết yếu (`-1`). Dùng để phá vỡ chu trình (memory leaks). Bắt buộc phải kiểm tra tồn tại (upgrade) trước khi đọc. (Tương đương `Weak`).
-3. **`&0` (Neutral Borrow - Mượn trung lập):** Mượn tạm thời trong Scope (`0`). Không làm thay đổi Reference Count ở Runtime (Zero-cost). (Tương đương `&T`).
+Con trỏ trong Triết có 5 dạng, đại diện bằng ký tự `&`:
 
-**KHÔNG theo Rust:** Triết loại bỏ hoàn toàn các ký hiệu Lifetime (`'a`). Bạn không bao giờ phải chứng minh vòng đời con trỏ với trình biên dịch nhờ 2 quy tắc cứng:
-- **Luật Cấm `&0` trong Struct:** Không bao giờ được lưu con trỏ mượn `&0` vào bộ nhớ dài hạn (Struct). Buộc phải dùng `&+` hoặc `&-`.
-- **Luật Ngắt Chu trình (Cycle Breaking):** Cấm tạo ra các chu trình khép kín toàn `&+` (gây memory leak). Lập trình viên phải dùng ít nhất một con trỏ `&-` để ngắt các chu trình vòng (ví dụ: tham chiếu parent trong cấu trúc Tree).
+| Cú pháp | Tên | Quyền sở hữua | Quyền ghi | Aliasing |
+|---|---|---|---|---|
+| `&+ T` | Strong owner, frozen | Unique | Read-only | Không clone |
+| `&+ mutable T` | Strong owner, mutable | Unique | Mutable | Không clone |
+| `&0 T` | Scope borrow, read-only | Borrow | Read-only | Nhiều OK |
+| `&0 mutable T` | Scope borrow, exclusive mutable | Borrow | Mutable | **Exclusive** (1/đối tượng) |
+| `&- T` | Weak observer | Không sở hữu | Read-only sau upgrade | Nhiều OK |
 
-### 10.2 Sự phân tầng Mặc định (Sensible Defaults)
+- **`&+ T`** là unique owner, frozen vĩnh viễn. Dùng khi cần immutable share cross-actor.
+- **`&+ mutable T`** là unique owner, được mutate. Default cho struct field trong `usr::`.
+- **`&0 T`** là scope borrow (zero-cost). Dùng cho function parameter (default trong `usr::`).
+- **`&0 mutable T`** là exclusive mutable borrow. Compiler enforce 1 tại 1 thời điểm qua NLL.
+- **`&- T`** là weak observer — compile-time tracked, deref trả `T?` (nullable). Không có gen check runtime.
 
-Để giữ lại sự thoải mái (Mojo-style) cho lập trình viên ứng dụng, Triết áp dụng các luật ngầm định (Infer) dựa trên Không gian (Namespace):
+### 10.2 Kiến trúc cốt lõi
 
-**Tại không gian Application (`usr::`):**
-- Khi khai báo biến lưu trữ trong Struct, trình biên dịch ngầm hiểu là `&+`.
-- Khi truyền tham số vào Hàm, trình biên dịch ngầm hiểu là `&0`.
--> 95% thời gian, bạn không cần gõ `&`, code trông sạch sẽ như Python/Java. Trình biên dịch sẽ tự báo lỗi nếu bạn vô tình tạo chu trình (Memory Leak) và yêu cầu bạn sửa 1 con trỏ thành `&-`.
+**Định lý vô-chu-trình:** Linear ownership (`&+` unique) + move semantics làm cho runtime cycle toàn `&+` là **bất khả thi về mặt toán học**. Triết **không cần** cycle collector / GC / SCC detection. Để tạo cấu trúc 2 chiều (doubly-linked list, tree parent pointer), lập trình viên **bắt buộc** dùng `&-` ở back-edge. Chi tiết: [ADR-0022 §6](docs/decisions/0022-trit-balanced-ownership.md#6--định-lý-vô-chu-trình-của-linear-ownership).
 
-**Tại không gian System (`sys::`, `dev::`):**
-- Các quy tắc ngầm định bị vô hiệu hóa.
-- Lập trình viên bị ép phải gõ rành mạch `&+`, `&0`, `&-` để quản lý chặt chẽ từng cycle của CPU và ngăn ngừa lỗi nghiêm trọng.
+**Capability-as-unsafe:** Triết **không có keyword `unsafe`**. Mọi hành vi nguy hiểm (raw pointer, FFI, MMIO, transmute, self-ref struct) được reframe thành capability declaration trong `dao.package` ([ADR-0022 §8](docs/decisions/0022-trit-balanced-ownership.md#8--capability-thay-unsafe-philosophy))
 
-### 10.3 Phân loại type
+**Không có lifetime annotation:** 3 quy tắc elision suy 90%+ case. 10% còn lại → compile error E2400 với refactor suggest. Không có syntax `<'a>` ([ADR-0025 §3-§4](docs/decisions/0025-borrow-checker-rules.md#3--lifetime-elision-3-quy-tắc)).
 
-Theo quy tắc đặt tên đã chốt (xem §2.1) — **PascalCase tất cả**:
+### 10.3 Sự phân tầng Mặc định (Namespace-based Inference)
 
-**Stack-allocatable** (kích thước cố định, copy trị):
-- `Trit`, `Tryte`, `Integer`, `Long` (numeric)
-- `Trilean` (logic)
-- `Unit` (zero-sized)
-- Tuples `(T1, T2, ...)`
-- `T?` (nullable: T + 1-trit discriminator)
+**Tại `usr::`:**
+- Struct field `field: T` → ngầm `&+ T` (owned, immutable)
+- Function param `param: T` → ngầm `&0 T` (borrow, read-only)
+- `let x = expr` → inferred từ expr
 
-**Heap-allocated**:
-- Được quản lý theo vòng đời của các con trỏ `&+` và `&-`.
-- `String` (UTF-8 owned)
-- `Result<T, E>` ✅ (v0.4 stdlib — `std.result`; canonical error-handling type per §2.5)
-- `List<T>`, `Set<T>`, `Map<K, V>` (post-v0.4 collections)
-
-`Option<T>` đã **deprecated trong stdlib** từ v0.4 (xem §2.5): `T?` là cách chính tắc cho "value may be absent".
+**Tại `sys::` / `dev::`:**
+- Mọi quy tắc ngầm định bị vô hiệu. Phải explicit `&+`/`&0`/`&-`.
+- Vi phạm → E2430 `ImplicitRefInSystemNamespace`.
 
 ### 10.4 Function parameter conventions
 
+Tham số hàm dùng các dạng tham chiếu từ §10.1 thay cho keyword riêng `mutable`/`owned`:
+
 ```triet
-// Mặc định: borrowed (read-only reference, không annotation)
+// Default: immutable borrow (ngầm &0 String trong usr::)
 function print_name(name: String) { ... }
 
-// Mutable: từ khóa `mutable` ở parameter (rare)
-function append(mutable buffer: String, suffix: String) { ... }
+// Explicit mutable borrow
+function append(buffer: &0 mutable String, suffix: String) { ... }
 
-// Owned (transfer ownership, hiếm dùng): từ khóa `owned`
-function consume(owned data: String) -> String { ... }
+// Take ownership (move semantics)
+function consume(data: &+ String) -> String { ... }
+
+// Frozen owner (immutable share-able)
+function inspect(config: &+ Config) { ... }
+
+// Weak observer (optional/non-owning)
+function notify(parent: &- Process) { ... }
 ```
 
-So với Rust: viết ngắn 30%, ít cognitive overhead 70%.
+### 10.5 Phân loại type
 
-### 10.4 Implementation hiện tại (v0.4)
+**Stack-allocatable** (kích thước cố định, copy trị — không có object header):
+- `Trit`, `Tryte`, `Integer`, `Long` (numeric)
+- `Trilean` (logic), `Unit` (zero-sized)
+- Tuples `(T1, T2, ...)`
+- `T?` (nullable: T + 1-trit discriminator)
+- `T~E`, `T?~E` (outcome: T / E + 1-trit discriminator)
 
-Triết hôm nay chạy trên **hai tier song song**, cả hai đều là development tiers per [VISION §4.3](VISION.md):
+**Heap-allocated** (có 8-byte object header với refcount):
+- `String`, user-defined `struct`/`enum`, collections (`Vector<T>`, `Map<K,V>`, etc.)
+- Lifecycle quản lý bởi `&+` unique owner (drop khi scope kết thúc) hoặc refcount ngầm tại actor boundary ([ADR-0026 §3.1](docs/decisions/0026-actor-boundary-send-rules.md#31--d6-frozen-owner-cross-actor-refcount-ngầm))
 
-- **Tree-walking interpreter** (`triet-interpreter`, từ v0.1): tất cả giá trị copy theo trị; heap types dùng `Rc<T>` Rust runtime (≈ ARC simulation).
-- **Bytecode VM** (`triet-ir`, từ v0.3): register-SSA IR + 53-opcode VM; differential test 11/11 byte-identical với tree-walker.
+### 10.6 Implementation hiện tại (v0.7 → v0.8)
 
-Borrow checker chưa cần — language hiện tại chưa expose references.
+Triết chạy trên 2 tier per [VISION §4.3](VISION.md):
 
-Native AOT compile (v2.0, LLVM) sẽ implement đầy đủ ARC + simplified borrow check. Trytecode backend (v∞) là production target cuối cùng khi phần cứng tam phân xuất hiện. Memory model precise (ARC opcodes, region-based vs reference-counted choice) **vẫn deferred** — v0.4 chỉ lock ABI surface, không lock memory representation; ADR riêng sẽ viết trước v0.9 JIT.
+- **Tree-walking interpreter** (`triet-interpreter`): giá trị copy theo trị; heap types dùng `Rc<T>` Rust runtime.
+- **Bytecode VM** (`triet-ir`): register-SSA IR + 53 opcodes; differential test với tree-walker.
+
+**Phasing borrow checker:**
+
+| Version | Scope |
+|---|---|
+| **v0.7** | Chưa expose references trong language |
+| **v0.8** | Parser tokens `&+`/`&0`/`&-`/`mutable`. AST nodes. Không enforcement. |
+| **v0.9** | Simple enforcement: E2420 use-after-move, E2422 constructibility termination, E2410/E2411 mutability frozen |
+| **v0.10** | NLL borrow exclusivity (E2440), lifetime elision 3 rules (E2400) |
+| **v0.11** | `&-` upgrade tracking (E2403), default inference per namespace |
+| **v1.0** | Full borrow checker stable. Capability `dev::custom_drop` |
+| **v2.0** | Native AOT compile (LLVM). 8-byte header per heap alloc. |
+| **v∞** | Trytecode native (phần cứng tam phân). 54-trit/6-Tryte header.
 
 ---
 
