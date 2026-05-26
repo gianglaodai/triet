@@ -191,6 +191,8 @@ impl Checker<'_> {
                 early_return,
             } => self.check_outcome_propagate(inner, capture_name.as_deref(), early_return, span),
             Expr::OutcomeDefault { inner, default } => self.check_outcome_default(inner, default),
+            // v0.8 actor model — typecheck deferred to v0.9+.
+            Expr::Send { .. } | Expr::Spawn { .. } => Type::Unknown,
         }
     }
 

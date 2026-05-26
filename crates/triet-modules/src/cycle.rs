@@ -116,7 +116,8 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
                 | Item::Enum { .. }
                 | Item::Const { .. }
                 | Item::Module { .. }
-                | Item::TypeAlias { .. } => {}
+                | Item::TypeAlias { .. }
+                | Item::ActorDef(_) => {}
             }
         }
 

@@ -29,16 +29,16 @@ pub use token::{IntLiteral, NumericSuffix, Token};
 mod tests {
     use super::*;
     use Token::{
-        Ampersand, AmpersandMinus, AmpersandPlus, AmpersandZero, And, AndAnd, As, Assign, Bang,
-        BangBang, Break, Caret, Colon, Comma, Constant, Continue, Dot, DotDot, DotDotEq, Else,
+        Actor, Ampersand, AmpersandMinus, AmpersandPlus, AmpersandZero, And, AndAnd, As, Assign,
+        Bang, BangBang, Break, Caret, Colon, Comma, Constant, Continue, Dot, DotDot, DotDotEq, Else,
         EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow, For, From, Function, GtEq,
         Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral, InterpolationEnd,
         InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace, LBracket, LParen, Let,
         Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not, NotEq, Null, Or, OrOr,
         Owned, PercentPercent, Pipe, Plus, Public, Question, QuestionColon, QuestionDot, RBrace,
-        RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral, TernaryLiteral,
-        ThinArrow, TildeArrow, TildeCaret, TildeMinusGt, TildePlusGt, TildeZeroGt, True, Type,
-        Underscore, Unknown, While, WhileQ, Xor,
+        RBracket, RParen, Receive, Return, Semi, Send, Slash, Spawn, Star, StarStar, StringLiteral,
+        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, TildeMinusGt, TildePlusGt, TildeZeroGt,
+        True, Type, Underscore, Unknown, While, WhileQ, Xor,
     };
 
     fn lex_only(source: &str) -> Vec<Token> {
@@ -804,5 +804,24 @@ mod tests {
     fn mutable_keyword_lexes_as_token_not_identifier() {
         let tokens = lex_only("mutable");
         assert_eq!(tokens, vec![Mutable]);
+    }
+
+    // ── v0.8 actor keywords ──────────────────────────────────────────
+
+    #[test]
+    fn lexes_actor_keywords() {
+        assert_eq!(lex_only("actor"), vec![Actor]);
+        assert_eq!(lex_only("receive"), vec![Receive]);
+        assert_eq!(lex_only("send"), vec![Send]);
+        assert_eq!(lex_only("spawn"), vec![Spawn]);
+    }
+
+    #[test]
+    fn actor_keywords_are_not_identifiers() {
+        for kw in &["actor", "receive", "send", "spawn"] {
+            let tokens = lex_only(kw);
+            assert_eq!(tokens.len(), 1, "keyword {kw:?}");
+            assert!(!matches!(tokens[0], Identifier(_)), "{kw:?} was Identifier");
+        }
     }
 }

@@ -1544,6 +1544,8 @@ impl<'a> LowerCtx<'a> {
                 capture_name,
                 early_return,
             } => self.lower_outcome_propagate(*inner, capture_name.as_deref(), *early_return),
+            // v0.8 actor model — lowering deferred to v0.9+.
+            Expr::Send { .. } | Expr::Spawn { .. } => ValueId(0),
         }
     }
 

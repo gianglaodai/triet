@@ -208,7 +208,8 @@ fn collect_declared_types(
                     },
                 ));
             }
-            Item::TypeAlias { .. } | Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) => {}
+            Item::TypeAlias { .. } | Item::Import(_) | Item::ImportFrom(_) | Item::Module(_)
+            | Item::ActorDef(_) => {}
         }
     }
 

@@ -212,6 +212,25 @@ pub enum Expr {
         body: ExprId,
     },
 
+    // === Actor model expressions (v0.8 per ADR-0026) ===
+    /// Send a message to an actor: `target.send(Message(args))`.
+    Send {
+        /// The actor handle expression.
+        target: ExprId,
+        /// Message constructor name (e.g., `Process`, `Query`).
+        message: String,
+        /// Arguments to the message constructor.
+        arguments: Vec<ExprId>,
+    },
+
+    /// Spawn a new actor: `spawn(ActorName::new())`.
+    Spawn {
+        /// Actor type name.
+        actor_name: String,
+        /// Constructor arguments expression.
+        constructor: ExprId,
+    },
+
     // === Legacy outcome operators (deprecated v0.7.4.3-error.4) ===
 
     /// [DEPRECATED] `inner ~? |name| early_return` →
