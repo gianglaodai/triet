@@ -28,11 +28,13 @@
 mod error;
 mod integer;
 mod long;
+pub mod memory;
 mod trit;
 mod tryte;
 
 pub use error::{DivisionByZeroError, OverflowError, ParseError};
 pub use integer::Integer;
 pub use long::Long;
+pub use memory::ObjectHeader;
 pub use trit::Trit;
 pub use tryte::Tryte;
