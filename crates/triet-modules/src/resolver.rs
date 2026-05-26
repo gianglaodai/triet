@@ -177,8 +177,7 @@ fn collect_imports(
             | Item::Enum { .. }
             | Item::Const { .. }
             | Item::Module { .. }
-            | Item::TypeAlias { .. }
-            | Item::ActorDef(_) => {}
+            | Item::TypeAlias { .. } => {}
         }
     }
     imports
@@ -437,7 +436,7 @@ fn item_name_and_visibility(item: &Item) -> Option<(String, Visibility)> {
         } => Some((name.clone(), *visibility)),
         Item::Struct(s) => Some((s.name.clone(), s.visibility)),
         Item::Enum(e) => Some((e.name.clone(), e.visibility)),
-        Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) | Item::ActorDef(_) => None,
+        Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) => None,
     }
 }
 

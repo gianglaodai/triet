@@ -95,19 +95,6 @@ pub enum Token {
     /// `while?` — condition-driven loop treating `Unknown` as `False`.
     #[token("while?")]
     WhileQ,
-    // === Actor model keywords (v0.8 per ADR-0026) ===
-    /// `actor` — actor definition.
-    #[token("actor")]
-    Actor,
-    /// `receive` — message handler inside an actor.
-    #[token("receive")]
-    Receive,
-    /// `send` — send a message to an actor.
-    #[token("send")]
-    Send,
-    /// `spawn` — create and start a new actor instance.
-    #[token("spawn")]
-    Spawn,
     /// `loop` — infinite loop with break-with-value.
     #[token("loop")]
     Loop,

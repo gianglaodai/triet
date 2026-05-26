@@ -207,8 +207,6 @@ impl<'p> Checker<'p> {
                 };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
-            // v0.8 actor model — typecheck deferred to v0.9+.
-            Item::ActorDef(_) => {}
         }
     }
 

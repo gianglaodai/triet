@@ -55,9 +55,6 @@ pub enum Item {
     /// Module declaration: `module foo` (file-bound) or
     /// `module foo { ... }` (inline). Per ADR-0005 §"Cú pháp".
     Module(ModuleDecl),
-
-    /// Actor definition (v0.8 per ADR-0026): `actor Name { receive ... }`.
-    ActorDef(ActorDef),
 }
 
 /// A struct definition with named fields.
@@ -242,27 +239,9 @@ impl Program {
     }
 }
 
-// ── Actor model (v0.8 per ADR-0026) ────────────────────────────────────
-
-/// Actor definition: `actor Name { receive Msg(params) { ... } }`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActorDef {
-    /// Actor name (PascalCase by convention).
-    pub name: String,
-    /// Message handlers declared with `receive` inside the actor body.
-    pub handlers: Vec<ReceiveHandler>,
-}
-
-/// A single message handler inside an actor: `receive MsgName(params) { body }`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReceiveHandler {
-    /// Message variant name (uppercase by convention).
-    pub message_name: String,
-    /// Parameters bound from the message payload.
-    pub parameters: Vec<FunctionParam>,
-    /// Handler body (block or expression).
-    pub body: FunctionBody,
-}
+// Actor model removed v0.8 per ADR-0026 v2 BYOS philosophy.
+// Concurrency primitives now live in stdlib `std.concurrency.*`, not core
+// language. See ADR-0026 v2 §5 (Refuse list).
 
 #[cfg(test)]
 mod tests {

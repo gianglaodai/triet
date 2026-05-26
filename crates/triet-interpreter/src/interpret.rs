@@ -190,8 +190,7 @@ impl<'p> Interpreter<'p> {
                 | Item::Import(_)
                 | Item::ImportFrom(_)
                 | Item::Struct(_)
-                | Item::Enum(_)
-                | Item::ActorDef(_) => {
+                | Item::Enum(_) => {
                     // No runtime effect at this stage. The module loader
                     // (v0.2.x.6) will materialize import bindings; for now
                     // they're parser-only AST.
@@ -597,8 +596,6 @@ impl<'p> Interpreter<'p> {
             Expr::OutcomeConstructor { .. }
             | Expr::OutcomeArmHandler { .. }
             | Expr::OutcomePropagate { .. }
-            | Expr::Send { .. }
-            | Expr::Spawn { .. }
             | Expr::OutcomeDefault { .. } => Err(RuntimeError::TypeError {
                 message: "outcome operators (~+, ~-, ~?, ~:) not supported by the interpreter — \
                           pending interpreter parity per ADR-0019 Addendum §A7 (use `dao build` \
@@ -985,8 +982,7 @@ impl<'p> Interpreter<'p> {
                     | Item::TypeAlias { .. }
                     | Item::Module { .. }
                     | Item::Import { .. }
-                    | Item::ImportFrom { .. }
-                    | Item::ActorDef(_) => {}
+                    | Item::ImportFrom { .. } => {}
                 }
             }
         }
