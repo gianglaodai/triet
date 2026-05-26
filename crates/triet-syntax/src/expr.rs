@@ -191,29 +191,46 @@ pub enum Expr {
         payload: Option<ExprId>,
     },
 
-    /// Outcome propagate (`~?` operator with explicit closure capture):
-    /// `inner_expr ~? |capture_name| early_return_form`.
-    /// On success: bind result to expression value (or null for T?~E).
-    /// On failure: declare `capture_name` (type E) in scope of
-    /// `early_return_form`, evaluate it.
-    OutcomePropagate {
-        /// The fallible expression being propagated.
+    // === Ternary map operators (v0.7.4.3-error.4 per ADR-0020 §3) ===
+    /// Ternary arm handler: `expr ~+> |v| body` / `expr ~0> body` /
+    /// `expr ~-> |e| body`. Each operator targets exactly one trit arm
+    /// of the outcome discriminator.
+    ///
+    /// Replaces `OutcomePropagate` and `OutcomeDefault` (deprecated
+    /// per ADR-0020 §3.7).
+    OutcomeArmHandler {
+        /// The fallible expression.
         inner: ExprId,
-        /// Name to bind the failure payload to within the early-return
-        /// form. `None` represents `|_|` (discard).
+        /// Which arm this operator targets.
+        arm: OutcomeArm,
+        /// Name to bind the arm's payload to. `None` for `~0>` (null arm
+        /// has no payload) or for `|_|` (discard).
         capture_name: Option<String>,
-        /// The early-return form (must be `return`, panic, or another
-        /// `~?`). Typecheck E1031 if falls through.
+        /// Body expression. Result is auto-wrapped with the corresponding
+        /// arm constructor (`~+` / `~0` / `~-`) per ADR-0020 §3.0 unless
+        /// the body itself produces a full outcome type.
+        body: ExprId,
+    },
+
+    // === Legacy outcome operators (deprecated v0.7.4.3-error.4) ===
+
+    /// [DEPRECATED] `inner ~? |name| early_return` →
+    /// `OutcomeArmHandler { arm: Negative, .. }`.
+    // [DEPRECATED v0.7.4.3-error.4] Use `OutcomeArmHandler`.
+    OutcomePropagate {
+        /// The fallible expression.
+        inner: ExprId,
+        /// Name binding for error payload.
+        capture_name: Option<String>,
+        /// The early-return body.
         early_return: ExprId,
     },
 
-    /// Outcome default (`~:` operator): `inner_expr ~: default_expr`.
-    /// On success: bind to success payload. On failure: evaluate
-    /// `default_expr` and bind to that.
+    // [DEPRECATED v0.7.4.3-error.4] Use `OutcomeArmHandler`.
     OutcomeDefault {
         /// The fallible expression.
         inner: ExprId,
-        /// Default-value expression on failure.
+        /// Default-value expression.
         default: ExprId,
     },
 }

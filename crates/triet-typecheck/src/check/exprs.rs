@@ -179,6 +179,12 @@ impl Checker<'_> {
                 }
                 self.check_outcome_constructor_context(arm, span)
             }
+            Expr::OutcomeArmHandler {
+                inner,
+                arm,
+                capture_name,
+                body,
+            } => self.check_outcome_arm_handler(inner, arm, capture_name.as_deref(), body, span),
             Expr::OutcomePropagate {
                 inner,
                 capture_name,
@@ -261,6 +267,33 @@ impl Checker<'_> {
     /// 1. Inner must be Outcome (else this operator is meaningless).
     /// 2. Caller's `current_return_type` must be Outcome (E1028).
     /// 3. Inner's error type must match caller's error type — explicit
+    /// Check `inner ~+> |v| body` / `~0> body` / `~-> |e| body`.
+    ///
+    /// For the `Negative` arm, delegates to `check_outcome_propagate`
+    /// (identical semantics when body is early-return). Other arms
+    /// are stubs for v0.7.4.3-error.4.
+    fn check_outcome_arm_handler(
+        &mut self,
+        inner: ExprId,
+        arm: triet_syntax::OutcomeArm,
+        capture_name: Option<&str>,
+        body: ExprId,
+        span: Span,
+    ) -> Type {
+        use triet_syntax::OutcomeArm;
+        match arm {
+            OutcomeArm::Negative => {
+                self.check_outcome_propagate(inner, capture_name, body, span.clone())
+            }
+            _ => {
+                // Stub — pending v0.7.4.3-error.5.
+                let _ = self.infer_expression(inner);
+                let _ = self.infer_expression(body);
+                Type::Unknown
+            }
+        }
+    }
+
     ///    conversion required (E1029) when they differ.
     /// 4. Capture name binds in the early-return form's scope.
     fn check_outcome_propagate(

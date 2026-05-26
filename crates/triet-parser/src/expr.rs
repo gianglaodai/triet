@@ -528,6 +528,9 @@ const fn postfix_binding_power(token: &Token) -> Option<u8> {
         | Token::LParen
         | Token::LBracket
         | Token::BangBang
+        | Token::TildePlusGt
+        | Token::TildeZeroGt
+        | Token::TildeMinusGt
         | Token::TildeQuestion
         | Token::TildeColon => Some(POSTFIX_LEFT_BP),
         _ => None,
@@ -547,6 +550,9 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
                 .arena
                 .alloc_expression(Spanned::new(Expr::ForceUnwrap(lhs), span)))
         }
+        Token::TildePlusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Positive),
+        Token::TildeZeroGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Zero),
+        Token::TildeMinusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Negative),
         Token::TildeQuestion => parse_outcome_propagate(parser, lhs),
         Token::TildeColon => parse_outcome_default(parser, lhs),
         Token::LBracket => {
@@ -611,6 +617,90 @@ fn parse_outcome_propagate(parser: &mut Parser<'_>, inner: ExprId) -> Result<Exp
         },
         span,
     )))
+}
+
+/// Parse ternary arm handler `inner ~+> |v| body` / `expr ~0> body` / `expr ~-> |e| body`
+/// per ADR-0020 §3 (v0.7.4.3-error.4).
+///
+/// `~+>` and `~->` require a `|name|` capture (or `|_|` discard).
+/// `~0>` takes no capture (null arm carries no payload).
+fn parse_outcome_arm_handler(
+    parser: &mut Parser<'_>,
+    inner: ExprId,
+    arm: OutcomeArm,
+) -> Result<ExprId, ParseError> {
+    let token_name = expected_arm_token(arm);
+    // Consume the 3-char compound token.
+    let expect_token = match arm {
+        OutcomeArm::Positive => &Token::TildePlusGt,
+        OutcomeArm::Zero => &Token::TildeZeroGt,
+        OutcomeArm::Negative => &Token::TildeMinusGt,
+    };
+    parser.expect(expect_token, token_name)?;
+
+    // `~0>` has no capture; `~+>` / `~->` require |name| or |_|.
+    let capture_name = if arm == OutcomeArm::Zero {
+        None
+    } else {
+        parse_outcome_capture(parser, token_name)?
+    };
+
+    let body = parse_expression_bp(parser, 0)?;
+    let span = arena_span(parser, inner).start..arena_span(parser, body).end;
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::OutcomeArmHandler {
+            inner,
+            arm,
+            capture_name,
+            body,
+        },
+        span,
+    )))
+}
+
+/// Parse `|name|` or `|_|` capture form used by `~?` (legacy), `~+>`, and `~->`.
+/// Returns `Some(name)` for `|name|`, `None` for `|_|`.
+fn parse_outcome_capture(
+    parser: &mut Parser<'_>,
+    op_label: &str,
+) -> Result<Option<String>, ParseError> {
+    parser.expect(&Token::Pipe, &format!("`|` (closure capture for {op_label})"))?;
+    let (capture_token, capture_span) =
+        parser
+            .peek()
+            .cloned()
+            .ok_or_else(|| ParseError::UnexpectedEof {
+                expected: "binding name or `_`".to_owned(),
+                span: parser.eof_span(),
+            })?;
+    let capture_name = match capture_token {
+        Token::Identifier(name) => {
+            parser.advance();
+            Some(name)
+        }
+        Token::Underscore => {
+            parser.advance();
+            None
+        }
+        other => {
+            return Err(ParseError::UnexpectedToken {
+                expected: "binding name or `_` after `|`".to_owned(),
+                found: format!("{other:?}"),
+                span: capture_span,
+            });
+        }
+    };
+    parser.expect(&Token::Pipe, "closing `|`")?;
+    Ok(capture_name)
+}
+
+/// Human-readable label for an arm token.
+fn expected_arm_token(arm: OutcomeArm) -> &'static str {
+    match arm {
+        OutcomeArm::Positive => "`~+>`",
+        OutcomeArm::Zero => "`~0>`",
+        OutcomeArm::Negative => "`~->`",
+    }
 }
 
 /// Parse `inner ~: default_expr` per ADR-0020 §3.2.

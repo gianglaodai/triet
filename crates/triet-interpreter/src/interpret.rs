@@ -594,6 +594,7 @@ impl<'p> Interpreter<'p> {
                 payload: None,
             } => Ok(Value::Null),
             Expr::OutcomeConstructor { .. }
+            | Expr::OutcomeArmHandler { .. }
             | Expr::OutcomePropagate { .. }
             | Expr::OutcomeDefault { .. } => Err(RuntimeError::TypeError {
                 message: "outcome operators (~+, ~-, ~?, ~:) not supported by the interpreter — \

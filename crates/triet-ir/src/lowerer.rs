@@ -1532,6 +1532,12 @@ impl<'a> LowerCtx<'a> {
             Expr::OutcomeConstructor { arm, payload } => {
                 self.lower_outcome_constructor(*arm, *payload)
             }
+            Expr::OutcomeArmHandler {
+                inner,
+                arm,
+                capture_name,
+                body,
+            } => self.lower_outcome_arm_handler(*inner, *arm, capture_name.as_deref(), *body),
             Expr::OutcomeDefault { inner, default } => self.lower_outcome_default(*inner, *default),
             Expr::OutcomePropagate {
                 inner,
@@ -1599,6 +1605,28 @@ impl<'a> LowerCtx<'a> {
             }
         }
         dest
+    }
+
+    /// Lower `inner ~+> |v| body` / `~0> body` / `~-> |e| body`.
+    ///
+    /// Stub for v0.7.4.3-error.4: delegates `Negative` arm to
+    /// `lower_outcome_propagate` (identical semantics when body is
+    /// an early-return). Other arms return `ValueId(0)` for now —
+    /// full lowering deferred to v0.7.4.3-error.5.
+    fn lower_outcome_arm_handler(
+        &mut self,
+        inner: ExprId,
+        arm: triet_syntax::OutcomeArm,
+        capture_name: Option<&str>,
+        body: ExprId,
+    ) -> ValueId {
+        use triet_syntax::OutcomeArm;
+        match arm {
+            OutcomeArm::Negative => {
+                self.lower_outcome_propagate(inner, capture_name, body)
+            }
+            _ => ValueId(0), /* stub — pending v0.7.4.3-error.5 */
+        }
     }
 
     /// Lower `inner ~: default`. Reads the discriminator; branches

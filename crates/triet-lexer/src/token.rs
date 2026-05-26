@@ -229,6 +229,23 @@ pub enum Token {
     TildeCaret,
     // === Outcome syntax (v0.7.4.3-error per ADR-0020) ===
     // Compound tokens MUST appear before `Tilde` bare for longest-match.
+    //
+    // Order within this block matters: 3-char `~+>`/`~0>`/`~->` MUST come
+    // BEFORE 2-char `~+`/`~0`/`~-` respectively. `~->` also MUST come
+    // before `~>` (TildeArrow) for longest-match (logos prefers first
+    // match when lengths tie, but we keep the longer token earlier for
+    // robustness — longest-match is specified to always win).
+    //
+    // ===== Ternary map operators (v0.7.4.3-error.4, ADR-0020 §3) =====
+    /// `~+>` — Success-arm map (postfix `expr ~+> |v| body`).
+    #[token("~+>")]
+    TildePlusGt,
+    /// `~0>` — Null-arm map (postfix `expr ~0> body`, T?~E only).
+    #[token("~0>")]
+    TildeZeroGt,
+    /// `~->` — Error-arm map (postfix `expr ~-> |e| body`).
+    #[token("~->")]
+    TildeMinusGt,
     /// `?~` — Ternary outcome separator (`T?~E` parses unified per
     /// ADR-0020 §1.3). Must precede `Question` for longest-match.
     #[token("?~")]
@@ -244,11 +261,15 @@ pub enum Token {
     /// §10 (replaces deprecated `null` keyword).
     #[token("~0")]
     TildeZero,
-    /// `~?` — Outcome propagate operator (early-return on failure).
-    /// Right-hand side uses `|capture| early_return_form` syntax.
+    // ===== Deprecated (v0.7.4.3-error.4 per ADR-0020 §3.7) =====
+    // Legacy propagate/default operators retained in token set so existing
+    // tests/examples can be migrated incrementally. Emit lex warnings at
+    // integration; removed entirely in v0.7.4.3-error.5 final.
+    /// `~?` — [DEPRECATED] Outcome propagate operator. Use `~->` instead.
     #[token("~?")]
     TildeQuestion,
-    /// `~:` — Outcome default operator (substitute value on failure).
+    /// `~:` — [DEPRECATED] Outcome default operator. Use `~0> default`
+    /// or `~-> |_| return ~+ default` instead.
     #[token("~:")]
     TildeColon,
     /// `~` — Binary outcome type separator (`T~E`). Bare tilde in type
