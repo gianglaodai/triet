@@ -2,9 +2,9 @@
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
-    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportFrom, ImportName,
+    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, ImportFrom, ImportName,
     ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Spanned, StructDef, StructField,
-    Visibility,
+    TypeParam, Visibility,
 };
 
 use crate::{
@@ -613,9 +613,9 @@ fn parse_enum_variants(parser: &mut Parser<'_>) -> Result<Vec<EnumVariant>, Pars
     Ok(variants)
 }
 
-/// Parse optional generic type parameters: `<T, U>`. Returns an empty
+/// Parse optional generic type parameters: `<T, U>` or `<F: Send>`. Returns an empty
 /// vec if the next token is not `<`.
-fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<String>, ParseError> {
+fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<TypeParam>, ParseError> {
     if !matches!(parser.peek_token(), Some(Token::Lt)) {
         return Ok(Vec::new());
     }
@@ -623,7 +623,30 @@ fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<String>, ParseErr
     let mut params = Vec::new();
     loop {
         let name = parse_ident(parser, "type parameter")?;
-        params.push(name);
+        let mut bound = None;
+        if parser.eat(&Token::Colon) {
+            let (bound_tok, span) = parser
+                .peek()
+                .cloned()
+                .ok_or_else(|| ParseError::UnexpectedEof {
+                    expected: "generic bound".to_owned(),
+                    span: parser.eof_span(),
+                })?;
+            match bound_tok {
+                Token::Identifier(ref id) if id == "Send" => {
+                    parser.advance();
+                    bound = Some(GenericBound::Send);
+                }
+                other => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "`Send` bound".to_owned(),
+                        found: format!("{other:?}"),
+                        span,
+                    });
+                }
+            }
+        }
+        params.push(TypeParam { name, bound });
         if !parser.eat(&Token::Comma) {
             break;
         }
@@ -781,7 +804,7 @@ mod tests {
         let (_, item) = parse("function identity<T>(x: T) -> T = x");
         match &item.node {
             Item::Function(def) => {
-                assert_eq!(def.type_params, vec!["T".to_owned()]);
+                assert_eq!(def.type_params, vec![TypeParam { name: "T".to_owned(), bound: None }]);
                 assert_eq!(def.parameters.len(), 1);
                 assert!(def.return_type.is_some());
             }
@@ -797,7 +820,7 @@ mod tests {
         let (_, item) = parse("function pair<K, V>(k: K, v: V) -> K = k");
         match &item.node {
             Item::Function(def) => {
-                assert_eq!(def.type_params, vec!["K".to_owned(), "V".to_owned()]);
+                assert_eq!(def.type_params, vec![TypeParam { name: "K".to_owned(), bound: None }, TypeParam { name: "V".to_owned(), bound: None }]);
                 assert_eq!(def.parameters.len(), 2);
             }
             other => panic!("expected Function, got {other:?}"),

@@ -953,7 +953,7 @@ function resolve_external(
             context,
             child_path,
             flat,
-            search_dir,
+            nested_dir,
             flat_content!!,
             parent,
         ),

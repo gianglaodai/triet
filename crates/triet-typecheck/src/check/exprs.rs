@@ -267,7 +267,7 @@ impl Checker<'_> {
     /// 1. Inner must be Outcome (else this operator is meaningless).
     /// 2. Caller's `current_return_type` must be Outcome (E1028).
     /// 3. Inner's error type must match caller's error type — explicit
-    /// Check `inner ~+> |v| body` / `~0> body` / `~-> |e| body`.
+    ///    Check `inner ~+> |v| body` / `~0> body` / `~-> |e| body`.
     ///
     /// For the `Negative` arm, delegates to `check_outcome_propagate`
     /// (identical semantics when body is early-return). Other arms
@@ -281,16 +281,13 @@ impl Checker<'_> {
         span: Span,
     ) -> Type {
         use triet_syntax::OutcomeArm;
-        match arm {
-            OutcomeArm::Negative => {
-                self.check_outcome_propagate(inner, capture_name, body, span.clone())
-            }
-            _ => {
-                // Stub — pending v0.7.4.3-error.5.
-                let _ = self.infer_expression(inner);
-                let _ = self.infer_expression(body);
-                Type::Unknown
-            }
+        if arm == OutcomeArm::Negative {
+            self.check_outcome_propagate(inner, capture_name, body, span)
+        } else {
+            // Stub — pending v0.7.4.3-error.5.
+            let _ = self.infer_expression(inner);
+            let _ = self.infer_expression(body);
+            Type::Unknown
         }
     }
 
@@ -503,6 +500,7 @@ impl Checker<'_> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn check_call(&mut self, callee: ExprId, arguments: &[ExprId], span: Span) -> Type {
         let callee_ty = self.infer_expression(callee);
 
@@ -517,7 +515,7 @@ impl Checker<'_> {
                 self.errors.push(TypeError::WrongArity {
                     expected: parameters.len(),
                     found: arguments.len(),
-                    span,
+                    span: span.clone(),
                 });
             }
             // Generic function inference per Q2-A (v0.7.4.1):
@@ -550,6 +548,19 @@ impl Checker<'_> {
             }
             if type_params.is_empty() {
                 return *return_type;
+            }
+            // Enforce bounds
+            for tp in type_params {
+                if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
+                    && let Some(arg_ty) = sub_map.get(&tp.name)
+                        && !arg_ty.is_send() {
+                            self.errors.push(crate::error::TypeError::Concurrency(
+                                crate::error::ConcurrencyError::NotSendCannotCrossBoundary {
+                                    ty: arg_ty.to_string(),
+                                    span: span.clone(),
+                                }
+                            ));
+                        }
             }
             return return_type.substitute(&sub_map);
         }

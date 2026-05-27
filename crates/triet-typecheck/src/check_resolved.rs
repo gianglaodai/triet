@@ -111,6 +111,13 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
                 if let Some((_, ty)) = source_types.iter().find(|(n, _)| n == item_name) {
                     env.declare(local_name, ty.clone());
                 }
+            } else if let Some(root) = source_path.root() {
+                // v0.8.11: Ambient/Capability modules (`sys`, `dev`, `usr`, `std`, `core`)
+                // do not have user-module definitions. We inject their names as `Type::Unknown`
+                // so the typechecker doesn't complain about undefined names (E1002).
+                if matches!(root, "sys" | "dev" | "usr" | "std" | "core") {
+                    env.declare(local_name, Type::Unknown);
+                }
             }
         }
 
@@ -232,10 +239,11 @@ fn resolve_type_expr(
 /// generic function signature extraction (v0.7.4.1, ADR-0019 Addendum
 /// §A7) so that a parameter typed `T` resolves to a type-param
 /// reference, not the unknown sink.
+#[allow(clippy::too_many_lines)]
 fn resolve_type_expr_with_params(
     arena: &triet_syntax::Arena,
     id: triet_syntax::TypeId,
-    type_params: &[String],
+    type_params: &[triet_syntax::TypeParam],
     name_table: &HashMap<String, Type>,
 ) -> Type {
     use triet_syntax::TypeExpr;
@@ -253,7 +261,7 @@ fn resolve_type_expr_with_params(
             "Trilean" => Type::TRILEAN,
             "String" => Type::String,
             "Unit" => Type::Unit,
-            other if type_params.iter().any(|p| p == other) => Type::TypeParam(other.to_owned()),
+            other if type_params.iter().any(|p| p.name == other) => Type::TypeParam(other.to_owned()),
             other => name_table.get(other).cloned().unwrap_or(Type::Unknown),
         },
         TypeExpr::Tuple(elements) => Type::Tuple(
@@ -284,6 +292,14 @@ fn resolve_type_expr_with_params(
                 name_table,
             )),
         },
+        TypeExpr::Generic { name, arguments } if name == "Atomic" && arguments.len() == 1 => {
+            Type::Atomic(Box::new(resolve_type_expr_with_params(
+                arena,
+                arguments[0],
+                type_params,
+                name_table,
+            )))
+        }
         // v0.7.4.2: Vector<T>/HashMap<K,V> in stdlib stub signatures.
         // Mirror the pseudo-struct shells materialized by `check.rs`
         // so cross-module signature extraction round-trips. Other
@@ -342,9 +358,9 @@ fn resolve_type_expr_with_params(
         },
         // v0.7.4.3-debt.1: `Trilean!` annotation per ADR-0021 §2.7.
         TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
-        // v0.8: reference forms. Enforcement deferred; strip to inner for now.
-        TypeExpr::Reference { inner, .. } => {
-            resolve_type_expr_with_params(arena, *inner, type_params, name_table)
+        TypeExpr::Reference { form, inner } => {
+            let inner_ty = resolve_type_expr_with_params(arena, *inner, type_params, name_table);
+            Type::Reference(*form, Box::new(inner_ty))
         }
     }
 }

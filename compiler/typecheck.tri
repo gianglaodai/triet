@@ -70,7 +70,7 @@ from khi.parser import FunctionTypePayload as ParseFunctionTypePayload, OutcomeT
 
 from khi.modules import ResolvedProgram, Module, ModuleId, ArenaId, ModulePath, AbsolutePath
 from khi.modules import resolved_program_module_count, resolved_program_arena_count, resolved_program_root
-from khi.modules import module_id_raw, arena_id_raw, absolute_path_module, absolute_path_name, find_module_by_path
+from khi.modules import module_id_raw, arena_id_raw, absolute_path_module, absolute_path_name, find_module_by_path, module_path_display
 
 // ─────────────────────────────────────────────────────────────────
 // TypeKind — discriminator for the resolved-type representation.
@@ -884,7 +884,11 @@ function checker_with_env(state: CheckerState, env: TypeEnvironment) -> CheckerS
         parser_arena: state.parser_arena,
     }
 
-function checker_push_error(state: CheckerState, err: TypeError) -> CheckerState =
+function checker_push_error(state: CheckerState, err: TypeError) -> CheckerState = {
+    match err {
+        UndefinedNameErr(p) => { },
+        _ => { },
+    }
     CheckerState {
         type_arena: state.type_arena,
         env: state.env,
@@ -893,6 +897,7 @@ function checker_push_error(state: CheckerState, err: TypeError) -> CheckerState
         in_loop: state.in_loop,
         parser_arena: state.parser_arena,
     }
+}
 
 function checker_with_return_type(state: CheckerState, type_id: Integer) -> CheckerState =
     CheckerState {
@@ -3164,7 +3169,7 @@ public function check_resolved(program: ResolvedProgram) -> Vector<TypeError> = 
         while ki < keys_len {
             let k: String = get(keys, ki)!!
             let binding: Binding = hashmap_get(frame.names, k)!!
-            insert(local_types, k, binding.type_id)
+            local_types = insert(local_types, k, binding.type_id)
             ki = ki + 1
         }
         module_types = push(module_types, local_types)

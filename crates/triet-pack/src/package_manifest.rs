@@ -61,6 +61,27 @@ const FORMAT_VERSION: u32 = 1;
 /// roots (`crate`/`self`/`super`) never appear at this layer.
 const RESERVED_CAP_ROOTS: &[&str] = &["sys", "dev", "usr"];
 
+/// Standard `sys.*` and `dev.*` capabilities (ADR-0022, ADR-0026).
+/// Used to detect typos in the manifest (e.g. `sys.raw_thred`).
+/// The `usr.*` namespace remains open for arbitrary paths.
+const STANDARD_CAPABILITIES: &[&str] = &[
+    // Concurrency (ADR-0026)
+    "sys.raw_thread",
+    "sys.atomic",
+    // FFI & Memory (ADR-0026)
+    "dev.ffi",
+    "dev.raw_memory",
+    "dev.reinterpret",
+    // Ownership (ADR-0022/0025)
+    "dev.self_ref",
+    "dev.custom_drop",
+    // Legacy examples
+    "sys.io",
+    "sys.net",
+    "sys.net.dns",
+    "dev.disk",
+];
+
 /// Parsed source manifest for one package. Mirrors the wire-side
 /// [`crate::AbiMetadata`] but at the *source* layer — what the author
 /// writes, what `dao build` would read before emitting a `.khi`.
@@ -539,6 +560,23 @@ pub enum PackageManifestError {
         /// The offending root segment.
         root: String,
     },
+
+    /// `cap_path` starts with `sys.` or `dev.` but is not in the standard
+    /// capability list. Typo prevention.
+    #[error("unknown standard capability `{cap_path}` at line {line}")]
+    #[diagnostic(
+        code(triet::capability::E2209),
+        help(
+            "this looks like a typo of a standard capability. \
+             usr.* capabilities are not validated, but sys.* and dev.* must be known."
+        )
+    )]
+    UnknownStandardCapability {
+        /// 1-based line number.
+        line: usize,
+        /// The unknown capability path.
+        cap_path: String,
+    },
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -610,6 +648,17 @@ fn validate_cap_path(s: &str, line: usize) -> Result<(), PackageManifestError> {
             root: root.to_owned(),
         });
     }
+
+    // Strict validation for sys.* and dev.* capabilities.
+    // usr.* is open for user-defined capabilities.
+    if (root == "sys" || root == "dev")
+        && !STANDARD_CAPABILITIES.contains(&s) {
+            return Err(PackageManifestError::UnknownStandardCapability {
+                line,
+                cap_path: s.to_owned(),
+            });
+        }
+
     Ok(())
 }
 
@@ -936,10 +985,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_standard_capability_sys() {
+        let text = "format_version 1\nname x\nversion 0.1.0\nrequires sys.raw_thred grant\n";
+        let err = PackageManifest::parse(text).expect_err("must reject");
+        assert!(matches!(
+            err,
+            PackageManifestError::UnknownStandardCapability {
+                line: 4,
+                ref cap_path,
+            } if cap_path == "sys.raw_thred"
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_standard_capability_dev() {
+        let text = "format_version 1\nname x\nversion 0.1.0\nrequires dev.magic grant\n";
+        let err = PackageManifest::parse(text).expect_err("must reject");
+        assert!(matches!(
+            err,
+            PackageManifestError::UnknownStandardCapability {
+                line: 4,
+                ref cap_path,
+            } if cap_path == "dev.magic"
+        ));
+    }
+
+    #[test]
     fn accepts_all_four_level_tokens() {
         let text = "format_version 1\nname x\nversion 0.1.0\n\
-             requires sys.a grant\nrequires sys.b ambient\n\
-             requires sys.c deny\nrequires sys.d defer\n";
+             requires usr.a grant\nrequires usr.b ambient\n\
+             requires usr.c deny\nrequires usr.d defer\n";
         let m = PackageManifest::parse(text).expect("parse ok");
         let levels: Vec<_> = m.requires.iter().map(|c| c.level).collect();
         assert_eq!(

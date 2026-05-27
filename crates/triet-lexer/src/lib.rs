@@ -37,7 +37,7 @@ mod tests {
         Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not, NotEq, Null, Or, OrOr,
         Owned, PercentPercent, Pipe, Plus, Public, Question, QuestionColon, QuestionDot, RBrace,
         RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral,
-        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret, TildeMinusGt, TildePlusGt, TildeZeroGt,
+        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret,
         True, Type, Underscore, Unknown, While, WhileQ, Xor,
     };
 

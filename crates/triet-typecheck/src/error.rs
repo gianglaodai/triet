@@ -438,6 +438,87 @@ pub enum TypeError {
         #[label("deprecated keyword")]
         span: Span,
     },
+
+    /// A concurrency-related error (e.g., crossing thread boundaries).
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Concurrency(#[from] ConcurrencyError),
+
+    /// A borrow checker error (E24XX series).
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Borrow(#[from] BorrowError),
+}
+
+/// Errors related to concurrency primitives and thread boundaries.
+#[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
+pub enum ConcurrencyError {
+    /// E2500: A type was passed across a thread boundary but is not Send.
+    #[error("type `{ty}` cannot be sent across thread boundaries")]
+    #[diagnostic(
+        code(triet::borrow::E2500),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Ensure the type is Send (primitive or `&+` holding Send types):\n\
+            Change `&0 T` or `&- T` to `&+ T` if applicable\n\n\
+            [Fix 2] Encapsulate inside an Actor if shared state is needed:\n\
+            Wrap type in `Actor<T>`"
+        )
+    )]
+    NotSendCannotCrossBoundary {
+        /// The type that failed the Send check.
+        ty: String,
+        /// Source location of the bound or argument.
+        #[label("this type is not Send")]
+        span: Span,
+    },
+
+    /// E2510: Scope-ref / weak-ref boundary violations.
+    #[error("scope-ref leakage: reference escapes its permitted scope")]
+    #[diagnostic(
+        code(triet::borrow::E2510),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Prevent the borrow from escaping:\n\
+            Remove escaping assignment or return\n\n\
+            [Fix 2] Upgrade to owned value for cross-boundary transport:\n\
+            Change `&0 T` to `&+ T`"
+        )
+    )]
+    ScopeRefLeakage {
+        /// Source location of the leak.
+        #[label("reference escapes here")]
+        span: Span,
+    },
+
+    /// E2520: Mutable-share anti-pattern.
+    #[error("mutable-share anti-pattern: attempting to share mutable state")]
+    #[diagnostic(
+        code(triet::borrow::E2520),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Use message passing instead of shared state:\n\
+            Change shared mutable state to Actor messaging\n\n\
+            [Fix 2] Restrict to single-threaded logic if sharing is required:\n\
+            Remove concurrency boundaries"
+        )
+    )]
+    MutableShareAntiPattern {
+        /// Source location of the anti-pattern.
+        #[label("mutable state shared here")]
+        span: Span,
+    },
+}
+
+impl ConcurrencyError {
+    /// Returns the source span associated with this concurrency error.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::NotSendCannotCrossBoundary { span, .. }
+            | Self::ScopeRefLeakage { span }
+            | Self::MutableShareAntiPattern { span } => span.clone(),
+        }
+    }
 }
 
 impl TypeError {
@@ -445,6 +526,8 @@ impl TypeError {
     #[must_use]
     pub fn span(&self) -> Span {
         match self {
+            Self::Concurrency(err) => err.span(),
+            Self::Borrow(err) => err.span(),
             Self::UnknownType { span, .. }
             | Self::UndefinedName { span, .. }
             | Self::Mismatch { span, .. }
@@ -473,6 +556,218 @@ impl TypeError {
             | Self::PossiblyUnknownCondition { span }
             | Self::TrileanReturnNotRefined { span }
             | Self::NullDeprecated { span } => span.clone(),
+        }
+    }
+}
+
+/// Errors emitted by the borrow checker (v0.9+ algorithm placeholder, ADR-0025).
+#[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
+pub enum BorrowError {
+    /// E2400: `BorrowLifetimeInferenceFailed` (ADR-0025 §3.4)
+    #[error("Cannot infer which input the returned borrow ties to")]
+    #[diagnostic(
+        code(triet::borrow::E2400),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Return owned value instead (requires cloning inside body):\n\
+            Change `-> &0 {ty}` to `-> &+ {ty}`\n\n\
+            [Fix 2] Group inputs into a collection with a single borrow scope:\n\
+            Refactor parameter list to a single struct or vector\n\n\
+            [Fix 3] Encapsulate inside a struct method (ties return to `self`):\n\
+            Wrap logic in an `impl` block"
+        )
+    )]
+    BorrowLifetimeInferenceFailed {
+        /// Type string of the returned borrow.
+        ty: String,
+        /// Source location of the return type expression.
+        #[label("ambiguous return borrow")]
+        span: Span,
+    },
+
+    /// E2402: `BorrowInStructField` (ADR-0025 §8.1)
+    #[error("struct fields cannot hold non-owned borrows (`&0` or `&-`)")]
+    #[diagnostic(
+        code(triet::borrow::E2402),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Make the field own its data:\n\
+            Change `&0 {ty}` or `&- {ty}` to `&+ {ty}`\n\n\
+            [Fix 2] Pass the borrow as a function parameter instead of storing it:\n\
+            Remove `{field_name}` field from struct"
+        )
+    )]
+    BorrowInStructField {
+        /// The name of the field.
+        field_name: String,
+        /// The type string.
+        ty: String,
+        /// Source location of the field.
+        #[label("struct fields must be `&+` (owned)")]
+        span: Span,
+    },
+
+    /// E2403: `EscapingBorrow` (ADR-0025 §8.2)
+    #[error("borrow escapes its lexical scope")]
+    #[diagnostic(
+        code(triet::borrow::E2403),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Return owned value instead:\n\
+            Change the return type to `&+ T`\n\n\
+            [Fix 2] Keep the borrow strictly within its scope:\n\
+            Remove the assignment to the outer scope"
+        )
+    )]
+    EscapingBorrow {
+        /// Source location where the borrow escapes.
+        #[label("borrow escapes here")]
+        span: Span,
+    },
+
+    /// E2410: `CannotMutateFrozenOwner` (ADR-0025 §7.1)
+    #[error("cannot mutate a frozen (`&0`) owner or its fields")]
+    #[diagnostic(
+        code(triet::borrow::E2410),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Request exclusive access to mutate:\n\
+            Change `&0 {ty}` to `&- {ty}`"
+        )
+    )]
+    CannotMutateFrozenOwner {
+        /// The type string.
+        ty: String,
+        /// Source location.
+        #[label("mutation attempted through frozen reference")]
+        span: Span,
+    },
+
+    /// E2411: `CannotPromoteFrozenToMutable` (ADR-0025 §7.2)
+    #[error("cannot promote frozen reference (`&0`) to mutable (`&-`)")]
+    #[diagnostic(
+        code(triet::borrow::E2411),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Request mutable reference from the start:\n\
+            Change `&0 {ty}` to `&- {ty}` at the source"
+        )
+    )]
+    CannotPromoteFrozenToMutable {
+        /// The type string.
+        ty: String,
+        /// Source location.
+        #[label("invalid promotion")]
+        span: Span,
+    },
+
+    /// E2420: `UseAfterMove` (ADR-0025 §5.1)
+    #[error("use of moved value `{name}`")]
+    #[diagnostic(
+        code(triet::borrow::E2420),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Borrow instead of moving if you still need it:\n\
+            Change argument to `&0 {name}` or `&- {name}`\n\n\
+            [Fix 2] Clone the value before moving:\n\
+            Use `{name}.clone()`"
+        )
+    )]
+    UseAfterMove {
+        /// The name of the variable.
+        name: String,
+        /// Source location.
+        #[label("value used here after move")]
+        span: Span,
+    },
+
+    /// E2421: `SelfOwnershipParadox` (ADR-0025 §5.2)
+    #[error("self-ownership paradox: struct cannot own itself")]
+    #[diagnostic(
+        code(triet::borrow::E2421),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Store an ID or index instead of the struct itself:\n\
+            Replace the self-reference with an identifier"
+        )
+    )]
+    SelfOwnershipParadox {
+        /// Source location.
+        #[label("self-ownership created here")]
+        span: Span,
+    },
+
+    /// E2422: `NonTerminatingConstruction` (ADR-0025 §6.2)
+    #[error("non-terminating construction: struct requires an owned instance of itself to be constructed")]
+    #[diagnostic(
+        code(triet::borrow::E2422),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Use an Outcome type to break the cycle (allows null state):\n\
+            Change `&+ {ty}` to `(&+ {ty})?~E` or similar null-able type\n\n\
+            [Fix 2] Use an array/vector for recursive ownership:\n\
+            Change `&+ {ty}` to `Vector<&+ {ty}>`"
+        )
+    )]
+    NonTerminatingConstruction {
+        /// The type string.
+        ty: String,
+        /// Source location.
+        #[label("field makes construction impossible")]
+        span: Span,
+    },
+
+    /// E2430: `NamespaceInferenceFailed`
+    #[error("namespace inference failed for capability requirement")]
+    #[diagnostic(
+        code(triet::borrow::E2430),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Provide an explicit namespace root:\n\
+            Change to fully qualified capability path"
+        )
+    )]
+    NamespaceInferenceFailed {
+        /// Source location.
+        #[label("inference fails here")]
+        span: Span,
+    },
+
+    /// E2440: `BorrowExclusivityViolation` (ADR-0025 §2.2)
+    #[error("cannot borrow `{name}` as mutable because it is also borrowed as immutable")]
+    #[diagnostic(
+        code(triet::borrow::E2440),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Shorten the lifetime of the immutable borrow:\n\
+            Move the immutable borrow out of scope before mutating\n\n\
+            [Fix 2] Reorder the read before mutation:\n\
+            Move the mutation statement later"
+        )
+    )]
+    BorrowExclusivityViolation {
+        /// The name of the variable.
+        name: String,
+        /// Source location.
+        #[label("mutable borrow occurs here")]
+        span: Span,
+    },
+}
+
+impl BorrowError {
+    /// Returns the source span associated with this borrow error.
+    pub fn span(&self) -> Span {
+        match self {
+            Self::BorrowLifetimeInferenceFailed { span, .. }
+            | Self::BorrowInStructField { span, .. }
+            | Self::EscapingBorrow { span }
+            | Self::CannotMutateFrozenOwner { span, .. }
+            | Self::CannotPromoteFrozenToMutable { span, .. }
+            | Self::UseAfterMove { span, .. }
+            | Self::SelfOwnershipParadox { span }
+            | Self::NonTerminatingConstruction { span, .. }
+            | Self::NamespaceInferenceFailed { span }
+            | Self::BorrowExclusivityViolation { span, .. } => span.clone(),
         }
     }
 }

@@ -110,7 +110,7 @@ impl<'p> Checker<'p> {
                 // struct/enum below).
                 self.env.push_frame();
                 for param in &def.type_params {
-                    self.env.declare(param, Type::TypeParam(param.clone()));
+                    self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let parameters: Vec<Type> = def
                     .parameters
@@ -171,7 +171,7 @@ impl<'p> Checker<'p> {
                 // field type resolution.
                 self.env.push_frame();
                 for param in &def.type_params {
-                    self.env.declare(param, Type::TypeParam(param.clone()));
+                    self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let fields: Vec<(String, Type)> = def
                     .fields
@@ -189,7 +189,7 @@ impl<'p> Checker<'p> {
             Item::Enum(def) => {
                 self.env.push_frame();
                 for param in &def.type_params {
-                    self.env.declare(param, Type::TypeParam(param.clone()));
+                    self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let variants: Vec<(String, Option<Box<Type>>)> = def
                     .variants
@@ -227,7 +227,7 @@ impl<'p> Checker<'p> {
         // them as `TypeParam(name)` rather than `Unknown` (v0.7.4.1,
         // ADR-0019 Addendum §A7, Q2-A).
         for param in &def.type_params {
-            self.env.declare(param, Type::TypeParam(param.clone()));
+            self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
         }
 
         let return_type = def
@@ -576,6 +576,9 @@ impl<'p> Checker<'p> {
                 // (locked v0.7.3.1). Existing struct/enum
                 // monomorphization machinery applies uniformly.
                 match (name.as_str(), args.len()) {
+                    ("Atomic", 1) => {
+                        return Type::Atomic(Box::new(args.into_iter().next().unwrap()));
+                    }
                     ("Vector", 1) => {
                         return Type::UserStruct {
                             name: "Vector".into(),
@@ -624,8 +627,20 @@ impl<'p> Checker<'p> {
                                 });
                                 return Type::Unknown;
                             }
-                            let map: std::collections::HashMap<_, _> =
-                                type_params.iter().cloned().zip(args).collect();
+let map: std::collections::HashMap<_, _> =
+                                type_params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
+                            for tp in type_params {
+                                if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
+                                    && let Some(arg_ty) = map.get(&tp.name)
+                                        && !arg_ty.is_send() {
+                                            self.errors.push(crate::error::TypeError::Concurrency(
+                                                crate::error::ConcurrencyError::NotSendCannotCrossBoundary {
+                                                    ty: arg_ty.to_string(),
+                                                    span: span.clone(),
+                                                }
+                                            ));
+                                        }
+                            }
                             return ty.substitute(&map);
                         }
                         // Non-struct types cannot have type params — fall through to UnknownType.
@@ -677,7 +692,9 @@ impl<'p> Checker<'p> {
             TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
             // v0.8: reference forms. Enforcement deferred to v0.9+;
             // resolve transparently to the inner type for now.
-            TypeExpr::Reference { inner, .. } => self.resolve_type(inner),
+            TypeExpr::Reference { form, inner } => {
+                Type::Reference(form, Box::new(self.resolve_type(inner)))
+            }
         }
     }
 

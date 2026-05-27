@@ -41,7 +41,7 @@ pub use capability_check::{CapabilityError, check_capabilities};
 pub use check::check;
 pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
-pub use error::TypeError;
+pub use error::{BorrowError, ConcurrencyError, TypeError};
 pub use types::Type;
 
 #[cfg(test)]
@@ -69,6 +69,89 @@ mod tests {
         assert!(
             errors.iter().any(predicate),
             "expected matching error, got: {errors:#?}",
+        );
+    }
+
+// ===== Concurrency Bounds =====
+
+    #[test]
+    fn checks_send_bound_success() {
+        assert_ok(
+            r"
+            function spawn<F: Send>(f: F) {}
+
+            function main() {
+                spawn(42) // Integer is Send
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_failure() {
+        assert_has_error(
+            r"
+            function spawn<F: Send>(f: F) {}
+
+            function main(r: &0 Integer) {
+                spawn(r)
+            }
+            ",
+            |e| matches!(e, TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })),
+        );
+    }
+
+#[test]
+    fn checks_send_bound_strong_ref_success() {
+        assert_ok(
+            r"
+            function spawn<F: Send>(f: F) {}
+
+            function main(r: &+ Integer) {
+                spawn(r)
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_weak_ref_failure() {
+        assert_has_error(
+            r"
+            function spawn<F: Send>(f: F) {}
+
+            function main(r: &- Integer) {
+                spawn(r)
+            }
+            ",
+            |e| matches!(e, TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })),
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_atomic_success() {
+        assert_ok(
+            r"
+            function spawn<F: Send>(f: F) {}
+
+            function main(r: Atomic<Integer>) {
+                spawn(r)
+            }
+            ",
+        );
+    }
+
+    // ===== Type bounds in struct =====
+    #[test]
+    fn checks_send_bound_struct() {
+        assert_has_error(
+            r"
+            struct Task<T: Send> { val: T }
+            function main(r: &0 Integer) {
+                let t: Task<&0 Integer> = Task { val: r } // Should fail
+            }
+            ",
+            |e| matches!(e, TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })),
         );
     }
 

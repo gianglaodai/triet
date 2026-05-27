@@ -47,8 +47,9 @@ pub use expr::{
     UnaryOperator,
 };
 pub use item::{
-    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, ImportFrom, ImportName,
+    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, ImportFrom, ImportName,
     ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Program, StructDef, StructField,
+    TypeParam,
 };
 pub use numeric::{NumericSuffix, TrileanValue};
 pub use pattern::{LiteralPattern, Pattern};

@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT OR Apache-2.0"
@@ -25,16 +25,16 @@ repository = "https://github.com/gianghoang/triet"
 description = "Triết — an AI-first balanced-ternary programming language"
 
 [workspace.dependencies]
-triet-core = { path = "crates/triet-core", version = "0.7.0" }
-triet-logic = { path = "crates/triet-logic", version = "0.7.0" }
-triet-syntax = { path = "crates/triet-syntax", version = "0.7.0" }
-triet-lexer = { path = "crates/triet-lexer", version = "0.7.0" }
-triet-parser = { path = "crates/triet-parser", version = "0.7.0" }
-triet-modules = { path = "crates/triet-modules", version = "0.7.0" }
-triet-ir = { path = "crates/triet-ir", version = "0.7.0" }
-triet-pack = { path = "crates/triet-pack", version = "0.7.0" }
-triet-typecheck = { path = "crates/triet-typecheck", version = "0.7.0" }
-triet-interpreter = { path = "crates/triet-interpreter", version = "0.7.0" }
+triet-core = { path = "crates/triet-core", version = "0.8.0" }
+triet-logic = { path = "crates/triet-logic", version = "0.8.0" }
+triet-syntax = { path = "crates/triet-syntax", version = "0.8.0" }
+triet-lexer = { path = "crates/triet-lexer", version = "0.8.0" }
+triet-parser = { path = "crates/triet-parser", version = "0.8.0" }
+triet-modules = { path = "crates/triet-modules", version = "0.8.0" }
+triet-ir = { path = "crates/triet-ir", version = "0.8.0" }
+triet-pack = { path = "crates/triet-pack", version = "0.8.0" }
+triet-typecheck = { path = "crates/triet-typecheck", version = "0.8.0" }
+triet-interpreter = { path = "crates/triet-interpreter", version = "0.8.0" }
 
 # External deps — pinned at workspace level for consistency
 thiserror = "2"

@@ -1,6 +1,6 @@
 # ADR 0022 — Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)
 
-**Trạng thái:** **Draft** (supersedes 2026-05-22 initial sketch). Foundation cho v0.8 Concurrency Model. Locks ngữ nghĩa 5-form reference syntax + mutability + aliasing + cycle policy + self-ref capability + Outcome integration. Detailed enforcement algorithm tách ra [ADR-0025](0025-borrow-checker-rules.md) (TODO). Actor send rules tách ra [ADR-0026](0026-actor-boundary-send-rules.md) (TODO).
+**Trạng thái:** **Draft** (supersedes 2026-05-22 initial sketch). Foundation cho v0.8 Concurrency Model. Locks ngữ nghĩa 5-form reference syntax + mutability + aliasing + cycle policy + self-ref capability + Outcome integration. Detailed enforcement algorithm tách ra [ADR-0025](0025-borrow-checker-rules.md) (TODO). Concurrency Send rules tách ra [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md).
 
 **Issue:** Triết tham vọng OS-capable per [VISION §3.5 + §5](../../VISION.md) — phải có memory model đủ chặt như Rust nhưng:
 1. **Không có keyword `unsafe`** — mọi nguy hiểm đi qua [capability system (ADR-0018)](0018-capability-loader-semantics.md), audit-friendly.
@@ -45,7 +45,7 @@ Trade-off chấp nhận: doubly-linked list / cycle phải break bằng `&-`, kh
 | **D2** | Default **read-only mọi nơi** (variable, parameter, struct field). Explicit keyword `mutable` để cho phép mutate | Brand fit "stability over speed", giống Rust 2018+ default |
 | **D3** | Self-ref struct **default cấm**, mở khóa qua capability `dev::self_ref` (offset-based pattern) | Refuse-over-guess; tránh Pin/unsafe complexity |
 
-D4–D7 chốt ở ADR-0025 và ADR-0026 (borrow checker + actor send).
+D4–D7 chốt ở ADR-0025 và ADR-0026 (borrow checker + thread boundary send).
 
 ---
 
@@ -65,7 +65,7 @@ D4–D7 chốt ở ADR-0025 và ADR-0026 (borrow checker + actor send).
 
 Java analogy: `final User u = new User(...)` (frozen owner) vs `User u = new User(...)` (mutable owner). Cả 2 đều là owner duy nhất, khác nhau ở quyền mutate.
 
-`&+ T` (frozen) tồn tại để **send qua actor boundary an toàn** (xem [ADR-0026](0026-actor-boundary-send-rules.md) §3) — frozen ≡ immutable share-able. `&+ mutable T` thì không Send (mutable shared = race condition).
+`&+ T` (frozen) tồn tại để **send qua thread boundary an toàn** (xem [ADR-0026](0026-actor-boundary-send-rules.md) §3) — frozen ≡ immutable share-able. `&+ mutable T` thì không Send (mutable shared = race condition).
 
 ### 2.2 — Tại sao không có syntax cho "shared owner" (Arc/Rc equivalent)
 
@@ -75,16 +75,16 @@ Per **D1**, core language không có shared ownership. Lý do:
 - **Compile-time clarity:** Unique owner cho phép compile-time exclusivity check không phải runtime guard.
 - **Brand fit:** Triết chấp nhận verbose hơn Rust ở một số pattern để đổi lấy zero-cost + compile-time rigor.
 
-Khi thực sự cần share đối tượng immutable cross-actor, [ADR-0026 §4](0026-actor-boundary-send-rules.md) sẽ cho phép refcount **tự động ngầm** ở actor message boundary — nhưng không expose vào user-facing language.
+Khi thực sự cần share đối tượng immutable cross-thread, [ADR-0026](0026-actor-boundary-send-rules.md) sẽ cho phép refcount **tự động ngầm** ở thread boundary — nhưng không expose vào user-facing language.
 
 ### 2.3 — Tại sao không có `&+ mutable shared T` (Rc<RefCell> equivalent)
 
 Mutable share là nguồn gốc của data race + iterator invalidation. Rust giải bằng `RefCell` (runtime borrow check, panic on violation). Triết refuse vì:
 
 - Runtime panic vi phạm priority "compile-time error catching".
-- Pattern này 95% thay được bằng actor model (gom mutable state vào 1 actor, query/update qua message).
+- Pattern này 95% thay được bằng message-passing pattern (gom mutable state vào 1 thread/context, query/update qua message).
 
-Edge case 5% còn lại (single-threaded interior mutability): có thể dùng `Cell<T>` cho primitive copy types (planned post-v1.0), hoặc refactor sang actor pattern.
+Edge case 5% còn lại (single-threaded interior mutability): có thể dùng `Cell<T>` cho primitive copy types (planned post-v1.0), hoặc refactor sang message-passing pattern.
 
 ---
 
@@ -188,7 +188,7 @@ Refcount (Rc/Arc) cho phép nhiều `&+` cùng tồn tại, mỗi clone tăng co
 2. **Cycle problem:** refcount không thu hồi cycle → phải có cycle collector (runtime overhead + non-deterministic drop) hoặc force user dùng Weak break (như Rust).
 3. **Compile-time predictability:** unique ownership cho phép compile-time exclusivity check; refcount thì không.
 
-Cross-actor immutable share (như `Arc<T> Send`) sẽ được handle ở [ADR-0026 §3.1](0026-actor-boundary-send-rules.md) bằng refcount **ngầm**, không expose cú pháp ra user. Memory layout chi tiết (8-byte object header chứa refcount field) lock ở [ADR-0026 §3.1.1](0026-actor-boundary-send-rules.md) — Scenario A "header always present" thay vì lazy box-wrapping, vì lazy wrap phá invariant compile-time của `&-` weak refs.
+Cross-thread immutable share sẽ được handle ở [ADR-0026](0026-actor-boundary-send-rules.md) bằng refcount **ngầm**, không expose cú pháp ra user. Memory layout chi tiết (8-byte object header chứa refcount field) lock ở [ADR-0026 §7](0026-actor-boundary-send-rules.md) — Scenario A "header always present" thay vì lazy box-wrapping, vì lazy wrap phá invariant compile-time của `&-` weak refs.
 
 ---
 
@@ -374,7 +374,7 @@ Pattern này không thực sự lưu `&0` vào struct — chỉ lưu `Integer` o
 
 ### 7.3 — Không có Pin equivalent
 
-Rust `Pin<&mut T>` cho phép thực sự lưu reference vào self. Triết không cho phép pattern này — buộc tác giả dùng offset hoặc index. Trade-off: một số Future state machine pattern phức tạp hơn so với Rust async, nhưng v0.8 actor model thay thế phần lớn use case.
+Rust `Pin<&mut T>` cho phép thực sự lưu reference vào self. Triết không cho phép pattern này — buộc tác giả dùng offset hoặc index. Trade-off: một số Future state machine pattern phức tạp hơn so với Rust async, nhưng v0.8 BYOS primitives thay thế phần lớn use case.
 
 ---
 
@@ -454,7 +454,7 @@ Trade-off: Triết `&-` hạn chế hơn Rust `Weak` — không thể giữ `&-`
 | Ngôn ngữ | Approach | Strength | Weakness so với Triết priority |
 |---|---|---|---|
 | Rust | Static borrow + lifetime annotation | Zero-cost, compile-time | Viral `<'a>` annotations |
-| Mojo | Borrow conventions (`borrowed`/`inout`/`owned`) | Đơn giản | Không giải doubly-linked, no actor story |
+| Mojo | Borrow conventions (`borrowed`/`inout`/`owned`) | Đơn giản | Không giải doubly-linked, no thread/BYOS story |
 | Pony | 6 reference capabilities (iso/trn/ref/val/box/tag) | Concurrency-safe | Curve học cực dốc |
 | Hylo (Val) | Mutable value semantics, no references | Không lifetime | Phải restructure mọi data-oriented code |
 | Vale | Generational references (runtime check) | Solve cycles tự nhiên | 1-2% overhead, runtime errors |
@@ -466,7 +466,7 @@ Trade-off: Triết `&-` hạn chế hơn Rust `Weak` — không thể giữ `&-`
 1. **Ternary syntax `&+/&0/&-`** map vào trit identity.
 2. **Capability-as-unsafe** — không có `unsafe` keyword nào.
 3. **No lifetime annotation syntax** — compile error với fix suggest khi elision fail (xem ADR-0025 §4).
-4. **Frozen owner `&+ T`** distinct với mutable owner `&+ mutable T` — cho phép send cross-actor tự nhiên.
+4. **Frozen owner `&+ T`** distinct với mutable owner `&+ mutable T` — cho phép send cross-thread tự nhiên.
 
 ---
 
@@ -479,7 +479,7 @@ ADR-0022 lock **conceptual model**. Các phần sau defer:
 | Borrow checker algorithm (NLL, elision, use-after-move, constructibility termination) | [ADR-0025](0025-borrow-checker-rules.md) (TODO) |
 | Drop order, custom destructor, capability `dev::custom_drop` | ADR-0025 §6 |
 | Move semantics (use-after-move detection) | ADR-0025 §8 |
-| Actor Send rule, `iso`, cross-actor refcount | [ADR-0026](0026-actor-boundary-send-rules.md) (TODO) |
+| Send rule, cross-thread refcount | [ADR-0026](0026-actor-boundary-send-rules.md) (TODO) |
 | FFI memory model (raw pointer, alignment, ownership across C boundary) | Future ADR (post-v0.8) |
 | Generic + reference interaction (`Vector<&+ T>` vs `Vector<&0 T>`) | ADR-0025 §9 |
 | Closure capture semantics (`Fn` vs `FnMut` equivalent) | Future ADR khi closure lock |
@@ -587,4 +587,4 @@ Lưu ý: §12.4 thực ra là demo ADR-0018 chứ không phải ADR-0022 — own
 - [ADR-0020 — Outcome error handling](0020-outcome-error-handling.md) (`T?` đã chốt cú pháp dùng cho `&-` upgrade)
 - [ADR-0021 — Trilean refinement](0021-trilean-refinement.md) (refuse-with-fix-suggest pattern reuse cho E2400 series)
 - ADR-0025 — Borrow Checker Rules (TODO, sibling) — enforcement algorithm
-- ADR-0026 — Actor Boundary & Send Rules (TODO, sibling) — concurrency interplay
+- ADR-0026 — Concurrency Primitives & Send Rules (sibling) — concurrency interplay

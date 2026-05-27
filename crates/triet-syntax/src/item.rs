@@ -7,6 +7,22 @@ use crate::{
     visibility::Visibility,
 };
 
+/// A bound on a generic parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GenericBound {
+    /// `: Send` bound, requiring the type to be safe to send across threads.
+    Send,
+}
+
+/// A generic parameter, e.g. `T` or `F: Send`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeParam {
+    /// The name of the parameter, e.g. `T`.
+    pub name: String,
+    /// An optional bound, e.g. `Send`.
+    pub bound: Option<GenericBound>,
+}
+
 /// A top-level item in a `.tri` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
@@ -65,7 +81,7 @@ pub struct StructDef {
     /// Struct name.
     pub name: String,
     /// Generic type parameters (e.g., `T` in `struct Box<T>`).
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     /// Fields in declaration order.
     pub fields: Vec<StructField>,
 }
@@ -87,7 +103,7 @@ pub struct EnumDef {
     /// Enum name.
     pub name: String,
     /// Generic type parameters (e.g., `T` in `enum Option<T>`).
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     /// Variants in declaration order.
     pub variants: Vec<EnumVariant>,
 }
@@ -115,7 +131,7 @@ pub struct FunctionDef {
     /// resolution. Mirror precedent of [`StructDef`]/[`EnumDef`].
     ///
     /// [ADR-0019 Addendum §A7]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     /// Parameters in declaration order.
     pub parameters: Vec<FunctionParam>,
     /// Optional return type annotation. Required for block bodies; may

@@ -1,0 +1,20 @@
+// Atomic-based counter (no scheduler) — minh họa SPEC §16 & ADR-0026
+//
+// Triết không đi kèm bộ lập lịch (no scheduler). Mọi hàm về luồng và Atomic
+// đều được quản lý bởi Capability Gate `sys.raw_thread` và `sys.atomic`.
+// Chương trình này chỉ minh họa cách khai báo và yêu cầu quyền, các lời gọi 
+// thực tế sẽ tuân theo BYOS (Bring Your Own Scheduler) của môi trường nhúng.
+
+import sys.atomic.Atomic
+import sys.atomic.fetch_add
+import sys.raw_thread.spawn
+
+function spawn_worker(counter: &+ Atomic<Integer>) {
+    // Tăng giá trị biến đếm an toàn trên thread
+    let old = fetch_add(counter, 1)
+}
+
+function main() {
+    // Trong v0.8.11, Atomic và raw_thread mới chỉ có ở dạng khai báo.
+    println("Atomic counter demo (capabilities granted!)")
+}

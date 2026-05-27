@@ -230,6 +230,7 @@ pub enum Expr {
     },
 
     // [DEPRECATED v0.7.4.3-error.4] Use `OutcomeArmHandler`.
+    /// A default catch-all outcome arm `_ => ...`
     OutcomeDefault {
         /// The fallible expression.
         inner: ExprId,

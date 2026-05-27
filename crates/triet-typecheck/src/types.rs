@@ -6,6 +6,7 @@
 //! generics, tuples, nullables, and function types are recursive.
 
 use std::fmt;
+use triet_syntax::{ReferenceForm, TypeParam};
 
 /// A resolved Triết type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +49,7 @@ pub enum Type {
     Function {
         /// Generic type parameters declared on the function
         /// (empty for non-generic functions).
-        type_params: Vec<String>,
+        type_params: Vec<TypeParam>,
         /// Parameter types, positionally. May contain `TypeParam(name)`
         /// when the function is generic.
         parameters: Vec<Self>,
@@ -66,7 +67,7 @@ pub enum Type {
         /// Struct name (for Display and error messages).
         name: String,
         /// Generic type parameters (empty for non-generic structs).
-        type_params: Vec<String>,
+        type_params: Vec<TypeParam>,
         /// Fields in declaration order. Stored as `(name, type)` pairs.
         fields: Vec<(String, Self)>,
     },
@@ -75,7 +76,7 @@ pub enum Type {
         /// Enum name.
         name: String,
         /// Generic type parameters (empty for non-generic enums).
-        type_params: Vec<String>,
+        type_params: Vec<TypeParam>,
         /// Variants in declaration order. Stored as `(name, optional_payload)`.
         variants: Vec<(String, Option<Box<Self>>)>,
     },
@@ -101,6 +102,10 @@ pub enum Type {
     /// A type the checker could not determine — used as a recovery
     /// placeholder so cascading errors don't compound.
     Unknown,
+    /// A reference with ownership semantics
+    Reference(ReferenceForm, Box<Self>),
+    /// Atomic wrapper
+    Atomic(Box<Self>),
 }
 
 impl Type {
@@ -213,6 +218,28 @@ impl Type {
         self == other
     }
 
+    /// Implements the `Send` derivation algorithm (ADR-0026 v2 §2.1).
+    #[must_use]
+    pub fn is_send(&self) -> bool {
+        match self {
+            Self::Trit | Self::Tryte | Self::Integer | Self::Long | Self::Trilean { .. } | Self::Unit | Self::String => true,
+            Self::Tuple(elements) => elements.iter().all(Self::is_send),
+            Self::Nullable(inner) => inner.is_send(),
+            Self::Outcome { value_type, error_type, .. } => value_type.is_send() && error_type.is_send(),
+            Self::Range(inner) => inner.is_send(),
+            Self::UserStruct { fields, .. } => fields.iter().all(|(_, t)| t.is_send()),
+            Self::UserEnum { variants, .. } => variants.iter().all(|(_, p)| {
+                p.as_ref().is_none_or(|inner| inner.is_send())
+            }),
+            Self::Reference(form, inner) => {
+                form.is_owning() && inner.is_send()
+            }
+            Self::Atomic(_) => true,
+            Self::Function { .. } => true,
+            Self::TypeParam(_) | Self::Unknown => true,
+        }
+    }
+
     /// If this is a `Nullable(T)`, return `T`; otherwise return `self`
     /// unchanged. Used by `?:`, `?.`, `!!` post-strip semantics.
     #[must_use]
@@ -260,7 +287,7 @@ impl Type {
                 // monomorphized type has no type params.
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
-                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Self::Unknown)))
+                    .map(|p| (p.name.clone(), map.get(&p.name).cloned().unwrap_or(Self::Unknown)))
                     .collect();
                 let merged = {
                     let mut m = map.clone();
@@ -283,7 +310,7 @@ impl Type {
             } => {
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
-                    .map(|p| (p.clone(), map.get(p).cloned().unwrap_or(Self::Unknown)))
+                    .map(|p| (p.name.clone(), map.get(&p.name).cloned().unwrap_or(Self::Unknown)))
                     .collect();
                 let merged = {
                     let mut m = map.clone();
@@ -314,6 +341,8 @@ impl Type {
                 error_type: Box::new(error_type.substitute(map)),
                 allow_null_state: *allow_null_state,
             },
+            Self::Reference(form, inner) => Self::Reference(*form, Box::new(inner.substitute(map))),
+            Self::Atomic(inner) => Self::Atomic(Box::new(inner.substitute(map))),
             // Primitives and Unknown are unchanged.
             other => other.clone(),
         }
@@ -359,7 +388,7 @@ impl fmt::Display for Type {
                         if i > 0 {
                             formatter.write_str(", ")?;
                         }
-                        formatter.write_str(param)?;
+                        formatter.write_str(&param.name)?;
                     }
                     formatter.write_str(">")?;
                 }
@@ -387,6 +416,17 @@ impl fmt::Display for Type {
                     write!(formatter, "{value_type}~{error_type}")
                 }
             }
+            Self::Reference(form, inner) => {
+                let prefix = match form {
+                    ReferenceForm::StrongFrozen => "&+ ",
+                    ReferenceForm::StrongMutable => "&+ mutable ",
+                    ReferenceForm::BorrowReadOnly => "&0 ",
+                    ReferenceForm::BorrowExclusiveMutable => "&0 mutable ",
+                    ReferenceForm::WeakObserver => "&- ",
+                };
+                write!(formatter, "{prefix}{inner}")
+            }
+            Self::Atomic(inner) => write!(formatter, "Atomic<{inner}>"),
             Self::Unknown => formatter.write_str("?"),
         }
     }
@@ -451,7 +491,7 @@ mod tests {
         // Generic function display shows the type params prefix.
         assert_eq!(
             Type::Function {
-                type_params: vec!["T".into()],
+                type_params: vec![TypeParam { name: "T".into(), bound: None }],
                 parameters: vec![Type::TypeParam("T".into())],
                 return_type: Box::new(Type::TypeParam("T".into())),
             }

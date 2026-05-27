@@ -695,7 +695,7 @@ fn parse_outcome_capture(
 }
 
 /// Human-readable label for an arm token.
-fn expected_arm_token(arm: OutcomeArm) -> &'static str {
+const fn expected_arm_token(arm: OutcomeArm) -> &'static str {
     match arm {
         OutcomeArm::Positive => "`~+>`",
         OutcomeArm::Zero => "`~0>`",

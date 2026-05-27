@@ -77,7 +77,7 @@ impl ObjectHeader {
     /// On ternary native hardware, static allocation uses sentinel -1.
     /// On binary targets, we use `refcount = u32::MAX` as a sentinel —
     /// strictly greater than any refcount attainable in practice.
-    pub fn new_static() -> Self {
+    pub const fn new_static() -> Self {
         Self {
             refcount: AtomicU32::new(STATIC_SENTINEL),
             reserved: AtomicU32::new(0),
@@ -88,7 +88,7 @@ impl ObjectHeader {
     ///
     /// Frozen objects are immutable and shared without refcount tracking.
     /// Ternary native: sentinel -2. Binary: `u32::MAX - 1`.
-    pub fn new_frozen_forever() -> Self {
+    pub const fn new_frozen_forever() -> Self {
         Self {
             refcount: AtomicU32::new(FROZEN_FOREVER_SENTINEL),
             reserved: AtomicU32::new(0),
@@ -247,6 +247,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn sentinels_are_distinct() {
         assert_ne!(STATIC_SENTINEL, FROZEN_FOREVER_SENTINEL);
         // Sentinels never collide with realistic refcounts (< 10^6)

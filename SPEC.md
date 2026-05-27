@@ -1,4 +1,4 @@
-# Triết — Đặc tả ngôn ngữ v0.7
+# Triết — Đặc tả ngôn ngữ v0.8
 
 > Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, với tham vọng **đủ năng lực viết hệ điều hành** khi phần cứng tam phân xuất hiện. Lấy cảm hứng từ Setun (Liên Xô, 1958) và logic Łukasiewicz Ł3 (1920).
 >
@@ -76,7 +76,7 @@ Các thứ sau được phasing rõ ràng vào version cụ thể, **KHÔNG** th
 
 - **CLI wiring** (`dao check` reading `dao.package` from project root, `dao build` populating `.khi` caps section from manifest, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner với v0.7 self-hosting.
 - **Hiệu năng tối ưu** — production runtime AOT đến v2.0 (LLVM). VM + tree-walker đều là development tiers per [VISION §4.3](VISION.md).
-- **Concurrency/async** — phase v0.8.
+- **Concurrency Primitives & BYOS** — phase v0.8.
 - **Lowerer emit `WitnessCall` cho cross-package generics** — defer khỏi v0.6. Cần package-aware `ResolvedProgram` + generic-instantiation tracking; multi-week architectural milestone. Lands cùng multi-package compile path hoặc v0.7 self-hosting.
 - **v=1 `.khi` lossy migration** (ADR-0015 §9) — defer. Hiện chưa có v=1 packs trong wild.
 - **Self-hosting compiler** — phase v0.7.
@@ -96,7 +96,7 @@ Các thứ deferred ra khỏi v0.7.3 sub-tasks; full bảng ở [ADR-0019 Addend
 - **Stdlib `.tri` stubs + `path_to_builtin` entries cho Vector/HashMap/IO/path/string builtins** — chờ generic function syntax (same blocker as trên).
 - **`vector_pop` + tuple opcodes** — Q1-A functional semantic requires tuple return; IR thiếu tuple opcodes. post-v1.0.
 - **`vector_iterator` + Iterator trait implementation** — ADR-0003 v0.2 deliverable chưa land (slipped qua v0.2–v0.6). Target v0.8 alongside concurrency model.
-- **Error handling primitive — recovery / try-catch / supervisor** — Triết hiện chỉ có 2 lớp recoverable error: `T?` (nullable) + `Result<T, E>` (std.result) + `Trilean::Unknown` (Ł3). Runtime panic (VmError E22XX) **không catch được**. v0.7.3.3 lock policy "bug = panic, data event = T?/Result/Trilean" nhưng v0.8 actor supervisor sẽ force question. Target ADR-0020 candidate khi v0.8 mở.
+- **Error handling primitive — recovery / try-catch / supervisor** — Triết hiện chỉ có 2 lớp recoverable error: `T?` (nullable) + `Result<T, E>` (std.result) + `Trilean::Unknown` (Ł3). Runtime panic (VmError E22XX) **không catch được**. v0.7.3.3 lock policy "bug = panic, data event = T?/Result/Trilean" nhưng v0.8 BYOS scheduler sẽ force question. Target ADR-0020 candidate khi v0.8 mở.
 - **IO builtin capability gating** — v0.7.3.4 ship `ReadFile`/`WriteFile`/`FileExists` không qua `CapabilityResolver`. Bootstrap context trusted; production user code phải đi qua v0.6 capability machinery. Target re-tackle: v0.7.10 CLI wiring (cùng project layout discovery).
 - **Windows path semantics** — v0.7.3.4 hardcode POSIX `/` cho `PathJoin`/`PathParent`/`PathBasename` (deterministic bootstrap output). Windows backslash + drive-letter defer post-v1.0 (mirror ADR-0018 ConPTY POSIX-first).
 - **`WriteFile` atomicity** — hiện dùng `std::fs::write` non-atomic. Mirror ADR-0015 §5 atomic install (write tmp + rename) khi user-facing application demand. Self-host bootstrap không cần.
@@ -842,7 +842,7 @@ Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: asse
 
 > **Trạng thái:** Design locked 2026-05-26 (S6). Implementation phased v0.8 (parser tokens) → v0.10 (NLL) → v1.0 (stable). Triết v0.7 runtime chưa expose references; cú pháp trong §10.1—§10.4 phản ánh design intent, không phải hành vi hiện tại của compiler.
 
-Triết sử dụng mô hình **Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)** — design lock **S6** (2026-05-26): Rust-strict static borrow check + cú pháp tam phân + capability-as-unsafe + **không có lifetime annotation `<'a>`**. Tham chiếu đầy đủ tại [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), thuật toán enforcement tại [ADR-0025](docs/decisions/0025-borrow-checker-rules.md), actor send rules tại [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md).
+Triết sử dụng mô hình **Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)** — design lock **S6** (2026-05-26): Rust-strict static borrow check + cú pháp tam phân + capability-as-unsafe + **không có lifetime annotation `<'a>`**. Tham chiếu đầy đủ tại [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), thuật toán enforcement tại [ADR-0025](docs/decisions/0025-borrow-checker-rules.md), concurrency primitives & send rules tại [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md).
 
 ### 10.1 Năm dạng tham chiếu (5 Reference Forms)
 
@@ -856,7 +856,7 @@ Con trỏ trong Triết có 5 dạng, đại diện bằng ký tự `&`:
 | `&0 mutable T` | Scope borrow, exclusive mutable | Borrow | Mutable | **Exclusive** (1/đối tượng) |
 | `&- T` | Weak observer | Không sở hữu | Read-only sau upgrade | Nhiều OK |
 
-- **`&+ T`** là unique owner, frozen vĩnh viễn. Dùng khi cần immutable share cross-actor.
+- **`&+ T`** là unique owner, frozen vĩnh viễn. Dùng khi cần immutable share cross-thread.
 - **`&+ mutable T`** là unique owner, được mutate. Default cho struct field trong `usr::`.
 - **`&0 T`** là scope borrow (zero-cost). Dùng cho function parameter (default trong `usr::`).
 - **`&0 mutable T`** là exclusive mutable borrow. Compiler enforce 1 tại 1 thời điểm qua NLL.
@@ -910,10 +910,11 @@ function notify(parent: &- Process) { ... }
 - Tuples `(T1, T2, ...)`
 - `T?` (nullable: T + 1-trit discriminator)
 - `T~E`, `T?~E` (outcome: T / E + 1-trit discriminator)
+- `Atomic<T>` (lock-free primitive)
 
 **Heap-allocated** (có 8-byte object header với refcount):
 - `String`, user-defined `struct`/`enum`, collections (`Vector<T>`, `Map<K,V>`, etc.)
-- Lifecycle quản lý bởi `&+` unique owner (drop khi scope kết thúc) hoặc refcount ngầm tại actor boundary ([ADR-0026 §3.1](docs/decisions/0026-actor-boundary-send-rules.md#31--d6-frozen-owner-cross-actor-refcount-ngầm))
+- Lifecycle quản lý bởi `&+` unique owner (drop khi scope kết thúc) hoặc refcount ngầm tại thread boundary ([ADR-0026 §3.2](docs/decisions/0026-actor-boundary-send-rules.md#32--t-frozen-qua-boundary--refcount-mediated-share))
 
 ### 10.6 Implementation hiện tại (v0.7 → v0.8)
 
@@ -927,7 +928,7 @@ Triết chạy trên 2 tier per [VISION §4.3](VISION.md):
 | Version | Scope |
 |---|---|
 | **v0.7** | Chưa expose references trong language |
-| **v0.8** | Parser tokens `&+`/`&0`/`&-`/`mutable`. AST nodes. Không enforcement. |
+| **v0.8** | Parser tokens `&+`/`&0`/`&-`/`mutable`. Send derivation algorithm (E2500). Capability registration. |
 | **v0.9** | Simple enforcement: E2420 use-after-move, E2422 constructibility termination, E2410/E2411 mutability frozen |
 | **v0.10** | NLL borrow exclusivity (E2440), lifetime elision 3 rules (E2400) |
 | **v0.11** | `&-` upgrade tracking (E2403), default inference per namespace |
@@ -1084,7 +1085,7 @@ Tóm tắt phasing dài hạn:
 - **v0.5** — CAS packaging (hash-based identity) ✅ ([ADR-0014](docs/decisions/0014-hash-scheme-refinement.md), [ADR-0015](docs/decisions/0015-package-store-layout.md))
 - **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`) ✅ ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md)) — **hiện tại**
 - **v0.7** — self-hosting compiler — *next*
-- **v0.8** — concurrency model
+- **v0.8** — Concurrency Primitives & BYOS
 - **v0.9** — JIT (Cranelift)
 - **v1.0** — production stability
 - **v2.0** — AOT native compile (LLVM)

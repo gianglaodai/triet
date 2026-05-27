@@ -61,6 +61,10 @@ enum Command {
     Run {
         /// Path to .tri, .triv, or .khi file.
         path: String,
+        
+        /// Arguments passed to the program.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Parse and type-check a Triết program without running it.
     #[command(alias = "kiem")]
@@ -143,7 +147,7 @@ fn main() -> ExitCode {
     }
 
     match cli.command {
-        Command::Run { path } => {
+        Command::Run { path, args } => {
             // Convention: source files end in `.tri`. Bytecode can be
             // `.triv` (v0.3 wire format) or `.khi` (v0.4+ package format
             // wrapping `.triv` code inside ABI metadata).
@@ -152,9 +156,9 @@ fn main() -> ExitCode {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             if ext == "triv" || ext == "khi" {
-                run_bytecode(&path, cli.json)
+                run_bytecode(&path, &args, cli.json)
             } else {
-                run_program(&path, cli.json)
+                run_program(&path, &args, cli.json)
             }
         }
         Command::Check { path } => check_program(&path, cli.json),
@@ -222,7 +226,7 @@ impl JsonEmitter {
     }
 }
 
-fn run_program(path: &str, json: bool) -> ExitCode {
+fn run_program(path: &str, _args: &[String], json: bool) -> ExitCode {
     let display_path = path;
 
     let resolved_program = match triet_modules::load_program(std::path::Path::new(path)) {
@@ -312,7 +316,14 @@ fn run_program(path: &str, json: bool) -> ExitCode {
 fn check_program(path: &str, json: bool) -> ExitCode {
     let display_path = path;
 
-    let resolved_program = match triet_modules::load_program(std::path::Path::new(path)) {
+    // v0.8.11: discover dao.package for capability checking in `dao check`.
+    let source_path = std::path::Path::new(path);
+    let _manifest = source_path
+        .parent()
+        .and_then(triet_pack::PackageManifest::discover)
+        .and_then(|p| triet_pack::PackageManifest::load(&p).ok());
+
+    let resolved_program = match triet_modules::load_program(source_path) {
         Ok(p) => p,
         Err(loader_errors) => {
             if json {
@@ -356,7 +367,38 @@ fn check_program(path: &str, json: bool) -> ExitCode {
         if has_hard_errors {
             return ExitCode::from(3);
         }
-        // Only warnings — fall through to OK.
+    }
+    
+    // v0.8.11: run capability check with discovered manifest or empty one if missing.
+    let manifest_path = source_path
+        .parent()
+        .and_then(triet_pack::PackageManifest::discover);
+        
+    let empty_manifest = triet_pack::PackageManifest::new("unknown", triet_pack::SemVer::new(0, 0, 0));
+    let manifest = match manifest_path {
+        Some(p) => match triet_pack::PackageManifest::load(&p) {
+            Ok(m) => Some(m),
+            Err(triet_pack::StoreError::PackageManifest(e)) => {
+                if json {
+                    let mut emitter = JsonEmitter::new();
+                    emitter.emit(&e.to_string(), package_manifest_error_code(&e), &(0..0), display_path);
+                    emitter.finish();
+                } else {
+                    eprintln!("{}: {}", package_manifest_error_code(&e), e);
+                }
+                return ExitCode::from(5);
+            }
+            Err(e) => {
+                if !json { eprintln!("triet::capability::E2208: {e}"); }
+                return ExitCode::from(5);
+            }
+        },
+        None => None,
+    };
+
+    let m = manifest.as_ref().unwrap_or(&empty_manifest);
+    if !run_capability_check(&resolved_program, m, display_path, json) {
+        return ExitCode::from(5);
     }
 
     if !json {
@@ -401,6 +443,29 @@ fn type_error_code(error: &TypeError) -> String {
         TypeError::TrileanReturnNotRefined { .. } => "triet::typecheck::E1034",
         // Warning code (ADR-0020 §10.3 — promotes to E2002 at v1.0):
         TypeError::NullDeprecated { .. } => "triet::typecheck::W2001",
+        TypeError::Concurrency(err) => match err {
+            triet_typecheck::ConcurrencyError::NotSendCannotCrossBoundary { .. } => {
+                "triet::borrow::E2500"
+            }
+            triet_typecheck::ConcurrencyError::ScopeRefLeakage { .. } => {
+                "triet::borrow::E2510"
+            }
+            triet_typecheck::ConcurrencyError::MutableShareAntiPattern { .. } => {
+                "triet::borrow::E2520"
+            }
+        },
+        TypeError::Borrow(err) => match err {
+            triet_typecheck::BorrowError::BorrowLifetimeInferenceFailed { .. } => "triet::borrow::E2400",
+            triet_typecheck::BorrowError::BorrowInStructField { .. } => "triet::borrow::E2402",
+            triet_typecheck::BorrowError::EscapingBorrow { .. } => "triet::borrow::E2403",
+            triet_typecheck::BorrowError::CannotMutateFrozenOwner { .. } => "triet::borrow::E2410",
+            triet_typecheck::BorrowError::CannotPromoteFrozenToMutable { .. } => "triet::borrow::E2411",
+            triet_typecheck::BorrowError::UseAfterMove { .. } => "triet::borrow::E2420",
+            triet_typecheck::BorrowError::SelfOwnershipParadox { .. } => "triet::borrow::E2421",
+            triet_typecheck::BorrowError::NonTerminatingConstruction { .. } => "triet::borrow::E2422",
+            triet_typecheck::BorrowError::NamespaceInferenceFailed { .. } => "triet::borrow::E2430",
+            triet_typecheck::BorrowError::BorrowExclusivityViolation { .. } => "triet::borrow::E2440",
+        },
     }
     .to_owned()
 }
@@ -432,16 +497,38 @@ fn runtime_error_span(error: &RuntimeError) -> std::ops::Range<usize> {
 
 // ── build ──────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
     let display_path = path;
 
     // v0.7.10: discover dao.package by walking up from the source file's
     // parent directory. Mirrors `cargo` convention per ADR-0019 §8.
     let source_path = Path::new(path);
-    let manifest = source_path
+    let manifest_path = source_path
         .parent()
-        .and_then(PackageManifest::discover)
-        .and_then(|p| PackageManifest::load(&p).ok());
+        .and_then(PackageManifest::discover);
+        
+    let empty_manifest = PackageManifest::new("unknown", triet_pack::SemVer::new(0, 0, 0));
+    let manifest = match manifest_path {
+        Some(p) => match PackageManifest::load(&p) {
+            Ok(m) => Some(m),
+            Err(triet_pack::StoreError::PackageManifest(e)) => {
+                if json {
+                    let mut emitter = JsonEmitter::new();
+                    emitter.emit(&e.to_string(), package_manifest_error_code(&e), &(0..0), display_path);
+                    emitter.finish();
+                } else {
+                    eprintln!("{}: {}", package_manifest_error_code(&e), e);
+                }
+                return ExitCode::from(5);
+            }
+            Err(e) => {
+                if !json { eprintln!("triet::capability::E2208: {e}"); }
+                return ExitCode::from(5);
+            }
+        },
+        None => None,
+    };
 
     let resolved = match triet_modules::load_program(Path::new(path)) {
         Ok(p) => p,
@@ -495,10 +582,8 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
         }
     }
 
-    // v0.7.10: run capability check if manifest was found.
-    if let Some(ref m) = manifest
-        && !run_capability_check(&resolved, m, display_path, json)
-    {
+    let m = manifest.as_ref().unwrap_or(&empty_manifest);
+    if !run_capability_check(&resolved, m, display_path, json) {
         return ExitCode::from(5);
     }
 
@@ -609,9 +694,19 @@ const fn capability_error_code(error: &CapabilityError) -> &'static str {
     }
 }
 
+const fn package_manifest_error_code(error: &triet_pack::PackageManifestError) -> &'static str {
+    use triet_pack::PackageManifestError;
+    match error {
+        PackageManifestError::UnsupportedFormatVersion { .. } => "triet::capability::E2208",
+        PackageManifestError::Malformed { .. } => "triet::capability::E2204",
+        PackageManifestError::InvalidCapabilityRoot { .. } => "triet::capability::E2206",
+        PackageManifestError::UnknownStandardCapability { .. } => "triet::capability::E2209",
+    }
+}
+
 // ── run bytecode (.triv or .khi) ──────────────────────────────────────
 
-fn run_bytecode(path: &str, json: bool) -> ExitCode {
+fn run_bytecode(path: &str, args: &[String], json: bool) -> ExitCode {
     let file_bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -656,9 +751,22 @@ fn run_bytecode(path: &str, json: bool) -> ExitCode {
     };
 
     let func_to_run = find_entry_function(&ir);
+    
+    // v0.8.12: Check if the entry function expects an argument.
+    // If it expects 1 argument (Vector<String>), map `args` and pass it in.
+    let func = ir.modules.iter().flat_map(|m| &m.functions).find(|f| f.id == func_to_run).unwrap();
+    let vm_args = if func.params.len() == 1 {
+        let argv_values: Vec<triet_ir::RuntimeValue> = args
+            .iter()
+            .map(|s| triet_ir::RuntimeValue::String(s.clone()))
+            .collect();
+        vec![triet_ir::RuntimeValue::Vector(argv_values)]
+    } else {
+        vec![]
+    };
 
     let mut vm = triet_ir::Vm::new(ir);
-    match vm.execute(func_to_run, vec![]) {
+    match vm.execute(func_to_run, vm_args) {
         Ok(value) => {
             if !json && !matches!(value, triet_ir::RuntimeValue::Unit) {
                 println!("{value}");

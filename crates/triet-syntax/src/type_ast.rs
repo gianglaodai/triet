@@ -28,22 +28,22 @@ pub enum ReferenceForm {
 
 impl ReferenceForm {
     /// Returns true when the reference permits mutation.
-    pub fn is_mutable(self) -> bool {
+    pub const fn is_mutable(self) -> bool {
         matches!(self, Self::StrongMutable | Self::BorrowExclusiveMutable)
     }
 
     /// Returns true when this is an owning reference (`&+` family).
-    pub fn is_owning(self) -> bool {
+    pub const fn is_owning(self) -> bool {
         matches!(self, Self::StrongFrozen | Self::StrongMutable)
     }
 
     /// Returns true when this is a scope borrow (`&0` family).
-    pub fn is_borrow(self) -> bool {
+    pub const fn is_borrow(self) -> bool {
         matches!(self, Self::BorrowReadOnly | Self::BorrowExclusiveMutable)
     }
 
     /// Returns the trit polarity: +1 for strong, 0 for neutral, -1 for weak.
-    pub fn polarity_trit(self) -> i8 {
+    pub const fn polarity_trit(self) -> i8 {
         match self {
             Self::StrongFrozen | Self::StrongMutable => 1,
             Self::BorrowReadOnly | Self::BorrowExclusiveMutable => 0,
