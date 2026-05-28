@@ -365,20 +365,91 @@ Final: **1436 tests workspace-wide** (+11 từ v0.8.x.review/docs-reorg close; +
 
 ---
 
-## v0.9 — JIT (Cranelift)
+## v0.9 — Wide-phased: JIT + Borrow Enforcement + Atomic + Self-host policy 🔄 in progress
 
-**Mục tiêu:** Bytecode VM có JIT tier cho hot code paths.
+**Scope decision 2026-05-29:** Author chose wide-phased option to match all "defer v0.9" promises locked across ADR-0025 (borrow enforcement), ADR-0026 v2 (Atomic), and ROADMAP §v0.9 (JIT). Phase v0.9 is multi-workstream — design ADRs first, then implementation sub-phases roughly parallel.
 
-**Deliverables:**
-- Tier 1: bytecode interpreter (v0.3).
+**Mục tiêu** (4 workstreams):
+
+1. **JIT (Cranelift)** — production tier 2 cho hot code paths.
+2. **Borrow checker enforcement** — E2400/E2403/E2440 fire real (not skeleton); NLL + 3-rule lifetime elision + `&-` upgrade tracking.
+3. **Atomic primitive implementation** — full memory ordering enforcement + operation set per ADR-0028 (refined from ADR-0026 v2 §4 placeholder).
+4. **Self-host port policy** — per v0.8.x.completion.4 retrospective lesson: lockstep vs freeze decision codified in ADR-0029.
+
+### Quyết định kiến trúc (ADRs to write — v0.9.0 design phase)
+
+- [ADR-0028](docs/decisions/0028-atomic-primitive.md) — Atomic primitive design. Refines ADR-0026 v2 §4 placeholder. Locks: implementation pattern (VM opcodes vs builtin shims per ADR-0019 §5), Ordering↔Trit mapping, full operation set (load/store/swap/compare_exchange + fetch_add/sub/and/or/xor), constructor + drop, E2530 fire conditions, interaction với `&+ mutable` ownership exclusivity.
+- [ADR-0029](docs/decisions/0029-self-host-port-policy.md) — Self-host port policy. Per v0.8.x.completion.4 lessons learned: v0.8.x.review.3 (lexer) + v0.8.x.completion.2 (parser AST) both retroactive ports. Locks: lockstep (mỗi Rust impl change → port self-host cùng phase) vs freeze (snapshot self-host tại version, gap acknowledged publicly).
+- [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md) — JIT integration. Cranelift backend choices, tier-2 dispatch trigger (call count threshold), AOT cache layout, profile-guided heuristics. Original ROADMAP §v0.9 deliverables go here.
+
+### Sub-phase ordering
+
+```
+v0.9.0 — Design phase (3 ADRs)
+   ↓
+v0.9.x.atomic — depends on ADR-0028
+v0.9.x.borrow — independent of others (ADR-0025 design đã lock)
+v0.9.x.jit    — depends on ADR-0030
+   ↓ (any order after design)
+v0.9.final    — release: version bump, SPEC v0.9 header, gate verify
+```
+
+### Deliverables (carry forward từ ROADMAP nguyên thủy §v0.9 + new wide scope)
+
+**JIT subsystem (per ADR-0030 lock):**
+- Tier 1: bytecode interpreter (v0.3) ✅ exists.
 - Tier 2: Cranelift JIT cho function chạy thường xuyên (profile-guided).
 - AOT cache: lần chạy thứ 2 dùng JIT-output cached.
 
-**Gate:**
-- Bench ≥10× so với v0.3 bytecode trên numeric-heavy programs.
-- Self-hosted compiler bootstrap loop ≤ 2× Rust impl runtime trên same hardware (carry-forward từ v0.7 perf gate per [ADR-0019 §7](docs/decisions/0019-self-hosting-compiler-bootstrap.md)).
-- Full 3-stage bootstrap loop < 10 phút trên dev hardware (carry-forward từ v0.7 perf gate, deferred per [ADR-0019 Addendum v0.7.13](docs/decisions/0019-self-hosting-compiler-bootstrap.md#addendum--v0713-perf-gate--10-ph%C3%BAt-deferral)).
-- `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` lifts from `#[ignore]` to CI-required (carry-forward functional gate, same Addendum).
+**Borrow checker enforcement subsystem (per ADR-0025 deferred):**
+- E2400 LifetimeInferenceFailed real fires (not skeleton).
+- E2403 EscapingBorrow real fires.
+- E2440 BorrowExclusivityViolation NLL enforcement.
+- 3-rule lifetime elision algorithm (single-input → output; method self → output; owned return).
+- `&-` weak observer upgrade tracking.
+
+**Atomic subsystem (per ADR-0028, refined từ ADR-0026 v2 §4):**
+- `Atomic<T>` runtime values trong `triet-ir` VM + `triet-interpreter`.
+- `Ordering` enum (Relaxed/Synchronized/Strict mapped vào Trit).
+- Operations: `load`, `store`, `swap`, `compare_exchange`, `fetch_add`, `fetch_sub`, `fetch_and`, `fetch_or`, `fetch_xor`.
+- Stdlib module `sys.atomic.*` với capability gate.
+- E2530 InvalidAtomicOrdering real fires.
+
+**Self-host port (per ADR-0029):**
+- Sync mechanism enforced per chosen policy.
+- Current gaps reconciled (atomic_counter.tri can compile through self-host if policy is lockstep).
+
+### Gate (ADR-0009 §A/B/C/D applied at v0.9.final)
+
+**Functional (A):**
+- 0 `TODO(v0.9)` markers in source.
+- Bench ≥10× v0.3 bytecode baseline on numeric-heavy programs.
+- `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` lifts from `#[ignore]` → CI-required (carry-forward functional gate per [ADR-0019 Addendum](docs/decisions/0019-self-hosting-compiler-bootstrap.md#addendum--v0713-perf-gate--10-ph%C3%BAt-deferral)).
+- Full 3-stage bootstrap loop < 10 phút trên dev hardware (carry-forward perf gate).
+- Self-hosted compiler bootstrap loop ≤ 2× Rust impl runtime trên same hardware (carry-forward).
+- All deferred E24XX / E25XX errors fire real (no skeleton remaining).
+
+**Hygiene (B):**
+- `scripts/release-check.sh` ✓ via ADR-0009 Addendum §A protocol.
+- Pre-commit + pre-push hooks active (per ADR-0009 Addendum §B).
+
+**Docs (C):**
+- Cargo workspace.package.version 0.8.0 → 0.9.0.
+- SPEC.md header v0.8 → v0.9.
+- README + ARCHITECTURE.md sync.
+- ADR-0028/0029/0030 status: Locked (no Draft references in SPEC).
+
+**Self-consistency (D):**
+- All `examples/*.tri` typecheck + build OK including atomic_counter via self-host (per ADR-0029 lockstep choice).
+- Send derivation tests cover all 13 categories (close gap từ v0.8.x.completion.3 partial coverage).
+
+### Pace expectation
+
+Per ROADMAP §"Pace expectations": v0.8-v0.9 = 6-12 tháng mỗi phase. Wide scope = realistic 12-18 tháng. ADR-0009 + Addendum §C enforce pre-version audit window mandatory → no "ship rồi audit" anti-pattern.
+
+### Pivot history
+
+Original ROADMAP §v0.9 (pre-v0.8.x.completion) = JIT-only. Author 2026-05-29 chose wide-phased after v0.8.x.completion.4 retrospective identified 5+ deferred items targeting v0.9: NLL enforcement, lifetime elision, `&-` upgrade tracking, Atomic full impl, self-host policy. Rather than re-defer to v0.10, close all in v0.9 before v1.0 freeze.
 
 ---
 

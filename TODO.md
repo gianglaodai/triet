@@ -34,8 +34,34 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ---
 
-## Active phase
+## v0.9 — Wide-phased (JIT + Borrow + Atomic + Self-host policy) 🔄 in progress
 
-Không có phase active. Next: **v0.9 — JIT (Cranelift)** + NLL enforcement. Xem [ROADMAP §v0.9](ROADMAP.md).
+**Scope decision 2026-05-29:** Author chose wide-phased per ADR-0025 + ADR-0026 v2 explicit "defer v0.9" promises. Internal ordering: design ADRs first (v0.9.0), then implementation sub-phases run roughly in parallel after design lands.
 
-**Trước khi bắt đầu sub-task v0.9.x đầu tiên:** chạy `bash scripts/install-hooks.sh` nếu chưa install (sets `core.hooksPath = .githooks`). Trước khi tag v0.9 release: chạy `scripts/release-check.sh` per ADR-0009 Addendum.
+**Pre-v0.9 baseline audit:** ✅ `scripts/release-check.sh` clean per ADR-0009 Addendum §C mandatory protocol. 1436 tests passing, all gates green. Safe to open phase.
+
+### v0.9.0 — Design phase (ADRs first per ADR-0009 + project philosophy)
+
+- [ ] **v0.9.0.1** — Draft [ADR-0028](docs/decisions/0028-atomic-primitive.md) Atomic Primitive — refine ADR-0026 v2 §4 placeholder. Lock: implementation pattern (VM opcodes vs builtin shims), Ordering ↔ Trit mapping, full operation set, constructor + drop, E2530 fire conditions.
+- [ ] **v0.9.0.2** — Draft [ADR-0029](docs/decisions/0029-self-host-port-policy.md) Self-host port policy — per v0.8.x.completion.4 lessons learned. Lock: lockstep vs freeze, sync triggers, frozen state ground rules.
+- [ ] **v0.9.0.3** — Draft [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md) JIT integration — Cranelift backend choices, tier-2 dispatch, AOT cache layout, perf gate criteria.
+
+### v0.9.x.atomic — Atomic Primitive implementation (after ADR-0028 lock)
+
+- [ ] **v0.9.x.atomic.1+** — Sub-tasks defined post-ADR-0028. Scope: type system signatures, VM opcodes/builtins, runtime, stdlib `sys.atomic.*` module, Send rule integration test corpus, E2530 emit.
+
+### v0.9.x.borrow — Borrow checker enforcement (independent of Atomic/JIT)
+
+- [ ] **v0.9.x.borrow.1+** — NLL enforcement (E2440 real fires), lifetime elision 3 rules (E2400 real), `&-` upgrade tracking (E2403 real). Per ADR-0025 explicit defer.
+
+### v0.9.x.jit — Cranelift JIT backend (after ADR-0030 lock)
+
+- [ ] **v0.9.x.jit.1+** — Cranelift integration, profile-guided dispatch, AOT cache. Per ROADMAP §v0.9 original target.
+
+### v0.9.final — release
+
+- [ ] **v0.9.final** — Per ADR-0009 + Addendum §C: `scripts/release-check.sh` clean, Cargo 0.8.0 → 0.9.0, SPEC v0.9 header, README + ARCHITECTURE.md sync, version bump commit độc lập (no bundling per cadence).
+
+### Workflow note
+
+Trước khi bắt đầu sub-task v0.9.x đầu tiên (v0.9.0.1): hooks đã install và baseline clean. Per ADR-0009 Addendum §C, pre-version audit pass đã hoàn thành 2026-05-29.
