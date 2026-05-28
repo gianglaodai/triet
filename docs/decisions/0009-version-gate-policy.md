@@ -107,3 +107,60 @@ Nếu một item không đạt được trong thời gian hợp lý, phải có 
 - [ROADMAP § v0.3 — Sub-task changelog](../../ROADMAP.md)
 - [ADR-0007 — IR design](0007-ir-design.md)
 - [ADR-0008 — `.triv` binary format](0008-triv-binary-format.md)
+
+---
+
+## Addendum — v0.8.x.cadence-fix (2026-05-28): Enforcement automation
+
+**Trigger:** Audit phát hiện v0.8 release commit `78f2402` ship với gate B violated (3 clippy errors trong `resolver.rs` + 21 unformatted files). Post-release v0.8.x.review (6 sub-tasks) + v0.8.x.docs-reorg (8 sub-tasks) = **14 cleanup commits** để đóng gate retroactively.
+
+Author confirmed 2026-05-28: "không cố ý, không nhận ra cadence slip" — root cause = **policy có, automation không**. v0.3-v0.7 honored gates by manual verify; v0.8 skipped pre-release audit window + bundled v0.8.8-13 vào release commit cùng lúc, không có moment nào agent flag được "gate B chưa pass".
+
+ADR-0009 §B nguyên gốc reference "CI" làm enforcement mechanism (lines 34-36) nhưng repo chưa có CI configured. Phần này codify enforcement tools shipped trong v0.8.x.cadence-fix phase.
+
+### A — `scripts/release-check.sh` là single source of truth
+
+Trước khi tag bất kỳ vX.Y release nào, **phải** chạy `scripts/release-check.sh`. Script này verify all 4 gates + drift checks bằng 1 command. Exit 0 = safe to tag; exit 1 = refuse to release.
+
+Coverage:
+- **Gate B Hygiene** (critical, blocking): `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo fmt --all --check`.
+- **Gate C Docs** (critical, blocking): Cargo.toml workspace.package.version sync với SPEC.md header.
+- **Gate D Self-consistency** (warnings): no stray `TODO(vX.Y)` markers in `crates/*/src/`, TODO.md no unchecked items, archive table populated.
+- **ADR status sanity**: no ADRs trong "Draft" status được referenced normatively từ SPEC.
+
+### B — Git hooks là commit-time guard
+
+`.githooks/pre-commit` + `.githooks/pre-push` được install qua `bash scripts/install-hooks.sh` (set `core.hooksPath = .githooks`). Mỗi clone phải install một lần.
+
+- **pre-commit** (~0.5s): `cargo fmt --all --check`. Block dirty fmt at commit-time — v0.8.x.review.1's 21 fmt files sẽ không bao giờ ship được.
+- **pre-push** (~1 min): full ADR-0009 gate B (fmt + clippy + test). Last guard trước khi dirty state reaches remote.
+
+Bypass mechanisms (`--no-verify`) cố ý có sẵn cho WIP/private-fork cases, nhưng **bypass on main = cadence violation** — explicitly documented violation type, không phải gray-area.
+
+### C — Pre-version audit window là MANDATORY
+
+Cadence policy update: giữa sub-task tail của phase v0.N và version bump commit, **phải** mở v0.N.x.review window (mirror v0.5.x.review / v0.6.x.review / v0.8.x.review precedent). Audit window:
+
+1. AI agent (hoặc author) chạy `scripts/release-check.sh` trước khi propose version bump commit.
+2. Nếu script fail → mở sub-tasks fix all findings trong v0.N.x.review section của TODO/ROADMAP.
+3. Nếu script pass → continue sang version bump.
+4. Version bump commit (release commit) **phải** là commit độc lập với sub-task work, **không bundle**.
+
+"Ship rồi audit" pattern = explicit cadence violation. v0.8 release commit `78f2402` bundling v0.8.8-13 = anti-pattern, không lặp lại.
+
+### D — Gate A `#[ignore]` rule clarification
+
+Phần "Không còn `#[ignore]` mới được thêm trong phase này" của Gate A (line 27) needs nuance per ADR-0019 §7 + Addendum: `#[ignore = "reason"]` với justification string explicit là **hợp lệ** (e.g., perf-deferred bootstrap tests). Bare `#[ignore]` không có lý do = vi phạm. Release-check.sh không enforce điều này tự động — author review during pre-version audit.
+
+### Hệ quả của Addendum
+
+- **v0.8 slip không lặp lại**: hai layer guards (commit-time + release-time) đảm bảo gate B violation không qua được lần tiếp.
+- **AI agent có tool**: `scripts/release-check.sh` là single command thay vì 6-7 manual checks. Future audit như Phase v0.8.x.review nên là exception, không norm.
+- **Future contributors**: README install instruction điều hướng họ qua `scripts/install-hooks.sh`. Slip protection không phụ thuộc tribal knowledge.
+- **CI tiếp theo (v0.9+)**: Khi GitHub Actions setup, workflow chỉ cần wrap `scripts/release-check.sh` — single line CI config.
+
+### Không làm trong Addendum
+
+- **Không** make `--no-verify` impossible — WIP commits + private fork cases hợp lệ.
+- **Không** enforce ADR-0009 retroactively cho commits trước Addendum date.
+- **Không** add new gates beyond ADR-0009 §A-D — chỉ codify enforcement của các gates đã có.
