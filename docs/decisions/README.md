@@ -97,6 +97,7 @@ prior decision, write a new ADR that supersedes it.
 | ADR | Title | Status |
 |---|---|---|
 | [0028](0028-atomic-primitive.md) | Atomic primitive design — refines ADR-0026 v2 §4 placeholder. Locks: Rust-shim builtin pattern (IDs 27-39, `.triv` v5→v6), AtomicValue marker trait, 3-level Ordering enum (Relaxed/Synchronized/Strict) mapped vào Trit polarity, full API (load/store/swap/compare_exchange + fetch_add/sub for Tryte/Integer + fetch_and/or/xor for Integer), interior mutability via `&+ Atomic<T>` (fixes ADR-0026 v2 §4.3 `&+ mutable` contradiction), conservative E2530 fire conditions. v0.9.x.atomic implementation depends on this lock | Locked |
+| [0029](0029-self-host-port-policy.md) | Self-host port policy — codifies v0.8 retrospective lesson (port lag recurring pattern). Locks: 3-layer scope (Layer A language surface MANDATORY lockstep, Layer B internal impl defer-OK, Layer C runtime independent), mandatory same-phase port (no discretion), 3-layer detection (smoke tests + release-check.sh count-based + TODO checklist), ADR template addition (Self-host port plan field), Stage 2/3 byte-identical gate lift chained to JIT (ADR-0030) | Locked |
 
 ## How to read an ADR
 

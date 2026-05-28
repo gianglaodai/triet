@@ -1,6 +1,6 @@
 # ADR 0029 — Self-host Port Policy (lockstep on language surface)
 
-**Trạng thái:** **Draft** (v0.9.0.2, 2026-05-29). Codifies lessons từ v0.8.x.completion.4 retrospective: self-host port lag là recurring pattern, broken bootstrap byte-identical gate claim. Author review required cho §2 (lockstep scope), §4 (detection mechanism). Locks after sign-off.
+**Trạng thái:** **Locked** (v0.9.0.2, author sign-off 2026-05-29). Codifies lessons từ v0.8.x.completion.4 retrospective: self-host port lag là recurring pattern, broken bootstrap byte-identical gate claim. Author confirmed 2 decisions: §2 mandatory lockstep (no discretion); §4 3-layer detection (smoke + count-based release-check + TODO checklist). §4 detection implementation lands as v0.9.0.2.c sub-task.
 
 **Issue:** Two retroactive self-host ports trong v0.8:
 

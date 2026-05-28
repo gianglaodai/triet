@@ -103,8 +103,9 @@ Cross-reference vào 27 ADRs theo **topic cluster** thay vì chronological numbe
 | ADR | Title | Status |
 |---|---|---|
 | [0006](0006-ternary-packaging-vision.md) | Ternary packaging vision (informational, points at v0.4+ work) | Informational |
-| [0009](0009-version-gate-policy.md) | Version gate policy — 4-gate matrix (Functional / Hygiene / Docs / Self-consistency) applied to mọi version bump | Locked |
+| [0009](0009-version-gate-policy.md) | Version gate policy — 4-gate matrix (Functional / Hygiene / Docs / Self-consistency) applied to mọi version bump. *+ v0.8.x.cadence-fix Addendum: enforcement automation (release-check.sh + git hooks)* | Locked |
 | [0027](0027-diagnostic-format-standard.md) | Diagnostic format standard (AI-first) — header `EXXXX ErrorName` + body + optional span + `[Fix N]` numbered blocks, pure ASCII, no diff `-/+`. Language-wide retroactive scope | Locked |
+| [0029](0029-self-host-port-policy.md) | Self-host port policy — Layer A (language surface) mandatory lockstep, Layer B (internal compiler) defer-OK, Layer C (runtime/backend) independent. 3-layer detection (smoke + count-based release-check + TODO checklist). Stage 2/3 byte-identical gate lift chained to JIT (ADR-0030) | Locked |
 
 ---
 
