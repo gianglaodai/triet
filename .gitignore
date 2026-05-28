@@ -1,4 +1,4 @@
-/target
+target/
 /Cargo.lock
 **/*.rs.bk
 *.swp
@@ -11,3 +11,7 @@
 .claude/settings.local.json
 .antigravitycli/
 scratch/
+
+# v0.8.x.review.6 — root-level scratch artifacts (built packs, debug binaries)
+/*.khi
+/parse_test
