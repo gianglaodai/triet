@@ -992,7 +992,54 @@ function notify(parent: &- Process) { ... }
 - `String`, user-defined `struct`/`enum`, collections (`Vector<T>`, `Map<K,V>`, etc.)
 - Lifecycle quản lý bởi `&+` unique owner (drop khi scope kết thúc) hoặc refcount ngầm tại thread boundary ([ADR-0026 §3.2](docs/decisions/0026-actor-boundary-send-rules.md#32--t-frozen-qua-boundary--refcount-mediated-share))
 
-### 10.6 Implementation hiện tại (v0.7 → v0.8)
+### 10.6 Concurrency boundary và Send rules (BYOS)
+
+> Full lock ở [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md). Phần này tóm tắt programmer-visible surface.
+
+**Bring Your Own Scheduler.** Triết core cung cấp Send rules + Atomic primitives + capability gates **nhưng không nướng scheduler/runtime vào core language**. Các keyword `actor` / `spawn` / `receive` / `send` / `async` / `await` / `select` / `yield` được explicit **refuse-list** ([ADR-0026 §6](docs/decisions/0026-actor-boundary-send-rules.md)) — chúng là plain identifiers, không phải keywords. Scheduler implementation:
+
+- **stdlib** `std.concurrency.*` (planned v0.10) — reference scheduler cho user-mode programs.
+- **External crate-pack** — kernel/embedded scenarios dùng raw capability + FFI (e.g., `triet-linux-kthread`, `triet-rtos`).
+
+Cùng compile-time safety regardless of scheduler choice — vì Send rules + capability gates là language-level constants, không phải runtime contracts.
+
+**Send derivation** (auto-classifier). Tại bất kỳ "execution boundary" nào (định nghĩa bởi scheduler — thường là `spawn`-equivalent function), compiler check argument types có Send hay không. 13 type categories per [ADR-0026 §2.1](docs/decisions/0026-actor-boundary-send-rules.md):
+
+| # | Type | Send? | Rationale |
+|---|---|---|---|
+| 1 | Stack primitives (`Trit`/`Tryte`/`Integer`/`Long`/`Trilean`/`Unit`) | ✅ luôn Send | Copy by value, no aliasing |
+| 2 | Tuples `(T1, T2, ...)` | ✅ nếu mọi `Ti` Send | Structural |
+| 3 | `T?` / `T~E` / `T?~E` | ✅ nếu `T` và `E` Send | Discriminator + payload |
+| 4 | `Atomic<T>` | ✅ luôn Send | Built for cross-thread |
+| 5 | `String` (frozen) | ✅ luôn Send | Immutable, refcount safe |
+| 6 | Struct / Enum (immutable fields toàn Send) | ✅ recursively Send | Deep frozen |
+| 7 | `&+ T` (frozen owner) | ✅ nếu `T` Send | Refcount-mediated share, [ADR-0026 §3.2] |
+| 8 | `&+ mutable T` | ✅ nếu `T` Send (move ownership) | Move giữa threads, không alias |
+| 9 | `&0 T` (scope borrow read) | ❌ never Send | Scope không cross boundary (E2510) |
+| 10 | `&0 mutable T` | ❌ never Send | Exclusive borrow không cross |
+| 11 | `&- T` (weak observer) | ❌ never Send | Upgrade chỉ valid trong same scope |
+| 12 | Closures | ✅ nếu mọi captured value Send | Recursive |
+| 13 | Heap types với mutable field non-Send | ❌ never Send | E2520 mutable-share anti-pattern |
+
+Vi phạm Send → E2500 `NotSendCannotCrossBoundary` ([CLAUDE.md §Error code namespace]).
+
+**Atomic primitives.** Stack-allocatable, always Send. ADR-0026 reserves type family `Atomic<T>` cho `T ∈ {Integer, Tryte, Trit, Trilean, Pointer}` với 3-state `Ordering` enum (`Relaxed` / `Synchronized` / `Strict`) tương ứng `+1`/`0`/`-1` trit semantics — full API + memory ordering enforcement defer **v0.9 ADR-0028**. v0.8 ship type placeholder để Send derivation + capability gates compile.
+
+**Capability gates cho concurrency.** Manifest claims trong `dao.package`:
+
+| Capability | Use |
+|---|---|
+| `sys.raw_thread` | Tạo OS thread / kthread trực tiếp (bypass stdlib scheduler) |
+| `sys.atomic` | Dùng `Atomic<T>` operations với non-Relaxed ordering |
+| `dev.ffi` | FFI cross-language calls |
+| `dev.raw_memory` | Raw pointer arithmetic / MMIO |
+| `dev.reinterpret` | Type-pun / transmute |
+
+Plus ownership-adjacent caps `dev.self_ref` (offset-based self-ref struct, [ADR-0022 §7]) và `dev.custom_drop` (override drop order, post-v1.0 ADR-tbd).
+
+**Refcount-mediated share (`&+ T` cross-boundary).** Khi `&+ T` frozen owner cross execution boundary, compiler emit implicit refcount-inc; lifetime bị extend tới khi cả hai sides drop. Đây là cách Triết cho phép immutable share cross-thread **không cần Rc/Arc explicit** ([ADR-0026 §3.2]). User code không viết refcount manually.
+
+### 10.7 Implementation hiện tại (v0.7 → v0.8)
 
 Triết chạy trên 2 tier per [VISION §4.3](VISION.md):
 
