@@ -42,241 +42,107 @@ v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7**
 
 ## v0.2.x — Module system cơ bản ✅ SHIPPED
 
-**Mục tiêu:** Cho phép tách codebase thành nhiều file/module với hierarchical namespace, explicit export.
+**Mục tiêu:** Tách codebase thành nhiều file/module với hierarchical namespace, explicit export. Final: **700+ tests**.
 
-**Quyết định kiến trúc:** [`docs/decisions/0005-module-system.md`](docs/decisions/0005-module-system.md)
+**ADRs:** [ADR-0005](docs/decisions/0005-module-system.md) — verbose keywords (`function`/`module`/`mutable`/`constant`/`public`), dot paths (`crate.foo.bar`), Python-style imports (`from std.io import println`), 3-level visibility, multi-arena `ResolvedProgram`, reserved namespace roots, stdlib as filesystem files. Locked: single-file = crate root (Python/Go); inline ≡ file-bound for path resolution.
 
-**Đã ship:**
-- Verbose keywords: `function`, `public`, `public(package)`, `mutable`, `constant`, `module` (ADR-0005).
-- Dot path syntax: `crate.foo.bar`, `self.x`, `super.y` (không `::`).
-- Python-style imports: `from std.io import println, print as p` + `import std.io.println`; glob bị reject.
-- 3-level visibility: `public`, `public(package)`, default private — enforced ở name resolver.
-- File resolution: flat (`foo.tri`) → nested fallback (`foo/foo.tri`); inline `module foo { … }` ≡ file-bound cho path resolution.
-- Multi-arena `ResolvedProgram`: một arena per parsed file, tránh cross-file ID remapping.
-- Cyclic import detection (E2100) với cycle trace `foo → bar → baz → foo`.
-- Diagnostic codes E2100–E2106 cho loader/resolver, tất cả implement `miette::Diagnostic`.
-- Reserved namespace roots: `std`, `sys`, `dev`, `usr`, `core`, `crate`, `self`, `super` (chưa enforce capability).
-- Stdlib reorganized as real filesystem files in `std/` directory: `std.io`, `std.text`, `std.assert`.
-- 704-dòng ternary ALU demo across 6 modules (file-bound + nested + inline) — exercises every feature.
-- Symbolic operators preferred convention (`!`, `&&`, `||`, `^`, `=>`, `~>`, `~^`, `<=>`, `<~>`); keyword forms vẫn valid.
-claude --resume ab0ebffb-b35d-4110-b6f5-d3c9480a938e
-**Sub-task changelog (per-step commits):**
+**Shipped:** Cyclic import detection (E2100), E2100-E2106 loader/resolver namespace, symbolic operators preferred (`!`/`&&`/`||`/`^`/`=>`/`~>`/`~^`/`<=>`/`<~>`), 704-dòng ternary ALU demo (6 modules). Detail prose: [docs/ARCHITECTURE.md §Module system](docs/ARCHITECTURE.md#module-system-shipped-v02x-adr-0005-locked).
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.2.x.0 | SPEC.md align với VISION (5 pillars + OS-capable) | — |
-| v0.2.x.1 | Drop SIMD/Tensor/DType §10.5 từ SPEC | — |
-| v0.2.x.2 | Visibility AST + parser capture (3 levels) | — |
-| v0.2.x.3 | Verbose keyword sweep + dot path commitment | — |
-| v0.2.x.3.1 | Post-sweep drift cleanup (ADR-0005, SPEC, README) | `fa89622` |
-| v0.2.x.4 | Reserved namespace roots validation | — |
-| v0.2.x.5 | Module decls + Python import syntax (parser-only) | `e6e7e51` |
-| v0.2.x.6 #36.1 | Scaffold `triet-modules` crate | `35dc88f` |
-| v0.2.x.6 #36.2 | File loader + multi-arena `ResolvedProgram` | (bundled) |
-| v0.2.x.6 #36.3 | Cycle detection (E2100) | `28b0ca3` |
-| v0.2.x.6 #36.4 | Name resolution + visibility check | `135342c` |
-| v0.2.x.6 #36.5 | Typecheck integration | `075db7d` |
-| v0.2.x.6 #36.6 | Interpreter integration | `9b0687c` |
-| v0.2.x.6 #36.7 | CLI rewire through loader + integration tests | `5634613` |
-| v0.2.x.7 v1 | Stdlib embedded module tree (synthetic) | `d1f1698` |
-| v0.2.x.7 v2 | Stdlib reorganize as real filesystem files | `befc59c` |
-| v0.2.x.8 v1 | Demo lớn (ALU) + snapshot tests cho E2100–E2103 | `b9d1d0c` |
-| v0.2.x.8 v2 | Module system demo snapshot tests (11 modules, 3 tests) | `e356a61` |
+**Không làm (defer):**
+- Capability enforcement → v0.6.
+- Cross-package linking → v0.4.
+- Signature files riêng — compiler tự suy ra từ source.
 
-**Không làm (deferred theo phase sau):**
-- Capability enforcement (đợi v0.6).
-- Cross-package linking (đợi v0.4).
-- Signature files riêng (compiler tự suy ra từ source).
-
-**Gate đã đạt:** Demo 704-dòng chia thành 6 module type-check + run đúng; visibility/cycle/file-not-found diagnostics chỉ rõ vị trí lỗi; 700+ tests xanh.
+Commit log: `git log --oneline --grep="v0\.2\.x"`.
 
 ---
 
 ## v0.3 — Bytecode VM + Stable IR ✅ SHIPPED
 
-**Mục tiêu:** Thiết kế và lock **Triết IR** — biên giới ngôn ngữ ↔ phần cứng. Bytecode VM ở phase này là **development tier scaffolding**, không phải production runtime. Production target nhị phân là AOT native (LLVM, v2.0); production target tam phân là trytecode native (v∞). Xem [VISION §4](VISION.md) cho execution model multi-backend.
+**Mục tiêu:** Lock **Triết IR** — biên giới ngôn ngữ ↔ phần cứng. VM ở phase này là **development tier scaffolding** per [VISION §4.3](VISION.md); production target AOT (v2.0) + trytecode (v∞). Final: **835 tests** (after v0.3.x.cleanup).
 
-**Quyết định kiến trúc:**
-- **[ADR-0007](docs/decisions/0007-ir-design.md)** — IR là **register-based, SSA form, virtual register vô hạn, type-tagged per register**.
-- **[ADR-0008](docs/decisions/0008-triv-binary-format.md)** — Bytecode binary format `.triv`: magic bytes, version field, section layout, LEB128 varint, little-endian.
+**ADRs:** [ADR-0007](docs/decisions/0007-ir-design.md) — register-based SSA IR, virtual register vô hạn, type-tagged per register. [ADR-0008](docs/decisions/0008-triv-binary-format.md) — `.triv` binary format (magic bytes + version + section layout + LEB128 varint, little-endian).
 
-**Đã ship:**
+**Shipped:** `triet-ir` crate (lowerer + 52-opcode VM + serde), `.triv` v1, CLI `dao build` + `dao run`, criterion benchmarks (VM 1.26× interpreter baseline, 3× gate deferred to v0.4 perf pass). Differential tests 11/11 byte-identical closed under v0.3.x.cleanup. Detail: [docs/ARCHITECTURE.md §IR + bytecode VM](docs/ARCHITECTURE.md#ir--bytecode-vm-shipped-v03-adr-000700080010).
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.3.0 | ADR-0007: IR design — register-based SSA | `abbd1d9` |
-| v0.3.1 | Scaffold `triet-ir` crate (types, instr, constant, module, verify, display) | `abbd1d9` |
-| v0.3.2 | Lowerer: AST → IR (core expressions + statements, 51 tests) | `2c80c2d` |
-| v0.3.3 | Lowerer: items + functions + modules (merged into v0.3.2) | — |
-| v0.3.4 | Lowerer: aggregates + match + closures (merged into v0.3.2) | — |
-| v0.3.5 | VM: bytecode execution (52 opcodes, 20 tests, balanced ternary) | `cef4119` |
-| v0.3.6 | Snapshot tests: IR display output (4 tests, insta) | `0ee2bb9` |
-| v0.3.7 | Differential tests: VM vs interpreter (3/11 pass, 8 deferred) | `2c57a50` |
-| v0.3.8 | ADR-0008: .triv bytecode binary format | `117c20d` |
-| v0.3.9 | Serialize/deserialize: .triv reader/writer (24 tests) | `52cee51` |
-| v0.3.10 | CLI: `dao build` + .triv execution + VM CallCrossModule | `3b94bbf` |
-| v0.3.11 | Benchmark harness (criterion) + BENCHMARKS.md | `4dab69a` |
+**Không làm (defer):**
+- JIT → v0.9 Cranelift.
+- Native AOT → v2.0 LLVM.
+- Trytecode → v∞.
+- ABI metadata trong `.triv` → v0.4.
 
-**Lowerer f-string + for-loop fixes (v0.3.7 cycle):**
-- FStringConcat builtin (instr.rs, vm.rs, serde.rs, display.rs)
-- For loop with phi-based SSA loop variable
-- VM path_index for cross-module dispatch + path_to_builtin fallback
-
-**Gate đã đạt (after v0.3.x.cleanup):**
-- ✅ IR spec (ADR-0007) + bytecode format `.triv` có version field (ADR-0008).
-- ✅ Differential tests: **11/11 examples byte-identical VM vs interpreter** (closed under v0.3.x.cleanup phase).
-- ⚠️ Bench: VM 1.26× interpreter trên factorial (3× gate → defer cho v0.4 performance pass, ghi rõ ở BENCHMARKS.md).
-- ✅ IR snapshot tests detect regression khi đổi lowerer (4 tests).
-
-**Không làm trong v0.3:**
-- JIT (v0.9), Native AOT (v2.0), Trytecode backend (v∞).
-- ABI metadata trong `.triv` (v0.4).
-- Cross-package linking (v0.4).
+Commit log: `git log --oneline --grep="v0\.3"` (excluding `.cleanup`/`.ternary`).
 
 ---
 
 ## v0.3.x.cleanup — Gate-closing phase ✅ SHIPPED
 
-**Mục tiêu:** Đóng đầy đủ gate cho v0.3 trước khi mở v0.4. Lock policy bằng
-[ADR-0009](docs/decisions/0009-version-gate-policy.md) — gate này áp dụng cho
-mọi version bump tương lai, không chỉ v0.3 → v0.4.
+Đóng đầy đủ ADR-0009 gate cho v0.3 trước khi mở v0.4. Lock policy 4-gate matrix (Functional/Hygiene/Docs/Self-consistency) áp dụng mọi version bump tương lai. Final: **835 tests**.
 
-**Đã ship:**
+**ADR:** [ADR-0009](docs/decisions/0009-version-gate-policy.md) — version gate policy.
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.3.x.cleanup.1 | ADR-0009 — version gate policy | `6a8a6b1` |
-| v0.3.x.cleanup.2 | Bump Cargo workspace 0.1.0 → 0.3.0 + `dao info` | `b86b0be` |
-| v0.3.x.cleanup.3 | README.md sync với v0.3 status + workspace structure | `a3df90f` |
-| v0.3.x.cleanup.4 | Clippy `-D warnings` sạch (109 → 0 warnings) | `84fea6c` |
-| v0.3.x.cleanup.5 | Enum payload + variant tag dispatch (maybe, generic) | `e3726c0` |
-| v0.3.x.cleanup.6 | SSA loop+if phi cho mutable vars (counter, while_polling, long_arithmetic) | `2ddd046` |
-| v0.3.x.cleanup.7 | Iterator `.enumerate()` + nullable ops `?.` `?:` `!!` + stdlib text builtins (nullable, enumerate) | `be9c0c5` |
-| v0.3.x.cleanup.8 | Tuple + literal pattern match (fizzbuzz) | `251f954` |
-
-**Gate đã đạt (ADR-0009):**
-- ✅ Gate A — Functional: 11/11 differential, 0 `#[ignore]`, 0 `TODO(v0.3...)`.
-- ✅ Gate B — Hygiene: 835 tests pass / 0 fail / 0 ignored; clippy `-D warnings` sạch.
-- ✅ Gate C — Docs: SPEC v0.3, Cargo 0.3.0, `dao info` đồng bộ, README cập nhật, ADRs 0001–0009.
-- ✅ Gate D — Self-consistency: 11/11 examples chạy interpreter & VM, demo 6-file module-system chạy.
+**Shipped:** Cargo workspace bump 0.1.0 → 0.3.0, clippy `-D warnings` clean (109 → 0), README sync, enum payload + variant tag dispatch, SSA loop+if phi cho mutable vars, iterator `.enumerate()` + nullable ops `?.`/`?:`/`!!`, tuple + literal pattern match. 11/11 differential examples byte-identical VM vs interpreter (closes v0.3 Gate A).
 
 **Không làm:**
-- Bench 3× (defer cho v0.4 perf pass; ADR-0010 nếu cần revise gate).
-- ~~Strict `if`/`while` unknown-as-error check~~ → Closed in v0.3.x.ternary phase below.
+- Bench 3× → defer v0.4 perf pass (BENCHMARKS.md ghi rõ).
+
+Commit log: `git log --oneline --grep="v0\.3\.x\.cleanup"`.
 
 ---
 
 ## v0.3.x.ternary — Ternary-native IR ✅ SHIPPED
 
-**Mục tiêu:** Audit sau cleanup phát hiện 5 chỗ binary-thinking leak ở IR:
-BrIf 2-way (Unknown collapse to else), if/if? semantic distinction hardcoded
-ở lowerer thay vì IR, EnumTag Trit chỉ dùng 2/3 states, Constant::Null
-bolt-on, Eq trên Trilean::Unknown trả False thay vì Unknown. Tất cả violate
-VISION §5 "Trit-level capability + Łukasiewicz checking + ternary ABI". Phase
-này lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze.
+Audit post-cleanup phát hiện 5 binary-thinking leak ở IR (BrIf 2-way Unknown collapse, hardcoded if-vs-if? semantics, EnumTag 2/3 states, Constant::Null bolt-on, Eq trên Unknown trả False). Phase lock thiết kế tam phân-first ở IR level trước khi v0.4 ABI freeze. Final: **838 tests**, `.triv` wire v1 → v2.
 
-**Quyết định kiến trúc:** [ADR-0010](docs/decisions/0010-ternary-native-ir.md)
+**ADR:** [ADR-0010](docs/decisions/0010-ternary-native-ir.md) — `BrTrilean` 3-way branch + Ł3-aware `Eq`/`Ne` + `Constant::Null` = Trit::Zero. Backend mapping: binary CPU 2 cmp + 2 branch; trytecode hardware 1 native instruction (điểm Triết thắng vĩnh viễn).
 
-**Đã ship:**
+**Shipped:** `BrTrilean` opcode (0xB4), lowerer migrate (0 emit BrIf, 7 emit BrTrilean), strict `if` Unknown→panic, `Eq`/`Ne` propagate Unknown khi operand Trilean::Unknown. `BrIf` còn lại cho .triv v1 backward decode + 2-state verified Trit cases.
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.3.x.ternary.1 | ADR-0010 — ternary-native IR design | `c944949` |
-| v0.3.x.ternary.2 | `BrTrilean` opcode (0xB4) — 3-way branch | `6f00c0a` |
-| v0.3.x.ternary.3+5 | Lowerer migrate to `BrTrilean` + strict `if` Unknown→panic (SPEC §7.1.1) | `09cc1e5` |
-| v0.3.x.ternary.4 | Match dispatch + pattern test dùng `BrTrilean` (cùng commit trên) | — |
-| v0.3.x.ternary.6 | `Eq`/`Ne` propagate Unknown khi operand Trilean::Unknown (Ł3) | `39b6cd6` |
-| v0.3.x.ternary.7 | Document `Constant::Null` = Trit::Zero discriminator state | `3b1ef2f` |
-| v0.3.x.ternary.8 | Verify gate: 11/11 + 838 tests + clippy clean | this commit |
+**Không làm (defer):**
+- Xoá `BrIf` enum variant — wire format compat.
+- ≥4-variant enum encoding thành Tryte tag — chưa example nào cần.
+- Capability `Trilean` dispatch → v0.6 (build trên BrTrilean infrastructure).
 
-**Backend mapping (per ADR-0010):**
-- **JIT (Cranelift, v0.9)**, **LLVM AOT (v2.0)**: BrTrilean → 2 cmp + 2 branch on binary CPU.
-- **Trytecode (v∞)**: BrTrilean → **1 native instruction** trên hardware tam phân. Đây là điểm Triết thắng vĩnh viễn nếu ngày phần cứng tam phân xuất hiện.
-
-**`.triv` wire format bumped v1 → v2** — v1 readers gặp BR_TRILEAN opcode (0xB4) trả `UnknownOpcode` thay vì silently misinterpret.
-
-**Lowerer state sau migration:** 0 emit BrIf, 7 emit BrTrilean. `BrIf` còn lại trong IR enum cho .triv v1 backward decode + cases binary-thực (Trit verified 2-state). Không có new code emit BrIf.
-
-**Không làm:**
-- Xoá `BrIf` enum variant (defer — wire format compat).
-- Encoding ≥4-variant enum thành Tryte tag (defer — chưa example nào cần).
-- Capability `Trilean` dispatch (v0.6 — sẽ build trên BrTrilean infrastructure).
+Commit log: `git log --oneline --grep="v0\.3\.x\.ternary"`.
 
 ---
 
 ## v0.4 — Crate-Pack + Stable ABI ✅ SHIPPED
 
-**Mục tiêu:** Cho phép phân phối binary library, type-safe cross-package linking.
+**Mục tiêu:** Phân phối binary library + type-safe cross-package linking. Final: **867 tests**, `.triv` wire v2 → v3.
 
-**Quyết định kiến trúc:**
-- **[ADR-0011](docs/decisions/0011-abi-metadata-format.md)** — ABI metadata binary format. Hai cấp hash (iface_hash + impl_hash). BLAKE3. Section ID layout cho future-compat.
-- **[ADR-0012](docs/decisions/0012-witness-table-dispatch.md)** — Witness table dispatch (Swift-style) cho cross-package generics. Hybrid: monomorphize intra-pkg, witness inter-pkg.
-- **[ADR-0013](docs/decisions/0013-semver-linking-policy.md)** — Semver decision matrix. iface_hash là final arbiter. Auto-shim explicitly not promised.
+**ADRs:** [ADR-0011](docs/decisions/0011-abi-metadata-format.md) ABI metadata (BLAKE3, 2-level hash `iface_hash` + `impl_hash`, section ID layout); [ADR-0012](docs/decisions/0012-witness-table-dispatch.md) witness table dispatch (Swift-style hybrid: monomorphize intra-pkg, witness inter-pkg); [ADR-0013](docs/decisions/0013-semver-linking-policy.md) semver decision matrix (`iface_hash_pin` final arbiter, auto-shim NOT promised).
 
-**Đã ship:**
+**Shipped:** `triet-pack` crate, `.khi` serde (11 round-trip tests), cross-package linker + decision matrix E2300-E2399 (8 tests), `WitnessCall` opcode + `.triv` v3 wire format + VM dispatch, `std.result` canonical + SPEC `T?` primary nullable, cross-package demo (7 integration tests). Detail: [docs/ARCHITECTURE.md §Crate-Pack distribution](docs/ARCHITECTURE.md#crate-pack-distribution-shipped-v04-adr-001100120013).
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.4.1 | ADR-0011 ABI metadata format | `8e9cfce` |
-| v0.4.2 | ADR-0012 Witness table dispatch | `d600f73` |
-| v0.4.3 | ADR-0013 Semver linking policy | `c76b89c` |
-| v0.4.4 | `triet-pack` crate + `.khi` serde (11 round-trip tests) | `09b155d` |
-| v0.4.5 | Cross-package linker + decision matrix (8 tests) | `b1f9f83` |
-| v0.4.6 | `WitnessCall` opcode + `.triv` v3 wire format + VM dispatch | `8360036` |
-| v0.4.7 | `std.result` + SPEC `T?` primary | `06d7129` |
-| v0.4.8 | Cross-package demo (7 integration tests) | `5d61de9` |
-| v0.4.9 | Verify gate + Cargo 0.4.0 + docs sync | this commit |
+**Không làm (defer):**
+- CAS hash identity → v0.5 (`iface_hash_pin` prep đã có).
+- Auto-shim ABI migration — rejected per [VISION §3.3](VISION.md) (semantic change không decidable).
+- Capability enforcement runtime → v0.6 (slot reserved trong ABI metadata).
+- CLI `triet link` subcommand → v0.5 (API trong `triet-pack` là contract).
+- Cross-module enum variant import (pre-existing v0.2.x gap) → v0.5.
+- Cross-package generic lowerer emit (`WitnessCall`) → v0.5+ multi-package compile.
 
-**Gate đạt (ADR-0009):**
-- ✅ A — Functional: differential 11/11 byte-identical, 0 `#[ignore]`, 0 `TODO(v0.4...)`.
-- ✅ B — Hygiene: 867 tests pass, clippy `-D warnings` clean, `cargo fmt` clean.
-- ✅ C — Docs: SPEC v0.4, Cargo `0.4.0`, README updated, 3 ADRs landed.
-- ✅ D — Self-consistency: 11/11 examples chạy interpreter + VM, demo cross-pkg pass.
-
-**Không làm:**
-- CAS hash identity (defer v0.5 — `iface_hash_pin` prep đã có trong dep table).
-- Auto-shim ABI migration (rejected per VISION §3.3 — semantic change không decidable).
-- Capability enforcement runtime (defer v0.6 — slot reserved trong ABI metadata).
-- CLI `triet link` subcommand (defer v0.5 — API trong `triet-pack` là contract).
-- Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap from v0.2.x; ADR text khuyến nghị, implementation ở v0.5.
-- Cross-package generic lowerer emit (lowerer chỉ emit `CallCrossModule` ở v0.4; full `WitnessCall` emit cross-package lands ở v0.5 với multi-package compile).
+Commit log: `git log --oneline --grep="v0\.4"`.
 
 ---
 
 ## v0.5 — CAS Packaging ✅ SHIPPED
 
-**Mục tiêu:** Định danh package bằng hash, eliminate DLL Hell, prep parallel versions ở RAM level.
+**Mục tiêu:** Định danh package bằng hash, eliminate DLL Hell, prep parallel versions ở RAM level. Final: **918 tests**, `abi_version` 1 → 2 (v=1 refused, no shim).
 
-**Quyết định kiến trúc:**
-- **[ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)** — Hash scheme refinement: 3-cấp hash tree (term + module + package), `abi_version` 1 → 2, domain separation per level.
-- **[ADR-0015](docs/decisions/0015-package-store-layout.md)** — Package store layout: `~/.triet/store/{term,mod,pkg,names,roots,tmp}/`, atomic install via tmp + rename, mark-and-sweep GC.
+**ADRs:** [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md) 3-cấp hash tree (term + module + pkg) với 16-byte domain separators per level; [ADR-0015](docs/decisions/0015-package-store-layout.md) `~/.triet/store/{term,mod,pkg,names,roots,tmp}/`, atomic install via tmp + `rename()` (POSIX), mark-sweep GC.
 
-**Đã ship:**
+**Shipped:** Hash-based resolver + `dao.lock` hand-rolled line format (sort-by-name canonical, no serde dep), `dao store {import,list,gc}` CLI, shared loading demo (term iface dedup proven via `tests/shared_loading.rs`), cross-module enum variant import (`from std.result import Ok, Err` — closes v0.2.x gap), E2107 cho aliased variant import. Detail: [docs/ARCHITECTURE.md §CAS Packaging](docs/ARCHITECTURE.md#cas-packaging-shipped-v05-adr-00140015).
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.5.1 | ADR-0014 hash scheme refinement | `f876006` |
-| v0.5.2 | ADR-0015 package store layout | `f7b49c8` |
-| v0.5.3 | 3-cấp hash tree implementation + abi_version 1 → 2 | `b6d170c` |
-| v0.5.4 | Package store filesystem + atomic install + GC | `2425e25` |
-| v0.5.5 | Hash-based resolver + `dao.lock` format | `2c43e69` |
-| v0.5.6 | Shared loading demo + term dir keyed by impl_hash | `6291bc1` |
-| v0.5.7 | `dao store {import,list,gc}` CLI | `8b4ce12` |
-| v0.5.8 | Cross-module enum variant import (`from X import Variant`) | `07323a1` |
-| v0.5.9 | Verify gate (ADR-0009) + bump 0.4.0 → 0.5.0 + docs sync | this commit |
+**Không làm (defer):**
+- Lowerer emit `WitnessCall` cross-package generics → v0.7 self-host.
+- v=1 `.khi` lossy migration → on-demand khi v=1 packs xuất hiện in wild.
+- Body-level RAM dedup → v0.6+ alongside lowerer per-term split.
+- Distributed registry / network fetch → v1.0+ (local store đủ).
+- Auto-GC — manual đủ ("refuse over guess").
 
-**Gate đạt (ADR-0009):**
-- ✅ A — Functional: differential 11/11 byte-identical, 0 `#[ignore]`, 0 `TODO(v0.5...)`.
-- ✅ B — Hygiene: 918 tests pass, clippy `-D warnings` clean, `cargo fmt` clean.
-- ✅ C — Docs: SPEC v0.5, Cargo `0.5.0`, README updated, 2 ADRs landed (0014, 0015).
-- ✅ D — Self-consistency: 11/11 examples chạy interpreter + VM, store CLI smoke OK, variant import e2e OK.
-
-**Không làm (defer khỏi v0.5):**
-- **Lowerer emit `WitnessCall` cho cross-package generics** (Item 2 carry-over) — cần package-aware lowering, multi-week milestone. Reschedules cùng multi-package compile path hoặc v0.7 self-hosting.
-- **v=1 `.khi` lossy migration** (ADR-0015 §9) — hiện chưa có v=1 packs trong wild; lands on demand.
-- **Body-level RAM dedup** (`term/<hash>/body.bin`) — chờ lowerer per-term IR body split. Iface-level dedup proven; body-level deferred to v0.6+ alongside lowerer work.
-- **Distributed registry / network fetch** — local store đủ; defer v1.0+.
-- **Auto-GC** — manual `dao store gc` đủ; "refuse over guess" policy.
+Commit log: `git log --oneline --grep="v0\.5\."` (excluding `.review`).
 
 ---
 
@@ -300,54 +166,25 @@ thay đổi spec gốc; thêm Addendum vào ADR-0015. 918 → 924 tests.
 
 ## v0.6 — Capability System (`sys.` / `dev.` / `usr.`) ✅ SHIPPED
 
-Trụ cột bản sắc #5 (VISION §3.5 + §5). Capability is a namespace
-attribute declared in the per-package `dao.package` manifest;
-runtime `Defer` slots resolve via `dao.policy` rules + optional
-TTY prompt.
+Trụ cột bản sắc #5 ([VISION §3.5 + §5](VISION.md)). Capability is namespace attribute trong per-package `dao.package` manifest; runtime `Defer` slots resolve via `dao.policy` + optional TTY prompt. Final: **1079 tests**, `abi_version` stays `2` (ADR-0016 §4 populate-not-bump promise).
 
-**3 ADRs locked + 1 Addendum:**
+**ADRs:** [ADR-0016](docs/decisions/0016-capability-type-system.md) capability type system (4-state level Grant/Ambient/Deny/Defer + Trilean::Unknown; wire reuses caps section since v0.4 ABI metadata; root authority sole decision-maker, no path inheritance); [ADR-0017](docs/decisions/0017-trilean-policy-hook.md) Trilean policy hook (`dao.policy` rules + TTY fallback, per-session cache, monotonicity invariant; *+ Addendum: parser strict + `/dev/tty` source + Abstain errata*); [ADR-0018](docs/decisions/0018-capability-loader-semantics.md) loader semantics (`dao.package` grammar, eager Step 6a refuse, TTY provenance prompt, `CapabilityClaim` Rust struct; *+ v0.6.x.review Addendum: monotonicity-under-mutation, policy round-trip, requester sort, strict_parser contracts*).
 
-| ADR | Title | Status |
-|---|---|---|
-| [0016](docs/decisions/0016-capability-type-system.md) | Capability type system (namespace + manifest, Trit + Trilean::Unknown) | Locked |
-| [0017](docs/decisions/0017-trilean-policy-hook.md) | Trilean policy hook protocol (`dao.policy` rules + TTY fallback) — *+ Addendum: parser strict + `/dev/tty` source + Abstain errata* | Locked |
-| [0018](docs/decisions/0018-capability-loader-semantics.md) | Loader semantics (`dao.package` grammar, eager Step 6a refuse, TTY provenance prompt, `CapabilityClaim`) | Locked |
+**Shipped:** Compile-time E2200/E2201 fire khi `usr.*` imports `dev.*`/`sys.*` không cap claim, runtime policy hook + TTY prompt (`/dev/tty` paired I/O POSIX, anti-spoofing, ASCII `!!` markers, G/D permanent write), E22XX fully populated E2200–E2208 across parse/compile/link/runtime. Capstone test `capability_pipeline.rs` (12 integration tests) + `demos/04-capability-system/` illustrative. Detail: [docs/ARCHITECTURE.md §Capability System](docs/ARCHITECTURE.md#capability-system-shipped-v06-adr-001600170018).
 
-**11 sub-tasks (v0.6.1–v0.6.11):**
+**Không làm (defer):**
+- CLI wiring (project layout discovery, cap-aware build emitting caps section, `DevTtyPrompt` integration) → v0.7 self-host.
+- E2208.PreV06Reader → future `abi_version` bump.
+- E2208.CapabilityDivergence → khi lowerer populates caps section from `dao.package`.
+- Per-function cap granularity → post-v1.0 (ADR-0016 "Không làm").
+- Wildcard claims in manifest — refuse-over-guess.
+- Windows ConPTY for TTY prompt → POSIX-first.
+- ANSI colour + Unicode TTY → post-security-floor.
+- `Capability<T>` stdlib type — superseded by namespace-level claims (ADR-0016 §1 phương án C).
+- Hardware enforcement — cần tam phân hardware hoặc bytecode VM sandbox.
+- Distributed capability → v1.0+.
 
-| Sub-task | Description | Commit |
-|---|---|---|
-| v0.6.1 | ADR-0016 land | `cd65127` |
-| v0.6.2 | ADR-0017 land | `0e6e94a` |
-| v0.6.2.addendum | ADR-0017 Addendum (parser strict + `/dev/tty` + Abstain errata) | `d6d0aa3` |
-| v0.6.3 | ADR-0018 land | `6742948` |
-| v0.6.4 | `CapabilityClaim` + `CapabilityLevel` + wire format (ADR-0016 §4) | `22151a4` |
-| v0.6.5 | `dao.package` parser (ADR-0018 §1) | `cb8aa7b` |
-| v0.6.6 | `dao.policy` parser + shared `strict_parser` (ADR-0017 §3) | `2a3a6c6` |
-| v0.6.7 | Type-check cross-root cap check (ADR-0016 §5 rules 1+2) | `b41d47e` |
-| v0.6.8 | Link-time cap check (ADR-0018 §2 Step 6a) | `24c34c3` |
-| v0.6.9 | Runtime resolver + per-session cache (ADR-0017 §4, ADR-0018 §2 Step 6b) | `6151399` |
-| v0.6.10 | TTY prompt UX (`/dev/tty` + provenance + G/D permanent write, ADR-0018 §4 + ADR-0017 Addendum §B) | `40f8cf4` |
-| v0.6.11 | Demo + capability pipeline integration test | this commit |
-
-**Gate đạt:**
-- ✅ Compile-time E2200/E2201 fire khi `usr.*` imports `dev.*`/`sys.*` không cap claim — proven by [`compile_*` tests in `capability_pipeline.rs`](crates/triet-typecheck/tests/capability_pipeline.rs).
-- ✅ Runtime policy hook resolves `Trilean::Unknown` via `dao.policy` rules + TTY prompt — proven by `resolve_*` tests.
-- ✅ Demo capability-restricted program: accept path + refuse path both proven by `full_pipeline_capstone_*` tests + `demos/04-capability-system/` illustrative files.
-- ✅ E22XX namespace fully populated: E2200–E2208 (+ sub-variants) across parse/compile/link/runtime stages.
-- ✅ 924 → 1079 tests, clippy `-D warnings` clean, `abi_version` stays `2` (ADR-0016 §4 promise honored).
-
-**Không làm (defer khỏi v0.6):**
-- **CLI wiring** (`dao check` reading `dao.package` from project root, cap-aware build pipeline emitting `.khi` with caps section populated, loader integration with `DevTtyPrompt`) — needs project-layout discovery convention; lands cleaner with v0.7 self-hosting.
-- **E2208.PreV06Reader** — gated by future `abi_version` bump.
-- **E2208.CapabilityDivergence** — fires when lowerer actually populates caps section from `dao.package`; defer with lowerer work.
-- **Per-function cap granularity** — defer post-v1.0 (ADR-0016 "Không làm").
-- **Wildcard claims** in manifest — refuse-over-guess (ADR-0016 "Không làm").
-- **Windows ConPTY** for TTY prompt — POSIX-first; Windows defer.
-- **ANSI colour theming** + box-drawing Unicode in TTY prompt — usability win, defer post-security-floor.
-- **`Capability<T>` stdlib type** (old roadmap wording) — superseded by namespace-level claims (ADR-0016 §1 picked phương án C over A/B/D).
-- Hardware enforcement (cần phần cứng tam phân hoặc bytecode VM sandbox).
-- Distributed capability (defer v1.0+).
+Commit log: `git log --oneline --grep="v0\.6\."` (excluding `.review`).
 
 ---
 
@@ -367,130 +204,54 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 
 ## v0.7 — Self-hosting Compiler ✅ SHIPPED
 
-**Mục tiêu:** Compiler Triết viết bằng Triết. Bootstrap đầy đủ. 3-stage chain với fixed-point hội tụ là gate.
+**Mục tiêu:** Compiler Triết viết bằng Triết. 3-stage chain với fixed-point hội tụ là gate.
 
-**Closed 2026-05-25** với 30+ commits, 1085 → 1345 tests (+260 net across v0.7.1 → v0.7.13). Self-host compiler ships as 6 `.tri` files (~9700 LOC) under `compiler/`. `dao build` đi qua filesystem-aware pipeline (`load_program_with_stdlib` + `check_resolved` + `lower_program` + `write_program` + `write_khi`); main.tri biên dịch chính mình qua VM. Bootstrap gate Stage 2 ≡ Stage 3 byte-identical đã wired (`bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical`) nhưng `#[ignore]` per ADR-0019 §7 + Addendum (xem dưới) — VM dev tier > 15 min per main.tri compile.
+**Closed 2026-05-25** với 30+ commits, 1085 → **1345 tests** (+260 net). Self-host compiler ships as 7 `.tri` files (~23K LOC) under `compiler/`. `dao build` đi qua filesystem-aware pipeline; main.tri biên dịch chính mình qua VM. Bootstrap gate Stage 2 ≡ Stage 3 byte-identical wired (`bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical`) nhưng `#[ignore]` per ADR-0019 §7 Addendum — VM dev tier > 15 min per main.tri compile, lifts CI-required ở v0.9 JIT.
 
-**Quyết định kiến trúc:**
-- [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — bootstrap chain shape, component order, canonical emission invariants, bit-identical gate semantics, Rust-shim stdlib, testing strategy, perf gate recalibration.
-- [ADR-0020](docs/decisions/0020-outcome-error-handling.md) — outcome error handling primitive (`T~E` / `T?~E` trit-encoded fallibility, replaces forced `Result<T, E>` functional ceremony with imperative-friendly Triết-native form; `~+`/`~0`/`~-` constructors mirror balanced ternary states; `~?` propagate + `~:` default operators; verbose force-unwrap methods with mandatory message; `.triv` v4 → v5 patch bump). Self-host compiler v0.7.4.3+ adopts as primary error mechanism; existing `Result<T, E>` enum stays legacy-convention.
+**ADRs:** [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) bootstrap chain + canonical emission invariants + Rust-shim stdlib (builtins 4–26) + perf gate recalibration; [ADR-0020](docs/decisions/0020-outcome-error-handling.md) Outcome `T~E`/`T?~E` trit-encoded fallibility + `~+`/`~0`/`~-` constructors + `~?`/`~:` postfix ops + verbose force-unwrap methods + `.triv` v4 → v5 patch bump; [ADR-0021](docs/decisions/0021-trilean-refinement.md) compile-time `Trilean!` refinement (E1033 `PossiblyUnknownCondition` / E1034 `TrileanReturnNotRefined`); [ADR-0023](docs/decisions/0023-lowerer-ssa-struct-tracking.md) lowerer SSA struct-tracking unified `ValueKind` enum (closed v0.7 review finding); [ADR-0024](docs/decisions/0024-khi-dao-identity-naming.md) Khí + Đạo identity (`.tri.bin` → `.khi`, CLI `triet` → `dao`, manifest `dao.package`, lockfile `dao.lock`; source `.tri` + IR `.triv` + name "Triết" giữ).
 
-**Deliverables:**
-- `compiler/lexer.tri` + `parser.tri` + `modules.tri` + `typecheck.tri` + `ir_lowerer.tri` + `pack_writer.tri` + `main.tri` — Triết-in-Triết compiler source, 1:1 mirror crate boundaries của Rust impl.
-- Bootstrap chain 3-stage: Stage 1 (Rust impl) → Stage 2 (Triết-built-by-Stage-1) → Stage 3 (Triết-built-by-Stage-2).
-- Builtin opcodes 4–26 (Vec / HashMap / file IO / path / string ops) trong VM dispatcher per ADR-0019 §5 Rust-shim approach.
-- CLI wiring carry-over từ v0.6: project layout discovery (`dao.package` walk-upward), `dao check`/`build`/`run` cap-aware, loader integration với `DevTtyPrompt`, `E2208.CapabilityDivergence` fires.
-- Three-layer testing: per-component differential test (5) + end-to-end semantic regression + bootstrap-loop CI gate.
-- Canonical emission determinism CI test (`bootstrap_determinism`) — `examples/*.tri` × 10 builds byte-identical.
+**Shipped:** Three-layer testing (per-component differential + e2e semantic regression + bootstrap-loop CI gate), canonical emission determinism CI (`examples/*.tri` × 10 builds byte-identical), CLI wiring carry-over v0.6 (project layout discovery, cap-aware build, `E2208.CapabilityDivergence` fires). Examples 14/14 dao check + 13/13 dao build (`while_true_loop.tri` infinite-loop fixture skipped); 12 interpreter run + 1 VM-only `outcome_propagate.tri` per ADR-0019 Addendum §A7 parity gap. Detail: [docs/ARCHITECTURE.md §Self-hosting Compiler](docs/ARCHITECTURE.md#self-hosting-compiler-shipped-v07-adr-001900200021024).
 
-**Không làm (defer khỏi v0.7 per ADR-0019 §Không làm):**
-- Native AOT emit (vẫn xuất bytecode `.triv` v3).
-- JIT integration (v0.9 Cranelift).
-- Triết-native `std.collections`/`std.io.fs` wrappers — Rust-shim builtins đủ; stdlib expansion v0.8+ scope.
-- Macro / metaprogramming, cross-compile, incremental cache, parallel compilation.
-- Triết-impl divergent semantics from Rust-impl — goal là 1:1 reimplementation.
+**Không làm (defer per ADR-0019 §Không làm):**
+- Native AOT → v2.0.
+- JIT → v0.9 Cranelift.
+- Triết-native `std.collections`/`std.io.fs` wrappers → v0.8+ scope (Rust-shim builtins đủ).
+- Macro / metaprogramming, cross-compile, incremental cache, parallel compilation → post-v1.0+.
+- Triết-impl divergent semantics from Rust — goal là 1:1 reimplementation.
+- Full 3-stage bootstrap loop < 10 phút → v0.9 JIT (ADR-0019 §7 Addendum; empirical ≥15 min per main.tri compile on VM dev tier).
 
-**Gate (recalibrated by ADR-0019 §7 + Addendum 2026-05-25):**
-- **Functional:** Bit-identical Stage 2 ≡ Stage 3 (`cmp compiler-stage2.khi compiler-stage3.khi`) — **wired** via `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical`. `#[ignore]` due to VM dev tier (single Stage 2 main.tri compile > 15 min on dev hardware per 2026-05-25 measurement). Lifts to CI-required at v0.9 JIT.
-- **Coverage:** Tất cả `examples/*.tri` typecheck + build OK (14/14 dao check, 13/13 dao build — `while_true_loop.tri` skipped as infinite-loop fixture; 12 interpreter run + 1 VM-only `outcome_propagate.tri` per ADR-0019 Addendum §A7 interpreter parity gap).
-- **Performance:** Full 3-stage bootstrap loop **< 10 phút** target **DEFERRED to v0.9 JIT** per ADR-0019 §7 Addendum. Empirical 2026-05-25 measurement: ≥15 min per main.tri compile. Same logic as the original 2× parity recalibrate — VM dev tier per [VISION §4.3](VISION.md), not production runtime.
-- **Hygiene:** ADR-0009 §A/B/C/D gates applied trong sub-task v0.7.13 (Gate A: 0 TODO(v0.7), 2 documented `#[ignore]`; Gate B: 1345 tests pass, clippy + fmt clean, 3 pre-existing large files documented; Gate C: workspace.package.version 0.7.0, SPEC v0.7, README synced, `dao info` updated; Gate D: examples + demos pass).
+Commit log: `git log --oneline --grep="v0\.7"`.
 
 ---
 
 ## v0.8 — Ownership Foundation + Concurrency Primitives (BYOS) ✅ SHIPPED
 
-**Closed 2026-05-28** với 14 sub-tasks (v0.8.8–v0.8.13 bundled trong release commit `78f2402`). Post-release `v0.8.x.review` audit closed gate B Hygiene leftover + namespace mistag + self-host lexer port + doc drift.
+**Closed 2026-05-28** với 14 sub-tasks (v0.8.8–v0.8.13 bundled trong release commit `78f2402`). Post-release `v0.8.x.review` audit closed gate B Hygiene leftover + namespace mistag + self-host lexer port + doc drift. Final: **1425 tests** (+80 net from v0.7 close).
 
-**Mục tiêu:** Lock memory model (S6) + concurrency Send rules primitives. **KHÔNG mục tiêu:** scheduler/runtime trong core language (BYOS — Bring Your Own Scheduler per ADR-0026 v2). NLL enforcement (→v0.9). stdlib `std.concurrency.*` (→v0.10).
+**Mục tiêu:** Lock memory model (S6) + concurrency Send rules primitives. **KHÔNG mục tiêu:** scheduler/runtime trong core language (BYOS — Bring Your Own Scheduler per ADR-0026 v2). NLL enforcement → v0.9. stdlib `std.concurrency.*` → v0.10.
 
-**Quyết định kiến trúc:** [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md) (S6 — 5-form reference, định lý vô-chu-trình, capability-as-unsafe), [ADR-0025](docs/decisions/0025-borrow-checker-rules.md) (borrow checker algorithm, NLL, elision 3 rules, no annotation policy, E24XX errors), [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md) (**BYOS** — Send rules universal, Atomic primitives, capability gates, refuse async/spawn/actor keywords, E25XX errors), [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) (AI-first diagnostic format language-wide). Design session 2026-05-26 chốt S6 ownership; cùng ngày pivot ADR-0026 v1 → v2 BYOS sau khi nhận ra v1 contradicts kernel-writability goal.
+**ADRs:** [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md) S6 5-form reference (`&+` strong / `&0` neutral / `&-` weak / `&` bare / `owned` transfer) + định lý vô-chu-trình + capability-as-unsafe; [ADR-0025](docs/decisions/0025-borrow-checker-rules.md) borrow checker algorithm (NLL + 3-rule elision + no annotation policy + E24XX); [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md) **BYOS** — Send rules universal + Atomic primitives + capability gates + refuse `actor`/`spawn`/`receive`/`send`/`async`/`await` keywords + E25XX; [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) AI-first diagnostic format (header `EXXXX ErrorName` + body + `[Fix N]` numbered blocks, ASCII, no diff `-/+`).
 
-### Sub-tasks
+**Shipped:** `triet-core::memory::ObjectHeader` (8-byte binary, 54-trit ternary, refcount atomic ops, sentinels), 5-form lexer tokens + parser AST `ReferenceForm`, Send derivation cho 13 type categories per ADR-0026 v2 §2.1 (E2500 fires), capability schema mở rộng (concurrency caps `sys.raw_thread`/`sys.atomic`/`dev.ffi`/`dev.raw_memory`/`dev.reinterpret`; ownership caps `dev.self_ref`/`dev.custom_drop`), E24XX/E25XX skeleton diagnostics AI-first format. Demo `examples/atomic_counter/` aspirational sketch (parser-side `ReferenceForm` port deferred — lexer port shipped v0.8.x.review.3 `46c8722`). Detail: [docs/ARCHITECTURE.md §Ownership + BYOS](docs/ARCHITECTURE.md#ownership-foundation--concurrency-primitives-byos-shipped-v08-adr-002200250026-v20027).
 
-| Sub-task | Description | Target |
-|---|---|---|
-| v0.7.4.3-error.4 | Ternary operator family `~+>`/`~0>`/`~->` (lexer+parser+typecheck+lowerer stubs) | Shipped `ebb90a2` |
-| v0.8.1 | SPEC §10 rewrite — S6 ownership model lock | Shipped `c9b887f` |
-| v0.8.2 | ROADMAP §v0.8 detail | Shipped `7225525` |
-| v0.8.3 | Object header memory layout — `triet-core::memory::ObjectHeader` (8-byte binary, 54-trit ternary, refcount atomic ops, sentinels). 11 tests. | Shipped `b2c7016` |
-| v0.8.4 | Lexer tokens ownership — `&+`/`&0`/`&-` compound + bare `&`. 10 tests. | Shipped `6379beb` |
-| v0.8.5 | Parser + AST ownership — `ReferenceForm` enum, 5 forms, postfix precedence (?/!/`~`/`?~` applies before reference wraps). 8 tests. | Shipped `dce9a3a` |
-| v0.8.6 | Type system reference tracking — TypeExpr::Reference resolves transparently; enforcement deferred v0.9+. | Shipped `f3b07ef` |
-| v0.8.7 | ~~Actor model lexer + parser~~ — **REVERTED** per BYOS (ADR-0026 v2 §6 refuse list). actor/spawn/receive/send là plain identifiers, không phải keywords. | Reverted `3f35027` |
-| v0.8.7-byos | ADR-0026 v2 rewrite — BYOS philosophy + Send rules universal + Atomic placeholder + capability gates + refuse scheduler keywords. | Shipped `dca6eb2` |
-| v0.8.8 | Send derivation algorithm — auto-derive Send for 13 type categories per ADR-0026 v2 §2.1. Type system tracks ReferenceForm. E2500 fires. | Shipped `78f2402` |
-| v0.8.9 | Capability registration — `dao.package` schema extended với concurrency capabilities (`sys.raw_thread`, `sys.atomic`, `dev.ffi`, etc.) + typo detection. | Shipped `78f2402` |
-| v0.8.10 | Diagnostic format compliance — E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. | Shipped `78f2402` (namespace mistag fixed `fcc18fd`) |
-| v0.8.11 | Demo + integration suite — Atomic-based counter (no scheduler) + capability gate end-to-end (`sys.raw_thread` grant → declare placeholder). Resolver fix: ambient capability modules bypass filesystem checks. | Shipped `78f2402` |
-| v0.8.12 | Self-hosting compiler smoke — Triết-in-Triết parser/lexer handles ownership tokens (read-only). Bootstrap chain Stage 1 ≡ Stage 2 byte-identical. | Shipped `78f2402` (lexer port `46c8722`) |
-| v0.8.13 | Verify gate + release — per ADR-0009 §A/B/C/D: tests pass, clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated. | Shipped `78f2402` (gate B closure `e8d797a`) |
+**Pivot 2026-05-26 (ADR-0026 v1 → v2):** Original plan included `actor`/`receive`/`send`/`spawn` keywords + actor demo. Author raised kernel-writability concern (Linux Rust modules cannot use async runtime — must defer to C scheduler; same problem applies to v1 Triết). v2 BYOS reframes: core provides primitives + capability gates, scheduler stdlib/external. Same compile-time safety regardless of scheduler. Test estimate scaled 245 → 150 → 80 actual (BYOS revert removed actor demo + lexer + integration scope).
 
-**Total:** 14 sub-tasks shipped. **1425 tests workspace-wide** (estimate ~1550 scaled down vì BYOS revert removed actor demo/lexer/integration scope; +80 net from v0.7 close 1345).
+**Gate (ADR-0009):** ✅ A — 0 `TODO(v0.8)`, 3 `#[ignore]` documented. ✅ B — 1425 tests, clippy `-D warnings` + fmt clean (post `v0.8.x.review.1` closure `e8d797a`). ✅ C — Cargo 0.7.0 → 0.8.0, SPEC v0.8 header, README synced (post `v0.8.x.review.4` `ebdbd15`). ✅ D — 12/13 examples interp+VM; `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7. Perf gate N/A (parser/typecheck only).
 
-### Test corpus strategy
+**Không làm (defer):**
+- NLL borrow checker enforcement (E2440 fires) → v0.9 (cần real-world corpus).
+- Lifetime elision 3 rules (E2400 fires) → v0.9 (cần monomorphization infra).
+- `&-` upgrade tracking (E2403 fires) → v0.9 (cần escape analysis).
+- Drop order + `dev.custom_drop` (E2450+) → separate ADR.
+- Move semantics hard error (E2420) → v0.10 (currently stub).
+- Atomic primitive implementation → v0.9 ADR-0028 (full memory ordering).
+- stdlib `std.concurrency.*` reference impl (green-thread, channel, scope, actor as struct) → v0.10.
+- Multiple alternative scheduler crates (triet-rtos, triet-linux) → v1.0+ community.
+- Self-hosting compiler uses ownership keywords → Stage 2+ post-v0.8.
+- Full auto-wrap lowerer (ADR-0020 §3.0) → v0.7.4.3-error.5.
+- Custom scheduler examples (Linux kthread, RTOS) → post-v1.0.
 
-| Category | Target tests |
-|---|---|
-| Lexer tokens (5 ref forms + `&` family) | ~10 (shipped) |
-| Parser AST (ownership) | ~10 (shipped) |
-| Memory layout binary (header bytes, refcount atomic ops, sentinels) | ~11 (shipped) |
-| Type system Reference tracking + Send derivation | ~30 |
-| Capability gate (concurrency capabilities declared) | ~10 |
-| Diagnostic format compliance (E24XX + E25XX round-trip) | ~30 |
-| Atomic primitive placeholder (type signatures only, no impl) | ~10 |
-| Integration + demos (no scheduler — Atomic counter, capability flow) | ~20 |
-| **Total v0.8 new tests** | **+80 actual** (1345 → 1425), vs ~150 estimate — BYOS revert scaled down |
-
-### Gate criteria (at v0.8.13)
-
-- **Gate A (Functional):** ✅ 0 `TODO(v0.8)` markers; 3 `#[ignore]` (2 v0.7 carry + 1 added v0.8 `e2e_bootstrap_chain`, all với justification string per ADR-0019 §7). ADR-0026 v2 Send rules + Atomic placeholder + capability list shipped.
-- **Gate B (Hygiene):** ✅ 1425 tests pass, 0 fail (post `v0.8.x.review.1` clippy/fmt closure `e8d797a`). Pre-release was dirty — see [v0.8.x.review](#v08xreview--postv08-audit-fixes--shipped) section below.
-- **Gate C (Docs):** ✅ Cargo workspace.package.version 0.7.0 → 0.8.0. SPEC header v0.8. ROADMAP §v0.8 marked SHIPPED. README synced (post-`v0.8.x.review.4` `ebdbd15`).
-- **Gate D (Consistency):** ✅ 12/13 `examples/*.tri` chạy interp+VM (1 `while_true_loop.tri` infinite-loop fixture); `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7. `examples/atomic_counter/` aspirational sketch (`&+ Atomic<T>` syntax — lexer port `46c8722` lands token, parser AST defer).
-- **Perf gate:** Not applicable — v0.8 không có enforcement runtime overhead (parser/typecheck only).
-
-### Critical path
-
-```
-✅ v0.7.4.3-error.4 → v0.8.1 → v0.8.2 → v0.8.3 (memory layout)
-✅ v0.8.4 (lexer) → v0.8.5 (parser) → v0.8.6 (type ref tracking)
-✅ v0.8.7-byos (ADR-0026 v2 rewrite — pivot from actor model)
-   ↓
-v0.8.8 (Send derivation) → v0.8.9 (capability reg) → v0.8.10 (diagnostics)
-   ↓
-v0.8.11 (Atomic demo + capability flow) → v0.8.12 (self-host smoke)
-   ↓
-v0.8.13 (release)
-```
-
-### Deferred to v0.9+
-
-| Feature | Reason |
-|---|---|
-| NLL borrow checker enforcement (E2440 fires) | Cần real-world Triết code corpus first |
-| Lifetime elision 3 rules (E2400 fires) | Cần monomorphization infra |
-| `&-` upgrade tracking (E2403 fires) | Cần escape analysis |
-| Drop order + `dev::custom_drop` (E2450+) | Destructor design needs separate ADR |
-| Move semantics enforcement (E2420 hard error) | Currently stub; hard error v0.10 |
-| Atomic primitive implementation (ADR-0028) | v0.9 — full memory ordering enforcement |
-| stdlib `std.concurrency.*` reference impl (green-thread, channel, scope, actor as struct) | v0.10 |
-| Multiple alternative scheduler crates (triet-rtos, triet-linux, etc.) | v1.0+ — community-driven |
-| Self-hosting compiler uses ownership keywords | Stage 1 still Rust; Stage 2+ post-v0.8 |
-| Full auto-wrap lowerer (ADR-0020 §3.0) | v0.7.4.3-error.5 |
-| Custom scheduler examples (Linux kthread, RTOS) | post-v1.0 |
-
-### Pivot 2026-05-26: Why ADR-0026 v1 → v2
-
-Original v0.8 plan (commit `7225525`) included v0.8.7 actor model keywords (`actor`/`receive`/`send`/`spawn`) + v0.8.11 actor demo. Author 2026-05-26 raised kernel-writability concern: Linux Rust modules cannot use async runtime (must defer to C scheduler). Same problem applies to Triết v1 actor model — bakes runtime into core language.
-
-ADR-0026 rewrite v2 (commit `dca6eb2`) reframes: **BYOS** — Triết core provides Send rules + Atomic + capability gates; scheduler is stdlib (`std.concurrency.*` planned v0.10) or external (kernel/embedded use raw capability + FFI). Same compile-time safety regardless of scheduler choice.
-
-Test count revised down 245 → 150 because:
-- Actor demo removed (~25 tests cut)
-- Actor lexer/parser tests removed (~12 tests cut)
-- Actor integration scope cut (~25 tests reduced to atomic demo ~20)
-- Migration tests added (~10 — capability flow verification)
+Commit log: `git log --oneline --grep="v0\.8"` (excluding `.review`/`.docs-reorg`).
 
 ---
 
