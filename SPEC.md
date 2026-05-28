@@ -378,6 +378,77 @@ Lý do thiết kế:
 
 V0.1–v0.3 thử nghiệm cả hai. v0.4 chốt **`T?` primary**. `Result<T, E>` trong `std.result` cung cấp cho error-handling explicit. Local user-defined enum vẫn được phép cho ad-hoc sum types (Color, Direction, ...) nhưng không nên dùng làm wrapper cho nullability.
 
+#### Outcome operators và methods (`T~E` / `T?~E`)
+
+Full semantics lock ở [ADR-0020](docs/decisions/0020-outcome-error-handling.md). Tóm tắt user-visible surface dưới đây.
+
+**Ternary operator family** (postfix, arm-specific transformer). Mỗi operator là 3-char compound token (no whitespace within); position là postfix nên không xung đột với constructor (prefix) hoặc function return arrow `->`:
+
+| Operator | Áp dụng | Mục đích | Mode |
+|---|---|---|---|
+| `expr ~+> \|val\| body` | Trit::Positive arm (success) | Transform success payload (Functor map) | MAP |
+| `expr ~0> body` | Trit::Zero arm (null, `T?~E` only) | Substitute default cho null | MAP |
+| `expr ~-> \|err\| body` | Trit::Negative arm (error) | Propagate, recover, hoặc transform error | MAP hoặc EARLY-RETURN |
+
+**Auto-wrap rule (§3.0 ADR-0020):** body của `~+>` ngầm wrap `~+`, body của `~0>` ngầm wrap `~+` (recover null → success), body của `~->` ngầm wrap `~-`. Để override, viết explicit constructor (`~+ val` / `~- err` / `~0`). Để escape sớm khỏi function, viết `return expr` — compiler suy ra MAP vs EARLY-RETURN mode dựa vào sự hiện diện của `return`.
+
+```triet
+// MAP mode (no return): ~+> wraps body in ~+, ~-> wraps in ~-
+let doubled: Integer~ParseError = parse(s) ~+> |n| n * 2
+let safe:    Integer~AppError   = parse(s) ~-> |e| AppError.parse(e)
+
+// EARLY-RETURN mode: propagate error to caller
+function f(s: String) -> Outcome~AppError = {
+    let n = parse(s) ~-> |e| return ~- AppError.parse(e)
+    do_work(n)
+}
+```
+
+Deprecated `~?` / `~:` (v0.7.4.3 early draft postfix forms) — lexer refuses; use `~->` / `~+>` thay thế (per ADR-0020 §3.7).
+
+**Safe properties** (return `Trilean!`, no panic):
+
+| Property | Áp dụng | Trả về |
+|---|---|---|
+| `.is_success` | `T?`, `T~E`, `T?~E` | `Trilean!` (true nếu `~+` arm) |
+| `.is_null` | `T?`, `T?~E` | `Trilean!` (true nếu `~0` arm) |
+| `.is_error` | `T~E`, `T?~E` | `Trilean!` (true nếu `~-` arm) |
+
+**Safe extraction** (return nullable, no panic):
+
+| Method | Trả về |
+|---|---|
+| `.try_value() -> T?` | `~+ v` nếu success, else `~0` |
+| `.try_error() -> E?` | `~- e` nếu error, else `~0` |
+
+**Dangerous methods** (panic-possible, **mandatory message argument** per [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) explicit-strictness):
+
+| Method | Behavior |
+|---|---|
+| `.unwrap_value(message: String) -> T` | Trả `T` nếu success arm; panic E20XX với `message` nếu `~0` hoặc `~- e` |
+| `.unwrap_error(message: String) -> E` | Trả `E` nếu error arm; panic E20XX với `message` nếu `~+` hoặc `~0` |
+
+Không có force-unwrap operator cho outcome (chỉ `!!` cho nullable). Lý do: outcome chứa structured error data, đòi hỏi caller explicit về "tôi accept panic ở đây vì lý do X". `expr.unwrap_value("config must be loaded by main()")` rõ ý hơn `expr!!`.
+
+**Pattern matching exhaustiveness:**
+
+- `T?` match: phải cover `~+ bind` và `~0`.
+- `T~E` match: phải cover `~+ bind` và `~- bind`. `~0` arm refused (E1025 — không có null state).
+- `T?~E` match: phải cover cả ba arms.
+
+```triet
+match outcome {
+    ~+ v => use(v),
+    ~0   => default,
+    ~- e => report(e),
+}
+```
+
+**Type-level rejections:**
+
+- `T~E?` ≡ `T~(E?)` rejected ở typecheck (E1024 — nullable trên error type không có semantic). Use `T?~E` thay thế.
+- `Trit::Zero` arm trong binary `T~E` không tồn tại — tạo Trit::Zero qua `Constant::Null` lowering trong `T~E` context fires runtime panic E2210 (defense-in-depth cho untrusted `.triv` consumers).
+
 ### 2.6 Type inference
 
 Inference thực hiện local, theo Hindley-Milner đơn giản hóa. Annotation bắt buộc tại:
