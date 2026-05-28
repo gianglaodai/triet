@@ -170,6 +170,125 @@ mod tests {
         );
     }
 
+    // ===== v0.8.x.completion.3: Send derivation coverage gap closure =====
+    // ADR-0026 v2 §2.1 lists 13 type categories. Pre-completion test suite
+    // covered 6 (primitive Integer, &+, &-, Atomic, generic struct). These
+    // tests fill the gap for tuple, nullable, outcome, String, &+ mutable,
+    // &0 mutable per ADR-0026 §2.1 rows.
+
+    #[test]
+    fn checks_send_bound_string_success() {
+        // Category 5: String (frozen) is always Send.
+        assert_ok(
+            r#"
+            function spawn<F: Send>(f: F) {}
+            function main() {
+                spawn("hello")
+            }
+            "#,
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_nullable_success() {
+        // Category 3: T? Send iff T Send.
+        assert_ok(
+            r"
+            function spawn<F: Send>(f: F) {}
+            function main(x: Integer?) {
+                spawn(x)
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_strong_mutable_success() {
+        // Category 8: &+ mutable T Send iff T Send (move semantics).
+        assert_ok(
+            r"
+            function spawn<F: Send>(f: F) {}
+            function main(r: &+ mutable Integer) {
+                spawn(r)
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_scope_borrow_mutable_failure() {
+        // Category 10: &0 mutable T never Send (exclusive borrow can't
+        // cross execution boundary). E2510-class violation per ADR-0026.
+        assert_has_error(
+            r"
+            function spawn<F: Send>(f: F) {}
+            function main(r: &0 mutable Integer) {
+                spawn(r)
+            }
+            ",
+            |e| {
+                matches!(
+                    e,
+                    TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_neutral_borrow_failure() {
+        // Category 9: &0 T (read-only borrow) never Send.
+        // Sibling of strong_ref_success — verifies the polarity flip.
+        assert_has_error(
+            r"
+            function spawn<F: Send>(f: F) {}
+            function main(r: &0 Integer) {
+                spawn(r)
+            }
+            ",
+            |e| {
+                matches!(
+                    e,
+                    TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_strong_mut_propagates_inner_non_send() {
+        // Category 8 negative: &+ mutable T Send rule requires T Send.
+        // `&+ mutable &0 T` — outer is mutable strong, inner is non-Send
+        // borrow → not Send overall.
+        assert_has_error(
+            r"
+            function spawn<F: Send>(f: F) {}
+            function main(r: &+ mutable &0 Integer) {
+                spawn(r)
+            }
+            ",
+            |e| {
+                matches!(
+                    e,
+                    TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn checks_send_bound_explicit_unit_success() {
+        // Category 1: Unit is always Send (stack primitive).
+        assert_ok(
+            r"
+            function spawn<F: Send>(f: F) {}
+            function main() {
+                spawn(())
+            }
+            ",
+        );
+    }
+
     // ===== Happy paths =====
 
     #[test]

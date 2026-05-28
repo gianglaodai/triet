@@ -153,3 +153,48 @@ fn e2520_mutable_share_anti_pattern_format() {
     assert!(help.contains("[Fix 2]"));
     assert!(help.contains("Remove concurrency boundaries"));
 }
+
+// ===== v0.8.x.completion.3: error code namespace verification =====
+// Guard against namespace regression like v0.8.x.review.2 (triet::borrow::E25XX
+// was incorrectly used for ConcurrencyError before fix). These tests verify
+// code() string matches ADR-0026 (actor::) for ConcurrencyError and ADR-0025
+// (borrow::) for BorrowError. Without these, future refactors could silently
+// re-mistag.
+
+#[test]
+fn e2400_code_uses_borrow_namespace() {
+    let err = BorrowError::BorrowLifetimeInferenceFailed {
+        ty: "T".to_string(),
+        span: dummy_span(),
+    };
+    let code = err.code().unwrap().to_string();
+    assert_eq!(code, "triet::borrow::E2400");
+}
+
+#[test]
+fn e2500_code_uses_actor_namespace() {
+    let err = ConcurrencyError::NotSendCannotCrossBoundary {
+        ty: "T".to_string(),
+        span: dummy_span(),
+    };
+    let code = err.code().unwrap().to_string();
+    assert_eq!(
+        code, "triet::actor::E2500",
+        "ConcurrencyError must use triet::actor::E25XX per ADR-0026 v2 \
+         (NOT triet::borrow::E25XX — see v0.8.x.review.2 fix)"
+    );
+}
+
+#[test]
+fn e2510_code_uses_actor_namespace() {
+    let err = ConcurrencyError::ScopeRefLeakage { span: dummy_span() };
+    let code = err.code().unwrap().to_string();
+    assert_eq!(code, "triet::actor::E2510");
+}
+
+#[test]
+fn e2520_code_uses_actor_namespace() {
+    let err = ConcurrencyError::MutableShareAntiPattern { span: dummy_span() };
+    let code = err.code().unwrap().to_string();
+    assert_eq!(code, "triet::actor::E2520");
+}
