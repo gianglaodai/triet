@@ -554,27 +554,32 @@ Hữu ích cho fuzzy reasoning và biên xác suất Fréchet, nhưng trong Ł3 
 
 ### 4.5 Equality `==` và `!=`
 
-Toán tử `==` là **value equality** — kiểm tra hai giá trị có cùng nội dung không. Trả về `Trilean` nhưng **không bao giờ tạo ra `unknown`** (chỉ `true` hoặc `false`).
+Toán tử `==` là **value equality** — kiểm tra hai giá trị có cùng nội dung không. Kiểu trả về phụ thuộc operand:
+
+- **Operand không phải Trilean** (Integer, Tryte, Long, String, Trit, struct, enum, …): trả về `Trilean!` (refined per [ADR-0021](docs/decisions/0021-trilean-refinement.md)) — never Unknown.
+- **Cả hai operand là `Trilean!`** (literals `true`/`false`, hoặc đã được refine): trả về `Trilean!`.
+- **Ít nhất một operand là generic `Trilean`** (có thể Unknown): trả về `Trilean` — Unknown lan truyền per Ł3 ([ADR-0010 §4](docs/decisions/0010-ternary-native-ir.md)).
 
 ```triet
-true == true              // → true
-unknown == unknown        // → true   (cùng giá trị, không phải biconditional)
-unknown == true           // → false  (khác giá trị)
-5_integer == 5_integer        // → true
-"abc" == "abc"            // → true
+5_integer == 5_integer        // → true  (Trilean!)
+"abc" == "abc"                // → true  (Trilean!)
+true == true                  // → true  (Trilean! cả hai operand)
+true == false                 // → false (Trilean!)
+unknown == unknown            // → unknown (Trilean — Ł3 propagation)
+unknown == true               // → unknown (Trilean — Ł3 propagation)
 ```
 
-Cùng semantic ở Ł3 và K3 — `==` không phải logical operator nên không phụ thuộc hệ logic.
+Cùng semantic ở Ł3 và K3 cho non-Trilean — `==` không phải logical operator nên không phụ thuộc hệ logic. Với Trilean operand, behavior khớp Ł3 vì SPEC §4 chọn Łukasiewicz làm default.
 
-Khi dev muốn **biconditional fuzzy** (lan truyền unknown), dùng `<=>` (Łukasiewicz) hoặc `<~>` (Kleene) explicitly:
+Khi dev muốn **biconditional logical** (rõ ràng là logic, không phải value compare), dùng `<=>` (Łukasiewicz) hoặc `<~>` (Kleene) explicitly:
 
 ```triet
-unknown == unknown        // → true   (giá trị giống nhau)
-unknown <=> unknown       // → true   (Łukasiewicz: vacuously equivalent)
-unknown <~> unknown       // → unknown (Kleene: không biết chúng có tương đương không)
+unknown == unknown            // → unknown (value compare under Ł3)
+unknown <=> unknown           // → true    (Łukasiewicz: vacuously equivalent)
+unknown <~> unknown           // → unknown (Kleene)
 ```
 
-Lý do thiết kế: 99% ngôn ngữ modern (Python, Rust, Kotlin, Swift, Go) đều dùng `==` là value equality. AI/dev không bị surprise. SQL `NULL` semantics tránh được — không có "bug âm thầm khi so sánh".
+Lý do thiết kế: 99% ngôn ngữ modern (Python, Rust, Kotlin, Swift, Go) đều dùng `==` là value equality + bool result cho concrete types — Triết khớp cho non-Trilean. Với Trilean, Ł3-aware result là invariant bản sắc tam phân: "compare with unknown ⇒ result unknown" tránh "bug âm thầm khi so sánh" giống SQL NULL bằng cách *expose* unknown thay vì giấu nó.
 
 ### 4.6 Short-circuit evaluation
 
