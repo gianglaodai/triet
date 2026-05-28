@@ -333,6 +333,38 @@ Each guard independent — bypass one (e.g., `--no-verify` for WIP) doesn't comp
 
 ---
 
+## v0.8.x.completion — Trục 2 implementation gap closure ✅ SHIPPED
+
+Author 2026-05-29: "không làm 0.9 và làm post 0.8. Những vấn đề ở các trục 2, 3. Hãy sửa chữa chúng ở post 0.8". Trục 3 đã đóng tại v0.8.x.cadence-fix. Trục 2 (implementation reality): audit re-verification phát hiện 1 false alarm + 1 real gap + test coverage thin.
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.8.x.completion.1 | Fix `examples/atomic_counter/dao.package` (deny → grant + add sys.atomic) + sync 4 stale doc files claiming demo "doesn't parse" (CLAUDE.md, README.md, ROADMAP.md, ARCHITECTURE.md). Demo works end-to-end: parses, typechecks, `dao run` outputs "Atomic counter demo (capabilities granted!)". Audit false-alarm: Rust impl parser actually has ReferenceForm fully wired (`type_expr.rs` 30+ refs + 8 dedicated tests). | `5ae0d08` |
+| v0.8.x.completion.2 | Port S6 ownership ReferenceForm to self-host `compiler/parser/parser.tri`. Add: ReferenceForm enum (5 variants), ReferencePayload struct, Reference variant trong TypeExpr enum, format_type Reference arm (compact `&+T`/`&+mutT`/`&0T`/`&0mutT`/`&-T`), try_parse_reference_prefix helper, parse_type_minimal dispatch. 9 new smoke assertions in parser_type_smoke. Mirror Rust impl pattern. Closes v0.8.12 paperwork gap fully (lexer port v0.8.x.review.3 + parser AST port v0.8.x.completion.2 = symmetric coverage). | `3ad4874` |
+| v0.8.x.completion.3 | Test top-up — close coverage gaps from ADR-0026 §2.1 + ADR-0027. +7 Send derivation tests (String/T?/&+mut/&0mut/&0/strong-mut-propagate/Unit). +4 diagnostic namespace verification tests guarding E24XX = `triet::borrow::` và E25XX = `triet::actor::` (v0.8.x.review.2 regression protection). 1425 → 1436 tests. | `3fe9e00` |
+| v0.8.x.completion.4 | Archive phase to ROADMAP/TODO. | this commit |
+
+**Audit retrospective lessons learned:**
+
+1. **Previous audit had false-alarms.** "atomic_counter parser-side ReferenceForm not yet ported" propagated across 4 docs in v0.8.x.docs-reorg, but actual code (`triet-parser/src/type_expr.rs`) had it fully wired. v0.8.x.completion.1 traces this to agent who flagged without verifying against actual code; subsequent docs trusted the unverified claim. **Mitigation:** future audits MUST cite file:line evidence for each "missing" claim — if can't cite, can't claim. Codified ở [v0.8.x.cadence-fix.3 ADR-0009 Addendum](docs/decisions/0009-version-gate-policy.md) §C audit-window contract (release-check.sh runs full verification before tag).
+
+2. **Self-host port lag is real and recurring** — lexer (v0.8.x.review.3) + parser (v0.8.x.completion.2) ported separately, both retroactive. v0.8 ship of Rust impl outpaced self-host. **Policy decision needed** (deferred to v0.9 plan): lockstep (each Rust impl change → self-host port same phase) OR freeze self-host at versioned snapshot. Currently mid-state.
+
+**Structurally v0.9, NOT post-0.8 (per ADR-0025/ADR-0026 explicit defer):**
+
+- NLL borrow checker enforcement (E2440 fires real, not skeleton) — ADR-0025 explicitly defers v0.9 awaiting real-world Triết corpus.
+- Lifetime elision 3 rules (E2400 fires) — needs monomorphization infra (v0.9 scope).
+- `&-` upgrade tracking (E2403 fires) — needs escape analysis (v0.9).
+- Atomic primitive full implementation + memory ordering — ADR-0028 not written yet, needs design ADR; type placeholder shipped v0.8.
+- Cross-cutting Send categories untested: Tuple mixed, Closure with captures, T~E outcome cross-thread, Heap struct with mutable non-Send. Deferred — v0.9 corpus + ADR-0028 will exercise.
+- stdlib `std.concurrency.*` reference scheduler — v0.10.
+
+**Trigger:** Author wants trục 2 implementation reality + trục 3 process discipline cùng đóng before v0.9 mở. Trục 3 closed v0.8.x.cadence-fix; trục 2 closed here.
+
+Final: **1436 tests workspace-wide** (+11 từ v0.8.x.review/docs-reorg close; +91 net từ v0.7 close 1345).
+
+---
+
 ## v0.9 — JIT (Cranelift)
 
 **Mục tiêu:** Bytecode VM có JIT tier cho hot code paths.

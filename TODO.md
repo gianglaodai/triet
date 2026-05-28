@@ -30,6 +30,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.8.x.review (audit fixes) | — | 1425 |
 | v0.8.x.docs-reorg (token + ADR thematic + ROADMAP compress + SPEC expand) | — | 1425 |
 | v0.8.x.cadence-fix (process enforcement automation) | 0009 Addendum | 1425 |
+| v0.8.x.completion (trục 2 implementation gap closure) | — | 1436 |
 
 ---
 
