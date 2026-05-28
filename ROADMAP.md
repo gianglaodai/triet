@@ -308,6 +308,31 @@ Defer khỏi reorg (per stability-over-speed scope discipline):
 
 ---
 
+## v0.8.x.cadence-fix — Process enforcement automation ✅ SHIPPED
+
+Audit retrospective phát hiện v0.8 release commit `78f2402` vi phạm ADR-0009 gate B (3 clippy errors + 21 unformatted files). Author confirmed 2026-05-28: "không cố ý, không nhận ra cadence slip" — root cause = **policy có, automation không**. ADR-0009 §B references "CI" làm enforcement mechanism từ 2025 nhưng repo chưa setup CI; gates verify bằng mắt người.
+
+Phase này codify enforcement tools để v0.8-style slip không lặp lại trong v0.9+.
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.8.x.cadence-fix.1 | `scripts/release-check.sh` — single command verify ADR-0009 4-gate matrix + drift checks (version sync, TODO consistency, ADR status sanity). Exit 0 = safe to tag; exit 1 = refuse release. | `4e48703` |
+| v0.8.x.cadence-fix.2 | Git hooks (`.githooks/pre-commit` + `.githooks/pre-push`) + `scripts/install-hooks.sh`. pre-commit fmt --check (~0.5s) + pre-push full gate B (~1 min). `core.hooksPath = .githooks` per-clone setup. | `31cb1c7` |
+| v0.8.x.cadence-fix.3 | ADR-0009 Addendum — codify release-check.sh + hooks + mandatory pre-version audit window. "Ship rồi audit" = explicit cadence violation. | `594641b` |
+| v0.8.x.cadence-fix.4 | Archive phase to ROADMAP + TODO + README install-hooks instruction. | this commit |
+
+**Slip protection model:**
+- **Commit-time guard** (pre-commit fmt) — catches v0.8.x.review.1-style fmt issues immediately.
+- **Push-time guard** (pre-push full gate B) — last guard trước remote.
+- **Release-time guard** (`release-check.sh`) — verify 4-gate + drift, refuse tag nếu fail.
+- **Policy guard** (ADR-0009 Addendum) — codify "ship rồi audit" = violation.
+
+Each guard independent — bypass one (e.g., `--no-verify` for WIP) doesn't compromise others. Author can still force-push to private fork; bypass on main = explicit violation.
+
+**Trigger:** Author 2026-05-28 sau audit retrospective: "Chúng ta cần sửa chữa các vấn đề này trước khi sang 0.9." Phase mở để fix root cause (automation absence) chứ không chỉ symptom (v0.8 cleanup).
+
+---
+
 ## v0.9 — JIT (Cranelift)
 
 **Mục tiêu:** Bytecode VM có JIT tier cho hot code paths.

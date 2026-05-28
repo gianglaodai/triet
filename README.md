@@ -119,6 +119,18 @@ cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```
 
+### Contributing — install git hooks
+
+Sau khi clone, chạy một lần để bật ADR-0009 enforcement (pre-commit fmt + pre-push full gate B):
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+Sets `core.hooksPath = .githooks` cho clone hiện tại. Hooks ngăn commit/push với dirty fmt/clippy/test state. Xem [ADR-0009 Addendum](docs/decisions/0009-version-gate-policy.md) cho rationale.
+
+Trước khi tag release: `bash scripts/release-check.sh` verify 4-gate matrix.
+
 ## Chạy demo
 
 ```bash

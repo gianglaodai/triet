@@ -29,9 +29,12 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.8 Ownership Foundation + BYOS | 0022, 0025, 0026 v2, 0027 | 1425 |
 | v0.8.x.review (audit fixes) | — | 1425 |
 | v0.8.x.docs-reorg (token + ADR thematic + ROADMAP compress + SPEC expand) | — | 1425 |
+| v0.8.x.cadence-fix (process enforcement automation) | 0009 Addendum | 1425 |
 
 ---
 
 ## Active phase
 
 Không có phase active. Next: **v0.9 — JIT (Cranelift)** + NLL enforcement. Xem [ROADMAP §v0.9](ROADMAP.md).
+
+**Trước khi bắt đầu sub-task v0.9.x đầu tiên:** chạy `bash scripts/install-hooks.sh` nếu chưa install (sets `core.hooksPath = .githooks`). Trước khi tag v0.9 release: chạy `scripts/release-check.sh` per ADR-0009 Addendum.
