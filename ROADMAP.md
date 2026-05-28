@@ -16,39 +16,27 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.5 đã ship ✅
+## Trạng thái hiện tại — v0.8 đã ship ✅
 
-v0.3 ✅ (interpreter + VM + IR) → v0.3.x.cleanup ✅ → v0.3.x.ternary ✅
-→ v0.4 ✅ (Crate-Pack + Stable ABI) → **v0.5** ✅ (CAS Packaging).
+v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7** ✅ (Self-hosting Compiler) → **v0.8** ✅ (Ownership Foundation + BYOS Concurrency Primitives). Post-release `v0.8.x.review` audit fixes ADR-0009 gate B leftover + namespace mistag + self-host lexer port + doc drift.
 
-✅ Tree-walking interpreter end-to-end
-✅ Type checker với inference + monomorphization
-✅ Struct, enum + generics (G.1)
-✅ Łukasiewicz Ł3 + Kleene K3
-✅ Nullable subtyping `T ⊂ T?` (bẩm sinh tam phân, không bolt-on)
-✅ Diagnostic format (miette, error codes E0000–E2399+)
-✅ Module system: hierarchical namespace, explicit `public` export, dot paths, Python-style imports, cycle detection, visibility
-✅ Bytecode VM: register SSA IR, 53-opcode dispatch (incl. WitnessCall), balanced ternary semantics
-✅ Lowerer: AST → IR cho toàn bộ v0.2 features bao gồm SSA phi cho mutable vars (loops + if), enum payload + variant tag dispatch, tuple/literal pattern match, `.enumerate()` adapter, `?.` / `?:` / `!!` nullable ops, stdlib text builtins
-✅ `.triv` binary format v3: ADR-0008 + ADR-0010 (BR_TRILEAN) + ADR-0012 (WITNESS_CALL + witness section)
-✅ `BrTrilean` 3-way branch + strict `if` Unknown→panic + Ł3-aware Eq (ADR-0010)
-✅ CLI `dao build foo.tri -o foo.triv` + `dao run foo.triv`
-✅ Differential tests: **11/11 examples byte-identical VM vs interpreter** (gate ADR-0009 § A đạt)
-✅ Benchmark harness: criterion, VM 1.26× interpreter (baseline)
-✅ Cargo workspace `version = 0.4.0` đồng bộ với SPEC v0.4 (ADR-0009 § C)
-✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch (ADR-0009 § B)
-✅ **Crate-Pack format** `.khi` per ADR-0011 — ABI metadata + IR code section + dedicated linker section IDs
-✅ **Witness table dispatch** per ADR-0012 — IR-level support, VM dispatch, `.triv` v3 wire format
-✅ **Semver linking policy** per ADR-0013 — E2300-2399 decision matrix, refuse-to-link on major bump, iface_hash drift warnings
-✅ **`triet-pack` crate**: write_khi/read_khi + plan_link, 26 unit + 7 integration tests
-✅ **Stdlib `std.result`**: canonical `Result<T, E>` enum; SPEC §2.5 promotes `T?` as primary nullable
-✅ 867 tests workspace-wide ở v0.4, → **918 tests ở v0.5** (0 ignored), snapshot tests cho IR + diagnostics
-✅ **CAS Packaging** per ADR-0014/0015 — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install protocol, mark-and-sweep GC
-✅ **Resolver + lockfile** — hash-pinned dep resolution, `dao.lock` line format
-✅ **`dao store` CLI** — `import`, `list`, `gc` subcommands
-✅ **Shared loading demo** — VISION §3.1 gate hit at iface level (term iface dedup proven; body-level RAM dedup queued behind lowerer per-term split)
-✅ **Cross-module enum variant import** — `from std.result import Ok, Err` closed pre-existing v0.2.x gap; E2107 cho aliased variant import
-🔜 Tiếp theo: v0.6 — Capability System (`sys.*` / `dev.*` / `usr.*` enforce, Trit-level capability, Ł3 policy hook)
+✅ Tree-walking interpreter + Bytecode VM (register SSA IR, 53 opcodes incl. `BrTrilean` + `WitnessCall`), `.triv` wire format v5 (ADR-0008 + 0010 + 0012 + 0020)
+✅ Type checker với inference + monomorphization + Trilean! refinement (ADR-0021)
+✅ Outcome error handling — `T~E` / `T?~E` trit-encoded, `~+`/`~0`/`~-` constructors + `~?`/`~:` postfix ops (ADR-0020)
+✅ Łukasiewicz Ł3 + Kleene K3 + symbolic + keyword operator forms
+✅ Module system: hierarchical namespace, dot paths, Python-style imports, multi-arena `ResolvedProgram` (ADR-0005)
+✅ Crate-Pack `.khi` + cross-package linker với semver decision matrix (ADR-0011/0012/0013)
+✅ CAS Packaging — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install, mark-and-sweep GC, `dao.lock` hash-pinned (ADR-0014/0015)
+✅ Capability System — `sys.*`/`dev.*`/`usr.*` 4-state level, `dao.package` + `dao.policy` + `/dev/tty` prompt, E22XX namespace (ADR-0016/0017/0018)
+✅ Self-hosting Compiler — `compiler/` 7 `.tri` files (~23K LOC), 3-stage bootstrap chain Stage 1 (Rust) → Stage 2 → Stage 3 byte-identical; main.tri convergence gate `#[ignore]`'d due to VM dev tier, lifts v0.9 (ADR-0019)
+✅ S6 Ownership Model — 5-form reference `&+`/`&0`/`&-`/`&` + `owned`, `ObjectHeader` 8-byte binary header với refcount atomic ops, lexer + parser + AST + type-system resolve transparently (ADR-0022)
+✅ Concurrency Primitives (BYOS) — Send derivation cho 13 type categories, E2500 fires, capability gates extended với `sys.raw_thread`/`sys.atomic`/`dev.ffi`/etc., Atomic placeholder shipped (ADR-0026 v2)
+✅ Borrow Checker skeleton + Diagnostic format AI-first — E24XX namespace (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (`triet::actor::E2500/E2510/E2520`), `[Fix N]` numbered blocks per ADR-0025/0027. Enforcement defer v0.9
+✅ Cargo workspace `version = 0.8.0`, SPEC header v0.8 (S6 §10 + Outcome §1.5.3 + Trilean! locked)
+✅ Differential tests: 12/12 v0.7.4.2 examples byte-identical VM vs interpreter; `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7
+✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch + `cargo fmt --all --check` sạch (post-v0.8.x.review.1)
+✅ **1425 tests workspace-wide** (3 `#[ignore]` documented per ADR-0019 §7 perf gate)
+🔜 Tiếp theo: v0.9 — JIT (Cranelift) + NLL enforcement (E24XX fires) + Stage 2 ≡ Stage 3 main.tri gate lift to CI
 
 ---
 
@@ -410,7 +398,9 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 
 ---
 
-## v0.8 — Ownership Foundation + Concurrency Primitives (BYOS)
+## v0.8 — Ownership Foundation + Concurrency Primitives (BYOS) ✅ SHIPPED
+
+**Closed 2026-05-28** với 14 sub-tasks (v0.8.8–v0.8.13 bundled trong release commit `78f2402`). Post-release `v0.8.x.review` audit closed gate B Hygiene leftover + namespace mistag + self-host lexer port + doc drift.
 
 **Mục tiêu:** Lock memory model (S6) + concurrency Send rules primitives. **KHÔNG mục tiêu:** scheduler/runtime trong core language (BYOS — Bring Your Own Scheduler per ADR-0026 v2). NLL enforcement (→v0.9). stdlib `std.concurrency.*` (→v0.10).
 
@@ -429,14 +419,14 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 | v0.8.6 | Type system reference tracking — TypeExpr::Reference resolves transparently; enforcement deferred v0.9+. | Shipped `f3b07ef` |
 | v0.8.7 | ~~Actor model lexer + parser~~ — **REVERTED** per BYOS (ADR-0026 v2 §6 refuse list). actor/spawn/receive/send là plain identifiers, không phải keywords. | Reverted `3f35027` |
 | v0.8.7-byos | ADR-0026 v2 rewrite — BYOS philosophy + Send rules universal + Atomic placeholder + capability gates + refuse scheduler keywords. | Shipped `dca6eb2` |
-| v0.8.8 | Send derivation algorithm — auto-derive Send for 13 type categories per ADR-0026 v2 §2.1. Type system tracks ReferenceForm (vs resolve transparently). E2500 fires. ~20 tests. | Code |
-| v0.8.9 | Capability registration — `dao.package` schema extended with concurrency capabilities (`sys::raw_thread`, `sys::atomic`, `dev::ffi`, `dev::raw_memory`, `dev::reinterpret`) + ownership ones (`dev::self_ref`, `dev::custom_drop`, etc.). ~10 tests. | Code |
-| v0.8.10 | Diagnostic format compliance — E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. ~30 tests. | Code |
-| v0.8.11 | Demo + integration suite — Atomic-based counter (no scheduler) + capability gate end-to-end (request `sys::raw_thread` → grant → declare-but-not-use placeholder). ~20 integration tests. | Code |
-| v0.8.12 | Self-hosting compiler smoke — Triết-in-Triết parser handles ownership tokens (read-only). Bootstrap chain verify Stage 1 ≡ Stage 2 byte-identical. | Verify |
-| v0.8.13 | Verify gate + release — per ADR-0009 §A/B/C/D: tests pass (~1550+), clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated. | Verify |
+| v0.8.8 | Send derivation algorithm — auto-derive Send for 13 type categories per ADR-0026 v2 §2.1. Type system tracks ReferenceForm. E2500 fires. | Shipped `78f2402` |
+| v0.8.9 | Capability registration — `dao.package` schema extended với concurrency capabilities (`sys.raw_thread`, `sys.atomic`, `dev.ffi`, etc.) + typo detection. | Shipped `78f2402` |
+| v0.8.10 | Diagnostic format compliance — E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. | Shipped `78f2402` (namespace mistag fixed `fcc18fd`) |
+| v0.8.11 | Demo + integration suite — Atomic-based counter (no scheduler) + capability gate end-to-end (`sys.raw_thread` grant → declare placeholder). Resolver fix: ambient capability modules bypass filesystem checks. | Shipped `78f2402` |
+| v0.8.12 | Self-hosting compiler smoke — Triết-in-Triết parser/lexer handles ownership tokens (read-only). Bootstrap chain Stage 1 ≡ Stage 2 byte-identical. | Shipped `78f2402` (lexer port `46c8722`) |
+| v0.8.13 | Verify gate + release — per ADR-0009 §A/B/C/D: tests pass, clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated. | Shipped `78f2402` (gate B closure `e8d797a`) |
 
-**Total estimate:** 14 sub-tasks (8 shipped, 6 remaining). ~150 new tests expected (1354 → ~1550) — scaled down từ original ~245 vì BYOS removes actor demo/integration scope.
+**Total:** 14 sub-tasks shipped. **1425 tests workspace-wide** (estimate ~1550 scaled down vì BYOS revert removed actor demo/lexer/integration scope; +80 net from v0.7 close 1345).
 
 ### Test corpus strategy
 
@@ -450,14 +440,14 @@ Audit window trước v0.7. 6 net-new tests across 4 layers (resolver, policy, l
 | Diagnostic format compliance (E24XX + E25XX round-trip) | ~30 |
 | Atomic primitive placeholder (type signatures only, no impl) | ~10 |
 | Integration + demos (no scheduler — Atomic counter, capability flow) | ~20 |
-| **Total v0.8 new tests** | **~150** (40 shipped + 110 remaining) |
+| **Total v0.8 new tests** | **+80 actual** (1345 → 1425), vs ~150 estimate — BYOS revert scaled down |
 
 ### Gate criteria (at v0.8.13)
 
-- **Gate A (Functional):** 0 `TODO(v0.8)` markers, 2 `#[ignore]` carry-forward từ v0.7. ADR-0026 v2 Send rules + Atomic placeholder + capability list **specced** (implementation may defer).
-- **Gate B (Hygiene):** ~1550 tests pass + 0 fail, clippy `-D warnings` clean, `cargo fmt --all --check` clean.
-- **Gate C (Docs):** `Cargo.toml workspace.package.version` 0.7.0 → 0.8.0 + dep version pins. SPEC header v0.7 → v0.8. ROADMAP §v0.8 marked SHIPPED. README synced. `dao info` updated.
-- **Gate D (Consistency):** All `examples/*.tri` typecheck + build OK. Atomic counter demo run OK. Capability declaration flow end-to-end verified.
+- **Gate A (Functional):** ✅ 0 `TODO(v0.8)` markers; 3 `#[ignore]` (2 v0.7 carry + 1 added v0.8 `e2e_bootstrap_chain`, all với justification string per ADR-0019 §7). ADR-0026 v2 Send rules + Atomic placeholder + capability list shipped.
+- **Gate B (Hygiene):** ✅ 1425 tests pass, 0 fail (post `v0.8.x.review.1` clippy/fmt closure `e8d797a`). Pre-release was dirty — see [v0.8.x.review](#v08xreview--postv08-audit-fixes--shipped) section below.
+- **Gate C (Docs):** ✅ Cargo workspace.package.version 0.7.0 → 0.8.0. SPEC header v0.8. ROADMAP §v0.8 marked SHIPPED. README synced (post-`v0.8.x.review.4` `ebdbd15`).
+- **Gate D (Consistency):** ✅ 12/13 `examples/*.tri` chạy interp+VM (1 `while_true_loop.tri` infinite-loop fixture); `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7. `examples/atomic_counter/` aspirational sketch (`&+ Atomic<T>` syntax — lexer port `46c8722` lands token, parser AST defer).
 - **Perf gate:** Not applicable — v0.8 không có enforcement runtime overhead (parser/typecheck only).
 
 ### Critical path
@@ -501,6 +491,22 @@ Test count revised down 245 → 150 because:
 - Actor lexer/parser tests removed (~12 tests cut)
 - Actor integration scope cut (~25 tests reduced to atomic demo ~20)
 - Migration tests added (~10 — capability flow verification)
+
+---
+
+## v0.8.x.review — Post-v0.8 audit fixes ✅ SHIPPED
+
+Audit window sau Release v0.8.0 commit `78f2402`. Whole-project review phát hiện gate B Hygiene leftover + E25XX namespace mistag + v0.8.12 paperwork-vs-reality gap (self-host lexer thiếu `&` token) + widespread doc drift. 5 sub-tasks fix all findings; không thay đổi spec.
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.8.x.review.1 | Close ADR-0009 gate B leftover — 3 clippy errors trong `resolver.rs` (collapsible-if + manual-let-else + single-match-else trên ambient-module fallback) + 21 `cargo fmt --all` files | `e8d797a` |
+| v0.8.x.review.2 | E25XX namespace correction `triet::borrow::E25XX` → `triet::actor::E25XX` per ADR-0026 v2 + CLAUDE.md namespace table (6 chỗ ở `error.rs` + `cli/main.rs`) | `fcc18fd` |
+| v0.8.x.review.3 | Port ownership reference tokens to self-host lexer — `compiler/parser/lexer.tri` thêm `AmpersandPlus/AmpersandZero/AmpersandMinus/Ampersand` Token variants + dispatch (longest-match precedes `&&`) + smoke check `check_count("ops_ownership", "&+ &0 &- &", 4)` | `46c8722` |
+| v0.8.x.review.4 | Doc sync — CLAUDE.md (state + 2 arch sections + anchor + trit table + cadence + examples + audit history), README.md (v0.8 highlight + structure + tests), docs/decisions/README.md (§v0.8 add 0022/0025/0026/0027, remove "Future research"), ADR status Draft → Locked × 4 | `ebdbd15` |
+| v0.8.x.review.5 | ROADMAP §v0.8 SHIPPED marker + archive sub-tasks + add this v0.8.x.review section + TODO.md v0.8 archive | this commit |
+
+**Trigger:** Whole-project audit sau v0.8.0 release. Author confirmed "tất cả các lựa chọn phải tuân thủ chặt chẽ stability over speed" — phase mở để fix tất cả audit findings trước khi v0.9 mở. Duy trì cadence *proactive tech-debt audit trước version freeze* (per v0.5.x.review / v0.6.x.review precedent).
 
 ---
 

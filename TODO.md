@@ -10,7 +10,7 @@ This file tracks the **current phase** only. When a phase finishes, its summary 
 
 ---
 
-## v0.2 — v0.7 archived
+## v0.2 — v0.8 archived
 
 All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
@@ -26,33 +26,19 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 | v0.6 Capability System | 0016, 0017, 0018 | 1079 |
 | v0.6.x.review | 0018 Addendum | 1085 |
 | v0.7 Self-hosting Compiler | 0019, 0020, 0021, 0024 | 1345 |
+| v0.8 Ownership Foundation + BYOS | 0022, 0025, 0026 v2, 0027 | 1425 |
 
 ---
 
-## v0.8 — Ownership Foundation + Concurrency Primitives (BYOS) 🔄 in progress
+## v0.8.x.review — Post-v0.8 audit fixes 🔄 in progress
 
-**Quyết định kiến trúc:** [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md) (BYOS + Send rules), [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md) (Ownership model). See ROADMAP.md §v0.8 for deliverables + gates.
+**Trigger:** Whole-project audit (AI) sau Release v0.8.0 commit `78f2402` phát hiện 4 BLOCKERS + 6 HIGH drift findings. Author confirmed "tất cả các lựa chọn phải tuân thủ chặt chẽ stability over speed" — phase mở để fix tất cả trước khi v0.9 mở.
 
-### Shipped (8 sub-tasks)
+**Quyết định kiến trúc:** Không thay đổi spec. Phases tuân theo cadence cũ v0.5.x.review / v0.6.x.review pattern.
 
-- [x] **v0.8.1** — SPEC §10 rewrite — S6 ownership model lock
-- [x] **v0.8.2** — ROADMAP §v0.8 detail
-- [x] **v0.8.3** — Object header memory layout — `triet-core::memory::ObjectHeader` (8-byte binary, 54-trit ternary, refcount atomic ops, sentinels). 11 tests.
-- [x] **v0.8.4** — Lexer tokens ownership — `&+/&0/&-` compound + bare `&`. 10 tests.
-- [x] **v0.8.5** — Parser + AST ownership — `ReferenceForm` enum, 5 forms, postfix precedence. 8 tests.
-- [x] **v0.8.6** — Type system reference tracking — TypeExpr::Reference resolves transparently; enforcement deferred v0.9+.
-- [x] **v0.8.7-byos** — ADR-0026 v2 rewrite — BYOS philosophy + Send rules universal + Atomic placeholder + capability gates + refuse scheduler keywords.
-- [x] **v0.8.8** — Send derivation algorithm — Auto-derive Send for 13 type categories per ADR-0026 v2 §2.1. Type system tracks ReferenceForm. E2500 fires.
-- [x] **v0.8.9** — Capability registration — `dao.package` schema extended with concurrency capabilities (`sys.raw_thread`, `sys.atomic`, `dev.ffi`, etc.) and typo detection.
-
-*(Note: v0.8.7 Actor model lexer + parser was reverted per BYOS).*
-
-### Remaining v0.8 sub-tasks
-- [ ] **v0.8.10** — Diagnostic format compliance
-  - E24XX (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (E2500/E2510/E2520) skeleton diagnostics với AI-first format per ADR-0027. ~30 tests.
-- [ ] **v0.8.11** — Demo + integration suite
-  - Atomic-based counter (no scheduler) + capability gate end-to-end (request `sys::raw_thread` → grant → declare-but-not-use placeholder). ~20 integration tests.
-- [ ] **v0.8.12** — Self-hosting compiler smoke
-  - Triết-in-Triết parser handles ownership tokens (read-only). Bootstrap chain verify Stage 1 ≡ Stage 2 byte-identical.
-- [ ] **v0.8.13** — Verify gate + release
-  - tests pass (~1550+), clippy clean, version bump 0.7.0 → 0.8.0, SPEC v0.8 header, README synced, `dao info` updated.
+- [x] **v0.8.x.review.1** — Close ADR-0009 gate B Hygiene leftover (3 clippy errors `resolver.rs` ambient-module fallback + 21 `cargo fmt` files) — `e8d797a`
+- [x] **v0.8.x.review.2** — E25XX namespace correction `triet::borrow::` → `triet::actor::` (6 chỗ ở `error.rs` + `cli/main.rs` JSON mapper) per ADR-0026 v2 + CLAUDE.md namespace table — `fcc18fd`
+- [x] **v0.8.x.review.3** — Port ownership reference tokens to self-host lexer — `compiler/parser/lexer.tri` thêm `Ampersand*` variants + dispatch + smoke check assert. Closes v0.8.12 paperwork-vs-reality gap (lexer-only; parser AST `ReferenceForm` port defer v0.9+) — `46c8722`
+- [x] **v0.8.x.review.4** — Doc sync — CLAUDE.md (state + 2 arch sections + anchor + trit table + cadence + examples + audit history), README.md (v0.8 highlight + structure + tests), docs/decisions/README.md (§v0.8 add 0022/0025/0026/0027, remove "Future research"), ADR status Draft → Locked × 4 — `ebdbd15`
+- [x] **v0.8.x.review.5** — ROADMAP §v0.8 SHIPPED marker + archive sub-tasks với commit hash + add §v0.8.x.review section + TODO.md v0.8 archive — this commit
+- [ ] **v0.8.x.review.6** — Cleanup root scratch files (15 untracked `fix_*.py`/`parse_test*`/`run_*.sh`/`demo.tri`/`hello.tri`/`out.khi`) + tighten `.gitignore` (`/target` → `target/` un-anchor + add `*.khi`)
