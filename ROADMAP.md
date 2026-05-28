@@ -271,6 +271,43 @@ Audit window sau Release v0.8.0 commit `78f2402`. Whole-project review phát hi�
 
 ---
 
+## v0.8.x.docs-reorg — Pre-v0.9 doc reorganization ✅ SHIPPED
+
+Author đặt vấn đề: docs đã đầy đủ trước v1.0, có nên reorg để (a) tiết kiệm AI token mỗi conversation, (b) categorize 27 ADRs theo topic? Audit phân tích tradeoffs → recommend doc-only reorg (compact CLAUDE.md + ADR thematic index + ROADMAP compression + close ADR↔SPEC gaps), defer "promote ADRs to technical docs" approach vì sẽ tạo drift surface 3 lớp.
+
+8 sub-tasks fix all findings; không thay đổi spec semantics — chỉ expose existing semantics tới SPEC.
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| v0.8.x.docs-reorg.1 | Extract CLAUDE.md §Architecture (95 dòng phase prose) ra `docs/ARCHITECTURE.md`. CLAUDE.md 3353 → 2356 từ (-30% tokens/turn). | `e6fbc7a` |
+| v0.8.x.docs-reorg.2 | Thematic ADR index `docs/decisions/by-topic.md` — 8 topic clusters cho 27 ADRs. Chronological `README.md` giữ. Không duplicate content. | `2dea4a0` |
+| v0.8.x.docs-reorg.3 | Compress ROADMAP shipped-phase prose (v0.2.x → v0.8). Drop sub-task changelog tables, per-phase gate enumeration, phase-specific tangent sections. 623 → 384 dòng (-40%). Fixed stray garbage line 62. | `291fd5b` |
+| v0.8.x.docs-reorg.4.1 | Fix SPEC §4.5 drift — Trilean equality propagates Unknown per Ł3 (was "never produces unknown" v0.2-era text; ADR-0010 §4 + ADR-0021 corrected since v0.3.x.ternary but SPEC never synced). BLOCKER. | `5e9fa0e` |
+| v0.8.x.docs-reorg.4.2 | Add SPEC §2.5 Outcome operators + methods — ternary family `~+>`/`~0>`/`~->`, auto-wrap rule, MAP vs EARLY-RETURN, safe properties (`.is_success`/`.is_null`/`.is_error`), safe extraction (`.try_value`/`.try_error`), dangerous methods (`.unwrap_value(msg)`/`.unwrap_error(msg)`), pattern exhaustiveness, T~E? rejection. | `48a33ab` |
+| v0.8.x.docs-reorg.4.3 | Add SPEC §10.6 Send rules + BYOS + Atomic surface — 13-row Send derivation table per ADR-0026 §2.1, BYOS philosophy với refuse-list, Atomic primitive placeholder, capability gates table, refcount-mediated share cross-boundary. | `6a05bfc` |
+| v0.8.x.docs-reorg.4.4 | Add SPEC §6.4-6.7 Module system surface — module declaration (file-bound + inline), import statements (Python-style + whole-module), visibility ladder (3 levels), reserved namespace roots, file resolution convention, cyclic refusal. | `65f7ed9` |
+| v0.8.x.docs-reorg.4.5 | Add SPEC §11 Capability system — 4-state level, `dao.package` grammar, `dao.policy` grammar, root authority, monotonicity invariant, TTY prompt fail-closed, E22XX table. Renumber §12-15 (Examples / EBNF / Open issues / Roadmap). | `d6f036f` |
+
+**Token economy delivered:**
+- CLAUDE.md: 284 → 234 dòng / 3353 → 2356 từ (~-30% per-turn).
+- ROADMAP.md: 623 → 384 dòng (~-40%).
+- ADRs: thematic index added, ADR content unchanged (immutable rule honored).
+
+**SPEC.md additions** (semantics đã shipped trong code, commit này expose tới authoritative doc):
+- §2.5 Outcome operators (~71 lines)
+- §6.4-6.7 Module system (~73 lines)
+- §10.6 Concurrency boundary + Send rules (~48 lines)
+- §11 Capability system (~120 lines)
+- §4.5 BLOCKER fix (Trilean equality drift)
+
+Defer khỏi reorg (per stability-over-speed scope discipline):
+- "Promote ADRs to technical docs by category" approach — refuse (would tạo 3-lớp drift surface: SPEC + tech-doc + ADR).
+- F-string format subset detail in §1.5.5 (ADR-0002), multi-line string indent rules in §1.5.4 (ADR-0004), iterator protocol §9 (ADR-0003), full atomic API §10/§9 (ADR-0028 TBD v0.9), EBNF §13 refresh — all MED priority, defer v0.9.
+
+**Trigger:** Author yêu cầu pre-v0.9 doc maturation: "chúng ta đã gần như hoàn thành mọi thứ trước version 1 rồi, chỉ còn 0.9. Bạn có nghĩ chúng ta nên chỉnh lý lại doc". Phase mở để rapid-fire close all doc-related debt trước version 1.0 freeze window.
+
+---
+
 ## v0.9 — JIT (Cranelift)
 
 **Mục tiêu:** Bytecode VM có JIT tier cho hot code paths.
