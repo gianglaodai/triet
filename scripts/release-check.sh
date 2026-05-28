@@ -106,6 +106,52 @@ warn_check "TODO.md has no [ ] unchecked items in active phase" \
 warn_check "TODO archive table has 'Final test count' column populated" \
     bash -c "grep -c '|.*|.*|.*[0-9].*|' TODO.md | xargs test 5 -lt"
 
+# Check: self-host symmetry per ADR-0029 §4 detection layer 2.
+# Count enum variants in Rust impl vs self-host parser.tri / lexer.tri.
+# Drift signal: "added N variants in Rust, 0 in self-host" pattern.
+# Limitation: count-based misses structural drift (rename, payload change) —
+# acceptable for v0.9; structural diff defer v0.10+.
+count_variants_rust() {
+    # Args: $1 = file path, $2 = enum name
+    # Counts lines like `    VariantName,` or `    VariantName(...)` between
+    # `pub enum <name>` (followed by `{` or whitespace+`{` on same/next line)
+    # and the next `^}`.
+    awk -v name="$2" '
+        $0 ~ "^pub enum " name "([[:space:]]|\\{|$)" { inside = 1; next }
+        inside && /^}/ { inside = 0 }
+        inside && /^    [A-Z][a-zA-Z]+(,|\(|[[:space:]]+\{)/ { count++ }
+        END { print count + 0 }
+    ' "$1"
+}
+count_variants_self_host() {
+    # Args: $1 = file path, $2 = enum name
+    awk -v name="$2" '
+        $0 ~ "public enum " name " \\{" { inside = 1; next }
+        inside && /^}/ { inside = 0 }
+        inside && /^    [A-Z][a-zA-Z]+(,|\(|[[:space:]]+\{)/ { count++ }
+        END { print count + 0 }
+    ' "$1"
+}
+check_symmetry() {
+    # Args: $1 = enum name, $2 = rust file, $3 = self-host file
+    local name="$1" rust_file="$2" sh_file="$3"
+    local rust_count sh_count
+    rust_count=$(count_variants_rust "$rust_file" "$name")
+    sh_count=$(count_variants_self_host "$sh_file" "$name")
+    if [ "$rust_count" = "$sh_count" ]; then
+        return 0
+    else
+        echo "$name: Rust impl has $rust_count variants, self-host has $sh_count (diff $((rust_count - sh_count)))"
+        return 1
+    fi
+}
+warn_check "self-host Token enum symmetric with crates/triet-lexer/" \
+    bash -c "$(declare -f count_variants_rust count_variants_self_host check_symmetry); \
+        check_symmetry Token crates/triet-lexer/src/token.rs compiler/parser/lexer.tri"
+warn_check "self-host TypeExpr enum symmetric with crates/triet-syntax/" \
+    bash -c "$(declare -f count_variants_rust count_variants_self_host check_symmetry); \
+        check_symmetry TypeExpr crates/triet-syntax/src/type_ast.rs compiler/parser/parser.tri"
+
 echo ""
 echo "ADR status sanity"
 # Check: ADRs with 'Locked' status should reflect normative content

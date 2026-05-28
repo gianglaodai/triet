@@ -129,6 +129,12 @@ public enum Token {
     TildePlus,
     TildeMinus,
     TildeZero,
+    // v0.9.0.2.c — ternary postfix operator family per ADR-0020 §3.
+    // Backlog port from v0.7.4.3-error.4 (commit ebb90a2). Detected by
+    // ADR-0029 §4 count-based release-check.
+    TildePlusGt,
+    TildeMinusGt,
+    TildeZeroGt,
     TildeQuestion,
     TildeColon,
     Tilde,
@@ -715,6 +721,18 @@ function lex_single_or_compound(source: String, cursor: Integer) -> OneToken~Lex
     if starts_with_at(source, cursor, "..=") {
         return ~+ make_op(DotDotEq, cursor, 3)
     }
+    // v0.9.0.2.c — ternary postfix operators per ADR-0020 §3.
+    // 3-char `~+>`/`~->`/`~0>` MUST precede 2-char `~+`/`~-`/`~0`
+    // for longest-match (else `~+>` would lex as TildePlus + Gt).
+    if starts_with_at(source, cursor, "~+>") {
+        return ~+ make_op(TildePlusGt, cursor, 3)
+    }
+    if starts_with_at(source, cursor, "~->") {
+        return ~+ make_op(TildeMinusGt, cursor, 3)
+    }
+    if starts_with_at(source, cursor, "~0>") {
+        return ~+ make_op(TildeZeroGt, cursor, 3)
+    }
 
     // 2-char compounds
     if starts_with_at(source, cursor, "..") {
@@ -1079,6 +1097,10 @@ function main() -> Unit = {
     // 4b. Ownership reference tokens (ADR-0022 §2 S6 five-form).
     //     Compounds `&+`/`&0`/`&-` precede bare `&`; `&-` precedes `&&`.
     check_count("ops_ownership", "&+ &0 &- &", 4)
+    // 4c. Ternary postfix operator family (ADR-0020 §3 — v0.9.0.2.c
+    //     backlog port). 3-char `~+>`/`~->`/`~0>` precede 2-char `~+`/`~-`/`~0`
+    //     for longest-match.
+    check_count("ops_ternary_postfix", "~+> ~-> ~0>", 3)
     // 5. Ternary literal.
     check_count("ternary_lit", "0t+0-+", 1)
     // 6. String literal with escapes.
