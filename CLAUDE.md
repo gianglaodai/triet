@@ -27,14 +27,14 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.7.4.3-error (design locked, implementation pending)** — v0.6 Capability System shipped; v0.7 Self-hosting Compiler in progress (umbrella sub-tasks v0.7.1 → v0.7.4.2 shipped, lexer port v0.7.4.3 next). Interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0.
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.8.0 (Ownership Foundation + BYOS Concurrency Primitives shipped)** — v0.6 Capability System ✅, v0.7 Self-hosting Compiler ✅, v0.8 S6 ownership model + Send rules + Atomic placeholder ✅. NLL enforcement + scheduler stdlib defer to v0.9+/v0.10. Interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0.
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative; header v0.6 stable, v0.7 design locked per ADR-0019 + ADR-0020 + ADR-0021 — header bumps at v0.7.13 verify gate)
+- `SPEC.md` — language semantics (authoritative; header **v0.8**, S6 ownership §10 + Outcome §1.5.3 + Trilean! refinement locked)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.7 Self-hosting Compiler in progress, **next: v0.7.4.3-error implementation** (Outcome type per ADR-0020 + Trilean! refinement per ADR-0021)
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.8 ✅ shipped, **next: v0.9 JIT (Cranelift)** + NLL enforcement
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — 21 ADRs for architectural decisions (ADR-0019 Self-hosting bootstrap + Addendums, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement for strict `if`; see `docs/decisions/README.md` for an index)
+- `docs/decisions/` — **27 ADRs** for architectural decisions (ADR-0019 Self-hosting bootstrap, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement, ADR-0022 S6 ownership, ADR-0025 borrow checker rules, ADR-0026 v2 BYOS concurrency, ADR-0027 diagnostic format; see `docs/decisions/README.md` for the full index)
 
 ## Development principles
 
@@ -149,7 +149,7 @@ Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-log
 ### IR + bytecode VM (shipped v0.3; ADR-0007/0008/0010)
 `triet-ir` lowers AST to a register-SSA IR (53 opcodes) and runs it on a stack-of-frames VM. `.triv` is the wire format (currently v3 — bumped at ADR-0010 for `BR_TRILEAN` and ADR-0012 for `WITNESS_CALL`). The VM is **development tier only** per VISION §4.3; production target is AOT (v2.0) and trytecode (v∞).
 
-ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing"). **Post-ADR-0021** (v0.7.4.3-error.3c), strict `if cond` Unknown-handling moved from *runtime panic via BrTrilean unknown_block* (primary safety) to *compile-time E1033 `PossiblyUnknownCondition`* (primary safety); the unknown_block panic stays as defense-in-depth for `if?`/match/untrusted `.triv` consumers — see [ADR-0010 Addendum §C](docs/decisions/0010-ternary-native-ir.md).
+ADR-0010 ternary-native IR locks: `BrTrilean` 3-way branch, `Eq`/`Ne` propagate Trilean::Unknown per Ł3, `Constant::Null` is the canonical encoding of `Trit::Zero` discriminator (not a separate "thing"). **Post-ADR-0021** (v0.7.4.3-error.3c), strict `if cond` Unknown-handling moved from *runtime panic via BrTrilean unknown_block* (primary safety) to *compile-time E1033 `PossiblyUnknownCondition`* (primary safety); the unknown_block panic stays as defense-in-depth for `if?`/match/untrusted `.triv` consumers — see [ADR-0010 Addendum §C](docs/decisions/0010-ternary-native-ir.md#addendum-c--v0743-error3c-brtrilean-unknown_block-demoted-to-defense-in-depth).
 
 ### Crate-Pack distribution (shipped v0.4; ADR-0011/0012/0013)
 `triet-pack` defines `.khi` (container: ABI metadata + IR code + reserved sections for witness tables + manifest) and the cross-package linker (`plan_link`). Two-level hash at pack level: `iface_hash` (ABI surface) + `impl_hash` (covers code bytes). BLAKE3, canonicalized via sort-by-name so identical surfaces produce identical bytes.
@@ -182,6 +182,20 @@ Root authority semantics (ADR-0016 §7): root package's manifest is the **sole d
 
 Demo + capstone test: `demos/04-capability-system/` (illustrative) + `crates/triet-typecheck/tests/capability_pipeline.rs` (executable proof for ROADMAP §v0.6 gates).
 
+### Self-hosting Compiler (shipped v0.7; ADR-0019/0020/0021/0024)
+`compiler/` holds the Triết-in-Triết compiler — 7 `.tri` files (~23K LOC) mirroring crate boundaries: `parser/lexer.tri`, `parser/parser.tri`, `modules.tri`, `typecheck.tri`, `ir_lowerer.tri`, `pack_writer.tri`, `main.tri` (+ `driver.tri` thin entry, `factorial.tri` byte-identical gate fixture). 3-stage bootstrap chain Stage 1 (Rust) → Stage 2 (Triết-built-by-Stage-1) → Stage 3 (Triết-built-by-Stage-2) wired via `crates/triet-bootstrap/tests/bootstrap_loop.rs`. Stage 2 ≡ Stage 3 byte-identical gate `#[ignore]`'d per ADR-0019 §7 Addendum (VM dev tier >15 min per main.tri compile; lifts at v0.9 JIT).
+
+ADR-0020 Outcome (`T~E` binary + `T?~E` ternary with `~+`/`~0`/`~-` constructors + `~?` propagate + `~:` default postfix ops) and ADR-0021 Trilean! refinement (strict `if cond` requires non-`unknown`, raises E1033 otherwise) are the v0.7 design locks now baked into typecheck + lowerer + self-host. ADR-0024 renames `.tri.bin` → `.khi` (pack file, deterministic compression) + canonical `dao` binary identity.
+
+### Ownership Foundation + Concurrency Primitives (BYOS, shipped v0.8; ADR-0022/0025/0026 v2/0027)
+Trụ cột bản sắc memory model. ADR-0022 locks **S6 — Single-form Ownership with 6 trits** as the 5-form reference family: `&+` strong owner (frozen), `&0` neutral borrow, `&-` weak observer (upgrade-tracked), bare `&` (parser disambiguates), plus `owned` for transfer semantics. Compound `&+`/`&0`/`&-` are lexer tokens (longest-match before `&&`). `triet-core::memory::ObjectHeader` is the 8-byte (binary) / 54-trit (ternary) per-allocation header with refcount atomic ops + sentinels.
+
+**BYOS — Bring Your Own Scheduler** (ADR-0026 v2): Triết core provides Send rules + Atomic primitives + capability gates **without** baking a scheduler into the language. `actor`/`spawn`/`receive`/`send`/`async`/`await` are NOT keywords (explicit refuse-list ADR-0026 v2 §6). Scheduler lives in stdlib (`std.concurrency.*` planned v0.10) or external (kernel-mode crates use raw capability + FFI). Same compile-time safety regardless of scheduler choice. The 2026-05-26 pivot from ADR-0026 v1 actor-model addressed kernel-writability: Linux Rust modules cannot use async runtime (defer to C scheduler) — same problem applied to v1 Triết.
+
+Send derivation auto-classifies 13 type categories per ADR-0026 v2 §2.1 via `triet-typecheck::types::Type::is_send()`. E2500 `NotSendCannotCrossBoundary` fires on generic `Send` bound violations. ADR-0025 borrow checker rules + E24XX lifetime/move/exclusivity diagnostics are **specced + skeleton-emitted**; enforcement deferred to v0.9 (need real-world corpus first). ADR-0027 diagnostic format standard locks AI-first format (header `EXXXX ErrorName` + body + `[Fix N]` blocks, ASCII, no diff `-/+`) across all error/warning text — retroactive to ADR-0020/0025.
+
+Capability schema (`dao.package`) extends with concurrency caps: `sys.raw_thread`, `sys.atomic`, `dev.ffi`, `dev.raw_memory`, `dev.reinterpret`; ownership caps `dev.self_ref`, `dev.custom_drop`. Resolver fix: ambient capability modules bypass filesystem checks. Demo `examples/atomic_counter/` is aspirational pseudo-code (parser-side ReferenceForm not yet ported — tracked v0.8.x.review).
+
 ### Error code namespace
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
@@ -212,7 +226,8 @@ These are decisions locked by ADRs. Code generation, examples, error messages, a
 | `from std.io import println` | `use std::io::println` | ADR-0005 |
 | `!a`, `a && b`, `a \|\| b`, `a ^ b`, `a => b` | — | SPEC §4.2 (symbolic preferred) |
 | `a ~> b`, `a ~^ b`, `a <=> b`, `a <~> b` | — | SPEC §4.2 (Kleene variants) |
-| `0t+`, `0t-`, `0t0` (prefix trit literal) | `0T` (capital T), suffix `_trit` | SPEC §1.5.1 |
+| `1_trit`, `0_trit`, `-1_trit` (suffix-typed Trit literal) | `0t+` as Trit (those `0t...` forms are balanced-ternary **Integer** literals, not Trit) | SPEC §1.5.1 |
+| `&+ T`, `&0 T`, `&- T`, `&` (ownership reference; longest-match before `&&`) | bare `&T` if compound intended | SPEC §10 + ADR-0022 |
 | `unknown` (third Trilean value) | `null` for Trilean | SPEC §1.5.2 |
 | `~0` (canonical Trit::Zero literal for `T?` / `T?~E`) | `null` (deprecated v0.7.4.3-error, W2001 → E2002 v1.0) | SPEC §1.5.3 + ADR-0020 §10 |
 
@@ -236,7 +251,7 @@ Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr
 The user follows a per-step commit pattern:
 1. Pick the next sub-task from `TODO.md`.
 2. Implement, run `cargo test --workspace` and `cargo clippy --workspace`.
-3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `feat(v0.7.4.N): …` / `docs(v0.7.4.N-error): …` (umbrella sub-tasks within v0.7.4 lexer-port phase). Earlier patterns: `feat(v0.6.N): …` (Capability System) / `docs(v0.5.x.review): …` (audit phases).
+3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `fix(v0.8.x.review.N): …` / `docs(v0.8.x.review.N): …` (post-v0.8 audit phase). Earlier patterns: `feat(v0.8.N): …` / `feat(v0.7.4.N-error): …` / `feat(v0.6.N): …` / `docs(v0.5.x.review.N): …`.
 4. Push.
 5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
 
@@ -252,10 +267,18 @@ Sample programs in `examples/*.tri` exercise specific features. Useful as smoke 
 for f in examples/*.tri; do ./target/release/dao run "$f" || echo "FAILED: $f"; done
 ```
 
-Demos shipped through v0.7.4.2: 12 single-file examples in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic, generic_function — all 12/12 byte-identical interpreter vs VM). 1 multi-file module demo in `demos/02-module-system/` (704-line ternary ALU). 1 cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 integration tests covering accept/refuse/drift cases). 1 shared-loading demo (`crates/triet-pack/tests/shared_loading.rs` — 4 integration tests proving CAS dedup at term + module level). 1 store CLI smoke test suite (`crates/triet-cli/tests/store_cli.rs` — 8 integration tests including `$TRIET_STORE` fallback chain). 1 capability system demo (`demos/04-capability-system/` illustrative files + `crates/triet-typecheck/tests/capability_pipeline.rs` — 12 integration tests proving ROADMAP §v0.6 gates). v0.7 bootstrap test infrastructure (`crates/triet-bootstrap/tests/`): determinism gate + stdlib stub VM round-trips.
+Demos at v0.8 close: **14 single-file examples** in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic, generic_function — all 12/12 byte-identical interpreter vs VM for the v0.7.4.2 cohort; plus `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7 interpreter parity gap; plus `while_true_loop.tri` infinite-loop negative fixture). **1 multi-file example dir** `examples/atomic_counter/` (aspirational sketch for v0.8 Atomic + ownership — parser-side ReferenceForm not yet ported; doesn't parse). Demos: `demos/02-module-system/` (704-line ternary ALU), `demos/04-capability-system/` (illustrative + capstone test `crates/triet-typecheck/tests/capability_pipeline.rs` 12 integration tests), `demos/05-error-handling/` (v0.7.4.3-error outcome capstone, VM-only per `README.md`). Cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 tests), shared-loading CAS dedup demo (`shared_loading.rs` — 4 tests), store CLI smoke (`store_cli.rs` — 8 tests). Bootstrap test infrastructure (`crates/triet-bootstrap/tests/`): determinism gate + stdlib stub VM round-trips + `lexer_self_smoke.rs` covering ownership tokens per v0.8.x.review.3.
 
 **Post-v0.5 audit** (`v0.5.x.review`, ADR-0015 Addendum): `Resolution.origin` is the 3-state `ResolutionOrigin { Lockfile, IfacePin, Fresh }` enum, not a bool — capability gates in v0.6 dispatch on it (proven via `OriginMatcher` lookup keys in `dao.policy`). `Store::gc()` is **conservative under manifest corruption**: `GcReport.corrupt_pkgs` flags unreadable manifests and suppresses mod + term sweeps to avoid orphaning their deps (VISION §6 *Refuse over guess*).
 
 **Post-v0.6 audit** (`v0.6.x.review`, ADR-0018 Addendum): Capability layer monotonicity invariant (ADR-0017 §5) pinned under `PolicyRules` mutation. DevTtyPrompt G/D path round-trip pinned. Linker requester-sort proved with non-alphabetical insertion. Strict parser positional contracts pinned for the negative case.
 
 **Post-v0.7.4.2 audit** (`v0.7.x.docs-audit`, 2026-05-18): cross-doc consistency sweep after 9-commit v0.7 series — fixed stale state declarations, ADR cross-refs, broken anchor refs, version drift. 1129 tests workspace-wide.
+
+**Post-v0.8 audit** (`v0.8.x.review`, 2026-05-28): 6-phase audit after Release v0.8.0 commit (`78f2402`) shipped with ADR-0009 gate B leftover. Fixes:
+- v0.8.x.review.1 — 3 clippy errors in `resolver.rs` (ambient-module fallback) + 21 `cargo fmt` files (gate B Hygiene).
+- v0.8.x.review.2 — E25XX namespace correction `triet::borrow::` → `triet::actor::` (E2500/E2510/E2520) per ADR-0026 v2 + namespace table.
+- v0.8.x.review.3 — `compiler/parser/lexer.tri` ports ownership tokens `&+`/`&0`/`&-`/`&` (v0.8.12 paperwork-vs-reality gap closed).
+- v0.8.x.review.4 — doc sync (CLAUDE.md/README.md/docs/decisions/README.md/ROADMAP.md/ADR status promote).
+- v0.8.x.review.5 — root scratch cleanup + `.gitignore` tightening.
+- 1425 tests workspace-wide (ROADMAP estimate ~1550 — BYOS revert cut scope per design).

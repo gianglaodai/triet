@@ -31,7 +31,7 @@ prior decision, write a new ADR that supersedes it.
 | ADR | Title | Status |
 |---|---|---|
 | [0007](0007-ir-design.md) | IR design (register-based SSA) | Locked |
-| [0008](0008-triv-binary-format.md) | `.triv` bytecode binary format (currently v3 after ADR-0010 + ADR-0012 bumps) | Locked |
+| [0008](0008-triv-binary-format.md) | `.triv` bytecode binary format (currently v5 after ADR-0010 / 0012 / 0020 bumps) | Locked |
 
 ### v0.3.x.cleanup — Gate-closing phase
 
@@ -78,13 +78,14 @@ prior decision, write a new ADR that supersedes it.
 | [0023](0023-lowerer-ssa-struct-tracking.md) | Lowerer SSA struct-tracking — unified `ValueKind` enum (Struct / Outcome / Nullable / Other) replaces 4 ad-hoc HashMap tracking patterns + ~13 per-construct propagation rules with a single `value_kinds: HashMap<ValueId, ValueKind>` + one recursive `type_expr_to_value_kind` helper. Lowerer crate only — no wire format / VM / typecheck / SPEC impact. Closes v0.7 review finding "patch-stack pattern violating VISION §6 *Refuse over guess*". | Locked |
 | [0024](0024-khi-dao-identity-naming.md) | Khí + Đạo identity naming (Đạo Đức Kinh §28 phác tán tắc vi khí + §42 tam sinh vạn vật) — rename 5 Rust-inherited user-facing surface terms: path keyword `crate` → `khi`, compiled artifact `.khi` → `.khi`, CLI binary `triet` → `dao`, manifest `dao.package` → `dao.package`, lockfile `dao.lock` → `dao.lock`. Source `.tri` + IR `.triv` + language name "Triết" giữ. Hard cutover, 5-stage commit series ship trước v0.7.10 mở. Justify Vietnamese-rooted philosophical depth + direct ternary tie via Đạo §42. | Locked |
 
-### Future research (post-v0.7)
-
-ADRs in this bucket capture exploratory design directions — recorded so the context isn't lost, but **explicitly NOT locked**. They will be revisited only after the v0.7 self-hosting compiler ships. Each carries a "deferred research" status and lists the open questions that must be answered before promotion to Locked.
+### v0.8 — Ownership Foundation + Concurrency Primitives (BYOS)
 
 | ADR | Title | Status |
 |---|---|---|
-| [0022](0022-trit-balanced-ownership.md) | Trit-balanced ownership — polarity-typed references (`~+ T` strong / `~- T` weak), cycle-balance conservation law (cycle sum = 0 at compile time), candidate 4th memory-management mechanism alongside GC / Rc-Weak / Manual. Origin: author's intuition that `+1`/`0`/`-1` can encode ownership direction. Research window: post-v0.7.13. | Draft (exploratory) |
+| [0022](0022-trit-balanced-ownership.md) | Trit-balanced ownership — S6 5-form reference (`&+` strong owner / `&0` neutral borrow / `&-` weak observer / bare `&` / `owned` transfer), cycle-balance acyclic invariant, capability-as-unsafe for `dev.self_ref` / `dev.custom_drop`. Foundation cho v0.8 Concurrency Model | Locked |
+| [0025](0025-borrow-checker-rules.md) | Borrow checker rules — compile-time enforcement algorithm cho 5 reference forms từ ADR-0022 §2; NLL + 3-rule lifetime elision + no-annotation policy; **E24XX** namespace (E2400 lifetime inference / E2410 mutability / E2420 move + use-after-move / E2430 namespace inference / E2440 NLL exclusivity); v0.8 ships skeleton diagnostics, full NLL enforcement defer v0.9 | Locked |
+| [0026](0026-actor-boundary-send-rules.md) | Concurrency Primitives & Send Rules — **BYOS (Bring Your Own Scheduler)** per 2026-05-26 v1→v2 pivot. Triết core provides Send derivation (13 type categories) + Atomic primitives + capability gates; scheduler stdlib (v0.10) or external (kernel-mode). **Refuses** `actor`/`spawn`/`receive`/`send`/`async`/`await` as keywords. **E25XX** namespace (`triet::actor::E2500/E2510/E2520`) | Locked v2 |
+| [0027](0027-diagnostic-format-standard.md) | Diagnostic format standard (AI-first) — language-wide canonical format cho mọi compiler/runtime diagnostic. Header `EXXXX ErrorName` + body + optional span block + `[Fix N]` numbered fix blocks với imperative verbs (Change/Wrap/Use/Add/Replace/Move X to Y). Pure ASCII, no diff `-/+`. Retroactive scope: ADR-0020 + ADR-0025 already comply | Locked |
 
 ## How to read an ADR
 

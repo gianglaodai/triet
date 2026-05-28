@@ -1,6 +1,6 @@
 # ADR 0025 — Borrow Checker Rules (Luật Kiểm tra Mượn-Sở-Hữu)
 
-**Trạng thái:** **Draft** (sibling của [ADR-0022](0022-trit-balanced-ownership.md) + [ADR-0026](0026-actor-boundary-send-rules.md) (TODO)). Targets v0.8 parser tokens → v0.9 simple enforcement → v0.10-v1.0 full algorithm. Locks compile-time enforcement algorithm cho 5 reference forms từ ADR-0022 §2. Định nghĩa namespace error code mới **E24XX** cho borrow-related diagnostics.
+**Trạng thái:** **Locked** (promoted via v0.8.x.review 2026-05-28). Sibling của [ADR-0022](0022-trit-balanced-ownership.md) + [ADR-0026](0026-actor-boundary-send-rules.md). v0.8 đã ship skeleton diagnostics (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) per v0.8.10; full NLL enforcement defer v0.9 (cần real-world Triết corpus). Locks compile-time enforcement algorithm cho 5 reference forms từ ADR-0022 §2. Định nghĩa namespace error code mới **E24XX** cho borrow-related diagnostics.
 
 **Issue:** [ADR-0022](0022-trit-balanced-ownership.md) lock conceptual model — 5 reference forms, mutability default, linear `&+`, capability-as-unsafe, định lý vô-chu-trình. Còn lại các quyết định *thuật toán*:
 

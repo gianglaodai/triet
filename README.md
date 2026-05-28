@@ -13,7 +13,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.8 — implementation v0.8.0-dev — Concurrency Primitives & BYOS.** **v0.7 Self-hosting Compiler SHIPPED.** Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` binary format (currently v5, [ADR-0008 §Version history](docs/decisions/0008-triv-binary-format.md)). **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** (`.khi`) + cross-package linker với semver decision matrix per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md) — 3-cấp hash tree, atomic install, hash-pinned `dao.lock`. **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md) — `sys.*`/`dev.*`/`usr.*` enforce, 4-state `CapabilityLevel`, `dao.package` + `dao.policy` + `/dev/tty` provenance prompt. **v0.7 Self-hosting Compiler shipped** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) — 3-stage bootstrap chain (Stage 1 Rust → Stage 2 Triết-in-Triết → Stage 3 byte-identical gate), canonical emission invariants, Rust-shim stdlib (20 builtins), Outcome error handling per [ADR-0020](docs/decisions/0020-outcome-error-handling.md) — `T~E` / `T?~E` trit-encoded fallibility shipped. Identity rename per [ADR-0024](docs/decisions/0024-khi-dao-identity-naming.md) — `khi`/`dao` naming throughout. **Bootstrap gate**: factorial.tri Stage 2 byte-identical with Rust (CI); main.tri Stage 2/Stage 3 gates wired but manual-promoted (`#[ignore]` due to VM dev tier per ADR-0019 §7; lifts to CI at v0.9 JIT). ~1350 tests pass workspace-wide.
+🟢 **Language SPEC v0.8 — implementation v0.8.0 SHIPPED — Ownership Foundation + Concurrency Primitives (BYOS).** **v0.8 highlight:** S6 ownership model (5-form reference `&+`/`&0`/`&-`/`&` + `owned`) per [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), Send-derivation diagnostics (E2500) per [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md), borrow-checker skeleton (E24XX, enforcement v0.9) per [ADR-0025](docs/decisions/0025-borrow-checker-rules.md), AI-first diagnostic format per [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md). **BYOS — Bring Your Own Scheduler**: Triết core provides primitives + capability gates, scheduler lives in stdlib (v0.10) or external (kernel-mode). Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` IR binary format (v5 per [ADR-0008 §Version history](docs/decisions/0008-triv-binary-format.md)) + `.khi` user-facing pack format. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** + cross-package linker per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md). **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md). **Self-hosting Compiler** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) (3-stage bootstrap chain, factorial.tri Stage 2 byte-identical in CI; main.tri convergence gate `#[ignore]`'d, lifts v0.9), Outcome error handling per [ADR-0020](docs/decisions/0020-outcome-error-handling.md), Trilean! refinement per [ADR-0021](docs/decisions/0021-trilean-refinement.md), Identity rename per [ADR-0024](docs/decisions/0024-khi-dao-identity-naming.md). **1425 tests** pass workspace-wide.
 
 > **Lưu ý — gate hội tụ self-hosting defer sang v0.9.** Bootstrap chain 3-stage đã wired end-to-end và `cmp` gate đã in-tree, nhưng test chứng minh `compiler/main.tri` hội tụ (Stage 2 ≡ Stage 3 byte-identical) đang `#[ignore]` — một lần Stage 2 self-compile `main.tri` mất >15 phút trên VM dev tier. CI hiện chỉ enforce proxy gate `factorial.tri` Stage 1 ≡ Stage 2 byte-identical, đủ để verify canonical-encoding invariants ([ADR-0019 §3](docs/decisions/0019-self-hosting-compiler-bootstrap.md)) nhưng **chưa** verify full self-host convergence claim. Cả 2 ignored tests lift lên CI-required ở v0.9 (Cranelift JIT). Rationale: [ADR-0019 Addendum 2026-05-25](docs/decisions/0019-self-hosting-compiler-bootstrap.md).
 
@@ -97,14 +97,16 @@ triet/
 │   └── triet-cli/         # Binary `triet` (run/check/build/info)
 ├── std/                   # Standard library (.tri files)
 │   ├── io.tri, text.tri, assert.tri
-├── examples/              # 11 sample .tri programs
+├── compiler/              # Triết-in-Triết self-hosting compiler (v0.7 shipped, ~23K LOC)
+├── examples/              # 14 single-file .tri programs + 1 dir (atomic_counter aspirational)
 ├── demos/                 # Larger multi-file demos
 │   ├── 02-module-system/  # 704-dòng ternary ALU across 6 modules
-│   └── 04-capability-system/  # v0.6 capability gates walkthrough
-├── docs/decisions/        # 20 ADRs (+ Addendums on ADR-0015, 0017, 0018, 0001, 0010, 0019)
-├── SPEC.md                # Đặc tả ngôn ngữ (header v0.7)
+│   ├── 04-capability-system/  # v0.6 capability gates walkthrough
+│   └── 05-error-handling/ # v0.7.4.3-error Outcome capstone (VM-only)
+├── docs/decisions/        # 27 ADRs (+ Addendums on ADR-0001, 0010, 0015, 0017, 0018, 0019)
+├── SPEC.md                # Đặc tả ngôn ngữ (header v0.8)
 ├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
-└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.7 SHC shipped)
+└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.8 BYOS shipped)
 ```
 
 ## Build
@@ -112,7 +114,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test --workspace   # run all tests (1345 in v0.7.0)
+cargo test --workspace   # run all tests (1425 in v0.8.0)
 cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```

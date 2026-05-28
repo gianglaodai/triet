@@ -1,6 +1,6 @@
 # ADR 0027 — Diagnostic Format Standard (AI-first)
 
-**Trạng thái:** **Draft**. Language-wide canonical format cho mọi compiler/runtime diagnostic. Retroactive scope: ADR-0020 (11 error blocks) + ADR-0025 (10 error blocks, đã follow chuẩn này) + tất cả ADRs tương lai có error code.
+**Trạng thái:** **Locked** (promoted via v0.8.x.review 2026-05-28). Language-wide canonical format cho mọi compiler/runtime diagnostic — đã apply trong v0.8.10 cho E24XX + E25XX skeleton diagnostics. Retroactive scope: ADR-0020 (11 error blocks) + ADR-0025 (10 error blocks, đã follow chuẩn này) + tất cả ADRs tương lai có error code.
 
 **Issue:** Author 2026-05-26 chốt 4 priority cho Triết: strict + compile-time + performance + **AI-friendly**. Priority cuối nghĩa là diagnostic message phải parseable cho LLM agents và quick-fix tools. State pre-2026-05-26:
 

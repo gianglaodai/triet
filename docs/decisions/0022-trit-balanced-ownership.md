@@ -1,6 +1,6 @@
 # ADR 0022 — Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)
 
-**Trạng thái:** **Draft** (supersedes 2026-05-22 initial sketch). Foundation cho v0.8 Concurrency Model. Locks ngữ nghĩa 5-form reference syntax + mutability + aliasing + cycle policy + self-ref capability + Outcome integration. Detailed enforcement algorithm tách ra [ADR-0025](0025-borrow-checker-rules.md) (TODO). Concurrency Send rules tách ra [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md).
+**Trạng thái:** **Locked** (promoted via v0.8.x.review 2026-05-28; supersedes 2026-05-22 initial sketch). Foundation cho v0.8 Ownership + Concurrency Model — đã ship ObjectHeader (`triet-core::memory`), 5-form lexer tokens, parser AST `ReferenceForm`, type-system resolve transparently per v0.8.3–v0.8.6. Locks ngữ nghĩa 5-form reference syntax + mutability + aliasing + cycle policy + self-ref capability + Outcome integration. Detailed enforcement algorithm tách ra [ADR-0025](0025-borrow-checker-rules.md). Concurrency Send rules tách ra [ADR-0026](0026-actor-boundary-send-rules.md).
 
 **Issue:** Triết tham vọng OS-capable per [VISION §3.5 + §5](../../VISION.md) — phải có memory model đủ chặt như Rust nhưng:
 1. **Không có keyword `unsafe`** — mọi nguy hiểm đi qua [capability system (ADR-0018)](0018-capability-loader-semantics.md), audit-friendly.
