@@ -89,8 +89,14 @@ prior decision, write a new ADR that supersedes it.
 |---|---|---|
 | [0022](0022-trit-balanced-ownership.md) | Trit-balanced ownership — S6 5-form reference (`&+` strong owner / `&0` neutral borrow / `&-` weak observer / bare `&` / `owned` transfer), cycle-balance acyclic invariant, capability-as-unsafe for `dev.self_ref` / `dev.custom_drop`. Foundation cho v0.8 Concurrency Model | Locked |
 | [0025](0025-borrow-checker-rules.md) | Borrow checker rules — compile-time enforcement algorithm cho 5 reference forms từ ADR-0022 §2; NLL + 3-rule lifetime elision + no-annotation policy; **E24XX** namespace (E2400 lifetime inference / E2410 mutability / E2420 move + use-after-move / E2430 namespace inference / E2440 NLL exclusivity); v0.8 ships skeleton diagnostics, full NLL enforcement defer v0.9 | Locked |
-| [0026](0026-actor-boundary-send-rules.md) | Concurrency Primitives & Send Rules — **BYOS (Bring Your Own Scheduler)** per 2026-05-26 v1→v2 pivot. Triết core provides Send derivation (13 type categories) + Atomic primitives + capability gates; scheduler stdlib (v0.10) or external (kernel-mode). **Refuses** `actor`/`spawn`/`receive`/`send`/`async`/`await` as keywords. **E25XX** namespace (`triet::actor::E2500/E2510/E2520`) | Locked v2 |
+| [0026](0026-actor-boundary-send-rules.md) | Concurrency Primitives & Send Rules — **BYOS (Bring Your Own Scheduler)** per 2026-05-26 v1→v2 pivot. Triết core provides Send derivation (13 type categories) + Atomic primitives + capability gates; scheduler stdlib (v0.10) or external (kernel-mode). **Refuses** `actor`/`spawn`/`receive`/`send`/`async`/`await` as keywords. **E25XX** namespace (`triet::actor::E2500/E2510/E2520`). *+ 2026-05-29 Addendum: §4 placeholder refined by ADR-0028* | Locked v2 |
 | [0027](0027-diagnostic-format-standard.md) | Diagnostic format standard (AI-first) — language-wide canonical format cho mọi compiler/runtime diagnostic. Header `EXXXX ErrorName` + body + optional span block + `[Fix N]` numbered fix blocks với imperative verbs (Change/Wrap/Use/Add/Replace/Move X to Y). Pure ASCII, no diff `-/+`. Retroactive scope: ADR-0020 + ADR-0025 already comply | Locked |
+
+### v0.9 — Wide-phased: JIT + Borrow Enforcement + Atomic + Self-host policy
+
+| ADR | Title | Status |
+|---|---|---|
+| [0028](0028-atomic-primitive.md) | Atomic primitive design — refines ADR-0026 v2 §4 placeholder. Locks: Rust-shim builtin pattern (IDs 27-39, `.triv` v5→v6), AtomicValue marker trait, 3-level Ordering enum (Relaxed/Synchronized/Strict) mapped vào Trit polarity, full API (load/store/swap/compare_exchange + fetch_add/sub for Tryte/Integer + fetch_and/or/xor for Integer), interior mutability via `&+ Atomic<T>` (fixes ADR-0026 v2 §4.3 `&+ mutable` contradiction), conservative E2530 fire conditions. v0.9.x.atomic implementation depends on this lock | Locked |
 
 ## How to read an ADR
 

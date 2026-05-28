@@ -1,6 +1,6 @@
 # ADR 0028 — Atomic Primitive Design (refines ADR-0026 v2 §4)
 
-**Trạng thái:** **Draft** (v0.9.0.1, 2026-05-29). Refines [ADR-0026 v2 §4](0026-actor-boundary-send-rules.md) placeholder. Author review required cho §1 (impl strategy), §5 (ownership ref form resolution — fixes ADR-0026 v2 §4.3 contradiction), §10 (E2530 fire conditions). Locks after author sign-off.
+**Trạng thái:** **Locked** (v0.9.0.1, author sign-off 2026-05-29). Refines [ADR-0026 v2 §4](0026-actor-boundary-send-rules.md) placeholder. Author confirmed 3 architecturally-significant decisions: §1 builtin shim strategy; §5 ownership ref form fix (resolves ADR-0026 v2 §4.3 contradiction); §10 conservative E2530 enforcement.
 
 **Issue:** ADR-0026 v2 §4 placeholder-locked Atomic primitive type family (`Atomic<Integer/Tryte/Trit/Trilean/Pointer>`) + Ordering enum (Relaxed/Synchronized/Strict) + skeleton API surface (load/store/swap/compare_exchange) + E2530 sketch. Open questions left for ADR-0028:
 
