@@ -1,4 +1,4 @@
-# ADR Index
+# ADR Index — chronological
 
 Architectural Decision Records for Triết. Each ADR captures one
 significant choice — *why* this design over alternatives — so future
@@ -7,6 +7,11 @@ without spelunking through git history.
 
 ADRs are immutable once "Quyết định" status is reached. To change a
 prior decision, write a new ADR that supersedes it.
+
+> **Looking for a rule on X?** Use [`by-topic.md`](by-topic.md) — same
+> 27 ADRs grouped by topic (language surface, type system, ownership,
+> module/package, IR/wire format, capability, compiler internals,
+> cross-cutting). This file ordered chronologically by phase.
 
 ## By phase
 
