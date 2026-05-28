@@ -689,7 +689,7 @@ let x: String = "hi"      // shadow, đổi cả type
 
 ---
 
-## 6. Hàm
+## 6. Hàm và module
 
 ### 6.1 Định nghĩa
 
@@ -732,6 +732,78 @@ let inc = |n: Integer| -> Integer { n + 1 }
 let inc = |n: Integer| n + 1               // single-expression form
 let inc = |n| n + 1                      // type inferred khi context cho phép
 ```
+
+### 6.4 Module declaration
+
+Full lock ở [ADR-0005](docs/decisions/0005-module-system.md). Tóm tắt:
+
+```triet
+// File-bound: module foo loads from foo.tri (or foo/foo.tri)
+module foo
+
+// Inline: module body inline
+module bar {
+    function helper() -> Integer { 42 }
+}
+```
+
+**File resolution** (convention, không phải semantics): `module foo` tìm `foo.tri` HOẶC `foo/foo.tri` relative tới directory của file declaring. Inline `module foo { … }` ≡ file-bound `module foo` cho path resolution (Rust/OCaml precedent).
+
+**Locked architecture decisions** (ADR-0005, do not change):
+- Single-file = crate root (Python/Go pattern).
+- Inline ≡ file-bound for path resolution.
+- Glob imports (`from foo import *`) và re-exports **không được phép** (explicit > implicit).
+
+**Cyclic dependencies refused** at name-resolution với E2100 + cycle trace `foo → bar → baz → foo`. Không có lazy-resolution escape hatch.
+
+### 6.5 Import statements
+
+Python-style imports:
+
+```triet
+// Import items từ module
+from std.io import println
+from std.io import println, print as p   // multi-item + rename
+
+// Whole-module import (binds last segment as name)
+import std.io.println                     // binds `println` in current scope
+```
+
+**Dot path syntax** (không `::`):
+- `crate.foo.bar` — absolute từ crate root.
+- `self.foo` — relative tới current module.
+- `super.foo` — parent module.
+- `std.io` — stdlib (reserved root per §1.4).
+
+### 6.6 Visibility ladder
+
+Ba mức visibility:
+
+| Cú pháp | Phạm vi |
+|---|---|
+| `public function f() { … }` | Visible everywhere (cross-package). |
+| `public(package) function f() { … }` | Visible inside same crate-pack only. |
+| `function f() { … }` (no modifier) | Private to current module. |
+
+Rust's `pub(super)` / `pub(in path)` intentionally absent — chỉ 3 levels, không có per-path granularity. Vi phạm visibility → E2104 `VisibilityViolation` với rõ ai import ai.
+
+`public` áp dụng cho `function`, `let`/`constant` items, `struct`, `enum`, `type` aliases, và `module` declarations.
+
+### 6.7 Reserved namespace roots
+
+5 roots cấm làm user identifiers (cross-reference §1.4):
+
+| Root | Vai trò |
+|---|---|
+| `std` | Stdlib (ambient capability — không cần claim) |
+| `sys` | System capabilities (syscall, raw thread, raw memory — claim required) |
+| `dev` | Device/driver capabilities (FFI, MMIO, reinterpret — claim required) |
+| `usr` | User application namespace (cross-package user code) |
+| `core` | Compiler-intrinsic primitives (ambient) |
+
+Plus path keywords `crate`, `self`, `super` (resolution-only, không phải user identifiers).
+
+`sys.*`/`dev.*`/`usr.*` được capability-checked tại compile + link time per capability system ([ADR-0016](docs/decisions/0016-capability-type-system.md)). Intra-package paths (`crate.*`, `self.*`, `super.*`) và stdlib (`std.*`/`core.*`) không cần capability claim.
 
 ---
 
