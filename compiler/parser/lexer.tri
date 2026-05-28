@@ -115,6 +115,13 @@ public enum Token {
     GtEq,
     AndAnd,
     OrOr,
+    // v0.8.x.review.3 — ownership reference tokens (ADR-0022 §2 S6
+    // five-form reference). Compound `&+`/`&0`/`&-` precede `&&`
+    // and bare `&` in dispatch for longest-match.
+    AmpersandPlus,
+    AmpersandZero,
+    AmpersandMinus,
+    Ampersand,
     FatArrow,
     TildeArrow,
     TildeCaret,
@@ -725,6 +732,18 @@ function lex_single_or_compound(source: String, cursor: Integer) -> OneToken~Lex
     if starts_with_at(source, cursor, ">=") {
         return ~+ make_op(GtEq, cursor, 2)
     }
+    // Ownership reference compounds (ADR-0022 §2) — MUST precede
+    // `&&` for longest-match. `&-` (2-char) shares prefix with `&&`
+    // (2-char); declaration order picks `&-` first.
+    if starts_with_at(source, cursor, "&+") {
+        return ~+ make_op(AmpersandPlus, cursor, 2)
+    }
+    if starts_with_at(source, cursor, "&0") {
+        return ~+ make_op(AmpersandZero, cursor, 2)
+    }
+    if starts_with_at(source, cursor, "&-") {
+        return ~+ make_op(AmpersandMinus, cursor, 2)
+    }
     if starts_with_at(source, cursor, "&&") {
         return ~+ make_op(AndAnd, cursor, 2)
     }
@@ -800,6 +819,7 @@ function lex_single_or_compound(source: String, cursor: Integer) -> OneToken~Lex
     if character == "(" { return ~+ make_op(LParen, cursor, 1) }
     if character == ")" { return ~+ make_op(RParen, cursor, 1) }
     if character == "|" { return ~+ make_op(Pipe, cursor, 1) }
+    if character == "&" { return ~+ make_op(Ampersand, cursor, 1) }
     if character == "_" { return ~+ make_op(Underscore, cursor, 1) }
 
     ~- UnexpectedCharacter(UnexpectedCharacterDetail {
@@ -1056,6 +1076,9 @@ function main() -> Unit = {
     check_count("ops_compound", "== != <= >= && || => ->", 8)
     // 4. Outcome ops (compound tokens from ADR-0020).
     check_count("ops_outcome", "~+ ~- ~0 ~? ~: ?~", 6)
+    // 4b. Ownership reference tokens (ADR-0022 §2 S6 five-form).
+    //     Compounds `&+`/`&0`/`&-` precede bare `&`; `&-` precedes `&&`.
+    check_count("ops_ownership", "&+ &0 &- &", 4)
     // 5. Ternary literal.
     check_count("ternary_lit", "0t+0-+", 1)
     // 6. String literal with escapes.
