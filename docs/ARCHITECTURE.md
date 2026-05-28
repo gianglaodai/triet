@@ -115,7 +115,7 @@ Trụ cột bản sắc memory model. ADR-0022 locks **S6 — Single-form Owners
 
 Send derivation auto-classifies 13 type categories per ADR-0026 v2 §2.1 via `triet-typecheck::types::Type::is_send()`. E2500 `NotSendCannotCrossBoundary` fires on generic `Send` bound violations. ADR-0025 borrow checker rules + E24XX lifetime/move/exclusivity diagnostics are **specced + skeleton-emitted**; enforcement deferred to v0.9 (need real-world corpus first). ADR-0027 diagnostic format standard locks AI-first format (header `EXXXX ErrorName` + body + `[Fix N]` blocks, ASCII, no diff `-/+`) across all error/warning text — retroactive to ADR-0020/0025.
 
-Capability schema (`dao.package`) extends with concurrency caps: `sys.raw_thread`, `sys.atomic`, `dev.ffi`, `dev.raw_memory`, `dev.reinterpret`; ownership caps `dev.self_ref`, `dev.custom_drop`. Resolver fix: ambient capability modules bypass filesystem checks. Demo `examples/atomic_counter/` is aspirational pseudo-code (parser-side ReferenceForm not yet ported — tracked v0.8.x.review).
+Capability schema (`dao.package`) extends with concurrency caps: `sys.raw_thread`, `sys.atomic`, `dev.ffi`, `dev.raw_memory`, `dev.reinterpret`; ownership caps `dev.self_ref`, `dev.custom_drop`. Resolver fix: ambient capability modules bypass filesystem checks. Demo `examples/atomic_counter/` shows ownership + capability declaration end-to-end (`&+ Atomic<T>` parses, `dao check` + `dao run` succeed; Atomic operations are declaration-only — full memory-ordering impl ships v0.9 ADR-0028).
 
 ---
 

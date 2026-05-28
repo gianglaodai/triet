@@ -98,7 +98,7 @@ triet/
 ├── std/                   # Standard library (.tri files)
 │   ├── io.tri, text.tri, assert.tri
 ├── compiler/              # Triết-in-Triết self-hosting compiler (v0.7 shipped, ~23K LOC)
-├── examples/              # 14 single-file .tri programs + 1 dir (atomic_counter aspirational)
+├── examples/              # 14 single-file .tri programs + 1 dir (atomic_counter capability + ownership demo)
 ├── demos/                 # Larger multi-file demos
 │   ├── 02-module-system/  # 704-dòng ternary ALU across 6 modules
 │   ├── 04-capability-system/  # v0.6 capability gates walkthrough
