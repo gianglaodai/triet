@@ -456,7 +456,7 @@ pub enum ConcurrencyError {
     /// E2500: A type was passed across a thread boundary but is not Send.
     #[error("type `{ty}` cannot be sent across thread boundaries")]
     #[diagnostic(
-        code(triet::borrow::E2500),
+        code(triet::actor::E2500),
         help(
             "Suggested fixes:\n\n\
             [Fix 1] Ensure the type is Send (primitive or `&+` holding Send types):\n\
@@ -476,7 +476,7 @@ pub enum ConcurrencyError {
     /// E2510: Scope-ref / weak-ref boundary violations.
     #[error("scope-ref leakage: reference escapes its permitted scope")]
     #[diagnostic(
-        code(triet::borrow::E2510),
+        code(triet::actor::E2510),
         help(
             "Suggested fixes:\n\n\
             [Fix 1] Prevent the borrow from escaping:\n\
@@ -494,7 +494,7 @@ pub enum ConcurrencyError {
     /// E2520: Mutable-share anti-pattern.
     #[error("mutable-share anti-pattern: attempting to share mutable state")]
     #[diagnostic(
-        code(triet::borrow::E2520),
+        code(triet::actor::E2520),
         help(
             "Suggested fixes:\n\n\
             [Fix 1] Use message passing instead of shared state:\n\

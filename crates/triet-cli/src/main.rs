@@ -453,11 +453,11 @@ fn type_error_code(error: &TypeError) -> String {
         TypeError::NullDeprecated { .. } => "triet::typecheck::W2001",
         TypeError::Concurrency(err) => match err {
             triet_typecheck::ConcurrencyError::NotSendCannotCrossBoundary { .. } => {
-                "triet::borrow::E2500"
+                "triet::actor::E2500"
             }
-            triet_typecheck::ConcurrencyError::ScopeRefLeakage { .. } => "triet::borrow::E2510",
+            triet_typecheck::ConcurrencyError::ScopeRefLeakage { .. } => "triet::actor::E2510",
             triet_typecheck::ConcurrencyError::MutableShareAntiPattern { .. } => {
-                "triet::borrow::E2520"
+                "triet::actor::E2520"
             }
         },
         TypeError::Borrow(err) => match err {
