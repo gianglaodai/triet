@@ -261,7 +261,9 @@ fn resolve_type_expr_with_params(
             "Trilean" => Type::TRILEAN,
             "String" => Type::String,
             "Unit" => Type::Unit,
-            other if type_params.iter().any(|p| p.name == other) => Type::TypeParam(other.to_owned()),
+            other if type_params.iter().any(|p| p.name == other) => {
+                Type::TypeParam(other.to_owned())
+            }
             other => name_table.get(other).cloned().unwrap_or(Type::Unknown),
         },
         TypeExpr::Tuple(elements) => Type::Tuple(

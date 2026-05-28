@@ -269,14 +269,14 @@ fn resolve_whole_import(
         let module_segments = &resolved[..resolved.len() - 1];
         let item_name = resolved.last().unwrap();
         let module_path = ModulePath::new(module_segments.to_vec());
-        if program.find_module(&module_path).is_none() {
-            if let Some(root) = module_path.root()
-                && matches!(root, "sys" | "dev" | "usr" | "std" | "core") {
-                    let abs_path = AbsolutePath::new(module_path, item_name.clone());
-                    let bind_name = segments.last().unwrap().clone();
-                    bind_import(program, importer_id, bind_name, abs_path, span, errors);
-                    return;
-                }
+        if program.find_module(&module_path).is_none()
+            && let Some(root) = module_path.root()
+            && matches!(root, "sys" | "dev" | "usr" | "std" | "core")
+        {
+            let abs_path = AbsolutePath::new(module_path, item_name.clone());
+            let bind_name = segments.last().unwrap().clone();
+            bind_import(program, importer_id, bind_name, abs_path, span, errors);
+            return;
         }
     }
 
@@ -308,27 +308,32 @@ fn resolve_from_import(
     let target_path = ModulePath::new(resolved);
 
     // User module.
-    let target_mod_id = match program.find_module(&target_path) {
-        Some(id) => id,
-        None => {
-            // v0.8.11: Capability/Ambient modules (`sys`, `dev`, `usr`, `std`, `core`)
-            // resolve automatically here so that `check_capabilities` and `typecheck` can process them later.
-            if let Some(root) = target_path.root()
-                && matches!(root, "sys" | "dev" | "usr" | "std" | "core") {
-                    for (original, rename) in names {
-                        let bind_name = rename.as_ref().unwrap_or(original).clone();
-                        let abs_path = AbsolutePath::new(target_path.clone(), original.clone());
-                        bind_import(program, importer_id, bind_name, abs_path, span.clone(), errors);
-                    }
-                    return;
-                }
-
-            errors.push(LoaderError::UnresolvedImport {
-                path: source.join("."),
-                span,
-            });
+    let Some(target_mod_id) = program.find_module(&target_path) else {
+        // v0.8.11: Capability/Ambient modules (`sys`, `dev`, `usr`, `std`, `core`)
+        // resolve automatically here so that `check_capabilities` and `typecheck` can process them later.
+        if let Some(root) = target_path.root()
+            && matches!(root, "sys" | "dev" | "usr" | "std" | "core")
+        {
+            for (original, rename) in names {
+                let bind_name = rename.as_ref().unwrap_or(original).clone();
+                let abs_path = AbsolutePath::new(target_path.clone(), original.clone());
+                bind_import(
+                    program,
+                    importer_id,
+                    bind_name,
+                    abs_path,
+                    span.clone(),
+                    errors,
+                );
+            }
             return;
         }
+
+        errors.push(LoaderError::UnresolvedImport {
+            path: source.join("."),
+            span,
+        });
+        return;
     };
 
     for (name, alias) in names {

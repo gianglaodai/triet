@@ -72,7 +72,7 @@ mod tests {
         );
     }
 
-// ===== Concurrency Bounds =====
+    // ===== Concurrency Bounds =====
 
     #[test]
     fn checks_send_bound_success() {
@@ -97,11 +97,16 @@ mod tests {
                 spawn(r)
             }
             ",
-            |e| matches!(e, TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })),
+            |e| {
+                matches!(
+                    e,
+                    TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })
+                )
+            },
         );
     }
 
-#[test]
+    #[test]
     fn checks_send_bound_strong_ref_success() {
         assert_ok(
             r"
@@ -124,7 +129,12 @@ mod tests {
                 spawn(r)
             }
             ",
-            |e| matches!(e, TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })),
+            |e| {
+                matches!(
+                    e,
+                    TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })
+                )
+            },
         );
     }
 
@@ -151,7 +161,12 @@ mod tests {
                 let t: Task<&0 Integer> = Task { val: r } // Should fail
             }
             ",
-            |e| matches!(e, TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })),
+            |e| {
+                matches!(
+                    e,
+                    TypeError::Concurrency(ConcurrencyError::NotSendCannotCrossBoundary { .. })
+                )
+            },
         );
     }
 

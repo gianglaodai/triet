@@ -9,14 +9,17 @@ fn e2e_bootstrap_chain() {
     let temp = TempDir::new().unwrap();
 
     // Ensure target/release directory exists (optional, but good practice per user request)
-    let release_dir = std::env::current_dir().unwrap().join("target").join("release");
+    let release_dir = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join("release");
     fs::create_dir_all(&release_dir).unwrap();
 
     let trietc_stage1 = release_dir.join("trietc.khi");
     let trietc_stage2 = temp.path().join("trietc2.khi");
 
     let dao_bin = env!("CARGO_BIN_EXE_dao");
-    
+
     // Cargo runs tests with CWD = crates/triet-cli. We need the workspace root.
     let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

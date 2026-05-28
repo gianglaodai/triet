@@ -2,9 +2,9 @@
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
-    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, ImportFrom, ImportName,
-    ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Spanned, StructDef, StructField,
-    TypeParam, Visibility,
+    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, ImportFrom,
+    ImportName, ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Spanned, StructDef,
+    StructField, TypeParam, Visibility,
 };
 
 use crate::{
@@ -625,13 +625,14 @@ fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<TypeParam>, Parse
         let name = parse_ident(parser, "type parameter")?;
         let mut bound = None;
         if parser.eat(&Token::Colon) {
-            let (bound_tok, span) = parser
-                .peek()
-                .cloned()
-                .ok_or_else(|| ParseError::UnexpectedEof {
-                    expected: "generic bound".to_owned(),
-                    span: parser.eof_span(),
-                })?;
+            let (bound_tok, span) =
+                parser
+                    .peek()
+                    .cloned()
+                    .ok_or_else(|| ParseError::UnexpectedEof {
+                        expected: "generic bound".to_owned(),
+                        span: parser.eof_span(),
+                    })?;
             match bound_tok {
                 Token::Identifier(ref id) if id == "Send" => {
                     parser.advance();
@@ -804,7 +805,13 @@ mod tests {
         let (_, item) = parse("function identity<T>(x: T) -> T = x");
         match &item.node {
             Item::Function(def) => {
-                assert_eq!(def.type_params, vec![TypeParam { name: "T".to_owned(), bound: None }]);
+                assert_eq!(
+                    def.type_params,
+                    vec![TypeParam {
+                        name: "T".to_owned(),
+                        bound: None
+                    }]
+                );
                 assert_eq!(def.parameters.len(), 1);
                 assert!(def.return_type.is_some());
             }
@@ -820,7 +827,19 @@ mod tests {
         let (_, item) = parse("function pair<K, V>(k: K, v: V) -> K = k");
         match &item.node {
             Item::Function(def) => {
-                assert_eq!(def.type_params, vec![TypeParam { name: "K".to_owned(), bound: None }, TypeParam { name: "V".to_owned(), bound: None }]);
+                assert_eq!(
+                    def.type_params,
+                    vec![
+                        TypeParam {
+                            name: "K".to_owned(),
+                            bound: None
+                        },
+                        TypeParam {
+                            name: "V".to_owned(),
+                            bound: None
+                        }
+                    ]
+                );
                 assert_eq!(def.parameters.len(), 2);
             }
             other => panic!("expected Function, got {other:?}"),

@@ -216,7 +216,6 @@ pub enum Expr {
     // Send/Spawn are stdlib functions, not Expr variants.
 
     // === Legacy outcome operators (deprecated v0.7.4.3-error.4) ===
-
     /// [DEPRECATED] `inner ~? |name| early_return` →
     /// `OutcomeArmHandler { arm: Negative, .. }`.
     // [DEPRECATED v0.7.4.3-error.4] Use `OutcomeArmHandler`.

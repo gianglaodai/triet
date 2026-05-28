@@ -651,13 +651,12 @@ fn validate_cap_path(s: &str, line: usize) -> Result<(), PackageManifestError> {
 
     // Strict validation for sys.* and dev.* capabilities.
     // usr.* is open for user-defined capabilities.
-    if (root == "sys" || root == "dev")
-        && !STANDARD_CAPABILITIES.contains(&s) {
-            return Err(PackageManifestError::UnknownStandardCapability {
-                line,
-                cap_path: s.to_owned(),
-            });
-        }
+    if (root == "sys" || root == "dev") && !STANDARD_CAPABILITIES.contains(&s) {
+        return Err(PackageManifestError::UnknownStandardCapability {
+            line,
+            cap_path: s.to_owned(),
+        });
+    }
 
     Ok(())
 }

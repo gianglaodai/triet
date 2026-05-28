@@ -9,10 +9,10 @@
 //! pipeline (load → typecheck → lower → VM execute) and assert the
 //! VM returns without hanging + produces correct values.
 
+use miette::Diagnostic;
 use triet_ir::{RuntimeValue, Vm, lower_program};
 use triet_modules::load_program_from_source;
 use triet_typecheck::check_resolved;
-use miette::Diagnostic;
 
 fn run_main(source: &str) -> RuntimeValue {
     let resolved = load_program_from_source(source).expect("load");

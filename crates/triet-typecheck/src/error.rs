@@ -698,7 +698,9 @@ pub enum BorrowError {
     },
 
     /// E2422: `NonTerminatingConstruction` (ADR-0025 §6.2)
-    #[error("non-terminating construction: struct requires an owned instance of itself to be constructed")]
+    #[error(
+        "non-terminating construction: struct requires an owned instance of itself to be constructed"
+    )]
     #[diagnostic(
         code(triet::borrow::E2422),
         help(

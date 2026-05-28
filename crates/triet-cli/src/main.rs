@@ -61,7 +61,7 @@ enum Command {
     Run {
         /// Path to .tri, .triv, or .khi file.
         path: String,
-        
+
         /// Arguments passed to the program.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -368,20 +368,26 @@ fn check_program(path: &str, json: bool) -> ExitCode {
             return ExitCode::from(3);
         }
     }
-    
+
     // v0.8.11: run capability check with discovered manifest or empty one if missing.
     let manifest_path = source_path
         .parent()
         .and_then(triet_pack::PackageManifest::discover);
-        
-    let empty_manifest = triet_pack::PackageManifest::new("unknown", triet_pack::SemVer::new(0, 0, 0));
+
+    let empty_manifest =
+        triet_pack::PackageManifest::new("unknown", triet_pack::SemVer::new(0, 0, 0));
     let manifest = match manifest_path {
         Some(p) => match triet_pack::PackageManifest::load(&p) {
             Ok(m) => Some(m),
             Err(triet_pack::StoreError::PackageManifest(e)) => {
                 if json {
                     let mut emitter = JsonEmitter::new();
-                    emitter.emit(&e.to_string(), package_manifest_error_code(&e), &(0..0), display_path);
+                    emitter.emit(
+                        &e.to_string(),
+                        package_manifest_error_code(&e),
+                        &(0..0),
+                        display_path,
+                    );
                     emitter.finish();
                 } else {
                     eprintln!("{}: {}", package_manifest_error_code(&e), e);
@@ -389,7 +395,9 @@ fn check_program(path: &str, json: bool) -> ExitCode {
                 return ExitCode::from(5);
             }
             Err(e) => {
-                if !json { eprintln!("triet::capability::E2208: {e}"); }
+                if !json {
+                    eprintln!("triet::capability::E2208: {e}");
+                }
                 return ExitCode::from(5);
             }
         },
@@ -447,24 +455,30 @@ fn type_error_code(error: &TypeError) -> String {
             triet_typecheck::ConcurrencyError::NotSendCannotCrossBoundary { .. } => {
                 "triet::borrow::E2500"
             }
-            triet_typecheck::ConcurrencyError::ScopeRefLeakage { .. } => {
-                "triet::borrow::E2510"
-            }
+            triet_typecheck::ConcurrencyError::ScopeRefLeakage { .. } => "triet::borrow::E2510",
             triet_typecheck::ConcurrencyError::MutableShareAntiPattern { .. } => {
                 "triet::borrow::E2520"
             }
         },
         TypeError::Borrow(err) => match err {
-            triet_typecheck::BorrowError::BorrowLifetimeInferenceFailed { .. } => "triet::borrow::E2400",
+            triet_typecheck::BorrowError::BorrowLifetimeInferenceFailed { .. } => {
+                "triet::borrow::E2400"
+            }
             triet_typecheck::BorrowError::BorrowInStructField { .. } => "triet::borrow::E2402",
             triet_typecheck::BorrowError::EscapingBorrow { .. } => "triet::borrow::E2403",
             triet_typecheck::BorrowError::CannotMutateFrozenOwner { .. } => "triet::borrow::E2410",
-            triet_typecheck::BorrowError::CannotPromoteFrozenToMutable { .. } => "triet::borrow::E2411",
+            triet_typecheck::BorrowError::CannotPromoteFrozenToMutable { .. } => {
+                "triet::borrow::E2411"
+            }
             triet_typecheck::BorrowError::UseAfterMove { .. } => "triet::borrow::E2420",
             triet_typecheck::BorrowError::SelfOwnershipParadox { .. } => "triet::borrow::E2421",
-            triet_typecheck::BorrowError::NonTerminatingConstruction { .. } => "triet::borrow::E2422",
+            triet_typecheck::BorrowError::NonTerminatingConstruction { .. } => {
+                "triet::borrow::E2422"
+            }
             triet_typecheck::BorrowError::NamespaceInferenceFailed { .. } => "triet::borrow::E2430",
-            triet_typecheck::BorrowError::BorrowExclusivityViolation { .. } => "triet::borrow::E2440",
+            triet_typecheck::BorrowError::BorrowExclusivityViolation { .. } => {
+                "triet::borrow::E2440"
+            }
         },
     }
     .to_owned()
@@ -504,10 +518,8 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
     // v0.7.10: discover dao.package by walking up from the source file's
     // parent directory. Mirrors `cargo` convention per ADR-0019 §8.
     let source_path = Path::new(path);
-    let manifest_path = source_path
-        .parent()
-        .and_then(PackageManifest::discover);
-        
+    let manifest_path = source_path.parent().and_then(PackageManifest::discover);
+
     let empty_manifest = PackageManifest::new("unknown", triet_pack::SemVer::new(0, 0, 0));
     let manifest = match manifest_path {
         Some(p) => match PackageManifest::load(&p) {
@@ -515,7 +527,12 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
             Err(triet_pack::StoreError::PackageManifest(e)) => {
                 if json {
                     let mut emitter = JsonEmitter::new();
-                    emitter.emit(&e.to_string(), package_manifest_error_code(&e), &(0..0), display_path);
+                    emitter.emit(
+                        &e.to_string(),
+                        package_manifest_error_code(&e),
+                        &(0..0),
+                        display_path,
+                    );
                     emitter.finish();
                 } else {
                     eprintln!("{}: {}", package_manifest_error_code(&e), e);
@@ -523,7 +540,9 @@ fn build_program(path: &str, output: Option<String>, json: bool) -> ExitCode {
                 return ExitCode::from(5);
             }
             Err(e) => {
-                if !json { eprintln!("triet::capability::E2208: {e}"); }
+                if !json {
+                    eprintln!("triet::capability::E2208: {e}");
+                }
                 return ExitCode::from(5);
             }
         },
@@ -751,10 +770,15 @@ fn run_bytecode(path: &str, args: &[String], json: bool) -> ExitCode {
     };
 
     let func_to_run = find_entry_function(&ir);
-    
+
     // v0.8.12: Check if the entry function expects an argument.
     // If it expects 1 argument (Vector<String>), map `args` and pass it in.
-    let func = ir.modules.iter().flat_map(|m| &m.functions).find(|f| f.id == func_to_run).unwrap();
+    let func = ir
+        .modules
+        .iter()
+        .flat_map(|m| &m.functions)
+        .find(|f| f.id == func_to_run)
+        .unwrap();
     let vm_args = if func.params.len() == 1 {
         let argv_values: Vec<triet_ir::RuntimeValue> = args
             .iter()

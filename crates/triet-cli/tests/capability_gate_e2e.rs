@@ -291,11 +291,7 @@ fn e2e_manifest_parse_error() {
         "format_version 1\nname test_pkg\nversion 1.0.0\nrequires sys.raw_thread UNKNOWN_LEVEL\n",
     )
     .unwrap();
-    fs::write(
-        temp.path().join("main.tri"),
-        "function main() {}\n",
-    )
-    .unwrap();
+    fs::write(temp.path().join("main.tri"), "function main() {}\n").unwrap();
     // dao check will fail parsing the manifest before capability checking
     let output = run_dao_check(temp.path(), "main.tri");
     assert!(!output.status.success());
@@ -309,11 +305,7 @@ fn e2e_duplicate_capability_decl() {
         "format_version 1\nname test\nversion 1.0.0\nrequires sys.io grant\nrequires sys.io grant\n",
     )
     .unwrap();
-    fs::write(
-        temp.path().join("main.tri"),
-        "function main() {}\n",
-    )
-    .unwrap();
+    fs::write(temp.path().join("main.tri"), "function main() {}\n").unwrap();
     let output = run_dao_check(temp.path(), "main.tri");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -328,11 +320,7 @@ fn e2e_invalid_capability_root() {
         "format_version 1\nname test\nversion 1.0.0\nrequires invalid.root grant\n",
     )
     .unwrap();
-    fs::write(
-        temp.path().join("main.tri"),
-        "function main() {}\n",
-    )
-    .unwrap();
+    fs::write(temp.path().join("main.tri"), "function main() {}\n").unwrap();
     let output = run_dao_check(temp.path(), "main.tri");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -370,4 +358,3 @@ fn e2e_atomic_counter_no_manifest() {
     // Should emit 2 E2200 errors (sys.atomic, sys.raw_thread) deduplicated
     assert_eq!(stderr.matches("E2200").count(), 2);
 }
-

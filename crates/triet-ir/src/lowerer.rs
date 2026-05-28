@@ -1622,9 +1622,7 @@ impl<'a> LowerCtx<'a> {
     ) -> ValueId {
         use triet_syntax::OutcomeArm;
         match arm {
-            OutcomeArm::Negative => {
-                self.lower_outcome_propagate(inner, capture_name, body)
-            }
+            OutcomeArm::Negative => self.lower_outcome_propagate(inner, capture_name, body),
             _ => ValueId(0), /* stub — pending v0.7.4.3-error.5 */
         }
     }

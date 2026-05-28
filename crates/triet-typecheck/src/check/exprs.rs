@@ -553,14 +553,15 @@ impl Checker<'_> {
             for tp in type_params {
                 if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
                     && let Some(arg_ty) = sub_map.get(&tp.name)
-                        && !arg_ty.is_send() {
-                            self.errors.push(crate::error::TypeError::Concurrency(
-                                crate::error::ConcurrencyError::NotSendCannotCrossBoundary {
-                                    ty: arg_ty.to_string(),
-                                    span: span.clone(),
-                                }
-                            ));
-                        }
+                    && !arg_ty.is_send()
+                {
+                    self.errors.push(crate::error::TypeError::Concurrency(
+                        crate::error::ConcurrencyError::NotSendCannotCrossBoundary {
+                            ty: arg_ty.to_string(),
+                            span: span.clone(),
+                        },
+                    ));
+                }
             }
             return return_type.substitute(&sub_map);
         }

@@ -664,7 +664,10 @@ fn parse_outcome_capture(
     parser: &mut Parser<'_>,
     op_label: &str,
 ) -> Result<Option<String>, ParseError> {
-    parser.expect(&Token::Pipe, &format!("`|` (closure capture for {op_label})"))?;
+    parser.expect(
+        &Token::Pipe,
+        &format!("`|` (closure capture for {op_label})"),
+    )?;
     let (capture_token, capture_span) =
         parser
             .peek()

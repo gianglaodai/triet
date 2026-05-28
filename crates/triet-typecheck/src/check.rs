@@ -110,7 +110,8 @@ impl<'p> Checker<'p> {
                 // struct/enum below).
                 self.env.push_frame();
                 for param in &def.type_params {
-                    self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
+                    self.env
+                        .declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let parameters: Vec<Type> = def
                     .parameters
@@ -171,7 +172,8 @@ impl<'p> Checker<'p> {
                 // field type resolution.
                 self.env.push_frame();
                 for param in &def.type_params {
-                    self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
+                    self.env
+                        .declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let fields: Vec<(String, Type)> = def
                     .fields
@@ -189,7 +191,8 @@ impl<'p> Checker<'p> {
             Item::Enum(def) => {
                 self.env.push_frame();
                 for param in &def.type_params {
-                    self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
+                    self.env
+                        .declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let variants: Vec<(String, Option<Box<Type>>)> = def
                     .variants
@@ -227,7 +230,8 @@ impl<'p> Checker<'p> {
         // them as `TypeParam(name)` rather than `Unknown` (v0.7.4.1,
         // ADR-0019 Addendum §A7, Q2-A).
         for param in &def.type_params {
-            self.env.declare(&param.name, Type::TypeParam(param.name.clone()));
+            self.env
+                .declare(&param.name, Type::TypeParam(param.name.clone()));
         }
 
         let return_type = def
@@ -627,19 +631,23 @@ impl<'p> Checker<'p> {
                                 });
                                 return Type::Unknown;
                             }
-let map: std::collections::HashMap<_, _> =
-                                type_params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
+                            let map: std::collections::HashMap<_, _> = type_params
+                                .iter()
+                                .map(|p| p.name.clone())
+                                .zip(args.iter().cloned())
+                                .collect();
                             for tp in type_params {
                                 if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
                                     && let Some(arg_ty) = map.get(&tp.name)
-                                        && !arg_ty.is_send() {
-                                            self.errors.push(crate::error::TypeError::Concurrency(
+                                    && !arg_ty.is_send()
+                                {
+                                    self.errors.push(crate::error::TypeError::Concurrency(
                                                 crate::error::ConcurrencyError::NotSendCannotCrossBoundary {
                                                     ty: arg_ty.to_string(),
                                                     span: span.clone(),
                                                 }
                                             ));
-                                        }
+                                }
                             }
                             return ty.substitute(&map);
                         }

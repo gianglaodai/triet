@@ -29,16 +29,15 @@ pub use token::{IntLiteral, NumericSuffix, Token};
 mod tests {
     use super::*;
     use Token::{
-        Ampersand, AmpersandMinus, AmpersandPlus, AmpersandZero, And, AndAnd, As, Assign,
-        Bang, BangBang, Break, Caret, Colon, Comma, Constant, Continue, Dot, DotDot, DotDotEq, Else,
+        Ampersand, AmpersandMinus, AmpersandPlus, AmpersandZero, And, AndAnd, As, Assign, Bang,
+        BangBang, Break, Caret, Colon, Comma, Constant, Continue, Dot, DotDot, DotDotEq, Else,
         EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow, For, From, Function, GtEq,
         Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral, InterpolationEnd,
         InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace, LBracket, LParen, Let,
         Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not, NotEq, Null, Or, OrOr,
         Owned, PercentPercent, Pipe, Plus, Public, Question, QuestionColon, QuestionDot, RBrace,
-        RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral,
-        TernaryLiteral, ThinArrow, TildeArrow, TildeCaret,
-        True, Type, Underscore, Unknown, While, WhileQ, Xor,
+        RBracket, RParen, Return, Semi, Slash, Star, StarStar, StringLiteral, TernaryLiteral,
+        ThinArrow, TildeArrow, TildeCaret, True, Type, Underscore, Unknown, While, WhileQ, Xor,
     };
 
     fn lex_only(source: &str) -> Vec<Token> {
@@ -722,17 +721,18 @@ mod tests {
     #[test]
     fn ownership_compound_longest_match_over_bare_ampersand() {
         // `&+` must lex as compound AmpersandPlus, not Ampersand + Plus.
-        assert_eq!(
-            lex_only("&+ &-"),
-            vec![AmpersandPlus, AmpersandMinus],
-        );
+        assert_eq!(lex_only("&+ &-"), vec![AmpersandPlus, AmpersandMinus],);
     }
 
     #[test]
     fn lexes_bare_ampersand_with_space() {
         // `& x` (with whitespace) → Ampersand, Identifier — not compound.
         let tokens = lex_only("& x");
-        assert_eq!(tokens.len(), 2, "expected Ampersand + Identifier, got {tokens:?}");
+        assert_eq!(
+            tokens.len(),
+            2,
+            "expected Ampersand + Identifier, got {tokens:?}"
+        );
         assert!(matches!(tokens[0], Ampersand));
     }
 
@@ -741,11 +741,7 @@ mod tests {
         // `&+ mutable T` — realistic ownership type expression.
         assert_eq!(
             lex_only("&+ mutable T"),
-            vec![
-                AmpersandPlus,
-                Mutable,
-                Identifier("T".to_owned()),
-            ],
+            vec![AmpersandPlus, Mutable, Identifier("T".to_owned()),],
         );
     }
 
@@ -814,7 +810,10 @@ mod tests {
         for kw in &["actor", "receive", "send", "spawn"] {
             let tokens = lex_only(kw);
             assert_eq!(tokens.len(), 1, "{kw:?}");
-            assert!(matches!(&tokens[0], Identifier(_)), "{kw:?} should be Identifier");
+            assert!(
+                matches!(&tokens[0], Identifier(_)),
+                "{kw:?} should be Identifier"
+            );
         }
     }
 }

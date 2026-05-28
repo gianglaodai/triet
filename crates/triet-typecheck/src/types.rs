@@ -222,18 +222,26 @@ impl Type {
     #[must_use]
     pub fn is_send(&self) -> bool {
         match self {
-            Self::Trit | Self::Tryte | Self::Integer | Self::Long | Self::Trilean { .. } | Self::Unit | Self::String => true,
+            Self::Trit
+            | Self::Tryte
+            | Self::Integer
+            | Self::Long
+            | Self::Trilean { .. }
+            | Self::Unit
+            | Self::String => true,
             Self::Tuple(elements) => elements.iter().all(Self::is_send),
             Self::Nullable(inner) => inner.is_send(),
-            Self::Outcome { value_type, error_type, .. } => value_type.is_send() && error_type.is_send(),
+            Self::Outcome {
+                value_type,
+                error_type,
+                ..
+            } => value_type.is_send() && error_type.is_send(),
             Self::Range(inner) => inner.is_send(),
             Self::UserStruct { fields, .. } => fields.iter().all(|(_, t)| t.is_send()),
-            Self::UserEnum { variants, .. } => variants.iter().all(|(_, p)| {
-                p.as_ref().is_none_or(|inner| inner.is_send())
-            }),
-            Self::Reference(form, inner) => {
-                form.is_owning() && inner.is_send()
-            }
+            Self::UserEnum { variants, .. } => variants
+                .iter()
+                .all(|(_, p)| p.as_ref().is_none_or(|inner| inner.is_send())),
+            Self::Reference(form, inner) => form.is_owning() && inner.is_send(),
             Self::Atomic(_) => true,
             Self::Function { .. } => true,
             Self::TypeParam(_) | Self::Unknown => true,
@@ -287,7 +295,12 @@ impl Type {
                 // monomorphized type has no type params.
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
-                    .map(|p| (p.name.clone(), map.get(&p.name).cloned().unwrap_or(Self::Unknown)))
+                    .map(|p| {
+                        (
+                            p.name.clone(),
+                            map.get(&p.name).cloned().unwrap_or(Self::Unknown),
+                        )
+                    })
                     .collect();
                 let merged = {
                     let mut m = map.clone();
@@ -310,7 +323,12 @@ impl Type {
             } => {
                 let local_map: std::collections::HashMap<_, _> = type_params
                     .iter()
-                    .map(|p| (p.name.clone(), map.get(&p.name).cloned().unwrap_or(Self::Unknown)))
+                    .map(|p| {
+                        (
+                            p.name.clone(),
+                            map.get(&p.name).cloned().unwrap_or(Self::Unknown),
+                        )
+                    })
                     .collect();
                 let merged = {
                     let mut m = map.clone();
@@ -491,7 +509,10 @@ mod tests {
         // Generic function display shows the type params prefix.
         assert_eq!(
             Type::Function {
-                type_params: vec![TypeParam { name: "T".into(), bound: None }],
+                type_params: vec![TypeParam {
+                    name: "T".into(),
+                    bound: None
+                }],
                 parameters: vec![Type::TypeParam("T".into())],
                 return_type: Box::new(Type::TypeParam("T".into())),
             }

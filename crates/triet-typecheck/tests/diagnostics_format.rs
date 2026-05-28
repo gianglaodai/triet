@@ -1,7 +1,7 @@
 //! Integration tests for diagnostic formats.
 use miette::Diagnostic;
-use triet_typecheck::{BorrowError, ConcurrencyError};
 use std::ops::Range;
+use triet_typecheck::{BorrowError, ConcurrencyError};
 
 // Dummy span for testing
 const fn dummy_span() -> Range<usize> {
