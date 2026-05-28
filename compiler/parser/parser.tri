@@ -355,6 +355,22 @@ public struct OutcomeTypePayload {
     allow_null_state: Trilean!,
 }
 
+// v0.8.x.completion.2 — ownership reference form per ADR-0022 §2 S6
+// model. Mirrors crates/triet-syntax/src/type_ast.rs ReferenceForm.
+// Five variants; no payload (each variant is a constant tag).
+public enum ReferenceForm {
+    StrongFrozen,             // &+ T
+    StrongMutable,            // &+ mutable T
+    BorrowReadOnly,           // &0 T
+    BorrowExclusiveMutable,   // &0 mutable T
+    WeakObserver,             // &- T (always immutable)
+}
+
+public struct ReferencePayload {
+    form: ReferenceForm,
+    inner: Integer,
+}
+
 public enum TypeExpr {
     NamedType(NamedTypePayload),
     GenericType(GenericTypePayload),
@@ -363,6 +379,7 @@ public enum TypeExpr {
     FunctionType(FunctionTypePayload),
     OutcomeType(OutcomeTypePayload),
     RefinedTrileanType,
+    Reference(ReferencePayload),
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -3023,12 +3040,110 @@ public struct ParseTypeListStep {
     close_end: Integer,
 }
 
+// v0.8.x.completion.2 — ownership reference prefix parse helper per
+// ADR-0022 §2. Returns `~+ outcome` if next token is `&+`/`&0`/`&-`
+// (with optional `mutable` follow-up for `&+`/`&0`); else `~0`.
+// Mirrors crates/triet-parser/src/type_expr.rs::try_parse_reference_prefix.
+struct ReferencePrefixOutcome {
+    form: ReferenceForm,
+    new_state: ParserState,
+    span_start: Integer,
+}
+
+function try_parse_reference_prefix(state: ParserState) -> ReferencePrefixOutcome? = {
+    let nx_opt: SpannedToken? = peek(state)
+    match nx_opt {
+        ~0 => ~0,
+        ~+ nx => {
+            match nx.token {
+                AmpersandPlus => {
+                    let after_amp: ParserState = advance(state)
+                    let nx2_opt: SpannedToken? = peek(after_amp)
+                    let is_mut: Trilean! = match nx2_opt {
+                        ~0 => false,
+                        ~+ nx2 => is_mutable_kw(nx2.token),
+                    }
+                    if is_mut {
+                        ~+ ReferencePrefixOutcome {
+                            form: StrongMutable,
+                            new_state: advance(after_amp),
+                            span_start: nx.span_start,
+                        }
+                    } else {
+                        ~+ ReferencePrefixOutcome {
+                            form: StrongFrozen,
+                            new_state: after_amp,
+                            span_start: nx.span_start,
+                        }
+                    }
+                },
+                AmpersandZero => {
+                    let after_amp: ParserState = advance(state)
+                    let nx2_opt: SpannedToken? = peek(after_amp)
+                    let is_mut: Trilean! = match nx2_opt {
+                        ~0 => false,
+                        ~+ nx2 => is_mutable_kw(nx2.token),
+                    }
+                    if is_mut {
+                        ~+ ReferencePrefixOutcome {
+                            form: BorrowExclusiveMutable,
+                            new_state: advance(after_amp),
+                            span_start: nx.span_start,
+                        }
+                    } else {
+                        ~+ ReferencePrefixOutcome {
+                            form: BorrowReadOnly,
+                            new_state: after_amp,
+                            span_start: nx.span_start,
+                        }
+                    }
+                },
+                AmpersandMinus => {
+                    // `&-` is always immutable per ADR-0022 §2; `mutable`
+                    // following `&-` is a parse error at typecheck.
+                    ~+ ReferencePrefixOutcome {
+                        form: WeakObserver,
+                        new_state: advance(state),
+                        span_start: nx.span_start,
+                    }
+                },
+                _ => ~0,
+            }
+        },
+    }
+}
+
 // Public entrypoint — kept named `parse_type_minimal` so the v0.7.5.3+
 // call sites compile unchanged. Returns a `ParseTypeStep` containing
-// the root TypeExpr ID.
+// the root TypeExpr ID. v0.8.x.completion.2: tries reference prefix
+// first; recursive call lets postfix bind to inner per Rust impl.
 public function parse_type_minimal(state: ParserState) -> ParseTypeStep~ParseError = {
-    let head: ParseTypeStep = parse_type_atom(state) ~? |err| ~- err
-    apply_type_postfix(head.state, head.type_id)
+    let ref_opt: ReferencePrefixOutcome? = try_parse_reference_prefix(state)
+    match ref_opt {
+        ~+ ref_outcome => {
+            let inner_step: ParseTypeStep = parse_type_minimal(ref_outcome.new_state) ~? |err| ~- err
+            let inner_sp: SpannedTypeExpr = get_type(inner_step.state.arena, inner_step.type_id)
+            let res: AllocResult = alloc_type(
+                inner_step.state.arena,
+                spanned_type(
+                    Reference(ReferencePayload {
+                        form: ref_outcome.form,
+                        inner: inner_step.type_id,
+                    }),
+                    ref_outcome.span_start,
+                    inner_sp.span_end,
+                ),
+            )
+            ~+ ParseTypeStep {
+                state: ParserState { tokens: inner_step.state.tokens, cursor: inner_step.state.cursor, arena: res.arena },
+                type_id: res.id,
+            }
+        },
+        ~0 => {
+            let head: ParseTypeStep = parse_type_atom(state) ~? |err| ~- err
+            apply_type_postfix(head.state, head.type_id)
+        },
+    }
 }
 
 // Atom: NamedType (+ optional generic args), or paren-form (which
@@ -5652,6 +5767,19 @@ public function format_type(arena: Arena, id: Integer) -> String = {
             concat(format_type(arena, p.value_type), concat(op, format_type(arena, p.error_type)))
         },
         RefinedTrileanType => "Trilean!",
+        Reference(p) => {
+            // v0.8.x.completion.2 — compact format: &+T, &+mutT, &0T,
+            // &0mutT, &-T. Matches conventional no-space format style
+            // of sibling arms (NullableType T?, OutcomeType T~E).
+            let prefix: String = match p.form {
+                StrongFrozen => "&+",
+                StrongMutable => "&+mut",
+                BorrowReadOnly => "&0",
+                BorrowExclusiveMutable => "&0mut",
+                WeakObserver => "&-",
+            }
+            concat(prefix, format_type(arena, p.inner))
+        },
     }
 }
 
@@ -6326,6 +6454,20 @@ function main() -> Unit = {
     assert_parse_type("Integer~ParseError", "Integer~ParseError")
     assert_parse_type("Integer?~ParseError", "Integer?~ParseError")
     assert_parse_type("Vector<Token>~LexError", "Vector<Token>~LexError")
+
+    // v0.8.x.completion.2 — S6 ownership reference forms per ADR-0022 §2.
+    // Mirrors crates/triet-parser/src/type_expr.rs ReferenceForm tests.
+    assert_parse_type("&+ Integer", "&+Integer")
+    assert_parse_type("&+ mutable Integer", "&+mutInteger")
+    assert_parse_type("&0 Integer", "&0Integer")
+    assert_parse_type("&0 mutable Integer", "&0mutInteger")
+    assert_parse_type("&- Integer", "&-Integer")
+    // Reference of generic — recursive parse_type_minimal handles inner.
+    assert_parse_type("&+ Atomic<Integer>", "&+Atomic<Integer>")
+    // Reference of nullable — postfix binds to inner per Rust impl.
+    assert_parse_type("&+ Integer?", "&+Integer?")
+    // Reference of outcome — `?~` compound stays attached to inner.
+    assert_parse_type("&0 Result<Integer, Error>", "&0Result<Integer,Error>")
 
     // v0.7.5.5b — full pattern grammar
     assert_parse_pattern("_", "_")
