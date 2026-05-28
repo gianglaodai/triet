@@ -1133,9 +1133,123 @@ Triết chạy trên 2 tier per [VISION §4.3](VISION.md):
 
 ---
 
-## 11. Ví dụ chương trình hoàn chỉnh
+## 11. Capability system
 
-### 11.1 FizzBuzz
+> Trụ cột bản sắc #5 ([VISION §3.5 + §5](VISION.md)). Full lock ở [ADR-0016](docs/decisions/0016-capability-type-system.md) (type system), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md) (policy hook), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md) (loader semantics).
+
+### 11.1 Khái niệm
+
+Capability là **namespace attribute** declared trong per-package `dao.package` manifest, không phải runtime token (Pony) hoặc effect annotation (Koka). Granularity = module level (không per-function); không wildcards; không path inheritance (`sys.io grant` NOT cover `sys.io.async`).
+
+**Reserved roots** (cross-reference §1.4 + §6.7):
+- `sys.*` — system capabilities (capability-checked).
+- `dev.*` — device/driver capabilities (capability-checked).
+- `usr.*` — user application namespace (capability-checked cross-package).
+- `std.*` — stdlib (ambient — không cần claim).
+- `core.*` — compiler intrinsics (ambient).
+
+Intra-package paths (`crate.*`, `self.*`, `super.*`) không cần claim.
+
+### 11.2 Capability level (4-state)
+
+```
+Grant     +1    Explicit grant — module được dùng.
+Ambient    0    Default-on cho stdlib / core / intra-package.
+Deny      -1    Explicit refuse — block khỏi module.
+Defer    UNK    Resolution deferred — policy hoặc TTY prompt quyết tại runtime.
+```
+
+Mapping vào Trit + `Trilean::Unknown` cho Defer state. Wire format reuses `caps section` của `.khi` ABI metadata reserved từ v0.4 (ADR-0016 §4 — populate-not-bump, `abi_version` stays `2`).
+
+### 11.3 `dao.package` source manifest
+
+Per-package source manifest. Textual level tokens cho library-author intent clarity. Grammar:
+
+```
+format_version 1
+name <id>
+version <maj>.<min>.<pat>
+requires <cap_path> <level>     # 0..n lines, sort canonical
+dep <name> <min> <max_excl> <iface_hash_hex>     # 0..n lines, sort canonical
+```
+
+`<id>` = `[a-z][a-z0-9_]*`. `<level>` ∈ {`grant`, `ambient`, `deny`, `defer`}.
+
+```dao.package
+format_version 1
+name my_app
+version 1.0.0
+requires sys.io grant
+requires sys.raw_thread deny
+requires usr.analytics defer
+```
+
+Parser strict whitelist: BOM/CRLF/inline-`#`/oversize-line/file rejected ([ADR-0017 Addendum §A](docs/decisions/0017-trilean-policy-hook.md)).
+
+### 11.4 `dao.policy` resolution rules
+
+Per-deploy resolution config cho `Defer` capabilities. Numeric tokens cho sysadmin audit compactness. Grammar:
+
+```
+format_version 1
+rule <cap_path> <origin> <decision>     # 0..n lines, sort canonical
+default <decision>
+```
+
+`<origin>` ∈ {`lockfile`, `ifacepin`, `fresh`, `*`}. `<decision>` ∈ {`+1`, `0`, `-1`, `prompt`}. `default prompt` rejected.
+
+```dao.policy
+format_version 1
+rule sys.io * +1
+rule usr.analytics lockfile -1
+default prompt
+```
+
+**Token convention difference:** `dao.package` dùng textual tokens (library-author audience); `dao.policy` dùng numeric tokens (sysadmin audience). Không alias: `0` trong policy = Abstain, không phải Ambient.
+
+### 11.5 Root authority semantics
+
+Root package's manifest là **sole decision-maker** ([ADR-0016 §7](docs/decisions/0016-capability-type-system.md)). Dep claims là *requests*, không bao giờ auto-promoted. Ambient at root ≡ Deny (root phải explicit grant nếu muốn use cap).
+
+**Enforcement stages:**
+
+1. **Compile-time** (`check_capabilities`): Fires E2200 `MissingCapabilityClaim` + E2201 `SelfContradictoryCapability`.
+2. **Link-time** (`check_link_capabilities`): Fires E2200 (root authority gap), E2202 `UnresolvedCapabilityPath`, E2203 `CapabilityRefused`.
+3. **Runtime** (`CapabilityResolver::resolve`): Defer unresolved tại link → `dao.policy` rules → TTY prompt → fail-closed.
+
+### 11.6 Monotonicity invariant
+
+Capability decisions là **monotonic within a process**: once cached, một `(cap_path, requester_pkg)` pair never re-evaluates. Modifying `dao.policy` mid-session has no effect; restart re-reads ([ADR-0017 §5](docs/decisions/0017-trilean-policy-hook.md)). Không có hot-reload.
+
+### 11.7 TTY prompt và fail-closed
+
+Khi `Defer` reaches runtime resolution + không `dao.policy` rule match + không TTY available, runtime **fail-closed** (treat as Deny + diagnostic E2205.NonTTYDefer).
+
+Khi TTY available, runtime opens `/dev/tty` directly (POSIX) cho prompt — stdin/stderr không được dùng (anti-spoofing per ADR-0017 Addendum §B). Full 64-hex hashes shown (no truncation — security boundary). ASCII `!!` markers cho universally renderable. User options: `g`/`d` (this session), `G`/`D` (permanent via `PolicyRules::save`), `?`/`h` (help).
+
+Windows ConPTY: `io::ErrorKind::Unsupported` stub (POSIX-first; Windows deferred).
+
+### 11.8 Error namespace E22XX
+
+Per CLAUDE.md error code namespace:
+
+| Code | Variant | Stage |
+|---|---|---|
+| E2200 | `MissingCapabilityClaim` | compile + link |
+| E2201 | `SelfContradictoryCapability` | compile |
+| E2202 | `UnresolvedCapabilityPath` | link |
+| E2203 | `CapabilityRefused` | link |
+| E2204 | `DuplicateCapabilityDecl` | parse |
+| E2205 | Policy runtime sub-variants | runtime |
+| E2206 | `InvalidRootCapability` | parse |
+| E2207 | `InvalidCapabilityLevel` | parse |
+| E2208 | Loader sub-variants | link |
+
+---
+
+## 12. Ví dụ chương trình hoàn chỉnh
+
+### 12.1 FizzBuzz
 
 ```triet
 function fizzbuzz(n: Integer) -> String =
@@ -1155,7 +1269,7 @@ function main() -> Unit {
 }
 ```
 
-### 11.2 Reasoning với missing data (showcase Łukasiewicz)
+### 12.2 Reasoning với missing data (showcase Łukasiewicz)
 
 ```triet
 type Patient = (Trilean, Trilean, Trilean)    // (có_sốt, có_phát_ban, đã_tiêm_vaccine)
@@ -1173,7 +1287,7 @@ function risk_measles(p: Patient) -> Trilean {
 // → "không đủ thông tin để khẳng định, cần xác minh tiêm chủng"
 ```
 
-### 11.3 Showcase balanced ternary — kiểm tra dấu
+### 12.3 Showcase balanced ternary — kiểm tra dấu
 
 ```triet
 // Dấu của số = trit MSB khác 0 đầu tiên
@@ -1183,7 +1297,7 @@ function sign(n: Integer) -> Trit = n.first_nonzero_trit_or(0_trit)
 
 ---
 
-## 12. Ngữ pháp (EBNF, không hoàn chỉnh, v0.2)
+## 13. Ngữ pháp (EBNF, không hoàn chỉnh, v0.2)
 
 ```ebnf
 program       = item* ;
@@ -1254,7 +1368,7 @@ p implies q implies r         // = p implies (q implies r) (right-assoc)
 
 ---
 
-## 13. Open issues — đã quyết định
+## 14. Open issues — đã quyết định
 
 Cả 4 open issue của bản trước đã có ADR riêng trong `docs/decisions/`. Tóm tắt:
 
@@ -1267,7 +1381,7 @@ Open issues mới sẽ append phía dưới. Hiện tại: trống.
 
 ---
 
-## 14. Lộ trình các phiên bản tiếp theo (informative)
+## 15. Lộ trình các phiên bản tiếp theo (informative)
 
 Lộ trình chi tiết với gates, deliverables, và ADRs: [`ROADMAP.md`](ROADMAP.md).
 
