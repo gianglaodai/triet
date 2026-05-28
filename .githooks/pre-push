@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Pre-push hook — full ADR-0009 gate B (~1 minute).
+#
+# Catches v0.8.x.review.1-style clippy errors and broken tests BEFORE
+# the dirty state reaches the remote. This is the last guard between
+# local mistakes and shared history.
+#
+# Runs:
+#   1. cargo fmt --all --check  (~0.5s)
+#   2. cargo clippy --workspace --all-targets -- -D warnings  (~30s)
+#   3. cargo test --workspace  (~30s)
+#
+# To bypass (e.g., for force-push to private fork branch), use:
+#   git push --no-verify
+#
+# Use sparingly. Bypass on main/master = cadence violation.
+
+set -e
+
+echo "Running ADR-0009 gate B (Hygiene) before push…"
+
+echo "  [1/3] cargo fmt --check"
+if ! cargo fmt --all --check 2>/dev/null; then
+    echo ""
+    echo "╳ cargo fmt --all --check failed. Run 'cargo fmt --all' then re-push."
+    exit 1
+fi
+
+echo "  [2/3] cargo clippy -D warnings"
+if ! cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy-pre-push.out | tail -5; then
+    echo ""
+    echo "╳ cargo clippy failed. See /tmp/clippy-pre-push.out for full output."
+    exit 1
+fi
+
+echo "  [3/3] cargo test --workspace"
+if ! cargo test --workspace --quiet 2>&1 | tail -10; then
+    echo ""
+    echo "╳ cargo test failed. Fix tests before re-push."
+    exit 1
+fi
+
+echo ""
+echo "✓ Gate B clean. Push proceeding."

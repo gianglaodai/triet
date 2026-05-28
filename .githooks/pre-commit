@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Pre-commit hook — fast format check (~0.5s).
+#
+# Catches v0.8.x.review.1-style "21 unformatted files" before they enter
+# the working tree. Heavy checks (clippy + test) defer to pre-push hook
+# to keep commit-time tight.
+#
+# To bypass (e.g., for in-progress WIP commits), use `git commit --no-verify`.
+# Use sparingly — bypass should be an exception.
+
+set -e
+
+if ! cargo fmt --all --check 2>/dev/null; then
+    echo ""
+    echo "╳ cargo fmt --all --check failed."
+    echo ""
+    echo "Fix:"
+    echo "  cargo fmt --all"
+    echo "  git add -u && git commit"
+    echo ""
+    echo "To bypass (NOT recommended):"
+    echo "  git commit --no-verify"
+    exit 1
+fi
