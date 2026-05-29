@@ -2,6 +2,28 @@
 
 **Trạng thái:** **Locked** (v0.9.0.1, author sign-off 2026-05-29). Refines [ADR-0026 v2 §4](0026-actor-boundary-send-rules.md) placeholder. Author confirmed 3 architecturally-significant decisions: §1 builtin shim strategy; §5 ownership ref form fix (resolves ADR-0026 v2 §4.3 contradiction); §10 conservative E2530 enforcement.
 
+> **2026-05-29 Addendum (v0.9.0.1.c):** Self-review post-lock identified 1 naming concern violating [VISION §6](../../VISION.md) "**Tam phân là mặc định, không phụ trợ**" + "Explicit > implicit":
+>
+> **Gap — Bitwise operations on `Atomic<Integer>` leak binary semantics into Triết-ternary API.** §4.3 original defined `fetch_and`/`fetch_or`/`fetch_xor` cho `Atomic<Integer>`. But Triết `Integer` = 27-trit ternary value; Cranelift binary CPU backing slot = 64-bit. Bitwise ops operate on 64-bit slot, NOT 27-trit ternary value. Calling these "and/or/xor" implicitly suggests they're standard logical ops on Integer's ternary semantics — they're not. They're escape hatches for FFI scenarios where `Atomic<Integer>` stores a packed binary value (kernel flag bytes, etc.).
+>
+> **Resolution: rename to `fetch_bitwise_and` / `fetch_bitwise_or` / `fetch_bitwise_xor`.** Explicit `_bitwise_` prefix forces caller to acknowledge: "I am using binary semantics on Triết Integer's 64-bit slot". Matches VISION §6 "Explicit > implicit" + "Refuse over guess".
+>
+> **Revised §4.3 signatures (replacing original):**
+>
+> ```triet
+> public function fetch_bitwise_and(self: &+ Atomic<Integer>, mask: Integer, ordering: Ordering) -> Integer
+> public function fetch_bitwise_or(self: &+ Atomic<Integer>, mask: Integer, ordering: Ordering) -> Integer
+> public function fetch_bitwise_xor(self: &+ Atomic<Integer>, mask: Integer, ordering: Ordering) -> Integer
+> ```
+>
+> Behavior unchanged — same builtin shim, same wire format, same FFI use case. Only the user-visible name carries the binary-semantic warning explicitly.
+>
+> **Cross-platform note:** On v∞ trytecode native hardware (per [VISION §4.5](../../VISION.md)), these ops MAY have no natural mapping — ternary CPU doesn't have bitwise instructions. Recommend: v∞ backend ADR ships compile-time error suggesting `fetch_trit_min` / `fetch_trit_max` (Łukasiewicz Ł3 conjunction/disjunction analogs) as ternary-native alternatives. Defer naming + design to v∞ scope.
+>
+> §4.2 arithmetic ops (`fetch_add`, `fetch_sub`) NOT renamed — these are arithmetic on ternary Integer (sum/difference make sense in balanced ternary per SPEC §3). Only the `bitwise_` rename applies to §4.3 binary-leak ops.
+>
+> **Addendum scope:** §4.3 user-visible API names. ADR-0028 body NOT edited per project ADR immutability rule. v0.9.x.atomic implementation uses renamed signatures. Stdlib `sys.atomic.*` module ships với renamed function names from day one.
+
 **Issue:** ADR-0026 v2 §4 placeholder-locked Atomic primitive type family (`Atomic<Integer/Tryte/Trit/Trilean/Pointer>`) + Ordering enum (Relaxed/Synchronized/Strict) + skeleton API surface (load/store/swap/compare_exchange) + E2530 sketch. Open questions left for ADR-0028:
 
 1. **Implementation pattern** — VM opcodes vs Rust-shim builtins (per [ADR-0019 §5](0019-self-hosting-compiler-bootstrap.md))?
