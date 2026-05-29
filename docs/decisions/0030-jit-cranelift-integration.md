@@ -1,6 +1,6 @@
 # ADR 0030 — JIT Integration (Cranelift backend)
 
-**Trạng thái:** **Draft** (v0.9.0.3, 2026-05-29). Refines [ROADMAP §v0.9](../../ROADMAP.md) JIT deliverables. Author review required cho §1 (tier model), §2 (trigger threshold), §6 (capability gate), §7 (threading model). Locks after sign-off. First ADR theo [ADR-0029 §5](0029-self-host-port-policy.md) Self-host port plan template — see §10.
+**Trạng thái:** **Locked** (v0.9.0.3, author sign-off 2026-05-29). Refines [ROADMAP §v0.9](../../ROADMAP.md) JIT deliverables. Author confirmed 4 architecturally-significant decisions: §1 3-tier model (Interpreter+VM+JIT, no JIT-only); §2 100-call threshold (Hotspot JVM convention); §6 no capability gate for default `usr.*` programs; §7 synchronous JIT for v0.9 (background defer v1.0+). First ADR using [ADR-0029 §5](0029-self-host-port-policy.md) Self-host port plan template — see §10.
 
 **Issue:** ROADMAP §v0.9 đặt JIT làm primary v0.9 deliverable: "Tier 2 Cranelift JIT cho function chạy thường xuyên (profile-guided)" + "AOT cache: lần chạy thứ 2 dùng JIT-output cached". Plus carry-forward perf gates: bench ≥10× v0.3 baseline, full 3-stage bootstrap < 10 phút, Stage 2 ≡ Stage 3 byte-identical lift từ `#[ignore]` → CI-required.
 

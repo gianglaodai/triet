@@ -93,6 +93,7 @@ Cross-reference vào 27 ADRs theo **topic cluster** thay vì chronological numbe
 | [0019](0019-self-hosting-compiler-bootstrap.md) | Self-hosting compiler bootstrap — 3-stage chain (Stage 1 Rust → 2 → 3), bottom-up incremental component order, canonical emission invariants, Rust-shim builtin stdlib, perf gate deferred v0.9 | Locked |
 | [0023](0023-lowerer-ssa-struct-tracking.md) | Lowerer SSA struct-tracking — unified `ValueKind` enum (Struct / Outcome / Nullable / Other) replaces 4 ad-hoc HashMap patterns | Locked |
 | [0024](0024-khi-dao-identity-naming.md) | Khí + Đạo identity naming — `.tri.bin` → `.khi`, CLI binary `triet` → `dao`, manifest `dao.package`, lockfile `dao.lock`; source `.tri` + IR `.triv` + language name "Triết" giữ nguyên | Locked |
+| [0030](0030-jit-cranelift-integration.md) | JIT integration (Cranelift backend) — 3-tier model (Interpreter→VM→JIT), 100-call threshold trigger, register-SSA 1:1 mapping, AOT cache per impl_hash, sync JIT v0.9, no capability gate. Stage 2/3 byte-identical gate lift conditions | Locked |
 
 > Self-host source code: `compiler/` directory (~23K LOC). Cross-cutting: [ADR-0009](0009-version-gate-policy.md) cho gate matrix; [ADR-0027](0027-diagnostic-format-standard.md) cho diagnostic format.
 
