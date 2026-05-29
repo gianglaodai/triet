@@ -96,6 +96,19 @@ pub enum RuntimeValue {
         /// arm of a `T?~E` outcome.
         payload: Option<Box<Self>>,
     },
+    /// `Atomic<T>` per [ADR-0028] — shared-mutable wrapper for
+    /// `AtomicValue` primitive (`Trit`/`Tryte`/`Integer`/`Trilean` per §2).
+    /// Implementation uses `Rc<RefCell<Self>>` for single-thread VM
+    /// (per ADR-0028 §9 dev tier: ordering is no-op semantically;
+    /// shared state propagation through clones matches v∞ trytecode
+    /// + v2.0 LLVM AOT atomic semantics).
+    ///
+    /// When v0.10 stdlib adds real threading, this representation
+    /// would switch to `Arc<RwLock<Self>>` or similar thread-safe
+    /// primitive. v0.9 stays single-thread per ADR-0026 v2 BYOS.
+    ///
+    /// [ADR-0028]: ../../../docs/decisions/0028-atomic-primitive.md
+    Atomic(std::rc::Rc<std::cell::RefCell<Self>>),
 }
 
 /// Keys for `RuntimeValue::HashMap`. Restricted to hashable primitives
@@ -188,6 +201,9 @@ impl RuntimeValue {
                 error_type: Box::new(TypeTag::Unit),
                 allow_null_state: false,
             },
+            // v0.9.x.atomic.3 — Atomic<T> inner type uses Unit wildcard
+            // per Vector/HashMap precedent (static TypeTag authoritative).
+            Self::Atomic(_) => TypeTag::Atomic(Box::new(TypeTag::Unit)),
         }
     }
 
@@ -316,6 +332,10 @@ impl std::fmt::Display for RuntimeValue {
                 discriminator: _,
                 payload: None,
             } => write!(f, "~0"),
+            // v0.9.x.atomic.3 — Atomic<T>: display inner state. Per
+            // ADR-0028 §9 single-thread VM, atomic is transparent;
+            // formatter borrows current inner without atomicity ceremony.
+            Self::Atomic(cell) => write!(f, "Atomic({})", cell.borrow()),
         }
     }
 }
@@ -1868,6 +1888,23 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
     }
 }
 
+/// v0.9.x.atomic.3 — value equality for `AtomicValue` types (`Trit`/`Tryte`/
+/// `Integer`/`Trilean` per ADR-0028 §2). Used by `AtomicCompareExchange`
+/// dispatch. Unrelated to `runtime_eq_trilean` (ADR-0010 Ł3-aware) because
+/// Atomic equality is concrete-state comparison, not Ł3 logic.
+fn atomic_value_eq(a: &RuntimeValue, b: &RuntimeValue) -> bool {
+    match (a, b) {
+        (RuntimeValue::Trit(x), RuntimeValue::Trit(y)) => x == y,
+        (RuntimeValue::Tryte(x), RuntimeValue::Tryte(y)) => x == y,
+        (RuntimeValue::Integer(x), RuntimeValue::Integer(y)) => x == y,
+        (RuntimeValue::Trilean(x), RuntimeValue::Trilean(y)) => x == y,
+        // Non-AtomicValue types should never reach here (typecheck E1040
+        // filters at compile-time), but be defensive: mismatched types
+        // never equal.
+        _ => false,
+    }
+}
+
 /// Validate a `Vector<Integer>` as a byte array — every element must be
 /// a `RuntimeValue::Integer` in 0..=255. Returns `None` on any non-byte
 /// element so callers can map to a domain-level null/error.
@@ -2631,23 +2668,152 @@ fn execute_builtin(
                 .collect();
             Ok(RuntimeValue::Vector(outer))
         }
-        // v0.9.x.atomic.2 — atomic primitive builtins declared per ADR-0028 §1.
-        // Wire format + display + serde shipped; VM dispatch lands v0.9.x.atomic.3-4.
-        // Calling these from generated IR before .3-.4 lands fires VmError::Unimplemented
-        // (not panic — graceful failure per ADR-0027 diagnostic format).
-        BuiltinName::AtomicNew
-        | BuiltinName::AtomicLoad
-        | BuiltinName::AtomicStore
-        | BuiltinName::AtomicSwap
-        | BuiltinName::AtomicCompareExchange
-        | BuiltinName::AtomicFetchAdd
+        // v0.9.x.atomic.3 — universal atomic ops dispatch per ADR-0028 §4.1.
+        // Single-thread VM: ordering arg validated (any RuntimeValue accepted —
+        // Ordering enum lands v0.9.x.atomic.5 stdlib) but no-op semantically
+        // per ADR-0028 §9 dev tier behavior.
+        BuiltinName::AtomicNew => {
+            // `sys.atomic.new<T>(initial: T) -> Atomic<T>` per ADR-0028 §6.
+            let initial = args
+                .iter()
+                .next()
+                .cloned()
+                .ok_or_else(|| VmError::TypeMismatch {
+                    expected: TypeTag::Unit,
+                    actual: "missing initial value".into(),
+                    function: func_name.into(),
+                })?;
+            Ok(RuntimeValue::Atomic(std::rc::Rc::new(
+                std::cell::RefCell::new(initial),
+            )))
+        }
+        BuiltinName::AtomicLoad => {
+            // `load(self: &+ Atomic<T>, ordering: Ordering) -> T` per §4.1.
+            // Ordering ignored on single-thread VM (no-op per §9).
+            let atomic = args
+                .iter()
+                .next()
+                .cloned()
+                .ok_or_else(|| VmError::TypeMismatch {
+                    expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                    actual: "missing atomic arg".into(),
+                    function: func_name.into(),
+                })?;
+            let cell = match atomic {
+                RuntimeValue::Atomic(rc) => rc,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            Ok(cell.borrow().clone())
+        }
+        BuiltinName::AtomicStore => {
+            // `store(self: &+ Atomic<T>, value: T, ordering: Ordering) -> Unit` per §4.1.
+            let atomic = args.first().cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                actual: "missing atomic arg".into(),
+                function: func_name.into(),
+            })?;
+            let new_value = args.get(1).cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Unit,
+                actual: "missing value arg".into(),
+                function: func_name.into(),
+            })?;
+            let cell = match atomic {
+                RuntimeValue::Atomic(rc) => rc,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            *cell.borrow_mut() = new_value;
+            Ok(RuntimeValue::Unit)
+        }
+        BuiltinName::AtomicSwap => {
+            // `swap(self: &+ Atomic<T>, value: T, ordering: Ordering) -> T` per §4.1.
+            // Returns previous value.
+            let atomic = args.first().cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                actual: "missing atomic arg".into(),
+                function: func_name.into(),
+            })?;
+            let new_value = args.get(1).cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Unit,
+                actual: "missing value arg".into(),
+                function: func_name.into(),
+            })?;
+            let cell = match atomic {
+                RuntimeValue::Atomic(rc) => rc,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let prev = cell.borrow().clone();
+            *cell.borrow_mut() = new_value;
+            Ok(prev)
+        }
+        BuiltinName::AtomicCompareExchange => {
+            // `compare_exchange(self, expected, new, succ_ord, fail_ord) ->
+            //  T~CompareExchangeFailed` per ADR-0028 §4.1.
+            // Returns Outcome: ~+ prev if expected matched + replaced; ~- actual otherwise.
+            let atomic = args.first().cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                actual: "missing atomic arg".into(),
+                function: func_name.into(),
+            })?;
+            let expected = args.get(1).cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Unit,
+                actual: "missing expected arg".into(),
+                function: func_name.into(),
+            })?;
+            let new_value = args.get(2).cloned().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Unit,
+                actual: "missing new value arg".into(),
+                function: func_name.into(),
+            })?;
+            let cell = match atomic {
+                RuntimeValue::Atomic(rc) => rc,
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                        actual: format!("{:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let current = cell.borrow().clone();
+            if atomic_value_eq(&current, &expected) {
+                *cell.borrow_mut() = new_value;
+                Ok(RuntimeValue::Outcome {
+                    discriminator: Trit::Positive,
+                    payload: Some(Box::new(current)),
+                })
+            } else {
+                Ok(RuntimeValue::Outcome {
+                    discriminator: Trit::Negative,
+                    payload: Some(Box::new(current)),
+                })
+            }
+        }
+        // v0.9.x.atomic.4 will land fetch_* dispatch.
+        BuiltinName::AtomicFetchAdd
         | BuiltinName::AtomicFetchSub
         | BuiltinName::AtomicFetchBitwiseAnd
         | BuiltinName::AtomicFetchBitwiseOr
         | BuiltinName::AtomicFetchBitwiseXor => Err(VmError::BuiltinUnimplemented {
             name: format!("{name:?}"),
-            reason: "v0.9.x.atomic.3-4 lands real dispatch per ADR-0028 §9 single-thread \
-                     no-op semantics"
+            reason: "v0.9.x.atomic.4 lands arithmetic + bitwise dispatch per ADR-0028 §4.2-§4.3"
                 .into(),
         }),
     }
@@ -5832,5 +5998,221 @@ mod tests {
         let mut vm = Vm::new(prog);
         let result = vm.execute(FuncId(0), Vec::new()).unwrap();
         assert!(matches!(result, RuntimeValue::Trit(Trit::Positive)));
+    }
+
+    // ===== v0.9.x.atomic.3 — universal atomic ops dispatch tests =====
+    //
+    // Single-thread VM: ordering arg ignored (no-op per ADR-0028 §9
+    // dev tier). Tests verify shared-state semantics via Rc<RefCell>
+    // backing — multiple references see mutations.
+
+    fn make_integer(n: i64) -> RuntimeValue {
+        RuntimeValue::Integer(Integer::new(n).unwrap())
+    }
+
+    fn make_atomic_integer(n: i64) -> RuntimeValue {
+        RuntimeValue::Atomic(std::rc::Rc::new(std::cell::RefCell::new(make_integer(n))))
+    }
+
+    /// `AtomicNew(initial)` wraps inner value in shared cell.
+    #[test]
+    fn vm_atomic_new_wraps_initial_value() {
+        let prog = build_builtin_program(
+            vec![("initial".into(), TypeTag::Integer)],
+            TypeTag::Atomic(Box::new(TypeTag::Integer)),
+            BuiltinName::AtomicNew,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![make_integer(42)]).unwrap();
+        match result {
+            RuntimeValue::Atomic(cell) => {
+                assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 42));
+            }
+            other => panic!("expected Atomic, got {other:?}"),
+        }
+    }
+
+    /// `AtomicLoad(atomic, ord)` returns current cell value (ord ignored).
+    #[test]
+    fn vm_atomic_load_returns_current_value() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("ord".into(), TypeTag::Unit), // placeholder for Ordering enum
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicLoad,
+            ConstantPool::new(),
+        );
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(FuncId(0), vec![make_atomic_integer(7), RuntimeValue::Unit])
+            .unwrap();
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 7));
+    }
+
+    /// `AtomicStore(atomic, new, ord)` mutates cell; subsequent Load
+    /// observes new value (via shared Rc).
+    #[test]
+    fn vm_atomic_store_mutates_shared_cell() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("v".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Unit,
+            BuiltinName::AtomicStore,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(0);
+        // Clone the Atomic — Rc<RefCell> so both clones share cell.
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let _ = vm
+            .execute(
+                FuncId(0),
+                vec![atomic, make_integer(99), RuntimeValue::Unit],
+            )
+            .unwrap();
+        // External (cloned) reference sees the mutation.
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 99));
+        } else {
+            panic!("expected Atomic shared clone");
+        }
+    }
+
+    /// `AtomicSwap(atomic, new, ord)` returns previous + mutates to new.
+    #[test]
+    fn vm_atomic_swap_returns_prev_and_mutates() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("v".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicSwap,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(11);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(
+                FuncId(0),
+                vec![atomic, make_integer(22), RuntimeValue::Unit],
+            )
+            .unwrap();
+        // Return value = previous (11).
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 11));
+        // Cell mutated to 22.
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 22));
+        }
+    }
+
+    /// `AtomicCompareExchange(atomic, expected, new, succ_ord, fail_ord)`:
+    /// success path — expected matches current, returns ~+ prev, mutates.
+    #[test]
+    fn vm_atomic_compare_exchange_success_path() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("exp".into(), TypeTag::Integer),
+                ("new".into(), TypeTag::Integer),
+                ("so".into(), TypeTag::Unit),
+                ("fo".into(), TypeTag::Unit),
+            ],
+            TypeTag::Outcome {
+                value_type: Box::new(TypeTag::Integer),
+                error_type: Box::new(TypeTag::Integer),
+                allow_null_state: false,
+            },
+            BuiltinName::AtomicCompareExchange,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(5);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(
+                FuncId(0),
+                vec![
+                    atomic,
+                    make_integer(5), // expected matches
+                    make_integer(10),
+                    RuntimeValue::Unit,
+                    RuntimeValue::Unit,
+                ],
+            )
+            .unwrap();
+        // Success arm: ~+ prev (5).
+        match result {
+            RuntimeValue::Outcome {
+                discriminator: Trit::Positive,
+                payload: Some(boxed),
+            } => {
+                assert!(matches!(*boxed, RuntimeValue::Integer(i) if i.to_i64() == 5));
+            }
+            other => panic!("expected ~+ prev, got {other:?}"),
+        }
+        // Cell mutated to 10.
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 10));
+        }
+    }
+
+    /// `AtomicCompareExchange` failure path — expected doesn't match,
+    /// returns ~- actual, NO mutation.
+    #[test]
+    fn vm_atomic_compare_exchange_failure_path() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("exp".into(), TypeTag::Integer),
+                ("new".into(), TypeTag::Integer),
+                ("so".into(), TypeTag::Unit),
+                ("fo".into(), TypeTag::Unit),
+            ],
+            TypeTag::Outcome {
+                value_type: Box::new(TypeTag::Integer),
+                error_type: Box::new(TypeTag::Integer),
+                allow_null_state: false,
+            },
+            BuiltinName::AtomicCompareExchange,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(5);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(
+                FuncId(0),
+                vec![
+                    atomic,
+                    make_integer(99), // expected does NOT match (current=5)
+                    make_integer(10),
+                    RuntimeValue::Unit,
+                    RuntimeValue::Unit,
+                ],
+            )
+            .unwrap();
+        // Failure arm: ~- actual current (5).
+        match result {
+            RuntimeValue::Outcome {
+                discriminator: Trit::Negative,
+                payload: Some(boxed),
+            } => {
+                assert!(matches!(*boxed, RuntimeValue::Integer(i) if i.to_i64() == 5));
+            }
+            other => panic!("expected ~- actual, got {other:?}"),
+        }
+        // Cell UNCHANGED (still 5).
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 5));
+        }
     }
 }

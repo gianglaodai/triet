@@ -103,6 +103,13 @@ pub enum TypeTag {
         /// True for `T?~E` (3-state with null); false for `T~E` (2-state).
         allow_null_state: bool,
     },
+    /// `Atomic<T>` per [ADR-0028]: shared-mutable wrapper for `AtomicValue`
+    /// primitive (`Trit`/`Tryte`/`Integer`/`Trilean`). Inner type tracked
+    /// at this tag level. v0.9.x.atomic.3 adds variant for
+    /// `RuntimeValue::Atomic` `type_tag()` reporting.
+    ///
+    /// [ADR-0028]: ../../../../docs/decisions/0028-atomic-primitive.md
+    Atomic(Box<Self>),
 }
 
 impl fmt::Display for TypeTag {
@@ -129,6 +136,7 @@ impl fmt::Display for TypeTag {
                     write!(f, "{value_type}~{error_type}")
                 }
             }
+            Self::Atomic(inner) => write!(f, "Atomic<{inner}>"),
         }
     }
 }

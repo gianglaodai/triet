@@ -365,6 +365,14 @@ fn write_type_tag(buf: &mut Vec<u8>, types: &[TypeTag], ty: &TypeTag) {
             write_varint(buf, value_idx);
             write_varint(buf, error_idx);
         }
+        // v0.9.x.atomic.3 (ADR-0028 §2 AtomicValue) — Atomic type
+        // encoding. Discriminant 11 + 1 varint inner-type index.
+        // Wire format `.triv` v6 (bumped v0.9.x.atomic.2 per ADR-0028 §1).
+        TypeTag::Atomic(inner) => {
+            write_u8(buf, 11);
+            let idx = type_index(types, inner);
+            write_varint(buf, idx);
+        }
     }
 }
 
@@ -1475,6 +1483,14 @@ fn read_constant(data: &[u8], pos: &mut usize, types: &[TypeTag]) -> Result<Cons
              built at runtime via opcodes 0xC1-0xC3 per ADR-0020 §7.2"
                 .into(),
         )),
+        // v0.9.x.atomic.3 — Atomic has no constant-pool encoding;
+        // atomic values are built at runtime via `AtomicNew` builtin
+        // per ADR-0028 §6.
+        TypeTag::Atomic(_) => Err(TrivError::Corrupted(
+            "Atomic has no constant-pool encoding — atomic values are \
+             built at runtime via `AtomicNew` builtin per ADR-0028 §6"
+                .into(),
+        )),
     }
 }
 
@@ -1789,7 +1805,8 @@ fn write_inline_primitive_tag(buf: &mut Vec<u8>, ty: &TypeTag) {
         TypeTag::Nullable(_)
         | TypeTag::Vector(_)
         | TypeTag::HashMap(_, _)
-        | TypeTag::Outcome { .. } => 0xFF,
+        | TypeTag::Outcome { .. }
+        | TypeTag::Atomic(_) => 0xFF,
     };
     write_u8(buf, disc);
 }
