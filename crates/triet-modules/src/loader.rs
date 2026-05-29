@@ -142,6 +142,13 @@ impl LoaderState {
     /// The stdlib directory is resolved relative to the workspace root (via
     /// `CARGO_MANIFEST_DIR` at compile time) and also checked relative to the
     /// current working directory at runtime.
+    ///
+    /// v0.9.x.atomic.5a: add synthetic `sys` root mirroring `std`. Declares
+    /// `module atomic` + `module raw_thread`. Per ADR-0028 §8 stdlib shape +
+    /// ADR-0026 v2 capability namespace pillar 5. Resolves under `std/sys/`
+    /// directory pattern (matches `std/io/`, `std/collections/`, etc).
+    /// Empty child files keep the ambient resolver fallback (resolver.rs)
+    /// in charge of import binding — actual functions/types land in .5b/.5c.
     fn load_stdlib(&mut self) {
         let std_path = ModulePath::new(vec!["std".to_owned()]);
         // `std.result` carries the `Result<T, E>` enum per SPEC §2.5
@@ -167,8 +174,39 @@ impl LoaderState {
             PathBuf::from("std")
         };
 
-        let std_chain = vec![std_dir];
+        let std_chain = vec![std_dir.clone()];
         self.load_from_source(&std_path, None, Some(&std_chain), source, None);
+
+        // v0.9.x.atomic.5a: synthetic `sys` root. Mirror std structure.
+        // Per ADR-0028 §8 stdlib module shape + ADR-0026 v2 capability
+        // namespace pillar 5.
+        //
+        // Children declared conditionally based on filesystem presence —
+        // declaring a module ("module atomic") triggers child file load,
+        // which fails với FileNotFound if `std/sys/atomic.tri` doesn't
+        // exist. Per "Refuse over guess" principle (VISION §6), we only
+        // declare children for files that actually exist. v0.9.x.atomic.5b
+        // adds `sys/atomic.tri` → atomic appears; .5c adds raw_thread.
+        //
+        // Falls back to pure ambient resolver (resolver.rs:262/304) when
+        // sys/ dir is empty, preserving v0.8.11 behavior.
+        let sys_dir = std_dir.join("sys");
+        if sys_dir.is_dir() {
+            let sys_path = ModulePath::new(vec!["sys".to_owned()]);
+            // Detect which child .tri files exist; declare only those.
+            let candidates = ["atomic", "raw_thread"];
+            let mut sys_source_lines: Vec<String> = Vec::new();
+            for name in candidates {
+                if sys_dir.join(format!("{name}.tri")).is_file() {
+                    sys_source_lines.push(format!("module {name}"));
+                }
+            }
+            if !sys_source_lines.is_empty() {
+                let sys_source = sys_source_lines.join("\n");
+                let sys_chain = vec![sys_dir];
+                self.load_from_source(&sys_path, None, Some(&sys_chain), &sys_source, None);
+            }
+        }
     }
 
     /// Parse `source`, allocate a fresh arena, slot a [`Module`] into
