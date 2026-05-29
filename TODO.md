@@ -48,15 +48,14 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### v0.9.x.atomic — Atomic Primitive implementation (ADR-0028 + Addendum)
 
-- [x] **v0.9.x.atomic.1** — `AtomicValue` typecheck enforcement. `Type::is_atomic_value()` method, `TypeError::NonAtomicValueType` E1040, validation at check.rs construction site, 8 lib.rs tests + 2 diagnostics_format tests. +10 net tests (1436→1446). check_resolved.rs path deferred v0.9.x.atomic.6 stdlib work — `6788d1c`.
-- [ ] **v0.9.x.atomic.2** — `Ordering` enum lexer + parser + typecheck. Tokens: `Ordering::Relaxed/Synchronized/Strict`. Mapped vào Trit polarity per ADR-0028 §3.
-- [ ] **v0.9.x.atomic.3** — Builtin opcodes 27-39 declaration in `triet-ir`. `.triv` v5 → v6 patch bump per ADR-0028 §1. Wire format: read/write paths.
-- [ ] **v0.9.x.atomic.4** — VM dispatch cho atomic builtins (single-thread no-op per ADR-0028 §9 dev tier behavior). load/store/swap/compare_exchange.
-- [ ] **v0.9.x.atomic.5** — VM dispatch cho fetch_add/sub (Tryte/Integer per ADR-0028 §4.2) + fetch_bitwise_and/or/xor (Integer per Addendum).
-- [ ] **v0.9.x.atomic.6** — Stdlib `sys/atomic.tri` module với function signatures + ambient resolver wire-up. Replaces phantom Unknown-type binding currently used in atomic_counter demo.
-- [ ] **v0.9.x.atomic.7** — E2530 conservative fire conditions per ADR-0028 §10: compare_exchange success<failure ordering, fetch_* Relaxed trên Atomic<Pointer> (when Pointer lands).
-- [ ] **v0.9.x.atomic.8** — `atomic_counter` demo upgrade: actually run `spawn_worker(counter)` exercising fetch_add. Verify runtime semantics correct (single-thread VM no-op atomicity).
-- [ ] **v0.9.x.atomic.9** — Phase verify gate: cargo test + clippy + fmt clean, release-check.sh pass, ROADMAP/TODO archive.
+- [x] **v0.9.x.atomic.1** — `AtomicValue` typecheck enforcement. `Type::is_atomic_value()` method, `TypeError::NonAtomicValueType` E1040, validation at check.rs construction site, 8 lib.rs tests + 2 diagnostics_format tests. +10 net tests (1436→1446). check_resolved.rs path deferred v0.9.x.atomic.5 stdlib work — `6788d1c`.
+- [ ] **v0.9.x.atomic.2** — IR builtin declaration (10 atomic builtins: New/Load/Store/Swap/CompareExchange/FetchAdd/FetchSub/FetchBitwiseAnd/FetchBitwiseOr/FetchBitwiseXor). Wire format `.triv` v5 → v6 per ADR-0028 §1. Serde encode/decode + version pin test. VM dispatcher placeholder arms (panic-with-clear-message until v0.9.x.atomic.3-4 lands real dispatch). **NOTE: outline revised v0.9.x.atomic.2 from original "Ordering enum lexer + parser + typecheck" — Ordering ships as regular Triết enum in stdlib file (.5), not separate sub-task.**
+- [ ] **v0.9.x.atomic.3** — VM dispatch (single-thread no-op per ADR-0028 §9 dev tier): AtomicNew + AtomicLoad/Store/Swap/CompareExchange. Universal ops cho mọi AtomicValue type (Trit/Tryte/Integer/Trilean).
+- [ ] **v0.9.x.atomic.4** — VM dispatch fetch_add/sub (Tryte/Integer per ADR-0028 §4.2) + fetch_bitwise_and/or/xor (Integer only per Addendum). Arithmetic + binary-leak ops.
+- [ ] **v0.9.x.atomic.5** — Stdlib `std/sys/atomic.tri` module: `enum Ordering { Relaxed, Synchronized, Strict }` per ADR-0028 §3 + function signatures cho 10 builtins. Loader.rs synthetic `sys` root wire (mirror `std` synthetic root pattern). Capability enforcement: `requires sys.atomic` checked. Also closes check_resolved.rs cross-module Atomic typecheck path (deferred từ .1).
+- [ ] **v0.9.x.atomic.6** — E2530 conservative fire conditions per ADR-0028 §10: compare_exchange success<failure ordering, fetch_* Relaxed trên Atomic<Pointer> (when Pointer lands).
+- [ ] **v0.9.x.atomic.7** — `atomic_counter` demo upgrade: actually run `spawn_worker(counter)` exercising fetch_add. Verify runtime semantics correct (single-thread VM no-op atomicity per ADR-0028 §9).
+- [ ] **v0.9.x.atomic.8** — Phase verify gate: cargo test + clippy + fmt clean, release-check.sh pass, ROADMAP/TODO archive. Final test count target ~1500+.
 
 ### v0.9.x.borrow — Borrow checker enforcement (independent of Atomic/JIT)
 
