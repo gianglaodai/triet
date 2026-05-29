@@ -421,6 +421,34 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1040: `Atomic<T>` payload `T` is not a member of `AtomicValue`
+    /// per [ADR-0028] §2. Only ternary primitives với hardware atomic
+    /// support qualify: Trit, Tryte, Integer, Trilean. Long excluded
+    /// (81-trit exceeds hardware atomic width — split into 3× Atomic<Integer>
+    /// or wait for `std.concurrency.Mutex` v0.10).
+    ///
+    /// [ADR-0028]: ../../../docs/decisions/0028-atomic-primitive.md
+    #[error("type `{ty}` is not a valid `Atomic<T>` payload")]
+    #[diagnostic(
+        code(triet::typecheck::E1040),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Use a primitive AtomicValue type:\n\
+            Change `Atomic<{ty}>` to `Atomic<Integer>` (or Tryte/Trit/Trilean)\n\n\
+            [Fix 2] Wrap composite types in Mutex (ships v0.10 stdlib):\n\
+            Use `Mutex<{ty}>` instead of `Atomic<{ty}>`\n\n\
+            [Fix 3] Long (81-trit) exceeds hardware atomic width:\n\
+            Split into 3× `Atomic<Integer>` slots với explicit synchronization"
+        )
+    )]
+    NonAtomicValueType {
+        /// The non-AtomicValue type used as Atomic payload.
+        ty: String,
+        /// Source location.
+        #[label("`Atomic<{ty}>` not valid — `{ty}` is not a member of AtomicValue")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -555,6 +583,7 @@ impl TypeError {
             | Self::PatternMissingExplicitConstructor { span }
             | Self::PossiblyUnknownCondition { span }
             | Self::TrileanReturnNotRefined { span }
+            | Self::NonAtomicValueType { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }

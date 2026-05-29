@@ -1,7 +1,7 @@
 //! Integration tests for diagnostic formats.
 use miette::Diagnostic;
 use std::ops::Range;
-use triet_typecheck::{BorrowError, ConcurrencyError};
+use triet_typecheck::{BorrowError, ConcurrencyError, TypeError};
 
 // Dummy span for testing
 const fn dummy_span() -> Range<usize> {
@@ -197,4 +197,31 @@ fn e2520_code_uses_actor_namespace() {
     let err = ConcurrencyError::MutableShareAntiPattern { span: dummy_span() };
     let code = err.code().unwrap().to_string();
     assert_eq!(code, "triet::actor::E2520");
+}
+
+// ===== v0.9.x.atomic.1: E1040 AtomicValue diagnostic format =====
+
+#[test]
+fn e1040_non_atomic_value_type_format() {
+    let err = TypeError::NonAtomicValueType {
+        ty: "String".to_string(),
+        span: dummy_span(),
+    };
+    let help = err.help().unwrap().to_string();
+    assert!(help.contains("[Fix 1]"));
+    assert!(help.contains("Change `Atomic<String>` to `Atomic<Integer>`"));
+    assert!(help.contains("[Fix 2]"));
+    assert!(help.contains("Mutex<String>"));
+    assert!(help.contains("[Fix 3]"));
+    assert!(help.contains("Long (81-trit)"));
+}
+
+#[test]
+fn e1040_code_uses_typecheck_namespace() {
+    let err = TypeError::NonAtomicValueType {
+        ty: "T".to_string(),
+        span: dummy_span(),
+    };
+    let code = err.code().unwrap().to_string();
+    assert_eq!(code, "triet::typecheck::E1040");
 }

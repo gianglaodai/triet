@@ -248,6 +248,25 @@ impl Type {
         }
     }
 
+    /// Returns true if `self` qualifies as `AtomicValue` payload per
+    /// ADR-0028 §2 (Atomic primitive types). Only ternary primitives
+    /// with hardware atomic support qualify: Trit/Tryte/Integer/Trilean.
+    /// Long excluded (81-trit exceeds hardware atomic width).
+    /// TypeParam/Unknown pass through as recovery (don't fire spurious
+    /// errors on generic types or already-failed typecheck).
+    #[must_use]
+    pub const fn is_atomic_value(&self) -> bool {
+        matches!(
+            self,
+            Self::Trit
+                | Self::Tryte
+                | Self::Integer
+                | Self::Trilean { .. }
+                | Self::TypeParam(_)
+                | Self::Unknown
+        )
+    }
+
     /// If this is a `Nullable(T)`, return `T`; otherwise return `self`
     /// unchanged. Used by `?:`, `?.`, `!!` post-strip semantics.
     #[must_use]

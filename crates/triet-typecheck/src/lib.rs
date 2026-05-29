@@ -289,6 +289,91 @@ mod tests {
         );
     }
 
+    // ===== v0.9.x.atomic.1: AtomicValue membership enforcement (ADR-0028 §2) =====
+    // Only Trit/Tryte/Integer/Trilean qualify as AtomicValue payload.
+    // Long excluded (81-trit > hardware atomic width); composites refused.
+
+    #[test]
+    fn atomic_integer_accepted() {
+        assert_ok(
+            r"
+            function take(x: Atomic<Integer>) {}
+            ",
+        );
+    }
+
+    #[test]
+    fn atomic_tryte_accepted() {
+        assert_ok(
+            r"
+            function take(x: Atomic<Tryte>) {}
+            ",
+        );
+    }
+
+    #[test]
+    fn atomic_trit_accepted() {
+        assert_ok(
+            r"
+            function take(x: Atomic<Trit>) {}
+            ",
+        );
+    }
+
+    #[test]
+    fn atomic_trilean_accepted() {
+        assert_ok(
+            r"
+            function take(x: Atomic<Trilean>) {}
+            ",
+        );
+    }
+
+    #[test]
+    fn atomic_long_rejected() {
+        // ADR-0028 §2: Long (81-trit) exceeds hardware atomic width.
+        assert_has_error(
+            r"
+            function take(x: Atomic<Long>) {}
+            ",
+            |e| matches!(e, TypeError::NonAtomicValueType { .. }),
+        );
+    }
+
+    #[test]
+    fn atomic_string_rejected() {
+        // ADR-0028 §2: String is composite (heap-allocated), not AtomicValue.
+        assert_has_error(
+            r"
+            function take(x: Atomic<String>) {}
+            ",
+            |e| matches!(e, TypeError::NonAtomicValueType { .. }),
+        );
+    }
+
+    #[test]
+    fn atomic_unit_rejected() {
+        // Unit is not AtomicValue — no atomic of zero-sized type allowed.
+        assert_has_error(
+            r"
+            function take(x: Atomic<Unit>) {}
+            ",
+            |e| matches!(e, TypeError::NonAtomicValueType { .. }),
+        );
+    }
+
+    #[test]
+    fn atomic_user_struct_rejected() {
+        // Composite struct cannot be Atomic per ADR-0028 §2 — wrap in Mutex (v0.10).
+        assert_has_error(
+            r"
+            struct Point { x: Integer, y: Integer }
+            function take(p: Atomic<Point>) {}
+            ",
+            |e| matches!(e, TypeError::NonAtomicValueType { .. }),
+        );
+    }
+
     // ===== Happy paths =====
 
     #[test]

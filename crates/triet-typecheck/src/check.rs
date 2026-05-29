@@ -581,7 +581,17 @@ impl<'p> Checker<'p> {
                 // monomorphization machinery applies uniformly.
                 match (name.as_str(), args.len()) {
                     ("Atomic", 1) => {
-                        return Type::Atomic(Box::new(args.into_iter().next().unwrap()));
+                        // v0.9.x.atomic.1 — enforce AtomicValue membership per
+                        // ADR-0028 §2. Reject non-primitive payloads at typecheck.
+                        let inner = args.into_iter().next().unwrap();
+                        if !inner.is_atomic_value() {
+                            self.errors.push(TypeError::NonAtomicValueType {
+                                ty: format!("{inner}"),
+                                span,
+                            });
+                            return Type::Unknown;
+                        }
+                        return Type::Atomic(Box::new(inner));
                     }
                     ("Vector", 1) => {
                         return Type::UserStruct {

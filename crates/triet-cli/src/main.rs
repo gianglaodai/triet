@@ -449,6 +449,8 @@ fn type_error_code(error: &TypeError) -> String {
         TypeError::PatternMissingExplicitConstructor { .. } => "triet::typecheck::E1032",
         TypeError::PossiblyUnknownCondition { .. } => "triet::typecheck::E1033",
         TypeError::TrileanReturnNotRefined { .. } => "triet::typecheck::E1034",
+        // v0.9.x.atomic.1 (ADR-0028 §2 AtomicValue membership):
+        TypeError::NonAtomicValueType { .. } => "triet::typecheck::E1040",
         // Warning code (ADR-0020 §10.3 — promotes to E2002 at v1.0):
         TypeError::NullDeprecated { .. } => "triet::typecheck::W2001",
         TypeError::Concurrency(err) => match err {
