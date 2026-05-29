@@ -1888,6 +1888,121 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
     }
 }
 
+/// v0.9.x.atomic.4 — arithmetic op selector for `fetch_add`/`fetch_sub`
+/// dispatch. Keeps the two arms thin.
+#[derive(Clone, Copy)]
+enum ArithmeticOp {
+    Add,
+    Sub,
+}
+
+/// v0.9.x.atomic.4 — bitwise op selector for `fetch_bitwise_and`/`or`/`xor`
+/// dispatch. Per ADR-0028 Addendum: operates on 64-bit binary slot of
+/// Triết `Integer`; renamed `_bitwise_` to make binary semantics explicit
+/// (anti-ternary leak warning honored).
+#[derive(Clone, Copy)]
+enum BitwiseOp {
+    And,
+    Or,
+    Xor,
+}
+
+/// v0.9.x.atomic.4 — shared dispatch for `fetch_add`/`sub` on `Tryte`/`Integer`
+/// per ADR-0028 §4.2. Returns PREVIOUS value (pre-modification).
+fn atomic_fetch_arithmetic(
+    args: &[RuntimeValue],
+    func_name: &str,
+    op: ArithmeticOp,
+) -> Result<RuntimeValue, VmError> {
+    let atomic = args.first().cloned().ok_or_else(|| VmError::TypeMismatch {
+        expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+        actual: "missing atomic arg".into(),
+        function: func_name.into(),
+    })?;
+    let delta = args.get(1).cloned().ok_or_else(|| VmError::TypeMismatch {
+        expected: TypeTag::Integer,
+        actual: "missing delta arg".into(),
+        function: func_name.into(),
+    })?;
+    let cell = match atomic {
+        RuntimeValue::Atomic(rc) => rc,
+        other => {
+            return Err(VmError::TypeMismatch {
+                expected: TypeTag::Atomic(Box::new(TypeTag::Unit)),
+                actual: format!("{:?}", other.type_tag()),
+                function: func_name.into(),
+            });
+        }
+    };
+    let current = cell.borrow().clone();
+    let new_value = match op {
+        ArithmeticOp::Add => arithmetic_add(&current, &delta, func_name)?,
+        ArithmeticOp::Sub => arithmetic_sub(&current, &delta, func_name)?,
+    };
+    *cell.borrow_mut() = new_value;
+    Ok(current)
+}
+
+/// v0.9.x.atomic.4 — shared dispatch for `fetch_bitwise_and`/`or`/`xor` on
+/// `Integer` per ADR-0028 Addendum (§4.3 bitwise ops, binary semantics
+/// on 64-bit slot). Returns PREVIOUS value (pre-modification).
+///
+/// `Tryte` excluded per ADR-0028 §2 type table (9-trit width clashes
+/// with binary atomic intrinsics). `Trit`/`Trilean` excluded — only
+/// `Integer` `AtomicValue` supports bitwise.
+fn atomic_fetch_bitwise(
+    args: &[RuntimeValue],
+    func_name: &str,
+    op: BitwiseOp,
+) -> Result<RuntimeValue, VmError> {
+    let atomic = args.first().cloned().ok_or_else(|| VmError::TypeMismatch {
+        expected: TypeTag::Atomic(Box::new(TypeTag::Integer)),
+        actual: "missing atomic arg".into(),
+        function: func_name.into(),
+    })?;
+    let mask = args.get(1).cloned().ok_or_else(|| VmError::TypeMismatch {
+        expected: TypeTag::Integer,
+        actual: "missing mask arg".into(),
+        function: func_name.into(),
+    })?;
+    let cell = match atomic {
+        RuntimeValue::Atomic(rc) => rc,
+        other => {
+            return Err(VmError::TypeMismatch {
+                expected: TypeTag::Atomic(Box::new(TypeTag::Integer)),
+                actual: format!("{:?}", other.type_tag()),
+                function: func_name.into(),
+            });
+        }
+    };
+    let current = cell.borrow().clone();
+    let (a_raw, b_raw) = match (&current, &mask) {
+        (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => (a.to_i64(), b.to_i64()),
+        _ => {
+            return Err(VmError::TypeMismatch {
+                expected: TypeTag::Integer,
+                actual: format!(
+                    "current={:?} mask={:?}",
+                    current.type_tag(),
+                    mask.type_tag()
+                ),
+                function: func_name.into(),
+            });
+        }
+    };
+    let new_raw = match op {
+        BitwiseOp::And => a_raw & b_raw,
+        BitwiseOp::Or => a_raw | b_raw,
+        BitwiseOp::Xor => a_raw ^ b_raw,
+    };
+    let new_value =
+        RuntimeValue::Integer(Integer::new(new_raw).ok_or_else(|| VmError::Overflow {
+            function: func_name.into(),
+        })?);
+    *cell.borrow_mut() = new_value;
+    Ok(current)
+}
+
 /// v0.9.x.atomic.3 — value equality for `AtomicValue` types (`Trit`/`Tryte`/
 /// `Integer`/`Trilean` per ADR-0028 §2). Used by `AtomicCompareExchange`
 /// dispatch. Unrelated to `runtime_eq_trilean` (ADR-0010 Ł3-aware) because
@@ -2806,16 +2921,16 @@ fn execute_builtin(
                 })
             }
         }
-        // v0.9.x.atomic.4 will land fetch_* dispatch.
-        BuiltinName::AtomicFetchAdd
-        | BuiltinName::AtomicFetchSub
-        | BuiltinName::AtomicFetchBitwiseAnd
-        | BuiltinName::AtomicFetchBitwiseOr
-        | BuiltinName::AtomicFetchBitwiseXor => Err(VmError::BuiltinUnimplemented {
-            name: format!("{name:?}"),
-            reason: "v0.9.x.atomic.4 lands arithmetic + bitwise dispatch per ADR-0028 §4.2-§4.3"
-                .into(),
-        }),
+        // v0.9.x.atomic.4 — arithmetic + bitwise dispatch per ADR-0028
+        // §4.2 (fetch_add/sub for Tryte/Integer) + Addendum §4.3
+        // (fetch_bitwise_and/or/xor for Integer, explicit binary-leak
+        // signal). All return PREVIOUS value (pre-modification).
+        // Single-thread VM no-op atomicity per §9.
+        BuiltinName::AtomicFetchAdd => atomic_fetch_arithmetic(args, func_name, ArithmeticOp::Add),
+        BuiltinName::AtomicFetchSub => atomic_fetch_arithmetic(args, func_name, ArithmeticOp::Sub),
+        BuiltinName::AtomicFetchBitwiseAnd => atomic_fetch_bitwise(args, func_name, BitwiseOp::And),
+        BuiltinName::AtomicFetchBitwiseOr => atomic_fetch_bitwise(args, func_name, BitwiseOp::Or),
+        BuiltinName::AtomicFetchBitwiseXor => atomic_fetch_bitwise(args, func_name, BitwiseOp::Xor),
     }
 }
 
@@ -6162,6 +6277,149 @@ mod tests {
         // Cell mutated to 10.
         if let RuntimeValue::Atomic(cell) = atomic_clone {
             assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 10));
+        }
+    }
+
+    // ===== v0.9.x.atomic.4 — arithmetic + bitwise dispatch tests =====
+
+    /// `AtomicFetchAdd(atomic, delta, ord)` returns PREVIOUS value;
+    /// cell mutated to prev + delta. Single-thread no-op per ADR-0028 §9.
+    #[test]
+    fn vm_atomic_fetch_add_returns_prev_and_mutates() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("d".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicFetchAdd,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(10);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(FuncId(0), vec![atomic, make_integer(5), RuntimeValue::Unit])
+            .unwrap();
+        // Return value = previous (10).
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 10));
+        // Cell mutated to 15.
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 15));
+        }
+    }
+
+    /// `AtomicFetchSub(atomic, delta, ord)` returns PREVIOUS;
+    /// cell mutated to prev - delta.
+    #[test]
+    fn vm_atomic_fetch_sub_returns_prev_and_mutates() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("d".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicFetchSub,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(20);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(FuncId(0), vec![atomic, make_integer(7), RuntimeValue::Unit])
+            .unwrap();
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 20));
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 13));
+        }
+    }
+
+    /// `AtomicFetchBitwiseAnd(atomic, mask, ord)` — Integer-only per
+    /// ADR-0028 Addendum. Binary AND on 64-bit slot. Returns previous.
+    #[test]
+    fn vm_atomic_fetch_bitwise_and_returns_prev_and_mutates() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("m".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicFetchBitwiseAnd,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(0b1111); // 15
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(
+                FuncId(0),
+                vec![atomic, make_integer(0b1010), RuntimeValue::Unit],
+            )
+            .unwrap();
+        // Return = prev 15.
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 15));
+        // 0b1111 & 0b1010 = 0b1010 = 10.
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 10));
+        }
+    }
+
+    /// `AtomicFetchBitwiseOr` — `0b1010 | 0b0101 = 0b1111 = 15`.
+    #[test]
+    fn vm_atomic_fetch_bitwise_or_returns_prev_and_mutates() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("m".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicFetchBitwiseOr,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(0b1010);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(
+                FuncId(0),
+                vec![atomic, make_integer(0b0101), RuntimeValue::Unit],
+            )
+            .unwrap();
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 0b1010));
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 0b1111));
+        }
+    }
+
+    /// `AtomicFetchBitwiseXor` — `0b1111 ^ 0b1010 = 0b0101 = 5`.
+    #[test]
+    fn vm_atomic_fetch_bitwise_xor_returns_prev_and_mutates() {
+        let prog = build_builtin_program(
+            vec![
+                ("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer))),
+                ("m".into(), TypeTag::Integer),
+                ("ord".into(), TypeTag::Unit),
+            ],
+            TypeTag::Integer,
+            BuiltinName::AtomicFetchBitwiseXor,
+            ConstantPool::new(),
+        );
+        let atomic = make_atomic_integer(0b1111);
+        let atomic_clone = atomic.clone();
+        let mut vm = Vm::new(prog);
+        let result = vm
+            .execute(
+                FuncId(0),
+                vec![atomic, make_integer(0b1010), RuntimeValue::Unit],
+            )
+            .unwrap();
+        assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 0b1111));
+        if let RuntimeValue::Atomic(cell) = atomic_clone {
+            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 0b0101));
         }
     }
 
