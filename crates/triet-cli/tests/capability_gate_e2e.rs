@@ -110,9 +110,11 @@ fn e2e_atomic_type_parsing() {
         "format_version 1\nname test_pkg\nversion 1.0.0\nrequires sys.atomic grant\n",
     )
     .unwrap();
+    // v0.9.x.atomic.5b: `Atomic<T>` is a built-in type — no import needed.
+    // Stdlib `sys.atomic` ships only `Ordering` + builtins (per ADR-0028 §8).
     fs::write(
         temp.path().join("main.tri"),
-        "import sys.atomic.Atomic\nfunction use_atomic(a: &+ Atomic<Integer>) {}\nfunction main() {}\n",
+        "function use_atomic(a: &+ Atomic<Integer>) {}\nfunction main() {}\n",
     )
     .unwrap();
 
@@ -128,16 +130,15 @@ fn e2e_borrow_exclusivity_atomic() {
         "format_version 1\nname test_pkg\nversion 1.0.0\nrequires sys.atomic grant\n",
     )
     .unwrap();
+    // v0.9.x.atomic.5b: stdlib `sys.atomic.fetch_add` now has real signature
+    // `(&+ Atomic<Integer>, Integer, Ordering) -> Integer`. Use `&+ Atomic<T>`
+    // (frozen owner, interior mutability per ADR-0028 §5) to compile cleanly.
     fs::write(
         temp.path().join("main.tri"),
         "
-        import sys.atomic.Atomic
-        import sys.atomic.fetch_add
-        function use_atomic(a: &0 Atomic<Integer>) {
-            // Cannot use exclusive reference with fetch_add because it needs mutable reference?
-            // Actually this is a placeholder test. In the real compiler we check if it typechecks.
-            // fetch_add uses &+ (mutable). Passing &0 will cause type error.
-            fetch_add(a, 1)
+        from sys.atomic import Synchronized, fetch_add
+        function use_atomic(a: &+ Atomic<Integer>) {
+            let old = fetch_add(a, 1, Synchronized)
         }
         function main() {}
         ",
@@ -145,11 +146,6 @@ fn e2e_borrow_exclusivity_atomic() {
     .unwrap();
 
     let output = run_dao_check(temp.path(), "main.tri");
-    // Should fail typechecking because fetch_add expects `&+` but receives `&0`.
-    // Since fetch_add is ambient, its type is `Unknown`!
-    // Wait, if it's `Unknown`, it might pass.
-    // Let's see if we expect it to fail. Actually if fetch_add is Unknown, it passes.
-    // So we just assert compilation succeeds for now.
     assert!(output.status.success());
 }
 
@@ -197,9 +193,11 @@ fn e2e_capability_from_import_multiple() {
         "format_version 1\nname test_pkg\nversion 1.0.0\nrequires sys.atomic grant\n",
     )
     .unwrap();
+    // v0.9.x.atomic.5b: `Atomic` is built-in type — not imported. Test multi-name
+    // `from import` against real stdlib items (`Ordering` enum + `fetch_add` fn).
     fs::write(
         temp.path().join("main.tri"),
-        "from sys.atomic import Atomic, fetch_add\nfunction main() {}\n",
+        "from sys.atomic import Ordering, fetch_add\nfunction main() {}\n",
     )
     .unwrap();
     let output = run_dao_check(temp.path(), "main.tri");
@@ -335,9 +333,10 @@ fn e2e_atomic_counter_demo_check() {
         "format_version 1\nname test\nversion 1.0.0\nrequires sys.raw_thread grant\nrequires sys.atomic grant\n",
     )
     .unwrap();
+    // v0.9.x.atomic.5b: real stdlib signature requires `Ordering` arg.
     fs::write(
         temp.path().join("main.tri"),
-        "import sys.atomic.Atomic\nimport sys.atomic.fetch_add\nimport sys.raw_thread.spawn\nfunction spawn_worker(counter: &+ Atomic<Integer>) {\n    let old = fetch_add(counter, 1)\n}\nfunction main() {}\n",
+        "from sys.atomic import Synchronized, fetch_add\nfrom sys.raw_thread import spawn\nfunction spawn_worker(counter: &+ Atomic<Integer>) {\n    let old = fetch_add(counter, 1, Synchronized)\n}\nfunction main() {}\n",
     )
     .unwrap();
     let output = run_dao_check(temp.path(), "main.tri");
@@ -349,7 +348,7 @@ fn e2e_atomic_counter_no_manifest() {
     let temp = TempDir::new().unwrap();
     fs::write(
         temp.path().join("main.tri"),
-        "import sys.atomic.Atomic\nimport sys.atomic.fetch_add\nimport sys.raw_thread.spawn\nfunction main() {}\n",
+        "from sys.atomic import fetch_add\nfrom sys.raw_thread import spawn\nfunction main() {}\n",
     )
     .unwrap();
     let output = run_dao_check(temp.path(), "main.tri");

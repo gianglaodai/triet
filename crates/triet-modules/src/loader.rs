@@ -514,9 +514,11 @@ mod tests {
     /// io.fs, path, string). Crate root contributes +1 → 12 modules
     /// for an empty program. v0.7.9.3 adds `crypto` (carrying the
     /// `blake3_hash` stub) for the .khi writer's iface/impl
-    /// hash chain → 13 modules. Centralized here so future stdlib
-    /// expansions only touch one place.
-    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 14;
+    /// hash chain → 13 modules. v0.9.x.atomic.5b adds synthetic
+    /// `sys` root + `sys.atomic` stdlib (`Ordering` enum + 10 atomic
+    /// builtin signatures per ADR-0028 §8) → 16. Centralized here so
+    /// future stdlib expansions only touch one place.
+    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 16;
 
     #[test]
     fn empty_root_creates_one_module() {
@@ -606,12 +608,13 @@ mod tests {
         }
     }
 
-    /// Stdlib arenas: 1 (std synthetic root) + 12 (one per stdlib
-    /// .tri file: io, io/fs, text, assert, result, collections,
+    /// Stdlib arenas: 1 (std synthetic root) + 12 (one per std/.tri
+    /// file: io, io/fs, text, assert, result, collections,
     /// collections/vector, collections/hashmap, path, string, crypto,
-    /// env). Crate root contributes +1 = 14 total when inline modules
-    /// share the crate's arena.
-    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 14;
+    /// env) + 1 (sys synthetic root) + 1 (sys/atomic.tri per ADR-0028
+    /// §8, added v0.9.x.atomic.5b). Crate root contributes +1 = 16
+    /// total when inline modules share the crate's arena.
+    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 16;
 
     #[test]
     fn inline_modules_share_root_arena() {
@@ -681,8 +684,8 @@ mod tests {
         assert_eq!(helper.items.len(), 1);
         // External child gets its own arena.
         assert_ne!(helper.arena_id, result.root_module().arena_id);
-        // Stdlib arenas (13: std synthetic + 12 .tri files including env)
-        // + crate root arena + external child file arena = 15.
+        // Stdlib arenas (see STDLIB_ARENA_COUNT_WITH_CRATE_ROOT
+        // breakdown above) + external child file arena = 17.
         assert_eq!(result.arenas.len(), STDLIB_ARENA_COUNT_WITH_CRATE_ROOT + 1);
     }
 

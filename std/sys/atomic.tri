@@ -1,0 +1,98 @@
+// Triết standard library — std.sys.atomic
+//
+// Atomic primitive per [ADR-0028]. Cross-thread shared-mutable
+// wrapper for `AtomicValue` primitives (`Trit` / `Tryte` / `Integer` /
+// `Trilean` / `Pointer`). `Long` excluded — exceeds hardware atomic
+// width on both 64-bit binary CPUs and forecast trytecode hardware
+// (use `std.concurrency.Mutex` v0.10 or 3× `Atomic<Integer>` manually).
+//
+// All operations are Rust-shim builtins per ADR-0019 §5. VM dispatch
+// lands at builtin IDs 33-42 (v0.9.x.atomic.2-4). Function bodies
+// here are placeholders — VM intercepts cross-module calls via
+// `path_to_builtin` per ADR-0019 Addendum §A7.
+//
+// **Concurrency model:** VM is single-thread (dev tier per VISION
+// §4.3) — `Ordering` argument validated at typecheck but no-op at
+// runtime. Real concurrency semantics land when AOT/JIT + OS threads
+// arrive (v0.10+ stdlib).
+//
+// **Reference form:** all ops take `&+ Atomic<T>` (frozen owner) —
+// atomicity is internal interior mutability per ADR-0028 §5.
+// Multi-thread share via refcount; race conditions resolved by
+// `Ordering`, not Triết's borrow checker.
+//
+// **Capability gate:** `sys.atomic` capability required per ADR-0028
+// §8 — declare `requires sys.atomic grant` in `dao.package`.
+//
+// **Parameter naming:** ADR-0028 signatures use `self` for the atomic
+// receiver; this stdlib uses `atom` because `self` is reserved for
+// import path qualification (`self.lexer`, ADR-0019 §3).
+
+/// Memory ordering level per ADR-0028 §3. Trit polarity carries
+/// strength:
+///
+/// - `Relaxed`     — Trit::Negative (-1), weakest — atomic only, no
+///                   inter-thread synchronization. Use with care.
+/// - `Synchronized` — Trit::Zero    ( 0), middle — acquire on load,
+///                   release on store (C++ `memory_order_acq_rel`).
+///                   **Default** for all ops without explicit ordering.
+/// - `Strict`     — Trit::Positive (+1), strongest — total order across
+///                   all threads (C++ `memory_order_seq_cst`).
+public enum Ordering {
+    Relaxed,
+    Synchronized,
+    Strict,
+}
+
+/// Compare-exchange failure payload per ADR-0028 §4.1. Carries the
+/// actual current value seen when `expected` did NOT match — caller
+/// retries the CAS loop with the new value.
+public struct CompareExchangeFailed<T> {
+    actual: T,
+}
+
+/// Construct an `Atomic<T>` initialized to `initial_value`. Caller
+/// stores ownership and borrows as `&+ counter` for cross-thread
+/// share. Stack-allocated per ADR-0028 §6 — no heap, no `ObjectHeader`.
+public function new<T>(initial_value: T) -> Atomic<T> = new(initial_value)
+
+/// Load value from atomic. `Ordering.Synchronized` is the safe default.
+public function load<T>(atom: &+ Atomic<T>, ordering: Ordering) -> T = load(atom, ordering)
+
+/// Store value into atomic. Atomicity is internal — owner ref is `&+` frozen
+/// per ADR-0028 §5 (interior mutability).
+public function store<T>(atom: &+ Atomic<T>, value: T, ordering: Ordering) {}
+
+/// Swap atomic with new value, return previous.
+public function swap<T>(atom: &+ Atomic<T>, value: T, ordering: Ordering) -> T = swap(atom, value, ordering)
+
+/// Compare-exchange. Returns `~+ previous_value` if `expected` matched
+/// and was replaced; `~- CompareExchangeFailed { actual }` if not.
+/// See ADR-0028 §4.1.
+public function compare_exchange<T>(
+    atom: &+ Atomic<T>,
+    expected: T,
+    new_value: T,
+    success_ordering: Ordering,
+    failure_ordering: Ordering,
+) -> T~CompareExchangeFailed<T> = compare_exchange(atom, expected, new_value, success_ordering, failure_ordering)
+
+/// Atomically add `delta`, return previous value (pre-modification).
+/// `Atomic<Integer>` or `Atomic<Tryte>` per ADR-0028 §4.2.
+public function fetch_add(atom: &+ Atomic<Integer>, delta: Integer, ordering: Ordering) -> Integer = fetch_add(atom, delta, ordering)
+
+/// Atomically subtract `delta`, return previous value (pre-modification).
+public function fetch_sub(atom: &+ Atomic<Integer>, delta: Integer, ordering: Ordering) -> Integer = fetch_sub(atom, delta, ordering)
+
+/// Atomic bitwise AND. **Binary-semantic escape hatch** per ADR-0028
+/// Addendum §4.3 — operates on 64-bit binary slot, NOT Triết's 27-trit
+/// ternary value. Explicit `_bitwise_` prefix signals binary leak.
+/// Use only for FFI scenarios where `Atomic<Integer>` stores a packed
+/// binary value (kernel flag bytes, etc.).
+public function fetch_bitwise_and(atom: &+ Atomic<Integer>, mask: Integer, ordering: Ordering) -> Integer = fetch_bitwise_and(atom, mask, ordering)
+
+/// Atomic bitwise OR. Same binary-semantic warning as `fetch_bitwise_and`.
+public function fetch_bitwise_or(atom: &+ Atomic<Integer>, mask: Integer, ordering: Ordering) -> Integer = fetch_bitwise_or(atom, mask, ordering)
+
+/// Atomic bitwise XOR. Same binary-semantic warning as `fetch_bitwise_and`.
+public function fetch_bitwise_xor(atom: &+ Atomic<Integer>, mask: Integer, ordering: Ordering) -> Integer = fetch_bitwise_xor(atom, mask, ordering)

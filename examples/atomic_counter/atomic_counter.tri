@@ -1,20 +1,24 @@
-// Atomic-based counter (no scheduler) — minh họa SPEC §16 & ADR-0026
+// Atomic-based counter (no scheduler) — minh họa SPEC §16 & ADR-0026 + ADR-0028
 //
 // Triết không đi kèm bộ lập lịch (no scheduler). Mọi hàm về luồng và Atomic
 // đều được quản lý bởi Capability Gate `sys.raw_thread` và `sys.atomic`.
-// Chương trình này chỉ minh họa cách khai báo và yêu cầu quyền, các lời gọi 
+// Chương trình này chỉ minh họa cách khai báo và yêu cầu quyền, các lời gọi
 // thực tế sẽ tuân theo BYOS (Bring Your Own Scheduler) của môi trường nhúng.
+//
+// `Atomic<T>` là built-in type — không cần import. Chỉ `Ordering` enum +
+// variants + builtins cần import (per ADR-0028 §8 stdlib module shape).
 
-import sys.atomic.Atomic
-import sys.atomic.fetch_add
-import sys.raw_thread.spawn
+from sys.atomic import Ordering, Synchronized, fetch_add
+from sys.raw_thread import spawn
 
 function spawn_worker(counter: &+ Atomic<Integer>) {
-    // Tăng giá trị biến đếm an toàn trên thread
-    let old = fetch_add(counter, 1)
+    // Tăng giá trị biến đếm an toàn trên thread. Synchronized = default
+    // ordering an toàn cho 95% use case per ADR-0028 §3.
+    let old = fetch_add(counter, 1, Synchronized)
 }
 
 function main() {
-    // Trong v0.8.11, Atomic và raw_thread mới chỉ có ở dạng khai báo.
+    // Trong v0.9.x.atomic.5b, Atomic full type-level + API + Send + capability.
+    // Cross-thread runtime semantics defer to v0.10+ stdlib (real OS threading).
     println("Atomic counter demo (capabilities granted!)")
 }
