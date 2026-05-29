@@ -395,6 +395,16 @@ pub enum VmError {
         /// Function where the error occurred.
         function: String,
     },
+    /// E2211: builtin is declared but dispatch not yet implemented.
+    /// v0.9.x.atomic.2 ships atomic builtin declarations + serde +
+    /// display, but VM dispatch lands v0.9.x.atomic.3-4. Calling
+    /// undispatched builtin produces graceful error, not panic.
+    BuiltinUnimplemented {
+        /// The declared-but-unimplemented builtin name.
+        name: String,
+        /// Reason / pointer to sub-task landing real dispatch.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for VmError {
@@ -440,6 +450,12 @@ impl std::fmt::Display for VmError {
             }
             Self::InvalidOutcomeState { reason, function } => {
                 write!(f, "E2210: invalid outcome state in `{function}`: {reason}")
+            }
+            Self::BuiltinUnimplemented { name, reason } => {
+                write!(
+                    f,
+                    "E2211: builtin `{name}` declared but dispatch unimplemented: {reason}"
+                )
             }
         }
     }
@@ -1833,6 +1849,21 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         // to walk `compiler/` for self-hosting.
         "std.io.fs.read_dir_recursive" => Some(BuiltinName::ReadDirRecursive),
 
+        // v0.9.x.atomic.2 — atomic primitive ops per ADR-0028 §1 + §4.
+        // IDs 33-42. Path lookup wires source `sys.atomic.*` callers
+        // to BuiltinName variants. VM dispatch lands v0.9.x.atomic.3-4.
+        // Capability check `sys.atomic` fires per ADR-0016 §5 + ADR-0028 §8.
+        "sys.atomic.new" => Some(BuiltinName::AtomicNew),
+        "sys.atomic.load" => Some(BuiltinName::AtomicLoad),
+        "sys.atomic.store" => Some(BuiltinName::AtomicStore),
+        "sys.atomic.swap" => Some(BuiltinName::AtomicSwap),
+        "sys.atomic.compare_exchange" => Some(BuiltinName::AtomicCompareExchange),
+        "sys.atomic.fetch_add" => Some(BuiltinName::AtomicFetchAdd),
+        "sys.atomic.fetch_sub" => Some(BuiltinName::AtomicFetchSub),
+        "sys.atomic.fetch_bitwise_and" => Some(BuiltinName::AtomicFetchBitwiseAnd),
+        "sys.atomic.fetch_bitwise_or" => Some(BuiltinName::AtomicFetchBitwiseOr),
+        "sys.atomic.fetch_bitwise_xor" => Some(BuiltinName::AtomicFetchBitwiseXor),
+
         _ => None,
     }
 }
@@ -2600,6 +2631,25 @@ fn execute_builtin(
                 .collect();
             Ok(RuntimeValue::Vector(outer))
         }
+        // v0.9.x.atomic.2 — atomic primitive builtins declared per ADR-0028 §1.
+        // Wire format + display + serde shipped; VM dispatch lands v0.9.x.atomic.3-4.
+        // Calling these from generated IR before .3-.4 lands fires VmError::Unimplemented
+        // (not panic — graceful failure per ADR-0027 diagnostic format).
+        BuiltinName::AtomicNew
+        | BuiltinName::AtomicLoad
+        | BuiltinName::AtomicStore
+        | BuiltinName::AtomicSwap
+        | BuiltinName::AtomicCompareExchange
+        | BuiltinName::AtomicFetchAdd
+        | BuiltinName::AtomicFetchSub
+        | BuiltinName::AtomicFetchBitwiseAnd
+        | BuiltinName::AtomicFetchBitwiseOr
+        | BuiltinName::AtomicFetchBitwiseXor => Err(VmError::BuiltinUnimplemented {
+            name: format!("{name:?}"),
+            reason: "v0.9.x.atomic.3-4 lands real dispatch per ADR-0028 §9 single-thread \
+                     no-op semantics"
+                .into(),
+        }),
     }
 }
 

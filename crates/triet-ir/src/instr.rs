@@ -556,4 +556,30 @@ pub enum BuiltinName {
     /// String. Returns empty Vector on I/O error. Iteration order is
     /// sorted by relative path for determinism.
     ReadDirRecursive,
+    // v0.9.x.atomic.2 (ADR-0028 §1 builtin shim strategy) — atomic
+    // primitive operations. IDs 33-42. VM dispatch placeholder until
+    // v0.9.x.atomic.3-4 lands; single-thread no-op atomicity per
+    // ADR-0028 §9 dev tier behavior.
+    /// `sys.atomic.new<T>(initial: T) -> Atomic<T>` constructor per ADR-0028 §6.
+    AtomicNew,
+    /// `sys.atomic.load<T>(self: &+ Atomic<T>, ord: Ordering) -> T` per ADR-0028 §4.1.
+    AtomicLoad,
+    /// `sys.atomic.store<T>(self: &+ Atomic<T>, value: T, ord: Ordering) -> Unit`.
+    AtomicStore,
+    /// `sys.atomic.swap<T>(self: &+ Atomic<T>, value: T, ord: Ordering) -> T`.
+    AtomicSwap,
+    /// `sys.atomic.compare_exchange<T>(...) -> T~CompareExchangeFailed` per ADR-0028 §4.1.
+    AtomicCompareExchange,
+    /// `sys.atomic.fetch_add(self: &+ Atomic<Tryte|Integer>, delta, ord) -> Tryte|Integer`.
+    AtomicFetchAdd,
+    /// `sys.atomic.fetch_sub(self: &+ Atomic<Tryte|Integer>, delta, ord) -> Tryte|Integer`.
+    AtomicFetchSub,
+    /// `sys.atomic.fetch_bitwise_and(self: &+ Atomic<Integer>, mask, ord) -> Integer`
+    /// per ADR-0028 Addendum (binary semantics on Triết Integer 64-bit slot — `_bitwise_`
+    /// prefix explicit per VISION §6 "Explicit > implicit").
+    AtomicFetchBitwiseAnd,
+    /// `sys.atomic.fetch_bitwise_or(self: &+ Atomic<Integer>, mask, ord) -> Integer`.
+    AtomicFetchBitwiseOr,
+    /// `sys.atomic.fetch_bitwise_xor(self: &+ Atomic<Integer>, mask, ord) -> Integer`.
+    AtomicFetchBitwiseXor,
 }

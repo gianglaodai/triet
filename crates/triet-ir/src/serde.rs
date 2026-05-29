@@ -33,7 +33,7 @@ const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
 ///   Patch bump per ADR-0008 §"Version compatibility".
 ///
 /// [ADR-0008 §"Version history"]: ../../../../docs/decisions/0008-triv-binary-format.md
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
@@ -571,6 +571,17 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::WriteFileBytes => 30,
         BuiltinName::GetEnv => 31,
         BuiltinName::ReadDirRecursive => 32,
+        // v0.9.x.atomic.2 — atomic builtins per ADR-0028 §1.
+        BuiltinName::AtomicNew => 33,
+        BuiltinName::AtomicLoad => 34,
+        BuiltinName::AtomicStore => 35,
+        BuiltinName::AtomicSwap => 36,
+        BuiltinName::AtomicCompareExchange => 37,
+        BuiltinName::AtomicFetchAdd => 38,
+        BuiltinName::AtomicFetchSub => 39,
+        BuiltinName::AtomicFetchBitwiseAnd => 40,
+        BuiltinName::AtomicFetchBitwiseOr => 41,
+        BuiltinName::AtomicFetchBitwiseXor => 42,
     };
     write_u8(buf, id);
 }
@@ -611,6 +622,17 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         30 => Ok(BuiltinName::WriteFileBytes),
         31 => Ok(BuiltinName::GetEnv),
         32 => Ok(BuiltinName::ReadDirRecursive),
+        // v0.9.x.atomic.2 — atomic builtins per ADR-0028 §1.
+        33 => Ok(BuiltinName::AtomicNew),
+        34 => Ok(BuiltinName::AtomicLoad),
+        35 => Ok(BuiltinName::AtomicStore),
+        36 => Ok(BuiltinName::AtomicSwap),
+        37 => Ok(BuiltinName::AtomicCompareExchange),
+        38 => Ok(BuiltinName::AtomicFetchAdd),
+        39 => Ok(BuiltinName::AtomicFetchSub),
+        40 => Ok(BuiltinName::AtomicFetchBitwiseAnd),
+        41 => Ok(BuiltinName::AtomicFetchBitwiseOr),
+        42 => Ok(BuiltinName::AtomicFetchBitwiseXor),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }
@@ -2365,19 +2387,51 @@ mod tests {
     /// Verify the wire-format version pin. Bumped 3→4 alongside the
     /// Vector/HashMap type-tag additions (ADR-0019 Addendum); bumped
     /// 4→5 alongside the Outcome type-tag + opcodes 0xC1-0xC6
-    /// (v0.7.4.3-error.3a, ADR-0020 §7). The version field is the 4
-    /// bytes at offset 4 (after the 4-byte magic).
+    /// (v0.7.4.3-error.3a, ADR-0020 §7); bumped 5→6 alongside Atomic
+    /// primitive builtins 33-42 (v0.9.x.atomic.2, ADR-0028 §1). The
+    /// version field is the 4 bytes at offset 4 (after the 4-byte magic).
     #[test]
-    fn wire_format_version_pinned_to_v5() {
+    fn wire_format_version_pinned_to_v6() {
         let program = IrProgram::new();
         let bytes = write_program(&program);
         assert!(bytes.len() >= 8, "header truncated");
         let version_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
         let version = u32::from_le_bytes(version_bytes);
         assert_eq!(
-            version, 5,
-            "v0.7.4.3-error.3a requires .triv version 5 (was {version})",
+            version, 6,
+            "v0.9.x.atomic.2 requires .triv version 6 (was {version})",
         );
+    }
+
+    /// v0.9.x.atomic.2 — verify all 10 atomic builtins round-trip
+    /// through `write_builtin`/`read_builtin` (IDs 33-42 per ADR-0028 §1).
+    /// Catches regression if any ID gap is introduced.
+    #[test]
+    fn atomic_builtins_serde_round_trip() {
+        let atomic_builtins = [
+            BuiltinName::AtomicNew,
+            BuiltinName::AtomicLoad,
+            BuiltinName::AtomicStore,
+            BuiltinName::AtomicSwap,
+            BuiltinName::AtomicCompareExchange,
+            BuiltinName::AtomicFetchAdd,
+            BuiltinName::AtomicFetchSub,
+            BuiltinName::AtomicFetchBitwiseAnd,
+            BuiltinName::AtomicFetchBitwiseOr,
+            BuiltinName::AtomicFetchBitwiseXor,
+        ];
+        for builtin in atomic_builtins {
+            let mut buf = Vec::new();
+            write_builtin(&mut buf, builtin);
+            assert_eq!(buf.len(), 1, "{builtin:?} must encode as single byte");
+            let mut pos = 0;
+            let decoded = read_builtin(&buf, &mut pos).expect("known atomic builtin");
+            assert_eq!(
+                decoded, builtin,
+                "round-trip mismatch for {builtin:?}: wrote {buf:?}",
+            );
+            assert_eq!(pos, 1, "{builtin:?} must consume single byte");
+        }
     }
 
     /// A pre-v4 reader (one that only knows discriminants 0..=7) must

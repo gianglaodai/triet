@@ -327,6 +327,17 @@ impl fmt::Display for BuiltinName {
             Self::Blake3Hash => write!(f, "blake3_hash"),
             Self::GetEnv => write!(f, "get_env"),
             Self::ReadDirRecursive => write!(f, "read_dir_recursive"),
+            // v0.9.x.atomic.2 — atomic primitive builtins per ADR-0028 §1.
+            Self::AtomicNew => write!(f, "atomic_new"),
+            Self::AtomicLoad => write!(f, "atomic_load"),
+            Self::AtomicStore => write!(f, "atomic_store"),
+            Self::AtomicSwap => write!(f, "atomic_swap"),
+            Self::AtomicCompareExchange => write!(f, "atomic_compare_exchange"),
+            Self::AtomicFetchAdd => write!(f, "atomic_fetch_add"),
+            Self::AtomicFetchSub => write!(f, "atomic_fetch_sub"),
+            Self::AtomicFetchBitwiseAnd => write!(f, "atomic_fetch_bitwise_and"),
+            Self::AtomicFetchBitwiseOr => write!(f, "atomic_fetch_bitwise_or"),
+            Self::AtomicFetchBitwiseXor => write!(f, "atomic_fetch_bitwise_xor"),
         }
     }
 }
