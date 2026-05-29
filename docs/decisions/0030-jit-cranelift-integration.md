@@ -2,6 +2,31 @@
 
 **Trạng thái:** **Locked** (v0.9.0.3, author sign-off 2026-05-29). Refines [ROADMAP §v0.9](../../ROADMAP.md) JIT deliverables. Author confirmed 4 architecturally-significant decisions: §1 3-tier model (Interpreter+VM+JIT, no JIT-only); §2 100-call threshold (Hotspot JVM convention); §6 no capability gate for default `usr.*` programs; §7 synchronous JIT for v0.9 (background defer v1.0+). First ADR using [ADR-0029 §5](0029-self-host-port-policy.md) Self-host port plan template — see §10.
 
+> **2026-05-29 Addendum (v0.9.0.3.c):** Self-review post-lock identified 3 architectural gaps requiring resolution before implementation phase v0.9.x.jit starts:
+>
+> **Gap 1 — JIT codegen IS privileged operation.** §6 original wording "JIT is part of runtime, no more privileged than VM is" was wrong about fundamentals: VM doesn't write executable memory; JIT does (W^X mmap RW→RX flip). Kernel modules cannot allocate RWX pages; hardened userspace runtimes (SELinux, macOS Hardened Runtime) require entitlement for JIT. Per [VISION §3.5](../../VISION.md) Pillar 5 capability + Pillar 4 OS-capable, JIT must have capability gate.
+>
+> **Resolution:** Add capability `dev.jit_codegen` — required for JIT codegen path in any program. Default ambient for `usr.*` (user-mode programs get JIT for free, matching current §6 intent). Kernel/embedded programs explicitly DENY via `dao.package requires dev.jit_codegen deny` — runtime detects, falls back to VM-only mode automatically (NOT error; per BYOS philosophy ADR-0026 v2, runtime features are external/optional). Capability ambient resolution per [ADR-0016 §5](0016-capability-type-system.md) — no friction for default `usr.*`.
+>
+> **Gap 2 — Tier model naming diverged từ VISION §4.2.** ADR §1 used "Tier 0/1/2" but VISION §4.2 lists "Backend 1: VM / Backend 2: JIT / Backend 3: AOT / Backend 4: Trytecode" với interpreter as auxiliary "Development tier (still runs alongside VM)". Realign:
+>
+> - **Backend 0 (auxiliary dev):** tree-walking interpreter — debug fallback, opt-in via `dao run --interpret` flag. NOT a graduation tier; runs alongside Backend 1.
+> - **Backend 1: bytecode VM** (existing v0.3 baseline; cold path + warmup + JIT-disabled fallback).
+> - **Backend 2: Cranelift JIT** (NEW v0.9; hot path post-graduation per §2 100-call threshold).
+> - **Backend 3: AOT native** (v2.0 LLVM future).
+> - **Backend 4: Trytecode native** (v∞ future).
+>
+> Per-function graduation rule (§1 original) unchanged. Naming alignment only; semantics preserved.
+>
+> **Gap 3 — Missing explicit JIT-off escape hatch + real-time disclaimer.**
+>
+> - **CLI flag `--no-jit`**: disable Backend 2 graduation entirely, run pure Backend 1 VM. For debugging, reproducibility, sandboxed environments. Persistent via `TRIET_JIT=disabled` env var.
+> - **Real-time suitability note** (added to §7 Hệ quả): "JIT NOT suitable for hard real-time contexts (~1-3s pause on first trigger of hot function is unpredictable). Real-time kernel code should use Backend 1 VM (deterministic dispatch latency) or wait for Backend 3 AOT (v2.0) / Backend 4 Trytecode (v∞)."
+>
+> **Addendum scope:** §6 capability gate semantics changed (no-gate → ambient-default-with-deny-fallback); §1 tier naming realigned with VISION §4.2; §7 real-time note added. ADR-0030 body NOT edited per project ADR immutability rule; Addendum is authoritative for these 3 gaps. v0.9.x.jit implementation phase uses Addendum semantics, not original §1/§6/§7 text.
+>
+> Cross-references: [ADR-0016 §5](0016-capability-type-system.md) (capability ambient resolution rule); [ADR-0026 v2 §6 BYOS](0026-actor-boundary-send-rules.md) (runtime features external philosophy); [VISION §3.5 + §4.2](../../VISION.md) (Pillar 5 + backend tier naming).
+
 **Issue:** ROADMAP §v0.9 đặt JIT làm primary v0.9 deliverable: "Tier 2 Cranelift JIT cho function chạy thường xuyên (profile-guided)" + "AOT cache: lần chạy thứ 2 dùng JIT-output cached". Plus carry-forward perf gates: bench ≥10× v0.3 baseline, full 3-stage bootstrap < 10 phút, Stage 2 ≡ Stage 3 byte-identical lift từ `#[ignore]` → CI-required.
 
 Open questions ADR-0030 phải lock:
