@@ -48,7 +48,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### v0.9.x.atomic — Atomic Primitive implementation (ADR-0028 + Addendum)
 
-- [ ] **v0.9.x.atomic.1** — `AtomicValue` typecheck enforcement. Add `Type::is_atomic_value()` method (Trit/Tryte/Integer/Trilean → true; Long/String/UserStruct/etc → false; TypeParam/Unknown pass-through for recovery). Add `TypeError::NonAtomicValueType` variant với code E1040. Validate at both Atomic construction sites (check.rs + check_resolved.rs). Tests: 4 positive + 4 negative + diagnostic format compliance.
+- [x] **v0.9.x.atomic.1** — `AtomicValue` typecheck enforcement. `Type::is_atomic_value()` method, `TypeError::NonAtomicValueType` E1040, validation at check.rs construction site, 8 lib.rs tests + 2 diagnostics_format tests. +10 net tests (1436→1446). check_resolved.rs path deferred v0.9.x.atomic.6 stdlib work — `6788d1c`.
 - [ ] **v0.9.x.atomic.2** — `Ordering` enum lexer + parser + typecheck. Tokens: `Ordering::Relaxed/Synchronized/Strict`. Mapped vào Trit polarity per ADR-0028 §3.
 - [ ] **v0.9.x.atomic.3** — Builtin opcodes 27-39 declaration in `triet-ir`. `.triv` v5 → v6 patch bump per ADR-0028 §1. Wire format: read/write paths.
 - [ ] **v0.9.x.atomic.4** — VM dispatch cho atomic builtins (single-thread no-op per ADR-0028 §9 dev tier behavior). load/store/swap/compare_exchange.
