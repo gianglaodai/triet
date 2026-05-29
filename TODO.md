@@ -40,11 +40,11 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 **Pre-v0.9 baseline audit:** ✅ `scripts/release-check.sh` clean per ADR-0009 Addendum §C mandatory protocol. 1436 tests passing, all gates green. Safe to open phase.
 
-### v0.9.0 — Design phase (ADRs first per ADR-0009 + project philosophy)
+### v0.9.0 — Design phase ✅ COMPLETE (ADRs first per ADR-0009 + project philosophy)
 
-- [ ] **v0.9.0.1** — Draft [ADR-0028](docs/decisions/0028-atomic-primitive.md) Atomic Primitive — refine ADR-0026 v2 §4 placeholder. Lock: implementation pattern (VM opcodes vs builtin shims), Ordering ↔ Trit mapping, full operation set, constructor + drop, E2530 fire conditions.
-- [ ] **v0.9.0.2** — Draft [ADR-0029](docs/decisions/0029-self-host-port-policy.md) Self-host port policy — per v0.8.x.completion.4 lessons learned. Lock: lockstep vs freeze, sync triggers, frozen state ground rules.
-- [ ] **v0.9.0.3** — Draft [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md) JIT integration — Cranelift backend choices, tier-2 dispatch, AOT cache layout, perf gate criteria.
+- [x] **v0.9.0.1** — [ADR-0028](docs/decisions/0028-atomic-primitive.md) Atomic Primitive — refined ADR-0026 v2 §4 placeholder. Builtin shim strategy, AtomicValue marker trait, 3-level Ordering ↔ Trit mapping, full API, `&+ Atomic<T>` interior mutability (fixes v2 §4.3 contradiction), conservative E2530. Drafted `603864c`, locked `06244fe` (+ ADR-0026 v2 Addendum + indexes).
+- [x] **v0.9.0.2** — [ADR-0029](docs/decisions/0029-self-host-port-policy.md) Self-host port policy — 3-layer scope (A lockstep mandatory / B defer-OK / C independent), 3-layer detection (smoke + count-based release-check + TODO checklist), ADR template addition. Drafted `260fa9a`, locked `99a089b`. Plus §4 detection implementation + backlog port ADR-0020 §3 ternary postfix tokens `~+>/~->/~0>` (caught by detection on first run — ~6-month silent drift from v0.7.4.3-error.4) — `deb04d1`.
+- [x] **v0.9.0.3** — [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md) JIT integration (Cranelift backend) — 3-tier model (Interpreter+VM+JIT), 100-call threshold, register-SSA 1:1 mapping, AOT cache per impl_hash, sync JIT v0.9 (background defer v1.0+), no capability gate. Stage 2/3 byte-identical lift conditions. Drafted `d9b0289`, locked `3bed098`. First ADR using ADR-0029 §5 Self-host port plan template.
 
 ### v0.9.x.atomic — Atomic Primitive implementation (after ADR-0028 lock)
 
