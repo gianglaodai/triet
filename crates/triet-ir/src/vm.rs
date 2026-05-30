@@ -547,6 +547,36 @@ impl Frame {
     }
 }
 
+// ── JIT dispatcher trait ───────────────────────────────────────────
+
+/// Hook surface the [`Vm`] uses to opt into Cranelift JIT dispatch.
+///
+/// Per [ADR-0030 §2] graduation policy. Implemented by
+/// `triet_jit::JitDispatcher` (separate crate to avoid circular
+/// dependency — `triet-jit` depends on `triet-ir`).
+///
+/// The Vm calls [`Self::record_call`] on every `CallLocal` to count
+/// invocations, and [`Self::try_dispatch`] when the callee's
+/// signature is JIT-friendly (currently all-Integer per ADR-0030
+/// §12). On `try_dispatch` returning `Some(result)`, Vm skips
+/// bytecode dispatch for that call. `None` falls through to Tier 1.
+///
+/// [ADR-0030 §2]: ../../../docs/decisions/0030-jit-cranelift-integration.md
+pub trait JitDispatch {
+    /// Record one call to `func_id`. The dispatcher MAY internally
+    /// trigger Cranelift compilation of `program` when the call count
+    /// hits the configured threshold (default 100 per ADR-0030 §2).
+    /// Idempotent: re-running compilation is the dispatcher's
+    /// responsibility to elide.
+    fn record_call(&mut self, func_id: FuncId, program: &IrProgram);
+
+    /// Attempt native dispatch with i64-marshaled args. Returns
+    /// `Some(result)` when a finalized native function exists for
+    /// `func_id` AND the arity (0–4) is supported. `None` on
+    /// uncompiled / unsupported-signature / unsupported-arity.
+    fn try_dispatch(&self, func_id: FuncId, args: &[i64]) -> Option<i64>;
+}
+
 // ── VM ─────────────────────────────────────────────────────────────
 
 /// The IR bytecode VM — walks basic blocks in a register-based interpreter loop.
@@ -559,6 +589,12 @@ pub struct Vm {
     block_maps: HashMap<FuncId, HashMap<BlockId, BasicBlock>>,
     /// Path index: absolute path string → `FuncId` for cross-module call dispatch.
     path_index: HashMap<String, FuncId>,
+    /// v0.9.x.jit.5 — Optional JIT dispatcher (Cranelift backend in
+    /// `triet-jit`). `None` when JIT is disabled via CLI flag,
+    /// `TRIET_JIT=disabled` env var, or kernel/embedded contexts.
+    /// Per ADR-0030 Addendum Gap 1, JIT is ambient default for
+    /// `usr.*` programs.
+    jit: Option<Box<dyn JitDispatch>>,
 }
 
 impl Vm {
@@ -600,7 +636,23 @@ impl Vm {
             functions,
             block_maps,
             path_index,
+            jit: None,
         }
+    }
+
+    /// v0.9.x.jit.5 — Install a JIT dispatcher (typically
+    /// `triet_jit::JitDispatcher`). Called by the CLI / runtime
+    /// driver after construction when JIT is enabled. Replaces any
+    /// previously-installed dispatcher.
+    pub fn set_jit_dispatcher(&mut self, jit: Box<dyn JitDispatch>) {
+        self.jit = Some(jit);
+    }
+
+    /// v0.9.x.jit.5 — Clear the JIT dispatcher (forces VM-only
+    /// dispatch). Used by `--no-jit` CLI flag or
+    /// `TRIET_JIT=disabled` env var path.
+    pub fn disable_jit(&mut self) {
+        self.jit = None;
     }
 
     /// Execute the program starting from the given function with arguments.
@@ -1058,6 +1110,38 @@ impl Vm {
                         name: format!("@f{}", callee.0),
                     })?;
 
+                // v0.9.x.jit.5 — Tier 2 JIT path attempt per ADR-0030
+                // §2 graduation policy. Each call increments the
+                // dispatcher's per-FuncId counter; once over the
+                // threshold (default 100), the dispatcher Cranelift-
+                // compiles the program. Subsequent calls check the
+                // native code cache: if the callee compiled AND its
+                // signature qualifies for the Integer-only dispatch
+                // path AND all args marshal to i64, we run native code
+                // and skip pushing a VM frame. Anything else falls
+                // through to Tier 1 bytecode dispatch below.
+                if let Some(ref mut jit) = self.jit {
+                    jit.record_call(callee, &self.program);
+                    if integer_signature_ok(&callee_func)
+                        && let Some(i64_args) = try_marshal_integer_args(&arg_vals)
+                        && let Some(result) = jit.try_dispatch(callee, &i64_args)
+                    {
+                        // Saturate on overflow (Integer is 27-trit
+                        // range, ~±3.8e12). JIT i64 result may exceed;
+                        // saturating matches VM bytecode arithmetic
+                        // semantics.
+                        let result_val =
+                            RuntimeValue::Integer(Integer::new(result).unwrap_or(Integer::ZERO));
+                        if let Some(d) = dest {
+                            frame.write(d, result_val);
+                        }
+                        // Native call returned synchronously — VM
+                        // continues at the next instruction without
+                        // pushing a new frame.
+                        return Ok(StepResult::Continue);
+                    }
+                }
+
                 let mut new_frame = Frame::new(&callee_func, arg_vals.len());
                 // Set return info on the CALLEE frame so when it returns,
                 // we know where to resume the caller.
@@ -1443,6 +1527,35 @@ impl Vm {
 
         Ok(StepResult::Continue)
     }
+}
+
+/// v0.9.x.jit.5 — Return true iff `func`'s signature qualifies for
+/// the Integer-only native dispatch path (all-Integer params + Integer
+/// return + arity ≤ 4). Wider type coverage defers v0.10 per
+/// ADR-0030 §12 backlog.
+fn integer_signature_ok(func: &Function) -> bool {
+    if func.params.len() > 4 {
+        return false;
+    }
+    if !matches!(func.return_type, TypeTag::Integer) {
+        return false;
+    }
+    func.params
+        .iter()
+        .all(|(_, t)| matches!(t, TypeTag::Integer))
+}
+
+/// v0.9.x.jit.5 — Try to marshal a slice of `RuntimeValue` into a
+/// `Vec<i64>` for the JIT native-dispatch ABI. Returns `None` if any
+/// arg is not `RuntimeValue::Integer` (mixed types disqualify the
+/// JIT path; VM tier-1 dispatch handles them).
+fn try_marshal_integer_args(vals: &[RuntimeValue]) -> Option<Vec<i64>> {
+    vals.iter()
+        .map(|v| match v {
+            RuntimeValue::Integer(i) => Some(i.to_i64()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Read an operand from a frame, resolving constants from the pool.

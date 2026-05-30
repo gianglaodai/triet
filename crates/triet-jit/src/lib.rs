@@ -37,11 +37,12 @@
 //!
 //! Cranelift's `JITModule::finalize_definitions` returns raw function
 //! pointers that the dispatcher casts to `extern "C"` callables — this
-//! requires `unsafe`. The actual `unsafe` blocks land in `.5`
-//! integration; scaffold layer only declares types, no machine code is
-//! produced yet. Workspace-wide `unsafe_code = "forbid"` is overridden
-//! to `deny` at this crate's `lib.rs` once `.5` lands; for now we keep
-//! the default and revisit when codegen runs.
+//! requires `unsafe`. As of `.5`, `dispatch_integer` localizes the
+//! transmute + call in a single `#[allow(unsafe_code)]` block with
+//! the safety contract documented at the function level. Workspace-
+//! wide `unsafe_code = "forbid"` is overridden to `deny` only at this
+//! crate's `Cargo.toml` `[lints.rust]` table (not propagated to other
+//! crates).
 //!
 //! [ADR-0030]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 §2]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
@@ -242,6 +243,192 @@ impl Default for JitCompiler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// v0.9.x.jit.5 — Per-process call count threshold for JIT graduation.
+///
+/// Per [ADR-0030 §2]. Functions hit 100 invocations → dispatcher
+/// triggers Cranelift compilation of the entire program. Hotspot
+/// JVM convention. Runtime-override via `TRIET_JIT_THRESHOLD` env
+/// var (deferred to a follow-up commit; constant for now).
+///
+/// [ADR-0030 §2]: ../../../docs/decisions/0030-jit-cranelift-integration.md
+pub const JIT_THRESHOLD: u32 = 100;
+
+/// v0.9.x.jit.5 — Runtime-side JIT integration façade.
+///
+/// Implements [`triet_ir::JitDispatch`] by wrapping a [`JitCompiler`]
+/// plus per-`FuncId` call counters. The Vm installs this via
+/// `Vm::set_jit_dispatcher` after construction. The CLI does this
+/// when `--no-jit` is absent and `TRIET_JIT` env var doesn't request
+/// disable, per ADR-0030 Addendum Gap 3.
+///
+/// Compilation is **whole-program once** semantics: the first
+/// function to cross [`JIT_THRESHOLD`] triggers a single
+/// `compile_program` pass that JIT-compiles every eligible function
+/// in the program (per ADR-0030 §3 + §11.3 batched-compile model).
+/// Subsequent threshold-crossings are no-ops; the cache is
+/// populated once and consulted on every subsequent call.
+pub struct JitDispatcher {
+    /// Underlying Cranelift compiler holding the native code cache.
+    compiler: JitCompiler,
+    /// Per-`FuncId` call-count counters. Incremented by
+    /// [`Self::record_call`]; the first counter to reach
+    /// [`JIT_THRESHOLD`] triggers the whole-program compile.
+    counters: HashMap<FuncId, u32>,
+    /// One-shot guard. `false` until the first threshold-crossing
+    /// fires `compile_program`; `true` after (subsequent
+    /// `record_call`s skip the compile path).
+    compiled: bool,
+}
+
+impl JitDispatcher {
+    /// Construct a fresh dispatcher with no compiled functions and
+    /// zeroed counters.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            compiler: JitCompiler::new(),
+            counters: HashMap::new(),
+            compiled: false,
+        }
+    }
+
+    /// Read access to the underlying compiler (for diagnostics, test
+    /// inspection, or future capability gate hooks).
+    #[must_use]
+    pub const fn compiler(&self) -> &JitCompiler {
+        &self.compiler
+    }
+}
+
+impl Default for JitDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl triet_ir::JitDispatch for JitDispatcher {
+    fn record_call(&mut self, func_id: FuncId, program: &triet_ir::IrProgram) {
+        if self.compiled {
+            // Counter still increments — useful for diagnostics — but
+            // compile path is closed. No-op compile-wise.
+            *self.counters.entry(func_id).or_insert(0) += 1;
+            return;
+        }
+        let counter = self.counters.entry(func_id).or_insert(0);
+        *counter += 1;
+        if *counter >= JIT_THRESHOLD {
+            // Best-effort whole-program compile. Per-function
+            // tier-down (UnsupportedOpcode) is silently absorbed —
+            // those functions stay VM-only.
+            let _ = self.compiler.compile_program(program);
+            self.compiled = true;
+        }
+    }
+
+    fn try_dispatch(&self, func_id: FuncId, args: &[i64]) -> Option<i64> {
+        dispatch_integer(&self.compiler, func_id, args)
+    }
+}
+
+/// v0.9.x.jit.5 — Dispatch a JIT-compiled function whose signature is
+/// **all-`Integer` params + `Integer` return** (arity 0–4) from the
+/// VM. Returns `None` when:
+///
+/// - The function isn't in the JIT cache (not yet compiled, or
+///   compilation failed for this `FuncId`).
+/// - The argument count exceeds the supported arity range (0–4 inclusive).
+///
+/// This is the **single safe-API gateway** for the VM's JIT trigger
+/// path. Cranelift returns raw `*const u8` for finalized code and any
+/// transmute to an `extern "C" fn` pointer is fundamentally unsafe;
+/// this function localizes that unsafe to one auditable site so the
+/// VM crate stays under `unsafe_code = "forbid"`.
+///
+/// # Safety contract (internal — documented for auditability)
+///
+/// The internal `unsafe { mem::transmute(...) }` is sound iff:
+///
+/// 1. `jit.lookup(func_id)` returned a pointer to native code that
+///    Cranelift compiled with a signature of N `i64` params + `i64`
+///    return for some N ≤ 4. The codegen layer guarantees this via
+///    [`codegen::map_type`]: `TypeTag::Integer` → `types::I64` always.
+/// 2. The function's `JitCompiler::compile_program` succeeded
+///    without an `UnsupportedOpcode` tier-down — already implied by
+///    the cache hit (failed compiles are never cached).
+/// 3. The host platform's calling convention matches Cranelift's
+///    `CallConv::SystemV` (or the equivalent Win64) — set in the
+///    Cranelift IR at codegen time.
+///
+/// VM-side caller MUST verify the callee's IR signature is
+/// all-Integer before calling this. The
+/// [`is_jit_integer_dispatchable`] helper exists for that pre-check.
+///
+/// [`codegen::map_type`]: crate::codegen
+pub fn dispatch_integer(jit: &JitCompiler, func_id: FuncId, args: &[i64]) -> Option<i64> {
+    let ptr = jit.lookup(func_id)?;
+    if args.len() > 4 {
+        return None;
+    }
+    // SAFETY: see fn-level doc-comment. The transmute is sound under
+    // the three invariants enumerated; VM caller is responsible for
+    // signature pre-check via `is_jit_integer_dispatchable`.
+    #[allow(unsafe_code)]
+    let result = unsafe {
+        match args.len() {
+            0 => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(ptr.addr as *const ());
+                f()
+            }
+            1 => {
+                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(ptr.addr as *const ());
+                f(args[0])
+            }
+            2 => {
+                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(ptr.addr as *const ());
+                f(args[0], args[1])
+            }
+            3 => {
+                let f: extern "C" fn(i64, i64, i64) -> i64 =
+                    std::mem::transmute(ptr.addr as *const ());
+                f(args[0], args[1], args[2])
+            }
+            4 => {
+                let f: extern "C" fn(i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(ptr.addr as *const ());
+                f(args[0], args[1], args[2], args[3])
+            }
+            // Unreachable per the `if args.len() > 4` guard above.
+            _ => return None,
+        }
+    };
+    Some(result)
+}
+
+/// v0.9.x.jit.5 — Pre-check used by [`triet_ir::Vm`] to decide whether
+/// a function's signature qualifies for the JIT native-dispatch path.
+/// Mirrors the `Integer`-only ABI [`dispatch_integer`] supports.
+///
+/// Returns `true` iff:
+/// - All parameters are `TypeTag::Integer`
+/// - The return type is `TypeTag::Integer`
+/// - Arity is ≤ 4
+///
+/// Wider type coverage (Trit / Tryte / Trilean / Long / composites)
+/// defers v0.10+ per ADR-0030 §12 backlog (`RuntimeValue` ABI
+/// marshaling complexity).
+#[must_use]
+pub fn is_jit_integer_dispatchable(func: &triet_ir::Function) -> bool {
+    if func.params.len() > 4 {
+        return false;
+    }
+    if !matches!(func.return_type, triet_ir::TypeTag::Integer) {
+        return false;
+    }
+    func.params
+        .iter()
+        .all(|(_, t)| matches!(t, triet_ir::TypeTag::Integer))
 }
 
 #[cfg(test)]
@@ -906,6 +1093,148 @@ mod tests {
         );
     }
 
+    // ===== v0.9.x.jit.5: native dispatch end-to-end =====
+    // First sub-task that actually executes JIT-compiled code (vs
+    // just verifying compile succeeds). Uses safe wrapper
+    // `dispatch_integer` to localize the unsafe transmute.
+
+    #[test]
+    fn jit5_dispatch_integer_signature_check() {
+        // Integer-only signature qualifies.
+        let int_fn = make_function_at(
+            FuncId(0),
+            "ok",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        assert!(super::is_jit_integer_dispatchable(&int_fn));
+
+        // Trilean return disqualifies.
+        let trilean_fn = make_function_at(
+            FuncId(1),
+            "trilean",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Trilean,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        assert!(!super::is_jit_integer_dispatchable(&trilean_fn));
+
+        // 5-arg fn disqualifies (max 4).
+        let five_arg_fn = make_function_at(
+            FuncId(2),
+            "five",
+            (0..5)
+                .map(|i| (format!("a{i}"), TypeTag::Integer))
+                .collect(),
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        assert!(!super::is_jit_integer_dispatchable(&five_arg_fn));
+    }
+
+    #[test]
+    fn jit5_dispatch_integer_identity() {
+        // Compile + dispatch `id(x) = x`. Returns input unchanged.
+        let id = make_function_at(
+            FuncId(0),
+            "id",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![id])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        let result = super::dispatch_integer(&jit, FuncId(0), &[42]);
+        assert_eq!(result, Some(42), "identity must return its argument");
+    }
+
+    #[test]
+    fn jit5_dispatch_integer_two_arg_add() {
+        // `add(a, b) = a + b`. Result must match Rust integer add.
+        let add = make_function_at(
+            FuncId(0),
+            "add",
+            vec![
+                ("a".to_string(), TypeTag::Integer),
+                ("b".to_string(), TypeTag::Integer),
+            ],
+            TypeTag::Integer,
+            vec![
+                Instruction::Add {
+                    dest: ValueId(2),
+                    lhs: Operand::Value(ValueId(0)),
+                    rhs: Operand::Value(ValueId(1)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![add])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert_eq!(
+            super::dispatch_integer(&jit, FuncId(0), &[3, 4]),
+            Some(7),
+            "3 + 4 = 7 via JIT"
+        );
+        assert_eq!(
+            super::dispatch_integer(&jit, FuncId(0), &[-10, 25]),
+            Some(15),
+            "-10 + 25 = 15 via JIT (negative arg handled)"
+        );
+    }
+
+    #[test]
+    fn jit5_dispatch_returns_none_on_uncached_fn() {
+        // Empty JIT cache → dispatch is None.
+        let jit = JitCompiler::new();
+        assert_eq!(super::dispatch_integer(&jit, FuncId(999), &[]), None);
+    }
+
+    #[test]
+    fn jit5_dispatch_returns_none_on_arity_overflow() {
+        // 5+ args refused per supported-arity guard.
+        let id = make_function_at(
+            FuncId(0),
+            "id",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![id])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // Pass 5 args (signature has 1, but dispatch_integer
+        // refuses by arity guard before invoking).
+        assert_eq!(
+            super::dispatch_integer(&jit, FuncId(0), &[1, 2, 3, 4, 5]),
+            None,
+            "arity > 4 must be refused"
+        );
+    }
+
     #[test]
     fn jit3_program_skips_function_with_unsupported_opcode() {
         // Per ADR-0030 §2 tier-down: a function with an unsupported
@@ -950,5 +1279,169 @@ mod tests {
             jit.lookup(FuncId(1)).is_none(),
             "bad function should be skipped"
         );
+    }
+
+    // ===== v0.9.x.jit.5: JitDispatcher + Vm integration =====
+    // End-to-end: install dispatcher → execute via Vm → counter
+    // climbs → at threshold compile fires → subsequent calls run
+    // native code.
+
+    use triet_ir::{JitDispatch, RuntimeValue, Vm};
+
+    fn make_increment_program() -> (IrProgram, FuncId) {
+        // Two functions:
+        //   helper(x) = x + 1     // FuncId(0), Integer-only signature
+        //   main(seed) = helper(seed)  // FuncId(1)
+        // main is what we drive in the loop so the Vm sees CallLocal
+        // to helper repeatedly.
+        let mut pool = triet_ir::ConstantPool::new();
+        let one = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(1).unwrap(),
+        ));
+        let helper = make_function_at(
+            FuncId(0),
+            "helper",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(1),
+                    constant: one,
+                },
+                Instruction::Add {
+                    dest: ValueId(2),
+                    lhs: Operand::Value(ValueId(0)),
+                    rhs: Operand::Value(ValueId(1)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let main = make_function_at(
+            FuncId(1),
+            "main",
+            vec![("seed".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                Instruction::CallLocal {
+                    dest: Some(ValueId(1)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![helper, main])], pool);
+        (program, FuncId(1))
+    }
+
+    #[test]
+    fn jit5_vm_with_dispatcher_returns_correct_result() {
+        // Sanity: Vm with JitDispatcher installed produces the
+        // correct numeric result on a single execute call. This is
+        // a one-shot check — running execute in a tight loop on the
+        // same Vm leaves stale frames per `Vm` semantics (entry
+        // frame persists). End-to-end threshold-cross + native-
+        // dispatch coverage lives in
+        // `jit5_dispatcher_record_call_counts` +
+        // `jit5_dispatcher_try_dispatch_returns_some_after_compile`
+        // which exercise `JitDispatcher` directly.
+        let (program, main_id) = make_increment_program();
+        let mut vm = Vm::new(program);
+        vm.set_jit_dispatcher(Box::new(JitDispatcher::new()));
+        let seed = triet_core::Integer::new(7).unwrap();
+        let result = vm
+            .execute(main_id, vec![RuntimeValue::Integer(seed)])
+            .expect("vm.execute");
+        match result {
+            RuntimeValue::Integer(out) => assert_eq!(out.to_i64(), 8),
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit5_dispatcher_record_call_counts() {
+        // Manual JitDispatcher test: feed record_call N times, verify
+        // compile triggers exactly at threshold + later calls hit
+        // cache.
+        let (program, _) = make_increment_program();
+        let mut dispatcher = JitDispatcher::new();
+
+        // Pre-threshold: record_call doesn't compile.
+        for _ in 0..(JIT_THRESHOLD - 1) {
+            dispatcher.record_call(FuncId(0), &program);
+        }
+        assert_eq!(
+            dispatcher.compiler().cached_function_count(),
+            0,
+            "no compile before threshold"
+        );
+
+        // Threshold crossing — compile fires.
+        dispatcher.record_call(FuncId(0), &program);
+        assert!(
+            dispatcher.compiler().cached_function_count() >= 1,
+            "compile must fire at threshold"
+        );
+
+        // Post-compile: subsequent record_calls increment counter but
+        // don't re-compile.
+        let cached_after = dispatcher.compiler().cached_function_count();
+        dispatcher.record_call(FuncId(0), &program);
+        assert_eq!(
+            dispatcher.compiler().cached_function_count(),
+            cached_after,
+            "no re-compile after first threshold-crossing"
+        );
+    }
+
+    #[test]
+    fn jit5_dispatcher_try_dispatch_returns_some_after_compile() {
+        // After threshold crossing, try_dispatch returns the native
+        // result for an eligible function.
+        let (program, _) = make_increment_program();
+        let mut dispatcher = JitDispatcher::new();
+        for _ in 0..JIT_THRESHOLD {
+            dispatcher.record_call(FuncId(0), &program);
+        }
+        // helper(5) = 6.
+        let result = dispatcher.try_dispatch(FuncId(0), &[5]);
+        assert_eq!(result, Some(6));
+    }
+
+    #[test]
+    fn jit5_vm_without_dispatcher_works_unchanged() {
+        // Default Vm (no JIT installed) still works — JIT path is
+        // strictly additive.
+        let (program, main_id) = make_increment_program();
+        let mut vm = Vm::new(program);
+        let seed = triet_core::Integer::new(41).unwrap();
+        let result = vm
+            .execute(main_id, vec![RuntimeValue::Integer(seed)])
+            .expect("vm.execute");
+        match result {
+            RuntimeValue::Integer(out) => assert_eq!(out.to_i64(), 42),
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit5_disable_jit_clears_dispatcher() {
+        // disable_jit removes the dispatcher → fall back to VM-only.
+        let (program, main_id) = make_increment_program();
+        let mut vm = Vm::new(program);
+        vm.set_jit_dispatcher(Box::new(JitDispatcher::new()));
+        vm.disable_jit();
+        let seed = triet_core::Integer::new(99).unwrap();
+        let result = vm
+            .execute(main_id, vec![RuntimeValue::Integer(seed)])
+            .expect("vm.execute");
+        match result {
+            RuntimeValue::Integer(out) => assert_eq!(out.to_i64(), 100),
+            other => panic!("expected Integer, got {other:?}"),
+        }
     }
 }

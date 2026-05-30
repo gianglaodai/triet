@@ -62,6 +62,16 @@ enum Command {
         /// Path to .tri, .triv, or .khi file.
         path: String,
 
+        /// v0.9.x.jit.5 — Disable Cranelift JIT (Tier 2). Forces VM
+        /// dispatch for all functions per ADR-0030 Addendum Gap 3.
+        /// Also honored via env var `TRIET_JIT=disabled`. Useful for
+        /// debugging, deterministic VM-only benchmarks, and
+        /// sandboxed contexts where JIT codegen is denied (per
+        /// `dev.jit_codegen` capability — full enforcement v0.10
+        /// per ADR-0030 §12).
+        #[arg(long)]
+        no_jit: bool,
+
         /// Arguments passed to the program.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -147,7 +157,13 @@ fn main() -> ExitCode {
     }
 
     match cli.command {
-        Command::Run { path, args } => {
+        Command::Run { path, no_jit, args } => {
+            // v0.9.x.jit.5 — per ADR-0030 Addendum Gap 3, both
+            // `--no-jit` CLI flag and `TRIET_JIT=disabled` env var
+            // disable Tier 2. Either path leaves Vm without an
+            // installed dispatcher.
+            let jit_disabled =
+                no_jit || std::env::var("TRIET_JIT").ok().as_deref() == Some("disabled");
             // Convention: source files end in `.tri`. Bytecode can be
             // `.triv` (v0.3 wire format) or `.khi` (v0.4+ package format
             // wrapping `.triv` code inside ABI metadata).
@@ -156,8 +172,14 @@ fn main() -> ExitCode {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
             if ext == "triv" || ext == "khi" {
-                run_bytecode(&path, &args, cli.json)
+                run_bytecode(&path, &args, cli.json, jit_disabled)
             } else {
+                // .tri source path uses the tree-walking interpreter
+                // per `triet-interpreter`; no JIT integration there
+                // (interpreter is the auxiliary debug tier per
+                // ADR-0030 §1 Addendum). `--no-jit` is a no-op here
+                // but accepted for CLI consistency.
+                let _ = jit_disabled;
                 run_program(&path, &args, cli.json)
             }
         }
@@ -730,7 +752,7 @@ const fn package_manifest_error_code(error: &triet_pack::PackageManifestError) -
 
 // ── run bytecode (.triv or .khi) ──────────────────────────────────────
 
-fn run_bytecode(path: &str, args: &[String], json: bool) -> ExitCode {
+fn run_bytecode(path: &str, args: &[String], json: bool, jit_disabled: bool) -> ExitCode {
     let file_bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -795,6 +817,12 @@ fn run_bytecode(path: &str, args: &[String], json: bool) -> ExitCode {
     };
 
     let mut vm = triet_ir::Vm::new(ir);
+    // v0.9.x.jit.5 — Install Cranelift JIT dispatcher unless
+    // explicitly disabled (--no-jit or TRIET_JIT=disabled). Tier 2
+    // graduation per ADR-0030 §2 fires at JIT_THRESHOLD (100) calls.
+    if !jit_disabled {
+        vm.set_jit_dispatcher(Box::new(triet_jit::JitDispatcher::new()));
+    }
     match vm.execute(func_to_run, vm_args) {
         Ok(value) => {
             if !json && !matches!(value, triet_ir::RuntimeValue::Unit) {
