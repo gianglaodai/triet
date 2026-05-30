@@ -62,7 +62,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### v0.10.x.thread — Multi-thread Atomic completion (3 sub-tasks)
 
-- [ ] **v0.10.x.thread.1** — `raw_thread.spawn` real OS thread impl per ADR-0026 v2 §3. Replace placeholder `spawn(work: Integer) -> Handle = Handle { thread_id: 0 }` with real OS thread creation. `Handle.join()` blocks until thread terminates. POSIX-first per ADR-0018 precedent (Windows stub OK). ~400 LOC + tests.
+- [x] **v0.10.x.thread.1** — `raw_thread.spawn` real OS thread impl per ADR-0026 v2 §3. Replace placeholder `spawn(work: Integer) -> Handle = Handle { thread_id: 0 }` with real OS thread creation. `Handle.join()` blocks until thread terminates. POSIX-first per ADR-0018 precedent (Windows stub OK). ~400 LOC + tests. — `68e8a0e` (+8 tests; `.triv` v6→v7 with self-host lockstep; spawned thread body empty per closure type system deferral; interpreter parity + JIT shim defer; thread bodies via `std::thread::spawn`)
 - [ ] **v0.10.x.thread.2** — Send-boundary refcount-bump codegen per ADR-0026 v2 §3.2. When `&+ T` crosses spawn boundary, emit refcount-bump on ObjectHeader (`triet-core::memory`). Matching Drop on thread join. User-visible: nothing changes; under the hood: multi-share enabled. ~300 LOC.
 - [ ] **v0.10.x.thread.3** — `&+ Atomic<T>` multi-thread clone semantics + multi-worker demo per ADR-0028 §5 + ADR-0031 §10.2. Wire clone-on-Send-boundary path for `&+ Atomic<T>`; single-thread `&+` stays linear move per v0.9 .7d E2420. Reactivate 3-worker `atomic_counter` demo with concurrency assertion (counter eventually consistent ≥ 3 after all join). ~200 LOC + e2e test.
 
