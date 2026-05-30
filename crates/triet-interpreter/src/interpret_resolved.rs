@@ -54,7 +54,13 @@ fn evaluate_all_globals(
             if let Item::Function(def) = &item.node {
                 let path = AbsolutePath::new(module.path.clone(), def.name.clone());
 
-                let value = if path.module_path().root() == Some("std") {
+                // v0.10.x.interp.1 (ADR-0031 §10.7): also intercept
+                // `sys.*` paths so atomic builtins resolve to a Rust shim
+                // instead of recursing on the stdlib stub body. Without
+                // this, `function new(initial) = new(initial)` (per
+                // std/sys/atomic.tri) overflows the stack on first call.
+                let intercept = matches!(path.module_path().root(), Some("std" | "sys"));
+                let value = if intercept {
                     if let Some(builtin) = crate::builtins::get_builtin(&module.path, &def.name) {
                         Value::Builtin(builtin)
                     } else {

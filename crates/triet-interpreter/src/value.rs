@@ -1,6 +1,6 @@
 //! Runtime value type produced by evaluating Triết expressions.
 
-use std::{collections::HashMap, fmt, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
 
 use triet_core::{Integer, Long, Trit, Tryte};
 use triet_logic::Trilean;
@@ -77,6 +77,16 @@ pub enum Value {
         /// Optional payload.
         payload: Option<Box<Self>>,
     },
+    /// `Atomic<T>` per [ADR-0028] — shared-mutable wrapper around an
+    /// `AtomicValue` primitive (`Trit`/`Tryte`/`Integer`/`Trilean` per §2).
+    /// Mirrors [`triet_ir::vm::RuntimeValue::Atomic`] for v0.10.x.interp.1
+    /// parity per [ADR-0031 §10.7] — single-thread interior mutability via
+    /// `Rc<RefCell<Self>>`. Multi-thread share lands when v0.10.x.thread
+    /// adds real OS threading.
+    ///
+    /// [ADR-0028]: ../../../docs/decisions/0028-atomic-primitive.md
+    /// [ADR-0031 §10.7]: ../../../docs/decisions/0031-borrow-expression-syntax.md
+    Atomic(Rc<RefCell<Self>>),
 }
 
 /// Reference into the program for a top-level function.
@@ -168,6 +178,12 @@ impl PartialEq for Value {
                     payload: p2,
                 },
             ) => n1 == n2 && v1 == v2 && p1 == p2,
+            // Two Atomic handles compare by Rc-pointer identity per
+            // ADR-0028 §5 interior-mutability model — sharing the same
+            // Rc means observing the same shared cell. Differing handles
+            // with byte-identical inner values are NOT equal (matches
+            // the VM's `Rc::ptr_eq` semantics for atomic share-state).
+            (Self::Atomic(a), Self::Atomic(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -231,6 +247,7 @@ impl fmt::Display for Value {
                 }
                 Ok(())
             }
+            Self::Atomic(cell) => write!(formatter, "Atomic({})", cell.borrow()),
         }
     }
 }
