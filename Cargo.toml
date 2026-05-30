@@ -8,6 +8,7 @@ members = [
     "crates/triet-parser",
     "crates/triet-modules",
     "crates/triet-ir",
+    "crates/triet-jit",
     "crates/triet-pack",
     "crates/triet-typecheck",
     "crates/triet-interpreter",
@@ -32,6 +33,7 @@ triet-lexer = { path = "crates/triet-lexer", version = "0.8.0" }
 triet-parser = { path = "crates/triet-parser", version = "0.8.0" }
 triet-modules = { path = "crates/triet-modules", version = "0.8.0" }
 triet-ir = { path = "crates/triet-ir", version = "0.8.0" }
+triet-jit = { path = "crates/triet-jit", version = "0.8.0" }
 triet-pack = { path = "crates/triet-pack", version = "0.8.0" }
 triet-typecheck = { path = "crates/triet-typecheck", version = "0.8.0" }
 triet-interpreter = { path = "crates/triet-interpreter", version = "0.8.0" }

@@ -1,0 +1,26 @@
+[package]
+name = "triet-jit"
+description = "Triết JIT — Cranelift-backed Tier 2 backend per ADR-0030"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+triet-ir.workspace = true
+# Cranelift backend pinned per ADR-0030 §3. Choices:
+#   - cranelift-codegen: SSA IR + machine-code emitter (target-agnostic).
+#   - cranelift-frontend: FunctionBuilder DSL for emitting Cranelift IR.
+#   - cranelift-jit: in-process JIT runtime (W^X mmap + symbol lookup).
+#   - cranelift-module: Module trait abstraction (JITModule implements).
+# Version 0.132 (current at v0.9.x.jit.1 scaffold, 2026-05-30).
+cranelift-codegen = "0.132"
+cranelift-frontend = "0.132"
+cranelift-jit = "0.132"
+cranelift-module = "0.132"
+thiserror.workspace = true
