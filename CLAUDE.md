@@ -177,7 +177,7 @@ These are decisions locked by ADRs. Code generation, examples, error messages, a
 | `!a`, `a && b`, `a \|\| b`, `a ^ b`, `a => b` | — | SPEC §4.2 (symbolic preferred) |
 | `a ~> b`, `a ~^ b`, `a <=> b`, `a <~> b` | — | SPEC §4.2 (Kleene variants) |
 | `1_trit`, `0_trit`, `-1_trit` (suffix-typed Trit literal) | `0t+` as Trit (those `0t...` forms are balanced-ternary **Integer** literals, not Trit) | SPEC §1.5.1 |
-| `&+ T`, `&0 T`, `&- T`, `&` (ownership reference; longest-match before `&&`) | bare `&T` if compound intended | SPEC §10 + ADR-0022 |
+| `&+ T`, `&+ mutable T`, `&0 T`, `&0 mutable T`, `&- T` (5 reference forms — lexer longest-match disambiguates `&` from `&&` logical-AND) | bare `&T` (no such form — 5 forms exhaustive per SPEC §10.1) | SPEC §10 + ADR-0022 §2 |
 | `unknown` (third Trilean value) | `null` for Trilean | SPEC §1.5.2 |
 | `~0` (canonical Trit::Zero literal for `T?` / `T?~E`) | `null` (deprecated v0.7.4.3-error, W2001 → E2002 v1.0) | SPEC §1.5.3 + ADR-0020 §10 |
 

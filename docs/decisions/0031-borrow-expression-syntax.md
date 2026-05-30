@@ -1,6 +1,12 @@
 # ADR 0031 — Borrow Expression Syntax (call-site `&+`/`&0`/`&-`)
 
-**Trạng thái:** **Draft** (v0.9.x.atomic.7a, 2026-05-30). Pending author sign-off. Closes [SPEC §10](../../SPEC.md) gap noted in v0.7-era warning ("runtime chưa expose references; cú pháp §10.1—§10.4 phản ánh design intent, không phải hành vi hiện tại của compiler"). Enables [ADR-0028 §6](0028-atomic-primitive.md) example `let mutable counter = sys.atomic.new(0); spawn(&+ counter)` to type-check and run end-to-end.
+**Trạng thái:** **Locked** (v0.9.x.atomic.7a, author sign-off 2026-05-30 "Phương án A"). Closes [SPEC §10](../../SPEC.md) gap noted in v0.7-era warning ("runtime chưa expose references; cú pháp §10.1—§10.4 phản ánh design intent, không phải hành vi hiện tại của compiler"). Enables [ADR-0028 §6](0028-atomic-primitive.md) example `let mutable counter = sys.atomic.new(0); spawn(&+ counter)` to type-check and run end-to-end.
+
+> **Lock context (2026-05-30 audit):** Author review surfaced 4 issues before lock:
+> 1. **Operand scope `vec[i]`** — `[i]` array-style index syntax doesn't exist in Triết parser (only `TupleIndex` `.0`). §2 originally listed `index` speculatively. **Resolution:** removed — IDENT + field-access only for v0.9.
+> 2. **Bare `&` form** — CLAUDE.md table phrasing implied a 6th form. SPEC §10.1 + ADR-0022 §2 both explicit "**Năm dạng** reference". **Resolution:** §6 confirms 5 forms total; CLAUDE.md gets clarification fix same commit.
+> 3. **Type-only ship trước enforcement** — original §4 deferred ALL borrow check to v0.9.x.borrow.*. Demo would silently accept double-move + use-after-move patterns, teaching wrong semantics, breaking v0.10. **Resolution (Phương án A):** wire up **E2420 UseAfterMove real fires** in v0.9 as new sub-task `.7d`. NLL (E2440) + lifetime elision (E2400) + `&-` upgrade (E2403) still defer v0.10 per ADR-0025 corpus-driven note. §10 captures v0.10 backlog.
+> 4. **Demo multi-worker semantics** — `&+ Atomic<T>` multi-share works via refcount bump on Send boundary per ADR-0026 v2 §3.2. Single-thread VM (ADR-0028 §9) has no real Send crossing — multi-worker demo inherently v0.10 territory. **Resolution:** scope `.7e` demo to single fetch_add call, comment-document multi-worker as v0.10 backlog. Exercise ADR-0028 §9 test gate item 2 ("round-trip correctness, not concurrency") exactly.
 
 **Issue:** v0.9.x.atomic.7 cần demo `atomic_counter` chạy thật trên VM (3× `fetch_add` → counter == 3) per ADR-0028 §9. Stdlib `sys.atomic` signatures bắt buộc `&+ Atomic<T>` parameters per ADR-0028 §5 (interior mutability — frozen owner). Nhưng `let counter = new(0)` produces plain `Atomic<Integer>` per ADR-0028 §6 (constructor returns owned value, not borrowed reference). Triết v0.8 lex được `&+`/`&0`/`&-` tokens trong **type expression** context only — không có expression-level borrow syntax. Hệ quả: `spawn_worker(counter)` raises E1003 mismatch, demo không thể call site nào ngoài type-level paperwork.
 
@@ -40,29 +46,29 @@ Tokens already exist (lexer ships `AmpersandPlus`/`AmpersandZero`/`AmpersandMinu
 
 ---
 
-## §2 — Operand scope: identifier + field access + index v0.9
+## §2 — Operand scope: identifier + field access v0.9
 
 **Decision:** v0.9 operand grammar:
 
 ```
 operand := IDENT                          # &+ counter
          | operand '.' IDENT              # &+ obj.field
-         | operand '[' expression ']'     # &+ vec[i]
 ```
 
-**Deferred to v0.10+ (corpus-driven):**
+**Deferred to v0.10+ (corpus-driven; tracked §10):**
 
-- Function call result borrow (`&+ make_thing()`) — requires lifetime-extension semantics. Borrow-from-rvalue corner case Rust solves via temporary materialization; Triết defers until real use case.
-- Compound binary expressions (`&+ (a + b)`) — semantically dubious (borrowing a computed value); refuse-over-guess.
-- Method call result (`&+ obj.method()`) — same lifetime-extension concern.
-- Nested borrow expression (`&+ &0 x`) — refused by typecheck (cannot borrow a borrow at expression level).
+- **Array-style index `vec[i]`** — Triết parser does NOT currently have `[i]` index expression (only `TupleIndex` `pair.0` exists). Vector access goes through `get(vec, i)` method per `triet_chained_get_unwrap.md` user memory. Until `vec[i]` syntax itself ships, `&+ vec[i]` is moot.
+- **Function call result borrow** (`&+ make_thing()`) — requires lifetime-extension semantics. Borrow-from-rvalue corner case Rust solves via temporary materialization; Triết defers until real use case.
+- **Compound binary expressions** (`&+ (a + b)`) — semantically dubious (borrowing a computed value); refuse-over-guess.
+- **Method call result** (`&+ obj.method()`) — same lifetime-extension concern.
+- **Nested borrow expression** (`&+ &0 x`) — refused by typecheck (cannot borrow a borrow at expression level).
 
 **Rationale:**
 
-- Identifier / field / index covers 95%+ of practical borrow sites (per Rust corpus analogy).
-- Lifetime-extension cases push borrow checker complexity beyond v0.9 .borrow.* scope.
+- Identifier + field-access covers ADR-0028 §6 example syntax + `.7e` demo needs exactly.
+- Index operand (`vec[i]`) removed from v0.9 scope per 2026-05-30 audit — Triết doesn't have array-index syntax yet.
+- Lifetime-extension cases push borrow checker complexity beyond ADR-0025 staged plan.
 - Conservative scope per project philosophy "Refuse over guess" (VISION §6).
-- Matches author's atomic_counter demo needs exactly (identifier operand only).
 
 ---
 
@@ -103,9 +109,21 @@ Pratt table position (descending):
 | `&0 mutable x` | `Reference(BorrowExclusiveMutable, T)` | Borrow (x lives, scope-bounded) | Exclusive — NLL enforced |
 | `&- x` | `Reference(WeakObserver, T)` | Track (x's lifetime independent) | Upgrade-on-deref → `T?` |
 
-**Borrow checker enforcement (defers v0.9.x.borrow.*):** v0.9 .atomic.7 ships **typecheck-only** form distinction — Type::Reference correctly emitted, but consume-once / exclusivity / weak-upgrade rules NOT enforced. E2420 / E2440 emission fires real per ADR-0025 sub-phases.
+**Borrow checker enforcement v0.9 — split per Phương án A (2026-05-30):**
 
-**Why type-only first:** Atomic demo needs Type::Reference correctness so signatures match. Borrow rule enforcement is orthogonal — staged per ADR-0025 explicit defer ("enforcement defers until real-world corpus first").
+| Rule | v0.9 status | Where |
+|---|---|---|
+| **E2420 UseAfterMove** (consume-once) | ✅ **SHIPS v0.9 — fires real** | Sub-task `.7d` per §9 |
+| E2440 NLL borrow exclusivity | ⏸️ Defers v0.10 (corpus-driven) | §10 backlog |
+| E2400 Lifetime elision 3 rules | ⏸️ Defers v0.10 | §10 backlog |
+| E2403 `&-` weak observer upgrade | ⏸️ Defers v0.10 | §10 backlog |
+| E2410/E2411 Mutability violations | Skeleton only (pre-existing) | §10 backlog |
+
+**Why E2420 ships v0.9 (not defer-all):** Without consume-once enforcement, `.7e` atomic_counter demo silently accepts `&+ counter; &+ counter` double-move pattern — teaches wrong semantics, breaks v0.10 when E2420 fires real. Author principle "chậm mà chắc, không ship tạm bợ" (2026-05-30): code shipping in v0.9 must compile + run with same semantics in v0.10. E2420 is the minimum check needed.
+
+**Why NLL/lifetime defer v0.10:** Per ADR-0025 staging: "full NLL enforcement defer v0.9 (cần real-world Triết corpus)". `.7e` demo single-call pattern doesn't exercise NLL (no overlapping borrows) or lifetime elision (no escaping refs). E2440/E2400/E2403 implementation without corpus risks design rework. v0.10 corpus = full self-host + multi-thread stdlib + capability demos.
+
+**Forward-compat guarantee:** Any v0.9 program that compiles via E2420 will continue compiling in v0.10 with the same semantics. NLL adds REJECTION of previously-passing patterns (overlapping borrows that v0.9 didn't catch) — but `.7e` demo doesn't trigger any such pattern.
 
 ---
 
@@ -124,9 +142,11 @@ VM treats `&+ counter` exactly like `counter` — both produce the same `Runtime
 
 ---
 
-## §6 — Form coverage v0.9: all 5
+## §6 — Form coverage v0.9: all 5 (no bare `&` exists)
 
 **Decision:** All 5 forms (`&+`, `&+ mutable`, `&0`, `&0 mutable`, `&-`) ship in v0.9 expression syntax. NOT subset.
+
+**No 6th "bare `&`" form.** Per SPEC §10.1 ("**Năm dạng** tham chiếu") + ADR-0022 §2 ("**Năm dạng** reference (lock cú pháp)"), Triết has exactly 5 reference forms. CLAUDE.md table previously contained phrasing `&+ T, &0 T, &- T, & (ownership reference; longest-match before &&)` which could be misread as 6 forms; the standalone `&` was actually noting the lexer longest-match rule against `&&` logical-AND, NOT a separate form. **Action:** CLAUDE.md row rephrased same commit per audit lock context.
 
 **Rationale:**
 
@@ -164,16 +184,58 @@ VM treats `&+ counter` exactly like `counter` — both produce the same `Runtime
 
 ---
 
-## §9 — Implementation sub-phase plan (v0.9.x.atomic.7)
+## §9 — Implementation sub-phase plan (v0.9.x.atomic.7) — revised Phương án A
 
-| Sub-task | Scope | Files (Rust crates) |
+| Sub-task | Scope | Files |
 |---|---|---|
-| `.7a` (this ADR) | Design lock | `docs/decisions/0031-*.md` + `docs/decisions/README.md` + `docs/decisions/by-topic.md` + TODO restructure |
-| `.7b` | Rust impl + tests | `triet-syntax/src/expr.rs` (AST variant) + `triet-parser/src/expr.rs` (prefix rule) + `triet-typecheck/src/check/exprs.rs` (Type::Reference emit) + `triet-ir/src/lowerer.rs` (passthrough) + per-crate tests |
-| `.7c` | Self-host Layer A port | `compiler/parser/parser.tri` (Expr variant + prefix rule) + self-host symmetry test extension |
-| `.7d` | Demo runtime + e2e | `examples/atomic_counter/atomic_counter.tri` upgrade + new `crates/triet-cli/tests/atomic_counter_e2e.rs` |
+| `.7a` (done) | Design lock — ADR-0031 Locked, scope refinements, v0.10 backlog | `docs/decisions/0031-*.md` + README + by-topic + TODO restructure + CLAUDE.md bare `&` fix |
+| `.7b` | Rust impl borrow expression syntax | `triet-syntax/src/expr.rs` (Expr::Borrow AST variant) + `triet-parser/src/expr.rs` (prefix rule per §3 precedence) + `triet-typecheck/src/check/exprs.rs` (Type::Reference emission) + `triet-ir/src/lowerer.rs` (passthrough) + per-crate tests (parser × form × operand-kind; typecheck per form; lowerer passthrough proof) |
+| `.7c` | Self-host Layer A port | `compiler/parser/parser.tri` (Expr variant + prefix rule mirroring `.7b`) + bootstrap symmetry test extension via `release-check.sh` |
+| `.7d` | **E2420 UseAfterMove real fires** (Phương án A enforcement minimum) | `triet-typecheck/src/check/exprs.rs` move-tracking (CFG walk over function body, mark binding state alive/moved on move site, fire E2420 on use of moved binding) + tests (positive: `&+ x` then `x` use fires; negative: single-use clean; mixed `&0`/`&+` cases) |
+| `.7e` | Demo runtime + e2e | `examples/atomic_counter/atomic_counter.tri` single-call scope (let counter = new(0); let prev = fetch_add(&+ counter, 1, Synchronized); println prev) + `crates/triet-cli/tests/atomic_counter_e2e.rs` asserting `Counter previous: 0` output + comment-document multi-worker v0.10 backlog |
+| `.8` | Phase verify gate | cargo test + clippy + fmt + release-check.sh + ROADMAP/TODO archive |
 
-Each sub-task = independent commit per CLAUDE.md cadence. `.7b` is the largest (~6 crates × small change each).
+Each sub-task = independent commit per CLAUDE.md cadence. `.7b` is the largest (~5 crates × small change each). `.7d` is medium (CFG walk for move tracking, ~400 LOC). `.7e` is small (demo file + 1 e2e test).
+
+---
+
+## §10 — v0.10 backlog revealed by this ADR
+
+Following items surfaced during ADR-0031 design + 2026-05-30 audit. **Tracked here** so v0.10 phase opening picks them up; each item cross-links the source ADR/section that locked it.
+
+### 10.1 — Borrow checker remaining enforcement (per ADR-0025 staged plan)
+
+- **E2440 NLL borrow exclusivity (full CFG live-range)** — per [ADR-0025 §2](0025-borrow-checker-rules.md). Compute borrow-active region from creation to last-use; reject overlapping `&0 mutable` / `&0` / `&+` borrows. Scope: ~1000+ LOC, CFG-based live-range analysis. Trigger: when v0.9 corpus (self-host + atomic + JIT phases) exposes real overlap patterns.
+- **E2400 Lifetime elision 3 rules** — per [ADR-0025 §3](0025-borrow-checker-rules.md). Implement quy tắc 1 (single input borrow → output), quy tắc 2 (`self` receiver → output ties self), quy tắc 3 (owned return). Scope: ~300 LOC + tests. Trigger: when function signature corpus produces ambiguous elision cases.
+- **E2403 `&-` weak observer upgrade tracking** — per [ADR-0022 §2 row 5](0022-trit-balanced-ownership.md). Deref `&- T` → `T?` (nullable); compile-time tracked. Scope: ~200 LOC. Trigger: when first stdlib needs weak refs (likely concurrency primitives or doubly-linked structures).
+- **E2410/E2411 Mutability violation enforcement** — skeletons exist per v0.8.10. Full enforcement (assign-to-frozen, mutate-via-readonly-borrow). Trigger: when `&+ mutable` / `&0 mutable` usage corpus grows.
+
+### 10.2 — Atomic primitive multi-thread completion (per ADR-0028 + ADR-0026 v2)
+
+- **Real `raw_thread.spawn` implementation** — per [ADR-0026 v2 §3](0026-actor-boundary-send-rules.md). Replace v0.9 placeholder `function spawn(work: Integer) -> Handle = Handle { thread_id: 0 }` with real OS thread creation. `Handle.join()` block until real thread terminates.
+- **Send boundary refcount-bump codegen** — per [ADR-0026 v2 §3.2](0026-actor-boundary-send-rules.md). When `&+ T` crosses spawn boundary, emit refcount-bump on ObjectHeader (`triet-core::memory`). User-visible: nothing changes; under the hood: multi-share enabled.
+- **`&+ Atomic<T>` multi-thread clone semantics** — per [ADR-0028 §5](0028-atomic-primitive.md). Locked: "refcount-mediated share, race conditions resolved by Ordering". v0.10 wire up clone-on-Send-boundary path; single-thread `&+` stays linear move (consume-once) per v0.9 .7d enforcement.
+- **`atomic_counter` demo multi-worker upgrade** — per `.7e` v0.9 comment. Reactivate the 3-worker pattern + final `load(&+ counter, ...)` once real spawn ships. Add concurrency assertion (counter eventually consistent ≥ 3 after all join).
+- **`std.concurrency.*` stdlib** — per [ROADMAP §v0.10](../../ROADMAP.md). Mutex, Channel, M:N green threads. Built atop `sys.raw_thread` real implementation.
+
+### 10.3 — Borrow expression operand scope expansion (deferred from ADR-0031 §2)
+
+- **Function-call result borrow** (`&+ make_thing()`) — requires lifetime-extension semantics (Rust calls this "temporary materialization"). Decide rules + ADR amendment.
+- **Method-call result borrow** (`&+ obj.method()`) — same lifetime concern as above.
+- **Array-style index expression `vec[i]`** — independent of this ADR. Vector access currently via `get(vec, i)` only per `triet_chained_get_unwrap.md`. v0.10 (or whenever index syntax ships) extends `&+ vec[i]` operand.
+- **Compound binary expressions** (`&+ (a + b)`) — explicitly refused v0.9 (refuse-over-guess). Re-evaluate if corpus surfaces use case; default stays refused.
+
+### 10.4 — Atomic E2530 — Pointer-Relaxed `fetch_*` pattern (deferred from ADR-0028 §10)
+
+- Per [ADR-0028 §10 pattern 2](0028-atomic-primitive.md): `fetch_add/sub/and/or/xor` with `Ordering.Relaxed` on `Atomic<Pointer>` should fire E2530 (Pointer is publish-like; Relaxed publish almost always wrong). **Blocked v0.9**: `Pointer` type doesn't parse. v0.10 when Pointer lands → wire up this E2530 conservative pattern alongside existing `compare_exchange` weaker-success check from `.6`.
+
+### 10.5 — CLAUDE.md normative documentation drift
+
+- **2026-05-30 audit found bare `&` row in CLAUDE.md confusing.** Fixed same commit as `.7a` lock (this commit). Pattern: CLAUDE.md table rows must spell out forms exhaustively, not hint at lexer rules ambiguously. Audit policy: when adding language convention rows to CLAUDE.md, cross-reference SPEC § to confirm form count + spelling.
+
+### 10.6 — Self-host port lag tracking
+
+- `.7c` ports borrow expression parsing to `compiler/parser/parser.tri` (Layer A per ADR-0029 §3 mandatory). v0.10 may discover that `.7d` E2420 enforcement also needs Layer A or Layer B port if self-host typecheck implementation lands. Currently self-host typecheck pass minimal; revisit when self-host typecheck phase opens (post-v0.9).
 
 ---
 
