@@ -1,6 +1,6 @@
 # Triết — Kiến trúc chi tiết
 
-> Tài liệu này mô tả chi tiết kiến trúc từng phase đã ship của Triết (v0.2.x → v0.8). Dành cho AI agents + contributors muốn đào sâu một area cụ thể trước khi chỉnh code.
+> Tài liệu này mô tả chi tiết kiến trúc từng phase đã ship của Triết (v0.2.x → v0.9). Dành cho AI agents + contributors muốn đào sâu một area cụ thể trước khi chỉnh code.
 >
 > **Khi nào đọc file này:** trước khi modify code trong area tương ứng (e.g., trước khi sửa `triet-pack` đọc §Crate-Pack + §CAS Packaging).
 >

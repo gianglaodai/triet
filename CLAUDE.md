@@ -27,12 +27,12 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret` pipeline, a register-SSA IR + bytecode VM, a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.8.0 (Ownership Foundation + BYOS Concurrency Primitives shipped)** — v0.6 Capability System ✅, v0.7 Self-hosting Compiler ✅, v0.8 S6 ownership model + Send rules + Atomic placeholder ✅. NLL enforcement + scheduler stdlib defer to v0.9+/v0.10. Interpreter + VM remain dev tiers per VISION §4; production AOT lands v2.0.
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret/VM/JIT` pipeline, a register-SSA IR + bytecode VM, a Cranelift JIT Tier-2 backend (partial coverage; v0.10 completes), a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.9.0 (Atomic Primitive + Borrow Expression Syntax + Cranelift JIT partial shipped)** — v0.6 Capability ✅, v0.7 Self-hosting ✅, v0.8 Ownership/BYOS ✅, v0.9 Atomic/Borrow/JIT-partial ✅. Full builtin shim layer + AOT cache + NLL borrow enforcement + multi-thread Atomic defer to v0.10 (in progress).
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative; header **v0.8**, S6 ownership §10 + Outcome §1.5.3 + Trilean! refinement locked)
+- `SPEC.md` — language semantics (authoritative; header **v0.9**, S6 ownership §10 + Outcome §1.5.3 + Trilean! refinement + Atomic + Borrow Expression locked)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.8 ✅ shipped, **next: v0.9 JIT (Cranelift)** + NLL enforcement
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.9 ✅ shipped (Atomic + Borrow + JIT partial), **next: v0.10** = full builtin shim layer + AOT cache + NLL enforcement + multi-thread Atomic
 - `TODO.md` — short-term sub-task tracker with commit hashes
 - `docs/decisions/` — **27 ADRs** for architectural decisions (ADR-0019 Self-hosting bootstrap, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement, ADR-0022 S6 ownership, ADR-0025 borrow checker rules, ADR-0026 v2 BYOS concurrency, ADR-0027 diagnostic format; see `docs/decisions/README.md` for the full index)
 

@@ -13,7 +13,7 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.8 — implementation v0.8.0 SHIPPED — Ownership Foundation + Concurrency Primitives (BYOS).** **v0.8 highlight:** S6 ownership model (5-form reference `&+`/`&0`/`&-`/`&` + `owned`) per [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), Send-derivation diagnostics (E2500) per [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md), borrow-checker skeleton (E24XX, enforcement v0.9) per [ADR-0025](docs/decisions/0025-borrow-checker-rules.md), AI-first diagnostic format per [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md). **BYOS — Bring Your Own Scheduler**: Triết core provides primitives + capability gates, scheduler lives in stdlib (v0.10) or external (kernel-mode). Pipeline `parse → modules → typecheck → interpret` end-to-end; bytecode VM với register SSA IR + `.triv` IR binary format (v5 per [ADR-0008 §Version history](docs/decisions/0008-triv-binary-format.md)) + `.khi` user-facing pack format. **Ternary-native IR** với `BrTrilean` 3-way branch + Ł3-aware `Eq` per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Crate-pack distribution** + cross-package linker per [ADR-0011](docs/decisions/0011-abi-metadata-format.md)/[0012](docs/decisions/0012-witness-table-dispatch.md)/[0013](docs/decisions/0013-semver-linking-policy.md). **CAS Packaging** per [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md)/[0015](docs/decisions/0015-package-store-layout.md). **Capability System** per [ADR-0016](docs/decisions/0016-capability-type-system.md)/[0017](docs/decisions/0017-trilean-policy-hook.md)/[0018](docs/decisions/0018-capability-loader-semantics.md). **Self-hosting Compiler** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md) (3-stage bootstrap chain, factorial.tri Stage 2 byte-identical in CI; main.tri convergence gate `#[ignore]`'d, lifts v0.9), Outcome error handling per [ADR-0020](docs/decisions/0020-outcome-error-handling.md), Trilean! refinement per [ADR-0021](docs/decisions/0021-trilean-refinement.md), Identity rename per [ADR-0024](docs/decisions/0024-khi-dao-identity-naming.md). **1425 tests** pass workspace-wide.
+🟢 **Language SPEC v0.9 — implementation v0.9.0 SHIPPED — Atomic Primitive + Borrow Expression Syntax + Cranelift JIT (partial).** **v0.9 highlights:** (1) Atomic primitive end-to-end (`Atomic<T>` typecheck, IR builtins, VM dispatch, stdlib `sys.atomic`, capability gates) per [ADR-0028](docs/decisions/0028-atomic-primitive.md); (2) Expression-level borrow syntax `&+ x` / `&+ mutable x` / `&0 x` / `&0 mutable x` / `&- x` with E2420 `UseAfterMove` enforcement (CFG move tracking + branch-aware join) per [ADR-0031](docs/decisions/0031-borrow-expression-syntax.md); (3) Cranelift JIT Tier-2 backend per [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md) — first Cranelift native execution from Triết Vm, Tier-1/2 graduation (≥100-call threshold), partial coverage (arithmetic + comparison + control flow + intra-program calls); workspace's single audited `unsafe` block in `triet-jit::dispatch_integer`. **v0.10 backlog**: full builtin shim layer (ADR-0030 §12), AOT cache (§13), bootstrap gate lift (§14), NLL borrow checker enforcement (E2440/E2400/E2403 per ADR-0025), multi-thread Atomic + real `raw_thread.spawn` per ADR-0026 v2 §3. Pipeline `parse → modules → typecheck → interpret/VM/JIT` end-to-end; bytecode VM với register SSA IR + `.triv` v6 + `.khi` user-facing pack format. **Ternary-native IR** với `BrTrilean` 3-way branch per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Self-hosting Compiler** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md), Outcome error handling per [ADR-0020](docs/decisions/0020-outcome-error-handling.md), Trilean! refinement per [ADR-0021](docs/decisions/0021-trilean-refinement.md), S6 Ownership per [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), Self-host port policy per [ADR-0029](docs/decisions/0029-self-host-port-policy.md). **1536 tests** pass workspace-wide.
 
 > **Lưu ý — gate hội tụ self-hosting defer sang v0.9.** Bootstrap chain 3-stage đã wired end-to-end và `cmp` gate đã in-tree, nhưng test chứng minh `compiler/main.tri` hội tụ (Stage 2 ≡ Stage 3 byte-identical) đang `#[ignore]` — một lần Stage 2 self-compile `main.tri` mất >15 phút trên VM dev tier. CI hiện chỉ enforce proxy gate `factorial.tri` Stage 1 ≡ Stage 2 byte-identical, đủ để verify canonical-encoding invariants ([ADR-0019 §3](docs/decisions/0019-self-hosting-compiler-bootstrap.md)) nhưng **chưa** verify full self-host convergence claim. Cả 2 ignored tests lift lên CI-required ở v0.9 (Cranelift JIT). Rationale: [ADR-0019 Addendum 2026-05-25](docs/decisions/0019-self-hosting-compiler-bootstrap.md).
 
@@ -104,9 +104,9 @@ triet/
 │   ├── 04-capability-system/  # v0.6 capability gates walkthrough
 │   └── 05-error-handling/ # v0.7.4.3-error Outcome capstone (VM-only)
 ├── docs/decisions/        # 27 ADRs (+ Addendums on ADR-0001, 0010, 0015, 0017, 0018, 0019)
-├── SPEC.md                # Đặc tả ngôn ngữ (header v0.8)
+├── SPEC.md                # Đặc tả ngôn ngữ (header v0.9)
 ├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
-└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.8 BYOS shipped)
+└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.9 Atomic + Borrow + JIT shipped)
 ```
 
 ## Build
@@ -114,7 +114,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test --workspace   # run all tests (1425 in v0.8.0)
+cargo test --workspace   # run all tests (1536 in v0.9.0)
 cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```
@@ -165,7 +165,8 @@ Triết hướng tới **ngôn ngữ-OS-capable**: balanced ternary + AI-first +
 - **v0.6** — capability namespaces (`sys.*` / `dev.*` / `usr.*`) ✅ ([ADR-0016](docs/decisions/0016-capability-type-system.md), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md))
 - **v0.7** — self-hosting compiler ✅ ([ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md), [ADR-0020](docs/decisions/0020-outcome-error-handling.md), [ADR-0021](docs/decisions/0021-trilean-refinement.md), [ADR-0024](docs/decisions/0024-khi-dao-identity-naming.md)). Stage 1 → Stage 2 byte-identical for factorial.tri (CI); Stage 2 ≡ Stage 3 gate for main.tri wired manual-promoted (VM dev tier > 15min per compile, defers to v0.9 JIT).
 - **v0.8** — Concurrency Primitives & BYOS (Bring Your Own Scheduler) ✅ SHIPPED
-- **v0.9** — JIT (Cranelift)
+- **v0.9** — Atomic Primitive + Borrow Expression + Cranelift JIT (partial) ✅ SHIPPED ([ADR-0028](docs/decisions/0028-atomic-primitive.md), [ADR-0029](docs/decisions/0029-self-host-port-policy.md), [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md), [ADR-0031](docs/decisions/0031-borrow-expression-syntax.md))
+- **v0.10** — Full builtin shim layer + AOT cache + NLL enforcement + multi-thread Atomic (in progress)
 - **v1.0** — production stability
 - **v2.0** — AOT native compile (LLVM)
 - **v3.0** — microkernel POC

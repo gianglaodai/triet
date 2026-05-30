@@ -16,9 +16,9 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.8 đã ship ✅
+## Trạng thái hiện tại — v0.9 đã ship ✅
 
-v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7** ✅ (Self-hosting Compiler) → **v0.8** ✅ (Ownership Foundation + BYOS Concurrency Primitives). Post-release `v0.8.x.review` audit fixes ADR-0009 gate B leftover + namespace mistag + self-host lexer port + doc drift.
+v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7** ✅ (Self-hosting Compiler) → **v0.8** ✅ (Ownership Foundation + BYOS Concurrency Primitives) → **v0.9** ✅ (Atomic Primitive + Borrow Expression Syntax + Cranelift JIT partial). v0.9 added 4 ADRs (0028 Atomic, 0029 Self-host port policy, 0030 JIT, 0031 Borrow expression). Phase achievements: first Cranelift native execution from Triết Vm, workspace's single audited unsafe block, E2420 UseAfterMove enforcement.
 
 ✅ Tree-walking interpreter + Bytecode VM (register SSA IR, 53 opcodes incl. `BrTrilean` + `WitnessCall`), `.triv` wire format v5 (ADR-0008 + 0010 + 0012 + 0020)
 ✅ Type checker với inference + monomorphization + Trilean! refinement (ADR-0021)
@@ -35,8 +35,8 @@ v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7**
 ✅ Cargo workspace `version = 0.8.0`, SPEC header v0.8 (S6 §10 + Outcome §1.5.3 + Trilean! locked)
 ✅ Differential tests: 12/12 v0.7.4.2 examples byte-identical VM vs interpreter; `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7
 ✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch + `cargo fmt --all --check` sạch (post-v0.8.x.review.1)
-✅ **1425 tests workspace-wide** (3 `#[ignore]` documented per ADR-0019 §7 perf gate)
-🔄 v0.9 — wide-phased (in progress): v0.9.0 design ADRs ✅ + **v0.9.x.atomic ✅ shipped 2026-05-30** (Atomic primitive full impl + borrow expression syntax + E2420 enforcement; 1506 tests). Remaining: v0.9.x.jit (Cranelift) + v0.9.final (Stage 2 ≡ Stage 3 main.tri gate lift to CI).
+✅ **1536 tests workspace-wide** (3 `#[ignore]` documented per ADR-0019 §7 perf gate; main.tri convergence gate stays `#[ignore]` per v0.9.x.jit.7 deferral to v0.10)
+🔜 Tiếp theo: v0.10 — full builtin shim layer (ADR-0030 §12) + AOT cache (§13) + bootstrap gate lift (§14) + NLL borrow enforcement (E2440/E2400/E2403 per ADR-0025 + ADR-0031 §10.1) + multi-thread Atomic (ADR-0026 v2 §3 + ADR-0031 §10.2).
 
 ---
 
@@ -365,7 +365,50 @@ Final: **1436 tests workspace-wide** (+11 từ v0.8.x.review/docs-reorg close; +
 
 ---
 
-## v0.9 — Wide-phased: JIT + Borrow Enforcement + Atomic + Self-host policy 🔄 in progress
+## v0.9 — Wide-phased: JIT + Borrow Enforcement + Atomic + Self-host policy ✅ SHIPPED
+
+**Closed 2026-05-30.** Final test count **1536** (+111 from v0.8.0 baseline 1425). All planned design ADRs locked (0028, 0029, 0030, 0031). 4 implementation sub-phases: `v0.9.0` design (3 ADRs) ✅, `v0.9.x.atomic` ✅ (12 sub-tasks), `v0.9.x.borrow` folded into atomic.7d ✅ (Phương án A), `v0.9.x.jit` partial ✅ (6 of 8 sub-tasks; .4 builtin shim + .6 AOT cache + .7+.8 perf/gate-lift deferred v0.10 with explicit ADR-0030 §12+§13+§14 backlog).
+
+**Net language additions vs v0.8:**
+- `Atomic<T>` primitive end-to-end (typecheck E1040, IR builtins 33-42, VM dispatch, stdlib `sys.atomic`/`sys.raw_thread`, capability gates) per ADR-0028.
+- Expression-level borrow syntax (5 forms `&+`/`&+ mutable`/`&0`/`&0 mutable`/`&-`) with E2420 `UseAfterMove` enforcement (CFG move-tracking + branch-aware join) per ADR-0031.
+- E2530 `InvalidAtomicOrdering` conservative fire (compare_exchange success<failure) per ADR-0028 §10.
+- Cranelift JIT Tier-2 backend: first Cranelift native execution from Triết Vm, Tier-1/2 graduation (≥100-call threshold), workspace's single audited `unsafe` block, partial coverage (numeric arith + cmp + control flow + intra-program calls).
+- CLI `--no-jit` flag + `TRIET_JIT=disabled` env var.
+- Self-host port policy locked per ADR-0029 (Layer A lockstep / Layer B defer-OK / Layer C independent).
+
+**Sub-phase archive:**
+
+| Sub-phase | Sub-tasks | Final test count | Status |
+|---|---|---|---|
+| v0.9.0 — Design phase | .1 ADR-0028 / .2 ADR-0029 / .3 ADR-0030 | 1436 | ✅ |
+| v0.9.x.atomic — Atomic Primitive Implementation | .1-.8 (incl. .7a-.7e split + ADR-0031 lock) | 1506 | ✅ |
+| v0.9.x.borrow — folded into atomic.7d | — | — | ✅ folded |
+| v0.9.x.jit — Cranelift JIT (partial) | .1-.6 shipped; .7+.8 deferred v0.10 | 1536 | ✅ partial |
+
+**Pivot 2026-05-30 (2-day v0.10 timeline):** Author chose to defer remaining JIT sub-tasks (.4 builtin shim, .6 AOT cache, .7 gate lift, .8 perf bench) to v0.10 so the 2-day v0.10 window can solve the coupled cluster coherently rather than ship temporary code v0.10 redesigns. Per `Phương án A` precedent (v0.9.x.atomic.7a) + author "chậm mà chắc": don't ship temporary code v0.10 invalidates.
+
+**Gate (ADR-0009 §A/B/C/D applied):**
+- ✅ A — 0 `TODO(v0.9)` markers in src/. main.tri convergence gate stays `#[ignore]` per v0.9.x.jit.7 deferral chain (§14.1).
+- ✅ B — 1536 tests, clippy `-D warnings` clean, fmt clean.
+- ✅ C — Cargo 0.8.0 → 0.9.0, SPEC v0.8 → v0.9, README + ROADMAP synced.
+- ✅ D — 14 single-file + 1 multi-file examples typecheck + run; new `atomic_counter` e2e via in-process VM.
+- Perf gate N/A — deferred to v0.10 alongside .8 bench.
+
+**Không làm (defer v0.10):**
+- Full builtin shim layer (43 builtins × RuntimeValue ABI marshaling) per ADR-0030 §12.
+- AOT cache via cranelift-object backend swap per ADR-0030 §13.
+- Bootstrap gate lift (Stage 2 ≡ Stage 3 main.tri byte-identical CI-required) per ADR-0030 §14.
+- Perf bench ≥10× v0.3 baseline per ADR-0030 §14.
+- NLL borrow checker enforcement (E2440 + E2400 lifetime elision + E2403 `&-` upgrade) per ADR-0025 + ADR-0031 §10.1.
+- Real `raw_thread.spawn` + Send-boundary refcount-bump codegen + multi-thread Atomic per ADR-0026 v2 §3 + ADR-0031 §10.2.
+- Interpreter parity for `sys.atomic.*` builtins per ADR-0031 §10.7.
+
+Commit log: `git log --oneline --grep="v0\.9"`.
+
+---
+
+## v0.9 — Wide-phased — original plan (archived above) 🗄️
 
 **Scope decision 2026-05-29:** Author chose wide-phased option to match all "defer v0.9" promises locked across ADR-0025 (borrow enforcement), ADR-0026 v2 (Atomic), and ROADMAP §v0.9 (JIT). Phase v0.9 is multi-workstream — design ADRs first, then implementation sub-phases roughly parallel.
 

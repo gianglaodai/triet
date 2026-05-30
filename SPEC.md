@@ -1,4 +1,4 @@
-# Triết — Đặc tả ngôn ngữ v0.8
+# Triết — Đặc tả ngôn ngữ v0.9
 
 > Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, với tham vọng **đủ năng lực viết hệ điều hành** khi phần cứng tam phân xuất hiện. Lấy cảm hứng từ Setun (Liên Xô, 1958) và logic Łukasiewicz Ł3 (1920).
 >
