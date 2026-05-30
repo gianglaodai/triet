@@ -291,6 +291,57 @@ Each sub-task = independent commit per cadence.
 
 ---
 
+## §12 — v0.10 backlog: full builtin shim layer (revealed by v0.9.x.jit.4)
+
+**Addendum 2026-05-30:** v0.9.x.jit.4 implementation surfaced that the original §3 "Builtin shim integration" item is **substantially more complex** than the other ADR-0030 §3 opcode-translation work because it requires cross-ABI marshaling of Triết runtime values. Per author "chậm mà chắc" stance, v0.9 ships ONLY the structured tier-down diagnostic — functions calling stdlib builtins still tier-down to VM dispatch, just with an error message that names the specific builtin instead of a generic Debug fallback. Full shim layer defers v0.10.
+
+### 12.1 — Why deferred (scope reality)
+
+43 builtins across categories — virtually all require non-primitive ABI marshaling:
+
+| Category | Builtins | Marshaling complexity |
+|---|---|---|
+| I/O | `Println` / `Print` | String args via `*const u8 + len` |
+| Assert | `Assert` / `AssertEq` | `Assert` takes (Trilean, String); `AssertEq` takes any two `RuntimeValue` for structural equality |
+| Text | `TextLen` / `TextConcat` / `TextFromInteger` / `ParseInteger` / `IntoBytes` / `FromBytes` | String allocation + lifetime ownership |
+| Collections | `Vector*` (4 ops) + `HashMap*` (5 ops) | Heap-allocated containers via `Rc::into_raw` + matching `drop_arc` shims |
+| File I/O | `ReadFile` / `WriteFile` / `WriteFileBytes` / `FileExists` / `ReadDirRecursive` | String paths + Vec<u8>/Vec<String> returns |
+| Path | `PathJoin` / `PathParent` / `PathBasename` | String → String |
+| String | `StringSubstring` / `StringSplit` / `StringIndexOf` | String slicing + ownership |
+| Misc | `Blake3Hash` (String → Vec<u8>) / `GetEnv` (String → String?) / `FStringConcat` (varargs) | Mixed |
+| Atomic (per ADR-0028) | `AtomicNew` / `Load` / `Store` / `Swap` / `CompareExchange` / `FetchAdd` / `FetchSub` / `FetchBitwise{And,Or,Xor}` | `Rc<RefCell<RuntimeValue>>` pointer marshaling; lifetime across JIT boundary |
+
+### 12.2 — Design constraints for v0.10 implementation
+
+When v0.10 picks this up, design must address:
+
+1. **`RuntimeValue` ABI representation.** JIT registers hold raw primitives (`i64`/`i8`); Rust shims need to receive/return structured `RuntimeValue`. Decide between:
+   - Pass everything as `*const RuntimeValue` (boxed-by-default, slow).
+   - Specialize per-builtin per arg type (43 × N marshaling stubs, verbose).
+   - Hybrid: primitives unboxed, composites boxed.
+2. **Lifetime management.** `Rc::into_raw` leaks the refcount unless a matching `drop_arc` shim runs. JIT'd code must emit `drop_arc(ptr)` at the right point — could integrate via Cranelift's `cold_block`/`ehpad` for clean Drop semantics, or explicit reference counting in IR.
+3. **Capability gate enforcement.** ADR-0028 §8 + ADR-0016 §5 require per-builtin capability checks. Currently VM does this at `path_to_builtin` time; JIT shim layer needs equivalent runtime check (or compile-time elision if grants are static).
+4. **Panic → VM error propagation.** Rust shims panic on `VmError`-class failures (`Assert` fail, `Vector::get` OOB). JIT-side, this means catching the panic + converting to VM-compatible error path. Cranelift trap blocks are one approach; `extern "C-unwind"` is another.
+5. **`unsafe_code` policy.** Shim layer requires `#[unsafe(no_mangle)]` + raw pointer casts; v0.9 keeps `unsafe_code = "forbid"` honored. v0.10 must override to `deny` with audit comments at each `unsafe` block.
+
+### 12.3 — v0.9 stop-gap behavior (shipped)
+
+`Instruction::CallBuiltin` opcode raises `JitError::UnsupportedOpcode` with a diagnostic naming the specific builtin. The function tier-downs to VM dispatch per ADR-0030 §2; other functions in the program still JIT. Diagnostic format:
+
+```
+unsupported IR opcode for JIT backend: CallBuiltin(println) with 1 arg(s) —
+full builtin shim layer defers v0.10 per ADR-0030 §12 backlog
+(RuntimeValue ABI marshaling complexity)
+```
+
+Real-world v0.9 impact: most user code paths (numeric loops, control flow, function calls) still JIT. Functions with `println` / `assert` / collection ops stay on VM. Self-host bootstrap (which uses `HashMap` heavily) sees partial JIT acceleration only.
+
+### 12.4 — Decision rationale
+
+Author chose "implementer's call — không ảnh hưởng cú pháp" 2026-05-30. Per "chậm mà chắc" precedent (`Phương án A` from v0.9.x.atomic.7a), the principle is: don't ship temporary code that v0.10 redesign would invalidate. Full builtin shim layer crosses too many design questions (above 5) to ship safely in v0.9 scope — defer to a coherent v0.10 phase.
+
+---
+
 ## Hệ quả
 
 **Possible (positive):**

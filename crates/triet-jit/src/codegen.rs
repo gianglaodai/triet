@@ -569,10 +569,32 @@ fn translate_instruction(
                 builder.ins().return_(&[unit]);
             }
         }
+        // v0.9.x.jit.4 — structured CallBuiltin tier-down per ADR-0030
+        // §12 backlog. Full builtin shim layer (extern "C" Rust
+        // registry + RuntimeValue ABI marshaling for String / Vector /
+        // HashMap / Atomic / etc. across 43 builtins) defers v0.10.
+        // Until then, any function calling a stdlib builtin
+        // tier-downs to VM dispatch with a structured diagnostic that
+        // names the specific builtin — easier to grep + roadmap than
+        // the catch-all Debug-format fallback.
+        Instruction::CallBuiltin { name, args, .. } => {
+            return Err(JitError::UnsupportedOpcode {
+                opcode: format!(
+                    "CallBuiltin({name}) with {} arg(s) — full builtin shim \
+                     layer defers v0.10 per ADR-0030 §12 backlog \
+                     (RuntimeValue ABI marshaling complexity)",
+                    args.len()
+                ),
+            });
+        }
         // Everything else triggers tier-down to VM-only for this fn.
+        // Use the IR `Display` impl (via `triet_ir::Instruction`'s
+        // pretty form) rather than `Debug` — easier to read in
+        // diagnostics, and stable across refactors of internal
+        // struct shape.
         other => {
             return Err(JitError::UnsupportedOpcode {
-                opcode: format!("{other:?}"),
+                opcode: format!("{other}"),
             });
         }
     }

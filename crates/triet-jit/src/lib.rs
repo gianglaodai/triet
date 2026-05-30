@@ -68,15 +68,18 @@ use crate::codegen::JitBackend;
 /// [`triet_ir::Vm`] (created lazily on first JIT trigger per
 /// [ADR-0030 §5] dispatcher integration).
 ///
-/// **v0.9.x.jit.3 status:** `compile` (single-fn) covers arithmetic,
+/// **v0.9.x.jit.4 status:** `compile` (single-fn) covers arithmetic,
 /// comparison, and control-flow opcodes. `compile_program` (multi-fn)
 /// additionally resolves `CallLocal`, `CallCrossModule`, and
 /// `WitnessCall` (the latter dispatches identically to
 /// `CallCrossModule` per ADR-0012 v0.4 semantics), and materializes
 /// inline `Operand::Const` against the program's constant pool.
-/// Builtins, closures, aggregates, nullable / outcome wrappers, and
-/// the `Long` type raise [`JitError::UnsupportedOpcode`] so the
-/// caller tiers down to VM-only dispatch per ADR-0030 §2.
+/// `CallBuiltin` raises a name-bearing tier-down diagnostic per
+/// ADR-0030 §12 (full shim layer defers v0.10 — `RuntimeValue` ABI
+/// marshaling complexity). Closures, aggregates, nullable / outcome
+/// wrappers, and the `Long` type also raise
+/// [`JitError::UnsupportedOpcode`] so the caller tiers down to
+/// VM-only dispatch per ADR-0030 §2.
 ///
 /// [ADR-0030 §5]: ../../../docs/decisions/0030-jit-cranelift-integration.md
 pub struct JitCompiler {
@@ -787,6 +790,120 @@ mod tests {
         jit.compile_program(&program)
             .expect("WitnessCall should compile (v0.4 dispatch = CallCrossModule)");
         assert_eq!(jit.cached_function_count(), 2);
+    }
+
+    // ===== v0.9.x.jit.4: structured CallBuiltin tier-down diagnostic =====
+    // Full builtin shim layer defers v0.10 per ADR-0030 §12 backlog
+    // (RuntimeValue ABI marshaling complexity). This sub-task ships
+    // ONLY the diagnostic improvement so functions calling builtins
+    // tier-down with a name-bearing error instead of opaque Debug
+    // dump. Real shim wiring lands v0.10.
+
+    #[test]
+    fn jit4_callbuiltin_tierdown_names_the_builtin() {
+        // Function calling `println` should tier-down with a
+        // diagnostic that names `println` + references the v0.10
+        // backlog.
+        use triet_ir::BuiltinName;
+        let func = make_function(
+            "with_println",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                Instruction::CallBuiltin {
+                    dest: None,
+                    name: BuiltinName::Println,
+                    args: vec![],
+                },
+                Instruction::Ret { value: None },
+            ],
+        );
+        let mut jit = JitCompiler::new();
+        match jit.compile(&func) {
+            Err(JitError::UnsupportedOpcode { opcode }) => {
+                assert!(
+                    opcode.contains("CallBuiltin(println)"),
+                    "diagnostic must name the builtin via its Display impl, got: {opcode}"
+                );
+                assert!(
+                    opcode.contains("v0.10"),
+                    "diagnostic must reference the v0.10 backlog, got: {opcode}"
+                );
+            }
+            other => panic!("expected UnsupportedOpcode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit4_callbuiltin_arg_count_in_diagnostic() {
+        // `assert_eq(a, b)` — verify arg count appears in diagnostic.
+        use triet_ir::BuiltinName;
+        let func = make_function(
+            "with_assert_eq",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                Instruction::CallBuiltin {
+                    dest: None,
+                    name: BuiltinName::AssertEq,
+                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                },
+                Instruction::Ret { value: None },
+            ],
+        );
+        let mut jit = JitCompiler::new();
+        match jit.compile(&func) {
+            Err(JitError::UnsupportedOpcode { opcode }) => {
+                assert!(
+                    opcode.contains("2 arg"),
+                    "diagnostic must include arg count, got: {opcode}"
+                );
+            }
+            other => panic!("expected UnsupportedOpcode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit4_program_with_builtin_caller_skipped_other_compiled() {
+        // Program-level tier-down per ADR-0030 §2: function calling
+        // builtin skipped, other function compiles. Same shape as
+        // .jit.3's ClosureCall test but with CallBuiltin opcode.
+        use triet_ir::BuiltinName;
+        let pure_fn = make_function_at(
+            FuncId(0),
+            "pure",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let builtin_fn = make_function_at(
+            FuncId(1),
+            "uses_builtin",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                Instruction::CallBuiltin {
+                    dest: None,
+                    name: BuiltinName::Println,
+                    args: vec![],
+                },
+                Instruction::Ret { value: None },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![pure_fn, builtin_fn])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("program should compile (per-fn tier-down)");
+        assert!(jit.lookup(FuncId(0)).is_some(), "pure fn must JIT");
+        assert!(
+            jit.lookup(FuncId(1)).is_none(),
+            "builtin-using fn must tier-down (skipped from cache)"
+        );
     }
 
     #[test]
