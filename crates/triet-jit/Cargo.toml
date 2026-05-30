@@ -13,6 +13,8 @@ workspace = true
 
 [dependencies]
 triet-ir.workspace = true
+triet-logic.workspace = true
+triet-modules.workspace = true
 # Cranelift backend pinned per ADR-0030 §3. Choices:
 #   - cranelift-codegen: SSA IR + machine-code emitter (target-agnostic).
 #   - cranelift-frontend: FunctionBuilder DSL for emitting Cranelift IR.
@@ -26,3 +28,8 @@ cranelift-module = "0.132"
 # Host-ISA builder (target detection) — needed for JITBuilder::with_isa.
 cranelift-native = "0.132"
 thiserror.workspace = true
+
+[dev-dependencies]
+# Tests construct `triet_ir::Constant::Integer(triet_core::Integer)`
+# directly to populate program-level pool.
+triet-core.workspace = true

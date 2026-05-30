@@ -1,9 +1,6 @@
 //! Triết JIT — Cranelift-backed Tier 2 backend per [ADR-0030].
 //!
-//! This crate is the **scaffold** layer for the v0.9 JIT subsystem.
-//! Sub-task `v0.9.x.jit.1` ships only the public API skeleton + crate
-//! wiring; actual opcode translation, codegen, and runtime integration
-//! land in subsequent sub-tasks per [ADR-0030 §11]:
+//! v0.9 JIT subsystem. Sub-task progression per [ADR-0030 §11]:
 //!
 //! - `.2` — opcode-by-opcode translation (arithmetic / comparisons /
 //!   control flow `BrIf` + `BrTrilean` per ADR-0010 backend).
@@ -71,12 +68,15 @@ use crate::codegen::JitBackend;
 /// [`triet_ir::Vm`] (created lazily on first JIT trigger per
 /// [ADR-0030 §5] dispatcher integration).
 ///
-/// **v0.9.x.jit.2 status:** `compile` translates arithmetic +
-/// comparison + control-flow opcodes (`Add`/`Sub`/`Mul`/`Neg` /
-/// `Eq`/`Ne`/`Lt`/`Le`/`Gt`/`Ge` / `Br`/`BrIf`/`BrTrilean`/`Ret`).
-/// `Const` operands, calls, builtins, and other opcodes raise
-/// [`JitError::UnsupportedOpcode`] and the caller tiers down to
-/// VM-only dispatch per ADR-0030 §2.
+/// **v0.9.x.jit.3 status:** `compile` (single-fn) covers arithmetic,
+/// comparison, and control-flow opcodes. `compile_program` (multi-fn)
+/// additionally resolves `CallLocal`, `CallCrossModule`, and
+/// `WitnessCall` (the latter dispatches identically to
+/// `CallCrossModule` per ADR-0012 v0.4 semantics), and materializes
+/// inline `Operand::Const` against the program's constant pool.
+/// Builtins, closures, aggregates, nullable / outcome wrappers, and
+/// the `Long` type raise [`JitError::UnsupportedOpcode`] so the
+/// caller tiers down to VM-only dispatch per ADR-0030 §2.
 ///
 /// [ADR-0030 §5]: ../../../docs/decisions/0030-jit-cranelift-integration.md
 pub struct JitCompiler {
@@ -113,10 +113,13 @@ pub struct NativeCodePtr {
 /// [ADR-0030 §2]: ../../../docs/decisions/0030-jit-cranelift-integration.md
 #[derive(Debug, Error)]
 pub enum JitError {
-    /// The opcode translation, call dispatch, builtin shim, or VM
-    /// integration layer is not yet implemented. Lands in
-    /// `v0.9.x.jit.2`–`.5` per ADR-0030 §11.
-    #[error("JIT compilation not yet implemented (scaffold layer; see ADR-0030 §11)")]
+    /// Reserved for future sub-phases that wire entire feature areas
+    /// in one shot (e.g. `.4` builtin shim integration, `.5` VM
+    /// dispatcher with capability gate). Currently no codegen path
+    /// returns this variant — per-opcode failures use
+    /// [`JitError::UnsupportedOpcode`] instead. Kept for forward
+    /// compatibility with `.4`/`.5` integration.
+    #[error("JIT compilation not yet implemented (see ADR-0030 §11)")]
     Unimplemented,
 
     /// The function uses an IR opcode that the current backend doesn't
@@ -154,12 +157,14 @@ impl JitCompiler {
         }
     }
 
-    /// Attempt to JIT-compile `func` and return the native code
-    /// pointer on success. v0.9.x.jit.2 ships translation for
-    /// arithmetic + comparison + control-flow opcodes; unsupported
-    /// opcodes raise [`JitError::UnsupportedOpcode`] for tier-down to
-    /// VM-only dispatch per ADR-0030 §2. Inline `Const` operands
-    /// + cross-module calls + builtin dispatch defer to `.3`/`.4`.
+    /// Attempt to JIT-compile `func` standalone and return the native
+    /// code pointer on success.
+    ///
+    /// **Use [`Self::compile_program`] instead** when the function
+    /// has cross-function calls, witness-table generics, or inline
+    /// constants — those need program-level wiring. The single-fn
+    /// path uses an empty pool + empty func map and will reject any
+    /// such opcode.
     ///
     /// On success, the pointer is also stored in the cache so
     /// [`Self::lookup`] returns the same address.
@@ -185,6 +190,34 @@ impl JitCompiler {
         let ptr = NativeCodePtr { addr };
         self.function_cache.insert(func.id, ptr);
         Ok(ptr)
+    }
+
+    /// JIT-compile every function in `program` with full
+    /// cross-function dispatch wiring per ADR-0030 §3. Functions
+    /// that fail (per-function `JitError::UnsupportedOpcode`) are
+    /// silently skipped (tier-down per ADR-0030 §2); the cache
+    /// only contains successfully-compiled entries.
+    ///
+    /// Use this entry point (instead of [`Self::compile`]) whenever
+    /// the program has cross-function calls, witness-table generics,
+    /// or inline constant operands — the single-function path lacks
+    /// the program context to resolve any of those.
+    ///
+    /// # Errors
+    ///
+    /// - [`JitError::Cranelift`] if the pre-pass (function signature
+    ///   declarations) or final `finalize_definitions` fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if backend initialization reports success but the
+    /// field is `None` — defensively unreachable.
+    pub fn compile_program(&mut self, program: &triet_ir::IrProgram) -> Result<(), JitError> {
+        if self.backend.is_none() {
+            self.backend = Some(JitBackend::new()?);
+        }
+        let backend = self.backend.as_mut().expect("backend just initialized");
+        backend.compile_program(program, &mut self.function_cache)
     }
 
     /// Return a previously-compiled native code pointer for `id`, or
@@ -357,9 +390,12 @@ mod tests {
     }
 
     #[test]
-    fn jit2_unsupported_const_opcode_falls_back() {
-        // Inline Const operand requires program-level pool wiring.
-        // Defer to .3 per ADR-0030 §3; for now compile() must err.
+    fn jit3_const_without_pool_fails_with_missing_const_error() {
+        // Single-function path uses an empty constant pool — Const
+        // instruction therefore looks up an absent entry. v0.9.x.jit.3
+        // surfaces this as a Cranelift-class error. Programs needing
+        // constants must use `compile_program`, which threads the
+        // real pool.
         let func = make_function(
             "with_const",
             vec![],
@@ -376,8 +412,13 @@ mod tests {
         );
         let mut jit = JitCompiler::new();
         match jit.compile(&func) {
-            Err(JitError::UnsupportedOpcode { .. }) => {}
-            other => panic!("expected UnsupportedOpcode, got {other:?}"),
+            Err(JitError::Cranelift { message }) => {
+                assert!(
+                    message.contains("ConstId"),
+                    "error must reference missing ConstId, got: {message}"
+                );
+            }
+            other => panic!("expected Cranelift missing-const error, got {other:?}"),
         }
         assert_eq!(
             jit.cached_function_count(),
@@ -516,8 +557,11 @@ mod tests {
     }
 
     #[test]
-    fn jit2_unsupported_call_opcode_falls_back() {
-        // CallLocal defers .3. Verify the tier-down path fires.
+    fn jit3_single_fn_call_to_unknown_target_falls_back() {
+        // Single-function path has empty func_id_map. CallLocal
+        // to any callee fires UnsupportedOpcode "call target FuncId
+        // not in program". Use `compile_program` for cross-call
+        // dispatch.
         let func = make_function(
             "with_call",
             vec![],
@@ -535,8 +579,259 @@ mod tests {
         );
         let mut jit = JitCompiler::new();
         match jit.compile(&func) {
-            Err(JitError::UnsupportedOpcode { .. }) => {}
+            Err(JitError::UnsupportedOpcode { opcode }) => {
+                assert!(
+                    opcode.contains("FuncId(42)"),
+                    "error should name the missing callee, got: {opcode}"
+                );
+            }
             other => panic!("expected UnsupportedOpcode, got {other:?}"),
         }
+    }
+
+    // ===== v0.9.x.jit.3: program-level compilation + call dispatch =====
+
+    use triet_ir::{IrModule, IrProgram};
+    use triet_modules::{AbsolutePath, ModulePath};
+
+    fn make_program(modules: Vec<IrModule>, constants: triet_ir::ConstantPool) -> IrProgram {
+        IrProgram {
+            modules,
+            constants,
+            witness_tables: Vec::new(),
+        }
+    }
+
+    fn make_ir_module(module_segments: &[&str], functions: Vec<Function>) -> IrModule {
+        let path = AbsolutePath::new(
+            ModulePath::new(module_segments.iter().map(|s| (*s).to_string()).collect()),
+            String::new(),
+        );
+        IrModule { path, functions }
+    }
+
+    fn make_function_at(
+        id: FuncId,
+        name: &str,
+        params: Vec<(String, TypeTag)>,
+        return_type: TypeTag,
+        instructions: Vec<Instruction>,
+    ) -> Function {
+        let mut block = BasicBlock::new(BlockId(0), Some("entry".to_string()));
+        block.instructions = instructions;
+        let mut func = Function::new(id, Some(name.to_string()), params, return_type);
+        func.blocks = vec![block];
+        func
+    }
+
+    #[test]
+    fn jit3_program_with_const_integer() {
+        // `function answer() -> Integer = 42` via Const + Ret.
+        let mut pool = triet_ir::ConstantPool::new();
+        let cid = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(42).unwrap(),
+        ));
+        let answer = make_function_at(
+            FuncId(0),
+            "answer",
+            vec![],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: cid,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![answer])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("program with Const should compile");
+        assert_eq!(jit.cached_function_count(), 1);
+        assert!(jit.lookup(FuncId(0)).is_some());
+    }
+
+    #[test]
+    fn jit3_program_with_call_local() {
+        // main calls helper which returns 7.
+        let mut pool = triet_ir::ConstantPool::new();
+        let seven = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(7).unwrap(),
+        ));
+        let helper = make_function_at(
+            FuncId(0),
+            "helper",
+            vec![],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: seven,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let main = make_function_at(
+            FuncId(1),
+            "main",
+            vec![],
+            TypeTag::Integer,
+            vec![
+                Instruction::CallLocal {
+                    dest: Some(ValueId(0)),
+                    callee: FuncId(0),
+                    args: vec![],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![helper, main])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("CallLocal program should compile");
+        assert_eq!(jit.cached_function_count(), 2);
+        assert!(jit.lookup(FuncId(0)).is_some());
+        assert!(jit.lookup(FuncId(1)).is_some());
+    }
+
+    #[test]
+    fn jit3_program_with_cross_module_call() {
+        // main (module=khi) calls helper (module=khi.utils) via
+        // CallCrossModule path resolution.
+        let helper = make_function_at(
+            FuncId(0),
+            "helper",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let main = make_function_at(
+            FuncId(1),
+            "main",
+            vec![("y".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                Instruction::CallCrossModule {
+                    dest: Some(ValueId(1)),
+                    path: AbsolutePath::new(
+                        ModulePath::new(vec!["khi".to_string(), "utils".to_string()]),
+                        "helper".to_string(),
+                    ),
+                    args: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![
+                make_ir_module(&["khi"], vec![main]),
+                make_ir_module(&["khi", "utils"], vec![helper]),
+            ],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("CallCrossModule should compile");
+        assert_eq!(jit.cached_function_count(), 2);
+    }
+
+    #[test]
+    fn jit3_program_with_witness_call_dispatches_same_as_cross_module() {
+        // WitnessCall lowers identically to CallCrossModule at v0.4
+        // semantics per ADR-0012 §2. Verify it compiles.
+        let helper = make_function_at(
+            FuncId(0),
+            "helper",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let main = make_function_at(
+            FuncId(1),
+            "main",
+            vec![("y".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                Instruction::WitnessCall {
+                    dest: Some(ValueId(1)),
+                    path: AbsolutePath::new(
+                        ModulePath::new(vec!["khi".to_string()]),
+                        "helper".to_string(),
+                    ),
+                    witness_idx: 0,
+                    args: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![helper, main])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("WitnessCall should compile (v0.4 dispatch = CallCrossModule)");
+        assert_eq!(jit.cached_function_count(), 2);
+    }
+
+    #[test]
+    fn jit3_program_skips_function_with_unsupported_opcode() {
+        // Per ADR-0030 §2 tier-down: a function with an unsupported
+        // opcode is skipped, but the rest of the program compiles.
+        let ok_fn = make_function_at(
+            FuncId(0),
+            "ok",
+            vec![("x".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let bad_fn = make_function_at(
+            FuncId(1),
+            "bad",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                // ClosureCall is not supported through .3.
+                Instruction::ClosureCall {
+                    dest: None,
+                    closure: Operand::Value(ValueId(99)),
+                    args: vec![],
+                },
+                Instruction::Ret { value: None },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![ok_fn, bad_fn])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("program should compile despite per-fn tier-down");
+        // `ok` compiled; `bad` did not.
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "ok function should be cached"
+        );
+        assert!(
+            jit.lookup(FuncId(1)).is_none(),
+            "bad function should be skipped"
+        );
     }
 }
