@@ -827,3 +827,135 @@ fn parses_outcome_default_operator() {
         other => panic!("expected OutcomeDefault, got {other:?}"),
     }
 }
+
+// =====================================================================
+// v0.9.x.atomic.7b: Borrow expression syntax (ADR-0031)
+// =====================================================================
+
+fn borrow_of(parser: &Parser<'_>, id: ExprId) -> (ReferenceForm, ExprId) {
+    match &parser.arena.expression(id).node {
+        Expr::Borrow { form, operand } => (*form, *operand),
+        other => panic!("expected Borrow, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_strong_frozen_borrow() {
+    let (parser, id) = parse_expr("&+ x");
+    let (form, operand) = borrow_of(&parser, id);
+    assert_eq!(form, ReferenceForm::StrongFrozen);
+    match &parser.arena.expression(operand).node {
+        Expr::Identifier(name) => assert_eq!(name, "x"),
+        other => panic!("expected Identifier operand, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_strong_mutable_borrow() {
+    let (parser, id) = parse_expr("&+ mutable x");
+    let (form, _) = borrow_of(&parser, id);
+    assert_eq!(form, ReferenceForm::StrongMutable);
+}
+
+#[test]
+fn parses_scope_borrow_readonly() {
+    let (parser, id) = parse_expr("&0 x");
+    let (form, _) = borrow_of(&parser, id);
+    assert_eq!(form, ReferenceForm::BorrowReadOnly);
+}
+
+#[test]
+fn parses_scope_borrow_exclusive_mutable() {
+    let (parser, id) = parse_expr("&0 mutable x");
+    let (form, _) = borrow_of(&parser, id);
+    assert_eq!(form, ReferenceForm::BorrowExclusiveMutable);
+}
+
+#[test]
+fn parses_weak_observer_borrow() {
+    let (parser, id) = parse_expr("&- x");
+    let (form, _) = borrow_of(&parser, id);
+    assert_eq!(form, ReferenceForm::WeakObserver);
+}
+
+#[test]
+fn parses_borrow_with_field_access_operand() {
+    // ADR-0031 §2 v0.9 scope: IDENT + field-access chain.
+    let (parser, id) = parse_expr("&+ obj.field");
+    let (form, operand) = borrow_of(&parser, id);
+    assert_eq!(form, ReferenceForm::StrongFrozen);
+    match &parser.arena.expression(operand).node {
+        Expr::FieldAccess { object, field } => {
+            assert_eq!(field, "field");
+            match &parser.arena.expression(*object).node {
+                Expr::Identifier(name) => assert_eq!(name, "obj"),
+                other => panic!("expected Identifier object, got {other:?}"),
+            }
+        }
+        other => panic!("expected FieldAccess operand, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_borrow_with_nested_field_chain() {
+    let (parser, id) = parse_expr("&+ a.b.c");
+    let (_, operand) = borrow_of(&parser, id);
+    match &parser.arena.expression(operand).node {
+        Expr::FieldAccess { object, field } => {
+            assert_eq!(field, "c");
+            match &parser.arena.expression(*object).node {
+                Expr::FieldAccess { field, .. } => assert_eq!(field, "b"),
+                other => panic!("expected nested FieldAccess, got {other:?}"),
+            }
+        }
+        other => panic!("expected FieldAccess operand, got {other:?}"),
+    }
+}
+
+#[test]
+fn borrow_operand_does_not_extend_into_function_call() {
+    // ADR-0031 §2 defers function-call result borrow to v0.10 §10.3
+    // backlog. The operand grammar accepts IDENT + field-access only.
+    // The pratt loop's postfix `(` therefore attaches to the Borrow
+    // expression as a whole, producing `Call(Borrow(f), [])` — i.e.
+    // "call the borrow of f", NOT `Borrow(Call(f, []))`. Semantic
+    // rejection happens at typecheck (Reference(Function) is not
+    // callable — NotCallable error).
+    let (parser, id) = parse_expr("&+ f()");
+    match &parser.arena.expression(id).node {
+        Expr::Call { callee, .. } => {
+            assert!(
+                matches!(parser.arena.expression(*callee).node, Expr::Borrow { .. }),
+                "outer Call must wrap a Borrow expression, proving operand stops at `f`"
+            );
+        }
+        other => panic!("expected Call(Borrow(...)), got {other:?}"),
+    }
+}
+
+#[test]
+fn refuses_borrow_with_integer_literal_operand() {
+    // Parser rejects non-identifier operand per ADR-0031 §2 v0.9 scope.
+    let result = try_parse_expr("&+ 42");
+    assert!(
+        result.is_err(),
+        "borrow of integer literal must fail to parse"
+    );
+}
+
+#[test]
+fn borrow_binds_at_unary_tier_lower_than_binary_op() {
+    // `&+ a + b` should parse as `(&+ a) + b` per ADR-0031 §3 — prefix
+    // unary tier tighter than binary `+`.
+    let (parser, id) = parse_expr("&+ a + b");
+    match &parser.arena.expression(id).node {
+        Expr::BinaryOp { operator, left, .. } => {
+            assert_eq!(*operator, BinaryOperator::Add);
+            assert!(
+                matches!(parser.arena.expression(*left).node, Expr::Borrow { .. }),
+                "left side of `+` must be the Borrow expression"
+            );
+        }
+        other => panic!("expected outer BinaryOp, got {other:?}"),
+    }
+}

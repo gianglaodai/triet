@@ -1221,6 +1221,13 @@ impl<'a> LowerCtx<'a> {
                 dest
             }
 
+            // v0.9.x.atomic.7b: borrow expression passthrough per
+            // ADR-0031 §5. References erase at IR level — the borrow
+            // form was a typecheck-only distinction. Lower the operand
+            // directly; the resulting ValueId is identical to what a
+            // bare operand would have produced.
+            Expr::Borrow { operand, .. } => self.lower_expr(*operand),
+
             Expr::UnaryOp {
                 operator: _op,
                 operand,

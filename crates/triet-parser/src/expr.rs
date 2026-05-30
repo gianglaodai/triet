@@ -8,7 +8,7 @@
 use triet_lexer::{IntLiteral as LexIntLiteral, Span, Token};
 use triet_syntax::{
     BinaryOperator, Block, Expr, ExprId, FStringPart, FStringSegments, LambdaParam, MatchArm,
-    NumericSuffix as AstSuffix, OutcomeArm, Spanned, TrileanValue, UnaryOperator,
+    NumericSuffix as AstSuffix, OutcomeArm, ReferenceForm, Spanned, TrileanValue, UnaryOperator,
 };
 
 use crate::{error::ParseError, parser::Parser, pattern::parse_pattern, type_expr::parse_type};
@@ -221,6 +221,12 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         Token::Pipe | Token::OrOr => parse_lambda(parser),
         // Unary prefix operators
         Token::Minus | Token::Bang | Token::Not => parse_unary(parser),
+        // v0.9.x.atomic.7b: borrow expression prefix per ADR-0031 §3.
+        // `&+`/`&0`/`&-` at expression position parses as Expr::Borrow
+        // with operand restricted to IDENT + field-access chain per §2.
+        Token::AmpersandPlus | Token::AmpersandZero | Token::AmpersandMinus => {
+            parse_borrow(parser, span)
+        }
         // Outcome constructors (v0.7.4.3-error per ADR-0020 §2):
         // `~+ value` (Positive), `~- error` (Negative), `~0` (Zero).
         Token::TildePlus => parse_outcome_constructor(parser, OutcomeArm::Positive, span),
@@ -247,6 +253,109 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         },
         span,
     )))
+}
+
+/// v0.9.x.atomic.7b: parse borrow expression per ADR-0031.
+///
+/// Consumes `&+` / `&0` / `&-` (with optional `mutable` keyword for
+/// `&+` and `&0`), then parses the operand restricted to IDENT
+/// followed by zero or more `.IDENT` field-access steps per §2 v0.9
+/// scope. Function calls, method calls, array index `[i]`, compound
+/// binary, and nested borrow are explicitly NOT accepted as operand
+/// (deferred to ADR-0031 §10.3 backlog).
+fn parse_borrow(parser: &mut Parser<'_>, op_span: Span) -> Result<ExprId, ParseError> {
+    let form = parse_borrow_form(parser)?;
+    let operand = parse_borrow_operand(parser)?;
+    let span = op_span.start..arena_span(parser, operand).end;
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Borrow { form, operand }, span)))
+}
+
+/// Consume the `&FORM` token sequence per ADR-0031 §1 grammar:
+/// - `&+` → `StrongFrozen`; `&+ mutable` → `StrongMutable`
+/// - `&0` → `BorrowReadOnly`; `&0 mutable` → `BorrowExclusiveMutable`
+/// - `&-` → `WeakObserver` (no `mutable` permitted — parse error if
+///   `mutable` follows per ADR-0022 §2 row 5 immutability).
+fn parse_borrow_form(parser: &mut Parser<'_>) -> Result<ReferenceForm, ParseError> {
+    let (token, _span) = parser.peek().cloned().expect("caller checked peek");
+    match token {
+        Token::AmpersandPlus => {
+            parser.advance();
+            Ok(if parser.eat(&Token::Mutable) {
+                ReferenceForm::StrongMutable
+            } else {
+                ReferenceForm::StrongFrozen
+            })
+        }
+        Token::AmpersandZero => {
+            parser.advance();
+            Ok(if parser.eat(&Token::Mutable) {
+                ReferenceForm::BorrowExclusiveMutable
+            } else {
+                ReferenceForm::BorrowReadOnly
+            })
+        }
+        Token::AmpersandMinus => {
+            parser.advance();
+            Ok(ReferenceForm::WeakObserver)
+        }
+        other => {
+            unreachable!("parse_borrow_form called with non-reference token: {other:?}")
+        }
+    }
+}
+
+/// Parse the operand of a borrow expression. Operand grammar (ADR-0031
+/// §2 v0.9 scope): `IDENT ('.' IDENT)*`. The result is an
+/// `Expr::Identifier` (bare) or a chain of `Expr::FieldAccess`.
+fn parse_borrow_operand(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
+    let (token, span) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "identifier".to_owned(),
+            span: parser.eof_span(),
+        })?;
+    let Token::Identifier(name) = token else {
+        return Err(ParseError::UnexpectedToken {
+            expected: "identifier".to_owned(),
+            found: format!("{token:?}"),
+            span,
+        });
+    };
+    parser.advance();
+    let mut node_id = parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Identifier(name), span));
+    while let Some((Token::Dot, _)) = parser.peek() {
+        parser.advance(); // consume `.`
+        let (field_tok, field_span) =
+            parser
+                .peek()
+                .cloned()
+                .ok_or_else(|| ParseError::UnexpectedEof {
+                    expected: "field name".to_owned(),
+                    span: parser.eof_span(),
+                })?;
+        let Token::Identifier(field_name) = field_tok else {
+            return Err(ParseError::UnexpectedToken {
+                expected: "field name".to_owned(),
+                found: format!("{field_tok:?}"),
+                span: field_span,
+            });
+        };
+        parser.advance();
+        let outer_span = arena_span(parser, node_id).start..field_span.end;
+        node_id = parser.arena.alloc_expression(Spanned::new(
+            Expr::FieldAccess {
+                object: node_id,
+                field: field_name,
+            },
+            outer_span,
+        ));
+    }
+    Ok(node_id)
 }
 
 // ============================================================================

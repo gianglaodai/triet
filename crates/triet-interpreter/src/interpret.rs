@@ -409,6 +409,11 @@ impl<'p> Interpreter<'p> {
                 operator: UnaryOperator::Negate,
                 operand,
             } => self.evaluate_negate(operand, span),
+            // v0.9.x.atomic.7b: borrow expression passthrough per
+            // ADR-0031 §5. References erase at runtime — the borrow
+            // form is a typecheck-only distinction. Evaluating the
+            // operand produces the same `Value` regardless of form.
+            Expr::Borrow { operand, .. } => self.evaluate_expression(operand),
             Expr::Call { callee, arguments } => self.evaluate_call(callee, &arguments, span),
             Expr::MethodCall {
                 receiver,

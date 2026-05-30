@@ -4,6 +4,7 @@ use crate::{
     arena::{ExprId, PatternId, TypeId},
     numeric::{NumericSuffix, TrileanValue},
     stmt::Block,
+    type_ast::ReferenceForm,
 };
 
 /// An expression — anything that evaluates to a value.
@@ -85,6 +86,17 @@ pub enum Expr {
         /// The operator.
         operator: UnaryOperator,
         /// Operand.
+        operand: ExprId,
+    },
+
+    // === Borrow expression (ADR-0031, v0.9.x.atomic.7b) ===
+    /// Borrow expression: `&+ x`, `&+ mutable x`, `&0 x`, `&0 mutable x`,
+    /// `&- x`. Prefix unary tier per ADR-0031 §3. Operand restricted to
+    /// `IDENT` + field-access per §2 (parser-enforced).
+    Borrow {
+        /// The 5-form reference form per ADR-0022 §2.
+        form: ReferenceForm,
+        /// Operand expression — `Identifier` or `FieldAccess` chain.
         operand: ExprId,
     },
 

@@ -8,7 +8,8 @@
 //! `check` can call it; helper sub-checks stay private to this file.
 
 use triet_syntax::{
-    BinaryOperator, Block, Expr, ExprId, FStringPart, MatchArm, NumericSuffix, Span, UnaryOperator,
+    BinaryOperator, Block, Expr, ExprId, FStringPart, MatchArm, NumericSuffix, ReferenceForm, Span,
+    UnaryOperator,
 };
 
 use crate::{error::TypeError, types::Type};
@@ -80,6 +81,12 @@ impl Checker<'_> {
                 operator: UnaryOperator::Negate,
                 operand,
             } => self.check_unary_negate(operand, span),
+            // v0.9.x.atomic.7b: borrow expression typecheck per ADR-0031
+            // §4. Infer the operand's type T, wrap into
+            // `Type::Reference(form, T)`. Borrow checker enforcement
+            // (consume-once E2420 fires .7d; NLL + lifetime elision
+            // defer v0.10 per §10.1 backlog).
+            Expr::Borrow { form, operand } => self.check_borrow(form, operand, span),
             Expr::Call { callee, arguments } => self.check_call(callee, &arguments, span),
             Expr::MethodCall {
                 receiver,
@@ -498,6 +505,25 @@ impl Checker<'_> {
             });
             Type::Unknown
         }
+    }
+
+    /// v0.9.x.atomic.7b: borrow expression typecheck per ADR-0031 §4.
+    /// Infers the operand's type `T`, wraps into
+    /// `Type::Reference(form, T)`. Borrow-of-borrow is refused per §2
+    /// last bullet ("Nested borrow expression — refused by typecheck").
+    /// Other operand restrictions (IDENT + field-access only) are
+    /// enforced by the parser; typecheck trusts the parser's grammar.
+    fn check_borrow(&mut self, form: ReferenceForm, operand: ExprId, span: Span) -> Type {
+        let inner = self.infer_expression(operand);
+        if let Type::Reference(..) = inner {
+            self.errors.push(TypeError::InvalidUnary {
+                operator: "&+/&0/&-".to_owned(),
+                operand: inner,
+                span,
+            });
+            return Type::Unknown;
+        }
+        Type::Reference(form, Box::new(inner))
     }
 
     #[allow(clippy::too_many_lines)]
