@@ -415,6 +415,26 @@ Also: AOT cache value tied to §12 builtin shim coverage. With most builtins tie
 
 ---
 
+## §14 — v0.10 backlog rollup: §11.7 + §11.8 also defer (chained from §12 + §13)
+
+**Addendum 2026-05-30 (v0.9 phase close decision):** Author chose 2-day v0.10 implementation window 2026-05-30, with AI as primary code author. Per "solve the most in v0.10" goal, remaining JIT sub-tasks `.7` (bootstrap byte-identical gate lift) and `.8` (perf bench ≥10×) also defer to v0.10. v0.9.x.jit phase closes at .6.
+
+### 14.1 — Why .7 (bootstrap gate lift) defers
+
+Per §9 + §13.5: lifting `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` to CI-required requires Stage 2/3 self-host compiler to finish within the bootstrap budget (< 10 min per §11.8). The 3000-function self-host × cold JIT compilation cost is prohibitive without §13 AOT cache. Once cached, subsequent runs are fast — gate lift becomes feasible v0.10 when §12 + §13 land.
+
+### 14.2 — Why .8 (perf bench) defers
+
+Per §12.3: most v0.9 user code paths tier-down to VM because the builtin shim layer isn't ready. A benchmark of pure-numeric loops (the JIT'd subset) would understate the architectural value, and benchmarking the same workload v0.10 with full builtin coverage gives a more honest "what JIT bought us" measurement. Defer the perf gate to v0.10 alongside the surface that completes it.
+
+### 14.3 — v0.9 .x.jit phase close summary
+
+Shipped 6 sub-tasks: `.1` scaffold, `.2` opcode translation, `.3` call dispatch + Const, `.4` CallBuiltin structured tier-down, `.5` VM dispatcher integration (first native execution), `.6` AOT cache deferral with §13 backlog. Three deferred to v0.10: `.4` builtin shim (§12), `.6` AOT cache (§13), `.7`+`.8` bootstrap-gate + perf-bench (this §14).
+
+Net v0.9 JIT achievement: **first execution of Cranelift-compiled native code from Triết Vm**, with full Tier-1/Tier-2 graduation model (≥100-call threshold per §2), `--no-jit` escape hatch, workspace's single audited `unsafe` block, partial-program coverage (numeric arithmetic + cmp + control flow + intra-program calls). Foundation laid for v0.10 to bolt on builtin shims + AOT cache + lift gates.
+
+---
+
 ## Hệ quả
 
 **Possible (positive):**

@@ -14,10 +14,13 @@
 //! - `.6` — AOT cache filesystem layout → **deferred v0.10** per
 //!   [ADR-0030 §13] (cranelift-jit → cranelift-object backend
 //!   swap). Ships ADR backlog only.
-//! - `.7` — Stage 2 ≡ Stage 3 byte-identical gate lift per
-//!   [ADR-0019 §7 Addendum] — blocked by .6 (no cache → full
-//!   re-JIT each run → bootstrap time prohibitive).
-//! - `.8` — perf bench: ≥10× v0.3 baseline + bootstrap < 10 min.
+//! - `.7` — bootstrap gate lift → **deferred v0.10** per
+//!   [ADR-0030 §14] (chained from §13.5: no AOT cache → 3000-fn
+//!   self-host × cold JIT cost prohibitive).
+//! - `.8` — perf bench → **deferred v0.10** per [ADR-0030 §14]
+//!   (chained from §12: most builtins tier-down → benchmark
+//!   understates architectural value; defer to alongside `.4`
+//!   completion for honest measurement).
 //!
 //! # Public API surface
 //!
@@ -53,6 +56,7 @@
 //! [ADR-0030 §11]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 §12]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 §13]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
+//! [ADR-0030 §14]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 Addendum Gap 1]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0019 §7 Addendum]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
 
