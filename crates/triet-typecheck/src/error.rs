@@ -688,38 +688,56 @@ pub enum BorrowError {
     },
 
     /// E2410: `CannotMutateFrozenOwner` (ADR-0025 §7.1)
-    #[error("cannot mutate a frozen (`&0`) owner or its fields")]
+    ///
+    /// Frozen owner = `&+ T` (NOT `&+ mutable T`). Frozen owners are
+    /// read-only for their entire lifetime. Per ADR-0022 §3.4, frozen
+    /// ownership is permanent — cannot mutate through the reference.
+    #[error("cannot mutate field `{field}` of frozen owner `{ty}`")]
     #[diagnostic(
         code(triet::borrow::E2410),
         help(
             "Suggested fixes:\n\n\
-            [Fix 1] Request exclusive access to mutate:\n\
-            Change `&0 {ty}` to `&- {ty}`"
+            [Fix 1] Declare the owner as mutable at construction site:\n\
+            Change `&+ {ty}` to `&+ mutable {ty}`\n\n\
+            [Fix 2] Construct a fresh owner with the new value (functional style):\n\
+            Replace the assignment with a new binding that copies all fields explicitly \
+            and sets `{field}` to the desired value"
         )
     )]
     CannotMutateFrozenOwner {
-        /// The type string.
+        /// The mutated field name (e.g., `name`, `display_name`).
+        field: String,
+        /// The type string (without the `&+` prefix).
         ty: String,
-        /// Source location.
-        #[label("mutation attempted through frozen reference")]
+        /// Source location of the mutating expression.
+        #[label("mutation through frozen `&+` reference")]
         span: Span,
     },
 
     /// E2411: `CannotPromoteFrozenToMutable` (ADR-0025 §7.2)
-    #[error("cannot promote frozen reference (`&0`) to mutable (`&-`)")]
+    ///
+    /// Frozen ownership (`&+ T`) is permanent — cannot be promoted to
+    /// mutable ownership (`&+ mutable T`). Per ADR-0022 §3.4 +
+    /// ADR-0026 §3 ("safe to share across actor boundary" invariant).
+    #[error("cannot promote `&+ {ty}` (frozen owner) to `&+ mutable {ty}`")]
     #[diagnostic(
         code(triet::borrow::E2411),
         help(
             "Suggested fixes:\n\n\
-            [Fix 1] Request mutable reference from the start:\n\
-            Change `&0 {ty}` to `&- {ty}` at the source"
+            [Fix 1] Declare as mutable at construction, derive frozen view only when sharing:\n\
+            Change the source binding's type from `&+ {ty}` to `&+ mutable {ty}`\n\n\
+            [Fix 2] Keep frozen ownership and construct a fresh mutable owner with fields \
+            copied explicitly:\n\
+            Replace `let mutable_handle: &+ mutable {ty} = frozen` with a fresh \
+            `&+ mutable {ty}` constructor that reads each field from `frozen`"
         )
     )]
     CannotPromoteFrozenToMutable {
-        /// The type string.
+        /// The inner type string (without the `&+` prefix).
         ty: String,
-        /// Source location.
-        #[label("invalid promotion")]
+        /// Source location of the promotion expression (the RHS of the
+        /// let binding or the assignment target).
+        #[label("frozen-to-mutable promotion")]
         span: Span,
     },
 

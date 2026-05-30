@@ -46,24 +46,38 @@ fn e2403_escaping_borrow_format() {
 
 #[test]
 fn e2410_cannot_mutate_frozen_owner_format() {
+    // v0.10.x.borrow.3: skeleton message corrected — E2410 fires on
+    // `&+ T` frozen-owner mutation, NOT `&0 T`. Fix suggestions point
+    // toward `&+ mutable T`.
     let err = BorrowError::CannotMutateFrozenOwner {
-        ty: "String".to_string(),
+        field: "name".to_string(),
+        ty: "User".to_string(),
         span: dummy_span(),
     };
     let help = err.help().unwrap().to_string();
     assert!(help.contains("[Fix 1]"));
-    assert!(help.contains("Change `&0 String` to `&- String`"));
+    assert!(
+        help.contains("Change `&+ User` to `&+ mutable User`"),
+        "expected new &+ → &+ mutable fix text, got: {help}"
+    );
+    assert!(help.contains("[Fix 2]"));
 }
 
 #[test]
 fn e2411_cannot_promote_frozen_to_mutable_format() {
+    // v0.10.x.borrow.3: skeleton message corrected — E2411 is about
+    // `&+ T` → `&+ mutable T` promotion (not `&0` → `&-`).
     let err = BorrowError::CannotPromoteFrozenToMutable {
-        ty: "String".to_string(),
+        ty: "User".to_string(),
         span: dummy_span(),
     };
     let help = err.help().unwrap().to_string();
     assert!(help.contains("[Fix 1]"));
-    assert!(help.contains("Change `&0 String` to `&- String`"));
+    assert!(
+        help.contains("`&+ User`") && help.contains("`&+ mutable User`"),
+        "expected new &+ → &+ mutable fix text, got: {help}"
+    );
+    assert!(help.contains("[Fix 2]"));
 }
 
 #[test]

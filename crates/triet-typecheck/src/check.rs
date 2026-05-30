@@ -81,6 +81,14 @@ struct Checker<'p> {
     /// Lookups for names NOT in the map are ignored (functions, types,
     /// imports — none of which are movable values).
     pub(crate) move_states: HashMap<String, MoveState>,
+    /// v0.10.x.borrow.3: per-function set of names introduced by
+    /// `let` bindings (NOT parameters). Used by E2403 enforcement to
+    /// distinguish "weak ref to local owner" (escapes when returned)
+    /// from "weak ref to parameter" (caller's owner outlives the
+    /// function). Reset on function entry per [ADR-0025] §8.2.
+    ///
+    /// [ADR-0025]: ../../../docs/decisions/0025-borrow-checker-rules.md
+    pub(crate) local_let_names: std::collections::HashSet<String>,
     errors: Vec<TypeError>,
 }
 
@@ -93,6 +101,7 @@ impl<'p> Checker<'p> {
             current_return_type: None,
             expected_type_stack: Vec::new(),
             move_states: HashMap::new(),
+            local_let_names: std::collections::HashSet::new(),
             errors: Vec::new(),
         }
     }
@@ -107,6 +116,7 @@ impl<'p> Checker<'p> {
             current_return_type: None,
             expected_type_stack: Vec::new(),
             move_states: HashMap::new(),
+            local_let_names: std::collections::HashSet::new(),
             errors: Vec::new(),
         }
     }
@@ -339,6 +349,11 @@ impl<'p> Checker<'p> {
         // v0.9.x.atomic.7d: save/restore move state across function
         // boundary — each function body has its own move-tracking map.
         let saved_moves = std::mem::take(&mut self.move_states);
+        // v0.10.x.borrow.3: save/restore local-let-name set per
+        // function for E2403 escape detection (ADR-0025 §8.2). The set
+        // is populated by Stmt::Let; parameters are NOT in it (they
+        // come from caller's owner trail).
+        let saved_local_lets = std::mem::take(&mut self.local_let_names);
         // Push a frame so type params are visible during type
         // resolution of parameters + return type. Reused as the
         // function body's scope (params live in same frame).
@@ -381,6 +396,12 @@ impl<'p> Checker<'p> {
                     let span = block_span(self.arena, block);
                     self.push_return_mismatch(&return_type, &body_ty, span);
                 }
+                // v0.10.x.borrow.3: block-form body's final expression
+                // is the function's return value — check for E2403.
+                // Inner `Stmt::Return` arms already check themselves.
+                if let Some(final_expr) = block.final_expression {
+                    self.check_escaping_weak_borrow(final_expr);
+                }
             }
             FunctionBody::Expression(expr) => {
                 let body_ty = self.infer_expression(*expr);
@@ -388,6 +409,9 @@ impl<'p> Checker<'p> {
                     let span = self.arena.expression(*expr).span.clone();
                     self.push_return_mismatch(&return_type, &body_ty, span);
                 }
+                // v0.10.x.borrow.3: expression-form body IS the
+                // function's return value — check for E2403.
+                self.check_escaping_weak_borrow(*expr);
             }
         }
 
@@ -395,6 +419,8 @@ impl<'p> Checker<'p> {
         self.env.pop_frame();
         // v0.9.x.atomic.7d: restore move state from caller's frame.
         self.move_states = saved_moves;
+        // v0.10.x.borrow.3: restore local-let-name set.
+        self.local_let_names = saved_local_lets;
     }
 
     /// v0.10.x.borrow.2 — Lifetime elision per [ADR-0025 §3].
@@ -503,6 +529,9 @@ impl<'p> Checker<'p> {
                 self.env.declare_with_mut(&name, ty, mutable);
                 // v0.9.x.atomic.7d: new local binding starts Alive.
                 self.move_states.insert(name.clone(), MoveState::Alive);
+                // v0.10.x.borrow.3: track as local-let (NOT parameter)
+                // for E2403 escape detection (ADR-0025 §8.2).
+                self.local_let_names.insert(name.clone());
             }
             Stmt::Assign { target, value } => {
                 self.check_assignment(&target, value, stmt.span.clone());
@@ -528,6 +557,10 @@ impl<'p> Checker<'p> {
                         found: actual,
                         span,
                     });
+                }
+                // v0.10.x.borrow.3: E2403 — `return &- local` escapes.
+                if let Some(id) = value {
+                    self.check_escaping_weak_borrow(id);
                 }
             }
             Stmt::Break(value) => {
@@ -608,11 +641,11 @@ impl<'p> Checker<'p> {
         match declared {
             Some(annotated) => {
                 if !annotated.matches(&inferred) {
-                    self.errors.push(TypeError::Mismatch {
-                        expected: annotated.clone(),
-                        found: inferred,
-                        span: self.arena.expression(value).span.clone(),
-                    });
+                    self.push_initializer_mismatch(
+                        &annotated,
+                        &inferred,
+                        self.arena.expression(value).span.clone(),
+                    );
                 }
                 annotated
             }
@@ -663,6 +696,65 @@ impl<'p> Checker<'p> {
                 found: found.clone(),
                 span,
             });
+        }
+    }
+
+    /// Specialized let/const initializer mismatch — reroutes the
+    /// frozen-to-mutable promotion pattern (`&+ T` → `&+ mutable T`)
+    /// to `E2411 CannotPromoteFrozenToMutable` per [ADR-0025] §7.2.
+    /// Other mismatches fall through to the generic E1003.
+    ///
+    /// [ADR-0025]: ../../../docs/decisions/0025-borrow-checker-rules.md
+    fn push_initializer_mismatch(&mut self, expected: &Type, found: &Type, span: Span) {
+        if let (
+            Type::Reference(expected_form, expected_inner),
+            Type::Reference(found_form, found_inner),
+        ) = (expected, found)
+            && *expected_form == triet_syntax::ReferenceForm::StrongMutable
+            && *found_form == triet_syntax::ReferenceForm::StrongFrozen
+            && expected_inner.matches(found_inner)
+        {
+            self.errors.push(TypeError::Borrow(
+                BorrowError::CannotPromoteFrozenToMutable {
+                    ty: format!("{expected_inner}"),
+                    span,
+                },
+            ));
+            return;
+        }
+        self.errors.push(TypeError::Mismatch {
+            expected: expected.clone(),
+            found: found.clone(),
+            span,
+        });
+    }
+
+    /// v0.10.x.borrow.3 — Detect direct `return &- local` pattern per
+    /// [ADR-0025] §8.2 (E2403 `WeakRefOutlivesOwner`).
+    ///
+    /// Conservative scope: only fires when the expression at a function
+    /// return position is `Expr::Borrow { form: WeakObserver, operand }`
+    /// AND `operand`'s base identifier was introduced by `let` in the
+    /// current function body (NOT a parameter, NOT a module-level item).
+    /// Parameters' owner trail extends to the caller's scope, so
+    /// `return &- param` is allowed.
+    ///
+    /// Full owner-trail tracking (assign-to-outer-scope, struct-field
+    /// store, multi-hop through function calls) defers v0.11+ per
+    /// §8.3 algorithm — refuse-over-guess.
+    ///
+    /// [ADR-0025]: ../../../docs/decisions/0025-borrow-checker-rules.md
+    fn check_escaping_weak_borrow(&mut self, expr_id: ExprId) {
+        let expr = self.arena.expression(expr_id).clone();
+        if let triet_syntax::Expr::Borrow { form, operand } = expr.node
+            && form == triet_syntax::ReferenceForm::WeakObserver
+            && let Some(base) = self.extract_base_identifier(operand)
+            && self.local_let_names.contains(&base)
+        {
+            self.errors
+                .push(TypeError::Borrow(BorrowError::EscapingBorrow {
+                    span: expr.span,
+                }));
         }
     }
 
