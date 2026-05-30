@@ -47,7 +47,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 ### v0.10.0 — Design phase (2 NEW ADRs)
 
 - [x] **v0.10.0.1** — [ADR-0032 NEW] Builtin shim ABI design — locks 5 constraints from ADR-0030 §12.2: (1) `RuntimeValue` ABI representation choice (boxed vs specialized vs hybrid), (2) lifetime management (`Rc::into_raw` + `drop_arc` pattern), (3) capability gate enforcement (per-builtin runtime check), (4) panic → `VmError` propagation (Cranelift trap vs `extern "C-unwind"`), (5) `unsafe_code` policy override scope. — `dcd49ae`
-- [ ] **v0.10.0.2** — [ADR-0033 NEW] AOT cache cranelift-object protocol — locks 5 constraints from ADR-0030 §13.4: (1) Cranelift version pinning + cache invalidation, (2) libcall symbol resolution at load via `libloading`/`dlsym`, (3) `dao store gc` mark-and-sweep root tracking, (4) cross-machine portability (per-`target_triple` separation), (5) determinism preservation (cache hit/miss not part of IR contract).
+- [x] **v0.10.0.2** — [ADR-0033 NEW] AOT cache cranelift-object protocol — locks 5 constraints from ADR-0030 §13.4: (1) Cranelift version pinning + cache invalidation, (2) libcall symbol resolution at load via `libloading`/`dlsym`, (3) `dao store gc` mark-and-sweep root tracking, (4) cross-machine portability (per-`target_triple` separation), (5) determinism preservation (cache hit/miss not part of IR contract). — `7268e26`
 
 ### v0.10.x.interp — Interpreter parity (smallest, lowest risk, warm-up)
 
