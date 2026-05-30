@@ -12,26 +12,45 @@
 // scheduler stdlib instead). Direct `sys.raw_thread` use is for
 // kernel modules, embedded firmware, scheduler authors.
 //
-// **v0.9 scope:** declaration-only. Function bodies are typecheck-only
-// placeholders — actual OS thread plumbing lands v0.10+ stdlib with
-// real threading runtime (per ADR-0028 §9 + ROADMAP §v0.10). Current
-// v0.9 ships type-level + Send + capability flow correctness.
+// **v0.10.x.thread.1 status:** VM intercepts `spawn` / `join` paths
+// via `path_to_builtin` per [ADR-0019] §5 + [ADR-0026 v2] §3. Real
+// OS threads are created (placeholder empty body — closure-typed work
+// dispatch lands when Triết closures gain Send-bound expressiveness).
+// Function bodies below are dead code under VM execution (intercept
+// fires before the body runs); the tree-walking interpreter still
+// falls back to the bodies (interpreter parity for raw_thread defers
+// v0.11+, mirror of v0.9 `sys.atomic.*` interpreter-parity gap before
+// v0.10.x.interp.1 closed it).
+//
+// [ADR-0019]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
+// [ADR-0026 v2]: ../../../../docs/decisions/0026-actor-boundary-send-rules.md
 
-/// Opaque handle to a spawned OS thread. Carries an implementation-
-/// defined identifier; lifetime tied to the running thread.
+/// Opaque handle to a spawned OS thread. Carries a monotonic
+/// implementation-defined identifier assigned at spawn time; lifetime
+/// tied to the running thread. ID 0 is reserved (matches the v0.9
+/// placeholder stub for diagnostic disambiguation); real spawns
+/// produce ids ≥ 1.
 public struct Handle {
     thread_id: Integer,
 }
 
 /// Spawn an OS thread that executes `work`. Returns a `Handle` for
-/// later join / cleanup. Placeholder body returns a stub Handle;
-/// real OS thread creation lands v0.10+.
+/// later join / cleanup.
 ///
-/// **v0.10+ note:** the closure-typed signature (`work: F where F:
-/// Send`) lands when Triết's closure type system gains the necessary
-/// Send-bound expressiveness. Current placeholder takes a bare
-/// `Integer` payload to keep the file typecheck-clean.
+/// **v0.10.x.thread.1 behavior:** VM intercepts and creates a real OS
+/// thread via the Rust `std::thread::spawn` runtime, returning a
+/// `Handle { thread_id: <monotonic> }` tied to the VM's JoinHandle
+/// registry. The spawned thread body is currently empty — closure-
+/// typed work execution per ADR-0026 v2 §3 lands when Triết's
+/// closure type system gains Send-bound expressiveness.
+///
+/// The interpreter (Backend 0 per ADR-0030 Addendum) falls back to
+/// the literal body below and returns `Handle { thread_id: 0 }`.
 public function spawn(work: Integer) -> Handle = Handle { thread_id: 0 }
 
-/// Join an OS thread, blocking until it terminates. Placeholder body.
+/// Join an OS thread, blocking until it terminates.
+///
+/// **v0.10.x.thread.1 behavior:** VM intercepts and calls
+/// `JoinHandle::join` on the matching registry entry. Returns `Unit`
+/// on clean termination; propagates thread panics as a VM error.
 public function join(handle: Handle) {}

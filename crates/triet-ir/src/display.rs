@@ -338,6 +338,9 @@ impl fmt::Display for BuiltinName {
             Self::AtomicFetchBitwiseAnd => write!(f, "atomic_fetch_bitwise_and"),
             Self::AtomicFetchBitwiseOr => write!(f, "atomic_fetch_bitwise_or"),
             Self::AtomicFetchBitwiseXor => write!(f, "atomic_fetch_bitwise_xor"),
+            // v0.10.x.thread.1 — raw OS thread primitives per ADR-0026 v2 §3.
+            Self::RawThreadSpawn => write!(f, "raw_thread_spawn"),
+            Self::RawThreadJoin => write!(f, "raw_thread_join"),
         }
     }
 }

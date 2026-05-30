@@ -712,10 +712,11 @@ constant SEC_FUNCTIONS: Integer = 3
 constant SEC_CODE: Integer = 4
 constant SEC_WITNESS_TABLES: Integer = 5
 
-// v0.9.x.atomic.2 — bumped 5→6 alongside Atomic primitive builtins
-// (ADR-0028 §1 wire format bump). Per ADR-0029 §2 mandatory lockstep:
-// Rust impl `crates/triet-ir/src/serde.rs::VERSION` bump same phase.
-constant TRIV_VERSION: Integer = 6
+// v0.10.x.thread.1 — bumped 6→7 alongside raw_thread primitive
+// builtins (ADR-0026 v2 §3 wire format bump). Per ADR-0029 §2
+// mandatory lockstep: Rust impl `crates/triet-ir/src/serde.rs::VERSION`
+// bump same phase. Earlier bumps: 5→6 (v0.9.x.atomic.2, ADR-0028 §1).
+constant TRIV_VERSION: Integer = 7
 constant TRIV_MAGIC_T: Integer = 116
 constant TRIV_MAGIC_R: Integer = 114
 constant TRIV_MAGIC_I: Integer = 105

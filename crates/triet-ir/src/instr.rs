@@ -582,4 +582,23 @@ pub enum BuiltinName {
     AtomicFetchBitwiseOr,
     /// `sys.atomic.fetch_bitwise_xor(self: &+ Atomic<Integer>, mask, ord) -> Integer`.
     AtomicFetchBitwiseXor,
+    /// `sys.raw_thread.spawn(work: Integer) -> Handle` per
+    /// [ADR-0026 v2] §3. v0.10.x.thread.1 plumbing — the placeholder
+    /// `work: Integer` parameter is preserved from the v0.9 stub
+    /// signature; spawned thread body is empty (closure-typed work
+    /// item lands when Triết's closure type system gains Send-bound
+    /// expressiveness per ADR-0026 v2 §3 placeholder note). Real OS
+    /// thread is created via `std::thread::spawn`; returned `Handle`
+    /// carries a monotonic `thread_id` mapped to the VM's `JoinHandle`
+    /// registry. ID 43 in the on-wire builtin table; `.triv` v6 → v7.
+    ///
+    /// [ADR-0026 v2]: ../../../../docs/decisions/0026-actor-boundary-send-rules.md
+    RawThreadSpawn,
+    /// `sys.raw_thread.join(handle: Handle) -> Unit` per
+    /// [ADR-0026 v2] §3. Consumes the `Handle`'s `thread_id`, looks
+    /// up the matching `JoinHandle` in the VM registry, blocks until
+    /// the OS thread terminates. ID 44 in the on-wire builtin table.
+    ///
+    /// [ADR-0026 v2]: ../../../../docs/decisions/0026-actor-boundary-send-rules.md
+    RawThreadJoin,
 }

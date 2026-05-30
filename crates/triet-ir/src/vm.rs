@@ -595,6 +595,21 @@ pub struct Vm {
     /// Per ADR-0030 Addendum Gap 1, JIT is ambient default for
     /// `usr.*` programs.
     jit: Option<Box<dyn JitDispatch>>,
+    /// v0.10.x.thread.1 — Real-OS-thread `JoinHandle` registry per
+    /// [ADR-0026 v2] §3. `RawThreadSpawn` inserts a freshly-spawned
+    /// thread; `RawThreadJoin` consumes (via `remove`) and blocks
+    /// on the handle. Single-threaded VM per [ADR-0028] §9, so the
+    /// map itself needs no synchronization.
+    ///
+    /// [ADR-0026 v2]: ../../../../docs/decisions/0026-actor-boundary-send-rules.md
+    /// [ADR-0028]: ../../../../docs/decisions/0028-atomic-primitive.md
+    thread_handles: HashMap<i64, std::thread::JoinHandle<()>>,
+    /// v0.10.x.thread.1 — Monotonic counter for `thread_id` assignment.
+    /// ID 0 is reserved (matches the v0.9 stub's placeholder `Handle
+    /// { thread_id: 0 }`); real spawns start at 1. Wraps around to
+    /// negative on overflow per `i64` default; in practice this would
+    /// require ~9.2 quintillion spawns in a single VM run.
+    next_thread_id: i64,
 }
 
 impl Vm {
@@ -637,6 +652,8 @@ impl Vm {
             block_maps,
             path_index,
             jit: None,
+            thread_handles: HashMap::new(),
+            next_thread_id: 0,
         }
     }
 
@@ -1157,7 +1174,23 @@ impl Vm {
                     .iter()
                     .map(|a| read_operand(constants, frame, *a))
                     .collect();
-                let result = execute_builtin(name, &arg_vals, &func_name)?;
+                // v0.10.x.thread.1 — route raw_thread variants through
+                // the thread-aware helper for VM registry access (same
+                // disjoint-borrow pattern as the CallCrossModule arm).
+                let result = if matches!(
+                    name,
+                    BuiltinName::RawThreadSpawn | BuiltinName::RawThreadJoin
+                ) {
+                    execute_thread_builtin(
+                        name,
+                        &arg_vals,
+                        &mut self.thread_handles,
+                        &mut self.next_thread_id,
+                        &func_name,
+                    )?
+                } else {
+                    execute_builtin(name, &arg_vals, &func_name)?
+                };
                 if let Some(d) = dest {
                     frame.write(d, result);
                 }
@@ -1171,7 +1204,26 @@ impl Vm {
 
                 // Check for builtin by path suffix.
                 if let Some(builtin) = path_to_builtin(&path.to_string()) {
-                    let result = execute_builtin(builtin, &arg_vals, &func_name)?;
+                    // v0.10.x.thread.1 — raw_thread builtins need
+                    // mutable access to Vm's `thread_handles` registry
+                    // (disjoint from `self.frames[frame_idx]` borrow
+                    // held as `frame`). Route them through the
+                    // thread-aware helper; non-thread builtins keep
+                    // the existing free-function dispatch path.
+                    let result = if matches!(
+                        builtin,
+                        BuiltinName::RawThreadSpawn | BuiltinName::RawThreadJoin
+                    ) {
+                        execute_thread_builtin(
+                            builtin,
+                            &arg_vals,
+                            &mut self.thread_handles,
+                            &mut self.next_thread_id,
+                            &func_name,
+                        )?
+                    } else {
+                        execute_builtin(builtin, &arg_vals, &func_name)?
+                    };
                     if let Some(d) = dest {
                         frame.write(d, result);
                     }
@@ -1235,8 +1287,24 @@ impl Vm {
                 if let Some(builtin) = path_to_builtin(&path.to_string()) {
                     // Stdlib builtins exposed as "generic" via witness
                     // call are a degenerate case but still legal —
-                    // dispatch identically.
-                    let result = execute_builtin(builtin, &arg_vals, &func_name)?;
+                    // dispatch identically. v0.10.x.thread.1: route
+                    // raw_thread variants through the thread-aware
+                    // helper for VM registry access (mirror of the
+                    // CallCrossModule branch).
+                    let result = if matches!(
+                        builtin,
+                        BuiltinName::RawThreadSpawn | BuiltinName::RawThreadJoin
+                    ) {
+                        execute_thread_builtin(
+                            builtin,
+                            &arg_vals,
+                            &mut self.thread_handles,
+                            &mut self.next_thread_id,
+                            &func_name,
+                        )?
+                    } else {
+                        execute_builtin(builtin, &arg_vals, &func_name)?
+                    };
                     if let Some(d) = dest {
                         frame.write(d, result);
                     }
@@ -1996,6 +2064,12 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
         "sys.atomic.fetch_bitwise_and" => Some(BuiltinName::AtomicFetchBitwiseAnd),
         "sys.atomic.fetch_bitwise_or" => Some(BuiltinName::AtomicFetchBitwiseOr),
         "sys.atomic.fetch_bitwise_xor" => Some(BuiltinName::AtomicFetchBitwiseXor),
+
+        // v0.10.x.thread.1 — raw OS thread primitives per ADR-0026 v2 §3.
+        // IDs 43-44, `.triv` v6 → v7. Capability `sys.raw_thread` enforced
+        // at link time per ADR-0016 §5 (no runtime check here).
+        "sys.raw_thread.spawn" => Some(BuiltinName::RawThreadSpawn),
+        "sys.raw_thread.join" => Some(BuiltinName::RawThreadJoin),
 
         _ => None,
     }
@@ -3044,6 +3118,132 @@ fn execute_builtin(
         BuiltinName::AtomicFetchBitwiseAnd => atomic_fetch_bitwise(args, func_name, BitwiseOp::And),
         BuiltinName::AtomicFetchBitwiseOr => atomic_fetch_bitwise(args, func_name, BitwiseOp::Or),
         BuiltinName::AtomicFetchBitwiseXor => atomic_fetch_bitwise(args, func_name, BitwiseOp::Xor),
+        // v0.10.x.thread.1 — raw_thread builtins need access to the
+        // Vm's `thread_handles` registry, which the free-function
+        // `execute_builtin` cannot provide (disjoint-borrow constraint
+        // explained at the dispatch site). Reaching this arm means the
+        // caller bypassed the disjoint-borrow routing — surface as a
+        // hard error rather than silently degrading.
+        BuiltinName::RawThreadSpawn | BuiltinName::RawThreadJoin => Err(VmError::TypeMismatch {
+            expected: TypeTag::Unit,
+            actual: format!("{name:?} must be dispatched via execute_thread_builtin"),
+            function: func_name.into(),
+        }),
+    }
+}
+
+/// v0.10.x.thread.1 — Real-OS-thread builtin dispatch per [ADR-0026 v2] §3.
+///
+/// Separated from [`execute_builtin`] because thread primitives need
+/// mutable access to the Vm's `thread_handles` registry; the
+/// dispatcher site uses disjoint field borrows so this helper takes
+/// the registry handle directly instead of a `&mut Vm` (which would
+/// conflict with the active `&mut self.frames[frame_idx]` borrow).
+///
+/// **Scope (v0.10.x.thread.1 plumbing-only):** the spawned thread
+/// body is empty — closure-typed work execution lands when Triết's
+/// closure type system gains Send-bound expressiveness (ADR-0026 v2
+/// §3 placeholder note). Plumbing proves: spawn returns a real
+/// `JoinHandle`, join blocks until thread terminates, Handle struct
+/// round-trips through the IR.
+///
+/// [ADR-0026 v2]: ../../../../docs/decisions/0026-actor-boundary-send-rules.md
+fn execute_thread_builtin(
+    name: BuiltinName,
+    args: &[RuntimeValue],
+    handles: &mut HashMap<i64, std::thread::JoinHandle<()>>,
+    next_id: &mut i64,
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    match name {
+        BuiltinName::RawThreadSpawn => {
+            // Signature: `spawn(work: Integer) -> Handle`. `work` is
+            // a placeholder per ADR-0026 v2 §3 (closure-typed signature
+            // lands when Triết's closure type system gains Send-bound
+            // expressiveness). Argument is currently consumed but not
+            // dispatched into the spawned thread — VM is single-thread
+            // per ADR-0028 §9; spawned thread body is empty, just
+            // proves the plumbing (spawn returns real JoinHandle, join
+            // blocks until terminate).
+            let _work = args.first().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Integer,
+                actual: "missing work arg".into(),
+                function: func_name.into(),
+            })?;
+            // Monotonic id, skip 0 (reserved for the v0.9 stub
+            // placeholder Handle { thread_id: 0 }; real spawns are
+            // ≥ 1 for unambiguous diagnostics).
+            *next_id = next_id.wrapping_add(1);
+            let thread_id = *next_id;
+            // Spawn a real OS thread. Empty closure body is Send by
+            // default; cross-platform via std::thread (POSIX +
+            // Windows abstracted at Rust stdlib level per ADR-0018
+            // POSIX-first precedent — actual syscalls handled by
+            // libstd, no direct pthread_create call needed for v0.10).
+            let handle = std::thread::spawn(|| { /* placeholder body */ });
+            handles.insert(thread_id, handle);
+            // Return RuntimeValue::Struct matching the stdlib Handle
+            // shape: { thread_id: Integer }. Field order is the
+            // declaration order from std/sys/raw_thread.tri.
+            Ok(RuntimeValue::Struct {
+                fields: vec![RuntimeValue::Integer(
+                    Integer::new(thread_id).unwrap_or_default(),
+                )],
+            })
+        }
+        BuiltinName::RawThreadJoin => {
+            // Signature: `join(handle: Handle) -> Unit`. Extract the
+            // thread_id from the struct field, consume the registry
+            // entry via `remove`, block on the JoinHandle.
+            let handle_val = args.first().ok_or_else(|| VmError::TypeMismatch {
+                expected: TypeTag::Unit,
+                actual: "missing handle arg".into(),
+                function: func_name.into(),
+            })?;
+            let thread_id = match handle_val {
+                RuntimeValue::Struct { fields } => match fields.first() {
+                    Some(RuntimeValue::Integer(i)) => i.to_i64(),
+                    other => {
+                        return Err(VmError::TypeMismatch {
+                            expected: TypeTag::Integer,
+                            actual: format!("handle.thread_id = {other:?}"),
+                            function: func_name.into(),
+                        });
+                    }
+                },
+                other => {
+                    return Err(VmError::TypeMismatch {
+                        expected: TypeTag::Unit,
+                        actual: format!("expected Handle struct, got {:?}", other.type_tag()),
+                        function: func_name.into(),
+                    });
+                }
+            };
+            let join_handle = handles
+                .remove(&thread_id)
+                .ok_or_else(|| VmError::TypeMismatch {
+                    expected: TypeTag::Unit,
+                    actual: format!(
+                        "raw_thread.join: unknown thread_id {thread_id} \
+                         (already joined, never spawned, or fabricated Handle)"
+                    ),
+                    function: func_name.into(),
+                })?;
+            // Block until the OS thread terminates. If the thread
+            // panicked, propagate as a structured VmError so the
+            // caller's program sees a clean error path.
+            join_handle.join().map_err(|_| VmError::TypeMismatch {
+                expected: TypeTag::Unit,
+                actual: format!("raw_thread.join: thread_id {thread_id} panicked"),
+                function: func_name.into(),
+            })?;
+            Ok(RuntimeValue::Unit)
+        }
+        other => Err(VmError::TypeMismatch {
+            expected: TypeTag::Unit,
+            actual: format!("execute_thread_builtin: non-thread builtin {other:?} routed here"),
+            function: func_name.into(),
+        }),
     }
 }
 
@@ -6586,4 +6786,215 @@ mod tests {
             assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 5));
         }
     }
+
+    // ── v0.10.x.thread.1 — raw_thread builtins (ADR-0026 v2 §3) ────
+
+    /// Helper: build a 2-statement program — call `spawn(work)`,
+    /// return the Handle struct.
+    fn build_raw_thread_spawn_program() -> IrProgram {
+        build_builtin_program(
+            vec![("work".into(), TypeTag::Integer)],
+            // Handle is a user struct with one Integer field; the
+            // return TypeTag for a struct is implementation-defined
+            // here (UserStruct unavailable in TypeTag enum), use Unit
+            // as placeholder since round-trip checks Struct shape.
+            TypeTag::Unit,
+            BuiltinName::RawThreadSpawn,
+            ConstantPool::new(),
+        )
+    }
+
+    /// spawn returns Handle struct with monotonic `thread_id` ≥ 1
+    /// (ID 0 reserved per v0.9 placeholder convention).
+    #[test]
+    fn vm_raw_thread_spawn_returns_handle_with_nonzero_id() {
+        let prog = build_raw_thread_spawn_program();
+        let mut vm = Vm::new(prog);
+        let result = vm.execute(FuncId(0), vec![make_integer(0)]).unwrap();
+        match result {
+            RuntimeValue::Struct { fields } => {
+                assert_eq!(fields.len(), 1);
+                match &fields[0] {
+                    RuntimeValue::Integer(id) => {
+                        assert!(id.to_i64() >= 1, "thread_id should start at 1, got {id}");
+                    }
+                    other => panic!("expected Integer thread_id, got {other:?}"),
+                }
+            }
+            other => panic!("expected Handle struct, got {other:?}"),
+        }
+        // Registry should have 1 entry after spawn — but the spawned
+        // thread already may have terminated. Verify via direct field
+        // access (single-thread VM, no race).
+        assert_eq!(
+            vm.thread_handles.len(),
+            1,
+            "spawn must register exactly 1 handle"
+        );
+    }
+
+    /// Successive spawns produce strictly-increasing `thread_id`s.
+    /// `Vm::execute` is not re-entrant on the same instance (it leaves
+    /// stack frames around after Return), so this test exercises the
+    /// thread-builtin helper directly — same code path the dispatcher
+    /// hits, just bypassing the IR program harness.
+    #[test]
+    fn vm_raw_thread_spawn_ids_are_monotonic() {
+        let mut vm = Vm::new(IrProgram::new());
+        let spawn = |vm: &mut Vm| -> i64 {
+            let result = execute_thread_builtin(
+                BuiltinName::RawThreadSpawn,
+                &[make_integer(0)],
+                &mut vm.thread_handles,
+                &mut vm.next_thread_id,
+                "test",
+            )
+            .unwrap();
+            match result {
+                RuntimeValue::Struct { fields } => match &fields[0] {
+                    RuntimeValue::Integer(i) => i.to_i64(),
+                    other => panic!("expected Integer, got {other:?}"),
+                },
+                other => panic!("expected Struct, got {other:?}"),
+            }
+        };
+        let id1 = spawn(&mut vm);
+        let id2 = spawn(&mut vm);
+        let id3 = spawn(&mut vm);
+        assert!(id1 < id2 && id2 < id3, "ids must be strictly increasing");
+        assert_eq!(vm.thread_handles.len(), 3);
+    }
+
+    /// join consumes the registry entry and blocks until the thread
+    /// terminates. Round-trip: spawn → join → registry emptied.
+    #[test]
+    fn vm_raw_thread_join_blocks_and_consumes_handle() {
+        // Spawn first.
+        let spawn_prog = build_raw_thread_spawn_program();
+        let mut vm = Vm::new(spawn_prog);
+        let handle = vm.execute(FuncId(0), vec![make_integer(0)]).unwrap();
+        assert_eq!(vm.thread_handles.len(), 1);
+
+        // Rebuild VM-side program for join (different signature). The
+        // helper builds a fresh IR program with the right param type;
+        // we re-use the VM instance so the spawn-side handle persists.
+        // To do this, we splice the join function onto the existing VM
+        // by constructing a fresh IrProgram with a `join` dispatch
+        // function and a `Vm` initialized over it — but the spawn
+        // handle would be lost. Instead, dispatch the join builtin
+        // directly via the helper, bypassing IR construction.
+        let result = execute_thread_builtin(
+            BuiltinName::RawThreadJoin,
+            &[handle],
+            &mut vm.thread_handles,
+            &mut vm.next_thread_id,
+            "test",
+        )
+        .unwrap();
+        assert!(matches!(result, RuntimeValue::Unit));
+        assert_eq!(
+            vm.thread_handles.len(),
+            0,
+            "join must remove handle from registry"
+        );
+    }
+
+    /// join on an unknown `thread_id` errors cleanly (handle invalid /
+    /// already-joined / fabricated).
+    #[test]
+    fn vm_raw_thread_join_unknown_id_errors() {
+        let mut vm = Vm::new(IrProgram::new());
+        let fake_handle = RuntimeValue::Struct {
+            fields: vec![make_integer(9999)],
+        };
+        let err = execute_thread_builtin(
+            BuiltinName::RawThreadJoin,
+            &[fake_handle],
+            &mut vm.thread_handles,
+            &mut vm.next_thread_id,
+            "test",
+        )
+        .unwrap_err();
+        // VmError::TypeMismatch carrying the diagnostic text.
+        match err {
+            VmError::TypeMismatch { actual, .. } => {
+                assert!(
+                    actual.contains("unknown thread_id"),
+                    "expected unknown_id diagnostic, got: {actual}"
+                );
+            }
+            other => panic!("expected TypeMismatch, got {other:?}"),
+        }
+    }
+
+    /// Double-join: spawn, join once (consumes), join again on the
+    /// same handle errors.
+    #[test]
+    fn vm_raw_thread_double_join_errors() {
+        let prog = build_raw_thread_spawn_program();
+        let mut vm = Vm::new(prog);
+        let handle = vm.execute(FuncId(0), vec![make_integer(0)]).unwrap();
+        // First join — succeeds. `std::slice::from_ref` avoids a clone:
+        // both calls borrow the handle but only the registry consumption
+        // side-effect matters; the value itself stays usable for the
+        // second-join attempt.
+        let _ = execute_thread_builtin(
+            BuiltinName::RawThreadJoin,
+            std::slice::from_ref(&handle),
+            &mut vm.thread_handles,
+            &mut vm.next_thread_id,
+            "test",
+        )
+        .unwrap();
+        // Second join — handle removed; should error.
+        let err = execute_thread_builtin(
+            BuiltinName::RawThreadJoin,
+            std::slice::from_ref(&handle),
+            &mut vm.thread_handles,
+            &mut vm.next_thread_id,
+            "test",
+        )
+        .unwrap_err();
+        assert!(matches!(err, VmError::TypeMismatch { .. }));
+    }
+
+    /// Thread builtins dispatched through `execute_builtin` (the
+    /// non-thread-aware path) must error explicitly — this catches
+    /// any caller that bypasses the disjoint-borrow routing instead
+    /// of silently degrading.
+    #[test]
+    fn execute_builtin_refuses_thread_variants() {
+        let err =
+            execute_builtin(BuiltinName::RawThreadSpawn, &[make_integer(0)], "test").unwrap_err();
+        match err {
+            VmError::TypeMismatch { actual, .. } => {
+                assert!(
+                    actual.contains("execute_thread_builtin"),
+                    "diagnostic must direct to execute_thread_builtin, got: {actual}"
+                );
+            }
+            other => panic!("expected TypeMismatch, got {other:?}"),
+        }
+    }
+
+    /// `path_to_builtin` maps the canonical paths to the right enum
+    /// variants — guards against typos that would cause silent
+    /// fallthrough to "function not found".
+    #[test]
+    fn raw_thread_path_to_builtin_maps_correctly() {
+        assert_eq!(
+            path_to_builtin("sys.raw_thread.spawn"),
+            Some(BuiltinName::RawThreadSpawn)
+        );
+        assert_eq!(
+            path_to_builtin("sys.raw_thread.join"),
+            Some(BuiltinName::RawThreadJoin)
+        );
+        // Negative: typo should NOT resolve.
+        assert_eq!(path_to_builtin("sys.raw_thread.spwn"), None);
+    }
+
+    // (raw_thread serde round-trip test lives in serde.rs's test
+    // module — `write_builtin`/`read_builtin` are module-private,
+    // following the same convention as `atomic_builtins_serde_round_trip`.)
 }

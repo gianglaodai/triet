@@ -31,9 +31,14 @@ const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
 ///   with `allow_null_state` boolean payload) + 6 opcodes 0xC1-0xC6
 ///   for outcome construction / unwrap / discriminant extraction.
 ///   Patch bump per ADR-0008 §"Version compatibility".
+/// - v6: ADR-0028 (v0.9.x.atomic.2) added 10 atomic builtins (IDs 33-42)
+///   + `TypeTag::Atomic(T)` (disc 11). Atomic primitive end-to-end.
+/// - v7: ADR-0026 v2 §3 (v0.10.x.thread.1) added 2 raw-thread builtins
+///   (IDs 43 `RawThreadSpawn`, 44 `RawThreadJoin`). Old v6 readers see
+///   `UnknownBuiltin(43/44)` if encountering these opcodes.
 ///
 /// [ADR-0008 §"Version history"]: ../../../../docs/decisions/0008-triv-binary-format.md
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
@@ -590,6 +595,10 @@ fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
         BuiltinName::AtomicFetchBitwiseAnd => 40,
         BuiltinName::AtomicFetchBitwiseOr => 41,
         BuiltinName::AtomicFetchBitwiseXor => 42,
+        // v0.10.x.thread.1 — raw OS thread primitives per ADR-0026 v2 §3.
+        // `.triv` v6 → v7 bump on this addition.
+        BuiltinName::RawThreadSpawn => 43,
+        BuiltinName::RawThreadJoin => 44,
     };
     write_u8(buf, id);
 }
@@ -641,6 +650,9 @@ fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> 
         40 => Ok(BuiltinName::AtomicFetchBitwiseAnd),
         41 => Ok(BuiltinName::AtomicFetchBitwiseOr),
         42 => Ok(BuiltinName::AtomicFetchBitwiseXor),
+        // v0.10.x.thread.1 — raw OS thread primitives per ADR-0026 v2 §3.
+        43 => Ok(BuiltinName::RawThreadSpawn),
+        44 => Ok(BuiltinName::RawThreadJoin),
         id => Err(TrivError::UnknownBuiltin(id)),
     }
 }
@@ -2405,18 +2417,20 @@ mod tests {
     /// Vector/HashMap type-tag additions (ADR-0019 Addendum); bumped
     /// 4→5 alongside the Outcome type-tag + opcodes 0xC1-0xC6
     /// (v0.7.4.3-error.3a, ADR-0020 §7); bumped 5→6 alongside Atomic
-    /// primitive builtins 33-42 (v0.9.x.atomic.2, ADR-0028 §1). The
-    /// version field is the 4 bytes at offset 4 (after the 4-byte magic).
+    /// primitive builtins 33-42 (v0.9.x.atomic.2, ADR-0028 §1); bumped
+    /// 6→7 alongside raw-thread builtins 43-44 (v0.10.x.thread.1,
+    /// ADR-0026 v2 §3). The version field is the 4 bytes at offset 4
+    /// (after the 4-byte magic).
     #[test]
-    fn wire_format_version_pinned_to_v6() {
+    fn wire_format_version_pinned_to_v7() {
         let program = IrProgram::new();
         let bytes = write_program(&program);
         assert!(bytes.len() >= 8, "header truncated");
         let version_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
         let version = u32::from_le_bytes(version_bytes);
         assert_eq!(
-            version, 6,
-            "v0.9.x.atomic.2 requires .triv version 6 (was {version})",
+            version, 7,
+            "v0.10.x.thread.1 requires .triv version 7 (was {version})",
         );
     }
 
@@ -2448,6 +2462,30 @@ mod tests {
                 "round-trip mismatch for {builtin:?}: wrote {buf:?}",
             );
             assert_eq!(pos, 1, "{builtin:?} must consume single byte");
+        }
+    }
+
+    /// v0.10.x.thread.1 — verify both `raw_thread` builtins round-trip
+    /// through `write_builtin`/`read_builtin` (IDs 43-44 per ADR-0026
+    /// v2 §3). Catches regression if any ID gap is introduced or the
+    /// `.triv` v7 dispatch is misaligned.
+    #[test]
+    fn raw_thread_builtins_serde_round_trip() {
+        for (builtin, expected_id) in [
+            (BuiltinName::RawThreadSpawn, 43_u8),
+            (BuiltinName::RawThreadJoin, 44_u8),
+        ] {
+            let mut buf = Vec::new();
+            write_builtin(&mut buf, builtin);
+            assert_eq!(
+                buf,
+                vec![expected_id],
+                "{builtin:?} should encode as byte {expected_id}",
+            );
+            let mut pos = 0;
+            let decoded = read_builtin(&buf, &mut pos).expect("known raw_thread builtin");
+            assert_eq!(decoded, builtin);
+            assert_eq!(pos, 1);
         }
     }
 
