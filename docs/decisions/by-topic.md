@@ -42,6 +42,7 @@ Cross-reference vào 27 ADRs theo **topic cluster** thay vì chronological numbe
 | [0025](0025-borrow-checker-rules.md) | Borrow checker rules — NLL + 3-rule lifetime elision + no-annotation policy; E24XX namespace (E2400 lifetime / E2410 mutability / E2420 move / E2430 namespace / E2440 NLL / E2450+ drop) | Locked |
 | [0026](0026-actor-boundary-send-rules.md) | Concurrency Primitives & Send Rules (**BYOS**) — Triết core provides Send rules + Atomic primitives + capability gates, scheduler stdlib hoặc external. Refuse list: `actor`/`spawn`/`receive`/`send`/`async`/`await`. E25XX namespace | Locked v2 |
 | [0028](0028-atomic-primitive.md) | Atomic primitive design — refines ADR-0026 v2 §4 placeholder. Rust-shim builtins + AtomicValue marker + 3-level Ordering ↔ Trit mapping + full API surface + `&+ Atomic<T>` interior mutability pattern (fixes v2 §4.3 contradiction) | Locked |
+| [0031](0031-borrow-expression-syntax.md) | Borrow expression syntax — closes SPEC §10 v0.7 warning + unblocks ADR-0028 §6 example. Prefix `&FORM operand` (all 5 forms), operand IDENT/field/index, lowerer passthrough (refs erase). Borrow checker enforcement defers v0.9.x.borrow.* | Draft |
 
 > Liên quan: [ADR-0001](0001-nullable-memory-layout.md) cho memory header pattern (Trit discriminator); ObjectHeader memory layout chi tiết ở `triet-core/src/memory.rs`.
 
