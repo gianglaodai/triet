@@ -1,0 +1,37 @@
+// Triết standard library — std.sys.raw_thread
+//
+// Low-level OS thread primitives per VISION §3.5 BYOS philosophy +
+// ADR-0026 v2. **Direct** OS thread / kthread creation — bypasses
+// any usr-space stdlib scheduler. Production schedulers
+// (`std.concurrency.green.*` M:N green threads, embedded RTOS
+// crates, etc.) layer on top of these primitives.
+//
+// **Capability gate:** `sys.raw_thread` required per ADR-0026 v2 §3
+// — declare `requires sys.raw_thread grant` in `dao.package`. Default
+// stance for `usr.*` apps should be `deny` (force going through a
+// scheduler stdlib instead). Direct `sys.raw_thread` use is for
+// kernel modules, embedded firmware, scheduler authors.
+//
+// **v0.9 scope:** declaration-only. Function bodies are typecheck-only
+// placeholders — actual OS thread plumbing lands v0.10+ stdlib with
+// real threading runtime (per ADR-0028 §9 + ROADMAP §v0.10). Current
+// v0.9 ships type-level + Send + capability flow correctness.
+
+/// Opaque handle to a spawned OS thread. Carries an implementation-
+/// defined identifier; lifetime tied to the running thread.
+public struct Handle {
+    thread_id: Integer,
+}
+
+/// Spawn an OS thread that executes `work`. Returns a `Handle` for
+/// later join / cleanup. Placeholder body returns a stub Handle;
+/// real OS thread creation lands v0.10+.
+///
+/// **v0.10+ note:** the closure-typed signature (`work: F where F:
+/// Send`) lands when Triết's closure type system gains the necessary
+/// Send-bound expressiveness. Current placeholder takes a bare
+/// `Integer` payload to keep the file typecheck-clean.
+public function spawn(work: Integer) -> Handle = Handle { thread_id: 0 }
+
+/// Join an OS thread, blocking until it terminates. Placeholder body.
+public function join(handle: Handle) {}

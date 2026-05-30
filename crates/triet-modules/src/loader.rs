@@ -516,9 +516,11 @@ mod tests {
     /// `blake3_hash` stub) for the .khi writer's iface/impl
     /// hash chain → 13 modules. v0.9.x.atomic.5b adds synthetic
     /// `sys` root + `sys.atomic` stdlib (`Ordering` enum + 10 atomic
-    /// builtin signatures per ADR-0028 §8) → 16. Centralized here so
+    /// builtin signatures per ADR-0028 §8) → 16. v0.9.x.atomic.5c
+    /// adds `sys.raw_thread` placeholder (`Handle` struct + `spawn` /
+    /// `join` stubs per ADR-0026 v2 §3) → 17. Centralized here so
     /// future stdlib expansions only touch one place.
-    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 16;
+    const STDLIB_MODULE_COUNT_WITH_CRATE_ROOT: usize = 17;
 
     #[test]
     fn empty_root_creates_one_module() {
@@ -612,9 +614,11 @@ mod tests {
     /// file: io, io/fs, text, assert, result, collections,
     /// collections/vector, collections/hashmap, path, string, crypto,
     /// env) + 1 (sys synthetic root) + 1 (sys/atomic.tri per ADR-0028
-    /// §8, added v0.9.x.atomic.5b). Crate root contributes +1 = 16
-    /// total when inline modules share the crate's arena.
-    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 16;
+    /// §8, added v0.9.x.atomic.5b) + 1 (`sys/raw_thread.tri` per
+    /// ADR-0026 v2 §3, added v0.9.x.atomic.5c). Crate root
+    /// contributes +1 = 17 total when inline modules share the
+    /// crate's arena.
+    const STDLIB_ARENA_COUNT_WITH_CRATE_ROOT: usize = 17;
 
     #[test]
     fn inline_modules_share_root_arena() {

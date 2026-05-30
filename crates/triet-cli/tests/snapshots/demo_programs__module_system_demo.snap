@@ -16,8 +16,9 @@ std.path: 3 items, 0 children
 std.string: 3 items, 0 children
 std.crypto: 2 items, 0 children
 std.env: 1 items, 0 children
-sys: 0 items, 1 children
+sys: 0 items, 2 children
 sys.atomic: 12 items, 0 children
+sys.raw_thread: 3 items, 0 children
 khi: 33 items, 4 children
 khi.gates: 14 items, 0 children
 khi.alu: 11 items, 0 children
@@ -25,5 +26,5 @@ khi.memory: 18 items, 0 children
 khi.utils: 2 items, 2 children
 khi.utils.print: 7 items, 0 children
 khi.utils.advanced: 4 items, 0 children
-total: 22 modules, 21 arenas
+total: 23 modules, 22 arenas
 result: OK

@@ -295,12 +295,19 @@ fn resolve_type_expr_with_params(
             )),
         },
         TypeExpr::Generic { name, arguments } if name == "Atomic" && arguments.len() == 1 => {
-            Type::Atomic(Box::new(resolve_type_expr_with_params(
-                arena,
-                arguments[0],
-                type_params,
-                name_table,
-            )))
+            // v0.9.x.atomic.5c (closes .1 deferred). Cross-module signature
+            // resolution path. E1040 itself is fired by [`check.rs`] at the
+            // original declaration site (single source of truth for error
+            // attribution); here we just refuse to propagate a malformed
+            // `Type::Atomic(<non-AtomicValue>)` into the shared name_table.
+            // Returning `Type::Unknown` keeps downstream signature shapes
+            // stable while avoiding bad-Atomic cascade. Per ADR-0028 §2
+            // AtomicValue membership rule.
+            let inner = resolve_type_expr_with_params(arena, arguments[0], type_params, name_table);
+            if !inner.is_atomic_value() {
+                return Type::Unknown;
+            }
+            Type::Atomic(Box::new(inner))
         }
         // v0.7.4.2: Vector<T>/HashMap<K,V> in stdlib stub signatures.
         // Mirror the pseudo-struct shells materialized by `check.rs`
@@ -683,6 +690,85 @@ public struct Spanned { token: Token, span_start: Integer }",
         assert!(
             errors.is_empty(),
             "cross-module struct.field match must type-check: {errors:?}"
+        );
+    }
+
+    /// v0.9.x.atomic.5c — closes .1 deferred path. When module A declares
+    /// a function whose Atomic payload type is valid AtomicValue
+    /// (`Atomic<Integer>`), the cross-module name_table must propagate
+    /// the proper `Type::Atomic(Integer)` shape so module B's call site
+    /// resolves correctly.
+    #[test]
+    fn cross_module_valid_atomic_signature_round_trips() {
+        let errors = check_filesystem(&[
+            (
+                "main.tri",
+                "module helper
+from khi.helper import bump
+function main() {}",
+            ),
+            (
+                "helper.tri",
+                "public function bump(a: &+ Atomic<Integer>) {}",
+            ),
+        ]);
+        assert!(
+            errors.is_empty(),
+            "valid cross-module Atomic<Integer> sig must round-trip: {errors:?}"
+        );
+    }
+
+    /// v0.9.x.atomic.5c — closes .1 deferred path. When module A declares
+    /// a malformed `Atomic<String>` signature, `check.rs` fires E1040 at
+    /// the declaration site (module A). The cross-module resolver in
+    /// `check_resolved.rs` must NOT additionally cascade a `bad-Atomic`
+    /// type through module B's `name_table` — it returns `Type::Unknown`
+    /// instead. Net effect: any E1040 fires are attributed to module A
+    /// only; module B sees the import as `Unknown` and types-cleanly.
+    ///
+    /// Implementation note: `check.rs` resolves parameter types BOTH
+    /// during `declare_item` AND `check_function`, so the same site
+    /// fires twice — a pre-existing pattern unrelated to .5c. This
+    /// test asserts the cross-module path does not *add* dups beyond
+    /// check.rs's baseline by comparing counts at both source spans.
+    #[test]
+    fn cross_module_invalid_atomic_signature_no_cross_cascade() {
+        use crate::error::TypeError;
+        let errors = check_filesystem(&[
+            (
+                "main.tri",
+                "module helper
+from khi.helper import bad
+function main() {}",
+            ),
+            ("helper.tri", "public function bad(a: &+ Atomic<String>) {}"),
+        ]);
+        let e1040_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| matches!(e, TypeError::NonAtomicValueType { .. }))
+            .collect();
+        // At least one E1040 attributed to helper.tri's signature site.
+        assert!(
+            !e1040_errors.is_empty(),
+            "expected E1040 for bad Atomic<String> sig, got: {errors:?}"
+        );
+        // All E1040 emissions point at the SAME source span (the
+        // `String` token in helper.tri) — confirms no cascade into
+        // main.tri's import or anywhere else. Distinct spans here
+        // would mean the cross-module name_table propagated a bad
+        // `Type::Atomic(String)` that fired again at a non-original
+        // site, defeating .1's E1040 attribution.
+        let unique_spans: std::collections::HashSet<_> = e1040_errors
+            .iter()
+            .filter_map(|e| match e {
+                TypeError::NonAtomicValueType { span, .. } => Some(span.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            unique_spans.len(),
+            1,
+            "E1040 emissions must all point at the same helper.tri span (no cross-module cascade), got distinct spans: {unique_spans:?}"
         );
     }
 
