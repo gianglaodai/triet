@@ -50,9 +50,16 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 NLL (E2440) + lifetime elision (E2400) + `&-` upgrade (E2403) + mutability (E2410/11) defer v0.10 per [ADR-0031 §10.1](docs/decisions/0031-borrow-expression-syntax.md) backlog (corpus-driven per ADR-0025).
 
-### v0.9.x.jit — Cranelift JIT backend (after ADR-0030 lock)
+### v0.9.x.jit — Cranelift JIT backend (per ADR-0030 §11)
 
-- [ ] **v0.9.x.jit.1+** — Cranelift integration, profile-guided dispatch, AOT cache. Per ROADMAP §v0.9 original target.
+- [x] **v0.9.x.jit.1** — Scaffold `triet-jit` crate. Cargo.toml với cranelift-codegen + cranelift-frontend + cranelift-jit + cranelift-module pinned 0.132 + thiserror + triet-ir. lib.rs skeleton (228 lines): `pub struct JitCompiler` với `HashMap<FuncId, NativeCodePtr>` cache; `pub struct NativeCodePtr { addr: usize }` opaque pointer wrapper; `pub enum JitError` 4 variants (Unimplemented / UnsupportedOpcode / Cranelift / CapabilityDenied per Addendum Gap 1); `compile`/`lookup`/`cached_function_count` stubs. Workspace Cargo.toml +2 lines (member + dependency). 4 scaffold smoke tests. Cold build adds ~10 Cranelift transitive deps per ADR-0030 ~5MB cost budget. No `unsafe` blocks yet — workspace `unsafe_code = "forbid"` honored; override deferred .5 codegen. 1506 → 1510 — `d1fcd55`.
+- [ ] **v0.9.x.jit.2** — Opcode-by-opcode translation: arithmetic + comparisons + control flow (BrIf + BrTrilean per ADR-0010 backend table 2-cmp-2-brnz).
+- [ ] **v0.9.x.jit.3** — Call dispatch: CallLocal + CallCrossModule + WitnessCall per ADR-0012.
+- [ ] **v0.9.x.jit.4** — Builtin shim integration: opcodes 4-26 (Vec/HashMap/IO) + 27-39 (Atomic per ADR-0028).
+- [ ] **v0.9.x.jit.5** — VM dispatcher integration: call-count threshold trigger (≥100 per ADR-0030 §2) + JIT compile path + native call thunk + `dev.jit_codegen` capability enforcement (per Addendum Gap 1).
+- [ ] **v0.9.x.jit.6** — AOT cache filesystem layout per ADR-0030 §5 + invalidation by impl_hash.
+- [ ] **v0.9.x.jit.7** — Stage 2 ≡ Stage 3 byte-identical gate verification + lift from `#[ignore]` to CI-required per ADR-0019 §7 Addendum.
+- [ ] **v0.9.x.jit.8** — Perf bench: ≥10× v0.3 baseline on numeric-heavy programs; full 3-stage bootstrap < 10 phút.
 
 ### v0.9.final — release
 
