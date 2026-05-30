@@ -36,7 +36,7 @@ v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7**
 ✅ Differential tests: 12/12 v0.7.4.2 examples byte-identical VM vs interpreter; `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7
 ✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch + `cargo fmt --all --check` sạch (post-v0.8.x.review.1)
 ✅ **1425 tests workspace-wide** (3 `#[ignore]` documented per ADR-0019 §7 perf gate)
-🔜 Tiếp theo: v0.9 — JIT (Cranelift) + NLL enforcement (E24XX fires) + Stage 2 ≡ Stage 3 main.tri gate lift to CI
+🔄 v0.9 — wide-phased (in progress): v0.9.0 design ADRs ✅ + **v0.9.x.atomic ✅ shipped 2026-05-30** (Atomic primitive full impl + borrow expression syntax + E2420 enforcement; 1506 tests). Remaining: v0.9.x.jit (Cranelift) + v0.9.final (Stage 2 ≡ Stage 3 main.tri gate lift to CI).
 
 ---
 
@@ -450,6 +450,65 @@ Per ROADMAP §"Pace expectations": v0.8-v0.9 = 6-12 tháng mỗi phase. Wide sco
 ### Pivot history
 
 Original ROADMAP §v0.9 (pre-v0.8.x.completion) = JIT-only. Author 2026-05-29 chose wide-phased after v0.8.x.completion.4 retrospective identified 5+ deferred items targeting v0.9: NLL enforcement, lifetime elision, `&-` upgrade tracking, Atomic full impl, self-host policy. Rather than re-defer to v0.10, close all in v0.9 before v1.0 freeze.
+
+### Sub-phase status (2026-05-30)
+
+| Sub-phase | ADRs | Status | Final test count |
+|---|---|---|---|
+| v0.9.0 Design phase | 0028, 0029, 0030 | ✅ SHIPPED (3 ADRs Locked) | 1436 |
+| v0.9.x.atomic Atomic Primitive Implementation | 0028, 0031 | ✅ SHIPPED (see below) | **1506** |
+| v0.9.x.borrow Borrow checker enforcement | 0025 | ⏸️ Folded — E2420 ships in atomic.7d; NLL/lifetime/`&-` upgrade defer v0.10 per ADR-0031 §10.1 | — |
+| v0.9.x.jit Cranelift JIT backend | 0030 | 🔜 pending | — |
+| v0.9.final release | — | 🔜 pending | — |
+
+---
+
+## v0.9.x.atomic — Atomic Primitive Implementation ✅ SHIPPED
+
+**Closed 2026-05-30** với 12 sub-tasks across 13 commits. Final: **1506 tests** (+70 from v0.9.0 design close at 1436).
+
+**Mục tiêu:** Refine ADR-0026 v2 §4 placeholder into full Atomic primitive support per ADR-0028 — type-level + IR builtins + VM dispatch + capability + stdlib + borrow expression syntax + use-after-move enforcement + runtime demo. Closes the `&+ Atomic<T>` SPEC §10 v0.7 warning gap end-to-end.
+
+**ADRs locked during phase:**
+- [ADR-0028](docs/decisions/0028-atomic-primitive.md) Atomic primitive design (Locked v0.9.0.1, ships through .1–.6).
+- [ADR-0031](docs/decisions/0031-borrow-expression-syntax.md) Borrow expression syntax (Locked v0.9.x.atomic.7a Phương án A — closes ADR-0028 §6 example syntax gap).
+
+**Shipped (12 sub-tasks):**
+
+| Sub-task | Description | Commit |
+|---|---|---|
+| .1 | `AtomicValue` typecheck enforcement (E1040) — `Type::is_atomic_value()` + validation at construction site | `6788d1c` |
+| .2 | IR builtin declaration (10 atomic builtins) + `.triv` v5→v6 + VM placeholders + path lookup + self-host TRIV_VERSION lockstep port | `d898760` |
+| .3 | VM dispatch universal ops (AtomicNew + Load/Store/Swap/CompareExchange) | `a90caa6` |
+| .4 | VM dispatch arithmetic + bitwise (fetch_add/sub + fetch_bitwise_and/or/xor) | `0d3f9fa` |
+| .5a | Loader synthetic `sys` root infrastructure | `8131d1e` |
+| .5b | Stdlib `std/sys/atomic.tri` shipped (Ordering enum + 10 function signatures) | `6f6b92e` |
+| .5c | Stdlib `std/sys/raw_thread.tri` placeholder + cross-module Atomic typecheck closed | `97e30d6` |
+| .6 | E2530 `InvalidAtomicOrdering` conservative fire (compare_exchange success<failure) | `0922936` |
+| .7a | ADR-0031 Borrow Expression Syntax Draft + Locked Phương án A + v0.10 backlog | `86e59b8` / `6fd3a6e` |
+| .7b | Rust impl borrow expression syntax (AST + parser + typecheck + lowerer + interpreter) | `d2ab072` |
+| .7c | Self-host Layer A port — `compiler/parser/parser.tri` lockstep | `9e0e10c` |
+| .7d | E2420 `UseAfterMove` real fires (CFG move-tracking + branch-aware join) | `bb92aa5` |
+| .7e | `atomic_counter` demo single-call + VM e2e | `8296895` |
+
+**Pivot 2026-05-30 (Phương án A):** During .7 design, author surfaced concern: shipping borrow expression syntax + multi-worker demo without consume-once enforcement would teach E2420-failing patterns that v0.10 NLL rejects. Per "chậm mà chắc, không ship tạm bợ" — split .7 into 5 sub-tasks (.7a–.7e), add E2420 enforcement in .7d (was originally deferred v0.9.x.borrow), scope demo down to single-call (.7e). Forward-compat guarantee: any v0.9-passing program continues passing v0.10 NLL.
+
+**Gate (ADR-0009 §A/B/C/D applied):**
+- ✅ A — 0 `TODO(v0.9.x.atomic)` markers; demo + e2e proves end-to-end pipeline.
+- ✅ B — 1506 tests, clippy `-D warnings` + fmt clean.
+- ✅ C — ADRs 0028 + 0031 Locked, README + by-topic index updated; Cargo version stays 0.8.0 until v0.9.final.
+- ✅ D — release-check.sh PASSED; self-host Token/TypeExpr symmetry preserved; atomic_counter demo typechecks via `dao check` + runs via in-process VM.
+
+**Không làm (defer v0.10 — captured in [ADR-0031 §10 backlog](docs/decisions/0031-borrow-expression-syntax.md)):**
+- §10.1 NLL enforcement (E2440 full CFG live-range), lifetime elision 3 rules (E2400), `&-` upgrade (E2403), mutability violations (E2410/11) — corpus-driven defer per ADR-0025.
+- §10.2 Real `raw_thread.spawn` + Send-boundary refcount-bump codegen + `&+ Atomic<T>` multi-thread clone + multi-worker demo + `std.concurrency.*` stdlib.
+- §10.3 Borrow expression operand scope expansion (function-call result, method-call result, index `vec[i]`, compound binary).
+- §10.4 E2530 Pointer-Relaxed `fetch_*` pattern — blocked by Pointer type.
+- §10.5 CLAUDE.md normative documentation drift policy.
+- §10.6 Self-host typecheck-layer port lag tracking.
+- §10.7 `triet-interpreter` atomic builtin intercepts (discovered .7e — currently VM-only demo per outcome_propagate.tri precedent).
+
+Commit log: `git log --oneline --grep="v0\.9\.x\.atomic"`.
 
 ---
 
