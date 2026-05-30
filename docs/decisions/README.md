@@ -9,7 +9,7 @@ ADRs are immutable once "Quyết định" status is reached. To change a
 prior decision, write a new ADR that supersedes it.
 
 > **Looking for a rule on X?** Use [`by-topic.md`](by-topic.md) — same
-> 28 ADRs grouped by topic (language surface, type system, ownership,
+> 29 ADRs grouped by topic (language surface, type system, ownership,
 > module/package, IR/wire format, capability, compiler internals,
 > cross-cutting). This file ordered chronologically by phase.
 
@@ -106,6 +106,7 @@ prior decision, write a new ADR that supersedes it.
 | ADR | Title | Status |
 |---|---|---|
 | [0032](0032-builtin-shim-abi.md) | Builtin shim ABI — locks 5 design constraints from ADR-0030 §12.2 so v0.10.x.jit.1 (framework) + .2 (43 impls) ship against settled design. §1 Hybrid `RuntimeValue` ABI (primitives unboxed via Cranelift native `i8`/`i16`/`i64`/`i128`; composites Rc-boxed reusing `Rc<RuntimeValue>` shape from ADR-0028 §3). §2 `Rc::into_raw` on box-out + `__triet_drop_arc` shim at SSA last-use (lowerer consults ValueKind per ADR-0023). §3 Capability gate compile-time hoist via frozen `CapabilitySet` snapshot — refuse-to-emit on denied namespace; inherits ADR-0017 program-load resolution invariant. §4 `extern "C-unwind"` ABI + thread-local `CURRENT_VM_ERROR` slot + dispatcher `catch_unwind`. §5 `unsafe_code = "deny"` override scope is `triet-jit` crate ONLY (workspace `forbid` preserved elsewhere; mandatory `// SAFETY:` per block). §6 Static `SHIM_TABLE` registry + `__triet_*` symbol prefix discipline + `JITBuilder::symbol()` wiring. §7 3-layer test gates (framework smoke + 43-builtin parity + ABI proptest). §8 Self-host port: Layer C runtime, no same-phase port. First v0.10 ADR. | Locked |
+| [0033](0033-aot-cache-cranelift-object.md) | AOT cache via `cranelift-object` — locks 5 design constraints from ADR-0030 §13.4 + backend-hybrid shape so v0.10.x.jit.3 ships against settled design. §1 Backend hybrid: keep `cranelift-jit` for Path B fresh compile, add `cranelift-object` for Path A persistence emission (one IR translator, two output paths). §2 Version pinning via `AotCacheManifest { cranelift_version, shim_abi_version, target_triple }` — mismatch silent-fallback to Path B + overwrite. §3 Direct `SHIM_TABLE`/`LIBCALL_TABLE` symbol resolution at load (NOT `libloading`/`dlsym`) — reuses ADR-0032 §6 registry. §4 GC integration: `jit/{triple}/{impl_hash}/` swept against `live_mods` set; new `GcReport.swept_jit_dirs`; conservative-on-corruption rule extended. §5 Per-`target_triple` path separation (no cross-arch loading attempted). §6 Determinism preserved — cache state is runtime-state, not IR-contract; bootstrap byte-identical gate uses `.khi` cmp not machine code. §7 Synchronous write on Path B success + atomic-install (ADR-0015 §3 pattern). §8 Silent-fallback recovery on any load failure. §9 4 test categories (round-trip + version mismatch + GC sweep + cross-arch isolation). Unblocks v0.10.x.jit.3 + chained gate-lift v0.10.x.jit.4 (Stage 2 ≡ Stage 3 byte-identical). | Locked |
 
 ## How to read an ADR
 

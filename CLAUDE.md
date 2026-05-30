@@ -34,7 +34,7 @@ Source-of-truth docs:
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
 - `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.9 ✅ shipped (Atomic + Borrow + JIT partial), **next: v0.10** = full builtin shim layer + AOT cache + NLL enforcement + multi-thread Atomic
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — **28 ADRs** for architectural decisions (ADR-0019 Self-hosting bootstrap, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement, ADR-0022 S6 ownership, ADR-0025 borrow checker rules, ADR-0026 v2 BYOS concurrency, ADR-0027 diagnostic format, ADR-0032 builtin shim ABI; see `docs/decisions/README.md` for the full index)
+- `docs/decisions/` — **29 ADRs** for architectural decisions (ADR-0019 Self-hosting bootstrap, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement, ADR-0022 S6 ownership, ADR-0025 borrow checker rules, ADR-0026 v2 BYOS concurrency, ADR-0027 diagnostic format, ADR-0032 builtin shim ABI, ADR-0033 AOT cache cranelift-object; see `docs/decisions/README.md` for the full index)
 
 ## Development principles
 
