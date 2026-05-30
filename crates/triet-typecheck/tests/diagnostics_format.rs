@@ -225,3 +225,32 @@ fn e1040_code_uses_typecheck_namespace() {
     let code = err.code().unwrap().to_string();
     assert_eq!(code, "triet::typecheck::E1040");
 }
+
+// ===== v0.9.x.atomic.6: E2530 InvalidAtomicOrdering diagnostic format =====
+
+#[test]
+fn e2530_invalid_atomic_ordering_format() {
+    let err = ConcurrencyError::InvalidAtomicOrdering {
+        success: "Relaxed".to_string(),
+        failure: "Strict".to_string(),
+        span: dummy_span(),
+    };
+    let help = err.help().unwrap().to_string();
+    assert!(help.contains("[Fix 1]"));
+    assert!(help.contains("Change `success=Relaxed` to `success=Strict`"));
+    assert!(help.contains("[Fix 2]"));
+    assert!(help.contains("Change `failure=Strict` to `failure=Relaxed`"));
+    assert!(help.contains("[Fix 3]"));
+    assert!(help.contains("Change both to `Synchronized`"));
+}
+
+#[test]
+fn e2530_code_uses_actor_namespace() {
+    let err = ConcurrencyError::InvalidAtomicOrdering {
+        success: "Relaxed".to_string(),
+        failure: "Strict".to_string(),
+        span: dummy_span(),
+    };
+    let code = err.code().unwrap().to_string();
+    assert_eq!(code, "triet::actor::E2530");
+}

@@ -461,6 +461,9 @@ fn type_error_code(error: &TypeError) -> String {
             triet_typecheck::ConcurrencyError::MutableShareAntiPattern { .. } => {
                 "triet::actor::E2520"
             }
+            triet_typecheck::ConcurrencyError::InvalidAtomicOrdering { .. } => {
+                "triet::actor::E2530"
+            }
         },
         TypeError::Borrow(err) => match err {
             triet_typecheck::BorrowError::BorrowLifetimeInferenceFailed { .. } => {

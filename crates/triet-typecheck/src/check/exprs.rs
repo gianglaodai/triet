@@ -511,6 +511,26 @@ impl Checker<'_> {
             return_type,
         } = callee_ty.clone()
         {
+            // v0.9.x.atomic.6: E2530 conservative fire conditions per
+            // ADR-0028 §10. Detect `compare_exchange(..., success_ord,
+            // failure_ord)` calls where success is weaker than failure
+            // — semantically nonsensical. Gating signal is dual:
+            //
+            // 1. Callee identifier name is `compare_exchange` (covers
+            //    both `from sys.atomic import compare_exchange` direct
+            //    use and `sys.atomic.compare_exchange` qualified use via
+            //    field access).
+            // 2. Function signature shape matches: 5 parameters with
+            //    params[3] and params[4] both `Type::UserEnum { name:
+            //    "Ordering", .. }`.
+            //
+            // Why both: the name alone risks false positives if a user
+            // defines an unrelated `compare_exchange`; the shape alone
+            // would flag any 2-Ordering function. Conservative scope per
+            // §10 — narrow & always-wrong cases only. Aliased imports
+            // (`as cas`) escape detection; documented limitation pending
+            // corpus need (§10 deferred patterns).
+            self.check_atomic_ordering(callee, &parameters, arguments, &span);
             if arguments.len() != parameters.len() {
                 self.errors.push(TypeError::WrongArity {
                     expected: parameters.len(),
@@ -1066,6 +1086,90 @@ impl Checker<'_> {
                 span,
             });
         }
+    }
+
+    /// v0.9.x.atomic.6: E2530 `InvalidAtomicOrdering` check per ADR-0028
+    /// §10. Conservative scope — fires only on the `compare_exchange`
+    /// success-weaker-than-failure pattern. The Pointer-Relaxed
+    /// `fetch_*` pattern defers until the `Pointer` type lands (currently
+    /// not parseable per ADR-0028 §2).
+    ///
+    /// Detection requires both: (1) the callee identifier name is
+    /// `compare_exchange`, and (2) the resolved function signature has
+    /// 5 parameters with the last two being the `Ordering` enum. This
+    /// dual gate guards against false positives on user-defined
+    /// look-alike functions and on different functions with two
+    /// `Ordering` parameters.
+    fn check_atomic_ordering(
+        &mut self,
+        callee: ExprId,
+        parameters: &[Type],
+        arguments: &[ExprId],
+        span: &Span,
+    ) {
+        if !callee_name_is(&self.arena.expression(callee).node, "compare_exchange") {
+            return;
+        }
+        if parameters.len() != 5 || arguments.len() != 5 {
+            return;
+        }
+        if !is_ordering_enum(&parameters[3]) || !is_ordering_enum(&parameters[4]) {
+            return;
+        }
+        let Some((s_name, s_strength)) =
+            ordering_strength(&self.arena.expression(arguments[3]).node)
+        else {
+            return;
+        };
+        let Some((f_name, f_strength)) =
+            ordering_strength(&self.arena.expression(arguments[4]).node)
+        else {
+            return;
+        };
+        if s_strength < f_strength {
+            self.errors.push(TypeError::Concurrency(
+                crate::error::ConcurrencyError::InvalidAtomicOrdering {
+                    success: s_name.to_string(),
+                    failure: f_name.to_string(),
+                    span: span.clone(),
+                },
+            ));
+        }
+    }
+}
+
+/// Return true when the callee expression resolves syntactically to an
+/// identifier or field-access with the given name. Aliased imports
+/// (`from … import X as Y`) intentionally escape detection — see
+/// ADR-0028 §10 conservative scope.
+fn callee_name_is(node: &Expr, expected: &str) -> bool {
+    match node {
+        Expr::Identifier(name) => name == expected,
+        Expr::FieldAccess { field, .. } => field == expected,
+        _ => false,
+    }
+}
+
+/// Return true when `ty` is the user-defined `Ordering` enum (declared
+/// in `std/sys/atomic.tri` per ADR-0028 §3).
+fn is_ordering_enum(ty: &Type) -> bool {
+    matches!(ty, Type::UserEnum { name, .. } if name == "Ordering")
+}
+
+/// Decode an argument expression as an `Ordering` variant reference,
+/// returning the variant name and its strength rank (Relaxed=0,
+/// Synchronized=1, Strict=2 per ADR-0028 §3). Returns `None` when the
+/// argument is anything other than a bare identifier on a known variant
+/// (dynamic ordering values escape v0.9 detection — corpus-deferred).
+fn ordering_strength(node: &Expr) -> Option<(&'static str, u8)> {
+    let Expr::Identifier(name) = node else {
+        return None;
+    };
+    match name.as_str() {
+        "Relaxed" => Some(("Relaxed", 0)),
+        "Synchronized" => Some(("Synchronized", 1)),
+        "Strict" => Some(("Strict", 2)),
+        _ => None,
     }
 }
 

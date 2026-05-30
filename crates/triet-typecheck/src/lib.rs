@@ -875,4 +875,149 @@ mod tests {
             "~0 should not emit deprecation warning, got: {warnings:#?}"
         );
     }
+
+    // ===== v0.9.x.atomic.6: E2530 InvalidAtomicOrdering (ADR-0028 §10) =====
+    // Conservative scope — fires only when compare_exchange success
+    // ordering is weaker than failure ordering. Local fixture re-declares
+    // `compare_exchange` with the canonical Ordering enum so the
+    // single-file checker sees the same shape `sys.atomic` ships.
+
+    const ATOMIC_ORDERING_FIXTURE: &str = r"
+        enum Ordering { Relaxed, Synchronized, Strict }
+        struct Atom { value: Integer }
+        struct Failed { actual: Integer }
+        function compare_exchange(
+            atom: Atom,
+            expected: Integer,
+            new_value: Integer,
+            success_ordering: Ordering,
+            failure_ordering: Ordering,
+        ) -> Integer~Failed = ~+ 0
+    ";
+
+    fn ordering_source(success: &str, failure: &str) -> String {
+        format!(
+            "{ATOMIC_ORDERING_FIXTURE}
+            function main() {{
+                let a = Atom {{ value: 0 }}
+                let result = compare_exchange(a, 0, 1, {success}, {failure})
+            }}
+            "
+        )
+    }
+
+    fn assert_invalid_atomic_ordering(source: &str) {
+        assert_has_error(source, |e| {
+            matches!(
+                e,
+                TypeError::Concurrency(ConcurrencyError::InvalidAtomicOrdering { .. })
+            )
+        });
+    }
+
+    fn assert_no_invalid_atomic_ordering(source: &str) {
+        let errors = check_source(source);
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e,
+                TypeError::Concurrency(ConcurrencyError::InvalidAtomicOrdering { .. })
+            )),
+            "expected no E2530 fire, got: {errors:#?}",
+        );
+    }
+
+    #[test]
+    fn e2530_relaxed_strict_fires() {
+        assert_invalid_atomic_ordering(&ordering_source("Relaxed", "Strict"));
+    }
+
+    #[test]
+    fn e2530_relaxed_synchronized_fires() {
+        assert_invalid_atomic_ordering(&ordering_source("Relaxed", "Synchronized"));
+    }
+
+    #[test]
+    fn e2530_synchronized_strict_fires() {
+        assert_invalid_atomic_ordering(&ordering_source("Synchronized", "Strict"));
+    }
+
+    #[test]
+    fn e2530_strict_strict_clean() {
+        assert_no_invalid_atomic_ordering(&ordering_source("Strict", "Strict"));
+    }
+
+    #[test]
+    fn e2530_synchronized_synchronized_clean() {
+        assert_no_invalid_atomic_ordering(&ordering_source("Synchronized", "Synchronized"));
+    }
+
+    #[test]
+    fn e2530_relaxed_relaxed_clean() {
+        // Equal orderings — Relaxed publish is conservative-deferred (§10).
+        assert_no_invalid_atomic_ordering(&ordering_source("Relaxed", "Relaxed"));
+    }
+
+    #[test]
+    fn e2530_strict_relaxed_clean() {
+        // Success stronger than failure — semantically fine.
+        assert_no_invalid_atomic_ordering(&ordering_source("Strict", "Relaxed"));
+    }
+
+    #[test]
+    fn e2530_synchronized_relaxed_clean() {
+        assert_no_invalid_atomic_ordering(&ordering_source("Synchronized", "Relaxed"));
+    }
+
+    #[test]
+    fn e2530_strict_synchronized_clean() {
+        assert_no_invalid_atomic_ordering(&ordering_source("Strict", "Synchronized"));
+    }
+
+    #[test]
+    fn e2530_does_not_fire_on_unrelated_function_with_two_orderings() {
+        // Conservative gate requires both name=`compare_exchange` AND
+        // signature shape. A look-alike helper with two Ordering params
+        // must NOT trigger.
+        assert_no_invalid_atomic_ordering(
+            r"
+            enum Ordering { Relaxed, Synchronized, Strict }
+            function pair_orderings(a: Integer, b: Integer, c: Integer, x: Ordering, y: Ordering) -> Integer = a
+            function main() {
+                let outcome = pair_orderings(1, 2, 3, Relaxed, Strict)
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn e2530_does_not_fire_on_compare_exchange_without_ordering_pair() {
+        // Same callee name, different shape: only 4 params and last is
+        // not Ordering. Conservative gate must skip.
+        assert_no_invalid_atomic_ordering(
+            r"
+            function compare_exchange(a: Integer, b: Integer, c: Integer, d: Integer) -> Integer = a
+            function main() {
+                let outcome = compare_exchange(1, 2, 3, 4)
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn e2530_does_not_fire_when_ordering_args_are_runtime_values() {
+        // Dynamic ordering (passed as parameter) escapes v0.9 detection
+        // per ADR-0028 §10 deferred-pattern note. Conservative scope
+        // covers literal-bound ordering only.
+        assert_no_invalid_atomic_ordering(&format!(
+            "{ATOMIC_ORDERING_FIXTURE}
+            function call(a: Atom, s: Ordering, f: Ordering) {{
+                let result = compare_exchange(a, 0, 1, s, f)
+            }}
+            function main() {{
+                let a = Atom {{ value: 0 }}
+                call(a, Relaxed, Strict)
+            }}
+            "
+        ));
+    }
 }

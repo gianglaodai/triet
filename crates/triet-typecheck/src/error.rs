@@ -536,6 +536,38 @@ pub enum ConcurrencyError {
         #[label("mutable state shared here")]
         span: Span,
     },
+
+    /// E2530: `compare_exchange` success ordering weaker than failure
+    /// ordering. Per [ADR-0028] §10 — semantically nonsensical: the
+    /// failure path observing stronger synchronization than the success
+    /// path is always a bug. Ordering strength is `Relaxed` (0) <
+    /// `Synchronized` (1) < `Strict` (2).
+    ///
+    /// [ADR-0028]: ../../../../docs/decisions/0028-atomic-primitive.md
+    #[error(
+        "compare_exchange success ordering `{success}` weaker than failure ordering `{failure}`"
+    )]
+    #[diagnostic(
+        code(triet::actor::E2530),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Raise the success ordering to match (or exceed) failure:\n\
+            Change `success={success}` to `success={failure}`\n\n\
+            [Fix 2] Lower the failure ordering to match success:\n\
+            Change `failure={failure}` to `failure={success}`\n\n\
+            [Fix 3] Use the same ordering on both paths (safe default):\n\
+            Change both to `Synchronized`"
+        )
+    )]
+    InvalidAtomicOrdering {
+        /// Name of the success-ordering variant (e.g. `Relaxed`).
+        success: String,
+        /// Name of the failure-ordering variant (e.g. `Strict`).
+        failure: String,
+        /// Source span of the entire call.
+        #[label("success={success}, failure={failure}")]
+        span: Span,
+    },
 }
 
 impl ConcurrencyError {
@@ -544,7 +576,8 @@ impl ConcurrencyError {
         match self {
             Self::NotSendCannotCrossBoundary { span, .. }
             | Self::ScopeRefLeakage { span }
-            | Self::MutableShareAntiPattern { span } => span.clone(),
+            | Self::MutableShareAntiPattern { span }
+            | Self::InvalidAtomicOrdering { span, .. } => span.clone(),
         }
     }
 }
