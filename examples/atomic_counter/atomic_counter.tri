@@ -2,23 +2,54 @@
 //
 // Triết không đi kèm bộ lập lịch (no scheduler). Mọi hàm về luồng và Atomic
 // đều được quản lý bởi Capability Gate `sys.raw_thread` và `sys.atomic`.
-// Chương trình này chỉ minh họa cách khai báo và yêu cầu quyền, các lời gọi
-// thực tế sẽ tuân theo BYOS (Bring Your Own Scheduler) của môi trường nhúng.
+// Chương trình này khai báo yêu cầu quyền và exercise runtime semantics
+// trên single-thread VM dev tier per ADR-0028 §9.
+//
+// **VM dev tier behavior (ADR-0028 §9):** mọi atomic op chạy như plain
+// non-atomic read/write. `Ordering` validated typecheck-time, no-op
+// runtime. Cross-thread synchronization defers v0.10+ stdlib với real
+// OS threading.
+//
+// **v0.9 scope (ADR-0031 §9 Phương án A — single-call):** Demo exercises
+// `let counter = new(0); fetch_add(&+ counter, 1, ...)` end-to-end —
+// proves borrow expression syntax + AtomicNew + fetch_add VM dispatch
+// + E2420 UseAfterMove enforcement work through the full pipeline.
+// Multi-worker pattern requires real Send-boundary refcount-bump
+// codegen (ADR-0026 v2 §3.2) which defers v0.10 per ADR-0031 §10.2
+// backlog. Until then, attempting `fetch_add(&+ counter, ...)` twice
+// fires E2420 — by design.
+//
+// **VM-ONLY DEMO (interpreter parity gap):** `dao run atomic_counter.tri`
+// directly will stack-overflow because the tree-walking interpreter
+// doesn't intercept `sys.atomic.*` builtin paths (mirrors the
+// outcome_propagate.tri VM-only precedent per CLAUDE.md). To run:
+//   $ dao build atomic_counter.tri && dao run atomic_counter.khi
+// The in-tree e2e test (`atomic_counter_e2e.rs`) executes via
+// in-process VM. Interpreter parity tracked in ADR-0031 §10 backlog.
 //
 // `Atomic<T>` là built-in type — không cần import. Chỉ `Ordering` enum +
 // variants + builtins cần import (per ADR-0028 §8 stdlib module shape).
 
-from sys.atomic import Ordering, Synchronized, fetch_add
+from sys.atomic import Synchronized, fetch_add, new
 from sys.raw_thread import spawn
 
-function spawn_worker(counter: &+ Atomic<Integer>) {
+function spawn_worker(counter: &+ Atomic<Integer>) -> Integer = {
     // Tăng giá trị biến đếm an toàn trên thread. Synchronized = default
-    // ordering an toàn cho 95% use case per ADR-0028 §3.
-    let old = fetch_add(counter, 1, Synchronized)
+    // ordering an toàn cho 95% use case per ADR-0028 §3. Returns the
+    // previous (pre-increment) value per ADR-0028 §4.2.
+    fetch_add(counter, 1, Synchronized)
 }
 
-function main() {
-    // Trong v0.9.x.atomic.5b, Atomic full type-level + API + Send + capability.
-    // Cross-thread runtime semantics defer to v0.10+ stdlib (real OS threading).
-    println("Atomic counter demo (capabilities granted!)")
+function main() -> Integer = {
+    // Construct Atomic<Integer> initialized to 0.
+    let counter = new(0)
+    // Single fetch_add — moves &+ counter into spawn_worker per
+    // ADR-0031 §4 + ADR-0022 §4.1. v0.9 single-thread VM: returns
+    // previous value (0). Multi-worker defers v0.10 (real Send
+    // boundary refcount-bump per ADR-0026 v2 §3.2).
+    let prev = spawn_worker(&+ counter)
+    // counter is now consumed; attempting `&+ counter` again would
+    // fire E2420 UseAfterMove per ADR-0025 §5.1 — see .7d enforcement.
+    println(f"Atomic counter previous: {prev}")
+    prev
 }

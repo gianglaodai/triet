@@ -237,6 +237,13 @@ Following items surfaced during ADR-0031 design + 2026-05-30 audit. **Tracked he
 
 - `.7c` ports borrow expression parsing to `compiler/parser/parser.tri` (Layer A per ADR-0029 §3 mandatory). v0.10 may discover that `.7d` E2420 enforcement also needs Layer A or Layer B port if self-host typecheck implementation lands. Currently self-host typecheck pass minimal; revisit when self-host typecheck phase opens (post-v0.9).
 
+### 10.7 — Interpreter parity for `sys.atomic.*` builtins (discovered v0.9.x.atomic.7e)
+
+- **Gap:** `triet-interpreter` (tree-walking dev tier per VISION §4.3) does NOT intercept `sys.atomic.*` builtin paths. Calling `sys.atomic.new(0)` recurses into the stdlib placeholder body (`= new(initial_value)`) → stack overflow. Same pattern blocks `sys.atomic.load/store/swap/fetch_*`. Mirrors the existing `outcome_propagate.tri` VM-only precedent per [CLAUDE.md](../../CLAUDE.md) demos note.
+- **v0.9 workaround:** `examples/atomic_counter/` is a **VM-only demo**. User runs via `dao build && dao run *.khi`, NOT direct `dao run atomic_counter.tri`. In-tree e2e test exercises in-process VM, not interpreter.
+- **v0.10 resolution:** add atomic builtin intercepts to `triet-interpreter::interpret::evaluate_call_expression` (or similar) mirroring the VM's `path_to_builtin` lookup. Implementation: `RuntimeValue::Atomic` already exists in IR layer; interpreter `Value` enum needs parallel `Atomic` variant + per-op dispatch. Scope estimate: ~300 LOC + tests.
+- **Forward-compat:** v0.9 demo continues to work in v0.10 without source change — only interpreter implementation extends.
+
 ---
 
 ## Hệ quả
