@@ -371,6 +371,15 @@ public struct ReferencePayload {
     inner: Integer,
 }
 
+// v0.9.x.atomic.7c — borrow expression payload per ADR-0031 §1 + §2.
+// `form` is one of 5 ReferenceForm variants; `operand` is expr_id of
+// `IdentifierExpr` or `FieldAccessExpr` chain (parser-enforced grammar).
+// Mirrors crates/triet-syntax/src/expr.rs Expr::Borrow.
+public struct BorrowExprPayload {
+    form: ReferenceForm,
+    operand: Integer,
+}
+
 public enum TypeExpr {
     NamedType(NamedTypePayload),
     GenericType(GenericTypePayload),
@@ -451,6 +460,9 @@ public enum Expr {
     NullLiteralExpr,
     IdentifierExpr(StringPayload),
     UnaryOpExpr(UnaryOpPayload),
+    // v0.9.x.atomic.7c — borrow expression per ADR-0031 §1.
+    // Prefix `&FORM operand` produces this variant.
+    BorrowExpr(BorrowExprPayload),
     BinaryOpExpr(BinaryOpPayload),
     ForceUnwrapExpr(Integer),
     CallExpr(CallPayload),
@@ -1563,6 +1575,13 @@ function parse_prefix(state: ParserState) -> ParseStep~ParseError = {
                 Minus => parse_unary_prefix(state),
                 Bang => parse_unary_prefix(state),
                 NotKw => parse_unary_prefix(state),
+                // v0.9.x.atomic.7c — borrow expression prefix per
+                // ADR-0031 §3. `&+`/`&0`/`&-` at expression position
+                // dispatches to parse_borrow_expr. Operand grammar
+                // (IDENT + field-access) enforced in helper.
+                AmpersandPlus => parse_borrow_expr(state),
+                AmpersandZero => parse_borrow_expr(state),
+                AmpersandMinus => parse_borrow_expr(state),
                 TildePlus => parse_outcome_ctor_payloaded(state, PositiveArm),
                 TildeMinus => parse_outcome_ctor_payloaded(state, NegativeArm),
                 TildeZero => parse_outcome_ctor_zero(state),
@@ -1627,6 +1646,116 @@ function parse_unary_prefix(state: ParserState) -> ParseStep~ParseError = {
             arena: res.arena,
         },
         expr_id: res.id,
+    }
+}
+
+// v0.9.x.atomic.7c — borrow expression parser per ADR-0031 §1-§2.
+// Mirrors crates/triet-parser/src/expr.rs parse_borrow.
+//
+// Consumes `&FORM` (optionally followed by `mutable`) via the existing
+// `try_parse_reference_prefix` helper (shared with type-position
+// parsing). Then parses operand restricted to IDENT + field-access
+// chain per ADR-0031 §2 v0.9 scope. Function call, index, compound
+// binary, and nested borrow are NOT accepted as operand (deferred to
+// ADR-0031 §10.3 backlog).
+function parse_borrow_expr(state: ParserState) -> ParseStep~ParseError = {
+    let ref_opt: ReferencePrefixOutcome? = try_parse_reference_prefix(state)
+    match ref_opt {
+        ~0 => ~- make_unexpected_token_err(state, "borrow prefix `&+`/`&0`/`&-`"),
+        ~+ ref_outcome => {
+            let operand_step: ParseStep = parse_borrow_operand(ref_outcome.new_state) ~? |err| ~- err
+            let operand_sp: SpannedExpr = get_expression(operand_step.state.arena, operand_step.expr_id)
+            let payload: BorrowExprPayload = BorrowExprPayload {
+                form: ref_outcome.form,
+                operand: operand_step.expr_id,
+            }
+            let res: AllocResult = alloc_expression(
+                operand_step.state.arena,
+                spanned_expr(BorrowExpr(payload), ref_outcome.span_start, operand_sp.span_end),
+            )
+            ~+ ParseStep {
+                state: ParserState {
+                    tokens: operand_step.state.tokens,
+                    cursor: operand_step.state.cursor,
+                    arena: res.arena,
+                },
+                expr_id: res.id,
+            }
+        },
+    }
+}
+
+// Parse the operand of a borrow expression per ADR-0031 §2 v0.9 scope:
+// `IDENT ('.' IDENT)*`. Returns an `IdentifierExpr` (bare) or a chain
+// of `FieldAccessExpr`. Refuses any other operand at parse-time —
+// function-call result, integer literal, compound binary, nested
+// borrow all produce parse errors.
+function parse_borrow_operand(state: ParserState) -> ParseStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(state)
+    match nx_opt {
+        ~0 => ~- make_unexpected_eof_err(state, "identifier"),
+        ~+ nx => {
+            match nx.token {
+                Identifier(p) => {
+                    let after_ident: ParserState = advance(state)
+                    let id_res: AllocResult = alloc_expression(
+                        after_ident.arena,
+                        spanned_expr(IdentifierExpr(p), nx.span_start, nx.span_end),
+                    )
+                    let head_state: ParserState = ParserState {
+                        tokens: after_ident.tokens,
+                        cursor: after_ident.cursor,
+                        arena: id_res.arena,
+                    }
+                    parse_borrow_operand_postfix(head_state, id_res.id, nx.span_start)
+                },
+                _ => ~- make_unexpected_token_err(state, "identifier"),
+            }
+        },
+    }
+}
+
+// Loop consuming `. IDENT` field-access steps, wrapping the running
+// node in `FieldAccessExpr` payloads. Returns when the next token is
+// not `.`.
+function parse_borrow_operand_postfix(state: ParserState, node_id: Integer, start_span: Integer) -> ParseStep~ParseError = {
+    let nx_opt: SpannedToken? = peek(state)
+    match nx_opt {
+        ~0 => ~+ ParseStep { state: state, expr_id: node_id },
+        ~+ nx => {
+            match nx.token {
+                Dot => {
+                    let after_dot: ParserState = advance(state)
+                    let field_opt: SpannedToken? = peek(after_dot)
+                    match field_opt {
+                        ~0 => ~- make_unexpected_eof_err(after_dot, "field name"),
+                        ~+ field_tok => {
+                            match field_tok.token {
+                                Identifier(field_payload) => {
+                                    let after_field: ParserState = advance(after_dot)
+                                    let access_payload: FieldAccessPayload = FieldAccessPayload {
+                                        object: node_id,
+                                        field: field_payload.text,
+                                    }
+                                    let access_res: AllocResult = alloc_expression(
+                                        after_field.arena,
+                                        spanned_expr(FieldAccessExpr(access_payload), start_span, field_tok.span_end),
+                                    )
+                                    let next_state: ParserState = ParserState {
+                                        tokens: after_field.tokens,
+                                        cursor: after_field.cursor,
+                                        arena: access_res.arena,
+                                    }
+                                    parse_borrow_operand_postfix(next_state, access_res.id, start_span)
+                                },
+                                _ => ~- make_unexpected_token_err(after_dot, "field name"),
+                            }
+                        },
+                    }
+                },
+                _ => ~+ ParseStep { state: state, expr_id: node_id },
+            }
+        },
     }
 }
 
@@ -5538,6 +5667,20 @@ public function format_expr(arena: Arena, id: Integer) -> String = {
             let inner: String = format_expr(arena, p.operand)
             concat("(- ", concat(inner, ")"))
         },
+        BorrowExpr(p) => {
+            // v0.9.x.atomic.7c — borrow expression render per ADR-0031.
+            // Compact form matches format_type prefix (&+, &+mut, &0,
+            // &0mut, &-) for visual symmetry between type + expression.
+            let prefix: String = match p.form {
+                StrongFrozen => "(&+ ",
+                StrongMutable => "(&+mut ",
+                BorrowReadOnly => "(&0 ",
+                BorrowExclusiveMutable => "(&0mut ",
+                WeakObserver => "(&- ",
+            }
+            let inner: String = format_expr(arena, p.operand)
+            concat(prefix, concat(inner, ")"))
+        },
         BinaryOpExpr(p) => {
             let l: String = format_expr(arena, p.left)
             let r: String = format_expr(arena, p.right)
@@ -6224,6 +6367,16 @@ function main() -> Unit = {
     assert_parse("x ?: 0", "(?: x 0)")
     assert_parse("0..10", "(.. 0 10)")
     assert_parse("0..=10", "(..= 0 10)")
+
+    // v0.9.x.atomic.7c — borrow expression per ADR-0031 §1-§2.
+    // All 5 forms; identifier + field-access operand grammar.
+    assert_parse("&+ x", "(&+ x)")
+    assert_parse("&+ mutable x", "(&+mut x)")
+    assert_parse("&0 x", "(&0 x)")
+    assert_parse("&0 mutable x", "(&0mut x)")
+    assert_parse("&- x", "(&- x)")
+    assert_parse("&+ obj.field", "(&+ (. obj field))")
+    assert_parse("&+ a.b.c", "(&+ (. (. a b) c))")
 
     // v0.7.5.3 — block + statement layer
     assert_parse_block("{ }", "(block)")
