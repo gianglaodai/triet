@@ -69,7 +69,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 ### v0.10.x.borrow — Borrow checker enforcement (3 sub-tasks, Tier 1B)
 
 - [ ] **v0.10.x.borrow.1** — E2440 NLL borrow exclusivity (full CFG live-range) per ADR-0025 §2 + ADR-0031 §10.1. Compute borrow-active region from creation to last-use; reject overlapping `&0 mutable` / `&0` / `&+` borrows. Biggest item — ~1000+ LOC. **Risk:** may tier-down further if 2-day budget too tight; .2 + .3 are lower-risk.
-- [ ] **v0.10.x.borrow.2** — E2400 lifetime elision 3 rules per ADR-0025 §3. Quy tắc 1 (single input borrow → output), quy tắc 2 (`self` receiver → output ties self), quy tắc 3 (owned return). E2400 fires when all 3 fail. ~300 LOC.
+- [x] **v0.10.x.borrow.2** — E2400 lifetime elision 3 rules per ADR-0025 §3. Quy tắc 1 (single input borrow → output), quy tắc 2 (`self` receiver → output ties self), quy tắc 3 (owned return). E2400 fires when all 3 fail. ~300 LOC. — `1b78f94` (+14 tests; Rule 2 dormant pending `self`-parameter parser syntax; nested-borrow defer v0.11+ corpus-driven)
 - [ ] **v0.10.x.borrow.3** — E2403 `&-` weak observer upgrade + E2410/E2411 mutability per ADR-0022 §2 row 5 + v0.8.10 skeletons. E2403: deref `&- T → T?` upgrade tracking. E2410/E2411: assign-to-frozen + mutate-via-readonly-borrow full enforcement. ~400 LOC combined.
 
 ### v0.10.final — release
