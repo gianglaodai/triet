@@ -23,4 +23,6 @@ cranelift-codegen = "0.132"
 cranelift-frontend = "0.132"
 cranelift-jit = "0.132"
 cranelift-module = "0.132"
+# Host-ISA builder (target detection) — needed for JITBuilder::with_isa.
+cranelift-native = "0.132"
 thiserror.workspace = true
