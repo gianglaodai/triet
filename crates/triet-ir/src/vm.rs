@@ -98,17 +98,26 @@ pub enum RuntimeValue {
     },
     /// `Atomic<T>` per [ADR-0028] — shared-mutable wrapper for
     /// `AtomicValue` primitive (`Trit`/`Tryte`/`Integer`/`Trilean` per §2).
-    /// Implementation uses `Rc<RefCell<Self>>` for single-thread VM
-    /// (per ADR-0028 §9 dev tier: ordering is no-op semantically;
-    /// shared state propagation through clones matches v∞ trytecode
-    /// + v2.0 LLVM AOT atomic semantics).
     ///
-    /// When v0.10 stdlib adds real threading, this representation
-    /// would switch to `Arc<RwLock<Self>>` or similar thread-safe
-    /// primitive. v0.9 stays single-thread per ADR-0026 v2 BYOS.
+    /// **v0.10.x.thread.2 migration:** previously `Rc<RefCell<Self>>`
+    /// (single-thread VM dev tier per ADR-0028 §9). Migrated to
+    /// `Arc<Mutex<Self>>` so the shared cell becomes `Send + Sync` and
+    /// can cross OS-thread boundaries when `raw_thread.spawn` (per
+    /// ADR-0026 v2 §3 + v0.10.x.thread.1) captures it. This is an
+    /// **infrastructure-prerequisite** change for v0.10.x.thread.3
+    /// (multi-worker `atomic_counter` demo); the real Send-boundary
+    /// codegen per ADR-0026 v2 §3.2 still defers to v0.11+ when
+    /// Triết's closure type system gains Send-bound expressiveness.
+    /// VM dispatcher itself is still single-thread per ADR-0028 §9 —
+    /// no concurrent IR execution.
+    ///
+    /// Ordering is still semantically no-op at v0.10 dev tier
+    /// (typecheck-validated, ignored at runtime per ADR-0028 §9).
+    /// Real ordering semantics land alongside v2.0 LLVM AOT.
     ///
     /// [ADR-0028]: ../../../docs/decisions/0028-atomic-primitive.md
-    Atomic(std::rc::Rc<std::cell::RefCell<Self>>),
+    /// [ADR-0026 v2]: ../../../docs/decisions/0026-actor-boundary-send-rules.md
+    Atomic(std::sync::Arc<std::sync::Mutex<Self>>),
 }
 
 /// Keys for `RuntimeValue::HashMap`. Restricted to hashable primitives
@@ -335,7 +344,18 @@ impl std::fmt::Display for RuntimeValue {
             // v0.9.x.atomic.3 — Atomic<T>: display inner state. Per
             // ADR-0028 §9 single-thread VM, atomic is transparent;
             // formatter borrows current inner without atomicity ceremony.
-            Self::Atomic(cell) => write!(f, "Atomic({})", cell.borrow()),
+            Self::Atomic(cell) => {
+                // Display does not propagate a Result from the inner
+                // value's fmt; if the mutex is poisoned (panic in a
+                // prior holder), fall back to a sentinel string rather
+                // than panicking the formatter. Poisoning is unreachable
+                // in single-thread VM dev tier (ADR-0028 §9) but the
+                // mutex API surface still admits the variant.
+                match cell.lock() {
+                    Ok(guard) => write!(f, "Atomic({})", &*guard),
+                    Err(_) => write!(f, "Atomic(<poisoned>)"),
+                }
+            }
         }
     }
 }
@@ -2075,6 +2095,20 @@ fn path_to_builtin(path: &str) -> Option<BuiltinName> {
     }
 }
 
+/// v0.10.x.thread.2 — Acquire the atomic cell's mutex guard.
+///
+/// Single-thread VM dev tier (ADR-0028 §9) — the mutex never sees
+/// real contention; poisoning would mean a prior holder panicked
+/// mid-operation, which is itself a bug. Promoting to `.expect()` so
+/// the diagnostic surfaces the invariant rather than silently
+/// recovering from inconsistent state.
+fn lock_atomic(
+    cell: &std::sync::Arc<std::sync::Mutex<RuntimeValue>>,
+) -> std::sync::MutexGuard<'_, RuntimeValue> {
+    cell.lock()
+        .expect("atomic mutex poisoned (single-thread VM dev tier)")
+}
+
 /// v0.9.x.atomic.4 — arithmetic op selector for `fetch_add`/`fetch_sub`
 /// dispatch. Keeps the two arms thin.
 #[derive(Clone, Copy)]
@@ -2096,6 +2130,13 @@ enum BitwiseOp {
 
 /// v0.9.x.atomic.4 — shared dispatch for `fetch_add`/`sub` on `Tryte`/`Integer`
 /// per ADR-0028 §4.2. Returns PREVIOUS value (pre-modification).
+///
+/// The mutex guard is INTENTIONALLY held across the read-modify-write
+/// so the operation is atomic from any concurrent observer's
+/// perspective. Allowing `clippy::significant_drop_tightening` here
+/// — tightening would split the read and write into separate locked
+/// sections, defeating the atomic intent.
+#[allow(clippy::significant_drop_tightening)]
 fn atomic_fetch_arithmetic(
     args: &[RuntimeValue],
     func_name: &str,
@@ -2121,12 +2162,18 @@ fn atomic_fetch_arithmetic(
             });
         }
     };
-    let current = cell.borrow().clone();
+    // Hold the lock once across read-modify-write — atomic from any
+    // concurrent observer's perspective (real ordering enforcement
+    // lands with v2.0 LLVM AOT; v0.10 single-thread VM has no race
+    // surface, but holding the lock once is cleaner than back-to-back
+    // lock/unlock and matches the semantic intent of the op).
+    let mut guard = lock_atomic(&cell);
+    let current = guard.clone();
     let new_value = match op {
         ArithmeticOp::Add => arithmetic_add(&current, &delta, func_name)?,
         ArithmeticOp::Sub => arithmetic_sub(&current, &delta, func_name)?,
     };
-    *cell.borrow_mut() = new_value;
+    *guard = new_value;
     Ok(current)
 }
 
@@ -2137,6 +2184,11 @@ fn atomic_fetch_arithmetic(
 /// `Tryte` excluded per ADR-0028 §2 type table (9-trit width clashes
 /// with binary atomic intrinsics). `Trit`/`Trilean` excluded — only
 /// `Integer` `AtomicValue` supports bitwise.
+///
+/// Same intentional guard-held-across-RMW pattern as the arithmetic
+/// counterpart; `significant_drop_tightening` allowed for the same
+/// atomicity-intent reason.
+#[allow(clippy::significant_drop_tightening)]
 fn atomic_fetch_bitwise(
     args: &[RuntimeValue],
     func_name: &str,
@@ -2162,7 +2214,10 @@ fn atomic_fetch_bitwise(
             });
         }
     };
-    let current = cell.borrow().clone();
+    // Hold lock once across read-modify-write per the arithmetic
+    // counterpart's note.
+    let mut guard = lock_atomic(&cell);
+    let current = guard.clone();
     let (a_raw, b_raw) = match (&current, &mask) {
         (RuntimeValue::Integer(a), RuntimeValue::Integer(b)) => (a.to_i64(), b.to_i64()),
         _ => {
@@ -2186,7 +2241,7 @@ fn atomic_fetch_bitwise(
         RuntimeValue::Integer(Integer::new(new_raw).ok_or_else(|| VmError::Overflow {
             function: func_name.into(),
         })?);
-    *cell.borrow_mut() = new_value;
+    *guard = new_value;
     Ok(current)
 }
 
@@ -2223,6 +2278,13 @@ fn vector_to_byte_array(elements: &[RuntimeValue]) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+// `clippy::significant_drop_tightening` allowed because the
+// AtomicSwap / AtomicCompareExchange arms intentionally hold the
+// mutex guard across the read-modify-write — tightening would split
+// the read + write into separate locked sections, defeating the
+// atomic intent (same rationale as the arithmetic / bitwise helpers
+// above, v0.10.x.thread.2 Arc<Mutex> migration).
+#[allow(clippy::significant_drop_tightening)]
 fn execute_builtin(
     name: BuiltinName,
     args: &[RuntimeValue],
@@ -2985,8 +3047,8 @@ fn execute_builtin(
                     actual: "missing initial value".into(),
                     function: func_name.into(),
                 })?;
-            Ok(RuntimeValue::Atomic(std::rc::Rc::new(
-                std::cell::RefCell::new(initial),
+            Ok(RuntimeValue::Atomic(std::sync::Arc::new(
+                std::sync::Mutex::new(initial),
             )))
         }
         BuiltinName::AtomicLoad => {
@@ -3011,7 +3073,7 @@ fn execute_builtin(
                     });
                 }
             };
-            Ok(cell.borrow().clone())
+            Ok(lock_atomic(&cell).clone())
         }
         BuiltinName::AtomicStore => {
             // `store(self: &+ Atomic<T>, value: T, ordering: Ordering) -> Unit` per §4.1.
@@ -3035,7 +3097,7 @@ fn execute_builtin(
                     });
                 }
             };
-            *cell.borrow_mut() = new_value;
+            *lock_atomic(&cell) = new_value;
             Ok(RuntimeValue::Unit)
         }
         BuiltinName::AtomicSwap => {
@@ -3061,8 +3123,12 @@ fn execute_builtin(
                     });
                 }
             };
-            let prev = cell.borrow().clone();
-            *cell.borrow_mut() = new_value;
+            // Hold lock once across swap (atomic from any external
+            // observer's perspective — v0.10 single-thread VM, but
+            // intent matches semantic).
+            let mut guard = lock_atomic(&cell);
+            let prev = guard.clone();
+            *guard = new_value;
             Ok(prev)
         }
         BuiltinName::AtomicCompareExchange => {
@@ -3094,9 +3160,14 @@ fn execute_builtin(
                     });
                 }
             };
-            let current = cell.borrow().clone();
+            // Hold lock once across compare-and-conditional-swap —
+            // the canonical CAS semantics require the read + the
+            // optional write to be one indivisible op from external
+            // observers' perspective.
+            let mut guard = lock_atomic(&cell);
+            let current = guard.clone();
             if atomic_value_eq(&current, &expected) {
-                *cell.borrow_mut() = new_value;
+                *guard = new_value;
                 Ok(RuntimeValue::Outcome {
                     discriminator: Trit::Positive,
                     payload: Some(Box::new(current)),
@@ -6439,7 +6510,7 @@ mod tests {
     }
 
     fn make_atomic_integer(n: i64) -> RuntimeValue {
-        RuntimeValue::Atomic(std::rc::Rc::new(std::cell::RefCell::new(make_integer(n))))
+        RuntimeValue::Atomic(std::sync::Arc::new(std::sync::Mutex::new(make_integer(n))))
     }
 
     /// `AtomicNew(initial)` wraps inner value in shared cell.
@@ -6455,7 +6526,9 @@ mod tests {
         let result = vm.execute(FuncId(0), vec![make_integer(42)]).unwrap();
         match result {
             RuntimeValue::Atomic(cell) => {
-                assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 42));
+                assert!(
+                    matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 42)
+                );
             }
             other => panic!("expected Atomic, got {other:?}"),
         }
@@ -6506,7 +6579,7 @@ mod tests {
             .unwrap();
         // External (cloned) reference sees the mutation.
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 99));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 99));
         } else {
             panic!("expected Atomic shared clone");
         }
@@ -6538,7 +6611,7 @@ mod tests {
         assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 11));
         // Cell mutated to 22.
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 22));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 22));
         }
     }
 
@@ -6589,7 +6662,7 @@ mod tests {
         }
         // Cell mutated to 10.
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 10));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 10));
         }
     }
 
@@ -6619,7 +6692,7 @@ mod tests {
         assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 10));
         // Cell mutated to 15.
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 15));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 15));
         }
     }
 
@@ -6645,7 +6718,7 @@ mod tests {
             .unwrap();
         assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 20));
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 13));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 13));
         }
     }
 
@@ -6676,7 +6749,7 @@ mod tests {
         assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 15));
         // 0b1111 & 0b1010 = 0b1010 = 10.
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 10));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 10));
         }
     }
 
@@ -6704,7 +6777,9 @@ mod tests {
             .unwrap();
         assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 0b1010));
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 0b1111));
+            assert!(
+                matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 0b1111)
+            );
         }
     }
 
@@ -6732,7 +6807,9 @@ mod tests {
             .unwrap();
         assert!(matches!(result, RuntimeValue::Integer(i) if i.to_i64() == 0b1111));
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 0b0101));
+            assert!(
+                matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 0b0101)
+            );
         }
     }
 
@@ -6783,7 +6860,7 @@ mod tests {
         }
         // Cell UNCHANGED (still 5).
         if let RuntimeValue::Atomic(cell) = atomic_clone {
-            assert!(matches!(&*cell.borrow(), RuntimeValue::Integer(i) if i.to_i64() == 5));
+            assert!(matches!(&*lock_atomic(&cell), RuntimeValue::Integer(i) if i.to_i64() == 5));
         }
     }
 
@@ -6997,4 +7074,98 @@ mod tests {
     // (raw_thread serde round-trip test lives in serde.rs's test
     // module — `write_builtin`/`read_builtin` are module-private,
     // following the same convention as `atomic_builtins_serde_round_trip`.)
+
+    // ── v0.10.x.thread.2 — Atomic Arc<Mutex> cross-thread share ─────
+
+    /// v0.10.x.thread.2 — verify the Arc<Mutex> migration preserves
+    /// shared-state semantics across OS-thread boundaries.
+    ///
+    /// Pre-migration: `RuntimeValue::Atomic` was `Rc<RefCell<…>>` and
+    /// could not be sent to another OS thread (Rc is `!Send`). Post-
+    /// migration: `Arc<Mutex<…>>` is `Send + Sync`. This test spawns
+    /// a real OS thread that clones the Atomic handle, writes through
+    /// the mutex, and joins back; the main-thread observer then sees
+    /// the cross-thread write.
+    ///
+    /// This exercises the **infrastructure** that v0.10.x.thread.3
+    /// builds on (multi-worker `atomic_counter` demo). It does NOT
+    /// require Triết closure type-system support — the spawn uses
+    /// Rust's `std::thread::spawn` directly to validate the type-
+    /// system property (`Send` for Atomic) without depending on
+    /// language-surface features that defer per ADR-0026 v2 §3.
+    #[test]
+    fn atomic_arc_mutex_crosses_os_thread_boundary() {
+        let atomic = make_atomic_integer(0);
+        // Extract the inner Arc to spawn-capture independently of the
+        // RuntimeValue wrapper.
+        let RuntimeValue::Atomic(arc_handle) = atomic.clone() else {
+            panic!("expected Atomic, got {atomic:?}");
+        };
+
+        let join_handle = std::thread::spawn(move || {
+            // Cross-thread write: lock the mutex, mutate the inner
+            // RuntimeValue. Demonstrates Atomic is now Send-safe.
+            let mut guard = arc_handle
+                .lock()
+                .expect("atomic mutex must lock from spawned thread");
+            *guard = RuntimeValue::Integer(Integer::new(42).unwrap());
+        });
+
+        join_handle.join().expect("spawned thread joined cleanly");
+
+        // Main thread observes the write — proves the Arc clone
+        // refers to the SAME underlying cell as the original.
+        if let RuntimeValue::Atomic(cell) = atomic {
+            let guard = lock_atomic(&cell);
+            match &*guard {
+                RuntimeValue::Integer(i) => assert_eq!(i.to_i64(), 42),
+                other => panic!("expected Integer 42, got {other:?}"),
+            }
+        } else {
+            panic!("main-thread atomic disappeared");
+        }
+    }
+
+    /// Multiple worker threads, each performing one swap on the
+    /// shared cell — verify Atomic clones see each other's writes
+    /// AND the join sequence completes deterministically. This is
+    /// the foundation for the v0.10.x.thread.3 multi-worker
+    /// `atomic_counter` demo (which will run a `fetch_add` per worker
+    /// via the same Arc-share + `std::thread` mechanism).
+    #[test]
+    fn atomic_arc_mutex_multi_worker_share() {
+        let atomic = make_atomic_integer(0);
+        let RuntimeValue::Atomic(arc_handle) = atomic.clone() else {
+            unreachable!("make_atomic_integer always returns Atomic")
+        };
+
+        // Spawn 3 workers; each writes a distinct value. The last
+        // writer wins; we verify the final value is among the
+        // expected set (deterministic per join sequence).
+        let mut joins = Vec::new();
+        for n in [10_i64, 20, 30] {
+            let arc_clone = arc_handle.clone();
+            joins.push(std::thread::spawn(move || {
+                let mut guard = arc_clone.lock().expect("worker lock");
+                *guard = RuntimeValue::Integer(Integer::new(n).unwrap());
+            }));
+        }
+        for j in joins {
+            j.join().expect("worker joined");
+        }
+
+        if let RuntimeValue::Atomic(cell) = atomic {
+            let guard = lock_atomic(&cell);
+            match &*guard {
+                RuntimeValue::Integer(i) => {
+                    let v = i.to_i64();
+                    assert!(
+                        [10, 20, 30].contains(&v),
+                        "expected one of {{10, 20, 30}}, got {v}"
+                    );
+                }
+                other => panic!("expected Integer, got {other:?}"),
+            }
+        }
+    }
 }

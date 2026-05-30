@@ -79,10 +79,19 @@ pub enum Value {
     },
     /// `Atomic<T>` per [ADR-0028] — shared-mutable wrapper around an
     /// `AtomicValue` primitive (`Trit`/`Tryte`/`Integer`/`Trilean` per §2).
-    /// Mirrors [`triet_ir::vm::RuntimeValue::Atomic`] for v0.10.x.interp.1
-    /// parity per [ADR-0031 §10.7] — single-thread interior mutability via
-    /// `Rc<RefCell<Self>>`. Multi-thread share lands when v0.10.x.thread
-    /// adds real OS threading.
+    /// Mirrors [`triet_ir::vm::RuntimeValue::Atomic`] in shape but uses
+    /// `Rc<RefCell<…>>` rather than `Arc<Mutex<…>>`.
+    ///
+    /// **Asymmetry with VM (v0.10.x.thread.2):** the VM migrated to
+    /// `Arc<Mutex<RuntimeValue>>` so atomics can cross OS-thread
+    /// boundaries (real `raw_thread.spawn` per ADR-0026 v2 §3 +
+    /// v0.10.x.thread.1). The interpreter cannot follow suit: its
+    /// `Value` enum holds `Rc<String>`, `Rc<FunctionRef>`,
+    /// `Rc<Closure>`, etc. (none `Send`), so wrapping the atomic in
+    /// `Arc<Mutex<…>>` would not yield a `Send` type anyway. The
+    /// interpreter stays single-thread (ADR-0030 Backend 0 dev tier
+    /// — no `raw_thread` interpreter parity yet) so `Rc<RefCell>` is
+    /// the right repr here. Asymmetry intentional.
     ///
     /// [ADR-0028]: ../../../docs/decisions/0028-atomic-primitive.md
     /// [ADR-0031 §10.7]: ../../../docs/decisions/0031-borrow-expression-syntax.md
