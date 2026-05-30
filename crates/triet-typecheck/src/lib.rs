@@ -30,6 +30,7 @@
     clippy::missing_panics_doc
 )]
 
+mod borrow_check;
 mod capability_check;
 mod check;
 mod check_resolved;

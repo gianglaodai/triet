@@ -816,22 +816,40 @@ pub enum BorrowError {
     },
 
     /// E2440: `BorrowExclusivityViolation` (ADR-0025 §2.2)
-    #[error("cannot borrow `{name}` as mutable because it is also borrowed as immutable")]
+    ///
+    /// Two overlapping borrows on the same base identifier have
+    /// conflicting forms. Per ADR-0025 §2.1 conflict table:
+    /// `&0` + `&0 mutable` → conflict (shared vs exclusive);
+    /// `&0 mutable` + `&0 mutable` → conflict (two exclusive).
+    /// `&-` weak observers never conflict with anything; two `&0`
+    /// read-only borrows coexist.
+    #[error("cannot create `{second_form} {base}` while `{first_form} {base}` is still live")]
     #[diagnostic(
         code(triet::borrow::E2440),
         help(
             "Suggested fixes:\n\n\
-            [Fix 1] Shorten the lifetime of the immutable borrow:\n\
-            Move the immutable borrow out of scope before mutating\n\n\
-            [Fix 2] Reorder the read before mutation:\n\
-            Move the mutation statement later"
+            [Fix 1] Shorten the lifetime of the earlier borrow:\n\
+            Move its last use earlier, before this new borrow is created\n\n\
+            [Fix 2] Reorder so the borrows don't overlap:\n\
+            Drop the earlier borrow's binding (or end its scope) before this one starts\n\n\
+            [Fix 3] If both borrows are read-only, promote them to `&0` instead of \
+            `&0 mutable` (multiple `&0` borrows on the same base coexist)"
         )
     )]
     BorrowExclusivityViolation {
-        /// The name of the variable.
-        name: String,
-        /// Source location.
-        #[label("mutable borrow occurs here")]
+        /// The shared base identifier the two borrows are rooted at.
+        base: String,
+        /// Reference-form label of the earlier (first-created) borrow.
+        first_form: String,
+        /// Reference-form label of the new (conflicting) borrow.
+        second_form: String,
+        /// Span of the earlier borrow's creation site (informational
+        /// label in the diagnostic).
+        #[label("earlier borrow created here")]
+        first_span: Span,
+        /// Span of the new conflicting borrow's creation site —
+        /// primary diagnostic anchor.
+        #[label("conflicting borrow attempted here")]
         span: Span,
     },
 }
