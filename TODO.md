@@ -51,7 +51,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### v0.10.x.interp — Interpreter parity (smallest, lowest risk, warm-up)
 
-- [ ] **v0.10.x.interp.1** — Atomic builtin interpreter parity per ADR-0031 §10.7. Add `sys.atomic.*` path intercepts to `triet-interpreter` mirroring VM's `path_to_builtin`. `RuntimeValue::Atomic` variant in interpreter Value enum + per-op dispatch. Drops VM-only caveat from `atomic_counter` demo. ~300 LOC + tests.
+- [x] **v0.10.x.interp.1** — Atomic builtin interpreter parity per ADR-0031 §10.7. Add `sys.atomic.*` path intercepts to `triet-interpreter` mirroring VM's `path_to_builtin`. `RuntimeValue::Atomic` variant in interpreter Value enum + per-op dispatch. Drops VM-only caveat from `atomic_counter` demo. ~300 LOC + tests. — `be9e535` (+13 tests; compare_exchange returns TypeError pending Outcome parity; `atomic_counter.tri` end-to-end via `dao run` confirmed)
 
 ### v0.10.x.jit — JIT subsystem completion (4 sub-tasks)
 
