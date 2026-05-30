@@ -15,6 +15,7 @@ use triet_syntax::{
 use crate::{error::TypeError, types::Type};
 
 use super::Checker;
+use super::MoveState;
 use super::methods::builtin_method_type;
 
 impl Checker<'_> {
@@ -62,6 +63,11 @@ impl Checker<'_> {
                 Type::Nullable(Box::new(Type::Unknown))
             }
             Expr::Identifier(name) => {
+                // v0.9.x.atomic.7d: E2420 UseAfterMove check per
+                // ADR-0025 §5.1 + ADR-0031 §4. Fires only on moved
+                // local bindings (params + lets); ignored for
+                // functions, types, imports (not movable values).
+                self.check_used(&name, &span);
                 // Try variable/function binding first, then enum variant.
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     ty
@@ -513,6 +519,12 @@ impl Checker<'_> {
     /// last bullet ("Nested borrow expression — refused by typecheck").
     /// Other operand restrictions (IDENT + field-access only) are
     /// enforced by the parser; typecheck trusts the parser's grammar.
+    ///
+    /// v0.9.x.atomic.7d: for **owning** forms (`StrongFrozen` /
+    /// `StrongMutable`), mark the operand's base identifier as Moved
+    /// for E2420 `UseAfterMove` enforcement per ADR-0025 §5.1. `&0`
+    /// and `&-` do NOT consume — those forms borrow / observe without
+    /// transferring ownership.
     fn check_borrow(&mut self, form: ReferenceForm, operand: ExprId, span: Span) -> Type {
         let inner = self.infer_expression(operand);
         if let Type::Reference(..) = inner {
@@ -522,6 +534,13 @@ impl Checker<'_> {
                 span,
             });
             return Type::Unknown;
+        }
+        if matches!(
+            form,
+            ReferenceForm::StrongFrozen | ReferenceForm::StrongMutable
+        ) && let Some(base) = self.extract_base_identifier(operand)
+        {
+            self.mark_moved(&base, span);
         }
         Type::Reference(form, Box::new(inner))
     }
@@ -991,12 +1010,24 @@ impl Checker<'_> {
         let cond_span = self.arena.expression(condition).span.clone();
         self.check_condition_type(cond_ty, treat_unknown_as_false, cond_span);
 
+        // v0.9.x.atomic.7d: branch-aware move tracking per ADR-0031 §4
+        // join semantics. Snapshot before each branch, walk, restore;
+        // join the two end states with any-branch-moves-wins.
+        let snapshot = self.snapshot_moves();
         let then_ty = self.check_block(then_branch);
+        let after_then = std::mem::replace(&mut self.move_states, snapshot.clone());
 
         match else_branch {
-            None => Type::Unit,
+            None => {
+                // No else branch: the "didn't enter" path stays at
+                // `snapshot`. Join with `after_then`.
+                self.move_states = Checker::join_moves(after_then, snapshot);
+                Type::Unit
+            }
             Some(block) => {
                 let else_ty = self.check_block(block);
+                let after_else = std::mem::take(&mut self.move_states);
+                self.move_states = Checker::join_moves(after_then, after_else);
                 if let Ok(unified) = try_unify(&then_ty, &else_ty) {
                     unified
                 } else {
@@ -1015,7 +1046,15 @@ impl Checker<'_> {
         let scrutinee_ty = self.infer_expression(scrutinee);
         let mut arm_type: Option<Type> = None;
 
+        // v0.9.x.atomic.7d: branch-aware move tracking per ADR-0031 §4.
+        // Snapshot before each arm so each starts from the same state;
+        // join all post-arm states with any-arm-moves-wins. Mirrors the
+        // `check_if` else-branch handling but iterates over N arms.
+        let pre_match = self.snapshot_moves();
+        let mut joined_post: Option<std::collections::HashMap<String, MoveState>> = None;
+
         for arm in arms {
+            pre_match.clone_into(&mut self.move_states);
             self.env.push_frame();
             self.bind_pattern(arm.pattern, &scrutinee_ty);
             if let Some(guard) = arm.guard {
@@ -1025,6 +1064,11 @@ impl Checker<'_> {
             }
             let body_ty = self.infer_expression(arm.body);
             self.env.pop_frame();
+            let after_arm = std::mem::take(&mut self.move_states);
+            joined_post = Some(match joined_post {
+                None => after_arm,
+                Some(acc) => Checker::join_moves(acc, after_arm),
+            });
 
             match &arm_type {
                 None => arm_type = Some(body_ty),
@@ -1040,6 +1084,11 @@ impl Checker<'_> {
                 },
             }
         }
+
+        // v0.9.x.atomic.7d: set move-state to the joined post-match
+        // result. If `joined_post` is None (empty match), keep the
+        // pre-match snapshot.
+        self.move_states = joined_post.unwrap_or(pre_match);
 
         // v0.7.4.3-error.2 (ADR-0020 §5.1): exhaustiveness check for
         // outcome scrutinee. Binary T~E requires ~+ and ~-; ternary

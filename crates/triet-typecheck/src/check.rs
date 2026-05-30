@@ -3,12 +3,39 @@
 mod exprs;
 mod methods;
 
+use std::collections::HashMap;
+
 use triet_syntax::{
     Arena, Block, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, Span,
     Spanned, Stmt, StmtId, TypeExpr, TypeId,
 };
 
-use crate::{env::TypeEnvironment, error::TypeError, types::Type};
+use crate::{
+    env::TypeEnvironment,
+    error::{BorrowError, TypeError},
+    types::Type,
+};
+
+/// v0.9.x.atomic.7d: per-binding move-state for E2420
+/// `UseAfterMove` enforcement per ADR-0025 §5.1 + ADR-0031 §4
+/// Phương án A.
+///
+/// Tracks whether a local binding (function parameter or `let`-bound
+/// name) is still owning its value (`Alive`) or has been consumed by
+/// an owning-reference borrow expression (`Moved`). The `at` span
+/// records the move site for richer diagnostics in future iterations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MoveState {
+    /// Binding still owns its value; references and use sites are OK.
+    Alive,
+    /// Binding was consumed by `&+ x` / `&+ mutable x` (or a chain
+    /// whose base resolves to this binding). Subsequent use fires
+    /// E2420 `UseAfterMove`.
+    Moved {
+        /// Span of the move expression (currently informational only).
+        at: Span,
+    },
+}
 
 /// Type-check a `Program`, returning all errors found.
 ///
@@ -49,6 +76,11 @@ struct Checker<'p> {
     /// `current_return_type` so a `let x: T? = ~0` binding inside a
     /// function returning `T~E` is accepted without firing E1025.
     expected_type_stack: Vec<Type>,
+    /// v0.9.x.atomic.7d: per-function move state map per ADR-0025 §5.1.
+    /// Reset on function entry; tracks local bindings (params + lets).
+    /// Lookups for names NOT in the map are ignored (functions, types,
+    /// imports — none of which are movable values).
+    pub(crate) move_states: HashMap<String, MoveState>,
     errors: Vec<TypeError>,
 }
 
@@ -60,6 +92,7 @@ impl<'p> Checker<'p> {
             env: TypeEnvironment::with_prelude(),
             current_return_type: None,
             expected_type_stack: Vec::new(),
+            move_states: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -73,6 +106,7 @@ impl<'p> Checker<'p> {
             env,
             current_return_type: None,
             expected_type_stack: Vec::new(),
+            move_states: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -84,6 +118,86 @@ impl<'p> Checker<'p> {
         let result = body(self);
         self.expected_type_stack.pop();
         result
+    }
+
+    // =======================================================================
+    // v0.9.x.atomic.7d — E2420 UseAfterMove enforcement per ADR-0025 §5.1 +
+    // ADR-0031 §4 Phương án A. Tracks local binding ownership state per
+    // function body; fires E2420 when a moved binding is used. Branch
+    // semantics: snapshot/restore/join with "any-branch-moves => moved"
+    // (over-strict; NLL refinement defers v0.10 per ADR-0031 §10.1).
+    // =======================================================================
+
+    /// Mark a local binding as moved, recording the move-site span.
+    /// No-op when the name isn't a tracked local (functions, types,
+    /// imports — not movable values).
+    pub(crate) fn mark_moved(&mut self, name: &str, at: Span) {
+        if self.move_states.contains_key(name) {
+            self.move_states
+                .insert(name.to_string(), MoveState::Moved { at });
+        }
+    }
+
+    /// Check whether using a name at a given span is valid. Fires
+    /// E2420 `UseAfterMove` if the binding is currently in `Moved`
+    /// state.
+    pub(crate) fn check_used(&mut self, name: &str, span: &Span) {
+        if matches!(self.move_states.get(name), Some(MoveState::Moved { .. })) {
+            self.errors
+                .push(TypeError::Borrow(BorrowError::UseAfterMove {
+                    name: name.to_string(),
+                    span: span.clone(),
+                }));
+        }
+    }
+
+    /// Walk an expression node looking for the **base identifier** of
+    /// an operand chain. `Expr::Identifier(name)` → `name`;
+    /// `Expr::FieldAccess { object, .. }` → recurse into `object`.
+    /// Any other expression form → `None` (operand grammar per
+    /// ADR-0031 §2 ensures this only walks IDENT + field-access).
+    pub(crate) fn extract_base_identifier(&self, expr_id: ExprId) -> Option<String> {
+        match &self.arena.expression(expr_id).node {
+            triet_syntax::Expr::Identifier(name) => Some(name.clone()),
+            triet_syntax::Expr::FieldAccess { object, .. } => self.extract_base_identifier(*object),
+            _ => None,
+        }
+    }
+
+    /// Snapshot the current move-state map. Used by branch-aware
+    /// constructs (`if` / `match` / loop bodies) to evaluate each
+    /// branch from the same starting state.
+    fn snapshot_moves(&self) -> HashMap<String, MoveState> {
+        self.move_states.clone()
+    }
+
+    /// Join two branch-end move-state maps with **any-branch-moves**
+    /// semantics per ADR-0031 §4 over-strict approach: a binding is
+    /// `Moved` in the join iff it's `Moved` in either branch. Span
+    /// from the first-seen move wins (informational only).
+    ///
+    /// This is conservative — rejects code that NLL would accept
+    /// (one branch moves, other doesn't, join point only reachable
+    /// via no-move path). Per "refuse over guess" + v0.10 NLL refines.
+    fn join_moves(
+        mut a: HashMap<String, MoveState>,
+        b: HashMap<String, MoveState>,
+    ) -> HashMap<String, MoveState> {
+        for (name, state_b) in b {
+            let current = a.get(&name).cloned();
+            match (current, state_b) {
+                (Some(MoveState::Moved { .. }), _) => {
+                    // Already moved in `a` — keep it.
+                }
+                (_, moved @ MoveState::Moved { .. }) => {
+                    a.insert(name, moved);
+                }
+                _ => {
+                    // Both Alive (or missing) — leave `a` as is.
+                }
+            }
+        }
+        a
     }
 
     fn check_program(&mut self) {
@@ -222,6 +336,9 @@ impl<'p> Checker<'p> {
     }
 
     fn check_function(&mut self, def: &FunctionDef) {
+        // v0.9.x.atomic.7d: save/restore move state across function
+        // boundary — each function body has its own move-tracking map.
+        let saved_moves = std::mem::take(&mut self.move_states);
         // Push a frame so type params are visible during type
         // resolution of parameters + return type. Reused as the
         // function body's scope (params live in same frame).
@@ -243,6 +360,10 @@ impl<'p> Checker<'p> {
         for parameter in &def.parameters {
             let ty = self.resolve_type(parameter.type_annotation);
             self.env.declare(&parameter.name, ty);
+            // v0.9.x.atomic.7d: track parameter as Alive at entry.
+            // Any function body move site updates this map.
+            self.move_states
+                .insert(parameter.name.clone(), MoveState::Alive);
         }
 
         match &def.body {
@@ -264,6 +385,8 @@ impl<'p> Checker<'p> {
 
         self.current_return_type = None;
         self.env.pop_frame();
+        // v0.9.x.atomic.7d: restore move state from caller's frame.
+        self.move_states = saved_moves;
     }
 
     // ====================================================================
@@ -293,6 +416,8 @@ impl<'p> Checker<'p> {
             } => {
                 let ty = self.check_initializer(type_annotation, value);
                 self.env.declare_with_mut(&name, ty, mutable);
+                // v0.9.x.atomic.7d: new local binding starts Alive.
+                self.move_states.insert(name.clone(), MoveState::Alive);
             }
             Stmt::Assign { target, value } => {
                 self.check_assignment(&target, value, stmt.span.clone());
@@ -340,7 +465,12 @@ impl<'p> Checker<'p> {
                 };
                 self.env.push_frame();
                 self.bind_pattern(variable, &element_ty);
+                // v0.9.x.atomic.7d: for-body may iterate 0 or N times;
+                // same join semantics as while/loop.
+                let pre_loop = self.snapshot_moves();
                 let _ = self.check_block(&body);
+                let after_body = std::mem::take(&mut self.move_states);
+                self.move_states = Self::join_moves(pre_loop, after_body);
                 self.env.pop_frame();
             }
             Stmt::While {
@@ -351,10 +481,20 @@ impl<'p> Checker<'p> {
                 let cond_ty = self.infer_expression(condition);
                 let cond_span = self.arena.expression(condition).span.clone();
                 self.check_condition_type(cond_ty, treat_unknown_as_false, cond_span);
+                // v0.9.x.atomic.7d: loop body may run 0 or N times.
+                // Snapshot before; walk body; join initial with
+                // after-body to model "didn't enter" vs "ran ≥1 time".
+                let pre_loop = self.snapshot_moves();
                 let _ = self.check_block(&body);
+                let after_body = std::mem::take(&mut self.move_states);
+                self.move_states = Self::join_moves(pre_loop, after_body);
             }
             Stmt::Loop(body) => {
+                // Same as while — body may not run (`loop { break }`).
+                let pre_loop = self.snapshot_moves();
                 let _ = self.check_block(&body);
+                let after_body = std::mem::take(&mut self.move_states);
+                self.move_states = Self::join_moves(pre_loop, after_body);
             }
             Stmt::ExprStmt(expr) => {
                 let _ = self.infer_expression(expr);
