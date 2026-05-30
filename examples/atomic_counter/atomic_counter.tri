@@ -10,22 +10,34 @@
 // runtime. Cross-thread synchronization defers v0.10+ stdlib với real
 // OS threading.
 //
-// **v0.9 scope (ADR-0031 §9 Phương án A — single-call):** Demo exercises
-// `let counter = new(0); fetch_add(&+ counter, 1, ...)` end-to-end —
-// proves borrow expression syntax + AtomicNew + fetch_add VM dispatch
-// + E2420 UseAfterMove enforcement work through the full pipeline.
-// Multi-worker pattern requires real Send-boundary refcount-bump
-// codegen (ADR-0026 v2 §3.2) which defers v0.10 per ADR-0031 §10.2
-// backlog. Until then, attempting `fetch_add(&+ counter, ...)` twice
-// fires E2420 — by design.
+// **v0.10 scope (ADR-0031 §9 Phương án A — single-call source):** Demo
+// exercises `let counter = new(0); fetch_add(&+ counter, 1, ...)`
+// end-to-end — proves borrow expression syntax + AtomicNew + fetch_add
+// VM dispatch + E2420 UseAfterMove enforcement work through the full
+// pipeline. Multi-worker pattern at the Triết-source level requires
+// closure-typed `spawn(work)` + Send-bound expressiveness; that ships
+// post-v0.10 (ADR-0026 v2 §3 placeholder note + ADR-0031 §10.2 backlog).
+// Until then, attempting `fetch_add(&+ counter, ...)` twice in the same
+// scope fires E2420 — by design (consume-once for owning references).
 //
-// **VM-ONLY DEMO (interpreter parity gap):** `dao run atomic_counter.tri`
-// directly will stack-overflow because the tree-walking interpreter
-// doesn't intercept `sys.atomic.*` builtin paths (mirrors the
-// outcome_propagate.tri VM-only precedent per CLAUDE.md). To run:
+// **Multi-worker (v0.10.x.thread.3 — runtime layer only):** The
+// `Atomic<T>` runtime representation is now `Arc<Mutex<…>>` (Send +
+// Sync) per v0.10.x.thread.2. Real OS-thread workers CAN share the
+// same atomic cell — proved by the in-tree e2e test
+// `crates/triet-cli/tests/atomic_counter_multi_worker.rs` which spawns
+// 3 `std::thread` workers, each runs its own `Vm` over a tiny IR
+// program that calls `fetch_add` exactly once, sharing the same Arc.
+// After all 3 join, counter == 3 deterministically (mutex serializes).
+// Triết-source equivalent waits for closures.
+//
+// **Interpreter parity (v0.10.x.interp.1 closed earlier):** `dao run
+// atomic_counter.tri` works directly now — the tree-walking interpreter
+// intercepts `sys.atomic.*` paths (mirrors the v0.10.x.thread.1 VM
+// raw_thread dispatch). To build + run via `.khi` instead:
 //   $ dao build atomic_counter.tri && dao run atomic_counter.khi
-// The in-tree e2e test (`atomic_counter_e2e.rs`) executes via
-// in-process VM. Interpreter parity tracked in ADR-0031 §10 backlog.
+// Both paths produce identical output. Single-call `atomic_counter_e2e
+// .rs` exercises VM dispatch; multi-worker test exercises Arc<Mutex>
+// + OS-thread crossing.
 //
 // `Atomic<T>` là built-in type — không cần import. Chỉ `Ordering` enum +
 // variants + builtins cần import (per ADR-0028 §8 stdlib module shape).
@@ -44,9 +56,11 @@ function main() -> Integer = {
     // Construct Atomic<Integer> initialized to 0.
     let counter = new(0)
     // Single fetch_add — moves &+ counter into spawn_worker per
-    // ADR-0031 §4 + ADR-0022 §4.1. v0.9 single-thread VM: returns
-    // previous value (0). Multi-worker defers v0.10 (real Send
-    // boundary refcount-bump per ADR-0026 v2 §3.2).
+    // ADR-0031 §4 + ADR-0022 §4.1. VM returns previous value (0).
+    // Multi-worker at the Triết-source level defers post-v0.10
+    // (closure types per ADR-0026 v2 §3); runtime-layer multi-worker
+    // share via Arc<Mutex> is proved separately by the integration
+    // test (see header comment).
     let prev = spawn_worker(&+ counter)
     // counter is now consumed; attempting `&+ counter` again would
     // fire E2420 UseAfterMove per ADR-0025 §5.1 — see .7d enforcement.
