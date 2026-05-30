@@ -366,6 +366,14 @@ impl<'p> Checker<'p> {
                 .insert(parameter.name.clone(), MoveState::Alive);
         }
 
+        // v0.10.x.borrow.2 (ADR-0025 §3): lifetime elision check.
+        // Property of the signature, not the body — evaluate before
+        // descending into the body so failure messages aren't masked
+        // by downstream errors. Conservative top-level scope per the
+        // sub-task plan: nested borrows in return type (e.g.,
+        // `Vector<&0 T>`, `(&0 T, X)`) defer v0.11+ corpus-driven.
+        self.check_lifetime_elision(def, &return_type);
+
         match &def.body {
             FunctionBody::Block(block) => {
                 let body_ty = self.check_block(block);
@@ -387,6 +395,83 @@ impl<'p> Checker<'p> {
         self.env.pop_frame();
         // v0.9.x.atomic.7d: restore move state from caller's frame.
         self.move_states = saved_moves;
+    }
+
+    /// v0.10.x.borrow.2 — Lifetime elision per [ADR-0025 §3].
+    ///
+    /// Fires `E2400 BorrowLifetimeInferenceFailed` when:
+    ///
+    /// 1. Return type is a **top-level borrow** (`&0 T`, `&0 mutable T`,
+    ///    or `&- T`), AND
+    /// 2. Rule 1 fails: function has != 1 input borrow parameter, AND
+    /// 3. Rule 2 fails: function does not have a borrow `self` receiver
+    ///    as its first parameter, AND
+    /// 4. Rule 3 is already excluded by the borrow-return guard (owned
+    ///    `&+` returns transfer ownership; no elision needed).
+    ///
+    /// **Conservative scope:** only top-level borrow at return position
+    /// is checked. Nested borrows inside generic containers (e.g.,
+    /// `Vector<&0 T>`, `(&0 T, X)`, `T~&0 E`) defer v0.11+ per the
+    /// refuse-over-guess principle ([VISION §6](../../../../VISION.md)).
+    ///
+    /// [ADR-0025 §3]: ../../../docs/decisions/0025-borrow-checker-rules.md
+    fn check_lifetime_elision(&mut self, def: &FunctionDef, return_type: &Type) {
+        // Step 1: only check when the return is a top-level borrow.
+        // ReferenceForm partitions into two groups: owning (`&+` /
+        // `&+ mutable`, via `is_owning()`) vs borrow (everything else —
+        // `&0`, `&0 mutable`, `&-`). Owning returns are Rule 3 — no
+        // inference needed; the function transfers ownership out.
+        let Type::Reference(return_form, return_inner) = return_type else {
+            return;
+        };
+        if return_form.is_owning() {
+            return;
+        }
+
+        // Step 2: classify each parameter. Count input borrows; remember
+        // whether the first parameter is a borrow `self` receiver
+        // (Rule 2 trigger). ADR-0025 §3.2 uses `&0 self` / `&0 mutable
+        // self` in the canonical example; `&-` self is a borrow receiver
+        // by the same logic (output ties to self).
+        //
+        // Rule 2 is **dormant** as of v0.10.x.borrow.2 — the parser
+        // refuses `self` as a parameter name (SelfKw is reserved). The
+        // branch stays in place so Rule 2 lights up automatically once
+        // the parser accepts `self`-parameter syntax.
+        let mut input_borrow_count: usize = 0;
+        let mut has_self_borrow_receiver = false;
+        for (i, parameter) in def.parameters.iter().enumerate() {
+            let param_ty = self.resolve_type(parameter.type_annotation);
+            if let Type::Reference(form, _) = &param_ty
+                && !form.is_owning()
+            {
+                input_borrow_count += 1;
+                if i == 0 && parameter.name == "self" {
+                    has_self_borrow_receiver = true;
+                }
+            }
+        }
+
+        // Step 3: apply elision rules in order.
+        // Rule 2: self receiver wins regardless of other borrow count.
+        if has_self_borrow_receiver {
+            return;
+        }
+        // Rule 1: exactly one input borrow → output ties to it.
+        if input_borrow_count == 1 {
+            return;
+        }
+        // Both rules failed; the return borrow has no unambiguous tie.
+        // Span: the return type annotation, falling back to the function
+        // name span if the annotation id is None (single-expression body
+        // with inferred return — rare at v0.10).
+        let span = def
+            .return_type
+            .map_or(0..0, |id| self.arena.type_expression(id).span.clone());
+        let ty_str = format!("{return_inner}");
+        self.errors.push(TypeError::Borrow(
+            BorrowError::BorrowLifetimeInferenceFailed { ty: ty_str, span },
+        ));
     }
 
     // ====================================================================
