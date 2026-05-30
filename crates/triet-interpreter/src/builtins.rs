@@ -257,9 +257,16 @@ fn builtin_atomic_compare_exchange(_args: &[Value]) -> Result<Value, RuntimeErro
     // parity pass that adds Outcome support. The structural intercept
     // (this function) prevents the stack overflow that the recursive
     // stdlib stub would otherwise cause.
-    Err(RuntimeError::TypeError {
-        message: "atomic.compare_exchange: interpreter parity deferred — runs through VM only \
-             until Outcome support lands (ADR-0028 §4.1 / ADR-0020 / ADR-0031 §10.7)"
+    //
+    // Error variant choice: `Panic` (not `TypeError`) — the caller
+    // passed correctly-typed args; what failed is that the operation
+    // itself is unimplemented in this backend. `Panic` matches the
+    // intent of "runtime hit a condition it cannot service" rather
+    // than "you gave me the wrong types".
+    Err(RuntimeError::Panic {
+        message: "atomic.compare_exchange: interpreter parity deferred — run via \
+             `dao build … && dao run …khi` (VM backend) until Outcome support lands \
+             in the interpreter (ADR-0028 §4.1 / ADR-0020 / ADR-0031 §10.7)"
             .to_owned(),
         span: 0..0,
     })
@@ -469,9 +476,6 @@ fn builtin_atomic_fetch_bitwise_xor(args: &[Value]) -> Result<Value, RuntimeErro
     atomic_fetch_bitwise(args, "atomic.fetch_bitwise_xor", BitwiseOp::Xor)
 }
 
-// Suppress warning for the unused helper kept for future parity work.
-const _: fn(&Value, &Value) -> bool = atomic_value_eq;
-
 #[cfg(test)]
 mod atomic_tests {
     use super::*;
@@ -595,7 +599,9 @@ mod atomic_tests {
             ordering_placeholder(),
         ])
         .unwrap_err();
-        assert!(matches!(err, RuntimeError::TypeError { .. }));
+        // `Panic` semantic — runtime hit a deferred-feature condition;
+        // caller's args were well-typed (TypeError would mislead).
+        assert!(matches!(err, RuntimeError::Panic { .. }));
     }
 
     #[test]
