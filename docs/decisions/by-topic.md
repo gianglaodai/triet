@@ -1,11 +1,11 @@
 # ADR Index — by Topic
 
-Cross-reference vào 27 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?".
+Cross-reference vào 28 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?".
 
 > **Note:** ADRs là *immutable historical records* — file content không thay đổi sau khi đạt "Quyết định" status. Index này chỉ point đến chúng, không duplicate. Active language semantics nằm ở [`SPEC.md`](../../SPEC.md).
 >
 > **Hai axis của index:**
-> - [`README.md`](README.md) — chronological (0001 → 0027), phase-grouped. Trace "decision khi nào, trong phase nào".
+> - [`README.md`](README.md) — chronological (0001 → 0032), phase-grouped. Trace "decision khi nào, trong phase nào".
 > - **Đây** ([`by-topic.md`](by-topic.md)) — topic-clustered. Trace "rule về X ở đâu".
 
 ---
@@ -95,6 +95,7 @@ Cross-reference vào 27 ADRs theo **topic cluster** thay vì chronological numbe
 | [0023](0023-lowerer-ssa-struct-tracking.md) | Lowerer SSA struct-tracking — unified `ValueKind` enum (Struct / Outcome / Nullable / Other) replaces 4 ad-hoc HashMap patterns | Locked |
 | [0024](0024-khi-dao-identity-naming.md) | Khí + Đạo identity naming — `.tri.bin` → `.khi`, CLI binary `triet` → `dao`, manifest `dao.package`, lockfile `dao.lock`; source `.tri` + IR `.triv` + language name "Triết" giữ nguyên | Locked |
 | [0030](0030-jit-cranelift-integration.md) | JIT integration (Cranelift backend) — 3-tier model (Interpreter→VM→JIT), 100-call threshold trigger, register-SSA 1:1 mapping, AOT cache per impl_hash, sync JIT v0.9, no capability gate. Stage 2/3 byte-identical gate lift conditions | Locked |
+| [0032](0032-builtin-shim-abi.md) | Builtin shim ABI — refines ADR-0030 §12 backlog. Hybrid `RuntimeValue` ABI (primitives unboxed, composites Rc-boxed). `Rc::into_raw` + `__triet_drop_arc` at SSA last-use per ADR-0023 ValueKind. Capability gate compile-time hoist (inherits ADR-0017 program-load invariant). `extern "C-unwind"` + TLS error context + dispatcher `catch_unwind`. `unsafe_code = "deny"` ONLY in `triet-jit` crate. Static `SHIM_TABLE` + `__triet_*` symbol prefix. 3-layer test gates (framework smoke + 43-builtin parity + ABI proptest). Unblocks v0.10.x.jit.1+.2 | Locked |
 
 > Self-host source code: `compiler/` directory (~23K LOC). Cross-cutting: [ADR-0009](0009-version-gate-policy.md) cho gate matrix; [ADR-0027](0027-diagnostic-format-standard.md) cho diagnostic format.
 
