@@ -342,6 +342,79 @@ Author chose "implementer's call — không ảnh hưởng cú pháp" 2026-05-30
 
 ---
 
+## §13 — v0.10 backlog: AOT cache layer (revealed by v0.9.x.jit.6)
+
+**Addendum 2026-05-30:** v0.9.x.jit.6 implementation reveals that ADR-0030 §5 "AOT cache layout" requires a **fundamental backend swap** — `cranelift-jit` (emits in-process mmap RX pages) → `cranelift-object` (emits ELF/.o object files suitable for serialization + cross-process loading). This is not "add a cache layer on top of existing JIT"; it's "use a different Cranelift module type". Per "chậm mà chắc" + .4 precedent, v0.9 defers full AOT cache to v0.10 with explicit design backlog.
+
+### 13.1 — Why the cranelift-jit backend can't be cached as-is
+
+`cranelift-jit::JITModule::finalize_definitions()` mmaps RX pages in the **current process address space** and returns raw pointers via `get_finalized_function`. These pages:
+
+- Contain absolute addresses for cross-function calls (resolved at `define_function` time relative to module's mmap base).
+- Reference Rust runtime symbol addresses (e.g., `cranelift_module::default_libcall_names` entries — `__triet_libcall_X` thunks).
+- Are not position-independent code by default.
+
+Dumping to disk + reloading would require:
+1. Tracking every relocation Cranelift applied.
+2. Re-applying relocations on load against the new process's address space.
+3. Re-resolving libcall symbols.
+4. Verifying RW page layout matches.
+
+This is precisely what `cranelift-object` does — it emits ELF objects with relocation records, which a separate object-file loader processes. v0.10 should switch.
+
+### 13.2 — v0.10 backend swap: `cranelift-object`
+
+Replace (or add alongside) the current `cranelift-jit` dep:
+
+```toml
+# triet-jit/Cargo.toml v0.10:
+cranelift-object = "0.132"   # NEW — for AOT path
+cranelift-jit    = "0.132"   # KEEP — for hot-path live JIT
+```
+
+Two execution paths:
+- **AOT cache hit:** load `.o` from `~/.triet/store/jit/{target_triple}/{impl_hash}/` → use `object` crate + `libloading` to map + resolve → cast fn pointer.
+- **Cache miss:** Cranelift-jit fresh compile (current v0.9 path) → emit machine code → optionally serialize to AOT cache on graceful shutdown.
+
+### 13.3 — Filesystem layout (per ADR-0030 §5)
+
+Already specified in §5; v0.10 implements:
+
+```
+~/.triet/store/
+└── jit/
+    └── {target_triple}/    e.g. x86_64-unknown-linux-gnu
+        └── {impl_hash}/    module-level ADR-0014 hash
+            ├── functions.o          (ELF object via cranelift-object)
+            └── manifest.bin         (FuncId → symbol-name table, CC)
+```
+
+`target_triple` from Rust `std::env::consts::ARCH` + OS detection. `impl_hash` already computed by `triet-pack`'s ADR-0014 hash tree (`crates/triet-pack/src/lockfile.rs`).
+
+### 13.4 — Five design constraints v0.10 must address
+
+When v0.10 picks this up, design must address:
+
+1. **Cranelift version pinning.** Cache invalidates on Cranelift bump — record `cranelift_codegen::VERSION` in manifest, refuse-on-mismatch on load.
+2. **Libcall symbol resolution.** Triết doesn't currently use Cranelift libcalls (we wired `default_libcall_names` but emitted code doesn't reference them). When v0.10 builtin shim layer (§12) adds `extern "C"` shims, those symbols become libcalls — the AOT load path must re-resolve at new process's `dlsym` time.
+3. **`std store gc` integration.** Per ADR-0015 §6 mark-and-sweep, JIT cache directories are GC roots tied to `impl_hash`. When the package's `pkg/{hash}/` is collected, `jit/{triple}/{hash}/` is too. Wire into existing GC walker.
+4. **Cross-machine cache portability.** Per §5 "Per-target-triple separation" — refuse load if `target_triple` directory doesn't match host. Don't try cross-arch loading.
+5. **Determinism preservation.** Per ADR-0007 IR is deterministic; the AOT cache's existence is not part of the determinism contract (cache hit/miss can differ across runs). Document explicitly; bootstrap tests still rely on byte-identical IR output, not cache state.
+
+### 13.5 — v0.9 stop-gap behavior (shipped)
+
+No persistent cache. `JitDispatcher` compiles fresh on every run when its threshold crosses (per .5 dispatch model). Per-process amortization — once compiled within a session, subsequent calls hit the in-memory cache. New `dao run` invocation = full re-compile.
+
+For self-host bootstrap (3000 functions × 1-3s JIT each): full re-compile every run. Per ADR-0030 §11.7 + §9, this is the gate-lift blocker — v0.9.x.jit.7 cannot lift Stage 2 ≡ Stage 3 byte-identical bootstrap from `#[ignore]` while the JIT compile cost is paid each run. v0.10 AOT cache closes that.
+
+### 13.6 — Decision rationale
+
+Same as §12.4 (builtin shim): defer to coherent v0.10 phase. `cranelift-jit → cranelift-object` is a backend swap, not an additive feature. Implementing skeleton with current `cranelift-jit` then reworking for v0.10 is the exact "ship temporary code" anti-pattern author rejected.
+
+Also: AOT cache value tied to §12 builtin shim coverage. With most builtins tier-downing to VM in v0.9, the JIT'd subset of any non-trivial program is small — cache hit benefit is proportionally small. v0.10 ships both together for full payoff.
+
+---
+
 ## Hệ quả
 
 **Possible (positive):**

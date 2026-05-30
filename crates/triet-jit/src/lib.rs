@@ -6,14 +6,17 @@
 //!   control flow `BrIf` + `BrTrilean` per ADR-0010 backend).
 //! - `.3` — call dispatch (`CallLocal` / `CallCrossModule` /
 //!   `WitnessCall` per ADR-0012).
-//! - `.4` — builtin shim integration (opcodes 4-26 + 27-39 Atomic per
-//!   ADR-0028).
+//! - `.4` — builtin shim integration → **deferred v0.10** per
+//!   [ADR-0030 §12] (`RuntimeValue` ABI marshaling complexity).
+//!   Ships only structured diagnostic for tier-down.
 //! - `.5` — VM dispatcher integration (call-count trigger + JIT
 //!   compile path + native call thunk per [ADR-0030 §2]).
-//! - `.6` — AOT cache filesystem layout + invalidation per
-//!   [ADR-0030 §5].
+//! - `.6` — AOT cache filesystem layout → **deferred v0.10** per
+//!   [ADR-0030 §13] (cranelift-jit → cranelift-object backend
+//!   swap). Ships ADR backlog only.
 //! - `.7` — Stage 2 ≡ Stage 3 byte-identical gate lift per
-//!   [ADR-0019 §7 Addendum].
+//!   [ADR-0019 §7 Addendum] — blocked by .6 (no cache → full
+//!   re-JIT each run → bootstrap time prohibitive).
 //! - `.8` — perf bench: ≥10× v0.3 baseline + bootstrap < 10 min.
 //!
 //! # Public API surface
@@ -48,6 +51,8 @@
 //! [ADR-0030 §2]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 §5]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 §11]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
+//! [ADR-0030 §12]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
+//! [ADR-0030 §13]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0030 Addendum Gap 1]: ../../../../docs/decisions/0030-jit-cranelift-integration.md
 //! [ADR-0019 §7 Addendum]: ../../../../docs/decisions/0019-self-hosting-compiler-bootstrap.md
 
