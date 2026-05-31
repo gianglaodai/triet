@@ -211,7 +211,7 @@ impl JitBackend {
             .map_err(cranelift_err)?;
         let mut cl_ctx = self.module.make_context();
         cl_ctx.func.signature = signature;
-        self.emit_function_body(func, &ctx, &mut cl_ctx)?;
+        emit_function_body(&mut self.module, func, &ctx, &mut cl_ctx)?;
         self.module
             .define_function(func_id, &mut cl_ctx)
             .map_err(cranelift_err)?;
@@ -354,7 +354,7 @@ impl JitBackend {
                 };
                 let mut cl_ctx = self.module.make_context();
                 cl_ctx.func.signature = build_signature(func)?;
-                if let Err(err) = self.emit_function_body(func, &ctx, &mut cl_ctx) {
+                if let Err(err) = emit_function_body(&mut self.module, func, &ctx, &mut cl_ctx) {
                     // Tier-down: skip this function, others still compile.
                     let _ = err;
                     self.module.clear_context(&mut cl_ctx);
@@ -380,88 +380,98 @@ impl JitBackend {
         }
         Ok(())
     }
+}
 
-    /// Shared body-emit routine called by both the single-function
-    /// and the program-level paths. Threads `ProgramContext` for call
-    /// dispatch + constant pool access.
-    fn emit_function_body(
-        &mut self,
-        func: &IrFunction,
-        ctx: &ProgramContext<'_>,
-        cl_ctx: &mut cranelift_codegen::Context,
-    ) -> Result<(), JitError> {
-        let mut fn_builder_ctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut cl_ctx.func, &mut fn_builder_ctx);
+/// Shared body-emit routine called by both the single-function and the
+/// program-level paths. Threads `ProgramContext` for call dispatch +
+/// constant pool access.
+///
+/// Generic over [`Module`] so the **same** Triết IR translator drives
+/// both the `cranelift-jit` (Path B fresh-compile) and the
+/// `cranelift-object` (Path A AOT-persist) backends per
+/// [ADR-0033 §1] — one codegen pipeline, two emission targets. Only
+/// the [`Module`] trait surface (`declare_function` /
+/// `declare_func_in_func`) is used here; backend-specific finalize /
+/// emit stays in the per-backend wrappers.
+///
+/// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
+fn emit_function_body(
+    module: &mut impl Module,
+    func: &IrFunction,
+    ctx: &ProgramContext<'_>,
+    cl_ctx: &mut cranelift_codegen::Context,
+) -> Result<(), JitError> {
+    let mut fn_builder_ctx = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut cl_ctx.func, &mut fn_builder_ctx);
 
-        // Pre-declare a Cranelift block per Triết BlockId so forward
-        // branches resolve. Cranelift requires the entry block to
-        // receive function parameters.
-        let mut block_map: HashMap<BlockId, Block> = HashMap::new();
-        for ir_block in &func.blocks {
-            let cl_block = builder.create_block();
-            block_map.insert(ir_block.id, cl_block);
-        }
-
-        let entry_ir_block = func
-            .blocks
-            .first()
-            .ok_or_else(|| JitError::UnsupportedOpcode {
-                opcode: "function with no blocks".to_string(),
-            })?;
-        let entry_block = block_map[&entry_ir_block.id];
-        builder.append_block_params_for_function_params(entry_block);
-
-        // Value map populated as instructions translate. Entry-block
-        // param values come from `block_params(entry_block)`.
-        let mut value_map: HashMap<ValueId, Value> = HashMap::new();
-        for (idx, param_val) in builder.block_params(entry_block).iter().enumerate() {
-            // IR convention: parameters occupy ValueId(0..param_count).
-            value_map.insert(
-                ValueId(u32::try_from(idx).map_err(|_| JitError::UnsupportedOpcode {
-                    opcode: "parameter index overflow".to_string(),
-                })?),
-                *param_val,
-            );
-        }
-
-        // Walk every block in declaration order, switch into it, and
-        // emit per-instruction Cranelift IR. `fn_state` carries the
-        // jit.2a composite-flow bookkeeping (created boxed values for
-        // drop_arc emission + shim-call count for the single-call scope).
-        let mut fn_state = FnState::default();
-        for ir_block in &func.blocks {
-            let cl_block = block_map[&ir_block.id];
-            builder.switch_to_block(cl_block);
-            for instr in &ir_block.instructions {
-                translate_instruction(
-                    &mut builder,
-                    &mut self.module,
-                    &mut value_map,
-                    &block_map,
-                    ctx,
-                    func,
-                    &mut fn_state,
-                    instr,
-                )?;
-            }
-        }
-
-        // v0.10.x.jit.2b-i — emit the shared `error_exit` block's body
-        // (created lazily on the first shim call per ADR-0032 §4
-        // option-2). It returns a type-correct sentinel; the
-        // dispatcher's `SHIM_FAILED` check converts the run to `Err`
-        // regardless of the sentinel value. Created composites leak on
-        // this path (one-time per error — see `FnState::created_boxed`).
-        if let Some(error_block) = fn_state.error_exit {
-            builder.switch_to_block(error_block);
-            let sentinel = builder.ins().iconst(map_type(&func.return_type)?, 0);
-            builder.ins().return_(&[sentinel]);
-        }
-
-        builder.seal_all_blocks();
-        builder.finalize();
-        Ok(())
+    // Pre-declare a Cranelift block per Triết BlockId so forward
+    // branches resolve. Cranelift requires the entry block to
+    // receive function parameters.
+    let mut block_map: HashMap<BlockId, Block> = HashMap::new();
+    for ir_block in &func.blocks {
+        let cl_block = builder.create_block();
+        block_map.insert(ir_block.id, cl_block);
     }
+
+    let entry_ir_block = func
+        .blocks
+        .first()
+        .ok_or_else(|| JitError::UnsupportedOpcode {
+            opcode: "function with no blocks".to_string(),
+        })?;
+    let entry_block = block_map[&entry_ir_block.id];
+    builder.append_block_params_for_function_params(entry_block);
+
+    // Value map populated as instructions translate. Entry-block
+    // param values come from `block_params(entry_block)`.
+    let mut value_map: HashMap<ValueId, Value> = HashMap::new();
+    for (idx, param_val) in builder.block_params(entry_block).iter().enumerate() {
+        // IR convention: parameters occupy ValueId(0..param_count).
+        value_map.insert(
+            ValueId(u32::try_from(idx).map_err(|_| JitError::UnsupportedOpcode {
+                opcode: "parameter index overflow".to_string(),
+            })?),
+            *param_val,
+        );
+    }
+
+    // Walk every block in declaration order, switch into it, and
+    // emit per-instruction Cranelift IR. `fn_state` carries the
+    // jit.2a composite-flow bookkeeping (created boxed values for
+    // drop_arc emission + shim-call count for the single-call scope).
+    let mut fn_state = FnState::default();
+    for ir_block in &func.blocks {
+        let cl_block = block_map[&ir_block.id];
+        builder.switch_to_block(cl_block);
+        for instr in &ir_block.instructions {
+            translate_instruction(
+                &mut builder,
+                module,
+                &mut value_map,
+                &block_map,
+                ctx,
+                func,
+                &mut fn_state,
+                instr,
+            )?;
+        }
+    }
+
+    // v0.10.x.jit.2b-i — emit the shared `error_exit` block's body
+    // (created lazily on the first shim call per ADR-0032 §4
+    // option-2). It returns a type-correct sentinel; the
+    // dispatcher's `SHIM_FAILED` check converts the run to `Err`
+    // regardless of the sentinel value. Created composites leak on
+    // this path (one-time per error — see `FnState::created_boxed`).
+    if let Some(error_block) = fn_state.error_exit {
+        builder.switch_to_block(error_block);
+        let sentinel = builder.ins().iconst(map_type(&func.return_type)?, 0);
+        builder.ins().return_(&[sentinel]);
+    }
+
+    builder.seal_all_blocks();
+    builder.finalize();
+    Ok(())
 }
 
 /// v0.10.x.jit.2a/2b-i — per-function composite-flow bookkeeping
@@ -550,7 +560,7 @@ fn register_shim_symbols(builder: &mut JITBuilder, entries: &[crate::shims::Shim
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn translate_instruction(
     builder: &mut FunctionBuilder<'_>,
-    module: &mut JITModule,
+    module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
     block_map: &HashMap<BlockId, Block>,
     ctx: &ProgramContext<'_>,
@@ -945,7 +955,7 @@ fn emit_icmp(
 /// per ADR-0012 §2.
 fn translate_call(
     builder: &mut FunctionBuilder<'_>,
-    module: &mut JITModule,
+    module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
     ctx: &ProgramContext<'_>,
     dest: Option<ValueId>,
@@ -979,7 +989,7 @@ fn translate_call(
 /// Returns the call's result `Value` when the shim has a return slot.
 fn emit_shim_call(
     builder: &mut FunctionBuilder<'_>,
-    module: &mut JITModule,
+    module: &mut impl Module,
     shim: &crate::shims::ShimEntry,
     arg_values: &[Value],
 ) -> Result<Option<Value>, JitError> {
@@ -1001,7 +1011,7 @@ fn emit_shim_call(
 /// function-created composite that is NOT the returned value.
 fn emit_drop_arc(
     builder: &mut FunctionBuilder<'_>,
-    module: &mut JITModule,
+    module: &mut impl Module,
     ptr_value: Value,
 ) -> Result<(), JitError> {
     let mut sig = Signature::new(CallConv::SystemV);
@@ -1023,7 +1033,7 @@ fn emit_drop_arc(
 /// side-effecting shims do not run after one fails.
 fn emit_shim_sentinel_check(
     builder: &mut FunctionBuilder<'_>,
-    module: &mut JITModule,
+    module: &mut impl Module,
     fn_state: &mut FnState,
 ) -> Result<(), JitError> {
     // Lazily create the shared error_exit block (body emitted post-loop
