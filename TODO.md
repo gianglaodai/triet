@@ -57,14 +57,14 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### v0.11.x.jit — AOT cache implementation (depends on v0.11.0.1 + v0.11.0.2)
 
-- [~] **v0.11.x.jit.3** — AOT cache implementation per ADR-0033. **Steps 0–3 shipped:**
+- [x] **v0.11.x.jit.3** — AOT cache implementation per ADR-0033. **Mechanism shipped (Steps 0–4b):**
   - Step 0 — generalize IR translator over `Module` trait — `3396f72`
-  - Step 1 — object emission (`emit_object`) + version-pinned manifest (§2) — `cbeb102`
+  - Step 1 — object emission + version-pinned manifest (§2) — `cbeb102`
   - Step 2 — `Store::install_aot_cache` + `dao store gc` jit sweep (§4/§5/§7) — `2946ce4`
   - Step 3 — Path-A relocating loader `ElfX86_64Loader` (§3 + Addendum constraints 1–4; loader is unsafe-free) — `c47bd8f`
-  - [x] **Step 4a** — per-**module** object emission + **load-time linker** (per v0.11.0.2 Entailment). `declare_and_define_module` (own `Export` / cross-module `Import`); `emit_module_object`; two-phase loader (`map_object` + `MappedObject::patch_and_exec`) + `load_program` building a global symbol table. Cross-module 2-module program links + executes → 7. Loader still zero-unsafe. — `52a1cba`
-  - [ ] **Step 4b** — wire Path A into `JitDispatcher` via injected `trait AotCacheStore` (opaque `impl_hash_mod` key) + §2 version-check + §8 silent fallback + `cache_state()`; CLI `AotCacheStore` adapter over `Store` + computes `impl_hash_mod`. §9.1 value-parity (cache ≡ VM) + §9.2 version-mismatch refuse. Remove the staged `#![allow(dead_code)]` in `aot.rs` + `loader.rs`.
-- [ ] **v0.11.x.jit.4** — Bootstrap gate lift + ≥10× perf bench per ADR-0030 §9 + §14. Lift `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` once warm-cache self-host completes < 10 min (ADR-0033 §9.5 chain). `criterion` warm-vs-cold bench, ≥10× v0.3 baseline target.
+  - Step 4a — per-**module** object emission + **load-time linker** (v0.11.0.2 Entailment); cross-module 2-module program links + executes → 7 — `52a1cba`
+  - Step 4b — wire Path A into `JitDispatcher` via injected `trait AotCacheStore` (opaque key) + §2 version-check + §8 silent fallback + `cache_state()`. §9.1 value-parity + §9.2 version-mismatch refuse, both via mock store. Dead code removed (no `#[allow]`). — `c7abe22`
+- [ ] **v0.11.x.jit.4** — Bootstrap gate lift + ≥10× perf bench per ADR-0030 §9 + §14. Lift `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` once warm-cache self-host completes < 10 min (ADR-0033 §9.5 chain). `criterion` warm-vs-cold bench, ≥10× v0.3 baseline target. **Includes the deferred CLI/run-path key wiring:** a `triet-cli` `AotCacheStore` adapter over `Store` (reads/writes `jit/<triple>/<hex(impl_hash_mod)>/`) + computing `impl_hash_mod` for JIT'd modules on the packaged/bootstrap path (the run path lowers to IR with no ABI metadata, so no canonical hash today — bootstrap is where warm cache pays off). Then enable via `JitDispatcher::enable_aot_cache` at `main.rs:824`.
 
 ### v0.11 backlog (trails AOT cache or later phase)
 
