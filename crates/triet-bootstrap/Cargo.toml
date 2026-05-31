@@ -21,6 +21,10 @@ triet-modules.workspace = true
 triet-typecheck.workspace = true
 triet-ir.workspace = true
 triet-pack.workspace = true
+# v0.11.x (Hướng A) jit_tier_down_audit: measure which self-host
+# compiler functions tier down (don't JIT) + why, to bound the
+# JIT-coverage work that unblocks the bootstrap gate lift.
+triet-jit.workspace = true
 # v0.7.5.6b parser_differential: byte-diff between Rust parser and
 # the Triết-in-Triết port at `compiler/parser.tri`.
 triet-parser.workspace = true

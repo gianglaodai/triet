@@ -331,6 +331,17 @@ impl JitBackend {
         }
         Ok(())
     }
+
+    /// v0.11.x (Hướng A) — diagnostic: attempt to JIT-translate every
+    /// function in `program` and return the ones that tier down + why.
+    /// Delegates to [`collect_tier_downs`] (resilient measurement, no
+    /// finalize).
+    pub(crate) fn audit(
+        &mut self,
+        program: &IrProgram,
+    ) -> Vec<(TriFuncId, Option<String>, String)> {
+        collect_tier_downs(&mut self.module, program)
+    }
 }
 
 /// Outcome of [`declare_and_define_program`] — the shared declare+define
@@ -548,6 +559,112 @@ pub(crate) fn declare_and_define_module(
         compiled,
         symbol_names,
     })
+}
+
+/// v0.11.x (Hướng A) — measure the JIT-coverage gap: attempt to
+/// translate every function in `program` and return `(func_id, name,
+/// reason)` for each that **tiers down**, WITHOUT finalizing or
+/// executing. This bounds the work needed to make a program (the
+/// self-host compiler) fully JIT-able, so the bootstrap byte-identical
+/// gate can be lifted (ROADMAP v0.11).
+///
+/// **Resilient where [`declare_and_define_program`] aborts:** a function
+/// whose *signature* is unsupported (e.g. a `Long` param) is recorded as
+/// a tier-down and skipped rather than aborting the whole pass — so the
+/// report covers every function, not just up to the first hard failure.
+/// Only the opcode-translation stage (`emit_function_body`) is run, not
+/// `define_function`/finalize: `UnsupportedOpcode` from translation is
+/// the coverage signal we're measuring (verifier failures are a
+/// separate, rare class out of scope here).
+pub(crate) fn collect_tier_downs(
+    module: &mut impl Module,
+    program: &IrProgram,
+) -> Vec<(TriFuncId, Option<String>, String)> {
+    let mut tier_downs: Vec<(TriFuncId, Option<String>, String)> = Vec::new();
+
+    // Resilient pre-pass: declare every function whose signature maps;
+    // record signature failures (e.g. `Long`) as tier-downs.
+    let mut func_id_map: HashMap<TriFuncId, ClFuncId> = HashMap::new();
+    let mut path_to_funcid: HashMap<AbsolutePath, TriFuncId> = HashMap::new();
+    for ir_module in &program.modules {
+        for func in &ir_module.functions {
+            let Ok(signature) = build_signature(func) else {
+                tier_downs.push((
+                    func.id,
+                    func.name.clone(),
+                    format!(
+                        "unsupported signature type ({})",
+                        build_signature(func).unwrap_err()
+                    ),
+                ));
+                continue;
+            };
+            let func_name = func
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("@f{}", func.id.0));
+            let mangled = format!("{}__f{}", func_name, func.id.0);
+            if let Ok(cl_id) = module.declare_function(&mangled, Linkage::Local, &signature) {
+                func_id_map.insert(func.id, cl_id);
+                if let Some(name) = &func.name {
+                    let path =
+                        AbsolutePath::new(ir_module.path.module_path().clone(), name.clone());
+                    path_to_funcid.insert(path, func.id);
+                }
+            }
+        }
+    }
+
+    let ctx = ProgramContext {
+        func_id_map: func_id_map.clone(),
+        path_to_funcid,
+        constants: &program.constants,
+        denied_namespaces: &[],
+    };
+
+    // Body-pass: attempt opcode translation per function; record the
+    // reason on the first unsupported opcode/constant. Each function is
+    // wrapped in `catch_unwind` because the translator can *panic* (not
+    // just error) on malformed-for-Cranelift IR — e.g. a Cranelift
+    // "instruction added to a filled block" assertion. A panic is a
+    // worse failure than a clean tier-down (it would abort the real JIT
+    // mid-`compile_program`), so the audit records it as its own
+    // category rather than aborting the measurement. `AssertUnwindSafe`
+    // is sound here: the module is a throwaway discarded after the audit.
+    for ir_module in &program.modules {
+        for func in &ir_module.functions {
+            if !func_id_map.contains_key(&func.id) {
+                continue; // signature already recorded as a tier-down
+            }
+            // Safe: only functions whose signature mapped are in the map.
+            let signature = build_signature(func).expect("signature mapped in pre-pass");
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut cl_ctx = module.make_context();
+                cl_ctx.func.signature = signature;
+                let r = emit_function_body(module, func, &ctx, &mut cl_ctx);
+                module.clear_context(&mut cl_ctx);
+                r
+            }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tier_downs.push((func.id, func.name.clone(), format!("{err}"))),
+                Err(panic) => {
+                    let msg = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| (*s).to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    tier_downs.push((
+                        func.id,
+                        func.name.clone(),
+                        format!("translator PANIC: {msg}"),
+                    ));
+                }
+            }
+        }
+    }
+
+    tier_downs
 }
 
 /// Shared body-emit routine called by both the single-function and the

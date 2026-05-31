@@ -443,6 +443,68 @@ impl Default for JitCompiler {
 /// [ADR-0030 §2]: ../../../docs/decisions/0030-jit-cranelift-integration.md
 pub const JIT_THRESHOLD: u32 = 100;
 
+/// One function that tiers down (falls back to VM dispatch) instead of
+/// JIT-compiling, with the reason — a single row of a
+/// [`JitCoverageReport`].
+#[derive(Clone, Debug)]
+pub struct JitCoverageEntry {
+    /// Raw `triet_ir::FuncId` value.
+    pub func_id: u32,
+    /// Function name (mangled-source name), if the IR carried one.
+    pub name: Option<String>,
+    /// Why it tiered down (the `UnsupportedOpcode` / unsupported-signature
+    /// message). Embeds the offending opcode / builtin / constant.
+    pub reason: String,
+}
+
+/// The JIT-coverage measurement for a whole program (v0.11.x Hướng A).
+///
+/// How many functions JIT, and which ones tier down + why — the
+/// measurement that bounds the work to make a program (the self-host
+/// compiler) fully JIT-able so the bootstrap byte-identical gate lifts.
+#[derive(Clone, Debug)]
+pub struct JitCoverageReport {
+    /// Total functions attempted (every function in the program).
+    pub total: usize,
+    /// The functions that tiered down. `total - tier_downs.len()` JIT.
+    pub tier_downs: Vec<JitCoverageEntry>,
+}
+
+impl JitCoverageReport {
+    /// Number of functions that JIT-compile cleanly.
+    #[must_use]
+    pub const fn jit_able(&self) -> usize {
+        self.total - self.tier_downs.len()
+    }
+}
+
+/// Attempt to JIT every function in `program` and report which tier
+/// down + why, **without** executing or finalizing (v0.11.x Hướng A).
+///
+/// Pure diagnostic: it runs only the opcode-translation stage to surface
+/// the coverage gap (see [`crate::codegen::collect_tier_downs`]). On host
+/// ISA-detection failure it returns an empty (no-tier-down) report — the
+/// audit simply can't run on that host.
+#[must_use]
+pub fn audit_jit_coverage(program: &triet_ir::IrProgram) -> JitCoverageReport {
+    let total = program.modules.iter().map(|m| m.functions.len()).sum();
+    let mut report = JitCoverageReport {
+        total,
+        tier_downs: Vec::new(),
+    };
+    let Ok(mut backend) = JitBackend::new() else {
+        return report;
+    };
+    for (id, name, reason) in backend.audit(program) {
+        report.tier_downs.push(JitCoverageEntry {
+            func_id: id.0,
+            name,
+            reason,
+        });
+    }
+    report
+}
+
 /// v0.9.x.jit.5 — Runtime-side JIT integration façade.
 ///
 /// Implements [`triet_ir::JitDispatch`] by wrapping a [`JitCompiler`]
