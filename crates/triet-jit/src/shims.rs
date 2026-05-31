@@ -17,11 +17,12 @@
 //!   per ADR-0016 §5).
 //! - [`__triet_drop_arc`] — the lifetime-management shim (§2): consumes
 //!   an `Rc::into_raw` pointer at a value's last use.
-//!
-//! **§4 error propagation DEFERRED:** the shim-panic → `VmError`
-//! mechanism (ADR-0032 §4) is blocked on `cranelift-jit 0.132` (no
-//! system unwind-table registration for JIT'd frames) — see the
-//! "Error propagation" section below + the ADR-0032 Addendum.
+//! - Error-propagation substrate (§4 option-2, v0.10.x.jit.2a):
+//!   thread-local `VmError` slot + `SHIM_FAILED` flag +
+//!   [`record_shim_failure`] / [`take_shim_failure`] /
+//!   [`__triet_shim_failed`] per-call probe. Shims are `extern "C"`
+//!   (never unwind out); the JIT emits a sentinel check after each
+//!   call. Replaces §4's blocked `catch_unwind`-across-JIT approach.
 //!
 //! **`unsafe` is localized here + in [`crate::codegen`]** per ADR-0032
 //! §5 — the crate-local `unsafe_code = "deny"` override (Cargo.toml)
@@ -32,9 +33,10 @@
 
 #![allow(clippy::redundant_pub_crate)]
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use triet_ir::{BuiltinName, RuntimeValue};
+use triet_ir::{BuiltinName, RuntimeValue, VmError};
 
 // ── ABI description (decoupled from Cranelift types) ────────────────
 
@@ -82,17 +84,28 @@ pub(crate) struct ShimSignature {
 /// site in [`crate::codegen`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShimEntry {
+    /// The [`BuiltinName`] this shim implements, or `None` for
+    /// framework shims (`__triet_drop_arc`, `__triet_shim_failed`)
+    /// that the codegen calls implicitly rather than via `CallBuiltin`.
+    pub builtin: Option<BuiltinName>,
     /// The `__triet_*`-prefixed symbol name per ADR-0032 §6.
     pub symbol: &'static str,
     /// Rust function address (`fn as usize`).
     pub addr: usize,
-    /// ABI signature for Cranelift declaration. Read by
-    /// `compile_shim_caller` (framework test) + v0.10.x.jit.2's
-    /// production `CallBuiltin` codegen when declaring the shim's
-    /// imported signature; `dead_code`-allowed in jit.1 where only
-    /// `symbol` + `addr` are consumed (symbol registration).
-    #[allow(dead_code)]
+    /// ABI signature for Cranelift declaration + per-arg marshaling
+    /// (primitive vs composite-pointer) per ADR-0032 §1.
     pub signature: ShimSignature,
+}
+
+/// v0.10.x.jit.2a — Look up the production [`ShimEntry`] for a
+/// `CallBuiltin` opcode's [`BuiltinName`], or `None` if no shim is
+/// implemented yet (the function then tier-downs to VM dispatch). The
+/// codegen drives argument marshaling from the returned entry's
+/// [`ShimSignature`].
+pub(crate) fn builtin_shim(name: BuiltinName) -> Option<ShimEntry> {
+    production_shim_entries()
+        .into_iter()
+        .find(|e| e.builtin == Some(name))
 }
 
 /// Framework + production shim registry. jit.1 returns ONLY the
@@ -101,17 +114,84 @@ pub(crate) struct ShimEntry {
 /// [`crate::codegen::JitBackend::new`] and registered via
 /// `JITBuilder::symbol`.
 pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
-    vec![ShimEntry {
-        symbol: "__triet_drop_arc",
-        // Cast via `*const ()` per clippy `function_casts_as_integer` —
-        // fn item → fn pointer → usize. The usize is recovered to
-        // `*const u8` at registration (a no-op address round-trip).
-        addr: __triet_drop_arc as *const () as usize,
-        signature: ShimSignature {
-            params: &[AbiScalar::Ptr],
-            ret: None,
+    vec![
+        // ── Framework shims (no BuiltinName — called implicitly) ──
+        ShimEntry {
+            builtin: None,
+            symbol: "__triet_drop_arc",
+            // Cast via `*const ()` per clippy `function_casts_as_integer`
+            // — fn item → fn pointer → usize. Recovered to `*const u8`
+            // at registration (a no-op address round-trip).
+            addr: __triet_drop_arc as *const () as usize,
+            signature: ShimSignature {
+                params: &[AbiScalar::Ptr],
+                ret: None,
+            },
         },
-    }]
+        ShimEntry {
+            builtin: None,
+            symbol: "__triet_shim_failed",
+            addr: __triet_shim_failed as *const () as usize,
+            signature: ShimSignature {
+                params: &[],
+                ret: Some(AbiScalar::I8),
+            },
+        },
+        // ── jit.2a representative production shims (5) ──
+        // `assert(cond: Trilean, msg: String?)` — cond is i8 (Trilean
+        // encoding), msg is a composite ptr (0 = no message). Failure
+        // path records VmError + sets SHIM_FAILED, returns Unit sentinel.
+        ShimEntry {
+            builtin: Some(BuiltinName::Assert),
+            symbol: "__triet_assert",
+            addr: __triet_assert as *const () as usize,
+            signature: ShimSignature {
+                params: &[AbiScalar::I8, AbiScalar::Ptr],
+                ret: Some(AbiScalar::I8),
+            },
+        },
+        // `println(value)` — composite ptr arg; prints + newline.
+        ShimEntry {
+            builtin: Some(BuiltinName::Println),
+            symbol: "__triet_println",
+            addr: __triet_println as *const () as usize,
+            signature: ShimSignature {
+                params: &[AbiScalar::Ptr],
+                ret: Some(AbiScalar::I8),
+            },
+        },
+        // `text.len(s: String) -> Integer` — composite arg → primitive ret.
+        ShimEntry {
+            builtin: Some(BuiltinName::TextLen),
+            symbol: "__triet_text_len",
+            addr: __triet_text_len as *const () as usize,
+            signature: ShimSignature {
+                params: &[AbiScalar::Ptr],
+                ret: Some(AbiScalar::I64),
+            },
+        },
+        // `vector.new() -> Vector` — composite ret (box-out).
+        ShimEntry {
+            builtin: Some(BuiltinName::VectorNew),
+            symbol: "__triet_vector_new",
+            addr: __triet_vector_new as *const () as usize,
+            signature: ShimSignature {
+                params: &[],
+                ret: Some(AbiScalar::Ptr),
+            },
+        },
+        // `vector.push(v: Vector, x) -> Vector` — functional return-new
+        // (clone-and-extend per `triet_vector_functional`).
+        ShimEntry {
+            builtin: Some(BuiltinName::VectorPush),
+            symbol: "__triet_vector_push",
+            addr: __triet_vector_push as *const () as usize,
+            signature: ShimSignature {
+                params: &[AbiScalar::Ptr, AbiScalar::Ptr],
+                ret: Some(AbiScalar::Ptr),
+            },
+        },
+    ]
 }
 
 // ── Capability namespace table (§3 defense-in-depth) ────────────────
@@ -187,36 +267,374 @@ pub(crate) const fn builtin_namespace(builtin: BuiltinName) -> &'static str {
 /// exported by name. v0.10.x.jit.3 AOT cache (ELF object emission)
 /// adds `no_mangle` when name-based load-time resolution becomes
 /// required, per ADR-0033 §3.
-pub(crate) extern "C-unwind" fn __triet_drop_arc(ptr: i64) {
+pub(crate) extern "C" fn __triet_drop_arc(ptr: i64) {
     if ptr == 0 {
         return;
     }
     // SAFETY: `ptr` originates from `Rc::into_raw(Rc::new(value))` at a
     // composite box-out site in JIT codegen (ADR-0032 §2 rule 2). The
-    // lowerer's ValueKind last-use tracking (ADR-0023) guarantees this
-    // pointer is consumed exactly once — no double-free, no use-after.
-    // Reconstituting the `Rc` and dropping it balances the `into_raw`.
-    // Backed by ADR-0032 §2.
+    // JIT's per-function last-use pass (jit.2a, single-block scope)
+    // guarantees this pointer is consumed exactly once — no double-free,
+    // no use-after. Reconstituting the `Rc` and dropping it balances the
+    // `into_raw`. Backed by ADR-0032 §2.
     #[allow(unsafe_code)]
     unsafe {
         let _ = Rc::from_raw(ptr as *const RuntimeValue);
     }
 }
 
-// ── Error propagation (§4) — DEFERRED per ADR-0032 Addendum ─────────
+// ── Composite ABI helpers (§1/§2) ───────────────────────────────────
+
+/// Box a `RuntimeValue` for the shim-ABI boundary per ADR-0032 §2
+/// rule 2 — fresh `Rc` (refcount 1), returned as an `i64` pointer the
+/// JIT register owns (and later drops via [`__triet_drop_arc`]).
+/// Pure-safe: `Rc::into_raw` + pointer→integer cast are both safe.
+fn box_rv(value: RuntimeValue) -> i64 {
+    Rc::into_raw(Rc::new(value)) as i64
+}
+
+/// v0.10.x.jit.2a (test-support) — box a `RuntimeValue` into a shim-ABI
+/// pointer so an integration test can feed a composite argument to a
+/// JIT'd function through [`crate::dispatch_with_shim_errors`]. The
+/// caller is responsible for the matching [`__triet_drop_arc`].
+#[cfg(test)]
+pub(crate) fn box_for_jit_test(value: RuntimeValue) -> i64 {
+    box_rv(value)
+}
+
+/// v0.10.x.jit.2a (test-support) — drop a test-boxed pointer.
+#[cfg(test)]
+pub(crate) fn drop_for_jit_test(ptr: i64) {
+    __triet_drop_arc(ptr);
+}
+
+/// Borrow a boxed `RuntimeValue` for the duration of `f` per ADR-0032
+/// §2 rule 1 (borrowed view — refcount unchanged, NOT consumed). The
+/// closure scopes the borrow so no dangling reference can escape.
+/// `ptr == 0` (null / `T?` null arm) yields `None`.
+fn with_rv<R>(ptr: i64, f: impl FnOnce(Option<&RuntimeValue>) -> R) -> R {
+    if ptr == 0 {
+        return f(None);
+    }
+    // SAFETY: per ADR-0032 §2 rule 1, `ptr` is a borrowed shim-ABI
+    // pointer from `Rc::into_raw(Rc::new(RuntimeValue))` in JIT codegen;
+    // it points to a live `RuntimeValue` for the shim-call duration (the
+    // JIT register holds the +1 refcount). We borrow within `f`'s scope
+    // only — no consume, no escape. Backed by ADR-0032 §2.
+    #[allow(unsafe_code)]
+    let rv = unsafe { &*(ptr as *const RuntimeValue) };
+    f(Some(rv))
+}
+
+// ── Representative production shims (jit.2a, ADR-0032 §4 option-2) ───
 //
-// ADR-0032 §4 locked `extern "C-unwind"` + dispatcher `catch_unwind`
-// for shim-panic → `VmError` propagation. v0.10.x.jit.1 implementation
-// discovered this is BLOCKED on `cranelift-jit 0.132`: that backend
-// does not register system DWARF unwind tables (`.eh_frame` via
-// `__register_frame`) for JIT'd code, so a panic unwinding THROUGH a
-// Cranelift-compiled frame aborts (`failed to initiate panic`) instead
-// of reaching the dispatcher's `catch_unwind`.
+// All are `extern "C"` (never unwind out). On a `VmError`-class failure
+// a shim calls `record_shim_failure` + returns a sentinel; the JIT's
+// per-call probe branches to `error_exit`.
+
+/// `assert(cond: Trilean, msg: String?)`. Trilean encoding: True = +1
+/// (ADR-0010). Passes iff True; otherwise records `AssertionFailed`
+/// (with the optional message) + signals failure. Returns Unit (`0`).
+extern "C" fn __triet_assert(cond: i8, msg_ptr: i64) -> i8 {
+    if cond == 1 {
+        return 0;
+    }
+    let message = with_rv(msg_ptr, |rv| match rv {
+        Some(RuntimeValue::String(s)) => Some(s.clone()),
+        _ => None,
+    });
+    record_shim_failure(VmError::AssertionFailed {
+        message,
+        function: current_func_name(),
+    });
+    0
+}
+
+/// `println(value)` — borrow the composite, print via `Display` +
+/// newline. Returns Unit (`0`).
+extern "C" fn __triet_println(val_ptr: i64) -> i8 {
+    with_rv(val_ptr, |rv| match rv {
+        Some(v) => println!("{v}"),
+        None => println!(),
+    });
+    0
+}
+
+/// `text.len(s: String) -> Integer` — UTF-8 char count of the borrowed
+/// String, returned as a primitive `i64` (Integer is unboxed per §1).
+/// Non-String / null borrows yield `0` (defensive — typecheck ensures
+/// the arg is a String upstream).
+extern "C" fn __triet_text_len(s_ptr: i64) -> i64 {
+    with_rv(s_ptr, |rv| match rv {
+        Some(RuntimeValue::String(s)) => i64::try_from(s.chars().count()).unwrap_or(i64::MAX),
+        _ => 0,
+    })
+}
+
+/// `vector.new() -> Vector` — fresh empty Vector, boxed out (§2 rule 2).
+extern "C" fn __triet_vector_new() -> i64 {
+    box_rv(RuntimeValue::Vector(Vec::new()))
+}
+
+/// `vector.push(v: Vector, x) -> Vector` — functional return-new per
+/// `triet_vector_functional`: clone the borrowed Vector, append a clone
+/// of the borrowed element, box the result. Both args are borrowed (not
+/// consumed); the JIT drops them at their last use.
+extern "C" fn __triet_vector_push(vec_ptr: i64, val_ptr: i64) -> i64 {
+    let new_vec = with_rv(vec_ptr, |v| {
+        with_rv(val_ptr, |x| match (v, x) {
+            (Some(RuntimeValue::Vector(elems)), Some(item)) => {
+                let mut next = elems.clone();
+                next.push(item.clone());
+                RuntimeValue::Vector(next)
+            }
+            // Defensive: typecheck guarantees (Vector, _) upstream.
+            _ => RuntimeValue::Vector(Vec::new()),
+        })
+    });
+    box_rv(new_vec)
+}
+
+// ── Error propagation (§4 option-2 resolution, v0.10.x.jit.2a) ──────
 //
-// The error-propagation mechanism (thread-local error slot + dispatch
-// wrapper) therefore defers to the ADR-0032 Addendum, which records
-// the cliff + three redesign options (shim-internal catch + sentinel /
-// per-call sentinel check in codegen / Cranelift unwind-table
-// registration). The option-agnostic pieces — shim registry, lifetime
-// `drop_arc`, capability table, symbol wiring — ship in jit.1; the
-// error mechanism lands once the Addendum is resolved (jit.2-adjacent).
+// ADR-0032 §4's original `extern "C-unwind"` + dispatcher
+// `catch_unwind` mechanism is BLOCKED on `cranelift-jit 0.132` (no
+// system DWARF unwind-table registration for JIT'd frames → abort).
+// The Addendum-locked replacement (option 2, per-call sentinel):
+//
+// - Shims are plain `extern "C"` (never unwind out). On a `VmError`-
+//   class failure a shim calls [`record_shim_failure`] (records the
+//   structured error + sets the `SHIM_FAILED` flag) and returns a
+//   sentinel (`0` / null).
+// - The JIT emits a [`__triet_shim_failed`] probe after each shim call
+//   and branches to the function's `error_exit` block when the flag
+//   is set — so the JIT frame returns NORMALLY (no unwinding).
+// - The dispatcher reads the slot via [`take_shim_failure`] after the
+//   native return; `Some` → `Err(VmError)`, `None` → `Ok(value)`.
+//
+// Single-thread VM dev tier (ADR-0028 §9) makes the per-thread slot
+// trivially correct; multi-thread inherits per-thread semantics.
+
+thread_local! {
+    /// Structured error a failing shim records via
+    /// [`record_shim_failure`]; the dispatcher consumes it via
+    /// [`take_shim_failure`] after the native call returns.
+    static CURRENT_VM_ERROR: RefCell<Option<VmError>> = const { RefCell::new(None) };
+
+    /// Failure flag set alongside [`CURRENT_VM_ERROR`]. Read by the
+    /// JIT-emitted per-call probe [`__triet_shim_failed`] so primitive-
+    /// returning shims (where `0` is a valid value) can still signal
+    /// failure without poisoning their value space.
+    static SHIM_FAILED: Cell<bool> = const { Cell::new(false) };
+
+    /// Name of the Triết function whose JIT'd body is executing — set
+    /// by the dispatcher before the native call so a shim can attribute
+    /// `VmError { function, .. }`.
+    static CURRENT_FUNC_NAME: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Record a structured `VmError` + raise the `SHIM_FAILED` flag. A
+/// shim calls this immediately before returning its sentinel.
+pub(crate) fn record_shim_failure(error: VmError) {
+    CURRENT_VM_ERROR.with(|slot| *slot.borrow_mut() = Some(error));
+    SHIM_FAILED.with(|flag| flag.set(true));
+}
+
+/// Clear the failure state. Called by the dispatcher before a native
+/// call so a stale flag from a prior call can't leak in.
+pub(crate) fn clear_shim_state() {
+    CURRENT_VM_ERROR.with(|slot| *slot.borrow_mut() = None);
+    SHIM_FAILED.with(|flag| flag.set(false));
+}
+
+/// Consume the recorded failure, if any. Called by the dispatcher
+/// after the native return: `Some` → the JIT'd function hit a shim
+/// failure (returned a sentinel); `None` → clean run.
+pub(crate) fn take_shim_failure() -> Option<VmError> {
+    if SHIM_FAILED.with(Cell::get) {
+        SHIM_FAILED.with(|flag| flag.set(false));
+        Some(
+            CURRENT_VM_ERROR
+                .with(|slot| slot.borrow_mut().take())
+                .unwrap_or_else(|| VmError::JitShimFault {
+                    reason: "shim set SHIM_FAILED without recording a structured VmError"
+                        .to_owned(),
+                    function: current_func_name(),
+                }),
+        )
+    } else {
+        None
+    }
+}
+
+/// Set the executing function's name (dispatcher → shim attribution).
+pub(crate) fn set_func_name(name: &str) {
+    CURRENT_FUNC_NAME.with(|slot| name.clone_into(&mut slot.borrow_mut()));
+}
+
+/// Read the executing function's name (shim error construction).
+pub(crate) fn current_func_name() -> String {
+    CURRENT_FUNC_NAME.with(|slot| slot.borrow().clone())
+}
+
+/// JIT-emitted per-call probe (ADR-0032 §4 option-2). Returns `1` if
+/// the most recent shim set `SHIM_FAILED`, else `0`. The JIT branches
+/// to `error_exit` on `1`. Does NOT reset the flag — the dispatcher's
+/// [`take_shim_failure`] owns the reset so the error survives until
+/// consumed.
+pub(crate) extern "C" fn __triet_shim_failed() -> i8 {
+    i8::from(SHIM_FAILED.with(Cell::get))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use triet_core::Integer;
+
+    /// Box a value the way JIT codegen would, returning the i64 ptr +
+    /// keeping it valid until the caller drops it via `__triet_drop_arc`.
+    fn box_for_test(value: RuntimeValue) -> i64 {
+        box_rv(value)
+    }
+
+    fn integer(n: i64) -> RuntimeValue {
+        RuntimeValue::Integer(Integer::new(n).unwrap())
+    }
+
+    /// `RuntimeValue` does not implement `PartialEq`; assert the
+    /// `Integer` arm's value directly.
+    fn expect_integer(rv: &RuntimeValue, want: i64) {
+        match rv {
+            RuntimeValue::Integer(i) => assert_eq!(i.to_i64(), want),
+            other => panic!("expected Integer({want}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_arc_balances_into_raw() {
+        let ptr = box_for_test(RuntimeValue::String("x".to_owned()));
+        // Reconstitute to check strong_count == 1, then re-leak so the
+        // drop_arc below is the sole consumer (no double-free).
+        // SAFETY: ptr just came from box_rv (Rc::into_raw of refcount-1).
+        #[allow(unsafe_code)]
+        let rc = unsafe { Rc::from_raw(ptr as *const RuntimeValue) };
+        assert_eq!(Rc::strong_count(&rc), 1);
+        let reptr = Rc::into_raw(rc) as i64;
+        __triet_drop_arc(reptr); // consumes the box, frees it
+    }
+
+    #[test]
+    fn drop_arc_null_is_noop() {
+        __triet_drop_arc(0); // must not panic / segfault
+    }
+
+    #[test]
+    fn text_len_counts_utf8_chars() {
+        let ptr = box_for_test(RuntimeValue::String("Triết".to_owned()));
+        // 5 chars: T r i ế t (ế is one Unicode scalar).
+        assert_eq!(__triet_text_len(ptr), 5);
+        __triet_drop_arc(ptr);
+    }
+
+    #[test]
+    fn text_len_empty_string() {
+        let ptr = box_for_test(RuntimeValue::String(String::new()));
+        assert_eq!(__triet_text_len(ptr), 0);
+        __triet_drop_arc(ptr);
+    }
+
+    #[test]
+    fn vector_new_returns_empty_vector() {
+        let ptr = __triet_vector_new();
+        with_rv(ptr, |rv| match rv {
+            Some(RuntimeValue::Vector(v)) => assert!(v.is_empty()),
+            other => panic!("expected empty Vector, got {other:?}"),
+        });
+        __triet_drop_arc(ptr);
+    }
+
+    #[test]
+    fn vector_push_returns_new_with_appended_element() {
+        // Functional: original unchanged, return has +1 element.
+        let vec_ptr = box_for_test(RuntimeValue::Vector(vec![integer(1)]));
+        let elem_ptr = box_for_test(integer(2));
+        let result_ptr = __triet_vector_push(vec_ptr, elem_ptr);
+        // Result has [1, 2].
+        with_rv(result_ptr, |rv| match rv {
+            Some(RuntimeValue::Vector(v)) => {
+                assert_eq!(v.len(), 2);
+                expect_integer(&v[0], 1);
+                expect_integer(&v[1], 2);
+            }
+            other => panic!("expected Vector[1,2], got {other:?}"),
+        });
+        // Original vec UNCHANGED (functional semantics).
+        with_rv(vec_ptr, |rv| match rv {
+            Some(RuntimeValue::Vector(v)) => assert_eq!(v.len(), 1),
+            other => panic!("expected original Vector[1], got {other:?}"),
+        });
+        __triet_drop_arc(vec_ptr);
+        __triet_drop_arc(elem_ptr);
+        __triet_drop_arc(result_ptr);
+    }
+
+    #[test]
+    fn assert_true_passes_no_failure() {
+        clear_shim_state();
+        set_func_name("test_fn");
+        let ret = __triet_assert(1, 0); // cond=True, no message
+        assert_eq!(ret, 0); // Unit sentinel
+        assert!(take_shim_failure().is_none());
+    }
+
+    #[test]
+    fn assert_false_records_failure_with_message() {
+        clear_shim_state();
+        set_func_name("test_fn");
+        let msg_ptr = box_for_test(RuntimeValue::String("boom".to_owned()));
+        let ret = __triet_assert(-1, msg_ptr); // cond=False
+        assert_eq!(ret, 0);
+        match take_shim_failure() {
+            Some(VmError::AssertionFailed { message, function }) => {
+                assert_eq!(message.as_deref(), Some("boom"));
+                assert_eq!(function, "test_fn");
+            }
+            other => panic!("expected AssertionFailed, got {other:?}"),
+        }
+        __triet_drop_arc(msg_ptr);
+    }
+
+    #[test]
+    fn assert_false_no_message_records_none() {
+        clear_shim_state();
+        set_func_name("f");
+        let ret = __triet_assert(-1, 0); // cond=False, null msg ptr
+        assert_eq!(ret, 0);
+        match take_shim_failure() {
+            Some(VmError::AssertionFailed { message, .. }) => assert!(message.is_none()),
+            other => panic!("expected AssertionFailed with no message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shim_failed_probe_reflects_flag() {
+        clear_shim_state();
+        assert_eq!(__triet_shim_failed(), 0);
+        record_shim_failure(VmError::JitShimFault {
+            reason: "x".to_owned(),
+            function: "f".to_owned(),
+        });
+        assert_eq!(__triet_shim_failed(), 1);
+        // take resets the flag.
+        assert!(take_shim_failure().is_some());
+        assert_eq!(__triet_shim_failed(), 0);
+    }
+
+    #[test]
+    fn builtin_shim_lookup_finds_implemented() {
+        assert!(builtin_shim(BuiltinName::TextLen).is_some());
+        assert!(builtin_shim(BuiltinName::VectorPush).is_some());
+        // Not-yet-implemented builtin (jit.2b): no shim.
+        assert!(builtin_shim(BuiltinName::HashMapNew).is_none());
+    }
+}

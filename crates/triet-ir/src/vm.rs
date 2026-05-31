@@ -445,6 +445,22 @@ pub enum VmError {
         /// Reason / pointer to sub-task landing real dispatch.
         reason: String,
     },
+    /// E2212: a JIT builtin shim signalled failure. v0.10.x.jit.2a —
+    /// per the [ADR-0032] §4 option-2 resolution, a shim records a
+    /// structured `VmError` into a thread-local slot + sets a
+    /// `SHIM_FAILED` flag, and the JIT-emitted per-call sentinel check
+    /// branches to the function's `error_exit`. The dispatcher reads
+    /// the slot after the (normal) native return. This variant is the
+    /// **fallback** when the flag was set WITHOUT a structured error
+    /// (a shim bug) — surfaced, not hidden.
+    ///
+    /// [ADR-0032]: ../../../docs/decisions/0032-builtin-shim-abi.md
+    JitShimFault {
+        /// One-line description of the fault.
+        reason: String,
+        /// Function where the JIT'd shim call occurred.
+        function: String,
+    },
 }
 
 impl std::fmt::Display for VmError {
@@ -496,6 +512,9 @@ impl std::fmt::Display for VmError {
                     f,
                     "E2211: builtin `{name}` declared but dispatch unimplemented: {reason}"
                 )
+            }
+            Self::JitShimFault { reason, function } => {
+                write!(f, "E2212: JIT shim fault in `{function}`: {reason}")
             }
         }
     }

@@ -104,19 +104,22 @@ pub(crate) fn map_type(tag: &TypeTag) -> Result<types::Type, JitError> {
         //   consistent ABI shape.
         TypeTag::Trit | TypeTag::Trilean | TypeTag::Unit => I8,
         TypeTag::Tryte => I16,
-        TypeTag::Integer => I64,
+        // `Integer` (primitive) + the v0.10.x.jit.2a composites
+        // (`String`/`Vector`) all map to `i64`: Integer is a 64-bit
+        // value, composites cross the shim ABI as `i64` raw pointers
+        // (`Rc::into_raw` boxed `RuntimeValue`) per ADR-0032 §1. Other
+        // composites (HashMap/Struct/Enum/Tuple/Outcome/Atomic/Nullable/
+        // Range) still tier-down until jit.2b.
+        TypeTag::Integer | TypeTag::String | TypeTag::Vector(_) => I64,
         // Long (i128) needs pair-of-i64 lowering per ADR-0030 §3 — defer.
         TypeTag::Long => {
             return Err(JitError::UnsupportedOpcode {
                 opcode: "Long type (i128) — defer to later sub-phase".to_string(),
             });
         }
-        // Composite types (String/Nullable/Vector/HashMap/Tuple/Range/
-        // Atomic/etc.) require heap-allocated layouts handled via Rust
-        // runtime calls — defer to .3-.4.
         other => {
             return Err(JitError::UnsupportedOpcode {
-                opcode: format!("type {other:?} — defer to later sub-phase"),
+                opcode: format!("type {other:?} — defer to jit.2b"),
             });
         }
     })
@@ -415,7 +418,10 @@ impl JitBackend {
         }
 
         // Walk every block in declaration order, switch into it, and
-        // emit per-instruction Cranelift IR.
+        // emit per-instruction Cranelift IR. `fn_state` carries the
+        // jit.2a composite-flow bookkeeping (created boxed values for
+        // drop_arc emission + shim-call count for the single-call scope).
+        let mut fn_state = FnState::default();
         for ir_block in &func.blocks {
             let cl_block = block_map[&ir_block.id];
             builder.switch_to_block(cl_block);
@@ -427,6 +433,7 @@ impl JitBackend {
                     &block_map,
                     ctx,
                     func,
+                    &mut fn_state,
                     instr,
                 )?;
             }
@@ -436,6 +443,26 @@ impl JitBackend {
         builder.finalize();
         Ok(())
     }
+}
+
+/// v0.10.x.jit.2a — per-function composite-flow bookkeeping threaded
+/// through instruction translation.
+#[derive(Default)]
+struct FnState {
+    /// Count of builtin-shim calls emitted so far. jit.2a supports at
+    /// most ONE shim call per function (the boundary TLS check in
+    /// `dispatch_with_shim_errors` suffices). A 2nd shim call tier-downs
+    /// — the per-call sentinel codegen (`error_exit` + mid-block
+    /// branching) for multi-call functions defers to jit.2b.
+    ///
+    /// Note: jit.2a does NOT emit `__triet_drop_arc` calls — in the
+    /// single-shim-call scope the one composite a function can create
+    /// is always its return value (ownership transfers to the caller,
+    /// no drop), so no created-and-discarded box exists to leak. The
+    /// `drop_arc` CODEGEN (with proper live-range analysis) lands in
+    /// jit.2b alongside multi-call support; the `__triet_drop_arc` shim
+    /// itself shipped + was unit-tested in jit.1.
+    shim_call_count: usize,
 }
 
 /// Build a Cranelift function signature from a Triết IR function's
@@ -458,12 +485,6 @@ fn cranelift_err<E: core::fmt::Display>(err: E) -> JitError {
 
 /// v0.10.x.jit.1 — Map an [`AbiScalar`] to its Cranelift IR type per
 /// ADR-0032 §1. `Ptr` is `i64`-wide on the v0.10 target triples.
-///
-/// `dead_code`-allowed in jit.1: the only caller is the `#[cfg(test)]`
-/// `compile_shim_caller` framework helper. v0.10.x.jit.2's production
-/// `CallBuiltin` codegen calls it to declare each shim's signature —
-/// not speculative, mandated by ADR-0032 §6.
-#[allow(dead_code)]
 const fn abi_scalar_to_clif(scalar: crate::shims::AbiScalar) -> types::Type {
     match scalar {
         crate::shims::AbiScalar::I8 => I8,
@@ -475,10 +496,6 @@ const fn abi_scalar_to_clif(scalar: crate::shims::AbiScalar) -> types::Type {
 
 /// v0.10.x.jit.1 — Build a Cranelift [`Signature`] from a shim's ABI
 /// description per ADR-0032 §1/§6.
-///
-/// `dead_code`-allowed in jit.1 for the same reason as
-/// [`abi_scalar_to_clif`] — production caller is v0.10.x.jit.2.
-#[allow(dead_code)]
 fn shim_signature_to_clif(sig: &crate::shims::ShimSignature) -> Signature {
     let mut clif = Signature::new(CallConv::SystemV);
     for param in sig.params {
@@ -510,7 +527,7 @@ fn register_shim_symbols(builder: &mut JITBuilder, entries: &[crate::shims::Shim
 /// `FunctionBuilder`'s current block. Updates `value_map` for any new
 /// SSA def; reads `block_map` for branch targets; consults `ctx` for
 /// inline constants + call targets.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn translate_instruction(
     builder: &mut FunctionBuilder<'_>,
     module: &mut JITModule,
@@ -518,6 +535,7 @@ fn translate_instruction(
     block_map: &HashMap<BlockId, Block>,
     ctx: &ProgramContext<'_>,
     func: &IrFunction,
+    fn_state: &mut FnState,
     instr: &Instruction,
 ) -> Result<(), JitError> {
     match instr {
@@ -719,30 +737,55 @@ fn translate_instruction(
                 builder.ins().return_(&[unit]);
             }
         }
-        // v0.9.x.jit.4 — structured CallBuiltin tier-down per ADR-0030
-        // §12 backlog. Full builtin shim layer (extern "C" Rust
-        // registry + RuntimeValue ABI marshaling for String / Vector /
-        // HashMap / Atomic / etc. across 43 builtins) defers v0.10.
-        // Until then, any function calling a stdlib builtin
-        // tier-downs to VM dispatch with a structured diagnostic that
-        // names the specific builtin — easier to grep + roadmap than
-        // the catch-all Debug-format fallback.
-        Instruction::CallBuiltin { name, args, .. } => {
-            // v0.10.x.jit.1 — §3 capability defense-in-depth: if the
-            // builtin's namespace is denied, surface
-            // `BuiltinCapabilityDenied` (distinct from the generic
-            // tier-down). Empty denied-set (production default) is a
-            // no-op. Real shim emission lands jit.2; until then, a
-            // granted builtin still tier-downs to VM dispatch.
+        // v0.10.x.jit.2a — production builtin-shim dispatch per ADR-0032
+        // (§4 option-2 + §1 hybrid ABI). For builtins with an
+        // implemented shim: marshal args, call the registered shim
+        // symbol, record composite returns for drop_arc. Builtins
+        // without a shim (38 pending jit.2b) tier-down. Scope:
+        // single-shim-call functions (boundary TLS check suffices); a
+        // 2nd shim call tier-downs (per-call sentinel codegen → jit.2b).
+        Instruction::CallBuiltin { dest, name, args } => {
+            // §3 capability defense-in-depth (empty denied-set = no-op).
             crate::check_builtin_capability(*name, ctx.denied_namespaces)?;
-            return Err(JitError::UnsupportedOpcode {
-                opcode: format!(
-                    "CallBuiltin({name}) with {} arg(s) — full builtin shim \
-                     layer defers v0.10.x.jit.2 per ADR-0032 (production \
-                     shim implementations)",
-                    args.len()
-                ),
-            });
+            let Some(shim) = crate::shims::builtin_shim(*name) else {
+                return Err(JitError::UnsupportedOpcode {
+                    opcode: format!("CallBuiltin({name}) — no shim implemented (defers jit.2b)"),
+                });
+            };
+            if fn_state.shim_call_count >= 1 {
+                return Err(JitError::UnsupportedOpcode {
+                    opcode: format!(
+                        "CallBuiltin({name}) — 2nd shim call exceeds jit.2a \
+                         single-shim-call scope (per-call sentinel codegen \
+                         defers jit.2b)"
+                    ),
+                });
+            }
+            if args.len() != shim.signature.params.len() {
+                return Err(JitError::UnsupportedOpcode {
+                    opcode: format!(
+                        "CallBuiltin({name}) arity {} != shim signature {} args",
+                        args.len(),
+                        shim.signature.params.len()
+                    ),
+                });
+            }
+            fn_state.shim_call_count += 1;
+            let arg_values: Vec<Value> = args
+                .iter()
+                .map(|op| resolve_operand(builder, value_map, ctx, *op))
+                .collect::<Result<_, _>>()?;
+            let result = emit_shim_call(builder, module, &shim, &arg_values)?;
+            if let Some(dest_id) = dest
+                && let Some(result_val) = result
+            {
+                value_map.insert(*dest_id, result_val);
+                // Composite (Ptr) returns are freshly-boxed values the
+                // function owns. In jit.2a's single-shim-call scope such
+                // a value is always the function's return (caller takes
+                // ownership) — no drop emitted here. drop_arc codegen
+                // for created-and-discarded composites lands jit.2b.
+            }
         }
         // Everything else triggers tier-down to VM-only for this fn.
         // Use the IR `Display` impl (via `triet_ir::Instruction`'s
@@ -882,3 +925,31 @@ fn translate_call(
     }
     Ok(())
 }
+
+/// v0.10.x.jit.2a — Emit a call to a registered builtin shim (declared
+/// `Import`) with already-resolved argument values, per ADR-0032 §6.
+/// Returns the call's result `Value` when the shim has a return slot.
+fn emit_shim_call(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut JITModule,
+    shim: &crate::shims::ShimEntry,
+    arg_values: &[Value],
+) -> Result<Option<Value>, JitError> {
+    let clif_sig = shim_signature_to_clif(&shim.signature);
+    let shim_id = module
+        .declare_function(shim.symbol, Linkage::Import, &clif_sig)
+        .map_err(cranelift_err)?;
+    let func_ref = module.declare_func_in_func(shim_id, builder.func);
+    let call_inst = builder.ins().call(func_ref, arg_values);
+    Ok(if shim.signature.ret.is_some() {
+        builder.inst_results(call_inst).first().copied()
+    } else {
+        None
+    })
+}
+
+// `emit_drop_arc` (composite last-use Drop codegen, ADR-0032 §2)
+// defers to jit.2b alongside multi-call support + live-range analysis.
+// jit.2a's single-shim-call scope never creates-and-discards a
+// composite, so no drop emission is needed; the `__triet_drop_arc`
+// shim shipped + was unit-tested in jit.1.

@@ -68,7 +68,7 @@ mod shims;
 use std::collections::HashMap;
 
 use thiserror::Error;
-use triet_ir::{BuiltinName, FuncId};
+use triet_ir::{BuiltinName, FuncId, VmError};
 
 use crate::codegen::JitBackend;
 
@@ -499,17 +499,80 @@ pub fn dispatch_integer(jit: &JitCompiler, func_id: FuncId, args: &[i64]) -> Opt
     Some(result)
 }
 
-// NOTE (v0.10.x.jit.1): the catch-unwind dispatch wrapper for
-// shim-panic → `VmError` propagation (ADR-0032 §4) is DEFERRED — it is
-// blocked on `cranelift-jit 0.132`, which does not register system
-// unwind tables for JIT'd frames, so a shim panic unwinding through a
-// Cranelift frame aborts rather than reaching `catch_unwind`. The
-// error-propagation mechanism + its framework test land once the
-// ADR-0032 Addendum resolves the redesign (shim-internal catch /
-// per-call sentinel / unwind-table registration). The option-agnostic
-// infrastructure (shim registry, `drop_arc`, capability gate, symbol
-// wiring) ships in jit.1; numeric-only `dispatch_integer` (no shim
-// panics) is unaffected.
+/// v0.10.x.jit.2a — Dispatch an all-`Integer` JIT'd function that may
+/// call builtin shims, propagating shim failures as `Err(VmError)` per
+/// the [ADR-0032 §4 option-2 resolution].
+///
+/// Unlike [`dispatch_integer`], this clears the thread-local shim state
+/// before the call + reads it after: a shim that fails records a
+/// `VmError` + sets `SHIM_FAILED`, the JIT-emitted per-call probe
+/// branches the function to its `error_exit` (returning a sentinel),
+/// and this dispatcher converts the recorded error into `Err`. No
+/// unwinding crosses the Cranelift frame — shims are plain `extern "C"`
+/// and return normally.
+///
+/// Returns:
+/// - `Some(Ok(value))` — clean run (no shim set the failure flag).
+/// - `Some(Err(vm_error))` — a shim recorded a failure (the function's
+///   sentinel return is discarded).
+/// - `None` — function not in the JIT cache, or arity > 4.
+///
+/// # Safety contract
+///
+/// Identical to [`dispatch_integer`] — the inner transmute is sound
+/// under the same three invariants (all-`i64` signature ≤ arity 4;
+/// compile success implied by cache hit; host calling convention
+/// matches Cranelift's `SystemV`). Shims declare `extern "C"` (never
+/// unwind), so no `catch_unwind` is needed and the cranelift-jit 0.132
+/// unwind-table gap is sidestepped (ADR-0032 §4 option-2).
+///
+/// [ADR-0032 §4 option-2]: ../../../docs/decisions/0032-builtin-shim-abi.md
+pub fn dispatch_with_shim_errors(
+    jit: &JitCompiler,
+    func_id: FuncId,
+    args: &[i64],
+    func_name: &str,
+) -> Option<Result<i64, VmError>> {
+    let ptr = jit.lookup(func_id)?;
+    if args.len() > 4 {
+        return None;
+    }
+    shims::clear_shim_state();
+    shims::set_func_name(func_name);
+    // SAFETY: see fn-level doc-comment + `dispatch_integer`'s contract.
+    // The function + every shim it calls is `extern "C"` and never
+    // unwinds, so no panic crosses this frame. Backed by ADR-0032 §4
+    // option-2.
+    #[allow(unsafe_code)]
+    let value = unsafe {
+        match args.len() {
+            0 => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(ptr.addr as *const ());
+                f()
+            }
+            1 => {
+                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(ptr.addr as *const ());
+                f(args[0])
+            }
+            2 => {
+                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(ptr.addr as *const ());
+                f(args[0], args[1])
+            }
+            3 => {
+                let f: extern "C" fn(i64, i64, i64) -> i64 =
+                    std::mem::transmute(ptr.addr as *const ());
+                f(args[0], args[1], args[2])
+            }
+            _ => {
+                let f: extern "C" fn(i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(ptr.addr as *const ());
+                f(args[0], args[1], args[2], args[3])
+            }
+        }
+    };
+    // Shim failure (recorded in TLS) → Err; clean run → Ok(value).
+    Some(shims::take_shim_failure().map_or(Ok(value), Err))
+}
 
 /// v0.9.x.jit.5 — Pre-check used by [`triet_ir::Vm`] to decide whether
 /// a function's signature qualifies for the JIT native-dispatch path.
@@ -1092,13 +1155,50 @@ mod tests {
     // dump. Real shim wiring lands v0.10.
 
     #[test]
-    fn jit4_callbuiltin_tierdown_names_the_builtin() {
-        // Function calling `println` should tier-down with a
-        // diagnostic that names `println` + references the v0.10
-        // backlog.
+    fn jit4_callbuiltin_without_shim_tiers_down_naming_builtin() {
+        // v0.10.x.jit.2a update: a builtin WITHOUT an implemented shim
+        // (one of the 38 pending jit.2b) tier-downs with a diagnostic
+        // that names the builtin + references the jit.2b backlog.
+        // `HashMapNew` has no jit.2a shim.
         use triet_ir::BuiltinName;
         let func = make_function(
-            "with_println",
+            "with_hashmap_new",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                Instruction::CallBuiltin {
+                    dest: None,
+                    name: BuiltinName::HashMapNew,
+                    args: vec![],
+                },
+                Instruction::Ret { value: None },
+            ],
+        );
+        let mut jit = JitCompiler::new();
+        match jit.compile(&func) {
+            Err(JitError::UnsupportedOpcode { opcode }) => {
+                assert!(
+                    opcode.contains("CallBuiltin(hashmap_new)"),
+                    "diagnostic must name the builtin via its Display impl, got: {opcode}"
+                );
+                assert!(
+                    opcode.contains("jit.2b"),
+                    "diagnostic must reference the jit.2b backlog, got: {opcode}"
+                );
+            }
+            other => panic!("expected UnsupportedOpcode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit4_callbuiltin_arity_mismatch_tiers_down() {
+        // v0.10.x.jit.2a update: a builtin WITH a shim but called with
+        // the wrong arity (e.g. `Println` with 0 args; the shim takes 1
+        // composite ptr) tier-downs with an arity diagnostic rather
+        // than miscompiling.
+        use triet_ir::BuiltinName;
+        let func = make_function(
+            "println_wrong_arity",
             vec![],
             TypeTag::Unit,
             vec![
@@ -1114,41 +1214,8 @@ mod tests {
         match jit.compile(&func) {
             Err(JitError::UnsupportedOpcode { opcode }) => {
                 assert!(
-                    opcode.contains("CallBuiltin(println)"),
-                    "diagnostic must name the builtin via its Display impl, got: {opcode}"
-                );
-                assert!(
-                    opcode.contains("v0.10"),
-                    "diagnostic must reference the v0.10 backlog, got: {opcode}"
-                );
-            }
-            other => panic!("expected UnsupportedOpcode, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn jit4_callbuiltin_arg_count_in_diagnostic() {
-        // `assert_eq(a, b)` — verify arg count appears in diagnostic.
-        use triet_ir::BuiltinName;
-        let func = make_function(
-            "with_assert_eq",
-            vec![],
-            TypeTag::Unit,
-            vec![
-                Instruction::CallBuiltin {
-                    dest: None,
-                    name: BuiltinName::AssertEq,
-                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
-                },
-                Instruction::Ret { value: None },
-            ],
-        );
-        let mut jit = JitCompiler::new();
-        match jit.compile(&func) {
-            Err(JitError::UnsupportedOpcode { opcode }) => {
-                assert!(
-                    opcode.contains("2 arg"),
-                    "diagnostic must include arg count, got: {opcode}"
+                    opcode.contains("arity"),
+                    "diagnostic must flag the arity mismatch, got: {opcode}"
                 );
             }
             other => panic!("expected UnsupportedOpcode, got {other:?}"),
@@ -1570,6 +1637,7 @@ mod tests {
 
     fn entry(symbol: &'static str, addr: usize, sig: ShimSignature) -> ShimEntry {
         ShimEntry {
+            builtin: None,
             symbol,
             addr,
             signature: sig,
@@ -1702,5 +1770,226 @@ mod tests {
             }
             other => panic!("expected BuiltinCapabilityDenied, got {other:?}"),
         }
+    }
+
+    // ===== v0.10.x.jit.2a: composite-flow + shim end-to-end (ADR-0032) =====
+    //
+    // Build a single-function IR program whose body calls one builtin
+    // shim, JIT-compile it, dispatch via `dispatch_with_shim_errors`,
+    // and assert the result / error path. Validates the full composite
+    // ABI (box-in / borrow / box-out) + §4 option-2 error propagation.
+
+    // Most IR types are already imported elsewhere in the test module
+    // (`BasicBlock`/`Function`/`Operand`/`TypeTag`/`ValueId` at ~630;
+    // `RuntimeValue` at ~1457). `Constant` is the only new one here;
+    // `IrModule`/`IrProgram` are referenced via `triet_ir::` paths.
+    use triet_ir::Constant;
+
+    fn single_fn_program(func: Function, constants: triet_ir::ConstantPool) -> triet_ir::IrProgram {
+        triet_ir::IrProgram {
+            modules: vec![triet_ir::IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::new(vec!["test".to_owned()]),
+                    String::new(),
+                ),
+                functions: vec![func],
+            }],
+            constants,
+            witness_tables: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn jit_text_len_via_shim() {
+        // `text_len_worker(s: String) -> Integer { TextLen(s) }`.
+        // Composite arg (String ptr) → primitive return.
+        let func = Function {
+            id: FuncId(0),
+            name: Some("text_len_worker".to_owned()),
+            params: vec![("s".to_owned(), TypeTag::String)],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(1)),
+                        name: BuiltinName::TextLen,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(1))),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, triet_ir::ConstantPool::new());
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(jit.lookup(FuncId(0)).is_some(), "text_len_worker must JIT");
+
+        let s_ptr = shims::box_for_jit_test(RuntimeValue::String("Triết!".to_owned()));
+        let result = dispatch_with_shim_errors(&jit, FuncId(0), &[s_ptr], "text_len_worker")
+            .expect("cache hit")
+            .expect("no shim failure");
+        assert_eq!(result, 6, "char count of \"Triết!\""); // T r i ế t !
+        shims::drop_for_jit_test(s_ptr);
+    }
+
+    #[test]
+    fn jit_vector_new_via_shim() {
+        // `make_vec() -> Vector { VectorNew() }`. Composite box-out
+        // return; the i64 result is a boxed empty Vector ptr.
+        let func = Function {
+            id: FuncId(0),
+            name: Some("make_vec".to_owned()),
+            params: vec![],
+            return_type: TypeTag::Vector(Box::new(TypeTag::Integer)),
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(0)),
+                        name: BuiltinName::VectorNew,
+                        args: vec![],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, triet_ir::ConstantPool::new());
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+
+        let result_ptr = dispatch_with_shim_errors(&jit, FuncId(0), &[], "make_vec")
+            .expect("cache hit")
+            .expect("no shim failure");
+        // The returned i64 is a boxed empty Vector — verify + drop it.
+        assert_ne!(result_ptr, 0);
+        shims::drop_for_jit_test(result_ptr);
+    }
+
+    #[test]
+    fn jit_assert_false_propagates_error() {
+        // `assert_worker(x: Integer) -> Integer { Assert(False, null); x }`.
+        // The failing Assert records a VmError + sets SHIM_FAILED; in
+        // jit.2a's single-shim-call scope the function still runs to
+        // `ret x`, and the dispatcher's boundary TLS check converts the
+        // recorded error to `Err` (per ADR-0032 §4 option-2).
+        let mut constants = triet_ir::ConstantPool::new();
+        let false_c = constants.intern(Constant::Trilean(triet_logic::Trilean::False));
+        // Integer 0 doubles as the null msg pointer (no message).
+        let null_msg = constants.intern(Constant::Integer(triet_core::Integer::new(0).unwrap()));
+        let func = Function {
+            id: FuncId(0),
+            name: Some("assert_worker".to_owned()),
+            params: vec![("x".to_owned(), TypeTag::Integer)],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: None,
+                        name: BuiltinName::Assert,
+                        args: vec![Operand::Const(false_c), Operand::Const(null_msg)],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, constants);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(jit.lookup(FuncId(0)).is_some(), "assert_worker must JIT");
+
+        let result =
+            dispatch_with_shim_errors(&jit, FuncId(0), &[7], "assert_worker").expect("cache hit");
+        match result {
+            Err(VmError::AssertionFailed { function, .. }) => {
+                assert_eq!(function, "assert_worker");
+            }
+            other => panic!("expected AssertionFailed via boundary check, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jit_assert_true_no_error() {
+        // Same shape, cond=True — no failure, function returns x.
+        let mut constants = triet_ir::ConstantPool::new();
+        let true_c = constants.intern(Constant::Trilean(triet_logic::Trilean::True));
+        let null_msg = constants.intern(Constant::Integer(triet_core::Integer::new(0).unwrap()));
+        let func = Function {
+            id: FuncId(0),
+            name: Some("assert_ok".to_owned()),
+            params: vec![("x".to_owned(), TypeTag::Integer)],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: None,
+                        name: BuiltinName::Assert,
+                        args: vec![Operand::Const(true_c), Operand::Const(null_msg)],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, constants);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        let result = dispatch_with_shim_errors(&jit, FuncId(0), &[42], "assert_ok")
+            .expect("cache hit")
+            .expect("no shim failure");
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn jit_two_shim_calls_tier_down() {
+        // jit.2a single-shim-call scope: a 2nd shim call in one function
+        // must tier down (per-call sentinel codegen defers jit.2b). The
+        // function is dropped from the cache.
+        let func = Function {
+            id: FuncId(0),
+            name: Some("two_lens".to_owned()),
+            params: vec![("s".to_owned(), TypeTag::String)],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(1)),
+                        name: BuiltinName::TextLen,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(2)),
+                        name: BuiltinName::TextLen,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(2))),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, triet_ir::ConstantPool::new());
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("compile (tier-down is silent)");
+        assert!(
+            jit.lookup(FuncId(0)).is_none(),
+            "2-shim-call function must tier down in jit.2a"
+        );
     }
 }
