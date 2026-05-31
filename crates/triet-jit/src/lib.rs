@@ -73,6 +73,7 @@ use thiserror::Error;
 use triet_ir::{BuiltinName, FuncId, VmError};
 
 use crate::codegen::JitBackend;
+use crate::loader::CodeLoader;
 pub use crate::shims::SHIM_ABI_VERSION;
 
 /// JIT compiler instance per Triết runtime.
@@ -106,6 +107,10 @@ pub struct JitCompiler {
     /// first `compile()` call so failed ISA detection doesn't break
     /// callers that never JIT.
     backend: Option<JitBackend>,
+    /// v0.11.x.jit.3 Step 4b — AOT-cache-loaded modules (Path A). Owns
+    /// the RX mappings so the addresses in `function_cache` stay valid
+    /// for the process. Empty unless a cache hit populated it.
+    aot_loaded: Vec<loader::LoadedProgram>,
 }
 
 /// Opaque pointer to native machine code.
@@ -226,7 +231,80 @@ impl JitCompiler {
         Self {
             function_cache: HashMap::new(),
             backend: None,
+            aot_loaded: Vec::new(),
         }
+    }
+
+    /// v0.11.x.jit.3 Step 4b (ADR-0033 §2/§3) — Path A: load a whole
+    /// program from the AOT cache instead of compiling it fresh.
+    ///
+    /// `modules` is one `(object_bytes, manifest_bytes)` pair per module
+    /// (in `program.modules` order). Every manifest is version-checked
+    /// first (§2: `cranelift_version` + [`SHIM_ABI_VERSION`] +
+    /// `target_triple`, all exact-match); any mismatch — or any link
+    /// failure — returns [`JitError::Cache`] **before** the native cache
+    /// is touched, so the caller falls back cleanly to a fresh compile
+    /// (§8). On success the per-module objects are linked together (the
+    /// load-time linker resolves cross-module symbols + shims) and every
+    /// function in their manifests is inserted into `function_cache`.
+    ///
+    /// # Errors
+    /// [`JitError::Cache`] on a corrupt/mismatched manifest or a load
+    /// failure — always recoverable via Path B.
+    pub(crate) fn load_from_aot(
+        &mut self,
+        modules: &[(Vec<u8>, Vec<u8>)],
+        host_triple: &str,
+    ) -> Result<(), JitError> {
+        // §2 version pins — check ALL manifests before populating.
+        let mut manifests = Vec::with_capacity(modules.len());
+        for (_object, manifest_bytes) in modules {
+            let manifest = crate::aot::AotCacheManifest::deserialize(manifest_bytes)?;
+            if manifest.cranelift_version != cranelift_codegen::VERSION {
+                return Err(JitError::Cache {
+                    reason: format!(
+                        "cranelift version mismatch (cache {}, current {})",
+                        manifest.cranelift_version,
+                        cranelift_codegen::VERSION
+                    ),
+                });
+            }
+            if manifest.shim_abi_version != SHIM_ABI_VERSION {
+                return Err(JitError::Cache {
+                    reason: format!(
+                        "shim ABI version mismatch (cache {}, current {SHIM_ABI_VERSION})",
+                        manifest.shim_abi_version
+                    ),
+                });
+            }
+            if manifest.target_triple != host_triple {
+                return Err(JitError::Cache {
+                    reason: format!(
+                        "target triple mismatch (cache {}, host {host_triple})",
+                        manifest.target_triple
+                    ),
+                });
+            }
+            manifests.push(manifest);
+        }
+
+        // Link every module object together (cross-module + shim
+        // resolution), then map each manifest's functions to addresses.
+        let object_refs: Vec<&[u8]> = modules.iter().map(|(o, _)| o.as_slice()).collect();
+        // Through the `CodeLoader` trait so the eventual ternary backend
+        // swaps in without touching this dispatcher (Addendum constraint 1).
+        let loaded =
+            loader::ElfX86_64Loader.load_program(&object_refs, &loader::shim_symbol_resolver)?;
+        for manifest in &manifests {
+            for entry in &manifest.function_table {
+                if let Some(addr) = loaded.function_addr(&entry.symbol) {
+                    self.function_cache
+                        .insert(FuncId(entry.func_id), NativeCodePtr { addr });
+                }
+            }
+        }
+        self.aot_loaded.push(loaded);
+        Ok(())
     }
 
     /// Attempt to JIT-compile `func` standalone and return the native
@@ -390,6 +468,52 @@ pub struct JitDispatcher {
     /// fires `compile_program`; `true` after (subsequent
     /// `record_call`s skip the compile path).
     compiled: bool,
+    /// v0.11.x.jit.3 Step 4b — optional AOT cache backend + per-module
+    /// keys. `None` = caching disabled (v0.9/v0.10 behaviour: always
+    /// fresh in-process compile). Set via [`Self::enable_aot_cache`].
+    aot: Option<AotCache>,
+    /// AOT cache hit/miss counters (observability only — ADR-0033 §6).
+    cache_state: CacheStats,
+}
+
+/// Pluggable AOT cache backend (filesystem I/O) per ADR-0033 §7/§8.
+///
+/// Injected into the dispatcher so `triet-jit` stays **independent of
+/// the package store** (`triet-pack`). Keys are opaque strings: the
+/// caller — which owns the store + knows program provenance — derives
+/// them (e.g. `hex(impl_hash_mod)` per v0.11.0.2), and a `None` key
+/// disables caching for the whole program (refuse-over-guess; never a
+/// fabricated key).
+pub trait AotCacheStore {
+    /// Load `(object_bytes, manifest_bytes)` for `key`, or `None` on a
+    /// miss (absent / unreadable entry).
+    fn load(&self, key: &str) -> Option<(Vec<u8>, Vec<u8>)>;
+    /// Persist `object_bytes` + `manifest_bytes` under `key`.
+    /// Best-effort (§8): a write failure must not surface to the running
+    /// program — swallow it (the next run simply recompiles).
+    fn store(&self, key: &str, object: &[u8], manifest: &[u8]);
+}
+
+/// AOT cache hit/miss counters for observability (ADR-0033 §6).
+///
+/// **Not** a correctness signal: cache state is outside the determinism
+/// contract, so tests must never assert on `hits`/`misses` for
+/// correctness — only for observability.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Path-A whole-program cache hits.
+    pub hits: usize,
+    /// Compile triggers that fell back to a fresh in-process compile.
+    pub misses: usize,
+}
+
+/// Injected AOT cache state: the backend, the per-module opaque keys
+/// (index == `program.modules` index), and the host triple for the §2
+/// version cross-check.
+struct AotCache {
+    store: Box<dyn AotCacheStore>,
+    module_keys: Vec<Option<String>>,
+    host_triple: String,
 }
 
 impl JitDispatcher {
@@ -401,6 +525,8 @@ impl JitDispatcher {
             compiler: JitCompiler::new(),
             counters: HashMap::new(),
             compiled: false,
+            aot: None,
+            cache_state: CacheStats::default(),
         }
     }
 
@@ -409,6 +535,98 @@ impl JitDispatcher {
     #[must_use]
     pub const fn compiler(&self) -> &JitCompiler {
         &self.compiler
+    }
+
+    /// v0.11.x.jit.3 Step 4b — enable the AOT cache (ADR-0033). `store`
+    /// is the I/O backend; `module_keys[i]` is the opaque cache key for
+    /// `program.modules[i]` (or `None` to mark that module — hence the
+    /// whole program — non-cacheable). The caller supplies keys it has
+    /// derived from the canonical `impl_hash_mod` (v0.11.0.2); the
+    /// dispatcher treats them as opaque.
+    pub fn enable_aot_cache(
+        &mut self,
+        store: Box<dyn AotCacheStore>,
+        module_keys: Vec<Option<String>>,
+    ) {
+        // Host triple for the §2 cross-check. If ISA detection fails the
+        // triple is empty → every cached manifest mismatches → caching
+        // degrades cleanly to always-fresh-compile.
+        let host_triple = crate::codegen::build_host_isa(true)
+            .map(|isa| isa.triple().to_string())
+            .unwrap_or_default();
+        self.aot = Some(AotCache {
+            store,
+            module_keys,
+            host_triple,
+        });
+    }
+
+    /// AOT cache hit/miss counters (observability — ADR-0033 §6).
+    #[must_use]
+    pub const fn cache_state(&self) -> CacheStats {
+        self.cache_state
+    }
+
+    /// Whole-program compile honouring the AOT cache (ADR-0033 §7/§8).
+    ///
+    /// Path A (cache hit): if every module has a key, try loading all
+    /// modules' cached objects; on success the load-time linker maps
+    /// them + populates the native cache — zero codegen. Path B (miss,
+    /// version mismatch, link failure, or non-cacheable): fresh
+    /// in-process compile (the v0.9 path), and — if cacheable — persist
+    /// each module's freshly-emitted object for next time. Any Path-A
+    /// failure falls through to Path B silently (§8).
+    fn compile_program_cached(&mut self, program: &triet_ir::IrProgram) {
+        // Cacheable iff caching is on AND every module has a key.
+        let keys: Option<Vec<String>> = match &self.aot {
+            Some(cache)
+                if cache.module_keys.len() == program.modules.len()
+                    && cache.module_keys.iter().all(Option::is_some) =>
+            {
+                Some(
+                    cache
+                        .module_keys
+                        .iter()
+                        .map(|k| k.clone().expect("all keys Some"))
+                        .collect(),
+                )
+            }
+            _ => None,
+        };
+        let Some(keys) = keys else {
+            // Caching disabled or this program isn't cacheable → fresh.
+            let _ = self.compiler.compile_program(program);
+            return;
+        };
+
+        // ── Path A: read every module's cached entry, then link. ──
+        let host_triple = self
+            .aot
+            .as_ref()
+            .expect("cache present")
+            .host_triple
+            .clone();
+        let cached: Option<Vec<(Vec<u8>, Vec<u8>)>> = {
+            let store = self.aot.as_ref().expect("cache present").store.as_ref();
+            // `collect` into `Option<Vec<_>>` → `None` if any module misses.
+            keys.iter().map(|k| store.load(k)).collect()
+        };
+        if let Some(modules) = cached
+            && self.compiler.load_from_aot(&modules, &host_triple).is_ok()
+        {
+            self.cache_state.hits += 1;
+            return;
+        }
+
+        // ── Path B: fresh compile, then persist for next run. ──
+        let _ = self.compiler.compile_program(program);
+        self.cache_state.misses += 1;
+        let store = self.aot.as_ref().expect("cache present").store.as_ref();
+        for (idx, key) in keys.iter().enumerate() {
+            if let Ok((object, manifest)) = crate::aot::emit_module_object(program, idx) {
+                store.store(key, &object, &manifest.serialize());
+            }
+        }
     }
 }
 
@@ -429,10 +647,11 @@ impl triet_ir::JitDispatch for JitDispatcher {
         let counter = self.counters.entry(func_id).or_insert(0);
         *counter += 1;
         if *counter >= JIT_THRESHOLD {
-            // Best-effort whole-program compile. Per-function
-            // tier-down (UnsupportedOpcode) is silently absorbed —
-            // those functions stay VM-only.
-            let _ = self.compiler.compile_program(program);
+            // Best-effort whole-program compile honouring the AOT cache
+            // (Path A load else Path B fresh compile + persist). Per-
+            // function tier-down (UnsupportedOpcode) is silently absorbed
+            // — those functions stay VM-only.
+            self.compile_program_cached(program);
             self.compiled = true;
         }
     }
@@ -1524,6 +1743,112 @@ mod tests {
         );
         let program = make_program(vec![make_ir_module(&["khi"], vec![helper, main])], pool);
         (program, FuncId(1))
+    }
+
+    // ===== v0.11.x.jit.3 Step 4b: AOT cache dispatcher integration =====
+
+    /// `key → (object_bytes, manifest_bytes)`.
+    type MockEntries = HashMap<String, (Vec<u8>, Vec<u8>)>;
+
+    /// In-memory [`AotCacheStore`] for tests. `Clone` shares one backing
+    /// map (via `Rc`), so a "cold" dispatcher's Path-B persist is visible
+    /// to a later "warm" dispatcher's Path-A load.
+    #[derive(Clone)]
+    struct MockAotStore {
+        map: std::rc::Rc<std::cell::RefCell<MockEntries>>,
+    }
+
+    impl MockAotStore {
+        fn new() -> Self {
+            Self {
+                map: std::rc::Rc::new(std::cell::RefCell::new(HashMap::new())),
+            }
+        }
+        fn is_empty(&self) -> bool {
+            self.map.borrow().is_empty()
+        }
+        fn get(&self, key: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+            self.map.borrow().get(key).cloned()
+        }
+    }
+
+    impl AotCacheStore for MockAotStore {
+        fn load(&self, key: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+            self.map.borrow().get(key).cloned()
+        }
+        fn store(&self, key: &str, object: &[u8], manifest: &[u8]) {
+            self.map
+                .borrow_mut()
+                .insert(key.to_string(), (object.to_vec(), manifest.to_vec()));
+        }
+    }
+
+    #[test]
+    fn aot_cache_path_a_matches_fresh_compile() {
+        // §9.1 value parity: a cold run compiles fresh (Path B) + persists;
+        // a warm run with the same store loads from cache (Path A). Both
+        // must dispatch to the identical result — the cache must never
+        // change observable behaviour, only avoid recompilation.
+        let (program, main_id) = make_increment_program();
+        let store = MockAotStore::new();
+        let keys = vec![Some("mod0".to_string())];
+
+        // Cold: cache empty → Path B fresh compile + persist.
+        let mut cold = JitDispatcher::new();
+        cold.enable_aot_cache(Box::new(store.clone()), keys.clone());
+        for _ in 0..JIT_THRESHOLD {
+            cold.record_call(main_id, &program);
+        }
+        assert_eq!(cold.try_dispatch(main_id, &[41]), Some(42));
+        assert_eq!(cold.cache_state().misses, 1);
+        assert_eq!(cold.cache_state().hits, 0);
+        assert!(!store.is_empty(), "Path B must have persisted the object");
+
+        // Warm: same store now populated → Path A cache hit.
+        let mut warm = JitDispatcher::new();
+        warm.enable_aot_cache(Box::new(store), keys);
+        for _ in 0..JIT_THRESHOLD {
+            warm.record_call(main_id, &program);
+        }
+        assert_eq!(
+            warm.try_dispatch(main_id, &[41]),
+            Some(42),
+            "Path-A cache result must equal the fresh-compile result"
+        );
+        assert_eq!(warm.cache_state().hits, 1);
+        assert_eq!(warm.cache_state().misses, 0);
+    }
+
+    #[test]
+    fn aot_cache_refuses_version_mismatch_then_overwrites() {
+        // §9.2: a cached entry whose manifest pins a different
+        // `cranelift_version` must be refused (§2) → silent fallback to
+        // Path B (§8) → still correct → and the stale entry overwritten.
+        let (program, main_id) = make_increment_program();
+        let store = MockAotStore::new();
+
+        // Seed a valid object but tamper the manifest's cranelift version.
+        let (object, mut manifest) = crate::aot::emit_module_object(&program, 0).expect("emit");
+        manifest.cranelift_version = "0.0.0-bogus".to_string();
+        store
+            .map
+            .borrow_mut()
+            .insert("mod0".to_string(), (object, manifest.serialize()));
+
+        let mut dispatcher = JitDispatcher::new();
+        dispatcher.enable_aot_cache(Box::new(store.clone()), vec![Some("mod0".to_string())]);
+        for _ in 0..JIT_THRESHOLD {
+            dispatcher.record_call(main_id, &program);
+        }
+        // Version mismatch refused → Path B → correct result anyway.
+        assert_eq!(dispatcher.try_dispatch(main_id, &[41]), Some(42));
+        assert_eq!(dispatcher.cache_state().misses, 1);
+        assert_eq!(dispatcher.cache_state().hits, 0);
+
+        // Path B overwrote the stale entry with a current-version manifest.
+        let (_object, manifest_bytes) = store.get("mod0").expect("entry present");
+        let fresh = crate::aot::AotCacheManifest::deserialize(&manifest_bytes).expect("parse");
+        assert_eq!(fresh.cranelift_version, cranelift_codegen::VERSION);
     }
 
     #[test]

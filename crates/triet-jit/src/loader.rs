@@ -31,10 +31,6 @@
 //! [ADR-0033 §3]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
 
 #![allow(clippy::redundant_pub_crate)]
-// Step 3 lands the loader + its tests; the dispatcher that *calls* it on
-// a cache hit lands in Step 4. Until then these items are exercised only
-// by tests. Removed once Step 4 wires them.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -53,22 +49,16 @@ use crate::JitError;
 /// [ADR-0033 §3]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
 pub(crate) type SymbolResolver<'a> = dyn Fn(&str) -> Option<usize> + 'a;
 
-/// Executable code produced by a [`CodeLoader`]: owns the RX mapping so
-/// the code stays live for the process, plus a defined-function
-/// symbol→host-address map.
+/// One module's executable code, produced by phase 2 of the loader:
+/// owns the RX mapping so the code stays live, plus that module's
+/// defined-function symbol→host-address map. Merged into a
+/// [`LoadedProgram`] by [`CodeLoader::load_program`].
 #[derive(Debug)]
-pub(crate) struct LoadedCode {
+struct LoadedCode {
     /// Owns the mapping — dropping `LoadedCode` unmaps the code. Held
     /// only to keep the addresses in `functions` valid; never read.
     _mmap: memmap2::Mmap,
     functions: HashMap<String, usize>,
-}
-
-impl LoadedCode {
-    /// Host address of a defined function by its (mangled) symbol name.
-    pub(crate) fn function_addr(&self, symbol: &str) -> Option<usize> {
-        self.functions.get(symbol).copied()
-    }
 }
 
 /// Backend-agnostic code loader (ADR-0033 Addendum safety constraint 1).
@@ -76,21 +66,23 @@ impl LoadedCode {
 /// backend (or any other arch) slots a sibling impl behind this trait
 /// without touching the dispatcher. Tests use a mock resolver.
 pub(crate) trait CodeLoader {
-    /// Parse `object_bytes`, map `.text`, resolve external symbols via
-    /// `resolve`, apply relocations, and return executable
-    /// [`LoadedCode`].
+    /// Load + **link** a set of per-module objects together (the
+    /// load-time linker, ADR-0033 v0.11.0.2): map every object, build
+    /// the global table of all defined functions, then patch each —
+    /// resolving cross-module Triết symbols against that table and
+    /// `__triet_*` shims against `shim_resolve`. The dispatcher uses
+    /// *this* (through the trait) so the eventual ternary backend slots
+    /// in as a sibling impl without touching the dispatcher (constraint
+    /// 1).
     ///
     /// # Errors
-    /// [`JitError::Cache`] on any refuse condition (constraint 3):
-    /// unsupported format/arch, zero or multiple text sections, a
-    /// relocation type outside the verified allowlist, an unresolved
-    /// symbol, an out-of-range displacement, or an mmap/mprotect
-    /// failure. The caller treats it as a cache miss (§8).
-    fn load(
+    /// [`JitError::Cache`] if any object refuses to map/patch, or a
+    /// symbol resolves nowhere (neither a sibling module nor a shim).
+    fn load_program(
         &self,
-        object_bytes: &[u8],
-        resolve: &SymbolResolver<'_>,
-    ) -> Result<LoadedCode, JitError>;
+        objects: &[&[u8]],
+        shim_resolve: &SymbolResolver<'_>,
+    ) -> Result<LoadedProgram, JitError>;
 }
 
 /// The ELF / `x86_64` (POSIX) loader — the only target v0.11 supports
@@ -294,65 +286,48 @@ impl MappedObject<'_> {
 }
 
 impl CodeLoader for ElfX86_64Loader {
-    fn load(
+    fn load_program(
         &self,
-        object_bytes: &[u8],
-        resolve: &SymbolResolver<'_>,
-    ) -> Result<LoadedCode, JitError> {
-        map_object(object_bytes)?.patch_and_exec(resolve)
+        objects: &[&[u8]],
+        shim_resolve: &SymbolResolver<'_>,
+    ) -> Result<LoadedProgram, JitError> {
+        // Phase 1: map every module's object (no resolution yet).
+        let mapped: Vec<MappedObject<'_>> = objects
+            .iter()
+            .map(|bytes| map_object(bytes))
+            .collect::<Result<_, _>>()?;
+
+        // Global symbol table = union of all modules' defined functions.
+        let mut global: HashMap<String, usize> = HashMap::new();
+        for m in &mapped {
+            for (name, addr) in m.defined_functions() {
+                global.insert(name.clone(), *addr);
+            }
+        }
+
+        // Combined resolver: a sibling module's definition first, then a
+        // shim. (Own-object definitions are handled inside patch_and_exec.)
+        let resolve = move |name: &str| global.get(name).copied().or_else(|| shim_resolve(name));
+
+        // Phase 2: patch + exec each, merging the function tables.
+        let mut functions: HashMap<String, usize> = HashMap::new();
+        let mut objects_loaded: Vec<LoadedCode> = Vec::new();
+        for m in mapped {
+            let code = m.patch_and_exec(&resolve)?;
+            for (name, addr) in &code.functions {
+                functions.insert(name.clone(), *addr);
+            }
+            objects_loaded.push(code);
+        }
+        Ok(LoadedProgram {
+            _objects: objects_loaded,
+            functions,
+        })
     }
 }
 
-/// Load + **link** a set of per-module objects together — the load-time
-/// linker (ADR-0033 v0.11.0.2). Maps every object, builds the global
-/// table of all defined functions, then patches each, resolving
-/// cross-module Triết symbols against that table and `__triet_*` shims
-/// against `shim_resolve`. This cross-module resolution is the capability
-/// an OS-capable language's own loader must provide (cf. `ld.so`); the
-/// relocation machinery is unchanged from the single-object path.
-///
-/// # Errors
-/// [`JitError::Cache`] if any object refuses to map/patch, or a symbol
-/// resolves nowhere (neither a sibling module nor a shim).
-pub(crate) fn load_program(
-    objects: &[&[u8]],
-    shim_resolve: &SymbolResolver<'_>,
-) -> Result<LoadedProgram, JitError> {
-    // Phase 1: map every module's object (no resolution yet).
-    let mapped: Vec<MappedObject<'_>> = objects
-        .iter()
-        .map(|bytes| map_object(bytes))
-        .collect::<Result<_, _>>()?;
-
-    // Global symbol table = union of all modules' defined functions.
-    let mut global: HashMap<String, usize> = HashMap::new();
-    for m in &mapped {
-        for (name, addr) in m.defined_functions() {
-            global.insert(name.clone(), *addr);
-        }
-    }
-
-    // Combined resolver: a sibling module's definition first, then a
-    // shim. (Own-object definitions are handled inside patch_and_exec.)
-    let resolve = move |name: &str| global.get(name).copied().or_else(|| shim_resolve(name));
-
-    // Phase 2: patch + exec each, merging the function tables.
-    let mut functions: HashMap<String, usize> = HashMap::new();
-    let mut objects_loaded: Vec<LoadedCode> = Vec::new();
-    for m in mapped {
-        let code = m.patch_and_exec(&resolve)?;
-        for (name, addr) in &code.functions {
-            functions.insert(name.clone(), *addr);
-        }
-        objects_loaded.push(code);
-    }
-    Ok(LoadedProgram {
-        _objects: objects_loaded,
-        functions,
-    })
-}
-
-/// A linked set of module objects (output of [`load_program`]). Owns all
+/// A linked set of module objects (output of [`CodeLoader::load_program`]).
+/// Owns all
 /// the RX mappings + a merged defined-function symbol→address map across
 /// every linked module.
 #[derive(Debug)]
@@ -614,7 +589,7 @@ mod tests {
         let (object_bytes, manifest) =
             crate::aot::emit_module_object(&call_local_program(), 0).expect("emit");
         let loaded = ElfX86_64Loader
-            .load(&object_bytes, &deny_resolver)
+            .load_program(&[&object_bytes], &deny_resolver)
             .expect("load (no external symbols)");
 
         let main_symbol = &manifest
@@ -648,7 +623,8 @@ mod tests {
         let (obj_khi, manifest_khi) = crate::aot::emit_module_object(&prog, 0).expect("emit khi");
         let (obj_khi_b, _m) = crate::aot::emit_module_object(&prog, 1).expect("emit khi.b");
 
-        let linked = load_program(&[&obj_khi, &obj_khi_b], &shim_symbol_resolver)
+        let linked = ElfX86_64Loader
+            .load_program(&[&obj_khi, &obj_khi_b], &shim_symbol_resolver)
             .expect("link the two module objects");
 
         let main_symbol = &manifest_khi
@@ -681,7 +657,7 @@ mod tests {
         let (object_bytes, _manifest) =
             crate::aot::emit_module_object(&shim_call_program(), 0).expect("emit");
         let loaded = ElfX86_64Loader
-            .load(&object_bytes, &shim_symbol_resolver)
+            .load_program(&[&object_bytes], &shim_symbol_resolver)
             .expect("load with shim resolver");
         // The defining function is present + addressable.
         assert!(
@@ -698,7 +674,7 @@ mod tests {
         let (object_bytes, _manifest) =
             crate::aot::emit_module_object(&shim_call_program(), 0).expect("emit");
         let err = ElfX86_64Loader
-            .load(&object_bytes, &deny_resolver)
+            .load_program(&[&object_bytes], &deny_resolver)
             .expect_err("must refuse on unresolved symbol");
         match err {
             JitError::Cache { reason } => {
@@ -717,7 +693,7 @@ mod tests {
         let (object_bytes, manifest) =
             crate::aot::emit_module_object(&call_local_program(), 0).expect("emit");
         let loaded = ElfX86_64Loader
-            .load(&object_bytes, &deny_resolver)
+            .load_program(&[&object_bytes], &deny_resolver)
             .expect("load");
         let main_symbol = &manifest.function_table[0].symbol;
         let addr = loaded.function_addr(main_symbol).expect("addr") as u64;

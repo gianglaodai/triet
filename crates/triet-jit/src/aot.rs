@@ -19,11 +19,6 @@
 //! [ADR-0033 §2]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
 
 #![allow(clippy::redundant_pub_crate)]
-// Step 1 lands object emission + the manifest type; the dispatcher
-// wiring that *consumes* them (Path-A load + cache write) lands in
-// Steps 2–4. Until then these items are exercised only by tests, so
-// the lib build sees them as unused. Removed once Step 4 wires them.
-#![allow(dead_code)]
 
 use cranelift_module::default_libcall_names;
 use cranelift_object::{ObjectBuilder, ObjectModule};
