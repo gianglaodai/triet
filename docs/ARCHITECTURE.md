@@ -1,6 +1,6 @@
 # Triết — Kiến trúc chi tiết
 
-> Tài liệu này mô tả chi tiết kiến trúc từng phase đã ship của Triết (v0.2.x → v0.9). Dành cho AI agents + contributors muốn đào sâu một area cụ thể trước khi chỉnh code.
+> Tài liệu này mô tả chi tiết kiến trúc từng phase đã ship của Triết (v0.2.x → v0.10). Dành cho AI agents + contributors muốn đào sâu một area cụ thể trước khi chỉnh code. Chi tiết per-phase mới nhất là v0.8; v0.9 (Atomic + Borrow + JIT partial) và v0.10 (JIT shim layer + NLL enforcement + multi-thread Atomic) tóm tắt trong [`ROADMAP.md`](../ROADMAP.md) + ADR 0028-0033.
 >
 > **Khi nào đọc file này:** trước khi modify code trong area tương ứng (e.g., trước khi sửa `triet-pack` đọc §Crate-Pack + §CAS Packaging).
 >
@@ -9,7 +9,7 @@
 > - [`SPEC.md`](../SPEC.md) — semantics ngôn ngữ (authoritative).
 > - [`VISION.md`](../VISION.md) — 5 trụ cột + OS-capable trajectory.
 > - [`ROADMAP.md`](../ROADMAP.md) — phasing v0.2.x → v3.0+.
-> - [`docs/decisions/`](decisions/) — 27 ADRs (xem cả [chronological README](decisions/README.md) và [thematic by-topic.md](decisions/by-topic.md)).
+> - [`docs/decisions/`](decisions/) — 33 ADRs (xem cả [chronological README](decisions/README.md) và [thematic by-topic.md](decisions/by-topic.md)).
 
 ---
 

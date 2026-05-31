@@ -13,9 +13,9 @@ Triết (Hán-Việt 哲, "triết học") là một ngôn ngữ lập trình pr
 
 ## Trạng thái
 
-🟢 **Language SPEC v0.9 — implementation v0.9.0 SHIPPED — Atomic Primitive + Borrow Expression Syntax + Cranelift JIT (partial).** **v0.9 highlights:** (1) Atomic primitive end-to-end (`Atomic<T>` typecheck, IR builtins, VM dispatch, stdlib `sys.atomic`, capability gates) per [ADR-0028](docs/decisions/0028-atomic-primitive.md); (2) Expression-level borrow syntax `&+ x` / `&+ mutable x` / `&0 x` / `&0 mutable x` / `&- x` with E2420 `UseAfterMove` enforcement (CFG move tracking + branch-aware join) per [ADR-0031](docs/decisions/0031-borrow-expression-syntax.md); (3) Cranelift JIT Tier-2 backend per [ADR-0030](docs/decisions/0030-jit-cranelift-integration.md) — first Cranelift native execution from Triết Vm, Tier-1/2 graduation (≥100-call threshold), partial coverage (arithmetic + comparison + control flow + intra-program calls); workspace's single audited `unsafe` block in `triet-jit::dispatch_integer`. **v0.10 backlog**: full builtin shim layer (ADR-0030 §12), AOT cache (§13), bootstrap gate lift (§14), NLL borrow checker enforcement (E2440/E2400/E2403 per ADR-0025), multi-thread Atomic + real `raw_thread.spawn` per ADR-0026 v2 §3. Pipeline `parse → modules → typecheck → interpret/VM/JIT` end-to-end; bytecode VM với register SSA IR + `.triv` v6 + `.khi` user-facing pack format. **Ternary-native IR** với `BrTrilean` 3-way branch per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Self-hosting Compiler** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md), Outcome error handling per [ADR-0020](docs/decisions/0020-outcome-error-handling.md), Trilean! refinement per [ADR-0021](docs/decisions/0021-trilean-refinement.md), S6 Ownership per [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), Self-host port policy per [ADR-0029](docs/decisions/0029-self-host-port-policy.md). **1536 tests** pass workspace-wide.
+🟢 **Language SPEC v0.10 — implementation v0.10.0 SHIPPED — JIT builtin-shim layer + NLL borrow enforcement + multi-thread Atomic + interpreter parity.** **v0.10 highlights:** (1) JIT builtin-shim layer per [ADR-0032](docs/decisions/0032-builtin-shim-abi.md) — 36/43 builtins JIT-shimmed (I/O, Text, Vector, HashMap, Path, String, Atomic ×10, File I/O ×5), multi-call codegen with per-call failure sentinels, composite ABI (`Rc::into_raw` box / borrow / `drop_arc`); all shims **delegate semantics to the VM's own `dispatch_builtin`** so VM↔JIT divergence is impossible by construction; (the `catch_unwind`-across-JIT error design hit a cranelift-jit 0.132 unwind-table cliff — resolved to a per-call sentinel mechanism, ADR-0032 §4 Addendum); (2) NLL borrow enforcement per [ADR-0025](docs/decisions/0025-borrow-checker-rules.md) — E2440 exclusivity (CFG live-range), E2400 lifetime elision (3 rules), E2411 frozen-to-mutable promotion, E2403 escaping-borrow; (3) Multi-thread Atomic per [ADR-0026 v2](docs/decisions/0026-actor-boundary-send-rules.md) — real `raw_thread.spawn` (OS threads, `.triv` v7), `Atomic<T>` migrated to `Arc<Mutex>` (Send + Sync), cross-thread share validated; (4) interpreter `sys.atomic.*` parity. **v0.11 backlog**: AOT cache (relocating-ELF-loader cliff, [ADR-0033](docs/decisions/0033-aot-cache-cranelift-object.md)) + bootstrap byte-identical gate lift + ≥10× perf bench + varargs shims (`FStringConcat`/`TextConcat`) + `std.concurrency.*`. Pipeline `parse → modules → typecheck → interpret/VM/JIT` end-to-end; bytecode VM với register SSA IR + `.triv` v7 + `.khi` user-facing pack format. **Ternary-native IR** với `BrTrilean` 3-way branch per [ADR-0010](docs/decisions/0010-ternary-native-ir.md). **Self-hosting Compiler** per [ADR-0019](docs/decisions/0019-self-hosting-compiler-bootstrap.md), Outcome error handling per [ADR-0020](docs/decisions/0020-outcome-error-handling.md), Trilean! refinement per [ADR-0021](docs/decisions/0021-trilean-refinement.md), S6 Ownership per [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), Self-host port policy per [ADR-0029](docs/decisions/0029-self-host-port-policy.md). **1637 tests** pass workspace-wide.
 
-> **Lưu ý — gate hội tụ self-hosting defer sang v0.9.** Bootstrap chain 3-stage đã wired end-to-end và `cmp` gate đã in-tree, nhưng test chứng minh `compiler/main.tri` hội tụ (Stage 2 ≡ Stage 3 byte-identical) đang `#[ignore]` — một lần Stage 2 self-compile `main.tri` mất >15 phút trên VM dev tier. CI hiện chỉ enforce proxy gate `factorial.tri` Stage 1 ≡ Stage 2 byte-identical, đủ để verify canonical-encoding invariants ([ADR-0019 §3](docs/decisions/0019-self-hosting-compiler-bootstrap.md)) nhưng **chưa** verify full self-host convergence claim. Cả 2 ignored tests lift lên CI-required ở v0.9 (Cranelift JIT). Rationale: [ADR-0019 Addendum 2026-05-25](docs/decisions/0019-self-hosting-compiler-bootstrap.md).
+> **Lưu ý — gate hội tụ self-hosting defer sang v0.11.** Bootstrap chain 3-stage đã wired end-to-end và `cmp` gate đã in-tree, nhưng test chứng minh `compiler/main.tri` hội tụ (Stage 2 ≡ Stage 3 byte-identical) đang `#[ignore]` — một lần Stage 2 self-compile `main.tri` mất >15 phút trên VM dev tier. CI hiện chỉ enforce proxy gate `factorial.tri` Stage 1 ≡ Stage 2 byte-identical, đủ để verify canonical-encoding invariants ([ADR-0019 §3](docs/decisions/0019-self-hosting-compiler-bootstrap.md)) nhưng **chưa** verify full self-host convergence claim. Gate lift chained to the JIT AOT cache (warm-cache bootstrap < 10 min); the cache hit a relocating-ELF-loader cliff and defers to v0.11 ([ADR-0033 Addendum](docs/decisions/0033-aot-cache-cranelift-object.md)), so the convergence gate carries one more phase.
 
 ```bash
 cargo build --release
@@ -103,10 +103,10 @@ triet/
 │   ├── 02-module-system/  # 704-dòng ternary ALU across 6 modules
 │   ├── 04-capability-system/  # v0.6 capability gates walkthrough
 │   └── 05-error-handling/ # v0.7.4.3-error Outcome capstone (VM-only)
-├── docs/decisions/        # 27 ADRs (+ Addendums on ADR-0001, 0010, 0015, 0017, 0018, 0019)
-├── SPEC.md                # Đặc tả ngôn ngữ (header v0.9)
+├── docs/decisions/        # 33 ADRs (+ Addendums on ADR-0001, 0010, 0015, 0017, 0018, 0019, 0032, 0033)
+├── SPEC.md                # Đặc tả ngôn ngữ (header v0.10)
 ├── VISION.md              # Tầm nhìn 5 trụ cột + OS-capable
-└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.9 Atomic + Borrow + JIT shipped)
+└── ROADMAP.md             # Phase gates v0.2 → v3.0+ (v0.10 JIT shim + NLL + multi-thread Atomic shipped)
 ```
 
 ## Build
@@ -114,7 +114,7 @@ triet/
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test --workspace   # run all tests (1536 in v0.9.0)
+cargo test --workspace   # run all tests (1637 in v0.10.0)
 cargo clippy --workspace --all-targets   # lint
 cargo fmt --all          # format
 ```

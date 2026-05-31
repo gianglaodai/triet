@@ -16,9 +16,9 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.9 đã ship ✅
+## Trạng thái hiện tại — v0.10 đã ship ✅
 
-v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7** ✅ (Self-hosting Compiler) → **v0.8** ✅ (Ownership Foundation + BYOS Concurrency Primitives) → **v0.9** ✅ (Atomic Primitive + Borrow Expression Syntax + Cranelift JIT partial). v0.9 added 4 ADRs (0028 Atomic, 0029 Self-host port policy, 0030 JIT, 0031 Borrow expression). Phase achievements: first Cranelift native execution from Triết Vm, workspace's single audited unsafe block, E2420 UseAfterMove enforcement.
+v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7** ✅ (Self-hosting Compiler) → **v0.8** ✅ (Ownership Foundation + BYOS Concurrency Primitives) → **v0.9** ✅ (Atomic Primitive + Borrow Expression Syntax + Cranelift JIT partial) → **v0.10** ✅ (JIT builtin-shim layer + NLL borrow enforcement + multi-thread Atomic + interpreter parity). v0.10 added 2 ADRs (0032 builtin shim ABI, 0033 AOT cache cranelift-object). Phase achievements: 36/43 builtins JIT-shimmed with VM-delegating semantics (zero divergence by construction), per-call failure-sentinel error mechanism (cranelift-jit unwind-table cliff resolved), E2440 NLL exclusivity + E2400 elision + E2411/E2403, real `raw_thread.spawn` OS threads, `Atomic<T>` → `Arc<Mutex>` Send+Sync.
 
 ✅ Tree-walking interpreter + Bytecode VM (register SSA IR, 53 opcodes incl. `BrTrilean` + `WitnessCall`), `.triv` wire format v5 (ADR-0008 + 0010 + 0012 + 0020)
 ✅ Type checker với inference + monomorphization + Trilean! refinement (ADR-0021)
@@ -31,12 +31,14 @@ v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7**
 ✅ Self-hosting Compiler — `compiler/` 7 `.tri` files (~23K LOC), 3-stage bootstrap chain Stage 1 (Rust) → Stage 2 → Stage 3 byte-identical; main.tri convergence gate `#[ignore]`'d due to VM dev tier, lifts v0.9 (ADR-0019)
 ✅ S6 Ownership Model — 5-form reference `&+`/`&0`/`&-`/`&` + `owned`, `ObjectHeader` 8-byte binary header với refcount atomic ops, lexer + parser + AST + type-system resolve transparently (ADR-0022)
 ✅ Concurrency Primitives (BYOS) — Send derivation cho 13 type categories, E2500 fires, capability gates extended với `sys.raw_thread`/`sys.atomic`/`dev.ffi`/etc., Atomic placeholder shipped (ADR-0026 v2)
-✅ Borrow Checker skeleton + Diagnostic format AI-first — E24XX namespace (E2400/E2402-E2403/E2410-E2411/E2420-E2422/E2430/E2440) + E25XX (`triet::actor::E2500/E2510/E2520`), `[Fix N]` numbered blocks per ADR-0025/0027. Enforcement defer v0.9
-✅ Cargo workspace `version = 0.8.0`, SPEC header v0.8 (S6 §10 + Outcome §1.5.3 + Trilean! locked)
-✅ Differential tests: 12/12 v0.7.4.2 examples byte-identical VM vs interpreter; `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7
-✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch + `cargo fmt --all --check` sạch (post-v0.8.x.review.1)
-✅ **1536 tests workspace-wide** (3 `#[ignore]` documented per ADR-0019 §7 perf gate; main.tri convergence gate stays `#[ignore]` per v0.9.x.jit.7 deferral to v0.10)
-🔜 Tiếp theo: v0.10 — full builtin shim layer (ADR-0030 §12) + AOT cache (§13) + bootstrap gate lift (§14) + NLL borrow enforcement (E2440/E2400/E2403 per ADR-0025 + ADR-0031 §10.1) + multi-thread Atomic (ADR-0026 v2 §3 + ADR-0031 §10.2).
+✅ Borrow Checker NLL enforcement — E2440 exclusivity (CFG live-range, branch isolation, loop extension), E2400 lifetime elision (3 rules; Rule 2 dormant pending `self`-param syntax), E2411 frozen-to-mutable promotion, E2403 `&-` escaping-borrow; `[Fix N]` numbered blocks per ADR-0025/0027/0031 §10.1
+✅ JIT builtin-shim layer — 36/43 builtins JIT-shimmed (I/O, Text, Vector, HashMap, Path, String, Atomic ×10, File I/O ×5), all DELEGATE semantics to `triet_ir::dispatch_builtin` (zero VM↔JIT divergence), composite ABI (`Rc::into_raw` box/borrow/`drop_arc`), per-call failure-sentinel error mechanism (ADR-0032 §4); 7 tier-down to VM (2 varargs deferred, 2 raw_thread, Ordering-enum gating)
+✅ Multi-thread Atomic — real `raw_thread.spawn` OS threads (`.triv` v7), `Atomic<T>` migrated `Rc<RefCell>` → `Arc<Mutex>` (Send + Sync), cross-thread share validated; interpreter `sys.atomic.*` parity (ADR-0026 v2 §3 + ADR-0028 §5 + ADR-0031 §10.2/§10.7)
+✅ Cargo workspace `version = 0.10.0`, SPEC header v0.10 (S6 §10 + Outcome §1.5.3 + Trilean! + Atomic + Borrow Expression locked)
+✅ Differential tests: 14 single-file + 1 multi-file examples; `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7
+✅ `cargo clippy --workspace --all-targets -- -D warnings` sạch + `cargo fmt --all --check` sạch
+✅ **1637 tests workspace-wide** (3 `#[ignore]` documented per ADR-0019 §7 perf gate; main.tri convergence gate stays `#[ignore]` — gate lift chains on v0.11 AOT cache)
+🔜 Tiếp theo: v0.11 — JIT AOT cache (cranelift-object relocating-loader cliff, ADR-0033) + bootstrap gate lift + ≥10× perf bench + varargs shims + `std.concurrency.*` stdlib.
 
 ---
 
@@ -552,6 +554,45 @@ Original ROADMAP §v0.9 (pre-v0.8.x.completion) = JIT-only. Author 2026-05-29 ch
 - §10.7 `triet-interpreter` atomic builtin intercepts (discovered .7e — currently VM-only demo per outcome_propagate.tri precedent).
 
 Commit log: `git log --oneline --grep="v0\.9\.x\.atomic"`.
+
+---
+
+## v0.10 — JIT builtin-shim layer + NLL enforcement + multi-thread Atomic ✅ SHIPPED
+
+**Closed 2026-05-31.** Final test count **1637** (+101 from v0.9.0 baseline 1536). 2 NEW design ADRs locked (0032 builtin shim ABI, 0033 AOT cache cranelift-object). **Scope decision 2026-05-30 (Option B):** 2-day window, AI as primary code author; Tier 1A (JIT completion + multi-thread + interpreter parity) + Tier 1B (NLL borrow enforcement) = 14 sub-tasks. `std.concurrency.*` stdlib + AOT cache deferred v0.11 (feature-new scope / loader cliff).
+
+**Net language additions vs v0.9:**
+- JIT builtin-shim layer per ADR-0032 — 36/43 builtins JIT-shimmed across I/O, Text, Vector, HashMap, Path, String, Atomic ×10, File I/O ×5. Hybrid ABI (primitives unboxed `i8`/`i16`/`i64`, composites `Rc`-boxed `i64` ptr), `Rc::into_raw` box-out / borrow-in / `__triet_drop_arc` at SSA last-use. **All shims delegate semantics to the VM's own `triet_ir::dispatch_builtin`** → VM↔JIT divergence impossible by construction.
+- §4 error mechanism — per-call failure sentinel: shims `extern "C"` (never unwind), record `VmError` to thread-local + set `SHIM_FAILED`, return sentinel; codegen emits `__triet_shim_failed` probe after each shim call → `brif` to lazy per-function `error_exit` block; dispatcher reads TLS after normal return. Resolved the cranelift-jit 0.132 unwind-table cliff (no system DWARF tables → `catch_unwind` across JIT frame aborts).
+- NLL borrow enforcement per ADR-0025 + ADR-0031 §10.1 — E2440 exclusivity (3-pass collect + live-range + conflict, branch isolation via event serialization, loop extension via marker pairs; clean on 23K-LOC self-host corpus), E2400 lifetime elision (3 rules), E2411 frozen-to-mutable promotion, E2403 `&-` escaping-borrow conservative.
+- Multi-thread Atomic per ADR-0026 v2 §3 + ADR-0028 §5 — real `raw_thread.spawn` OS threads (`std::thread::spawn`, `.triv` v6→v7 with self-host lockstep), `Atomic<T>` migrated `Rc<RefCell>` → `Arc<Mutex>` (Send + Sync), `Arc::clone` shares cell → cross-thread share validated (4-worker e2e). Interpreter `sys.atomic.*` parity (drops `atomic_counter` VM-only caveat).
+
+**Sub-phase archive:**
+
+| Sub-phase | Sub-tasks | Final test count | Status |
+|---|---|---|---|
+| v0.10.0 — Design phase | .1 ADR-0032 / .2 ADR-0033 | 1536 | ✅ |
+| v0.10.x.interp — Interpreter atomic parity | .1 | 1549 | ✅ |
+| v0.10.x.jit — JIT subsystem completion | .1 / .2a / .2b-i / .2b-ii / .2b-iii shipped; .3 + .4 deferred v0.11 | ~1620 | ✅ partial |
+| v0.10.x.thread — Multi-thread Atomic | .1 / .2 / .3 | ~1635 | ✅ |
+| v0.10.x.borrow — Borrow checker enforcement | .1 / .2 / .3 | 1637 | ✅ |
+
+**Gate (ADR-0009 §A/B/C/D applied):**
+- ✅ A — 0 `TODO(v0.10)` markers in src/. main.tri convergence gate stays `#[ignore]` (gate lift chains on v0.11 AOT cache).
+- ✅ B — 1637 tests, clippy `-D warnings` clean, fmt clean, `release-check.sh` ✓✓✓✓.
+- ✅ C — Cargo 0.9.0 → 0.10.0, SPEC v0.9 → v0.10, README + ROADMAP + ARCHITECTURE + CLAUDE.md synced.
+- ✅ D — 14 single-file + 1 multi-file examples typecheck + run; `atomic_counter` cross-thread e2e.
+- Perf gate — deferred v0.11 alongside AOT cache (cold-JIT bootstrap prohibitive without warm cache).
+
+**Không làm (defer v0.11):**
+- JIT AOT cache (jit.3) via cranelift-object — relocating-ELF-loader cliff per [ADR-0033 Addendum](docs/decisions/0033-aot-cache-cranelift-object.md); no turnkey crate loads `.o` + symbol resolver → executable, hand-rolled relocation patching is the highest mem-corruption-risk code in the project.
+- Bootstrap gate lift + ≥10× criterion perf bench (jit.4) — chains on jit.3 warm cache.
+- Varargs shims `FStringConcat`/`TextConcat` — genuine ABI cliff (array-ptr+len), ADR-0032 jit.2b-iii Addendum.
+- Borrow checker corpus-driven: field-granular NLL, inter-procedural, closure captures, E2403 full owner-trail, Rule-2 elision (`self`-param parser), E2410 field-assign.
+- Concurrency closures: `spawn(closure)` Send-bound closure types → real Send-boundary refcount-bump codegen + Triết-source multi-worker.
+- `std.concurrency.*` stdlib (Mutex, Channel, M:N green threads) per ADR-0028 §10.
+
+Commit log: `git log --oneline --grep="v0\.10"`.
 
 ---
 

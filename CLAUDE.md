@@ -27,14 +27,14 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret/VM/JIT` pipeline, a register-SSA IR + bytecode VM, a Cranelift JIT Tier-2 backend (partial coverage; v0.10 completes), a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.9.0 (Atomic Primitive + Borrow Expression Syntax + Cranelift JIT partial shipped)** — v0.6 Capability ✅, v0.7 Self-hosting ✅, v0.8 Ownership/BYOS ✅, v0.9 Atomic/Borrow/JIT-partial ✅. Full builtin shim layer + AOT cache + NLL borrow enforcement + multi-thread Atomic defer to v0.10 (in progress).
+Triết is a balanced-ternary, AI-first programming language implemented in Rust. The codebase is a Cargo workspace with a `parse → modules → typecheck → interpret/VM/JIT` pipeline, a register-SSA IR + bytecode VM, a Cranelift JIT Tier-2 backend (36/43 builtin shims + multi-call codegen; AOT cache defers v0.11), a crate-pack distribution format (`.khi`), a content-addressed package store (`~/.triet/store/`), and a capability system (`sys.*`/`dev.*`/`usr.*` with manifest + policy + TTY prompt). Long-term aim is OS-capable; **current state is v0.10.0 (JIT builtin-shim layer + NLL borrow enforcement + multi-thread Atomic + interpreter parity shipped)** — v0.6 Capability ✅, v0.7 Self-hosting ✅, v0.8 Ownership/BYOS ✅, v0.9 Atomic/Borrow/JIT-partial ✅, v0.10 Shim-layer/NLL/Multi-thread ✅. AOT cache (relocating-ELF-loader cliff) + bootstrap byte-identical gate lift + varargs shims + `std.concurrency.*` defer to v0.11.
 
 Source-of-truth docs:
-- `SPEC.md` — language semantics (authoritative; header **v0.9**, S6 ownership §10 + Outcome §1.5.3 + Trilean! refinement + Atomic + Borrow Expression locked)
+- `SPEC.md` — language semantics (authoritative; header **v0.10**, S6 ownership §10 + Outcome §1.5.3 + Trilean! refinement + Atomic + Borrow Expression locked)
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.9 ✅ shipped (Atomic + Borrow + JIT partial), **next: v0.10** = full builtin shim layer + AOT cache + NLL enforcement + multi-thread Atomic
+- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.10 ✅ shipped (JIT shim layer + NLL enforcement + multi-thread Atomic + interpreter parity), **next: v0.11** = JIT AOT cache + bootstrap gate lift + ≥10× perf bench + varargs shims + `std.concurrency.*`
 - `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — **29 ADRs** for architectural decisions (ADR-0019 Self-hosting bootstrap, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement, ADR-0022 S6 ownership, ADR-0025 borrow checker rules, ADR-0026 v2 BYOS concurrency, ADR-0027 diagnostic format, ADR-0032 builtin shim ABI, ADR-0033 AOT cache cranelift-object; see `docs/decisions/README.md` for the full index)
+- `docs/decisions/` — **33 ADRs** for architectural decisions (ADR-0019 Self-hosting bootstrap, ADR-0020 Outcome error handling, ADR-0021 Trilean! refinement, ADR-0022 S6 ownership, ADR-0025 borrow checker rules, ADR-0026 v2 BYOS concurrency, ADR-0027 diagnostic format, ADR-0032 builtin shim ABI, ADR-0033 AOT cache cranelift-object; see `docs/decisions/README.md` for the full index)
 
 ## Development principles
 

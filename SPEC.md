@@ -1,4 +1,4 @@
-# Triết — Đặc tả ngôn ngữ v0.9
+# Triết — Đặc tả ngôn ngữ v0.10
 
 > Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, với tham vọng **đủ năng lực viết hệ điều hành** khi phần cứng tam phân xuất hiện. Lấy cảm hứng từ Setun (Liên Xô, 1958) và logic Łukasiewicz Ł3 (1920).
 >
@@ -988,7 +988,7 @@ Note: `std.assert` panic nếu `cond` là `false` HOẶC `unknown`. Lý do: asse
 
 ## 10. Memory model
 
-> **Trạng thái:** Design locked 2026-05-26 (S6). Implementation phased v0.8 (parser tokens) → v0.10 (NLL) → v1.0 (stable). Triết v0.7 runtime chưa expose references; cú pháp trong §10.1—§10.4 phản ánh design intent, không phải hành vi hiện tại của compiler.
+> **Trạng thái:** Design locked 2026-05-26 (S6). Implementation phased v0.8 (parser tokens) → v0.9 (expression-level borrow syntax `&+`/`&0`/`&-` + E2420 use-after-move, ADR-0031) → v0.10 (NLL exclusivity E2440 + lifetime elision E2400 + E2411/E2403 enforcement, ADR-0025) → v1.0 (stable). As of v0.10 the borrow forms in §10.1—§10.4 are real compiler behavior; field-granular NLL + inter-procedural borrow + closure captures remain corpus-driven v0.11+ refinements.
 
 Triết sử dụng mô hình **Trit-Balanced Ownership (Sở hữu Tam phân Cân bằng)** — design lock **S6** (2026-05-26): Rust-strict static borrow check + cú pháp tam phân + capability-as-unsafe + **không có lifetime annotation `<'a>`**. Tham chiếu đầy đủ tại [ADR-0022](docs/decisions/0022-trit-balanced-ownership.md), thuật toán enforcement tại [ADR-0025](docs/decisions/0025-borrow-checker-rules.md), concurrency primitives & send rules tại [ADR-0026](docs/decisions/0026-actor-boundary-send-rules.md).
 
