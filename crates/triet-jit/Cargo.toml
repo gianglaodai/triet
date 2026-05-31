@@ -50,7 +50,16 @@ cranelift-module = "0.132"
 # the Path-A loader. `memmap2` (RW→RX loaded code) joins in Step 3.
 cranelift-object = "0.132"
 object = "0.39"
+# v0.11.x.jit.3 Step 3 — Path-A relocating loader: anonymous RW mmap →
+# patch relocations → `make_exec` (RX). W^X by construction (MmapMut is
+# never executable; make_exec drops write) per ADR-0033 Addendum §4c.
+memmap2 = "0.9"
 # Host-ISA builder (target detection) — needed for JITBuilder::with_isa.
 cranelift-native = "0.132"
 thiserror.workspace = true
+
+[dev-dependencies]
+# v0.11.x.jit.3 Step 3 — property-fuzz the relocation patcher's
+# arithmetic core (ADR-0033 Addendum safety constraint 4b).
+proptest = "1"
 

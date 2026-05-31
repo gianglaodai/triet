@@ -64,6 +64,7 @@
 
 mod aot;
 mod codegen;
+mod loader;
 mod shims;
 
 use std::collections::HashMap;
