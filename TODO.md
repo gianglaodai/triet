@@ -69,7 +69,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 **Reframed by the coverage audit (`29aeeaa`):** `compiler/main.tri` is only **3.7% JIT-able** (96.3% tier down on struct/enum/Outcome/Nullable/String). The gate can't lift until the compiler is ~fully JIT-able. Author: "stop deferring — Hướng A." Cover the aggregate data model via delegate-to-VM shims per ADR-0034, re-measuring the audit after each sub-task (the burndown metric).
 
 - [x] **jit.4.audit** — JIT-coverage measurement tooling (`audit_jit_coverage` + `codegen::collect_tier_downs` + `jit_tier_down_audit.rs`). Finding: 146/3953 JIT-able. — `29aeeaa`
-- [ ] **jit.4.agg.0** — §6 translator panic → clean tier-down (10 functions Cranelift-assert instead of erroring; would abort the real JIT). Make iteration safe. Re-audit: 0 panics.
+- [x] **jit.4.agg.0** — §6 translator panic → clean skip. Root cause: lowerer emits dead code after an early-`return` terminator within one block; codegen now stops at the terminator (Ret/Br/BrIf/BrTrilean/Unreachable). Re-audit: 0 panics. Regression test added. A real fix (removes a crash the production `compile_program` would hit), not just tier-down. — `89ca3fd`
 - [ ] **jit.4.agg.1** — §1 struct ops (`FieldGet`/`FieldSet`) + §2 `StructNew` variadic array-ptr+len ABI (also unblocks deferred f-string varargs). Largest bucket (1314).
 - [ ] **jit.4.agg.2** — §1 enum ops (`EnumNew`/`EnumTag`/`EnumPayload`) + Outcome ops (`OutcomeDiscriminant`/wrap/unwrap). ~1489 combined.
 - [ ] **jit.4.agg.3** — §1 Nullable ops + §3 String/Null constants + **loader `R_X86_64_64` data relocation** (extends `SUPPORTED_RELOC_TYPES` + the ADR-0033 constraint-4 regimen: value-parity + proptest fuzz + W^X). Only sub-task that re-touches unsafe loader.
