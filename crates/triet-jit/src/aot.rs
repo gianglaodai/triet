@@ -29,7 +29,7 @@ use cranelift_module::default_libcall_names;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use triet_ir::IrProgram;
 
-use crate::codegen::{build_host_isa, declare_and_define_program};
+use crate::codegen::{build_host_isa, declare_and_define_module};
 use crate::{JitError, SHIM_ABI_VERSION};
 
 /// One entry in the manifest function table: a compiled Triết function
@@ -146,25 +146,32 @@ impl AotCacheManifest {
     }
 }
 
-/// Emit a relocatable ELF `.o` for `program` plus its
-/// [`AotCacheManifest`], using the shared translator against a
-/// `cranelift-object` backend (Path A persist per [ADR-0033 §1]).
+/// Emit a relocatable ELF `.o` for a **single module**
+/// (`program.modules[local_idx]`) plus its [`AotCacheManifest`], using
+/// the shared translator against a `cranelift-object` backend (Path A
+/// persist per [ADR-0033 §1] + v0.11.0.2 per-module granularity).
 ///
-/// The ISA is built PIC (`build_host_isa(true)`) so the object uses
-/// PC-relative relocations — loadable at an arbitrary `mmap` address
-/// in Step 3. Functions that tier down during translation (per
-/// ADR-0030 §2) are simply absent from both the object and the
-/// manifest's function table, exactly as in the JIT cache.
+/// One object per module so each is cacheable + GC'd by its own
+/// `impl_hash_mod`. Cross-module calls become external symbols the
+/// load-time linker resolves (see [`declare_and_define_module`]). The
+/// ISA is built PIC (`build_host_isa(true)`) so the object uses
+/// PC-relative relocations — loadable at an arbitrary `mmap` address.
+/// Functions that tier down during translation (per ADR-0030 §2) are
+/// absent from both the object and the manifest's function table.
 ///
 /// # Errors
 ///
 /// [`JitError::Cranelift`] if ISA construction, the `ObjectBuilder`,
-/// or final object emission fails. (Object *emission* faults are
+/// or final object emission fails; [`JitError::UnsupportedOpcode`] if
+/// `local_idx` is out of range. (Object *emission* faults are
 /// `Cranelift`, not [`JitError::Cache`] — the latter is the Path-A
 /// *load* side per §8.)
 ///
 /// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
-pub(crate) fn emit_object(program: &IrProgram) -> Result<(Vec<u8>, AotCacheManifest), JitError> {
+pub(crate) fn emit_module_object(
+    program: &IrProgram,
+    local_idx: usize,
+) -> Result<(Vec<u8>, AotCacheManifest), JitError> {
     let isa = build_host_isa(true)?;
     let target_triple = isa.triple().to_string();
     let builder = ObjectBuilder::new(isa, "triet_aot", default_libcall_names()).map_err(|err| {
@@ -173,7 +180,7 @@ pub(crate) fn emit_object(program: &IrProgram) -> Result<(Vec<u8>, AotCacheManif
         }
     })?;
     let mut module = ObjectModule::new(builder);
-    let translated = declare_and_define_program(&mut module, program, &[])?;
+    let translated = declare_and_define_module(&mut module, program, local_idx, &[])?;
 
     let mut function_table: Vec<FunctionEntry> = translated
         .compiled
@@ -477,7 +484,7 @@ mod tests {
     #[test]
     fn emit_object_produces_parseable_elf_with_bounded_relocations() {
         let program = call_local_program();
-        let (object_bytes, manifest) = emit_object(&program).expect("emit");
+        let (object_bytes, manifest) = emit_module_object(&program, 0).expect("emit");
 
         // Manifest reflects both compiled functions.
         assert_eq!(manifest.function_table.len(), 2);
@@ -522,7 +529,7 @@ mod tests {
         // The external-symbol case: shim references resolve via
         // SHIM_TABLE at load (Step 3), not an in-object offset. Verify
         // they appear as *undefined* symbols + bounded relocation type.
-        let (object_bytes, manifest) = emit_object(&shim_call_program()).expect("emit");
+        let (object_bytes, manifest) = emit_module_object(&shim_call_program(), 0).expect("emit");
         assert_eq!(manifest.function_table.len(), 1);
 
         let seen = collect_bounded_relocations(&object_bytes);

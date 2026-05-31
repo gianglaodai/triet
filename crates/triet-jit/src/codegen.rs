@@ -448,6 +448,108 @@ pub(crate) fn declare_and_define_program(
     })
 }
 
+/// Per-**module** translation for AOT object emission (ADR-0033
+/// v0.11.0.2): declare + define ONLY `program.modules[local_idx]`'s
+/// functions, so each module becomes its own cacheable `.o` keyed by
+/// its `impl_hash_mod`.
+///
+/// Linkage split that makes the load-time linker work:
+/// - **Local module's functions → `Export`** (globally referenceable):
+///   defined here, and visible to *other* modules' objects at load.
+/// - **Other modules' functions → `Import`** (undefined externals):
+///   declared but not defined, so a cross-module call lowers to an
+///   external relocation (GOTPCREL) the linker resolves against the
+///   global symbol table. Unreferenced imports emit no relocation.
+/// - Shims stay `Import` (handled inside `emit_function_body`).
+///
+/// The mangled symbol `{name}__f{func_id}` is program-global-unique, so
+/// a caller module's `Import` matches the definer module's `Export` by
+/// name. Same translator core (`emit_function_body`) as the
+/// whole-program path.
+///
+/// # Errors
+/// [`JitError::UnsupportedOpcode`] if `local_idx` is out of range, or a
+/// `declare_function` failure.
+pub(crate) fn declare_and_define_module(
+    module: &mut impl Module,
+    program: &IrProgram,
+    local_idx: usize,
+    denied_namespaces: &[&str],
+) -> Result<TranslatedProgram, JitError> {
+    if local_idx >= program.modules.len() {
+        return Err(JitError::UnsupportedOpcode {
+            opcode: format!("module index {local_idx} out of range"),
+        });
+    }
+
+    // Pre-pass: declare every program function so calls resolve —
+    // local ones `Export` (defined below), the rest `Import`.
+    let mut func_id_map: HashMap<TriFuncId, ClFuncId> = HashMap::new();
+    let mut path_to_funcid: HashMap<AbsolutePath, TriFuncId> = HashMap::new();
+    let mut symbol_names: HashMap<TriFuncId, String> = HashMap::new();
+    for (m_idx, ir_module) in program.modules.iter().enumerate() {
+        let is_local = m_idx == local_idx;
+        for func in &ir_module.functions {
+            let signature = build_signature(func)?;
+            let func_name = func
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("@f{}", func.id.0));
+            let mangled = format!("{}__f{}", func_name, func.id.0);
+            let linkage = if is_local {
+                Linkage::Export
+            } else {
+                Linkage::Import
+            };
+            let cl_id = module
+                .declare_function(&mangled, linkage, &signature)
+                .map_err(cranelift_err)?;
+            func_id_map.insert(func.id, cl_id);
+            if is_local {
+                symbol_names.insert(func.id, mangled);
+            }
+            if let Some(name) = &func.name {
+                let path = AbsolutePath::new(ir_module.path.module_path().clone(), name.clone());
+                path_to_funcid.insert(path, func.id);
+            }
+        }
+    }
+
+    let ctx = ProgramContext {
+        func_id_map: func_id_map.clone(),
+        path_to_funcid,
+        constants: &program.constants,
+        denied_namespaces,
+    };
+
+    // Body pass: define ONLY the local module's functions. Per-function
+    // tier-down (per ADR-0030 §2) skips just that function.
+    let mut compiled: Vec<TriFuncId> = Vec::new();
+    for func in &program.modules[local_idx].functions {
+        let Some(&cl_id) = func_id_map.get(&func.id) else {
+            continue;
+        };
+        let mut cl_ctx = module.make_context();
+        cl_ctx.func.signature = build_signature(func)?;
+        if emit_function_body(module, func, &ctx, &mut cl_ctx).is_err() {
+            module.clear_context(&mut cl_ctx);
+            continue;
+        }
+        if module.define_function(cl_id, &mut cl_ctx).is_err() {
+            module.clear_context(&mut cl_ctx);
+            continue;
+        }
+        module.clear_context(&mut cl_ctx);
+        compiled.push(func.id);
+    }
+
+    Ok(TranslatedProgram {
+        func_id_map,
+        compiled,
+        symbol_names,
+    })
+}
+
 /// Shared body-emit routine called by both the single-function and the
 /// program-level paths. Threads `ProgramContext` for call dispatch +
 /// constant pool access.
