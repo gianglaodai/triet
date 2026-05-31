@@ -69,9 +69,39 @@
 > shims require. Final choice is the author's; this Addendum records the
 > cliff so jit.2 does not build 43 shims on an unvalidated foundation.
 >
-> §4 body below is preserved (immutability rule); this Addendum is
-> authoritative for the error-propagation mechanism until a follow-up
-> ADR or Addendum locks the chosen redesign.
+> **RESOLVED 2026-05-31 (author sign-off): OPTION 2 — per-call sentinel
+> check in codegen.** The §4 `extern "C-unwind"` + dispatcher
+> `catch_unwind` mechanism is **superseded** for v0.10. The locked
+> replacement:
+>
+> - **Shim ABI:** each fallible shim returns its result PLUS an
+>   out-of-band failure signal. A shim records a structured `VmError`
+>   into a thread-local slot (the §4 slot is RE-USED — it survives as
+>   option-agnostic substrate) and returns a **sentinel** the codegen
+>   recognizes. For pointer/composite returns the sentinel is a null
+>   `i64 0`; for primitive returns (where 0 is a valid value) the shim
+>   instead sets a dedicated thread-local `SHIM_FAILED` boolean flag
+>   that the codegen-emitted check reads (chosen over poisoning a
+>   primitive value-space).
+> - **Codegen:** after every `call $shim`, the JIT emits a check of the
+>   `SHIM_FAILED` flag (a `__triet_shim_failed() -> i8` probe shim) and,
+>   if set, branches to a per-function `error_exit` block that returns a
+>   sentinel up to the dispatcher. The dispatcher reads the TLS
+>   `VmError` after the native call returns (NORMALLY — no unwinding
+>   through the JIT frame).
+> - **Shims declare `extern "C"` (not `"C-unwind"`)** — they never
+>   unwind out; on internal panic-class failures they `catch_unwind`
+>   INTERNALLY, record the `VmError`, set the flag, and return. The JIT
+>   frame is never traversed by the unwinder. This sidesteps the
+>   cranelift-jit 0.132 unwind-table gap entirely.
+> - **`VmError::JitShimFault`** (the fallback variant reverted in jit.1)
+>   is RE-ADDED in jit.2 for the "shim set flag without recording a
+>   structured error" defensive case.
+>
+> jit.2 implements this. The §4 body below (C-unwind + catch_unwind) is
+> preserved per immutability but is **non-normative** — this Addendum's
+> option-2 resolution is authoritative for v0.10's error-propagation
+> mechanism.
 
 **Issue:** v0.9 ships partial Cranelift JIT (numeric arith / cmp / control flow / intra-program calls). `Instruction::CallBuiltin` tier-downs to VM dispatch per [ADR-0030 §12.3](0030-jit-cranelift-integration.md) — entire function reverts to VM when it touches *any* of the 43 stdlib builtins. Real programs use `println` / `Vector*` / `HashMap*` heavily, so v0.9 JIT acceleration is limited to numeric leaf functions. v0.10 closes the gap.
 
