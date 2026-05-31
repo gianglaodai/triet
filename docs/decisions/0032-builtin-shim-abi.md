@@ -2,6 +2,77 @@
 
 **Trạng thái:** **Locked** (v0.10.0.1, author sign-off pending). Refines [ADR-0030 §12](0030-jit-cranelift-integration.md) — locks the 5 design constraints surfaced by v0.9.x.jit.4 deferral so that v0.10.x.jit.1 (shim infrastructure) and v0.10.x.jit.2 (43 builtin implementations) can ship without re-litigating ABI shape. First ADR opened in the v0.10 cycle; mandatory unblock for jit.1.
 
+> **2026-05-31 Addendum (v0.10.x.jit.1 implementation) — §4 error-propagation cliff + redesign options.**
+>
+> v0.10.x.jit.1 implementation discovered that **§4's locked mechanism
+> (`extern "C-unwind"` shim panic + dispatcher `catch_unwind` across the
+> JIT'd frame) does NOT work on `cranelift-jit 0.132`** — the version
+> pinned in `triet-jit/Cargo.toml`. The framework smoke test
+> `framework_shim_panic_to_vm_error` (§7.1) aborts with `failed to
+> initiate panic, error 5` + SIGABRT.
+>
+> **Root cause:** `cranelift-jit 0.132` does not register **system DWARF
+> unwind tables** (`.eh_frame` via `__register_frame`) for JIT-compiled
+> functions. (It has a `wasmtime-unwinder` cargo feature, but that wires
+> Wasmtime's *custom* exception model, not the system unwinder that
+> Rust's `panic!`/`catch_unwind` use.) When a shim panics and the
+> unwinder tries to traverse the Cranelift-compiled caller frame, it
+> finds no unwind info → fatal abort, never reaching the dispatcher's
+> `catch_unwind`. §4 assumed (incorrectly) that `extern "C-unwind"` +
+> `catch_unwind` would compose with Cranelift JIT out of the box.
+>
+> **What jit.1 shipped (option-agnostic, all green):** shim registry
+> (`ShimEntry`/`production_shim_entries`/`JITBuilder::symbol` wiring,
+> §6), lifetime `__triet_drop_arc` shim (§2), `BuiltinName → namespace`
+> capability table + `check_builtin_capability` defense-in-depth (§3),
+> hybrid-ABI scalar/signature converters (§1), the `unsafe_code = deny`
+> crate-local override (§5), and 3 of 4 framework tests
+> (`framework_shim_call_returns_value`,
+> `framework_drop_arc_balances_refcount`,
+> `framework_capability_denied_tiers_down`).
+>
+> **What deferred:** the §4 error-propagation mechanism — the
+> thread-local error slot + dispatch `catch_unwind` wrapper
+> (`dispatch_integer_caught`) + `framework_shim_panic_to_vm_error` test +
+> the `VmError::JitShimFault` fallback variant. These were removed from
+> jit.1 (not shipped half-working) pending the redesign decision below.
+>
+> **Three redesign options for the author (decide before v0.10.x.jit.2
+> wires the 43 shims, which all need a working error path):**
+>
+> 1. **Shim-internal catch + boundary TLS check.** Each shim wraps its
+>    fallible body in `catch_unwind` internally; on failure it records a
+>    `VmError` to a thread-local slot and returns a sentinel — never
+>    unwinding out through the JIT frame. The dispatcher reads the slot
+>    after the (normal) native return. *Caveat:* a JIT'd function calling
+>    multiple shims would keep executing subsequent shims after one
+>    fails (the failing shim returned a sentinel, not an abort) — wrong
+>    for side-effecting shims (`println`) unless paired with option 2's
+>    per-call check. Lowest codegen complexity, weakest semantics.
+> 2. **Per-call sentinel check in codegen.** Shims record-to-TLS +
+>    return a sentinel; the JIT `CallBuiltin` codegen emits a
+>    check-and-early-return after each shim call. Correct abort-on-first-
+>    error; this is the path §4 explicitly rejected as "verbose", but it
+>    is robust and needs no Cranelift unwind tables. ~per-call branch
+>    overhead + codegen complexity.
+> 3. **Register Cranelift unwind tables.** Enable `unwind_info` + wire
+>    system `__register_frame` (or adopt the `wasmtime-unwinder` feature
+>    if it can target the system unwinder) so `catch_unwind` across the
+>    JIT frame works — keeping §4 as originally locked. Uncertain
+>    feasibility on `cranelift-jit 0.132`; needs research; most faithful
+>    to §4 if achievable.
+>
+> **Recommendation (implementer):** option 2 — robust + Cranelift-
+> version-independent, matching the project's "refuse over guess" +
+> "stability over speed" stance. The §4 "verbose" objection is
+> outweighed by the abort-on-first-error correctness that side-effecting
+> shims require. Final choice is the author's; this Addendum records the
+> cliff so jit.2 does not build 43 shims on an unvalidated foundation.
+>
+> §4 body below is preserved (immutability rule); this Addendum is
+> authoritative for the error-propagation mechanism until a follow-up
+> ADR or Addendum locks the chosen redesign.
+
 **Issue:** v0.9 ships partial Cranelift JIT (numeric arith / cmp / control flow / intra-program calls). `Instruction::CallBuiltin` tier-downs to VM dispatch per [ADR-0030 §12.3](0030-jit-cranelift-integration.md) — entire function reverts to VM when it touches *any* of the 43 stdlib builtins. Real programs use `println` / `Vector*` / `HashMap*` heavily, so v0.9 JIT acceleration is limited to numeric leaf functions. v0.10 closes the gap.
 
 The 5 constraints ADR-0030 §12.2 surfaced as needing a coherent design pass:

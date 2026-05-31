@@ -63,11 +63,12 @@
 #![warn(missing_docs)]
 
 mod codegen;
+mod shims;
 
 use std::collections::HashMap;
 
 use thiserror::Error;
-use triet_ir::FuncId;
+use triet_ir::{BuiltinName, FuncId};
 
 use crate::codegen::JitBackend;
 
@@ -157,6 +158,47 @@ pub enum JitError {
     /// falls back to VM-only mode entirely (not just this function).
     #[error("dev.jit_codegen capability denied — running in VM-only mode")]
     CapabilityDenied,
+
+    /// v0.10.x.jit.1 — a `CallBuiltin` opcode names a builtin whose
+    /// capability namespace is denied by the program's
+    /// capability set. Per [ADR-0032 §3] this is a **compile-time
+    /// defense-in-depth** check (the authoritative gate runs at
+    /// program-load time per ADR-0016 §5). On this error the function
+    /// tiers down to VM dispatch, where the same denial surfaces.
+    ///
+    /// [ADR-0032 §3]: ../../../docs/decisions/0032-builtin-shim-abi.md
+    #[error("builtin `{builtin}` requires capability namespace `{namespace}` (denied)")]
+    BuiltinCapabilityDenied {
+        /// The builtin whose namespace was denied (Display form).
+        builtin: String,
+        /// The capability namespace required + denied.
+        namespace: String,
+    },
+}
+
+/// v0.10.x.jit.1 — Look up a [`BuiltinName`]'s capability namespace +
+/// test it against a denied-namespace set per [ADR-0032 §3].
+///
+/// Returns `Err(JitError::BuiltinCapabilityDenied { .. })` when the
+/// builtin's namespace appears in `denied`. The JIT codegen consults
+/// this before emitting a builtin-shim call (defense-in-depth; the
+/// authoritative gate is upstream at program-load time per
+/// ADR-0016 §5). Empty `denied` (the production default — capabilities
+/// already resolved at load) always returns `Ok`.
+///
+/// [ADR-0032 §3]: ../../../docs/decisions/0032-builtin-shim-abi.md
+pub(crate) fn check_builtin_capability(
+    builtin: BuiltinName,
+    denied: &[&str],
+) -> Result<(), JitError> {
+    let namespace = shims::builtin_namespace(builtin);
+    if denied.contains(&namespace) {
+        return Err(JitError::BuiltinCapabilityDenied {
+            builtin: format!("{builtin}"),
+            namespace: namespace.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 impl JitCompiler {
@@ -230,7 +272,29 @@ impl JitCompiler {
             self.backend = Some(JitBackend::new()?);
         }
         let backend = self.backend.as_mut().expect("backend just initialized");
-        backend.compile_program(program, &mut self.function_cache)
+        // Production path: empty denied-set. Capability gating is
+        // authoritative at program-load time (ADR-0016 §5); the JIT's
+        // §3 check is defense-in-depth and only fires when a non-empty
+        // denied set is threaded through (see the test-only
+        // `compile_program_denied`).
+        backend.compile_program(program, &mut self.function_cache, &[])
+    }
+
+    /// v0.10.x.jit.1 (test-support) — compile with an explicit
+    /// denied-namespace set, exercising the ADR-0032 §3
+    /// `BuiltinCapabilityDenied` defense-in-depth path. Production
+    /// callers use [`Self::compile_program`] (empty denied-set).
+    #[cfg(test)]
+    pub(crate) fn compile_program_denied(
+        &mut self,
+        program: &triet_ir::IrProgram,
+        denied: &[&str],
+    ) -> Result<(), JitError> {
+        if self.backend.is_none() {
+            self.backend = Some(JitBackend::new()?);
+        }
+        let backend = self.backend.as_mut().expect("backend just initialized");
+        backend.compile_program(program, &mut self.function_cache, denied)
     }
 
     /// Return a previously-compiled native code pointer for `id`, or
@@ -245,6 +309,26 @@ impl JitCompiler {
     #[must_use]
     pub fn cached_function_count(&self) -> usize {
         self.function_cache.len()
+    }
+
+    /// v0.10.x.jit.1 (test-support) — build a backend with `extra_shims`
+    /// registered, compile a synthetic caller forwarding to
+    /// `shim_symbol`, and cache it under `func_id` so the framework
+    /// tests can drive it through [`dispatch_integer_caught`].
+    #[cfg(test)]
+    fn cache_shim_caller(
+        &mut self,
+        func_id: FuncId,
+        extra_shims: &[shims::ShimEntry],
+        caller_sig: &shims::ShimSignature,
+        shim_symbol: &str,
+        shim_sig: &shims::ShimSignature,
+    ) -> Result<(), JitError> {
+        let mut backend = JitBackend::new_with_extra_shims(extra_shims)?;
+        let addr = backend.compile_shim_caller(caller_sig, shim_symbol, shim_sig)?;
+        self.backend = Some(backend);
+        self.function_cache.insert(func_id, NativeCodePtr { addr });
+        Ok(())
     }
 }
 
@@ -414,6 +498,18 @@ pub fn dispatch_integer(jit: &JitCompiler, func_id: FuncId, args: &[i64]) -> Opt
     };
     Some(result)
 }
+
+// NOTE (v0.10.x.jit.1): the catch-unwind dispatch wrapper for
+// shim-panic → `VmError` propagation (ADR-0032 §4) is DEFERRED — it is
+// blocked on `cranelift-jit 0.132`, which does not register system
+// unwind tables for JIT'd frames, so a shim panic unwinding through a
+// Cranelift frame aborts rather than reaching `catch_unwind`. The
+// error-propagation mechanism + its framework test land once the
+// ADR-0032 Addendum resolves the redesign (shim-internal catch /
+// per-call sentinel / unwind-table registration). The option-agnostic
+// infrastructure (shim registry, `drop_arc`, capability gate, symbol
+// wiring) ships in jit.1; numeric-only `dispatch_integer` (no shim
+// panics) is unaffected.
 
 /// v0.9.x.jit.5 — Pre-check used by [`triet_ir::Vm`] to decide whether
 /// a function's signature qualifies for the JIT native-dispatch path.
@@ -1451,6 +1547,160 @@ mod tests {
         match result {
             RuntimeValue::Integer(out) => assert_eq!(out.to_i64(), 100),
             other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+
+    // ===== v0.10.x.jit.1: Layer A framework smoke tests (ADR-0032 §7.1) =====
+    //
+    // These exercise the shim-infrastructure mechanisms in isolation —
+    // symbol registration + external-call codegen, catch_unwind → VmError,
+    // drop_arc refcount balance, and capability-denied tier-down — WITHOUT
+    // requiring any of the 43 production shims (those land in jit.2).
+
+    use crate::shims::{self, AbiScalar, ShimEntry, ShimSignature};
+
+    /// Framework self-test shim: identity over one `i64`. `extern
+    /// "C-unwind"` per ADR-0032 §4. Referenced by address (registered
+    /// via `JITBuilder::symbol`), so no `#[no_mangle]` needed. Never
+    /// panics — exercises the symbol-registration + external-call
+    /// codegen path without touching the deferred §4 unwind mechanism.
+    extern "C-unwind" fn test_shim_identity(x: i64) -> i64 {
+        x
+    }
+
+    fn entry(symbol: &'static str, addr: usize, sig: ShimSignature) -> ShimEntry {
+        ShimEntry {
+            symbol,
+            addr,
+            signature: sig,
+        }
+    }
+
+    #[test]
+    fn framework_shim_call_returns_value() {
+        // Register `__triet_test_identity`, build a JIT caller that
+        // forwards its i64 param to it, dispatch, assert round-trip.
+        let sig = ShimSignature {
+            params: &[AbiScalar::I64],
+            ret: Some(AbiScalar::I64),
+        };
+        let shim = entry(
+            "__triet_test_identity",
+            test_shim_identity as *const () as usize,
+            sig,
+        );
+        let mut jit = JitCompiler::new();
+        jit.cache_shim_caller(FuncId(0), &[shim], &sig, "__triet_test_identity", &sig)
+            .expect("compile shim caller");
+        // Dispatch via the numeric `dispatch_integer` path — the shim
+        // never panics, so the deferred §4 catch-unwind wrapper is not
+        // needed to validate symbol-registration + external-call codegen.
+        let result = dispatch_integer(&jit, FuncId(0), &[42]).expect("cache hit");
+        assert_eq!(result, 42);
+    }
+
+    // NOTE: `framework_shim_panic_to_vm_error` (ADR-0032 §7.1) is
+    // DEFERRED with the §4 error-propagation mechanism — it requires
+    // catch_unwind across a Cranelift JIT frame, blocked on
+    // cranelift-jit 0.132 (no system unwind-table registration). The
+    // test lands when the ADR-0032 Addendum resolves the redesign.
+
+    #[test]
+    fn framework_drop_arc_balances_refcount() {
+        use std::rc::Rc;
+        use triet_ir::RuntimeValue;
+
+        // Box a composite via Rc::into_raw, then hand the raw pointer
+        // to __triet_drop_arc — the strong count must return to the
+        // pre-box level, and the original handle stays valid.
+        let original = Rc::new(RuntimeValue::String("framework".to_owned()));
+        assert_eq!(Rc::strong_count(&original), 1);
+
+        // Simulate a box-out: clone (count → 2), leak the clone as the
+        // JIT-side owned pointer (into_raw consumes the +1 without
+        // dropping → count stays 2).
+        let boxed = Rc::clone(&original);
+        let raw = Rc::into_raw(boxed) as i64;
+        assert_eq!(Rc::strong_count(&original), 2);
+
+        // drop_arc reconstitutes + drops the leaked Rc → count back to 1.
+        shims::__triet_drop_arc(raw);
+        assert_eq!(Rc::strong_count(&original), 1);
+
+        // Null pointer is a no-op (does not panic, does not touch count).
+        shims::__triet_drop_arc(0);
+        assert_eq!(Rc::strong_count(&original), 1);
+    }
+
+    #[test]
+    fn framework_capability_denied_tiers_down() {
+        // A function calling AtomicNew, compiled with `sys.atomic`
+        // denied, must surface BuiltinCapabilityDenied (not the
+        // generic UnsupportedOpcode tier-down).
+        use triet_ir::{
+            BasicBlock, BlockId, BuiltinName, Constant, Function, IrModule, IrProgram, Operand,
+            TypeTag, ValueId,
+        };
+        let mut constants = triet_ir::ConstantPool::new();
+        let zero = constants.intern(Constant::Integer(triet_core::Integer::new(0).unwrap()));
+        let func = Function {
+            id: FuncId(0),
+            name: Some("uses_atomic".to_owned()),
+            params: vec![],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::Const {
+                        dest: ValueId(0),
+                        constant: zero,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(1)),
+                        name: BuiltinName::AtomicNew,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            }],
+        };
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::new(vec!["test".to_owned()]),
+                    String::new(),
+                ),
+                functions: vec![func],
+            }],
+            constants,
+            witness_tables: Vec::new(),
+        };
+
+        // compile_program_denied silently tiers-down per-function errors
+        // (the function is dropped from the cache), so we assert via the
+        // direct capability-check helper that the namespace maps + denies
+        // correctly — the mechanism the codegen consults.
+        let mut jit = JitCompiler::new();
+        jit.compile_program_denied(&program, &["sys.atomic"])
+            .expect("program-level compile (per-function tier-down is silent)");
+        // The function must NOT be cached (it tiered down on the denied
+        // builtin).
+        assert!(
+            jit.lookup(FuncId(0)).is_none(),
+            "function calling a denied builtin must tier down (not cached)"
+        );
+        // And the check helper surfaces the precise diagnostic.
+        let err = crate::check_builtin_capability(BuiltinName::AtomicNew, &["sys.atomic"])
+            .expect_err("sys.atomic denied");
+        match err {
+            JitError::BuiltinCapabilityDenied { builtin, namespace } => {
+                assert!(builtin.contains("atomic"), "builtin name: {builtin}");
+                assert_eq!(namespace, "sys.atomic");
+            }
+            other => panic!("expected BuiltinCapabilityDenied, got {other:?}"),
         }
     }
 }

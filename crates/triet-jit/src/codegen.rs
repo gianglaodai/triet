@@ -83,6 +83,12 @@ struct ProgramContext<'a> {
     path_to_funcid: HashMap<AbsolutePath, TriFuncId>,
     /// Shared constant pool for inline `Operand::Const(id)` materialization.
     constants: &'a ConstantPool,
+    /// v0.10.x.jit.1 — capability namespaces denied for this program
+    /// (per ADR-0032 §3 compile-time defense-in-depth). Empty in the
+    /// production path (capabilities already resolved at program-load
+    /// time per ADR-0016 §5); the framework test passes a non-empty
+    /// set to exercise the `BuiltinCapabilityDenied` tier-down.
+    denied_namespaces: &'a [&'a str],
 }
 
 /// Map a Triết [`TypeTag`] to a Cranelift IR scalar type per
@@ -134,7 +140,36 @@ impl JitBackend {
             .map_err(|err| JitError::Cranelift {
                 message: format!("ISA finish failed: {err}"),
             })?;
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // v0.10.x.jit.1 — register builtin-shim symbols per ADR-0032 §6
+        // so emitted `call $shim_symbol` instructions resolve at
+        // finalize time. jit.1 registers only `__triet_drop_arc`; jit.2
+        // appends the 43 production shims to `production_shim_entries`.
+        register_shim_symbols(&mut builder, &crate::shims::production_shim_entries());
+        let module = JITModule::new(builder);
+        Ok(Self { module })
+    }
+
+    /// v0.10.x.jit.1 (test-support) — construct a backend with extra
+    /// shim symbols registered alongside the production set. Used by
+    /// the framework smoke tests to wire synthetic `__triet_test_*`
+    /// shims without baking them into the production registry.
+    #[cfg(test)]
+    pub(crate) fn new_with_extra_shims(
+        extra: &[crate::shims::ShimEntry],
+    ) -> Result<Self, JitError> {
+        let flag_builder = settings::builder();
+        let isa_builder = cranelift_native::builder().map_err(|message| JitError::Cranelift {
+            message: format!("ISA detection failed: {message}"),
+        })?;
+        let isa = isa_builder
+            .finish(settings::Flags::new(flag_builder))
+            .map_err(|err| JitError::Cranelift {
+                message: format!("ISA finish failed: {err}"),
+            })?;
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        register_shim_symbols(&mut builder, &crate::shims::production_shim_entries());
+        register_shim_symbols(&mut builder, extra);
         let module = JITModule::new(builder);
         Ok(Self { module })
     }
@@ -153,6 +188,7 @@ impl JitBackend {
             func_id_map: HashMap::new(),
             path_to_funcid: HashMap::new(),
             constants: &empty_pool,
+            denied_namespaces: &[],
         };
         let signature = build_signature(func)?;
         let func_name = func
@@ -173,6 +209,68 @@ impl JitBackend {
         self.module.finalize_definitions().map_err(cranelift_err)?;
         let raw_ptr = self.module.get_finalized_function(func_id);
         Ok(raw_ptr as usize)
+    }
+
+    /// v0.10.x.jit.1 (test-support) — compile a synthetic caller that
+    /// invokes a registered shim symbol and returns its result,
+    /// exercising the ADR-0032 §6 external-call mechanism (declare
+    /// `Import` shim + `declare_func_in_func` + `builder.ins().call`)
+    /// in isolation — the exact machinery v0.10.x.jit.2's `CallBuiltin`
+    /// codegen will use.
+    ///
+    /// The caller forwards all its parameters to the shim. If the shim
+    /// returns a value, the caller returns it; if the shim is `Unit`
+    /// (`ret: None`), the caller returns `iconst 0` so it still matches
+    /// the all-`i64` [`crate::dispatch_integer_caught`] ABI.
+    #[cfg(test)]
+    pub(crate) fn compile_shim_caller(
+        &mut self,
+        caller_sig: &crate::shims::ShimSignature,
+        shim_symbol: &str,
+        shim_sig: &crate::shims::ShimSignature,
+    ) -> Result<usize, JitError> {
+        // Declare the shim as an imported function (resolved to the
+        // address registered via `JITBuilder::symbol`).
+        let shim_clif_sig = shim_signature_to_clif(shim_sig);
+        let shim_id = self
+            .module
+            .declare_function(shim_symbol, Linkage::Import, &shim_clif_sig)
+            .map_err(cranelift_err)?;
+
+        // Declare the caller (Local).
+        let caller_clif_sig = shim_signature_to_clif(caller_sig);
+        let caller_id = self
+            .module
+            .declare_function("__triet_test_caller", Linkage::Local, &caller_clif_sig)
+            .map_err(cranelift_err)?;
+
+        let mut cl_ctx = self.module.make_context();
+        cl_ctx.func.signature = caller_clif_sig;
+        {
+            let mut fn_builder_ctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut cl_ctx.func, &mut fn_builder_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+            let arg_values: Vec<Value> = builder.block_params(entry).to_vec();
+            let shim_ref = self.module.declare_func_in_func(shim_id, builder.func);
+            let call_inst = builder.ins().call(shim_ref, &arg_values);
+            let ret_val = if shim_sig.ret.is_some() {
+                builder.inst_results(call_inst)[0]
+            } else {
+                // Unit shim — caller returns an i64 0 placeholder.
+                builder.ins().iconst(I64, 0)
+            };
+            builder.ins().return_(&[ret_val]);
+            builder.finalize();
+        }
+        self.module
+            .define_function(caller_id, &mut cl_ctx)
+            .map_err(cranelift_err)?;
+        self.module.clear_context(&mut cl_ctx);
+        self.module.finalize_definitions().map_err(cranelift_err)?;
+        Ok(self.module.get_finalized_function(caller_id) as usize)
     }
 
     /// Compile every function in `program` in a two-pass shape:
@@ -197,6 +295,7 @@ impl JitBackend {
         &mut self,
         program: &IrProgram,
         out_cache: &mut HashMap<TriFuncId, NativeCodePtr>,
+        denied_namespaces: &[&str],
     ) -> Result<(), JitError> {
         // Pre-pass: declare every function so calls can resolve.
         let mut func_id_map: HashMap<TriFuncId, ClFuncId> = HashMap::new();
@@ -231,6 +330,7 @@ impl JitBackend {
             func_id_map: func_id_map.clone(),
             path_to_funcid,
             constants: &program.constants,
+            denied_namespaces,
         };
 
         // Body pass: per-function codegen + define. On per-function
@@ -353,6 +453,56 @@ fn build_signature(func: &IrFunction) -> Result<Signature, JitError> {
 fn cranelift_err<E: core::fmt::Display>(err: E) -> JitError {
     JitError::Cranelift {
         message: format!("{err}"),
+    }
+}
+
+/// v0.10.x.jit.1 — Map an [`AbiScalar`] to its Cranelift IR type per
+/// ADR-0032 §1. `Ptr` is `i64`-wide on the v0.10 target triples.
+///
+/// `dead_code`-allowed in jit.1: the only caller is the `#[cfg(test)]`
+/// `compile_shim_caller` framework helper. v0.10.x.jit.2's production
+/// `CallBuiltin` codegen calls it to declare each shim's signature —
+/// not speculative, mandated by ADR-0032 §6.
+#[allow(dead_code)]
+const fn abi_scalar_to_clif(scalar: crate::shims::AbiScalar) -> types::Type {
+    match scalar {
+        crate::shims::AbiScalar::I8 => I8,
+        crate::shims::AbiScalar::I16 => I16,
+        // Integer + composite pointers are both i64-wide.
+        crate::shims::AbiScalar::I64 | crate::shims::AbiScalar::Ptr => I64,
+    }
+}
+
+/// v0.10.x.jit.1 — Build a Cranelift [`Signature`] from a shim's ABI
+/// description per ADR-0032 §1/§6.
+///
+/// `dead_code`-allowed in jit.1 for the same reason as
+/// [`abi_scalar_to_clif`] — production caller is v0.10.x.jit.2.
+#[allow(dead_code)]
+fn shim_signature_to_clif(sig: &crate::shims::ShimSignature) -> Signature {
+    let mut clif = Signature::new(CallConv::SystemV);
+    for param in sig.params {
+        clif.params.push(AbiParam::new(abi_scalar_to_clif(*param)));
+    }
+    if let Some(ret) = sig.ret {
+        clif.returns.push(AbiParam::new(abi_scalar_to_clif(ret)));
+    }
+    clif
+}
+
+/// v0.10.x.jit.1 — Register each shim entry's symbol → address with the
+/// `JITBuilder` per ADR-0032 §6 (`__triet_*` prefix). Must run BEFORE
+/// `JITModule::new` consumes the builder.
+fn register_shim_symbols(builder: &mut JITBuilder, entries: &[crate::shims::ShimEntry]) {
+    for entry in entries {
+        // `entry.addr` is the address of a `#[unsafe(no_mangle)]
+        // extern "C-unwind"` shim function (from `crate::shims` or a
+        // `#[cfg(test)]` framework shim). The `usize → *const u8` cast
+        // is a SAFE pointer cast; `JITBuilder::symbol` only records the
+        // address for later relocation — it never dereferences or calls
+        // it here. Backed by ADR-0032 §6.
+        let addr = entry.addr as *const u8;
+        builder.symbol(entry.symbol, addr);
     }
 }
 
@@ -578,11 +728,18 @@ fn translate_instruction(
         // names the specific builtin — easier to grep + roadmap than
         // the catch-all Debug-format fallback.
         Instruction::CallBuiltin { name, args, .. } => {
+            // v0.10.x.jit.1 — §3 capability defense-in-depth: if the
+            // builtin's namespace is denied, surface
+            // `BuiltinCapabilityDenied` (distinct from the generic
+            // tier-down). Empty denied-set (production default) is a
+            // no-op. Real shim emission lands jit.2; until then, a
+            // granted builtin still tier-downs to VM dispatch.
+            crate::check_builtin_capability(*name, ctx.denied_namespaces)?;
             return Err(JitError::UnsupportedOpcode {
                 opcode: format!(
                     "CallBuiltin({name}) with {} arg(s) — full builtin shim \
-                     layer defers v0.10 per ADR-0030 §12 backlog \
-                     (RuntimeValue ABI marshaling complexity)",
+                     layer defers v0.10.x.jit.2 per ADR-0032 (production \
+                     shim implementations)",
                     args.len()
                 ),
             });
