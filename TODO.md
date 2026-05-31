@@ -62,8 +62,8 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
   - Step 1 — object emission (`emit_object`) + version-pinned manifest (§2) — `cbeb102`
   - Step 2 — `Store::install_aot_cache` + `dao store gc` jit sweep (§4/§5/§7) — `2946ce4`
   - Step 3 — Path-A relocating loader `ElfX86_64Loader` (§3 + Addendum constraints 1–4; loader is unsafe-free) — `c47bd8f`
-  - [ ] **Step 4a** — refactor `emit_object` per-program → **per-module** + key by canonical `impl_hash_mod` (per v0.11.0.2). Adjust `install_aot_cache` callers + GC tests to the per-module key.
-  - [ ] **Step 4b** — wire Path A into `JitDispatcher` via injected `trait AotCacheStore` (opaque key) + §2 version-check + §8 silent fallback + `cache_state()`; CLI `AotCacheStore` adapter over `Store` + computes `impl_hash_mod`. §9.1 value-parity (cache ≡ VM) + §9.2 version-mismatch refuse. Remove the staged `#![allow(dead_code)]` in `aot.rs` + `loader.rs`.
+  - [ ] **Step 4a** — per-**module** object emission + **load-time linker** (per v0.11.0.2 Entailment). Emit one object per `IrModule` (own funcs `Export`, cross-module callees `Import`, shims `Import`); two-phase `CodeLoader` that maps all modules' `.text`, builds a global symbol table, then patches cross-module Triết symbols + shims. Test: a 2-module program (A calls B across the boundary) links + executes → value parity.
+  - [ ] **Step 4b** — wire Path A into `JitDispatcher` via injected `trait AotCacheStore` (opaque `impl_hash_mod` key) + §2 version-check + §8 silent fallback + `cache_state()`; CLI `AotCacheStore` adapter over `Store` + computes `impl_hash_mod`. §9.1 value-parity (cache ≡ VM) + §9.2 version-mismatch refuse. Remove the staged `#![allow(dead_code)]` in `aot.rs` + `loader.rs`.
 - [ ] **v0.11.x.jit.4** — Bootstrap gate lift + ≥10× perf bench per ADR-0030 §9 + §14. Lift `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` once warm-cache self-host completes < 10 min (ADR-0033 §9.5 chain). `criterion` warm-vs-cold bench, ≥10× v0.3 baseline target.
 
 ### v0.11 backlog (trails AOT cache or later phase)
