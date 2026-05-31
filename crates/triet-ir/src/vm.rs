@@ -2297,6 +2297,31 @@ fn vector_to_byte_array(elements: &[RuntimeValue]) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// v0.10.x.jit.2b — Public builtin-dispatch entry point shared by the
+/// VM and the JIT shim layer.
+///
+/// The JIT's `extern "C"` builtin shims (per [ADR-0032]) marshal their
+/// ABI arguments into `RuntimeValue`s, call this, then marshal the
+/// result back — so builtin SEMANTICS have a single source of truth
+/// (no VM↔JIT divergence by construction). Thin pub wrapper over the
+/// crate-private `execute_builtin`. Atomic builtins (33-42) are handled
+/// here; `raw_thread.spawn`/`join` are NOT (they need the VM's
+/// thread-handle registry).
+///
+/// # Errors
+///
+/// Returns the same [`VmError`] variants `execute_builtin` produces —
+/// e.g. `AssertionFailed`, `TypeMismatch`, `OutOfBounds`, `Overflow`.
+///
+/// [ADR-0032]: ../../../docs/decisions/0032-builtin-shim-abi.md
+pub fn dispatch_builtin(
+    name: BuiltinName,
+    args: &[RuntimeValue],
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    execute_builtin(name, args, func_name)
+}
+
 // `clippy::significant_drop_tightening` allowed because the
 // AtomicSwap / AtomicCompareExchange arms intentionally hold the
 // mutex guard across the read-modify-write — tightening would split

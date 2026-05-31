@@ -87,7 +87,7 @@ pub use module::{BasicBlock, Function, IrModule, IrProgram};
 pub use serde::{TrivError, read_program, write_program};
 pub use types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 pub use verify::{VerifierResult, VerifierViolation, verify_function, verify_program};
-pub use vm::{JitDispatch, RuntimeMapKey, RuntimeValue, Vm, VmError};
+pub use vm::{JitDispatch, RuntimeMapKey, RuntimeValue, Vm, VmError, dispatch_builtin};
 
 #[cfg(test)]
 mod tests {

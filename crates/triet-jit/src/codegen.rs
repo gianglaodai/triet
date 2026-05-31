@@ -439,30 +439,43 @@ impl JitBackend {
             }
         }
 
+        // v0.10.x.jit.2b-i — emit the shared `error_exit` block's body
+        // (created lazily on the first shim call per ADR-0032 §4
+        // option-2). It returns a type-correct sentinel; the
+        // dispatcher's `SHIM_FAILED` check converts the run to `Err`
+        // regardless of the sentinel value. Created composites leak on
+        // this path (one-time per error — see `FnState::created_boxed`).
+        if let Some(error_block) = fn_state.error_exit {
+            builder.switch_to_block(error_block);
+            let sentinel = builder.ins().iconst(map_type(&func.return_type)?, 0);
+            builder.ins().return_(&[sentinel]);
+        }
+
         builder.seal_all_blocks();
         builder.finalize();
         Ok(())
     }
 }
 
-/// v0.10.x.jit.2a — per-function composite-flow bookkeeping threaded
-/// through instruction translation.
+/// v0.10.x.jit.2a/2b-i — per-function composite-flow bookkeeping
+/// threaded through instruction translation.
 #[derive(Default)]
 struct FnState {
-    /// Count of builtin-shim calls emitted so far. jit.2a supports at
-    /// most ONE shim call per function (the boundary TLS check in
-    /// `dispatch_with_shim_errors` suffices). A 2nd shim call tier-downs
-    /// — the per-call sentinel codegen (`error_exit` + mid-block
-    /// branching) for multi-call functions defers to jit.2b.
-    ///
-    /// Note: jit.2a does NOT emit `__triet_drop_arc` calls — in the
-    /// single-shim-call scope the one composite a function can create
-    /// is always its return value (ownership transfers to the caller,
-    /// no drop), so no created-and-discarded box exists to leak. The
-    /// `drop_arc` CODEGEN (with proper live-range analysis) lands in
-    /// jit.2b alongside multi-call support; the `__triet_drop_arc` shim
-    /// itself shipped + was unit-tested in jit.1.
-    shim_call_count: usize,
+    /// SSA values the function CREATED as boxed composites (shim `Ptr`
+    /// returns). At the function's `Ret`, each is dropped via
+    /// `__triet_drop_arc` EXCEPT the returned one (whose ownership
+    /// transfers to the caller). Composite PARAMS are NOT here —
+    /// they're borrowed (caller owns + drops) per ADR-0032 §2 rule 1.
+    /// On the error path (`error_exit`) these leak — a one-time leak
+    /// per runtime error, acceptable for the dev-tier JIT (errors are
+    /// typically program-terminating). Per ADR-0032 §2.
+    created_boxed: Vec<ValueId>,
+    /// Lazily-created shared `error_exit` Cranelift block (jit.2b-i §4
+    /// option-2). On the first shim call the function gains an
+    /// `error_exit` that returns a type-correct sentinel; each shim
+    /// call's per-call probe branches here when `SHIM_FAILED` is set.
+    /// Its body is emitted once, after the instruction loop.
+    error_exit: Option<Block>,
 }
 
 /// Build a Cranelift function signature from a Triết IR function's
@@ -727,6 +740,26 @@ fn translate_instruction(
             builder.ins().brif(is_unk, cl_unk, &[], cl_false, &[]);
         }
         Instruction::Ret { value } => {
+            // v0.10.x.jit.2b-i — drop every function-created boxed
+            // composite EXCEPT the returned one (ownership of the
+            // returned box transfers to the caller per ADR-0032 §2).
+            // Composite params are NOT dropped (borrowed; caller owns).
+            // Dropping at Ret (rather than precise last-use) is a
+            // conservative-correct subset: the Rc lives slightly longer
+            // but is balanced exactly once — no leak (success path), no
+            // double-free, no use-after.
+            let returned_id = match value {
+                Some(Operand::Value(id)) => Some(*id),
+                _ => None,
+            };
+            for boxed in &fn_state.created_boxed {
+                if Some(*boxed) == returned_id {
+                    continue;
+                }
+                if let Some(&ptr_val) = value_map.get(boxed) {
+                    emit_drop_arc(builder, module, ptr_val)?;
+                }
+            }
             if let Some(op) = value {
                 let v = resolve_operand(builder, value_map, ctx, *op)?;
                 builder.ins().return_(&[v]);
@@ -752,12 +785,16 @@ fn translate_instruction(
                     opcode: format!("CallBuiltin({name}) — no shim implemented (defers jit.2b)"),
                 });
             };
-            if fn_state.shim_call_count >= 1 {
+            // jit.2b-i scope: shim calls only in single-Triết-block
+            // functions. Multi-block (if/match/loop) with shims tier-
+            // downs — the continue-block chain assumes linear within-
+            // block flow; cross-block composite lifetime + multi-Ret
+            // drop analysis defers to a later refinement.
+            if func.blocks.len() > 1 {
                 return Err(JitError::UnsupportedOpcode {
                     opcode: format!(
-                        "CallBuiltin({name}) — 2nd shim call exceeds jit.2a \
-                         single-shim-call scope (per-call sentinel codegen \
-                         defers jit.2b)"
+                        "CallBuiltin({name}) in multi-block function — \
+                         single-block shim scope (jit.2b-i)"
                     ),
                 });
             }
@@ -770,7 +807,6 @@ fn translate_instruction(
                     ),
                 });
             }
-            fn_state.shim_call_count += 1;
             let arg_values: Vec<Value> = args
                 .iter()
                 .map(|op| resolve_operand(builder, value_map, ctx, *op))
@@ -781,11 +817,16 @@ fn translate_instruction(
             {
                 value_map.insert(*dest_id, result_val);
                 // Composite (Ptr) returns are freshly-boxed values the
-                // function owns. In jit.2a's single-shim-call scope such
-                // a value is always the function's return (caller takes
-                // ownership) — no drop emitted here. drop_arc codegen
-                // for created-and-discarded composites lands jit.2b.
+                // function owns → track for drop_arc-at-Ret.
+                if shim.signature.ret == Some(crate::shims::AbiScalar::Ptr) {
+                    fn_state.created_boxed.push(*dest_id);
+                }
             }
+            // v0.10.x.jit.2b-i — per-call sentinel (ADR-0032 §4
+            // option-2): probe `__triet_shim_failed`; on failure branch
+            // to the shared `error_exit` so subsequent shims (e.g.
+            // side-effecting `println`) do NOT run after one fails.
+            emit_shim_sentinel_check(builder, module, fn_state)?;
         }
         // Everything else triggers tier-down to VM-only for this fn.
         // Use the IR `Display` impl (via `triet_ir::Instruction`'s
@@ -948,8 +989,57 @@ fn emit_shim_call(
     })
 }
 
-// `emit_drop_arc` (composite last-use Drop codegen, ADR-0032 §2)
-// defers to jit.2b alongside multi-call support + live-range analysis.
-// jit.2a's single-shim-call scope never creates-and-discards a
-// composite, so no drop emission is needed; the `__triet_drop_arc`
-// shim shipped + was unit-tested in jit.1.
+/// v0.10.x.jit.2b-i — emit a `__triet_drop_arc(ptr)` call to balance a
+/// composite box-out (ADR-0032 §2). Called from the `Ret` arm for each
+/// function-created composite that is NOT the returned value.
+fn emit_drop_arc(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut JITModule,
+    ptr_value: Value,
+) -> Result<(), JitError> {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(I64));
+    let drop_id = module
+        .declare_function("__triet_drop_arc", Linkage::Import, &sig)
+        .map_err(cranelift_err)?;
+    let func_ref = module.declare_func_in_func(drop_id, builder.func);
+    builder.ins().call(func_ref, &[ptr_value]);
+    Ok(())
+}
+
+/// v0.10.x.jit.2b-i — emit the per-call failure sentinel (ADR-0032 §4
+/// option-2). After a shim call: probe `__triet_shim_failed`; if set,
+/// branch to the function's shared `error_exit` block (created lazily
+/// here, body emitted after the instruction loop); otherwise fall
+/// through into a fresh `continue` block where translation resumes.
+/// This guarantees abort-on-first-shim-failure — subsequent
+/// side-effecting shims do not run after one fails.
+fn emit_shim_sentinel_check(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut JITModule,
+    fn_state: &mut FnState,
+) -> Result<(), JitError> {
+    // Lazily create the shared error_exit block (body emitted post-loop
+    // in `emit_function_body`).
+    let error_exit = if let Some(b) = fn_state.error_exit {
+        b
+    } else {
+        let b = builder.create_block();
+        fn_state.error_exit = Some(b);
+        b
+    };
+    // Probe: call `__triet_shim_failed() -> i8`.
+    let mut probe_sig = Signature::new(CallConv::SystemV);
+    probe_sig.returns.push(AbiParam::new(I8));
+    let probe_id = module
+        .declare_function("__triet_shim_failed", Linkage::Import, &probe_sig)
+        .map_err(cranelift_err)?;
+    let probe_ref = module.declare_func_in_func(probe_id, builder.func);
+    let probe_call = builder.ins().call(probe_ref, &[]);
+    let failed = builder.inst_results(probe_call)[0];
+    // Branch: failed (non-zero) → error_exit; else → continue.
+    let cont = builder.create_block();
+    builder.ins().brif(failed, error_exit, &[], cont, &[]);
+    builder.switch_to_block(cont);
+    Ok(())
+}

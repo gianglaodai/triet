@@ -36,7 +36,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use triet_ir::{BuiltinName, RuntimeValue, VmError};
+use triet_core::Integer;
+use triet_ir::{BuiltinName, RuntimeValue, VmError, dispatch_builtin};
+use triet_logic::Trilean;
 
 // ── ABI description (decoupled from Cranelift types) ────────────────
 
@@ -113,18 +115,39 @@ pub(crate) fn builtin_shim(name: BuiltinName) -> Option<ShimEntry> {
 /// builtin shims (one [`ShimEntry`] per [`BuiltinName`]). Built once at
 /// [`crate::codegen::JitBackend::new`] and registered via
 /// `JITBuilder::symbol`.
+// A flat registry table — one line-group per shim. Length is inherent
+// to the 26-entry breadth, not complexity; splitting by category would
+// fragment the single audit surface ADR-0032 §6 wants.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
+    use AbiScalar::{I8, I64, Ptr};
+
+    // Builtin shim entry. `addr` cast via `*const ()` per clippy
+    // `function_casts_as_integer`; recovered to `*const u8` at
+    // registration (a no-op address round-trip).
+    const fn b(
+        builtin: BuiltinName,
+        symbol: &'static str,
+        addr: usize,
+        params: &'static [AbiScalar],
+        ret: Option<AbiScalar>,
+    ) -> ShimEntry {
+        ShimEntry {
+            builtin: Some(builtin),
+            symbol,
+            addr,
+            signature: ShimSignature { params, ret },
+        }
+    }
+
     vec![
         // ── Framework shims (no BuiltinName — called implicitly) ──
         ShimEntry {
             builtin: None,
             symbol: "__triet_drop_arc",
-            // Cast via `*const ()` per clippy `function_casts_as_integer`
-            // — fn item → fn pointer → usize. Recovered to `*const u8`
-            // at registration (a no-op address round-trip).
             addr: __triet_drop_arc as *const () as usize,
             signature: ShimSignature {
-                params: &[AbiScalar::Ptr],
+                params: &[Ptr],
                 ret: None,
             },
         },
@@ -134,63 +157,200 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             addr: __triet_shim_failed as *const () as usize,
             signature: ShimSignature {
                 params: &[],
-                ret: Some(AbiScalar::I8),
+                ret: Some(I8),
             },
         },
-        // ── jit.2a representative production shims (5) ──
-        // `assert(cond: Trilean, msg: String?)` — cond is i8 (Trilean
-        // encoding), msg is a composite ptr (0 = no message). Failure
-        // path records VmError + sets SHIM_FAILED, returns Unit sentinel.
-        ShimEntry {
-            builtin: Some(BuiltinName::Assert),
-            symbol: "__triet_assert",
-            addr: __triet_assert as *const () as usize,
-            signature: ShimSignature {
-                params: &[AbiScalar::I8, AbiScalar::Ptr],
-                ret: Some(AbiScalar::I8),
-            },
-        },
-        // `println(value)` — composite ptr arg; prints + newline.
-        ShimEntry {
-            builtin: Some(BuiltinName::Println),
-            symbol: "__triet_println",
-            addr: __triet_println as *const () as usize,
-            signature: ShimSignature {
-                params: &[AbiScalar::Ptr],
-                ret: Some(AbiScalar::I8),
-            },
-        },
-        // `text.len(s: String) -> Integer` — composite arg → primitive ret.
-        ShimEntry {
-            builtin: Some(BuiltinName::TextLen),
-            symbol: "__triet_text_len",
-            addr: __triet_text_len as *const () as usize,
-            signature: ShimSignature {
-                params: &[AbiScalar::Ptr],
-                ret: Some(AbiScalar::I64),
-            },
-        },
-        // `vector.new() -> Vector` — composite ret (box-out).
-        ShimEntry {
-            builtin: Some(BuiltinName::VectorNew),
-            symbol: "__triet_vector_new",
-            addr: __triet_vector_new as *const () as usize,
-            signature: ShimSignature {
-                params: &[],
-                ret: Some(AbiScalar::Ptr),
-            },
-        },
-        // `vector.push(v: Vector, x) -> Vector` — functional return-new
-        // (clone-and-extend per `triet_vector_functional`).
-        ShimEntry {
-            builtin: Some(BuiltinName::VectorPush),
-            symbol: "__triet_vector_push",
-            addr: __triet_vector_push as *const () as usize,
-            signature: ShimSignature {
-                params: &[AbiScalar::Ptr, AbiScalar::Ptr],
-                ret: Some(AbiScalar::Ptr),
-            },
-        },
+        // ── Production builtin shims — all delegate semantics to
+        // `triet_ir::dispatch_builtin` (single source of truth). ──
+        // I/O + assert (Unit returns).
+        b(
+            BuiltinName::Assert,
+            "__triet_assert",
+            __triet_assert as *const () as usize,
+            &[I8, Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::AssertEq,
+            "__triet_assert_eq",
+            __triet_assert_eq as *const () as usize,
+            &[Ptr, Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::Println,
+            "__triet_println",
+            __triet_println as *const () as usize,
+            &[Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::Print,
+            "__triet_print",
+            __triet_print as *const () as usize,
+            &[Ptr],
+            Some(I8),
+        ),
+        // Text.
+        b(
+            BuiltinName::TextLen,
+            "__triet_text_len",
+            __triet_text_len as *const () as usize,
+            &[Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::TextFromInteger,
+            "__triet_text_from_integer",
+            __triet_text_from_integer as *const () as usize,
+            &[I64],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::ParseInteger,
+            "__triet_parse_integer",
+            __triet_parse_integer as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::TextIntoBytes,
+            "__triet_text_into_bytes",
+            __triet_text_into_bytes as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::TextFromBytes,
+            "__triet_text_from_bytes",
+            __triet_text_from_bytes as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        // Vector.
+        b(
+            BuiltinName::VectorNew,
+            "__triet_vector_new",
+            __triet_vector_new as *const () as usize,
+            &[],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::VectorPush,
+            "__triet_vector_push",
+            __triet_vector_push as *const () as usize,
+            &[Ptr, Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::VectorGet,
+            "__triet_vector_get",
+            __triet_vector_get as *const () as usize,
+            &[Ptr, I64],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::VectorLength,
+            "__triet_vector_length",
+            __triet_vector_length as *const () as usize,
+            &[Ptr],
+            Some(I64),
+        ),
+        // HashMap.
+        b(
+            BuiltinName::HashMapNew,
+            "__triet_hashmap_new",
+            __triet_hashmap_new as *const () as usize,
+            &[],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::HashMapInsert,
+            "__triet_hashmap_insert",
+            __triet_hashmap_insert as *const () as usize,
+            &[Ptr, Ptr, Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::HashMapGet,
+            "__triet_hashmap_get",
+            __triet_hashmap_get as *const () as usize,
+            &[Ptr, Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::HashMapKeys,
+            "__triet_hashmap_keys",
+            __triet_hashmap_keys as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::HashMapContains,
+            "__triet_hashmap_contains",
+            __triet_hashmap_contains as *const () as usize,
+            &[Ptr, Ptr],
+            Some(I8),
+        ),
+        // Path.
+        b(
+            BuiltinName::PathJoin,
+            "__triet_path_join",
+            __triet_path_join as *const () as usize,
+            &[Ptr, Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::PathParent,
+            "__triet_path_parent",
+            __triet_path_parent as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::PathBasename,
+            "__triet_path_basename",
+            __triet_path_basename as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        // String.
+        b(
+            BuiltinName::StringSubstring,
+            "__triet_string_substring",
+            __triet_string_substring as *const () as usize,
+            &[Ptr, I64, I64],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::StringSplit,
+            "__triet_string_split",
+            __triet_string_split as *const () as usize,
+            &[Ptr, Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::StringIndexOf,
+            "__triet_string_index_of",
+            __triet_string_index_of as *const () as usize,
+            &[Ptr, Ptr],
+            Some(Ptr),
+        ),
+        // Misc.
+        b(
+            BuiltinName::Blake3Hash,
+            "__triet_blake3_hash",
+            __triet_blake3_hash as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::GetEnv,
+            "__triet_get_env",
+            __triet_get_env as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
     ]
 }
 
@@ -326,73 +486,287 @@ fn with_rv<R>(ptr: i64, f: impl FnOnce(Option<&RuntimeValue>) -> R) -> R {
     f(Some(rv))
 }
 
-// ── Representative production shims (jit.2a, ADR-0032 §4 option-2) ───
+// ── Production shims (ADR-0032 §1 hybrid ABI + §4 option-2) ─────────
 //
-// All are `extern "C"` (never unwind out). On a `VmError`-class failure
-// a shim calls `record_shim_failure` + returns a sentinel; the JIT's
-// per-call probe branches to `error_exit`.
+// Design: each shim MARSHALS its ABI arguments into `RuntimeValue`s,
+// delegates the SEMANTICS to `triet_ir::dispatch_builtin` (the exact
+// code the VM runs — zero VM↔JIT divergence by construction), then
+// marshals the result back. All are `extern "C"` (never unwind out);
+// on a `VmError` the result-marshaling tail records it via
+// `record_shim_failure` + returns a sentinel for the per-call probe.
 
-/// `assert(cond: Trilean, msg: String?)`. Trilean encoding: True = +1
-/// (ADR-0010). Passes iff True; otherwise records `AssertionFailed`
-/// (with the optional message) + signals failure. Returns Unit (`0`).
-extern "C" fn __triet_assert(cond: i8, msg_ptr: i64) -> i8 {
-    if cond == 1 {
-        return 0;
+// ── Argument marshaling (ABI → RuntimeValue) ─────────────────────────
+
+/// Borrow a composite-ptr arg into an owned `RuntimeValue` clone.
+/// Null ptr (`T?` null arm) → `RuntimeValue::Null`.
+fn arg_composite(ptr: i64) -> RuntimeValue {
+    with_rv(ptr, |rv| rv.cloned().unwrap_or(RuntimeValue::Null))
+}
+
+/// Wrap a primitive `i64` (Integer ABI slot) into a `RuntimeValue`.
+fn arg_integer(v: i64) -> RuntimeValue {
+    RuntimeValue::Integer(Integer::new(v).unwrap_or_default())
+}
+
+/// Wrap a primitive `i8` (Trilean ABI slot, `{-1,0,+1}` per ADR-0010).
+const fn arg_trilean(v: i8) -> RuntimeValue {
+    let t = match v {
+        1 => Trilean::True,
+        -1 => Trilean::False,
+        _ => Trilean::Unknown,
+    };
+    RuntimeValue::Trilean(t)
+}
+
+// ── Result marshaling (RuntimeValue → ABI) ───────────────────────────
+
+/// Marshal a dispatch result into a composite-ptr (`Ptr`) ABI return:
+/// box the value, or on error record + return null sentinel.
+fn finish_ptr(result: Result<RuntimeValue, VmError>) -> i64 {
+    match result {
+        Ok(rv) => box_rv(rv),
+        Err(e) => {
+            record_shim_failure(e);
+            0
+        }
     }
-    let message = with_rv(msg_ptr, |rv| match rv {
-        Some(RuntimeValue::String(s)) => Some(s.clone()),
-        _ => None,
-    });
-    record_shim_failure(VmError::AssertionFailed {
-        message,
-        function: current_func_name(),
-    });
-    0
 }
 
-/// `println(value)` — borrow the composite, print via `Display` +
-/// newline. Returns Unit (`0`).
+/// Marshal into an `i64` (Integer) ABI return. A non-Integer success
+/// (shouldn't happen for Integer-returning builtins) records a fault.
+fn finish_i64(result: Result<RuntimeValue, VmError>) -> i64 {
+    match result {
+        Ok(RuntimeValue::Integer(i)) => i.to_i64(),
+        Ok(other) => {
+            record_shim_failure(VmError::JitShimFault {
+                reason: format!("expected Integer return, got {:?}", other.type_tag()),
+                function: current_func_name(),
+            });
+            0
+        }
+        Err(e) => {
+            record_shim_failure(e);
+            0
+        }
+    }
+}
+
+/// Marshal into an `i8` (Trilean / Unit) ABI return. Trilean uses the
+/// `{-1,0,+1}` encoding (ADR-0010); Unit → `0`.
+fn finish_i8(result: Result<RuntimeValue, VmError>) -> i8 {
+    match result {
+        Ok(RuntimeValue::Trilean(t)) => match t {
+            Trilean::True => 1,
+            Trilean::Unknown => 0,
+            Trilean::False => -1,
+        },
+        Ok(RuntimeValue::Unit) => 0,
+        Ok(other) => {
+            record_shim_failure(VmError::JitShimFault {
+                reason: format!("expected Trilean/Unit return, got {:?}", other.type_tag()),
+                function: current_func_name(),
+            });
+            0
+        }
+        Err(e) => {
+            record_shim_failure(e);
+            0
+        }
+    }
+}
+
+/// Dispatch a builtin with the current function name for attribution.
+fn dispatch(name: BuiltinName, args: &[RuntimeValue]) -> Result<RuntimeValue, VmError> {
+    dispatch_builtin(name, args, &current_func_name())
+}
+
+// ── jit.2a shims (5) — now delegating ───────────────────────────────
+
+/// `assert(cond: Trilean, msg: String?)` → Unit.
+extern "C" fn __triet_assert(cond: i8, msg_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::Assert,
+        &[arg_trilean(cond), arg_composite(msg_ptr)],
+    ))
+}
+
+/// `println(value)` → Unit.
 extern "C" fn __triet_println(val_ptr: i64) -> i8 {
-    with_rv(val_ptr, |rv| match rv {
-        Some(v) => println!("{v}"),
-        None => println!(),
-    });
-    0
+    finish_i8(dispatch(BuiltinName::Println, &[arg_composite(val_ptr)]))
 }
 
-/// `text.len(s: String) -> Integer` — UTF-8 char count of the borrowed
-/// String, returned as a primitive `i64` (Integer is unboxed per §1).
-/// Non-String / null borrows yield `0` (defensive — typecheck ensures
-/// the arg is a String upstream).
+/// `text.len(s: String) -> Integer`.
 extern "C" fn __triet_text_len(s_ptr: i64) -> i64 {
-    with_rv(s_ptr, |rv| match rv {
-        Some(RuntimeValue::String(s)) => i64::try_from(s.chars().count()).unwrap_or(i64::MAX),
-        _ => 0,
-    })
+    finish_i64(dispatch(BuiltinName::TextLen, &[arg_composite(s_ptr)]))
 }
 
-/// `vector.new() -> Vector` — fresh empty Vector, boxed out (§2 rule 2).
+/// `vector.new() -> Vector`.
 extern "C" fn __triet_vector_new() -> i64 {
-    box_rv(RuntimeValue::Vector(Vec::new()))
+    finish_ptr(dispatch(BuiltinName::VectorNew, &[]))
 }
 
-/// `vector.push(v: Vector, x) -> Vector` — functional return-new per
-/// `triet_vector_functional`: clone the borrowed Vector, append a clone
-/// of the borrowed element, box the result. Both args are borrowed (not
-/// consumed); the JIT drops them at their last use.
+/// `vector.push(v: Vector, x) -> Vector` (functional return-new).
 extern "C" fn __triet_vector_push(vec_ptr: i64, val_ptr: i64) -> i64 {
-    let new_vec = with_rv(vec_ptr, |v| {
-        with_rv(val_ptr, |x| match (v, x) {
-            (Some(RuntimeValue::Vector(elems)), Some(item)) => {
-                let mut next = elems.clone();
-                next.push(item.clone());
-                RuntimeValue::Vector(next)
-            }
-            // Defensive: typecheck guarantees (Vector, _) upstream.
-            _ => RuntimeValue::Vector(Vec::new()),
-        })
-    });
-    box_rv(new_vec)
+    finish_ptr(dispatch(
+        BuiltinName::VectorPush,
+        &[arg_composite(vec_ptr), arg_composite(val_ptr)],
+    ))
+}
+
+// ── jit.2b-i clean shims (16) ────────────────────────────────────────
+
+/// `print(value)` → Unit (no newline).
+extern "C" fn __triet_print(val_ptr: i64) -> i8 {
+    finish_i8(dispatch(BuiltinName::Print, &[arg_composite(val_ptr)]))
+}
+
+/// `assert_eq(a, b)` → Unit (structural equality; fail records error).
+extern "C" fn __triet_assert_eq(a_ptr: i64, b_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::AssertEq,
+        &[arg_composite(a_ptr), arg_composite(b_ptr)],
+    ))
+}
+
+/// `text.from_integer(n: Integer) -> String`.
+extern "C" fn __triet_text_from_integer(n: i64) -> i64 {
+    finish_ptr(dispatch(BuiltinName::TextFromInteger, &[arg_integer(n)]))
+}
+
+/// `vector.get(v: Vector, i: Integer) -> T?` (boxed Null-or-element).
+extern "C" fn __triet_vector_get(vec_ptr: i64, idx: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::VectorGet,
+        &[arg_composite(vec_ptr), arg_integer(idx)],
+    ))
+}
+
+/// `vector.length(v: Vector) -> Integer`.
+extern "C" fn __triet_vector_length(vec_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::VectorLength,
+        &[arg_composite(vec_ptr)],
+    ))
+}
+
+/// `hashmap.new() -> HashMap`.
+extern "C" fn __triet_hashmap_new() -> i64 {
+    finish_ptr(dispatch(BuiltinName::HashMapNew, &[]))
+}
+
+/// `hashmap.insert(m, k, v) -> HashMap` (functional return-new).
+extern "C" fn __triet_hashmap_insert(map_ptr: i64, key_ptr: i64, val_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::HashMapInsert,
+        &[
+            arg_composite(map_ptr),
+            arg_composite(key_ptr),
+            arg_composite(val_ptr),
+        ],
+    ))
+}
+
+/// `hashmap.get(m, k) -> V?` (boxed Null-or-value).
+extern "C" fn __triet_hashmap_get(map_ptr: i64, key_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::HashMapGet,
+        &[arg_composite(map_ptr), arg_composite(key_ptr)],
+    ))
+}
+
+/// `hashmap.keys(m) -> Vector<K>`.
+extern "C" fn __triet_hashmap_keys(map_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::HashMapKeys,
+        &[arg_composite(map_ptr)],
+    ))
+}
+
+/// `hashmap.contains(m, k) -> Trilean`.
+extern "C" fn __triet_hashmap_contains(map_ptr: i64, key_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::HashMapContains,
+        &[arg_composite(map_ptr), arg_composite(key_ptr)],
+    ))
+}
+
+/// `path.join(base, segment) -> String`.
+extern "C" fn __triet_path_join(base_ptr: i64, seg_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::PathJoin,
+        &[arg_composite(base_ptr), arg_composite(seg_ptr)],
+    ))
+}
+
+/// `path.parent(path) -> String?` (boxed Null-or-String).
+extern "C" fn __triet_path_parent(path_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::PathParent,
+        &[arg_composite(path_ptr)],
+    ))
+}
+
+/// `path.basename(path) -> String`.
+extern "C" fn __triet_path_basename(path_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::PathBasename,
+        &[arg_composite(path_ptr)],
+    ))
+}
+
+/// `string.substring(s, start: Integer, end: Integer) -> String`.
+extern "C" fn __triet_string_substring(s_ptr: i64, start: i64, end: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::StringSubstring,
+        &[arg_composite(s_ptr), arg_integer(start), arg_integer(end)],
+    ))
+}
+
+/// `string.split(s, sep) -> Vector<String>`.
+extern "C" fn __triet_string_split(s_ptr: i64, sep_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::StringSplit,
+        &[arg_composite(s_ptr), arg_composite(sep_ptr)],
+    ))
+}
+
+/// `string.index_of(s, needle) -> Integer?` (boxed Null-or-Integer).
+extern "C" fn __triet_string_index_of(s_ptr: i64, needle_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::StringIndexOf,
+        &[arg_composite(s_ptr), arg_composite(needle_ptr)],
+    ))
+}
+
+/// `text.parse_integer(s) -> Integer?` (boxed Null-or-Integer).
+extern "C" fn __triet_parse_integer(s_ptr: i64) -> i64 {
+    finish_ptr(dispatch(BuiltinName::ParseInteger, &[arg_composite(s_ptr)]))
+}
+
+/// `text.into_bytes(s) -> Vector<Integer>`.
+extern "C" fn __triet_text_into_bytes(s_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::TextIntoBytes,
+        &[arg_composite(s_ptr)],
+    ))
+}
+
+/// `text.from_bytes(bytes: Vector<Integer>) -> String?`.
+extern "C" fn __triet_text_from_bytes(bytes_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::TextFromBytes,
+        &[arg_composite(bytes_ptr)],
+    ))
+}
+
+/// `crypto.blake3_hash(s) -> Vector<Integer>`.
+extern "C" fn __triet_blake3_hash(s_ptr: i64) -> i64 {
+    finish_ptr(dispatch(BuiltinName::Blake3Hash, &[arg_composite(s_ptr)]))
+}
+
+/// `env.get(name) -> String?` (boxed Null-or-String).
+extern "C" fn __triet_get_env(name_ptr: i64) -> i64 {
+    finish_ptr(dispatch(BuiltinName::GetEnv, &[arg_composite(name_ptr)]))
 }
 
 // ── Error propagation (§4 option-2 resolution, v0.10.x.jit.2a) ──────
@@ -605,14 +979,22 @@ mod tests {
     }
 
     #[test]
-    fn assert_false_no_message_records_none() {
+    fn assert_false_null_msg_matches_vm() {
+        // A null msg ptr marshals to `RuntimeValue::Null`; the shim
+        // delegates to `dispatch_builtin`, so the message matches what
+        // the VM produces for `assert(False, Null)` exactly — namely
+        // `Some("null")` (VM formats the Null arg via Display). This is
+        // VM↔JIT parity by construction; the jit.2a hand-rolled shim's
+        // `None` was a divergence that delegation corrected.
         clear_shim_state();
         set_func_name("f");
         let ret = __triet_assert(-1, 0); // cond=False, null msg ptr
         assert_eq!(ret, 0);
         match take_shim_failure() {
-            Some(VmError::AssertionFailed { message, .. }) => assert!(message.is_none()),
-            other => panic!("expected AssertionFailed with no message, got {other:?}"),
+            Some(VmError::AssertionFailed { message, .. }) => {
+                assert_eq!(message.as_deref(), Some("null"));
+            }
+            other => panic!("expected AssertionFailed, got {other:?}"),
         }
     }
 
@@ -632,9 +1014,168 @@ mod tests {
 
     #[test]
     fn builtin_shim_lookup_finds_implemented() {
+        // jit.2b-i clean shims are implemented.
         assert!(builtin_shim(BuiltinName::TextLen).is_some());
         assert!(builtin_shim(BuiltinName::VectorPush).is_some());
-        // Not-yet-implemented builtin (jit.2b): no shim.
-        assert!(builtin_shim(BuiltinName::HashMapNew).is_none());
+        assert!(builtin_shim(BuiltinName::HashMapNew).is_some());
+        assert!(builtin_shim(BuiltinName::Blake3Hash).is_some());
+        // Cliff builtins (jit.2b-iii / defer): no shim yet.
+        assert!(builtin_shim(BuiltinName::FStringConcat).is_none()); // varargs
+        assert!(builtin_shim(BuiltinName::ReadFile).is_none()); // file I/O
+    }
+
+    // ── jit.2b-i delegating-shim parity (shim ABI ↔ dispatch_builtin) ──
+    //
+    // Each shim marshals ABI args → RuntimeValues → dispatch_builtin →
+    // marshals back. These tests pin the marshaling against the known
+    // VM semantics. (Semantics themselves can't diverge — same
+    // dispatch_builtin the VM runs.)
+
+    #[test]
+    fn vector_get_in_bounds_and_oob() {
+        let vec_ptr = box_for_test(RuntimeValue::Vector(vec![integer(10), integer(20)]));
+        // In-bounds → boxed Integer.
+        let got = __triet_vector_get(vec_ptr, 1);
+        with_rv(got, |rv| expect_integer(rv.unwrap(), 20));
+        __triet_drop_arc(got);
+        // OOB → boxed Null.
+        let oob = __triet_vector_get(vec_ptr, 5);
+        with_rv(oob, |rv| assert!(matches!(rv, Some(RuntimeValue::Null))));
+        __triet_drop_arc(oob);
+        __triet_drop_arc(vec_ptr);
+    }
+
+    #[test]
+    fn vector_length_matches() {
+        let vec_ptr = box_for_test(RuntimeValue::Vector(vec![
+            integer(1),
+            integer(2),
+            integer(3),
+        ]));
+        assert_eq!(__triet_vector_length(vec_ptr), 3);
+        __triet_drop_arc(vec_ptr);
+    }
+
+    #[test]
+    fn text_from_integer_produces_decimal_string() {
+        let ptr = __triet_text_from_integer(-42);
+        with_rv(ptr, |rv| match rv {
+            Some(RuntimeValue::String(s)) => assert_eq!(s.as_str(), "-42"),
+            other => panic!("expected String, got {other:?}"),
+        });
+        __triet_drop_arc(ptr);
+    }
+
+    #[test]
+    fn parse_integer_valid_and_invalid() {
+        let ok = box_for_test(RuntimeValue::String("123".to_owned()));
+        let r = __triet_parse_integer(ok);
+        with_rv(r, |rv| expect_integer(rv.unwrap(), 123));
+        __triet_drop_arc(r);
+        __triet_drop_arc(ok);
+        // Non-numeric → Null.
+        let bad = box_for_test(RuntimeValue::String("xyz".to_owned()));
+        let rb = __triet_parse_integer(bad);
+        with_rv(rb, |rv| assert!(matches!(rv, Some(RuntimeValue::Null))));
+        __triet_drop_arc(rb);
+        __triet_drop_arc(bad);
+    }
+
+    #[test]
+    fn hashmap_insert_get_contains_roundtrip() {
+        let m0 = __triet_hashmap_new();
+        let k = box_for_test(RuntimeValue::String("key".to_owned()));
+        let v = box_for_test(integer(7));
+        let m1 = __triet_hashmap_insert(m0, k, v);
+        // get → boxed value 7.
+        let got = __triet_hashmap_get(m1, k);
+        with_rv(got, |rv| expect_integer(rv.unwrap(), 7));
+        __triet_drop_arc(got);
+        // contains → True (i8 +1).
+        assert_eq!(__triet_hashmap_contains(m1, k), 1);
+        // get a missing key → Null.
+        let missing = box_for_test(RuntimeValue::String("nope".to_owned()));
+        let g2 = __triet_hashmap_get(m1, missing);
+        with_rv(g2, |rv| assert!(matches!(rv, Some(RuntimeValue::Null))));
+        __triet_drop_arc(g2);
+        __triet_drop_arc(missing);
+        __triet_drop_arc(m0);
+        __triet_drop_arc(m1);
+        __triet_drop_arc(k);
+        __triet_drop_arc(v);
+    }
+
+    #[test]
+    fn assert_eq_pass_and_fail() {
+        clear_shim_state();
+        set_func_name("f");
+        let a = box_for_test(integer(5));
+        let b = box_for_test(integer(5));
+        assert_eq!(__triet_assert_eq(a, b), 0);
+        assert!(take_shim_failure().is_none());
+        // Mismatch → records failure.
+        clear_shim_state();
+        let c = box_for_test(integer(6));
+        let _ = __triet_assert_eq(a, c);
+        assert!(matches!(
+            take_shim_failure(),
+            Some(VmError::AssertionFailed { .. })
+        ));
+        __triet_drop_arc(a);
+        __triet_drop_arc(b);
+        __triet_drop_arc(c);
+    }
+
+    #[test]
+    fn path_join_and_basename() {
+        let base = box_for_test(RuntimeValue::String("a/b".to_owned()));
+        let seg = box_for_test(RuntimeValue::String("c".to_owned()));
+        let joined = __triet_path_join(base, seg);
+        with_rv(joined, |rv| match rv {
+            Some(RuntimeValue::String(s)) => assert_eq!(s.as_str(), "a/b/c"),
+            other => panic!("expected String, got {other:?}"),
+        });
+        let bn = __triet_path_basename(joined);
+        with_rv(bn, |rv| match rv {
+            Some(RuntimeValue::String(s)) => assert_eq!(s.as_str(), "c"),
+            other => panic!("expected String, got {other:?}"),
+        });
+        __triet_drop_arc(joined);
+        __triet_drop_arc(bn);
+        __triet_drop_arc(base);
+        __triet_drop_arc(seg);
+    }
+
+    #[test]
+    fn string_index_of_found_and_missing() {
+        let s = box_for_test(RuntimeValue::String("hello".to_owned()));
+        let needle = box_for_test(RuntimeValue::String("ll".to_owned()));
+        let found = __triet_string_index_of(s, needle);
+        with_rv(found, |rv| expect_integer(rv.unwrap(), 2));
+        __triet_drop_arc(found);
+        let absent = box_for_test(RuntimeValue::String("z".to_owned()));
+        let miss = __triet_string_index_of(s, absent);
+        with_rv(miss, |rv| assert!(matches!(rv, Some(RuntimeValue::Null))));
+        __triet_drop_arc(miss);
+        __triet_drop_arc(s);
+        __triet_drop_arc(needle);
+        __triet_drop_arc(absent);
+    }
+
+    #[test]
+    fn text_into_bytes_roundtrip() {
+        let s = box_for_test(RuntimeValue::String("Hi".to_owned()));
+        let bytes = __triet_text_into_bytes(s);
+        // "Hi" → [72, 105].
+        with_rv(bytes, |rv| match rv {
+            Some(RuntimeValue::Vector(v)) => {
+                assert_eq!(v.len(), 2);
+                expect_integer(&v[0], 72);
+                expect_integer(&v[1], 105);
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        });
+        __triet_drop_arc(bytes);
+        __triet_drop_arc(s);
     }
 }

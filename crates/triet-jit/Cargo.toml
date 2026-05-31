@@ -27,6 +27,10 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 
 [dependencies]
+# v0.10.x.jit.2b — shims construct `RuntimeValue::Integer(triet_core::
+# Integer)` etc. when marshaling ABI args into RuntimeValues for
+# `triet_ir::dispatch_builtin`.
+triet-core.workspace = true
 triet-ir.workspace = true
 triet-logic.workspace = true
 triet-modules.workspace = true
@@ -44,7 +48,3 @@ cranelift-module = "0.132"
 cranelift-native = "0.132"
 thiserror.workspace = true
 
-[dev-dependencies]
-# Tests construct `triet_ir::Constant::Integer(triet_core::Integer)`
-# directly to populate program-level pool.
-triet-core.workspace = true

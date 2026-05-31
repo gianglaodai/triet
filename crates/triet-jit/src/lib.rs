@@ -1156,19 +1156,18 @@ mod tests {
 
     #[test]
     fn jit4_callbuiltin_without_shim_tiers_down_naming_builtin() {
-        // v0.10.x.jit.2a update: a builtin WITHOUT an implemented shim
-        // (one of the 38 pending jit.2b) tier-downs with a diagnostic
-        // that names the builtin + references the jit.2b backlog.
-        // `HashMapNew` has no jit.2a shim.
+        // A builtin WITHOUT an implemented shim (a jit.2b-iii cliff)
+        // tier-downs with a diagnostic that names the builtin + the
+        // jit.2b backlog. `FStringConcat` is a varargs cliff — no shim.
         use triet_ir::BuiltinName;
         let func = make_function(
-            "with_hashmap_new",
+            "with_fstring",
             vec![],
             TypeTag::Unit,
             vec![
                 Instruction::CallBuiltin {
                     dest: None,
-                    name: BuiltinName::HashMapNew,
+                    name: BuiltinName::FStringConcat,
                     args: vec![],
                 },
                 Instruction::Ret { value: None },
@@ -1178,7 +1177,7 @@ mod tests {
         match jit.compile(&func) {
             Err(JitError::UnsupportedOpcode { opcode }) => {
                 assert!(
-                    opcode.contains("CallBuiltin(hashmap_new)"),
+                    opcode.contains("CallBuiltin(fstring_concat)"),
                     "diagnostic must name the builtin via its Display impl, got: {opcode}"
                 );
                 assert!(
@@ -1954,10 +1953,10 @@ mod tests {
     }
 
     #[test]
-    fn jit_two_shim_calls_tier_down() {
-        // jit.2a single-shim-call scope: a 2nd shim call in one function
-        // must tier down (per-call sentinel codegen defers jit.2b). The
-        // function is dropped from the cache.
+    fn jit_two_shim_calls_in_single_block_jit() {
+        // v0.10.x.jit.2b-i: multiple shim calls in a single-block
+        // function now JIT (per-call sentinel codegen). Two TextLen
+        // calls on the same String, returning the second result.
         let func = Function {
             id: FuncId(0),
             name: Some("two_lens".to_owned()),
@@ -1985,11 +1984,113 @@ mod tests {
         };
         let program = single_fn_program(func, triet_ir::ConstantPool::new());
         let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(jit.lookup(FuncId(0)).is_some(), "two-shim-call fn must JIT");
+
+        let s_ptr = shims::box_for_jit_test(RuntimeValue::String("hello".to_owned()));
+        let result = dispatch_with_shim_errors(&jit, FuncId(0), &[s_ptr], "two_lens")
+            .expect("cache hit")
+            .expect("no shim failure");
+        assert_eq!(result, 5);
+        shims::drop_for_jit_test(s_ptr);
+    }
+
+    #[test]
+    fn jit_abort_on_first_shim_failure() {
+        // v0.10.x.jit.2b-i abort-on-first-error: a function that first
+        // calls a FAILING Assert then a Println must NOT run the Println
+        // (the per-call sentinel branches to error_exit). We can't
+        // directly observe stdout suppression, but we verify the
+        // function returns Err (the failing Assert's VmError) — proving
+        // the error_exit branch fired before the 2nd shim.
+        let mut constants = triet_ir::ConstantPool::new();
+        let false_c = constants.intern(Constant::Trilean(triet_logic::Trilean::False));
+        let null_msg = constants.intern(Constant::Integer(triet_core::Integer::new(0).unwrap()));
+        let func = Function {
+            id: FuncId(0),
+            name: Some("assert_then_print".to_owned()),
+            params: vec![("msg".to_owned(), TypeTag::String)],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    // 1st shim: Assert(False) → records failure, sentinel.
+                    Instruction::CallBuiltin {
+                        dest: None,
+                        name: BuiltinName::Assert,
+                        args: vec![Operand::Const(false_c), Operand::Const(null_msg)],
+                    },
+                    // 2nd shim: Println(msg) — must NOT run (error_exit
+                    // branch taken after the failing Assert).
+                    Instruction::CallBuiltin {
+                        dest: None,
+                        name: BuiltinName::Println,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Const(null_msg)),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, constants);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "assert_then_print must JIT"
+        );
+
+        let msg_ptr = shims::box_for_jit_test(RuntimeValue::String("SHOULD NOT PRINT".to_owned()));
+        let result = dispatch_with_shim_errors(&jit, FuncId(0), &[msg_ptr], "assert_then_print")
+            .expect("cache hit");
+        match result {
+            Err(VmError::AssertionFailed { .. }) => {} // abort-on-first ✓
+            other => panic!("expected AssertionFailed (abort before Println), got {other:?}"),
+        }
+        shims::drop_for_jit_test(msg_ptr);
+    }
+
+    #[test]
+    fn jit_shim_in_multi_block_tiers_down() {
+        // jit.2b-i scope: shim calls in a MULTI-block function tier
+        // down (single-block shim scope). Build a 2-block function with
+        // a shim call; assert it's not cached.
+        let func = Function {
+            id: FuncId(0),
+            name: Some("multi_block_shim".to_owned()),
+            params: vec![("s".to_owned(), TypeTag::String)],
+            return_type: TypeTag::Integer,
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId(0),
+                    name: Some("entry".to_owned()),
+                    instructions: vec![Instruction::Br { target: BlockId(1) }],
+                },
+                BasicBlock {
+                    id: BlockId(1),
+                    name: Some("second".to_owned()),
+                    instructions: vec![
+                        Instruction::CallBuiltin {
+                            dest: Some(ValueId(1)),
+                            name: BuiltinName::TextLen,
+                            args: vec![Operand::Value(ValueId(0))],
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(1))),
+                        },
+                    ],
+                },
+            ],
+        };
+        let program = single_fn_program(func, triet_ir::ConstantPool::new());
+        let mut jit = JitCompiler::new();
         jit.compile_program(&program)
             .expect("compile (tier-down is silent)");
         assert!(
             jit.lookup(FuncId(0)).is_none(),
-            "2-shim-call function must tier down in jit.2a"
+            "multi-block shim function must tier down in jit.2b-i"
         );
     }
 }
