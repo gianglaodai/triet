@@ -15,3 +15,6 @@ scratch/
 # v0.8.x.review.6 — root-level scratch artifacts (built packs, debug binaries)
 /*.khi
 /parse_test
+
+# graphify generated knowledge graph — regenerate with `graphify update .`
+graphify-out/

@@ -204,6 +204,7 @@ The user follows a per-step commit pattern:
 3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `fix(v0.8.x.review.N): …` / `docs(v0.8.x.review.N): …` (post-v0.8 audit phase). Earlier patterns: `feat(v0.8.N): …` / `feat(v0.7.4.N-error): …` / `feat(v0.6.N): …` / `docs(v0.5.x.review.N): …`.
 4. Push.
 5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
+6. The `.githooks/post-commit` hook auto-rebuilds the knowledge graph (graphify-out/) in the background after the commit (AST-only, no API cost) — no manual step needed in the normal case. See the **graphify** section below for the freshness check + manual-fallback conditions.
 
 Do not commit, push, or run `gh` commands without an explicit ask. The user reviews each step. Only the user runs `cargo run` against examples in interactive sessions — don't auto-run.
 
@@ -232,3 +233,18 @@ Demos at v0.8 close: **14 single-file examples** in `examples/` (fizzbuzz, facto
 - v0.8.x.review.4 — doc sync (CLAUDE.md/README.md/docs/decisions/README.md/ROADMAP.md/ADR status promote).
 - v0.8.x.review.5 — root scratch cleanup + `.gitignore` tightening.
 - 1425 tests workspace-wide (ROADMAP estimate ~1550 — BYOS revert cut scope per design).
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+**At the start of every new thread/session** (when graphify-out/graph.json exists), orient on the architecture via graphify *before* doing broad source exploration:
+1. Skim graphify-out/GRAPH_REPORT.md "Community Hubs" to map the crate/subsystem layout, then `graphify query "<your task area>"` to pull the scoped subgraph for what you're about to touch.
+2. **Check freshness:** GRAPH_REPORT.md records `Built from commit:` — compare to `git rev-parse HEAD`. If it lags HEAD, run `graphify update .` first so the graph reflects current code.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<node-name>"` for focused concepts (note: `explain` takes a **node name**, not a community label). These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- **Auto-update is wired:** a `.githooks/post-commit` hook (installed by `graphify hook install`, with `core.hooksPath=.githooks`) rebuilds the graph in the background after every commit — code-only, no API cost — so the graph normally tracks committed code on its own. Verify with the `Built from commit:` freshness check above; only run `graphify update .` manually if you changed code *without* committing, or the background rebuild failed (log: `~/.cache/graphify-rebuild.log`).
+- graphify-out/ is generated output (gitignored) — never hand-edit it; regenerate with `graphify update .` if absent or stale.
