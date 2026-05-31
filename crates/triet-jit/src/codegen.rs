@@ -104,22 +104,29 @@ pub(crate) fn map_type(tag: &TypeTag) -> Result<types::Type, JitError> {
         //   consistent ABI shape.
         TypeTag::Trit | TypeTag::Trilean | TypeTag::Unit => I8,
         TypeTag::Tryte => I16,
-        // `Integer` (primitive) + the v0.10.x.jit.2a composites
-        // (`String`/`Vector`) all map to `i64`: Integer is a 64-bit
-        // value, composites cross the shim ABI as `i64` raw pointers
-        // (`Rc::into_raw` boxed `RuntimeValue`) per ADR-0032 §1. Other
-        // composites (HashMap/Struct/Enum/Tuple/Outcome/Atomic/Nullable/
-        // Range) still tier-down until jit.2b.
-        TypeTag::Integer | TypeTag::String | TypeTag::Vector(_) => I64,
+        // `Integer` (primitive) + composites all map to `i64`: Integer
+        // is a 64-bit value; composites cross the shim ABI as `i64` raw
+        // pointers (`Rc::into_raw` boxed `RuntimeValue`) per ADR-0032 §1.
+        // Composite coverage grows per sub-task:
+        //   - jit.2b-i: String, Vector, HashMap, Nullable.
+        //   - jit.2b-ii: Atomic, Outcome (compare_exchange return).
+        // (TypeTag has no Enum/Struct variant — user aggregates lower
+        // via EnumNew/struct ops, not JIT-supported yet, so they tier
+        // down at construction.) Tuple / Range also tier-down for now.
+        TypeTag::Integer
+        | TypeTag::String
+        | TypeTag::Vector(_)
+        | TypeTag::HashMap(..)
+        | TypeTag::Nullable(_)
+        | TypeTag::Atomic(_)
+        | TypeTag::Outcome { .. } => I64,
         // Long (i128) needs pair-of-i64 lowering per ADR-0030 §3 — defer.
+        // (Exhaustive match — no catch-all: a future `TypeTag` variant
+        // will fail to compile here until explicitly mapped, preventing
+        // a silent ABI miscompile of an unhandled type.)
         TypeTag::Long => {
             return Err(JitError::UnsupportedOpcode {
                 opcode: "Long type (i128) — defer to later sub-phase".to_string(),
-            });
-        }
-        other => {
-            return Err(JitError::UnsupportedOpcode {
-                opcode: format!("type {other:?} — defer to jit.2b"),
             });
         }
     })

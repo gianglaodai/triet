@@ -1798,6 +1798,14 @@ mod tests {
         }
     }
 
+    /// Build an `Atomic<Integer>` `RuntimeValue` for end-to-end atomic
+    /// JIT tests (matches `dispatch_builtin(AtomicNew, ..)` shape).
+    fn make_atomic(n: i64) -> RuntimeValue {
+        RuntimeValue::Atomic(std::sync::Arc::new(std::sync::Mutex::new(
+            RuntimeValue::Integer(triet_core::Integer::new(n).unwrap()),
+        )))
+    }
+
     #[test]
     fn jit_text_len_via_shim() {
         // `text_len_worker(s: String) -> Integer { TextLen(s) }`.
@@ -2092,5 +2100,64 @@ mod tests {
             jit.lookup(FuncId(0)).is_none(),
             "multi-block shim function must tier down in jit.2b-i"
         );
+    }
+
+    #[test]
+    fn jit_atomic_fetch_add_end_to_end() {
+        // jit.2b-ii end-to-end: `inc(counter: Atomic<Integer>, ord:
+        // Ordering, delta: Integer) -> Integer { fetch_add(counter,
+        // delta, ord) }`. `counter` + `ord` arrive as composite-ptr
+        // PARAMS (boxed by the caller) — sidesteps the EnumNew gate
+        // (we don't construct Ordering in-function). Proves the atomic
+        // shim JITs + dispatches end-to-end through the composite ABI.
+        let func = Function {
+            id: FuncId(0),
+            name: Some("inc".to_owned()),
+            params: vec![
+                (
+                    "counter".to_owned(),
+                    TypeTag::Atomic(Box::new(TypeTag::Integer)),
+                ),
+                // Ordering modeled as a Nullable here (composite ptr) so
+                // the param maps to i64 without an Enum TypeTag; the VM
+                // ignores the ordering value anyway.
+                ("ord".to_owned(), TypeTag::Nullable(Box::new(TypeTag::Unit))),
+                ("delta".to_owned(), TypeTag::Integer),
+            ],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".to_owned()),
+                instructions: vec![
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(3)),
+                        name: BuiltinName::AtomicFetchAdd,
+                        args: vec![
+                            Operand::Value(ValueId(0)), // counter (Atomic ptr)
+                            Operand::Value(ValueId(2)), // delta (i64)
+                            Operand::Value(ValueId(1)), // ord (ptr, ignored)
+                        ],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(3))),
+                    },
+                ],
+            }],
+        };
+        let program = single_fn_program(func, triet_ir::ConstantPool::new());
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(jit.lookup(FuncId(0)).is_some(), "atomic fetch_add must JIT");
+
+        // Box a counter=100 + a null ordering; call fetch_add(+5).
+        let counter = shims::box_for_jit_test(make_atomic(100));
+        let ord = 0_i64; // null ordering ptr (VM ignores)
+        let prev = dispatch_with_shim_errors(&jit, FuncId(0), &[counter, ord, 5], "inc")
+            .expect("cache hit")
+            .expect("no shim failure");
+        assert_eq!(prev, 100, "fetch_add returns previous value");
+        // The shared Atomic now holds 105.
+        shims::with_atomic_for_test(counter, |v| assert_eq!(v, 105));
+        shims::drop_for_jit_test(counter);
     }
 }

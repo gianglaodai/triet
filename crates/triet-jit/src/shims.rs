@@ -351,6 +351,79 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             &[Ptr],
             Some(Ptr),
         ),
+        // Atomic ×10 (jit.2b-ii) — Atomic<Integer>; `self` + `ordering`
+        // are composite ptrs, value/delta/mask are i64. `Arc<Mutex>`
+        // repr (thread.2) supersedes ADR-0032 §1 `Rc<RefCell>` text.
+        b(
+            BuiltinName::AtomicNew,
+            "__triet_atomic_new",
+            __triet_atomic_new as *const () as usize,
+            &[I64],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::AtomicLoad,
+            "__triet_atomic_load",
+            __triet_atomic_load as *const () as usize,
+            &[Ptr, Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::AtomicStore,
+            "__triet_atomic_store",
+            __triet_atomic_store as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::AtomicSwap,
+            "__triet_atomic_swap",
+            __triet_atomic_swap as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::AtomicCompareExchange,
+            "__triet_atomic_compare_exchange",
+            __triet_atomic_compare_exchange as *const () as usize,
+            &[Ptr, I64, I64, Ptr, Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::AtomicFetchAdd,
+            "__triet_atomic_fetch_add",
+            __triet_atomic_fetch_add as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::AtomicFetchSub,
+            "__triet_atomic_fetch_sub",
+            __triet_atomic_fetch_sub as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::AtomicFetchBitwiseAnd,
+            "__triet_atomic_fetch_bitwise_and",
+            __triet_atomic_fetch_bitwise_and as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::AtomicFetchBitwiseOr,
+            "__triet_atomic_fetch_bitwise_or",
+            __triet_atomic_fetch_bitwise_or as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I64),
+        ),
+        b(
+            BuiltinName::AtomicFetchBitwiseXor,
+            "__triet_atomic_fetch_bitwise_xor",
+            __triet_atomic_fetch_bitwise_xor as *const () as usize,
+            &[Ptr, I64, Ptr],
+            Some(I64),
+        ),
     ]
 }
 
@@ -466,6 +539,23 @@ pub(crate) fn box_for_jit_test(value: RuntimeValue) -> i64 {
 #[cfg(test)]
 pub(crate) fn drop_for_jit_test(ptr: i64) {
     __triet_drop_arc(ptr);
+}
+
+/// v0.10.x.jit.2b-ii (test-support) — read the Integer inside a boxed
+/// `Atomic<Integer>` (locks the shared Mutex). For end-to-end atomic
+/// JIT assertions.
+#[cfg(test)]
+pub(crate) fn with_atomic_for_test(ptr: i64, check: impl FnOnce(i64)) {
+    with_rv(ptr, |rv| match rv {
+        Some(RuntimeValue::Atomic(arc)) => {
+            let guard = arc.lock().expect("atomic mutex");
+            match &*guard {
+                RuntimeValue::Integer(i) => check(i.to_i64()),
+                other => panic!("expected Integer inside Atomic, got {other:?}"),
+            }
+        }
+        other => panic!("expected Atomic, got {other:?}"),
+    });
 }
 
 /// Borrow a boxed `RuntimeValue` for the duration of `f` per ADR-0032
@@ -767,6 +857,143 @@ extern "C" fn __triet_blake3_hash(s_ptr: i64) -> i64 {
 /// `env.get(name) -> String?` (boxed Null-or-String).
 extern "C" fn __triet_get_env(name_ptr: i64) -> i64 {
     finish_ptr(dispatch(BuiltinName::GetEnv, &[arg_composite(name_ptr)]))
+}
+
+// ── jit.2b-ii Atomic shims (10) ──────────────────────────────────────
+//
+// Atomic delegation works because `RuntimeValue::Atomic(Arc<Mutex<…>>)`
+// clones SHARE the underlying cell (Arc::clone) — `arg_composite` clones
+// the borrowed Atomic, `dispatch_builtin` mutates the shared Mutex, and
+// the caller's boxed Atomic observes the change. The `ordering` arg is a
+// composite (Ordering enum) ptr; the VM ignores it on the dev tier
+// (ADR-0028 §9), so it's marshaled but inert.
+//
+// **Scope: Atomic<Integer>** (value/delta/mask slots = `i64`). The
+// fetch_*/bitwise ops are Integer-only per ADR-0028 §4.2/§4.3.
+// load/store/swap/compare_exchange are polymorphic over AtomicValue but
+// jit.2b-ii wires the Integer instantiation (the counter case); non-
+// Integer atomic value ops tier-down. **End-to-end JIT of a full
+// atomic-using function is additionally gated on Ordering-enum codegen
+// (`EnumNew` is not JIT-supported), so these shims are validated by
+// direct unit tests; a real `fetch_add(c, 1, Synchronized)` function
+// tier-downs at the enum construction until enum codegen lands.**
+
+/// `atomic.new(initial: Integer) -> Atomic<Integer>` (boxed Atomic).
+extern "C" fn __triet_atomic_new(initial: i64) -> i64 {
+    finish_ptr(dispatch(BuiltinName::AtomicNew, &[arg_integer(initial)]))
+}
+
+/// `atomic.load(self, ordering) -> Integer`.
+extern "C" fn __triet_atomic_load(self_ptr: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicLoad,
+        &[arg_composite(self_ptr), arg_composite(ord_ptr)],
+    ))
+}
+
+/// `atomic.store(self, value: Integer, ordering) -> Unit`.
+extern "C" fn __triet_atomic_store(self_ptr: i64, value: i64, ord_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::AtomicStore,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(value),
+            arg_composite(ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.swap(self, value: Integer, ordering) -> Integer` (prev).
+extern "C" fn __triet_atomic_swap(self_ptr: i64, value: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicSwap,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(value),
+            arg_composite(ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.compare_exchange(self, expected, new, succ_ord, fail_ord)
+/// -> Integer~CompareExchangeFailed` (boxed Outcome).
+extern "C" fn __triet_atomic_compare_exchange(
+    self_ptr: i64,
+    expected: i64,
+    new_value: i64,
+    succ_ord_ptr: i64,
+    fail_ord_ptr: i64,
+) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::AtomicCompareExchange,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(expected),
+            arg_integer(new_value),
+            arg_composite(succ_ord_ptr),
+            arg_composite(fail_ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.fetch_add(self, delta: Integer, ordering) -> Integer` (prev).
+extern "C" fn __triet_atomic_fetch_add(self_ptr: i64, delta: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicFetchAdd,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(delta),
+            arg_composite(ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.fetch_sub(self, delta: Integer, ordering) -> Integer` (prev).
+extern "C" fn __triet_atomic_fetch_sub(self_ptr: i64, delta: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicFetchSub,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(delta),
+            arg_composite(ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.fetch_bitwise_and(self, mask: Integer, ordering) -> Integer`.
+extern "C" fn __triet_atomic_fetch_bitwise_and(self_ptr: i64, mask: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicFetchBitwiseAnd,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(mask),
+            arg_composite(ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.fetch_bitwise_or(self, mask: Integer, ordering) -> Integer`.
+extern "C" fn __triet_atomic_fetch_bitwise_or(self_ptr: i64, mask: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicFetchBitwiseOr,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(mask),
+            arg_composite(ord_ptr),
+        ],
+    ))
+}
+
+/// `atomic.fetch_bitwise_xor(self, mask: Integer, ordering) -> Integer`.
+extern "C" fn __triet_atomic_fetch_bitwise_xor(self_ptr: i64, mask: i64, ord_ptr: i64) -> i64 {
+    finish_i64(dispatch(
+        BuiltinName::AtomicFetchBitwiseXor,
+        &[
+            arg_composite(self_ptr),
+            arg_integer(mask),
+            arg_composite(ord_ptr),
+        ],
+    ))
 }
 
 // ── Error propagation (§4 option-2 resolution, v0.10.x.jit.2a) ──────
@@ -1177,5 +1404,129 @@ mod tests {
         });
         __triet_drop_arc(bytes);
         __triet_drop_arc(s);
+    }
+
+    // ── jit.2b-ii Atomic shims ───────────────────────────────────────
+    //
+    // ordering arg passed as null (0) — VM ignores it on the dev tier
+    // (ADR-0028 §9). These exercise the Arc<Mutex> delegation +
+    // Outcome marshaling directly.
+
+    #[test]
+    fn atomic_new_load_roundtrip() {
+        let a = __triet_atomic_new(7);
+        assert_eq!(__triet_atomic_load(a, 0), 7);
+        __triet_drop_arc(a);
+    }
+
+    #[test]
+    fn atomic_fetch_add_returns_prev_and_mutates_shared_cell() {
+        let a = __triet_atomic_new(10);
+        // fetch_add returns the PREVIOUS value.
+        assert_eq!(__triet_atomic_fetch_add(a, 5, 0), 10);
+        // Subsequent load sees the mutation through the shared Arc<Mutex>.
+        assert_eq!(__triet_atomic_load(a, 0), 15);
+        __triet_drop_arc(a);
+    }
+
+    #[test]
+    fn atomic_store_and_swap() {
+        let a = __triet_atomic_new(1);
+        assert_eq!(__triet_atomic_store(a, 99, 0), 0); // Unit sentinel
+        assert_eq!(__triet_atomic_load(a, 0), 99);
+        // swap returns previous, installs new.
+        assert_eq!(__triet_atomic_swap(a, 42, 0), 99);
+        assert_eq!(__triet_atomic_load(a, 0), 42);
+        __triet_drop_arc(a);
+    }
+
+    #[test]
+    fn atomic_compare_exchange_success_and_failure_outcome() {
+        let a = __triet_atomic_new(5);
+        // Success: expected=5 matches → Outcome ~+ (positive arm),
+        // payload = previous value (5), cell becomes 8.
+        let ok = __triet_atomic_compare_exchange(a, 5, 8, 0, 0);
+        with_rv(ok, |rv| match rv {
+            Some(RuntimeValue::Outcome {
+                discriminator,
+                payload,
+            }) => {
+                assert!(discriminator.is_positive());
+                match payload.as_deref() {
+                    Some(RuntimeValue::Integer(i)) => assert_eq!(i.to_i64(), 5),
+                    other => panic!("expected prev=5 payload, got {other:?}"),
+                }
+            }
+            other => panic!("expected Outcome, got {other:?}"),
+        });
+        __triet_drop_arc(ok);
+        assert_eq!(__triet_atomic_load(a, 0), 8);
+        // Failure: expected=999 ≠ current(8) → Outcome ~- (negative arm).
+        let fail = __triet_atomic_compare_exchange(a, 999, 0, 0, 0);
+        with_rv(fail, |rv| match rv {
+            Some(RuntimeValue::Outcome { discriminator, .. }) => {
+                assert!(discriminator.is_negative());
+            }
+            other => panic!("expected Outcome, got {other:?}"),
+        });
+        __triet_drop_arc(fail);
+        // Cell unchanged on failure.
+        assert_eq!(__triet_atomic_load(a, 0), 8);
+        __triet_drop_arc(a);
+    }
+
+    #[test]
+    fn atomic_fetch_bitwise_ops() {
+        let a = __triet_atomic_new(0b1100);
+        assert_eq!(__triet_atomic_fetch_bitwise_and(a, 0b1010, 0), 0b1100); // prev
+        assert_eq!(__triet_atomic_load(a, 0), 0b1000); // 1100 & 1010
+        assert_eq!(__triet_atomic_fetch_bitwise_or(a, 0b0011, 0), 0b1000);
+        assert_eq!(__triet_atomic_load(a, 0), 0b1011);
+        assert_eq!(__triet_atomic_fetch_bitwise_xor(a, 0b1111, 0), 0b1011);
+        assert_eq!(__triet_atomic_load(a, 0), 0b0100);
+        __triet_drop_arc(a);
+    }
+
+    #[test]
+    fn atomic_fetch_sub() {
+        let a = __triet_atomic_new(20);
+        assert_eq!(__triet_atomic_fetch_sub(a, 7, 0), 20); // prev
+        assert_eq!(__triet_atomic_load(a, 0), 13);
+        __triet_drop_arc(a);
+    }
+
+    #[test]
+    fn atomic_cross_thread_share_via_shims() {
+        // jit.2b-ii deliverable: a counter boxed for the shim ABI can be
+        // shared across OS threads (Arc<Mutex>), each thread doing a
+        // fetch_add via the shim. After join, the count reflects all
+        // increments — proving the JIT shim path is Send-correct.
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        let counter = __triet_atomic_new(0);
+        // Extract the inner Arc to share across threads (the boxed
+        // RuntimeValue::Atomic holds it).
+        let shared: Arc<Mutex<RuntimeValue>> = with_rv(counter, |rv| match rv {
+            Some(RuntimeValue::Atomic(arc)) => arc.clone(),
+            other => panic!("expected Atomic, got {other:?}"),
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let arc = shared.clone();
+            handles.push(std::thread::spawn(move || {
+                // Re-box the shared Atomic for the shim ABI, fetch_add 1.
+                let boxed = box_rv(RuntimeValue::Atomic(arc));
+                let _prev = __triet_atomic_fetch_add(boxed, 1, 0);
+                __triet_drop_arc(boxed);
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker joined");
+        }
+        // 4 increments from 0 → 4.
+        assert_eq!(__triet_atomic_load(counter, 0), 4);
+        __triet_drop_arc(counter);
     }
 }
