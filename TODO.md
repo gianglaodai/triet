@@ -53,10 +53,17 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 ### v0.11.0 — Design phase (loader-approach resolution)
 
 - [x] **v0.11.0.1** — [ADR-0033 Addendum] **Loader-approach decision** — locked **Path A (Triết owns its relocating loader)**, author sign-off. Path B (system-linker + `dlopen`) rejected: runtime C-toolchain dependency on the perf path + leans on `dlopen`/ELF dynamic linking, neither exists on balanced-ternary hardware. Path A honors OS-capable/from-scratch identity. 4 normative safety constraints for jit.3: CodeLoader trait, ELF/x86_64 POSIX-first, bounded reloc set + refuse-on-unknown, test regimen (round-trip value parity + proptest fuzz + W^X). Supersedes only ADR-0033 §3 framing; §3 symbol-resolution + §1/§2/§4–§10 unchanged. — `ee624ce`
+- [ ] **v0.11.0.2** — [ADR-0033 Addendum] **Cache identity decision** — locked **key = canonical `impl_hash_mod` + per-module objects**, author sign-off. Rejects the content-hash shortcut (parallel identity space disjoint from the [ADR-0014] hash tree → would break `dao store gc` liveness; app-tier reasoning, wrong for OS-capable). GC aligns by construction (jit dir live iff `impl_hash_mod ∈ live_mods`). `triet-jit` stays `triet-pack`-independent: opaque key bytes + injected `trait AotCacheStore`; the caller computes `impl_hash_mod`. Loose runs without the canonical hash → not cached (refuse-over-guess, never fabricate a key). Supersedes Step 1's per-program `emit_object` → per-module (jit.4a).
 
-### v0.11.x.jit — AOT cache implementation (depends on v0.11.0.1)
+### v0.11.x.jit — AOT cache implementation (depends on v0.11.0.1 + v0.11.0.2)
 
-- [ ] **v0.11.x.jit.3** — AOT cache implementation per ADR-0033 (§1 backend hybrid + §2 version-pinned manifest + §3 symbol resolution per chosen loader + §4 `dao store gc` integration + §5 per-triple separation + §6 determinism doc + §7 synchronous atomic-install + §8 silent fallback + §9.1–9.4 test gates). ~800 LOC + 4 test categories. POSIX/ELF-first per ADR-0018 precedent.
+- [~] **v0.11.x.jit.3** — AOT cache implementation per ADR-0033. **Steps 0–3 shipped:**
+  - Step 0 — generalize IR translator over `Module` trait — `3396f72`
+  - Step 1 — object emission (`emit_object`) + version-pinned manifest (§2) — `cbeb102`
+  - Step 2 — `Store::install_aot_cache` + `dao store gc` jit sweep (§4/§5/§7) — `2946ce4`
+  - Step 3 — Path-A relocating loader `ElfX86_64Loader` (§3 + Addendum constraints 1–4; loader is unsafe-free) — `c47bd8f`
+  - [ ] **Step 4a** — refactor `emit_object` per-program → **per-module** + key by canonical `impl_hash_mod` (per v0.11.0.2). Adjust `install_aot_cache` callers + GC tests to the per-module key.
+  - [ ] **Step 4b** — wire Path A into `JitDispatcher` via injected `trait AotCacheStore` (opaque key) + §2 version-check + §8 silent fallback + `cache_state()`; CLI `AotCacheStore` adapter over `Store` + computes `impl_hash_mod`. §9.1 value-parity (cache ≡ VM) + §9.2 version-mismatch refuse. Remove the staged `#![allow(dead_code)]` in `aot.rs` + `loader.rs`.
 - [ ] **v0.11.x.jit.4** — Bootstrap gate lift + ≥10× perf bench per ADR-0030 §9 + §14. Lift `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` once warm-cache self-host completes < 10 min (ADR-0033 §9.5 chain). `criterion` warm-vs-cold bench, ≥10× v0.3 baseline target.
 
 ### v0.11 backlog (trails AOT cache or later phase)
