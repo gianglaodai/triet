@@ -44,15 +44,28 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ---
 
-## v0.11 — JIT AOT cache + bootstrap gate lift + std.concurrency 🔜 next
+## v0.11 — JIT AOT cache + bootstrap gate lift 🔄 in progress
 
-Deferred from v0.10 (see [`ROADMAP.md`](ROADMAP.md) §v0.10 *Không làm*):
+**Scope decision 2026-05-31 (author):** v0.11 prioritizes the **JIT AOT cache** first (over `std.concurrency.*` or low-risk cleanup). Rationale: it lifts the bootstrap byte-identical gate that's been `#[ignore]`'d since v0.7 + delivers the headline ≥10× perf win. The other v0.11 backlog items (varargs shims, borrow corpus, concurrency closures, `std.concurrency.*`) trail the AOT cache or move to a later phase.
 
-- **JIT AOT cache (jit.3)** via cranelift-object per ADR-0033 — relocating-ELF-loader cliff (no turnkey crate loads `.o` + symbol resolver → executable). Design locked; dedicated phase.
-- **Bootstrap gate lift + ≥10× perf bench (jit.4)** per ADR-0030 §14 — chains on jit.3 warm cache (3000-fn cold-JIT self-host prohibitive). Lifts `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]`.
+**Pre-v0.11 baseline audit:** ✅ `scripts/release-check.sh` PASSED per ADR-0009 Addendum §C. 1637 tests, all 4 gates green (run 2026-05-31). Safe to open phase.
+
+### v0.11.0 — Design phase (loader-approach resolution)
+
+- [ ] **v0.11.0.1** — [ADR-0033 Addendum or ADR-0034 NEW] **Loader-approach decision** — ADR-0033's design is locked but its §3 Path-A loader is the deferred cliff (hand-rolled `R_X86_64_*` relocation patching + `mmap` RW→RX = highest mem-corruption-risk code in project). Before any impl, lock HOW the `.o` becomes executable: evaluate **(A)** hand-rolled relocating loader (ADR-0033 §3 as-written, `object` + `memmap2`) vs **(B)** system-linker + `dlopen` (cranelift-object `.o` → `cc -shared` → `libloading::Library`, host built `-rdynamic` so shim symbols resolve via dynamic table). Decide on the mem-safety / portability / dep-tree tradeoff; supersede ADR-0033 §3 if (B). Author sign-off required (ADR change). DESIGN-FIRST per ADR-0009 — blocks v0.11.x.jit.3.
+
+### v0.11.x.jit — AOT cache implementation (depends on v0.11.0.1)
+
+- [ ] **v0.11.x.jit.3** — AOT cache implementation per ADR-0033 (§1 backend hybrid + §2 version-pinned manifest + §3 symbol resolution per chosen loader + §4 `dao store gc` integration + §5 per-triple separation + §6 determinism doc + §7 synchronous atomic-install + §8 silent fallback + §9.1–9.4 test gates). ~800 LOC + 4 test categories. POSIX/ELF-first per ADR-0018 precedent.
+- [ ] **v0.11.x.jit.4** — Bootstrap gate lift + ≥10× perf bench per ADR-0030 §9 + §14. Lift `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` once warm-cache self-host completes < 10 min (ADR-0033 §9.5 chain). `criterion` warm-vs-cold bench, ≥10× v0.3 baseline target.
+
+### v0.11 backlog (trails AOT cache or later phase)
+
 - **JIT shim gaps:** varargs `FStringConcat`/`TextConcat` (array-ptr+len ABI, ADR-0032 jit.2b-iii Addendum); multi-block-shim codegen (jit.2b-i single-block scope); Ordering-`EnumNew` codegen for end-to-end atomic-function JIT.
 - **Borrow checker corpus-driven:** field-granular NLL base, inter-procedural borrow, closure captures, E2403 full owner-trail, Rule-2 elision (`self`-param parser), E2410 field-assign enforcement.
 - **Concurrency closures:** `spawn(closure)` Send-bound closure types → real Send-boundary refcount-bump codegen (thread.2) + Triết-source multi-worker (thread.3).
 - **`std.concurrency.*` stdlib** (Mutex, Channel, M:N green threads) per ADR-0028 §10 — feature-new scope, separate stdlib phase.
 
-**Pre-v0.11 baseline:** open with a `scripts/release-check.sh` audit per ADR-0009 Addendum §C before the first impl sub-task.
+### Workflow note
+
+Per ADR-0009 design-first, **v0.11.0.1 must lock before v0.11.x.jit.3 starts** — the loader approach determines the §3 symbol-resolution mechanism + the unsafe surface. ADR-0032's SHIM_TABLE is the symbol resolution source of truth either way (ADR-0033 §3).
