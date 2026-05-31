@@ -1029,11 +1029,12 @@ fn store_gc(store: &triet_pack::Store, json: bool) -> ExitCode {
         Ok(report) => {
             if json {
                 println!(
-                    "{{\"swept_pkgs\":{},\"swept_modules\":{},\"swept_terms\":{},\"swept_name_links\":{}}}",
+                    "{{\"swept_pkgs\":{},\"swept_modules\":{},\"swept_terms\":{},\"swept_name_links\":{},\"swept_jit_dirs\":{}}}",
                     report.swept_pkgs,
                     report.swept_modules,
                     report.swept_terms,
                     report.swept_name_links,
+                    report.swept_jit_dirs,
                 );
             } else {
                 println!("Garbage-collected:");
@@ -1041,6 +1042,7 @@ fn store_gc(store: &triet_pack::Store, json: bool) -> ExitCode {
                 println!("  {} module dirs", report.swept_modules);
                 println!("  {} term dirs", report.swept_terms);
                 println!("  {} dangling name links", report.swept_name_links);
+                println!("  {} JIT cache dirs", report.swept_jit_dirs);
             }
             ExitCode::SUCCESS
         }

@@ -49,6 +49,10 @@ mod dirs {
     pub(super) const NAMES: &str = "names";
     pub(super) const ROOTS: &str = "roots";
     pub(super) const TMP: &str = "tmp";
+    /// v0.11.x.jit.3 (ADR-0033 §4/§5) — AOT cache root. Children are
+    /// per-`target_triple` dirs, each holding `<hex(impl_hash_mod)>/`
+    /// dirs of `{functions.o, manifest.bin}`.
+    pub(super) const JIT: &str = "jit";
 }
 
 /// Content-addressable package store rooted at a single directory.
@@ -82,6 +86,10 @@ pub struct GcReport {
     pub swept_terms: usize,
     /// Number of dangling name links removed.
     pub swept_name_links: usize,
+    /// v0.11.x.jit.3 (ADR-0033 §4) — number of orphan AOT-cache dirs
+    /// (`jit/<triple>/<hex(impl_hash_mod)>/`) removed. Like mod + term
+    /// sweeps, suppressed under conservative mode (see `corrupt_pkgs`).
+    pub swept_jit_dirs: usize,
     /// Pkg hashes whose `manifest.bin` couldn't be parsed during the
     /// mark phase — typically filesystem corruption or tampering.
     /// When non-empty, GC enters a conservative mode: module and term
@@ -107,6 +115,7 @@ impl Store {
             dirs::NAMES,
             dirs::ROOTS,
             dirs::TMP,
+            dirs::JIT,
         ] {
             let p = root.join(sub);
             fs::create_dir_all(&p).map_err(|e| StoreError::io(p.display().to_string(), e))?;
@@ -462,6 +471,13 @@ impl Store {
             report.swept_terms += sweep_hash_dir(&self.root.join(dirs::TERM), |bytes| {
                 !live_terms.contains(&bytes)
             })?;
+            // v0.11.x.jit.3 (ADR-0033 §4): AOT cache dirs are keyed by
+            // `impl_hash_mod`, so a jit dir is reachable iff its module is
+            // live. Same conservative gate as mod/term — a corrupt
+            // manifest hides which modules a pkg referenced.
+            report.swept_jit_dirs += sweep_jit_tree(&self.root.join(dirs::JIT), |bytes| {
+                !live_mods.contains(&bytes)
+            })?;
         }
         report.corrupt_pkgs = corrupt_pkgs;
 
@@ -483,10 +499,62 @@ impl Store {
         Ok(report)
     }
 
+    /// v0.11.x.jit.3 (ADR-0033 §5/§7) — install an AOT cache entry at
+    /// `jit/<target_triple>/<hex(impl_hash_mod)>/` holding `functions.o`
+    /// + `manifest.bin`.
+    ///
+    /// Unlike the content-addressed `term`/`mod`/`pkg` installs (which
+    /// skip on EEXIST because identical hash ⇒ identical content), a
+    /// cache entry for the *same* `impl_hash_mod` can become stale when
+    /// only the Cranelift / shim ABI version changes (ADR-0033 §2 — the
+    /// version pins live in the manifest, not the path). So this method
+    /// **overwrites** any existing entry rather than skipping it. POSIX
+    /// `rename` won't clobber a non-empty dir, so the stale entry is
+    /// removed first; the brief window where the entry is absent only
+    /// costs a racing reader a cache miss → fresh compile (best-effort
+    /// cache per §8).
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] if staging, removal, or the final rename fails.
+    pub fn install_aot_cache(
+        &self,
+        target_triple: &str,
+        module_hash: &ModuleImplHash,
+        object_bytes: &[u8],
+        manifest_bytes: &[u8],
+    ) -> StoreResult<()> {
+        let target = self.jit_cache_dir(target_triple, module_hash);
+        let staging = self.fresh_tmp_dir()?;
+        let rollback = StagingGuard {
+            path: staging.clone(),
+        };
+        write_file(&staging.join("functions.o"), object_bytes)
+            .map_err(|e| StoreError::io(staging.display().to_string(), e))?;
+        write_file(&staging.join("manifest.bin"), manifest_bytes)
+            .map_err(|e| StoreError::io(staging.display().to_string(), e))?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| StoreError::io(parent.display().to_string(), e))?;
+        }
+        // Overwrite semantics: drop any stale entry before the rename.
+        remove_path(&target)?;
+        fs::rename(&staging, &target)
+            .map_err(|e| StoreError::io(target.display().to_string(), e))?;
+        rollback.disarm();
+        Ok(())
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     fn pkg_dir(&self, h: &ImplHash) -> PathBuf {
         self.root.join(dirs::PKG).join(hex_encode(&h.0))
+    }
+
+    fn jit_cache_dir(&self, target_triple: &str, module_hash: &ModuleImplHash) -> PathBuf {
+        self.root
+            .join(dirs::JIT)
+            .join(target_triple)
+            .join(hex_encode(&module_hash.0))
     }
 
     fn mod_dir(&self, h: &ModuleImplHash) -> PathBuf {
@@ -766,6 +834,36 @@ fn sweep_hash_dir(
     Ok(removed)
 }
 
+/// v0.11.x.jit.3 (ADR-0033 §4) — sweep the AOT cache tree
+/// `jit/<triple>/<hex(hash)>/`. Walks each per-`target_triple` subdir
+/// (multi-arch caches coexist when a store is shared across machines
+/// per §5) and delegates the inner hex-named-hash level to
+/// [`sweep_hash_dir`] — same convention as `pkg`/`mod`/`term`. Returns
+/// the total number of orphan cache dirs removed across all triples.
+fn sweep_jit_tree(
+    jit_root: &Path,
+    is_unreachable: impl Fn([u8; IMPL_HASH_LEN]) -> bool,
+) -> StoreResult<usize> {
+    if !jit_root.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for triple_entry in
+        fs::read_dir(jit_root).map_err(|e| StoreError::io(jit_root.display().to_string(), e))?
+    {
+        let triple_entry =
+            triple_entry.map_err(|e| StoreError::io(jit_root.display().to_string(), e))?;
+        let triple_dir = triple_entry.path();
+        if !triple_dir.is_dir() {
+            continue;
+        }
+        // `&F` is `Fn` when `F: Fn`, so the same predicate threads into
+        // every per-triple subtree without cloning.
+        removed += sweep_hash_dir(&triple_dir, &is_unreachable)?;
+    }
+    Ok(removed)
+}
+
 /// Pull the ABI metadata section bytes back out of a `.khi`.
 /// Used to populate `pkg/<hash>/manifest.bin` so the resolver can
 /// re-read the metadata without parsing the whole pack.
@@ -908,9 +1006,19 @@ mod tests {
     fn open_creates_layout() {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();
-        for sub in ["term", "mod", "pkg", "names", "roots", "tmp"] {
+        for sub in ["term", "mod", "pkg", "names", "roots", "tmp", "jit"] {
             assert!(store.root().join(sub).is_dir(), "missing {sub}");
         }
+    }
+
+    /// Read back the live `impl_hash_mod` of an installed pack's first
+    /// module — the exact value `gc()` records in its live set. (The
+    /// serializer rebuilds the module table from terms grouped by
+    /// `module_path`, so this must come from the stored manifest, not a
+    /// hand-set seed.)
+    fn live_module_hash(store: &Store, pkg: &ImplHash) -> ModuleImplHash {
+        let manifest = store.resolve_manifest_bytes(pkg).unwrap().unwrap();
+        parse_manifest_only(&manifest).unwrap().modules[0].impl_hash_mod
     }
 
     #[test]
@@ -1174,5 +1282,124 @@ mod tests {
         // Term dirs survive — the gc didn't silently orphan them.
         let term_count_after = fs::read_dir(&term_root).unwrap().count();
         assert_eq!(term_count_after, term_count_before);
+    }
+
+    // ── v0.11.x.jit.3 AOT cache (ADR-0033 §4/§5/§7) ─────────────────
+
+    #[test]
+    fn install_aot_cache_round_trips_and_overwrites() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        let h = ModuleImplHash([0x22; IMPL_HASH_LEN]);
+
+        store
+            .install_aot_cache(triple, &h, b"OBJ-v1", b"MAN-v1")
+            .unwrap();
+        let dir = store.root().join("jit").join(triple).join(hex_encode(&h.0));
+        assert_eq!(fs::read(dir.join("functions.o")).unwrap(), b"OBJ-v1");
+        assert_eq!(fs::read(dir.join("manifest.bin")).unwrap(), b"MAN-v1");
+
+        // Reinstall same hash with new bytes (e.g. a Cranelift bump per
+        // ADR-0033 §2) → overwrite, not skip.
+        store
+            .install_aot_cache(triple, &h, b"OBJ-v2-longer", b"MAN-v2")
+            .unwrap();
+        assert_eq!(fs::read(dir.join("functions.o")).unwrap(), b"OBJ-v2-longer");
+        assert_eq!(fs::read(dir.join("manifest.bin")).unwrap(), b"MAN-v2");
+    }
+
+    #[test]
+    fn gc_sweeps_orphan_jit_dirs_keeps_live_module() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+
+        // A live module: referenced by an installed + rooted pack (its
+        // exports group into one module). Read the live hash back from
+        // the stored manifest — the same value `gc()` marks.
+        let bytes = mk_pack("withmod", SemVer::new(1, 0, 0), &["alpha"]);
+        let h = store.install_pack(&bytes).unwrap();
+        store.add_root("proj", &[h]).unwrap();
+        let live = live_module_hash(&store, &h);
+
+        store
+            .install_aot_cache(triple, &live, b"LIVE", b"M")
+            .unwrap();
+        // Orphan: no pack references this module hash.
+        let orphan = ModuleImplHash([0x99; IMPL_HASH_LEN]);
+        store
+            .install_aot_cache(triple, &orphan, b"DEAD", b"M")
+            .unwrap();
+        // A second triple's orphan — verifies multi-triple walking (§5).
+        store
+            .install_aot_cache("aarch64-apple-darwin", &orphan, b"DEAD", b"M")
+            .unwrap();
+
+        let report = store.gc().unwrap();
+        assert_eq!(report.swept_jit_dirs, 2, "both orphans (2 triples) swept");
+
+        let live_dir = store
+            .root()
+            .join("jit")
+            .join(triple)
+            .join(hex_encode(&live.0));
+        assert!(live_dir.exists(), "live module's cache kept");
+        assert_eq!(fs::read(live_dir.join("functions.o")).unwrap(), b"LIVE");
+        assert!(
+            !store
+                .root()
+                .join("jit")
+                .join(triple)
+                .join(hex_encode(&orphan.0))
+                .exists()
+        );
+        assert!(
+            !store
+                .root()
+                .join("jit")
+                .join("aarch64-apple-darwin")
+                .join(hex_encode(&orphan.0))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn gc_preserves_jit_dirs_when_manifest_corrupt() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        let bytes = mk_pack("victim", SemVer::new(1, 0, 0), &["alpha"]);
+        let h = store.install_pack(&bytes).unwrap();
+        store.add_root("proj", &[h]).unwrap();
+
+        // An orphan jit dir that WOULD be swept under a normal gc.
+        let orphan = ModuleImplHash([0x99; IMPL_HASH_LEN]);
+        store
+            .install_aot_cache(triple, &orphan, b"DEAD", b"M")
+            .unwrap();
+
+        // Smash the manifest → conservative mode.
+        let manifest_path = store
+            .root()
+            .join("pkg")
+            .join(hex_encode(&h.0))
+            .join("manifest.bin");
+        fs::write(&manifest_path, b"not a valid manifest").unwrap();
+
+        let report = store.gc().unwrap();
+        assert_eq!(report.corrupt_pkgs, vec![h]);
+        assert_eq!(
+            report.swept_jit_dirs, 0,
+            "jit sweep suppressed under corruption"
+        );
+        assert!(
+            store
+                .root()
+                .join("jit")
+                .join(triple)
+                .join(hex_encode(&orphan.0))
+                .exists()
+        );
     }
 }
