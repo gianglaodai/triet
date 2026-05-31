@@ -52,7 +52,7 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
 
 ### v0.11.0 — Design phase (loader-approach resolution)
 
-- [ ] **v0.11.0.1** — [ADR-0033 Addendum or ADR-0034 NEW] **Loader-approach decision** — ADR-0033's design is locked but its §3 Path-A loader is the deferred cliff (hand-rolled `R_X86_64_*` relocation patching + `mmap` RW→RX = highest mem-corruption-risk code in project). Before any impl, lock HOW the `.o` becomes executable: evaluate **(A)** hand-rolled relocating loader (ADR-0033 §3 as-written, `object` + `memmap2`) vs **(B)** system-linker + `dlopen` (cranelift-object `.o` → `cc -shared` → `libloading::Library`, host built `-rdynamic` so shim symbols resolve via dynamic table). Decide on the mem-safety / portability / dep-tree tradeoff; supersede ADR-0033 §3 if (B). Author sign-off required (ADR change). DESIGN-FIRST per ADR-0009 — blocks v0.11.x.jit.3.
+- [x] **v0.11.0.1** — [ADR-0033 Addendum] **Loader-approach decision** — locked **Path A (Triết owns its relocating loader)**, author sign-off. Path B (system-linker + `dlopen`) rejected: runtime C-toolchain dependency on the perf path + leans on `dlopen`/ELF dynamic linking, neither exists on balanced-ternary hardware. Path A honors OS-capable/from-scratch identity. 4 normative safety constraints for jit.3: CodeLoader trait, ELF/x86_64 POSIX-first, bounded reloc set + refuse-on-unknown, test regimen (round-trip value parity + proptest fuzz + W^X). Supersedes only ADR-0033 §3 framing; §3 symbol-resolution + §1/§2/§4–§10 unchanged. — `ee624ce`
 
 ### v0.11.x.jit — AOT cache implementation (depends on v0.11.0.1)
 
