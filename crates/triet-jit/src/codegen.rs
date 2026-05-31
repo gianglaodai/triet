@@ -739,6 +739,26 @@ fn emit_function_body(
                 &mut fn_state,
                 instr,
             )?;
+            // Stop at the block's terminator. The lowerer can emit dead
+            // instructions AFTER a terminator within one block (e.g. an
+            // early `return` whose lexical-block continuation is still
+            // appended) — the VM ignores them (it halts at the
+            // terminator), but Cranelift panics ("instruction added to a
+            // block already filled") if we emit into the now-filled
+            // block. Skipping the unreachable tail is observably
+            // equivalent to the VM + is required for correctness. (Per
+            // ADR-0034 §6 — fixes the 10 translator panics in the
+            // self-host compiler's equality helpers.)
+            if matches!(
+                instr,
+                Instruction::Ret { .. }
+                    | Instruction::Br { .. }
+                    | Instruction::BrIf { .. }
+                    | Instruction::BrTrilean { .. }
+                    | Instruction::Unreachable
+            ) {
+                break;
+            }
         }
     }
 

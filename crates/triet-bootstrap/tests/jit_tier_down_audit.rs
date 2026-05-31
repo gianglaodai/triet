@@ -178,6 +178,18 @@ fn jit_tier_down_audit_compiler_main() {
     for (reason, count) in rs.into_iter().take(25) {
         eprintln!("  {count:>5}  {reason}");
     }
+
+    // jit.4.agg.0 — list every translator PANIC by function, so the
+    // fix targets the exact IR shapes (not a guess).
+    eprintln!("\n--- translator PANICs (func_id, name → reason) ---");
+    for entry in report
+        .tier_downs
+        .iter()
+        .filter(|e| e.reason.contains("translator PANIC"))
+    {
+        eprintln!("  f{}  {:?}  {}", entry.func_id, entry.name, entry.reason);
+    }
+
     eprintln!("=== end audit ===\n");
 
     // Always passes — it is a measurement. Sanity only:

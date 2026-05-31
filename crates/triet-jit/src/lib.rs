@@ -1328,6 +1328,56 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg0_dead_code_after_terminator_does_not_panic() {
+        // v0.11.x.jit.4.agg.0 — regression for the 10 self-host compiler
+        // translator panics: the lowerer emits dead instructions AFTER a
+        // terminator within one block (early `return` + appended lexical-
+        // block continuation). Cranelift used to panic ("instruction added
+        // to a block already filled"); codegen now stops at the
+        // terminator. The function must JIT (the dead tail is skipped),
+        // returning the value of the early `ret`.
+        let mut pool = triet_ir::ConstantPool::new();
+        let first = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(1).unwrap(),
+        ));
+        let dead = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(2).unwrap(),
+        ));
+        let func = make_function_at(
+            FuncId(0),
+            "early",
+            vec![],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: first,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+                // Dead code after the terminator — must be skipped, not
+                // emitted into the now-filled block.
+                Instruction::Const {
+                    dest: ValueId(1),
+                    constant: dead,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![func])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("dead-code-after-terminator must compile, not panic");
+        assert_eq!(jit.cached_function_count(), 1);
+        // Executes to the FIRST ret (== 1), proving the dead tail (== 2)
+        // was correctly skipped.
+        assert_eq!(dispatch_integer(&jit, FuncId(0), &[]), Some(1));
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();
