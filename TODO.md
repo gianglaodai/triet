@@ -64,14 +64,24 @@ All shipped phases now live in [`ROADMAP.md`](ROADMAP.md):
   - Step 3 — Path-A relocating loader `ElfX86_64Loader` (§3 + Addendum constraints 1–4; loader is unsafe-free) — `c47bd8f`
   - Step 4a — per-**module** object emission + **load-time linker** (v0.11.0.2 Entailment); cross-module 2-module program links + executes → 7 — `52a1cba`
   - Step 4b — wire Path A into `JitDispatcher` via injected `trait AotCacheStore` (opaque key) + §2 version-check + §8 silent fallback + `cache_state()`. §9.1 value-parity + §9.2 version-mismatch refuse, both via mock store. Dead code removed (no `#[allow]`). — `c7abe22`
-- [ ] **v0.11.x.jit.4** — Bootstrap gate lift + ≥10× perf bench per ADR-0030 §9 + §14. Lift `bootstrap_loop.rs::stage2_eq_stage3_main_tri_byte_identical` from `#[ignore]` once warm-cache self-host completes < 10 min (ADR-0033 §9.5 chain). `criterion` warm-vs-cold bench, ≥10× v0.3 baseline target. **Includes the deferred CLI/run-path key wiring:** a `triet-cli` `AotCacheStore` adapter over `Store` (reads/writes `jit/<triple>/<hex(impl_hash_mod)>/`) + computing `impl_hash_mod` for JIT'd modules on the packaged/bootstrap path (the run path lowers to IR with no ABI metadata, so no canonical hash today — bootstrap is where warm cache pays off). Then enable via `JitDispatcher::enable_aot_cache` at `main.rs:824`.
-  - **From jit.3 review (perf, address while wiring jit.4):**
-    - **#4 — 2× codegen on cache miss.** `compile_program_cached` Path B runs `compile_program` (in-process JIT of all modules) AND then a per-module `emit_module_object` loop — every body is lowered twice. ADR §1 budgets a miss at ~10-20% slower; this is ~2×. Share one translation/emit pass between the in-process finalize and the object emit so the miss path lowers each body once. Matters because jit.4's perf bench measures cold-cache cost.
-    - **#5 — O(N²) cross-module declare pre-pass.** `declare_and_define_module`'s pre-pass re-declares ALL functions of ALL modules on every per-module call (needed so cross-module `Import`s resolve), so a full N-module emit is O(N²) `declare_function` + `build_signature` + name-mangle allocs. For a self-host-sized program this is a quadratic blowup on the persist path. Declare only the imports each module actually references, or build the program-wide declaration table once and reuse it across all N module emits.
+### v0.11.x.jit.4 — JIT aggregate coverage → bootstrap gate lift (ADR-0034, Hướng A)
+
+**Reframed by the coverage audit (`29aeeaa`):** `compiler/main.tri` is only **3.7% JIT-able** (96.3% tier down on struct/enum/Outcome/Nullable/String). The gate can't lift until the compiler is ~fully JIT-able. Author: "stop deferring — Hướng A." Cover the aggregate data model via delegate-to-VM shims per ADR-0034, re-measuring the audit after each sub-task (the burndown metric).
+
+- [x] **jit.4.audit** — JIT-coverage measurement tooling (`audit_jit_coverage` + `codegen::collect_tier_downs` + `jit_tier_down_audit.rs`). Finding: 146/3953 JIT-able. — `29aeeaa`
+- [ ] **jit.4.agg.0** — §6 translator panic → clean tier-down (10 functions Cranelift-assert instead of erroring; would abort the real JIT). Make iteration safe. Re-audit: 0 panics.
+- [ ] **jit.4.agg.1** — §1 struct ops (`FieldGet`/`FieldSet`) + §2 `StructNew` variadic array-ptr+len ABI (also unblocks deferred f-string varargs). Largest bucket (1314).
+- [ ] **jit.4.agg.2** — §1 enum ops (`EnumNew`/`EnumTag`/`EnumPayload`) + Outcome ops (`OutcomeDiscriminant`/wrap/unwrap). ~1489 combined.
+- [ ] **jit.4.agg.3** — §1 Nullable ops + §3 String/Null constants + **loader `R_X86_64_64` data relocation** (extends `SUPPORTED_RELOC_TYPES` + the ADR-0033 constraint-4 regimen: value-parity + proptest fuzz + W^X). Only sub-task that re-touches unsafe loader.
+- [ ] **jit.4.agg.4** — §4 Phi (Cranelift block params) + §5 multi-block shim codegen (lift jit.2b-i single-block restriction). Order may move earlier if it blocks re-measurement.
+- [ ] **jit.4.gate** — once audit shows ~full coverage + warm-cache bootstrap < 10 min: wire CLI `AotCacheStore` adapter over `Store` (`jit/<triple>/<hex(impl_hash_mod)>/`) + compute `impl_hash_mod` on the packaged/bootstrap path + `enable_aot_cache` at `main.rs:824`; lift `stage2_eq_stage3_main_tri_byte_identical` off `#[ignore]`; `criterion` warm-vs-cold bench (≥10× on a JIT-friendly workload per ADR-0034 §8, + warm-cache bootstrap wall-time as gate evidence).
+  - **Fold in the jit.3-review perf findings (#4/#5) here** — they're on the bench's cold-cache path:
+    - **#4 — 2× codegen on cache miss.** `compile_program_cached` Path B runs `compile_program` (in-process JIT of all modules) AND then a per-module `emit_module_object` loop — every body lowered twice. Share one translation/emit pass.
+    - **#5 — O(N²) cross-module declare pre-pass.** `declare_and_define_module` re-declares ALL functions of ALL modules per call → O(N²) for an N-module emit. Build the program-wide declaration table once + reuse.
 
 ### v0.11 backlog (trails AOT cache or later phase)
 
-- **JIT shim gaps:** varargs `FStringConcat`/`TextConcat` (array-ptr+len ABI, ADR-0032 jit.2b-iii Addendum); multi-block-shim codegen (jit.2b-i single-block scope); Ordering-`EnumNew` codegen for end-to-end atomic-function JIT.
+- **JIT shim gaps** — now folded into v0.11.x.jit.4 (ADR-0034): varargs `FStringConcat`/`TextConcat` → agg.1 §2 array-ptr+len ABI; multi-block-shim codegen → agg.4 §5; Ordering-`EnumNew` → agg.2 enum ops.
 - **Borrow checker corpus-driven:** field-granular NLL base, inter-procedural borrow, closure captures, E2403 full owner-trail, Rule-2 elision (`self`-param parser), E2410 field-assign enforcement.
 - **Concurrency closures:** `spawn(closure)` Send-bound closure types → real Send-boundary refcount-bump codegen (thread.2) + Triết-source multi-worker (thread.3).
 - **`std.concurrency.*` stdlib** (Mutex, Channel, M:N green threads) per ADR-0028 §10 — feature-new scope, separate stdlib phase.
