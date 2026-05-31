@@ -424,6 +424,42 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             &[Ptr, I64, Ptr],
             Some(I64),
         ),
+        // File I/O ×5 (jit.2b-iii) — fixed-arity delegating shims.
+        b(
+            BuiltinName::ReadFile,
+            "__triet_read_file",
+            __triet_read_file as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
+        b(
+            BuiltinName::WriteFile,
+            "__triet_write_file",
+            __triet_write_file as *const () as usize,
+            &[Ptr, Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::WriteFileBytes,
+            "__triet_write_file_bytes",
+            __triet_write_file_bytes as *const () as usize,
+            &[Ptr, Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::FileExists,
+            "__triet_file_exists",
+            __triet_file_exists as *const () as usize,
+            &[Ptr],
+            Some(I8),
+        ),
+        b(
+            BuiltinName::ReadDirRecursive,
+            "__triet_read_dir_recursive",
+            __triet_read_dir_recursive as *const () as usize,
+            &[Ptr],
+            Some(Ptr),
+        ),
     ]
 }
 
@@ -996,6 +1032,54 @@ extern "C" fn __triet_atomic_fetch_bitwise_xor(self_ptr: i64, mask: i64, ord_ptr
     ))
 }
 
+// ── jit.2b-iii file I/O shims (5) ────────────────────────────────────
+//
+// Fixed-arity, delegate to `dispatch_builtin` (which performs the real
+// filesystem I/O) — same clean pattern as the jit.2b-i shims, NOT an
+// ABI cliff. Side-effecting, so parity tests use tempdir fixtures.
+// Capability (`std.io.fs`) is enforced at program-load time (ADR-0016
+// §5), not here. (The varargs builtins FStringConcat/TextConcat ARE a
+// genuine ABI cliff — they need an array-ptr+len ABI — and defer to
+// v0.11 per the jit.2b-iii decision; they tier-down to VM until then.)
+
+/// `fs.read(path: String) -> String?` (boxed Null-on-error / contents).
+extern "C" fn __triet_read_file(path_ptr: i64) -> i64 {
+    finish_ptr(dispatch(BuiltinName::ReadFile, &[arg_composite(path_ptr)]))
+}
+
+/// `fs.write(path: String, contents: String) -> Trilean` (strict 2-state).
+extern "C" fn __triet_write_file(path_ptr: i64, contents_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::WriteFile,
+        &[arg_composite(path_ptr), arg_composite(contents_ptr)],
+    ))
+}
+
+/// `fs.write_bytes(path: String, bytes: Vector<Integer>) -> Trilean`.
+extern "C" fn __triet_write_file_bytes(path_ptr: i64, bytes_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::WriteFileBytes,
+        &[arg_composite(path_ptr), arg_composite(bytes_ptr)],
+    ))
+}
+
+/// `fs.exists(path: String) -> Trilean` (strict 2-state).
+extern "C" fn __triet_file_exists(path_ptr: i64) -> i8 {
+    finish_i8(dispatch(
+        BuiltinName::FileExists,
+        &[arg_composite(path_ptr)],
+    ))
+}
+
+/// `fs.read_dir_recursive(dir: String) -> Vector<Tuple>` (composite-in-
+/// composite — still a single boxed `RuntimeValue`).
+extern "C" fn __triet_read_dir_recursive(dir_ptr: i64) -> i64 {
+    finish_ptr(dispatch(
+        BuiltinName::ReadDirRecursive,
+        &[arg_composite(dir_ptr)],
+    ))
+}
+
 // ── Error propagation (§4 option-2 resolution, v0.10.x.jit.2a) ──────
 //
 // ADR-0032 §4's original `extern "C-unwind"` + dispatcher
@@ -1239,17 +1323,8 @@ mod tests {
         assert_eq!(__triet_shim_failed(), 0);
     }
 
-    #[test]
-    fn builtin_shim_lookup_finds_implemented() {
-        // jit.2b-i clean shims are implemented.
-        assert!(builtin_shim(BuiltinName::TextLen).is_some());
-        assert!(builtin_shim(BuiltinName::VectorPush).is_some());
-        assert!(builtin_shim(BuiltinName::HashMapNew).is_some());
-        assert!(builtin_shim(BuiltinName::Blake3Hash).is_some());
-        // Cliff builtins (jit.2b-iii / defer): no shim yet.
-        assert!(builtin_shim(BuiltinName::FStringConcat).is_none()); // varargs
-        assert!(builtin_shim(BuiltinName::ReadFile).is_none()); // file I/O
-    }
+    // (Full implemented-vs-tier-down coverage is asserted by
+    // `shim_coverage_matrix` below — the authoritative matrix.)
 
     // ── jit.2b-i delegating-shim parity (shim ABI ↔ dispatch_builtin) ──
     //
@@ -1528,5 +1603,135 @@ mod tests {
         // 4 increments from 0 → 4.
         assert_eq!(__triet_atomic_load(counter, 0), 4);
         __triet_drop_arc(counter);
+    }
+
+    // ── jit.2b-iii file I/O shims ────────────────────────────────────
+
+    /// Unique temp path under the OS temp dir (no external dep).
+    fn temp_path(tag: &str) -> String {
+        let mut p = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        p.push(format!("triet_jit_test_{tag}_{nanos}"));
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn file_write_read_exists_roundtrip() {
+        let path = temp_path("rw");
+        let path_rv = box_for_test(RuntimeValue::String(path.clone()));
+        let contents = box_for_test(RuntimeValue::String("Triết I/O".to_owned()));
+
+        // exists → False before write.
+        assert_eq!(__triet_file_exists(path_rv), -1);
+        // write → True.
+        assert_eq!(__triet_write_file(path_rv, contents), 1);
+        // exists → True after.
+        assert_eq!(__triet_file_exists(path_rv), 1);
+        // read → boxed String matching contents.
+        let read = __triet_read_file(path_rv);
+        with_rv(read, |rv| match rv {
+            Some(RuntimeValue::String(s)) => assert_eq!(s.as_str(), "Triết I/O"),
+            other => panic!("expected String, got {other:?}"),
+        });
+        __triet_drop_arc(read);
+
+        // Cleanup.
+        let _ = std::fs::remove_file(&path);
+        __triet_drop_arc(path_rv);
+        __triet_drop_arc(contents);
+    }
+
+    #[test]
+    fn file_read_missing_returns_null() {
+        let path_rv = box_for_test(RuntimeValue::String(temp_path("missing")));
+        let read = __triet_read_file(path_rv);
+        with_rv(read, |rv| assert!(matches!(rv, Some(RuntimeValue::Null))));
+        __triet_drop_arc(read);
+        __triet_drop_arc(path_rv);
+    }
+
+    #[test]
+    fn file_write_bytes_then_read() {
+        let path = temp_path("bytes");
+        let path_rv = box_for_test(RuntimeValue::String(path.clone()));
+        // bytes [72, 105] = "Hi".
+        let bytes = box_for_test(RuntimeValue::Vector(vec![integer(72), integer(105)]));
+        assert_eq!(__triet_write_file_bytes(path_rv, bytes), 1);
+        let read = __triet_read_file(path_rv);
+        with_rv(read, |rv| match rv {
+            Some(RuntimeValue::String(s)) => assert_eq!(s.as_str(), "Hi"),
+            other => panic!("expected String, got {other:?}"),
+        });
+        __triet_drop_arc(read);
+        let _ = std::fs::remove_file(&path);
+        __triet_drop_arc(path_rv);
+        __triet_drop_arc(bytes);
+    }
+
+    // ── Coverage matrix (ADR-0032 §7.2) ──────────────────────────────
+
+    #[test]
+    fn shim_coverage_matrix() {
+        use BuiltinName as B;
+        // 36 JIT-relevant builtins have a shim after jit.2b-i/ii/iii.
+        let covered = [
+            B::Println,
+            B::Print,
+            B::Assert,
+            B::AssertEq,
+            B::TextLen,
+            B::TextFromInteger,
+            B::ParseInteger,
+            B::TextIntoBytes,
+            B::TextFromBytes,
+            B::VectorNew,
+            B::VectorPush,
+            B::VectorGet,
+            B::VectorLength,
+            B::HashMapNew,
+            B::HashMapInsert,
+            B::HashMapGet,
+            B::HashMapKeys,
+            B::HashMapContains,
+            B::PathJoin,
+            B::PathParent,
+            B::PathBasename,
+            B::StringSubstring,
+            B::StringSplit,
+            B::StringIndexOf,
+            B::Blake3Hash,
+            B::GetEnv,
+            B::AtomicNew,
+            B::AtomicLoad,
+            B::AtomicStore,
+            B::AtomicSwap,
+            B::AtomicCompareExchange,
+            B::AtomicFetchAdd,
+            B::AtomicFetchSub,
+            B::AtomicFetchBitwiseAnd,
+            B::AtomicFetchBitwiseOr,
+            B::AtomicFetchBitwiseXor,
+            B::ReadFile,
+            B::WriteFile,
+            B::WriteFileBytes,
+            B::FileExists,
+            B::ReadDirRecursive,
+        ];
+        for b in covered {
+            assert!(builtin_shim(b).is_some(), "{b:?} must have a shim");
+        }
+        // Cliffs (varargs) + raw_thread (VM-registry) have NO shim —
+        // they tier-down to VM. Documented jit.2b-iii deferrals.
+        for b in [
+            B::FStringConcat,  // varargs — defer v0.11
+            B::TextConcat,     // varargs — defer v0.11
+            B::RawThreadSpawn, // VM thread registry — not JIT-able
+            B::RawThreadJoin,
+        ] {
+            assert!(builtin_shim(b).is_none(), "{b:?} must tier-down (no shim)");
+        }
     }
 }

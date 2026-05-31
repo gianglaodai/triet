@@ -103,6 +103,36 @@
 > option-2 resolution is authoritative for v0.10's error-propagation
 > mechanism.
 
+> **2026-05-31 Addendum (v0.10.x.jit.2b-iii) — shim coverage + varargs deferral.**
+>
+> v0.10 ships **36 of the 43** builtin JIT shims (jit.2b-i clean fixed-
+> arity ×21, jit.2b-ii Atomic ×10, jit.2b-iii file-I/O ×5). All delegate
+> their SEMANTICS to `triet_ir::dispatch_builtin` (the VM's own dispatch)
+> — VM↔JIT divergence is impossible by construction. The remaining 7
+> tier-down to VM (correct, just not JIT-accelerated):
+>
+> - **Varargs (2): `FStringConcat`, `TextConcat`.** Each `CallBuiltin`
+>   has a concrete arity at the IR level, but it varies per call site,
+>   so no fixed-arity `extern "C"` shim fits. §1's hybrid table flagged
+>   this "Mixed/unresolved". Supporting it needs a NEW ABI shape — an
+>   array-ptr + len (box each arg → stack array → shim reads N
+>   `RuntimeValue`s). That is itself an ABI decision; **deferred to
+>   v0.11** with its own ADR addendum rather than rushed into the v0.10
+>   window. F-strings tier-down to VM meanwhile (often on cold I/O
+>   paths anyway).
+> - **`RawThreadSpawn` / `RawThreadJoin` (2):** need the VM's
+>   thread-handle registry (not a pure `dispatch_builtin` call) — not
+>   JIT-able through the shim ABI. Out of scope; tier-down forever
+>   (or until a VM-thread-aware JIT path, undecided).
+> - **Ordering-enum end-to-end (atomic functions):** the Atomic shims
+>   work, but a real `fetch_add(c, 1, Synchronized)` function tier-downs
+>   at the `Synchronized` `EnumNew` construction (no `Enum` `TypeTag`,
+>   no enum codegen). Gated on a future enum-construction codegen.
+>
+> File I/O was initially flagged a "cliff" but is NOT — fixed-arity,
+> delegates cleanly (the I/O happens in `dispatch_builtin`); only its
+> parity tests need tempdir fixtures.
+
 **Issue:** v0.9 ships partial Cranelift JIT (numeric arith / cmp / control flow / intra-program calls). `Instruction::CallBuiltin` tier-downs to VM dispatch per [ADR-0030 §12.3](0030-jit-cranelift-integration.md) — entire function reverts to VM when it touches *any* of the 43 stdlib builtins. Real programs use `println` / `Vector*` / `HashMap*` heavily, so v0.9 JIT acceleration is limited to numeric leaf functions. v0.10 closes the gap.
 
 The 5 constraints ADR-0030 §12.2 surfaced as needing a coherent design pass:
