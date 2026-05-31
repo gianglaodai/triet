@@ -156,6 +156,13 @@ fn map_object(object_bytes: &[u8]) -> Result<MappedObject<'_>, JitError> {
         let RelocationTarget::Symbol(sym) = reloc.target() else {
             return Err(cache("section-relative relocation — unsupported"));
         };
+        // Single gate against the patcher's supported set (constraint 3).
+        // The categorizing match below handles exactly these types; the
+        // gate + the aot.rs emitter test both key off SUPPORTED_RELOC_TYPES
+        // so the three can't drift.
+        if !SUPPORTED_RELOC_TYPES.contains(&r_type) {
+            return Err(cache(format!("unsupported relocation type {r_type}")));
+        }
         match r_type {
             R_X86_64_PC32 | R_X86_64_PLT32 => {}
             R_X86_64_GOTPCREL | R_X86_64_GOTPCRELX | R_X86_64_REX_GOTPCRELX => {
@@ -163,6 +170,8 @@ fn map_object(object_bytes: &[u8]) -> Result<MappedObject<'_>, JitError> {
                 let next = got_index.len();
                 got_index.entry(name).or_insert(next);
             }
+            // Unreachable: the gate above admits only SUPPORTED_RELOC_TYPES,
+            // every member of which is categorized in an arm above.
             other => return Err(cache(format!("unsupported relocation type {other}"))),
         }
         relocs.push(PendingReloc {
@@ -416,6 +425,23 @@ const R_X86_64_PLT32: u32 = object::elf::R_X86_64_PLT32;
 const R_X86_64_GOTPCREL: u32 = object::elf::R_X86_64_GOTPCREL;
 const R_X86_64_GOTPCRELX: u32 = object::elf::R_X86_64_GOTPCRELX;
 const R_X86_64_REX_GOTPCRELX: u32 = object::elf::R_X86_64_REX_GOTPCRELX;
+
+/// The **exact** relocation set the patcher above handles (Addendum
+/// safety constraint 3). This is the single source of truth: the
+/// emitter-verification test in `aot.rs` asserts every relocation
+/// `emit_module_object` produces is in *this* slice, so "what the test
+/// verifies" and "what the patcher accepts" can never silently diverge.
+/// `map_object`'s match arms must stay in sync with this list — adding a
+/// reloc type means extending both the match and this const together.
+/// `R_X86_64_64` (absolute data) is intentionally absent: Triết IR emits
+/// no data relocations yet, and refusing it is the safe default.
+pub(crate) const SUPPORTED_RELOC_TYPES: &[u32] = &[
+    R_X86_64_PC32,
+    R_X86_64_PLT32,
+    R_X86_64_GOTPCREL,
+    R_X86_64_GOTPCRELX,
+    R_X86_64_REX_GOTPCRELX,
+];
 
 #[cfg(test)]
 mod tests {

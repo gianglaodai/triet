@@ -509,13 +509,21 @@ impl Store {
     /// only the Cranelift / shim ABI version changes (ADR-0033 §2 — the
     /// version pins live in the manifest, not the path). So this method
     /// **overwrites** any existing entry rather than skipping it. POSIX
-    /// `rename` won't clobber a non-empty dir, so the stale entry is
-    /// removed first; the brief window where the entry is absent only
-    /// costs a racing reader a cache miss → fresh compile (best-effort
-    /// cache per §8).
+    /// `rename` won't clobber a non-empty dir, so the **occupied** case
+    /// drops the stale entry then renames; the brief window where the
+    /// entry is absent only costs a racing reader a cache miss → fresh
+    /// compile (best-effort cache per §8).
+    ///
+    /// Race-safe by the same rule as [`Self::atomic_install_dir`]: the
+    /// common first-install case renames directly (no destructive
+    /// `remove`), and a rename lost to a concurrent writer of the same
+    /// key is treated as **success** (their content is an equally-valid
+    /// compile of the same `impl_hash_mod`) rather than an error — so a
+    /// race never destroys a valid entry nor surfaces an `Err`.
     ///
     /// # Errors
-    /// [`StoreError::Io`] if staging, removal, or the final rename fails.
+    /// [`StoreError::Io`] if staging the new content fails, or the final
+    /// rename fails for a non-race reason.
     pub fn install_aot_cache(
         &self,
         target_triple: &str,
@@ -536,12 +544,31 @@ impl Store {
             fs::create_dir_all(parent)
                 .map_err(|e| StoreError::io(parent.display().to_string(), e))?;
         }
-        // Overwrite semantics: drop any stale entry before the rename.
-        remove_path(&target)?;
-        fs::rename(&staging, &target)
-            .map_err(|e| StoreError::io(target.display().to_string(), e))?;
-        rollback.disarm();
-        Ok(())
+        // First-install fast path: rename directly (target absent), never
+        // touching an existing entry.
+        match fs::rename(&staging, &target) {
+            Ok(()) => {
+                rollback.disarm();
+                return Ok(());
+            }
+            // Target occupied (stale entry or a concurrent writer) — fall
+            // through to the overwrite path.
+            Err(_) if target.exists() => {}
+            Err(e) => return Err(StoreError::io(target.display().to_string(), e)),
+        }
+        // Overwrite path: drop the stale entry, then rename in. A racing
+        // writer that re-populates `target` between our remove and rename
+        // wins harmlessly — same-key content is an equally-valid compile,
+        // so a lost rename is success, not an error (best-effort §8).
+        let _ = remove_path(&target);
+        match fs::rename(&staging, &target) {
+            Ok(()) => {
+                rollback.disarm();
+                Ok(())
+            }
+            Err(_) if target.exists() => Ok(()),
+            Err(e) => Err(StoreError::io(target.display().to_string(), e)),
+        }
     }
 
     // ── Internal helpers ────────────────────────────────────────────

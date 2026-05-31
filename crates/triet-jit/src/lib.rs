@@ -621,6 +621,23 @@ impl JitDispatcher {
         // ── Path B: fresh compile, then persist for next run. ──
         let _ = self.compiler.compile_program(program);
         self.cache_state.misses += 1;
+
+        // Only persist when EVERY function compiled. A tier-down
+        // (UnsupportedOpcode) leaves a function undefined in its object,
+        // so any caller's relocation to it — intra-module (PLT32) or
+        // cross-module (GOTPCREL) — is an unresolved symbol the load-time
+        // linker refuses; persisting such an object would cache a thing
+        // that can never load, paying a parse+mmap+refuse cycle on every
+        // future run (permanent churn). Skipping is safe + correct: a
+        // not-fully-JIT-able program simply recompiles fresh each run, as
+        // it did before the cache existed. (Partial-program warm cache —
+        // caching the compiled subset while VM-dispatching the rest — is
+        // a jit.4 refinement; it needs the linker to tolerate VM-resident
+        // callees, which direct relocations cannot today.)
+        let total_funcs: usize = program.modules.iter().map(|m| m.functions.len()).sum();
+        if self.compiler.cached_function_count() != total_funcs {
+            return;
+        }
         let store = self.aot.as_ref().expect("cache present").store.as_ref();
         for (idx, key) in keys.iter().enumerate() {
             if let Ok((object, manifest)) = crate::aot::emit_module_object(program, idx) {
@@ -1849,6 +1866,62 @@ mod tests {
         let (_object, manifest_bytes) = store.get("mod0").expect("entry present");
         let fresh = crate::aot::AotCacheManifest::deserialize(&manifest_bytes).expect("parse");
         assert_eq!(fresh.cranelift_version, cranelift_codegen::VERSION);
+    }
+
+    #[test]
+    fn aot_cache_does_not_persist_when_a_function_tiers_down() {
+        // A program with a tier-down function must NOT be persisted: its
+        // object would have an undefined symbol that the load-time linker
+        // refuses forever (permanent churn). Skipping is correct — the
+        // program just recompiles fresh each run.
+        let mut pool = triet_ir::ConstantPool::new();
+        // `bad()` Consts a String → materialize_constant defers it →
+        // emit_function_body errors → that function tiers down.
+        let s = pool.intern(triet_ir::Constant::String("x".to_string()));
+        let good = make_function_at(
+            FuncId(0),
+            "good",
+            vec![],
+            TypeTag::Integer,
+            vec![Instruction::Ret {
+                value: Some(Operand::Const(pool.intern(triet_ir::Constant::Integer(
+                    triet_core::Integer::new(1).unwrap(),
+                )))),
+            }],
+        );
+        let bad = make_function_at(
+            FuncId(1),
+            "bad",
+            vec![],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: s,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![good, bad])], pool);
+
+        let store = MockAotStore::new();
+        let mut dispatcher = JitDispatcher::new();
+        dispatcher.enable_aot_cache(Box::new(store.clone()), vec![Some("mod0".to_string())]);
+        for _ in 0..JIT_THRESHOLD {
+            dispatcher.record_call(FuncId(0), &program);
+        }
+        // `good` compiled, `bad` tiered down → not fully JIT-able → no persist.
+        assert!(
+            dispatcher.compiler().cached_function_count() < 2,
+            "bad() must tier down"
+        );
+        assert!(
+            store.is_empty(),
+            "a not-fully-JIT-able program must not persist an unloadable object"
+        );
+        assert_eq!(dispatcher.cache_state().misses, 1);
     }
 
     #[test]

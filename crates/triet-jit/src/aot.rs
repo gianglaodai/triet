@@ -398,14 +398,10 @@ mod tests {
     /// Returns `(r_type, target_symbol_name, target_is_undefined)` for
     /// every relocation, after asserting each `r_type` is allowed.
     fn collect_bounded_relocations(object_bytes: &[u8]) -> Vec<(u32, String, bool)> {
-        const ALLOWED_R_X86_64: &[u32] = &[
-            object::elf::R_X86_64_PC32,          // 2  PC-relative 32 (calls/data)
-            object::elf::R_X86_64_PLT32,         // 4  PLT-relative 32 (calls)
-            object::elf::R_X86_64_64,            // 1  absolute 64 (data refs)
-            object::elf::R_X86_64_GOTPCREL,      // 9  GOT-relative (extern data)
-            object::elf::R_X86_64_GOTPCRELX,     // 41
-            object::elf::R_X86_64_REX_GOTPCRELX, // 42
-        ];
+        // Assert against the loader's single source of truth — the exact
+        // set its patcher handles. If the emitter ever produces a reloc
+        // outside what the loader accepts, this trips (not a green test
+        // over a superset the loader would silently refuse).
         let file = object::File::parse(object_bytes).expect("parse ELF .o");
         let mut seen = Vec::new();
         for section in file.sections() {
@@ -422,9 +418,9 @@ mod tests {
                     other => (format!("{other:?}"), false),
                 };
                 assert!(
-                    ALLOWED_R_X86_64.contains(&r_type),
-                    "unexpected relocation type {r_type} (target {name}) — Step 3 patcher \
-                     must be extended + verified before this is allowed"
+                    crate::loader::SUPPORTED_RELOC_TYPES.contains(&r_type),
+                    "relocation type {r_type} (target {name}) is emitted but NOT in the \
+                     loader's SUPPORTED_RELOC_TYPES — extend the patcher + that const together"
                 );
                 seen.push((r_type, name, undefined));
             }
