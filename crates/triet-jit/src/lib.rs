@@ -62,6 +62,7 @@
 
 #![warn(missing_docs)]
 
+mod aot;
 mod codegen;
 mod shims;
 
@@ -71,6 +72,7 @@ use thiserror::Error;
 use triet_ir::{BuiltinName, FuncId, VmError};
 
 use crate::codegen::JitBackend;
+pub use crate::shims::SHIM_ABI_VERSION;
 
 /// JIT compiler instance per Triết runtime.
 ///
@@ -173,6 +175,20 @@ pub enum JitError {
         builtin: String,
         /// The capability namespace required + denied.
         namespace: String,
+    },
+
+    /// v0.11.x.jit.3 (ADR-0033 §8) — AOT cache fault on the Path-A
+    /// load side: corrupt/truncated manifest, ELF parse failure,
+    /// version-pin mismatch, unresolved symbol, or relocation refusal.
+    /// **Never user-visible** — the dispatcher treats it as a cache
+    /// miss and silently falls back to a fresh compile, overwriting the
+    /// stale entry. `reason` is logged for observability only. Object
+    /// **emission** failures (Path-B persist) reuse
+    /// [`JitError::Cranelift`]; this variant is the load/parse side.
+    #[error("AOT cache unusable ({reason}) — falling back to fresh compile")]
+    Cache {
+        /// Human-readable cause, for `tracing::warn` + post-mortem.
+        reason: String,
     },
 }
 

@@ -56,8 +56,8 @@ use std::collections::HashMap;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I8, I16, I64};
 use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, Signature, Value, types};
-use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings;
+use cranelift_codegen::isa::{CallConv, OwnedTargetIsa};
+use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId as ClFuncId, Linkage, Module};
@@ -132,6 +132,37 @@ pub(crate) fn map_type(tag: &TypeTag) -> Result<types::Type, JitError> {
     })
 }
 
+/// Build a configured host [`OwnedTargetIsa`] via `cranelift-native`
+/// target detection.
+///
+/// Shared by the `cranelift-jit` backend (Path B, `pic = false` —
+/// in-process absolute addressing, unchanged from v0.10) and the
+/// `cranelift-object` backend (Path A, `pic = true` so the emitted
+/// `.o` uses PC-relative relocations — a relocatable object loaded at
+/// an arbitrary `mmap` address per [ADR-0033 §1]). The exact
+/// relocation set this produces is verified empirically by the
+/// `aot` round-trip test, not assumed (Addendum safety constraint 3).
+///
+/// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
+pub(crate) fn build_host_isa(pic: bool) -> Result<OwnedTargetIsa, JitError> {
+    let mut flag_builder = settings::builder();
+    if pic {
+        flag_builder
+            .set("is_pic", "true")
+            .map_err(|err| JitError::Cranelift {
+                message: format!("set is_pic: {err}"),
+            })?;
+    }
+    let isa_builder = cranelift_native::builder().map_err(|message| JitError::Cranelift {
+        message: format!("ISA detection failed: {message}"),
+    })?;
+    isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|err| JitError::Cranelift {
+            message: format!("ISA finish failed: {err}"),
+        })
+}
+
 /// Encapsulates the Cranelift JIT module + a target ISA. Constructed
 /// lazily on the first `compile()` call.
 pub(crate) struct JitBackend {
@@ -141,15 +172,7 @@ pub(crate) struct JitBackend {
 impl JitBackend {
     /// Initialize Cranelift JIT for the host target.
     pub(crate) fn new() -> Result<Self, JitError> {
-        let flag_builder = settings::builder();
-        let isa_builder = cranelift_native::builder().map_err(|message| JitError::Cranelift {
-            message: format!("ISA detection failed: {message}"),
-        })?;
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .map_err(|err| JitError::Cranelift {
-                message: format!("ISA finish failed: {err}"),
-            })?;
+        let isa = build_host_isa(false)?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         // v0.10.x.jit.1 — register builtin-shim symbols per ADR-0032 §6
         // so emitted `call $shim_symbol` instructions resolve at
@@ -168,15 +191,7 @@ impl JitBackend {
     pub(crate) fn new_with_extra_shims(
         extra: &[crate::shims::ShimEntry],
     ) -> Result<Self, JitError> {
-        let flag_builder = settings::builder();
-        let isa_builder = cranelift_native::builder().map_err(|message| JitError::Cranelift {
-            message: format!("ISA detection failed: {message}"),
-        })?;
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .map_err(|err| JitError::Cranelift {
-                message: format!("ISA finish failed: {err}"),
-            })?;
+        let isa = build_host_isa(false)?;
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         register_shim_symbols(&mut builder, &crate::shims::production_shim_entries());
         register_shim_symbols(&mut builder, extra);
@@ -283,103 +298,154 @@ impl JitBackend {
         Ok(self.module.get_finalized_function(caller_id) as usize)
     }
 
-    /// Compile every function in `program` in a two-pass shape:
+    /// Compile every function in `program` and collect the finalized
+    /// native pointers into `out_cache`, keyed by Triết `FuncId`.
     ///
-    /// 1. **Pre-pass:** for each Triết function, build its Cranelift
-    ///    signature + `declare_function` so cross-references resolve.
-    ///    Populates `func_id_map` (Triết → Cranelift) + `path_to_funcid`
-    ///    (`AbsolutePath` → Triết) used by call sites.
-    /// 2. **Body pass:** for each function, emit its Cranelift IR body
-    ///    via [`Self::emit_function_body`] with full program context
-    ///    (call resolution + constant pool access).
-    /// 3. **Finalize:** single `finalize_definitions` flips all
-    ///    machine code from RW to RX, then collect raw pointers into
-    ///    `out_cache` keyed by Triết `FuncId`.
+    /// The shared declare+define translation runs via
+    /// [`declare_and_define_program`] (the backend-agnostic pass per
+    /// [ADR-0033 §1]); this method adds the `cranelift-jit`-specific
+    /// finalize: a single `finalize_definitions` flips all bodies from
+    /// RW to RX, then `get_finalized_function` resolves each compiled
+    /// function's host address.
     ///
-    /// On any per-function error, the function is dropped from the
-    /// cache (tier-down per ADR-0030 §2); other functions in the same
-    /// program continue compiling. Returns Err only on
-    /// pre-pass / finalize failures that prevent the whole program
-    /// from JIT-ing.
+    /// Per-function tier-down (per ADR-0030 §2) happens inside the
+    /// shared pass — only successfully-defined functions reach
+    /// `out_cache`. Returns Err only on a finalize failure that
+    /// prevents the whole program from JIT-ing.
+    ///
+    /// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
     pub(crate) fn compile_program(
         &mut self,
         program: &IrProgram,
         out_cache: &mut HashMap<TriFuncId, NativeCodePtr>,
         denied_namespaces: &[&str],
     ) -> Result<(), JitError> {
-        // Pre-pass: declare every function so calls can resolve.
-        let mut func_id_map: HashMap<TriFuncId, ClFuncId> = HashMap::new();
-        let mut path_to_funcid: HashMap<AbsolutePath, TriFuncId> = HashMap::new();
-        for ir_module in &program.modules {
-            for func in &ir_module.functions {
-                let signature = build_signature(func)?;
-                let func_name = func
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("@f{}", func.id.0));
-                // Mangle name with FuncId so two modules can share a
-                // simple name (`main`, `helper`) without collision.
-                let mangled = format!("{}__f{}", func_name, func.id.0);
-                let cl_id = self
-                    .module
-                    .declare_function(&mangled, Linkage::Local, &signature)
-                    .map_err(cranelift_err)?;
-                func_id_map.insert(func.id, cl_id);
-                if let Some(name) = &func.name {
-                    // `IrModule.path` is an AbsolutePath with empty item
-                    // name per lowerer convention (`module.rs` line 147).
-                    // Extract its `ModulePath` and re-wrap with `name`.
-                    let path =
-                        AbsolutePath::new(ir_module.path.module_path().clone(), name.clone());
-                    path_to_funcid.insert(path, func.id);
-                }
-            }
-        }
-
-        let ctx = ProgramContext {
-            func_id_map: func_id_map.clone(),
-            path_to_funcid,
-            constants: &program.constants,
-            denied_namespaces,
-        };
-
-        // Body pass: per-function codegen + define. On per-function
-        // error, skip (tier-down) without aborting the whole program.
-        let mut compiled: Vec<TriFuncId> = Vec::new();
-        for ir_module in &program.modules {
-            for func in &ir_module.functions {
-                let cl_id = match func_id_map.get(&func.id) {
-                    Some(id) => *id,
-                    None => continue,
-                };
-                let mut cl_ctx = self.module.make_context();
-                cl_ctx.func.signature = build_signature(func)?;
-                if let Err(err) = emit_function_body(&mut self.module, func, &ctx, &mut cl_ctx) {
-                    // Tier-down: skip this function, others still compile.
-                    let _ = err;
-                    self.module.clear_context(&mut cl_ctx);
-                    continue;
-                }
-                if let Err(err) = self.module.define_function(cl_id, &mut cl_ctx) {
-                    let _ = err;
-                    self.module.clear_context(&mut cl_ctx);
-                    continue;
-                }
-                self.module.clear_context(&mut cl_ctx);
-                compiled.push(func.id);
-            }
-        }
-
+        let translated = declare_and_define_program(&mut self.module, program, denied_namespaces)?;
         // Finalize everything together. Single mmap-flip across all
         // bodies — required before `get_finalized_function`.
         self.module.finalize_definitions().map_err(cranelift_err)?;
-        for tri_id in compiled {
-            let cl_id = func_id_map[&tri_id];
+        for tri_id in translated.compiled {
+            let cl_id = translated.func_id_map[&tri_id];
             let raw = self.module.get_finalized_function(cl_id);
             out_cache.insert(tri_id, NativeCodePtr { addr: raw as usize });
         }
         Ok(())
     }
+}
+
+/// Outcome of [`declare_and_define_program`] — the shared declare+define
+/// translation of an [`IrProgram`] into a Cranelift [`Module`], used by
+/// both backends per [ADR-0033 §1]. The caller performs the
+/// backend-specific finalization (`cranelift-jit` finalize +
+/// `get_finalized_function`, or `cranelift-object` `finish` + `emit`).
+///
+/// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
+pub(crate) struct TranslatedProgram {
+    /// Triết `FuncId` → Cranelift `FuncId` for every declared function.
+    pub func_id_map: HashMap<TriFuncId, ClFuncId>,
+    /// Functions whose body was successfully defined. Functions that
+    /// tiered down (per ADR-0030 §2) are absent — finalize/cache only
+    /// these.
+    pub compiled: Vec<TriFuncId>,
+    /// Triết `FuncId` → the mangled symbol name used at
+    /// `declare_function` time. The AOT manifest records these so the
+    /// Path-A loader can locate each function's offset in the loaded
+    /// `.o` per [ADR-0033 §2].
+    pub symbol_names: HashMap<TriFuncId, String>,
+}
+
+/// Run the two-pass declare+define translation of `program` into
+/// `module`, generic over the Cranelift backend per [ADR-0033 §1] so
+/// the `cranelift-jit` (Path B) and `cranelift-object` (Path A) paths
+/// share one codegen pipeline.
+///
+/// 1. **Pre-pass:** for each Triết function build its Cranelift
+///    signature + `declare_function` (mangled `name__f{id}` so two
+///    modules can share a simple name). Populates the Triết→Cranelift
+///    id map, the `AbsolutePath`→Triết map for call resolution, and the
+///    `FuncId`→symbol-name map for the AOT manifest.
+/// 2. **Body pass:** for each function emit its Cranelift IR body via
+///    [`emit_function_body`] with full program context, then
+///    `define_function`. On a per-function error the function is
+///    skipped (tier-down per ADR-0030 §2); the rest continue.
+///
+/// Returns Err only on a pre-pass `declare_function` failure.
+///
+/// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
+/// [ADR-0033 §2]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
+pub(crate) fn declare_and_define_program(
+    module: &mut impl Module,
+    program: &IrProgram,
+    denied_namespaces: &[&str],
+) -> Result<TranslatedProgram, JitError> {
+    // Pre-pass: declare every function so calls can resolve.
+    let mut func_id_map: HashMap<TriFuncId, ClFuncId> = HashMap::new();
+    let mut path_to_funcid: HashMap<AbsolutePath, TriFuncId> = HashMap::new();
+    let mut symbol_names: HashMap<TriFuncId, String> = HashMap::new();
+    for ir_module in &program.modules {
+        for func in &ir_module.functions {
+            let signature = build_signature(func)?;
+            let func_name = func
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("@f{}", func.id.0));
+            // Mangle name with FuncId so two modules can share a
+            // simple name (`main`, `helper`) without collision.
+            let mangled = format!("{}__f{}", func_name, func.id.0);
+            let cl_id = module
+                .declare_function(&mangled, Linkage::Local, &signature)
+                .map_err(cranelift_err)?;
+            func_id_map.insert(func.id, cl_id);
+            symbol_names.insert(func.id, mangled);
+            if let Some(name) = &func.name {
+                // `IrModule.path` is an AbsolutePath with empty item
+                // name per lowerer convention (`module.rs` line 147).
+                // Extract its `ModulePath` and re-wrap with `name`.
+                let path = AbsolutePath::new(ir_module.path.module_path().clone(), name.clone());
+                path_to_funcid.insert(path, func.id);
+            }
+        }
+    }
+
+    let ctx = ProgramContext {
+        func_id_map: func_id_map.clone(),
+        path_to_funcid,
+        constants: &program.constants,
+        denied_namespaces,
+    };
+
+    // Body pass: per-function codegen + define. On per-function error,
+    // skip (tier-down) without aborting the whole program.
+    let mut compiled: Vec<TriFuncId> = Vec::new();
+    for ir_module in &program.modules {
+        for func in &ir_module.functions {
+            let cl_id = match func_id_map.get(&func.id) {
+                Some(id) => *id,
+                None => continue,
+            };
+            let mut cl_ctx = module.make_context();
+            cl_ctx.func.signature = build_signature(func)?;
+            if let Err(err) = emit_function_body(module, func, &ctx, &mut cl_ctx) {
+                // Tier-down: skip this function, others still compile.
+                let _ = err;
+                module.clear_context(&mut cl_ctx);
+                continue;
+            }
+            if let Err(err) = module.define_function(cl_id, &mut cl_ctx) {
+                let _ = err;
+                module.clear_context(&mut cl_ctx);
+                continue;
+            }
+            module.clear_context(&mut cl_ctx);
+            compiled.push(func.id);
+        }
+    }
+
+    Ok(TranslatedProgram {
+        func_id_map,
+        compiled,
+        symbol_names,
+    })
 }
 
 /// Shared body-emit routine called by both the single-function and the

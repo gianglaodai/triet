@@ -44,6 +44,12 @@ cranelift-codegen = "0.132"
 cranelift-frontend = "0.132"
 cranelift-jit = "0.132"
 cranelift-module = "0.132"
+# v0.11.x.jit.3 (ADR-0033 §1) — AOT cache: `cranelift-object` emits a
+# relocatable ELF `.o` from the SAME Triết IR translator (Path A
+# persist); `object` parses it back (symbol table + relocations) for
+# the Path-A loader. `memmap2` (RW→RX loaded code) joins in Step 3.
+cranelift-object = "0.132"
+object = "0.39"
 # Host-ISA builder (target detection) — needed for JITBuilder::with_isa.
 cranelift-native = "0.132"
 thiserror.workspace = true

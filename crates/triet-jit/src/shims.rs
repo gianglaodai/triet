@@ -40,6 +40,22 @@ use triet_core::Integer;
 use triet_ir::{BuiltinName, RuntimeValue, VmError, dispatch_builtin};
 use triet_logic::Trilean;
 
+/// The builtin-shim ABI version baked into every AOT cache manifest
+/// (v0.11.x.jit.3, ADR-0033 §2).
+///
+/// The Path-A loader refuses a cache whose recorded `shim_abi_version`
+/// differs from this constant (silent fallback to fresh compile +
+/// overwrite), so a cache compiled against an older shim ABI can never
+/// be loaded against a newer one.
+///
+/// **Bump this manually on ANY ADR-0032 ABI break** — e.g. adding or
+/// removing a [`BuiltinName`] shim, changing the hybrid ABI of an
+/// existing shim ([`AbiScalar`] slot layout), or altering the §4
+/// error-sentinel contract. A bump = global invalidation of every
+/// cache entry that references an affected builtin, mirroring the
+/// semver-style `iface_hash` discipline of ADR-0013.
+pub const SHIM_ABI_VERSION: u32 = 1;
+
 // ── ABI description (decoupled from Cranelift types) ────────────────
 
 /// A scalar slot in a shim's ABI signature. Maps to a Cranelift type
