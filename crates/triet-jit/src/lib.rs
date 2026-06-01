@@ -2666,6 +2666,194 @@ mod tests {
     }
 
     #[test]
+    fn jit4_crosscall_boxed_to_unboxed_scalar_value_parity() {
+        // agg.cross-call (chiều boxed→unboxed): a BOXED function (has a
+        // struct op) calls an UNBOXED scalar helper. Args unbox (ptr→i64),
+        // result re-boxes (i64→ptr).
+        //   add(a, b: Integer) -> Integer = a + b          (unboxed)
+        //   sum(p: struct)     -> Integer = add(p.0, p.1)  (boxed)
+        let add = make_function_at(
+            FuncId(0),
+            "add",
+            vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
+            TypeTag::Integer,
+            vec![
+                Instruction::Add {
+                    dest: ValueId(2),
+                    lhs: Operand::Value(ValueId(0)),
+                    rhs: Operand::Value(ValueId(1)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let sum = make_function_at(
+            FuncId(1),
+            "sum",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 1,
+                },
+                Instruction::CallLocal {
+                    dest: Some(ValueId(3)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(1)), Operand::Value(ValueId(2))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(3))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![add, sum])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // `add` is unboxed (pure scalar); `sum` is boxed and cross-mode
+        // calls `add` — both must JIT now (no tier-down).
+        assert!(jit.lookup(FuncId(0)).is_some(), "unboxed add JITs");
+        assert!(
+            jit.lookup(FuncId(1)).is_some(),
+            "boxed sum cross-mode calling unboxed add must JIT"
+        );
+
+        let point = triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(7), integer(9)],
+        };
+        let jit_r = dispatch_boxed(&jit, FuncId(1), vec![point.clone()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(1), vec![point]).expect("vm sum");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &integer(16));
+    }
+
+    #[test]
+    fn jit4_crosscall_composite_boundary_tiers_down() {
+        // A composite cross-mode boundary tiers down (conservative): an
+        // unboxed callee returning a borrowed param (e.g. `id(s)=s`) does
+        // NOT bump the refcount, so passing composites across the boundary
+        // would double-free. Deferred until a clone-on-return discipline.
+        //   id(s: String) -> String = s             (unboxed passthrough)
+        //   pick(p struct) -> String = id(p.0)       (boxed → tier down)
+        let id = make_function_at(
+            FuncId(0),
+            "id",
+            vec![("s".into(), TypeTag::String)],
+            TypeTag::String,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let pick = make_function_at(
+            FuncId(1),
+            "pick",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::String,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::CallLocal {
+                    dest: Some(ValueId(2)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(1))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![id, pick])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // `pick` tiers down on the composite cross-mode boundary (no
+        // double-free); `id` itself still JITs.
+        assert!(jit.lookup(FuncId(0)).is_some(), "unboxed id JITs");
+        assert!(
+            jit.lookup(FuncId(1)).is_none(),
+            "boxed caller with a composite cross-mode boundary must tier down"
+        );
+    }
+
+    #[test]
+    fn jit4_crosscall_unit_boundary_tiers_down() {
+        // A Unit boundary is ambiguous (true-Unit vs struct/enum-lowered),
+        // so a cross-mode call with a Unit param/return must tier the
+        // boxed caller down — never miscompile.
+        //   sink(x: Unit) -> Integer = 0   (unboxed; Unit param)
+        //   caller(p struct) -> Integer = sink(p.0)   (boxed → tier down)
+        let mut pool = triet_ir::ConstantPool::new();
+        let zero = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(0).unwrap(),
+        ));
+        let sink = make_function_at(
+            FuncId(0),
+            "sink",
+            vec![("x".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(1),
+                    constant: zero,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let caller = make_function_at(
+            FuncId(1),
+            "caller",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::CallLocal {
+                    dest: Some(ValueId(2)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(1))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![sink, caller])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // `caller` tiers down (Unit boundary) — `sink` itself still JITs.
+        assert!(jit.lookup(FuncId(0)).is_some(), "unboxed sink JITs");
+        assert!(
+            jit.lookup(FuncId(1)).is_none(),
+            "boxed caller with a Unit cross-mode boundary must tier down"
+        );
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();

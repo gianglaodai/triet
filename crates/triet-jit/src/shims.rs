@@ -254,6 +254,17 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
         },
         ShimEntry {
             builtin: None,
+            // boxed ptr + kind (i8) → raw scalar bits (i64). Cross-mode
+            // marshaling (agg.cross-call); inverse of __triet_box_const.
+            symbol: "__triet_unbox_scalar",
+            addr: __triet_unbox_scalar as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr, I8],
+                ret: Some(I64),
+            },
+        },
+        ShimEntry {
+            builtin: None,
             // boxed branch cond → its three-way tag (i8 `{-1,0,+1}`).
             symbol: "__triet_trilean_tag",
             addr: __triet_trilean_tag as *const () as usize,
@@ -1025,6 +1036,40 @@ extern "C" fn __triet_box_const(kind: i8, payload: i64) -> i64 {
         return 0;
     };
     box_rv(exec_box_const(kind, payload))
+}
+
+/// `unbox_scalar(ptr, kind) -> i64` — the inverse of `__triet_box_const`
+/// for cross-mode call marshaling (ADR-0034 agg.cross-call).
+///
+/// Reads the boxed `RuntimeValue` at `ptr` and returns its scalar value
+/// as raw `i64` bits (the codegen narrows to i8/i16 for the callee's slot
+/// type). `kind` is the expected [`JitConstKind`]. A type mismatch records
+/// a `JitShimFault` (the per-call sentinel surfaces it) — by construction
+/// the callee's param type guarantees the match, so a mismatch is a bug.
+extern "C" fn __triet_unbox_scalar(ptr: i64, kind: i8) -> i64 {
+    let Some(kind) = u8::try_from(kind).ok().and_then(JitConstKind::from_u8) else {
+        record_shim_failure(VmError::JitShimFault {
+            reason: format!("invalid JitConstKind discriminant {kind}"),
+            function: current_func_name(),
+        });
+        return 0;
+    };
+    let rv = arg_composite(ptr);
+    match (kind, &rv) {
+        (JitConstKind::Integer, RuntimeValue::Integer(i)) => i.to_i64(),
+        // Trilean uses the {-1,0,+1} encoding; delegate to `as_trilean`
+        // (via `exec_trilean_tag`) so Trit/Integer carriers also work.
+        (JitConstKind::Trilean, _) => i64::from(exec_trilean_tag(&rv)),
+        (JitConstKind::Trit, RuntimeValue::Trit(t)) => i64::from(t.to_i8()),
+        (JitConstKind::Tryte, RuntimeValue::Tryte(t)) => t.to_i64(),
+        _ => {
+            record_shim_failure(VmError::JitShimFault {
+                reason: format!("unbox_scalar: expected {kind:?}, got {:?}", rv.type_tag()),
+                function: current_func_name(),
+            });
+            0
+        }
+    }
 }
 
 /// `trilean_tag(cond) -> i8` — read a boxed branch condition's three-way
