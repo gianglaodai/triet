@@ -1726,6 +1726,84 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg1c_boxed_to_boxed_call_value_parity() {
+        // agg.1c-iii: a boxed function calling another boxed function
+        // (same-mode boxed→boxed). Both pass/return boxed ptrs.
+        //   inner(p) -> p.field(0)                          (boxed: FieldGet)
+        //   outer(p) -> { inner(p), p.field(1) }            (boxed: StructNew
+        //                + CallLocal to inner + FieldGet)
+        // outer({7,9}) == {7, 9}; assert JIT == VM.
+        let inner = make_function_at(
+            FuncId(0),
+            "inner",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let outer = make_function_at(
+            FuncId(1),
+            "outer",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Unit,
+            vec![
+                Instruction::CallLocal {
+                    dest: Some(ValueId(1)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 1,
+                },
+                Instruction::StructNew {
+                    dest: ValueId(3),
+                    fields: vec![Operand::Value(ValueId(1)), Operand::Value(ValueId(2))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(3))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![inner, outer])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed→boxed call must compile");
+        assert_eq!(
+            jit.cached_function_count(),
+            2,
+            "both boxed fns JIT (boxed call, no tier-down)"
+        );
+
+        let point = || triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(7), integer(9)],
+        };
+        let jit_r = dispatch_boxed(&jit, FuncId(1), vec![point()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(1), vec![point()]).expect("vm outer");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(
+            &jit_r,
+            &triet_ir::RuntimeValue::Struct {
+                fields: vec![integer(7), integer(9)],
+            },
+        );
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();

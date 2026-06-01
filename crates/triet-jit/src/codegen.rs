@@ -1126,6 +1126,42 @@ fn translate_boxed_instruction(
             record_boxed_result(value_map, fn_state, dest, res);
             emit_shim_sentinel_check(builder, module, fn_state)?;
         }
+        // Boxed-mode calls (agg.1c-iii): same-mode boxed→boxed only.
+        // Args + return are boxed `i64` ptrs matching the callee's boxed
+        // signature; a non-boxed callee tiers this function down (cross-
+        // mode marshaling is a later sub-task).
+        Instruction::CallLocal { dest, callee, args } => {
+            translate_boxed_call(
+                builder, module, value_map, ctx, fn_state, *dest, *callee, args,
+            )?;
+        }
+        Instruction::CallCrossModule { dest, path, args } => {
+            let callee = ctx.path_to_funcid.get(path).copied().ok_or_else(|| {
+                JitError::UnsupportedOpcode {
+                    opcode: format!("CallCrossModule path `{path}` not in program (boxed)"),
+                }
+            })?;
+            translate_boxed_call(
+                builder, module, value_map, ctx, fn_state, *dest, callee, args,
+            )?;
+        }
+        Instruction::WitnessCall {
+            dest,
+            path,
+            witness_idx: _,
+            args,
+        } => {
+            // v0.4 witness-table semantics identical to CallCrossModule
+            // (ADR-0012 §2) — same dispatch in boxed mode.
+            let callee = ctx.path_to_funcid.get(path).copied().ok_or_else(|| {
+                JitError::UnsupportedOpcode {
+                    opcode: format!("WitnessCall path `{path}` not in program (boxed)"),
+                }
+            })?;
+            translate_boxed_call(
+                builder, module, value_map, ctx, fn_state, *dest, callee, args,
+            )?;
+        }
         other => {
             return Err(JitError::UnsupportedOpcode {
                 opcode: format!("{other} (boxed mode — defer to a later agg sub-task)"),
@@ -1657,6 +1693,63 @@ fn translate_call(
             value_map.insert(dest_id, result_val);
         }
     }
+    Ok(())
+}
+
+/// Boxed-mode call (ADR-0034 Addendum agg.1c-iii). **Same-mode
+/// boxed→boxed only**: the callee's params + return are boxed `i64`
+/// ptrs (its signature is all-i64 per `build_signature_for`), so the
+/// boxed-ptr args we pass line up exactly. If the callee is compiled
+/// UNBOXED, tier this function down — passing a boxed ptr where a raw
+/// scalar is expected (same i64 width, verifier-invisible) would
+/// miscompile. This mirrors the unboxed `translate_call` guard from the
+/// opposite side; cross-mode marshaling (unbox args / box result) is a
+/// later sub-task.
+#[allow(clippy::too_many_arguments)]
+fn translate_boxed_call(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    value_map: &mut HashMap<ValueId, Value>,
+    ctx: &ProgramContext<'_>,
+    fn_state: &mut FnState,
+    dest: Option<ValueId>,
+    callee: TriFuncId,
+    args: &[Operand],
+) -> Result<(), JitError> {
+    if !ctx.boxed_funcs.contains(&callee) {
+        return Err(JitError::UnsupportedOpcode {
+            opcode: format!(
+                "call to unboxed FuncId({}) from a boxed function — cross-mode ABI (defer)",
+                callee.0
+            ),
+        });
+    }
+    let cl_callee =
+        ctx.func_id_map
+            .get(&callee)
+            .copied()
+            .ok_or_else(|| JitError::UnsupportedOpcode {
+                opcode: format!("boxed call target FuncId({}) not in program", callee.0),
+            })?;
+    let arg_values: Vec<Value> = args
+        .iter()
+        .map(|op| materialize_boxed_operand(builder, module, value_map, ctx, *op))
+        .collect::<Result<_, _>>()?;
+    let func_ref = module.declare_func_in_func(cl_callee, builder.func);
+    let call_inst = builder.ins().call(func_ref, &arg_values);
+    let result = builder.inst_results(call_inst).first().copied();
+    // The boxed callee returns an owned box (refcount transfers to us).
+    if let Some(dest_id) = dest {
+        record_boxed_result(value_map, fn_state, dest_id, result);
+    } else if let Some(r) = result {
+        // Result discarded — drop the owned box to balance the callee's
+        // box-out (a null `0` sentinel ptr is a no-op in `__triet_drop_arc`).
+        emit_drop_arc(builder, module, r)?;
+    }
+    // The callee may have failed internally (recorded a VmError + set the
+    // SHIM_FAILED flag, returning a null sentinel ptr). Probe + propagate
+    // so we abort rather than treat null as a live result.
+    emit_shim_sentinel_check(builder, module, fn_state)?;
     Ok(())
 }
 
