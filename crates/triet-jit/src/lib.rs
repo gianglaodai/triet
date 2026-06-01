@@ -1393,6 +1393,7 @@ mod tests {
             }
             (R::Trilean(x), R::Trilean(y)) => assert_eq!(x, y, "{a:?} vs {b:?}"),
             (R::Trit(x), R::Trit(y)) => assert_eq!(x, y, "{a:?} vs {b:?}"),
+            (R::String(x), R::String(y)) => assert_eq!(x, y, "{a:?} vs {b:?}"),
             (
                 R::Enum {
                     variant: va,
@@ -2794,13 +2795,15 @@ mod tests {
     }
 
     #[test]
-    fn jit4_crosscall_composite_boundary_tiers_down() {
-        // A composite cross-mode boundary tiers down (conservative): an
-        // unboxed callee returning a borrowed param (e.g. `id(s)=s`) does
-        // NOT bump the refcount, so passing composites across the boundary
-        // would double-free. Deferred until a clone-on-return discipline.
+    fn jit4_crosscall_composite_passthrough_value_parity() {
+        // ADR-0035 §1+§2: composite cross-mode boundary now JITs safely.
+        // The unboxed `id(s)=s` returns a borrowed composite param, so its
+        // clone-on-return (§1 unboxed, TypeTag-guided) mints an owned box;
+        // the boxed caller passes the composite arg through + records the
+        // owned result (§2) — no double-free (the case that aborted with
+        // `malloc(): unaligned tcache` before the discipline), no leak.
         //   id(s: String) -> String = s             (unboxed passthrough)
-        //   pick(p struct) -> String = id(p.0)       (boxed → tier down)
+        //   pick(p struct) -> String = id(p.0)       (boxed cross-mode)
         let id = make_function_at(
             FuncId(0),
             "id",
@@ -2837,13 +2840,62 @@ mod tests {
         );
         let mut jit = JitCompiler::new();
         jit.compile_program(&program).expect("compile");
-        // `pick` tiers down on the composite cross-mode boundary (no
-        // double-free); `id` itself still JITs.
+        // Both JIT now: `id` (unboxed composite passthrough) + `pick`
+        // (boxed cross-mode composite call).
         assert!(jit.lookup(FuncId(0)).is_some(), "unboxed id JITs");
         assert!(
-            jit.lookup(FuncId(1)).is_none(),
-            "boxed caller with a composite cross-mode boundary must tier down"
+            jit.lookup(FuncId(1)).is_some(),
+            "boxed cross-mode composite caller must JIT"
         );
+
+        let point = triet_ir::RuntimeValue::Struct {
+            fields: vec![
+                triet_ir::RuntimeValue::String("triết".to_owned()),
+                integer(9),
+            ],
+        };
+        // dispatch_boxed drops the arg box + the result box; with the
+        // clone-on-return discipline this is balanced (no double-free).
+        let jit_r = dispatch_boxed(&jit, FuncId(1), vec![point.clone()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(1), vec![point]).expect("vm pick");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &triet_ir::RuntimeValue::String("triết".to_owned()));
+    }
+
+    #[test]
+    fn jit4_unboxed_return_borrowed_composite_no_double_free() {
+        // ADR-0035 §1 (unboxed): a same-mode unboxed→unboxed composite
+        // passthrough. `outer` calls `id(s)=s` and returns the result; both
+        // are unboxed (no aggregate op). Without unboxed clone-on-return
+        // this double-frees the String box. The String is materialized by
+        // a builtin so it's a real boxed composite flowing through unboxed
+        // functions.
+        let id = make_function_at(
+            FuncId(0),
+            "id",
+            vec![("s".into(), TypeTag::String)],
+            TypeTag::String,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![id])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(jit.lookup(FuncId(0)).is_some(), "unboxed id JITs");
+
+        // Call id(s) directly: box a String arg, dispatch, read + drop the
+        // result, drop the arg. Aliased without the §1 clone → double-free.
+        let s_ptr = shims::box_for_jit_test(triet_ir::RuntimeValue::String("hi".to_owned()));
+        let result_ptr = dispatch_integer(&jit, FuncId(0), &[s_ptr]).expect("id dispatch");
+        let result = shims::read_for_jit_test(result_ptr);
+        shims::drop_for_jit_test(result_ptr);
+        shims::drop_for_jit_test(s_ptr);
+        assert_rv_eq(&result, &triet_ir::RuntimeValue::String("hi".to_owned()));
     }
 
     #[test]

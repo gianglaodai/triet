@@ -1,6 +1,6 @@
 # ADR 0035 — JIT boxed-value refcount discipline (clone-on-return, cross-mode marshaling, leak tolerance)
 
-**Trạng thái:** **Proposed** (v0.11.x.jit.4.agg.cross-call, awaiting author sign-off). Builds on [ADR-0032 §2](0032-builtin-shim-abi.md) (the composite `Rc::into_raw` boxed-ptr ABI + `__triet_drop_arc` lifetime shim) and [ADR-0034](0034-jit-aggregate-coverage.md) (Bậc A per-function uniform boxing — the boxed mode whose values this discipline governs). Opened to *close* a latent-double-free class surfaced while implementing cross-mode calls, before it spreads further.
+**Trạng thái:** **Locked** (v0.11.x.jit.4.agg.cross-call, author sign-off 2026-06-01 — "triển khai Bậc A": adopt the clone-on-return discipline + bounded leak tolerance over the no-leak alternatives, confirmed non-conflicting with the future Bậc C native-codegen speed phase). Builds on [ADR-0032 §2](0032-builtin-shim-abi.md) (the composite `Rc::into_raw` boxed-ptr ABI + `__triet_drop_arc` lifetime shim) and [ADR-0034](0034-jit-aggregate-coverage.md) (Bậc A per-function uniform boxing — the boxed mode whose values this discipline governs). Opened to *close* a latent-double-free class surfaced while implementing cross-mode calls, before it spreads further.
 
 ## Issue
 

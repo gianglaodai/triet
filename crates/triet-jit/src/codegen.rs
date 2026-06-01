@@ -965,36 +965,57 @@ fn build_func_sigs(program: &IrProgram) -> HashMap<TriFuncId, (Vec<TypeTag>, Typ
         .collect()
 }
 
-/// How a primitive scalar crossing a boxed↔unboxed call boundary is
-/// marshaled (agg.cross-call): box (`__triet_box_const`) / unbox
-/// (`__triet_unbox_scalar`) with this `kind`, at Cranelift width `clif`.
-struct BoundaryScalar {
-    kind: JitConstKind,
-    clif: types::Type,
+/// `true` iff `tag` is a composite carried as an `Rc<RuntimeValue>` `i64`
+/// pointer in BOTH modes (ADR-0032 §1). Used by the clone-on-return
+/// discipline (only composite returns need a refcount bump; scalars are
+/// value-copy) + cross-mode pass-through classification.
+const fn is_composite_tag(tag: &TypeTag) -> bool {
+    matches!(
+        tag,
+        TypeTag::String
+            | TypeTag::Vector(_)
+            | TypeTag::HashMap(..)
+            | TypeTag::Nullable(_)
+            | TypeTag::Atomic(_)
+            | TypeTag::Outcome { .. }
+    )
 }
 
-/// Classify a boundary type for cross-mode marshaling.
-///
-/// Returns `Some` only for the four **unambiguous primitive scalars**
-/// (Integer/Trilean/Trit/Tryte) — box/unbox is value-copy, no refcount.
-/// Everything else tiers down:
-/// - **Composites** (`String`/`Vector`/`Outcome`/…) share the
-///   `Rc<RuntimeValue>` ptr repr, BUT cross-mode pass-through is UNSAFE
-///   today: an unboxed callee returning a borrowed param (e.g.
-///   `id(s)=s`) does not bump the refcount, so the caller would
-///   over-drop (double-free). Composite cross-mode marshaling waits on a
-///   clone-on-return refcount discipline (deferred slice). The same
-///   latent aliasing affects same-mode boxed identity-passthrough.
-/// - **`Unit`** is ambiguous (true-Unit vs the lowerer's struct/enum/
-///   generic placeholder — `lowerer.rs` `_ => TypeTag::Unit`).
-/// - **`Long`** is i128 (deferred).
-fn boundary_class(tag: &TypeTag) -> Option<BoundaryScalar> {
-    let scalar = |kind, clif| Some(BoundaryScalar { kind, clif });
+/// How a value crossing a boxed↔unboxed call boundary is marshaled
+/// (ADR-0035 agg.cross-call).
+enum BoundaryClass {
+    /// An unambiguous primitive scalar — box (`__triet_box_const`) /
+    /// unbox (`__triet_unbox_scalar`) with this `kind` at width `clif`
+    /// (value-copy, no refcount).
+    Scalar {
+        kind: JitConstKind,
+        clif: types::Type,
+    },
+    /// A composite — the SAME `Rc<RuntimeValue>` ptr repr in both modes,
+    /// so it crosses UNMARSHALED. Safe because clone-on-return ([ADR-0035
+    /// §1], applied in both modes) guarantees every function returns an
+    /// OWNED box: a boxed caller records a cross-mode composite result as
+    /// owned (drops at its Ret), and a composite arg is borrowed by the
+    /// callee (not consumed). No caller-side clone, no leak in the common
+    /// case (ADR-0035 §2).
+    PassThrough,
+}
+
+/// Classify a boundary type for cross-mode marshaling, or `None` (tier
+/// down) for the ambiguous / unsupported types:
+/// - **`Unit`** — ambiguous (true-Unit vs the lowerer's struct/enum/
+///   generic placeholder, `lowerer.rs` `_ => TypeTag::Unit`); can't tell
+///   "nothing" from "a struct ptr" (ADR-0035 §4).
+/// - **`Long`** — i128 (deferred).
+fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
+    let scalar = |kind, clif| Some(BoundaryClass::Scalar { kind, clif });
     match tag {
         TypeTag::Integer => scalar(JitConstKind::Integer, I64),
         TypeTag::Trilean => scalar(JitConstKind::Trilean, I8),
         TypeTag::Trit => scalar(JitConstKind::Trit, I8),
         TypeTag::Tryte => scalar(JitConstKind::Tryte, I16),
+        _ if is_composite_tag(tag) => Some(BoundaryClass::PassThrough),
+        // `Unit` (ambiguous) / `Long` (i128) → tier down.
         _ => None,
     }
 }
@@ -1951,7 +1972,25 @@ fn translate_instruction(
             }
             if let Some(op) = value {
                 let v = resolve_operand(builder, value_map, ctx, *op)?;
-                builder.ins().return_(&[v]);
+                // Clone-on-return (ADR-0035 §1), unboxed mode: a borrowed
+                // COMPOSITE return (a `Value(id)` ∉ created_boxed whose
+                // return type is an `Rc` ptr — a param, or an untracked
+                // pass-through) must clone, else the caller + the original
+                // owner both drop → double-free. Scalars (Integer i64,
+                // Trilean i8, …) are value-copy → never cloned; a
+                // created/owned composite (∈ created_boxed) already owns 1
+                // → transferred (skipped in the drop loop above). This is
+                // what makes a same-mode unboxed composite passthrough
+                // (`id(s)=s`) AND a cross-mode composite result owned by
+                // construction (ADR-0035 §2).
+                let borrowed_composite = is_composite_tag(&func.return_type)
+                    && matches!(op, Operand::Value(id) if !fn_state.created_boxed.contains(id));
+                let ret_v = if borrowed_composite {
+                    emit_clone_arc(builder, module, v)?
+                } else {
+                    v
+                };
+                builder.ins().return_(&[ret_v]);
             } else {
                 // No-value return: emit a Unit i8 0 placeholder per
                 // build_signature returning i8 for Unit.
@@ -2227,11 +2266,16 @@ fn translate_boxed_call(
         }
         let mut marshaled = Vec::with_capacity(boxed_args.len());
         for (ptr, ty) in boxed_args.iter().zip(params) {
-            let BoundaryScalar { kind, clif } =
-                boundary_class(ty).ok_or_else(|| JitError::UnsupportedOpcode {
-                    opcode: format!("cross-mode arg type {ty:?} not marshalable (boxed→unboxed)"),
-                })?;
-            marshaled.push(emit_unbox_scalar(builder, module, *ptr, kind, clif)?);
+            match boundary_class(ty).ok_or_else(|| JitError::UnsupportedOpcode {
+                opcode: format!("cross-mode arg type {ty:?} not marshalable (boxed→unboxed)"),
+            })? {
+                // Scalar arg: unbox ptr → raw. Composite arg: pass the ptr
+                // through (the unboxed callee borrows it, never consumes).
+                BoundaryClass::Scalar { kind, clif } => {
+                    marshaled.push(emit_unbox_scalar(builder, module, *ptr, kind, clif)?);
+                }
+                BoundaryClass::PassThrough => marshaled.push(*ptr),
+            }
         }
         marshaled
     };
@@ -2241,17 +2285,20 @@ fn translate_boxed_call(
     let raw_result = builder.inst_results(call_inst).first().copied();
 
     // Marshal the result back into a boxed ptr. Same-mode: the callee
-    // already returns a boxed ptr. Cross-mode: a scalar result is re-boxed
-    // (a composite result is already an `Rc` ptr → pass through). Either
-    // way the resulting box is owned by us (drop-at-Ret unless returned).
+    // already returns a boxed ptr. Cross-mode: a scalar result is re-boxed;
+    // a composite result is already an `Rc` ptr → pass through. Either way
+    // the result is an OWNED box (the callee's clone-on-return discipline,
+    // ADR-0035 §1, guarantees it) → we record it as owned (drop-at-Ret
+    // unless returned).
     let boxed_result = if same_mode {
         raw_result
     } else {
         let (_params, ret) = ctx.func_sigs.get(&callee).expect("checked above");
         match (raw_result, boundary_class(ret)) {
-            (Some(r), Some(BoundaryScalar { kind, .. })) => {
+            (Some(r), Some(BoundaryClass::Scalar { kind, .. })) => {
                 Some(emit_box_scalar(builder, module, r, kind)?)
             }
+            (Some(r), Some(BoundaryClass::PassThrough)) => Some(r),
             (_, None) => {
                 return Err(JitError::UnsupportedOpcode {
                     opcode: format!("cross-mode return type {ret:?} not marshalable"),
