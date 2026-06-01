@@ -752,6 +752,7 @@ fn emit_function_body(
                     &mut builder,
                     module,
                     &mut value_map,
+                    &block_map,
                     ctx,
                     &mut fn_state,
                     instr,
@@ -1014,10 +1015,12 @@ const fn boxed_binop_of(instr: &Instruction) -> Option<(JitBinOp, ValueId, Opera
 /// (agg.1b), binary/unary scalar ops (agg.1c-i), and constants
 /// (agg.1c-ii); everything else tiers down.
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn translate_boxed_instruction(
     builder: &mut FunctionBuilder<'_>,
     module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
+    block_map: &HashMap<BlockId, Block>,
     ctx: &ProgramContext<'_>,
     fn_state: &mut FnState,
     instr: &Instruction,
@@ -1090,12 +1093,26 @@ fn translate_boxed_instruction(
                 Some(Operand::Value(id)) => Some(*id),
                 _ => None,
             };
-            for boxed in &fn_state.created_boxed {
-                if Some(*boxed) == returned_id {
-                    continue;
-                }
-                if let Some(&ptr) = value_map.get(boxed) {
-                    emit_drop_arc(builder, module, ptr)?;
+            // The drop-at-Ret pass is sound ONLY for single-IR-block
+            // functions: it references every created box's `Value`, which
+            // requires the def to dominate this `Ret`. In a multi-block
+            // function a box created on a sibling path does NOT dominate
+            // (the Cranelift verifier would reject the use). Precise
+            // drop placement needs SSA liveness/dominance analysis (a
+            // later refinement); until then a multi-block boxed function
+            // SKIPS the drops (a bounded dev-tier leak per ADR-0032 §2 —
+            // memory-safe: leak only, never a double-free; the returned
+            // value is always dominating in valid non-Phi SSA). The JIT
+            // is the correctness oracle (ADR-0034 Addendum); native-speed
+            // codegen (with real drop placement) is the post-v0.11 phase.
+            if block_map.len() == 1 {
+                for boxed in &fn_state.created_boxed {
+                    if Some(*boxed) == returned_id {
+                        continue;
+                    }
+                    if let Some(&ptr) = value_map.get(boxed) {
+                        emit_drop_arc(builder, module, ptr)?;
+                    }
                 }
             }
             if let Some(op) = value {
@@ -1162,6 +1179,83 @@ fn translate_boxed_instruction(
                 builder, module, value_map, ctx, fn_state, *dest, callee, args,
             )?;
         }
+        // Boxed branches (agg.1c-iv). The cond is a boxed `RuntimeValue`
+        // ptr; `__triet_trilean_tag` reads its `{-1,0,+1}` three-way tag
+        // (the VM's `as_trilean`), then the SAME icmp/brif dispatch the
+        // unboxed branches use (ADR-0010 §3). The tag shim is total
+        // (never faults) so no sentinel probe is needed. Phi (block
+        // params) still tiers down — branch targets pass no args, so a
+        // function whose blocks merge values via Phi defers (agg.1c-v).
+        Instruction::Br { target } => {
+            let cl_target = *block_map
+                .get(target)
+                .ok_or_else(|| JitError::UnsupportedOpcode {
+                    opcode: format!("Br target block {target:?} not in map (boxed)"),
+                })?;
+            builder.ins().jump(cl_target, &[]);
+        }
+        Instruction::BrIf {
+            cond,
+            then_block,
+            else_block,
+        } => {
+            // BrIf truthiness = `as_trilean == True` (tag == +1), matching
+            // the VM's `is_truthy` and the unboxed `BrIf` codegen.
+            let tag = emit_boxed_trilean_tag(builder, module, value_map, ctx, *cond)?;
+            let one = builder.ins().iconst(I8, 1);
+            let is_true = builder.ins().icmp(IntCC::Equal, tag, one);
+            let cl_then =
+                *block_map
+                    .get(then_block)
+                    .ok_or_else(|| JitError::UnsupportedOpcode {
+                        opcode: format!("BrIf then-block {then_block:?} not in map (boxed)"),
+                    })?;
+            let cl_else =
+                *block_map
+                    .get(else_block)
+                    .ok_or_else(|| JitError::UnsupportedOpcode {
+                        opcode: format!("BrIf else-block {else_block:?} not in map (boxed)"),
+                    })?;
+            builder.ins().brif(is_true, cl_then, &[], cl_else, &[]);
+        }
+        Instruction::BrTrilean {
+            cond,
+            true_block,
+            unknown_block,
+            false_block,
+        } => {
+            // Three-way dispatch per ADR-0010 §4: 2 icmp + 2 brif on the
+            // tag, identical to the unboxed `BrTrilean` codegen.
+            let tag = emit_boxed_trilean_tag(builder, module, value_map, ctx, *cond)?;
+            let pos_one = builder.ins().iconst(I8, 1);
+            let zero = builder.ins().iconst(I8, 0);
+            let cl_true =
+                *block_map
+                    .get(true_block)
+                    .ok_or_else(|| JitError::UnsupportedOpcode {
+                        opcode: format!("BrTrilean true-block {true_block:?} not in map (boxed)"),
+                    })?;
+            let cl_unk =
+                *block_map
+                    .get(unknown_block)
+                    .ok_or_else(|| JitError::UnsupportedOpcode {
+                        opcode: format!(
+                            "BrTrilean unknown-block {unknown_block:?} not in map (boxed)"
+                        ),
+                    })?;
+            let cl_false =
+                *block_map
+                    .get(false_block)
+                    .ok_or_else(|| JitError::UnsupportedOpcode {
+                        opcode: format!("BrTrilean false-block {false_block:?} not in map (boxed)"),
+                    })?;
+            let fallthrough = builder.create_block();
+            let is_true = builder.ins().icmp(IntCC::Equal, tag, pos_one);
+            builder.ins().brif(is_true, cl_true, &[], fallthrough, &[]);
+            builder.switch_to_block(fallthrough);
+            let is_unk = builder.ins().icmp(IntCC::Equal, tag, zero);
+            builder.ins().brif(is_unk, cl_unk, &[], cl_false, &[]);
+        }
         other => {
             return Err(JitError::UnsupportedOpcode {
                 opcode: format!("{other} (boxed mode — defer to a later agg sub-task)"),
@@ -1185,6 +1279,25 @@ fn emit_agg_shim(
         message: format!("aggregate shim {symbol} not registered"),
     })?;
     emit_shim_call(builder, module, &shim, args)
+}
+
+/// Materialize a boxed branch condition + emit `__triet_trilean_tag`,
+/// returning the `i8` three-way tag `Value` (`{-1,0,+1}`) for the boxed
+/// `BrIf` / `BrTrilean` dispatch (ADR-0034 agg.1c-iv). The shim is total
+/// (never faults), so no per-call sentinel probe follows.
+fn emit_boxed_trilean_tag(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    value_map: &HashMap<ValueId, Value>,
+    ctx: &ProgramContext<'_>,
+    cond: Operand,
+) -> Result<Value, JitError> {
+    let cond_ptr = materialize_boxed_operand(builder, module, value_map, ctx, cond)?;
+    emit_agg_shim(builder, module, "__triet_trilean_tag", &[cond_ptr])?.ok_or_else(|| {
+        JitError::Cranelift {
+            message: "__triet_trilean_tag returned no value".to_string(),
+        }
+    })
 }
 
 /// Record a boxed shim's `Ptr` result as `dest` + track it as a

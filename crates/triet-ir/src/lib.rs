@@ -90,7 +90,7 @@ pub use verify::{VerifierResult, VerifierViolation, verify_function, verify_prog
 pub use vm::{
     JitBinOp, JitConstKind, JitDispatch, RuntimeMapKey, RuntimeValue, Vm, VmError,
     dispatch_builtin, exec_box_const, exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg,
-    exec_struct_new,
+    exec_struct_new, exec_trilean_tag,
 };
 
 #[cfg(test)]

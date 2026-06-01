@@ -40,6 +40,7 @@ use triet_core::Integer;
 use triet_ir::{
     BuiltinName, JitBinOp, JitConstKind, RuntimeValue, VmError, dispatch_builtin, exec_box_const,
     exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg, exec_struct_new,
+    exec_trilean_tag,
 };
 use triet_logic::Trilean;
 
@@ -246,6 +247,16 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             signature: ShimSignature {
                 params: &[I8, I64],
                 ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // boxed branch cond → its three-way tag (i8 `{-1,0,+1}`).
+            symbol: "__triet_trilean_tag",
+            addr: __triet_trilean_tag as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(I8),
             },
         },
         // ── Production builtin shims — all delegate semantics to
@@ -888,6 +899,17 @@ extern "C" fn __triet_box_const(kind: i8, payload: i64) -> i64 {
         return 0;
     };
     box_rv(exec_box_const(kind, payload))
+}
+
+/// `trilean_tag(cond) -> i8` — read a boxed branch condition's three-way
+/// tag (`{-1,0,+1}` = `False/Unknown/True`) for boxed-mode `BrIf` /
+/// `BrTrilean` (ADR-0034 agg.1c-iv). Delegates to `exec_trilean_tag`
+/// (the VM's `as_trilean`) so JIT branch dispatch matches the VM. Total:
+/// null / non-Trilean values map through `as_trilean` — never faults, so
+/// no sentinel probe is needed (a branch is a terminator).
+extern "C" fn __triet_trilean_tag(cond_ptr: i64) -> i8 {
+    let cond = arg_composite(cond_ptr);
+    exec_trilean_tag(&cond)
 }
 
 // ── jit.2a shims (5) — now delegating ───────────────────────────────

@@ -2573,6 +2573,25 @@ pub fn exec_box_const(kind: JitConstKind, payload: i64) -> RuntimeValue {
     }
 }
 
+/// Read a boxed branch condition's three-way tag for JIT boxed-mode
+/// branches (ADR-0034 agg.1c-iv).
+///
+/// `{-1, 0, +1}` = `False / Unknown / True` — the same `{-1,0,+1}`
+/// encoding the unboxed branch codegen uses (ADR-0010 §3). Delegates to
+/// `RuntimeValue::as_trilean` so the JIT's
+/// `BrIf` / `BrTrilean` dispatch matches the VM exactly (the VM reads
+/// `is_truthy` = `as_trilean == True` for `BrIf`, and `as_trilean` for
+/// `BrTrilean`). Total: a non-Trilean / null value maps through
+/// `as_trilean` (Integer sign, else `Unknown`) — never faults.
+#[must_use]
+pub fn exec_trilean_tag(value: &RuntimeValue) -> i8 {
+    match value.as_trilean() {
+        Trilean::True => 1,
+        Trilean::Unknown => 0,
+        Trilean::False => -1,
+    }
+}
+
 // `clippy::significant_drop_tightening` allowed because the
 // AtomicSwap / AtomicCompareExchange arms intentionally hold the
 // mutex guard across the read-modify-write — tightening would split

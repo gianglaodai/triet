@@ -1804,6 +1804,177 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg1c_boxed_brif_multiblock_value_parity() {
+        // agg.1c-iv: a multi-block BOXED function branching on a boxed
+        // Trilean cond (`__triet_trilean_tag` → icmp). No Phi (each arm
+        // has its own Ret), so it JITs.
+        //   max(p) -> { if p.field(0) > p.field(1) then p.field(0)
+        //               else p.field(1) }
+        let max = make_multi_block_function(
+            "max",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                (
+                    BlockId(0),
+                    vec![
+                        Instruction::FieldGet {
+                            dest: ValueId(1),
+                            object: Operand::Value(ValueId(0)),
+                            field_idx: 0,
+                        },
+                        Instruction::FieldGet {
+                            dest: ValueId(2),
+                            object: Operand::Value(ValueId(0)),
+                            field_idx: 1,
+                        },
+                        Instruction::Gt {
+                            dest: ValueId(3),
+                            lhs: Operand::Value(ValueId(1)),
+                            rhs: Operand::Value(ValueId(2)),
+                        },
+                        Instruction::BrIf {
+                            cond: Operand::Value(ValueId(3)),
+                            then_block: BlockId(1),
+                            else_block: BlockId(2),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(1),
+                    vec![Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(1))),
+                    }],
+                ),
+                (
+                    BlockId(2),
+                    vec![Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(2))),
+                    }],
+                ),
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![max])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("multi-block boxed BrIf must compile");
+        assert_eq!(jit.cached_function_count(), 1, "boxed BrIf fn JITs");
+
+        for (a, b, expected) in [(7, 9, 9), (9, 7, 9), (5, 5, 5)] {
+            let point = triet_ir::RuntimeValue::Struct {
+                fields: vec![integer(a), integer(b)],
+            };
+            let jit_r = dispatch_boxed(&jit, FuncId(0), vec![point.clone()]);
+            let mut vm = triet_ir::Vm::new(program.clone());
+            let vm_r = vm.execute(FuncId(0), vec![point]).expect("vm max");
+            assert_rv_eq(&jit_r, &vm_r);
+            assert_rv_eq(&jit_r, &integer(expected));
+        }
+    }
+
+    #[test]
+    fn jit4_agg1c_boxed_brtrilean_multiblock_value_parity() {
+        // agg.1c-iv: a multi-block BOXED function with a three-way
+        // BrTrilean on a boxed Trilean field. Each arm returns a distinct
+        // boxed Integer const (no Phi). Exercises all three tag values.
+        //   classify(p) -> match p.field(0): True=>1, Unknown=>0, False=>-1
+        let mut pool = triet_ir::ConstantPool::new();
+        let pos = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(1).unwrap(),
+        ));
+        let zero = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(0).unwrap(),
+        ));
+        let neg = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(-1).unwrap(),
+        ));
+        let classify = make_multi_block_function(
+            "classify",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                (
+                    BlockId(0),
+                    vec![
+                        Instruction::FieldGet {
+                            dest: ValueId(1),
+                            object: Operand::Value(ValueId(0)),
+                            field_idx: 0,
+                        },
+                        Instruction::BrTrilean {
+                            cond: Operand::Value(ValueId(1)),
+                            true_block: BlockId(1),
+                            unknown_block: BlockId(2),
+                            false_block: BlockId(3),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(1),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(2),
+                            constant: pos,
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(2))),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(2),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(3),
+                            constant: zero,
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(3))),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(3),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(4),
+                            constant: neg,
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(4))),
+                        },
+                    ],
+                ),
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![classify])], pool);
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("multi-block boxed BrTrilean must compile");
+        assert_eq!(jit.cached_function_count(), 1);
+
+        for (tri, expected) in [
+            (triet_logic::Trilean::True, 1),
+            (triet_logic::Trilean::Unknown, 0),
+            (triet_logic::Trilean::False, -1),
+        ] {
+            let point = triet_ir::RuntimeValue::Struct {
+                fields: vec![triet_ir::RuntimeValue::Trilean(tri)],
+            };
+            let jit_r = dispatch_boxed(&jit, FuncId(0), vec![point.clone()]);
+            let mut vm = triet_ir::Vm::new(program.clone());
+            let vm_r = vm.execute(FuncId(0), vec![point]).expect("vm classify");
+            assert_rv_eq(&jit_r, &vm_r);
+            assert_rv_eq(&jit_r, &integer(expected));
+        }
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();
