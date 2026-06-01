@@ -2666,6 +2666,57 @@ mod tests {
     }
 
     #[test]
+    fn jit4_boxed_return_borrowed_param_no_double_free() {
+        // Clone-on-return regression: a BOXED function (touches an
+        // aggregate op → boxed) that returns a BORROWED composite param.
+        // Without the clone-on-return discipline this double-frees (the
+        // caller drops the result + the original owner drops the param =
+        // same box freed twice → `malloc(): unaligned tcache` abort).
+        //   keep(p, q: struct) -> struct {
+        //       _ = p.field(0)   // FieldGet → boxed; result dropped at Ret
+        //       ret q            // borrowed param → must be cloned
+        //   }
+        let keep = make_function_at(
+            FuncId(0),
+            "keep",
+            vec![("p".into(), TypeTag::Unit), ("q".into(), TypeTag::Unit)],
+            TypeTag::Unit,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![keep])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert_eq!(jit.cached_function_count(), 1, "keep is boxed + JITs");
+
+        let p = triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(1)],
+        };
+        let q = triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(2), integer(3)],
+        };
+        // dispatch_boxed drops both arg boxes + the result box. If `keep`
+        // returns q without cloning, the result box aliases the q arg box
+        // → double-free on the drops below. The clone makes it safe.
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![p.clone(), q.clone()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![p, q.clone()]).expect("vm keep");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &q);
+    }
+
+    #[test]
     fn jit4_crosscall_boxed_to_unboxed_scalar_value_parity() {
         // agg.cross-call (chiều boxed→unboxed): a BOXED function (has a
         // struct op) calls an UNBOXED scalar helper. Args unbox (ptr→i64),

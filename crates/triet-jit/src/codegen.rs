@@ -1403,7 +1403,27 @@ fn translate_boxed_instruction(
             }
             if let Some(op) = value {
                 let v = materialize_boxed_operand(builder, module, value_map, ctx, *op)?;
-                builder.ins().return_(&[v]);
+                // Clone-on-return (agg.cross-call): the Ret must transfer
+                // exactly ONE owned ref to the caller.
+                // - A function-created box (`Value(id)` ∈ created_boxed)
+                //   already owns 1 → transfer (it was skipped in the drop
+                //   loop above). No clone.
+                // - An inline `Const` operand materializes a FRESH box
+                //   (owned, ref 1) → transfer. No clone.
+                // - A BORROWED value (`Value(id)` ∉ created_boxed: a param
+                //   or a φ/pass-through resolving to one) owns 0 refs here,
+                //   so returning it as-is double-frees (caller drops +
+                //   original owner drops). Clone to mint the owned ref.
+                let borrowed = matches!(
+                    op,
+                    Operand::Value(id) if !fn_state.created_boxed.contains(id)
+                );
+                let ret_v = if borrowed {
+                    emit_clone_arc(builder, module, v)?
+                } else {
+                    v
+                };
+                builder.ins().return_(&[ret_v]);
             } else {
                 // Unit return in boxed mode → a null (0) ptr; the
                 // dispatcher unboxes it to `Null`/no-value.
@@ -2292,6 +2312,26 @@ fn emit_drop_arc(
     let func_ref = module.declare_func_in_func(drop_id, builder.func);
     builder.ins().call(func_ref, &[ptr_value]);
     Ok(())
+}
+
+/// agg.cross-call — emit a `__triet_clone_arc(ptr) -> ptr` call to bump a
+/// borrowed box's refcount (clone-on-return). Returns the same ptr with
+/// +1 strong count, so the caller's drop is balanced without freeing the
+/// original owner's reference.
+fn emit_clone_arc(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    ptr_value: Value,
+) -> Result<Value, JitError> {
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(I64));
+    sig.returns.push(AbiParam::new(I64));
+    let clone_id = module
+        .declare_function("__triet_clone_arc", Linkage::Import, &sig)
+        .map_err(cranelift_err)?;
+    let func_ref = module.declare_func_in_func(clone_id, builder.func);
+    let call = builder.ins().call(func_ref, &[ptr_value]);
+    Ok(builder.inst_results(call)[0])
 }
 
 /// v0.10.x.jit.2b-i — emit the per-call failure sentinel (ADR-0032 §4

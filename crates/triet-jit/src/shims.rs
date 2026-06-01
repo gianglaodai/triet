@@ -185,6 +185,16 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
         },
         ShimEntry {
             builtin: None,
+            // boxed ptr → same ptr with +1 refcount (clone-on-return).
+            symbol: "__triet_clone_arc",
+            addr: __triet_clone_arc as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
             symbol: "__triet_shim_failed",
             addr: __triet_shim_failed as *const () as usize,
             signature: ShimSignature {
@@ -786,6 +796,30 @@ pub(crate) extern "C" fn __triet_drop_arc(ptr: i64) {
     unsafe {
         let _ = Rc::from_raw(ptr as *const RuntimeValue);
     }
+}
+
+/// Bump a boxed `RuntimeValue`'s refcount, returning the SAME pointer with
+/// +1 strong count (ADR-0034 agg.cross-call — clone-on-return discipline).
+///
+/// When a boxed function returns a **borrowed** value (a param, or a
+/// value passed through from another call) the caller treats the result
+/// as owned and drops it. Without a clone the original owner ALSO drops
+/// it → double-free. Cloning mints the owned ref the caller balances,
+/// leaving the borrow intact. Null-safe (`ptr == 0` → 0).
+pub(crate) extern "C" fn __triet_clone_arc(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    // SAFETY: `ptr` is a live `Rc::into_raw(Rc::new(value))` pointer (a
+    // borrowed boxed `RuntimeValue` held by the caller for this call's
+    // duration). `increment_strong_count` adds one owner without moving
+    // the value; the returned ptr now carries a +1 the new owner balances
+    // via `__triet_drop_arc`. Backed by ADR-0032 §2 + ADR-0034.
+    #[allow(unsafe_code)]
+    unsafe {
+        Rc::increment_strong_count(ptr as *const RuntimeValue);
+    }
+    ptr
 }
 
 // ── Composite ABI helpers (§1/§2) ───────────────────────────────────
