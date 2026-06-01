@@ -65,7 +65,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId as ClFuncId, Linkage, Module};
 use triet_ir::{
     BlockId, ConstId, Constant, ConstantPool, FuncId as TriFuncId, Function as IrFunction,
-    Instruction, IrProgram, JitBinOp, Operand, TypeTag, ValueId,
+    Instruction, IrProgram, JitBinOp, JitConstKind, Operand, TypeTag, ValueId,
 };
 use triet_logic::Trilean;
 use triet_modules::AbsolutePath;
@@ -741,6 +741,7 @@ fn emit_function_body(
                     &mut builder,
                     module,
                     &mut value_map,
+                    ctx,
                     &mut fn_state,
                     instr,
                 )?;
@@ -870,11 +871,38 @@ fn build_signature_for(func: &IrFunction) -> Result<Signature, JitError> {
     Ok(sig)
 }
 
+/// Map a primitive [`Constant`] to its boxed-mode `(kind, payload)` wire
+/// form for `__triet_box_const` (ADR-0034 §1). `String`/`Long` have no
+/// i64 payload (data-section / i128 — agg.3) → `None` (tier down).
+fn boxed_const_kind_payload(constant: &Constant) -> Option<(JitConstKind, i64)> {
+    let pair = match constant {
+        Constant::Trit(t) => (JitConstKind::Trit, i64::from(t.to_i8())),
+        Constant::Tryte(t) => (JitConstKind::Tryte, t.to_i64()),
+        Constant::Integer(i) => (JitConstKind::Integer, i.to_i64()),
+        Constant::Trilean(t) => (
+            JitConstKind::Trilean,
+            match t {
+                Trilean::False => -1,
+                Trilean::Unknown => 0,
+                Trilean::True => 1,
+            },
+        ),
+        Constant::Unit => (JitConstKind::Unit, 0),
+        Constant::Null => (JitConstKind::Null, 0),
+        _ => return None, // String / Long — defer (agg.3)
+    };
+    Some(pair)
+}
+
 /// Resolve an [`Operand`] to its boxed (`i64` ptr) [`Value`] in a boxed
-/// function. `Value(id)` is already a ptr in `value_map`. `Const` would
-/// need a runtime box shim — deferred past agg.1, so it tiers down.
-fn resolve_operand_boxed(
+/// function. `Value(id)` is already a ptr in `value_map`; an inline
+/// `Const` is materialized via the `__triet_box_const` shim (tracked as
+/// a function-created box). `String`/`Long` constants tier down.
+fn materialize_boxed_operand(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
     value_map: &HashMap<ValueId, Value>,
+    ctx: &ProgramContext<'_>,
     operand: Operand,
 ) -> Result<Value, JitError> {
     match operand {
@@ -886,17 +914,45 @@ fn resolve_operand_boxed(
                     opcode: format!("ValueId({}) referenced before def (boxed)", id.0),
                 })
         }
-        Operand::Const(_) => Err(JitError::UnsupportedOpcode {
-            opcode: "boxed constant — defer to a later agg sub-task".to_string(),
-        }),
+        Operand::Const(const_id) => {
+            // Inline-const materialization: emit the box. It has no SSA
+            // `dest`, so it can't join `created_boxed` (keyed by ValueId
+            // for the drop-at-Ret pass) — the box leaks. Bounded + one-
+            // time per inline-const operand, the same dev-tier-JIT leak
+            // tolerance the error path already documents (ADR-0032 §2).
+            // The statement form `Const { dest }` IS tracked + dropped.
+            emit_boxed_const(builder, module, ctx, const_id)
+        }
     }
 }
 
-/// Translate one IR instruction in **boxed** mode (ADR-0034 Addendum
-/// Bậc A): every value is a boxed `RuntimeValue` ptr; aggregate ops
-/// delegate to the `__triet_*` VM-shims. agg.1 handles the struct
-/// opcodes + `Ret`; everything else tiers down (its boxed codegen lands
-/// in a later agg sub-task).
+/// Emit a `__triet_box_const` call materializing `const_id`, returning
+/// the boxed ptr `Value`. `String`/`Long` constants tier down.
+fn emit_boxed_const(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    ctx: &ProgramContext<'_>,
+    const_id: ConstId,
+) -> Result<Value, JitError> {
+    let constant = ctx
+        .constants
+        .get(const_id)
+        .ok_or_else(|| JitError::Cranelift {
+            message: format!("ConstId({}) missing from pool", const_id.0),
+        })?;
+    let (kind, payload) =
+        boxed_const_kind_payload(constant).ok_or_else(|| JitError::UnsupportedOpcode {
+            opcode: format!("boxed constant {constant:?} — defer (agg.3 String/Long)"),
+        })?;
+    let kind_v = builder.ins().iconst(I8, i64::from(kind as u8));
+    let payload_v = builder.ins().iconst(I64, payload);
+    emit_agg_shim(builder, module, "__triet_box_const", &[kind_v, payload_v])?.ok_or_else(|| {
+        JitError::Cranelift {
+            message: "__triet_box_const returned no value".to_string(),
+        }
+    })
+}
+
 /// Map a binary-scalar IR instruction to its [`JitBinOp`] + operands,
 /// or `None` if it isn't one. Lets the boxed translator handle the whole
 /// arithmetic/comparison/Ł3/K3 family through one `__triet_binop` shim.
@@ -927,20 +983,32 @@ const fn boxed_binop_of(instr: &Instruction) -> Option<(JitBinOp, ValueId, Opera
     Some((op, dest, lhs, rhs))
 }
 
+/// Translate one IR instruction in **boxed** mode (ADR-0034 Addendum
+/// Bậc A): every value is a boxed `RuntimeValue` ptr; aggregate +
+/// scalar ops delegate to the `__triet_*` VM-shims. Handles struct ops
+/// (agg.1b), binary/unary scalar ops (agg.1c-i), and constants
+/// (agg.1c-ii); everything else tiers down.
+#[allow(clippy::too_many_lines)]
 fn translate_boxed_instruction(
     builder: &mut FunctionBuilder<'_>,
     module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
+    ctx: &ProgramContext<'_>,
     fn_state: &mut FnState,
     instr: &Instruction,
 ) -> Result<(), JitError> {
     match instr {
+        Instruction::Const { dest, constant } => {
+            let v = emit_boxed_const(builder, module, ctx, *constant)?;
+            value_map.insert(*dest, v);
+            fn_state.created_boxed.push(*dest);
+        }
         Instruction::StructNew { dest, fields } => {
             // §2 array-ptr+len ABI: spill the resolved field ptrs into a
             // stack slot, pass its address + length to the shim.
             let field_vals: Vec<Value> = fields
                 .iter()
-                .map(|op| resolve_operand_boxed(value_map, *op))
+                .map(|op| materialize_boxed_operand(builder, module, value_map, ctx, *op))
                 .collect::<Result<_, _>>()?;
             let len = field_vals.len();
             let bytes = u32::try_from(len * 8).map_err(|_| JitError::UnsupportedOpcode {
@@ -970,7 +1038,7 @@ fn translate_boxed_instruction(
             object,
             field_idx,
         } => {
-            let obj = resolve_operand_boxed(value_map, *object)?;
+            let obj = materialize_boxed_operand(builder, module, value_map, ctx, *object)?;
             let idx = builder.ins().iconst(I64, i64::from(*field_idx));
             let r = emit_agg_shim(builder, module, "__triet_field_get", &[obj, idx])?;
             record_boxed_result(value_map, fn_state, *dest, r);
@@ -982,9 +1050,9 @@ fn translate_boxed_instruction(
             field_idx,
             value,
         } => {
-            let obj = resolve_operand_boxed(value_map, *object)?;
+            let obj = materialize_boxed_operand(builder, module, value_map, ctx, *object)?;
             let idx = builder.ins().iconst(I64, i64::from(*field_idx));
-            let val = resolve_operand_boxed(value_map, *value)?;
+            let val = materialize_boxed_operand(builder, module, value_map, ctx, *value)?;
             let r = emit_agg_shim(builder, module, "__triet_field_set", &[obj, idx, val])?;
             record_boxed_result(value_map, fn_state, *dest, r);
             emit_shim_sentinel_check(builder, module, fn_state)?;
@@ -1006,7 +1074,7 @@ fn translate_boxed_instruction(
                 }
             }
             if let Some(op) = value {
-                let v = resolve_operand_boxed(value_map, *op)?;
+                let v = materialize_boxed_operand(builder, module, value_map, ctx, *op)?;
                 builder.ins().return_(&[v]);
             } else {
                 // Unit return in boxed mode → a null (0) ptr; the
@@ -1019,15 +1087,15 @@ fn translate_boxed_instruction(
         // `__triet_binop(op, a, b)` shim delegating to the VM. The op
         // discriminant is an `i8` immediate.
         Instruction::Neg { dest, operand } => {
-            let v = resolve_operand_boxed(value_map, *operand)?;
+            let v = materialize_boxed_operand(builder, module, value_map, ctx, *operand)?;
             let r = emit_agg_shim(builder, module, "__triet_neg", &[v])?;
             record_boxed_result(value_map, fn_state, *dest, r);
             emit_shim_sentinel_check(builder, module, fn_state)?;
         }
         _ if boxed_binop_of(instr).is_some() => {
             let (binop, dest, lhs, rhs) = boxed_binop_of(instr).expect("guard guarantees Some");
-            let l = resolve_operand_boxed(value_map, lhs)?;
-            let r = resolve_operand_boxed(value_map, rhs)?;
+            let l = materialize_boxed_operand(builder, module, value_map, ctx, lhs)?;
+            let r = materialize_boxed_operand(builder, module, value_map, ctx, rhs)?;
             let op_imm = builder.ins().iconst(I8, i64::from(binop as u8));
             let res = emit_agg_shim(builder, module, "__triet_binop", &[op_imm, l, r])?;
             record_boxed_result(value_map, fn_state, dest, res);

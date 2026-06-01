@@ -2507,6 +2507,72 @@ pub fn exec_jit_neg(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmErro
     arithmetic_neg(v, func)
 }
 
+/// Primitive constant kinds the JIT boxed mode materializes via the
+/// `__triet_box_const` shim (ADR-0034 §1, agg.1c).
+///
+/// `String`/`Long` constants are NOT here — they need a data-section /
+/// i128 path (agg.3) and tier down until then. The `#[repr(u8)]`
+/// discriminants are the codegen↔shim wire contract (cf. [`JitBinOp`]).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JitConstKind {
+    /// `Trit` from the `i8` payload (`{-1,0,+1}`).
+    Trit = 0,
+    /// `Tryte` from the `i16`-range payload.
+    Tryte = 1,
+    /// `Integer` from the `i64` payload.
+    Integer = 2,
+    /// `Trilean` from the `i8` payload (`{-1,0,+1}` → `False/Unknown/True`).
+    Trilean = 3,
+    /// `Unit` (payload ignored).
+    Unit = 4,
+    /// `Null` (payload ignored).
+    Null = 5,
+}
+
+impl JitConstKind {
+    /// Reconstruct from the wire discriminant (shim side); `None` if out
+    /// of range (a shim fault).
+    #[must_use]
+    pub const fn from_u8(n: u8) -> Option<Self> {
+        let k = match n {
+            0 => Self::Trit,
+            1 => Self::Tryte,
+            2 => Self::Integer,
+            3 => Self::Trilean,
+            4 => Self::Unit,
+            5 => Self::Null,
+            _ => return None,
+        };
+        Some(k)
+    }
+}
+
+/// Materialize a primitive constant from its `(kind, payload)` wire form
+/// (ADR-0034 §1) — the `__triet_box_const` shim delegate.
+///
+/// Mirrors how the VM turns a [`crate::Constant`] into a
+/// [`RuntimeValue`], keeping one source of truth. Out-of-range
+/// `Trit`/`Tryte` payloads saturate to the zero value (cannot occur from
+/// valid codegen).
+#[must_use]
+pub fn exec_box_const(kind: JitConstKind, payload: i64) -> RuntimeValue {
+    match kind {
+        JitConstKind::Trit => RuntimeValue::Trit(
+            Trit::from_i8(i8::try_from(payload).unwrap_or(0)).unwrap_or(Trit::Zero),
+        ),
+        JitConstKind::Tryte => RuntimeValue::Tryte(Tryte::new_saturating(payload)),
+        JitConstKind::Integer => RuntimeValue::Integer(Integer::new(payload).unwrap_or_default()),
+        JitConstKind::Trilean => RuntimeValue::Trilean(match payload {
+            1 => Trilean::True,
+            -1 => Trilean::False,
+            _ => Trilean::Unknown,
+        }),
+        JitConstKind::Unit => RuntimeValue::Unit,
+        JitConstKind::Null => RuntimeValue::Null,
+    }
+}
+
 // `clippy::significant_drop_tightening` allowed because the
 // AtomicSwap / AtomicCompareExchange arms intentionally hold the
 // mutex guard across the read-modify-write — tightening would split

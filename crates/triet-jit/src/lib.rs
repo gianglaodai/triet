@@ -1626,6 +1626,52 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg1c_boxed_inline_constant_value_parity() {
+        // add100(p) -> p.field(0) + 100   (FieldGet → boxed; inline Const
+        // 100 materialized via __triet_box_const). Assert == VM.
+        let mut pool = triet_ir::ConstantPool::new();
+        let hundred = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(100).unwrap(),
+        ));
+        let add100 = make_function_at(
+            FuncId(0),
+            "add100",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::Add {
+                    dest: ValueId(2),
+                    lhs: Operand::Value(ValueId(1)),
+                    rhs: Operand::Const(hundred),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![add100])], pool);
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed inline-constant fn must compile");
+        assert_eq!(jit.cached_function_count(), 1);
+
+        let point = || triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(7), integer(9)],
+        };
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![point()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![point()]).expect("vm add100");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &integer(107));
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();

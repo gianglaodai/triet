@@ -38,8 +38,8 @@ use std::rc::Rc;
 
 use triet_core::Integer;
 use triet_ir::{
-    BuiltinName, JitBinOp, RuntimeValue, VmError, dispatch_builtin, exec_field_get, exec_field_set,
-    exec_jit_binop, exec_jit_neg, exec_struct_new,
+    BuiltinName, JitBinOp, JitConstKind, RuntimeValue, VmError, dispatch_builtin, exec_box_const,
+    exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg, exec_struct_new,
 };
 use triet_logic::Trilean;
 
@@ -235,6 +235,16 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             addr: __triet_neg as *const () as usize,
             signature: ShimSignature {
                 params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // const kind discriminant (i8) + scalar payload (i64).
+            symbol: "__triet_box_const",
+            addr: __triet_box_const as *const () as usize,
+            signature: ShimSignature {
+                params: &[I8, I64],
                 ret: Some(Ptr),
             },
         },
@@ -862,6 +872,22 @@ extern "C" fn __triet_binop(op: i8, a_ptr: i64, b_ptr: i64) -> i64 {
 extern "C" fn __triet_neg(v_ptr: i64) -> i64 {
     let v = arg_composite(v_ptr);
     finish_ptr(exec_jit_neg(&v, &current_func_name()))
+}
+
+/// `box_const(kind, payload) -> boxed` — materialize a primitive
+/// constant in boxed mode (ADR-0034 §1, agg.1c). `kind` is a
+/// [`JitConstKind`] discriminant; `payload` carries the scalar value
+/// (i8/i16/i64-range; ignored for Unit/Null). Delegates to
+/// `exec_box_const` (the VM's `Constant`→`RuntimeValue` shape).
+extern "C" fn __triet_box_const(kind: i8, payload: i64) -> i64 {
+    let Some(kind) = u8::try_from(kind).ok().and_then(JitConstKind::from_u8) else {
+        record_shim_failure(VmError::JitShimFault {
+            reason: format!("invalid JitConstKind discriminant {kind}"),
+            function: current_func_name(),
+        });
+        return 0;
+    };
+    box_rv(exec_box_const(kind, payload))
 }
 
 // ── jit.2a shims (5) — now delegating ───────────────────────────────
