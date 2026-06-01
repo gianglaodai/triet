@@ -2305,7 +2305,7 @@ pub fn dispatch_builtin(
 
 /// `StructNew` — allocate a struct from its fields (declaration order).
 #[must_use]
-pub fn exec_struct_new(fields: Vec<RuntimeValue>) -> RuntimeValue {
+pub const fn exec_struct_new(fields: Vec<RuntimeValue>) -> RuntimeValue {
     RuntimeValue::Struct { fields }
 }
 

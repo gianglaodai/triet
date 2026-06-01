@@ -55,7 +55,9 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I8, I16, I64};
-use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, Signature, Value, types};
+use cranelift_codegen::ir::{
+    AbiParam, Block, InstBuilder, Signature, StackSlotData, StackSlotKind, Value, types,
+};
 use cranelift_codegen::isa::{CallConv, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -215,7 +217,7 @@ impl JitBackend {
             constants: &empty_pool,
             denied_namespaces: &[],
         };
-        let signature = build_signature(func)?;
+        let signature = build_signature_for(func)?;
         let func_name = func
             .name
             .clone()
@@ -226,7 +228,7 @@ impl JitBackend {
             .map_err(cranelift_err)?;
         let mut cl_ctx = self.module.make_context();
         cl_ctx.func.signature = signature;
-        emit_function_body(&mut self.module, func, &ctx, &mut cl_ctx)?;
+        emit_function_body(&mut self.module, func, &ctx, &mut cl_ctx, is_boxed(func))?;
         self.module
             .define_function(func_id, &mut cl_ctx)
             .map_err(cranelift_err)?;
@@ -395,7 +397,7 @@ pub(crate) fn declare_and_define_program(
     let mut symbol_names: HashMap<TriFuncId, String> = HashMap::new();
     for ir_module in &program.modules {
         for func in &ir_module.functions {
-            let signature = build_signature(func)?;
+            let signature = build_signature_for(func)?;
             let func_name = func
                 .name
                 .clone()
@@ -435,8 +437,8 @@ pub(crate) fn declare_and_define_program(
                 None => continue,
             };
             let mut cl_ctx = module.make_context();
-            cl_ctx.func.signature = build_signature(func)?;
-            if let Err(err) = emit_function_body(module, func, &ctx, &mut cl_ctx) {
+            cl_ctx.func.signature = build_signature_for(func)?;
+            if let Err(err) = emit_function_body(module, func, &ctx, &mut cl_ctx, is_boxed(func)) {
                 // Tier-down: skip this function, others still compile.
                 let _ = err;
                 module.clear_context(&mut cl_ctx);
@@ -501,7 +503,7 @@ pub(crate) fn declare_and_define_module(
     for (m_idx, ir_module) in program.modules.iter().enumerate() {
         let is_local = m_idx == local_idx;
         for func in &ir_module.functions {
-            let signature = build_signature(func)?;
+            let signature = build_signature_for(func)?;
             let func_name = func
                 .name
                 .clone()
@@ -541,8 +543,8 @@ pub(crate) fn declare_and_define_module(
             continue;
         };
         let mut cl_ctx = module.make_context();
-        cl_ctx.func.signature = build_signature(func)?;
-        if emit_function_body(module, func, &ctx, &mut cl_ctx).is_err() {
+        cl_ctx.func.signature = build_signature_for(func)?;
+        if emit_function_body(module, func, &ctx, &mut cl_ctx, is_boxed(func)).is_err() {
             module.clear_context(&mut cl_ctx);
             continue;
         }
@@ -588,13 +590,13 @@ pub(crate) fn collect_tier_downs(
     let mut path_to_funcid: HashMap<AbsolutePath, TriFuncId> = HashMap::new();
     for ir_module in &program.modules {
         for func in &ir_module.functions {
-            let Ok(signature) = build_signature(func) else {
+            let Ok(signature) = build_signature_for(func) else {
                 tier_downs.push((
                     func.id,
                     func.name.clone(),
                     format!(
                         "unsupported signature type ({})",
-                        build_signature(func).unwrap_err()
+                        build_signature_for(func).unwrap_err()
                     ),
                 ));
                 continue;
@@ -637,11 +639,11 @@ pub(crate) fn collect_tier_downs(
                 continue; // signature already recorded as a tier-down
             }
             // Safe: only functions whose signature mapped are in the map.
-            let signature = build_signature(func).expect("signature mapped in pre-pass");
+            let signature = build_signature_for(func).expect("signature mapped in pre-pass");
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut cl_ctx = module.make_context();
                 cl_ctx.func.signature = signature;
-                let r = emit_function_body(module, func, &ctx, &mut cl_ctx);
+                let r = emit_function_body(module, func, &ctx, &mut cl_ctx, is_boxed(func));
                 module.clear_context(&mut cl_ctx);
                 r
             }));
@@ -685,6 +687,7 @@ fn emit_function_body(
     func: &IrFunction,
     ctx: &ProgramContext<'_>,
     cl_ctx: &mut cranelift_codegen::Context,
+    boxed: bool,
 ) -> Result<(), JitError> {
     let mut fn_builder_ctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut cl_ctx.func, &mut fn_builder_ctx);
@@ -729,16 +732,30 @@ fn emit_function_body(
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
         for instr in &ir_block.instructions {
-            translate_instruction(
-                &mut builder,
-                module,
-                &mut value_map,
-                &block_map,
-                ctx,
-                func,
-                &mut fn_state,
-                instr,
-            )?;
+            if boxed {
+                // Bậc A uniform boxing (ADR-0034 Addendum): every value is
+                // a boxed RuntimeValue ptr; aggregate ops delegate to VM
+                // shims. A separate translator handles the boxed opcode
+                // subset + tier-downs the rest.
+                translate_boxed_instruction(
+                    &mut builder,
+                    module,
+                    &mut value_map,
+                    &mut fn_state,
+                    instr,
+                )?;
+            } else {
+                translate_instruction(
+                    &mut builder,
+                    module,
+                    &mut value_map,
+                    &block_map,
+                    ctx,
+                    func,
+                    &mut fn_state,
+                    instr,
+                )?;
+            }
             // Stop at the block's terminator. The lowerer can emit dead
             // instructions AFTER a terminator within one block (e.g. an
             // early `return` whose lexical-block continuation is still
@@ -770,7 +787,15 @@ fn emit_function_body(
     // this path (one-time per error — see `FnState::created_boxed`).
     if let Some(error_block) = fn_state.error_exit {
         builder.switch_to_block(error_block);
-        let sentinel = builder.ins().iconst(map_type(&func.return_type)?, 0);
+        // Boxed functions return an i64 ptr regardless of `return_type`
+        // (which lies — struct/enum lower to TypeTag::Unit); the sentinel
+        // must match that i64 return, not `map_type(return_type)`.
+        let sentinel_ty = if boxed {
+            I64
+        } else {
+            map_type(&func.return_type)?
+        };
+        let sentinel = builder.ins().iconst(sentinel_ty, 0);
         builder.ins().return_(&[sentinel]);
     }
 
@@ -810,6 +835,194 @@ fn build_signature(func: &IrFunction) -> Result<Signature, JitError> {
     sig.returns
         .push(AbiParam::new(map_type(&func.return_type)?));
     Ok(sig)
+}
+
+/// Whether a function is compiled in **boxed** mode (ADR-0034 Addendum
+/// Bậc A — per-function uniform boxing) or the unboxed integer fast
+/// path. A function is boxed iff it uses an aggregate opcode whose value
+/// model requires uniform boxing. This set grows per agg.* sub-task; at
+/// agg.1 it is the struct opcodes (the other aggregate families tier
+/// down until their boxed codegen lands).
+fn is_boxed(func: &IrFunction) -> bool {
+    func.blocks.iter().flat_map(|b| &b.instructions).any(|i| {
+        matches!(
+            i,
+            Instruction::StructNew { .. }
+                | Instruction::FieldGet { .. }
+                | Instruction::FieldSet { .. }
+        )
+    })
+}
+
+/// Signature for a function honouring its mode: unboxed → per-type
+/// (`build_signature`); boxed → every param + the return is an `i64`
+/// boxed-`RuntimeValue` ptr (ADR-0034 Addendum — the `TypeTag`s lie,
+/// e.g. struct lowers to `TypeTag::Unit`, so they are NOT consulted).
+fn build_signature_for(func: &IrFunction) -> Result<Signature, JitError> {
+    if !is_boxed(func) {
+        return build_signature(func);
+    }
+    let mut sig = Signature::new(CallConv::SystemV);
+    for _ in &func.params {
+        sig.params.push(AbiParam::new(I64));
+    }
+    sig.returns.push(AbiParam::new(I64));
+    Ok(sig)
+}
+
+/// Resolve an [`Operand`] to its boxed (`i64` ptr) [`Value`] in a boxed
+/// function. `Value(id)` is already a ptr in `value_map`. `Const` would
+/// need a runtime box shim — deferred past agg.1, so it tiers down.
+fn resolve_operand_boxed(
+    value_map: &HashMap<ValueId, Value>,
+    operand: Operand,
+) -> Result<Value, JitError> {
+    match operand {
+        Operand::Value(id) => {
+            value_map
+                .get(&id)
+                .copied()
+                .ok_or_else(|| JitError::UnsupportedOpcode {
+                    opcode: format!("ValueId({}) referenced before def (boxed)", id.0),
+                })
+        }
+        Operand::Const(_) => Err(JitError::UnsupportedOpcode {
+            opcode: "boxed constant — defer to a later agg sub-task".to_string(),
+        }),
+    }
+}
+
+/// Translate one IR instruction in **boxed** mode (ADR-0034 Addendum
+/// Bậc A): every value is a boxed `RuntimeValue` ptr; aggregate ops
+/// delegate to the `__triet_*` VM-shims. agg.1 handles the struct
+/// opcodes + `Ret`; everything else tiers down (its boxed codegen lands
+/// in a later agg sub-task).
+fn translate_boxed_instruction(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    value_map: &mut HashMap<ValueId, Value>,
+    fn_state: &mut FnState,
+    instr: &Instruction,
+) -> Result<(), JitError> {
+    match instr {
+        Instruction::StructNew { dest, fields } => {
+            // §2 array-ptr+len ABI: spill the resolved field ptrs into a
+            // stack slot, pass its address + length to the shim.
+            let field_vals: Vec<Value> = fields
+                .iter()
+                .map(|op| resolve_operand_boxed(value_map, *op))
+                .collect::<Result<_, _>>()?;
+            let len = field_vals.len();
+            let bytes = u32::try_from(len * 8).map_err(|_| JitError::UnsupportedOpcode {
+                opcode: "struct field count overflow".to_string(),
+            })?;
+            // ExplicitSlot, 8-byte aligned (align_shift 3 = 2^3). Min size
+            // 8 so a fieldless struct still has a valid (unread) base.
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                bytes.max(8),
+                3,
+            ));
+            for (i, v) in field_vals.iter().enumerate() {
+                let offset = i32::try_from(i * 8).map_err(|_| JitError::UnsupportedOpcode {
+                    opcode: "struct field offset overflow".to_string(),
+                })?;
+                builder.ins().stack_store(*v, slot, offset);
+            }
+            let base = builder.ins().stack_addr(I64, slot, 0);
+            let len_val = builder.ins().iconst(I64, i64::try_from(len).unwrap_or(0));
+            let r = emit_agg_shim(builder, module, "__triet_struct_new", &[base, len_val])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::FieldGet {
+            dest,
+            object,
+            field_idx,
+        } => {
+            let obj = resolve_operand_boxed(value_map, *object)?;
+            let idx = builder.ins().iconst(I64, i64::from(*field_idx));
+            let r = emit_agg_shim(builder, module, "__triet_field_get", &[obj, idx])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::FieldSet {
+            dest,
+            object,
+            field_idx,
+            value,
+        } => {
+            let obj = resolve_operand_boxed(value_map, *object)?;
+            let idx = builder.ins().iconst(I64, i64::from(*field_idx));
+            let val = resolve_operand_boxed(value_map, *value)?;
+            let r = emit_agg_shim(builder, module, "__triet_field_set", &[obj, idx, val])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::Ret { value } => {
+            // Drop every function-created box EXCEPT the returned one
+            // (ownership transfers to the caller). Params are borrowed
+            // (caller owns + drops) so they are not in `created_boxed`.
+            let returned_id = match value {
+                Some(Operand::Value(id)) => Some(*id),
+                _ => None,
+            };
+            for boxed in &fn_state.created_boxed {
+                if Some(*boxed) == returned_id {
+                    continue;
+                }
+                if let Some(&ptr) = value_map.get(boxed) {
+                    emit_drop_arc(builder, module, ptr)?;
+                }
+            }
+            if let Some(op) = value {
+                let v = resolve_operand_boxed(value_map, *op)?;
+                builder.ins().return_(&[v]);
+            } else {
+                // Unit return in boxed mode → a null (0) ptr; the
+                // dispatcher unboxes it to `Null`/no-value.
+                let z = builder.ins().iconst(I64, 0);
+                builder.ins().return_(&[z]);
+            }
+        }
+        other => {
+            return Err(JitError::UnsupportedOpcode {
+                opcode: format!("{other} (boxed mode — defer to a later agg sub-task)"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Emit a call to a registered aggregate-op shim (looked up by symbol),
+/// returning its result `Value`. The caller records the result + emits
+/// the per-call failure sentinel — the same machinery `CallBuiltin`
+/// uses, reused for the boxed aggregate opcodes.
+fn emit_agg_shim(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    symbol: &str,
+    args: &[Value],
+) -> Result<Option<Value>, JitError> {
+    let shim = crate::shims::shim_entry_by_symbol(symbol).ok_or_else(|| JitError::Cranelift {
+        message: format!("aggregate shim {symbol} not registered"),
+    })?;
+    emit_shim_call(builder, module, &shim, args)
+}
+
+/// Record a boxed shim's `Ptr` result as `dest` + track it as a
+/// function-created box (dropped at `Ret` unless it is the returned
+/// value), per ADR-0032 §2.
+fn record_boxed_result(
+    value_map: &mut HashMap<ValueId, Value>,
+    fn_state: &mut FnState,
+    dest: ValueId,
+    result: Option<Value>,
+) {
+    if let Some(v) = result {
+        value_map.insert(dest, v);
+        fn_state.created_boxed.push(dest);
+    }
 }
 
 fn cranelift_err<E: core::fmt::Display>(err: E) -> JitError {

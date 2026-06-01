@@ -129,6 +129,15 @@ pub(crate) fn builtin_shim(name: BuiltinName) -> Option<ShimEntry> {
         .find(|e| e.builtin == Some(name))
 }
 
+/// v0.11.x.jit.4.agg.1 — look up a registered shim by its `__triet_*`
+/// symbol. Used by the boxed codegen to emit calls to the aggregate-op
+/// shims (`builtin: None` entries) it doesn't reach via `CallBuiltin`.
+pub(crate) fn shim_entry_by_symbol(symbol: &str) -> Option<ShimEntry> {
+    production_shim_entries()
+        .into_iter()
+        .find(|e| e.symbol == symbol)
+}
+
 /// Framework + production shim registry. jit.1 returns ONLY the
 /// `__triet_drop_arc` lifetime shim; jit.2 appends the 43 production
 /// builtin shims (one [`ShimEntry`] per [`BuiltinName`]). Built once at
@@ -625,6 +634,15 @@ pub(crate) fn box_for_jit_test(value: RuntimeValue) -> i64 {
 #[cfg(test)]
 pub(crate) fn drop_for_jit_test(ptr: i64) {
     __triet_drop_arc(ptr);
+}
+
+/// v0.11.x.jit.4.agg.1b (test-support) — clone the `RuntimeValue` a boxed
+/// shim-ABI pointer points at, so a test can inspect a boxed function's
+/// result. Borrows (does not consume) — caller still drops `ptr`.
+/// `ptr == 0` → `Null`.
+#[cfg(test)]
+pub(crate) fn read_for_jit_test(ptr: i64) -> RuntimeValue {
+    with_rv(ptr, |rv| rv.cloned().unwrap_or(RuntimeValue::Null))
 }
 
 /// v0.10.x.jit.2b-ii (test-support) — read the Integer inside a boxed
@@ -1303,7 +1321,10 @@ mod tests {
         let f0 = box_for_test(integer(7));
         let f1 = box_for_test(integer(9));
         let slots: [i64; 2] = [f0, f1];
-        let s = __triet_struct_new(slots.as_ptr() as usize as i64, 2);
+        let s = __triet_struct_new(
+            i64::try_from(slots.as_ptr() as usize).expect("addr fits i64"),
+            2,
+        );
 
         let g0 = __triet_field_get(s, 0);
         with_rv(g0, |rv| expect_integer(rv.expect("field 0"), 7));

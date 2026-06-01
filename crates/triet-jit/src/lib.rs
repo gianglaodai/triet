@@ -1377,6 +1377,157 @@ mod tests {
         assert_eq!(dispatch_integer(&jit, FuncId(0), &[]), Some(1));
     }
 
+    // ===== v0.11.x.jit.4.agg.1b: boxed codegen mode (struct ops) =====
+
+    /// Recursive structural equality (`RuntimeValue` has no `PartialEq`)
+    /// — the value-parity assertion: JIT boxed result == VM result.
+    fn assert_rv_eq(a: &triet_ir::RuntimeValue, b: &triet_ir::RuntimeValue) {
+        use triet_ir::RuntimeValue as R;
+        match (a, b) {
+            (R::Integer(x), R::Integer(y)) => assert_eq!(x.to_i64(), y.to_i64(), "{a:?} vs {b:?}"),
+            (R::Struct { fields: fa }, R::Struct { fields: fb }) => {
+                assert_eq!(fa.len(), fb.len(), "struct arity {a:?} vs {b:?}");
+                for (x, y) in fa.iter().zip(fb) {
+                    assert_rv_eq(x, y);
+                }
+            }
+            (R::Unit, R::Unit) | (R::Null, R::Null) => {}
+            _ => panic!("RuntimeValue mismatch: {a:?} vs {b:?}"),
+        }
+    }
+
+    fn integer(n: i64) -> triet_ir::RuntimeValue {
+        triet_ir::RuntimeValue::Integer(triet_core::Integer::new(n).unwrap())
+    }
+
+    /// Dispatch a boxed JIT function: box each arg, call via the shared
+    /// `dispatch_integer` (the i64-ABI transmute — args/return are boxed
+    /// ptrs here), read back the result, drop the arg boxes.
+    fn dispatch_boxed(
+        jit: &JitCompiler,
+        func_id: FuncId,
+        args: Vec<triet_ir::RuntimeValue>,
+    ) -> triet_ir::RuntimeValue {
+        let arg_ptrs: Vec<i64> = args.into_iter().map(shims::box_for_jit_test).collect();
+        let result_ptr = dispatch_integer(jit, func_id, &arg_ptrs).expect("boxed dispatch");
+        let result = shims::read_for_jit_test(result_ptr);
+        shims::drop_for_jit_test(result_ptr);
+        for p in arg_ptrs {
+            shims::drop_for_jit_test(p);
+        }
+        result
+    }
+
+    #[test]
+    fn jit4_agg1b_boxed_struct_ops_value_parity() {
+        // make(x, y) -> Struct{x, y}     (StructNew)
+        // first(p)   -> p.field(0)       (FieldGet)
+        // set0(p, v) -> {v, p.field(1)}  (FieldSet)
+        // All boxed (Bậc A). Assert the JIT result equals the VM result.
+        let make = make_function_at(
+            FuncId(0),
+            "make",
+            vec![
+                ("x".into(), TypeTag::Integer),
+                ("y".into(), TypeTag::Integer),
+            ],
+            TypeTag::Unit, // struct → Unit placeholder (the TypeTag lies)
+            vec![
+                Instruction::StructNew {
+                    dest: ValueId(2),
+                    fields: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let first = make_function_at(
+            FuncId(1),
+            "first",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let set0 = make_function_at(
+            FuncId(2),
+            "set0",
+            vec![("p".into(), TypeTag::Unit), ("v".into(), TypeTag::Integer)],
+            TypeTag::Unit,
+            vec![
+                Instruction::FieldSet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                    value: Operand::Value(ValueId(1)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![make, first, set0])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed struct functions must compile");
+        // All three are boxed-JIT-able (no tier-down).
+        assert_eq!(jit.cached_function_count(), 3);
+
+        // make(7, 9) — JIT vs VM.
+        let jit_made = dispatch_boxed(&jit, FuncId(0), vec![integer(7), integer(9)]);
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let vm_made = vm
+            .execute(FuncId(0), vec![integer(7), integer(9)])
+            .expect("vm make");
+        assert_rv_eq(&jit_made, &vm_made);
+        // ...and it is the struct {7, 9}.
+        assert_rv_eq(
+            &jit_made,
+            &triet_ir::RuntimeValue::Struct {
+                fields: vec![integer(7), integer(9)],
+            },
+        );
+
+        // first({7, 9}) == 7 — JIT vs VM.
+        let point = triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(7), integer(9)],
+        };
+        let jit_first = dispatch_boxed(&jit, FuncId(1), vec![point.clone()]);
+        let mut vm2 = triet_ir::Vm::new(program.clone());
+        let vm_first = vm2
+            .execute(FuncId(1), vec![point.clone()])
+            .expect("vm first");
+        assert_rv_eq(&jit_first, &vm_first);
+        assert_rv_eq(&jit_first, &integer(7));
+
+        // set0({7, 9}, 42) == {42, 9} — JIT vs VM.
+        let jit_set = dispatch_boxed(&jit, FuncId(2), vec![point.clone(), integer(42)]);
+        let mut vm3 = triet_ir::Vm::new(program);
+        let vm_set = vm3
+            .execute(FuncId(2), vec![point, integer(42)])
+            .expect("vm set");
+        assert_rv_eq(&jit_set, &vm_set);
+        assert_rv_eq(
+            &jit_set,
+            &triet_ir::RuntimeValue::Struct {
+                fields: vec![integer(42), integer(9)],
+            },
+        );
+    }
+
     #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
