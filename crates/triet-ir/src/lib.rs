@@ -89,8 +89,9 @@ pub use types::{BlockId, ConstId, FuncId, TypeTag, ValueId};
 pub use verify::{VerifierResult, VerifierViolation, verify_function, verify_program};
 pub use vm::{
     JitBinOp, JitConstKind, JitDispatch, RuntimeMapKey, RuntimeValue, Vm, VmError,
-    dispatch_builtin, exec_box_const, exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg,
-    exec_struct_new, exec_trilean_tag,
+    dispatch_builtin, exec_box_const, exec_enum_new, exec_enum_payload, exec_enum_tag,
+    exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg, exec_struct_new,
+    exec_trilean_tag,
 };
 
 #[cfg(test)]

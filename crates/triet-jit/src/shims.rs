@@ -39,8 +39,8 @@ use std::rc::Rc;
 use triet_core::Integer;
 use triet_ir::{
     BuiltinName, JitBinOp, JitConstKind, RuntimeValue, VmError, dispatch_builtin, exec_box_const,
-    exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg, exec_struct_new,
-    exec_trilean_tag,
+    exec_enum_new, exec_enum_payload, exec_enum_tag, exec_field_get, exec_field_set,
+    exec_jit_binop, exec_jit_neg, exec_struct_new, exec_trilean_tag,
 };
 use triet_logic::Trilean;
 
@@ -257,6 +257,37 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             signature: ShimSignature {
                 params: &[Ptr],
                 ret: Some(I8),
+            },
+        },
+        // ── Enum-opcode shims (ADR-0034 agg.2a, builtin: None) ──
+        ShimEntry {
+            builtin: None,
+            // variant (i64) + has_payload flag (i8) + payload ptr → Enum.
+            symbol: "__triet_enum_new",
+            addr: __triet_enum_new as *const () as usize,
+            signature: ShimSignature {
+                params: &[I64, I8, Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // scrutinee ptr → boxed Integer variant index.
+            symbol: "__triet_enum_tag",
+            addr: __triet_enum_tag as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // scrutinee ptr → boxed payload (or failure sentinel).
+            symbol: "__triet_enum_payload",
+            addr: __triet_enum_payload as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
             },
         },
         // ── Production builtin shims — all delegate semantics to
@@ -910,6 +941,41 @@ extern "C" fn __triet_box_const(kind: i8, payload: i64) -> i64 {
 extern "C" fn __triet_trilean_tag(cond_ptr: i64) -> i8 {
     let cond = arg_composite(cond_ptr);
     exec_trilean_tag(&cond)
+}
+
+// ── Enum-opcode shims (ADR-0034 agg.2a) ─────────────────────────────
+
+/// `enum_new(variant, has_payload, payload) -> Enum` — construct an enum
+/// variant. `has_payload == 0` → unit variant (`payload` ignored, may be
+/// a 0 sentinel); otherwise `payload` is the boxed payload value. The
+/// presence flag is needed because a genuine payload could itself be a
+/// boxed `Null` (a non-zero ptr), so ptr==0 alone can't mean "no
+/// payload". Delegates to `exec_enum_new`.
+extern "C" fn __triet_enum_new(variant: i64, has_payload: i8, payload_ptr: i64) -> i64 {
+    let variant = u32::try_from(variant).unwrap_or(0);
+    let payload = if has_payload != 0 {
+        Some(arg_composite(payload_ptr))
+    } else {
+        None
+    };
+    box_rv(exec_enum_new(variant, payload))
+}
+
+/// `enum_tag(scrutinee) -> Integer` — the variant index as a boxed
+/// Integer (`Null` → -1, bare value → 0). Delegates to `exec_enum_tag`;
+/// total, never faults.
+extern "C" fn __triet_enum_tag(scrutinee_ptr: i64) -> i64 {
+    let scr = arg_composite(scrutinee_ptr);
+    box_rv(exec_enum_tag(&scr))
+}
+
+/// `enum_payload(scrutinee) -> payload` — unpack a variant's payload.
+/// A payload-less / non-enum scrutinee records an `InvalidVariant`
+/// failure + returns the null sentinel (per-call probe). Delegates to
+/// `exec_enum_payload`.
+extern "C" fn __triet_enum_payload(scrutinee_ptr: i64) -> i64 {
+    let scr = arg_composite(scrutinee_ptr);
+    finish_ptr(exec_enum_payload(&scr, &current_func_name()))
 }
 
 // ── jit.2a shims (5) — now delegating ───────────────────────────────

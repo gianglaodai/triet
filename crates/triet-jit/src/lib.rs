@@ -1391,6 +1391,42 @@ mod tests {
                     assert_rv_eq(x, y);
                 }
             }
+            (R::Trilean(x), R::Trilean(y)) => assert_eq!(x, y, "{a:?} vs {b:?}"),
+            (R::Trit(x), R::Trit(y)) => assert_eq!(x, y, "{a:?} vs {b:?}"),
+            (
+                R::Enum {
+                    variant: va,
+                    payload: pa,
+                },
+                R::Enum {
+                    variant: vb,
+                    payload: pb,
+                },
+            ) => {
+                assert_eq!(va, vb, "enum variant {a:?} vs {b:?}");
+                match (pa, pb) {
+                    (Some(x), Some(y)) => assert_rv_eq(x, y),
+                    (None, None) => {}
+                    _ => panic!("enum payload presence mismatch: {a:?} vs {b:?}"),
+                }
+            }
+            (
+                R::Outcome {
+                    discriminator: da,
+                    payload: pa,
+                },
+                R::Outcome {
+                    discriminator: db,
+                    payload: pb,
+                },
+            ) => {
+                assert_eq!(da, db, "outcome discriminator {a:?} vs {b:?}");
+                match (pa, pb) {
+                    (Some(x), Some(y)) => assert_rv_eq(x, y),
+                    (None, None) => {}
+                    _ => panic!("outcome payload presence mismatch: {a:?} vs {b:?}"),
+                }
+            }
             (R::Unit, R::Unit) | (R::Null, R::Null) => {}
             _ => panic!("RuntimeValue mismatch: {a:?} vs {b:?}"),
         }
@@ -2076,6 +2112,180 @@ mod tests {
             assert_rv_eq(&jit_r, &vm_r);
             assert_rv_eq(&jit_r, &integer(expected));
         }
+    }
+
+    #[test]
+    fn jit4_agg2a_boxed_enum_ops_value_parity() {
+        // agg.2a: boxed enum ops. A struct payload exercises the
+        // payload-preservation gotcha (triet_enum_struct_payload_identity).
+        //   wrap(v)  -> EnumNew variant=1, payload=v   (Some payload)
+        //   unit()   -> EnumNew variant=0              (no payload)
+        //   tag(e)   -> EnumTag e                      (→ Integer)
+        //   inner(e) -> EnumPayload e                  (→ payload)
+        let wrap = make_function_at(
+            FuncId(0),
+            "wrap",
+            vec![("v".into(), TypeTag::Integer)],
+            TypeTag::Unit,
+            vec![
+                Instruction::EnumNew {
+                    dest: ValueId(1),
+                    variant_idx: 1,
+                    payload: Some(Operand::Value(ValueId(0))),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let unit = make_function_at(
+            FuncId(1),
+            "unit",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                Instruction::EnumNew {
+                    dest: ValueId(0),
+                    variant_idx: 0,
+                    payload: None,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let tag = make_function_at(
+            FuncId(2),
+            "tag",
+            vec![("e".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::EnumTag {
+                    dest: ValueId(1),
+                    scrutinee: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let inner = make_function_at(
+            FuncId(3),
+            "inner",
+            vec![("e".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::EnumPayload {
+                    dest: ValueId(1),
+                    scrutinee: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![wrap, unit, tag, inner])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed enum ops must compile");
+        assert_eq!(jit.cached_function_count(), 4, "all 4 boxed enum fns JIT");
+
+        // wrap(42) == Enum{variant:1, payload:42} — JIT vs VM.
+        let jit_wrap = dispatch_boxed(&jit, FuncId(0), vec![integer(42)]);
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let vm_wrap = vm.execute(FuncId(0), vec![integer(42)]).expect("vm wrap");
+        assert_rv_eq(&jit_wrap, &vm_wrap);
+        match &jit_wrap {
+            triet_ir::RuntimeValue::Enum {
+                variant,
+                payload: Some(p),
+            } => {
+                assert_eq!(*variant, 1);
+                assert_rv_eq(p, &integer(42));
+            }
+            _ => panic!("expected Enum{{1, Some(42)}}, got {jit_wrap:?}"),
+        }
+
+        // unit() == Enum{variant:0, payload:None}.
+        let jit_unit = dispatch_boxed(&jit, FuncId(1), vec![]);
+        let mut vm2 = triet_ir::Vm::new(program.clone());
+        let vm_unit = vm2.execute(FuncId(1), vec![]).expect("vm unit");
+        assert_rv_eq(&jit_unit, &vm_unit);
+        assert!(
+            matches!(
+                &jit_unit,
+                triet_ir::RuntimeValue::Enum {
+                    variant: 0,
+                    payload: None
+                }
+            ),
+            "got {jit_unit:?}"
+        );
+
+        // tag(wrap(42)) == 1; inner(wrap(42)) == 42 — JIT vs VM.
+        let e = triet_ir::RuntimeValue::Enum {
+            variant: 1,
+            payload: Some(Box::new(integer(42))),
+        };
+        let jit_tag = dispatch_boxed(&jit, FuncId(2), vec![e.clone()]);
+        let mut vm3 = triet_ir::Vm::new(program.clone());
+        let vm_tag = vm3.execute(FuncId(2), vec![e.clone()]).expect("vm tag");
+        assert_rv_eq(&jit_tag, &vm_tag);
+        assert_rv_eq(&jit_tag, &integer(1));
+
+        let jit_inner = dispatch_boxed(&jit, FuncId(3), vec![e.clone()]);
+        let mut vm4 = triet_ir::Vm::new(program);
+        let vm_inner = vm4.execute(FuncId(3), vec![e]).expect("vm inner");
+        assert_rv_eq(&jit_inner, &vm_inner);
+        assert_rv_eq(&jit_inner, &integer(42));
+    }
+
+    #[test]
+    fn jit4_agg2a_boxed_enum_struct_payload_identity() {
+        // The triet_enum_struct_payload_identity gotcha as a JIT==VM check:
+        // an enum carrying a STRUCT payload must round-trip its fields
+        // through EnumNew → EnumPayload without loss.
+        //   rewrap(s) -> EnumPayload(EnumNew variant=2, payload=s)
+        let rewrap = make_function_at(
+            FuncId(0),
+            "rewrap",
+            vec![("s".into(), TypeTag::Unit)],
+            TypeTag::Unit,
+            vec![
+                Instruction::EnumNew {
+                    dest: ValueId(1),
+                    variant_idx: 2,
+                    payload: Some(Operand::Value(ValueId(0))),
+                },
+                Instruction::EnumPayload {
+                    dest: ValueId(2),
+                    scrutinee: Operand::Value(ValueId(1)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![rewrap])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert_eq!(jit.cached_function_count(), 1);
+
+        let s = triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(7), integer(9)],
+        };
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![s.clone()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![s.clone()]).expect("vm rewrap");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &s); // struct fields preserved end-to-end
     }
 
     #[test]

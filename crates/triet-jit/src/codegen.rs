@@ -907,6 +907,9 @@ fn is_boxed(func: &IrFunction) -> bool {
             Instruction::StructNew { .. }
                 | Instruction::FieldGet { .. }
                 | Instruction::FieldSet { .. }
+                | Instruction::EnumNew { .. }
+                | Instruction::EnumTag { .. }
+                | Instruction::EnumPayload { .. }
         )
     })
 }
@@ -1199,6 +1202,43 @@ fn translate_boxed_instruction(
             let idx = builder.ins().iconst(I64, i64::from(*field_idx));
             let val = materialize_boxed_operand(builder, module, value_map, ctx, *value)?;
             let r = emit_agg_shim(builder, module, "__triet_field_set", &[obj, idx, val])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        // Enum ops (agg.2a). Payload presence is a separate i8 flag — a
+        // genuine payload may be a boxed Null (non-zero ptr), so ptr==0
+        // alone can't encode "no payload".
+        Instruction::EnumNew {
+            dest,
+            variant_idx,
+            payload,
+        } => {
+            let variant = builder.ins().iconst(I64, i64::from(*variant_idx));
+            let (has_payload, payload_v) = match payload {
+                Some(op) => {
+                    let v = materialize_boxed_operand(builder, module, value_map, ctx, *op)?;
+                    (builder.ins().iconst(I8, 1), v)
+                }
+                None => (builder.ins().iconst(I8, 0), builder.ins().iconst(I64, 0)),
+            };
+            let r = emit_agg_shim(
+                builder,
+                module,
+                "__triet_enum_new",
+                &[variant, has_payload, payload_v],
+            )?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::EnumTag { dest, scrutinee } => {
+            let scr = materialize_boxed_operand(builder, module, value_map, ctx, *scrutinee)?;
+            let r = emit_agg_shim(builder, module, "__triet_enum_tag", &[scr])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::EnumPayload { dest, scrutinee } => {
+            let scr = materialize_boxed_operand(builder, module, value_map, ctx, *scrutinee)?;
+            let r = emit_agg_shim(builder, module, "__triet_enum_payload", &[scr])?;
             record_boxed_result(value_map, fn_state, *dest, r);
             emit_shim_sentinel_check(builder, module, fn_state)?;
         }

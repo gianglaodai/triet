@@ -1084,43 +1084,16 @@ impl Vm {
                 variant_idx,
                 payload,
             } => {
-                let payload_val = payload.map(|p| Box::new(read_operand(constants, frame, p)));
-                frame.write(
-                    dest,
-                    RuntimeValue::Enum {
-                        variant: variant_idx,
-                        payload: payload_val,
-                    },
-                );
+                let payload_val = payload.map(|p| read_operand(constants, frame, p));
+                frame.write(dest, exec_enum_new(variant_idx, payload_val));
             }
             Instruction::EnumTag { dest, scrutinee } => {
                 let scr = read_operand(constants, frame, scrutinee);
-                // v0.7.4.3-debt.7: return the variant index as Integer
-                // instead of a 2-state Trit. Pre-fix only distinguished
-                // variant 0 (Positive) vs all others (Negative), so
-                // match-on-enum-with-3+-variants dispatched incorrectly.
-                let idx: i64 = match &scr {
-                    RuntimeValue::Enum { variant, .. } => i64::from(*variant),
-                    RuntimeValue::Null => -1,
-                    _ => 0, // bare value — treat as variant 0
-                };
-                frame.write(
-                    dest,
-                    RuntimeValue::Integer(triet_core::Integer::new(idx).unwrap_or_default()),
-                );
+                frame.write(dest, exec_enum_tag(&scr));
             }
             Instruction::EnumPayload { dest, scrutinee } => {
                 let scr = read_operand(constants, frame, scrutinee);
-                match scr {
-                    RuntimeValue::Enum {
-                        payload: Some(p), ..
-                    } => frame.write(dest, *p),
-                    _ => {
-                        return Err(VmError::InvalidVariant {
-                            function: func_name,
-                        });
-                    }
-                }
+                frame.write(dest, exec_enum_payload(&scr, &func_name)?);
             }
 
             // ── Function calls ───────────────────────────────────
@@ -2355,6 +2328,51 @@ pub fn exec_field_set(
         _ => Err(VmError::TypeMismatch {
             expected: TypeTag::Unit,
             actual: "non-struct".into(),
+            function: func_name.to_string(),
+        }),
+    }
+}
+
+/// `EnumNew` — construct an enum variant (ADR-0034 agg.2a). `payload`
+/// is `None` for a unit variant, `Some` otherwise — the same shape the
+/// VM's `EnumNew` arm builds.
+#[must_use]
+pub fn exec_enum_new(variant: u32, payload: Option<RuntimeValue>) -> RuntimeValue {
+    RuntimeValue::Enum {
+        variant,
+        payload: payload.map(Box::new),
+    }
+}
+
+/// `EnumTag` — the variant index as an `Integer` (ADR-0034 agg.2a).
+/// `Null` → `-1`, a bare non-enum value → `0` (variant 0), matching the
+/// VM's `EnumTag` arm (v0.7.4.3-debt.7). Total — never faults.
+#[must_use]
+pub fn exec_enum_tag(scrutinee: &RuntimeValue) -> RuntimeValue {
+    let idx: i64 = match scrutinee {
+        RuntimeValue::Enum { variant, .. } => i64::from(*variant),
+        RuntimeValue::Null => -1,
+        _ => 0,
+    };
+    RuntimeValue::Integer(Integer::new(idx).unwrap_or_default())
+}
+
+/// `EnumPayload` — unpack a variant's payload (ADR-0034 agg.2a). A
+/// payload-less or non-enum scrutinee is an `InvalidVariant` error,
+/// matching the VM's `EnumPayload` arm.
+///
+/// # Errors
+/// [`VmError::InvalidVariant`] if `scrutinee` is not an enum carrying a
+/// payload.
+pub fn exec_enum_payload(
+    scrutinee: &RuntimeValue,
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    match scrutinee {
+        RuntimeValue::Enum {
+            payload: Some(p), ..
+        } => Ok((**p).clone()),
+        _ => Err(VmError::InvalidVariant {
             function: func_name.to_string(),
         }),
     }
