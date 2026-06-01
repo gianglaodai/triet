@@ -754,7 +754,7 @@ impl<'a> LowerCtx<'a> {
                 "Trilean" => TypeTag::Trilean,
                 "String" => TypeTag::String,
                 "Unit" => TypeTag::Unit,
-                _ => TypeTag::Unit, // user-defined type OR generic type param — placeholder
+                _ => TypeTag::Opaque, // user-defined struct/enum/generic → opaque aggregate (ADR-0036)
             },
             triet_syntax::type_ast::TypeExpr::Nullable(inner) => {
                 TypeTag::Nullable(Box::new(self.type_expr_to_tag(*inner)))
@@ -772,10 +772,10 @@ impl<'a> LowerCtx<'a> {
                         Box::new(self.type_expr_to_tag(*key)),
                         Box::new(self.type_expr_to_tag(*value)),
                     ),
-                    _ => TypeTag::Unit,
+                    _ => TypeTag::Opaque,
                 }
             }
-            _ => TypeTag::Unit,
+            _ => TypeTag::Opaque,
         }
     }
 

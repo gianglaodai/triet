@@ -120,22 +120,18 @@ pub(crate) fn map_type(tag: &TypeTag) -> Result<types::Type, JitError> {
         //   consistent ABI shape.
         TypeTag::Trit | TypeTag::Trilean | TypeTag::Unit => I8,
         TypeTag::Tryte => I16,
-        // `Integer` (primitive) + composites all map to `i64`: Integer
-        // is a 64-bit value; composites cross the shim ABI as `i64` raw
-        // pointers (`Rc::into_raw` boxed `RuntimeValue`) per ADR-0032 §1.
-        // Composite coverage grows per sub-task:
-        //   - jit.2b-i: String, Vector, HashMap, Nullable.
-        //   - jit.2b-ii: Atomic, Outcome (compare_exchange return).
-        // (TypeTag has no Enum/Struct variant — user aggregates lower
-        // via EnumNew/struct ops, not JIT-supported yet, so they tier
-        // down at construction.) Tuple / Range also tier-down for now.
+        // `Integer` (primitive) + composites + `Opaque` (user-defined
+        // aggregate, ADR-0036) all map to `i64`: Integer is a 64-bit
+        // value; composites cross the shim ABI as `i64` raw pointers
+        // (`Rc::into_raw` boxed `RuntimeValue`) per ADR-0032 §1.
         TypeTag::Integer
         | TypeTag::String
         | TypeTag::Vector(_)
         | TypeTag::HashMap(..)
         | TypeTag::Nullable(_)
         | TypeTag::Atomic(_)
-        | TypeTag::Outcome { .. } => I64,
+        | TypeTag::Outcome { .. }
+        | TypeTag::Opaque => I64,
         // Long (i128) needs pair-of-i64 lowering per ADR-0030 §3 — defer.
         // (Exhaustive match — no catch-all: a future `TypeTag` variant
         // will fail to compile here until explicitly mapped, preventing
@@ -978,6 +974,7 @@ const fn is_composite_tag(tag: &TypeTag) -> bool {
             | TypeTag::Nullable(_)
             | TypeTag::Atomic(_)
             | TypeTag::Outcome { .. }
+            | TypeTag::Opaque
     )
 }
 
@@ -1002,10 +999,7 @@ enum BoundaryClass {
 }
 
 /// Classify a boundary type for cross-mode marshaling, or `None` (tier
-/// down) for the ambiguous / unsupported types:
-/// - **`Unit`** — ambiguous (true-Unit vs the lowerer's struct/enum/
-///   generic placeholder, `lowerer.rs` `_ => TypeTag::Unit`); can't tell
-///   "nothing" from "a struct ptr" (ADR-0035 §4).
+/// down) for unsupported types:
 /// - **`Long`** — i128 (deferred).
 fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
     let scalar = |kind, clif| Some(BoundaryClass::Scalar { kind, clif });
@@ -1014,8 +1008,12 @@ fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
         TypeTag::Trilean => scalar(JitConstKind::Trilean, I8),
         TypeTag::Trit => scalar(JitConstKind::Trit, I8),
         TypeTag::Tryte => scalar(JitConstKind::Tryte, I16),
+        // Unit (true zero-sized) + Opaque (user aggregate) — both are
+        // `Rc<RuntimeValue>` pointers in boxed mode, same repr in both
+        // modes, pass through unmarshaled (ADR-0036 §4).
+        TypeTag::Unit | TypeTag::Opaque => Some(BoundaryClass::PassThrough),
         _ if is_composite_tag(tag) => Some(BoundaryClass::PassThrough),
-        // `Unit` (ambiguous) / `Long` (i128) → tier down.
+        // `Long` (i128) → tier down (deferred).
         _ => None,
     }
 }

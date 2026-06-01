@@ -301,6 +301,7 @@ constant TYPE_TAG_NULLABLE: Integer = 7
 constant TYPE_TAG_VECTOR: Integer = 8
 constant TYPE_TAG_HASHMAP: Integer = 9
 constant TYPE_TAG_OUTCOME: Integer = 10
+constant TYPE_TAG_OPAQUE: Integer = 12
 
 public function write_type_table(buf: Vector<Integer>, arena: TypeTagArena) -> Vector<Integer> = {
     let header: Vector<Integer> = write_varint(buf, length(arena.tags))
@@ -345,6 +346,7 @@ public function write_type_tag(buf: Vector<Integer>, ty: TypeTag) -> Vector<Inte
             let s3: Vector<Integer> = write_varint(s2, p.value_type)
             write_varint(s3, p.error_type)
         },
+        OpaqueTag(_) => write_u8(buf, TYPE_TAG_OPAQUE),
     }
 }
 
@@ -716,7 +718,7 @@ constant SEC_WITNESS_TABLES: Integer = 5
 // builtins (ADR-0026 v2 §3 wire format bump). Per ADR-0029 §2
 // mandatory lockstep: Rust impl `crates/triet-ir/src/serde.rs::VERSION`
 // bump same phase. Earlier bumps: 5→6 (v0.9.x.atomic.2, ADR-0028 §1).
-constant TRIV_VERSION: Integer = 7
+constant TRIV_VERSION: Integer = 8
 constant TRIV_MAGIC_T: Integer = 116
 constant TRIV_MAGIC_R: Integer = 114
 constant TRIV_MAGIC_I: Integer = 105
@@ -1944,6 +1946,7 @@ function type_tag_discriminator(ty: TypeTag) -> Integer =
         VectorTag(_) => TYPE_TAG_VECTOR,
         HashMapTag(_) => TYPE_TAG_HASHMAP,
         OutcomeTag(_) => TYPE_TAG_OUTCOME,
+        OpaqueTag(_) => TYPE_TAG_OPAQUE,
     }
 
 function type_tag_nullable_inner(ty: TypeTag) -> Integer =

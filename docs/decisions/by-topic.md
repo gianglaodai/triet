@@ -1,11 +1,11 @@
 # ADR Index — by Topic
 
-Cross-reference vào 29 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?".
+Cross-reference vào 36 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?".
 
 > **Note:** ADRs là *immutable historical records* — file content không thay đổi sau khi đạt "Quyết định" status. Index này chỉ point đến chúng, không duplicate. Active language semantics nằm ở [`SPEC.md`](../../SPEC.md).
 >
 > **Hai axis của index:**
-> - [`README.md`](README.md) — chronological (0001 → 0033), phase-grouped. Trace "decision khi nào, trong phase nào".
+> - [`README.md`](README.md) — chronological (0001 → 0036), phase-grouped. Trace "decision khi nào, trong phase nào".
 > - **Đây** ([`by-topic.md`](by-topic.md)) — topic-clustered. Trace "rule về X ở đâu".
 
 ---
@@ -29,6 +29,7 @@ Cross-reference vào 29 ADRs theo **topic cluster** thay vì chronological numbe
 | [0003](0003-iterator-protocol.md) | Iterator protocol — `Iterator<T>` trait + `.enumerate()` adapter | Locked |
 | [0020](0020-outcome-error-handling.md) | Outcome error handling — `T~E` 2-state binary + `T?~E` 3-state ternary, `~+`/`~0`/`~-` constructors, `~?`/`~:` postfix ops | Locked |
 | [0021](0021-trilean-refinement.md) | Trilean! refinement — typecheck-only refinement, strict `if cond` requires non-Unknown, E1033/E1034 | Locked |
+| [0036](0036-typetag-opaque-aggregate.md) | `TypeTag::Opaque` — user-aggregate disambiguation from `Unit` (disc 12, .triv version 7 → 8, self-host lockstep, resolves Unit ambiguity to unblock 410 cross-mode tier-downs) | Locked |
 
 > Cross-cutting: [ADR-0010](0010-ternary-native-ir.md) cho IR-level Trilean semantics (`BrTrilean`, Ł3-aware `Eq`).
 
@@ -70,6 +71,7 @@ Cross-reference vào 29 ADRs theo **topic cluster** thay vì chronological numbe
 | [0008](0008-triv-binary-format.md) | `.triv` bytecode binary format — magic bytes + version + section layout + LEB128 varint, currently v5 sau ADR-0010/0012/0020 bumps | Locked |
 | [0010](0010-ternary-native-ir.md) | Ternary-native IR — `BrTrilean` 3-way branch, Ł3-aware `Eq`/`Ne` propagate Unknown, `Constant::Null` = Trit::Zero canonical encoding | Locked |
 | [0012](0012-witness-table-dispatch.md) | Witness table dispatch — Swift-style, hybrid intra/inter-package (monomorphize intra, witness inter) | Locked |
+| [0036](0036-typetag-opaque-aggregate.md) | `TypeTag::Opaque` — user-aggregate disambiguation from `Unit` (disc 12, .triv version 7 → 8, self-host lockstep, resolves Unit ambiguity to unblock 410 cross-mode tier-downs) | Locked |
 
 > Cross-cutting: [ADR-0011](0011-abi-metadata-format.md) cho IR artifact container; [ADR-0023](0023-lowerer-ssa-struct-tracking.md) cho lowerer internals.
 

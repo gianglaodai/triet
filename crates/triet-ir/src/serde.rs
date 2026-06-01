@@ -36,9 +36,13 @@ const MAGIC: [u8; 4] = [0x74, 0x72, 0x69, 0x76]; // "triv"
 /// - v7: ADR-0026 v2 §3 (v0.10.x.thread.1) added 2 raw-thread builtins
 ///   (IDs 43 `RawThreadSpawn`, 44 `RawThreadJoin`). Old v6 readers see
 ///   `UnknownBuiltin(43/44)` if encountering these opcodes.
+/// - v8: ADR-0036 (v0.11.x.jit.4.agg.opaque) added `TypeTag::Opaque`
+///   (disc 12) for user-defined aggregates (struct/enum/generic),
+///   disambiguating them from true `TypeTag::Unit`. Also retroactively
+///   added the missing disc 11 (`TypeTag::Atomic`) reader arm.
 ///
 /// [ADR-0008 §"Version history"]: ../../../../docs/decisions/0008-triv-binary-format.md
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 
 const SEC_TYPES: u8 = 1;
 const SEC_CONSTANTS: u8 = 2;
@@ -311,6 +315,7 @@ fn add_type(types: &mut Vec<TypeTag>, ty: TypeTag) {
             add_type(types, (**value_type).clone());
             add_type(types, (**error_type).clone());
         }
+        TypeTag::Atomic(inner) => add_type(types, (**inner).clone()),
         _ => {}
     }
     if !types.contains(&ty) {
@@ -378,6 +383,7 @@ fn write_type_tag(buf: &mut Vec<u8>, types: &[TypeTag], ty: &TypeTag) {
             let idx = type_index(types, inner);
             write_varint(buf, idx);
         }
+        TypeTag::Opaque => write_u8(buf, 12),
     }
 }
 
@@ -450,6 +456,18 @@ fn read_type_tag(data: &[u8], pos: &mut usize, table: &[TypeTag]) -> Result<Type
                 allow_null_state,
             })
         }
+        // v0.9.x.atomic.3 (ADR-0028 §2): Atomic type encoding.
+        // Discriminant 11 + 1 varint inner-type index.
+        11 => {
+            let idx = read_varint(data, pos)? as usize;
+            let inner = table
+                .get(idx)
+                .ok_or_else(|| TrivError::Corrupted("invalid type index in Atomic".into()))?
+                .clone();
+            Ok(TypeTag::Atomic(Box::new(inner)))
+        }
+        // ADR-0036: Opaque aggregate (disc 12, no payload).
+        12 => Ok(TypeTag::Opaque),
         d => Err(TrivError::UnknownTypeDiscriminant(d)),
     }
 }
@@ -1503,6 +1521,14 @@ fn read_constant(data: &[u8], pos: &mut usize, types: &[TypeTag]) -> Result<Cons
              built at runtime via `AtomicNew` builtin per ADR-0028 §6"
                 .into(),
         )),
+        // ADR-0036: Opaque has no constant-pool encoding — opaque
+        // aggregates are built at runtime via struct/enum opcodes.
+        TypeTag::Opaque => Err(TrivError::Corrupted(
+            "Opaque has no constant-pool encoding — opaque aggregate \
+             values are built at runtime via struct/enum opcodes \
+             per ADR-0036"
+                .into(),
+        )),
     }
 }
 
@@ -1818,7 +1844,8 @@ fn write_inline_primitive_tag(buf: &mut Vec<u8>, ty: &TypeTag) {
         | TypeTag::Vector(_)
         | TypeTag::HashMap(_, _)
         | TypeTag::Outcome { .. }
-        | TypeTag::Atomic(_) => 0xFF,
+        | TypeTag::Atomic(_)
+        | TypeTag::Opaque => 0xFF,
     };
     write_u8(buf, disc);
 }
@@ -2413,24 +2440,18 @@ mod tests {
         assert_eq!(decoded, program);
     }
 
-    /// Verify the wire-format version pin. Bumped 3→4 alongside the
-    /// Vector/HashMap type-tag additions (ADR-0019 Addendum); bumped
-    /// 4→5 alongside the Outcome type-tag + opcodes 0xC1-0xC6
-    /// (v0.7.4.3-error.3a, ADR-0020 §7); bumped 5→6 alongside Atomic
-    /// primitive builtins 33-42 (v0.9.x.atomic.2, ADR-0028 §1); bumped
-    /// 6→7 alongside raw-thread builtins 43-44 (v0.10.x.thread.1,
-    /// ADR-0026 v2 §3). The version field is the 4 bytes at offset 4
-    /// (after the 4-byte magic).
+    /// Verify the wire-format version pin. Bumped 7→8 alongside the
+    /// `TypeTag::Opaque` addition (ADR-0036 — user-aggregate disambiguation).
     #[test]
-    fn wire_format_version_pinned_to_v7() {
+    fn wire_format_version_pinned_to_v8() {
         let program = IrProgram::new();
         let bytes = write_program(&program);
         assert!(bytes.len() >= 8, "header truncated");
         let version_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
         let version = u32::from_le_bytes(version_bytes);
         assert_eq!(
-            version, 7,
-            "v0.10.x.thread.1 requires .triv version 7 (was {version})",
+            version, 8,
+            "ADR-0036 requires .triv version 8 (was {version})",
         );
     }
 
@@ -2487,6 +2508,86 @@ mod tests {
             assert_eq!(decoded, builtin);
             assert_eq!(pos, 1);
         }
+    }
+
+    /// ADR-0036: Opaque type tag (disc 12) round-trips through the `.triv`
+    /// wire format. Builds a minimal program with an Opaque-typed function
+    /// and verifies the type survives serialization.
+    #[test]
+    fn opaque_type_tag_serde_round_trip() {
+        let function = Function {
+            id: FuncId(0),
+            name: Some("identity_struct".into()),
+            params: vec![("s".into(), TypeTag::Opaque)],
+            return_type: TypeTag::Opaque,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                }],
+            }],
+        };
+
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::khi_root(),
+                    "test_opaque".into(),
+                ),
+                functions: vec![function],
+            }],
+            constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
+        };
+
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).expect("Opaque round-trip must succeed");
+
+        let f = &decoded.modules[0].functions[0];
+        assert_eq!(f.params[0].1, TypeTag::Opaque, "param type must be Opaque");
+        assert_eq!(f.return_type, TypeTag::Opaque, "return type must be Opaque");
+    }
+
+    /// ADR-0036 opportunistic fix: disc 11 (`Atomic`) reader was missing.
+    /// Verify `Atomic<Integer>` round-trips through the type table.
+    #[test]
+    fn atomic_type_tag_serde_round_trip() {
+        let function = Function {
+            id: FuncId(0),
+            name: Some("load_atomic".into()),
+            params: vec![("a".into(), TypeTag::Atomic(Box::new(TypeTag::Integer)))],
+            return_type: TypeTag::Integer,
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                name: Some("entry".into()),
+                instructions: vec![Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                }],
+            }],
+        };
+
+        let program = IrProgram {
+            modules: vec![IrModule {
+                path: triet_modules::AbsolutePath::new(
+                    triet_modules::ModulePath::khi_root(),
+                    "test_atomic_serde".into(),
+                ),
+                functions: vec![function],
+            }],
+            constants: ConstantPool::new(),
+            witness_tables: Vec::new(),
+        };
+
+        let bytes = write_program(&program);
+        let decoded = read_program(&bytes).expect("Atomic round-trip must succeed");
+
+        let f = &decoded.modules[0].functions[0];
+        assert_eq!(
+            f.params[0].1,
+            TypeTag::Atomic(Box::new(TypeTag::Integer)),
+            "Atomic<Integer> param must survive round-trip (disc 11)"
+        );
     }
 
     /// A pre-v4 reader (one that only knows discriminants 0..=7) must

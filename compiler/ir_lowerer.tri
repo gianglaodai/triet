@@ -150,6 +150,7 @@ public enum TypeTag {
     TrileanTag(PrimitiveMarker),
     StringTag(PrimitiveMarker),
     UnitTag(PrimitiveMarker),
+    OpaqueTag(PrimitiveMarker),
     NullableTag(TypeTagNullablePayload),
     VectorTag(TypeTagVectorPayload),
     HashMapTag(TypeTagHashMapPayload),
@@ -201,6 +202,9 @@ public function alloc_tag_string(arena: TypeTagArena) -> AllocTagResult =
 public function alloc_tag_unit(arena: TypeTagArena) -> AllocTagResult =
     alloc_type_tag(arena, UnitTag(primitive_marker()))
 
+public function alloc_tag_opaque(arena: TypeTagArena) -> AllocTagResult =
+    alloc_type_tag(arena, OpaqueTag(primitive_marker()))
+
 public function alloc_tag_nullable(arena: TypeTagArena, inner: Integer) -> AllocTagResult =
     alloc_type_tag(arena, NullableTag(TypeTagNullablePayload { inner: inner }))
 
@@ -236,6 +240,7 @@ public function type_tag_display(arena: TypeTagArena, tag_id: Integer) -> String
                 TrileanTag(_) => "Trilean",
                 StringTag(_) => "String",
                 UnitTag(_) => "Unit",
+                OpaqueTag(_) => "Opaque",
                 NullableTag(p) => concat(type_tag_display(arena, p.inner), "?"),
                 VectorTag(p) => concat(concat("Vector<", type_tag_display(arena, p.inner)), ">"),
                 HashMapTag(p) => {
@@ -1710,10 +1715,10 @@ function resolve_type_expr_to_tag(ctx: LowerCtx, type_expr_id: Integer) -> Resol
                 tag_id: r.tag_id,
             }
         },
-        // Unknown / generic / tuple / function / outcome → Unit
-        // placeholder. v0.7.8.{3,4} fills these in.
+        // Unknown / generic / tuple / function / outcome → opaque
+        // aggregate per ADR-0036.
         _ => {
-            let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
+            let r: AllocTagResult = alloc_tag_opaque(ctx.type_arena)
             ResolveTagResult {
                 ctx: ctx_with_type_arena(ctx, r.arena),
                 tag_id: r.tag_id,
@@ -1751,8 +1756,8 @@ function resolve_named_type_tag(ctx: LowerCtx, name: String) -> ResolveTagResult
         let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
         return ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
     }
-    // Unknown user type — Unit placeholder for v0.7.8.2.
-    let r: AllocTagResult = alloc_tag_unit(ctx.type_arena)
+    // Unknown user type — opaque aggregate per ADR-0036.
+    let r: AllocTagResult = alloc_tag_opaque(ctx.type_arena)
     ResolveTagResult { ctx: ctx_with_type_arena(ctx, r.arena), tag_id: r.tag_id }
 }
 

@@ -34,6 +34,9 @@ ADR này lock binary format trước khi serialize/deserialize implementation (v
 | `3` | v0.4 ([ADR-0012](0012-witness-table-dispatch.md)) | Added `WITNESS_CALL` opcode (0x93) + new `witness_tables` section (5). | v2 readers emit `UnknownOpcode` on 0x93. |
 | `4` | v0.7.3.1 ([ADR-0019 Addendum §A1](0019-self-hosting-compiler-bootstrap.md)) | Added type discriminants 8 (Vector) + 9 (HashMap). | v3 readers emit `UnknownTypeDiscriminant` on 8/9. |
 | `5` | v0.7.4.3-error ([ADR-0020 §7](0020-outcome-error-handling.md), pending impl) | Added type discriminant 10 (Outcome with `allow_null_state: bool`) + 6 opcodes 0xC1–0xC6 (`OUTCOME_NEW_POSITIVE/NEGATIVE/NULL`, `OUTCOME_DISCRIMINANT`, `OUTCOME_UNWRAP_VALUE/ERROR`). | v4 readers emit `UnknownTypeDiscriminant` on 10 / `UnknownOpcode` on 0xC1–0xC6. |
+| `6` | v0.9.x.atomic.2 ([ADR-0028 §1](0028-atomic-primitive.md)) | Added `TypeTag::Atomic(T)` (disc 11) + 10 atomic builtins IDs 33-42. | v5 readers emit `UnknownTypeDiscriminant` on 11. |
+| `7` | v0.10.x.thread.1 ([ADR-0026 v2 §3](0026-concurrency-byos-actor-model-v2.md)) | Added 2 raw-thread builtins IDs 43-44 (`RawThreadSpawn`, `RawThreadJoin`). | v6 readers emit `UnknownBuiltin(43/44)`. |
+| `8` | v0.11.x.jit.4.agg.opaque ([ADR-0036](0036-typetag-opaque-aggregate.md)) | Added `TypeTag::Opaque` (disc 12) for user-defined aggregates (struct/enum/generic), disambiguating them from true `TypeTag::Unit`. Also retroactively added the missing disc 11 (`TypeTag::Atomic`) reader arm. Patch bump per §"Version compatibility." | v7 readers emit `UnknownTypeDiscriminant` on 12. |
 
 Each bump is **additive-only** per §"Version compatibility" rules below — no semantic change to existing sections/opcodes. Older readers refuse cleanly on encountering newer features, never silently misinterpret.
 3. **Section-based layout** — mỗi section có `section_id` (1 byte) + `section_size` (u32

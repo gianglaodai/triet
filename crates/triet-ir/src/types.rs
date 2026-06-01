@@ -68,6 +68,15 @@ pub enum TypeTag {
     String,
     /// Zero-sized unit type `()`.
     Unit,
+    /// User-defined aggregate (struct, enum, erased generic type
+    /// parameter). The IR does not track field layout — `Opaque` means
+    /// "a composite `Rc<RuntimeValue>` pointer at runtime, but the
+    /// exact shape is unknown to the IR." Introduced by [ADR-0036] to
+    /// resolve the `TypeTag::Unit` ambiguity (user aggregates and
+    /// true-Unit were both `Unit`).
+    ///
+    /// [ADR-0036]: ../../../../docs/decisions/0036-typetag-opaque-aggregate.md
+    Opaque,
     /// Nullable wrapper: `T?` — 1-trit discriminator + inner type.
     Nullable(Box<Self>),
     /// Homogeneous ordered collection: `Vector<T>`. Element type is the
@@ -122,6 +131,7 @@ impl fmt::Display for TypeTag {
             Self::Trilean => write!(f, "Trilean"),
             Self::String => write!(f, "String"),
             Self::Unit => write!(f, "Unit"),
+            Self::Opaque => write!(f, "Opaque"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Vector(inner) => write!(f, "Vector<{inner}>"),
             Self::HashMap(key, value) => write!(f, "HashMap<{key}, {value}>"),
@@ -306,6 +316,21 @@ mod tests {
         assert_ne!(
             TypeTag::Nullable(Box::new(TypeTag::Trit)),
             TypeTag::Nullable(Box::new(TypeTag::Integer))
+        );
+    }
+
+    #[test]
+    fn opaque_type_display() {
+        assert_eq!(TypeTag::Opaque.to_string(), "Opaque");
+    }
+
+    #[test]
+    fn opaque_type_equality() {
+        assert_eq!(TypeTag::Opaque, TypeTag::Opaque);
+        assert_ne!(
+            TypeTag::Opaque,
+            TypeTag::Unit,
+            "Opaque must be distinct from Unit"
         );
     }
 }

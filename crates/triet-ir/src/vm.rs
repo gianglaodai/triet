@@ -194,7 +194,7 @@ impl RuntimeValue {
             Self::String(_) => TypeTag::String,
             Self::Unit => TypeTag::Unit,
             Self::Null => TypeTag::Nullable(Box::new(TypeTag::Unit)),
-            Self::Struct { .. } | Self::Enum { .. } | Self::Closure { .. } => TypeTag::Unit,
+            Self::Struct { .. } | Self::Enum { .. } | Self::Closure { .. } => TypeTag::Opaque,
             // Collection element types aren't tracked on the runtime
             // value — the IR's static `TypeTag` retains that info. Fall
             // back to a wildcard element of `Unit`; callers that need
