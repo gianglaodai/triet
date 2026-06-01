@@ -1055,7 +1055,7 @@ impl Vm {
                     .iter()
                     .map(|f| read_operand(constants, frame, *f))
                     .collect();
-                frame.write(dest, RuntimeValue::Struct { fields: field_vals });
+                frame.write(dest, exec_struct_new(field_vals));
             }
             Instruction::FieldGet {
                 dest,
@@ -1063,22 +1063,8 @@ impl Vm {
                 field_idx,
             } => {
                 let obj = read_operand(constants, frame, object);
-                match obj {
-                    RuntimeValue::Struct { fields } => {
-                        let val = fields
-                            .get(field_idx as usize)
-                            .cloned()
-                            .unwrap_or(RuntimeValue::Unit);
-                        frame.write(dest, val);
-                    }
-                    _ => {
-                        return Err(VmError::TypeMismatch {
-                            expected: TypeTag::Unit,
-                            actual: "non-struct".into(),
-                            function: func_name,
-                        });
-                    }
-                }
+                let val = exec_field_get(&obj, field_idx, &func_name)?;
+                frame.write(dest, val);
             }
             Instruction::FieldSet {
                 dest,
@@ -1086,23 +1072,10 @@ impl Vm {
                 field_idx,
                 value,
             } => {
-                let mut obj = read_operand(constants, frame, object);
+                let obj = read_operand(constants, frame, object);
                 let new_val = read_operand(constants, frame, value);
-                match &mut obj {
-                    RuntimeValue::Struct { fields } => {
-                        if (field_idx as usize) < fields.len() {
-                            fields[field_idx as usize] = new_val;
-                        }
-                        frame.write(dest, obj);
-                    }
-                    _ => {
-                        return Err(VmError::TypeMismatch {
-                            expected: TypeTag::Unit,
-                            actual: "non-struct".into(),
-                            function: func_name,
-                        });
-                    }
-                }
+                let updated = exec_field_set(&obj, field_idx, new_val, &func_name)?;
+                frame.write(dest, updated);
             }
 
             // ── Aggregate: enum ──────────────────────────────────
@@ -2320,6 +2293,71 @@ pub fn dispatch_builtin(
     func_name: &str,
 ) -> Result<RuntimeValue, VmError> {
     execute_builtin(name, args, func_name)
+}
+
+// ── Aggregate-opcode helpers (single source of truth, ADR-0034 §1) ──
+//
+// The struct opcodes' SEMANTICS live here as `pub` functions that BOTH
+// the VM instruction loop and the JIT's delegate-to-VM shims call — so a
+// JIT'd struct op runs the exact same logic the VM does (no VM↔JIT
+// divergence by construction, the ADR-0032 §6 discipline generalized to
+// IR opcodes per ADR-0034).
+
+/// `StructNew` — allocate a struct from its fields (declaration order).
+#[must_use]
+pub fn exec_struct_new(fields: Vec<RuntimeValue>) -> RuntimeValue {
+    RuntimeValue::Struct { fields }
+}
+
+/// `FieldGet` — read field `field_idx` (0-based) of a struct. Out-of-range
+/// yields `Unit` (matches the VM); a non-struct is a `TypeMismatch`.
+///
+/// # Errors
+/// [`VmError::TypeMismatch`] if `object` is not a struct.
+pub fn exec_field_get(
+    object: &RuntimeValue,
+    field_idx: u32,
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    match object {
+        RuntimeValue::Struct { fields } => Ok(fields
+            .get(field_idx as usize)
+            .cloned()
+            .unwrap_or(RuntimeValue::Unit)),
+        _ => Err(VmError::TypeMismatch {
+            expected: TypeTag::Unit,
+            actual: "non-struct".into(),
+            function: func_name.to_string(),
+        }),
+    }
+}
+
+/// `FieldSet` — return a copy of the struct with field `field_idx`
+/// replaced (functional update). Out-of-range index is a no-op (matches
+/// the VM); a non-struct is a `TypeMismatch`.
+///
+/// # Errors
+/// [`VmError::TypeMismatch`] if `object` is not a struct.
+pub fn exec_field_set(
+    object: &RuntimeValue,
+    field_idx: u32,
+    value: RuntimeValue,
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    match object {
+        RuntimeValue::Struct { fields } => {
+            let mut fields = fields.clone();
+            if (field_idx as usize) < fields.len() {
+                fields[field_idx as usize] = value;
+            }
+            Ok(RuntimeValue::Struct { fields })
+        }
+        _ => Err(VmError::TypeMismatch {
+            expected: TypeTag::Unit,
+            actual: "non-struct".into(),
+            function: func_name.to_string(),
+        }),
+    }
 }
 
 // `clippy::significant_drop_tightening` allowed because the

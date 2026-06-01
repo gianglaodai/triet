@@ -37,7 +37,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use triet_core::Integer;
-use triet_ir::{BuiltinName, RuntimeValue, VmError, dispatch_builtin};
+use triet_ir::{
+    BuiltinName, RuntimeValue, VmError, dispatch_builtin, exec_field_get, exec_field_set,
+    exec_struct_new,
+};
 use triet_logic::Trilean;
 
 /// The builtin-shim ABI version baked into every AOT cache manifest
@@ -174,6 +177,37 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             signature: ShimSignature {
                 params: &[],
                 ret: Some(I8),
+            },
+        },
+        // ── Aggregate-opcode shims (ADR-0034 §1/§2, builtin: None —
+        // called by boxed codegen directly, not via CallBuiltin) ──
+        ShimEntry {
+            builtin: None,
+            // `fields_ptr` (raw stack-slot addr) + `len` are plain i64s;
+            // the return is a boxed Struct ptr.
+            symbol: "__triet_struct_new",
+            addr: __triet_struct_new as *const () as usize,
+            signature: ShimSignature {
+                params: &[I64, I64],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            symbol: "__triet_field_get",
+            addr: __triet_field_get as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr, I64],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            symbol: "__triet_field_set",
+            addr: __triet_field_set as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr, I64, Ptr],
+                ret: Some(Ptr),
             },
         },
         // ── Production builtin shims — all delegate semantics to
@@ -722,6 +756,54 @@ fn dispatch(name: BuiltinName, args: &[RuntimeValue]) -> Result<RuntimeValue, Vm
     dispatch_builtin(name, args, &current_func_name())
 }
 
+// ── Aggregate-opcode shims (ADR-0034 §1/§2) ─────────────────────────
+//
+// The JIT's boxed codegen mode lowers struct IR opcodes to these shims,
+// which delegate to the `triet_ir::exec_*` helpers — the SAME logic the
+// VM instruction loop runs (no VM↔JIT divergence by construction).
+// Composite args/returns use the ADR-0032 §1/§2 boxed-ptr ABI
+// (`arg_composite` borrows + clones; `box_rv`/`finish_ptr` box out).
+// `builtin: None` in the registry (called by codegen directly, like
+// `__triet_drop_arc`, not via a `CallBuiltin`).
+
+/// `struct_new(fields_ptr, len) -> Struct` — the variadic array-ptr+len
+/// ABI (ADR-0034 §2). `fields_ptr` addresses `len` consecutive `i64`
+/// field-value pointers the JIT spilled into a caller-owned stack slot.
+extern "C" fn __triet_struct_new(fields_ptr: i64, len: i64) -> i64 {
+    let n = usize::try_from(len).unwrap_or(0);
+    let mut fields = Vec::with_capacity(n);
+    if n > 0 {
+        // SAFETY: per ADR-0034 §2, JIT codegen spills exactly `len`
+        // consecutive `i64` field-value pointers into a caller-owned
+        // stack slot at `fields_ptr` that lives for this call. Each slot
+        // is an `Rc::into_raw` `RuntimeValue` pointer (or 0 = null). We
+        // read exactly `n` of them and borrow (not consume) each via
+        // `arg_composite` — refcounts unchanged. `n > 0` guards against a
+        // dangling/zero base for empty structs.
+        #[allow(unsafe_code)]
+        let slots: &[i64] = unsafe { std::slice::from_raw_parts(fields_ptr as *const i64, n) };
+        for &p in slots {
+            fields.push(arg_composite(p));
+        }
+    }
+    box_rv(exec_struct_new(fields))
+}
+
+/// `field_get(obj, idx) -> field` — read field `idx` of a boxed struct.
+extern "C" fn __triet_field_get(obj_ptr: i64, idx: i64) -> i64 {
+    let obj = arg_composite(obj_ptr);
+    let field_idx = u32::try_from(idx).unwrap_or(0);
+    finish_ptr(exec_field_get(&obj, field_idx, &current_func_name()))
+}
+
+/// `field_set(obj, idx, val) -> Struct` — functional field update.
+extern "C" fn __triet_field_set(obj_ptr: i64, idx: i64, val_ptr: i64) -> i64 {
+    let obj = arg_composite(obj_ptr);
+    let val = arg_composite(val_ptr);
+    let field_idx = u32::try_from(idx).unwrap_or(0);
+    finish_ptr(exec_field_set(&obj, field_idx, val, &current_func_name()))
+}
+
 // ── jit.2a shims (5) — now delegating ───────────────────────────────
 
 /// `assert(cond: Trilean, msg: String?)` → Unit.
@@ -1209,6 +1291,60 @@ mod tests {
             RuntimeValue::Integer(i) => assert_eq!(i.to_i64(), want),
             other => panic!("expected Integer({want}), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn struct_shims_round_trip_and_delegate() {
+        // v0.11.x.jit.4.agg.1 — exercise the struct shims directly (the
+        // boxed codegen that calls them lands in agg.1b). Build {7, 9} via
+        // the array-ptr+len ABI, read fields, functional-update one.
+        let _ = take_shim_failure(); // clear any prior thread-local state
+
+        let f0 = box_for_test(integer(7));
+        let f1 = box_for_test(integer(9));
+        let slots: [i64; 2] = [f0, f1];
+        let s = __triet_struct_new(slots.as_ptr() as usize as i64, 2);
+
+        let g0 = __triet_field_get(s, 0);
+        with_rv(g0, |rv| expect_integer(rv.expect("field 0"), 7));
+        let g1 = __triet_field_get(s, 1);
+        with_rv(g1, |rv| expect_integer(rv.expect("field 1"), 9));
+
+        // Functional update: field_set returns a NEW struct (s unchanged).
+        let v = box_for_test(integer(42));
+        let s2 = __triet_field_set(s, 0, v);
+        let h0 = __triet_field_get(s2, 0);
+        with_rv(h0, |rv| expect_integer(rv.expect("updated field 0"), 42));
+        let h1 = __triet_field_get(s2, 1);
+        with_rv(h1, |rv| expect_integer(rv.expect("field 1 unchanged"), 9));
+        // Original struct's field 0 is still 7 (functional, not mutated).
+        let orig0 = __triet_field_get(s, 0);
+        with_rv(orig0, |rv| expect_integer(rv.expect("orig field 0"), 7));
+
+        assert!(
+            take_shim_failure().is_none(),
+            "valid struct ops must not record a shim failure"
+        );
+
+        // Each box is independent (shims clone) → drop each exactly once.
+        for p in [f0, f1, s, g0, g1, v, s2, h0, h1, orig0] {
+            __triet_drop_arc(p);
+        }
+    }
+
+    #[test]
+    fn field_get_on_non_struct_records_failure() {
+        // A non-struct receiver is a TypeMismatch the shim surfaces via
+        // the SHIM_FAILED flag (per ADR-0032 §4), returning the 0 sentinel.
+        let _ = take_shim_failure();
+        let not_a_struct = box_for_test(integer(5));
+        let r = __triet_field_get(not_a_struct, 0);
+        assert_eq!(r, 0, "failure returns the null sentinel");
+        assert!(
+            take_shim_failure().is_some(),
+            "field_get on a non-struct must record a shim failure"
+        );
+        __triet_drop_arc(not_a_struct);
     }
 
     #[test]
