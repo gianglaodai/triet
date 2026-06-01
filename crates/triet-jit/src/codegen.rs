@@ -56,7 +56,7 @@ use std::collections::HashMap;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::{I8, I16, I64};
 use cranelift_codegen::ir::{
-    AbiParam, Block, InstBuilder, Signature, StackSlotData, StackSlotKind, Value, types,
+    AbiParam, Block, BlockArg, InstBuilder, Signature, StackSlotData, StackSlotKind, Value, types,
 };
 use cranelift_codegen::isa::{CallConv, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
@@ -65,7 +65,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId as ClFuncId, Linkage, Module};
 use triet_ir::{
     BlockId, ConstId, Constant, ConstantPool, FuncId as TriFuncId, Function as IrFunction,
-    Instruction, IrProgram, JitBinOp, JitConstKind, Operand, TypeTag, ValueId,
+    Instruction, IrProgram, JitBinOp, JitConstKind, Operand, PhiIncoming, TypeTag, ValueId,
 };
 use triet_logic::Trilean;
 use triet_modules::AbsolutePath;
@@ -719,7 +719,31 @@ fn emit_function_body(
             opcode: "function with no blocks".to_string(),
         })?;
     let entry_block = block_map[&entry_ir_block.id];
+    let entry_id = entry_ir_block.id;
     builder.append_block_params_for_function_params(entry_block);
+
+    // Boxed-mode φ handling (agg.1c-v): each φ-node lowers to a Cranelift
+    // block parameter (all boxed → I64). Collect the per-block φs, then
+    // append one I64 param per φ to every NON-entry block (entry has the
+    // function params + no predecessors → no φs). At block-switch time
+    // each φ dest is mapped to its block param; predecessors pass the
+    // matching incoming value as a block-call arg (`boxed_block_args`).
+    let block_phis: HashMap<BlockId, Vec<BoxedPhi>> = if boxed {
+        collect_block_phis(func)
+    } else {
+        HashMap::new()
+    };
+    for ir_block in &func.blocks {
+        if ir_block.id == entry_id {
+            continue;
+        }
+        if let Some(phis) = block_phis.get(&ir_block.id) {
+            let cl_block = block_map[&ir_block.id];
+            for _ in phis {
+                builder.append_block_param(cl_block, I64);
+            }
+        }
+    }
 
     // Value map populated as instructions translate. Entry-block
     // param values come from `block_params(entry_block)`.
@@ -742,7 +766,25 @@ fn emit_function_body(
     for ir_block in &func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
+        // Boxed φ dests → this block's Cranelift params (set above).
+        // Entry's params are the function params (mapped already).
+        if boxed && ir_block.id != entry_id {
+            if let Some(phis) = block_phis.get(&ir_block.id) {
+                let params: Vec<Value> = builder.block_params(cl_block).to_vec();
+                for (i, phi) in phis.iter().enumerate() {
+                    if let Some(&p) = params.get(i) {
+                        value_map.insert(phi.dest, p);
+                    }
+                }
+            }
+        }
         for instr in &ir_block.instructions {
+            // Boxed φs are already materialized as block params — skip the
+            // instruction. (Unboxed φ still tiers down via the `other`
+            // arm below.)
+            if boxed && matches!(instr, Instruction::Phi { .. }) {
+                continue;
+            }
             if boxed {
                 // Bậc A uniform boxing (ADR-0034 Addendum): every value is
                 // a boxed RuntimeValue ptr; aggregate ops delegate to VM
@@ -753,6 +795,8 @@ fn emit_function_body(
                     module,
                     &mut value_map,
                     &block_map,
+                    &block_phis,
+                    ir_block.id,
                     ctx,
                     &mut fn_state,
                     instr,
@@ -1009,6 +1053,77 @@ const fn boxed_binop_of(instr: &Instruction) -> Option<(JitBinOp, ValueId, Opera
     Some((op, dest, lhs, rhs))
 }
 
+/// A boxed-mode φ-node lowered to a Cranelift block parameter
+/// (ADR-0034 agg.1c-v): its SSA `dest` + the per-predecessor incoming
+/// values. The φ's position in its block determines the block-param
+/// index; predecessors pass the incoming value matching their `BlockId`.
+struct BoxedPhi {
+    dest: ValueId,
+    incoming: Vec<PhiIncoming>,
+}
+
+/// Collect each block's leading φ-nodes (φs appear first in a block per
+/// the IR invariant). In boxed mode each becomes one I64 Cranelift block
+/// param. Blocks with no φ are absent from the map.
+fn collect_block_phis(func: &IrFunction) -> HashMap<BlockId, Vec<BoxedPhi>> {
+    let mut map = HashMap::new();
+    for block in &func.blocks {
+        let phis: Vec<BoxedPhi> = block
+            .instructions
+            .iter()
+            .filter_map(|i| match i {
+                Instruction::Phi { dest, incoming } => Some(BoxedPhi {
+                    dest: *dest,
+                    incoming: incoming.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+        if !phis.is_empty() {
+            map.insert(block.id, phis);
+        }
+    }
+    map
+}
+
+/// The block-call args a branch from `from` passes to `target`'s φ params
+/// (ADR-0034 agg.1c-v): for each φ (in block order), the incoming value
+/// declared for predecessor `from`, resolved to its boxed `Value`. Empty
+/// when `target` has no φ. Tiers down if a φ lacks an incoming for `from`
+/// (malformed edge) or that value isn't defined yet (e.g. a loop carried
+/// value whose def is not yet translated — deferred).
+fn boxed_block_args(
+    block_phis: &HashMap<BlockId, Vec<BoxedPhi>>,
+    value_map: &HashMap<ValueId, Value>,
+    target: BlockId,
+    from: BlockId,
+) -> Result<Vec<BlockArg>, JitError> {
+    let Some(phis) = block_phis.get(&target) else {
+        return Ok(Vec::new());
+    };
+    let mut args = Vec::with_capacity(phis.len());
+    for phi in phis {
+        let inc = phi
+            .incoming
+            .iter()
+            .find(|pi| pi.block == from)
+            .ok_or_else(|| JitError::UnsupportedOpcode {
+                opcode: format!("φ in {target:?} has no incoming from {from:?} (boxed)"),
+            })?;
+        let v = value_map
+            .get(&inc.value)
+            .copied()
+            .ok_or_else(|| JitError::UnsupportedOpcode {
+                opcode: format!(
+                    "φ incoming ValueId({}) referenced before def (boxed)",
+                    inc.value.0
+                ),
+            })?;
+        args.push(BlockArg::Value(v));
+    }
+    Ok(args)
+}
+
 /// Translate one IR instruction in **boxed** mode (ADR-0034 Addendum
 /// Bậc A): every value is a boxed `RuntimeValue` ptr; aggregate +
 /// scalar ops delegate to the `__triet_*` VM-shims. Handles struct ops
@@ -1021,6 +1136,8 @@ fn translate_boxed_instruction(
     module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
     block_map: &HashMap<BlockId, Block>,
+    block_phis: &HashMap<BlockId, Vec<BoxedPhi>>,
+    cur_block: BlockId,
     ctx: &ProgramContext<'_>,
     fn_state: &mut FnState,
     instr: &Instruction,
@@ -1183,16 +1300,16 @@ fn translate_boxed_instruction(
         // ptr; `__triet_trilean_tag` reads its `{-1,0,+1}` three-way tag
         // (the VM's `as_trilean`), then the SAME icmp/brif dispatch the
         // unboxed branches use (ADR-0010 §3). The tag shim is total
-        // (never faults) so no sentinel probe is needed. Phi (block
-        // params) still tiers down — branch targets pass no args, so a
-        // function whose blocks merge values via Phi defers (agg.1c-v).
+        // (never faults) so no sentinel probe is needed. φ args are
+        // passed per target via `boxed_block_args` (agg.1c-v).
         Instruction::Br { target } => {
             let cl_target = *block_map
                 .get(target)
                 .ok_or_else(|| JitError::UnsupportedOpcode {
                     opcode: format!("Br target block {target:?} not in map (boxed)"),
                 })?;
-            builder.ins().jump(cl_target, &[]);
+            let args = boxed_block_args(block_phis, value_map, *target, cur_block)?;
+            builder.ins().jump(cl_target, &args);
         }
         Instruction::BrIf {
             cond,
@@ -1216,7 +1333,11 @@ fn translate_boxed_instruction(
                     .ok_or_else(|| JitError::UnsupportedOpcode {
                         opcode: format!("BrIf else-block {else_block:?} not in map (boxed)"),
                     })?;
-            builder.ins().brif(is_true, cl_then, &[], cl_else, &[]);
+            let then_args = boxed_block_args(block_phis, value_map, *then_block, cur_block)?;
+            let else_args = boxed_block_args(block_phis, value_map, *else_block, cur_block)?;
+            builder
+                .ins()
+                .brif(is_true, cl_then, &then_args, cl_else, &else_args);
         }
         Instruction::BrTrilean {
             cond,
@@ -1249,12 +1370,19 @@ fn translate_boxed_instruction(
                     .ok_or_else(|| JitError::UnsupportedOpcode {
                         opcode: format!("BrTrilean false-block {false_block:?} not in map (boxed)"),
                     })?;
+            let true_args = boxed_block_args(block_phis, value_map, *true_block, cur_block)?;
+            let unk_args = boxed_block_args(block_phis, value_map, *unknown_block, cur_block)?;
+            let false_args = boxed_block_args(block_phis, value_map, *false_block, cur_block)?;
             let fallthrough = builder.create_block();
             let is_true = builder.ins().icmp(IntCC::Equal, tag, pos_one);
-            builder.ins().brif(is_true, cl_true, &[], fallthrough, &[]);
+            builder
+                .ins()
+                .brif(is_true, cl_true, &true_args, fallthrough, &[]);
             builder.switch_to_block(fallthrough);
             let is_unk = builder.ins().icmp(IntCC::Equal, tag, zero);
-            builder.ins().brif(is_unk, cl_unk, &[], cl_false, &[]);
+            builder
+                .ins()
+                .brif(is_unk, cl_unk, &unk_args, cl_false, &false_args);
         }
         other => {
             return Err(JitError::UnsupportedOpcode {
