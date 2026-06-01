@@ -1432,136 +1432,29 @@ impl Vm {
             // ── Outcome (ADR-0020) ───────────────────────────────
             Instruction::OutcomeNewPositive { dest, payload } => {
                 let val = read_operand(constants, frame, payload);
-                frame.write(
-                    dest,
-                    RuntimeValue::Outcome {
-                        discriminator: Trit::Positive,
-                        payload: Some(Box::new(val)),
-                    },
-                );
+                frame.write(dest, exec_outcome_new_positive(val));
             }
             Instruction::OutcomeNewNegative { dest, payload } => {
                 let val = read_operand(constants, frame, payload);
-                frame.write(
-                    dest,
-                    RuntimeValue::Outcome {
-                        discriminator: Trit::Negative,
-                        payload: Some(Box::new(val)),
-                    },
-                );
+                frame.write(dest, exec_outcome_new_negative(val));
             }
             Instruction::OutcomeNewNull { dest } => {
-                frame.write(
-                    dest,
-                    RuntimeValue::Outcome {
-                        discriminator: Trit::Zero,
-                        payload: None,
-                    },
-                );
+                frame.write(dest, exec_outcome_new_null());
             }
             Instruction::OutcomeDiscriminant { dest, source } => {
+                // Cross-tolerance (ADR-0010 Addendum §D + WA-6): Null reads
+                // as Zero, bare non-Outcome as Positive — see
+                // `exec_outcome_discriminant`.
                 let outcome = read_operand(constants, frame, source);
-                // ADR-0010 Addendum §D (v0.7.4.3-error.6a): cross-
-                // tolerance with the legacy `RuntimeValue::Null`
-                // carrier — `~0` source-level value lowers to
-                // `Constant::Null` per Addendum §B byte-identity
-                // promise, so the discriminator readout has to
-                // recognize Null as a Zero-state.
-                //
-                // v0.7.4.3-debt.6 (WA-6 fix): extend cross-tolerance
-                // to bare `T?` values. A nullable holds either Null
-                // or a bare T (no Outcome wrapper), so any non-Null
-                // non-Outcome value reads as `Positive`. This is what
-                // makes `match user { ~+ u => ..., ~0 => ... }` work
-                // for plain `T?` per the ADR-0010 Addendum §D §"Match
-                // arm dispatch" promise (cross-tolerance now reaches
-                // pattern-match dispatch beyond the 4 opcodes
-                // originally proven in `ffcf6de`).
-                let discriminator = match outcome {
-                    RuntimeValue::Outcome { discriminator, .. } => discriminator,
-                    RuntimeValue::Null => Trit::Zero,
-                    // Bare T value (Enum, Struct, Integer, etc.) flowing
-                    // through a `T?` slot at runtime. T ⊂ T? widening
-                    // doesn't wrap the value, so the runtime sees it
-                    // raw — treat as the success arm.
-                    _ => Trit::Positive,
-                };
-                frame.write(dest, RuntimeValue::Trit(discriminator));
+                frame.write(dest, exec_outcome_discriminant(&outcome));
             }
             Instruction::OutcomeUnwrapValue { dest, source } => {
                 let outcome = read_operand(constants, frame, source);
-                let (discriminator, payload) = match outcome {
-                    RuntimeValue::Outcome {
-                        discriminator,
-                        payload,
-                    } => (discriminator, payload),
-                    // ADR-0010 Addendum §D: unwrap on a Null-carried
-                    // Zero state surfaces as E2210 (wrong arm), not
-                    // E2201 (wrong type) — the value IS valid, it's
-                    // just not the success arm.
-                    RuntimeValue::Null => {
-                        return Err(VmError::InvalidOutcomeState {
-                            reason: "unwrap_value called on null state".into(),
-                            function: func_name,
-                        });
-                    }
-                    // v0.7.4.3-debt.6 (WA-6 fix): bare T value flowing
-                    // through a `T?` slot — the value IS its own
-                    // success payload, no wrapper to peel. Return it
-                    // directly.
-                    other => {
-                        frame.write(dest, other);
-                        return Ok(StepResult::Continue);
-                    }
-                };
-                if !discriminator.is_positive() {
-                    return Err(VmError::InvalidOutcomeState {
-                        reason: format!("unwrap_value called on {} arm", arm_name(discriminator)),
-                        function: func_name,
-                    });
-                }
-                let inner = payload.ok_or_else(|| VmError::InvalidOutcomeState {
-                    reason: "success arm missing payload".into(),
-                    function: func_name.clone(),
-                })?;
-                frame.write(dest, *inner);
+                frame.write(dest, exec_outcome_unwrap_value(outcome, &func_name)?);
             }
             Instruction::OutcomeUnwrapError { dest, source } => {
                 let outcome = read_operand(constants, frame, source);
-                let (discriminator, payload) = match outcome {
-                    RuntimeValue::Outcome {
-                        discriminator,
-                        payload,
-                    } => (discriminator, payload),
-                    RuntimeValue::Null => {
-                        return Err(VmError::InvalidOutcomeState {
-                            reason: "unwrap_error called on null state".into(),
-                            function: func_name,
-                        });
-                    }
-                    other => {
-                        return Err(VmError::TypeMismatch {
-                            expected: TypeTag::Outcome {
-                                value_type: Box::new(TypeTag::Unit),
-                                error_type: Box::new(TypeTag::Unit),
-                                allow_null_state: false,
-                            },
-                            actual: other.type_tag().to_string(),
-                            function: func_name,
-                        });
-                    }
-                };
-                if !discriminator.is_negative() {
-                    return Err(VmError::InvalidOutcomeState {
-                        reason: format!("unwrap_error called on {} arm", arm_name(discriminator)),
-                        function: func_name,
-                    });
-                }
-                let inner = payload.ok_or_else(|| VmError::InvalidOutcomeState {
-                    reason: "failure arm missing payload".into(),
-                    function: func_name.clone(),
-                })?;
-                frame.write(dest, *inner);
+                frame.write(dest, exec_outcome_unwrap_error(outcome, &func_name)?);
             }
 
             // ── Phi node ─────────────────────────────────────────
@@ -2376,6 +2269,140 @@ pub fn exec_enum_payload(
             function: func_name.to_string(),
         }),
     }
+}
+
+/// `OutcomeNewPositive` — wrap `payload` in the `Trit::Positive` success
+/// arm (ADR-0034 agg.2b).
+#[must_use]
+pub fn exec_outcome_new_positive(payload: RuntimeValue) -> RuntimeValue {
+    RuntimeValue::Outcome {
+        discriminator: Trit::Positive,
+        payload: Some(Box::new(payload)),
+    }
+}
+
+/// `OutcomeNewNegative` — wrap `payload` in the `Trit::Negative` failure
+/// arm (ADR-0034 agg.2b).
+#[must_use]
+pub fn exec_outcome_new_negative(payload: RuntimeValue) -> RuntimeValue {
+    RuntimeValue::Outcome {
+        discriminator: Trit::Negative,
+        payload: Some(Box::new(payload)),
+    }
+}
+
+/// `OutcomeNewNull` — the `Trit::Zero` null arm (no payload), ADR-0034
+/// agg.2b.
+#[must_use]
+pub const fn exec_outcome_new_null() -> RuntimeValue {
+    RuntimeValue::Outcome {
+        discriminator: Trit::Zero,
+        payload: None,
+    }
+}
+
+/// `OutcomeDiscriminant` — the arm trit (ADR-0034 agg.2b).
+///
+/// Mirrors the VM's cross-tolerance: `Null` reads as `Zero`; a bare
+/// non-Outcome value (a `T` flowing through a `T?` slot) reads as
+/// `Positive`. Total.
+#[must_use]
+pub const fn exec_outcome_discriminant(source: &RuntimeValue) -> RuntimeValue {
+    let discriminator = match source {
+        RuntimeValue::Outcome { discriminator, .. } => *discriminator,
+        RuntimeValue::Null => Trit::Zero,
+        _ => Trit::Positive,
+    };
+    RuntimeValue::Trit(discriminator)
+}
+
+/// `OutcomeUnwrapValue` — extract the success payload (ADR-0034 agg.2b).
+///
+/// A bare non-Outcome value passes through unchanged (it IS its own
+/// success payload, per WA-6 cross-tolerance); `Null` or a non-success
+/// arm is an `InvalidOutcomeState`. Takes ownership so the payload moves
+/// out without a clone (matching the VM).
+///
+/// # Errors
+/// [`VmError::InvalidOutcomeState`] on a null / failure arm or a
+/// payload-less success arm.
+pub fn exec_outcome_unwrap_value(
+    source: RuntimeValue,
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    let (discriminator, payload) = match source {
+        RuntimeValue::Outcome {
+            discriminator,
+            payload,
+        } => (discriminator, payload),
+        RuntimeValue::Null => {
+            return Err(VmError::InvalidOutcomeState {
+                reason: "unwrap_value called on null state".into(),
+                function: func_name.to_string(),
+            });
+        }
+        other => return Ok(other),
+    };
+    if !discriminator.is_positive() {
+        return Err(VmError::InvalidOutcomeState {
+            reason: format!("unwrap_value called on {} arm", arm_name(discriminator)),
+            function: func_name.to_string(),
+        });
+    }
+    let inner = payload.ok_or_else(|| VmError::InvalidOutcomeState {
+        reason: "success arm missing payload".into(),
+        function: func_name.to_string(),
+    })?;
+    Ok(*inner)
+}
+
+/// `OutcomeUnwrapError` — extract the failure payload (ADR-0034 agg.2b).
+///
+/// `Null` or a non-Outcome value is a type/state error; a non-failure arm
+/// is an `InvalidOutcomeState`. Takes ownership (payload moves out).
+///
+/// # Errors
+/// [`VmError::InvalidOutcomeState`] on a null / non-failure arm or a
+/// payload-less failure arm; [`VmError::TypeMismatch`] on a non-Outcome
+/// non-Null value.
+pub fn exec_outcome_unwrap_error(
+    source: RuntimeValue,
+    func_name: &str,
+) -> Result<RuntimeValue, VmError> {
+    let (discriminator, payload) = match source {
+        RuntimeValue::Outcome {
+            discriminator,
+            payload,
+        } => (discriminator, payload),
+        RuntimeValue::Null => {
+            return Err(VmError::InvalidOutcomeState {
+                reason: "unwrap_error called on null state".into(),
+                function: func_name.to_string(),
+            });
+        }
+        other => {
+            return Err(VmError::TypeMismatch {
+                expected: TypeTag::Outcome {
+                    value_type: Box::new(TypeTag::Unit),
+                    error_type: Box::new(TypeTag::Unit),
+                    allow_null_state: false,
+                },
+                actual: other.type_tag().to_string(),
+                function: func_name.to_string(),
+            });
+        }
+    };
+    if !discriminator.is_negative() {
+        return Err(VmError::InvalidOutcomeState {
+            reason: format!("unwrap_error called on {} arm", arm_name(discriminator)),
+            function: func_name.to_string(),
+        });
+    }
+    let inner = payload.ok_or_else(|| VmError::InvalidOutcomeState {
+        reason: "failure arm missing payload".into(),
+        function: func_name.to_string(),
+    })?;
+    Ok(*inner)
 }
 
 /// Binary scalar opcodes the JIT's boxed mode delegates to the VM

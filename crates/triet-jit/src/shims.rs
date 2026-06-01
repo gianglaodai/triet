@@ -40,7 +40,9 @@ use triet_core::Integer;
 use triet_ir::{
     BuiltinName, JitBinOp, JitConstKind, RuntimeValue, VmError, dispatch_builtin, exec_box_const,
     exec_enum_new, exec_enum_payload, exec_enum_tag, exec_field_get, exec_field_set,
-    exec_jit_binop, exec_jit_neg, exec_struct_new, exec_trilean_tag,
+    exec_jit_binop, exec_jit_neg, exec_outcome_discriminant, exec_outcome_new_negative,
+    exec_outcome_new_null, exec_outcome_new_positive, exec_outcome_unwrap_error,
+    exec_outcome_unwrap_value, exec_struct_new, exec_trilean_tag,
 };
 use triet_logic::Trilean;
 
@@ -285,6 +287,67 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             // scrutinee ptr → boxed payload (or failure sentinel).
             symbol: "__triet_enum_payload",
             addr: __triet_enum_payload as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        // ── Outcome-opcode shims (ADR-0034 agg.2b, builtin: None) ──
+        ShimEntry {
+            builtin: None,
+            // payload ptr → boxed Outcome (Positive arm).
+            symbol: "__triet_outcome_new_positive",
+            addr: __triet_outcome_new_positive as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // payload ptr → boxed Outcome (Negative arm).
+            symbol: "__triet_outcome_new_negative",
+            addr: __triet_outcome_new_negative as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // (no args) → boxed Outcome (Zero/null arm).
+            symbol: "__triet_outcome_new_null",
+            addr: __triet_outcome_new_null as *const () as usize,
+            signature: ShimSignature {
+                params: &[],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // source ptr → boxed Trit discriminant. Total.
+            symbol: "__triet_outcome_discriminant",
+            addr: __triet_outcome_discriminant as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // source ptr → boxed success payload (or failure sentinel).
+            symbol: "__triet_outcome_unwrap_value",
+            addr: __triet_outcome_unwrap_value as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // source ptr → boxed failure payload (or failure sentinel).
+            symbol: "__triet_outcome_unwrap_error",
+            addr: __triet_outcome_unwrap_error as *const () as usize,
             signature: ShimSignature {
                 params: &[Ptr],
                 ret: Some(Ptr),
@@ -976,6 +1039,46 @@ extern "C" fn __triet_enum_tag(scrutinee_ptr: i64) -> i64 {
 extern "C" fn __triet_enum_payload(scrutinee_ptr: i64) -> i64 {
     let scr = arg_composite(scrutinee_ptr);
     finish_ptr(exec_enum_payload(&scr, &current_func_name()))
+}
+
+// ── Outcome-opcode shims (ADR-0034 agg.2b) ──────────────────────────
+
+/// `outcome_new_positive(payload) -> Outcome` — wrap in the success arm.
+extern "C" fn __triet_outcome_new_positive(payload_ptr: i64) -> i64 {
+    box_rv(exec_outcome_new_positive(arg_composite(payload_ptr)))
+}
+
+/// `outcome_new_negative(payload) -> Outcome` — wrap in the failure arm.
+extern "C" fn __triet_outcome_new_negative(payload_ptr: i64) -> i64 {
+    box_rv(exec_outcome_new_negative(arg_composite(payload_ptr)))
+}
+
+/// `outcome_new_null() -> Outcome` — the Zero/null arm (no payload).
+extern "C" fn __triet_outcome_new_null() -> i64 {
+    box_rv(exec_outcome_new_null())
+}
+
+/// `outcome_discriminant(source) -> Trit` — the arm trit, boxed. Total
+/// (cross-tolerance: Null→Zero, bare value→Positive); never faults.
+extern "C" fn __triet_outcome_discriminant(source_ptr: i64) -> i64 {
+    let src = arg_composite(source_ptr);
+    box_rv(exec_outcome_discriminant(&src))
+}
+
+/// `outcome_unwrap_value(source) -> payload` — extract the success
+/// payload (bare value passes through); a null / non-success arm records
+/// an `InvalidOutcomeState` + returns the failure sentinel.
+extern "C" fn __triet_outcome_unwrap_value(source_ptr: i64) -> i64 {
+    let src = arg_composite(source_ptr);
+    finish_ptr(exec_outcome_unwrap_value(src, &current_func_name()))
+}
+
+/// `outcome_unwrap_error(source) -> payload` — extract the failure
+/// payload; a null / non-failure arm or non-Outcome value records a
+/// failure + returns the sentinel.
+extern "C" fn __triet_outcome_unwrap_error(source_ptr: i64) -> i64 {
+    let src = arg_composite(source_ptr);
+    finish_ptr(exec_outcome_unwrap_error(src, &current_func_name()))
 }
 
 // ── jit.2a shims (5) — now delegating ───────────────────────────────

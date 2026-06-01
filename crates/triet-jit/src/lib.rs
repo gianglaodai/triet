@@ -2115,6 +2115,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn jit4_agg2a_boxed_enum_ops_value_parity() {
         // agg.2a: boxed enum ops. A struct payload exercises the
         // payload-preservation gotcha (triet_enum_struct_payload_identity).
@@ -2286,6 +2287,223 @@ mod tests {
         let vm_r = vm.execute(FuncId(0), vec![s.clone()]).expect("vm rewrap");
         assert_rv_eq(&jit_r, &vm_r);
         assert_rv_eq(&jit_r, &s); // struct fields preserved end-to-end
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn jit4_agg2b_boxed_outcome_ops_value_parity() {
+        // agg.2b: boxed Outcome ops.
+        //   ok(v)    -> ~+ v             (OutcomeNewPositive)
+        //   err(v)   -> ~- v             (OutcomeNewNegative)
+        //   nul()    -> ~0               (OutcomeNewNull)
+        //   disc(o)  -> discriminant o   (→ Trit)
+        //   val(o)   -> unwrap_value o
+        //   errv(o)  -> unwrap_error o
+        let ok = make_function_at(
+            FuncId(0),
+            "ok",
+            vec![("v".into(), TypeTag::Integer)],
+            TypeTag::Unit,
+            vec![
+                Instruction::OutcomeNewPositive {
+                    dest: ValueId(1),
+                    payload: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let err = make_function_at(
+            FuncId(1),
+            "err",
+            vec![("v".into(), TypeTag::Integer)],
+            TypeTag::Unit,
+            vec![
+                Instruction::OutcomeNewNegative {
+                    dest: ValueId(1),
+                    payload: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let nul = make_function_at(
+            FuncId(2),
+            "nul",
+            vec![],
+            TypeTag::Unit,
+            vec![
+                Instruction::OutcomeNewNull { dest: ValueId(0) },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let disc = make_function_at(
+            FuncId(3),
+            "disc",
+            vec![("o".into(), TypeTag::Unit)],
+            TypeTag::Trit,
+            vec![
+                Instruction::OutcomeDiscriminant {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let val = make_function_at(
+            FuncId(4),
+            "val",
+            vec![("o".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::OutcomeUnwrapValue {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let errv = make_function_at(
+            FuncId(5),
+            "errv",
+            vec![("o".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::OutcomeUnwrapError {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(
+                &["khi"],
+                vec![ok, err, nul, disc, val, errv],
+            )],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed outcome ops must compile");
+        assert_eq!(
+            jit.cached_function_count(),
+            6,
+            "all 6 boxed outcome fns JIT"
+        );
+
+        let pos = || triet_ir::RuntimeValue::Outcome {
+            discriminator: triet_core::Trit::Positive,
+            payload: Some(Box::new(integer(42))),
+        };
+        let neg = || triet_ir::RuntimeValue::Outcome {
+            discriminator: triet_core::Trit::Negative,
+            payload: Some(Box::new(integer(7))),
+        };
+
+        // ok(42) == ~+42; err(7) == ~-7; nul() == ~0 — JIT vs VM.
+        let mut vm = triet_ir::Vm::new(program.clone());
+        assert_rv_eq(
+            &dispatch_boxed(&jit, FuncId(0), vec![integer(42)]),
+            &vm.execute(FuncId(0), vec![integer(42)]).expect("vm ok"),
+        );
+        assert_rv_eq(&dispatch_boxed(&jit, FuncId(0), vec![integer(42)]), &pos());
+        let mut vm = triet_ir::Vm::new(program.clone());
+        assert_rv_eq(
+            &dispatch_boxed(&jit, FuncId(1), vec![integer(7)]),
+            &vm.execute(FuncId(1), vec![integer(7)]).expect("vm err"),
+        );
+        assert_rv_eq(&dispatch_boxed(&jit, FuncId(1), vec![integer(7)]), &neg());
+        let mut vm = triet_ir::Vm::new(program.clone());
+        assert_rv_eq(
+            &dispatch_boxed(&jit, FuncId(2), vec![]),
+            &vm.execute(FuncId(2), vec![]).expect("vm nul"),
+        );
+
+        // disc(~+42) == Positive; disc(~0) == Zero — JIT vs VM.
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let jit_disc = dispatch_boxed(&jit, FuncId(3), vec![pos()]);
+        assert_rv_eq(
+            &jit_disc,
+            &vm.execute(FuncId(3), vec![pos()]).expect("vm disc"),
+        );
+        assert_rv_eq(
+            &jit_disc,
+            &triet_ir::RuntimeValue::Trit(triet_core::Trit::Positive),
+        );
+
+        // val(~+42) == 42; errv(~-7) == 7 — JIT vs VM.
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let jit_val = dispatch_boxed(&jit, FuncId(4), vec![pos()]);
+        assert_rv_eq(
+            &jit_val,
+            &vm.execute(FuncId(4), vec![pos()]).expect("vm val"),
+        );
+        assert_rv_eq(&jit_val, &integer(42));
+        let mut vm = triet_ir::Vm::new(program);
+        let jit_errv = dispatch_boxed(&jit, FuncId(5), vec![neg()]);
+        assert_rv_eq(
+            &jit_errv,
+            &vm.execute(FuncId(5), vec![neg()]).expect("vm errv"),
+        );
+        assert_rv_eq(&jit_errv, &integer(7));
+    }
+
+    #[test]
+    fn jit4_agg2b_boxed_outcome_unwrap_wrong_arm_fails() {
+        // val(~-7): unwrap_value on a failure arm must FAIL at runtime —
+        // the per-call sentinel converts the boxed JIT run to an error,
+        // exactly as the VM raises InvalidOutcomeState.
+        let val = make_function_at(
+            FuncId(0),
+            "val",
+            vec![("o".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::OutcomeUnwrapValue {
+                    dest: ValueId(1),
+                    source: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![val])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert_eq!(jit.cached_function_count(), 1);
+
+        let neg = triet_ir::RuntimeValue::Outcome {
+            discriminator: triet_core::Trit::Negative,
+            payload: Some(Box::new(integer(7))),
+        };
+        // VM errors.
+        let mut vm = triet_ir::Vm::new(program);
+        assert!(
+            vm.execute(FuncId(0), vec![neg.clone()]).is_err(),
+            "VM must error"
+        );
+        // Boxed JIT errors via the per-call sentinel.
+        let neg_ptr = shims::box_for_jit_test(neg);
+        let r = dispatch_with_shim_errors(&jit, FuncId(0), &[neg_ptr], "val")
+            .expect("function is cached");
+        shims::drop_for_jit_test(neg_ptr);
+        assert!(r.is_err(), "boxed JIT must surface the wrong-arm failure");
     }
 
     #[test]

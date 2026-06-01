@@ -693,6 +693,7 @@ pub(crate) fn collect_tier_downs(
 /// emit stays in the per-backend wrappers.
 ///
 /// [ADR-0033 §1]: ../../../docs/decisions/0033-aot-cache-cranelift-object.md
+#[allow(clippy::too_many_lines)]
 fn emit_function_body(
     module: &mut impl Module,
     func: &IrFunction,
@@ -768,13 +769,14 @@ fn emit_function_body(
         builder.switch_to_block(cl_block);
         // Boxed φ dests → this block's Cranelift params (set above).
         // Entry's params are the function params (mapped already).
-        if boxed && ir_block.id != entry_id {
-            if let Some(phis) = block_phis.get(&ir_block.id) {
-                let params: Vec<Value> = builder.block_params(cl_block).to_vec();
-                for (i, phi) in phis.iter().enumerate() {
-                    if let Some(&p) = params.get(i) {
-                        value_map.insert(phi.dest, p);
-                    }
+        if boxed
+            && ir_block.id != entry_id
+            && let Some(phis) = block_phis.get(&ir_block.id)
+        {
+            let params: Vec<Value> = builder.block_params(cl_block).to_vec();
+            for (i, phi) in phis.iter().enumerate() {
+                if let Some(&p) = params.get(i) {
+                    value_map.insert(phi.dest, p);
                 }
             }
         }
@@ -910,6 +912,12 @@ fn is_boxed(func: &IrFunction) -> bool {
                 | Instruction::EnumNew { .. }
                 | Instruction::EnumTag { .. }
                 | Instruction::EnumPayload { .. }
+                | Instruction::OutcomeNewPositive { .. }
+                | Instruction::OutcomeNewNegative { .. }
+                | Instruction::OutcomeNewNull { .. }
+                | Instruction::OutcomeDiscriminant { .. }
+                | Instruction::OutcomeUnwrapValue { .. }
+                | Instruction::OutcomeUnwrapError { .. }
         )
     })
 }
@@ -1239,6 +1247,44 @@ fn translate_boxed_instruction(
         Instruction::EnumPayload { dest, scrutinee } => {
             let scr = materialize_boxed_operand(builder, module, value_map, ctx, *scrutinee)?;
             let r = emit_agg_shim(builder, module, "__triet_enum_payload", &[scr])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        // Outcome ops (agg.2b). New* construct, Discriminant reads the arm
+        // trit (total), Unwrap* peel the payload (failure-sentinel on the
+        // wrong arm). All single-operand → one boxed shim each.
+        Instruction::OutcomeNewPositive { dest, payload } => {
+            let p = materialize_boxed_operand(builder, module, value_map, ctx, *payload)?;
+            let r = emit_agg_shim(builder, module, "__triet_outcome_new_positive", &[p])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::OutcomeNewNegative { dest, payload } => {
+            let p = materialize_boxed_operand(builder, module, value_map, ctx, *payload)?;
+            let r = emit_agg_shim(builder, module, "__triet_outcome_new_negative", &[p])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::OutcomeNewNull { dest } => {
+            let r = emit_agg_shim(builder, module, "__triet_outcome_new_null", &[])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::OutcomeDiscriminant { dest, source } => {
+            let src = materialize_boxed_operand(builder, module, value_map, ctx, *source)?;
+            let r = emit_agg_shim(builder, module, "__triet_outcome_discriminant", &[src])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::OutcomeUnwrapValue { dest, source } => {
+            let src = materialize_boxed_operand(builder, module, value_map, ctx, *source)?;
+            let r = emit_agg_shim(builder, module, "__triet_outcome_unwrap_value", &[src])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::OutcomeUnwrapError { dest, source } => {
+            let src = materialize_boxed_operand(builder, module, value_map, ctx, *source)?;
+            let r = emit_agg_shim(builder, module, "__triet_outcome_unwrap_error", &[src])?;
             record_boxed_result(value_map, fn_state, *dest, r);
             emit_shim_sentinel_check(builder, module, fn_state)?;
         }
