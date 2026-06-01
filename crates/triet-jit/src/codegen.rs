@@ -65,7 +65,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId as ClFuncId, Linkage, Module};
 use triet_ir::{
     BlockId, ConstId, Constant, ConstantPool, FuncId as TriFuncId, Function as IrFunction,
-    Instruction, IrProgram, Operand, TypeTag, ValueId,
+    Instruction, IrProgram, JitBinOp, Operand, TypeTag, ValueId,
 };
 use triet_logic::Trilean;
 use triet_modules::AbsolutePath;
@@ -897,6 +897,36 @@ fn resolve_operand_boxed(
 /// delegate to the `__triet_*` VM-shims. agg.1 handles the struct
 /// opcodes + `Ret`; everything else tiers down (its boxed codegen lands
 /// in a later agg sub-task).
+/// Map a binary-scalar IR instruction to its [`JitBinOp`] + operands,
+/// or `None` if it isn't one. Lets the boxed translator handle the whole
+/// arithmetic/comparison/Ł3/K3 family through one `__triet_binop` shim.
+const fn boxed_binop_of(instr: &Instruction) -> Option<(JitBinOp, ValueId, Operand, Operand)> {
+    let (op, dest, lhs, rhs) = match *instr {
+        Instruction::Add { dest, lhs, rhs } => (JitBinOp::Add, dest, lhs, rhs),
+        Instruction::Sub { dest, lhs, rhs } => (JitBinOp::Sub, dest, lhs, rhs),
+        Instruction::Mul { dest, lhs, rhs } => (JitBinOp::Mul, dest, lhs, rhs),
+        Instruction::Div { dest, lhs, rhs } => (JitBinOp::Div, dest, lhs, rhs),
+        Instruction::Mod { dest, lhs, rhs } => (JitBinOp::Mod, dest, lhs, rhs),
+        Instruction::Pow { dest, base, exp } => (JitBinOp::Pow, dest, base, exp),
+        Instruction::Eq { dest, lhs, rhs } => (JitBinOp::Eq, dest, lhs, rhs),
+        Instruction::Ne { dest, lhs, rhs } => (JitBinOp::Ne, dest, lhs, rhs),
+        Instruction::Lt { dest, lhs, rhs } => (JitBinOp::Lt, dest, lhs, rhs),
+        Instruction::Le { dest, lhs, rhs } => (JitBinOp::Le, dest, lhs, rhs),
+        Instruction::Gt { dest, lhs, rhs } => (JitBinOp::Gt, dest, lhs, rhs),
+        Instruction::Ge { dest, lhs, rhs } => (JitBinOp::Ge, dest, lhs, rhs),
+        Instruction::LukAnd { dest, lhs, rhs } => (JitBinOp::LukAnd, dest, lhs, rhs),
+        Instruction::LukOr { dest, lhs, rhs } => (JitBinOp::LukOr, dest, lhs, rhs),
+        Instruction::LukImplies { dest, lhs, rhs } => (JitBinOp::LukImplies, dest, lhs, rhs),
+        Instruction::LukXor { dest, lhs, rhs } => (JitBinOp::LukXor, dest, lhs, rhs),
+        Instruction::LukIff { dest, lhs, rhs } => (JitBinOp::LukIff, dest, lhs, rhs),
+        Instruction::KleeneImplies { dest, lhs, rhs } => (JitBinOp::KleeneImplies, dest, lhs, rhs),
+        Instruction::KleeneXor { dest, lhs, rhs } => (JitBinOp::KleeneXor, dest, lhs, rhs),
+        Instruction::KleeneIff { dest, lhs, rhs } => (JitBinOp::KleeneIff, dest, lhs, rhs),
+        _ => return None,
+    };
+    Some((op, dest, lhs, rhs))
+}
+
 fn translate_boxed_instruction(
     builder: &mut FunctionBuilder<'_>,
     module: &mut impl Module,
@@ -984,6 +1014,24 @@ fn translate_boxed_instruction(
                 let z = builder.ins().iconst(I64, 0);
                 builder.ins().return_(&[z]);
             }
+        }
+        // Binary scalar ops (arithmetic / comparison / Ł3 / K3): one
+        // `__triet_binop(op, a, b)` shim delegating to the VM. The op
+        // discriminant is an `i8` immediate.
+        Instruction::Neg { dest, operand } => {
+            let v = resolve_operand_boxed(value_map, *operand)?;
+            let r = emit_agg_shim(builder, module, "__triet_neg", &[v])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        _ if boxed_binop_of(instr).is_some() => {
+            let (binop, dest, lhs, rhs) = boxed_binop_of(instr).expect("guard guarantees Some");
+            let l = resolve_operand_boxed(value_map, lhs)?;
+            let r = resolve_operand_boxed(value_map, rhs)?;
+            let op_imm = builder.ins().iconst(I8, i64::from(binop as u8));
+            let res = emit_agg_shim(builder, module, "__triet_binop", &[op_imm, l, r])?;
+            record_boxed_result(value_map, fn_state, dest, res);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
         }
         other => {
             return Err(JitError::UnsupportedOpcode {

@@ -38,8 +38,8 @@ use std::rc::Rc;
 
 use triet_core::Integer;
 use triet_ir::{
-    BuiltinName, RuntimeValue, VmError, dispatch_builtin, exec_field_get, exec_field_set,
-    exec_struct_new,
+    BuiltinName, JitBinOp, RuntimeValue, VmError, dispatch_builtin, exec_field_get, exec_field_set,
+    exec_jit_binop, exec_jit_neg, exec_struct_new,
 };
 use triet_logic::Trilean;
 
@@ -216,6 +216,25 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             addr: __triet_field_set as *const () as usize,
             signature: ShimSignature {
                 params: &[Ptr, I64, Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // op discriminant (i8) + two boxed operands → boxed result.
+            symbol: "__triet_binop",
+            addr: __triet_binop as *const () as usize,
+            signature: ShimSignature {
+                params: &[I8, Ptr, Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            symbol: "__triet_neg",
+            addr: __triet_neg as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
                 ret: Some(Ptr),
             },
         },
@@ -820,6 +839,29 @@ extern "C" fn __triet_field_set(obj_ptr: i64, idx: i64, val_ptr: i64) -> i64 {
     let val = arg_composite(val_ptr);
     let field_idx = u32::try_from(idx).unwrap_or(0);
     finish_ptr(exec_field_set(&obj, field_idx, val, &current_func_name()))
+}
+
+/// `binop(op, a, b) -> result` — the boxed-mode binary scalar op
+/// (ADR-0034 §1, agg.1c). `op` is a [`JitBinOp`] discriminant; `a`/`b`
+/// are boxed operands. Delegates to `exec_jit_binop` (the VM's own
+/// arithmetic/comparison/logic) → identical results, boxed back out.
+extern "C" fn __triet_binop(op: i8, a_ptr: i64, b_ptr: i64) -> i64 {
+    let Some(op) = u8::try_from(op).ok().and_then(JitBinOp::from_u8) else {
+        record_shim_failure(VmError::JitShimFault {
+            reason: format!("invalid JitBinOp discriminant {op}"),
+            function: current_func_name(),
+        });
+        return 0;
+    };
+    let a = arg_composite(a_ptr);
+    let b = arg_composite(b_ptr);
+    finish_ptr(exec_jit_binop(op, &a, &b, &current_func_name()))
+}
+
+/// `neg(v) -> -v` — the boxed-mode unary negation (ADR-0034 §1).
+extern "C" fn __triet_neg(v_ptr: i64) -> i64 {
+    let v = arg_composite(v_ptr);
+    finish_ptr(exec_jit_neg(&v, &current_func_name()))
 }
 
 // ── jit.2a shims (5) — now delegating ───────────────────────────────

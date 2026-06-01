@@ -2360,6 +2360,153 @@ pub fn exec_field_set(
     }
 }
 
+/// Binary scalar opcodes the JIT's boxed mode delegates to the VM
+/// (ADR-0034 §1, agg.1c).
+///
+/// One enum so a single `__triet_binop` shim + `exec_jit_binop` cover
+/// arithmetic + comparison + Ł3/K3 logic, instead of ~20 per-op shims.
+/// The `#[repr(u8)]` discriminants are the wire contract between the
+/// codegen (emits the op number) and the shim (reconstructs via
+/// [`JitBinOp::from_u8`]).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JitBinOp {
+    /// `+`
+    Add = 0,
+    /// `-`
+    Sub = 1,
+    /// `*`
+    Mul = 2,
+    /// `/`
+    Div = 3,
+    /// `%`
+    Mod = 4,
+    /// `**`
+    Pow = 5,
+    /// `==` (Ł3-aware)
+    Eq = 6,
+    /// `!=`
+    Ne = 7,
+    /// `<`
+    Lt = 8,
+    /// `<=`
+    Le = 9,
+    /// `>`
+    Gt = 10,
+    /// `>=`
+    Ge = 11,
+    /// `&&` (Łukasiewicz)
+    LukAnd = 12,
+    /// `||`
+    LukOr = 13,
+    /// `=>`
+    LukImplies = 14,
+    /// `^`
+    LukXor = 15,
+    /// `<=>`
+    LukIff = 16,
+    /// `~>` (Kleene)
+    KleeneImplies = 17,
+    /// `~^`
+    KleeneXor = 18,
+    /// `<~>`
+    KleeneIff = 19,
+}
+
+impl JitBinOp {
+    /// Reconstruct from the wire discriminant (shim side). `None` for an
+    /// out-of-range code (treated as a shim fault).
+    #[must_use]
+    pub const fn from_u8(n: u8) -> Option<Self> {
+        let op = match n {
+            0 => Self::Add,
+            1 => Self::Sub,
+            2 => Self::Mul,
+            3 => Self::Div,
+            4 => Self::Mod,
+            5 => Self::Pow,
+            6 => Self::Eq,
+            7 => Self::Ne,
+            8 => Self::Lt,
+            9 => Self::Le,
+            10 => Self::Gt,
+            11 => Self::Ge,
+            12 => Self::LukAnd,
+            13 => Self::LukOr,
+            14 => Self::LukImplies,
+            15 => Self::LukXor,
+            16 => Self::LukIff,
+            17 => Self::KleeneImplies,
+            18 => Self::KleeneXor,
+            19 => Self::KleeneIff,
+            _ => return None,
+        };
+        Some(op)
+    }
+}
+
+/// Execute a binary scalar op (ADR-0034 §1).
+///
+/// The single source of truth the JIT boxed-mode `__triet_binop` shim
+/// delegates to, so the JIT and the VM compute identical results.
+/// Dispatches to the same `arithmetic_*` / `runtime_eq_trilean` /
+/// `runtime_cmp` / `Trilean` logic the VM instruction loop uses.
+///
+/// # Errors
+/// Propagates arithmetic [`VmError`] (e.g. `Overflow`, `DivisionByZero`).
+pub fn exec_jit_binop(
+    op: JitBinOp,
+    l: &RuntimeValue,
+    r: &RuntimeValue,
+    func: &str,
+) -> Result<RuntimeValue, VmError> {
+    use std::cmp::Ordering;
+    let cmp_to_trilean = |want_lt: bool, want_eq: bool, want_gt: bool| {
+        let ord = runtime_cmp(l, r);
+        let hit = match ord {
+            Ordering::Less => want_lt,
+            Ordering::Equal => want_eq,
+            Ordering::Greater => want_gt,
+        };
+        RuntimeValue::Trilean(if hit { Trilean::True } else { Trilean::False })
+    };
+    let trilean = |t: Trilean| RuntimeValue::Trilean(t);
+    Ok(match op {
+        JitBinOp::Add => arithmetic_add(l, r, func)?,
+        JitBinOp::Sub => arithmetic_sub(l, r, func)?,
+        JitBinOp::Mul => arithmetic_mul(l, r, func)?,
+        JitBinOp::Div => arithmetic_div(l, r, func)?,
+        JitBinOp::Mod => arithmetic_mod(l, r, func)?,
+        JitBinOp::Pow => arithmetic_pow(l, r, func)?,
+        JitBinOp::Eq => trilean(runtime_eq_trilean(l, r)),
+        JitBinOp::Ne => trilean(match runtime_eq_trilean(l, r) {
+            Trilean::True => Trilean::False,
+            Trilean::False => Trilean::True,
+            Trilean::Unknown => Trilean::Unknown,
+        }),
+        JitBinOp::Lt => cmp_to_trilean(true, false, false),
+        JitBinOp::Le => cmp_to_trilean(true, true, false),
+        JitBinOp::Gt => cmp_to_trilean(false, false, true),
+        JitBinOp::Ge => cmp_to_trilean(false, true, true),
+        JitBinOp::LukAnd => trilean(l.as_trilean().and(r.as_trilean())),
+        JitBinOp::LukOr => trilean(l.as_trilean().or(r.as_trilean())),
+        JitBinOp::LukImplies => trilean(l.as_trilean().implies(r.as_trilean())),
+        JitBinOp::LukXor => trilean(l.as_trilean().xor(r.as_trilean())),
+        JitBinOp::LukIff => trilean(l.as_trilean().iff(r.as_trilean())),
+        JitBinOp::KleeneImplies => trilean(l.as_trilean().kleene_implies(r.as_trilean())),
+        JitBinOp::KleeneXor => trilean(l.as_trilean().kleene_xor(r.as_trilean())),
+        JitBinOp::KleeneIff => trilean(l.as_trilean().kleene_iff(r.as_trilean())),
+    })
+}
+
+/// Execute unary `Neg` (ADR-0034 §1) — the `__triet_neg` shim delegate.
+///
+/// # Errors
+/// Propagates arithmetic [`VmError`].
+pub fn exec_jit_neg(v: &RuntimeValue, func: &str) -> Result<RuntimeValue, VmError> {
+    arithmetic_neg(v, func)
+}
+
 // `clippy::significant_drop_tightening` allowed because the
 // AtomicSwap / AtomicCompareExchange arms intentionally hold the
 // mutex guard across the read-modify-write — tightening would split

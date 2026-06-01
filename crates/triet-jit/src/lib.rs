@@ -1529,6 +1529,103 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg1c_boxed_arithmetic_and_comparison_value_parity() {
+        // sum(p)  -> p.field(0) + p.field(1)   (FieldGet + Add, boxed)
+        // gt(p)   -> p.field(0) > p.field(1)   (FieldGet + Gt → Trilean)
+        // Boxed because of FieldGet; the arithmetic/comparison now JIT too
+        // (agg.1c) instead of tiering down. Assert == VM.
+        let sum = make_function_at(
+            FuncId(0),
+            "sum",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 1,
+                },
+                Instruction::Add {
+                    dest: ValueId(3),
+                    lhs: Operand::Value(ValueId(1)),
+                    rhs: Operand::Value(ValueId(2)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(3))),
+                },
+            ],
+        );
+        let gt = make_function_at(
+            FuncId(1),
+            "gt",
+            vec![("p".into(), TypeTag::Unit)],
+            TypeTag::Trilean,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 1,
+                },
+                Instruction::Gt {
+                    dest: ValueId(3),
+                    lhs: Operand::Value(ValueId(1)),
+                    rhs: Operand::Value(ValueId(2)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(3))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![sum, gt])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed arithmetic/comparison must compile");
+        assert_eq!(
+            jit.cached_function_count(),
+            2,
+            "both fns JIT (no tier-down)"
+        );
+
+        let point = || triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(7), integer(9)],
+        };
+
+        // sum({7,9}) == 16, == VM.
+        let jit_sum = dispatch_boxed(&jit, FuncId(0), vec![point()]);
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let vm_sum = vm.execute(FuncId(0), vec![point()]).expect("vm sum");
+        assert_rv_eq(&jit_sum, &vm_sum);
+        assert_rv_eq(&jit_sum, &integer(16));
+
+        // gt({7,9}) == False (7 > 9), == VM.
+        let jit_gt = dispatch_boxed(&jit, FuncId(1), vec![point()]);
+        let mut vm2 = triet_ir::Vm::new(program);
+        let vm_gt = vm2.execute(FuncId(1), vec![point()]).expect("vm gt");
+        // Both are Trilean — compare via the boxed read.
+        match (&jit_gt, &vm_gt) {
+            (triet_ir::RuntimeValue::Trilean(a), triet_ir::RuntimeValue::Trilean(b)) => {
+                assert_eq!(a, b, "gt parity");
+                assert_eq!(*a, triet_logic::Trilean::False);
+            }
+            _ => panic!("expected Trilean from gt, got {jit_gt:?} / {vm_gt:?}"),
+        }
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();
