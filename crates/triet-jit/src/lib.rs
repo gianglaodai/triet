@@ -2795,6 +2795,85 @@ mod tests {
     }
 
     #[test]
+    fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
+        // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
+        // with all-scalar boundary. Args box (raw->ptr), result unboxes
+        // (ptr->raw); temp arg boxes + the result box are dropped (a wrong
+        // drop order double-frees → this test aborts during dispatch).
+        //   make_and_sum(a, b: Integer) -> Integer  (BOXED: builds a struct)
+        //   caller(n: Integer) -> Integer = make_and_sum(n, n)  (UNBOXED)
+        let make_and_sum = make_function_at(
+            FuncId(0),
+            "make_and_sum",
+            vec![
+                ("a".into(), TypeTag::Integer),
+                ("b".into(), TypeTag::Integer),
+            ],
+            TypeTag::Integer,
+            vec![
+                Instruction::StructNew {
+                    dest: ValueId(2),
+                    fields: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(3),
+                    object: Operand::Value(ValueId(2)),
+                    field_idx: 0,
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(4),
+                    object: Operand::Value(ValueId(2)),
+                    field_idx: 1,
+                },
+                Instruction::Add {
+                    dest: ValueId(5),
+                    lhs: Operand::Value(ValueId(3)),
+                    rhs: Operand::Value(ValueId(4)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(5))),
+                },
+            ],
+        );
+        let caller = make_function_at(
+            FuncId(1),
+            "caller",
+            vec![("n".into(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                Instruction::CallLocal {
+                    dest: Some(ValueId(1)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![make_and_sum, caller])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // make_and_sum is boxed; caller is unboxed and cross-mode calls it.
+        // Both must JIT now (caller no longer tiers down).
+        assert!(jit.lookup(FuncId(0)).is_some(), "boxed make_and_sum JITs");
+        assert!(
+            jit.lookup(FuncId(1)).is_some(),
+            "unboxed caller cross-mode calling a boxed callee must JIT"
+        );
+        // caller is unboxed → raw i64 in/out via dispatch_integer.
+        // caller(5) = make_and_sum(5,5) = struct{5,5} -> 5+5 = 10.
+        assert_eq!(dispatch_integer(&jit, FuncId(1), &[5]), Some(10));
+        // VM parity.
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(1), vec![integer(5)]).expect("vm caller");
+        assert_rv_eq(&vm_r, &integer(10));
+    }
+
+    #[test]
     fn jit4_crosscall_composite_passthrough_value_parity() {
         // ADR-0035 §1+§2: composite cross-mode boundary now JITs safely.
         // The unboxed `id(s)=s` returns a borrowed composite param, so its

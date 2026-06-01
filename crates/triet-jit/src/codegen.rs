@@ -1790,7 +1790,9 @@ fn translate_instruction(
             value_map.insert(*dest, result);
         }
         Instruction::CallLocal { dest, callee, args } => {
-            translate_call(builder, module, value_map, ctx, *dest, *callee, args)?;
+            translate_call(
+                builder, module, value_map, ctx, fn_state, *dest, *callee, args,
+            )?;
         }
         Instruction::CallCrossModule { dest, path, args } => {
             let callee = ctx.path_to_funcid.get(path).copied().ok_or_else(|| {
@@ -1798,7 +1800,9 @@ fn translate_instruction(
                     opcode: format!("CallCrossModule path `{path}` not in program"),
                 }
             })?;
-            translate_call(builder, module, value_map, ctx, *dest, callee, args)?;
+            translate_call(
+                builder, module, value_map, ctx, fn_state, *dest, callee, args,
+            )?;
         }
         Instruction::WitnessCall {
             dest,
@@ -1816,7 +1820,9 @@ fn translate_instruction(
                     opcode: format!("WitnessCall path `{path}` not in program"),
                 }
             })?;
-            translate_call(builder, module, value_map, ctx, *dest, callee, args)?;
+            translate_call(
+                builder, module, value_map, ctx, fn_state, *dest, callee, args,
+            )?;
         }
         Instruction::Eq { dest, lhs, rhs } => {
             emit_icmp(builder, value_map, ctx, IntCC::Equal, *dest, *lhs, *rhs)?;
@@ -2164,11 +2170,13 @@ fn emit_icmp(
 /// all three lower to the same Cranelift `call $func` form at the
 /// v0.4 dispatch level. Witness tables remain informational only
 /// per ADR-0012 §2.
+#[allow(clippy::too_many_arguments)]
 fn translate_call(
     builder: &mut FunctionBuilder<'_>,
     module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
     ctx: &ProgramContext<'_>,
+    fn_state: &mut FnState,
     dest: Option<ValueId>,
     callee: TriFuncId,
     args: &[Operand],
@@ -2183,12 +2191,87 @@ fn translate_call(
     // this one check closes the cross-mode hazard. Cross-mode marshaling
     // is a later sub-task.
     if ctx.boxed_funcs.contains(&callee) {
-        return Err(JitError::UnsupportedOpcode {
-            opcode: format!(
-                "call to boxed FuncId({}) from an unboxed function — cross-mode ABI (defer)",
-                callee.0
-            ),
-        });
+        // Cross-mode: unboxed caller -> boxed callee. Scalar-only
+        // (cross-call.b). Box each scalar arg (raw→ptr), call the boxed
+        // callee, unbox the scalar result (ptr→raw); drop every box
+        // created.
+        let (params, ret) =
+            ctx.func_sigs
+                .get(&callee)
+                .ok_or_else(|| JitError::UnsupportedOpcode {
+                    opcode: format!(
+                        "cross-mode call to boxed FuncId({}) — no signature",
+                        callee.0
+                    ),
+                })?;
+        let cl_callee =
+            ctx.func_id_map
+                .get(&callee)
+                .copied()
+                .ok_or_else(|| JitError::UnsupportedOpcode {
+                    opcode: format!("cross-mode call target FuncId({}) not in program", callee.0),
+                })?;
+        if params.len() != args.len() {
+            return Err(JitError::UnsupportedOpcode {
+                opcode: format!("cross-mode call arity mismatch to FuncId({})", callee.0),
+            });
+        }
+
+        // Box each scalar arg into a temp box; a non-scalar boundary tiers down.
+        let mut temp_boxes = Vec::new();
+        let mut boxed_args = Vec::with_capacity(args.len());
+        for (op, pty) in args.iter().zip(params) {
+            match boundary_class(pty).ok_or_else(|| JitError::UnsupportedOpcode {
+                opcode: format!("cross-mode arg type {pty:?} not marshalable (unboxed→boxed)"),
+            })? {
+                BoundaryClass::Scalar { kind, .. } => {
+                    let raw = resolve_operand(builder, value_map, ctx, *op)?;
+                    let boxed = emit_box_scalar(builder, module, raw, kind)?;
+                    boxed_args.push(boxed);
+                    temp_boxes.push(boxed);
+                }
+                BoundaryClass::PassThrough => {
+                    return Err(JitError::UnsupportedOpcode {
+                        opcode: format!("cross-mode arg type {pty:?} not scalar (unboxed→boxed)"),
+                    });
+                }
+            }
+        }
+
+        // The return must be scalar too, else tier down.
+        let Some(BoundaryClass::Scalar {
+            kind: ret_kind,
+            clif: ret_clif,
+        }) = boundary_class(ret)
+        else {
+            return Err(JitError::UnsupportedOpcode {
+                opcode: format!("cross-mode return type {ret:?} not scalar (unboxed→boxed)"),
+            });
+        };
+
+        let func_ref = module.declare_func_in_func(cl_callee, builder.func);
+        let call_inst = builder.ins().call(func_ref, &boxed_args);
+        let result_ptr = builder.inst_results(call_inst).first().copied();
+
+        // Unbox the scalar result into `dest` (read BEFORE dropping the
+        // box), then drop it. The boxed callee returned an owned box per
+        // ADR-0035 §1 clone-on-return discipline.
+        if let Some(r) = result_ptr {
+            if let Some(dest_id) = dest {
+                let raw = emit_unbox_scalar(builder, module, r, ret_kind, ret_clif)?;
+                value_map.insert(dest_id, raw);
+            }
+            emit_drop_arc(builder, module, r)?;
+        }
+
+        // Drop the temp arg boxes (the boxed callee only borrowed them).
+        for b in temp_boxes {
+            emit_drop_arc(builder, module, b)?;
+        }
+
+        // Propagate a callee-internal failure (mirrors translate_boxed_call's tail).
+        emit_shim_sentinel_check(builder, module, fn_state)?;
+        return Ok(());
     }
     let cl_callee =
         ctx.func_id_map
