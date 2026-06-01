@@ -2507,6 +2507,165 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn jit4_agg3a_boxed_nullable_ops_value_parity() {
+        // agg.3a: boxed Nullable ops.
+        //   wrap(v)  -> NullWrap v     (→ Enum{0, Some(v)})
+        //   uw(n)    -> NullUnwrap n   (pass-through; Null panics)
+        //   chk(n)   -> NullCheck n    (→ Trit)
+        let wrap = make_function_at(
+            FuncId(0),
+            "wrap",
+            vec![("v".into(), TypeTag::Integer)],
+            TypeTag::Unit,
+            vec![
+                Instruction::NullWrap {
+                    dest: ValueId(1),
+                    value: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let uw = make_function_at(
+            FuncId(1),
+            "uw",
+            vec![("n".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::NullUnwrap {
+                    dest: ValueId(1),
+                    nullable: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let chk = make_function_at(
+            FuncId(2),
+            "chk",
+            vec![("n".into(), TypeTag::Unit)],
+            TypeTag::Trit,
+            vec![
+                Instruction::NullCheck {
+                    dest: ValueId(1),
+                    nullable: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![wrap, uw, chk])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed nullable ops must compile");
+        assert_eq!(
+            jit.cached_function_count(),
+            3,
+            "all 3 boxed nullable fns JIT"
+        );
+
+        // wrap(5) == Enum{0, Some(5)} — JIT vs VM.
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let jit_wrap = dispatch_boxed(&jit, FuncId(0), vec![integer(5)]);
+        assert_rv_eq(
+            &jit_wrap,
+            &vm.execute(FuncId(0), vec![integer(5)]).expect("vm wrap"),
+        );
+        assert!(
+            matches!(
+                &jit_wrap,
+                triet_ir::RuntimeValue::Enum {
+                    variant: 0,
+                    payload: Some(_)
+                }
+            ),
+            "got {jit_wrap:?}"
+        );
+
+        // uw(42) == 42 (pass-through) — JIT vs VM.
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let jit_uw = dispatch_boxed(&jit, FuncId(1), vec![integer(42)]);
+        assert_rv_eq(
+            &jit_uw,
+            &vm.execute(FuncId(1), vec![integer(42)]).expect("vm uw"),
+        );
+        assert_rv_eq(&jit_uw, &integer(42));
+
+        // chk(42) == Positive; chk(Null) == Zero — JIT vs VM.
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let jit_chk = dispatch_boxed(&jit, FuncId(2), vec![integer(42)]);
+        assert_rv_eq(
+            &jit_chk,
+            &vm.execute(FuncId(2), vec![integer(42)]).expect("vm chk"),
+        );
+        assert_rv_eq(
+            &jit_chk,
+            &triet_ir::RuntimeValue::Trit(triet_core::Trit::Positive),
+        );
+
+        let mut vm = triet_ir::Vm::new(program);
+        let jit_chk_null = dispatch_boxed(&jit, FuncId(2), vec![triet_ir::RuntimeValue::Null]);
+        assert_rv_eq(
+            &jit_chk_null,
+            &vm.execute(FuncId(2), vec![triet_ir::RuntimeValue::Null])
+                .expect("vm chk null"),
+        );
+        assert_rv_eq(
+            &jit_chk_null,
+            &triet_ir::RuntimeValue::Trit(triet_core::Trit::Zero),
+        );
+    }
+
+    #[test]
+    fn jit4_agg3a_boxed_null_unwrap_panics_on_null() {
+        // uw(Null): NullUnwrap on Null must FAIL at runtime — the boxed
+        // JIT surfaces it via the per-call sentinel, matching the VM.
+        let uw = make_function_at(
+            FuncId(0),
+            "uw",
+            vec![("n".into(), TypeTag::Unit)],
+            TypeTag::Integer,
+            vec![
+                Instruction::NullUnwrap {
+                    dest: ValueId(1),
+                    nullable: Operand::Value(ValueId(0)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![uw])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+
+        // VM errors on Null.
+        let mut vm = triet_ir::Vm::new(program);
+        assert!(
+            vm.execute(FuncId(0), vec![triet_ir::RuntimeValue::Null])
+                .is_err(),
+            "VM must error"
+        );
+        // Boxed JIT errors via the per-call sentinel.
+        let null_ptr = shims::box_for_jit_test(triet_ir::RuntimeValue::Null);
+        let r = dispatch_with_shim_errors(&jit, FuncId(0), &[null_ptr], "uw")
+            .expect("function is cached");
+        shims::drop_for_jit_test(null_ptr);
+        assert!(r.is_err(), "boxed JIT must surface the null-unwrap panic");
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();

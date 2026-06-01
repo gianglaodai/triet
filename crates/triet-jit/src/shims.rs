@@ -40,9 +40,10 @@ use triet_core::Integer;
 use triet_ir::{
     BuiltinName, JitBinOp, JitConstKind, RuntimeValue, VmError, dispatch_builtin, exec_box_const,
     exec_enum_new, exec_enum_payload, exec_enum_tag, exec_field_get, exec_field_set,
-    exec_jit_binop, exec_jit_neg, exec_outcome_discriminant, exec_outcome_new_negative,
-    exec_outcome_new_null, exec_outcome_new_positive, exec_outcome_unwrap_error,
-    exec_outcome_unwrap_value, exec_struct_new, exec_trilean_tag,
+    exec_jit_binop, exec_jit_neg, exec_null_check, exec_null_unwrap, exec_null_wrap,
+    exec_outcome_discriminant, exec_outcome_new_negative, exec_outcome_new_null,
+    exec_outcome_new_positive, exec_outcome_unwrap_error, exec_outcome_unwrap_value,
+    exec_struct_new, exec_trilean_tag,
 };
 use triet_logic::Trilean;
 
@@ -348,6 +349,37 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
             // source ptr → boxed failure payload (or failure sentinel).
             symbol: "__triet_outcome_unwrap_error",
             addr: __triet_outcome_unwrap_error as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        // ── Nullable-opcode shims (ADR-0034 agg.3a, builtin: None) ──
+        ShimEntry {
+            builtin: None,
+            // value ptr → boxed Some-carrier (Enum variant 0).
+            symbol: "__triet_null_wrap",
+            addr: __triet_null_wrap as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // nullable ptr → boxed value (or NullUnwrap failure sentinel).
+            symbol: "__triet_null_unwrap",
+            addr: __triet_null_unwrap as *const () as usize,
+            signature: ShimSignature {
+                params: &[Ptr],
+                ret: Some(Ptr),
+            },
+        },
+        ShimEntry {
+            builtin: None,
+            // nullable ptr → boxed Trit discriminant. Total.
+            symbol: "__triet_null_check",
+            addr: __triet_null_check as *const () as usize,
             signature: ShimSignature {
                 params: &[Ptr],
                 ret: Some(Ptr),
@@ -1079,6 +1111,27 @@ extern "C" fn __triet_outcome_unwrap_value(source_ptr: i64) -> i64 {
 extern "C" fn __triet_outcome_unwrap_error(source_ptr: i64) -> i64 {
     let src = arg_composite(source_ptr);
     finish_ptr(exec_outcome_unwrap_error(src, &current_func_name()))
+}
+
+// ── Nullable-opcode shims (ADR-0034 agg.3a) ─────────────────────────
+
+/// `null_wrap(value) -> Some-carrier` — wrap as the non-null carrier.
+extern "C" fn __triet_null_wrap(value_ptr: i64) -> i64 {
+    box_rv(exec_null_wrap(arg_composite(value_ptr)))
+}
+
+/// `null_unwrap(nullable) -> value` — force-unwrap; `Null` records a
+/// `NullUnwrap` failure + returns the sentinel (per-call probe).
+extern "C" fn __triet_null_unwrap(nullable_ptr: i64) -> i64 {
+    let v = arg_composite(nullable_ptr);
+    finish_ptr(exec_null_unwrap(v, &current_func_name()))
+}
+
+/// `null_check(nullable) -> Trit` — the discriminator trit, boxed. Total
+/// (Null / `Outcome{Zero,None}` → Zero, else Positive); never faults.
+extern "C" fn __triet_null_check(nullable_ptr: i64) -> i64 {
+    let v = arg_composite(nullable_ptr);
+    box_rv(exec_null_check(&v))
 }
 
 // ── jit.2a shims (5) — now delegating ───────────────────────────────

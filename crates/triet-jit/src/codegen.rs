@@ -918,6 +918,9 @@ fn is_boxed(func: &IrFunction) -> bool {
                 | Instruction::OutcomeDiscriminant { .. }
                 | Instruction::OutcomeUnwrapValue { .. }
                 | Instruction::OutcomeUnwrapError { .. }
+                | Instruction::NullWrap { .. }
+                | Instruction::NullUnwrap { .. }
+                | Instruction::NullCheck { .. }
         )
     })
 }
@@ -1285,6 +1288,26 @@ fn translate_boxed_instruction(
         Instruction::OutcomeUnwrapError { dest, source } => {
             let src = materialize_boxed_operand(builder, module, value_map, ctx, *source)?;
             let r = emit_agg_shim(builder, module, "__triet_outcome_unwrap_error", &[src])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        // Nullable ops (agg.3a). Wrap/Check are total; Unwrap panics on
+        // Null (failure sentinel). One boxed shim each.
+        Instruction::NullWrap { dest, value } => {
+            let v = materialize_boxed_operand(builder, module, value_map, ctx, *value)?;
+            let r = emit_agg_shim(builder, module, "__triet_null_wrap", &[v])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::NullUnwrap { dest, nullable } => {
+            let n = materialize_boxed_operand(builder, module, value_map, ctx, *nullable)?;
+            let r = emit_agg_shim(builder, module, "__triet_null_unwrap", &[n])?;
+            record_boxed_result(value_map, fn_state, *dest, r);
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
+        Instruction::NullCheck { dest, nullable } => {
+            let n = materialize_boxed_operand(builder, module, value_map, ctx, *nullable)?;
+            let r = emit_agg_shim(builder, module, "__triet_null_check", &[n])?;
             record_boxed_result(value_map, fn_state, *dest, r);
             emit_shim_sentinel_check(builder, module, fn_state)?;
         }

@@ -982,71 +982,22 @@ impl Vm {
             // ── Nullable ─────────────────────────────────────────
             Instruction::NullWrap { dest, value } => {
                 let v = read_operand(constants, frame, value);
-                // Wrap: create an enum with variant 0 = Some(v)
-                frame.write(
-                    dest,
-                    RuntimeValue::Enum {
-                        variant: 0,
-                        payload: Some(Box::new(v)),
-                    },
-                );
+                frame.write(dest, exec_null_wrap(v));
             }
             Instruction::NullUnwrap { dest, nullable } => {
-                // v0.7.5.1: symmetric to the v0.7.4.4 NullCheck cleanup.
-                // The legacy `Enum { variant: 0, payload: Some(p) }`
-                // unwrap arm was the inverse of the legacy `NullWrap`
-                // emit. With ADR-0010 Addendum §D's unified encoding,
-                // `T?` values flow as the bare value (or `Null`); no
-                // current lowerer path emits `NullWrap`, so the only
-                // hits on the legacy arm were user enums whose
-                // variant-0 happened to carry a payload — `Vector<Node>`
-                // round-trip through `get(...)!!` was reading `Leaf(10)`
-                // as `Integer(10)`, dropping the enum tag. The two
-                // canonical nullable carriers are `RuntimeValue::Null`
-                // (panic) and any other value (pass through).
+                // The two canonical nullable carriers are
+                // `RuntimeValue::Null` (panic) and any other value (pass
+                // through) per ADR-0010 Addendum §D — see
+                // `exec_null_unwrap`.
                 let v = read_operand(constants, frame, nullable);
-                match v {
-                    RuntimeValue::Null => {
-                        return Err(VmError::NullUnwrap {
-                            function: func_name,
-                        });
-                    }
-                    _ => frame.write(dest, v),
-                }
+                frame.write(dest, exec_null_unwrap(v, &func_name)?);
             }
             Instruction::NullCheck { dest, nullable } => {
-                // ADR-0010: report the nullable's discriminator trit.
-                //   Positive = wrapped value (Some)
-                //   Zero     = canonical null
-                //   Negative = reserved for definitely-missing
-                // Today only Some/Null are produced; Negative is reserved.
-                //
-                // ADR-0010 Addendum §D (v0.7.4.3-error.6a): cross-
-                // tolerance with the Outcome value carrier — an
-                // `OutcomeNewNull`-constructed `RuntimeValue::Outcome
-                // { Trit::Zero, None }` is also recognized as the
-                // canonical null state. This unifies `~0` source with
-                // the legacy `null` keyword at the runtime tier.
-                //
-                // v0.7.4.4: the legacy "any payload-less Enum is null"
-                // arm was removed — it collided with bare unit-variant
-                // enum values (e.g. `LetKw` from a `Token?` slot via
-                // cross-tolerance), which a hand-rolled Elvis like
-                // `keyword_for(slice) ?: Identifier(...)` then mis-
-                // classified as null. Today no opcode emits a unit
-                // enum as a null marker; `RuntimeValue::Null` and
-                // `Outcome { Trit::Zero, None }` are the two canonical
-                // null carriers.
+                // Discriminator trit (ADR-0010 + Addendum §D cross-
+                // tolerance: Null and `Outcome { Zero, None }` → Zero) —
+                // see `exec_null_check`.
                 let v = read_operand(constants, frame, nullable);
-                let trit = match &v {
-                    RuntimeValue::Null
-                    | RuntimeValue::Outcome {
-                        discriminator: Trit::Zero,
-                        payload: None,
-                    } => Trit::Zero,
-                    _ => Trit::Positive,
-                };
-                frame.write(dest, RuntimeValue::Trit(trit));
+                frame.write(dest, exec_null_check(&v));
             }
 
             // ── Aggregate: struct ────────────────────────────────
@@ -2403,6 +2354,53 @@ pub fn exec_outcome_unwrap_error(
         function: func_name.to_string(),
     })?;
     Ok(*inner)
+}
+
+/// `NullWrap` — wrap a value as the non-null `Some` carrier (ADR-0034
+/// agg.3a).
+///
+/// Mirrors the VM: an `Enum { variant: 0, payload: Some(value) }`.
+#[must_use]
+pub fn exec_null_wrap(value: RuntimeValue) -> RuntimeValue {
+    RuntimeValue::Enum {
+        variant: 0,
+        payload: Some(Box::new(value)),
+    }
+}
+
+/// `NullUnwrap` — force-unwrap a nullable (ADR-0034 agg.3a).
+///
+/// `Null` panics (`NullUnwrap` error); any other value passes through
+/// unchanged (the canonical `T?` carrier flows as the bare value per
+/// ADR-0010 Addendum §D). Takes ownership (the value moves out).
+///
+/// # Errors
+/// [`VmError::NullUnwrap`] if `value` is `Null`.
+pub fn exec_null_unwrap(value: RuntimeValue, func_name: &str) -> Result<RuntimeValue, VmError> {
+    match value {
+        RuntimeValue::Null => Err(VmError::NullUnwrap {
+            function: func_name.to_string(),
+        }),
+        other => Ok(other),
+    }
+}
+
+/// `NullCheck` — the nullable's discriminator trit (ADR-0034 agg.3a).
+///
+/// `Zero` for the two canonical null carriers (`Null` and `Outcome {
+/// Zero, None }` per ADR-0010 Addendum §D cross-tolerance), `Positive`
+/// otherwise. Total — never faults.
+#[must_use]
+pub const fn exec_null_check(value: &RuntimeValue) -> RuntimeValue {
+    let trit = match value {
+        RuntimeValue::Null
+        | RuntimeValue::Outcome {
+            discriminator: Trit::Zero,
+            payload: None,
+        } => Trit::Zero,
+        _ => Trit::Positive,
+    };
+    RuntimeValue::Trit(trit)
 }
 
 /// Binary scalar opcodes the JIT's boxed mode delegates to the VM

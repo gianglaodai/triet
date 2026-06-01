@@ -90,9 +90,10 @@ pub use verify::{VerifierResult, VerifierViolation, verify_function, verify_prog
 pub use vm::{
     JitBinOp, JitConstKind, JitDispatch, RuntimeMapKey, RuntimeValue, Vm, VmError,
     dispatch_builtin, exec_box_const, exec_enum_new, exec_enum_payload, exec_enum_tag,
-    exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg, exec_outcome_discriminant,
-    exec_outcome_new_negative, exec_outcome_new_null, exec_outcome_new_positive,
-    exec_outcome_unwrap_error, exec_outcome_unwrap_value, exec_struct_new, exec_trilean_tag,
+    exec_field_get, exec_field_set, exec_jit_binop, exec_jit_neg, exec_null_check,
+    exec_null_unwrap, exec_null_wrap, exec_outcome_discriminant, exec_outcome_new_negative,
+    exec_outcome_new_null, exec_outcome_new_positive, exec_outcome_unwrap_error,
+    exec_outcome_unwrap_value, exec_struct_new, exec_trilean_tag,
 };
 
 #[cfg(test)]
