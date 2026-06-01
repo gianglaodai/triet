@@ -91,6 +91,13 @@ struct ProgramContext<'a> {
     /// time per ADR-0016 §5); the framework test passes a non-empty
     /// set to exercise the `BuiltinCapabilityDenied` tier-down.
     denied_namespaces: &'a [&'a str],
+    /// v0.11.x.jit.4.agg.1 — the `FuncId`s compiled in **boxed** mode
+    /// (ADR-0034 Addendum Bậc A). A call across a mode boundary has a
+    /// mismatched ABI (raw scalar vs boxed ptr, same i64 width → the
+    /// Cranelift verifier can't catch it), so a call whose callee mode
+    /// differs from the caller's tiers down (see `translate_call`).
+    /// Cross-mode marshaling is a later sub-task.
+    boxed_funcs: std::collections::HashSet<TriFuncId>,
 }
 
 /// Map a Triết [`TypeTag`] to a Cranelift IR scalar type per
@@ -216,6 +223,7 @@ impl JitBackend {
             path_to_funcid: HashMap::new(),
             constants: &empty_pool,
             denied_namespaces: &[],
+            boxed_funcs: std::collections::HashSet::new(),
         };
         let signature = build_signature_for(func)?;
         let func_name = func
@@ -425,6 +433,7 @@ pub(crate) fn declare_and_define_program(
         path_to_funcid,
         constants: &program.constants,
         denied_namespaces,
+        boxed_funcs: boxed_func_set(program),
     };
 
     // Body pass: per-function codegen + define. On per-function error,
@@ -533,6 +542,7 @@ pub(crate) fn declare_and_define_module(
         path_to_funcid,
         constants: &program.constants,
         denied_namespaces,
+        boxed_funcs: boxed_func_set(program),
     };
 
     // Body pass: define ONLY the local module's functions. Per-function
@@ -622,6 +632,7 @@ pub(crate) fn collect_tier_downs(
         path_to_funcid,
         constants: &program.constants,
         denied_namespaces: &[],
+        boxed_funcs: boxed_func_set(program),
     };
 
     // Body-pass: attempt opcode translation per function; record the
@@ -853,6 +864,20 @@ fn is_boxed(func: &IrFunction) -> bool {
                 | Instruction::FieldSet { .. }
         )
     })
+}
+
+/// The set of program `FuncId`s compiled in boxed mode — the call-site
+/// mode-mismatch guard (`translate_call`) consults it so a cross-mode
+/// call tiers down rather than passing a raw scalar where a boxed ptr
+/// is expected (ADR-0034 Addendum). Computed once per program pass.
+fn boxed_func_set(program: &IrProgram) -> std::collections::HashSet<TriFuncId> {
+    program
+        .modules
+        .iter()
+        .flat_map(|m| &m.functions)
+        .filter(|f| is_boxed(f))
+        .map(|f| f.id)
+        .collect()
 }
 
 /// Signature for a function honouring its mode: unboxed → per-type
@@ -1596,6 +1621,23 @@ fn translate_call(
     callee: TriFuncId,
     args: &[Operand],
 ) -> Result<(), JitError> {
+    // Cross-mode ABI guard (ADR-0034 Addendum): this is the unboxed
+    // caller path (`translate_instruction`). If the callee is compiled
+    // boxed, its params/return are boxed `i64` ptrs, but we'd pass raw
+    // unboxed scalars (same i64 width → the Cranelift verifier can't
+    // catch it) → the callee would deref a raw integer as a pointer.
+    // Refuse: tier this caller down to the VM (always correct). Boxed
+    // callers already tier down on any call (no boxed call arm yet), so
+    // this one check closes the cross-mode hazard. Cross-mode marshaling
+    // is a later sub-task.
+    if ctx.boxed_funcs.contains(&callee) {
+        return Err(JitError::UnsupportedOpcode {
+            opcode: format!(
+                "call to boxed FuncId({}) from an unboxed function — cross-mode ABI (defer)",
+                callee.0
+            ),
+        });
+    }
     let cl_callee =
         ctx.func_id_map
             .get(&callee)

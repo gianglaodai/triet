@@ -1672,6 +1672,60 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg1c_cross_mode_call_tiers_down_caller() {
+        // Safety guard (ADR-0034 Addendum): an unboxed (all-Integer)
+        // caller calling a BOXED callee would pass a raw i64 where the
+        // callee expects a boxed ptr (same width → Cranelift can't catch
+        // it). The caller must tier down; the boxed callee still JITs.
+        //   make(x) -> Struct{x}              (boxed)
+        //   caller(x: Integer) -> Integer = { make(x); x }  (would call
+        //     boxed make → must tier down; left as call + ret x)
+        let make = make_function_at(
+            FuncId(0),
+            "make",
+            vec![("x".into(), TypeTag::Integer)],
+            TypeTag::Unit,
+            vec![
+                Instruction::StructNew {
+                    dest: ValueId(1),
+                    fields: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let caller = make_function_at(
+            FuncId(1),
+            "caller",
+            vec![("x".into(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                Instruction::CallLocal {
+                    dest: Some(ValueId(1)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![make, caller])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // `make` (boxed) JITs; `caller` tiers down on the cross-mode call.
+        assert!(jit.lookup(FuncId(0)).is_some(), "boxed make must JIT");
+        assert!(
+            jit.lookup(FuncId(1)).is_none(),
+            "unboxed caller of a boxed callee must tier down (no cross-mode miscompile)"
+        );
+    }
+
+    #[test]
     fn jit3_program_with_call_local() {
         // main calls helper which returns 7.
         let mut pool = triet_ir::ConstantPool::new();
