@@ -3136,6 +3136,142 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg4_boxed_builtin_assert_value_parity() {
+        // agg.4 (the dominant 87.6% lever): a BOXED function (FieldGet
+        // forces boxed) calls `assert` on a struct field — the most common
+        // builtin in aggregate-touching self-host functions. Previously
+        // every such function tiered down ("boxed mode — defer"); now the
+        // generic `__triet_call_builtin` shim dispatches it. The trailing
+        // `Const`/`Ret` carries a real value so the boxed-Unit return repr
+        // doesn't muddy the parity check.
+        //   guard(p) -> Integer: assert(p.field(0)); 42
+        // - field True            -> assert passes -> 42 (value parity win)
+        // - field Unknown / False -> assert fails  -> Err(AssertionFailed)
+        let mut pool = triet_ir::ConstantPool::new();
+        let answer = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(42).unwrap(),
+        ));
+        let guard = make_function_at(
+            FuncId(0),
+            "guard",
+            vec![("p".into(), TypeTag::Opaque)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::CallBuiltin {
+                    dest: Some(ValueId(2)),
+                    name: triet_ir::BuiltinName::Assert,
+                    args: vec![Operand::Value(ValueId(1))],
+                },
+                Instruction::Const {
+                    dest: ValueId(3),
+                    constant: answer,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(3))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![guard])], pool);
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed fn calling assert must JIT (no longer tiers down)");
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "boxed CallBuiltin(assert) must NOT tier the function down"
+        );
+
+        // Passing arm: assert(True) -> returns 42, parity with the VM.
+        let ok = triet_ir::RuntimeValue::Struct {
+            fields: vec![triet_ir::RuntimeValue::Trilean(triet_logic::Trilean::True)],
+        };
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![ok.clone()]);
+        let mut vm = triet_ir::Vm::new(program.clone());
+        let vm_r = vm.execute(FuncId(0), vec![ok]).expect("vm guard ok");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &integer(42));
+
+        // Failing arm: assert(Unknown) -> Err(AssertionFailed), Err parity.
+        let bad = triet_ir::RuntimeValue::Struct {
+            fields: vec![triet_ir::RuntimeValue::Trilean(
+                triet_logic::Trilean::Unknown,
+            )],
+        };
+        let p_ptr = shims::box_for_jit_test(bad.clone());
+        let jit_r =
+            dispatch_with_shim_errors(&jit, FuncId(0), &[p_ptr], "guard").expect("cache hit");
+        assert!(
+            matches!(jit_r, Err(VmError::AssertionFailed { .. })),
+            "a failing assert must surface AssertionFailed, got {jit_r:?}"
+        );
+        shims::drop_for_jit_test(p_ptr);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![bad]);
+        assert!(
+            matches!(vm_r, Err(VmError::AssertionFailed { .. })),
+            "VM oracle must also raise AssertionFailed, got {vm_r:?}"
+        );
+    }
+
+    #[test]
+    fn jit4_agg4_boxed_builtin_println_value_parity() {
+        // agg.4: a BOXED function (FieldGet forces boxed) calls `println`
+        // (the other deferred boxed builtin) — proves NON-assert builtins
+        // route through the same generic shim. Returns Unit; the trailing
+        // constant keeps the parity check off the boxed-Unit return repr.
+        //   shout(p) -> Integer: println(p.field(0)); 7
+        let mut pool = triet_ir::ConstantPool::new();
+        let seven = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(7).unwrap(),
+        ));
+        let shout = make_function_at(
+            FuncId(0),
+            "shout",
+            vec![("p".into(), TypeTag::Opaque)],
+            TypeTag::Integer,
+            vec![
+                Instruction::FieldGet {
+                    dest: ValueId(1),
+                    object: Operand::Value(ValueId(0)),
+                    field_idx: 0,
+                },
+                Instruction::CallBuiltin {
+                    dest: Some(ValueId(2)),
+                    name: triet_ir::BuiltinName::Println,
+                    args: vec![Operand::Value(ValueId(1))],
+                },
+                Instruction::Const {
+                    dest: ValueId(3),
+                    constant: seven,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(3))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![shout])], pool);
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed fn calling println must JIT");
+        assert!(jit.lookup(FuncId(0)).is_some(), "boxed println must JIT");
+
+        let p = triet_ir::RuntimeValue::Struct {
+            fields: vec![integer(99)],
+        };
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![p.clone()]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![p]).expect("vm shout");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &integer(7));
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes

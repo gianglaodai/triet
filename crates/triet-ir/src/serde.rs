@@ -568,111 +568,15 @@ fn read_option_value(data: &[u8], pos: &mut usize) -> Result<Option<ValueId>, Tr
 // encountering ID 8+ emit `TrivError::UnknownBuiltinId` (same refusal
 // contract as `UnknownTypeDiscriminant`).
 fn write_builtin(buf: &mut Vec<u8>, builtin: BuiltinName) {
-    let id = match builtin {
-        BuiltinName::Println => 0,
-        BuiltinName::Print => 1,
-        BuiltinName::Assert => 2,
-        BuiltinName::AssertEq => 3,
-        BuiltinName::FStringConcat => 4,
-        BuiltinName::TextLen => 5,
-        BuiltinName::TextConcat => 6,
-        BuiltinName::TextFromInteger => 7,
-        BuiltinName::VectorNew => 8,
-        BuiltinName::VectorPush => 9,
-        BuiltinName::VectorGet => 10,
-        BuiltinName::VectorLength => 11,
-        BuiltinName::HashMapNew => 12,
-        BuiltinName::HashMapInsert => 13,
-        BuiltinName::HashMapGet => 14,
-        BuiltinName::HashMapKeys => 15,
-        BuiltinName::HashMapContains => 16,
-        BuiltinName::ReadFile => 17,
-        BuiltinName::WriteFile => 18,
-        BuiltinName::FileExists => 19,
-        BuiltinName::PathJoin => 20,
-        BuiltinName::PathParent => 21,
-        BuiltinName::PathBasename => 22,
-        BuiltinName::StringSubstring => 23,
-        BuiltinName::StringSplit => 24,
-        BuiltinName::StringIndexOf => 25,
-        BuiltinName::ParseInteger => 26,
-        BuiltinName::TextIntoBytes => 27,
-        BuiltinName::TextFromBytes => 28,
-        BuiltinName::Blake3Hash => 29,
-        BuiltinName::WriteFileBytes => 30,
-        BuiltinName::GetEnv => 31,
-        BuiltinName::ReadDirRecursive => 32,
-        // v0.9.x.atomic.2 — atomic builtins per ADR-0028 §1.
-        BuiltinName::AtomicNew => 33,
-        BuiltinName::AtomicLoad => 34,
-        BuiltinName::AtomicStore => 35,
-        BuiltinName::AtomicSwap => 36,
-        BuiltinName::AtomicCompareExchange => 37,
-        BuiltinName::AtomicFetchAdd => 38,
-        BuiltinName::AtomicFetchSub => 39,
-        BuiltinName::AtomicFetchBitwiseAnd => 40,
-        BuiltinName::AtomicFetchBitwiseOr => 41,
-        BuiltinName::AtomicFetchBitwiseXor => 42,
-        // v0.10.x.thread.1 — raw OS thread primitives per ADR-0026 v2 §3.
-        // `.triv` v6 → v7 bump on this addition.
-        BuiltinName::RawThreadSpawn => 43,
-        BuiltinName::RawThreadJoin => 44,
-    };
-    write_u8(buf, id);
+    // The `BuiltinName` ↔ `u8` numbering lives on the type itself
+    // (`BuiltinName::wire_id`) so the `.triv` codec and the JIT's
+    // boxed-mode dispatch shim share one append-only source of truth.
+    write_u8(buf, builtin.wire_id());
 }
 
 fn read_builtin(data: &[u8], pos: &mut usize) -> Result<BuiltinName, TrivError> {
     let id = read_u8(data, pos)?;
-    match id {
-        0 => Ok(BuiltinName::Println),
-        1 => Ok(BuiltinName::Print),
-        2 => Ok(BuiltinName::Assert),
-        3 => Ok(BuiltinName::AssertEq),
-        4 => Ok(BuiltinName::FStringConcat),
-        5 => Ok(BuiltinName::TextLen),
-        6 => Ok(BuiltinName::TextConcat),
-        7 => Ok(BuiltinName::TextFromInteger),
-        8 => Ok(BuiltinName::VectorNew),
-        9 => Ok(BuiltinName::VectorPush),
-        10 => Ok(BuiltinName::VectorGet),
-        11 => Ok(BuiltinName::VectorLength),
-        12 => Ok(BuiltinName::HashMapNew),
-        13 => Ok(BuiltinName::HashMapInsert),
-        14 => Ok(BuiltinName::HashMapGet),
-        15 => Ok(BuiltinName::HashMapKeys),
-        16 => Ok(BuiltinName::HashMapContains),
-        17 => Ok(BuiltinName::ReadFile),
-        18 => Ok(BuiltinName::WriteFile),
-        19 => Ok(BuiltinName::FileExists),
-        20 => Ok(BuiltinName::PathJoin),
-        21 => Ok(BuiltinName::PathParent),
-        22 => Ok(BuiltinName::PathBasename),
-        23 => Ok(BuiltinName::StringSubstring),
-        24 => Ok(BuiltinName::StringSplit),
-        25 => Ok(BuiltinName::StringIndexOf),
-        26 => Ok(BuiltinName::ParseInteger),
-        27 => Ok(BuiltinName::TextIntoBytes),
-        28 => Ok(BuiltinName::TextFromBytes),
-        29 => Ok(BuiltinName::Blake3Hash),
-        30 => Ok(BuiltinName::WriteFileBytes),
-        31 => Ok(BuiltinName::GetEnv),
-        32 => Ok(BuiltinName::ReadDirRecursive),
-        // v0.9.x.atomic.2 — atomic builtins per ADR-0028 §1.
-        33 => Ok(BuiltinName::AtomicNew),
-        34 => Ok(BuiltinName::AtomicLoad),
-        35 => Ok(BuiltinName::AtomicStore),
-        36 => Ok(BuiltinName::AtomicSwap),
-        37 => Ok(BuiltinName::AtomicCompareExchange),
-        38 => Ok(BuiltinName::AtomicFetchAdd),
-        39 => Ok(BuiltinName::AtomicFetchSub),
-        40 => Ok(BuiltinName::AtomicFetchBitwiseAnd),
-        41 => Ok(BuiltinName::AtomicFetchBitwiseOr),
-        42 => Ok(BuiltinName::AtomicFetchBitwiseXor),
-        // v0.10.x.thread.1 — raw OS thread primitives per ADR-0026 v2 §3.
-        43 => Ok(BuiltinName::RawThreadSpawn),
-        44 => Ok(BuiltinName::RawThreadJoin),
-        id => Err(TrivError::UnknownBuiltin(id)),
-    }
+    BuiltinName::from_wire_id(id).ok_or(TrivError::UnknownBuiltin(id))
 }
 
 // ── Instruction ────────────────────────────────────────────────────

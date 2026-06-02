@@ -224,6 +224,19 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
                 ret: Some(Ptr),
             },
         },
+        ShimEntry {
+            builtin: None,
+            // boxed-mode `CallBuiltin` dispatch (ADR-0034 §1/§2):
+            // `(name_disc, args_ptr, len)` → boxed result. Generic over
+            // every builtin (called by boxed codegen directly, not via
+            // the per-builtin `builtin_shim` lookup).
+            symbol: "__triet_call_builtin",
+            addr: __triet_call_builtin as *const () as usize,
+            signature: ShimSignature {
+                params: &[I64, I64, I64],
+                ret: Some(Ptr),
+            },
+        },
         // ── Aggregate-opcode shims (ADR-0034 §1/§2, builtin: None —
         // called by boxed codegen directly, not via CallBuiltin) ──
         ShimEntry {
@@ -1086,6 +1099,51 @@ extern "C" fn __triet_struct_new(fields_ptr: i64, len: i64) -> i64 {
         }
     }
     box_rv(exec_struct_new(fields))
+}
+
+/// `call_builtin(name_disc, args_ptr, len) -> result` — the boxed-mode
+/// dispatch for ANY `CallBuiltin` (ADR-0034 §1/§2). `name_disc` is the
+/// [`BuiltinName::wire_id`]; `args_ptr` addresses `len` consecutive boxed
+/// `i64` argument pointers the JIT spilled into a caller-owned stack slot
+/// (the §2 array-ptr+len ABI, shared with [`__triet_struct_new`]).
+///
+/// Unlike the unboxed [`builtin_shim`] path — fixed-arity per-builtin
+/// shims with the hybrid scalar/ptr ABI — the boxed path is uniform:
+/// every argument is already a boxed `RuntimeValue` ptr, so a single
+/// generic shim handles every builtin at any arity (this also resolves
+/// the `assert` arity-1-vs-2 hybrid mismatch — the VM's `execute_builtin`
+/// reads arguments positionally). Delegates to `dispatch_builtin` (the
+/// exact VM logic) → zero VM↔JIT divergence; the result boxes out via
+/// `finish_ptr` (Unit for `assert`/`println`), or records a per-call
+/// failure + returns the `0` sentinel.
+extern "C" fn __triet_call_builtin(name_disc: i64, args_ptr: i64, len: i64) -> i64 {
+    let Some(name) = u8::try_from(name_disc)
+        .ok()
+        .and_then(BuiltinName::from_wire_id)
+    else {
+        record_shim_failure(VmError::JitShimFault {
+            reason: format!("invalid builtin discriminant {name_disc}"),
+            function: current_func_name(),
+        });
+        return 0;
+    };
+    let n = usize::try_from(len).unwrap_or(0);
+    let mut args = Vec::with_capacity(n);
+    if n > 0 {
+        // SAFETY: per ADR-0034 §2, JIT codegen spills exactly `len`
+        // consecutive `i64` boxed argument pointers into a caller-owned
+        // stack slot at `args_ptr` that lives for this call. Each slot is
+        // an `Rc::into_raw` `RuntimeValue` pointer (or 0 = null). We read
+        // exactly `n` of them and borrow (not consume) each via
+        // `arg_composite` — refcounts unchanged. `n > 0` guards against a
+        // dangling/zero base for a niladic builtin.
+        #[allow(unsafe_code)]
+        let slots: &[i64] = unsafe { std::slice::from_raw_parts(args_ptr as *const i64, n) };
+        for &p in slots {
+            args.push(arg_composite(p));
+        }
+    }
+    finish_ptr(dispatch_builtin(name, &args, &current_func_name()))
 }
 
 /// `field_get(obj, idx) -> field` — read field `idx` of a boxed struct.

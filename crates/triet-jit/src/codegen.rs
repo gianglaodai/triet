@@ -1642,6 +1642,57 @@ fn translate_boxed_instruction(
         Instruction::Unreachable => {
             emit_unreachable(builder, module, fn_state)?;
         }
+        // Boxed-mode `CallBuiltin` (agg.4 — the biggest 87.6% lever:
+        // `assert`/`println` in aggregate-touching functions). Unlike the
+        // unboxed path (fixed-arity per-builtin shims, single-block only),
+        // every builtin routes through the generic `__triet_call_builtin`
+        // shim: the args spill into a stack slot (the §2 array-ptr+len ABI,
+        // exactly StructNew's spill) and dispatch by `wire_id`. Boxed args
+        // are already ptrs → arbitrary arity is uniform, and the per-call
+        // sentinel makes it sound across multi-block boxed functions.
+        Instruction::CallBuiltin { dest, name, args } => {
+            // §3 capability defense-in-depth (empty denied-set = no-op),
+            // mirroring the unboxed path.
+            crate::check_builtin_capability(*name, ctx.denied_namespaces)?;
+            let arg_vals: Vec<Value> = args
+                .iter()
+                .map(|op| materialize_boxed_operand(builder, module, value_map, ctx, *op))
+                .collect::<Result<_, _>>()?;
+            let len = arg_vals.len();
+            let bytes = u32::try_from(len * 8).map_err(|_| JitError::UnsupportedOpcode {
+                opcode: "builtin arg count overflow".to_string(),
+            })?;
+            // ExplicitSlot, 8-byte aligned; min size 8 so a niladic
+            // builtin still has a valid (unread) base.
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                bytes.max(8),
+                3,
+            ));
+            for (i, v) in arg_vals.iter().enumerate() {
+                let offset = i32::try_from(i * 8).map_err(|_| JitError::UnsupportedOpcode {
+                    opcode: "builtin arg offset overflow".to_string(),
+                })?;
+                builder.ins().stack_store(*v, slot, offset);
+            }
+            let base = builder.ins().stack_addr(I64, slot, 0);
+            let disc = builder.ins().iconst(I64, i64::from(name.wire_id()));
+            let len_val = builder.ins().iconst(I64, i64::try_from(len).unwrap_or(0));
+            let r = emit_agg_shim(
+                builder,
+                module,
+                "__triet_call_builtin",
+                &[disc, base, len_val],
+            )?;
+            // A discarded result (`dest == None`, e.g. `assert`/`println`)
+            // leaves its boxed `Unit` unreferenced — a bounded dev-tier
+            // leak, consistent with the multi-block drop-skip policy
+            // (memory-safe, never a double-free; precise drop = post-v0.11).
+            if let Some(dest_id) = dest {
+                record_boxed_result(value_map, fn_state, *dest_id, r);
+            }
+            emit_shim_sentinel_check(builder, module, fn_state)?;
+        }
         other => {
             return Err(JitError::UnsupportedOpcode {
                 opcode: format!("{other} (boxed mode — defer to a later agg sub-task)"),

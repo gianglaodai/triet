@@ -602,3 +602,120 @@ pub enum BuiltinName {
     /// [ADR-0026 v2]: ../../../../docs/decisions/0026-actor-boundary-send-rules.md
     RawThreadJoin,
 }
+
+impl BuiltinName {
+    /// The stable discriminant byte for this builtin.
+    ///
+    /// Single source of truth for the `BuiltinName` ↔ `u8` numbering:
+    /// the `.triv` serializer ([`crate::serde`]) and the JIT's boxed-mode
+    /// `__triet_call_builtin` dispatch shim (per ADR-0034 §1/§2) both
+    /// consume it. The IDs are **append-only** (a `.triv` stability
+    /// contract) — never renumber an existing variant; a new builtin
+    /// takes the next free ID.
+    #[must_use]
+    pub const fn wire_id(self) -> u8 {
+        match self {
+            Self::Println => 0,
+            Self::Print => 1,
+            Self::Assert => 2,
+            Self::AssertEq => 3,
+            Self::FStringConcat => 4,
+            Self::TextLen => 5,
+            Self::TextConcat => 6,
+            Self::TextFromInteger => 7,
+            Self::VectorNew => 8,
+            Self::VectorPush => 9,
+            Self::VectorGet => 10,
+            Self::VectorLength => 11,
+            Self::HashMapNew => 12,
+            Self::HashMapInsert => 13,
+            Self::HashMapGet => 14,
+            Self::HashMapKeys => 15,
+            Self::HashMapContains => 16,
+            Self::ReadFile => 17,
+            Self::WriteFile => 18,
+            Self::FileExists => 19,
+            Self::PathJoin => 20,
+            Self::PathParent => 21,
+            Self::PathBasename => 22,
+            Self::StringSubstring => 23,
+            Self::StringSplit => 24,
+            Self::StringIndexOf => 25,
+            Self::ParseInteger => 26,
+            Self::TextIntoBytes => 27,
+            Self::TextFromBytes => 28,
+            Self::Blake3Hash => 29,
+            Self::WriteFileBytes => 30,
+            Self::GetEnv => 31,
+            Self::ReadDirRecursive => 32,
+            Self::AtomicNew => 33,
+            Self::AtomicLoad => 34,
+            Self::AtomicStore => 35,
+            Self::AtomicSwap => 36,
+            Self::AtomicCompareExchange => 37,
+            Self::AtomicFetchAdd => 38,
+            Self::AtomicFetchSub => 39,
+            Self::AtomicFetchBitwiseAnd => 40,
+            Self::AtomicFetchBitwiseOr => 41,
+            Self::AtomicFetchBitwiseXor => 42,
+            Self::RawThreadSpawn => 43,
+            Self::RawThreadJoin => 44,
+        }
+    }
+
+    /// Inverse of [`Self::wire_id`]: recover a builtin from its
+    /// discriminant byte, or `None` for an unknown ID (refuse-over-guess
+    /// — callers surface the unknown-id error rather than guess).
+    #[must_use]
+    pub const fn from_wire_id(id: u8) -> Option<Self> {
+        let name = match id {
+            0 => Self::Println,
+            1 => Self::Print,
+            2 => Self::Assert,
+            3 => Self::AssertEq,
+            4 => Self::FStringConcat,
+            5 => Self::TextLen,
+            6 => Self::TextConcat,
+            7 => Self::TextFromInteger,
+            8 => Self::VectorNew,
+            9 => Self::VectorPush,
+            10 => Self::VectorGet,
+            11 => Self::VectorLength,
+            12 => Self::HashMapNew,
+            13 => Self::HashMapInsert,
+            14 => Self::HashMapGet,
+            15 => Self::HashMapKeys,
+            16 => Self::HashMapContains,
+            17 => Self::ReadFile,
+            18 => Self::WriteFile,
+            19 => Self::FileExists,
+            20 => Self::PathJoin,
+            21 => Self::PathParent,
+            22 => Self::PathBasename,
+            23 => Self::StringSubstring,
+            24 => Self::StringSplit,
+            25 => Self::StringIndexOf,
+            26 => Self::ParseInteger,
+            27 => Self::TextIntoBytes,
+            28 => Self::TextFromBytes,
+            29 => Self::Blake3Hash,
+            30 => Self::WriteFileBytes,
+            31 => Self::GetEnv,
+            32 => Self::ReadDirRecursive,
+            33 => Self::AtomicNew,
+            34 => Self::AtomicLoad,
+            35 => Self::AtomicStore,
+            36 => Self::AtomicSwap,
+            37 => Self::AtomicCompareExchange,
+            38 => Self::AtomicFetchAdd,
+            39 => Self::AtomicFetchSub,
+            40 => Self::AtomicFetchBitwiseAnd,
+            41 => Self::AtomicFetchBitwiseOr,
+            42 => Self::AtomicFetchBitwiseXor,
+            43 => Self::RawThreadSpawn,
+            44 => Self::RawThreadJoin,
+            _ => return None,
+        };
+        Some(name)
+    }
+}
