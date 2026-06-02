@@ -3480,6 +3480,131 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::type_complexity,
+        clippy::cast_possible_truncation
+    )]
+    fn jit4_unboxed_lukasiewicz_kleene_ops_value_parity() {
+        // Unboxed Ł3/K3 logic ops had no native codegen (boxed-only, via
+        // boxed_binop_of) → unboxed functions using them tiered down. Now
+        // they delegate to the VM's exec_jit_binop through the __triet_binop
+        // shim (divergence-free — no Ł3/K3 truth table re-derived in
+        // codegen). Cover ALL EIGHT ops over the full Trilean input grid
+        // including Unknown (the Ł3-distinguishing value), each checked
+        // against the VM oracle.
+        //   op(a, b: Trilean) -> Trilean
+        use triet_logic::Trilean::{False as F, True as T, Unknown as U};
+        let ops: [(&str, fn(ValueId, Operand, Operand) -> Instruction); 8] = [
+            ("LukAnd", |d, l, r| Instruction::LukAnd {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("LukOr", |d, l, r| Instruction::LukOr {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("LukImplies", |d, l, r| Instruction::LukImplies {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("LukXor", |d, l, r| Instruction::LukXor {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("LukIff", |d, l, r| Instruction::LukIff {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("KleeneImplies", |d, l, r| Instruction::KleeneImplies {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("KleeneXor", |d, l, r| Instruction::KleeneXor {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+            ("KleeneIff", |d, l, r| Instruction::KleeneIff {
+                dest: d,
+                lhs: l,
+                rhs: r,
+            }),
+        ];
+        // Trilean {-1, 0, +1} encoding (ADR-0010 §3); the i8 result rides in
+        // the low byte of the i64 dispatch return, recovered via `as i8`.
+        let tri_i64 = |t: triet_logic::Trilean| -> i64 {
+            match t {
+                F => -1,
+                U => 0,
+                T => 1,
+            }
+        };
+        for (name, ctor) in ops {
+            let func = make_function(
+                name,
+                vec![
+                    ("a".to_string(), TypeTag::Trilean),
+                    ("b".to_string(), TypeTag::Trilean),
+                ],
+                TypeTag::Trilean,
+                vec![
+                    ctor(
+                        ValueId(2),
+                        Operand::Value(ValueId(0)),
+                        Operand::Value(ValueId(1)),
+                    ),
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(2))),
+                    },
+                ],
+            );
+            let program = make_program(
+                vec![make_ir_module(&["khi"], vec![func])],
+                triet_ir::ConstantPool::new(),
+            );
+            let mut jit = JitCompiler::new();
+            jit.compile_program(&program)
+                .expect("unboxed Ł3/K3 op must JIT");
+            assert!(
+                jit.lookup(FuncId(0)).is_some(),
+                "{name} must JIT (no longer tiers down)"
+            );
+
+            for a in [F, U, T] {
+                for b in [F, U, T] {
+                    let jit_raw = dispatch_integer(&jit, FuncId(0), &[tri_i64(a), tri_i64(b)])
+                        .expect("dispatch") as i8;
+                    let mut vm = triet_ir::Vm::new(program.clone());
+                    let vm_r = vm
+                        .execute(
+                            FuncId(0),
+                            vec![
+                                triet_ir::RuntimeValue::Trilean(a),
+                                triet_ir::RuntimeValue::Trilean(b),
+                            ],
+                        )
+                        .expect("vm op");
+                    let vm_raw = match vm_r {
+                        triet_ir::RuntimeValue::Trilean(t) => tri_i64(t) as i8,
+                        other => panic!("{name}: VM returned non-Trilean {other:?}"),
+                    };
+                    assert_eq!(
+                        jit_raw, vm_raw,
+                        "{name}({a:?}, {b:?}): jit {jit_raw} vs vm {vm_raw}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes

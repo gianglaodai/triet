@@ -1194,6 +1194,62 @@ const fn boxed_binop_of(instr: &Instruction) -> Option<(JitBinOp, ValueId, Opera
     Some((op, dest, lhs, rhs))
 }
 
+/// The Ł3/K3 logic-op subset of [`boxed_binop_of`] — used by the UNBOXED
+/// translator to delegate the eight Łukasiewicz/Kleene ops to the VM
+/// (arithmetic + comparison already have native unboxed codegen, so they
+/// are excluded here). Returns `None` for any non-logic instruction.
+const fn luk_kleene_op_of(instr: &Instruction) -> Option<(JitBinOp, ValueId, Operand, Operand)> {
+    let (op, dest, lhs, rhs) = match *instr {
+        Instruction::LukAnd { dest, lhs, rhs } => (JitBinOp::LukAnd, dest, lhs, rhs),
+        Instruction::LukOr { dest, lhs, rhs } => (JitBinOp::LukOr, dest, lhs, rhs),
+        Instruction::LukImplies { dest, lhs, rhs } => (JitBinOp::LukImplies, dest, lhs, rhs),
+        Instruction::LukXor { dest, lhs, rhs } => (JitBinOp::LukXor, dest, lhs, rhs),
+        Instruction::LukIff { dest, lhs, rhs } => (JitBinOp::LukIff, dest, lhs, rhs),
+        Instruction::KleeneImplies { dest, lhs, rhs } => (JitBinOp::KleeneImplies, dest, lhs, rhs),
+        Instruction::KleeneXor { dest, lhs, rhs } => (JitBinOp::KleeneXor, dest, lhs, rhs),
+        Instruction::KleeneIff { dest, lhs, rhs } => (JitBinOp::KleeneIff, dest, lhs, rhs),
+        _ => return None,
+    };
+    Some((op, dest, lhs, rhs))
+}
+
+/// Emit an UNBOXED Ł3/K3 logic op (agg — unboxed-logic coverage). The
+/// operands are raw `i8` Trileans; box each as a `Trilean` `RuntimeValue`,
+/// call the `__triet_binop` shim (delegating to the VM's `exec_jit_binop`
+/// — zero divergence, no Ł3/K3 truth table re-derived in codegen), then
+/// unbox the `i8` Trilean result. The three temp boxes are fresh +
+/// dominating (created here, used here) → dropped inline, safe in any
+/// block. The logic ops are total (never fault) so no per-call sentinel is
+/// needed (cf. the total `__triet_trilean_tag`).
+#[allow(clippy::too_many_arguments)]
+fn emit_unboxed_logic_op(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    value_map: &mut HashMap<ValueId, Value>,
+    ctx: &ProgramContext<'_>,
+    op: JitBinOp,
+    dest: ValueId,
+    lhs: Operand,
+    rhs: Operand,
+) -> Result<(), JitError> {
+    let l_raw = resolve_operand(builder, module, value_map, ctx, lhs)?;
+    let r_raw = resolve_operand(builder, module, value_map, ctx, rhs)?;
+    let l_box = emit_box_scalar(builder, module, l_raw, JitConstKind::Trilean)?;
+    let r_box = emit_box_scalar(builder, module, r_raw, JitConstKind::Trilean)?;
+    let op_imm = builder.ins().iconst(I8, i64::from(op as u8));
+    let res_box = emit_agg_shim(builder, module, "__triet_binop", &[op_imm, l_box, r_box])?
+        .ok_or_else(|| JitError::Cranelift {
+            message: "__triet_binop returned no value".to_string(),
+        })?;
+    // Read the scalar out BEFORE dropping its box.
+    let res = emit_unbox_scalar(builder, module, res_box, JitConstKind::Trilean, I8)?;
+    emit_drop_arc(builder, module, res_box)?;
+    emit_drop_arc(builder, module, l_box)?;
+    emit_drop_arc(builder, module, r_box)?;
+    value_map.insert(dest, res);
+    Ok(())
+}
+
 /// A boxed-mode φ-node lowered to a Cranelift block parameter
 /// (ADR-0034 agg.1c-v): its SSA `dest` + the per-predecessor incoming
 /// values. The φ's position in its block determines the block-param
@@ -2004,6 +2060,15 @@ fn translate_instruction(
                 *lhs,
                 *rhs,
             )?;
+        }
+        // Łukasiewicz Ł3 + Kleene K3 logic ops have no native unboxed
+        // codegen (only the boxed path did, via `boxed_binop_of`). Cover
+        // them here by delegating to the VM's `exec_jit_binop` through the
+        // `__triet_binop` shim — divergence-free (the same logic the VM
+        // runs), no re-derivation of Ł3/K3 truth tables in codegen.
+        _ if luk_kleene_op_of(instr).is_some() => {
+            let (op, dest, lhs, rhs) = luk_kleene_op_of(instr).expect("guard guarantees Some");
+            emit_unboxed_logic_op(builder, module, value_map, ctx, op, dest, lhs, rhs)?;
         }
         Instruction::Br { target } => {
             let cl_target = *block_map
