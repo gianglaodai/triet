@@ -3136,6 +3136,139 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg3b_iii_unboxed_string_const_value_parity() {
+        // agg.3b-iii: an UNBOXED function (no aggregate opcode) returns a
+        // `Constant::String`. The composite's unboxed repr is an i64 ptr,
+        // so the String materializes via the SAME data-object path the
+        // boxed mode uses (`emit_box_string`), threaded into the unboxed
+        // `materialize_constant`. The fresh box is tracked in
+        // `created_boxed` + transferred at Ret (clone-on-return sees it ∈
+        // created_boxed → no clone) → dispatch reads + drops it exactly
+        // once (a refcount slip double-frees + aborts the test).
+        //   tag() -> String = "<s>"
+        for s in ["", "std", "Triết!"] {
+            let mut pool = triet_ir::ConstantPool::new();
+            let sid = pool.intern(triet_ir::Constant::String(s.to_owned()));
+            let tag = make_function_at(
+                FuncId(0),
+                "tag",
+                vec![],
+                TypeTag::String,
+                vec![
+                    Instruction::Const {
+                        dest: ValueId(0),
+                        constant: sid,
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(0))),
+                    },
+                ],
+            );
+            let program = make_program(vec![make_ir_module(&["khi"], vec![tag])], pool);
+            let mut jit = JitCompiler::new();
+            jit.compile_program(&program)
+                .expect("unboxed String const must JIT (3b-iii)");
+            assert!(
+                jit.lookup(FuncId(0)).is_some(),
+                "unboxed String const {s:?} must JIT"
+            );
+
+            let jit_r = dispatch_boxed(&jit, FuncId(0), vec![]);
+            let mut vm = triet_ir::Vm::new(program);
+            let vm_r = vm.execute(FuncId(0), vec![]).expect("vm tag");
+            assert_rv_eq(&jit_r, &vm_r);
+            assert_rv_eq(&jit_r, &triet_ir::RuntimeValue::String(s.to_owned()));
+        }
+    }
+
+    #[test]
+    fn jit4_agg3b_iii_unboxed_string_null_const_discarded_no_double_free() {
+        // agg.3b-iii: an UNBOXED function creates a String AND a Null const
+        // it does NOT return (a scalar is returned instead). Both composite
+        // boxes are tracked in `created_boxed` + dropped at Ret — proving
+        // the drop discipline runs once per discarded composite const (a
+        // double-free here aborts under glibc; the scalar result confirms
+        // value parity).
+        //   mix() -> Integer = { _ = "discarded"; _ = null; 7 }
+        let mut pool = triet_ir::ConstantPool::new();
+        let sid = pool.intern(triet_ir::Constant::String("discarded".to_owned()));
+        let nid = pool.intern(triet_ir::Constant::Null);
+        let seven = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(7).unwrap(),
+        ));
+        let mix = make_function_at(
+            FuncId(0),
+            "mix",
+            vec![],
+            TypeTag::Integer,
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: sid,
+                },
+                Instruction::Const {
+                    dest: ValueId(1),
+                    constant: nid,
+                },
+                Instruction::Const {
+                    dest: ValueId(2),
+                    constant: seven,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![mix])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("unboxed String/Null const must JIT");
+        assert!(jit.lookup(FuncId(0)).is_some(), "mix must JIT");
+
+        // mix returns a raw Integer → dispatch_integer (not the ptr helper).
+        assert_eq!(dispatch_integer(&jit, FuncId(0), &[]), Some(7));
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![]).expect("vm mix");
+        assert_rv_eq(&vm_r, &integer(7));
+    }
+
+    #[test]
+    fn jit4_agg3b_iii_unboxed_null_const_value_parity() {
+        // agg.3b-iii: an UNBOXED function returns a `Constant::Null` (the
+        // `__triet_box_const` Null arm, no data object). Return type is a
+        // composite (`Nullable`) → i64 ptr; the box transfers at Ret.
+        //   nothing() -> Integer? = null
+        let mut pool = triet_ir::ConstantPool::new();
+        let nid = pool.intern(triet_ir::Constant::Null);
+        let nothing = make_function_at(
+            FuncId(0),
+            "nothing",
+            vec![],
+            TypeTag::Nullable(Box::new(TypeTag::Integer)),
+            vec![
+                Instruction::Const {
+                    dest: ValueId(0),
+                    constant: nid,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![nothing])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("unboxed Null const must JIT");
+        assert!(jit.lookup(FuncId(0)).is_some(), "nothing must JIT");
+
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![]).expect("vm nothing");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &triet_ir::RuntimeValue::Null);
+    }
+
+    #[test]
     fn jit4_agg4_boxed_builtin_assert_value_parity() {
         // agg.4 (the dominant 87.6% lever): a BOXED function (FieldGet
         // forces boxed) calls `assert` on a struct field — the most common
@@ -4197,9 +4330,11 @@ mod tests {
         // refuses forever (permanent churn). Skipping is correct — the
         // program just recompiles fresh each run.
         let mut pool = triet_ir::ConstantPool::new();
-        // `bad()` Consts a String → materialize_constant defers it →
-        // emit_function_body errors → that function tiers down.
-        let s = pool.intern(triet_ir::Constant::String("x".to_string()));
+        // `bad()` Consts a Long (i128) → materialize_constant defers it →
+        // emit_function_body errors → that function tiers down. (agg.3b-iii
+        // now JITs String/Null consts in unboxed mode; Long still defers,
+        // so it's the stable "still tiers down" fixture.)
+        let s = pool.intern(triet_ir::Constant::Long(triet_core::Long::from_i64(1)));
         let good = make_function_at(
             FuncId(0),
             "good",

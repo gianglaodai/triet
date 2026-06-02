@@ -1862,29 +1862,38 @@ fn translate_instruction(
 ) -> Result<(), JitError> {
     match instr {
         Instruction::Const { dest, constant } => {
-            let val = materialize_constant(builder, ctx.constants, *constant)?;
+            let val = materialize_constant(builder, module, ctx.constants, *constant)?;
             value_map.insert(*dest, val);
+            // A String/Null const materializes a FRESH owned box (i64 ptr,
+            // agg.3b-iii) → track for drop-at-Ret like any created composite
+            // (ADR-0035 §2); a scalar const is a value-copy, not tracked.
+            if matches!(
+                ctx.constants.get(*constant),
+                Some(Constant::String(_) | Constant::Null)
+            ) {
+                fn_state.created_boxed.push(*dest);
+            }
         }
         Instruction::Add { dest, lhs, rhs } => {
-            let l = resolve_operand(builder, value_map, ctx, *lhs)?;
-            let r = resolve_operand(builder, value_map, ctx, *rhs)?;
+            let l = resolve_operand(builder, module, value_map, ctx, *lhs)?;
+            let r = resolve_operand(builder, module, value_map, ctx, *rhs)?;
             let v = builder.ins().iadd(l, r);
             value_map.insert(*dest, v);
         }
         Instruction::Sub { dest, lhs, rhs } => {
-            let l = resolve_operand(builder, value_map, ctx, *lhs)?;
-            let r = resolve_operand(builder, value_map, ctx, *rhs)?;
+            let l = resolve_operand(builder, module, value_map, ctx, *lhs)?;
+            let r = resolve_operand(builder, module, value_map, ctx, *rhs)?;
             let v = builder.ins().isub(l, r);
             value_map.insert(*dest, v);
         }
         Instruction::Mul { dest, lhs, rhs } => {
-            let l = resolve_operand(builder, value_map, ctx, *lhs)?;
-            let r = resolve_operand(builder, value_map, ctx, *rhs)?;
+            let l = resolve_operand(builder, module, value_map, ctx, *lhs)?;
+            let r = resolve_operand(builder, module, value_map, ctx, *rhs)?;
             let v = builder.ins().imul(l, r);
             value_map.insert(*dest, v);
         }
         Instruction::Neg { dest, operand } => {
-            let v = resolve_operand(builder, value_map, ctx, *operand)?;
+            let v = resolve_operand(builder, module, value_map, ctx, *operand)?;
             let result = builder.ins().ineg(v);
             value_map.insert(*dest, result);
         }
@@ -1924,14 +1933,33 @@ fn translate_instruction(
             )?;
         }
         Instruction::Eq { dest, lhs, rhs } => {
-            emit_icmp(builder, value_map, ctx, IntCC::Equal, *dest, *lhs, *rhs)?;
+            emit_icmp(
+                builder,
+                module,
+                value_map,
+                ctx,
+                IntCC::Equal,
+                *dest,
+                *lhs,
+                *rhs,
+            )?;
         }
         Instruction::Ne { dest, lhs, rhs } => {
-            emit_icmp(builder, value_map, ctx, IntCC::NotEqual, *dest, *lhs, *rhs)?;
+            emit_icmp(
+                builder,
+                module,
+                value_map,
+                ctx,
+                IntCC::NotEqual,
+                *dest,
+                *lhs,
+                *rhs,
+            )?;
         }
         Instruction::Lt { dest, lhs, rhs } => {
             emit_icmp(
                 builder,
+                module,
                 value_map,
                 ctx,
                 IntCC::SignedLessThan,
@@ -1943,6 +1971,7 @@ fn translate_instruction(
         Instruction::Le { dest, lhs, rhs } => {
             emit_icmp(
                 builder,
+                module,
                 value_map,
                 ctx,
                 IntCC::SignedLessThanOrEqual,
@@ -1954,6 +1983,7 @@ fn translate_instruction(
         Instruction::Gt { dest, lhs, rhs } => {
             emit_icmp(
                 builder,
+                module,
                 value_map,
                 ctx,
                 IntCC::SignedGreaterThan,
@@ -1965,6 +1995,7 @@ fn translate_instruction(
         Instruction::Ge { dest, lhs, rhs } => {
             emit_icmp(
                 builder,
+                module,
                 value_map,
                 ctx,
                 IntCC::SignedGreaterThanOrEqual,
@@ -1994,7 +2025,7 @@ fn translate_instruction(
             // Correct mapping per ADR-0010 §3: True=+1, False=-1, so
             // we test `cond == +1` (treat anything else as the else
             // branch).
-            let c = resolve_operand(builder, value_map, ctx, *cond)?;
+            let c = resolve_operand(builder, module, value_map, ctx, *cond)?;
             let one = builder.ins().iconst(I8, 1);
             let is_true = builder.ins().icmp(IntCC::Equal, c, one);
             let cl_then =
@@ -2025,7 +2056,7 @@ fn translate_instruction(
             // fallthrough_1:
             //   v_unk = icmp eq cond, 0
             //   brif v_unk, unknown_block, false_block
-            let c = resolve_operand(builder, value_map, ctx, *cond)?;
+            let c = resolve_operand(builder, module, value_map, ctx, *cond)?;
             let pos_one = builder.ins().iconst(I8, 1);
             let zero = builder.ins().iconst(I8, 0);
             let cl_true =
@@ -2076,7 +2107,7 @@ fn translate_instruction(
                 }
             }
             if let Some(op) = value {
-                let v = resolve_operand(builder, value_map, ctx, *op)?;
+                let v = resolve_operand(builder, module, value_map, ctx, *op)?;
                 // Clone-on-return (ADR-0035 §1), unboxed mode: a borrowed
                 // COMPOSITE return (a `Value(id)` ∉ created_boxed whose
                 // return type is an `Rc` ptr — a param, or an untracked
@@ -2142,7 +2173,7 @@ fn translate_instruction(
             }
             let arg_values: Vec<Value> = args
                 .iter()
-                .map(|op| resolve_operand(builder, value_map, ctx, *op))
+                .map(|op| resolve_operand(builder, module, value_map, ctx, *op))
                 .collect::<Result<_, _>>()?;
             let result = emit_shim_call(builder, module, &shim, &arg_values)?;
             if let Some(dest_id) = dest
@@ -2184,6 +2215,7 @@ fn translate_instruction(
 /// using the program-level constant pool.
 fn resolve_operand(
     builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
     value_map: &HashMap<ValueId, Value>,
     ctx: &ProgramContext<'_>,
     operand: Operand,
@@ -2197,7 +2229,12 @@ fn resolve_operand(
                     opcode: format!("ValueId({}) referenced before def", id.0),
                 })
         }
-        Operand::Const(const_id) => materialize_constant(builder, ctx.constants, const_id),
+        // Inline String/Null const: materializes a FRESH box with no SSA
+        // `dest`, so it can't join `created_boxed` (keyed by ValueId) → the
+        // box leaks. Bounded + one-time per inline-const operand, the same
+        // dev-tier leak tolerance the boxed inline-const path documents
+        // (ADR-0032 §2). The statement form `Const { dest }` IS tracked.
+        Operand::Const(const_id) => materialize_constant(builder, module, ctx.constants, const_id),
     }
 }
 
@@ -2206,6 +2243,7 @@ fn resolve_operand(
 /// (statement form) and `Operand::Const` (inline form).
 fn materialize_constant(
     builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
     constants: &ConstantPool,
     const_id: ConstId,
 ) -> Result<Value, JitError> {
@@ -2232,10 +2270,28 @@ fn materialize_constant(
             builder.ins().iconst(I8, raw)
         }
         Constant::Unit => builder.ins().iconst(I8, 0),
-        // Strings + Long + Null defer .4 (heap layouts + i128 pair lowering).
-        other => {
+        // String / Null materialize as boxed `RuntimeValue` ptrs (agg.3b-iii).
+        // A composite's unboxed repr IS an i64 ptr (`map_type`=I64), so these
+        // reuse the SAME in-process path the boxed mode uses: a String's
+        // bytes go through the data-object `__triet_box_string` (agg.3b-i),
+        // a Null through `__triet_box_const` (the `boxed_const_kind_payload`
+        // Null arm). The `Const { dest }` caller records the fresh box in
+        // `created_boxed` for drop-at-Ret. Long (i128) still defers.
+        Constant::String(s) => emit_box_string(builder, module, s)?,
+        Constant::Null => {
+            let kind_v = builder
+                .ins()
+                .iconst(I8, i64::from(JitConstKind::Null as u8));
+            let payload_v = builder.ins().iconst(I64, 0);
+            emit_agg_shim(builder, module, "__triet_box_const", &[kind_v, payload_v])?.ok_or_else(
+                || JitError::Cranelift {
+                    message: "__triet_box_const returned no value".to_string(),
+                },
+            )?
+        }
+        Constant::Long(_) => {
             return Err(JitError::UnsupportedOpcode {
-                opcode: format!("Constant variant {other:?} — defer to later sub-phase"),
+                opcode: format!("Constant variant {constant:?} — defer to later sub-phase"),
             });
         }
     };
@@ -2245,8 +2301,10 @@ fn materialize_constant(
 /// Emit an integer compare returning a Trilean i8 (`+1` for true,
 /// `-1` for false; Unknown is not produced because non-nullable
 /// integer comparisons can't yield Unknown per ADR-0021).
+#[allow(clippy::too_many_arguments)]
 fn emit_icmp(
     builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
     ctx: &ProgramContext<'_>,
     cc: IntCC,
@@ -2254,8 +2312,8 @@ fn emit_icmp(
     lhs: Operand,
     rhs: Operand,
 ) -> Result<(), JitError> {
-    let l = resolve_operand(builder, value_map, ctx, lhs)?;
-    let r = resolve_operand(builder, value_map, ctx, rhs)?;
+    let l = resolve_operand(builder, module, value_map, ctx, lhs)?;
+    let r = resolve_operand(builder, module, value_map, ctx, rhs)?;
     // Cranelift `icmp` produces an i8 (0 or 1). Map to Triết Trilean
     // encoding by computing `2*raw - 1`: true → +1, false → -1.
     let raw = builder.ins().icmp(cc, l, r);
@@ -2331,7 +2389,7 @@ fn translate_call(
         let mut temp_boxes = Vec::new();
         let mut boxed_args = Vec::with_capacity(args.len());
         for (op, pty) in args.iter().zip(params) {
-            let raw = resolve_operand(builder, value_map, ctx, *op)?;
+            let raw = resolve_operand(builder, module, value_map, ctx, *op)?;
             match boundary_class(pty).ok_or_else(|| JitError::UnsupportedOpcode {
                 opcode: format!("cross-mode arg type {pty:?} not marshalable (unboxed→boxed)"),
             })? {
@@ -2399,7 +2457,7 @@ fn translate_call(
             })?;
     let arg_values: Vec<Value> = args
         .iter()
-        .map(|op| resolve_operand(builder, value_map, ctx, *op))
+        .map(|op| resolve_operand(builder, module, value_map, ctx, *op))
         .collect::<Result<_, _>>()?;
     let func_ref = module.declare_func_in_func(cl_callee, builder.func);
     let call_inst = builder.ins().call(func_ref, &arg_values);
