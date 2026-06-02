@@ -2890,6 +2890,161 @@ mod tests {
     }
 
     #[test]
+    fn jit4_unreachable_unboxed_reached_err_parity() {
+        // ADR-0034 agg (`unreachable` lever): an UNBOXED function whose
+        // body is just `Unreachable`. The VM raises a *recoverable*
+        // `AssertionFailed` ("reached unreachable instruction"); the JIT
+        // must surface the SAME `Err` (via the `__triet_unreachable`
+        // shim-failure path + error_exit), NOT abort with a hardware trap.
+        //   boom() -> Integer = { unreachable }
+        let boom = make_function(
+            "boom",
+            vec![],
+            TypeTag::Integer,
+            vec![Instruction::Unreachable],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![boom])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("unboxed Unreachable must JIT (no longer tiers down)");
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "a function reaching Unreachable must still JIT — it surfaces \
+             the error at runtime, it does not refuse to compile"
+        );
+
+        let jit_r = dispatch_with_shim_errors(&jit, FuncId(0), &[], "boom").expect("cache hit");
+        assert!(
+            matches!(jit_r, Err(VmError::AssertionFailed { .. })),
+            "JIT must surface a recoverable AssertionFailed, got {jit_r:?}"
+        );
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![]);
+        assert!(
+            matches!(vm_r, Err(VmError::AssertionFailed { .. })),
+            "VM oracle must also raise AssertionFailed, got {vm_r:?}"
+        );
+    }
+
+    #[test]
+    fn jit4_unreachable_boxed_dead_arm_value_parity() {
+        // ADR-0034 agg (`unreachable` lever, the faithful 644-case): a
+        // BOXED function (FieldGet forces boxed) whose `unknown` arm of a
+        // three-way `BrTrilean` is `Unreachable` — the lowerer's plain-`if`
+        // shape (SPEC §7.1.1). Previously the whole function tiered down
+        // because `Unreachable` was unsupported; now it JITs.
+        //   classify(p) -> match p.field(0): True=>1, Unknown=>!!, False=>-1
+        // - True / False arms: the Unreachable arm is NOT taken → value
+        //   parity with the VM (this is the coverage win).
+        // - Unknown arm: Unreachable IS reached → Err parity (recoverable
+        //   AssertionFailed, same as the VM).
+        let mut pool = triet_ir::ConstantPool::new();
+        let pos = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(1).unwrap(),
+        ));
+        let neg = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(-1).unwrap(),
+        ));
+        let classify = make_multi_block_function(
+            "classify",
+            vec![("p".into(), TypeTag::Opaque)],
+            TypeTag::Integer,
+            vec![
+                (
+                    BlockId(0),
+                    vec![
+                        Instruction::FieldGet {
+                            dest: ValueId(1),
+                            object: Operand::Value(ValueId(0)),
+                            field_idx: 0,
+                        },
+                        Instruction::BrTrilean {
+                            cond: Operand::Value(ValueId(1)),
+                            true_block: BlockId(1),
+                            unknown_block: BlockId(2),
+                            false_block: BlockId(3),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(1),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(2),
+                            constant: pos,
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(2))),
+                        },
+                    ],
+                ),
+                (BlockId(2), vec![Instruction::Unreachable]),
+                (
+                    BlockId(3),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(4),
+                            constant: neg,
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(4))),
+                        },
+                    ],
+                ),
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![classify])], pool);
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("boxed fn with an Unreachable dead-arm must JIT");
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "the Unreachable arm must NOT tier the whole function down"
+        );
+
+        // Dead-arm not taken → value parity (the coverage win).
+        for (tri, expected) in [
+            (triet_logic::Trilean::True, 1),
+            (triet_logic::Trilean::False, -1),
+        ] {
+            let point = triet_ir::RuntimeValue::Struct {
+                fields: vec![triet_ir::RuntimeValue::Trilean(tri)],
+            };
+            let jit_r = dispatch_boxed(&jit, FuncId(0), vec![point.clone()]);
+            let mut vm = triet_ir::Vm::new(program.clone());
+            let vm_r = vm.execute(FuncId(0), vec![point]).expect("vm classify");
+            assert_rv_eq(&jit_r, &vm_r);
+            assert_rv_eq(&jit_r, &integer(expected));
+        }
+
+        // Unknown → the Unreachable arm IS reached → Err parity.
+        let unknown = triet_ir::RuntimeValue::Struct {
+            fields: vec![triet_ir::RuntimeValue::Trilean(
+                triet_logic::Trilean::Unknown,
+            )],
+        };
+        let p_ptr = shims::box_for_jit_test(unknown.clone());
+        let jit_r =
+            dispatch_with_shim_errors(&jit, FuncId(0), &[p_ptr], "classify").expect("cache hit");
+        assert!(
+            matches!(jit_r, Err(VmError::AssertionFailed { .. })),
+            "reaching Unreachable must surface AssertionFailed, got {jit_r:?}"
+        );
+        shims::drop_for_jit_test(p_ptr);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![unknown]);
+        assert!(
+            matches!(vm_r, Err(VmError::AssertionFailed { .. })),
+            "VM oracle must also raise AssertionFailed, got {vm_r:?}"
+        );
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes

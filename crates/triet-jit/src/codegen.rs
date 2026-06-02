@@ -19,7 +19,9 @@
 //! - `.4` — builtin shim integration (Vec/HashMap/IO + Atomic).
 //! - `ClosureNew` / `ClosureCall` — needs closure runtime layout.
 //! - Aggregate (struct/enum), nullable/outcome wrappers, conversions,
-//!   logic ops (Ł3/K3), `Long` (i128), `Phi`, `Unreachable`.
+//!   logic ops (Ł3/K3), `Long` (i128), `Phi`. (`Unreachable` is now
+//!   emitted in both modes — ADR-0034 agg — via the `__triet_unreachable`
+//!   shim-failure path, not a hardware trap.)
 //! - Strings, `Vector`, `HashMap`, Atomic.
 //!
 //! Anything outside the supported set raises [`JitError::UnsupportedOpcode`]
@@ -1599,6 +1601,9 @@ fn translate_boxed_instruction(
                 .ins()
                 .brif(is_unk, cl_unk, &unk_args, cl_false, &false_args);
         }
+        Instruction::Unreachable => {
+            emit_unreachable(builder, module, fn_state)?;
+        }
         other => {
             return Err(JitError::UnsupportedOpcode {
                 opcode: format!("{other} (boxed mode — defer to a later agg sub-task)"),
@@ -2067,6 +2072,9 @@ fn translate_instruction(
             // side-effecting `println`) do NOT run after one fails.
             emit_shim_sentinel_check(builder, module, fn_state)?;
         }
+        Instruction::Unreachable => {
+            emit_unreachable(builder, module, fn_state)?;
+        }
         // Everything else triggers tier-down to VM-only for this fn.
         // Use the IR `Display` impl (via `triet_ir::Instruction`'s
         // pretty form) rather than `Debug` — easier to read in
@@ -2476,20 +2484,51 @@ fn emit_clone_arc(
 /// through into a fresh `continue` block where translation resumes.
 /// This guarantees abort-on-first-shim-failure — subsequent
 /// side-effecting shims do not run after one fails.
-fn emit_shim_sentinel_check(
-    builder: &mut FunctionBuilder<'_>,
-    module: &mut impl Module,
-    fn_state: &mut FnState,
-) -> Result<(), JitError> {
-    // Lazily create the shared error_exit block (body emitted post-loop
-    // in `emit_function_body`).
-    let error_exit = if let Some(b) = fn_state.error_exit {
+/// Get the function's shared `error_exit` block, creating it lazily on
+/// first use. Its body (a type-correct sentinel return) is emitted
+/// post-loop in `emit_function_body`; the dispatcher's `SHIM_FAILED`
+/// check converts the run to `Err` regardless of the sentinel value.
+fn ensure_error_exit(builder: &mut FunctionBuilder<'_>, fn_state: &mut FnState) -> Block {
+    if let Some(b) = fn_state.error_exit {
         b
     } else {
         let b = builder.create_block();
         fn_state.error_exit = Some(b);
         b
-    };
+    }
+}
+
+/// Emit the `Unreachable` terminator (ADR-0034 agg — both boxed and
+/// unboxed modes). Calls the `__triet_unreachable` framework shim, which
+/// records a recoverable `AssertionFailed` mirroring the VM's
+/// `Unreachable` arm (`vm.rs`), then jumps unconditionally to the
+/// function's `error_exit` block (which returns the type-correct
+/// sentinel the dispatcher converts to `Err`). Routing through the
+/// shim-failure path — not a Cranelift `trap`/SIGILL — preserves
+/// value-parity with the VM, whose `Unreachable` is a recoverable error
+/// rather than a process abort.
+fn emit_unreachable(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    fn_state: &mut FnState,
+) -> Result<(), JitError> {
+    let sig = Signature::new(CallConv::SystemV);
+    let id = module
+        .declare_function("__triet_unreachable", Linkage::Import, &sig)
+        .map_err(cranelift_err)?;
+    let fref = module.declare_func_in_func(id, builder.func);
+    builder.ins().call(fref, &[]);
+    let error_exit = ensure_error_exit(builder, fn_state);
+    builder.ins().jump(error_exit, &[]);
+    Ok(())
+}
+
+fn emit_shim_sentinel_check(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    fn_state: &mut FnState,
+) -> Result<(), JitError> {
+    let error_exit = ensure_error_exit(builder, fn_state);
     // Probe: call `__triet_shim_failed() -> i8`.
     let mut probe_sig = Signature::new(CallConv::SystemV);
     probe_sig.returns.push(AbiParam::new(I8));

@@ -202,6 +202,17 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
                 ret: Some(I8),
             },
         },
+        ShimEntry {
+            builtin: None,
+            // `Instruction::Unreachable`: records a recoverable
+            // `AssertionFailed`; codegen jumps to `error_exit` after.
+            symbol: "__triet_unreachable",
+            addr: __triet_unreachable as *const () as usize,
+            signature: ShimSignature {
+                params: &[],
+                ret: None,
+            },
+        },
         // ── Aggregate-opcode shims (ADR-0034 §1/§2, builtin: None —
         // called by boxed codegen directly, not via CallBuiltin) ──
         ShimEntry {
@@ -820,6 +831,21 @@ pub(crate) extern "C" fn __triet_clone_arc(ptr: i64) -> i64 {
         Rc::increment_strong_count(ptr as *const RuntimeValue);
     }
     ptr
+}
+
+/// Framework shim for `Instruction::Unreachable` (ADR-0034 agg). Records
+/// a recoverable `AssertionFailed` ("reached unreachable instruction") +
+/// raises `SHIM_FAILED`, mirroring the VM's `Unreachable` arm (`vm.rs`).
+///
+/// The codegen emits an unconditional branch to `error_exit` right after
+/// the call, so the dispatcher converts the recorded error to `Err` — no
+/// process abort. A hardware `trap` (SIGILL) would diverge from the VM,
+/// whose `Unreachable` is a recoverable runtime error, not a crash.
+pub(crate) extern "C" fn __triet_unreachable() {
+    record_shim_failure(VmError::AssertionFailed {
+        message: Some("reached unreachable instruction".to_owned()),
+        function: current_func_name(),
+    });
 }
 
 // ── Composite ABI helpers (§1/§2) ───────────────────────────────────
