@@ -2319,54 +2319,69 @@ fn translate_call(
             });
         }
 
-        // Box each scalar arg into a temp box; a non-scalar boundary tiers down.
+        // Marshal each arg by its boundary type (cross-call.c). A scalar
+        // boxes into a FRESH temp (dropped after the call — the boxed
+        // callee only borrows it). A composite is ALREADY an `Rc` ptr in
+        // unboxed mode (`map_type` = i64 for String/Vector/Opaque/…), so
+        // it passes through unmarshaled: the callee borrows it too (boxed
+        // params are never consumed, codegen.rs Ret arm), and the unboxed
+        // caller retains ownership — no fresh box, no temp to drop, no
+        // clone (ADR-0035 §2 borrow-on-arg discipline, symmetric to
+        // `translate_boxed_call`'s boxed→unboxed passthrough).
         let mut temp_boxes = Vec::new();
         let mut boxed_args = Vec::with_capacity(args.len());
         for (op, pty) in args.iter().zip(params) {
+            let raw = resolve_operand(builder, value_map, ctx, *op)?;
             match boundary_class(pty).ok_or_else(|| JitError::UnsupportedOpcode {
                 opcode: format!("cross-mode arg type {pty:?} not marshalable (unboxed→boxed)"),
             })? {
                 BoundaryClass::Scalar { kind, .. } => {
-                    let raw = resolve_operand(builder, value_map, ctx, *op)?;
                     let boxed = emit_box_scalar(builder, module, raw, kind)?;
                     boxed_args.push(boxed);
                     temp_boxes.push(boxed);
                 }
-                BoundaryClass::PassThrough => {
-                    return Err(JitError::UnsupportedOpcode {
-                        opcode: format!("cross-mode arg type {pty:?} not scalar (unboxed→boxed)"),
-                    });
-                }
+                BoundaryClass::PassThrough => boxed_args.push(raw),
             }
         }
 
-        // The return must be scalar too, else tier down.
-        let Some(BoundaryClass::Scalar {
-            kind: ret_kind,
-            clif: ret_clif,
-        }) = boundary_class(ret)
-        else {
-            return Err(JitError::UnsupportedOpcode {
-                opcode: format!("cross-mode return type {ret:?} not scalar (unboxed→boxed)"),
-            });
-        };
+        // Classify the return up front (an ambiguous boundary tiers down
+        // before any code is emitted).
+        let ret_class = boundary_class(ret).ok_or_else(|| JitError::UnsupportedOpcode {
+            opcode: format!("cross-mode return type {ret:?} not marshalable (unboxed→boxed)"),
+        })?;
 
         let func_ref = module.declare_func_in_func(cl_callee, builder.func);
         let call_inst = builder.ins().call(func_ref, &boxed_args);
         let result_ptr = builder.inst_results(call_inst).first().copied();
 
-        // Unbox the scalar result into `dest` (read BEFORE dropping the
-        // box), then drop it. The boxed callee returned an owned box per
-        // ADR-0035 §1 clone-on-return discipline.
+        // Marshal the result. The boxed callee returns an OWNED box
+        // (ADR-0035 §1 clone-on-return). A scalar is unboxed (value-copy,
+        // read BEFORE dropping its box) then the box is dropped. A
+        // composite stays an `Rc` ptr → it is recorded in `created_boxed`
+        // so the unboxed caller's Ret drops it (unless returned), exactly
+        // like a shim composite result (the §2 ownership discipline) — a
+        // discarded composite result is dropped here.
         if let Some(r) = result_ptr {
-            if let Some(dest_id) = dest {
-                let raw = emit_unbox_scalar(builder, module, r, ret_kind, ret_clif)?;
-                value_map.insert(dest_id, raw);
+            match ret_class {
+                BoundaryClass::Scalar { kind, clif } => {
+                    if let Some(dest_id) = dest {
+                        let raw = emit_unbox_scalar(builder, module, r, kind, clif)?;
+                        value_map.insert(dest_id, raw);
+                    }
+                    emit_drop_arc(builder, module, r)?;
+                }
+                BoundaryClass::PassThrough => {
+                    if let Some(dest_id) = dest {
+                        value_map.insert(dest_id, r);
+                        fn_state.created_boxed.push(dest_id);
+                    } else {
+                        emit_drop_arc(builder, module, r)?;
+                    }
+                }
             }
-            emit_drop_arc(builder, module, r)?;
         }
 
-        // Drop the temp arg boxes (the boxed callee only borrowed them).
+        // Drop the temp scalar-arg boxes (the boxed callee only borrowed them).
         for b in temp_boxes {
             emit_drop_arc(builder, module, b)?;
         }

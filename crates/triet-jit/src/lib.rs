@@ -3420,6 +3420,81 @@ mod tests {
     }
 
     #[test]
+    fn jit4_crosscall_c_unboxed_to_boxed_composite_value_parity() {
+        // cross-call.c: an UNBOXED caller cross-mode calls a BOXED callee
+        // passing a COMPOSITE arg + receiving a COMPOSITE return — the
+        // residual cross-mode blocker ("cross-mode arg type String/Opaque/
+        // Vector not scalar (unboxed→boxed)"). Previously the unboxed
+        // caller tiered down at the composite arg; now the `Rc` ptr passes
+        // through (the boxed callee borrows it, the caller retains
+        // ownership) and the owned composite result is tracked in
+        // `created_boxed` for drop-at-Ret (ADR-0035 §2). The String round-
+        // trip through `echo`'s struct proves the bytes survive the
+        // boundary; a refcount slip double-frees + aborts the test.
+        //   echo(s: String) -> String   (BOXED: StructNew/FieldGet round-trip)
+        //   forward(s: String) -> String = echo(s)   (UNBOXED, cross-mode)
+        let echo = make_function_at(
+            FuncId(0),
+            "echo",
+            vec![("s".into(), TypeTag::String)],
+            TypeTag::String,
+            vec![
+                Instruction::StructNew {
+                    dest: ValueId(1),
+                    fields: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(2),
+                    object: Operand::Value(ValueId(1)),
+                    field_idx: 0,
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(2))),
+                },
+            ],
+        );
+        let forward = make_function_at(
+            FuncId(1),
+            "forward",
+            vec![("s".into(), TypeTag::String)],
+            TypeTag::String,
+            vec![
+                Instruction::CallLocal {
+                    dest: Some(ValueId(1)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(0))],
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(1))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![echo, forward])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        assert!(jit.lookup(FuncId(0)).is_some(), "boxed echo JITs");
+        assert!(
+            jit.lookup(FuncId(1)).is_some(),
+            "unboxed caller passing a composite arg cross-mode must JIT"
+        );
+
+        // forward is unboxed with a String (i64-ptr) param + return, so the
+        // boxed-ptr dispatch helper drives it; the arg box + result box are
+        // dropped — a refcount slip here double-frees + aborts the test.
+        for s in ["", "hi", "triết!"] {
+            let arg = triet_ir::RuntimeValue::String(s.to_owned());
+            let jit_r = dispatch_boxed(&jit, FuncId(1), vec![arg.clone()]);
+            let mut vm = triet_ir::Vm::new(program.clone());
+            let vm_r = vm.execute(FuncId(1), vec![arg]).expect("vm forward");
+            assert_rv_eq(&jit_r, &vm_r);
+            assert_rv_eq(&jit_r, &triet_ir::RuntimeValue::String(s.to_owned()));
+        }
+    }
+
+    #[test]
     fn jit4_unboxed_return_borrowed_composite_no_double_free() {
         // ADR-0035 §1 (unboxed): a same-mode unboxed→unboxed composite
         // passthrough. `outer` calls `id(s)=s` and returns the result; both
