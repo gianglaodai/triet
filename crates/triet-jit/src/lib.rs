@@ -2795,6 +2795,101 @@ mod tests {
     }
 
     #[test]
+    fn jit4_crosscall_opaque_passthrough_value_parity() {
+        // ADR-0036: an Opaque (user-aggregate) value CROSSES the cross-mode
+        // boundary by pass-through — as a call ARG and as a RETURN — which is
+        // the runtime path the audit only proves "compiles", not "runs
+        // correctly". A boxed caller builds a struct, hands it to an unboxed
+        // `identity` that returns it, then reads both fields.
+        //   identity(s: Opaque) -> Opaque = s                    (unboxed)
+        //   outer(x, y: Integer) -> Integer =                    (boxed)
+        //       { s = Struct{x, y}; t = identity(s); t.0 + t.1 }
+        //
+        // Refcount: the struct box is created once (strong=1), cloned once by
+        // identity's clone-on-return (is_composite_tag now includes Opaque,
+        // ADR-0035 §1 → strong=2), and dropped twice at the caller's Ret (the
+        // StructNew dest + the cross-mode result dest alias the same ptr) →
+        // freed exactly once. A missing clone or wrong drop double-frees → the
+        // glibc malloc tripwire aborts dispatch (same guard the `keep` +
+        // composite-passthrough tests rely on).
+        let identity = make_function_at(
+            FuncId(0),
+            "identity",
+            vec![("s".into(), TypeTag::Opaque)],
+            TypeTag::Opaque,
+            vec![Instruction::Ret {
+                value: Some(Operand::Value(ValueId(0))),
+            }],
+        );
+        let outer = make_function_at(
+            FuncId(1),
+            "outer",
+            vec![
+                ("x".into(), TypeTag::Integer),
+                ("y".into(), TypeTag::Integer),
+            ],
+            TypeTag::Integer,
+            vec![
+                Instruction::StructNew {
+                    dest: ValueId(2),
+                    fields: vec![Operand::Value(ValueId(0)), Operand::Value(ValueId(1))],
+                },
+                Instruction::CallLocal {
+                    dest: Some(ValueId(3)),
+                    callee: FuncId(0),
+                    args: vec![Operand::Value(ValueId(2))],
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(4),
+                    object: Operand::Value(ValueId(3)),
+                    field_idx: 0,
+                },
+                Instruction::FieldGet {
+                    dest: ValueId(5),
+                    object: Operand::Value(ValueId(3)),
+                    field_idx: 1,
+                },
+                Instruction::Add {
+                    dest: ValueId(6),
+                    lhs: Operand::Value(ValueId(4)),
+                    rhs: Operand::Value(ValueId(5)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(6))),
+                },
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![identity, outer])],
+            triet_ir::ConstantPool::new(),
+        );
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program).expect("compile");
+        // `identity` is unboxed (only a Ret) but takes + returns an Opaque;
+        // `outer` is boxed and cross-mode passes an Opaque arg + receives an
+        // Opaque return. Both must JIT (the Opaque boundary no longer tiers
+        // down per ADR-0036) for this to exercise the runtime path — if either
+        // tiered down, the cross-mode Opaque marshaling wouldn't run at all.
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "unboxed identity (Opaque->Opaque) must JIT"
+        );
+        assert!(
+            jit.lookup(FuncId(1)).is_some(),
+            "boxed outer passing an Opaque cross-mode must JIT"
+        );
+
+        let jit_r = dispatch_boxed(&jit, FuncId(1), vec![integer(7), integer(9)]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm
+            .execute(FuncId(1), vec![integer(7), integer(9)])
+            .expect("vm outer");
+        assert_rv_eq(&jit_r, &vm_r);
+        assert_rv_eq(&jit_r, &integer(16));
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes

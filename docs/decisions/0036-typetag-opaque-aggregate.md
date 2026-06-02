@@ -120,34 +120,23 @@ const fn is_composite_tag(tag: &TypeTag) -> bool {
 
 ```rust
 fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
-    // ...
-    TypeTag::Opaque => Some(BoundaryClass::PassThrough),  // NEW — was tier-down via Unit
-    // `Unit` remains None (true Unit: zero-sized, no ptr) — but see §5.
-    // ...
-}
-```
-
-Wait — true `Unit` should **also** be classifiable now. A function returning `Unit` returns nothing meaningful; the boxed mode boxes it as `Rc<RuntimeValue::Unit>`, but the cross-mode boundary can handle it as a **scalar** (box/unbox the Unit constant). Or simpler: a `Unit`-returning cross-mode call can just be treated as `PassThrough` — the `Unit` box is an `Rc<RuntimeValue::Unit>` pointer same as any composite, it'll be leaked (one box, cold path, within §3 tolerance of [ADR-0035](0035-jit-boxed-refcount-discipline.md)) or correctly handled.
-
-**Decision for `Unit`:** classify true `Unit` as `PassThrough` too. `Unit` is still an `Rc<RuntimeValue>` pointer in boxed mode — it has the same representation as any composite. With `Opaque` absorbing all the user-aggregate traffic, `Unit` cross-mode calls are rare (only explicit `Unit`-typed parameters/returns), and `PassThrough` is the correct treatment (no box/unbox needed — same ptr repr).
-
-```rust
-fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
     let scalar = |kind, clif| Some(BoundaryClass::Scalar { kind, clif });
     match tag {
         TypeTag::Integer => scalar(JitConstKind::Integer, I64),
         TypeTag::Trilean => scalar(JitConstKind::Trilean, I8),
         TypeTag::Trit => scalar(JitConstKind::Trit, I8),
         TypeTag::Tryte => scalar(JitConstKind::Tryte, I16),
-        TypeTag::Unit | TypeTag::Opaque => Some(BoundaryClass::PassThrough),
+        TypeTag::Opaque => Some(BoundaryClass::PassThrough),  // NEW
         _ if is_composite_tag(tag) => Some(BoundaryClass::PassThrough),
-        // `Long` (i128) → tier down (deferred).
+        // `Unit` (differing reprs, below) / `Long` (i128) → tier down.
         _ => None,
     }
 }
 ```
 
-This removes `Unit` and `Opaque` from the tier-down path. Only `Long` (i128, ~0 occurrences in self-host) remains unclassified.
+This adds **`Opaque`** to the pass-through path; **`Unit` stays `None` (tier down)**.
+
+**Why `Unit` is NOT pass-through (correction to an earlier draft of this ADR):** the draft proposed lumping `Unit` into `PassThrough` on the premise that "`Unit` is an `Rc<RuntimeValue>` ptr like any composite, same repr in both modes." That premise is **false on the unboxed side**: `map_type(TypeTag::Unit) = I8` (a 1-byte scalar), not an i64 pointer. So a true-`Unit` value does **not** have the same representation across the boxed↔unboxed boundary — in boxed mode it is an i64 box ptr, in unboxed mode an I8 scalar. Pass-through (cross the i64 ptr unmarshaled) would hand the unboxed callee an i64 where it declared I8 (and vice-versa for the return). That mismatch happens to be caught by the Cranelift verifier → a late tier-down at `define_function`, so it is *memory-safe by accident* — but it is **not** a correct pass-through, the justification was wrong, and it would silently become a double-free if `map_type(Unit)` ever changed to I64. Classifying `Unit` as `None` makes the tier-down explicit at marshaling time and removes that latent fragility. `Unit` cross-mode boundaries are rare now that `Opaque` absorbs all user-aggregate traffic, so the lost coverage is ~0 (the audit shows no residual `Unit` cross-mode blockers). Only `Long` (i128, ~0 occurrences in self-host) is the other unclassified boundary.
 
 **Clone-on-return impact (ADR-0035 §1):** `is_composite_tag` now includes `Opaque` → the unboxed `Ret` correctly clones a borrowed `Opaque`-typed return. `Unit` is NOT added to `is_composite_tag` because a true `Unit` return in unboxed mode is value-copy (the `i64` encoding of `Unit` is a constant, not a refcounted pointer), so cloning it would be incorrect. If a `Unit`-returning unboxed function returns a borrowed parameter, it's returning a `Unit` constant — value-copy, no double-free possible.
 

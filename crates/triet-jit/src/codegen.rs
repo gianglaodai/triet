@@ -1000,6 +1000,10 @@ enum BoundaryClass {
 
 /// Classify a boundary type for cross-mode marshaling, or `None` (tier
 /// down) for unsupported types:
+/// - **`Unit`** — true zero-sized `()`; `map_type(Unit)=I8` in unboxed
+///   mode but an i64 box ptr in boxed mode → differing reprs across the
+///   boundary, so it can neither pass through (not a ptr in unboxed
+///   mode) nor box/unbox as a scalar value-copy → tier down.
 /// - **`Long`** — i128 (deferred).
 fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
     let scalar = |kind, clif| Some(BoundaryClass::Scalar { kind, clif });
@@ -1008,12 +1012,15 @@ fn boundary_class(tag: &TypeTag) -> Option<BoundaryClass> {
         TypeTag::Trilean => scalar(JitConstKind::Trilean, I8),
         TypeTag::Trit => scalar(JitConstKind::Trit, I8),
         TypeTag::Tryte => scalar(JitConstKind::Tryte, I16),
-        // Unit (true zero-sized) + Opaque (user aggregate) — both are
-        // `Rc<RuntimeValue>` pointers in boxed mode, same repr in both
-        // modes, pass through unmarshaled (ADR-0036 §4).
-        TypeTag::Unit | TypeTag::Opaque => Some(BoundaryClass::PassThrough),
+        // Opaque (user aggregate) — an `Rc<RuntimeValue>` ptr in BOTH
+        // modes (`map_type(Opaque)=I64`), same repr, pass through
+        // unmarshaled (ADR-0036 §4).
+        TypeTag::Opaque => Some(BoundaryClass::PassThrough),
         _ if is_composite_tag(tag) => Some(BoundaryClass::PassThrough),
-        // `Long` (i128) → tier down (deferred).
+        // `Unit` (I8 unboxed vs i64-ptr boxed — differing reprs) /
+        // `Long` (i128) → tier down. Now that Opaque absorbs all
+        // user-aggregate traffic, a true-`Unit` cross-mode boundary is
+        // rare and correctly handled by tier-down.
         _ => None,
     }
 }
