@@ -3605,6 +3605,324 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn jit4_unboxed_phi_integer_merge_value_parity() {
+        // agg.phi-unboxed: an UNBOXED multi-block function merges two i64
+        // (Integer) values at a φ — the if/else value-merge shape. Unboxed φ
+        // used to tier down (boxed-only); now the φ becomes a typed Cranelift
+        // block param (i64 derived) with predecessors threading the incoming.
+        //   abs(n) = if n < 0 { -n } else { n }
+        let mut pool = triet_ir::ConstantPool::new();
+        let zero = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(0).unwrap(),
+        ));
+        let abs = make_multi_block_function(
+            "abs",
+            vec![("n".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                (
+                    BlockId(0),
+                    vec![
+                        Instruction::Lt {
+                            dest: ValueId(1),
+                            lhs: Operand::Value(ValueId(0)),
+                            rhs: Operand::Const(zero),
+                        },
+                        Instruction::BrIf {
+                            cond: Operand::Value(ValueId(1)),
+                            then_block: BlockId(1),
+                            else_block: BlockId(2),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(1),
+                    vec![
+                        Instruction::Neg {
+                            dest: ValueId(2),
+                            operand: Operand::Value(ValueId(0)),
+                        },
+                        Instruction::Br { target: BlockId(3) },
+                    ],
+                ),
+                (BlockId(2), vec![Instruction::Br { target: BlockId(3) }]),
+                (
+                    BlockId(3),
+                    vec![
+                        Instruction::Phi {
+                            dest: ValueId(3),
+                            incoming: vec![
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(2),
+                                    block: BlockId(1),
+                                },
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(0),
+                                    block: BlockId(2),
+                                },
+                            ],
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(3))),
+                        },
+                    ],
+                ),
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![abs])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("unboxed φ (i64 merge) must JIT");
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "unboxed integer φ must JIT (no longer tiers down)"
+        );
+        for n in [-5_i64, 0, 5, -1, 42] {
+            let jit_r = dispatch_integer(&jit, FuncId(0), &[n]).expect("dispatch");
+            let mut vm = triet_ir::Vm::new(program.clone());
+            let vm_r = vm.execute(FuncId(0), vec![integer(n)]).expect("vm abs");
+            assert_rv_eq(&vm_r, &integer(jit_r));
+            assert_eq!(jit_r, n.abs(), "abs({n})");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+    fn jit4_unboxed_phi_trilean_merge_value_parity() {
+        // agg.phi-unboxed: a φ merging i8 Trilean values across a 3-way
+        // BrTrilean — exercises the typed (i8) block param + BrTrilean φ-arg
+        // threading. `norm(c) == c`, but built as a per-arm const merge.
+        use triet_logic::Trilean::{False as F, True as T, Unknown as U};
+        let tri_i64 = |t: triet_logic::Trilean| -> i64 {
+            match t {
+                F => -1,
+                U => 0,
+                T => 1,
+            }
+        };
+        let mut pool = triet_ir::ConstantPool::new();
+        let c_true = pool.intern(triet_ir::Constant::Trilean(T));
+        let c_unk = pool.intern(triet_ir::Constant::Trilean(U));
+        let c_false = pool.intern(triet_ir::Constant::Trilean(F));
+        let norm = make_multi_block_function(
+            "norm",
+            vec![("c".to_string(), TypeTag::Trilean)],
+            TypeTag::Trilean,
+            vec![
+                (
+                    BlockId(0),
+                    vec![Instruction::BrTrilean {
+                        cond: Operand::Value(ValueId(0)),
+                        true_block: BlockId(1),
+                        unknown_block: BlockId(2),
+                        false_block: BlockId(3),
+                    }],
+                ),
+                (
+                    BlockId(1),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(1),
+                            constant: c_true,
+                        },
+                        Instruction::Br { target: BlockId(4) },
+                    ],
+                ),
+                (
+                    BlockId(2),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(2),
+                            constant: c_unk,
+                        },
+                        Instruction::Br { target: BlockId(4) },
+                    ],
+                ),
+                (
+                    BlockId(3),
+                    vec![
+                        Instruction::Const {
+                            dest: ValueId(3),
+                            constant: c_false,
+                        },
+                        Instruction::Br { target: BlockId(4) },
+                    ],
+                ),
+                (
+                    BlockId(4),
+                    vec![
+                        Instruction::Phi {
+                            dest: ValueId(4),
+                            incoming: vec![
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(1),
+                                    block: BlockId(1),
+                                },
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(2),
+                                    block: BlockId(2),
+                                },
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(3),
+                                    block: BlockId(3),
+                                },
+                            ],
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(4))),
+                        },
+                    ],
+                ),
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![norm])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("unboxed φ (i8 Trilean merge) must JIT");
+        assert!(
+            jit.lookup(FuncId(0)).is_some(),
+            "unboxed Trilean φ must JIT"
+        );
+        for c in [F, U, T] {
+            let jit_raw = dispatch_integer(&jit, FuncId(0), &[tri_i64(c)]).expect("dispatch") as i8;
+            let mut vm = triet_ir::Vm::new(program.clone());
+            let vm_r = vm
+                .execute(FuncId(0), vec![triet_ir::RuntimeValue::Trilean(c)])
+                .expect("vm norm");
+            let vm_raw = match vm_r {
+                triet_ir::RuntimeValue::Trilean(t) => tri_i64(t) as i8,
+                other => panic!("VM returned non-Trilean {other:?}"),
+            };
+            assert_eq!(jit_raw, vm_raw, "norm({c:?}): jit {jit_raw} vs vm {vm_raw}");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn jit4_unboxed_phi_uncertain_tiers_down_no_crash() {
+        // agg.phi-unboxed refuse-over-guess: a φ whose type can't be derived
+        // with certainty must TIER DOWN gracefully (compile_program still
+        // succeeds; the function is simply not cached), NEVER crash with a
+        // verifier panic. Two triggers:
+        //   (a) loop-carried φ (back-edge incoming defined after the φ).
+        //   (b) a non-whitelisted op (Div) upstream of the φ.
+        // (a) loop-carried.
+        let loop_fn = make_multi_block_function(
+            "loop_carried",
+            vec![("n".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                (BlockId(0), vec![Instruction::Br { target: BlockId(1) }]),
+                (
+                    BlockId(1),
+                    vec![
+                        Instruction::Phi {
+                            dest: ValueId(1),
+                            incoming: vec![
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(0),
+                                    block: BlockId(0),
+                                },
+                                // back-edge: %2 is defined LATER in this block.
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(2),
+                                    block: BlockId(1),
+                                },
+                            ],
+                        },
+                        Instruction::Neg {
+                            dest: ValueId(2),
+                            operand: Operand::Value(ValueId(1)),
+                        },
+                        Instruction::Br { target: BlockId(1) },
+                    ],
+                ),
+            ],
+        );
+        let program = make_program(
+            vec![make_ir_module(&["khi"], vec![loop_fn])],
+            triet_ir::ConstantPool::new(),
+        );
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("compile_program must succeed (loop-carried φ tiers down, not errors)");
+        assert!(
+            jit.lookup(FuncId(0)).is_none(),
+            "loop-carried unboxed φ must tier down (refuse-over-guess), not JIT"
+        );
+
+        // (b) φ downstream of a Div (non-whitelisted unboxed op).
+        let mut pool = triet_ir::ConstantPool::new();
+        let zero = pool.intern(triet_ir::Constant::Integer(
+            triet_core::Integer::new(0).unwrap(),
+        ));
+        let div_fn = make_multi_block_function(
+            "div_phi",
+            vec![("n".to_string(), TypeTag::Integer)],
+            TypeTag::Integer,
+            vec![
+                (
+                    BlockId(0),
+                    vec![
+                        Instruction::Lt {
+                            dest: ValueId(1),
+                            lhs: Operand::Value(ValueId(0)),
+                            rhs: Operand::Const(zero),
+                        },
+                        Instruction::BrIf {
+                            cond: Operand::Value(ValueId(1)),
+                            then_block: BlockId(1),
+                            else_block: BlockId(2),
+                        },
+                    ],
+                ),
+                (
+                    BlockId(1),
+                    vec![
+                        Instruction::Div {
+                            dest: ValueId(2),
+                            lhs: Operand::Value(ValueId(0)),
+                            rhs: Operand::Value(ValueId(0)),
+                        },
+                        Instruction::Br { target: BlockId(3) },
+                    ],
+                ),
+                (BlockId(2), vec![Instruction::Br { target: BlockId(3) }]),
+                (
+                    BlockId(3),
+                    vec![
+                        Instruction::Phi {
+                            dest: ValueId(3),
+                            incoming: vec![
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(2),
+                                    block: BlockId(1),
+                                },
+                                triet_ir::PhiIncoming {
+                                    value: ValueId(0),
+                                    block: BlockId(2),
+                                },
+                            ],
+                        },
+                        Instruction::Ret {
+                            value: Some(Operand::Value(ValueId(3))),
+                        },
+                    ],
+                ),
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![div_fn])], pool);
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("compile_program must succeed (Div-φ fn tiers down)");
+        assert!(
+            jit.lookup(FuncId(0)).is_none(),
+            "φ downstream of a non-whitelisted op must tier down"
+        );
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes

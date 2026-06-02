@@ -739,10 +739,20 @@ fn emit_function_body(
     // function params + no predecessors → no φs). At block-switch time
     // each φ dest is mapped to its block param; predecessors pass the
     // matching incoming value as a block-call arg (`boxed_block_args`).
-    let block_phis: HashMap<BlockId, Vec<BoxedPhi>> = if boxed {
-        collect_block_phis(func)
-    } else {
+    let block_phis: HashMap<BlockId, Vec<BoxedPhi>> = collect_block_phis(func);
+    // Unboxed φ block params need the merged scalar's concrete Cranelift
+    // type (boxed φ are uniformly `I64` ptrs). Derive every value's type up
+    // front; if an unboxed φ-bearing function isn't certainly typeable
+    // (loop-carried φ, incoming-type disagreement, or a non-whitelisted op),
+    // refuse → tier down (refuse-over-guess; never emit a guessed-type
+    // block param a verifier could reject).
+    let value_types: HashMap<ValueId, types::Type> = if boxed || block_phis.is_empty() {
         HashMap::new()
+    } else {
+        derive_value_types(func, ctx).ok_or_else(|| JitError::UnsupportedOpcode {
+            opcode: "unboxed φ: value types not derivable (loop-carried / unsupported op)"
+                .to_string(),
+        })?
     };
     for ir_block in &func.blocks {
         if ir_block.id == entry_id {
@@ -750,8 +760,17 @@ fn emit_function_body(
         }
         if let Some(phis) = block_phis.get(&ir_block.id) {
             let cl_block = block_map[&ir_block.id];
-            for _ in phis {
-                builder.append_block_param(cl_block, I64);
+            for phi in phis {
+                let param_ty = if boxed {
+                    I64
+                } else {
+                    *value_types
+                        .get(&phi.dest)
+                        .ok_or_else(|| JitError::UnsupportedOpcode {
+                            opcode: "unboxed φ dest untyped — tier down".to_string(),
+                        })?
+                };
+                builder.append_block_param(cl_block, param_ty);
             }
         }
     }
@@ -777,10 +796,10 @@ fn emit_function_body(
     for ir_block in &func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
-        // Boxed φ dests → this block's Cranelift params (set above).
-        // Entry's params are the function params (mapped already).
-        if boxed
-            && ir_block.id != entry_id
+        // φ dests → this block's Cranelift params (appended above, both
+        // modes: boxed = I64, unboxed = the derived scalar type). Entry's
+        // params are the function params (mapped already).
+        if ir_block.id != entry_id
             && let Some(phis) = block_phis.get(&ir_block.id)
         {
             let params: Vec<Value> = builder.block_params(cl_block).to_vec();
@@ -791,10 +810,9 @@ fn emit_function_body(
             }
         }
         for instr in &ir_block.instructions {
-            // Boxed φs are already materialized as block params — skip the
-            // instruction. (Unboxed φ still tiers down via the `other`
-            // arm below.)
-            if boxed && matches!(instr, Instruction::Phi { .. }) {
+            // φs are already materialized as block params (both modes) —
+            // skip the instruction itself.
+            if matches!(instr, Instruction::Phi { .. }) {
                 continue;
             }
             if boxed {
@@ -819,6 +837,8 @@ fn emit_function_body(
                     module,
                     &mut value_map,
                     &block_map,
+                    &block_phis,
+                    ir_block.id,
                     ctx,
                     func,
                     &mut fn_state,
@@ -1319,6 +1339,126 @@ fn boxed_block_args(
         args.push(BlockArg::Value(v));
     }
     Ok(args)
+}
+
+/// The Cranelift type a [`Constant`] materializes to in UNBOXED mode (for
+/// φ type derivation). Composites (String/Null) are `i64` ptrs; `Long`
+/// (i128) is not handled → `None` (the φ-function tiers down).
+const fn const_clif_type(c: &Constant) -> Option<types::Type> {
+    Some(match c {
+        Constant::Trit(_) | Constant::Trilean(_) | Constant::Unit => I8,
+        Constant::Tryte(_) => I16,
+        Constant::Integer(_) | Constant::String(_) | Constant::Null => I64,
+        Constant::Long(_) => return None,
+    })
+}
+
+/// Derive every SSA value's UNBOXED Cranelift type by a single forward
+/// pass — the prerequisite for typing unboxed φ block params (boxed φ are
+/// always `I64`; unboxed φ must match the merged scalar's width).
+///
+/// Returns `None` (→ the whole function tiers down, refuse-over-guess) if
+/// ANY value can't be typed with certainty: a non-whitelisted op
+/// (`Div`/`Mod`/`Pow`/conversions/aggregates/`Long` — all of which the
+/// unboxed translator itself tiers down on), a φ whose incoming isn't yet
+/// typed (loop-carried / back-edge, consistent with the boxed φ deferral),
+/// or a φ whose incoming types disagree. The whitelist + the per-op result
+/// type MATCH the unboxed emitter exactly, so a derived type can never
+/// disagree with the value Cranelift actually produces (no verifier panic).
+fn derive_value_types(
+    func: &IrFunction,
+    ctx: &ProgramContext<'_>,
+) -> Option<HashMap<ValueId, types::Type>> {
+    let mut types: HashMap<ValueId, types::Type> = HashMap::new();
+    for (idx, (_, ty)) in func.params.iter().enumerate() {
+        let id = ValueId(u32::try_from(idx).ok()?);
+        types.insert(id, map_type(ty).ok()?);
+    }
+    let op_ty = |types: &HashMap<ValueId, types::Type>, op: &Operand| -> Option<types::Type> {
+        match op {
+            Operand::Value(id) => types.get(id).copied(),
+            Operand::Const(cid) => const_clif_type(ctx.constants.get(*cid)?),
+        }
+    };
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            let (dest, ty) = match instr {
+                Instruction::Const { dest, constant } => {
+                    (*dest, const_clif_type(ctx.constants.get(*constant)?)?)
+                }
+                // Native unboxed arithmetic preserves operand width
+                // (`iadd`/`isub`/`imul`/`ineg`).
+                Instruction::Add { dest, lhs, .. }
+                | Instruction::Sub { dest, lhs, .. }
+                | Instruction::Mul { dest, lhs, .. } => (*dest, op_ty(&types, lhs)?),
+                Instruction::Neg { dest, operand } => (*dest, op_ty(&types, operand)?),
+                // Comparisons + Ł3/K3 logic ops produce a Trilean (i8).
+                Instruction::Eq { dest, .. }
+                | Instruction::Ne { dest, .. }
+                | Instruction::Lt { dest, .. }
+                | Instruction::Le { dest, .. }
+                | Instruction::Gt { dest, .. }
+                | Instruction::Ge { dest, .. } => (*dest, I8),
+                _ if luk_kleene_op_of(instr).is_some() => (luk_kleene_op_of(instr)?.1, I8),
+                Instruction::CallLocal {
+                    dest: Some(d),
+                    callee,
+                    ..
+                } => {
+                    let (_, ret) = ctx.func_sigs.get(callee)?;
+                    (*d, map_type(ret).ok()?)
+                }
+                Instruction::CallCrossModule {
+                    dest: Some(d),
+                    path,
+                    ..
+                }
+                | Instruction::WitnessCall {
+                    dest: Some(d),
+                    path,
+                    ..
+                } => {
+                    let callee = ctx.path_to_funcid.get(path)?;
+                    let (_, ret) = ctx.func_sigs.get(callee)?;
+                    (*d, map_type(ret).ok()?)
+                }
+                Instruction::CallBuiltin {
+                    dest: Some(d),
+                    name,
+                    ..
+                } => {
+                    let shim = crate::shims::builtin_shim(*name)?;
+                    (*d, abi_scalar_to_clif(shim.signature.ret?))
+                }
+                Instruction::Phi { dest, incoming } => {
+                    let mut iter = incoming.iter();
+                    let first = types.get(&iter.next()?.value).copied()?;
+                    for inc in iter {
+                        if types.get(&inc.value).copied()? != first {
+                            return None;
+                        }
+                    }
+                    (*dest, first)
+                }
+                // Dest-less calls + terminators produce no value.
+                Instruction::Ret { .. }
+                | Instruction::Br { .. }
+                | Instruction::BrIf { .. }
+                | Instruction::BrTrilean { .. }
+                | Instruction::Unreachable
+                | Instruction::CallLocal { dest: None, .. }
+                | Instruction::CallCrossModule { dest: None, .. }
+                | Instruction::WitnessCall { dest: None, .. }
+                | Instruction::CallBuiltin { dest: None, .. } => continue,
+                // Div/Mod/Pow/conversions/aggregates/Long: not certainly
+                // typeable in unboxed mode → refuse (the function tiers down,
+                // exactly as the unboxed translator would on these ops).
+                _ => return None,
+            };
+            types.insert(dest, ty);
+        }
+    }
+    Some(types)
 }
 
 /// Translate one IR instruction in **boxed** mode (ADR-0034 Addendum
@@ -1912,6 +2052,8 @@ fn translate_instruction(
     module: &mut impl Module,
     value_map: &mut HashMap<ValueId, Value>,
     block_map: &HashMap<BlockId, Block>,
+    block_phis: &HashMap<BlockId, Vec<BoxedPhi>>,
+    cur_block: BlockId,
     ctx: &ProgramContext<'_>,
     func: &IrFunction,
     fn_state: &mut FnState,
@@ -2076,7 +2218,11 @@ fn translate_instruction(
                 .ok_or_else(|| JitError::UnsupportedOpcode {
                     opcode: format!("Br target block {target:?} not in map"),
                 })?;
-            builder.ins().jump(cl_target, &[]);
+            // Thread φ block-args (unboxed φ, agg.phi-unboxed): the target's
+            // φ params receive this predecessor's incoming values. Empty
+            // when the target has no φ (boxed_block_args returns []).
+            let args = boxed_block_args(block_phis, value_map, *target, cur_block)?;
+            builder.ins().jump(cl_target, &args);
         }
         Instruction::BrIf {
             cond,
@@ -2106,7 +2252,11 @@ fn translate_instruction(
                     .ok_or_else(|| JitError::UnsupportedOpcode {
                         opcode: format!("BrIf else-block {else_block:?} not in map"),
                     })?;
-            builder.ins().brif(is_true, cl_then, &[], cl_else, &[]);
+            let then_args = boxed_block_args(block_phis, value_map, *then_block, cur_block)?;
+            let else_args = boxed_block_args(block_phis, value_map, *else_block, cur_block)?;
+            builder
+                .ins()
+                .brif(is_true, cl_then, &then_args, cl_else, &else_args);
         }
         Instruction::BrTrilean {
             cond,
@@ -2143,13 +2293,24 @@ fn translate_instruction(
                     .ok_or_else(|| JitError::UnsupportedOpcode {
                         opcode: format!("BrTrilean false-block {false_block:?} not in map"),
                     })?;
+            // φ block-args per target (unboxed φ); computed in this
+            // predecessor before the branch (the `fallthrough` is internal
+            // → no φ → no args). cur_block dominates fallthrough, so the
+            // values stay valid across the switch.
+            let true_args = boxed_block_args(block_phis, value_map, *true_block, cur_block)?;
+            let unk_args = boxed_block_args(block_phis, value_map, *unknown_block, cur_block)?;
+            let false_args = boxed_block_args(block_phis, value_map, *false_block, cur_block)?;
             // Materialize an intermediate block for the False-or-Unknown fall-through.
             let fallthrough = builder.create_block();
             let is_true = builder.ins().icmp(IntCC::Equal, c, pos_one);
-            builder.ins().brif(is_true, cl_true, &[], fallthrough, &[]);
+            builder
+                .ins()
+                .brif(is_true, cl_true, &true_args, fallthrough, &[]);
             builder.switch_to_block(fallthrough);
             let is_unk = builder.ins().icmp(IntCC::Equal, c, zero);
-            builder.ins().brif(is_unk, cl_unk, &[], cl_false, &[]);
+            builder
+                .ins()
+                .brif(is_unk, cl_unk, &unk_args, cl_false, &false_args);
         }
         Instruction::Ret { value } => {
             // v0.10.x.jit.2b-i — drop every function-created boxed
