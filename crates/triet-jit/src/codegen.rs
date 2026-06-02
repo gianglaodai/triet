@@ -64,7 +64,7 @@ use cranelift_codegen::isa::{CallConv, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId as ClFuncId, Linkage, Module};
+use cranelift_module::{DataDescription, FuncId as ClFuncId, Linkage, Module};
 use triet_ir::{
     BlockId, ConstId, Constant, ConstantPool, FuncId as TriFuncId, Function as IrFunction,
     Instruction, IrProgram, JitBinOp, JitConstKind, Operand, PhiIncoming, TypeTag, ValueId,
@@ -1112,15 +1112,53 @@ fn emit_boxed_const(
         .ok_or_else(|| JitError::Cranelift {
             message: format!("ConstId({}) missing from pool", const_id.0),
         })?;
+    // String constants (agg.3b-i) take the data-object path; the rest are
+    // scalar (kind, payload) pairs through `__triet_box_const`.
+    if let Constant::String(s) = constant {
+        return emit_box_string(builder, module, s);
+    }
     let (kind, payload) =
         boxed_const_kind_payload(constant).ok_or_else(|| JitError::UnsupportedOpcode {
-            opcode: format!("boxed constant {constant:?} — defer (agg.3 String/Long)"),
+            opcode: format!("boxed constant {constant:?} — defer (agg.3 Long)"),
         })?;
     let kind_v = builder.ins().iconst(I8, i64::from(kind as u8));
     let payload_v = builder.ins().iconst(I64, payload);
     emit_agg_shim(builder, module, "__triet_box_const", &[kind_v, payload_v])?.ok_or_else(|| {
         JitError::Cranelift {
             message: "__triet_box_const returned no value".to_string(),
+        }
+    })
+}
+
+/// Emit a boxed `RuntimeValue::String` for a `Constant::String` (agg.3b-i,
+/// in-process path). The string's bytes are baked into an anonymous,
+/// read-only Cranelift data object; the JIT linker resolves its address,
+/// which — together with the byte length — is handed to
+/// `__triet_box_string` to construct the boxed value.
+///
+/// One data object per occurrence (no cross-function dedupe): anonymous
+/// data needs no symbol-name bookkeeping, and the duplicated bytes are an
+/// acceptable oracle-tier cost. The AOT `.o` data relocation is agg.3b-ii.
+fn emit_box_string(
+    builder: &mut FunctionBuilder<'_>,
+    module: &mut impl Module,
+    s: &str,
+) -> Result<Value, JitError> {
+    let bytes = s.as_bytes();
+    let data_id = module
+        .declare_anonymous_data(false, false)
+        .map_err(cranelift_err)?;
+    let mut desc = DataDescription::new();
+    desc.define(bytes.to_vec().into_boxed_slice());
+    module.define_data(data_id, &desc).map_err(cranelift_err)?;
+    let gv = module.declare_data_in_func(data_id, builder.func);
+    let ptr = builder.ins().global_value(I64, gv);
+    let len = builder
+        .ins()
+        .iconst(I64, i64::try_from(bytes.len()).unwrap_or(0));
+    emit_agg_shim(builder, module, "__triet_box_string", &[ptr, len])?.ok_or_else(|| {
+        JitError::Cranelift {
+            message: "__triet_box_string returned no value".to_string(),
         }
     })
 }

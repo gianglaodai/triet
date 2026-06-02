@@ -3045,6 +3045,97 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg3b_boxed_string_const_value_parity() {
+        // agg.3b-i: a BOXED function (StructNew forces boxed) materializes
+        // a `Constant::String` and stores it in a struct field. The String
+        // const goes through the in-process data-object path
+        // (`emit_box_string` -> `__triet_box_string`), NOT a tier-down.
+        // Covers the empty string (the single most common String const in
+        // the self-host audit), plain ASCII, and multi-byte UTF-8.
+        //   str_struct() -> Opaque = Struct{ <string const> }
+        for s in ["", "hi", "Triết!"] {
+            let mut pool = triet_ir::ConstantPool::new();
+            let sid = pool.intern(triet_ir::Constant::String(s.to_owned()));
+            let func = make_function_at(
+                FuncId(0),
+                "str_struct",
+                vec![],
+                TypeTag::Opaque,
+                vec![
+                    Instruction::Const {
+                        dest: ValueId(0),
+                        constant: sid,
+                    },
+                    Instruction::StructNew {
+                        dest: ValueId(1),
+                        fields: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(1))),
+                    },
+                ],
+            );
+            let program = make_program(vec![make_ir_module(&["khi"], vec![func])], pool);
+
+            let mut jit = JitCompiler::new();
+            jit.compile_program(&program)
+                .expect("boxed String const must JIT (no longer tiers down)");
+            assert!(
+                jit.lookup(FuncId(0)).is_some(),
+                "boxed String const {s:?} must JIT"
+            );
+
+            let jit_r = dispatch_boxed(&jit, FuncId(0), vec![]);
+            let mut vm = triet_ir::Vm::new(program);
+            let vm_r = vm.execute(FuncId(0), vec![]).expect("vm str_struct");
+            assert_rv_eq(&jit_r, &vm_r);
+            let expected = triet_ir::RuntimeValue::Struct {
+                fields: vec![triet_ir::RuntimeValue::String(s.to_owned())],
+            };
+            assert_rv_eq(&jit_r, &expected);
+        }
+    }
+
+    #[test]
+    fn jit4_agg3b_inline_string_const_operand_value_parity() {
+        // agg.3b-i: a `Constant::String` used as an INLINE operand (here
+        // an EnumNew payload), not a `Const` statement — exercises
+        // `materialize_boxed_operand`'s `Operand::Const` arm reaching
+        // `emit_box_string`. The enum carries the String into the boxed
+        // value; parity against the VM oracle confirms the bytes survive.
+        //   tag_str() -> Opaque = Enum#2(<string const>)
+        let mut pool = triet_ir::ConstantPool::new();
+        let sid = pool.intern(triet_ir::Constant::String("payload".to_owned()));
+        let func = make_function_at(
+            FuncId(0),
+            "tag_str",
+            vec![],
+            TypeTag::Opaque,
+            vec![
+                Instruction::EnumNew {
+                    dest: ValueId(0),
+                    variant_idx: 2,
+                    payload: Some(Operand::Const(sid)),
+                },
+                Instruction::Ret {
+                    value: Some(Operand::Value(ValueId(0))),
+                },
+            ],
+        );
+        let program = make_program(vec![make_ir_module(&["khi"], vec![func])], pool);
+
+        let mut jit = JitCompiler::new();
+        jit.compile_program(&program)
+            .expect("inline String const must JIT");
+        assert!(jit.lookup(FuncId(0)).is_some(), "tag_str must JIT");
+
+        let jit_r = dispatch_boxed(&jit, FuncId(0), vec![]);
+        let mut vm = triet_ir::Vm::new(program);
+        let vm_r = vm.execute(FuncId(0), vec![]).expect("vm tag_str");
+        assert_rv_eq(&jit_r, &vm_r);
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes

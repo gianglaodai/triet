@@ -213,6 +213,17 @@ pub(crate) fn production_shim_entries() -> Vec<ShimEntry> {
                 ret: None,
             },
         },
+        ShimEntry {
+            builtin: None,
+            // `Constant::String` (agg.3b-i): static data-object `ptr` +
+            // `len` (both i64) → a boxed `RuntimeValue::String` ptr.
+            symbol: "__triet_box_string",
+            addr: __triet_box_string as *const () as usize,
+            signature: ShimSignature {
+                params: &[I64, I64],
+                ret: Some(Ptr),
+            },
+        },
         // ── Aggregate-opcode shims (ADR-0034 §1/§2, builtin: None —
         // called by boxed codegen directly, not via CallBuiltin) ──
         ShimEntry {
@@ -846,6 +857,39 @@ pub(crate) extern "C" fn __triet_unreachable() {
         message: Some("reached unreachable instruction".to_owned()),
         function: current_func_name(),
     });
+}
+
+/// Materialize a boxed `RuntimeValue::String` from a static byte slice
+/// (ADR-0034 agg.3b-i). `ptr`/`len` name a Cranelift data object the
+/// codegen emitted via `DataDescription` for a `Constant::String`; the
+/// shim reads it and boxes a fresh owned `String` (refcount 1, the
+/// caller's JIT register owns it, dropped at `Ret` like any created box).
+///
+/// This is the in-process path only — the data lives for the program's
+/// duration in the `JITModule`'s finalized memory. The AOT `.o` path
+/// (a `R_X86_64_64` data relocation through the hand-rolled loader) is
+/// deferred to agg.3b-ii.
+pub(crate) extern "C" fn __triet_box_string(ptr: i64, len: i64) -> i64 {
+    // A zero (or, defensively, non-representable) length needs no read —
+    // and `from_raw_parts` forbids a dangling ptr even for len 0 — so box
+    // the empty string directly.
+    let Ok(len) = usize::try_from(len) else {
+        return box_rv(RuntimeValue::String(String::new()));
+    };
+    if len == 0 {
+        return box_rv(RuntimeValue::String(String::new()));
+    }
+    // SAFETY: `ptr`/`len` name a 'static, read-only data object the
+    // codegen emitted via `DataDescription::define` for this exact
+    // `Constant::String` — `len` is its precise byte length and the
+    // bytes are valid UTF-8 (they originate from a Rust `&str`). The
+    // slice is only read, never mutated, and outlives this call. Backed
+    // by ADR-0034 agg.3b.
+    #[allow(unsafe_code)]
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
+    box_rv(RuntimeValue::String(
+        String::from_utf8_lossy(bytes).into_owned(),
+    ))
 }
 
 // ── Composite ABI helpers (§1/§2) ───────────────────────────────────
