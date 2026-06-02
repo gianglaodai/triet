@@ -66,8 +66,9 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId as ClFuncId, Linkage, Module};
 use triet_ir::{
-    BlockId, ConstId, Constant, ConstantPool, FuncId as TriFuncId, Function as IrFunction,
-    Instruction, IrProgram, JitBinOp, JitConstKind, Operand, PhiIncoming, TypeTag, ValueId,
+    BlockId, BuiltinName, ConstId, Constant, ConstantPool, FuncId as TriFuncId,
+    Function as IrFunction, Instruction, IrProgram, JitBinOp, JitConstKind, Operand, PhiIncoming,
+    TypeTag, ValueId,
 };
 use triet_logic::Trilean;
 use triet_modules::AbsolutePath;
@@ -2161,6 +2162,47 @@ fn translate_instruction(
                          single-block shim scope (jit.2b-i)"
                     ),
                 });
+            }
+            // `assert(cond)` (arity 1) vs the fixed `__triet_assert` shim
+            // (arity 2 — cond + an optional `msg`). The self-host always
+            // emits arity 1; route it through the GENERIC boxed-builtin
+            // shim (agg.builtin) at the EXACT IR arity so the VM dispatches
+            // `[Trilean]` (msg = None), byte-identical to the interpreter.
+            // (Padding a null `msg` would instead make the VM-side failure
+            // diagnostic read a `Null` message — a needless divergence.)
+            // Box the Trilean cond, spill the 1-element arg array, dispatch
+            // by `wire_id`; assert yields Unit → drop the boxed result + the
+            // temp cond box, and (if bound) give `dest` the raw i8-0 Unit.
+            if *name == BuiltinName::Assert && args.len() == 1 {
+                let cond = resolve_operand(builder, module, value_map, ctx, args[0])?;
+                let boxed = emit_box_scalar(builder, module, cond, JitConstKind::Trilean)?;
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                builder.ins().stack_store(boxed, slot, 0);
+                let base = builder.ins().stack_addr(I64, slot, 0);
+                let disc = builder
+                    .ins()
+                    .iconst(I64, i64::from(BuiltinName::Assert.wire_id()));
+                let len_val = builder.ins().iconst(I64, 1);
+                let r = emit_agg_shim(
+                    builder,
+                    module,
+                    "__triet_call_builtin",
+                    &[disc, base, len_val],
+                )?;
+                if let Some(rv) = r {
+                    emit_drop_arc(builder, module, rv)?;
+                }
+                emit_drop_arc(builder, module, boxed)?;
+                if let Some(dest_id) = dest {
+                    let unit = builder.ins().iconst(I8, 0);
+                    value_map.insert(*dest_id, unit);
+                }
+                emit_shim_sentinel_check(builder, module, fn_state)?;
+                return Ok(());
             }
             if args.len() != shim.signature.params.len() {
                 return Err(JitError::UnsupportedOpcode {

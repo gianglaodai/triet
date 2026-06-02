@@ -3405,6 +3405,81 @@ mod tests {
     }
 
     #[test]
+    fn jit4_agg4_unboxed_assert_arity1_value_parity() {
+        // The self-host emits `assert(cond)` (arity 1), but the fixed
+        // `__triet_assert` shim is arity 2 (cond + an optional `msg`), so an
+        // UNBOXED single-block function calling arity-1 assert tiered down
+        // ("arity 1 != shim signature 2 args"). Now it routes through the
+        // generic `__triet_call_builtin` shim at the EXACT IR arity → the VM
+        // dispatches `[Trilean]` (msg = None), identical to the interpreter.
+        //   guard() -> Integer = { assert(<tri>); 42 }
+        // - assert(True)            -> passes -> 42 (value parity)
+        // - assert(False)/(Unknown) -> AssertionFailed Err (parity)
+        for (tri, passes) in [
+            (triet_logic::Trilean::True, true),
+            (triet_logic::Trilean::False, false),
+            (triet_logic::Trilean::Unknown, false),
+        ] {
+            let mut pool = triet_ir::ConstantPool::new();
+            let cid = pool.intern(triet_ir::Constant::Trilean(tri));
+            let answer = pool.intern(triet_ir::Constant::Integer(
+                triet_core::Integer::new(42).unwrap(),
+            ));
+            let guard = make_function_at(
+                FuncId(0),
+                "guard",
+                vec![],
+                TypeTag::Integer,
+                vec![
+                    Instruction::Const {
+                        dest: ValueId(0),
+                        constant: cid,
+                    },
+                    Instruction::CallBuiltin {
+                        dest: Some(ValueId(1)),
+                        name: triet_ir::BuiltinName::Assert,
+                        args: vec![Operand::Value(ValueId(0))],
+                    },
+                    Instruction::Const {
+                        dest: ValueId(2),
+                        constant: answer,
+                    },
+                    Instruction::Ret {
+                        value: Some(Operand::Value(ValueId(2))),
+                    },
+                ],
+            );
+            let program = make_program(vec![make_ir_module(&["khi"], vec![guard])], pool);
+            let mut jit = JitCompiler::new();
+            jit.compile_program(&program)
+                .expect("unboxed arity-1 assert must JIT (no longer tiers down)");
+            assert!(
+                jit.lookup(FuncId(0)).is_some(),
+                "unboxed arity-1 assert must JIT (tri={tri:?})"
+            );
+
+            let jit_r =
+                dispatch_with_shim_errors(&jit, FuncId(0), &[], "guard").expect("cache hit");
+            let mut vm = triet_ir::Vm::new(program);
+            let vm_r = vm.execute(FuncId(0), vec![]);
+            if passes {
+                // Raw i64 return (unboxed) on the success path.
+                assert_eq!(jit_r.ok(), Some(42), "jit guard pass (tri={tri:?})");
+                assert_rv_eq(vm_r.as_ref().expect("vm ok"), &integer(42));
+            } else {
+                assert!(
+                    matches!(jit_r, Err(VmError::AssertionFailed { .. })),
+                    "jit must surface AssertionFailed (tri={tri:?}), got {jit_r:?}"
+                );
+                assert!(
+                    matches!(vm_r, Err(VmError::AssertionFailed { .. })),
+                    "vm oracle must raise AssertionFailed (tri={tri:?}), got {vm_r:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn jit4_crosscall_b_unboxed_to_boxed_scalar_value_parity() {
         // cross-call.b: an UNBOXED caller cross-mode calls a BOXED callee
         // with all-scalar boundary. Args box (raw->ptr), result unboxes
