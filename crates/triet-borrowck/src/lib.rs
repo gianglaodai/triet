@@ -25,8 +25,8 @@ pub mod liveness;
 
 use triet_mir::{
     BasicBlock, BinOp, BlockData, Body, CallTarget, ConstValue, DUMMY_SPAN, FunctionId,
-    FunctionSignature, Local, LocalDecl, ParameterPassing, Place, ReferenceForm, Statement,
-    Terminator,
+    FunctionSignature, Local, LocalDecl, ParameterPassing, Place, ReferenceForm, ReturnShape,
+    Statement, Terminator,
 };
 
 use std::collections::HashMap;
@@ -241,6 +241,7 @@ pub fn call_dispatch(
         args,
         return_bb,
         dest,
+        return_shape: ReturnShape::Scalar,
         span: DUMMY_SPAN,
     }
 }

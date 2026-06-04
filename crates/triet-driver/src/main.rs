@@ -85,6 +85,7 @@ fn main() -> ExitCode {
             eprintln!("{path}: MIR verification error: {e}");
             return ExitCode::from(3);
         }
+        println!("{}", body);
     }
 
     // ── Phase 4: Borrow check ──

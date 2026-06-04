@@ -497,7 +497,12 @@ fn process_block(
             }
 
             Statement::Assign { dest, source, span } => {
-                if state.var_states.get(&source.local) == Some(&VarState::Moved) {
+                // Field access is a copy, not a move — reading `obj.field`
+                // does not consume the whole object. Only a plain-local
+                // source (no projections) is a genuine move of the base.
+                let is_field_read = !source.projection.is_empty();
+
+                if !is_field_read && state.var_states.get(&source.local) == Some(&VarState::Moved) {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
@@ -508,20 +513,23 @@ fn process_block(
                 // A move must conflict with ANY active loan — even on
                 // a different local, because a reference could alias
                 // the moved value. Conservative: assume overlap.
-                let conflicting = state
-                    .active_loans
-                    .iter()
-                    .find(|l| places_conflict(&l.source, source, true));
-                if let Some(loan) = conflicting {
-                    errors.push(BorrowError::NllExclusivityViolation {
-                        source_local: source.local,
-                        source_name: place_name(source, names),
-                        new_form: ReferenceForm::StrongMutable,
-                        existing_loan_dest: loan.dest,
-                        span: span.clone(),
-                    });
+                // Field reads do not conflict (they don't move the base).
+                if !is_field_read {
+                    let conflicting = state
+                        .active_loans
+                        .iter()
+                        .find(|l| places_conflict(&l.source, source, true));
+                    if let Some(loan) = conflicting {
+                        errors.push(BorrowError::NllExclusivityViolation {
+                            source_local: source.local,
+                            source_name: place_name(source, names),
+                            new_form: ReferenceForm::StrongMutable,
+                            existing_loan_dest: loan.dest,
+                            span: span.clone(),
+                        });
+                    }
+                    state.var_states.insert(source.local, VarState::Moved);
                 }
-                state.var_states.insert(source.local, VarState::Moved);
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
@@ -559,6 +567,11 @@ fn process_block(
                     });
                 }
                 state.var_states.insert(dest.local, VarState::Owned);
+            }
+
+            Statement::StructAlloc { .. } => {
+                // No borrow-check impact — StorageLive already set the local
+                // to Owned. StructAlloc just declares stack layout.
             }
 
             Statement::Drop(l, span) => {

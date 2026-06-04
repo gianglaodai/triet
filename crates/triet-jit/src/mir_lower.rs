@@ -407,6 +407,9 @@ impl JitContext {
                 Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => {
                     // No-op at runtime — borrow checker verified safety
                 }
+                Statement::StructAlloc { .. } => {
+                    // No-op at runtime — stack slot allocated during build_body
+                }
 
                 Statement::Const { dest, value, .. } => {
                     let val = match value {

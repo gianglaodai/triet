@@ -188,6 +188,7 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::OutcomeUnwrap { source, .. } => vec![source.local],
         Statement::OutcomeUnwrapError { source, .. } => vec![source.local],
         Statement::Drop(l, _) => vec![*l],
+        Statement::StructAlloc { .. } => Vec::new(),
     }
 }
 
@@ -203,6 +204,7 @@ fn statement_writes(stmt: &Statement) -> Vec<Local> {
         | Statement::OutcomeUnwrap { dest, .. }
         | Statement::OutcomeUnwrapError { dest, .. } => vec![dest.local],
         Statement::Drop(_, _) => Vec::new(),
+        Statement::StructAlloc { dest, .. } => vec![*dest],
     }
 }
 

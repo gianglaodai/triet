@@ -268,6 +268,17 @@ pub enum Statement {
         span: Span,
     },
 
+    /// Allocate stack space for a struct literal. The struct's layout
+    /// can be found in `Body::struct_layouts` by name.
+    StructAlloc {
+        /// The local being initialized as a struct.
+        dest: Local,
+        /// Struct name — key into `Body::struct_layouts`.
+        struct_name: String,
+        /// Source location.
+        span: Span,
+    },
+
     /// Drop a local's value (decrement refcount or free memory).
     Drop(Local, Span),
 }
@@ -460,7 +471,11 @@ pub enum Terminator {
         /// - Unit: empty
         /// - Scalar: 1 local (the value)
         /// - BinaryOutcome/TernaryOutcome: 2 locals (discriminant, payload)
+        /// - Struct: empty (data written through sret pointer arg[0])
         dest: Vec<Local>,
+        /// The callee's return shape — caller needs this to know whether
+        /// dest is empty (sret) and how to handle return values.
+        return_shape: ReturnShape,
         /// Source location.
         span: Span,
     },
@@ -478,7 +493,7 @@ pub enum Terminator {
 /// of return values. Mirrors the Type system: `Unit` → 0 values,
 /// `Scalar` → 1 value, `BinaryOutcome` → 2 values (no Trit::Zero),
 /// `TernaryOutcome` → 2 values (Trit::Zero valid).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReturnShape {
     /// `()` — no return value (void).
     Unit,
@@ -491,14 +506,18 @@ pub enum ReturnShape {
     /// `T?~E` — ternary Outcome. Returns 2 values (discriminant + payload).
     /// Trit::Zero IS valid (null state).
     TernaryOutcome,
+    /// Struct return via sret — the caller allocates space and passes a
+    /// hidden pointer as the first argument. The callee writes the struct
+    /// fields through that pointer and returns 0 values (void).
+    Struct { struct_name: String },
 }
 
 impl ReturnShape {
     /// Number of return values in the ABI (0, 1, or 2).
     #[must_use]
-    pub const fn arity(self) -> usize {
+    pub fn arity(&self) -> usize {
         match self {
-            Self::Unit => 0,
+            Self::Unit | Self::Struct { .. } => 0,
             Self::Scalar => 1,
             Self::BinaryOutcome | Self::TernaryOutcome => 2,
         }
@@ -918,6 +937,7 @@ impl Body {
                         check_place(dest)?;
                         check_place(source)?;
                     }
+                    Statement::StructAlloc { dest, .. } => check_local(*dest)?,
                     Statement::Drop(l, _) => check_local(*l)?,
                 }
             }
@@ -1023,6 +1043,9 @@ impl fmt::Display for Statement {
             Self::OutcomeUnwrapError { dest, source, .. } => {
                 write!(f, "{dest} = unwrap_error({source})")
             }
+            Self::StructAlloc {
+                dest, struct_name, ..
+            } => write!(f, "{dest} = struct {struct_name} {{..}}"),
             Self::Drop(l, _) => write!(f, "Drop({l})"),
         }
     }
@@ -1292,6 +1315,7 @@ mod tests {
             args: vec![],
             return_bb: BasicBlock(99),
             dest: vec![Local(0)],
+            return_shape: ReturnShape::Scalar,
             span: DUMMY_SPAN,
         };
         let err = body.verify().expect_err("should reject bad return_bb");
@@ -1335,6 +1359,7 @@ mod tests {
             args: vec![Local(99)], // arg out of bounds
             return_bb: BasicBlock(0),
             dest: vec![Local(0)],
+            return_shape: ReturnShape::Scalar,
             span: DUMMY_SPAN,
         };
         let err = body

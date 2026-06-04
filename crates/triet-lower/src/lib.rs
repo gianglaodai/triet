@@ -82,11 +82,27 @@ struct Ctx {
     next_bb: usize,
     mir_blocks: Vec<triet_mir::BlockData>,
     sig: FunctionSignature,
+    /// Set of type names that are user-defined structs. Used to detect
+    /// struct params, returns, and copies.
+    struct_names: std::collections::HashSet<String>,
+    /// Struct layouts keyed by name (cloned from lower_program's computation).
+    struct_layouts: HashMap<String, StructLayout>,
+    /// Map from function name to its return type name.
+    func_return_types: HashMap<String, String>,
+    /// If this function returns a struct, the local holding the sret pointer.
+    sret_ptr: Option<Local>,
 }
 
 impl Ctx {
-    fn new(name: &str, ret: &str) -> Self {
-        Self {
+    fn new(
+        name: &str,
+        ret: &str,
+        struct_names: std::collections::HashSet<String>,
+        struct_layouts: HashMap<String, StructLayout>,
+        func_return_types: HashMap<String, String>,
+    ) -> Self {
+        let is_struct_return = struct_names.contains(ret);
+        let mut ctx = Self {
             vars: HashMap::new(),
             local_decls: Vec::new(),
             cur: BasicBlock(0),
@@ -100,9 +116,29 @@ impl Ctx {
                 params: Vec::new(),
                 return_type: ret.to_string(),
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
-                return_shape: triet_mir::ReturnShape::Scalar,
+                return_shape: if is_struct_return {
+                    triet_mir::ReturnShape::Struct {
+                        struct_name: ret.to_string(),
+                    }
+                } else {
+                    triet_mir::ReturnShape::Scalar
+                },
             },
+            struct_names,
+            struct_layouts,
+            func_return_types,
+            sret_ptr: None,
+        };
+        // If returning a struct, allocate the sret pointer as Local(0).
+        // The JIT will receive this as a hidden first parameter.
+        if is_struct_return {
+            ctx.sret_ptr = Some(ctx.alloc_local_ty("sret_ptr"));
         }
+        ctx
+    }
+
+    fn is_struct_type(&self, name: &str) -> bool {
+        self.struct_names.contains(name)
     }
 
     /// Allocate a fresh local with a declared type name.
@@ -182,10 +218,40 @@ pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
         })
         .collect();
 
+    let struct_names: std::collections::HashSet<String> =
+        struct_layouts.iter().map(|l| l.name.clone()).collect();
+    let struct_map: HashMap<String, StructLayout> = struct_layouts
+        .iter()
+        .map(|l| (l.name.clone(), l.clone()))
+        .collect();
+
+    let func_return_types: HashMap<String, String> = prog
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Function { def } = &item.node {
+                let ret = def
+                    .return_type
+                    .map(|tid| type_name(&prog.arena, tid))
+                    .unwrap_or_else(|| "Integer".to_string());
+                Some((def.name.clone(), ret))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let mut bodies = Vec::new();
     for item in &prog.items {
         if let Item::Function { def } = &item.node {
-            let mut body = lower_function(def, &prog.arena, item.span.clone())?;
+            let mut body = lower_function(
+                def,
+                &prog.arena,
+                item.span.clone(),
+                struct_names.clone(),
+                struct_map.clone(),
+                func_return_types.clone(),
+            )?;
             body.struct_layouts = struct_layouts.clone();
             bodies.push(body);
         }
@@ -197,8 +263,26 @@ pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
 ///
 /// `span` is the byte range of the function definition in the source file,
 /// used as a fallback for body-level synthetic statements.
-pub fn lower_function(func: &FunctionDef, arena: &Arena, _span: Span) -> Result<Body, LowerError> {
-    let mut c = Ctx::new(&func.name, "Integer");
+pub fn lower_function(
+    func: &FunctionDef,
+    arena: &Arena,
+    _span: Span,
+    struct_names: std::collections::HashSet<String>,
+    struct_layouts: HashMap<String, StructLayout>,
+    func_return_types: HashMap<String, String>,
+) -> Result<Body, LowerError> {
+    let ret_ty = func
+        .return_type
+        .as_ref()
+        .map(|tid| type_name(arena, *tid))
+        .unwrap_or_else(|| "Integer".to_string());
+    let mut c = Ctx::new(
+        &func.name,
+        &ret_ty,
+        struct_names,
+        struct_layouts,
+        func_return_types,
+    );
     let entry = c.cur;
 
     for p in &func.params {
@@ -296,18 +380,47 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             lower_expr(*expr, arena, c)?;
         }
         Stmt::Return { value } => {
-            let mut values = Vec::new();
-            if let Some(v) = value {
-                values.push(lower_expr(*v, arena, c)?);
+            if let (Some(sret), Some(v)) = (c.sret_ptr, value) {
+                // Struct return via sret: copy struct fields to the caller's buffer.
+                let struct_local = lower_expr(*v, arena, c)?;
+                let source_ty = c.local_decls[struct_local.0].ty.clone();
+                if let Some(layout) = c.struct_layouts.get(&source_ty) {
+                    let field_names: Vec<String> =
+                        layout.fields.iter().map(|f| f.name.clone()).collect();
+                    for field_name in field_names {
+                        let dest_place =
+                            Place::local(sret).project(Projection::Field(field_name.clone()));
+                        let source_place =
+                            Place::local(struct_local).project(Projection::Field(field_name));
+                        c.push(Statement::Assign {
+                            dest: dest_place,
+                            source: source_place,
+                            span: stmt_span.clone(),
+                        });
+                    }
+                }
+                let cur = c.cur;
+                c.term(
+                    cur,
+                    Terminator::Return {
+                        values: Vec::new(),
+                        span: stmt_span.clone(),
+                    },
+                );
+            } else {
+                let mut values = Vec::new();
+                if let Some(v) = value {
+                    values.push(lower_expr(*v, arena, c)?);
+                }
+                let cur = c.cur;
+                c.term(
+                    cur,
+                    Terminator::Return {
+                        values,
+                        span: stmt_span.clone(),
+                    },
+                );
             }
-            let cur = c.cur;
-            c.term(
-                cur,
-                Terminator::Return {
-                    values,
-                    span: stmt_span.clone(),
-                },
-            );
             let dead = c.alloc_bb();
             c.cur = dead;
         }
@@ -500,6 +613,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         args: vec![lhs, rhs],
                         return_bb: ret_bb,
                         dest: vec![d],
+                        return_shape: triet_mir::ReturnShape::Scalar,
                         span: expr_span,
                     },
                 );
@@ -530,28 +644,69 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 Expr::Identifier { name } => name.clone(),
                 other => return Err(LowerError::unsupported_callee(other, expr_span)),
             };
-            let args: Vec<Local> = arguments
+            let callee_ret = c
+                .func_return_types
+                .get(&callee_name)
+                .cloned()
+                .unwrap_or_else(|| "Integer".to_string());
+            let is_struct_ret = c.is_struct_type(&callee_ret);
+
+            let mut args: Vec<Local> = arguments
                 .iter()
                 .map(|a| lower_expr(*a, arena, c))
                 .collect::<Result<Vec<_>, _>>()?;
-            let dest = c.alloc_local();
-            c.push(Statement::StorageLive(dest, expr_span.clone()));
-            let ret_bb = c.alloc_bb();
-            let call_bb = c.cur;
-            c.term(
-                call_bb,
-                Terminator::CallDispatch {
-                    callee: triet_mir::FunctionId(0),
-                    callee_name,
-                    target: CallTarget::Jit,
-                    args,
-                    return_bb: ret_bb,
-                    dest: vec![dest],
-                    span: expr_span,
-                },
-            );
-            c.cur = ret_bb;
-            Ok(dest)
+
+            if is_struct_ret {
+                // sret: allocate struct local for return, pass as hidden arg[0].
+                let ret_local = c.alloc_local_ty(&callee_ret);
+                c.push(Statement::StorageLive(ret_local, expr_span.clone()));
+                c.push(Statement::StructAlloc {
+                    dest: ret_local,
+                    struct_name: callee_ret.clone(),
+                    span: expr_span.clone(),
+                });
+                // Insert sret pointer as first argument.
+                args.insert(0, ret_local);
+                let ret_bb = c.alloc_bb();
+                let call_bb = c.cur;
+                c.term(
+                    call_bb,
+                    Terminator::CallDispatch {
+                        callee: triet_mir::FunctionId(0),
+                        callee_name,
+                        target: CallTarget::Jit,
+                        args,
+                        return_bb: ret_bb,
+                        dest: Vec::new(),
+                        return_shape: triet_mir::ReturnShape::Struct {
+                            struct_name: callee_ret,
+                        },
+                        span: expr_span,
+                    },
+                );
+                c.cur = ret_bb;
+                Ok(ret_local)
+            } else {
+                let dest = c.alloc_local();
+                c.push(Statement::StorageLive(dest, expr_span.clone()));
+                let ret_bb = c.alloc_bb();
+                let call_bb = c.cur;
+                c.term(
+                    call_bb,
+                    Terminator::CallDispatch {
+                        callee: triet_mir::FunctionId(0),
+                        callee_name,
+                        target: CallTarget::Jit,
+                        args,
+                        return_bb: ret_bb,
+                        dest: vec![dest],
+                        return_shape: triet_mir::ReturnShape::Scalar,
+                        span: expr_span,
+                    },
+                );
+                c.cur = ret_bb;
+                Ok(dest)
+            }
         }
         Expr::Block { .. } => {
             let final_expr = match &arena.expression(expr_id).node {
@@ -695,6 +850,27 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 source,
                 span: expr_span,
             });
+            Ok(d)
+        }
+        Expr::StructLiteral {
+            struct_name,
+            fields,
+        } => {
+            let d = c.alloc_local_ty(struct_name);
+            c.push(Statement::StorageLive(d, expr_span.clone()));
+            c.push(Statement::StructAlloc {
+                dest: d,
+                struct_name: struct_name.clone(),
+                span: expr_span.clone(),
+            });
+            for (field_name, field_expr) in fields {
+                let field_val = lower_expr(*field_expr, arena, c)?;
+                c.push(Statement::Assign {
+                    dest: Place::local(d).project(Projection::Field(field_name.clone())),
+                    source: Place::local(field_val),
+                    span: expr_span.clone(),
+                });
+            }
             Ok(d)
         }
         other => Err(LowerError::unsupported_expr(other, expr_span)),
