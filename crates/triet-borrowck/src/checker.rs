@@ -125,8 +125,13 @@ impl Loan {
 enum VarState {
     /// Variable is owned and can be used.
     Owned,
-    /// Variable was moved — any use is E2420.
+    /// Variable was moved (by Assign or strong reference) — any use is E2420.
     Moved,
+    /// Variable storage was ended by Drop/StorageDead — Return can still
+    /// consume it (returning a value after its storage ends is fine), but
+    /// any other use is E2420. Distinguished from `Moved` so the E2450
+    /// check at Return is not accompanied by a false-positive E2420.
+    Ended,
 }
 
 // ── Block state (entry/exit) ────────────────────────────────
@@ -178,8 +183,15 @@ impl BlockState {
             let any_moved = predecessors
                 .iter()
                 .any(|s| s.var_states.get(&local) == Some(&VarState::Moved));
+            let any_ended = predecessors
+                .iter()
+                .any(|s| s.var_states.get(&local) == Some(&VarState::Ended));
             if any_moved {
                 merged.var_states.insert(local, VarState::Moved);
+            } else if any_ended {
+                // Ended on some path, Owned on others — be conservative
+                // and treat as Owned (value may still be available).
+                merged.var_states.insert(local, VarState::Owned);
             } else {
                 // Owned on all paths (or not present = assume Owned)
                 merged.var_states.insert(local, VarState::Owned);
@@ -240,12 +252,12 @@ pub enum BorrowError {
         span: Span,
     },
 
-    /// E2450: Drop while borrowed — dropping a variable that still has
-    /// active loans would leave dangling references.
-    #[error("E2450: cannot drop `{name}` — it still has active borrows")]
+    /// E2450: Drop while borrowed — dropping or returning a variable that
+    /// still has active loans would leave dangling references.
+    #[error("E2450: `{name}` still has active borrows — cannot end its storage here")]
     #[diagnostic(
         code(triet::borrow::E2450),
-        help("ensure all references to `{name}` have ended before dropping it")
+        help("ensure all references to `{name}` have ended before it goes out of scope")
     )]
     DropWhileBorrowed {
         /// The variable being dropped while borrowed.
@@ -590,15 +602,15 @@ fn process_block(
                     });
                 }
 
-                if state.var_states.get(l) == Some(&VarState::Moved) {
-                    let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
-                    errors.push(BorrowError::UseAfterMove {
-                        local: *l,
-                        name: l_name,
-                        span: span.clone(),
-                    });
-                }
-                state.var_states.insert(*l, VarState::Moved);
+                // NOTE: Drop does NOT flag UseAfterMove for Moved/Ended locals.
+                // A local moved by Assign (e.g., into a struct field) is legitimately
+                // transferred; Dropping it afterwards is a no-op. UseAfterMove is
+                // caught by subsequent reads/writes (and by the Return terminator
+                // check below).
+                //
+                // Use `Ended` (not `Moved`) so Return can still consume the value
+                // without a false-positive UseAfterMove.
+                state.var_states.insert(*l, VarState::Ended);
                 state.active_loans.retain(|loan| loan.source.local != *l);
             }
         }
@@ -613,6 +625,9 @@ fn process_block(
 
     // Check terminator for use-after-move — use the terminator's own span
     // so diagnostics point to the actual source code the user wrote.
+    // `Ended` (set by Drop) is acceptable for Return — returning a value
+    // after its storage logically ends is fine; the E2450 check below will
+    // catch any dangling-reference issues.
     let term_span = terminator_span(&block_data.terminator);
     let term_reads = terminator_reads(&block_data.terminator);
     for r in &term_reads {
@@ -623,6 +638,26 @@ fn process_block(
                 name: r_name,
                 span: term_span.clone(),
             });
+        }
+    }
+
+    // Check Return terminator for E2450: returning a value that still has
+    // active loans would create a dangling reference (the reference outlives
+    // the borrowed value, whose storage ends at the function boundary).
+    if let Terminator::Return { .. } = &block_data.terminator {
+        for r in &term_reads {
+            let has_active_loans = state
+                .active_loans
+                .iter()
+                .any(|loan| loan.source.local == *r);
+            if has_active_loans {
+                let r_name = names.get(r).cloned().unwrap_or_else(|| format!("{r}"));
+                errors.push(BorrowError::DropWhileBorrowed {
+                    local: *r,
+                    name: r_name,
+                    span: term_span.clone(),
+                });
+            }
         }
     }
 
@@ -703,7 +738,8 @@ mod tests {
         storage_live,
     };
     use triet_mir::{
-        FieldPath, FunctionSignature, ParameterPassing, Place, Projection, ReferenceForm,
+        DUMMY_SPAN, FieldPath, FunctionSignature, ParameterPassing, Place, Projection,
+        ReferenceForm,
     };
 
     fn field(local: Local, name: &str) -> Place {
@@ -1038,6 +1074,43 @@ mod tests {
         assert!(
             result.is_ok(),
             "disjoint field borrows obj.x / obj.y must be accepted, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// E2450: returning a borrowed value while the reference is still alive.
+    /// `r = &0 x; return x;` — E2450 must fire because x still has active loans.
+    /// The lowerer emits Drop for owned locals in forward order before Return,
+    /// so Drop(x) fires before Drop(r) can trigger NLL cleanup of the loan.
+    #[test]
+    fn e2450_return_borrowed_value() {
+        let mut b = MirBuilder::new("demo", "Integer");
+        let x = b.add_param("x", ParameterPassing::Move);
+        let r = b.new_local();
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, borrow(r, ReferenceForm::BorrowReadOnly, x));
+        // Simulate flush_all_for_return: Drop in forward order (source first).
+        b.push(bb0, Statement::Drop(x, DUMMY_SPAN));
+        b.push(bb0, Statement::Drop(r, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![x]));
+        let body = b.build(bb0);
+        println!("=== MIR ===\n{body}");
+        let result = check_body(&body);
+        println!("=== ERRORS ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result.is_ok(),
+            "E2450 must fire when returning borrowed value, got no errors"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::DropWhileBorrowed { .. })),
+            "expected E2450 DropWhileBorrowed, got: {:?}",
             result.errors
         );
     }

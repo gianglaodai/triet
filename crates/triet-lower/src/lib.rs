@@ -91,6 +91,14 @@ struct Ctx {
     func_return_types: HashMap<String, String>,
     /// If this function returns a struct, the local holding the sret pointer.
     sret_ptr: Option<Local>,
+    /// Locals introduced by `let` bindings that need `Drop` at scope exit.
+    /// Flattened across all active scopes — `scope_snapshots` tracks
+    /// where each scope started so we can drop in reverse order per scope.
+    owned_locals: Vec<Local>,
+    /// Stack of `owned_locals` lengths at each scope entry. `push_scope`
+    /// pushes the current length; `pop_scope` drops everything from that
+    /// snapshot to the end and truncates.
+    scope_snapshots: Vec<usize>,
 }
 
 impl Ctx {
@@ -128,6 +136,8 @@ impl Ctx {
             struct_layouts,
             func_return_types,
             sret_ptr: None,
+            owned_locals: Vec::new(),
+            scope_snapshots: Vec::new(),
         };
         // If returning a struct, allocate the sret pointer as Local(0).
         // The JIT will receive this as a hidden first parameter.
@@ -151,6 +161,49 @@ impl Ctx {
     /// Allocate a temporary whose type is not tracked yet.
     fn alloc_local(&mut self) -> Local {
         self.alloc_local_ty("?")
+    }
+
+    // ── Scope tracking (Drop emission) ─────────────────────────
+
+    /// Push a new scope onto the stack. All subsequent `push_owned` calls
+    /// will register locals in this scope. Returns the snapshot index.
+    fn push_scope(&mut self) {
+        self.scope_snapshots.push(self.owned_locals.len());
+    }
+
+    /// Pop the innermost scope and emit [`Statement::Drop`] for every
+    /// owned local registered in it, in reverse allocation order.
+    /// No-op if all scopes were already flushed by a `return`.
+    fn pop_scope(&mut self) {
+        let Some(snapshot) = self.scope_snapshots.pop() else {
+            return;
+        };
+        for i in (snapshot..self.owned_locals.len()).rev() {
+            self.push(Statement::Drop(self.owned_locals[i], DUMMY_SPAN));
+        }
+        self.owned_locals.truncate(snapshot);
+    }
+
+    /// Register a local as needing Drop at the end of the current scope.
+    /// No-op if the local is already registered (e.g., `let b = a` reuses
+    /// the same local as `a` without an intervening Assign).
+    fn push_owned(&mut self, l: Local) {
+        if !self.owned_locals.contains(&l) {
+            self.owned_locals.push(l);
+        }
+    }
+
+    /// Flush owned locals across all scopes (for `return`).
+    /// Emits `Drop` for every owned local BEFORE the Return terminator,
+    /// in forward order so the *source* of a loan is dropped before its
+    /// *dest* (the reference). This way E2450 fires on the source before
+    /// NLL cleanup on the dest can remove the loan.
+    fn flush_all_for_return(&mut self) {
+        for i in 0..self.owned_locals.len() {
+            self.push(Statement::Drop(self.owned_locals[i], DUMMY_SPAN));
+        }
+        self.owned_locals.clear();
+        self.scope_snapshots.clear();
     }
 
     fn alloc_bb(&mut self) -> BasicBlock {
@@ -285,10 +338,15 @@ pub fn lower_function(
     );
     let entry = c.cur;
 
+    // Function scope: Drop all owned locals (params + let bindings) when
+    // the function exits. Must start before pushing parameters.
+    c.push_scope();
+
     for p in &func.params {
         let ty = type_name(arena, p.type_annotation);
         let l = c.alloc_local_ty(&ty);
         c.vars.insert(p.name.clone(), l);
+        c.push_owned(l);
         let passing = match p.passing_mode {
             triet_syntax::ParameterPassing::Borrow => ParameterPassing::Borrow,
             triet_syntax::ParameterPassing::Move => ParameterPassing::Move,
@@ -315,6 +373,10 @@ pub fn lower_function(
         }
         FunctionBody::External { .. } => {}
     }
+
+    // Flush owned locals (params + let bindings) before building the body.
+    // If a `return` already flushed everything, this is a no-op.
+    c.pop_scope();
 
     // A block-form body that falls off the end returns unit.
     // This is a synthetic return — use DUMMY_SPAN since it has no source.
@@ -346,6 +408,7 @@ fn type_name(arena: &Arena, id: TypeId) -> String {
 /// Lower a block expression (statements + optional final expression) into
 /// the current block, discarding the block's value.
 fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) -> Result<(), LowerError> {
+    c.push_scope();
     match &arena.expression(block_expr).node {
         Expr::Block {
             statements,
@@ -365,6 +428,7 @@ fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) -> Result<(), Low
             lower_expr(block_expr, arena, c)?;
         }
     }
+    c.pop_scope();
     Ok(())
 }
 
@@ -375,6 +439,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
         Stmt::Let { name, init, .. } => {
             let v = lower_expr(*init, arena, c)?;
             c.vars.insert(name.clone(), v);
+            c.push_owned(v);
         }
         Stmt::Expression { expr } => {
             lower_expr(*expr, arena, c)?;
@@ -399,6 +464,9 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         });
                     }
                 }
+                // Drop owned locals before Return, so the borrowck can
+                // flag dangling references (E2450) on the return value.
+                c.flush_all_for_return();
                 let cur = c.cur;
                 c.term(
                     cur,
@@ -407,11 +475,16 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         span: stmt_span.clone(),
                     },
                 );
+                let dead = c.alloc_bb();
+                c.cur = dead;
             } else {
                 let mut values = Vec::new();
                 if let Some(v) = value {
                     values.push(lower_expr(*v, arena, c)?);
                 }
+                // Drop owned locals before Return, so the borrowck can
+                // flag dangling references (E2450) on the return value.
+                c.flush_all_for_return();
                 let cur = c.cur;
                 c.term(
                     cur,
@@ -420,9 +493,9 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         span: stmt_span.clone(),
                     },
                 );
+                let dead = c.alloc_bb();
+                c.cur = dead;
             }
-            let dead = c.alloc_bb();
-            c.cur = dead;
         }
         Stmt::Assignment { target, value } => {
             let v = lower_expr(*value, arena, c)?;
@@ -709,6 +782,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             }
         }
         Expr::Block { .. } => {
+            // Expression blocks introduce a new scope for `let` bindings.
+            c.push_scope();
             let final_expr = match &arena.expression(expr_id).node {
                 Expr::Block {
                     statements,
@@ -724,7 +799,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 }
                 _ => None,
             };
-            match final_expr {
+            let result = match final_expr {
                 Some(e) => lower_expr(e, arena, c),
                 None => {
                     let u = c.alloc_local();
@@ -736,7 +811,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     });
                     Ok(u)
                 }
-            }
+            };
+            c.pop_scope();
+            result
         }
         Expr::If {
             condition,

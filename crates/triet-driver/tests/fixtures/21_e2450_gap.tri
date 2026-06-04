@@ -1,13 +1,8 @@
-// EXPECT: 10
-// GAP: E2450 (DropWhileBorrowed) is dead end-to-end.
-//
-// The borrowck crate implements E2450, but it never fires through
-// the real pipeline because the lowerer does not emit Drop statements
-// for locals at function exit. Without a Drop in the MIR, the
-// borrowck's Drop handler is never reached.
-//
-// This fixture will become a negative test (// ERROR: E2450) when
-// the lowerer starts emitting Drop. Until then, it documents the gap.
+// ERROR: E2450
+// Returning a borrowed value: `r = &0 x` creates a shared borrow on `x`,
+// then `return x` tries to move `x` out of the function while the borrow
+// is still active. E2450 fires because `x` still has active loans when
+// its storage ends.
 function demo(x: Integer) -> Integer {
     let r = &0 x;
     return x;
