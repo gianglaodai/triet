@@ -776,6 +776,205 @@ fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
     }
 }
 
+impl Body {
+    /// Verify that this body is well-formed.
+    ///
+    /// Checks two invariants that every MIR consumer (borrowck, JIT) relies on:
+    ///
+    /// - **INV-1 (block bounds):** every `BasicBlock` reference in every
+    ///   terminator, and `entry_block`, must be in range `0..blocks.len()`.
+    /// - **INV-2 (local bounds):** every `Local` reference in every statement
+    ///   and terminator (including inside `Place::projection` `Index` nodes)
+    ///   must be in range `0..num_locals`.
+    ///
+    /// # Trust boundary
+    ///
+    /// INV-2 trusts that `num_locals` accurately reflects the number of
+    /// distinct locals used by the body. Both producers (`triet-lower`'s
+    /// `Ctx::alloc_local` and `MirBuilder::new_local`) maintain this
+    /// invariant: every local is allocated through `alloc_local()` which
+    /// pushes a `LocalDecl` and increments the counter, so locals are dense
+    /// `0..num_locals-1` and `num_locals = local_decls.len()`.
+    ///
+    /// If a future producer creates locals without updating `num_locals`,
+    /// INV-2 becomes unsound. A verifier for the verifier would cross-check
+    /// `num_locals >= local_decls.len()` and scan all statements for the
+    /// maximum Local index — deferred until a second producer exists.
+    ///
+    /// Callers MUST run this after building a `Body` (e.g. from the lowerer)
+    /// and before passing it to the borrow checker or JIT backend.
+    pub fn verify(&self) -> Result<(), MirError> {
+        let num_blocks = self.blocks.len();
+
+        // ── INV-1: entry block in bounds ──
+        if self.entry_block.0 >= num_blocks {
+            return Err(MirError::BlockOutOfBounds {
+                block: self.entry_block,
+                num_blocks,
+                span: DUMMY_SPAN.clone(),
+            });
+        }
+
+        for block_data in &self.blocks {
+            // INV-1 helpers — BasicBlock references, copy-friendly
+            let check_block = |target: BasicBlock| -> Result<(), MirError> {
+                if target.0 >= num_blocks {
+                    return Err(MirError::BlockOutOfBounds {
+                        block: target,
+                        num_blocks,
+                        span: DUMMY_SPAN.clone(),
+                    });
+                }
+                Ok(())
+            };
+
+            // INV-2 helpers — Local references, copy-friendly
+            let check_local = |local: Local| -> Result<(), MirError> {
+                if local.0 >= self.num_locals {
+                    return Err(MirError::LocalOutOfBounds {
+                        local,
+                        num_locals: self.num_locals,
+                        span: DUMMY_SPAN.clone(),
+                    });
+                }
+                Ok(())
+            };
+
+            let check_place = |place: &Place| -> Result<(), MirError> {
+                check_local(place.local)?;
+                for proj in &place.projection {
+                    if let Projection::Index(local) = proj {
+                        check_local(*local)?;
+                    }
+                }
+                Ok(())
+            };
+
+            // Check terminator
+            match &block_data.terminator {
+                Terminator::Return { values, .. } => {
+                    for &v in values {
+                        check_local(v)?;
+                    }
+                }
+                Terminator::Goto { target, .. } => {
+                    check_block(*target)?;
+                }
+                Terminator::If {
+                    cond,
+                    positive_bb,
+                    zero_bb,
+                    negative_bb,
+                    ..
+                } => {
+                    check_local(*cond)?;
+                    check_block(*positive_bb)?;
+                    check_block(*negative_bb)?;
+                    if let Some(zb) = zero_bb {
+                        check_block(*zb)?;
+                    }
+                }
+                Terminator::CallDispatch {
+                    args,
+                    return_bb,
+                    dest,
+                    ..
+                } => {
+                    for &a in args {
+                        check_local(a)?;
+                    }
+                    for &d in dest {
+                        check_local(d)?;
+                    }
+                    check_block(*return_bb)?;
+                }
+                Terminator::Unreachable { .. } => {}
+            }
+
+            // Check statements
+            for stmt in &block_data.statements {
+                match stmt {
+                    Statement::StorageLive(l, _) => check_local(*l)?,
+                    Statement::StorageDead(l, _) => check_local(*l)?,
+                    Statement::Assign { dest, source, .. } => {
+                        check_place(dest)?;
+                        check_place(source)?;
+                    }
+                    Statement::Borrow { dest, source, .. } => {
+                        check_place(dest)?;
+                        check_place(source)?;
+                    }
+                    Statement::Const { dest, .. } => check_place(dest)?,
+                    Statement::BinaryOp {
+                        dest, left, right, ..
+                    } => {
+                        check_place(dest)?;
+                        check_place(left)?;
+                        check_place(right)?;
+                    }
+                    Statement::OutcomeDiscriminant { dest, source, .. }
+                    | Statement::OutcomeUnwrap { dest, source, .. }
+                    | Statement::OutcomeUnwrapError { dest, source, .. } => {
+                        check_place(dest)?;
+                        check_place(source)?;
+                    }
+                    Statement::Drop(l, _) => check_local(*l)?,
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// MIR verification error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MirError {
+    /// A `BasicBlock` index is out of bounds.
+    BlockOutOfBounds {
+        /// The out-of-bounds block index.
+        block: BasicBlock,
+        /// The number of blocks in the body.
+        num_blocks: usize,
+        /// Source location (DUMMY_SPAN for MIR-level errors).
+        span: Span,
+    },
+    /// A `Local` index is out of bounds.
+    LocalOutOfBounds {
+        /// The out-of-bounds local index.
+        local: Local,
+        /// The number of locals in the body.
+        num_locals: usize,
+        /// Source location (DUMMY_SPAN for MIR-level errors).
+        span: Span,
+    },
+}
+
+impl fmt::Display for MirError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BlockOutOfBounds {
+                block, num_blocks, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: block {} out of bounds (body has {} blocks)",
+                    block.0, num_blocks
+                )
+            }
+            Self::LocalOutOfBounds {
+                local, num_locals, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: local {} out of bounds (body has {} locals)",
+                    local.0, num_locals
+                )
+            }
+        }
+    }
+}
+
 // ── Display implementations ─────────────────────────────────
 
 impl fmt::Display for Body {
@@ -1012,6 +1211,193 @@ mod tests {
             &[
                 ("x".into(), 5, 5), // alignment 5 is invalid
             ],
+        );
+    }
+
+    // ── Verifier tests ─────────────────────────────────────
+
+    /// Build a minimal well-formed body for verify() tests.
+    fn well_formed_body() -> Body {
+        Body {
+            signature: FunctionSignature {
+                name: "test".into(),
+                params: vec![],
+                return_type: "Integer".into(),
+                return_borrow_map: ReturnBorrowMap::new(),
+                return_shape: ReturnShape::Scalar,
+            },
+            blocks: vec![BlockData {
+                statements: vec![],
+                terminator: Terminator::Return {
+                    values: vec![],
+                    span: DUMMY_SPAN,
+                },
+            }],
+            entry_block: BasicBlock(0),
+            num_locals: 0,
+            local_decls: vec![],
+            struct_layouts: vec![],
+        }
+    }
+
+    #[test]
+    fn verify_accepts_well_formed_body() {
+        let body = well_formed_body();
+        body.verify().expect("well-formed body should pass verify");
+    }
+
+    #[test]
+    fn verify_rejects_entry_block_out_of_bounds() {
+        let mut body = well_formed_body();
+        body.entry_block = BasicBlock(99); // out of range
+        let err = body.verify().expect_err("should reject bad entry_block");
+        assert!(matches!(err, MirError::BlockOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_goto_target_out_of_bounds() {
+        let mut body = well_formed_body();
+        body.blocks[0].terminator = Terminator::Goto {
+            target: BasicBlock(99),
+            span: DUMMY_SPAN,
+        };
+        let err = body.verify().expect_err("should reject bad Goto target");
+        assert!(matches!(err, MirError::BlockOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_if_branch_out_of_bounds() {
+        let mut body = well_formed_body();
+        // Add a local so we have one to use as cond
+        body.num_locals += 1;
+        body.blocks[0].terminator = Terminator::If {
+            cond: Local(0),
+            positive_bb: BasicBlock(99),
+            zero_bb: None,
+            negative_bb: BasicBlock(0),
+            span: DUMMY_SPAN,
+        };
+        let err = body.verify().expect_err("should reject bad If branch");
+        assert!(matches!(err, MirError::BlockOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_call_return_bb_out_of_bounds() {
+        let mut body = well_formed_body();
+        body.num_locals += 1;
+        body.blocks[0].terminator = Terminator::CallDispatch {
+            callee: FunctionId(0),
+            callee_name: "f".into(),
+            target: CallTarget::Jit,
+            args: vec![],
+            return_bb: BasicBlock(99),
+            dest: vec![Local(0)],
+            span: DUMMY_SPAN,
+        };
+        let err = body.verify().expect_err("should reject bad return_bb");
+        assert!(matches!(err, MirError::BlockOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_local_out_of_bounds_in_return() {
+        let mut body = well_formed_body();
+        body.blocks[0].terminator = Terminator::Return {
+            values: vec![Local(99)],
+            span: DUMMY_SPAN,
+        };
+        let err = body
+            .verify()
+            .expect_err("should reject bad local in Return");
+        assert!(matches!(err, MirError::LocalOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_local_out_of_bounds_in_statement() {
+        let mut body = well_formed_body();
+        // Insert a statement with an out-of-range local
+        body.blocks[0]
+            .statements
+            .push(Statement::StorageLive(Local(99), DUMMY_SPAN));
+        let err = body
+            .verify()
+            .expect_err("should reject bad local in statement");
+        assert!(matches!(err, MirError::LocalOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_local_out_of_bounds_in_call_args() {
+        let mut body = well_formed_body();
+        body.num_locals += 1;
+        body.blocks[0].terminator = Terminator::CallDispatch {
+            callee: FunctionId(0),
+            callee_name: "f".into(),
+            target: CallTarget::Jit,
+            args: vec![Local(99)], // arg out of bounds
+            return_bb: BasicBlock(0),
+            dest: vec![Local(0)],
+            span: DUMMY_SPAN,
+        };
+        let err = body
+            .verify()
+            .expect_err("should reject bad local in call args");
+        assert!(matches!(err, MirError::LocalOutOfBounds { .. }));
+    }
+
+    #[test]
+    fn verify_rejects_oob_local_in_projection_index() {
+        let mut body = well_formed_body();
+        body.num_locals = 5; // only locals 0..4 are valid
+        // Place with Index(Local(99)) — projection carries an OOB local
+        let bad_place = Place {
+            local: Local(0),
+            projection: vec![Projection::Index(Local(99))],
+        };
+        body.blocks[0].statements.push(Statement::Assign {
+            dest: bad_place.clone(),
+            source: Place::local(Local(0)),
+            span: DUMMY_SPAN,
+        });
+        let err = body
+            .verify()
+            .expect_err("should reject Index(Local(99)) in projection");
+        assert!(
+            matches!(err, MirError::LocalOutOfBounds { .. }),
+            "expected LocalOutOfBounds, got {err:?}"
+        );
+    }
+
+    /// Regression guard: if someone removes the verifier checks and
+    /// hand-builds a malformed body, this test must FAIL (panic or
+    /// return Ok when it should Err). We test by calling verify() on
+    /// a known-bad body — if verify() returns Ok, the guard is dead.
+    #[test]
+    fn verify_guard_is_live_block_bounds() {
+        let mut body = well_formed_body();
+        body.blocks[0].terminator = Terminator::Goto {
+            target: BasicBlock(999),
+            span: DUMMY_SPAN,
+        };
+        // Must return Err. If this ever returns Ok, the verifier guard
+        // was removed and the JIT will OOB panic on this body.
+        assert!(
+            body.verify().is_err(),
+            "VERIFIER GUARD REMOVED: body.verify() accepted a body with \
+             a Goto to BasicBlock(999) but the body has only 1 block. \
+             The JIT would panic on self.blocks[target]."
+        );
+    }
+
+    #[test]
+    fn verify_guard_is_live_local_bounds() {
+        let mut body = well_formed_body();
+        body.blocks[0]
+            .statements
+            .push(Statement::StorageLive(Local(999), DUMMY_SPAN));
+        assert!(
+            body.verify().is_err(),
+            "VERIFIER GUARD REMOVED: body.verify() accepted a body with \
+             Local(999) but body.num_locals < 999. \
+             The JIT would use_var on an undeclared Cranelift Variable."
         );
     }
 }

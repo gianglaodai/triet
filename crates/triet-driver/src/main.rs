@@ -78,6 +78,15 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // ── Phase 3.5: MIR verification ──
+    // Run BEFORE borrowck and JIT so they can assume well-formed MIR.
+    for body in &bodies {
+        if let Err(e) = body.verify() {
+            eprintln!("{path}: MIR verification error: {e}");
+            return ExitCode::from(3);
+        }
+    }
+
     // ── Phase 4: Borrow check ──
     let mut has_errors = false;
     let src = NamedSource::new(path, source.clone());
@@ -128,7 +137,18 @@ fn main() -> ExitCode {
     match main_entry {
         Some(body) => match compiled.get(&body.signature.name) {
             Some(func) => {
-                let result = execute_main(func, &body.signature.params);
+                // Bậc A: main() must have 0 params — the JIT only
+                // supports calling with 0 arguments today.
+                if !body.signature.params.is_empty() {
+                    eprintln!(
+                        "{}: main() has {} parameter(s) — \
+                         Bậc A JIT does not support arguments to main()",
+                        path,
+                        body.signature.params.len()
+                    );
+                    return ExitCode::from(3);
+                }
+                let result = execute_main(func);
                 println!("{result}");
                 ExitCode::SUCCESS
             }
@@ -152,15 +172,6 @@ fn main() -> ExitCode {
 /// # Safety
 /// The JIT module that produced `func` must still be alive.
 #[allow(unsafe_code)]
-fn execute_main(func: &CompiledFunction, params: &[(String, triet_mir::ParameterPassing)]) -> i64 {
-    match params.len() {
-        0 => unsafe { func.call_i64_0() },
-        _ => {
-            eprintln!(
-                "warning: main with {} params not supported, calling with 0 args",
-                params.len()
-            );
-            unsafe { func.call_i64_0() }
-        }
-    }
+fn execute_main(func: &CompiledFunction) -> i64 {
+    unsafe { func.call_i64_0() }
 }

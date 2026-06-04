@@ -411,7 +411,15 @@ impl JitContext {
                 Statement::Const { dest, value, .. } => {
                     let val = match value {
                         ConstValue::Integer(n) => {
-                            let n_i64 = i64::try_from(*n).unwrap_or(0);
+                            let n_i64 = i64::try_from(*n).map_err(|_| {
+                                JitError::Unsupported(format!(
+                                    "Integer constant {n} does not fit in i64 — \
+                                     Bậc A only supports 64-bit values. \
+                                     Triết Integer is 27-trit (~7.6×10^12 signed), \
+                                     which fits in i64 (~9.2×10^18). \
+                                     This value may come from a buggy lowerer."
+                                ))
+                            })?;
                             builder.ins().iconst(I64, n_i64)
                         }
                         ConstValue::Trit(t) => builder.ins().iconst(I8, i64::from(*t)),
@@ -458,38 +466,37 @@ impl JitContext {
                     builder.def_var(dest_var, result);
                 }
 
-                // ── Outcome ops (Bậc A — pass-through) ─────────────────
+                // ── Outcome ops (provably unreachable through real pipeline) ─
                 //
-                // In Bậc A, every value is a single i64. There is no packed
-                // representation for Outcome<T, E> — the discriminant and
-                // payload are stored as separate MIR locals, and at the
-                // Cranelift level both are just i64 scalars.
+                // These MIR statements exist so the borrow checker can model
+                // Outcome discriminant/payload extraction. However, the lowerer
+                // (`triet-lower`) does NOT yet lower `Expr::OutcomeConstructor`
+                // (it returns `Err(LowerError::unsupported_expr)`), and MIR has
+                // no `OutcomeNew` statement to CREATE an Outcome value. Therefore
+                // these extraction ops CANNOT be reached through the real
+                // .tri → lower → MIR → JIT pipeline today.
                 //
-                // OutcomeDiscriminant / OutcomeUnwrap / OutcomeUnwrapError
-                // are therefore identity operations at this tier: they copy
-                // the source i64 to the destination i64 unchanged. Real
-                // bit-extraction (e.g., masking the top 2 bits for the
-                // Trit discriminant, shifting to extract the payload) is
-                // deferred to Bậc C when a packed ABI is introduced.
+                // If they WERE reachable, the current pass-through (identity copy
+                // of a single i64) would be WRONG: a single i64 cannot carry both
+                // the trit discriminant AND the success/error payload. Real
+                // extraction requires a packed representation (Bậc C).
                 //
-                // For now, the type system and borrowck guarantee that an
-                // Outcome source local paired with OutcomeDiscriminant
-                // carries the discriminant value, so the pass-through is
-                // semantically correct — just not yet optimized to a
-                // compact representation.
-                Statement::OutcomeDiscriminant { dest, source, .. } => {
-                    let disc_val = builder.use_var(self.var(source.local));
-                    builder.def_var(self.var(dest.local), disc_val);
-                }
-
-                Statement::OutcomeUnwrap { dest, source, .. } => {
-                    let payload_val = builder.use_var(self.var(source.local));
-                    builder.def_var(self.var(dest.local), payload_val);
-                }
-
-                Statement::OutcomeUnwrapError { dest, source, .. } => {
-                    let payload_val = builder.use_var(self.var(source.local));
-                    builder.def_var(self.var(dest.local), payload_val);
+                // "Refuse over guess": the JIT refuses to compile these until
+                // the lowerer produces real Outcome values and a packed ABI exists.
+                Statement::OutcomeDiscriminant { .. }
+                | Statement::OutcomeUnwrap { .. }
+                | Statement::OutcomeUnwrapError { .. } => {
+                    return Err(JitError::Unsupported(
+                        "Outcome ops require Bậc C packed ABI; \
+                         the lowerer does not yet produce Outcome values, \
+                         so these MIR statements are unreachable through \
+                         the real pipeline. If you are seeing this error, \
+                         the lowerer has been updated to lower Outcome \
+                         constructors — the JIT backend must be updated \
+                         to implement packed extraction before removing \
+                         this guard."
+                            .into(),
+                    ));
                 }
 
                 Statement::Drop(_, _) => {
@@ -514,7 +521,19 @@ impl JitContext {
 
         match &block_data.terminator {
             Terminator::Return { values, .. } => {
-                // Bậc A: all functions return a single i64.
+                // Bậc A: single i64 return. Multi-value return (BinaryOutcome,
+                // TernaryOutcome, struct returns) is deferred to Bậc C.
+                // Refuse over guess — returning only the first value would
+                // silently drop the second, which is a miscompile.
+                if values.len() > 1 {
+                    return Err(JitError::Unsupported(
+                        "multi-value return requires Bậc C packed ABI; \
+                         Bậc A only supports single i64 returns. \
+                         The function's ReturnShape asks for more than one \
+                         return value, but the JIT cannot yet pack them."
+                            .into(),
+                    ));
+                }
                 let val = if values.is_empty() {
                     builder.ins().iconst(I64, 0)
                 } else {
@@ -1082,22 +1101,25 @@ mod tests {
         assert_eq!(result, 55);
     }
 
-    /// Outcome ops: compile a function that uses `OutcomeDiscriminant`
-    /// to read the disc component of a split Outcome local.
+    /// Outcome ops are **provably unreachable** through the real pipeline:
+    /// the lowerer returns `Err(LowerError::unsupported_expr)` for
+    /// `Expr::OutcomeConstructor`, and MIR has no `OutcomeNew` statement.
     ///
-    /// **Bậc A note:** Outcome ops are identity pass-through — they copy
-    /// the source i64 unchanged. This test verifies the pass-through
-    /// works correctly (Const(1) → OutcomeDiscriminant → 1). Real
-    /// bit-extraction for packed Outcome representation is deferred to
-    /// Bậc C.
+    /// This test hand-builds MIR with `OutcomeDiscriminant` (bypassing the
+    /// lowerer guard) and verifies the JIT **refuses** to compile it. A
+    /// pass-through identity copy would be wrong — a single i64 cannot
+    /// carry both discriminant and payload. Real extraction requires Bậc C
+    /// packed ABI.
+    ///
+    /// **If this test ever fails (JIT compiles successfully), someone
+    /// removed the guard without implementing proper packed extraction.**
+    /// That would be a miscompile — `disc(~+ v) == disc(~- e)` for
+    /// identical payloads.
     #[test]
-    #[allow(unsafe_code)]
-    fn outcome_discriminant_jit() {
-        // Function that creates an "Outcome" value (disc via Const) and reads
-        // the discriminant back. This exercises the split variable mapping.
+    fn outcome_discriminant_jit_refuses_to_compile() {
         let mut b = MirBuilder::new("outcome_disc_test", "Integer");
         let _dummy = b.add_param("dummy", ParameterPassing::Borrow);
-        let outcome_val = b.new_local(); // will be Outcome source
+        let outcome_val = b.new_local();
         let disc_result = b.new_local();
 
         let bb0 = b.new_block();
@@ -1111,7 +1133,6 @@ mod tests {
             },
         );
         b.push(bb0, storage_live(disc_result));
-        // This marks outcome_val as Outcome source in pre-scan
         b.push(
             bb0,
             triet_mir::Statement::OutcomeDiscriminant {
@@ -1129,31 +1150,44 @@ mod tests {
         );
 
         let body = b.build(bb0);
-        println!("=== MIR ===\n{body}");
-
         let mut ctx = JitContext::new();
-        let func = ctx.compile(&body).expect("Outcome compilation failed");
+        let result = ctx.compile(&body);
 
-        let result = unsafe { func.call_i64_1(0) };
-        println!("outcome_discriminant(const 1) = {result}");
-        assert_eq!(
-            result, 1,
-            "OutcomeDiscriminant should return the disc value"
-        );
+        match result {
+            Err(JitError::Unsupported(msg)) => {
+                assert!(
+                    msg.contains("Outcome"),
+                    "expected Outcome-related error, got: {msg}"
+                );
+            }
+            Ok(_) => {
+                panic!(
+                    "JIT compiled OutcomeDiscriminant as pass-through — \
+                     this is a miscompile. The JIT guard was removed \
+                     without implementing packed extraction. \
+                     disc(~+ v) would equal disc(~- e) for identical payloads."
+                );
+            }
+            Err(other) => {
+                panic!(
+                    "unexpected JIT error (expected Unsupported, got {other}) — \
+                     if the guard was changed, verify Outcome ops still refuse"
+                );
+            }
+        }
     }
 
-    /// Outcome ABI: full caller-callee with Outcome return.
-    /// Callee returns Outcome (2-value), caller calls and extracts disc.
+    /// Multi-value return is **provably unreachable** through the real
+    /// pipeline (lowerer does not produce `ReturnShape::BinaryOutcome`).
+    /// This test hand-builds MIR with a 2-value return and verifies the
+    /// JIT **refuses** to compile it.
     ///
-    /// **Bậc A limitation:** only the first return value is passed through
-    /// the calling convention. The callee returns `[disc_val=1, payload_val=42]`
-    /// but only `disc_val` (values[0]) is returned by the function. The
-    /// caller correctly receives disc=1. Multi-value returns (both disc
-    /// AND payload) require Bậc C packed ABI or multi-register return.
+    /// **If this test fails**, someone removed the multi-return guard
+    /// without implementing Bậc C packed ABI. Returning only `values[0]`
+    /// would silently drop the second return value — a miscompile.
     #[test]
-    #[allow(unsafe_code)]
-    fn outcome_caller_callee_jit() {
-        // ── Callee ───────────────────────────────────────────
+    fn multi_value_return_refuses_to_compile() {
+        // Build a callee that returns 2 values (BinaryOutcome)
         let mut callee = MirBuilder::new("make_outcome", "Outcome");
         callee.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
         let _dummy = callee.add_param("dummy", ParameterPassing::Borrow);
@@ -1167,7 +1201,7 @@ mod tests {
             triet_mir::Statement::Const {
                 dest: disc_val.into(),
                 value: ConstValue::Integer(1),
-                span: DUMMY_SPAN, // disc = +1 (success)
+                span: DUMMY_SPAN,
             },
         );
         callee.push(bb0, storage_live(payload_val));
@@ -1176,72 +1210,43 @@ mod tests {
             triet_mir::Statement::Const {
                 dest: payload_val.into(),
                 value: ConstValue::Integer(42),
-                span: DUMMY_SPAN, // payload = 42
+                span: DUMMY_SPAN,
             },
         );
         callee.set_terminator(
             bb0,
             Terminator::Return {
-                values: vec![disc_val, payload_val],
+                values: vec![disc_val, payload_val], // 2 values — triggers P6
                 span: DUMMY_SPAN,
             },
         );
         let callee_body = callee.build(bb0);
 
-        // ── Caller ───────────────────────────────────────────
-        let mut caller = MirBuilder::new("call_outcome", "Integer");
-        let disc_out = caller.new_local();
-        let payload_out = caller.new_local();
-
-        let c_bb0 = caller.new_block();
-        caller.push(c_bb0, storage_live(disc_out));
-        caller.push(c_bb0, storage_live(payload_out));
-
-        // Return the disc directly — it's already the first return value
-        let c_bb1 = caller.new_block();
-        caller.set_terminator(
-            c_bb1,
-            Terminator::Return {
-                values: vec![disc_out],
-                span: DUMMY_SPAN,
-            },
-        );
-
-        let make_id = caller.func_id_for("make_outcome");
-        let dummy_arg = caller.new_local();
-        caller.push(c_bb0, storage_live(dummy_arg));
-        caller.push(
-            c_bb0,
-            triet_mir::Statement::Const {
-                dest: dummy_arg.into(),
-                value: ConstValue::Integer(0),
-                span: DUMMY_SPAN,
-            },
-        );
-        caller.set_terminator(
-            c_bb0,
-            Terminator::CallDispatch {
-                callee: make_id,
-                callee_name: "make_outcome".into(),
-                target: CallTarget::Jit,
-                args: vec![dummy_arg],
-                return_bb: c_bb1,
-                dest: vec![disc_out, payload_out],
-                span: DUMMY_SPAN,
-            },
-        );
-        let caller_body = caller.build(c_bb0);
-
-        // Compile both
         let mut ctx = JitContext::new();
-        let compiled = ctx
-            .compile_multi(&[&callee_body, &caller_body])
-            .expect("Outcome compilation failed");
-        let func = compiled.get("call_outcome").expect("call_outcome");
+        let result = ctx.compile(&callee_body);
 
-        let result = unsafe { func.call_i64_1(0) };
-        println!("call_outcome() disc = {result}");
-        assert_eq!(result, 1, "discriminant should be 1");
+        match result {
+            Err(JitError::Unsupported(msg)) => {
+                assert!(
+                    msg.contains("multi-value"),
+                    "expected multi-value-related error, got: {msg}"
+                );
+            }
+            Ok(_) => {
+                panic!(
+                    "JIT compiled a 2-value return as single i64 — \
+                     this is a miscompile. The multi-return guard was \
+                     removed without implementing Bậc C packed ABI. \
+                     The second return value would be silently dropped."
+                );
+            }
+            Err(other) => {
+                panic!(
+                    "unexpected JIT error (expected Unsupported, got {other}) — \
+                     if the guard was changed, verify multi-return still refuses"
+                );
+            }
+        }
     }
 
     // ── Logic op truth table tests ─────────────────────────
