@@ -1,15 +1,11 @@
-// EXPECT: 42
-// LATENT BORROWCK GUARD: double `&0 mutable` borrow on the same
-// variable SHOULD be rejected (E2440 at MIR level, or typecheck
-// BorrowExclusivityViolation). Currently NEITHER catches this
-// through the real pipeline:
-// - typecheck borrow_check is not wired into check()
-// - MIR borrowck may not see the conflict through lowerer output
-// When fixed, change to: // ERROR: E2440
+// ERROR: E2440
+// Double exclusive borrow where at least one is actually used —
+// NLL live ranges overlap → E2440 NllExclusivityViolation.
+// (Same pattern as examples/test_borrow.tri.)
 function demo(vga: Integer) -> Integer {
     let a = &0 mutable vga;
     let b = &0 mutable vga;
-    return 42;
+    return a;
 }
 function main() -> Integer {
     return demo(42);

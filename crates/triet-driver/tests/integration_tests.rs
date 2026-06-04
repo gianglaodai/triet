@@ -39,39 +39,67 @@ fn parse_directive(source: &str) -> Option<Expected> {
     }
 }
 
-/// Run one `.tri` file through the full pipeline and return the i64 result.
+/// Run one `.tri` file through the full pipeline.
+///
+/// Collects errors from every phase so that a `// ERROR: E2440` directive
+/// can match a borrowck error even when earlier phases (typecheck) also
+/// produce errors. Returns `Ok(value)` only if ALL phases pass.
 fn run_fixture(source: &str) -> Result<i64, String> {
+    let mut errors: Vec<String> = Vec::new();
+
     // ── Phase 1: Parse ──
     let (program, parse_errors) = triet_parser::parse(source);
     if !parse_errors.is_empty() {
-        return Err(format!("parse errors: {parse_errors:?}"));
+        errors.push(format!("parse errors: {parse_errors:?}"));
+        // Can't continue without a valid AST
+        return Err(errors.join(" | "));
     }
 
-    // ── Phase 2: Typecheck (blocking) ──
+    // ── Phase 2: Typecheck ──
     let type_errors = triet_typecheck::check(&program);
     if !type_errors.is_empty() {
-        return Err(format!("type errors: {type_errors:?}"));
+        for err in &type_errors {
+            errors.push(format!("type error: {err}"));
+        }
+        // Don't return — type errors don't prevent lowering, and we want
+        // to reach borrowck so // ERROR: E2440 can match.
     }
 
     // ── Phase 3: Lower to MIR ──
-    let bodies = triet_lower::lower_program(&program).map_err(|e| format!("lowerer error: {e}"))?;
+    let bodies = match triet_lower::lower_program(&program) {
+        Ok(b) => b,
+        Err(e) => {
+            errors.push(format!("lowerer error: {e}"));
+            return Err(errors.join(" | "));
+        }
+    };
 
     if bodies.is_empty() {
-        return Err("no functions to compile".into());
+        errors.push("no functions to compile".into());
+        return Err(errors.join(" | "));
     }
 
     // ── Phase 3.5: MIR verification ──
     for body in &bodies {
-        body.verify()
-            .map_err(|e| format!("MIR verification error: {e}"))?;
+        if let Err(e) = body.verify() {
+            errors.push(format!("MIR verification: {e}"));
+            return Err(errors.join(" | "));
+        }
     }
 
-    // ── Phase 4: Borrow check (blocking) ──
+    // ── Phase 4: Borrow check ──
     for body in &bodies {
         let result = triet_borrowck::checker::check_body(body);
         if !result.is_ok() {
-            return Err(format!("borrow errors: {:?}", result.errors));
+            for err in &result.errors {
+                errors.push(format!("borrow error: {err}"));
+            }
         }
+    }
+
+    // If any phase had errors, return them all now
+    if !errors.is_empty() {
+        return Err(errors.join(" | "));
     }
 
     // ── Phase 5: JIT compile ──

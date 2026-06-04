@@ -1,4 +1,4 @@
-// ERROR: Mismatch
+// ERROR: type mismatch
 // Returning a String where Integer is expected — type mismatch.
 function main() -> Integer {
     return "not an integer";
