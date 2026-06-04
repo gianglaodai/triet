@@ -1,15 +1,32 @@
 # Phase 2 — Borrow Checker Design (dựa trên CFG + NLL)
 
-**Status:** **Implemented** (2026-06-04) — `triet-borrowck` crate hoạt động với 10 tests.
+**Status:** Partial — 2/5 error codes fire end-to-end; regression vs v0.10 borrowck (2026-06-04)
+**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+
+**Dependency note:** Phase numbering ≠ build order. The borrow checker depends on
+Phase 4 (AST→MIR lowerer) which produces the MIR bodies that borrowck analyzes.
+Phase 4 must run before Phase 2 in any build pipeline.
+
+**What actually works (verified against code):**
+
+| Error code | Status |
+|---|---|
+| E2420 UseAfterMove | ✅ Fires end-to-end (CFG move-tracking + branch-aware join) |
+| E2440 NllExclusivityViolation | ✅ Fires end-to-end (NLL dataflow, branch isolation, loop extension) |
+| E2450 DropWhileBorrowed | ❌ Dead end-to-end — borrowck handles `Statement::Drop` but lowerer never emits it |
+| E2400 LifetimeElision | ❌ Not implemented in new borrowck (v0.10 borrowck had 3-rule elision) |
+| E2403 EscapingBorrow | ❌ Not implemented in new borrowck (v0.10 borrowck had escape analysis) |
+
+**Regression:** The deleted v0.10 borrowck had E2400 (3-rule lifetime elision) and
+E2403 (escaping borrow). The new borrowck has neither. This is a step backwards —
+the new MIR-based borrowck covers fewer error codes than the old AST-based one.
+
+**Known soundness debt:** `places_conflict(a, b, conservative=true)` treats any two
+different base locals as conflicting for `&0`/`&-` — a conservative band-aid that
+rejects valid shared-borrow programs. Proper alias analysis is future work.
+
 **Implementation:** `crates/triet-borrowck/src/{lib.rs, checker.rs, liveness.rs}` (~980 dòng).
-NLL dataflow analysis, field-level `places_conflict`, cross-call `PropagatedLoan`,
-miette diagnostics (E2420, E2440, E2450). Pipeline end-to-end: `.tri → parse → typecheck → lower → MIR → borrowck → E24XX`.
-**Post-audit fixes:** DropWhileBorrowed (E2450), StrongFrozen/StrongMutable conflict,
-func_id_for HashMap cache.
-**Mentor review:** `places_conflict(a, b, conservative)` — conservative alias assumption
-cho `BorrowReadOnly`, `WeakObserver`, và Move. Khi `conservative=true`, 2 local khác
-nhau → assume conflict (vá soundness hole).
-**Phụ thuộc:** `spec/schema/triet-schema.json` (Phase 1 — S6 model)
+**Phụ thuộc:** `spec/schema/triet-schema.yaml` (Phase 1 — S6 model)
 **Mentor yêu cầu:** "Không có bản vẽ CFG, cấm gõ một dòng code Rust nào!"
 
 ---

@@ -2,10 +2,14 @@
 
 ## Nguyên tắc
 
-**ĐÂY LÀ SINGLE SOURCE OF TRUTH.** Mọi thay đổi về type system, AST, hay
-ownership model phải bắt đầu từ `triet-schema.yaml`. Sau khi sửa schema,
-chạy code generator để cập nhật Rust source. **Không được viết tay struct
-định nghĩa type/AST trong Rust code.**
+**ĐÂY LÀ SINGLE SOURCE OF TRUTH cho AST, operator, và S6 ownership model.**
+Mọi thay đổi về AST node shapes, operator, hay ownership types phải bắt đầu từ
+`triet-schema.yaml`. Sau khi sửa schema, chạy code generator để cập nhật Rust source.
+
+**⚠️ Type system chưa được schema drive (2026-06-04).** `enum Type` sinh từ schema
+là **spec-only** — typechecker dùng Type hand-written riêng trong `triet-typecheck`.
+Schema `Type` là target specification; typecheck `Type` hiện tại đã diverge.
+Reconcile là phase tương lai. Xem `spec/plans/phase1-schema-s6-model.md`.
 
 Lý do: schema-driven ngăn chặn byte-drift giữa Rust compiler host và Triết
 self-host compiler (sau này). Một file schema → sinh code cho cả Rust lẫn

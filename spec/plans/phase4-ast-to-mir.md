@@ -1,10 +1,19 @@
 # Phase 4 — AST → MIR Lowering
 
-**Status:** **Implemented** (2026-06-04) — `triet-lower` crate hoạt động với 3 tests.
+**Status:** Partial — scalar + control flow + borrow; aggregates Err (2026-06-04)
+**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+
+**Dependency note:** Phase numbering ≠ build order. This phase (AST→MIR lowering)
+is the prerequisite for Phase 2 (borrowck) and Phase 3 (JIT) — both consume MIR
+bodies produced by the lowerer. The lowerer was built first; phase numbers reflect
+document order, not dependency order.
+
 **Implementation:** `crates/triet-lower/src/lib.rs` (~650 dòng).
-Hỗ trợ: let, binaryop (18/19 ops), Pow→shim (`CallDispatch` to `__triet_pow`),
+**What works:** let, binaryop (18/19 ops), Pow→shim (`CallDispatch` to `__triet_pow`),
 if/else, while, call, borrow (`&0`/`&+`/`&-`), field access (→ Place projection),
-return, block, literals. Threads AST `Spanned<T>.span` vào MIR.
+return, block, literals. Threads AST `Spanned<T>.span` into MIR. 3 tests.
+**What does NOT work:** Struct/enum/String/Vector/HashMap literals — all return
+`Err(LowerError::unsupported_*(...))`. `Statement::Drop` never emitted (→ E2450 dead).
 **Note:** Plan dự đoán file `ast_lower.rs`; thực tế là `lib.rs` với inline tests.
 **Phụ thuộc:** `triet-syntax` (AST), `triet-mir` (MIR), `triet-typecheck` (typed AST)
 

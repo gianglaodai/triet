@@ -23,7 +23,7 @@ When the author wants to ship something risky, your job is to say *"this will
 break in phase X because of Y — here's the ADR that proves it."*
 
 **Before every non-trivial change:**
-1. Check `spec/schema/triet-schema.yaml` — the single source of truth for types.
+1. Check `spec/schema/triet-schema.yaml` — the single source of truth for AST/ownership types (⚠️ type system is hand-written: see §Schema-first discipline).
 2. Check `spec/plans/` — the phase plans for the rewrite.
 3. Check `docs/decisions/` — ADRs that are still locked (language semantics, error codes, conventions).
 4. If the change touches types/AST/ownership, it MUST start from the schema.
@@ -127,7 +127,7 @@ Design principles of the rewrite:
   checker — zero runtime overhead (design, not yet implemented).
 
 **`spec/` is the DESIGN AUTHORITY for the rewrite:**
-- `spec/schema/triet-schema.yaml` — canonical type system + AST + S6 ownership
+- `spec/schema/triet-schema.yaml` — canonical AST + S6 ownership (⚠️ type system spec-only, hand-written in typecheck)
 - `spec/schema/codegen.py` — code generator (Rust now, Triết at v1.0)
 - `spec/plans/phase2-borrow-checker-design.md` — CFG + NLL dataflow design
 - `spec/plans/phase3-cranelift-backend.md` — Cranelift JIT/AOT architecture
@@ -146,7 +146,7 @@ Design principles of the rewrite:
 - `TODO.md` — ⚠️ STALE: tracks the deleted v0.11 JIT work; not the rewrite backlog.
 - `docs/decisions/` — **38 ADRs**; the language-semantics ones are preserved in
   the rewrite, the architecture ones are history (see "What this is").
-- `spec/schema/triet-schema.yaml` — **canonical type system** (design authority).
+- `spec/schema/triet-schema.yaml` — **canonical AST + S6 ownership** (design authority; ⚠️ type system spec-only, hand-written in typecheck).
 - `spec/plans/` — **phase designs** for the rewrite (design authority);
   `spec/plans/REPORT-2026-06-04.md` is the most accurate current-state report.
 
@@ -405,14 +405,24 @@ Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr
 - All public items need a doc comment (rustdoc-rendered).
 - Miette diagnostics: every error variant gets `#[diagnostic(code(triet::<area>::E<code>))]` plus a `#[label]`-bearing `Span`.
 
-## Schema-first discipline (NON-NEGOTIABLE)
+## Schema-first discipline
 
-**`spec/schema/triet-schema.yaml` is the SINGLE SOURCE OF TRUTH** for all type
-definitions, AST node shapes, and ownership semantics.
+**`spec/schema/triet-schema.yaml` is the single source of truth for AST node
+shapes, operators, and S6 ownership semantics.** The generated `ReferenceForm`,
+`Visibility`, and all `Expr`/`Stmt`/`Item` AST types are wired into the compiler.
+
+**⚠️ The type system is NOT yet schema-driven (2026-06-04).** The generated
+`Type` enum is **spec-only** — the typechecker uses a hand-written `Type` in
+`triet-typecheck/src/types.rs`. The schema's `Type` definition is the target
+specification; the hand-written typecheck `Type` has diverged from it (different
+variant sets, different semantics). Reconcile is a **future phase** — this is a
+conscious deferral, not an oversight. See `spec/plans/phase1-schema-s6-model.md`.
 
 Rules (from `spec/schema/README.md`):
-1. **Schema first, code after.** Never add a variant to `Type` or `Expr` in
-   Rust code first. Always edit the schema first.
+1. **Schema first, code after** — for AST nodes and ownership types. For the
+   type system itself: schema documents the target; hand-written typecheck Type
+   is the current reality. Don't add variants to hand-written Type without
+   checking if the schema already defines them.
 2. **Generated code is never hand-edited.** If the generated code has issues,
    fix the codegen (`spec/schema/codegen.py`), not the output.
 3. **Schema IS documentation.** Every description in the schema must be

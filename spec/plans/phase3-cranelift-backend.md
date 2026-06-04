@@ -1,18 +1,26 @@
 # Phase 3 — Cranelift JIT/AOT Backend Design
 
-**Status:** **Implemented** (2026-06-04) — `triet-jit` crate hoạt động với 15 tests.
+**Status:** Partial — scalar-only; §9.1 native struct layout not built (2026-06-04)
+**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+
+**Dependency note:** Phase numbering ≠ build order. The JIT depends on Phase 4
+(AST→MIR lowerer) which produces MIR bodies, and Phase 2 (borrowck) which
+validates them. Both must run before Phase 3 in any build pipeline.
+
+**What actually works:** Bậc A single-i64 ABI. Scalar arithmetic, comparisons
+(→Trilean!), Ł3/K3 logic ops, if/else, while, recursion, cross-function calls,
+pow shim (`__triet_pow`), borrow references (raw pointers). 15 JIT tests.
+
+**What does NOT work (verified against code):**
+- Aggregate types (struct/enum/String/Vector/HashMap) — lowerer returns `Err`
+- Native struct `StackSlot` (§9.1) — not implemented; every value is a single `i64`
+- Multi-value return / packed Outcome ABI (§9.2 Bậc C) — deferred
+- Outcome ops — guarded with `LowerError::unsupported_*`, not pass-through
+- AOT cache — killed as premature optimization
+- struct_layouts populated but JIT doesn't use them
+
 **Implementation:** `crates/triet-jit/src/mir_lower.rs` (~1150 dòng) + `lib.rs`.
-MIR→Cranelift lowering, SSA via `FunctionBuilder`+`Variable`, RPO CFG traversal,
-20 BinOp variants (Ł3/K3 logic ops), shim calls (`extern "C"` + SystemV ABI),
-type-safe `ShimSymbol` factories. Bậc A: single i64 ABI (Outcome = pass-through identity).
 Pipeline end-to-end: `triet-driver run hello_jit.tri` → 42.
-**Post-audit:** 5× `FunctionBuilder<'_>` (0 warnings), Outcome Bậc A doc-comment.
-**Mentor review:** `triet-lower` giờ có `LowerError` (0 panic), `StructLayout` được
-populate từ AST struct definitions, `places_conflict` conservative alias check.
-**Note:** Plan dự đoán file `lower.rs`; thực tế là `mir_lower.rs`. Module structure
-đơn giản hơn plan (1 file chính thay vì 5 file `lower/types/abi/builtins/cache`).
-**Outcome ABI note:** §9.2 mô tả multi-register (rax, rdx) — design cho Bậc C.
-Bậc A hiện tại: single i64 pass-through, không packed representation.
 **Phụ thuộc:** `triet-mir` (MIR data structures + CFG), Phase 2 borrow checker
 **Nguyên tắc:** IR → machine code từ day 0. Borrow checker đảm bảo safety ở compile-time; runtime chỉ là raw addresses + arithmetic.
 
@@ -368,7 +376,7 @@ abs_diff:
 ## 7. Những gì KHÔNG làm trong Phase 3
 
 1. **Không tự viết SSA pass.** Cranelift `Variable` + `FunctionBuilder` xử lý toàn bộ.
-2. **Không GC / refcount trong JIT.** Mọi composite type ban đầu dùng delegate-to-VM shim (pattern từ v0.11 bản nháp). Native aggregate codegen là Phase 5+.
+2. **Không GC / refcount trong JIT.** Composite types (String, Vector, HashMap) sẽ dùng shim calls tới allocator helpers khi được implement. Native aggregate codegen là Phase 5+.
 3. **Không AOT cache.** Phase 3 chỉ JIT (compile + run in-memory). AOT persistence là Phase 3.2.
 4. **Không multi-thread / concurrent JIT.** Single-thread, synchronous compilation.
 5. **Không PIC / relocatable code.** Code được compile cho địa chỉ cố định trong session.
@@ -406,7 +414,7 @@ abs_diff:
 **Quyết định:** Cranelift native codegen cho scalars và structs thuần túy (không có con trỏ heap). Chỉ gọi shim (`__triet_alloc_*`) cho các type cần heap allocation (String, Vector, HashMap).
 
 - **Struct không có heap pointer:** dùng Cranelift `StackSlot` — allocate trên stack, truy cập qua offset. Không delegate to VM. MIR `Body::struct_layouts` mang thông tin field offsets (từ `triet_mir::StructLayout`) — codegen đọc bảng này để biết kích thước + offset, không cần AST type definition đầy đủ.
-- **Struct có heap pointer / String / Vector / HashMap:** gọi shim delegate-to-VM. Pattern từ bản nháp v0.11 — shim gọi VM helper, divergence-free by construction.
+- **Struct có heap pointer / String / Vector / HashMap:** gọi allocator shim (`__triet_alloc_*`). Pattern từ bản nháp v0.11 — shim gọi heap allocator, divergence-free by construction.
 
 Lý do: Triết là OS-capable — trong kernel không có VM. Native struct codegen là bước đầu cho native aggregate codegen (Bậc C). Nhưng heap allocation cần memory allocator — chưa có trong Phase 3. `StructLayout` trong MIR đảm bảo codegen backend có đủ thông tin để tính offset mà không cần type erasure ra Opaque.
 
@@ -428,8 +436,8 @@ Xem `crates/triet-jit/src/mir_lower.rs` lines ~457-475 cho doc-comment chi tiế
 
 Lý do: Vòng lặp phát triển nhanh — compile, chạy, thấy kết quả ngay. Debug segmentation fault dễ hơn nhiều so với debug ELF file. Khi test suite JIT pass hết, chuyển sang AOT chỉ là đổi backend — mất dưới 1 giờ.
 
-### 9.4 — Không delegate-to-VM cho struct thuần túy
+### 9.4 — Không delegate-to-allocator cho struct thuần túy
 
-**Quyết định bổ sung:** Struct không chứa heap pointer (vd: `struct Point { x: Integer, y: Integer }`) được native-codegen qua Cranelift `StackSlot`. Tuyệt đối không gọi VM shim cho những struct này.
+**Quyết định bổ sung:** Struct không chứa heap pointer (vd: `struct Point { x: Integer, y: Integer }`) được native-codegen qua Cranelift `StackSlot`. Tuyệt đối không gọi allocator shim cho những struct này.
 
 Đây là khác biệt với bản nháp v0.11 (mọi aggregate đều delegate-to-VM). Bản làm lại native ngay từ đầu cho struct — đúng nguyên tắc "IR → machine code từ day 0".

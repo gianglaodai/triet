@@ -573,6 +573,7 @@ definitions:
     \u2500"
   Type:
     kind: enum
+    status: spec_only  # Defined in schema as target spec; typechecker uses hand-written Type (2026-06-04)
     description: "The canonical resolved-type representation. This is what the type\
       \ checker produces \u2014 distinct from TypeExpr (syntax). Every expression\
       \ in a Tri\u1EBFt program has a Type. The type checker resolves TypeExpr \u2192\

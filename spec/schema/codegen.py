@@ -132,6 +132,13 @@ def generate_enum(name, defn, with_serde=True):
     variants = defn.get("variants", [])
     derive_str = ", ".join(defn.get("derive", ["Clone", "Debug", "PartialEq", "Eq"]))
     lines = []
+    status = defn.get("status", "")
+    if status == "spec_only":
+        lines.append("/// ⚠️ SPEC-ONLY — defined in schema as target specification but NOT yet wired")
+        lines.append("/// into the compiler. The typechecker uses a hand-written Type in")
+        lines.append("/// `triet-typecheck`. Reconcile is a future phase. Do NOT use this")
+        lines.append("/// generated enum in new code until migration is complete.")
+        lines.append("///")
     lines.append(f"/// {defn.get('description', name)}")
     lines.append(f"#[derive({derive_str})]")
     if with_serde:
@@ -190,6 +197,12 @@ def generate_struct(name, defn):
     fields = defn.get("fields", [])
     derive_str = ", ".join(defn.get("derive", ["Clone", "Debug", "PartialEq", "Eq"]))
     lines = []
+    status = defn.get("status", "")
+    if status == "spec_only":
+        lines.append("/// ⚠️ SPEC-ONLY — defined in schema as target specification but NOT yet wired")
+        lines.append("/// into the compiler. Do NOT use this generated struct in new code until")
+        lines.append("/// migration is complete.")
+        lines.append("///")
     lines.append(f"/// {defn.get('description', name)}")
     lines.append(f"#[derive({derive_str})]")
     lines.append(f"pub struct {name} {{")
@@ -215,6 +228,10 @@ def generate_visitor_trait(name, defn):
     """Generate a visitor trait for an enum."""
     variants = defn.get("variants", [])
     lines = []
+    status = defn.get("status", "")
+    if status == "spec_only":
+        lines.append("/// ⚠️ SPEC-ONLY — see corresponding type annotation above.")
+        lines.append("///")
     lines.append(f"/// Visitor for {name} — auto-generated.")
     lines.append(f"pub trait {name}Visitor<R> {{")
 
