@@ -1,0 +1,10 @@
+// EXPECT: 3
+function abs_diff(a: Integer, b: Integer) -> Integer {
+    if a > b {
+        return a - b;
+    }
+    return b - a;
+}
+function main() -> Integer {
+    return abs_diff(10, 7);
+}

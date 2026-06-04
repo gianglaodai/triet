@@ -1,0 +1,4 @@
+// EXPECT: 1024
+function main() -> Integer {
+    return 2 ** 10;
+}

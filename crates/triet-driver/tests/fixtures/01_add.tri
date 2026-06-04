@@ -1,0 +1,7 @@
+// EXPECT: 42
+function add(a: Integer, b: Integer) -> Integer {
+    return a + b;
+}
+function main() -> Integer {
+    return add(40, 2);
+}

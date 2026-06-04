@@ -1,0 +1,8 @@
+// EXPECT: -1
+// Ł3: true && false = false (Trilean encoding: -1)
+function main() -> Integer {
+    let a = true;
+    let b = false;
+    let result = a && b;
+    return result;
+}

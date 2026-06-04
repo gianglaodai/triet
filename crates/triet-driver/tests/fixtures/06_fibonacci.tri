@@ -1,0 +1,10 @@
+// EXPECT: 55
+function fib(n: Integer) -> Integer {
+    if n <= 1 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+function main() -> Integer {
+    return fib(10);
+}

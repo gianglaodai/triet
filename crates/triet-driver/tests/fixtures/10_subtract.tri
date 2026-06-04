@@ -1,0 +1,4 @@
+// EXPECT: 35
+function main() -> Integer {
+    return 42 - 7;
+}

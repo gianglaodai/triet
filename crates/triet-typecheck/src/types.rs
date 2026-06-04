@@ -216,6 +216,12 @@ impl Type {
         {
             return n1 == n2 && v1.matches(v2) && e1.matches(e2);
         }
+        // Bậc A widening: Trilean! (+1/0/-1) is a subset of Integer
+        // (27-trit signed). Both are i64 at runtime, so Integer accepts
+        // Trilean! — needed for `return true && false` in integration tests.
+        if matches!(self, Self::Integer) && matches!(other, Self::Trilean { refined: true }) {
+            return true;
+        }
         // Same-name user types match even with different type params
         // (e.g., `Option<T>` vs `Option<Integer>`). Structural
         // comparison of variants/fields catches actual mismatches.

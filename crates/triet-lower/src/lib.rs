@@ -314,9 +314,26 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
         Stmt::Assignment { target, value } => {
             let v = lower_expr(*value, arena, c)?;
             match &arena.expression(*target).node {
-                // Simple identifier target: rebind the variable.
+                // Simple identifier target: emit an Assign to update the
+                // original local in-place, so loop headers reading from the
+                // same local see the updated value. Without this, `x = x - 1`
+                // inside a while loop would rebind x to a new local while the
+                // loop header still reads the old one → infinite loop.
                 Expr::Identifier { name } => {
-                    c.vars.insert(name.clone(), v);
+                    if let Some(&orig) = c.vars.get(name) {
+                        c.push(Statement::Assign {
+                            dest: Place::local(orig),
+                            source: Place::local(v),
+                            span: stmt_span.clone(),
+                        });
+                        // Keep the var map pointing to orig — the Assign
+                        // updated it in-place, and the loop header reads
+                        // from the same local.
+                    } else {
+                        // Variable not yet defined — shouldn't happen after
+                        // typecheck, but treat as a new binding.
+                        c.vars.insert(name.clone(), v);
+                    }
                 }
                 // Field/projection target: store through the place.
                 _ => {

@@ -1,0 +1,7 @@
+// EXPECT: 1034
+function pow_add(a: Integer, b: Integer, c: Integer) -> Integer {
+    return a + b ** c;
+}
+function main() -> Integer {
+    return pow_add(10, 2, 10);
+}

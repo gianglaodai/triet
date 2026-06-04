@@ -12,7 +12,7 @@
 //! block parameters (φ-nodes) at seal time.
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::types::{I8, I64};
+use cranelift_codegen::ir::types::I64;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
@@ -422,7 +422,7 @@ impl JitContext {
                             })?;
                             builder.ins().iconst(I64, n_i64)
                         }
-                        ConstValue::Trit(t) => builder.ins().iconst(I8, i64::from(*t)),
+                        ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
                         ConstValue::Unit => builder.ins().iconst(I64, 0),
                         ConstValue::String(_) => {
                             return Err(JitError::Unsupported(
@@ -714,7 +714,6 @@ fn lower_binop(
     rhs: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
     let i64 = I64;
-    let i8 = I8;
 
     match op {
         // ── Arithmetic ──
@@ -739,10 +738,9 @@ fn lower_binop(
                 _ => unreachable!(),
             };
             let cmp = builder.ins().icmp(cc, lhs, rhs);
-            let one = builder.ins().iconst(i8, 1);
-            let neg_one = builder.ins().iconst(i8, -1_i64);
-            let trilean_i8 = builder.ins().select(cmp, one, neg_one);
-            builder.ins().sextend(i64, trilean_i8)
+            let one = builder.ins().iconst(i64, 1);
+            let neg_one = builder.ins().iconst(i64, -1_i64);
+            builder.ins().select(cmp, one, neg_one)
         }
 
         // ── Universal logic ops (identical in Ł3 and K3) ──
