@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use triet_mir::DUMMY_SPAN;
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, Local, Place, Projection,
-    ReturnShape, Statement, StructLayout, Terminator,
+    Statement, StructLayout, Terminator,
 };
 
 // ── Errors ──────────────────────────────────────────────────
@@ -1044,7 +1044,7 @@ pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
 mod tests {
     use super::*;
     use triet_borrowck::{MirBuilder, binop, return_, storage_live};
-    use triet_mir::{FunctionId, ParameterPassing};
+    use triet_mir::{FunctionId, ParameterPassing, ReturnShape};
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
     #[test]

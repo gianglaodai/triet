@@ -1,23 +1,37 @@
 # Phase 3 — Cranelift JIT/AOT Backend Design
 
-**Status:** Partial — scalar-only; §9.1 native struct layout not built (2026-06-04)
+**Status:** Bậc-A complete — scalar + control flow + call + flat struct; clean
+refusals for everything beyond (2026-06-05).
 **See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
 
 **Dependency note:** Phase numbering ≠ build order. The JIT depends on Phase 4
 (AST→MIR lowerer) which produces MIR bodies, and Phase 2 (borrowck) which
 validates them. Both must run before Phase 3 in any build pipeline.
 
-**What actually works:** Bậc A single-i64 ABI. Scalar arithmetic, comparisons
-(→Trilean!), Ł3/K3 logic ops, if/else, while, recursion, cross-function calls,
-pow shim (`__triet_pow`), borrow references (raw pointers). 15 JIT tests.
+**What works (Bậc A backend):**
+- Scalar arithmetic, comparisons (→Trilean!), Ł3/K3 logic ops
+- Control flow: if/else, while, recursion
+- Cross-function calls + pow shim (`__triet_pow`)
+- Borrow references (raw pointers)
+- **Flat struct:** local init (StackSlot), field access, param (by-pointer),
+  return (sret — caller allocates, passes `stack_addr` as hidden arg[0])
+- 18 integration tests, 15 JIT unit tests
 
-**What does NOT work (verified against code):**
-- Aggregate types (struct/enum/String/Vector/HashMap) — lowerer returns `Err`
-- Native struct `StackSlot` (§9.1) — not implemented; every value is a single `i64`
-- Multi-value return / packed Outcome ABI (§9.2 Bậc C) — deferred
-- Outcome ops — guarded with `LowerError::unsupported_*`, not pass-through
-- AOT cache — killed as premature optimization
-- struct_layouts populated but JIT doesn't use them
+**Rổ A — known backend gaps (Phase 3 scope, not yet built):**
+- Nested struct field access (`a.b.c`) — lowerer emits single-level `Field`
+  only; JIT refuses nested projections
+- `Deref`/`Index` projections — defined in MIR but **provably unreachable**
+  from lowerer (lowerer only emits `Projection::Field`). JIT refuses them
+  as defense-in-depth.
+
+**Rổ B — intentional defer to Bậc C (NOT Phase 3 blockers):**
+- Outcome 2-register ABI (§9.2) + multi-value return — per plan, Bậc C scope.
+  Lowerer does not yet emit Outcome → JIT Outcome path is provably unreachable.
+- AOT cache — killed as premature optimization (was §3.2/Phase 3.2).
+
+**Rổ C — NOT Phase 3 (belongs to Phase 4 lowerer):**
+- String / Vector / HashMap / Enum / match — all `Err` at the **lowerer**
+  (`unsupported_expr` catch-all), never reach the JIT. These are Phase 4 scope.
 
 **Implementation:** `crates/triet-jit/src/mir_lower.rs` (~1150 dòng) + `lib.rs`.
 Pipeline end-to-end: `triet-driver run hello_jit.tri` → 42.
