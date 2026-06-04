@@ -24,8 +24,8 @@ pub mod checker;
 pub mod liveness;
 
 use triet_mir::{
-    BasicBlock, BinOp, BlockData, Body, ConstValue, FunctionId, FunctionSignature, Local,
-    LocalDecl, ParameterPassing, Place, ReferenceForm, Statement, Terminator,
+    BasicBlock, BinOp, BlockData, Body, ConstValue, DUMMY_SPAN, FunctionId, FunctionSignature,
+    Local, LocalDecl, ParameterPassing, Place, ReferenceForm, Statement, Terminator,
 };
 
 // ── MIR builder (convenience API for constructing MIR by hand) ─
@@ -94,7 +94,7 @@ impl MirBuilder {
         self.next_block += 1;
         self.blocks.push(BlockData {
             statements: Vec::new(),
-            terminator: Terminator::Unreachable,
+            terminator: Terminator::Unreachable { span: DUMMY_SPAN },
         });
         bb
     }
@@ -145,13 +145,13 @@ impl MirBuilder {
 /// `StorageLive(local)`
 #[must_use]
 pub fn storage_live(local: Local) -> Statement {
-    Statement::StorageLive(local)
+    Statement::StorageLive(local, DUMMY_SPAN)
 }
 
 /// `StorageDead(local)`
 #[must_use]
 pub fn storage_dead(local: Local) -> Statement {
-    Statement::StorageDead(local)
+    Statement::StorageDead(local, DUMMY_SPAN)
 }
 
 /// `dest = &form source` (whole-local borrow).
@@ -161,6 +161,7 @@ pub fn borrow(dest: Local, form: ReferenceForm, source: Local) -> Statement {
         dest: dest.into(),
         form,
         source: source.into(),
+        span: DUMMY_SPAN,
     }
 }
 
@@ -172,6 +173,7 @@ pub fn borrow_place(dest: Local, form: ReferenceForm, source: Place) -> Statemen
         dest: dest.into(),
         form,
         source,
+        span: DUMMY_SPAN,
     }
 }
 
@@ -181,6 +183,7 @@ pub fn assign(dest: Local, source: Local) -> Statement {
     Statement::Assign {
         dest: dest.into(),
         source: source.into(),
+        span: DUMMY_SPAN,
     }
 }
 
@@ -190,6 +193,7 @@ pub fn const_int(dest: Local, value: i128) -> Statement {
     Statement::Const {
         dest: dest.into(),
         value: ConstValue::Integer(value),
+        span: DUMMY_SPAN,
     }
 }
 
@@ -201,6 +205,7 @@ pub fn binop(dest: Local, op: BinOp, left: Local, right: Local) -> Statement {
         op,
         left: left.into(),
         right: right.into(),
+        span: DUMMY_SPAN,
     }
 }
 
@@ -224,19 +229,26 @@ pub fn call_dispatch(
         args,
         return_bb,
         dest,
+        span: DUMMY_SPAN,
     }
 }
 
 /// `Return(values)` terminator.
 #[must_use]
 pub fn return_(values: Vec<Local>) -> Terminator {
-    Terminator::Return { values }
+    Terminator::Return {
+        values,
+        span: DUMMY_SPAN,
+    }
 }
 
 /// `Goto(target)` terminator.
 #[must_use]
 pub fn goto(target: BasicBlock) -> Terminator {
-    Terminator::Goto { target }
+    Terminator::Goto {
+        target,
+        span: DUMMY_SPAN,
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────
@@ -411,6 +423,7 @@ mod tests {
                 positive_bb: bb1,
                 zero_bb: None,
                 negative_bb: bb2,
+                span: DUMMY_SPAN,
             },
         );
 

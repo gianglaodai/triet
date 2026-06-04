@@ -29,8 +29,10 @@
 //!   another borrow is still active on the same variable.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fmt;
-use triet_mir::{BasicBlock, Local, Place, Projection, ReferenceForm, Statement, Terminator};
+use triet_mir::{BasicBlock, Local, Place, Projection, ReferenceForm, Span, Statement, Terminator};
+
+use miette::Diagnostic;
+use thiserror::Error;
 
 use crate::liveness::LivenessResult;
 
@@ -183,51 +185,46 @@ impl BlockState {
 
 // ── Borrow check result ─────────────────────────────────────
 
-/// A borrow-check error.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A borrow-check error with source-level diagnostics.
+#[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
 pub enum BorrowError {
-    /// E2420: Use after move.
+    /// E2420: Use after move — a variable was used after its ownership was transferred.
+    #[error("E2420: use after move — `{name}` was used after its ownership was transferred")]
+    #[diagnostic(
+        code(triet::borrow::E2420),
+        help("bind the moved value to a new variable before use, or borrow it instead of moving")
+    )]
     UseAfterMove {
         /// The variable that was used after being moved.
         local: Local,
         /// Human-readable variable name.
         name: String,
+        /// Source location of the use.
+        #[label("used here after move")]
+        span: Span,
     },
+
     /// E2440: NLL exclusivity violation — conflicting borrow.
+    #[error(
+        "E2440: cannot create {new_form} borrow on `{source_name}` — it is already exclusively borrowed"
+    )]
+    #[diagnostic(
+        code(triet::borrow::E2440),
+        help("end the earlier borrow before creating a new one, or use a read-only borrow (&0)")
+    )]
     NllExclusivityViolation {
         /// The variable being borrowed.
-        source: Local,
+        source_local: Local,
         /// Human-readable source name.
         source_name: String,
         /// The new borrow that conflicts.
         new_form: ReferenceForm,
         /// The existing loan that causes the conflict.
         existing_loan_dest: Local,
+        /// Source location of the conflicting borrow.
+        #[label("conflicting borrow created here")]
+        span: Span,
     },
-}
-
-impl fmt::Display for BorrowError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UseAfterMove { local, name } => {
-                write!(
-                    f,
-                    "E2420 UseAfterMove: `{name}` ({local}) was used after its ownership was transferred"
-                )
-            }
-            Self::NllExclusivityViolation {
-                source,
-                source_name,
-                new_form,
-                existing_loan_dest,
-            } => {
-                write!(
-                    f,
-                    "E2440 NllExclusivityViolation: cannot create {new_form} borrow on `{source_name}` ({source}) — it is already exclusively borrowed by {existing_loan_dest}"
-                )
-            }
-        }
-    }
 }
 
 /// Result of borrow-checking a function.
@@ -401,25 +398,31 @@ fn process_block(
 
     for (stmt_idx, stmt) in block_data.statements.iter().enumerate() {
         match stmt {
-            Statement::StorageLive(l) => {
+            Statement::StorageLive(l, _) => {
                 state.var_states.insert(*l, VarState::Owned);
             }
 
-            Statement::StorageDead(l) => {
+            Statement::StorageDead(l, _) => {
                 state.active_loans.retain(|loan| loan.source.local != *l);
                 state.var_states.remove(l);
             }
 
-            Statement::Borrow { dest, form, source } => {
+            Statement::Borrow {
+                dest,
+                form,
+                source,
+                span,
+            } => {
                 // Check for conflicts with active loans (field-level: only
                 // overlapping places conflict — `obj.x` vs `obj.y` do not).
                 for loan in &state.active_loans {
                     if places_conflict(&loan.source, source) && loan.conflicts_with(*form) {
                         errors.push(BorrowError::NllExclusivityViolation {
-                            source: source.local,
+                            source_local: source.local,
                             source_name: place_name(source, names),
                             new_form: *form,
                             existing_loan_dest: loan.dest,
+                            span: span.clone(),
                         });
                     }
                 }
@@ -429,6 +432,7 @@ fn process_block(
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
+                        span: span.clone(),
                     });
                 }
 
@@ -450,11 +454,12 @@ fn process_block(
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
-            Statement::Assign { dest, source } => {
+            Statement::Assign { dest, source, span } => {
                 if state.var_states.get(&source.local) == Some(&VarState::Moved) {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
+                        span: span.clone(),
                     });
                 }
 
@@ -464,10 +469,11 @@ fn process_block(
                     .find(|l| places_conflict(&l.source, source));
                 if let Some(loan) = conflicting {
                     errors.push(BorrowError::NllExclusivityViolation {
-                        source: source.local,
+                        source_local: source.local,
                         source_name: place_name(source, names),
                         new_form: ReferenceForm::StrongMutable,
                         existing_loan_dest: loan.dest,
+                        span: span.clone(),
                     });
                 }
                 state.var_states.insert(source.local, VarState::Moved);
@@ -479,37 +485,44 @@ fn process_block(
             }
 
             Statement::BinaryOp {
-                dest, left, right, ..
+                dest,
+                left,
+                right,
+                span,
+                ..
             } => {
                 for op in [left, right] {
                     if state.var_states.get(&op.local) == Some(&VarState::Moved) {
                         errors.push(BorrowError::UseAfterMove {
                             local: op.local,
                             name: place_name(op, names),
+                            span: span.clone(),
                         });
                     }
                 }
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
-            Statement::OutcomeDiscriminant { dest, source }
-            | Statement::OutcomeUnwrap { dest, source }
-            | Statement::OutcomeUnwrapError { dest, source } => {
+            Statement::OutcomeDiscriminant { dest, source, span }
+            | Statement::OutcomeUnwrap { dest, source, span }
+            | Statement::OutcomeUnwrapError { dest, source, span } => {
                 if state.var_states.get(&source.local) == Some(&VarState::Moved) {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
+                        span: span.clone(),
                     });
                 }
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
-            Statement::Drop(l) => {
+            Statement::Drop(l, span) => {
                 if state.var_states.get(l) == Some(&VarState::Moved) {
                     let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
                     errors.push(BorrowError::UseAfterMove {
                         local: *l,
                         name: l_name,
+                        span: span.clone(),
                     });
                 }
                 state.var_states.insert(*l, VarState::Moved);
@@ -525,7 +538,9 @@ fn process_block(
             .retain(|loan| liveness.is_live_after(block_id, idx, loan.dest));
     }
 
-    // Check terminator for use-after-move
+    // Check terminator for use-after-move — use the terminator's own span
+    // so diagnostics point to the actual source code the user wrote.
+    let term_span = terminator_span(&block_data.terminator);
     let term_reads = terminator_reads(&block_data.terminator);
     for r in &term_reads {
         if state.var_states.get(r) == Some(&VarState::Moved) {
@@ -533,6 +548,7 @@ fn process_block(
             errors.push(BorrowError::UseAfterMove {
                 local: *r,
                 name: r_name,
+                span: term_span.clone(),
             });
         }
     }
@@ -584,14 +600,25 @@ fn process_block(
     (state, errors)
 }
 
+/// Return the source span of a terminator.
+fn terminator_span(term: &Terminator) -> Span {
+    match term {
+        Terminator::Return { span, .. }
+        | Terminator::Goto { span, .. }
+        | Terminator::If { span, .. }
+        | Terminator::CallDispatch { span, .. }
+        | Terminator::Unreachable { span } => span.clone(),
+    }
+}
+
 /// Return the locals READ by a terminator.
 fn terminator_reads(term: &Terminator) -> Vec<Local> {
     match term {
-        Terminator::Return { values } => values.clone(),
+        Terminator::Return { values, .. } => values.clone(),
         Terminator::Goto { .. } => Vec::new(),
         Terminator::If { cond, .. } => vec![*cond],
         Terminator::CallDispatch { args, .. } => args.clone(),
-        Terminator::Unreachable => Vec::new(),
+        Terminator::Unreachable { .. } => Vec::new(),
     }
 }
 

@@ -1,0 +1,17 @@
+[package]
+name = "triet-driver"
+version = "0.1.0"
+edition = "2024"
+description = "Triết Track B pipeline driver — end-to-end borrow-check compilation"
+
+[[bin]]
+name = "triet-driver"
+path = "src/main.rs"
+
+[dependencies]
+triet-parser = { path = "../triet-parser" }
+triet-typecheck = { path = "../triet-typecheck" }
+triet-lower = { path = "../triet-lower" }
+triet-mir = { path = "../triet-mir" }
+triet-borrowck = { path = "../triet-borrowck" }
+miette = { workspace = true }

@@ -12,6 +12,7 @@ members = [
     "crates/triet-lower",
     "crates/triet-mir",
     "crates/triet-borrowck",
+    "crates/triet-driver",
 ]
 
 [workspace.package]

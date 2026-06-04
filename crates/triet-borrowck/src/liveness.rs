@@ -179,7 +179,7 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
     // Liveness is tracked at whole-local granularity, so a projected place's
     // base local is what counts as read.
     match stmt {
-        Statement::StorageLive(_) | Statement::StorageDead(_) => Vec::new(),
+        Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => Vec::new(),
         Statement::Assign { source, .. } => vec![source.local],
         Statement::Borrow { source, .. } => vec![source.local],
         Statement::Const { .. } => Vec::new(),
@@ -187,14 +187,14 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::OutcomeDiscriminant { source, .. } => vec![source.local],
         Statement::OutcomeUnwrap { source, .. } => vec![source.local],
         Statement::OutcomeUnwrapError { source, .. } => vec![source.local],
-        Statement::Drop(l) => vec![*l],
+        Statement::Drop(l, _) => vec![*l],
     }
 }
 
 /// Return the locals WRITTEN by a statement.
 fn statement_writes(stmt: &Statement) -> Vec<Local> {
     match stmt {
-        Statement::StorageLive(_) | Statement::StorageDead(_) => Vec::new(),
+        Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => Vec::new(),
         Statement::Assign { dest, .. }
         | Statement::Borrow { dest, .. }
         | Statement::Const { dest, .. }
@@ -202,18 +202,18 @@ fn statement_writes(stmt: &Statement) -> Vec<Local> {
         | Statement::OutcomeDiscriminant { dest, .. }
         | Statement::OutcomeUnwrap { dest, .. }
         | Statement::OutcomeUnwrapError { dest, .. } => vec![dest.local],
-        Statement::Drop(_) => Vec::new(),
+        Statement::Drop(_, _) => Vec::new(),
     }
 }
 
 /// Return the locals READ by a terminator.
 fn terminator_reads(term: &Terminator) -> Vec<Local> {
     match term {
-        Terminator::Return { values } => values.clone(),
+        Terminator::Return { values, .. } => values.clone(),
         Terminator::Goto { .. } => Vec::new(),
         Terminator::If { cond, .. } => vec![*cond],
         Terminator::CallDispatch { args, .. } => args.clone(),
-        Terminator::Unreachable => Vec::new(),
+        Terminator::Unreachable { .. } => Vec::new(),
     }
 }
 

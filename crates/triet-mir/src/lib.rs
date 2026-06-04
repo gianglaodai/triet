@@ -27,6 +27,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+/// A half-open byte range `[start, end)` in source text.
+///
+/// Mirrors `triet_syntax::Span` to keep `triet-mir` dependency-free.
+pub type Span = std::ops::Range<usize>;
+
+/// A zero-length span for synthetic MIR nodes that have no corresponding
+/// source location (e.g. implicit `Return(())` inserted at function end,
+/// or compiler-generated temporaries). Must NOT be used for errors the
+/// user actually wrote.
+pub const DUMMY_SPAN: Span = 0..0;
+
 // ── Index types ──────────────────────────────────────────────
 
 /// Index into a function's local variable table.
@@ -155,13 +166,17 @@ impl LocalDecl {
 ///
 /// Each statement operates on `Local` values only. Any nesting in the
 /// original AST is broken into temporaries during lowering.
+///
+/// Every variant carries a [`Span`] for source-level diagnostics. Use
+/// [`DUMMY_SPAN`] for compiler-synthesized statements that have no
+/// corresponding source code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Statement {
     /// Mark a local as live (created). Must precede any use.
-    StorageLive(Local),
+    StorageLive(Local, Span),
 
     /// Mark a local as dead (dropped). Must follow the last use.
-    StorageDead(Local),
+    StorageDead(Local, Span),
 
     /// `dest = source` — copy or move depending on types.
     Assign {
@@ -169,6 +184,8 @@ pub enum Statement {
         dest: Place,
         /// Source place.
         source: Place,
+        /// Source location.
+        span: Span,
     },
 
     /// `dest = &form source` — create a reference to source.
@@ -179,6 +196,8 @@ pub enum Statement {
         form: ReferenceForm,
         /// The place being borrowed (may be a field/deref projection).
         source: Place,
+        /// Source location.
+        span: Span,
     },
 
     /// `dest = const` — load a compile-time constant.
@@ -187,6 +206,8 @@ pub enum Statement {
         dest: Place,
         /// Constant value as a human-readable string (placeholder).
         value: ConstValue,
+        /// Source location.
+        span: Span,
     },
 
     /// Binary operation: `dest = left op right`.
@@ -199,6 +220,8 @@ pub enum Statement {
         left: Place,
         /// Right operand.
         right: Place,
+        /// Source location.
+        span: Span,
     },
 
     /// Discriminant of an Outcome value: `dest = discriminant(source)`.
@@ -208,6 +231,8 @@ pub enum Statement {
         dest: Place,
         /// Source Outcome value.
         source: Place,
+        /// Source location.
+        span: Span,
     },
 
     /// Unwrap success arm of Outcome: `dest = unwrap_value(source)`.
@@ -216,6 +241,8 @@ pub enum Statement {
         dest: Place,
         /// Source Outcome value.
         source: Place,
+        /// Source location.
+        span: Span,
     },
 
     /// Unwrap error arm of Outcome: `dest = unwrap_error(source)`.
@@ -224,10 +251,12 @@ pub enum Statement {
         dest: Place,
         /// Source Outcome value.
         source: Place,
+        /// Source location.
+        span: Span,
     },
 
     /// Drop a local's value (decrement refcount or free memory).
-    Drop(Local),
+    Drop(Local, Span),
 }
 
 /// Compile-time constant value.
@@ -313,6 +342,10 @@ impl fmt::Display for ParameterPassing {
 
 /// A terminator — the last instruction in a basic block that transfers
 /// control to another block (or exits the function).
+///
+/// Every variant carries a [`Span`] for source-level diagnostics. Use
+/// [`DUMMY_SPAN`] for compiler-synthesized terminators (e.g. implicit
+/// `Return(())` at end of a void function).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Terminator {
     /// Return from the function.
@@ -323,12 +356,16 @@ pub enum Terminator {
     Return {
         /// Values to return. Must match `ReturnShape::arity()`.
         values: Vec<Local>,
+        /// Source location (DUMMY_SPAN for implicit returns).
+        span: Span,
     },
 
     /// Unconditional jump to another block.
     Goto {
         /// Target block.
         target: BasicBlock,
+        /// Source location (DUMMY_SPAN for synthetic jumps).
+        span: Span,
     },
 
     /// Conditional branch based on a Trilean discriminant.
@@ -345,6 +382,8 @@ pub enum Terminator {
         zero_bb: Option<BasicBlock>,
         /// Branch taken when cond = Trit::Negative (False).
         negative_bb: BasicBlock,
+        /// Source location.
+        span: Span,
     },
 
     /// Function call. Triết is a kernel language — there is no exception
@@ -365,10 +404,15 @@ pub enum Terminator {
         /// - Scalar: 1 local (the value)
         /// - BinaryOutcome/TernaryOutcome: 2 locals (discriminant, payload)
         dest: Vec<Local>,
+        /// Source location.
+        span: Span,
     },
 
     /// Unreachable point — after infinite loop or guaranteed panic.
-    Unreachable,
+    Unreachable {
+        /// Source location (DUMMY_SPAN for dead blocks).
+        span: Span,
+    },
 }
 
 // ── Function signature ──────────────────────────────────────
@@ -612,7 +656,7 @@ impl Body {
                 successors: Vec::new(),
                 data: BlockData {
                     statements: Vec::new(),
-                    terminator: Terminator::Unreachable,
+                    terminator: Terminator::Unreachable { span: DUMMY_SPAN },
                 },
             })
             .collect();
@@ -655,8 +699,8 @@ impl Body {
 /// Return the successor blocks of a terminator.
 fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
     match terminator {
-        Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
-        Terminator::Goto { target } => vec![*target],
+        Terminator::Return { .. } | Terminator::Unreachable { .. } => Vec::new(),
+        Terminator::Goto { target, .. } => vec![*target],
         Terminator::If {
             positive_bb,
             zero_bb,
@@ -700,25 +744,30 @@ impl fmt::Display for Body {
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::StorageLive(l) => write!(f, "StorageLive({l})"),
-            Self::StorageDead(l) => write!(f, "StorageDead({l})"),
-            Self::Assign { dest, source } => write!(f, "{dest} = move {source}"),
-            Self::Borrow { dest, form, source } => write!(f, "{dest} = {form} {source}"),
-            Self::Const { dest, value } => write!(f, "{dest} = const {value}"),
+            Self::StorageLive(l, _) => write!(f, "StorageLive({l})"),
+            Self::StorageDead(l, _) => write!(f, "StorageDead({l})"),
+            Self::Assign { dest, source, .. } => write!(f, "{dest} = move {source}"),
+            Self::Borrow {
+                dest, form, source, ..
+            } => write!(f, "{dest} = {form} {source}"),
+            Self::Const { dest, value, .. } => write!(f, "{dest} = const {value}"),
             Self::BinaryOp {
                 dest,
                 op,
                 left,
                 right,
+                ..
             } => write!(f, "{dest} = {left} {op} {right}"),
-            Self::OutcomeDiscriminant { dest, source } => {
+            Self::OutcomeDiscriminant { dest, source, .. } => {
                 write!(f, "{dest} = discriminant({source})")
             }
-            Self::OutcomeUnwrap { dest, source } => write!(f, "{dest} = unwrap_value({source})"),
-            Self::OutcomeUnwrapError { dest, source } => {
+            Self::OutcomeUnwrap { dest, source, .. } => {
+                write!(f, "{dest} = unwrap_value({source})")
+            }
+            Self::OutcomeUnwrapError { dest, source, .. } => {
                 write!(f, "{dest} = unwrap_error({source})")
             }
-            Self::Drop(l) => write!(f, "Drop({l})"),
+            Self::Drop(l, _) => write!(f, "Drop({l})"),
         }
     }
 }
@@ -726,17 +775,18 @@ impl fmt::Display for Statement {
 impl fmt::Display for Terminator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Return { values } if values.is_empty() => write!(f, "Return(())"),
-            Self::Return { values } => {
+            Self::Return { values, .. } if values.is_empty() => write!(f, "Return(())"),
+            Self::Return { values, .. } => {
                 let vs: Vec<String> = values.iter().map(|v| v.to_string()).collect();
                 write!(f, "Return({})", vs.join(", "))
             }
-            Self::Goto { target } => write!(f, "Goto({target})"),
+            Self::Goto { target, .. } => write!(f, "Goto({target})"),
             Self::If {
                 cond,
                 positive_bb,
                 zero_bb: Some(zero),
                 negative_bb,
+                ..
             } => {
                 write!(
                     f,
@@ -748,6 +798,7 @@ impl fmt::Display for Terminator {
                 positive_bb,
                 zero_bb: None,
                 negative_bb,
+                ..
             } => {
                 write!(f, "If({cond}) → +:{positive_bb}, -:{negative_bb}")
             }
@@ -770,7 +821,7 @@ impl fmt::Display for Terminator {
                 }
                 Ok(())
             }
-            Self::Unreachable => write!(f, "Unreachable"),
+            Self::Unreachable { .. } => write!(f, "Unreachable"),
         }
     }
 }

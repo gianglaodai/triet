@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 
 use triet_mir::{
-    BasicBlock, BinOp, Body, ConstValue, FunctionSignature, Local, LocalDecl, ParameterPassing,
-    Place, Projection, Statement, Terminator,
+    BasicBlock, BinOp, Body, ConstValue, DUMMY_SPAN, FunctionSignature, Local, LocalDecl,
+    ParameterPassing, Place, Projection, Span, Statement, Terminator,
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, FunctionBody, FunctionDef, Item, Program, Stmt, TypeExpr,
@@ -45,7 +45,7 @@ impl Ctx {
             next_bb: 1,
             mir_blocks: vec![triet_mir::BlockData {
                 statements: Vec::new(),
-                terminator: Terminator::Unreachable,
+                terminator: Terminator::Unreachable { span: DUMMY_SPAN },
             }],
             sig: FunctionSignature {
                 name: name.to_string(),
@@ -74,7 +74,7 @@ impl Ctx {
         self.next_bb += 1;
         self.mir_blocks.push(triet_mir::BlockData {
             statements: Vec::new(),
-            terminator: Terminator::Unreachable,
+            terminator: Terminator::Unreachable { span: DUMMY_SPAN },
         });
         bb
     }
@@ -88,7 +88,10 @@ impl Ctx {
     }
 
     fn is_open(&self, bb: BasicBlock) -> bool {
-        matches!(self.mir_blocks[bb.0].terminator, Terminator::Unreachable)
+        matches!(
+            self.mir_blocks[bb.0].terminator,
+            Terminator::Unreachable { .. }
+        )
     }
 
     fn build(self, entry: BasicBlock) -> Body {
@@ -111,15 +114,18 @@ pub fn lower_program(prog: &Program) -> Vec<Body> {
     let mut bodies = Vec::new();
     for item in &prog.items {
         if let Item::Function { def } = &item.node {
-            bodies.push(lower_function(def, &prog.arena));
+            bodies.push(lower_function(def, &prog.arena, item.span.clone()));
         }
     }
     bodies
 }
 
 /// Lower one function definition to a MIR body.
+///
+/// `span` is the byte range of the function definition in the source file,
+/// used as a fallback for body-level synthetic statements.
 #[must_use]
-pub fn lower_function(func: &FunctionDef, arena: &Arena) -> Body {
+pub fn lower_function(func: &FunctionDef, arena: &Arena, _span: Span) -> Body {
     let mut c = Ctx::new(&func.name, "Integer");
     let entry = c.cur;
 
@@ -142,15 +148,29 @@ pub fn lower_function(func: &FunctionDef, arena: &Arena) -> Body {
         FunctionBody::Expression { expr } => {
             let val = lower_expr(*expr, arena, &mut c);
             let cur = c.cur;
-            c.term(cur, Terminator::Return { values: vec![val] });
+            let expr_span = arena.expression(*expr).span.clone();
+            c.term(
+                cur,
+                Terminator::Return {
+                    values: vec![val],
+                    span: expr_span,
+                },
+            );
         }
         FunctionBody::External { .. } => {}
     }
 
     // A block-form body that falls off the end returns unit.
+    // This is a synthetic return — use DUMMY_SPAN since it has no source.
     let cur = c.cur;
     if c.is_open(cur) {
-        c.term(cur, Terminator::Return { values: vec![] });
+        c.term(
+            cur,
+            Terminator::Return {
+                values: vec![],
+                span: DUMMY_SPAN,
+            },
+        );
     }
 
     c.build(entry)
@@ -176,8 +196,10 @@ fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) {
             final_expr,
         } => {
             for &stmt_id in statements {
-                let stmt = arena.statement(stmt_id).node.clone();
-                lower_stmt(&stmt, arena, c);
+                let spanned_stmt = arena.statement(stmt_id);
+                let stmt = spanned_stmt.node.clone();
+                let stmt_span = spanned_stmt.span.clone();
+                lower_stmt(&stmt, stmt_span, arena, c);
             }
             if let Some(e) = final_expr {
                 lower_expr(*e, arena, c);
@@ -191,7 +213,7 @@ fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) {
 
 // ── Statement lowering ──────────────────────────────────────
 
-fn lower_stmt(stmt: &Stmt, arena: &Arena, c: &mut Ctx) {
+fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
     match stmt {
         Stmt::Let { name, init, .. } => {
             let v = lower_expr(*init, arena, c);
@@ -206,7 +228,13 @@ fn lower_stmt(stmt: &Stmt, arena: &Arena, c: &mut Ctx) {
                 None => vec![],
             };
             let cur = c.cur;
-            c.term(cur, Terminator::Return { values });
+            c.term(
+                cur,
+                Terminator::Return {
+                    values,
+                    span: stmt_span.clone(),
+                },
+            );
             let dead = c.alloc_bb();
             c.cur = dead;
         }
@@ -223,6 +251,7 @@ fn lower_stmt(stmt: &Stmt, arena: &Arena, c: &mut Ctx) {
                     c.push(Statement::Assign {
                         dest,
                         source: Place::local(v),
+                        span: stmt_span.clone(),
                     });
                 }
             }
@@ -235,7 +264,13 @@ fn lower_stmt(stmt: &Stmt, arena: &Arena, c: &mut Ctx) {
             let ext = c.alloc_bb();
 
             let cur = c.cur;
-            c.term(cur, Terminator::Goto { target: hdr });
+            c.term(
+                cur,
+                Terminator::Goto {
+                    target: hdr,
+                    span: DUMMY_SPAN,
+                },
+            );
 
             c.cur = hdr;
             let cond = lower_expr(*condition, arena, c);
@@ -247,13 +282,20 @@ fn lower_stmt(stmt: &Stmt, arena: &Arena, c: &mut Ctx) {
                     positive_bb: bdy,
                     zero_bb: None,
                     negative_bb: ext,
+                    span: arena.expression(*condition).span.clone(),
                 },
             );
 
             c.cur = bdy;
             lower_block(*body, arena, c);
             let bdy_end = c.cur;
-            c.term(bdy_end, Terminator::Goto { target: hdr });
+            c.term(
+                bdy_end,
+                Terminator::Goto {
+                    target: hdr,
+                    span: DUMMY_SPAN,
+                },
+            );
 
             c.cur = ext;
         }
@@ -288,37 +330,41 @@ fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Place {
 // ── Expression lowering ─────────────────────────────────────
 
 fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
+    let expr_span = arena.expression(expr_id).span.clone();
     match &arena.expression(expr_id).node {
         Expr::IntegerLiteral { value, .. } => {
             let d = c.alloc_local();
-            c.push(Statement::StorageLive(d));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
                 value: ConstValue::Integer(*value),
+                span: expr_span,
             });
             d
         }
         Expr::TernaryLiteral { value } => {
             let d = c.alloc_local();
-            c.push(Statement::StorageLive(d));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
                 value: ConstValue::Integer(*value),
+                span: expr_span,
             });
             d
         }
         Expr::TritLiteral { value } => {
             let d = c.alloc_local();
-            c.push(Statement::StorageLive(d));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
                 value: ConstValue::Trit(*value),
+                span: expr_span,
             });
             d
         }
         Expr::TrileanLiteral { value } => {
             let d = c.alloc_local();
-            c.push(Statement::StorageLive(d));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
             let trit: i8 = match value {
                 triet_syntax::TrileanValue::True => 1,
                 triet_syntax::TrileanValue::False => -1,
@@ -327,6 +373,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             c.push(Statement::Const {
                 dest: Place::local(d),
                 value: ConstValue::Trit(trit),
+                span: expr_span,
             });
             d
         }
@@ -343,17 +390,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             let lhs = lower_expr(*left, arena, c);
             let rhs = lower_expr(*right, arena, c);
             let d = c.alloc_local();
-            c.push(Statement::StorageLive(d));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
             match op {
                 Some(op) => c.push(Statement::BinaryOp {
                     dest: Place::local(d),
                     op,
                     left: Place::local(lhs),
                     right: Place::local(rhs),
+                    span: expr_span,
                 }),
                 None => c.push(Statement::Assign {
                     dest: Place::local(d),
                     source: Place::local(lhs),
+                    span: expr_span,
                 }),
             }
             d
@@ -365,7 +414,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             };
             let args: Vec<Local> = arguments.iter().map(|a| lower_expr(*a, arena, c)).collect();
             let dest = c.alloc_local();
-            c.push(Statement::StorageLive(dest));
+            c.push(Statement::StorageLive(dest, expr_span.clone()));
             let ret_bb = c.alloc_bb();
             let call_bb = c.cur;
             c.term(
@@ -376,6 +425,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                     args,
                     return_bb: ret_bb,
                     dest: vec![dest],
+                    span: expr_span,
                 },
             );
             c.cur = ret_bb;
@@ -388,8 +438,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                     final_expr,
                 } => {
                     for &stmt_id in statements {
-                        let stmt = arena.statement(stmt_id).node.clone();
-                        lower_stmt(&stmt, arena, c);
+                        let spanned_stmt = arena.statement(stmt_id);
+                        let stmt = spanned_stmt.node.clone();
+                        let stmt_span = spanned_stmt.span.clone();
+                        lower_stmt(&stmt, stmt_span, arena, c);
                     }
                     *final_expr
                 }
@@ -399,10 +451,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 Some(e) => lower_expr(e, arena, c),
                 None => {
                     let u = c.alloc_local();
-                    c.push(Statement::StorageLive(u));
+                    c.push(Statement::StorageLive(u, expr_span.clone()));
                     c.push(Statement::Const {
                         dest: Place::local(u),
                         value: ConstValue::Unit,
+                        span: expr_span,
                     });
                     u
                 }
@@ -433,6 +486,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                     positive_bb: then_bb,
                     zero_bb: None,
                     negative_bb: else_bb,
+                    span: expr_span.clone(),
                 },
             );
 
@@ -442,12 +496,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             let result = c.alloc_local();
 
             if let Some(eb) = else_branch {
-                c.push(Statement::StorageLive(result));
+                c.push(Statement::StorageLive(result, expr_span.clone()));
                 c.push(Statement::Assign {
                     dest: Place::local(result),
                     source: Place::local(then_val),
+                    span: expr_span.clone(),
                 });
-                c.term(then_end, Terminator::Goto { target: merge_bb });
+                c.term(
+                    then_end,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
 
                 c.cur = else_bb;
                 let else_val = lower_expr(eb, arena, c);
@@ -455,19 +516,33 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 c.push(Statement::Assign {
                     dest: Place::local(result),
                     source: Place::local(else_val),
+                    span: expr_span.clone(),
                 });
-                c.term(else_end, Terminator::Goto { target: merge_bb });
+                c.term(
+                    else_end,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
 
                 c.cur = merge_bb;
                 result
             } else {
-                c.term(then_end, Terminator::Goto { target: merge_bb });
+                c.term(
+                    then_end,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
                 c.cur = merge_bb;
                 let u = c.alloc_local();
-                c.push(Statement::StorageLive(u));
+                c.push(Statement::StorageLive(u, expr_span.clone()));
                 c.push(Statement::Const {
                     dest: Place::local(u),
                     value: ConstValue::Unit,
+                    span: expr_span,
                 });
                 u
             }
@@ -479,11 +554,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             // checker can track the loan at field granularity.
             let source = lower_place(*operand, arena, c);
             let dest = c.alloc_local();
-            c.push(Statement::StorageLive(dest));
+            c.push(Statement::StorageLive(dest, expr_span.clone()));
             c.push(Statement::Borrow {
                 dest: Place::local(dest),
                 form: mir_form,
                 source,
+                span: expr_span,
             });
             dest
         }
@@ -491,10 +567,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
         Expr::FieldAccess { .. } => {
             let source = lower_place(expr_id, arena, c);
             let d = c.alloc_local();
-            c.push(Statement::StorageLive(d));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Assign {
                 dest: Place::local(d),
                 source,
+                span: expr_span,
             });
             d
         }
@@ -541,13 +618,13 @@ mod tests {
             .iter()
             .find_map(|item| {
                 if let Item::Function { def } = &item.node {
-                    Some(def.clone())
+                    Some((def.clone(), item.span.clone()))
                 } else {
                     None
                 }
             })
             .expect("no function found");
-        lower_function(&func, &prog.arena)
+        lower_function(&func.0, &prog.arena, func.1)
     }
 
     #[test]

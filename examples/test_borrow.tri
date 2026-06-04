@@ -1,0 +1,5 @@
+function demo(vga: Integer) -> Integer {
+    let a = &0 mutable vga;
+    let b = &0 mutable vga;
+    return a;
+}

@@ -6,3 +6,5 @@ description = "Triết Borrow Checker — S6 ownership enforcement via NLL dataf
 
 [dependencies]
 triet-mir = { path = "../triet-mir" }
+miette = { workspace = true }
+thiserror = { workspace = true }
