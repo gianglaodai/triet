@@ -509,7 +509,10 @@ pub enum ReturnShape {
     /// Struct return via sret — the caller allocates space and passes a
     /// hidden pointer as the first argument. The callee writes the struct
     /// fields through that pointer and returns 0 values (void).
-    Struct { struct_name: String },
+    Struct {
+        /// The name of the struct type.
+        struct_name: String,
+    },
 }
 
 impl ReturnShape {

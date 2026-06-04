@@ -3,10 +3,11 @@
 Sub-task tracking for the current phase (Phase 4 & 5).
 
 ## Phase 4 — Aggregate Type Lowering
-- [ ] Struct literal lowering (using Cranelift StackSlot infrastructure).
+- [x] Struct literal lowering (using Cranelift StackSlot infrastructure).
+  - *Note: JIT hiện tại chưa hỗ trợ nested field access (e.g., `a.b.c`). Cần tính toán offset cộng dồn hoặc stack load chain.*
 - [ ] Enum literal lowering.
 - [ ] String, Vector, HashMap literal lowering.
-- [ ] ReturnShape::Struct for multi-field returns in MIR.
+- [x] ReturnShape::Struct for multi-field returns in MIR.
 - [ ] Shim registry for Track B aggregates (`__triet_alloc_struct`, `__triet_set_field`, etc. if fallback is needed, though StackSlot is preferred).
 
 ## Phase 5 — Bậc C (Native Layout)

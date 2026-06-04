@@ -1,0 +1,12 @@
+// ERROR: nested projections not supported
+struct Inner {
+    val: Integer,
+}
+struct Outer {
+    inner: Inner,
+}
+
+function main() -> Integer {
+    let p = Outer { inner: Inner { val: 42 } };
+    return p.inner.val;
+}
