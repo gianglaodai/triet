@@ -16,15 +16,27 @@ Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
 
 ---
 
-## Trạng thái hiện tại — v0.10 đã ship ✅
+## Trạng thái hiện tại — Rewrite v0.1.0-dev (2026-06-04)
 
-v0.3 ✅ → v0.4 ✅ → v0.5 ✅ → v0.6 ✅ (Capability System) → **v0.7** ✅ (Self-hosting Compiler) → **v0.8** ✅ (Ownership Foundation + BYOS Concurrency Primitives) → **v0.9** ✅ (Atomic Primitive + Borrow Expression Syntax + Cranelift JIT partial) → **v0.10** ✅ (JIT builtin-shim layer + NLL borrow enforcement + multi-thread Atomic + interpreter parity). v0.10 added 2 ADRs (0032 builtin shim ABI, 0033 AOT cache cranelift-object). Phase achievements: 36/43 builtins JIT-shimmed with VM-delegating semantics (zero divergence by construction), per-call failure-sentinel error mechanism (cranelift-jit unwind-table cliff resolved), E2440 NLL exclusivity + E2400 elision + E2411/E2403, real `raw_thread.spawn` OS threads, `Atomic<T>` → `Arc<Mutex>` Send+Sync.
+**v0.2–v0.10 đã ship và đã bị xóa.** Ngày 2026-06-04, toàn bộ backend cũ
+(triet-ir, triet-interpreter, triet-bootstrap, triet-cli, compiler/) bị xóa vĩnh
+viễn trong một cuộc rewrite từ đầu. Frontend (lexer, parser, modules, typecheck)
+được giữ lại. Backend mới: MIR → NLL borrowck → Cranelift JIT.
 
-✅ Tree-walking interpreter + Bytecode VM (register SSA IR, 53 opcodes incl. `BrTrilean` + `WitnessCall`), `.triv` wire format v5 (ADR-0008 + 0010 + 0012 + 0020)
-✅ Type checker với inference + monomorphization + Trilean! refinement (ADR-0021)
-✅ Outcome error handling — `T~E` / `T?~E` trit-encoded, `~+`/`~0`/`~-` constructors + `~?`/`~:` postfix ops (ADR-0020)
-✅ Łukasiewicz Ł3 + Kleene K3 + symbolic + keyword operator forms
-✅ Module system: hierarchical namespace, dot paths, Python-style imports, multi-arena `ResolvedProgram` (ADR-0005)
+Pipeline hiện tại: `.tri → parse → typecheck → lower → MIR verify → borrowck → JIT → execute`
+
+Đã hoạt động: scalar + arithmetic + logic ops (Ł3/K3), if/else, while, đệ quy,
+borrow (`&0`/`&+`/`&-`), pow shim, MIR verifier (INV-1 + INV-2), 16 integration tests.
+Chưa có: aggregate types (struct/enum/String/Vector/HashMap), multi-value return,
+packed Outcome ABI, alias analysis, AOT cache.
+
+Version `0.1.0-dev` thừa nhận đây là một dòng mới — không phải bản nâng cấp từ v0.10.
+
+✅ Tree-walking interpreter + Bytecode VM (register SSA IR, 53 opcodes) — **đã xóa**
+✅ Type checker với inference + monomorphization + Trilean! refinement (ADR-0021) — **giữ lại**
+✅ Outcome error handling — `T~E` / `T?~E` syntax (ADR-0020) — **giữ lại, JIT chưa hỗ trợ**
+✅ Łukasiewicz Ł3 + Kleene K3 — **hoạt động end-to-end**
+✅ Module system — **giữ lại**
 ✅ Crate-Pack `.khi` + cross-package linker với semver decision matrix (ADR-0011/0012/0013)
 ✅ CAS Packaging — 3-cấp hash tree (term + module + pkg), package store `~/.triet/store/`, atomic install, mark-and-sweep GC, `dao.lock` hash-pinned (ADR-0014/0015)
 ✅ Capability System — `sys.*`/`dev.*`/`usr.*` 4-state level, `dao.package` + `dao.policy` + `/dev/tty` prompt, E22XX namespace (ADR-0016/0017/0018)

@@ -17,24 +17,28 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.1.0-dev"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 authors = ["Giang Hoàng"]
 repository = "https://github.com/gianghoang/triet"
-description = "Triết — an AI-first balanced-ternary programming language"
+description = "Triết — an AI-first balanced-ternary programming language (rewrite)"
 
 [workspace.dependencies]
-triet-core = { path = "crates/triet-core", version = "0.10.0" }
-triet-logic = { path = "crates/triet-logic", version = "0.10.0" }
-triet-syntax = { path = "crates/triet-syntax", version = "0.10.0" }
-triet-lexer = { path = "crates/triet-lexer", version = "0.10.0" }
-triet-parser = { path = "crates/triet-parser", version = "0.10.0" }
-triet-modules = { path = "crates/triet-modules", version = "0.10.0" }
-triet-jit = { path = "crates/triet-jit", version = "0.10.0" }
-triet-pack = { path = "crates/triet-pack", version = "0.10.0" }
-triet-typecheck = { path = "crates/triet-typecheck", version = "0.10.0" }
+triet-core = { path = "crates/triet-core", version = "0.1.0-dev" }
+triet-logic = { path = "crates/triet-logic", version = "0.1.0-dev" }
+triet-syntax = { path = "crates/triet-syntax", version = "0.1.0-dev" }
+triet-lexer = { path = "crates/triet-lexer", version = "0.1.0-dev" }
+triet-parser = { path = "crates/triet-parser", version = "0.1.0-dev" }
+triet-modules = { path = "crates/triet-modules", version = "0.1.0-dev" }
+triet-jit = { path = "crates/triet-jit", version = "0.1.0-dev" }
+triet-pack = { path = "crates/triet-pack", version = "0.1.0-dev" }
+triet-typecheck = { path = "crates/triet-typecheck", version = "0.1.0-dev" }
+triet-lower = { path = "crates/triet-lower", version = "0.1.0-dev" }
+triet-mir = { path = "crates/triet-mir", version = "0.1.0-dev" }
+triet-borrowck = { path = "crates/triet-borrowck", version = "0.1.0-dev" }
+triet-driver = { path = "crates/triet-driver", version = "0.1.0-dev" }
 
 # External deps — pinned at workspace level for consistency
 thiserror = "2"

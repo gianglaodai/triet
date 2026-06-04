@@ -1,6 +1,6 @@
 [package]
 name = "triet-borrowck"
-version = "0.1.0"
+version = "0.1.0-dev"
 edition = "2024"
 description = "Triết Borrow Checker — S6 ownership enforcement via NLL dataflow analysis on MIR/CFG"
 

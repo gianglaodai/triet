@@ -1,6 +1,6 @@
 [package]
 name = "triet-lower"
-version = "0.1.0"
+version = "0.1.0-dev"
 edition = "2024"
 description = "Triết AST → MIR lowering — flattens typed AST into flat MIR control-flow graph"
 
