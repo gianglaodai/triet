@@ -1,0 +1,19 @@
+// EXPECT: 30
+// Test: struct crossing function boundaries — pass as arg + return as value.
+
+struct Point { x: Integer, y: Integer }
+
+// Returns a struct by value — caller must receive the struct.
+function make_point(x_val: Integer, y_val: Integer) -> Point {
+    return Point { x: x_val, y: y_val };
+}
+
+// Receives a struct by value — reads fields from the argument.
+function point_sum(p: Point) -> Integer {
+    return p.x + p.y;
+}
+
+function main() -> Integer {
+    let p = make_point(10, 20);
+    return point_sum(p);
+}

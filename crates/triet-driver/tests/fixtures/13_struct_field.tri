@@ -1,0 +1,7 @@
+// EXPECT: 30
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let p = Point { x: 10, y: 20 };
+    return p.x + p.y;
+}
