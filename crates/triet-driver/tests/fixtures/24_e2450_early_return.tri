@@ -1,0 +1,15 @@
+// ERROR: E2450
+// Case D: early return before borrow — dangling ref on fall-through path.
+// `r = &0 x` borrows x, then `return x` returns the borrowed value.
+// Even though an early return on a sibling path exits cleanly,
+// the fall-through path must still be rejected.
+function demo(x: Integer, c: Integer) -> Integer {
+    if c != 0 {
+        return 0;
+    }
+    let r = &0 x;
+    return x;
+}
+function main() -> Integer {
+    return demo(10, 0);
+}

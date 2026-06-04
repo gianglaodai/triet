@@ -193,17 +193,21 @@ impl Ctx {
         }
     }
 
-    /// Flush owned locals across all scopes (for `return`).
-    /// Emits `Drop` for every owned local BEFORE the Return terminator,
-    /// in forward order so the *source* of a loan is dropped before its
-    /// *dest* (the reference). This way E2450 fires on the source before
-    /// NLL cleanup on the dest can remove the loan.
+    /// Emit `Drop` for every currently-owned local BEFORE a Return
+    /// terminator, in forward order so the *source* of a loan drops
+    /// before its *dest*. This way E2450 fires before NLL cleanup on
+    /// the dest can remove the loan.
+    ///
+    /// **Does NOT clear `owned_locals` or `scope_snapshots`.**  This is
+    /// deliberate: a local live before a control-flow split must be
+    /// dropped on EVERY exit path after it.  Clearing the global state
+    /// on the first `return` would silently skip the drop on sibling
+    /// paths (Case D soundness hole).  The scope bookkeeping is cleaned
+    /// up by `pop_scope` at normal scope boundaries.
     fn flush_all_for_return(&mut self) {
         for i in 0..self.owned_locals.len() {
             self.push(Statement::Drop(self.owned_locals[i], DUMMY_SPAN));
         }
-        self.owned_locals.clear();
-        self.scope_snapshots.clear();
     }
 
     fn alloc_bb(&mut self) -> BasicBlock {
