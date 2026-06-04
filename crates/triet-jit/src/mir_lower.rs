@@ -12,14 +12,18 @@
 //! block parameters (φ-nodes) at seal time.
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::types::{I64, I8};
+use cranelift_codegen::ir::types::{I8, I64};
 use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use std::collections::{HashMap, HashSet};
-use triet_mir::{BasicBlock, BinOp, Body, ConstValue, ControlFlowGraph, Local, ReturnShape, Statement, Terminator};
+#[cfg(test)]
+use triet_mir::DUMMY_SPAN;
+use triet_mir::{
+    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, Local, Statement, Terminator,
+};
 
 // ── Errors ──────────────────────────────────────────────────
 
@@ -49,15 +53,15 @@ pub struct CompiledFunction {
 }
 
 impl CompiledFunction {
-    /// Call with two i64 args, returning i64.
+    /// Call with zero args, returning i64.
     ///
     /// # Safety
-    /// Caller must ensure the function has signature (i64, i64) -> i64
+    /// Caller must ensure the function has signature () -> i64
     /// and the JIT module that produced it is still alive.
     #[allow(unsafe_code)]
-    pub unsafe fn call_i64_2(&self, a: i64, b: i64) -> i64 {
-        let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(self.code_ptr) };
-        f(a, b)
+    pub unsafe fn call_i64_0(&self) -> i64 {
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.code_ptr) };
+        f()
     }
 
     /// Call with one i64 arg, returning i64.
@@ -70,6 +74,78 @@ impl CompiledFunction {
         let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(self.code_ptr) };
         f(a)
     }
+
+    /// Call with two i64 args, returning i64.
+    ///
+    /// # Safety
+    /// Caller must ensure the function has signature (i64, i64) -> i64
+    /// and the JIT module that produced it is still alive.
+    #[allow(unsafe_code)]
+    pub unsafe fn call_i64_2(&self, a: i64, b: i64) -> i64 {
+        let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(self.code_ptr) };
+        f(a, b)
+    }
+}
+
+// ── Shim symbols ─────────────────────────────────────────────
+
+/// A registered `extern "C"` shim symbol callable from JIT code.
+///
+/// Construct via the type-safe factory methods (`fn_0_1`, `fn_2_1`, etc.)
+/// which enforce the correct function signature at compile time. The method
+/// name encodes the arity: `fn_N_M` = N args, returns M values (0 or 1).
+#[derive(Clone, Debug)]
+pub struct ShimSymbol {
+    /// Symbol name (e.g. `__triet_pow`).
+    pub name: String,
+    /// Function pointer address.
+    pub addr: usize,
+    /// Number of i64 arguments.
+    pub arity: usize,
+    /// Whether the function returns an i64 (true) or is void (false).
+    pub has_return: bool,
+}
+
+impl ShimSymbol {
+    /// Register a 0-arg → 1-return shim.
+    pub fn fn_0_1(name: &str, f: extern "C" fn() -> i64) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 0,
+            has_return: true,
+        }
+    }
+
+    /// Register a 1-arg → 1-return shim.
+    pub fn fn_1_1(name: &str, f: extern "C" fn(i64) -> i64) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 1,
+            has_return: true,
+        }
+    }
+
+    /// Register a 2-arg → 1-return shim.
+    pub fn fn_2_1(name: &str, f: extern "C" fn(i64, i64) -> i64) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 2,
+            has_return: true,
+        }
+    }
+
+    /// Register a 2-arg → void shim.
+    pub fn fn_2_0(name: &str, f: extern "C" fn(i64, i64)) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 2,
+            has_return: false,
+        }
+    }
 }
 
 // ── JIT context ─────────────────────────────────────────────
@@ -77,10 +153,10 @@ impl CompiledFunction {
 /// Holds Cranelift JIT state across compilations.
 pub struct JitContext {
     module: JITModule,
-    /// Map from MIR Local to Cranelift Variable (discriminant for Outcome, value for scalars).
+    /// Map from MIR Local to Cranelift Variable (one per MIR local).
+    /// Bậc A: every value is a single i64 — scalars unboxed, aggregates as
+    /// opaque i64 pointers to VM heap objects. No split disc/payload for Outcome.
     locals: HashMap<Local, Variable>,
-    /// Set of locals that hold Outcome values (need split disc+payload representation).
-    outcome_locals: HashSet<Local>,
     /// Map from MIR `BasicBlock` to Cranelift Block.
     blocks: HashMap<BasicBlock, cranelift_codegen::ir::Block>,
     /// Blocks that have been sealed.
@@ -89,41 +165,44 @@ pub struct JitContext {
     filled: HashSet<BasicBlock>,
     /// Map from function name → Cranelift FuncId (for cross-function calls).
     func_ids: HashMap<String, cranelift_module::FuncId>,
+    /// Registered shim symbols (extern "C" functions).
+    shim_registry: HashMap<String, ShimSymbol>,
 }
 
 impl JitContext {
-    /// Return the Cranelift Variable for the discriminant component of a Local.
-    /// For Outcome locals: this is the disc (i8 extended to i64).
-    /// For scalar locals: this is the only value.
-    fn disc_var(&self, l: Local) -> Variable {
-        Variable::from_u32(l.0 as u32 * 2)
+    /// Return the Cranelift Variable for a MIR Local.
+    /// Bậc A: one Cranelift Variable per MIR Local — everything is i64.
+    fn var(&self, l: Local) -> Variable {
+        Variable::from_u32(l.0 as u32)
     }
 
-    /// Return the Cranelift Variable for the payload component of a Local.
-    /// Only meaningful for Outcome locals.
-    fn payload_var(&self, l: Local) -> Variable {
-        Variable::from_u32(l.0 as u32 * 2 + 1)
-    }
-
-    /// Check if a local is Outcome-typed (has split disc+payload).
-    fn is_outcome(&self, l: Local) -> bool {
-        self.outcome_locals.contains(&l)
-    }
-
-    /// Create a new JIT context with host ISA detection.
+    /// Create a new JIT context with host ISA detection (no shims).
     pub fn new() -> Self {
+        Self::with_shims(&[])
+    }
+
+    /// Create a new JIT context with registered shim symbols.
+    ///
+    /// Each shim is registered as an `extern "C"` symbol in the JIT module
+    /// so that `CallTarget::Shim` calls resolve at link time.
+    pub fn with_shims(shims: &[ShimSymbol]) -> Self {
         let flag_builder = cranelift_codegen::settings::builder();
-        let isa_builder = cranelift_native::builder()
-            .expect("host ISA detection failed");
+        let isa_builder = cranelift_native::builder().expect("host ISA detection failed");
         let isa = isa_builder
             .finish(cranelift_codegen::settings::Flags::new(flag_builder))
             .expect("host ISA not supported");
         let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        // Register production shim symbols (so `__triet_*` calls resolve)
-        register_shim_symbols(
-            &mut jit_builder,
-            &crate::shims::production_shim_entries(),
-        );
+
+        // Register shim symbols so they can be resolved at link time
+        for shim in shims {
+            jit_builder.symbol(&shim.name, shim.addr as *const u8);
+        }
+
+        let mut shim_registry = HashMap::new();
+        for shim in shims {
+            shim_registry.insert(shim.name.clone(), shim.clone());
+        }
+
         let module = JITModule::new(jit_builder);
         Self {
             module,
@@ -132,7 +211,7 @@ impl JitContext {
             sealed: HashSet::new(),
             filled: HashSet::new(),
             func_ids: HashMap::new(),
-            outcome_locals: HashSet::new(),
+            shim_registry,
         }
     }
 
@@ -165,10 +244,9 @@ impl JitContext {
             for _ in &body.signature.params {
                 sig.params.push(AbiParam::new(I64));
             }
+            // Bậc A: every function returns a single i64. Aggregates
+            // (including Outcome) are opaque i64 pointers to VM heap objects.
             sig.returns.push(AbiParam::new(I64));
-            if body.signature.return_shape != ReturnShape::Scalar {
-                sig.returns.push(AbiParam::new(I64)); // second return: payload
-            }
 
             let func_id = self
                 .module
@@ -187,10 +265,8 @@ impl JitContext {
             for _ in &body.signature.params {
                 cl_ctx.func.signature.params.push(AbiParam::new(I64));
             }
+            // Bậc A: single i64 return for all functions
             cl_ctx.func.signature.returns.push(AbiParam::new(I64));
-            if body.signature.return_shape != ReturnShape::Scalar {
-                cl_ctx.func.signature.returns.push(AbiParam::new(I64));
-            }
 
             let mut fn_builder_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut cl_ctx.func, &mut fn_builder_ctx);
@@ -209,58 +285,28 @@ impl JitContext {
                 .map_err(|e| JitError::Module(format!("define {}: {e}", body.signature.name)))?;
         }
 
-        self.module.finalize_definitions().map_err(|e| {
-            JitError::Module(format!("finalize: {e}"))
-        })?;
+        self.module
+            .finalize_definitions()
+            .map_err(|e| JitError::Module(format!("finalize: {e}")))?;
 
         // ── Collect results ────────────────────────────────
         let mut result = HashMap::new();
         for body in bodies {
             let func_id = self.func_ids[&body.signature.name];
             let code_ptr = self.module.get_finalized_function(func_id);
-            result.insert(
-                body.signature.name.clone(),
-                CompiledFunction { code_ptr },
-            );
+            result.insert(body.signature.name.clone(), CompiledFunction { code_ptr });
         }
 
         Ok(result)
     }
 
     /// Build the Cranelift IR for a single function body.
-    fn build_body(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        body: &Body,
-    ) -> Result<(), JitError> {
+    fn build_body(&mut self, builder: &mut FunctionBuilder, body: &Body) -> Result<(), JitError> {
         let cfg = body.build_cfg();
 
-        // ── Pre-scan: identify Outcome locals ─────────────────
-        self.outcome_locals.clear();
-        // Sources used in Outcome ops
-        for block_data in &body.blocks {
-            for stmt in &block_data.statements {
-                if let Statement::OutcomeDiscriminant { source, .. }
-                | Statement::OutcomeUnwrap { source, .. }
-                | Statement::OutcomeUnwrapError { source, .. } = stmt {
-                    self.outcome_locals.insert(*source);
-                }
-            }
-        }
-        // Return values of Outcome functions
-        if body.signature.return_shape != ReturnShape::Scalar {
-            for block_data in &body.blocks {
-                if let Terminator::Return { values } = &block_data.terminator {
-                    if !values.is_empty() {
-                        self.outcome_locals.insert(values[0]);
-                    }
-                }
-            }
-        }
-
-        // ── Declare variables (2× for Outcome split support) ──
+        // ── Declare variables (1 per MIR local, Bậc A: all i64) ──
         self.locals.clear();
-        for i in 0..(body.num_locals * 2) {
+        for i in 0..body.num_locals {
             let var = builder.declare_var(I64);
             self.locals.insert(Local(i), var);
         }
@@ -280,11 +326,11 @@ impl JitContext {
             }
         }
 
-        // Entry block: params go into disc_var slots
+        // Entry block: params → var slots
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         for (i, _) in body.signature.params.iter().enumerate() {
-            let var = self.disc_var(Local(i));
+            let var = self.var(Local(i));
             let param_val = builder.block_params(entry_block)[i];
             builder.def_var(var, param_val);
         }
@@ -354,11 +400,11 @@ impl JitContext {
         let block_data = &body.blocks[block.0];
         for stmt in &block_data.statements {
             match stmt {
-                Statement::StorageLive(_) | Statement::StorageDead(_) => {
+                Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => {
                     // No-op at runtime — borrow checker verified safety
                 }
 
-                Statement::Const { dest, value } => {
+                Statement::Const { dest, value, .. } => {
                     let val = match value {
                         ConstValue::Integer(n) => {
                             let n_i64 = i64::try_from(*n).unwrap_or(0);
@@ -372,73 +418,58 @@ impl JitContext {
                             ));
                         }
                     };
-                    let var = self.disc_var(*dest);
+                    let var = self.var(dest.local);
                     builder.def_var(var, val);
-                    // If Outcome local, also define payload (default 0)
-                    if self.is_outcome(*dest) {
-                        let zero = builder.ins().iconst(I64, 0);
-                        builder.def_var(self.payload_var(*dest), zero);
-                    }
                 }
 
-                Statement::Assign { dest, source } => {
-                    let src_var = self.disc_var(*source);
+                Statement::Assign { dest, source, .. } => {
+                    let src_var = self.var(source.local);
                     let val = builder.use_var(src_var);
-                    let dest_var = self.disc_var(*dest);
+                    let dest_var = self.var(dest.local);
                     builder.def_var(dest_var, val);
                 }
 
                 Statement::Borrow { dest, source, .. } => {
                     // S6 references = raw pointers at runtime — just copy
-                    let src_var = self.disc_var(*source);
+                    let src_var = self.var(source.local);
                     let val = builder.use_var(src_var);
-                    let dest_var = self.disc_var(*dest);
+                    let dest_var = self.var(dest.local);
                     builder.def_var(dest_var, val);
                 }
 
-                Statement::BinaryOp { dest, op, left, right } => {
-                    let l_var = self.disc_var(*left);
-                    let r_var = self.disc_var(*right);
+                Statement::BinaryOp {
+                    dest,
+                    op,
+                    left,
+                    right,
+                    ..
+                } => {
+                    let l_var = self.var(left.local);
+                    let r_var = self.var(right.local);
                     let lhs = builder.use_var(l_var);
                     let rhs = builder.use_var(r_var);
 
-                    let result = match op {
-                        BinOp::Add => builder.ins().iadd(lhs, rhs),
-                        BinOp::Sub => builder.ins().isub(lhs, rhs),
-                        BinOp::Mul => builder.ins().imul(lhs, rhs),
-                        BinOp::Gt | BinOp::Le => {
-                            let cc = match op {
-                                BinOp::Gt => IntCC::SignedGreaterThan,
-                                BinOp::Le => IntCC::SignedLessThanOrEqual,
-                                _ => unreachable!(),
-                            };
-                            let cmp = builder.ins().icmp(cc, lhs, rhs);
-                            let one = builder.ins().iconst(I8, 1);
-                            let neg_one = builder.ins().iconst(I8, -1_i64);
-                            let trilean = builder.ins().select(cmp, one, neg_one);
-                            builder.ins().sextend(I64, trilean)
-                        }
-                    };
-                    let dest_var = self.disc_var(*dest);
+                    let result = lower_binop(builder, *op, lhs, rhs);
+                    let dest_var = self.var(dest.local);
                     builder.def_var(dest_var, result);
                 }
 
-                Statement::OutcomeDiscriminant { dest, source } => {
-                    let disc_val = builder.use_var(self.disc_var(*source));
-                    builder.def_var(self.disc_var(*dest), disc_val);
+                Statement::OutcomeDiscriminant { dest, source, .. } => {
+                    let disc_val = builder.use_var(self.var(source.local));
+                    builder.def_var(self.var(dest.local), disc_val);
                 }
 
-                Statement::OutcomeUnwrap { dest, source } => {
-                    let payload_val = builder.use_var(self.payload_var(*source));
-                    builder.def_var(self.disc_var(*dest), payload_val);
+                Statement::OutcomeUnwrap { dest, source, .. } => {
+                    let payload_val = builder.use_var(self.var(source.local));
+                    builder.def_var(self.var(dest.local), payload_val);
                 }
 
-                Statement::OutcomeUnwrapError { dest, source } => {
-                    let payload_val = builder.use_var(self.payload_var(*source));
-                    builder.def_var(self.disc_var(*dest), payload_val);
+                Statement::OutcomeUnwrapError { dest, source, .. } => {
+                    let payload_val = builder.use_var(self.var(source.local));
+                    builder.def_var(self.var(dest.local), payload_val);
                 }
 
-                Statement::Drop(_) => {
+                Statement::Drop(_, _) => {
                     // No-op for scalars at runtime
                 }
             }
@@ -459,22 +490,17 @@ impl JitContext {
         let block_data = &body.blocks[block.0];
 
         match &block_data.terminator {
-            Terminator::Return { values } => {
-                if values.is_empty() {
-                    let zero = builder.ins().iconst(I64, 0);
-                    builder.ins().return_(&[zero]);
-                } else if values.len() == 1 {
-                    let val = builder.use_var(self.disc_var(values[0]));
-                    builder.ins().return_(&[val]);
+            Terminator::Return { values, .. } => {
+                // Bậc A: all functions return a single i64.
+                let val = if values.is_empty() {
+                    builder.ins().iconst(I64, 0)
                 } else {
-                    // Outcome: 2 values — disc + payload
-                    let disc = builder.use_var(self.disc_var(values[0]));
-                    let payload = builder.use_var(self.payload_var(values[1]));
-                    builder.ins().return_(&[disc, payload]);
-                }
+                    builder.use_var(self.var(values[0]))
+                };
+                builder.ins().return_(&[val]);
             }
 
-            Terminator::Goto { target } => {
+            Terminator::Goto { target, .. } => {
                 let target_block = self.blocks[target];
                 builder.ins().jump(target_block, &[]);
             }
@@ -484,8 +510,9 @@ impl JitContext {
                 positive_bb,
                 zero_bb,
                 negative_bb,
+                ..
             } => {
-                let cond_var = self.disc_var(*cond);
+                let cond_var = self.var(*cond);
                 let cond_val = builder.use_var(cond_var);
                 let pos_block = self.blocks[positive_bb];
                 let neg_block = self.blocks[negative_bb];
@@ -498,71 +525,127 @@ impl JitContext {
                     let zero_block = self.blocks[zero];
                     let is_zero = builder.ins().icmp(IntCC::Equal, cond_val, zero_val);
                     let fallthrough = builder.create_block();
-                    builder.ins().brif(is_zero, zero_block, &[], fallthrough, &[]);
+                    builder
+                        .ins()
+                        .brif(is_zero, zero_block, &[], fallthrough, &[]);
 
                     builder.switch_to_block(fallthrough);
-                    let is_pos = builder.ins().icmp(IntCC::SignedGreaterThan, cond_val, zero_val);
+                    let is_pos = builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThan, cond_val, zero_val);
                     builder.ins().brif(is_pos, pos_block, &[], neg_block, &[]);
                 } else {
                     // Binary branch (if): 2-way
-                    let is_pos = builder.ins().icmp(IntCC::SignedGreaterThan, cond_val, zero_val);
+                    let is_pos = builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThan, cond_val, zero_val);
                     builder.ins().brif(is_pos, pos_block, &[], neg_block, &[]);
                 }
             }
 
             Terminator::CallDispatch {
                 callee_name,
+                target,
                 args,
                 return_bb,
                 dest,
                 ..
             } => {
-                // Look up callee's FuncId
-                let callee_id = self
-                    .func_ids
-                    .get(callee_name)
-                    .copied()
-                    .ok_or_else(|| {
-                        JitError::Unsupported(format!(
-                            "callee `{callee_name}` not found — compile it first via compile_multi"
-                        ))
-                    })?;
+                match target {
+                    CallTarget::Jit => {
+                        // Look up callee's FuncId
+                        let callee_id = self
+                            .func_ids
+                            .get(callee_name)
+                            .copied()
+                            .ok_or_else(|| {
+                                JitError::Unsupported(format!(
+                                    "callee `{callee_name}` not found — compile it first via compile_multi"
+                                ))
+                            })?;
 
-                // Import callee into current function
-                let func_ref = self.module.declare_func_in_func(callee_id, builder.func);
+                        // Import callee into current function
+                        let func_ref = self.module.declare_func_in_func(callee_id, builder.func);
 
-                // Prepare arguments
-                let arg_vals: Vec<_> = args
-                    .iter()
-                    .map(|a| {
-                        let var = self.disc_var(*a);
-                        builder.use_var(var)
-                    })
-                    .collect();
+                        // Prepare arguments
+                        let arg_vals: Vec<_> = args
+                            .iter()
+                            .map(|a| {
+                                let var = self.var(*a);
+                                builder.use_var(var)
+                            })
+                            .collect();
 
-                // Emit call
-                let call_inst = builder.ins().call(func_ref, &arg_vals);
+                        // Emit call
+                        let call_inst = builder.ins().call(func_ref, &arg_vals);
 
-                // Store return values into dest locals.
-                // dest.len() matches callee's ReturnShape::arity():
-                //   Unit → empty, Scalar → 1, Outcome → 2 (disc, payload)
-                if dest.len() == 1 {
-                    let ret_val = builder.inst_results(call_inst)[0];
-                    builder.def_var(self.disc_var(dest[0]), ret_val);
-                } else if dest.len() == 2 {
-                    let ret_disc = builder.inst_results(call_inst)[0];
-                    let ret_payload = builder.inst_results(call_inst)[1];
-                    builder.def_var(self.disc_var(dest[0]), ret_disc);
-                    builder.def_var(self.payload_var(dest[1]), ret_payload);
+                        // Store return value (single i64 in Bậc A).
+                        if !dest.is_empty() {
+                            let ret_val = builder.inst_results(call_inst)[0];
+                            builder.def_var(self.var(dest[0]), ret_val);
+                        }
+
+                        // Jump to return block
+                        let ret_block = self.blocks[return_bb];
+                        builder.ins().jump(ret_block, &[]);
+                    }
+
+                    CallTarget::Shim => {
+                        let shim = self.shim_registry.get(callee_name).ok_or_else(|| {
+                            JitError::Unsupported(format!(
+                                "shim `{callee_name}` not registered — add it to JitContext::with_shims()"
+                            ))
+                        })?;
+
+                        // Declare the shim as an imported extern "C" function
+                        // if we haven't already
+                        let func_id = if let Some(&id) = self.func_ids.get(callee_name) {
+                            id
+                        } else {
+                            let mut sig = Signature::new(CallConv::SystemV);
+                            for _ in 0..shim.arity {
+                                sig.params.push(AbiParam::new(I64));
+                            }
+                            if shim.has_return {
+                                sig.returns.push(AbiParam::new(I64));
+                            }
+                            let id = self
+                                .module
+                                .declare_function(callee_name, Linkage::Import, &sig)
+                                .map_err(|e| {
+                                    JitError::Module(format!("declare shim {callee_name}: {e}"))
+                                })?;
+                            self.func_ids.insert(callee_name.clone(), id);
+                            id
+                        };
+
+                        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+
+                        let arg_vals: Vec<_> = args
+                            .iter()
+                            .map(|a| {
+                                let var = self.var(*a);
+                                builder.use_var(var)
+                            })
+                            .collect();
+
+                        let call_inst = builder.ins().call(func_ref, &arg_vals);
+
+                        if shim.has_return && !dest.is_empty() {
+                            let ret_val = builder.inst_results(call_inst)[0];
+                            builder.def_var(self.var(dest[0]), ret_val);
+                        }
+
+                        let ret_block = self.blocks[return_bb];
+                        builder.ins().jump(ret_block, &[]);
+                    }
                 }
-
-                // Jump to return block
-                let ret_block = self.blocks[return_bb];
-                builder.ins().jump(ret_block, &[]);
             }
 
-            Terminator::Unreachable => {
-                builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
+            Terminator::Unreachable { .. } => {
+                builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
             }
         }
 
@@ -576,17 +659,116 @@ impl Default for JitContext {
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────
+// ── BinOp lowering ───────────────────────────────────────────
 
-/// Register production shim symbols so that calls to `__triet_*` resolve.
-fn register_shim_symbols(
-    builder: &mut JITBuilder,
-    entries: &[crate::shims::ShimEntry],
-) {
-    for entry in entries {
-        builder.symbol(entry.symbol, entry.addr as *const u8);
+/// Lower a MIR `BinOp` into Cranelift IR values.
+///
+/// All values are i64. Trilean-typed results use the encoding:
+///   +1 = True, 0 = Unknown, -1 = False.
+fn lower_binop(
+    builder: &mut FunctionBuilder,
+    op: BinOp,
+    lhs: cranelift_codegen::ir::Value,
+    rhs: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let i64 = I64;
+    let i8 = I8;
+
+    match op {
+        // ── Arithmetic ──
+        BinOp::Add => builder.ins().iadd(lhs, rhs),
+        BinOp::Sub => builder.ins().isub(lhs, rhs),
+        BinOp::Mul => builder.ins().imul(lhs, rhs),
+        BinOp::Div => builder.ins().sdiv(lhs, rhs),
+        BinOp::Mod => builder.ins().srem(lhs, rhs),
+
+        // ── Ternary negation ──
+        BinOp::Neg => builder.ins().ineg(lhs),
+
+        // ── Comparisons → Trilean! (+1 / -1, never Unknown) ──
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            let cc = match op {
+                BinOp::Eq => IntCC::Equal,
+                BinOp::Ne => IntCC::NotEqual,
+                BinOp::Lt => IntCC::SignedLessThan,
+                BinOp::Le => IntCC::SignedLessThanOrEqual,
+                BinOp::Gt => IntCC::SignedGreaterThan,
+                BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                _ => unreachable!(),
+            };
+            let cmp = builder.ins().icmp(cc, lhs, rhs);
+            let one = builder.ins().iconst(i8, 1);
+            let neg_one = builder.ins().iconst(i8, -1_i64);
+            let trilean_i8 = builder.ins().select(cmp, one, neg_one);
+            builder.ins().sextend(i64, trilean_i8)
+        }
+
+        // ── Universal logic ops (identical in Ł3 and K3) ──
+        // And = min(a, b)
+        BinOp::LukAnd => {
+            let is_lt = builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs);
+            builder.ins().select(is_lt, lhs, rhs)
+        }
+        // Or = max(a, b)
+        BinOp::LukOr => {
+            let is_gt = builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs);
+            builder.ins().select(is_gt, lhs, rhs)
+        }
+
+        // ── Łukasiewicz Ł3 implies ──
+        // a → b:
+        //   a = False (-1)  → True (+1)
+        //   a = True  (+1)  → b
+        //   a = Unknown (0) → (b == False) ? Unknown (0) : True (+1)
+        BinOp::LukImplies => {
+            let neg_one = builder.ins().iconst(i64, -1_i64);
+            let zero = builder.ins().iconst(i64, 0);
+            let one = builder.ins().iconst(i64, 1);
+
+            let is_false = builder.ins().icmp(IntCC::Equal, lhs, neg_one);
+            let is_true = builder.ins().icmp(IntCC::Equal, lhs, one);
+            let b_is_false = builder.ins().icmp(IntCC::Equal, rhs, neg_one);
+            let unknown_result = builder.ins().select(b_is_false, zero, one);
+            let non_false_result = builder.ins().select(is_true, rhs, unknown_result);
+            builder.ins().select(is_false, one, non_false_result)
+        }
+
+        // ── Łukasiewicz Ł3 iff: (a → b) ∧ (b → a) ──
+        BinOp::LukIff => {
+            let ab = lower_binop(builder, BinOp::LukImplies, lhs, rhs);
+            let ba = lower_binop(builder, BinOp::LukImplies, rhs, lhs);
+            lower_binop(builder, BinOp::LukAnd, ab, ba)
+        }
+
+        // ── Łukasiewicz Ł3 xor: ¬(a ↔ b) ──
+        BinOp::LukXor => {
+            let iff = lower_binop(builder, BinOp::LukIff, lhs, rhs);
+            builder.ins().ineg(iff)
+        }
+
+        // ── Kleene K3 implies = max(¬a, b) = max(-a, b) ──
+        BinOp::KleeneImplies => {
+            let not_a = builder.ins().ineg(lhs);
+            let is_gt = builder.ins().icmp(IntCC::SignedGreaterThan, not_a, rhs);
+            builder.ins().select(is_gt, not_a, rhs)
+        }
+
+        // ── Kleene K3 iff: (a → b) ∧ (b → a) ──
+        BinOp::KleeneIff => {
+            let ab = lower_binop(builder, BinOp::KleeneImplies, lhs, rhs);
+            let ba = lower_binop(builder, BinOp::KleeneImplies, rhs, lhs);
+            lower_binop(builder, BinOp::LukAnd, ab, ba)
+        }
+
+        // ── Kleene K3 xor: ¬(a ↔ b) ──
+        BinOp::KleeneXor => {
+            let iff = lower_binop(builder, BinOp::KleeneIff, lhs, rhs);
+            builder.ins().ineg(iff)
+        }
     }
 }
+
+// ── Helpers ─────────────────────────────────────────────────
 
 // ── CFG traversal ───────────────────────────────────────────
 
@@ -614,13 +796,45 @@ fn dfs_post(
     order.push(block);
 }
 
+// ── Runtime shims (extern "C" functions callable from JIT) ───
+
+/// Simple `extern "C"` shim: `multiply(a, b) = a * b`.
+/// C ABI is the ONLY stable contract between Cranelift JIT and Rust.
+/// `#[no_mangle]` ensures the symbol is visible to `nm` and dynamic lookup.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+
+/// Integer power via exponentiation by squaring (`extern "C"` ABI).
+/// `pow(base, exp)` = base^exp. Exponent must be >= 0.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
+    if exp < 0 {
+        return 0; // undefined, fallback
+    }
+    let mut result: i64 = 1;
+    let mut e = exp;
+    let mut b = base;
+    while e > 0 {
+        if e & 1 != 0 {
+            result = result.wrapping_mul(b);
+        }
+        e >>= 1;
+        b = b.wrapping_mul(b);
+    }
+    result
+}
+
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use triet_borrowck::{binop, return_, storage_live, MirBuilder};
-    use triet_mir::ParameterPassing;
+    use triet_borrowck::{MirBuilder, binop, return_, storage_live};
+    use triet_mir::{FunctionId, ParameterPassing};
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
     #[test]
@@ -655,6 +869,7 @@ mod tests {
                 positive_bb: bb1,
                 zero_bb: None,
                 negative_bb: bb2,
+                span: DUMMY_SPAN,
             },
         );
 
@@ -729,7 +944,14 @@ mod tests {
         let bb0 = b.new_block();
         b.push(bb0, storage_live(cond));
         b.push(bb0, storage_live(one));
-        b.push(bb0, triet_mir::Statement::Const { dest: one, value: triet_mir::ConstValue::Integer(1) });
+        b.push(
+            bb0,
+            triet_mir::Statement::Const {
+                dest: one.into(),
+                value: triet_mir::ConstValue::Integer(1),
+                span: DUMMY_SPAN,
+            },
+        );
         b.push(bb0, binop(cond, BinOp::Le, n, one));
 
         // bb1: return n (base case: n <= 1)
@@ -746,7 +968,14 @@ mod tests {
         b.push(bb3, storage_live(tmp2));
         let two = b.new_local();
         b.push(bb3, storage_live(two));
-        b.push(bb3, triet_mir::Statement::Const { dest: two, value: triet_mir::ConstValue::Integer(2) });
+        b.push(
+            bb3,
+            triet_mir::Statement::Const {
+                dest: two.into(),
+                value: triet_mir::ConstValue::Integer(2),
+                span: DUMMY_SPAN,
+            },
+        );
         b.push(bb3, binop(tmp2, BinOp::Sub, n, two)); // tmp2 = n - 2
 
         // bb4: store call2 result, compute sum
@@ -763,9 +992,10 @@ mod tests {
             bb0,
             Terminator::If {
                 cond,
-                positive_bb: bb1,   // n <= 1 → return n
+                positive_bb: bb1, // n <= 1 → return n
                 zero_bb: None,
-                negative_bb: bb2,   // n > 1 → compute
+                negative_bb: bb2, // n > 1 → compute
+                span: DUMMY_SPAN,
             },
         );
         let fib_id = b.func_id_for("fibonacci");
@@ -774,9 +1004,11 @@ mod tests {
             Terminator::CallDispatch {
                 callee: fib_id,
                 callee_name: "fibonacci".into(),
+                target: CallTarget::Jit,
                 args: vec![tmp1],
                 return_bb: bb3,
                 dest: vec![call1_result],
+                span: DUMMY_SPAN,
             },
         );
         b.set_terminator(
@@ -784,20 +1016,26 @@ mod tests {
             Terminator::CallDispatch {
                 callee: fib_id,
                 callee_name: "fibonacci".into(),
+                target: CallTarget::Jit,
                 args: vec![tmp2],
                 return_bb: bb4,
                 dest: vec![call2_result],
+                span: DUMMY_SPAN,
             },
         );
-        b.set_terminator(bb4, Terminator::Goto { target: bb5 });
+        b.set_terminator(
+            bb4,
+            Terminator::Goto {
+                target: bb5,
+                span: DUMMY_SPAN,
+            },
+        );
 
         let body = b.build(bb0);
         println!("=== MIR (fibonacci) ===\n{body}");
 
         let mut ctx = JitContext::new();
-        let compiled = ctx
-            .compile_multi(&[&body])
-            .expect("JIT compilation failed");
+        let compiled = ctx.compile_multi(&[&body]).expect("JIT compilation failed");
         let fib = compiled.get("fibonacci").expect("fibonacci function");
 
         // fib(0) = 0
@@ -835,16 +1073,31 @@ mod tests {
 
         let bb0 = b.new_block();
         b.push(bb0, storage_live(outcome_val));
-        b.push(bb0, triet_mir::Statement::Const {
-            dest: outcome_val, value: ConstValue::Integer(1),
-        });
+        b.push(
+            bb0,
+            triet_mir::Statement::Const {
+                dest: outcome_val.into(),
+                value: ConstValue::Integer(1),
+                span: DUMMY_SPAN,
+            },
+        );
         b.push(bb0, storage_live(disc_result));
         // This marks outcome_val as Outcome source in pre-scan
-        b.push(bb0, triet_mir::Statement::OutcomeDiscriminant {
-            dest: disc_result,
-            source: outcome_val,
-        });
-        b.set_terminator(bb0, Terminator::Return { values: vec![disc_result] });
+        b.push(
+            bb0,
+            triet_mir::Statement::OutcomeDiscriminant {
+                dest: disc_result.into(),
+                source: outcome_val.into(),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(
+            bb0,
+            Terminator::Return {
+                values: vec![disc_result],
+                span: DUMMY_SPAN,
+            },
+        );
 
         let body = b.build(bb0);
         println!("=== MIR ===\n{body}");
@@ -854,7 +1107,10 @@ mod tests {
 
         let result = unsafe { func.call_i64_1(0) };
         println!("outcome_discriminant(const 1) = {result}");
-        assert_eq!(result, 1, "OutcomeDiscriminant should return the disc value");
+        assert_eq!(
+            result, 1,
+            "OutcomeDiscriminant should return the disc value"
+        );
     }
 
     /// Outcome ABI: full caller-callee with Outcome return.
@@ -871,14 +1127,30 @@ mod tests {
 
         let bb0 = callee.new_block();
         callee.push(bb0, storage_live(disc_val));
-        callee.push(bb0, triet_mir::Statement::Const {
-            dest: disc_val, value: ConstValue::Integer(1),  // disc = +1 (success)
-        });
+        callee.push(
+            bb0,
+            triet_mir::Statement::Const {
+                dest: disc_val.into(),
+                value: ConstValue::Integer(1),
+                span: DUMMY_SPAN, // disc = +1 (success)
+            },
+        );
         callee.push(bb0, storage_live(payload_val));
-        callee.push(bb0, triet_mir::Statement::Const {
-            dest: payload_val, value: ConstValue::Integer(42), // payload = 42
-        });
-        callee.set_terminator(bb0, Terminator::Return { values: vec![disc_val, payload_val] });
+        callee.push(
+            bb0,
+            triet_mir::Statement::Const {
+                dest: payload_val.into(),
+                value: ConstValue::Integer(42),
+                span: DUMMY_SPAN, // payload = 42
+            },
+        );
+        callee.set_terminator(
+            bb0,
+            Terminator::Return {
+                values: vec![disc_val, payload_val],
+                span: DUMMY_SPAN,
+            },
+        );
         let callee_body = callee.build(bb0);
 
         // ── Caller ───────────────────────────────────────────
@@ -892,29 +1164,337 @@ mod tests {
 
         // Return the disc directly — it's already the first return value
         let c_bb1 = caller.new_block();
-        caller.set_terminator(c_bb1, Terminator::Return { values: vec![disc_out] });
+        caller.set_terminator(
+            c_bb1,
+            Terminator::Return {
+                values: vec![disc_out],
+                span: DUMMY_SPAN,
+            },
+        );
 
         let make_id = caller.func_id_for("make_outcome");
         let dummy_arg = caller.new_local();
         caller.push(c_bb0, storage_live(dummy_arg));
-        caller.push(c_bb0, triet_mir::Statement::Const { dest: dummy_arg, value: ConstValue::Integer(0) });
-        caller.set_terminator(c_bb0, Terminator::CallDispatch {
-            callee: make_id,
-            callee_name: "make_outcome".into(),
-            args: vec![dummy_arg],
-            return_bb: c_bb1,
-            dest: vec![disc_out, payload_out],
-        });
+        caller.push(
+            c_bb0,
+            triet_mir::Statement::Const {
+                dest: dummy_arg.into(),
+                value: ConstValue::Integer(0),
+                span: DUMMY_SPAN,
+            },
+        );
+        caller.set_terminator(
+            c_bb0,
+            Terminator::CallDispatch {
+                callee: make_id,
+                callee_name: "make_outcome".into(),
+                target: CallTarget::Jit,
+                args: vec![dummy_arg],
+                return_bb: c_bb1,
+                dest: vec![disc_out, payload_out],
+                span: DUMMY_SPAN,
+            },
+        );
         let caller_body = caller.build(c_bb0);
 
         // Compile both
         let mut ctx = JitContext::new();
-        let compiled = ctx.compile_multi(&[&callee_body, &caller_body])
+        let compiled = ctx
+            .compile_multi(&[&callee_body, &caller_body])
             .expect("Outcome compilation failed");
         let func = compiled.get("call_outcome").expect("call_outcome");
 
         let result = unsafe { func.call_i64_1(0) };
         println!("call_outcome() disc = {result}");
         assert_eq!(result, 1, "discriminant should be 1");
+    }
+
+    // ── Logic op truth table tests ─────────────────────────
+
+    /// Trilean encoding: +1=True, 0=Unknown, -1=False.
+    const T: i64 = 1;
+    const U: i64 = 0;
+    const F: i64 = -1;
+    const ALL: [i64; 3] = [T, U, F];
+
+    /// Build a MIR function `op(a, b)` that applies `binop` and returns the result.
+    fn build_binop_tester(op: BinOp) -> Body {
+        let mut b = MirBuilder::new(&format!("test_{op:?}"), "Integer");
+        let a = b.add_param("a", ParameterPassing::Borrow);
+        let b_param = b.add_param("b", ParameterPassing::Borrow);
+        let result = b.new_local();
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(result));
+        b.push(bb0, binop(result, op, a, b_param));
+        b.set_terminator(bb0, return_(vec![result]));
+        b.build(bb0)
+    }
+
+    /// JIT-compile a binop tester and call with (x, y).
+    #[allow(unsafe_code)]
+    fn call_binop(op: BinOp, x: i64, y: i64) -> i64 {
+        let body = build_binop_tester(op);
+        let mut ctx = JitContext::new();
+        let func = ctx.compile(&body).expect("compile");
+        unsafe { func.call_i64_2(x, y) }
+    }
+
+    // ── Łukasiewicz Ł3 And (min) ──
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn luk_and_truth_table() {
+        // And = min(a, b): False dominates
+        for a in ALL {
+            for b in ALL {
+                let expected = a.min(b);
+                let got = call_binop(BinOp::LukAnd, a, b);
+                assert_eq!(
+                    got, expected,
+                    "Ł3 And: {a} && {b} should be {expected}, got {got}"
+                );
+            }
+        }
+    }
+
+    // ── Łukasiewicz Ł3 Or (max) ──
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn luk_or_truth_table() {
+        // Or = max(a, b): True dominates
+        for a in ALL {
+            for b in ALL {
+                let expected = a.max(b);
+                let got = call_binop(BinOp::LukOr, a, b);
+                assert_eq!(
+                    got, expected,
+                    "Ł3 Or: {a} || {b} should be {expected}, got {got}"
+                );
+            }
+        }
+    }
+
+    // ── Łukasiewicz Ł3 Implies ──
+
+    /// Expected Ł3 implies per triet-logic reference.
+    fn expected_luk_implies(a: i64, b: i64) -> i64 {
+        match (a, b) {
+            (-1, _) => 1, // False → anything = True
+            (1, x) => x,  // True → x = x
+            (0, 1) => 1,  // Unknown → True = True
+            (0, 0) => 1,  // Unknown → Unknown = True (Ł3 signature)
+            (0, -1) => 0, // Unknown → False = Unknown
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn luk_implies_truth_table() {
+        for a in ALL {
+            for b in ALL {
+                let expected = expected_luk_implies(a, b);
+                let got = call_binop(BinOp::LukImplies, a, b);
+                assert_eq!(
+                    got, expected,
+                    "Ł3 Implies: {a} => {b} should be {expected}, got {got}"
+                );
+            }
+        }
+    }
+
+    // ── Łukasiewicz Ł3 Iff ──
+
+    /// Expected Ł3 iff per triet-logic: (a→b) ∧ (b→a)
+    fn expected_luk_iff(a: i64, b: i64) -> i64 {
+        let ab = expected_luk_implies(a, b);
+        let ba = expected_luk_implies(b, a);
+        ab.min(ba) // And = min
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn luk_iff_truth_table() {
+        for a in ALL {
+            for b in ALL {
+                let expected = expected_luk_iff(a, b);
+                let got = call_binop(BinOp::LukIff, a, b);
+                assert_eq!(
+                    got, expected,
+                    "Ł3 Iff: {a} <=> {b} should be {expected}, got {got}"
+                );
+            }
+        }
+    }
+
+    // ── Łukasiewicz Ł3 Xor ──
+
+    /// Expected Ł3 xor = ¬(a↔b)
+    fn expected_luk_xor(a: i64, b: i64) -> i64 {
+        -expected_luk_iff(a, b) // negation
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn luk_xor_truth_table() {
+        for a in ALL {
+            for b in ALL {
+                let expected = expected_luk_xor(a, b);
+                let got = call_binop(BinOp::LukXor, a, b);
+                assert_eq!(
+                    got, expected,
+                    "Ł3 Xor: {a} ^ {b} should be {expected}, got {got}"
+                );
+            }
+        }
+    }
+
+    // ── Kleene K3 Implies ──
+
+    /// Expected K3 implies = max(-a, b)
+    fn expected_kleene_implies(a: i64, b: i64) -> i64 {
+        (-a).max(b)
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn kleene_implies_truth_table() {
+        for a in ALL {
+            for b in ALL {
+                let expected = expected_kleene_implies(a, b);
+                let got = call_binop(BinOp::KleeneImplies, a, b);
+                assert_eq!(
+                    got, expected,
+                    "K3 Implies: {a} ~> {b} should be {expected}, got {got}"
+                );
+            }
+        }
+    }
+
+    // ── Verify Ł3 vs K3 differ ONLY at (Unknown, Unknown) ──
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn luk_vs_kleene_differs_only_at_unknown_unknown() {
+        for a in ALL {
+            for b in ALL {
+                let luk = call_binop(BinOp::LukImplies, a, b);
+                let kleene = call_binop(BinOp::KleeneImplies, a, b);
+                if a == U && b == U {
+                    assert_eq!(luk, T, "Ł3 U→U must be True");
+                    assert_eq!(kleene, U, "K3 U→U must be Unknown");
+                    assert_ne!(luk, kleene);
+                } else {
+                    assert_eq!(
+                        luk, kleene,
+                        "Ł3/K3 disagree at ({a}→{b}): Ł3={luk}, K3={kleene}"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Negation ──
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn neg_truth_table() {
+        let mut b = MirBuilder::new("test_neg", "Integer");
+        let a = b.add_param("a", ParameterPassing::Borrow);
+        let result = b.new_local();
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(result));
+        // Neg is a unary op — we model it via BinOp::Neg by ignoring the rhs
+        // (lower_binop only uses lhs for Neg). Pass a dummy rhs.
+        b.push(bb0, binop(result, BinOp::Neg, a, a)); // rhs ignored
+        b.set_terminator(bb0, return_(vec![result]));
+        let body = b.build(bb0);
+
+        let mut ctx = JitContext::new();
+        let func = ctx.compile(&body).expect("compile");
+
+        assert_eq!(unsafe { func.call_i64_1(T) }, F, "neg True = False");
+        assert_eq!(unsafe { func.call_i64_1(U) }, U, "neg Unknown = Unknown");
+        assert_eq!(unsafe { func.call_i64_1(F) }, T, "neg False = True");
+    }
+
+    // ── Shim call tests ────────────────────────────────────
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn shim_call_multiply_via_jit() {
+        // Build a JIT function that calls __test_shim_multiply via Shim
+        let mut b = MirBuilder::new("test_shim_mul", "Integer");
+        let a = b.add_param("a", ParameterPassing::Borrow);
+        let b_param = b.add_param("b", ParameterPassing::Borrow);
+        let result = b.new_local();
+        let call_bb = b.new_block();
+        let ret_bb = b.new_block();
+        b.push(call_bb, storage_live(result));
+        b.set_terminator(
+            call_bb,
+            Terminator::CallDispatch {
+                callee: FunctionId(0),
+                callee_name: "__test_shim_multiply".into(),
+                target: CallTarget::Shim,
+                args: vec![a, b_param],
+                return_bb: ret_bb,
+                dest: vec![result],
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(ret_bb, return_(vec![result]));
+        let body = b.build(call_bb);
+
+        let shims = &[ShimSymbol::fn_2_1(
+            "__test_shim_multiply",
+            super::__test_shim_multiply,
+        )];
+
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("shim JIT compile");
+        let result = unsafe { func.call_i64_2(7, 9) };
+        assert_eq!(
+            result, 63,
+            "__test_shim_multiply(7, 9) = 63 via JIT shim call"
+        );
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn shim_call_pow_via_jit() {
+        // Build a JIT function that calls __triet_pow via Shim
+        let mut b = MirBuilder::new("test_pow", "Integer");
+        let base = b.add_param("base", ParameterPassing::Borrow);
+        let exp = b.add_param("exp", ParameterPassing::Borrow);
+        let result = b.new_local();
+        let call_bb = b.new_block();
+        let ret_bb = b.new_block();
+        b.push(call_bb, storage_live(result));
+        b.set_terminator(
+            call_bb,
+            Terminator::CallDispatch {
+                callee: FunctionId(0),
+                callee_name: "__triet_pow".into(),
+                target: CallTarget::Shim,
+                args: vec![base, exp],
+                return_bb: ret_bb,
+                dest: vec![result],
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(ret_bb, return_(vec![result]));
+        let body = b.build(call_bb);
+
+        let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
+
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("pow shim JIT compile");
+
+        assert_eq!(unsafe { func.call_i64_2(2, 10) }, 1024, "2^10 = 1024");
+        assert_eq!(unsafe { func.call_i64_2(3, 5) }, 243, "3^5 = 243");
+        assert_eq!(unsafe { func.call_i64_2(5, 0) }, 1, "5^0 = 1");
+        assert_eq!(unsafe { func.call_i64_2(7, 1) }, 7, "7^1 = 7");
     }
 }

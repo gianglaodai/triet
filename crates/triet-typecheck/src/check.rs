@@ -521,10 +521,29 @@ impl<'p> Checker<'p> {
 
     fn check_block(&mut self, statements: &[StmtId], final_expression: Option<ExprId>) -> Type {
         self.env.push_frame();
+        let mut has_return = false;
         for stmt_id in statements {
+            // Peek at statement node before checking — if the block
+            // contains a `return`, the block's final type is irrelevant
+            // (all paths diverge). Use `Type::Unknown` so the function-
+            // level return-type check doesn't fire spuriously.
+            if matches!(
+                self.arena.statement(*stmt_id).node,
+                Stmt::Return { .. } | Stmt::Break | Stmt::Continue
+            ) {
+                has_return = true;
+            }
             self.check_statement(*stmt_id);
         }
-        let value_type = final_expression.map_or(Type::Unit, |id| self.infer_expression(id));
+        let value_type = if has_return && final_expression.is_none() {
+            // Block ends with return/break/continue — diverges.
+            // Never is the bottom type: compatible with any expected
+            // return type. Individual return statements are already
+            // type-checked against the declared return type.
+            Type::Never
+        } else {
+            final_expression.map_or(Type::Unit, |id| self.infer_expression(id))
+        };
         self.env.pop_frame();
         value_type
     }

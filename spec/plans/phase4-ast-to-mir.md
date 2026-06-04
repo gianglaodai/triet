@@ -1,6 +1,11 @@
 # Phase 4 — AST → MIR Lowering
 
-**Status:** Draft — đang triển khai
+**Status:** **Implemented** (2026-06-04) — `triet-lower` crate hoạt động với 3 tests.
+**Implementation:** `crates/triet-lower/src/lib.rs` (~650 dòng).
+Hỗ trợ: let, binaryop (18/19 ops), Pow→shim (`CallDispatch` to `__triet_pow`),
+if/else, while, call, borrow (`&0`/`&+`/`&-`), field access (→ Place projection),
+return, block, literals. Threads AST `Spanned<T>.span` vào MIR.
+**Note:** Plan dự đoán file `ast_lower.rs`; thực tế là `lib.rs` với inline tests.
 **Phụ thuộc:** `triet-syntax` (AST), `triet-mir` (MIR), `triet-typecheck` (typed AST)
 
 ---

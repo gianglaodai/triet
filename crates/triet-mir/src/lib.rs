@@ -64,6 +64,19 @@ impl fmt::Display for BasicBlock {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionId(pub usize);
 
+/// How a call target should be compiled.
+///
+/// JIT functions use Cranelift's native calling convention. Shim functions
+/// are `extern "C"` Rust functions registered as symbols in the JIT module
+/// and must be called with the SystemV ABI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallTarget {
+    /// A user-defined function compiled by the JIT (Cranelift native ABI).
+    Jit,
+    /// An `extern "C"` runtime shim (SystemV ABI, symbol from `shims.rs`).
+    Shim,
+}
+
 // ── Places + projections ────────────────────────────────────
 
 /// A single step in a [`Place`] projection chain.
@@ -272,7 +285,12 @@ pub enum ConstValue {
     String(String),
 }
 
-/// Binary operators in MIR (subset of AST BinaryOperator).
+/// Binary and unary operators in MIR.
+///
+/// Covers arithmetic, comparisons (returning Trilean +1/0/-1), and
+/// ternary-logic operations (Łukasiewicz Ł3 + Kleene K3). All logic
+/// ops work on i64-encoded Trilean values where +1=True, 0=Unknown,
+/// -1=False.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinOp {
     /// Arithmetic addition.
@@ -281,10 +299,47 @@ pub enum BinOp {
     Sub,
     /// Arithmetic multiplication.
     Mul,
-    /// Greater-than comparison.
-    Gt,
-    /// Less-than-or-equal comparison.
+    /// Arithmetic division (signed, truncates toward zero).
+    Div,
+    /// Arithmetic remainder (signed).
+    Mod,
+
+    /// Equality comparison → Trilean (+1/0/-1).
+    Eq,
+    /// Not-equal comparison → Trilean.
+    Ne,
+    /// Less-than comparison → Trilean.
+    Lt,
+    /// Less-than-or-equal comparison → Trilean.
     Le,
+    /// Greater-than comparison → Trilean.
+    Gt,
+    /// Greater-than-or-equal comparison → Trilean.
+    Ge,
+
+    /// Łukasiewicz Ł3 conjunction (logical AND): min(a, b).
+    LukAnd,
+    /// Łukasiewicz Ł3 disjunction (logical OR): max(a, b).
+    LukOr,
+    /// Łukasiewicz Ł3 exclusive-or: ¬(a ↔ b) in Ł3.
+    LukXor,
+    /// Łukasiewicz Ł3 implication: ¬a ∨ b (max(-a, b)).
+    LukImplies,
+    /// Łukasiewicz Ł3 equivalence: (a → b) ∧ (b → a).
+    LukIff,
+
+    /// Kleene K3 implication: same truth table as Ł3 for atoms,
+    /// differs in how Unknown propagates through nested expressions.
+    KleeneImplies,
+    /// Kleene K3 exclusive-or.
+    KleeneXor,
+    /// Kleene K3 equivalence.
+    KleeneIff,
+
+    /// Ternary arithmetic negation: maps (+,0,-) → (-,0,+).
+    /// Same result for all three unary forms (Negate, Not, KleeneNot)
+    /// at the MIR level — differs only in type-system refinement tracking.
+    Neg,
 }
 
 /// S6 reference forms (mirrors triet_syntax::ReferenceForm).
@@ -394,6 +449,8 @@ pub enum Terminator {
         callee: FunctionId,
         /// Callee function name (for diagnostics / Display).
         callee_name: String,
+        /// How to compile this call: JIT-to-JIT or JIT-to-Shim.
+        target: CallTarget,
         /// Argument locals.
         args: Vec<Local>,
         /// Block to jump to on normal return.
@@ -843,8 +900,23 @@ impl fmt::Display for BinOp {
             Self::Add => write!(f, "+"),
             Self::Sub => write!(f, "-"),
             Self::Mul => write!(f, "*"),
-            Self::Gt => write!(f, ">"),
+            Self::Div => write!(f, "/"),
+            Self::Mod => write!(f, "%"),
+            Self::Eq => write!(f, "=="),
+            Self::Ne => write!(f, "!="),
+            Self::Lt => write!(f, "<"),
             Self::Le => write!(f, "<="),
+            Self::Gt => write!(f, ">"),
+            Self::Ge => write!(f, ">="),
+            Self::LukAnd => write!(f, "&&"),
+            Self::LukOr => write!(f, "||"),
+            Self::LukXor => write!(f, "^"),
+            Self::LukImplies => write!(f, "=>"),
+            Self::LukIff => write!(f, "<=>"),
+            Self::KleeneImplies => write!(f, "~>"),
+            Self::KleeneXor => write!(f, "~^"),
+            Self::KleeneIff => write!(f, "<~>"),
+            Self::Neg => write!(f, "neg"),
         }
     }
 }

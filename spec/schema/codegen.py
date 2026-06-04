@@ -30,6 +30,8 @@ def make_header():
 //! To modify: edit the schema, then re-run codegen:
 //!   python3 spec/schema/codegen.py --target rust --schema spec/schema/triet-schema.yaml
 
+#![allow(unused_imports, missing_docs)]
+
 """
 
 RUST_TYPE_MAP = {

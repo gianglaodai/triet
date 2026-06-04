@@ -102,6 +102,11 @@ pub enum Type {
     /// A type the checker could not determine — used as a recovery
     /// placeholder so cascading errors don't compound.
     Unknown,
+    /// The bottom type — a computation that never produces a value
+    /// (diverges: `return`, `break`, `continue`, infinite loop).
+    /// `Never` is compatible with every type (can appear anywhere a
+    /// value is expected, since control never reaches that point).
+    Never,
     /// A reference with ownership semantics
     Reference(ReferenceForm, Box<Self>),
     /// Atomic wrapper
@@ -155,7 +160,12 @@ impl Type {
     /// information loss, zero runtime cost.
     #[must_use]
     pub fn matches(&self, other: &Self) -> bool {
-        if matches!(self, Self::Unknown) || matches!(other, Self::Unknown) {
+        // Unknown and Never are universal subtypes/supertypes:
+        // - Unknown: recovery placeholder, matches everything
+        // - Never: bottom type (diverging block), compatible with everything
+        if matches!(self, Self::Unknown | Self::Never)
+            || matches!(other, Self::Unknown | Self::Never)
+        {
             return true;
         }
         // Trilean refinement (ADR-0021 §1): Trilean! widens to Trilean
@@ -244,7 +254,7 @@ impl Type {
             Self::Reference(form, inner) => form.is_owning() && inner.is_send(),
             Self::Atomic(_) => true,
             Self::Function { .. } => true,
-            Self::TypeParam(_) | Self::Unknown => true,
+            Self::TypeParam(_) | Self::Unknown | Self::Never => true,
         }
     }
 
@@ -465,6 +475,7 @@ impl fmt::Display for Type {
             }
             Self::Atomic(inner) => write!(formatter, "Atomic<{inner}>"),
             Self::Unknown => formatter.write_str("?"),
+            Self::Never => formatter.write_str("!"),
         }
     }
 }

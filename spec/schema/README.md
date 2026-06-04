@@ -35,9 +35,11 @@ Từ schema, code generator sinh ra:
 | `ast_stmt.rs` | `enum Stmt` |
 | `ast_item.rs` | `enum Item`, `struct FunctionDef`, `struct StructDef`, ... |
 | `ast_operator.rs` | `enum BinaryOperator`, `enum UnaryOperator` |
-| `visitor.rs` | `trait ExprVisitor`, `trait TypeVisitor`, ... |
-| `display.rs` | `impl Display` cho tất cả types |
-| `serde_impl.rs` | `Serialize`/`Deserialize` implementations |
+| `mod.rs` | Module index + re-exports |
+
+> **Note (2026-06-04):** `visitor.rs`, `display.rs`, and `serde_impl.rs` are not
+> yet generated. Display is hand-implemented in `triet-mir`. Visitor/serde
+> deferred to future codegen enhancements.
 
 ## Cấu trúc schema
 

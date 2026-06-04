@@ -24,8 +24,9 @@ pub mod checker;
 pub mod liveness;
 
 use triet_mir::{
-    BasicBlock, BinOp, BlockData, Body, ConstValue, DUMMY_SPAN, FunctionId, FunctionSignature,
-    Local, LocalDecl, ParameterPassing, Place, ReferenceForm, Statement, Terminator,
+    BasicBlock, BinOp, BlockData, Body, CallTarget, ConstValue, DUMMY_SPAN, FunctionId,
+    FunctionSignature, Local, LocalDecl, ParameterPassing, Place, ReferenceForm, Statement,
+    Terminator,
 };
 
 // ── MIR builder (convenience API for constructing MIR by hand) ─
@@ -226,6 +227,7 @@ pub fn call_dispatch(
     Terminator::CallDispatch {
         callee,
         callee_name: callee_name.to_string(),
+        target: CallTarget::Jit,
         args,
         return_bb,
         dest,

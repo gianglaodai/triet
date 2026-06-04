@@ -1,6 +1,13 @@
 # Phase 3 — Cranelift JIT/AOT Backend Design
 
-**Status:** Draft — thiết kế kiến trúc, chưa code
+**Status:** **Implemented** (2026-06-04) — `triet-jit` crate hoạt động với 15 tests.
+**Implementation:** `crates/triet-jit/src/mir_lower.rs` (~1150 dòng) + `lib.rs`.
+MIR→Cranelift lowering, SSA via `FunctionBuilder`+`Variable`, RPO CFG traversal,
+20 BinOp variants (Ł3/K3 logic ops), shim calls (`extern "C"` + SystemV ABI),
+type-safe `ShimSymbol` factories. Bậc A: single i64 ABI. Pipeline end-to-end:
+`triet-driver run hello_jit.tri` → 42.
+**Note:** Plan dự đoán file `lower.rs`; thực tế là `mir_lower.rs`. Module structure
+đơn giản hơn plan (1 file chính thay vì 5 file `lower/types/abi/builtins/cache`).
 **Phụ thuộc:** `triet-mir` (MIR data structures + CFG), Phase 2 borrow checker
 **Nguyên tắc:** IR → machine code từ day 0. Borrow checker đảm bảo safety ở compile-time; runtime chỉ là raw addresses + arithmetic.
 

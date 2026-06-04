@@ -1,6 +1,0 @@
----
-source: crates/triet-ir/tests/ir_snapshots.rs
-assertion_line: 261
-expression: ir.to_string()
----
-";; ── Constant pool (2) ──\n;; c0 = 0\n;; c1 = 1\n\n;; module khi.test\nfunction countdown(%n: Integer) -> Integer {\nentry:\n    br b1\nwhile_header:\n    %1 = gt %0, const c0\n    br_if %1, b2, b3\nwhile_body:\n    %2 = sub %0, const c1\n    br b1\nwhile_exit:\n    ret %0\n}\n"

@@ -1,4 +1,0 @@
-format_version 1
-name test_pkg
-version 1.0.0
-requires dev.net grant

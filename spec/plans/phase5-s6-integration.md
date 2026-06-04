@@ -1,6 +1,10 @@
 # Phase 5 — S6 Ownership Pipeline Integration
 
-**Status:** In progress
+**Status:** Partially implemented — borrowck DONE, end-to-end pipeline DONE, full S6 ownership test suite NOT YET
+**Done (2026-06-04):** Borrow checker (E2420, E2440), AST→MIR lowering (5 reference forms),
+ParameterPassing in MIR signatures, pipeline end-to-end (`.tri → borrowck → JIT`).
+**Not done:** Comprehensive S6 ownership test corpus, loop-carried borrows,
+closures, weak observer upgrade, full ADR-0026 concurrency model.
 **Phụ thuộc:** Phase 4 (AST→MIR lowering), Phase 2 (borrow checker)
 
 ## Lộ trình

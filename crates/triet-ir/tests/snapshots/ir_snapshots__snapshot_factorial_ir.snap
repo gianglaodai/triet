@@ -1,6 +1,0 @@
----
-source: crates/triet-ir/tests/ir_snapshots.rs
-assertion_line: 249
-expression: ir.to_string()
----
-";; ── Constant pool (2) ──\n;; c0 = 0\n;; c1 = 1\n\n;; module khi.test\nfunction factorial(%n: Integer) -> Integer {\nentry:\n    %1 = eq %0, const c0\n    br_if %1, b1, b2\nbase_case:\n    ret const c1\nrecursive_case:\n    %2 = sub %0, const c1\n    %3 = call @f0(%2)\n    %4 = mul %0, %3\n    ret %4\n}\n"

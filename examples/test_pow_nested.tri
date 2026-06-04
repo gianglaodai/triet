@@ -1,0 +1,3 @@
+function main() -> Integer {
+    return 10 + 2 ** 10;
+}

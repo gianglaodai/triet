@@ -14,4 +14,5 @@ triet-typecheck = { path = "../triet-typecheck" }
 triet-lower = { path = "../triet-lower" }
 triet-mir = { path = "../triet-mir" }
 triet-borrowck = { path = "../triet-borrowck" }
+triet-jit = { path = "../triet-jit" }
 miette = { workspace = true }

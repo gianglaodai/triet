@@ -1,8 +1,0 @@
----
-source: crates/triet-cli/tests/cli_tests.rs
-expression: stderr
----
-triet::modules::E2101
-
-  × module file not found for `missing`
-  help: create `missing.tri` or `missing/missing.tri`

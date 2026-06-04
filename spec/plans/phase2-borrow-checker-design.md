@@ -1,6 +1,9 @@
 # Phase 2 — Borrow Checker Design (dựa trên CFG + NLL)
 
-**Status:** Draft — chưa viết code, đây là bản vẽ kiến trúc
+**Status:** **Implemented** (2026-06-04) — `triet-borrowck` crate hoạt động với 10 tests.
+**Implementation:** `crates/triet-borrowck/src/{lib.rs, checker.rs, liveness.rs}` (~900 dòng).
+NLL dataflow analysis, field-level `places_conflict`, cross-call `PropagatedLoan`,
+miette diagnostics (E2420, E2440). Pipeline end-to-end: `.tri → parse → typecheck → lower → MIR → borrowck → E24XX`.
 **Phụ thuộc:** `spec/schema/triet-schema.json` (Phase 1 — S6 model)
 **Mentor yêu cầu:** "Không có bản vẽ CFG, cấm gõ một dòng code Rust nào!"
 

@@ -15,8 +15,8 @@
 use std::collections::HashMap;
 
 use triet_mir::{
-    BasicBlock, BinOp, Body, ConstValue, DUMMY_SPAN, FunctionSignature, Local, LocalDecl,
-    ParameterPassing, Place, Projection, Span, Statement, Terminator,
+    BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, FunctionSignature, Local,
+    LocalDecl, ParameterPassing, Place, Projection, Span, Statement, Terminator,
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, FunctionBody, FunctionDef, Item, Program, Stmt, TypeExpr,
@@ -386,10 +386,33 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             left,
             right,
         } => {
-            let op = lower_binop(operator);
             let lhs = lower_expr(*left, arena, c);
             let rhs = lower_expr(*right, arena, c);
             let d = c.alloc_local();
+
+            // `Pow` is not an ALU instruction — it must go through the
+            // `__triet_pow` shim via CallDispatch (extern "C" SystemV).
+            if matches!(operator, BinaryOperator::Pow) {
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                let ret_bb = c.alloc_bb();
+                let call_bb = c.cur;
+                c.term(
+                    call_bb,
+                    Terminator::CallDispatch {
+                        callee: triet_mir::FunctionId(0),
+                        callee_name: "__triet_pow".into(),
+                        target: CallTarget::Shim,
+                        args: vec![lhs, rhs],
+                        return_bb: ret_bb,
+                        dest: vec![d],
+                        span: expr_span,
+                    },
+                );
+                c.cur = ret_bb;
+                return d;
+            }
+
+            let op = lower_binop(operator);
             c.push(Statement::StorageLive(d, expr_span.clone()));
             match op {
                 Some(op) => c.push(Statement::BinaryOp {
@@ -422,6 +445,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 Terminator::CallDispatch {
                     callee: triet_mir::FunctionId(0),
                     callee_name,
+                    target: CallTarget::Jit,
                     args,
                     return_bb: ret_bb,
                     dest: vec![dest],
@@ -598,9 +622,24 @@ fn lower_binop(op: &BinaryOperator) -> Option<BinOp> {
         BinaryOperator::Add => BinOp::Add,
         BinaryOperator::Sub => BinOp::Sub,
         BinaryOperator::Mul => BinOp::Mul,
-        BinaryOperator::Gt => BinOp::Gt,
+        BinaryOperator::Div => BinOp::Div,
+        BinaryOperator::Mod => BinOp::Mod,
+        BinaryOperator::Eq => BinOp::Eq,
+        BinaryOperator::Ne => BinOp::Ne,
+        BinaryOperator::Lt => BinOp::Lt,
         BinaryOperator::Le => BinOp::Le,
-        _ => return None,
+        BinaryOperator::Gt => BinOp::Gt,
+        BinaryOperator::Ge => BinOp::Ge,
+        BinaryOperator::LukAnd => BinOp::LukAnd,
+        BinaryOperator::LukOr => BinOp::LukOr,
+        BinaryOperator::LukXor => BinOp::LukXor,
+        BinaryOperator::LukImplies => BinOp::LukImplies,
+        BinaryOperator::LukIff => BinOp::LukIff,
+        BinaryOperator::KleeneImplies => BinOp::KleeneImplies,
+        BinaryOperator::KleeneXor => BinOp::KleeneXor,
+        BinaryOperator::KleeneIff => BinOp::KleeneIff,
+        // Pow is handled inline in lower_expr via __triet_pow shim.
+        BinaryOperator::Pow => return None,
     })
 }
 
