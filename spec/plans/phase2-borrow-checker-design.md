@@ -1,9 +1,14 @@
 # Phase 2 — Borrow Checker Design (dựa trên CFG + NLL)
 
 **Status:** **Implemented** (2026-06-04) — `triet-borrowck` crate hoạt động với 10 tests.
-**Implementation:** `crates/triet-borrowck/src/{lib.rs, checker.rs, liveness.rs}` (~900 dòng).
+**Implementation:** `crates/triet-borrowck/src/{lib.rs, checker.rs, liveness.rs}` (~980 dòng).
 NLL dataflow analysis, field-level `places_conflict`, cross-call `PropagatedLoan`,
-miette diagnostics (E2420, E2440). Pipeline end-to-end: `.tri → parse → typecheck → lower → MIR → borrowck → E24XX`.
+miette diagnostics (E2420, E2440, E2450). Pipeline end-to-end: `.tri → parse → typecheck → lower → MIR → borrowck → E24XX`.
+**Post-audit fixes:** DropWhileBorrowed (E2450), StrongFrozen/StrongMutable conflict,
+func_id_for HashMap cache.
+**Mentor review:** `places_conflict(a, b, conservative)` — conservative alias assumption
+cho `BorrowReadOnly`, `WeakObserver`, và Move. Khi `conservative=true`, 2 local khác
+nhau → assume conflict (vá soundness hole).
 **Phụ thuộc:** `spec/schema/triet-schema.json` (Phase 1 — S6 model)
 **Mentor yêu cầu:** "Không có bản vẽ CFG, cấm gõ một dòng code Rust nào!"
 
@@ -285,24 +290,25 @@ Tại mỗi program point, nó tính toán:
 | Statement | Effect |
 |---|---|
 | `StorageLive(x)` | `x.state = Owned` |
-| `StorageDead(x)` | Drop x; kết thúc mọi loan từ x |
-| `Borrow(dest, form, source)` | Tạo Loan(source, form); `dest.state = Owned` (dest là reference mới) |
-| `Move(dest, source)` | `source.state = Moved`; `dest.state = Owned` |
-| `Call(dest, func, args)` | args có passing_mode Borrow → loan kết thúc sau call; Move → arg.state = Moved |
-| `Drop(x)` | Kết thúc mọi loan từ x; `x.state = Moved` |
+| `StorageDead(x)` | Kết thúc mọi loan từ x (source.local); `x.state` removed |
+| `Borrow(dest, form, source)` | **Conflict check**: nếu `places_conflict` + `conflicts_with(form)` → E2440. StrongFrozen/StrongMutable: conflict với MỌI loan (move invalidates references). Weak/borrow forms: tạo Loan. `dest.state = Owned` |
+| `Move(dest, source)` | Conflict check với active loans. `source.state = Moved`; `dest.state = Owned` |
+| `Call(dest, func, args)` | args có passing_mode Borrow → loan kết thúc sau call; Move → arg.state = Moved. Cross-call propagation qua `return_borrow_map` |
+| `Drop(x)` | **Nếu active loans trên x → E2450 DropWhileBorrowed.** Sau đó: `x.state = Moved`, retain loans từ x |
 | Sử dụng biến `x` | Cập nhật `loan.last_use = current_point` cho loan liên quan |
 
 **Conflict check** — tại mỗi program point, kiểm tra:
 
-| Hành động | Conflict condition |
-|---|---|
-| Tạo `&0 T` (shared borrow) | Conflict nếu có `&0 mutable` đang active trên cùng source |
-| Tạo `&0 mutable T` (exclusive) | Conflict nếu có BẤT KỲ loan nào đang active trên cùng source |
-| Tạo `&- T` (weak) | Conflict nếu có `&0 mutable` đang active |
-| Move `x` | Conflict nếu có BẤT KỲ loan nào đang active trên x |
-| Drop `x` | Conflict nếu có BẤT KỲ loan nào đang active trên x |
-| Mutate qua `&0 T` | Conflict — &0 T là read-only |
-| Mutate qua `&+ T` (frozen) | Conflict — &+ T frozen không thể mutate |
+| Hành động | Conflict condition | Error code |
+|---|---|---|
+| Tạo `&0 T` (shared borrow) | Conflict nếu có `&0 mutable` đang active trên cùng source | E2440 |
+| Tạo `&0 mutable T` (exclusive) | Conflict nếu có BẤT KỲ loan nào đang active trên cùng source | E2440 |
+| Tạo `&- T` (weak) | Conflict nếu có `&0 mutable` đang active | E2440 |
+| Tạo `&+ T` / `&+ mutable T` (strong=move) | Conflict nếu có BẤT KỲ loan nào đang active — **move invalidates all references** | E2440 |
+| Move `x` | Conflict nếu có BẤT KỲ loan nào đang active trên x | E2440 |
+| Drop `x` | Conflict nếu có BẤT KỲ loan nào đang active trên x | **E2450** |
+| Mutate qua `&0 T` | Conflict — &0 T là read-only | *(typecheck-level)* |
+| Mutate qua `&+ T` (frozen) | Conflict — &+ T frozen không thể mutate | *(typecheck-level)* |
 
 ### 3.3 — NLL: khi nào một loan kết thúc?
 

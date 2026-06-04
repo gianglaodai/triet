@@ -7,8 +7,8 @@
 //!
 //! Scope (v0 milestone): scalars, `let`, binary ops, `if`, `while`, calls,
 //! borrows, and `obj.field` access (lowered to a `Field` projection).
-//! Index projections, strings, f-strings, and outcome constructors are not
-//! yet lowered.
+//! Unsupported constructs return `Err(LowerError)` — the lowerer never panics
+//! on user input.
 
 #![warn(missing_docs)]
 
@@ -16,12 +16,60 @@ use std::collections::HashMap;
 
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, FunctionSignature, Local,
-    LocalDecl, ParameterPassing, Place, Projection, Span, Statement, Terminator,
+    LocalDecl, ParameterPassing, Place, Projection, Span, Statement, StructLayout, Terminator,
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, FunctionBody, FunctionDef, Item, Program, Stmt, TypeExpr,
     TypeId,
 };
+
+// ── Lowering error ───────────────────────────────────────────
+
+/// An error produced when lowering cannot proceed because an AST construct
+/// is not yet supported by the MIR backend.
+#[derive(Debug, Clone)]
+pub struct LowerError {
+    /// Human-readable description of what was not supported.
+    pub message: String,
+    /// Source location of the unsupported construct.
+    pub span: Span,
+}
+
+impl LowerError {
+    fn unsupported_stmt(stmt: &Stmt, span: Span) -> Self {
+        Self {
+            message: format!("lowerer does not yet support this statement: {stmt:?}"),
+            span,
+        }
+    }
+
+    fn unsupported_expr(expr: &Expr, span: Span) -> Self {
+        Self {
+            message: format!("lowerer does not yet support this expression: {expr:?}"),
+            span,
+        }
+    }
+
+    fn unsupported_callee(expr: &Expr, span: Span) -> Self {
+        Self {
+            message: format!("unsupported callee expression: {expr:?}"),
+            span,
+        }
+    }
+
+    fn undefined_local(name: &str, span: Span) -> Self {
+        Self {
+            message: format!("undefined local variable: {name}"),
+            span,
+        }
+    }
+}
+
+impl std::fmt::Display for LowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
 
 // ── Lowering context ────────────────────────────────────────
 
@@ -109,23 +157,47 @@ impl Ctx {
 // ── Public API ──────────────────────────────────────────────
 
 /// Lower every function in a parsed program to its MIR body.
-#[must_use]
-pub fn lower_program(prog: &Program) -> Vec<Body> {
+///
+/// Returns `Err` if any function contains an AST construct the lowerer
+/// does not yet support. The error carries a span for diagnostics.
+///
+/// Struct definitions in the program are lowered to `StructLayout` entries
+/// and attached to every function body so that the JIT backend can compute
+/// field offsets. In Bậc A every field is 8 bytes (i64), alignment 8.
+pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
+    // ── Collect struct layouts from struct definitions ──────────
+    // Bậc A: every field is 8 bytes, alignment 8 (single i64).
+    // Bậc C will compute real sizes from type information.
+    let struct_layouts: Vec<StructLayout> = prog
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Struct { def } = &item.node {
+                let fields: Vec<(String, usize, usize)> =
+                    def.fields.iter().map(|f| (f.name.clone(), 8, 8)).collect();
+                Some(StructLayout::compute(&def.name, &fields))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let mut bodies = Vec::new();
     for item in &prog.items {
         if let Item::Function { def } = &item.node {
-            bodies.push(lower_function(def, &prog.arena, item.span.clone()));
+            let mut body = lower_function(def, &prog.arena, item.span.clone())?;
+            body.struct_layouts = struct_layouts.clone();
+            bodies.push(body);
         }
     }
-    bodies
+    Ok(bodies)
 }
 
 /// Lower one function definition to a MIR body.
 ///
 /// `span` is the byte range of the function definition in the source file,
 /// used as a fallback for body-level synthetic statements.
-#[must_use]
-pub fn lower_function(func: &FunctionDef, arena: &Arena, _span: Span) -> Body {
+pub fn lower_function(func: &FunctionDef, arena: &Arena, _span: Span) -> Result<Body, LowerError> {
     let mut c = Ctx::new(&func.name, "Integer");
     let entry = c.cur;
 
@@ -143,10 +215,10 @@ pub fn lower_function(func: &FunctionDef, arena: &Arena, _span: Span) -> Body {
 
     match &func.body {
         FunctionBody::Block { block } => {
-            lower_block(*block, arena, &mut c);
+            lower_block(*block, arena, &mut c)?;
         }
         FunctionBody::Expression { expr } => {
-            let val = lower_expr(*expr, arena, &mut c);
+            let val = lower_expr(*expr, arena, &mut c)?;
             let cur = c.cur;
             let expr_span = arena.expression(*expr).span.clone();
             c.term(
@@ -173,7 +245,7 @@ pub fn lower_function(func: &FunctionDef, arena: &Arena, _span: Span) -> Body {
         );
     }
 
-    c.build(entry)
+    Ok(c.build(entry))
 }
 
 /// Resolve a type annotation to a display name (best-effort; non-`Named`
@@ -189,7 +261,7 @@ fn type_name(arena: &Arena, id: TypeId) -> String {
 
 /// Lower a block expression (statements + optional final expression) into
 /// the current block, discarding the block's value.
-fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) {
+fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) -> Result<(), LowerError> {
     match &arena.expression(block_expr).node {
         Expr::Block {
             statements,
@@ -199,34 +271,35 @@ fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) {
                 let spanned_stmt = arena.statement(stmt_id);
                 let stmt = spanned_stmt.node.clone();
                 let stmt_span = spanned_stmt.span.clone();
-                lower_stmt(&stmt, stmt_span, arena, c);
+                lower_stmt(&stmt, stmt_span, arena, c)?;
             }
             if let Some(e) = final_expr {
-                lower_expr(*e, arena, c);
+                lower_expr(*e, arena, c)?;
             }
         }
         _ => {
-            lower_expr(block_expr, arena, c);
+            lower_expr(block_expr, arena, c)?;
         }
     }
+    Ok(())
 }
 
 // ── Statement lowering ──────────────────────────────────────
 
-fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
+fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Result<(), LowerError> {
     match stmt {
         Stmt::Let { name, init, .. } => {
-            let v = lower_expr(*init, arena, c);
+            let v = lower_expr(*init, arena, c)?;
             c.vars.insert(name.clone(), v);
         }
         Stmt::Expression { expr } => {
-            lower_expr(*expr, arena, c);
+            lower_expr(*expr, arena, c)?;
         }
         Stmt::Return { value } => {
-            let values = match value {
-                Some(v) => vec![lower_expr(*v, arena, c)],
-                None => vec![],
-            };
+            let mut values = Vec::new();
+            if let Some(v) = value {
+                values.push(lower_expr(*v, arena, c)?);
+            }
             let cur = c.cur;
             c.term(
                 cur,
@@ -239,7 +312,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
             c.cur = dead;
         }
         Stmt::Assignment { target, value } => {
-            let v = lower_expr(*value, arena, c);
+            let v = lower_expr(*value, arena, c)?;
             match &arena.expression(*target).node {
                 // Simple identifier target: rebind the variable.
                 Expr::Identifier { name } => {
@@ -247,7 +320,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
                 }
                 // Field/projection target: store through the place.
                 _ => {
-                    let dest = lower_place(*target, arena, c);
+                    let dest = lower_place(*target, arena, c)?;
                     c.push(Statement::Assign {
                         dest,
                         source: Place::local(v),
@@ -273,7 +346,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
             );
 
             c.cur = hdr;
-            let cond = lower_expr(*condition, arena, c);
+            let cond = lower_expr(*condition, arena, c)?;
             let hdr_end = c.cur;
             c.term(
                 hdr_end,
@@ -287,7 +360,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
             );
 
             c.cur = bdy;
-            lower_block(*body, arena, c);
+            lower_block(*body, arena, c)?;
             let bdy_end = c.cur;
             c.term(
                 bdy_end,
@@ -300,8 +373,9 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
             c.cur = ext;
         }
         // Const / Break / Continue / For / Loop not yet lowered.
-        other => panic!("unsupported statement: {other:?}"),
+        other => return Err(LowerError::unsupported_stmt(other, stmt_span)),
     }
+    Ok(())
 }
 
 // ── Place lowering ──────────────────────────────────────────
@@ -309,27 +383,28 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) {
 /// Lower an lvalue expression to a [`Place`]. Identifiers map to their local;
 /// `obj.field` appends a `Field` projection. Non-place expressions are
 /// materialized into a temporary and referred to as a bare local.
-fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Place {
+fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Place, LowerError> {
     match &arena.expression(expr_id).node {
-        Expr::Identifier { name } => Place::local(
-            *c.vars
-                .get(name)
-                .unwrap_or_else(|| panic!("undefined local: {name}")),
-        ),
+        Expr::Identifier { name } => {
+            let &local = c.vars.get(name).ok_or_else(|| {
+                LowerError::undefined_local(name, arena.expression(expr_id).span.clone())
+            })?;
+            Ok(Place::local(local))
+        }
         Expr::FieldAccess { object, field } => {
-            let base = lower_place(*object, arena, c);
-            base.project(Projection::Field(field.clone()))
+            let base = lower_place(*object, arena, c)?;
+            Ok(base.project(Projection::Field(field.clone())))
         }
         _ => {
-            let temp = lower_expr(expr_id, arena, c);
-            Place::local(temp)
+            let temp = lower_expr(expr_id, arena, c)?;
+            Ok(Place::local(temp))
         }
     }
 }
 
 // ── Expression lowering ─────────────────────────────────────
 
-fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
+fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, LowerError> {
     let expr_span = arena.expression(expr_id).span.clone();
     match &arena.expression(expr_id).node {
         Expr::IntegerLiteral { value, .. } => {
@@ -340,7 +415,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 value: ConstValue::Integer(*value),
                 span: expr_span,
             });
-            d
+            Ok(d)
         }
         Expr::TernaryLiteral { value } => {
             let d = c.alloc_local();
@@ -350,7 +425,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 value: ConstValue::Integer(*value),
                 span: expr_span,
             });
-            d
+            Ok(d)
         }
         Expr::TritLiteral { value } => {
             let d = c.alloc_local();
@@ -360,7 +435,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 value: ConstValue::Trit(*value),
                 span: expr_span,
             });
-            d
+            Ok(d)
         }
         Expr::TrileanLiteral { value } => {
             let d = c.alloc_local();
@@ -375,19 +450,22 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 value: ConstValue::Trit(trit),
                 span: expr_span,
             });
-            d
+            Ok(d)
         }
-        Expr::Identifier { name } => *c
-            .vars
-            .get(name)
-            .unwrap_or_else(|| panic!("undefined local: {name}")),
+        Expr::Identifier { name } => {
+            let &local = c
+                .vars
+                .get(name)
+                .ok_or_else(|| LowerError::undefined_local(name, expr_span))?;
+            return Ok(local);
+        }
         Expr::BinaryOp {
             operator,
             left,
             right,
         } => {
-            let lhs = lower_expr(*left, arena, c);
-            let rhs = lower_expr(*right, arena, c);
+            let lhs = lower_expr(*left, arena, c)?;
+            let rhs = lower_expr(*right, arena, c)?;
             let d = c.alloc_local();
 
             // `Pow` is not an ALU instruction — it must go through the
@@ -409,7 +487,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                     },
                 );
                 c.cur = ret_bb;
-                return d;
+                return Ok(d);
             }
 
             let op = lower_binop(operator);
@@ -428,14 +506,17 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                     span: expr_span,
                 }),
             }
-            d
+            Ok(d)
         }
         Expr::Call { callee, arguments } => {
             let callee_name = match &arena.expression(*callee).node {
                 Expr::Identifier { name } => name.clone(),
-                other => panic!("unsupported callee: {other:?}"),
+                other => return Err(LowerError::unsupported_callee(other, expr_span)),
             };
-            let args: Vec<Local> = arguments.iter().map(|a| lower_expr(*a, arena, c)).collect();
+            let args: Vec<Local> = arguments
+                .iter()
+                .map(|a| lower_expr(*a, arena, c))
+                .collect::<Result<Vec<_>, _>>()?;
             let dest = c.alloc_local();
             c.push(Statement::StorageLive(dest, expr_span.clone()));
             let ret_bb = c.alloc_bb();
@@ -453,7 +534,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 },
             );
             c.cur = ret_bb;
-            dest
+            Ok(dest)
         }
         Expr::Block { .. } => {
             let final_expr = match &arena.expression(expr_id).node {
@@ -465,7 +546,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                         let spanned_stmt = arena.statement(stmt_id);
                         let stmt = spanned_stmt.node.clone();
                         let stmt_span = spanned_stmt.span.clone();
-                        lower_stmt(&stmt, stmt_span, arena, c);
+                        lower_stmt(&stmt, stmt_span, arena, c)?;
                     }
                     *final_expr
                 }
@@ -481,7 +562,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                         value: ConstValue::Unit,
                         span: expr_span,
                     });
-                    u
+                    Ok(u)
                 }
             }
         }
@@ -493,7 +574,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
         } => {
             let then_branch = *then_branch;
             let else_branch = *else_branch;
-            let cond = lower_expr(*condition, arena, c);
+            let cond = lower_expr(*condition, arena, c)?;
             let then_bb = c.alloc_bb();
             let merge_bb = c.alloc_bb();
             let else_bb = if else_branch.is_some() {
@@ -515,7 +596,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             );
 
             c.cur = then_bb;
-            let then_val = lower_expr(then_branch, arena, c);
+            let then_val = lower_expr(then_branch, arena, c)?;
             let then_end = c.cur;
             let result = c.alloc_local();
 
@@ -535,7 +616,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 );
 
                 c.cur = else_bb;
-                let else_val = lower_expr(eb, arena, c);
+                let else_val = lower_expr(eb, arena, c)?;
                 let else_end = c.cur;
                 c.push(Statement::Assign {
                     dest: Place::local(result),
@@ -551,7 +632,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 );
 
                 c.cur = merge_bb;
-                result
+                Ok(result)
             } else {
                 c.term(
                     then_end,
@@ -568,7 +649,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                     value: ConstValue::Unit,
                     span: expr_span,
                 });
-                u
+                Ok(u)
             }
         }
         Expr::Borrow { form, operand } => {
@@ -576,7 +657,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
             // The operand is an lvalue (IDENT or field-access chain per
             // ADR-0031 §2) — lower it to a projected Place so the borrow
             // checker can track the loan at field granularity.
-            let source = lower_place(*operand, arena, c);
+            let source = lower_place(*operand, arena, c)?;
             let dest = c.alloc_local();
             c.push(Statement::StorageLive(dest, expr_span.clone()));
             c.push(Statement::Borrow {
@@ -585,11 +666,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 source,
                 span: expr_span,
             });
-            dest
+            Ok(dest)
         }
         // `obj.field` as an rvalue: read through the projected place into a temp.
         Expr::FieldAccess { .. } => {
-            let source = lower_place(expr_id, arena, c);
+            let source = lower_place(expr_id, arena, c)?;
             let d = c.alloc_local();
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Assign {
@@ -597,9 +678,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Local {
                 source,
                 span: expr_span,
             });
-            d
+            Ok(d)
         }
-        other => panic!("unsupported expr: {other:?}"),
+        other => Err(LowerError::unsupported_expr(other, expr_span)),
     }
 }
 
@@ -663,7 +744,7 @@ mod tests {
                 }
             })
             .expect("no function found");
-        lower_function(&func.0, &prog.arena, func.1)
+        lower_function(&func.0, &prog.arena, func.1).expect("lowering failed")
     }
 
     #[test]

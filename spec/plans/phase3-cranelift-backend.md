@@ -4,10 +4,15 @@
 **Implementation:** `crates/triet-jit/src/mir_lower.rs` (~1150 dòng) + `lib.rs`.
 MIR→Cranelift lowering, SSA via `FunctionBuilder`+`Variable`, RPO CFG traversal,
 20 BinOp variants (Ł3/K3 logic ops), shim calls (`extern "C"` + SystemV ABI),
-type-safe `ShimSymbol` factories. Bậc A: single i64 ABI. Pipeline end-to-end:
-`triet-driver run hello_jit.tri` → 42.
+type-safe `ShimSymbol` factories. Bậc A: single i64 ABI (Outcome = pass-through identity).
+Pipeline end-to-end: `triet-driver run hello_jit.tri` → 42.
+**Post-audit:** 5× `FunctionBuilder<'_>` (0 warnings), Outcome Bậc A doc-comment.
+**Mentor review:** `triet-lower` giờ có `LowerError` (0 panic), `StructLayout` được
+populate từ AST struct definitions, `places_conflict` conservative alias check.
 **Note:** Plan dự đoán file `lower.rs`; thực tế là `mir_lower.rs`. Module structure
 đơn giản hơn plan (1 file chính thay vì 5 file `lower/types/abi/builtins/cache`).
+**Outcome ABI note:** §9.2 mô tả multi-register (rax, rdx) — design cho Bậc C.
+Bậc A hiện tại: single i64 pass-through, không packed representation.
 **Phụ thuộc:** `triet-mir` (MIR data structures + CFG), Phase 2 borrow checker
 **Nguyên tắc:** IR → machine code từ day 0. Borrow checker đảm bảo safety ở compile-time; runtime chỉ là raw addresses + arithmetic.
 
@@ -226,7 +231,7 @@ kernel_main(hw: &+ mutable Hardware)
 
 **Giá trị trả về:**
 - Scalar đơn: 1 register.
-- Outcome `T~E`: 2 registers — Trit discriminant trong `rax` (i8), payload trong `rdx` (i64). Hoặc 1 struct `{i8, i64}` nếu ABI yêu cầu.
+- Outcome `T~E` (Bậc C): 2 registers — Trit discriminant trong `rax` (i8), payload trong `rdx` (i64). **Bậc A: 1 register i64 pass-through.**
 - Unit: không có giá trị trả về (void).
 
 **Outcome ABI chi tiết:**
@@ -389,8 +394,8 @@ abs_diff:
 
 ### Phase 3.4 — S6 References + Outcome
 - Verify references = raw pointers (zero-cost).
-- Lower `Outcome` return ABI (discriminant + payload).
-- Test: hàm trả về `T~E`, caller kiểm tra discriminant.
+- Lower `Outcome` return ABI (discriminant + payload). **Bậc A: single i64 pass-through.**
+- Test: hàm trả về `T~E`, caller kiểm tra discriminant. **Đã implement (15 tests).**
 
 ---
 
@@ -405,11 +410,17 @@ abs_diff:
 
 Lý do: Triết là OS-capable — trong kernel không có VM. Native struct codegen là bước đầu cho native aggregate codegen (Bậc C). Nhưng heap allocation cần memory allocator — chưa có trong Phase 3. `StructLayout` trong MIR đảm bảo codegen backend có đủ thông tin để tính offset mà không cần type erasure ra Opaque.
 
-### 9.2 — Outcome ABI: 2 registers (rax, rdx)
+### 9.2 — Outcome ABI: 2 registers (rax, rdx) [Bậc C]
 
-**Quyết định:** Dùng multi-value return trong Cranelift IR — 2 values map thẳng xuống `rax` (discriminant i8) và `rdx` (payload i64).
+**Quyết định (target Bậc C):** Dùng multi-value return trong Cranelift IR — 2 values map thẳng xuống `rax` (discriminant i8) và `rdx` (payload i64).
 
 Lý do: System V AMD64 ABI trả về struct nhỏ (≤ 16 byte) trong `rax` + `rdx`. Multi-value return của Cranelift map thẳng xuống 2 thanh ghi này. Không tốn memory traffic. Chỉ dùng stack slot nếu payload > 8 byte.
+
+**Bậc A hiện tại (2026-06-04):** Outcome sử dụng single i64 pass-through. Outcome ops
+(`OutcomeDiscriminant`, `OutcomeUnwrap`, `OutcomeUnwrapError`) là identity copy —
+không extract discriminant/payload từ packed representation. Function return luôn 1 value.
+Multi-register ABI và packed Outcome representation được defer tới Bậc C.
+Xem `crates/triet-jit/src/mir_lower.rs` lines ~457-475 cho doc-comment chi tiết.
 
 ### 9.3 — JIT trước, AOT sau
 

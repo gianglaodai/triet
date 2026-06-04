@@ -6,24 +6,24 @@
 
 use crate::arena::TypeId;
 
-/// Reference ownership form per ADR-0022 §2.
-///
-/// Each of the 5 reference forms maps to one arm of the trit-based
-/// ownership scheme. The `mutable` field distinguishes frozen vs mutable
-/// for `&+` (strong) and `&0` (neutral borrow) forms. `&-` (weak) is
-/// always immutable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ReferenceForm {
-    /// `&+ T` — strong owner, frozen (immutable).
-    StrongFrozen,
-    /// `&+ mutable T` — strong owner, mutable.
-    StrongMutable,
-    /// `&0 T` — neutral borrow, read-only.
-    BorrowReadOnly,
-    /// `&0 mutable T` — neutral borrow, exclusive mutable.
-    BorrowExclusiveMutable,
-    /// `&- T` — weak observer, always immutable.
-    WeakObserver,
+// ── ReferenceForm: schema-generated type, extended with methods ─
+//
+// The canonical definition lives in `spec/schema/triet-schema.yaml`
+// and is generated into `crate::generated::types::ReferenceForm`.
+// This module re-exports the generated enum and adds the accessor
+// methods that the type checker, parser, and lowerer depend on.
+//
+// This is the first type fully migrated from hand-written to
+// schema-generated — proving the schema-to-compiler pipeline works.
+
+pub use crate::generated::types::ReferenceForm;
+
+// Manual impls for traits the codegen does not yet emit on this type.
+impl Copy for ReferenceForm {}
+impl std::hash::Hash for ReferenceForm {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+    }
 }
 
 impl ReferenceForm {

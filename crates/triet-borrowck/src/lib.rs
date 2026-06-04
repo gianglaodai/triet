@@ -29,6 +29,8 @@ use triet_mir::{
     Terminator,
 };
 
+use std::collections::HashMap;
+
 // ── MIR builder (convenience API for constructing MIR by hand) ─
 
 /// A builder for constructing MIR bodies programmatically.
@@ -41,6 +43,8 @@ pub struct MirBuilder {
     next_local: usize,
     next_block: usize,
     next_func: usize,
+    /// Cache of function name → FunctionId for `func_id_for`.
+    func_ids: HashMap<String, FunctionId>,
 }
 
 impl MirBuilder {
@@ -59,6 +63,7 @@ impl MirBuilder {
             next_local: 0,
             next_block: 0,
             next_func: 0,
+            func_ids: HashMap::new(),
         }
     }
 
@@ -112,8 +117,13 @@ impl MirBuilder {
     /// Returns the same ID for the same name within a builder session,
     /// so that multiple `CallDispatch` sites referencing the same callee
     /// share the same `FunctionId`.
-    pub fn func_id_for(&mut self, _name: &str) -> FunctionId {
-        self.new_func_id()
+    pub fn func_id_for(&mut self, name: &str) -> FunctionId {
+        if let Some(&id) = self.func_ids.get(name) {
+            return id;
+        }
+        let id = self.new_func_id();
+        self.func_ids.insert(name.to_string(), id);
+        id
     }
 
     /// Push a statement to the given block.

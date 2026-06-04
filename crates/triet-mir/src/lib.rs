@@ -1007,7 +1007,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "alignment must be power of 2")]
     fn struct_layout_rejects_non_power_of_two_alignment() {
-        StructLayout::compute(
+        let _ = StructLayout::compute(
             "Bad",
             &[
                 ("x".into(), 5, 5), // alignment 5 is invalid

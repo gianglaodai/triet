@@ -301,7 +301,11 @@ impl JitContext {
     }
 
     /// Build the Cranelift IR for a single function body.
-    fn build_body(&mut self, builder: &mut FunctionBuilder, body: &Body) -> Result<(), JitError> {
+    fn build_body(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+    ) -> Result<(), JitError> {
         let cfg = body.build_cfg();
 
         // ── Declare variables (1 per MIR local, Bậc A: all i64) ──
@@ -367,7 +371,7 @@ impl JitContext {
     /// Fill a single basic block.
     fn lower_block(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         body: &Body,
         block: BasicBlock,
     ) -> Result<(), JitError> {
@@ -393,7 +397,7 @@ impl JitContext {
     /// Lower statements in a block.
     fn lower_block_statements(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         body: &Body,
         block: BasicBlock,
     ) -> Result<(), JitError> {
@@ -454,6 +458,25 @@ impl JitContext {
                     builder.def_var(dest_var, result);
                 }
 
+                // ── Outcome ops (Bậc A — pass-through) ─────────────────
+                //
+                // In Bậc A, every value is a single i64. There is no packed
+                // representation for Outcome<T, E> — the discriminant and
+                // payload are stored as separate MIR locals, and at the
+                // Cranelift level both are just i64 scalars.
+                //
+                // OutcomeDiscriminant / OutcomeUnwrap / OutcomeUnwrapError
+                // are therefore identity operations at this tier: they copy
+                // the source i64 to the destination i64 unchanged. Real
+                // bit-extraction (e.g., masking the top 2 bits for the
+                // Trit discriminant, shifting to extract the payload) is
+                // deferred to Bậc C when a packed ABI is introduced.
+                //
+                // For now, the type system and borrowck guarantee that an
+                // Outcome source local paired with OutcomeDiscriminant
+                // carries the discriminant value, so the pass-through is
+                // semantically correct — just not yet optimized to a
+                // compact representation.
                 Statement::OutcomeDiscriminant { dest, source, .. } => {
                     let disc_val = builder.use_var(self.var(source.local));
                     builder.def_var(self.var(dest.local), disc_val);
@@ -483,7 +506,7 @@ impl JitContext {
     /// Lower a block terminator.
     fn lower_block_terminator(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         body: &Body,
         block: BasicBlock,
     ) -> Result<(), JitError> {
@@ -666,7 +689,7 @@ impl Default for JitContext {
 /// All values are i64. Trilean-typed results use the encoding:
 ///   +1 = True, 0 = Unknown, -1 = False.
 fn lower_binop(
-    builder: &mut FunctionBuilder,
+    builder: &mut FunctionBuilder<'_>,
     op: BinOp,
     lhs: cranelift_codegen::ir::Value,
     rhs: cranelift_codegen::ir::Value,
@@ -1061,6 +1084,12 @@ mod tests {
 
     /// Outcome ops: compile a function that uses `OutcomeDiscriminant`
     /// to read the disc component of a split Outcome local.
+    ///
+    /// **Bậc A note:** Outcome ops are identity pass-through — they copy
+    /// the source i64 unchanged. This test verifies the pass-through
+    /// works correctly (Const(1) → OutcomeDiscriminant → 1). Real
+    /// bit-extraction for packed Outcome representation is deferred to
+    /// Bậc C.
     #[test]
     #[allow(unsafe_code)]
     fn outcome_discriminant_jit() {
@@ -1115,6 +1144,12 @@ mod tests {
 
     /// Outcome ABI: full caller-callee with Outcome return.
     /// Callee returns Outcome (2-value), caller calls and extracts disc.
+    ///
+    /// **Bậc A limitation:** only the first return value is passed through
+    /// the calling convention. The callee returns `[disc_val=1, payload_val=42]`
+    /// but only `disc_val` (values[0]) is returned by the function. The
+    /// caller correctly receives disc=1. Multi-value returns (both disc
+    /// AND payload) require Bậc C packed ABI or multi-register return.
     #[test]
     #[allow(unsafe_code)]
     fn outcome_caller_callee_jit() {

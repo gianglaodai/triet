@@ -23,10 +23,13 @@ When the author wants to ship something risky, your job is to say *"this will
 break in phase X because of Y — here's the ADR that proves it."*
 
 **Before every non-trivial change:**
-1. Check `spec/schema/triet-schema.json` — the single source of truth for types.
+1. Check `spec/schema/triet-schema.yaml` — the single source of truth for types.
 2. Check `spec/plans/` — the phase plans for the rewrite.
 3. Check `docs/decisions/` — ADRs that are still locked (language semantics, error codes, conventions).
 4. If the change touches types/AST/ownership, it MUST start from the schema.
+5. Check `crates/triet-syntax/src/generated/` — is there already a generated type
+   you should use instead of writing a hand-written duplicate?
+6. Check CLAUDE.md "Track B — non-negotiable rules" — these are enforced in review.
 
 ## Author–AI collaboration model
 
@@ -185,6 +188,72 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## Track B — non-negotiable rules (from mentor review, 2026-06-04)
+
+These rules were learned the hard way. Violating any of them will be called out
+in review. They apply to every Track B crate (lower, mir, borrowck, jit, driver).
+
+### 1. Compiler never panics on user input
+
+A compiler that panics is a script, not a compiler. Every function that processes
+user input MUST return `Result<T, LowerError>` (or equivalent). Use the error
+type to carry a `Span` so the driver can print a diagnostic.
+
+- `panic!()`, `unreachable!()`, `unwrap()`, `expect()` — **forbidden** in any
+  code path reachable from user input (lowerer, typecheck, borrowck, JIT).
+- Unsupported AST constructs → `Err(LowerError::unsupported_*(...))` with span.
+- Internal invariants (e.g., "block must have a terminator") → `Err`, not panic.
+
+### 2. Schema-first means schema MUST be used
+
+Generated code that nobody imports is **dead code**, not "documentation."
+Dead generated types are a bug — either wire them into the compiler or remove
+them from the schema.
+
+- Every `pub enum` / `pub struct` emitted by `codegen.py` must have at least
+  one consumer in the workspace.
+- The first type migrated (ReferenceForm, 2026-06-04) proves the pipeline works.
+  Future types should follow the same pattern: replace hand-written with
+  `pub use crate::generated::types::Foo`, add manual impls for missing traits.
+- Before adding a new type to the Rust source, check if the schema already
+  defines it. If yes, use the generated version.
+
+### 3. Soundness beats test color
+
+Green tests do not prove the code is correct. A soundness hole with all tests
+passing is worse than a failing test — it silently generates wrong code.
+
+- **Adversarial self-audit before claiming "done."** Ask: what invariants should
+  hold? What edge cases are untested? What assumptions are undocumented?
+- Borrowck specifically: `places_conflict` must be conservative. When uncertain
+  whether two places alias, **assume they do** (refuse over guess). Different
+  base locals are only provably disjoint for exclusive/strong references.
+- Every `conflicts_with` / `places_conflict` decision must trace to an S6 rule
+  in SPEC §10 or an ADR.
+
+### 4. No dead fields in MIR
+
+Every field in `Body` and every MIR data structure must be **populated** by
+the lowerer and **consumed** by at least one backend pass.
+
+- `struct_layouts: Vec<StructLayout>` was defined but always empty — dead code
+  with 4 passing tests. Fixed by populating from `Item::Struct` in the lowerer.
+- When adding a field to a MIR type, add the corresponding population logic
+  in the lowerer **in the same commit**. No "the backend will use this later"
+  without a producer.
+- `ReturnShape` must be extended to cover struct returns BEFORE the JIT needs
+  multi-value return — not after.
+
+### 5. Every `#[allow(...)]` must justify itself
+
+Suppressing warnings hides problems. The codegen `#![allow(unused_imports, missing_docs)]`
+was added because the generated code had unused imports and empty doc comments.
+The correct fix is to fix the codegen, not silence the warning.
+
+- `#[allow(...)]` in hand-written code → must have a comment explaining why.
+- `#[allow(...)]` in generated code → must be tracked as a codegen bug.
+- Goal: 0 warnings from `cargo check --workspace` (achieved 2026-06-04).
+
 ## Common commands
 
 ```bash
@@ -242,10 +311,11 @@ Tests must be **green before any commit**. The user's "stability over speed" pri
 Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-logic` (Trilean Łukasiewicz Ł3 / Kleene K3), `triet-syntax` (AST types + arena, schema-generated types in `src/generated/`).
 
 New crates (rewrite-specific):
-- `triet-mir` — flat, non-nested MIR with `Body`, `Statement`, `Terminator`, `ControlFlowGraph`, `StructLayout`. Independent of AST types.
-- `triet-lower` — AST→MIR lowering bridge. Consumes `triet-syntax` + `triet-typecheck`, produces `triet-mir::Body`.
-- `triet-borrowck` — NLL borrow checker with forward/backward dataflow over CFG. Liveness analysis + loan tracking + conflict detection. E24XX error codes.
-- `triet-jit` — Cranelift JIT compiler consuming MIR `Body` directly. Native codegen for scalars + structs. Shim only for heap types.
+- `triet-mir` — flat, non-nested MIR with `Body`, `Statement`, `Terminator`, `ControlFlowGraph`, `StructLayout`. Independent of AST types. Every field populated, no dead data.
+- `triet-lower` — AST→MIR lowering bridge. `lower_program() -> Result<Vec<Body>, LowerError>` — **0 panic!()**. Populates `StructLayout` from `Item::Struct`. Consumes `triet-syntax` + `triet-typecheck`.
+- `triet-borrowck` — NLL borrow checker with forward/backward dataflow over CFG. Liveness analysis + loan tracking + `places_conflict(conservative)` — conservative alias assumption for `&0`/`&-`. Error codes: E2420, E2440, **E2450**.
+- `triet-jit` — Cranelift JIT compiler consuming MIR `Body` directly. Native codegen for scalars + structs. Shim only for heap types. Bậc A: single i64 ABI (Outcome = pass-through).
+- `triet-driver` — Track B pipeline binary. `check` mode: parse→typecheck→lower→borrowck. `run` mode: +JIT compile+execute. Handles `Result` from all phases, exits with diagnostic on error.
 
 Legacy crates (still active for frontend + packaging):
 - `triet-lexer`, `triet-parser` — frontend, reused in rewrite
@@ -274,7 +344,7 @@ Legacy crates (still active for frontend + packaging):
 - `triet::modules::E21XX` — loader / resolver (E2100 cyclic, E2101 file-not-found, …)
 - `triet::capability::E22XX` — capability system (E2200-E2208)
 - `triet::pack::E23XX` — semver linker (v0.4)
-- `triet::borrow::E24XX` — borrow checker (E2400 lifetime / E2410 mutability / E2420 move / E2430 namespace / E2440 NLL / E2450+ drop) per ADR-0025
+- `triet::borrow::E24XX` — borrow checker (E2400 lifetime / E2410 mutability / E2420 move / E2430 namespace / E2440 NLL / E2450 DropWhileBorrowed) per ADR-0025. E2450 implemented 2026-06-04.
 - `triet::actor::E25XX` — actor/concurrency (E2500 Send / E2510 scope-ref / E2520 mutable-share / E2530+ reply/supervision) per ADR-0026
 
 All errors implement `miette::Diagnostic`. The CLI's `--json` flag also needs each variant in `parse_error_code` / `type_error_code` / `runtime_error_code` mappers trong `crates/triet-cli/src/main.rs` — keep them in sync khi adding variants.

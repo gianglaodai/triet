@@ -27,6 +27,8 @@
 //! - **E2420 UseAfterMove**: using a variable whose ownership was transferred.
 //! - **E2440 NllExclusivityViolation**: creating a conflicting borrow while
 //!   another borrow is still active on the same variable.
+//! - **E2450 DropWhileBorrowed**: dropping a variable that still has active
+//!   loans — the references would become dangling.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use triet_mir::{BasicBlock, Local, Place, Projection, ReferenceForm, Span, Statement, Terminator};
@@ -40,15 +42,25 @@ use crate::liveness::LivenessResult;
 
 /// Whether two places may refer to overlapping memory.
 ///
-/// Different base locals never alias (no pointer-aliasing analysis yet).
+/// When `conservative` is true, two places with **different base locals**
+/// are assumed to conflict — this is necessary for `&0` (shared) and `&-`
+/// (weak) borrows, where two distinct reference variables may point to
+/// the same allocation. Without pointer-alias analysis we cannot prove
+/// them disjoint, so we refuse over guess.
+///
+/// When `conservative` is false, different base locals are assumed
+/// disjoint — safe for `&+ mutable` (exclusive) strong borrows where
+/// the S6 system guarantees no aliasing, and for `BorrowExclusiveMutable`
+/// where the exclusivity guarantees no other mutable access.
+///
 /// With the same base, projections are compared step-by-step: two distinct
 /// **fields** (`obj.x` vs `obj.y`) are provably disjoint, so they do NOT
 /// conflict — this is what enables field-level NLL. Anything we cannot prove
 /// disjoint (a prefix relationship, an `Index`, or mismatched projection
 /// kinds) is treated as overlapping (refuse over guess).
-fn places_conflict(a: &Place, b: &Place) -> bool {
+fn places_conflict(a: &Place, b: &Place, conservative: bool) -> bool {
     if a.local != b.local {
-        return false;
+        return conservative;
     }
     for (pa, pb) in a.projection.iter().zip(b.projection.iter()) {
         match (pa, pb) {
@@ -99,7 +111,9 @@ impl Loan {
             ReferenceForm::WeakObserver => {
                 matches!(self.form, ReferenceForm::BorrowExclusiveMutable)
             }
-            ReferenceForm::StrongFrozen | ReferenceForm::StrongMutable => false,
+            // A strong (moving) borrow conflicts with ANY active loan — moving
+            // the value invalidates every reference that points into it.
+            ReferenceForm::StrongFrozen | ReferenceForm::StrongMutable => true,
         }
     }
 }
@@ -223,6 +237,23 @@ pub enum BorrowError {
         existing_loan_dest: Local,
         /// Source location of the conflicting borrow.
         #[label("conflicting borrow created here")]
+        span: Span,
+    },
+
+    /// E2450: Drop while borrowed — dropping a variable that still has
+    /// active loans would leave dangling references.
+    #[error("E2450: cannot drop `{name}` — it still has active borrows")]
+    #[diagnostic(
+        code(triet::borrow::E2450),
+        help("ensure all references to `{name}` have ended before dropping it")
+    )]
+    DropWhileBorrowed {
+        /// The variable being dropped while borrowed.
+        local: Local,
+        /// Human-readable variable name.
+        name: String,
+        /// Source location of the drop.
+        #[label("drop occurs here while borrows are still active")]
         span: Span,
     },
 }
@@ -415,8 +446,19 @@ fn process_block(
             } => {
                 // Check for conflicts with active loans (field-level: only
                 // overlapping places conflict — `obj.x` vs `obj.y` do not).
+                //
+                // Shared borrows (&0) and weak observers (&-) can alias —
+                // two different reference locals may point to the same
+                // allocation. Without alias analysis, be conservative:
+                // assume conflict when base locals differ.
+                let may_alias = matches!(
+                    *form,
+                    ReferenceForm::BorrowReadOnly | ReferenceForm::WeakObserver
+                );
                 for loan in &state.active_loans {
-                    if places_conflict(&loan.source, source) && loan.conflicts_with(*form) {
+                    if places_conflict(&loan.source, source, may_alias)
+                        && loan.conflicts_with(*form)
+                    {
                         errors.push(BorrowError::NllExclusivityViolation {
                             source_local: source.local,
                             source_name: place_name(source, names),
@@ -463,10 +505,13 @@ fn process_block(
                     });
                 }
 
+                // A move must conflict with ANY active loan — even on
+                // a different local, because a reference could alias
+                // the moved value. Conservative: assume overlap.
                 let conflicting = state
                     .active_loans
                     .iter()
-                    .find(|l| places_conflict(&l.source, source));
+                    .find(|l| places_conflict(&l.source, source, true));
                 if let Some(loan) = conflicting {
                     errors.push(BorrowError::NllExclusivityViolation {
                         source_local: source.local,
@@ -517,6 +562,21 @@ fn process_block(
             }
 
             Statement::Drop(l, span) => {
+                // Check for active loans on the dropped variable — dropping
+                // while borrows are still live would create dangling references.
+                let has_active_loans = state
+                    .active_loans
+                    .iter()
+                    .any(|loan| loan.source.local == *l);
+                if has_active_loans {
+                    let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
+                    errors.push(BorrowError::DropWhileBorrowed {
+                        local: *l,
+                        name: l_name,
+                        span: span.clone(),
+                    });
+                }
+
                 if state.var_states.get(l) == Some(&VarState::Moved) {
                     let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
                     errors.push(BorrowError::UseAfterMove {

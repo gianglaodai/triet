@@ -65,7 +65,13 @@ fn main() -> ExitCode {
     }
 
     // ── Phase 3: Lower to MIR ──
-    let bodies = triet_lower::lower_program(&program);
+    let bodies = match triet_lower::lower_program(&program) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("{path}: lowerer error: {e}");
+            return ExitCode::from(3);
+        }
+    };
 
     if bodies.is_empty() {
         eprintln!("{path}: no functions to compile");
