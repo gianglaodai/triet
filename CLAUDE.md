@@ -59,59 +59,73 @@ that gap by grounding every recommendation in the project's own documents.
 Triết is a balanced-ternary, AI-first programming language implemented in Rust.
 Long-term aim is OS-capable.
 
-**The codebase is in a TRANSITION period.** There are two tracks:
+**The codebase was REBUILT from the backend up on 2026-06-04.** A complete
+compiler shipped v0.2-v0.10 and was then **deleted** in a ground-up rewrite.
+Read the history honestly so you don't recommend against code that no longer exists.
 
-### Track A — LEGACY (shipped v0.2-v0.10, in `docs/`)
+### What was deleted (the v0.2-v0.10 compiler — gone, not "legacy-but-active")
 
-The existing compiler that works end-to-end: `parse → modules → typecheck →
-IR (53-opcode bytecode VM) → interpreter`. v0.10 shipped a Cranelift JIT
-backend using **delegate-to-VM shims** (36/43 builtin shims + multi-call
-codegen). ~1637 tests. This code is in `crates/triet-{lexer,parser,modules,
-typecheck,ir,interpreter,pack,cli}`.
+The shipped compiler ran `parse → modules → typecheck → IR (53-opcode bytecode
+VM) → interpreter`, with a delegate-to-VM Cranelift JIT (v0.11 reached 96% JIT
+coverage), a self-hosting `compiler/` (~23K LOC Triết-in-Triết), and ~1637 tests.
+On 2026-06-04 the backend was **purged**: `triet-ir`, `triet-interpreter`,
+`triet-bootstrap`, `triet-cli` crates + 5500 lines of JIT legacy were deleted
+permanently (git history retains them). **Do not assume any of these exist.**
 
-**`docs/` is LEGACY.** It documents the shipped v0.2-v0.10 journey:
-- `docs/ARCHITECTURE.md` — deep dive per phase, v0.2-v0.10
-- `docs/decisions/` — 36 ADRs (0001-0036), many still LOCKED for language semantics
-- `docs/plans/` — one legacy implementation plan (v0.7.9)
+> ⚠️ ORPHAN: `compiler/` (the self-host `.tri` sources) was NOT deleted but its
+> target IR/VM (`triet-ir`/`triet-interpreter`) WAS. It can no longer bootstrap.
+> Treat it as dead weight pending a decision, not as a working self-host.
 
-ADRs that lock language semantics (error codes, diagnostic format, Outcome
-design, Trilean! refinement, S6 reference forms, keyword conventions) **remain
-authoritative** — the rewrite does NOT change the language, only the compiler
-internals.
+**`docs/` is the HISTORICAL RECORD of the deleted compiler:**
+- `docs/ARCHITECTURE.md` — per-phase deep dive of the v0.2-v0.10 architecture
+  (describes code that no longer exists — read for *intent*, not current layout).
+- `docs/decisions/` — **38 ADRs (0001-0036)**. The ones that lock **language
+  semantics** (error codes, diagnostic format, Outcome, Trilean! refinement,
+  S6 reference forms, keyword conventions) **remain authoritative** — the rewrite
+  does NOT change the language, only the compiler internals. ADRs that describe
+  the deleted *architecture* (VM, bootstrap, old JIT shim ABI) are history.
+- `docs/plans/` — one legacy implementation plan (v0.7.9).
 
-### Track B — REWRITE (in `spec/`, target v1.0)
+### The current compiler (the rewrite — formerly "Track B")
 
-A **ground-up rebuild** of the compiler backend with a clean architecture:
+A single pipeline. Reused frontend + a new backend built from scratch:
 
 ```
 .tri source
     │
-    ▼  triet-lexer + triet-parser       AST (arena-based)      [REUSED from legacy]
-    ▼  triet-modules + triet-typecheck  typed AST              [REUSED from legacy]
+    ▼  triet-lexer + triet-parser       AST (arena-based)      [REUSED, well-tested]
+    ▼  triet-modules + triet-typecheck  typed AST              [REUSED, well-tested]
     ▼  triet-lower                      AST → MIR              [NEW]
     ▼  triet-mir                        flat non-nested IR     [NEW]
     ▼  triet-borrowck                   NLL dataflow analysis  [NEW]
-    ▼  triet-jit                        Cranelift native code  [NEW — rewritten]
+    ▼  triet-jit                        Cranelift native code  [NEW]
+    ▼  triet-driver                     pipeline binary        [NEW]
 ```
 
-Key differences from legacy:
-- **Schema-driven types:** `spec/schema/triet-schema.json` is the SINGLE SOURCE
+**Maturity (be honest about this — it is NOT a 96%-complete compiler):**
+the new backend compiles **scalar + arithmetic + logic-op** programs end-to-end
+(`main() → 42`, `2**10`, Ł3/K3 truth tables, recursive fib) and runs the NLL
+borrow checker. **NOT yet rebuilt:** aggregate types (String/Vector/HashMap/Enum/
+Struct literals all `Err` out of the lowerer), self-host, AOT cache, multi-value
+return, MIR verifier. Backend test count is ~22 (lower 3 + mir 4 + jit 15) — the
+1637-test safety net was deleted with the VM. Frontend tests (parser/typecheck/
+pack/modules) survive because the frontend was reused.
+
+Design principles of the rewrite:
+- **Schema-driven types:** `spec/schema/triet-schema.yaml` is the SINGLE SOURCE
   OF TRUTH for all type/AST/ownership definitions. Codegen produces Rust structs
   in `crates/triet-syntax/src/generated/`. Hand-editing generated files is
   FORBIDDEN.
 - **MIR layer:** Flat, non-nested IR with explicit CFG — purpose-built for
-  borrow checking and dataflow analysis. Replaces the old register-SSA IR.
-- **NLL borrow checker:** Polonius-style forward+backward dataflow on the CFG,
-  not the skeleton/shim approach of v0.8-v0.10.
-- **Native JIT from day 0:** Cranelift native codegen for scalars + structs.
-  Structs without heap pointers get native `StackSlot` allocation — no VM shim.
-  Only heap types (String, Vector, HashMap) delegate to runtime shims.
+  borrow checking and dataflow analysis.
+- **NLL borrow checker:** Polonius-style forward+backward dataflow on the CFG.
+- **Native JIT:** Cranelift codegen. Today every value is a single `i64`
+  (Bậc A); native struct `StackSlot` layout + heap-type shims are future work.
 - **Hardware Token capability:** ZST compile-time tokens enforced by the borrow
-  checker — zero runtime overhead. Complements (not replaces) the legacy
-  namespace policy layer.
+  checker — zero runtime overhead (design, not yet implemented).
 
-**`spec/` is the NEW DESIGN AUTHORITY:**
-- `spec/schema/triet-schema.json` — canonical type system + AST + S6 ownership
+**`spec/` is the DESIGN AUTHORITY for the rewrite:**
+- `spec/schema/triet-schema.yaml` — canonical type system + AST + S6 ownership
 - `spec/schema/codegen.py` — code generator (Rust now, Triết at v1.0)
 - `spec/plans/phase2-borrow-checker-design.md` — CFG + NLL dataflow design
 - `spec/plans/phase3-cranelift-backend.md` — Cranelift JIT/AOT architecture
@@ -119,15 +133,20 @@ Key differences from legacy:
 - `spec/plans/phase5-s6-integration.md` — S6 ownership pipeline integration
 - `spec/plans/phase6-capability-security.md` — Hardware Token ZST pattern
 
-### Source-of-truth docs (all tracks)
+### Source-of-truth docs
 
-- `SPEC.md` — language semantics (authoritative; header **v0.10**, S6 ownership §10 + Outcome §1.5.3 + Trilean! refinement + Atomic + Borrow Expression locked)
-- `VISION.md` — 5 architectural pillars + OS-capable trajectory
-- `ROADMAP.md` — phasing v0.2.x → v3.0 with version gates; v0.10 ✅ shipped
-- `TODO.md` — short-term sub-task tracker with commit hashes
-- `docs/decisions/` — **36 ADRs** — locked language semantics (preserved in rewrite)
-- `spec/schema/triet-schema.json` — **canonical type system** (new design authority)
-- `spec/plans/` — **phase designs** for the rewrite (new design authority)
+- `SPEC.md` — language semantics (authoritative for the LANGUAGE; header still
+  reads **v0.10** and describes the deleted compiler's state — the *semantics*
+  are current, the *implementation-status* claims are stale).
+- `VISION.md` — 5 architectural pillars + OS-capable trajectory.
+- `ROADMAP.md` — ⚠️ STALE: still says "v0.10 ✅ shipped" and `Cargo.toml` is
+  `0.10.0`; both describe the deleted compiler, not the rewrite's actual state.
+- `TODO.md` — ⚠️ STALE: tracks the deleted v0.11 JIT work; not the rewrite backlog.
+- `docs/decisions/` — **38 ADRs**; the language-semantics ones are preserved in
+  the rewrite, the architecture ones are history (see "What this is").
+- `spec/schema/triet-schema.yaml` — **canonical type system** (design authority).
+- `spec/plans/` — **phase designs** for the rewrite (design authority);
+  `spec/plans/REPORT-2026-06-04.md` is the most accurate current-state report.
 
 ## Development principles
 
@@ -266,32 +285,18 @@ cargo clippy --workspace --all-targets   # lint (workspace lints are strict — 
 cargo fmt --all                          # format
 
 # Run a .tri program (build the binary first)
+# The binary is `triet-driver` (the old `dao` CLI was deleted).
+# Only scalar/arithmetic/logic programs compile today — aggregate examples Err.
 cargo build --release
-./target/release/dao run examples/fizzbuzz.tri
-./target/release/dao check examples/fizzbuzz.tri    # parse+typecheck only
-./target/release/dao --json run examples/foo.tri    # machine-readable diagnostics
+./target/release/triet-driver examples/hello_jit.tri        # check: parse→typecheck→lower→borrowck
+./target/release/triet-driver run examples/hello_jit.tri    # run:   + JIT compile + execute → 42
 ```
 
 Tests must be **green before any commit**. The user's "stability over speed" principle is non-negotiable — do not bypass failing checks with `--no-verify`, `#[allow]`, or `#[ignore]`.
 
 ## Architecture
 
-### Legacy pipeline (shipped v0.2-v0.10)
-
-```
-.tri source
-    │
-    ▼  triet-lexer        tokens (logos-based)
-    ▼  triet-parser       AST (recursive descent + Pratt)
-    ▼  triet-modules      ResolvedProgram (loader + resolver)
-    ▼  triet-typecheck    type errors
-    ▼  triet-ir           register-SSA IR + lowerer + bytecode VM
-    ▼  triet-interpreter  tree-walking runtime values (dev tier)
-    ▼  triet-pack         .khi format + cross-package linker
-    ▼  triet-cli          binary, miette diagnostics, JSON output
-```
-
-### Rewrite pipeline (in progress — `spec/` designs, partial code)
+### Current pipeline (the only pipeline — the rewrite)
 
 ```
 .tri source
@@ -299,32 +304,44 @@ Tests must be **green before any commit**. The user's "stability over speed" pri
     ▼  triet-lexer        [REUSED] tokens (logos-based)
     ▼  triet-parser       [REUSED] AST (recursive descent + Pratt)
     ▼  triet-modules      [REUSED] ResolvedProgram (loader + resolver)
-    ▼  triet-typecheck    [REUSED] type errors
-    ▼  triet-lower        [NEW] AST → MIR lowering
+    ▼  triet-typecheck    [REUSED] type errors (BLOCKING — fatal on error)
+    ▼  triet-lower        [NEW] AST → MIR lowering (Result, 0 panic!())
     ▼  triet-mir          [NEW] flat non-nested IR + CFG
     ▼  triet-borrowck     [NEW] NLL dataflow borrow checker
-    ▼  triet-jit          [REWRITTEN] Cranelift native code (no VM shim)
-    ▼  triet-pack         [REUSED] .khi format + cross-package linker
-    ▼  triet-cli          [REUSED] binary, miette diagnostics, JSON output
+    ▼  triet-jit          [NEW] Cranelift native code (Bậc A: single-i64 ABI)
+    ▼  triet-driver       [NEW] pipeline binary (check / run modes)
 ```
+
+`triet-pack` (`.khi` format + cross-package linker) survives from the old
+compiler but is **not yet wired** into the new pipeline. `triet-ir`,
+`triet-interpreter`, `triet-bootstrap`, `triet-cli` were **deleted** — do not
+reference them.
+
+The 13 live crates: `triet-core`, `triet-logic`, `triet-syntax` (foundation);
+`triet-lexer`, `triet-parser`, `triet-modules`, `triet-typecheck` (reused
+frontend); `triet-lower`, `triet-mir`, `triet-borrowck`, `triet-jit`,
+`triet-driver` (new backend); `triet-pack` (packaging, unwired).
 
 Foundation crates: `triet-core` (Trit/Tryte/Integer/Long arithmetic), `triet-logic` (Trilean Łukasiewicz Ł3 / Kleene K3), `triet-syntax` (AST types + arena, schema-generated types in `src/generated/`).
 
-New crates (rewrite-specific):
+New backend crates:
 - `triet-mir` — flat, non-nested MIR with `Body`, `Statement`, `Terminator`, `ControlFlowGraph`, `StructLayout`. Independent of AST types. Every field populated, no dead data.
 - `triet-lower` — AST→MIR lowering bridge. `lower_program() -> Result<Vec<Body>, LowerError>` — **0 panic!()**. Populates `StructLayout` from `Item::Struct`. Consumes `triet-syntax` + `triet-typecheck`.
 - `triet-borrowck` — NLL borrow checker with forward/backward dataflow over CFG. Liveness analysis + loan tracking + `places_conflict(conservative)` — conservative alias assumption for `&0`/`&-`. Error codes: E2420, E2440, **E2450**.
-- `triet-jit` — Cranelift JIT compiler consuming MIR `Body` directly. Native codegen for scalars + structs. Shim only for heap types. Bậc A: single i64 ABI (Outcome = pass-through).
-- `triet-driver` — Track B pipeline binary. `check` mode: parse→typecheck→lower→borrowck. `run` mode: +JIT compile+execute. Handles `Result` from all phases, exits with diagnostic on error.
+- `triet-jit` — Cranelift JIT compiler consuming MIR `Body` directly. Bậc A: single i64 ABI (every value is one `i64`; aggregates/Outcome are pass-through, NOT yet correctly extracted — see the soundness note below). Native struct layout + heap-type shims are future work.
+- `triet-driver` — pipeline binary. `check` mode: parse→typecheck→lower→borrowck. `run` mode: +JIT compile+execute. Handles `Result` from all phases, exits with diagnostic on error.
 
-Legacy crates (still active for frontend + packaging):
-- `triet-lexer`, `triet-parser` — frontend, reused in rewrite
-- `triet-modules`, `triet-typecheck` — name resolution + type checking, reused
-- `triet-ir`, `triet-interpreter` — old IR + VM, being replaced by MIR+JIT
-- `triet-pack`, `triet-cli` — packaging + binary, reused
-- `triet-bootstrap` — self-hosting bootstrap tests
+> ⚠️ KNOWN SOUNDNESS DEBT (2026-06-04): the JIT's Outcome ops
+> (`OutcomeDiscriminant`/`OutcomeUnwrap`/`OutcomeUnwrapError`) are all identity
+> copies of the same i64 — a latent miscompile that is harmless ONLY because the
+> lowerer cannot yet produce real `~+`/`~-` Outcome values. When aggregate
+> lowering lands, these must become a tier-down/`Err`, not a silent copy. There
+> is no MIR verifier, and `execute_main` ignores `main` parameters. See
+> `spec/plans/REPORT-2026-06-04.md` §5 for the full 15-item debt list.
 
-**Shipped phase summary** (LEGACY — preserved for context; deep dive ở [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)):
+**Historical phase summary** — describes the DELETED v0.2-v0.10 compiler.
+Kept for ADR/intent context only; the crates and architecture below **no longer
+exist** (deep dive ở [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)):
 
 - **Arena-based AST** — `triet-syntax` allocates `Expr`/`Stmt`/`Pattern`/`TypeExpr` trong typed sub-arenas. Nodes giữ `*Id` handles, không `Box<T>`. Đi qua `arena.expression(id)`; **không fabricate IDs**.
 - **v0.2.x Module system** (ADR-0005 locked) — multi-arena `ResolvedProgram`, dot paths, Python-style imports, stdlib từ filesystem. **Locked rules**: single-file = crate root; inline ≡ file-bound for path resolution.
@@ -340,14 +357,14 @@ Legacy crates (still active for frontend + packaging):
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
 - `triet::typecheck::E10XX` — type checker (E1024-E1032 + E1037-E1039 ADR-0020 Outcome; E1033/E1034 ADR-0021 Trilean!)
-- `triet::runtime::E20XX` — interpreter
+- `triet::runtime::E20XX` — interpreter (DELETED crate; codes reserved, no live emitter)
 - `triet::modules::E21XX` — loader / resolver (E2100 cyclic, E2101 file-not-found, …)
 - `triet::capability::E22XX` — capability system (E2200-E2208)
 - `triet::pack::E23XX` — semver linker (v0.4)
 - `triet::borrow::E24XX` — borrow checker (E2400 lifetime / E2410 mutability / E2420 move / E2430 namespace / E2440 NLL / E2450 DropWhileBorrowed) per ADR-0025. E2450 implemented 2026-06-04.
 - `triet::actor::E25XX` — actor/concurrency (E2500 Send / E2510 scope-ref / E2520 mutable-share / E2530+ reply/supervision) per ADR-0026
 
-All errors implement `miette::Diagnostic`. The CLI's `--json` flag also needs each variant in `parse_error_code` / `type_error_code` / `runtime_error_code` mappers trong `crates/triet-cli/src/main.rs` — keep them in sync khi adding variants.
+All errors implement `miette::Diagnostic`. (The old `triet-cli` `--json` mapper layer was deleted with the CLI; `triet-driver` prints miette reports directly and has no JSON mode yet. If/when JSON output returns, the error-code mapper discipline applies again.)
 
 **Diagnostic format:** all error/warning text follows the canonical AI-first format locked in [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) — header `EXXXX ErrorName` + body + optional span block + optional `[Fix N]` numbered fix blocks với imperative `Change/Wrap/Use/Add/Replace/Move X to Y`. Pure ASCII, no diff `-/+`.
 
@@ -388,7 +405,7 @@ Reserved namespace roots (cannot be user identifiers): `std`, `sys`, `dev`, `usr
 
 ## Schema-first discipline (NON-NEGOTIABLE)
 
-**`spec/schema/triet-schema.json` is the SINGLE SOURCE OF TRUTH** for all type
+**`spec/schema/triet-schema.yaml` is the SINGLE SOURCE OF TRUTH** for all type
 definitions, AST node shapes, and ownership semantics.
 
 Rules (from `spec/schema/README.md`):
@@ -403,10 +420,10 @@ Rules (from `spec/schema/README.md`):
 
 ```bash
 # Regenerate Rust sources after schema changes
-python3 spec/schema/codegen.py --target rust --schema spec/schema/triet-schema.json
+python3 spec/schema/codegen.py --target rust --schema spec/schema/triet-schema.yaml
 
 # Validate schema consistency
-python3 spec/schema/codegen.py --validate spec/schema/triet-schema.json
+python3 spec/schema/codegen.py --validate spec/schema/triet-schema.yaml
 ```
 
 If you find yourself wanting to add a field to `Type` or a variant to `Expr`
@@ -429,27 +446,29 @@ When a decision affects future architecture (module shape, ABI, type system), wr
 
 ## Examples
 
-Sample programs in `examples/*.tri` exercise specific features. Useful as smoke tests when changing parser/typecheck/interpreter:
+`examples/*.tri` is a MIX of survivors from the deleted VM-era compiler and new
+driver smoke tests. **Most old examples do NOT run on `triet-driver` yet** — they
+use String/Vector/Enum/Struct, which the new lowerer rejects. Do not treat a
+failed old example as a regression.
 
+Known-good on the current driver (scalar/arith/logic only):
 ```bash
-for f in examples/*.tri; do ./target/release/dao run "$f" || echo "FAILED: $f"; done
+./target/release/triet-driver run examples/hello_jit.tri        # → 42
+./target/release/triet-driver run examples/test_pow.tri         # → 1024
+./target/release/triet-driver run examples/test_pow_complex.tri # → 1267
+./target/release/triet-driver examples/test_borrow.tri          # → E2440 borrow error (miette)
 ```
 
-Demos at v0.8 close: **14 single-file examples** in `examples/` (fizzbuzz, factorial, measles_risk, lukasiewicz_vs_kleene, counter, long_arithmetic, enumerate, nullable, while_polling, maybe, generic, generic_function — all 12/12 byte-identical interpreter vs VM for the v0.7.4.2 cohort; plus `outcome_propagate.tri` VM-only per ADR-0019 Addendum §A7 interpreter parity gap; plus `while_true_loop.tri` infinite-loop negative fixture). **1 multi-file example dir** `examples/atomic_counter/` (v0.8 ownership + capability declaration demo — `&+ Atomic<T>` parses, `dao check` + `dao run` work end-to-end; Atomic operations là declaration-only per ADR-0026 §3 — full implementation ship v0.9 ADR-0028). Demos: `demos/02-module-system/` (704-line ternary ALU), `demos/04-capability-system/` (illustrative + capstone test `crates/triet-typecheck/tests/capability_pipeline.rs` 12 integration tests), `demos/05-error-handling/` (v0.7.4.3-error outcome capstone, VM-only per `README.md`). Cross-package linker demo (`crates/triet-pack/tests/cross_package_demo.rs` — 7 tests), shared-loading CAS dedup demo (`shared_loading.rs` — 4 tests), store CLI smoke (`store_cli.rs` — 8 tests). Bootstrap test infrastructure (`crates/triet-bootstrap/tests/`): determinism gate + stdlib stub VM round-trips + `lexer_self_smoke.rs` covering ownership tokens per v0.8.x.review.3.
+Old VM-era examples (`fizzbuzz`, `factorial`, `measles_risk`, `nullable`,
+`generic`, `atomic_counter/`, …) and the `demos/` dirs were written for the
+deleted interpreter/VM and the byte-identical interpreter-vs-VM differential
+harness. They are **stale fixtures** until aggregate lowering is rebuilt —
+either re-validate or prune them when that work lands.
 
-**Post-v0.5 audit** (`v0.5.x.review`, ADR-0015 Addendum): `Resolution.origin` is the 3-state `ResolutionOrigin { Lockfile, IfacePin, Fresh }` enum, not a bool — capability gates in v0.6 dispatch on it (proven via `OriginMatcher` lookup keys in `dao.policy`). `Store::gc()` is **conservative under manifest corruption**: `GcReport.corrupt_pkgs` flags unreadable manifests and suppresses mod + term sweeps to avoid orphaning their deps (VISION §6 *Refuse over guess*).
-
-**Post-v0.6 audit** (`v0.6.x.review`, ADR-0018 Addendum): Capability layer monotonicity invariant (ADR-0017 §5) pinned under `PolicyRules` mutation. DevTtyPrompt G/D path round-trip pinned. Linker requester-sort proved with non-alphabetical insertion. Strict parser positional contracts pinned for the negative case.
-
-**Post-v0.7.4.2 audit** (`v0.7.x.docs-audit`, 2026-05-18): cross-doc consistency sweep after 9-commit v0.7 series — fixed stale state declarations, ADR cross-refs, broken anchor refs, version drift. 1129 tests workspace-wide.
-
-**Post-v0.8 audit** (`v0.8.x.review`, 2026-05-28): 6-phase audit after Release v0.8.0 commit (`78f2402`) shipped with ADR-0009 gate B leftover. Fixes:
-- v0.8.x.review.1 — 3 clippy errors in `resolver.rs` (ambient-module fallback) + 21 `cargo fmt` files (gate B Hygiene).
-- v0.8.x.review.2 — E25XX namespace correction `triet::borrow::` → `triet::actor::` (E2500/E2510/E2520) per ADR-0026 v2 + namespace table.
-- v0.8.x.review.3 — `compiler/parser/lexer.tri` ports ownership tokens `&+`/`&0`/`&-`/`&` (v0.8.12 paperwork-vs-reality gap closed).
-- v0.8.x.review.4 — doc sync (CLAUDE.md/README.md/docs/decisions/README.md/ROADMAP.md/ADR status promote).
-- v0.8.x.review.5 — root scratch cleanup + `.gitignore` tightening.
-- 1425 tests workspace-wide (ROADMAP estimate ~1550 — BYOS revert cut scope per design).
+> The "Post-v0.5 … Post-v0.8 audit" notes that used to live here documented the
+> DELETED compiler's audit history. They are preserved in git history and in
+> `docs/`; they no longer describe live code, so they were removed from this file
+> to stop misleading fresh sessions.
 
 ## graphify
 
