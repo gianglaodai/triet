@@ -77,14 +77,16 @@ permanently (git history retains them). **Do not assume any of these exist.**
 > Treat it as dead weight pending a decision, not as a working self-host.
 
 **`docs/` is the HISTORICAL RECORD of the deleted compiler:**
-- `docs/ARCHITECTURE.md` — per-phase deep dive of the v0.2-v0.10 architecture
-  (describes code that no longer exists — read for *intent*, not current layout).
-- `docs/decisions/` — **38 ADRs (0001-0036)**. The ones that lock **language
+- `docs/ARCHIVE.md` — **single reference digest** of the deleted v0.2-v0.10
+  architecture + a **classified catalog of all 36 ADRs** (LIVE / TOOLING /
+  HISTORICAL). The old `docs/ARCHITECTURE.md` + `docs/plans/` were folded into
+  this and removed (full text in git history). Read for *intent*, not layout.
+- `docs/decisions/` — **36 ADRs (0001-0036)**. The ones that lock **language
   semantics** (error codes, diagnostic format, Outcome, Trilean! refinement,
   S6 reference forms, keyword conventions) **remain authoritative** — the rewrite
   does NOT change the language, only the compiler internals. ADRs that describe
   the deleted *architecture* (VM, bootstrap, old JIT shim ABI) are history.
-- `docs/plans/` — one legacy implementation plan (v0.7.9).
+  See `docs/ARCHIVE.md` §2 for the live/dead tag on each ADR.
 
 ### The current compiler (the rewrite — formerly "Track B")
 
@@ -341,7 +343,7 @@ New backend crates:
 
 **Historical phase summary** — describes the DELETED v0.2-v0.10 compiler.
 Kept for ADR/intent context only; the crates and architecture below **no longer
-exist** (deep dive ở [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)):
+exist** (deep dive ở [`docs/ARCHIVE.md`](docs/ARCHIVE.md)):
 
 - **Arena-based AST** — `triet-syntax` allocates `Expr`/`Stmt`/`Pattern`/`TypeExpr` trong typed sub-arenas. Nodes giữ `*Id` handles, không `Box<T>`. Đi qua `arena.expression(id)`; **không fabricate IDs**.
 - **v0.2.x Module system** (ADR-0005 locked) — multi-arena `ResolvedProgram`, dot paths, Python-style imports, stdlib từ filesystem. **Locked rules**: single-file = crate root; inline ≡ file-bound for path resolution.
