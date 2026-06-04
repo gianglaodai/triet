@@ -1,0 +1,16 @@
+// EXPECT: 42
+// LATENT BORROWCK GUARD: double `&0 mutable` borrow on the same
+// variable SHOULD be rejected (E2440 at MIR level, or typecheck
+// BorrowExclusivityViolation). Currently NEITHER catches this
+// through the real pipeline:
+// - typecheck borrow_check is not wired into check()
+// - MIR borrowck may not see the conflict through lowerer output
+// When fixed, change to: // ERROR: E2440
+function demo(vga: Integer) -> Integer {
+    let a = &0 mutable vga;
+    let b = &0 mutable vga;
+    return 42;
+}
+function main() -> Integer {
+    return demo(42);
+}

@@ -1,0 +1,14 @@
+// EXPECT: 10
+// LATENT E2450 guard: currently the lowerer does not emit Drop for
+// parameters, so E2450 (DropWhileBorrowed) is not reachable through
+// the real pipeline. When the lowerer starts emitting Drop statements
+// for borrowed locals, change this directive to:
+//   // ERROR: E2450
+// and verify the borrowck catches the drop-while-borrowed pattern.
+function demo(x: Integer) -> Integer {
+    let r = &0 x;
+    return x;
+}
+function main() -> Integer {
+    return demo(10);
+}

@@ -1,0 +1,5 @@
+// EXPECT: 2
+// Integer division: 10 / 4 = 2 (truncates toward zero)
+function main() -> Integer {
+    return 10 / 4;
+}

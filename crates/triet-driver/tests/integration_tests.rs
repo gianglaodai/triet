@@ -17,14 +17,26 @@ use std::path::Path;
 
 use triet_jit::mir_lower::{CompiledFunction, JitContext, ShimSymbol};
 
-/// Parse the first line of a `.tri` file, expecting `// EXPECT: <value>`.
-/// Returns the expected i64 value.
-fn parse_expected(source: &str) -> Option<i64> {
+/// What the test expects: either a successful run with a specific output,
+/// or a pipeline error containing a specific substring.
+enum Expected {
+    /// Pipeline must succeed and `main()` must return this value.
+    Value(i64),
+    /// Pipeline must fail (at any phase) with this substring in the error.
+    Error(String),
+}
+
+/// Parse the first line of a `.tri` file for a test directive.
+/// Supports `// EXPECT: <value>` (positive) or `// ERROR: <code>` (negative).
+fn parse_directive(source: &str) -> Option<Expected> {
     let first_line = source.lines().next()?;
-    let expect_prefix = "// EXPECT: ";
-    first_line
-        .strip_prefix(expect_prefix)
-        .and_then(|s| s.trim().parse::<i64>().ok())
+    if let Some(val) = first_line.strip_prefix("// EXPECT: ") {
+        val.trim().parse::<i64>().ok().map(Expected::Value)
+    } else if let Some(code) = first_line.strip_prefix("// ERROR: ") {
+        Some(Expected::Error(code.trim().to_string()))
+    } else {
+        None
+    }
 }
 
 /// Run one `.tri` file through the full pipeline and return the i64 result.
@@ -117,25 +129,51 @@ fn integration_test_corpus() {
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
         let source = fs::read_to_string(&path).expect("failed to read fixture");
 
-        let expected = match parse_expected(&source) {
+        let expected = match parse_directive(&source) {
             Some(v) => v,
             None => {
-                failed.push((file_name, "missing or invalid // EXPECT: comment".into()));
+                failed.push((
+                    file_name,
+                    "missing or invalid directive (use // EXPECT: <value> or // ERROR: <code>)"
+                        .into(),
+                ));
                 continue;
             }
         };
 
-        match run_fixture(&source) {
-            Ok(actual) if actual == expected => {
-                passed += 1;
-                eprintln!("  PASS {file_name} → {actual}");
-            }
-            Ok(actual) => {
-                failed.push((file_name, format!("expected {expected}, got {actual}")));
-            }
-            Err(e) => {
-                failed.push((file_name, e));
-            }
+        match expected {
+            Expected::Value(val) => match run_fixture(&source) {
+                Ok(actual) if actual == val => {
+                    passed += 1;
+                    eprintln!("  PASS {file_name} → {actual}");
+                }
+                Ok(actual) => {
+                    failed.push((file_name, format!("expected {val}, got {actual}")));
+                }
+                Err(e) => {
+                    failed.push((file_name, format!("expected {val}, got error: {e}")));
+                }
+            },
+            Expected::Error(code) => match run_fixture(&source) {
+                Ok(actual) => {
+                    failed.push((
+                        file_name,
+                        format!(
+                            "expected error containing '{code}', but pipeline succeeded with {actual}"
+                        ),
+                    ));
+                }
+                Err(e) if e.contains(&code) => {
+                    passed += 1;
+                    eprintln!("  PASS {file_name} → error matches '{code}'");
+                }
+                Err(e) => {
+                    failed.push((
+                        file_name,
+                        format!("expected error containing '{code}', got: {e}"),
+                    ));
+                }
+            },
         }
     }
 

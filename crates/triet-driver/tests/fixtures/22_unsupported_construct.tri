@@ -1,0 +1,6 @@
+// ERROR: String
+// String literals are not yet supported by the lowerer.
+function main() -> Integer {
+    let msg = "hello";
+    return 42;
+}
