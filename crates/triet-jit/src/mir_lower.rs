@@ -13,7 +13,7 @@
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::I64;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature, StackSlotData, StackSlotKind};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -22,7 +22,8 @@ use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use triet_mir::DUMMY_SPAN;
 use triet_mir::{
-    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, Local, Statement, Terminator,
+    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, Local, Place, Projection,
+    ReturnShape, Statement, StructLayout, Terminator,
 };
 
 // ── Errors ──────────────────────────────────────────────────
@@ -154,9 +155,11 @@ impl ShimSymbol {
 pub struct JitContext {
     module: JITModule,
     /// Map from MIR Local to Cranelift Variable (one per MIR local).
-    /// Bậc A: every value is a single i64 — scalars unboxed, aggregates as
-    /// opaque i64 pointers to VM heap objects. No split disc/payload for Outcome.
+    /// Bậc A: every value is a single i64 — scalars unboxed.
     locals: HashMap<Local, Variable>,
+    /// Map from MIR Local to Cranelift StackSlot + struct layout.
+    /// Struct locals use StackSlots; fields accessed via stack_load/store.
+    struct_slots: HashMap<Local, (cranelift_codegen::ir::StackSlot, StructLayout)>,
     /// Map from MIR `BasicBlock` to Cranelift Block.
     blocks: HashMap<BasicBlock, cranelift_codegen::ir::Block>,
     /// Blocks that have been sealed.
@@ -174,6 +177,118 @@ impl JitContext {
     /// Bậc A: one Cranelift Variable per MIR Local — everything is i64.
     fn var(&self, l: Local) -> Variable {
         Variable::from_u32(l.0 as u32)
+    }
+
+    /// Load the Cranelift Value for a MIR Place.
+    /// Plain locals → use_var. Field projections → stack_load (local struct)
+    /// or load through pointer (param/sret struct).
+    fn load_place(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        place: &Place,
+    ) -> Result<cranelift_codegen::ir::Value, JitError> {
+        if place.projection.is_empty() {
+            return Ok(builder.use_var(self.var(place.local)));
+        }
+        if place.projection.len() != 1 {
+            return Err(JitError::Unsupported(
+                "nested projections not supported".into(),
+            ));
+        }
+        if let Projection::Field(field_name) = &place.projection[0] {
+            let ty = &body.local_decls[place.local.0].ty;
+            let layout = body
+                .struct_layouts
+                .iter()
+                .find(|l| l.name == *ty)
+                .ok_or_else(|| {
+                    JitError::Unsupported(format!(
+                        "type '{ty}' is not a known struct (local {})",
+                        place.local
+                    ))
+                })?;
+            let field = layout
+                .fields
+                .iter()
+                .find(|f| f.name == *field_name)
+                .ok_or_else(|| {
+                    JitError::Unsupported(format!(
+                        "field '{field_name}' not found in struct '{ty}'"
+                    ))
+                })?;
+            let offset = i32::try_from(field.offset)
+                .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
+            if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+                return Ok(builder.ins().stack_load(I64, *slot, offset));
+            }
+            // Pointer-based: param or sret. Load pointer, add offset, load.
+            let ptr = builder.use_var(self.var(place.local));
+            let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
+            return Ok(builder
+                .ins()
+                .load(I64, cranelift_codegen::ir::MemFlags::new(), addr, 0));
+        }
+        Err(JitError::Unsupported(
+            "non-Field projections not supported".into(),
+        ))
+    }
+
+    /// Store a Cranelift Value into a MIR Place.
+    fn store_place(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        place: &Place,
+        value: cranelift_codegen::ir::Value,
+    ) -> Result<(), JitError> {
+        if place.projection.is_empty() {
+            builder.def_var(self.var(place.local), value);
+            return Ok(());
+        }
+        if place.projection.len() != 1 {
+            return Err(JitError::Unsupported(
+                "nested projections not supported".into(),
+            ));
+        }
+        if let Projection::Field(field_name) = &place.projection[0] {
+            let ty = &body.local_decls[place.local.0].ty;
+            let layout = body
+                .struct_layouts
+                .iter()
+                .find(|l| l.name == *ty)
+                .ok_or_else(|| {
+                    JitError::Unsupported(format!(
+                        "type '{ty}' is not a known struct (local {})",
+                        place.local
+                    ))
+                })?;
+            let field = layout
+                .fields
+                .iter()
+                .find(|f| f.name == *field_name)
+                .ok_or_else(|| {
+                    JitError::Unsupported(format!(
+                        "field '{field_name}' not found in struct '{ty}'"
+                    ))
+                })?;
+            let offset = i32::try_from(field.offset)
+                .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
+            if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+                builder.ins().stack_store(value, *slot, offset);
+                return Ok(());
+            }
+            // Pointer-based: load pointer, add offset, store.
+            let ptr = builder.use_var(self.var(place.local));
+            let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
+            builder
+                .ins()
+                .store(cranelift_codegen::ir::MemFlags::new(), value, addr, 0);
+            return Ok(());
+        }
+        Err(JitError::Unsupported(
+            "non-Field projections not supported".into(),
+        ))
     }
 
     /// Create a new JIT context with host ISA detection (no shims).
@@ -207,6 +322,7 @@ impl JitContext {
         Self {
             module,
             locals: HashMap::new(),
+            struct_slots: HashMap::new(),
             blocks: HashMap::new(),
             sealed: HashSet::new(),
             filled: HashSet::new(),
@@ -241,12 +357,19 @@ impl JitContext {
 
         for body in bodies {
             let mut sig = Signature::new(CallConv::SystemV);
+            let is_sret = matches!(
+                body.signature.return_shape,
+                triet_mir::ReturnShape::Struct { .. }
+            );
+            if is_sret {
+                sig.params.push(AbiParam::new(I64));
+            }
             for _ in &body.signature.params {
                 sig.params.push(AbiParam::new(I64));
             }
-            // Bậc A: every function returns a single i64. Aggregates
-            // (including Outcome) are opaque i64 pointers to VM heap objects.
-            sig.returns.push(AbiParam::new(I64));
+            if !is_sret {
+                sig.returns.push(AbiParam::new(I64));
+            }
 
             let func_id = self
                 .module
@@ -261,12 +384,20 @@ impl JitContext {
         let mut contexts: Vec<cranelift_codegen::Context> = Vec::new();
         for body in bodies {
             let mut cl_ctx = self.module.make_context();
+            let is_sret = matches!(
+                body.signature.return_shape,
+                triet_mir::ReturnShape::Struct { .. }
+            );
             cl_ctx.func.signature = Signature::new(CallConv::SystemV);
+            if is_sret {
+                cl_ctx.func.signature.params.push(AbiParam::new(I64));
+            }
             for _ in &body.signature.params {
                 cl_ctx.func.signature.params.push(AbiParam::new(I64));
             }
-            // Bậc A: single i64 return for all functions
-            cl_ctx.func.signature.returns.push(AbiParam::new(I64));
+            if !is_sret {
+                cl_ctx.func.signature.returns.push(AbiParam::new(I64));
+            }
 
             let mut fn_builder_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut cl_ctx.func, &mut fn_builder_ctx);
@@ -308,11 +439,36 @@ impl JitContext {
     ) -> Result<(), JitError> {
         let cfg = body.build_cfg();
 
-        // ── Declare variables (1 per MIR local, Bậc A: all i64) ──
+        // ── Declare variables ──
         self.locals.clear();
+        self.struct_slots.clear();
         for i in 0..body.num_locals {
             let var = builder.declare_var(I64);
             self.locals.insert(Local(i), var);
+        }
+        // ── Create StackSlots for local structs ──
+        for block in &body.blocks {
+            for stmt in &block.statements {
+                if let Statement::StructAlloc {
+                    dest, struct_name, ..
+                } = stmt
+                {
+                    let layout = body
+                        .struct_layouts
+                        .iter()
+                        .find(|l| l.name == *struct_name)
+                        .ok_or_else(|| {
+                            JitError::Unsupported(format!("struct layout not found: {struct_name}"))
+                        })?;
+                    let align_shift = layout.alignment.ilog2() as u8;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        layout.total_size as u32,
+                        align_shift,
+                    ));
+                    self.struct_slots.insert(*dest, (slot, layout.clone()));
+                }
+            }
         }
 
         // Pre-declare blocks
@@ -330,13 +486,25 @@ impl JitContext {
             }
         }
 
-        // Entry block: params → var slots
+        // Entry block: params → var slots. sret: block param[0] → Local(0).
+        let is_sret = matches!(
+            body.signature.return_shape,
+            triet_mir::ReturnShape::Struct { .. }
+        );
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
+        let mut bp_idx = 0;
+        if is_sret {
+            let sret_val = builder.block_params(entry_block)[0];
+            builder.def_var(self.var(Local(0)), sret_val);
+            bp_idx = 1;
+        }
         for (i, _) in body.signature.params.iter().enumerate() {
-            let var = self.var(Local(i));
-            let param_val = builder.block_params(entry_block)[i];
+            let local = if is_sret { Local(i + 1) } else { Local(i) };
+            let var = self.var(local);
+            let param_val = builder.block_params(entry_block)[bp_idx];
             builder.def_var(var, param_val);
+            bp_idx += 1;
         }
         builder.seal_block(entry_block);
         self.sealed.insert(cfg.entry);
@@ -438,10 +606,8 @@ impl JitContext {
                 }
 
                 Statement::Assign { dest, source, .. } => {
-                    let src_var = self.var(source.local);
-                    let val = builder.use_var(src_var);
-                    let dest_var = self.var(dest.local);
-                    builder.def_var(dest_var, val);
+                    let val = self.load_place(builder, body, source)?;
+                    self.store_place(builder, body, dest, val)?;
                 }
 
                 Statement::Borrow { dest, source, .. } => {
@@ -459,14 +625,10 @@ impl JitContext {
                     right,
                     ..
                 } => {
-                    let l_var = self.var(left.local);
-                    let r_var = self.var(right.local);
-                    let lhs = builder.use_var(l_var);
-                    let rhs = builder.use_var(r_var);
-
+                    let lhs = self.load_place(builder, body, left)?;
+                    let rhs = self.load_place(builder, body, right)?;
                     let result = lower_binop(builder, *op, lhs, rhs);
-                    let dest_var = self.var(dest.local);
-                    builder.def_var(dest_var, result);
+                    self.store_place(builder, body, dest, result)?;
                 }
 
                 // ── Outcome ops (provably unreachable through real pipeline) ─
@@ -524,25 +686,24 @@ impl JitContext {
 
         match &block_data.terminator {
             Terminator::Return { values, .. } => {
-                // Bậc A: single i64 return. Multi-value return (BinaryOutcome,
-                // TernaryOutcome, struct returns) is deferred to Bậc C.
-                // Refuse over guess — returning only the first value would
-                // silently drop the second, which is a miscompile.
                 if values.len() > 1 {
                     return Err(JitError::Unsupported(
-                        "multi-value return requires Bậc C packed ABI; \
-                         Bậc A only supports single i64 returns. \
-                         The function's ReturnShape asks for more than one \
-                         return value, but the JIT cannot yet pack them."
-                            .into(),
+                        "multi-value return requires Bậc C packed ABI".into(),
                     ));
                 }
-                let val = if values.is_empty() {
-                    builder.ins().iconst(I64, 0)
+                let is_sret_ret = matches!(
+                    body.signature.return_shape,
+                    triet_mir::ReturnShape::Struct { .. }
+                );
+                if is_sret_ret {
+                    builder.ins().return_(&[]);
+                } else if values.is_empty() {
+                    let val = builder.ins().iconst(I64, 0);
+                    builder.ins().return_(&[val]);
                 } else {
-                    builder.use_var(self.var(values[0]))
-                };
-                builder.ins().return_(&[val]);
+                    let val = builder.use_var(self.var(values[0]));
+                    builder.ins().return_(&[val]);
+                }
             }
 
             Terminator::Goto { target, .. } => {
@@ -594,8 +755,10 @@ impl JitContext {
                 args,
                 return_bb,
                 dest,
+                return_shape,
                 ..
             } => {
+                let is_sret_call = matches!(return_shape, triet_mir::ReturnShape::Struct { .. });
                 match target {
                     CallTarget::Jit => {
                         // Look up callee's FuncId
@@ -612,12 +775,16 @@ impl JitContext {
                         // Import callee into current function
                         let func_ref = self.module.declare_func_in_func(callee_id, builder.func);
 
-                        // Prepare arguments
+                        // Prepare arguments. Struct locals → stack_addr; scalars → use_var.
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
-                                let var = self.var(*a);
-                                builder.use_var(var)
+                                if let Some((slot, _)) = self.struct_slots.get(a) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    let var = self.var(*a);
+                                    builder.use_var(var)
+                                }
                             })
                             .collect();
 
@@ -625,7 +792,7 @@ impl JitContext {
                         let call_inst = builder.ins().call(func_ref, &arg_vals);
 
                         // Store return value (single i64 in Bậc A).
-                        if !dest.is_empty() {
+                        if !is_sret_call && !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
                         }
@@ -1051,6 +1218,7 @@ mod tests {
                 args: vec![tmp1],
                 return_bb: bb3,
                 dest: vec![call1_result],
+                return_shape: ReturnShape::Scalar,
                 span: DUMMY_SPAN,
             },
         );
@@ -1063,6 +1231,7 @@ mod tests {
                 args: vec![tmp2],
                 return_bb: bb4,
                 dest: vec![call2_result],
+                return_shape: ReturnShape::Scalar,
                 span: DUMMY_SPAN,
             },
         );
@@ -1482,6 +1651,7 @@ mod tests {
                 args: vec![a, b_param],
                 return_bb: ret_bb,
                 dest: vec![result],
+                return_shape: ReturnShape::Scalar,
                 span: DUMMY_SPAN,
             },
         );
@@ -1522,6 +1692,7 @@ mod tests {
                 args: vec![base, exp],
                 return_bb: ret_bb,
                 dest: vec![result],
+                return_shape: ReturnShape::Scalar,
                 span: DUMMY_SPAN,
             },
         );

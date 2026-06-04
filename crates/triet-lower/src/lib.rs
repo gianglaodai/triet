@@ -132,7 +132,7 @@ impl Ctx {
         // If returning a struct, allocate the sret pointer as Local(0).
         // The JIT will receive this as a hidden first parameter.
         if is_struct_return {
-            ctx.sret_ptr = Some(ctx.alloc_local_ty("sret_ptr"));
+            ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
         }
         ctx
     }
@@ -937,7 +937,15 @@ mod tests {
                 }
             })
             .expect("no function found");
-        lower_function(&func.0, &prog.arena, func.1).expect("lowering failed")
+        lower_function(
+            &func.0,
+            &prog.arena,
+            func.1,
+            std::collections::HashSet::new(),
+            HashMap::new(),
+            HashMap::new(),
+        )
+        .expect("lowering failed")
     }
 
     #[test]
