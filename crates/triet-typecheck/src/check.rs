@@ -6,8 +6,8 @@ mod methods;
 use std::collections::HashMap;
 
 use triet_syntax::{
-    Arena, Block, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, Span,
-    Spanned, Stmt, StmtId, TypeExpr, TypeId,
+    Arena, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, Span, Spanned,
+    Stmt, StmtId, TypeExpr, TypeId,
 };
 
 use crate::{
@@ -168,7 +168,7 @@ impl<'p> Checker<'p> {
     /// ADR-0031 §2 ensures this only walks IDENT + field-access).
     pub(crate) fn extract_base_identifier(&self, expr_id: ExprId) -> Option<String> {
         match &self.arena.expression(expr_id).node {
-            triet_syntax::Expr::Identifier(name) => Some(name.clone()),
+            triet_syntax::Expr::Identifier { name } => Some(name.clone()),
             triet_syntax::Expr::FieldAccess { object, .. } => self.extract_base_identifier(*object),
             _ => None,
         }
@@ -228,7 +228,7 @@ impl<'p> Checker<'p> {
 
     fn declare_item(&mut self, item: &Spanned<Item>) {
         match &item.node {
-            Item::Function(def) => {
+            Item::Function { def } => {
                 // Push a frame so generic type params are visible
                 // during parameter/return type resolution (mirror
                 // struct/enum below).
@@ -238,7 +238,7 @@ impl<'p> Checker<'p> {
                         .declare(&param.name, Type::TypeParam(param.name.clone()));
                 }
                 let parameters: Vec<Type> = def
-                    .parameters
+                    .params
                     .iter()
                     .map(|p| self.resolve_type(p.type_annotation))
                     .collect();
@@ -253,7 +253,7 @@ impl<'p> Checker<'p> {
                 };
                 self.declare_or_record_dup(&def.name, function_type, item.span.clone());
             }
-            Item::Const {
+            Item::Constant {
                 name,
                 type_annotation,
                 value,
@@ -281,17 +281,17 @@ impl<'p> Checker<'p> {
                 // checker does not yet expand them. Names registered in
                 // declare_or_record_dup are not used as type names.
             }
-            Item::Import(_) | Item::ImportFrom(_) => {
+            Item::Import { .. } | Item::ImportFrom { .. } => {
                 // Imports are syntactic placeholders until the module
                 // loader (v0.2.x.6) ships. Names introduced by `import`
                 // / `from … import …` are not yet bound here.
             }
-            Item::Module(_) => {
+            Item::Module { .. } => {
                 // Module declarations are not yet checked; the module
                 // loader (v0.2.x.6) will recurse into inline content
                 // and resolve external file-bound modules.
             }
-            Item::Struct(def) => {
+            Item::Struct { def } => {
                 // Push a frame where type params are visible during
                 // field type resolution.
                 self.env.push_frame();
@@ -312,7 +312,7 @@ impl<'p> Checker<'p> {
                 };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
-            Item::Enum(def) => {
+            Item::Enum { def } => {
                 self.env.push_frame();
                 for param in &def.type_params {
                     self.env
@@ -338,7 +338,7 @@ impl<'p> Checker<'p> {
     }
 
     fn check_item(&mut self, item: &Spanned<Item>) {
-        if let Item::Function(def) = &item.node {
+        if let Item::Function { def } = &item.node {
             self.check_function(def);
         }
         // Struct / Enum definitions have no runtime body to check
@@ -372,7 +372,7 @@ impl<'p> Checker<'p> {
 
         self.current_return_type = Some(return_type.clone());
 
-        for parameter in &def.parameters {
+        for parameter in &def.params {
             let ty = self.resolve_type(parameter.type_annotation);
             self.env.declare(&parameter.name, ty);
             // v0.9.x.atomic.7d: track parameter as Alive at entry.
@@ -398,20 +398,26 @@ impl<'p> Checker<'p> {
         crate::borrow_check::analyze_function(self.arena, def, &mut self.errors);
 
         match &def.body {
-            FunctionBody::Block(block) => {
-                let body_ty = self.check_block(block);
+            FunctionBody::Block { block } => {
+                // Block-form body is an `Expr::Block` node; infer it
+                // through the expression checker.
+                let body_ty = self.infer_expression(*block);
                 if !return_type.matches(&body_ty) {
-                    let span = block_span(self.arena, block);
+                    let span = self.arena.expression(*block).span.clone();
                     self.push_return_mismatch(&return_type, &body_ty, span);
                 }
                 // v0.10.x.borrow.3: block-form body's final expression
                 // is the function's return value — check for E2403.
                 // Inner `Stmt::Return` arms already check themselves.
-                if let Some(final_expr) = block.final_expression {
+                let final_expr = match &self.arena.expression(*block).node {
+                    triet_syntax::Expr::Block { final_expr, .. } => *final_expr,
+                    _ => None,
+                };
+                if let Some(final_expr) = final_expr {
                     self.check_escaping_weak_borrow(final_expr);
                 }
             }
-            FunctionBody::Expression(expr) => {
+            FunctionBody::Expression { expr } => {
                 let body_ty = self.infer_expression(*expr);
                 if !return_type.matches(&body_ty) {
                     let span = self.arena.expression(*expr).span.clone();
@@ -421,6 +427,7 @@ impl<'p> Checker<'p> {
                 // function's return value — check for E2403.
                 self.check_escaping_weak_borrow(*expr);
             }
+            FunctionBody::External { .. } => {}
         }
 
         self.current_return_type = None;
@@ -474,7 +481,7 @@ impl<'p> Checker<'p> {
         // the parser accepts `self`-parameter syntax.
         let mut input_borrow_count: usize = 0;
         let mut has_self_borrow_receiver = false;
-        for (i, parameter) in def.parameters.iter().enumerate() {
+        for (i, parameter) in def.params.iter().enumerate() {
             let param_ty = self.resolve_type(parameter.type_annotation);
             if let Type::Reference(form, _) = &param_ty
                 && !form.is_owning()
@@ -512,14 +519,12 @@ impl<'p> Checker<'p> {
     // Statements / blocks
     // ====================================================================
 
-    fn check_block(&mut self, block: &Block) -> Type {
+    fn check_block(&mut self, statements: &[StmtId], final_expression: Option<ExprId>) -> Type {
         self.env.push_frame();
-        for stmt_id in &block.statements {
+        for stmt_id in statements {
             self.check_statement(*stmt_id);
         }
-        let value_type = block
-            .final_expression
-            .map_or(Type::Unit, |id| self.infer_expression(id));
+        let value_type = final_expression.map_or(Type::Unit, |id| self.infer_expression(id));
         self.env.pop_frame();
         value_type
     }
@@ -529,20 +534,20 @@ impl<'p> Checker<'p> {
         match stmt.node {
             Stmt::Let {
                 name,
-                mutable,
+                is_mutable,
                 type_annotation,
-                value,
+                init,
             } => {
-                let ty = self.check_initializer(type_annotation, value);
-                self.env.declare_with_mut(&name, ty, mutable);
+                let ty = self.check_initializer(type_annotation, init);
+                self.env.declare_with_mut(&name, ty, is_mutable);
                 // v0.9.x.atomic.7d: new local binding starts Alive.
                 self.move_states.insert(name.clone(), MoveState::Alive);
                 // v0.10.x.borrow.3: track as local-let (NOT parameter)
                 // for E2403 escape detection (ADR-0025 §8.2).
                 self.local_let_names.insert(name.clone());
             }
-            Stmt::Assign { target, value } => {
-                self.check_assignment(&target, value, stmt.span.clone());
+            Stmt::Assignment { target, value } => {
+                self.check_assignment(target, value, stmt.span.clone());
             }
             Stmt::Const {
                 name,
@@ -552,7 +557,7 @@ impl<'p> Checker<'p> {
                 let ty = self.check_initializer(type_annotation, value);
                 self.env.declare(&name, ty);
             }
-            Stmt::Return(value) => {
+            Stmt::Return { value } => {
                 let actual = value.map_or(Type::Unit, |id| self.infer_expression(id));
                 if let Some(expected) = self.current_return_type.clone()
                     && !expected.matches(&actual)
@@ -571,12 +576,9 @@ impl<'p> Checker<'p> {
                     self.check_escaping_weak_borrow(id);
                 }
             }
-            Stmt::Break(value) => {
-                // For v0.1, break-with-value is allowed only inside `loop`;
-                // we don't track loop context here, so just type-check.
-                if let Some(id) = value {
-                    let _ = self.infer_expression(id);
-                }
+            Stmt::Break => {
+                // `Stmt::Break` is a unit variant in the schema AST —
+                // break-with-value is not modeled.
             }
             Stmt::Continue => {}
             Stmt::For {
@@ -594,7 +596,7 @@ impl<'p> Checker<'p> {
                 // v0.9.x.atomic.7d: for-body may iterate 0 or N times;
                 // same join semantics as while/loop.
                 let pre_loop = self.snapshot_moves();
-                let _ = self.check_block(&body);
+                let _ = self.infer_expression(body);
                 let after_body = std::mem::take(&mut self.move_states);
                 self.move_states = Self::join_moves(pre_loop, after_body);
                 self.env.pop_frame();
@@ -611,18 +613,18 @@ impl<'p> Checker<'p> {
                 // Snapshot before; walk body; join initial with
                 // after-body to model "didn't enter" vs "ran ≥1 time".
                 let pre_loop = self.snapshot_moves();
-                let _ = self.check_block(&body);
+                let _ = self.infer_expression(body);
                 let after_body = std::mem::take(&mut self.move_states);
                 self.move_states = Self::join_moves(pre_loop, after_body);
             }
-            Stmt::Loop(body) => {
+            Stmt::Loop { body } => {
                 // Same as while — body may not run (`loop { break }`).
                 let pre_loop = self.snapshot_moves();
-                let _ = self.check_block(&body);
+                let _ = self.infer_expression(body);
                 let after_body = std::mem::take(&mut self.move_states);
                 self.move_states = Self::join_moves(pre_loop, after_body);
             }
-            Stmt::ExprStmt(expr) => {
+            Stmt::Expression { expr } => {
                 let _ = self.infer_expression(expr);
             }
         }
@@ -661,19 +663,24 @@ impl<'p> Checker<'p> {
         }
     }
 
-    fn check_assignment(&mut self, target: &str, value: ExprId, stmt_span: Span) {
+    fn check_assignment(&mut self, target: ExprId, value: ExprId, stmt_span: Span) {
         let value_ty = self.infer_expression(value);
         let value_span = self.arena.expression(value).span.clone();
-        let Some(binding) = self.env.lookup_binding(target).cloned() else {
+        // `Stmt::Assignment` stores the target as an `ExprId`; only
+        // identifier targets are assignable (parser-enforced).
+        let Some(name) = self.extract_base_identifier(target) else {
+            return;
+        };
+        let Some(binding) = self.env.lookup_binding(&name).cloned() else {
             self.errors.push(TypeError::UndefinedName {
-                name: target.to_owned(),
+                name,
                 span: stmt_span,
             });
             return;
         };
         if !binding.mutable {
             self.errors.push(TypeError::AssignToImmutable {
-                name: target.to_owned(),
+                name,
                 span: stmt_span,
             });
         }
@@ -1054,13 +1061,3 @@ impl<'p> Checker<'p> {
 // ====================================================================
 // Free helpers
 // ====================================================================
-
-fn block_span(arena: &Arena, block: &Block) -> Span {
-    if let Some(id) = block.final_expression {
-        arena.expression(id).span.clone()
-    } else if let Some(stmt_id) = block.statements.last() {
-        arena.statement(*stmt_id).span.clone()
-    } else {
-        0..0
-    }
-}

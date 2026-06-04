@@ -14,7 +14,9 @@
 //! into a real `Spanned<T>` reference. Reference patterns are typed: a
 //! `PatternId` cannot be used where an `ExprId` is expected.
 
-use crate::{expr::Expr, pattern::Pattern, span::Spanned, stmt::Stmt, type_ast::TypeExpr};
+use crate::{
+    generated::Expr, generated::Stmt, pattern::Pattern, span::Spanned, type_ast::TypeExpr,
+};
 
 macro_rules! define_id {
     ($name:ident, $doc:expr) => {
@@ -53,7 +55,7 @@ define_id!(StmtId, "Handle to a `Spanned<Stmt>` stored in an `Arena`.");
 /// The arena owns the actual `Spanned<T>` data; AST node fields hold only
 /// `*Id` handles. To inspect a child, call the appropriate accessor
 /// (e.g. [`Arena::expression`]) with the handle.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Arena {
     expressions: Vec<Spanned<Expr>>,
     patterns: Vec<Spanned<Pattern>>,
@@ -174,7 +176,7 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{expr::Expr, numeric::TrileanValue, pattern::Pattern, type_ast::TypeExpr};
+    use crate::{generated::Expr, numeric::TrileanValue, pattern::Pattern, type_ast::TypeExpr};
 
     #[test]
     fn new_arena_is_empty() {
@@ -209,13 +211,19 @@ mod tests {
     #[test]
     fn alloc_round_trips_through_lookup() {
         let mut arena = Arena::new();
-        let id =
-            arena.alloc_expression(Spanned::new(Expr::TrileanLiteral(TrileanValue::True), 5..9));
+        let id = arena.alloc_expression(Spanned::new(
+            Expr::TrileanLiteral {
+                value: TrileanValue::True,
+            },
+            5..9,
+        ));
         let stored = arena.expression(id);
         assert_eq!(stored.span, 5..9);
         assert!(matches!(
             stored.node,
-            Expr::TrileanLiteral(TrileanValue::True),
+            Expr::TrileanLiteral {
+                value: TrileanValue::True
+            },
         ));
     }
 

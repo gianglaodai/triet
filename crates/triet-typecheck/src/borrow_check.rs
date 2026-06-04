@@ -47,8 +47,7 @@
 //! [ADR-0029 §3]: ../../../docs/decisions/0029-self-host-port-policy.md
 
 use triet_syntax::{
-    Arena, Block, Expr, ExprId, FunctionBody, FunctionDef, ReferenceForm, Span, Spanned, Stmt,
-    StmtId,
+    Arena, Expr, ExprId, FunctionBody, FunctionDef, ReferenceForm, Span, Spanned, Stmt, StmtId,
 };
 
 use crate::error::{BorrowError, TypeError};
@@ -121,10 +120,10 @@ impl<'a> Collector<'a> {
         let Spanned { node, span } = self.arena.expression(expr_id).clone();
         match node {
             // Identifier read — if it's a tracked borrow binding, log Use.
-            Expr::Identifier(name) if self.tracked.contains(&name) => {
+            Expr::Identifier { name } if self.tracked.contains(&name) => {
                 self.push(span, EventKind::Use(name));
             }
-            Expr::Identifier(_) => {}
+            Expr::Identifier { .. } => {}
             // Walk child expressions.
             Expr::FieldAccess { object, .. } => self.walk_expr(object),
             Expr::TupleIndex { tuple, .. } => self.walk_expr(tuple),
@@ -175,7 +174,7 @@ impl<'a> Collector<'a> {
                 self.walk_expr(object);
                 self.walk_expr(default);
             }
-            Expr::ForceUnwrap(inner) => self.walk_expr(inner),
+            Expr::ForceUnwrap { operand: inner } => self.walk_expr(inner),
             // ── Branches — serialized in event stream ────────────
             Expr::If {
                 condition,
@@ -184,9 +183,9 @@ impl<'a> Collector<'a> {
                 ..
             } => {
                 self.walk_expr(condition);
-                self.walk_block(&then_branch);
+                self.walk_expr(then_branch);
                 if let Some(else_block) = else_branch {
-                    self.walk_block(&else_block);
+                    self.walk_expr(else_block);
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -198,18 +197,21 @@ impl<'a> Collector<'a> {
                     self.walk_expr(arm.body);
                 }
             }
-            Expr::Block(block) => self.walk_block(&block),
+            Expr::Block {
+                statements,
+                final_expr,
+            } => self.walk_block(&statements, final_expr),
             // Literals + Outcome constructors + other leaf forms don't
             // produce use events; skip.
             _ => {}
         }
     }
 
-    fn walk_block(&mut self, block: &Block) {
-        for stmt_id in &block.statements {
+    fn walk_block(&mut self, statements: &[StmtId], final_expression: Option<ExprId>) {
+        for stmt_id in statements {
             self.walk_stmt(*stmt_id);
         }
-        if let Some(final_expr) = block.final_expression {
+        if let Some(final_expr) = final_expression {
             self.walk_expr(final_expr);
         }
     }
@@ -217,13 +219,13 @@ impl<'a> Collector<'a> {
     fn walk_stmt(&mut self, stmt_id: StmtId) {
         let stmt = self.arena.statement(stmt_id).clone();
         match stmt.node {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { name, init, .. } => {
                 // First walk the RHS for use events (e.g., the operand
                 // of a borrow might reference another tracked binding).
-                self.walk_expr(value);
+                self.walk_expr(init);
                 // Then check whether the RHS is a borrow expression —
                 // if so, the let-binding becomes a tracked borrow.
-                if let Expr::Borrow { form, operand } = &self.arena.expression(value).node
+                if let Expr::Borrow { form, operand } = &self.arena.expression(init).node
                     && let Some(base) = extract_base_identifier(self.arena, *operand)
                 {
                     self.tracked.insert(name.clone());
@@ -237,7 +239,7 @@ impl<'a> Collector<'a> {
                     );
                 }
             }
-            Stmt::Assign { value, .. } => {
+            Stmt::Assignment { value, .. } => {
                 // The target name is implicit; we don't track re-assign
                 // semantics for borrow lifetimes at v0.10 scope.
                 // Re-assignment to a `let mutable r: &0 X = ...` is
@@ -246,22 +248,20 @@ impl<'a> Collector<'a> {
                 self.walk_expr(value);
             }
             Stmt::Const { value, .. } => self.walk_expr(value),
-            Stmt::Return(value) => {
+            Stmt::Return { value } => {
                 if let Some(id) = value {
                     self.walk_expr(id);
                 }
             }
-            Stmt::Break(value) => {
-                if let Some(id) = value {
-                    self.walk_expr(id);
-                }
+            Stmt::Break => {
+                // Unit variant — break-with-value is not modeled.
             }
             Stmt::Continue => {}
             Stmt::For { iterable, body, .. } => {
                 self.walk_expr(iterable);
                 // For-loop body — same loop semantics as while.
                 self.push(stmt.span.clone(), EventKind::LoopEnter);
-                self.walk_block(&body);
+                self.walk_expr(body);
                 self.push(stmt.span, EventKind::LoopExit);
             }
             Stmt::While {
@@ -269,15 +269,15 @@ impl<'a> Collector<'a> {
             } => {
                 self.walk_expr(condition);
                 self.push(stmt.span.clone(), EventKind::LoopEnter);
-                self.walk_block(&body);
+                self.walk_expr(body);
                 self.push(stmt.span, EventKind::LoopExit);
             }
-            Stmt::Loop(body) => {
+            Stmt::Loop { body } => {
                 self.push(stmt.span.clone(), EventKind::LoopEnter);
-                self.walk_block(&body);
+                self.walk_expr(body);
                 self.push(stmt.span, EventKind::LoopExit);
             }
-            Stmt::ExprStmt(expr) => self.walk_expr(expr),
+            Stmt::Expression { expr } => self.walk_expr(expr),
         }
     }
 }
@@ -289,7 +289,7 @@ impl<'a> Collector<'a> {
 /// covers all parseable borrow operands).
 fn extract_base_identifier(arena: &Arena, expr_id: ExprId) -> Option<String> {
     match &arena.expression(expr_id).node {
-        Expr::Identifier(name) => Some(name.clone()),
+        Expr::Identifier { name } => Some(name.clone()),
         Expr::FieldAccess { object, .. } => extract_base_identifier(arena, *object),
         _ => None,
     }
@@ -492,8 +492,9 @@ pub(crate) fn analyze_function(arena: &Arena, def: &FunctionDef, errors: &mut Ve
     // OF SCOPE for v0.10.x.borrow.1 — defer v0.11+ corpus-driven.
     let mut collector = Collector::new(arena);
     match &def.body {
-        FunctionBody::Block(block) => collector.walk_block(block),
-        FunctionBody::Expression(expr) => collector.walk_expr(*expr),
+        FunctionBody::Block { block } => collector.walk_expr(*block),
+        FunctionBody::Expression { expr } => collector.walk_expr(*expr),
+        FunctionBody::External { .. } => {}
     }
 
     let summaries = compute_live_ranges(&collector.events);

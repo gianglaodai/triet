@@ -149,23 +149,22 @@ fn collect_imports(
     let mut imports = Vec::new();
     for item in items {
         match &item.node {
-            Item::Import(import_path) => {
+            Item::Import { import } => {
                 imports.push(ImportInfo {
                     kind: ImportKind::Whole {
-                        segments: import_path.segments.clone(),
+                        segments: import.module_path.segments.clone(),
                     },
                     span: item.span.clone(),
                 });
             }
-            Item::ImportFrom(import_from) => {
-                let names = import_from
-                    .names
+            Item::ImportFrom { module_path, names } => {
+                let names = names
                     .iter()
                     .map(|n| (n.name.clone(), n.alias.clone()))
                     .collect();
                 imports.push(ImportInfo {
                     kind: ImportKind::From {
-                        source: import_from.source.clone(),
+                        source: module_path.segments.clone(),
                         names,
                     },
                     span: item.span.clone(),
@@ -175,7 +174,7 @@ fn collect_imports(
             Item::Function { .. }
             | Item::Struct { .. }
             | Item::Enum { .. }
-            | Item::Const { .. }
+            | Item::Constant { .. }
             | Item::Module { .. }
             | Item::TypeAlias { .. } => {}
         }
@@ -245,7 +244,7 @@ fn resolve_whole_import(
         if let Some(target_mod_id) = program.find_module(&module_path) {
             // Visibility check.
             if let Some(vis) = find_item_visibility(program, target_mod_id, item_name) {
-                if !is_visible(vis, importer_id, target_mod_id, program) {
+                if !is_visible(&vis, importer_id, target_mod_id, program) {
                     errors.push(LoaderError::VisibilityViolation {
                         name: item_name.clone(),
                         actual_visibility: vis.to_string(),
@@ -369,7 +368,7 @@ fn resolve_from_import(
                     });
                     continue;
                 }
-                if !is_visible(enum_vis, importer_id, target_mod_id, program) {
+                if !is_visible(&enum_vis, importer_id, target_mod_id, program) {
                     errors.push(LoaderError::VisibilityViolation {
                         name: name.clone(),
                         actual_visibility: enum_vis.to_string(),
@@ -396,7 +395,7 @@ fn resolve_from_import(
         };
 
         // Visibility check.
-        if !is_visible(vis, importer_id, target_mod_id, program) {
+        if !is_visible(&vis, importer_id, target_mod_id, program) {
             errors.push(LoaderError::VisibilityViolation {
                 name: name.clone(),
                 actual_visibility: vis.to_string(),
@@ -466,16 +465,16 @@ fn resolve_path_keywords(
 /// Extract name and visibility from an item, if it defines a named entity.
 fn item_name_and_visibility(item: &Item) -> Option<(String, Visibility)> {
     match item {
-        Item::Function(f) => Some((f.name.clone(), f.visibility)),
-        Item::Const {
+        Item::Function { def } => Some((def.name.clone(), def.visibility.clone())),
+        Item::Constant {
             name, visibility, ..
         }
         | Item::TypeAlias {
             name, visibility, ..
-        } => Some((name.clone(), *visibility)),
-        Item::Struct(s) => Some((s.name.clone(), s.visibility)),
-        Item::Enum(e) => Some((e.name.clone(), e.visibility)),
-        Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) => None,
+        } => Some((name.clone(), visibility.clone())),
+        Item::Struct { def } => Some((def.name.clone(), def.visibility.clone())),
+        Item::Enum { def } => Some((def.name.clone(), def.visibility.clone())),
+        Item::Import { .. } | Item::ImportFrom { .. } | Item::Module { .. } => None,
     }
 }
 
@@ -514,10 +513,10 @@ fn find_enum_owning_variant(
 ) -> Option<(String, Visibility)> {
     let module = program.module(module_id);
     for item in &module.items {
-        if let Item::Enum(e) = &item.node
+        if let Item::Enum { def: e } = &item.node
             && e.variants.iter().any(|v| v.name == variant_name)
         {
-            return Some((e.name.clone(), e.visibility));
+            return Some((e.name.clone(), e.visibility.clone()));
         }
     }
     None
@@ -526,7 +525,7 @@ fn find_enum_owning_variant(
 /// Check whether an item with the given visibility in `target_mod` is
 /// visible to `importer_mod`.
 fn is_visible(
-    vis: Visibility,
+    vis: &Visibility,
     importer_id: ModuleId,
     target_mod_id: ModuleId,
     _program: &ResolvedProgram,

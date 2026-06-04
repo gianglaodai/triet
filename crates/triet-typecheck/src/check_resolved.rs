@@ -81,6 +81,7 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
         let single_program = triet_syntax::Program {
             arena: arena.clone(),
             items: module.items.clone(),
+            source_file: String::new(),
         };
 
         // Pre-seed the root module's environment with the standard
@@ -141,9 +142,9 @@ fn collect_declared_types(
 
     for item in items {
         match &item.node {
-            Item::Function(def) => {
+            Item::Function { def } => {
                 let parameters: Vec<Type> = def
-                    .parameters
+                    .params
                     .iter()
                     .map(|p| {
                         resolve_type_expr_with_params(
@@ -166,7 +167,7 @@ fn collect_declared_types(
                     },
                 ));
             }
-            Item::Const {
+            Item::Constant {
                 name,
                 type_annotation,
                 ..
@@ -175,7 +176,7 @@ fn collect_declared_types(
                     .map_or(Type::Unknown, |id| resolve_type_expr(arena, id, name_table));
                 result.push((name.clone(), ty));
             }
-            Item::Struct(def) => {
+            Item::Struct { def } => {
                 let fields: Vec<(String, Type)> = def
                     .fields
                     .iter()
@@ -195,7 +196,7 @@ fn collect_declared_types(
                     },
                 ));
             }
-            Item::Enum(def) => {
+            Item::Enum { def } => {
                 let variants: Vec<(String, Option<Box<Type>>)> = def
                     .variants
                     .iter()
@@ -215,7 +216,10 @@ fn collect_declared_types(
                     },
                 ));
             }
-            Item::TypeAlias { .. } | Item::Import(_) | Item::ImportFrom(_) | Item::Module(_) => {}
+            Item::TypeAlias { .. }
+            | Item::Import { .. }
+            | Item::ImportFrom { .. }
+            | Item::Module { .. } => {}
         }
     }
 

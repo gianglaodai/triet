@@ -1,0 +1,1746 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://triet-lang.org/schema/v1/triet-schema.json
+title: "Tri\u1EBFt Language Schema \u2014 Type System & Memory Model (Phase 1)"
+description: "Canonical schema for the Tri\u1EBFt programming language. THIS FILE\
+  \ IS THE SINGLE SOURCE OF TRUTH for all type definitions, AST node shapes, and ownership\
+  \ semantics. Code generators consume this schema to produce Rust enums/structs,\
+  \ serialize/deserialize, visitor traits, and Display implementations. Hand-written\
+  \ struct definitions are FORBIDDEN \u2014 any change to the language surface MUST\
+  \ start by editing this file."
+schema_version: 1.0.0
+language_version: 0.1.0-rewrite
+phase: 1-memory-model
+codegen:
+  targets:
+  - rust
+  - triet
+  rust:
+    crate_prefix: triet
+    output_dir: crates/triet-syntax/src/generated/
+    derive:
+    - Clone
+    - Debug
+    - PartialEq
+    serde: false
+    visitor_trait: true
+    display_impl: true
+  triet:
+    output_dir: compiler/generated/
+    note: Generated when language reaches 1.0 stability
+meta:
+  design_adrs:
+  - "ADR-0022 \u2014 Trit-Balanced Ownership (S6 5-form reference)"
+  - "ADR-0025 \u2014 Borrow Checker Rules (NLL + lifetime elision)"
+  - "ADR-0026 v2 \u2014 BYOS Concurrency + Send Rules"
+  - "ADR-0028 \u2014 Atomic Primitive Design"
+  - "ADR-0031 \u2014 Borrow Expression Syntax"
+  principle: Ownership + Borrow + Type System are the FOUNDATION. Every other phase
+    (IR, codegen, modules, packaging, capability) builds on top. This schema encodes
+    the memory model FIRST, then the AST. If a feature cannot be expressed in this
+    schema, it does not belong in the language.
+builtin_types:
+  description: "Well-known types provided by the runtime or standard library. These\
+    \ are NOT generated from schema \u2014 they are defined once in the runtime crate\
+    \ and referenced by generated code."
+  types:
+    ExprId:
+      rust_type: crate::arena::ExprId
+      description: u32 handle into expression arena.
+    PatternId:
+      rust_type: crate::arena::PatternId
+      description: u32 handle into pattern arena.
+    StmtId:
+      rust_type: crate::arena::StmtId
+      description: u32 handle into statement arena.
+    TypeId:
+      rust_type: crate::arena::TypeId
+      description: u32 handle into type-expression arena.
+    Arena:
+      rust_type: crate::arena::Arena
+      description: Arena allocator holding all AST nodes.
+    Span:
+      rust_type: crate::span::Span
+      description: Source location (file_id, offset, length).
+    Spanned:
+      rust_type: crate::span::Spanned<T>
+      description: Value with attached source span.
+    NumericSuffix:
+      rust_type: crate::numeric::NumericSuffix
+      description: Explicit type suffix on integer literals.
+    TrileanValue:
+      rust_type: crate::numeric::TrileanValue
+      description: Compile-time Trilean literal (True/False/Unknown).
+    FStringPart:
+      rust_type: crate::expr::FStringPart
+      description: One segment of an f-string (literal text or interpolation).
+    FStringSegments:
+      rust_type: crate::expr::FStringSegments
+      description: Parsed f-string with interpolation segments.
+    MatchArm:
+      rust_type: crate::expr::MatchArm
+      description: 'One arm of a match expression: pattern => body.'
+    LambdaParam:
+      rust_type: crate::expr::LambdaParam
+      description: 'A lambda parameter: |x, y| body.'
+    OutcomeArmDiscriminant:
+      rust_type: crate::expr::OutcomeArm
+      description: 'Which arm of an Outcome: Success (Trit::Positive), Null (Trit::Zero),
+        Failure (Trit::Negative).'
+    GenericBound:
+      rust_type: crate::item::GenericBound
+      description: Trait/interface bound on a generic type parameter.
+    ImportPath:
+      rust_type: crate::item::ImportPath
+      description: Module path in an import declaration.
+    ImportName:
+      rust_type: crate::item::ImportName
+      description: A name imported from a module.
+    TypeParam:
+      rust_type: crate::item::TypeParam
+      description: 'A generic type parameter: `T` in `struct Box<T>`.'
+    StructField:
+      rust_type: crate::item::StructField
+      description: A field in a struct definition.
+    EnumVariant:
+      rust_type: crate::item::EnumVariant
+      description: A variant in an enum definition.
+    Integer:
+      rust_type: triet_core::Integer
+      description: 27-trit balanced-ternary integer (runtime value).
+    Pointer:
+      rust_type: triet_core::Pointer
+      description: Raw memory pointer (only in unsafe/capability-gated contexts).
+    RawMemory:
+      rust_type: triet_core::RawMemory
+      description: Raw memory region handle.
+definitions:
+  '=== SECTION 1: PRIMITIVE TYPES (freestanding, Ring-0 capable) ===': "\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500"
+  PrimitiveType:
+    kind: enum
+    description: "Built-in primitive types. These exist in `core` \u2014 no allocator,\
+      \ no OS, no stdlib required. They are the only types available in freestanding\
+      \ (kernel) mode."
+    variants:
+    - name: Trit
+      discriminant: 0
+      description: '1-trit numeric atom. Values: -1, 0, +1. 2-bit storage. Smallest
+        addressable unit in ternary-native hardware.'
+      category: numeric
+      bit_width: 2
+      trit_width: 1
+      freestanding: true
+    - name: Tryte
+      discriminant: 1
+      description: "9-trit integer. 6-trit (\u2248 3^9 = 19683 values). 16-bit storage\
+        \ on binary hardware."
+      category: numeric
+      bit_width: 16
+      trit_width: 9
+      freestanding: true
+    - name: Integer
+      discriminant: 2
+      description: "27-trit integer \u2014 the default numeric type. 64-bit storage\
+        \ on binary hardware. This is Tri\u1EBFt's `int`."
+      category: numeric
+      bit_width: 64
+      trit_width: 27
+      freestanding: true
+    - name: I8
+      discriminant: 10
+      description: 8-bit signed integer. Binary native for MMIO and syscalls.
+      category: numeric
+      bit_width: 8
+      freestanding: true
+    - name: U8
+      discriminant: 11
+      description: 8-bit unsigned integer. Byte-level data.
+      category: numeric
+      bit_width: 8
+      freestanding: true
+    - name: I16
+      discriminant: 12
+      description: 16-bit signed integer. Port I/O, UTF-16.
+      category: numeric
+      bit_width: 16
+      freestanding: true
+    - name: U16
+      discriminant: 13
+      description: 16-bit unsigned integer. Port I/O, UTF-16.
+      category: numeric
+      bit_width: 16
+      freestanding: true
+    - name: I32
+      discriminant: 14
+      description: 32-bit signed integer. Syscall return values, file descriptors.
+      category: numeric
+      bit_width: 32
+      freestanding: true
+    - name: U32
+      discriminant: 15
+      description: 32-bit unsigned integer.
+      category: numeric
+      bit_width: 32
+      freestanding: true
+    - name: I64
+      discriminant: 16
+      description: 64-bit signed integer. Size_t, DMA addresses.
+      category: numeric
+      bit_width: 64
+      freestanding: true
+    - name: U64
+      discriminant: 17
+      description: 64-bit unsigned integer. Size_t, DMA addresses.
+      category: numeric
+      bit_width: 64
+      freestanding: true
+    - name: F64
+      discriminant: 18
+      description: 64-bit floating point.
+      category: numeric
+      bit_width: 64
+      freestanding: true
+    - name: Pointer
+      discriminant: 19
+      description: Raw pointer, FFI opaque handles.
+      category: pointer
+      bit_width: 64
+      freestanding: true
+    - name: Long
+      discriminant: 3
+      description: 81-trit extended integer. 128-bit storage on binary hardware. Used
+        for cryptography, large arithmetic, and FFI.
+      category: numeric
+      bit_width: 128
+      trit_width: 81
+      freestanding: true
+    - name: Trilean
+      discriminant: 4
+      description: "Three-valued truth type: True, False, Unknown. Follows \u0141\
+        ukasiewicz \u01413 semantics by default. Carries a `refined` flag: when true,\
+        \ the value is statically proven \u2260 Unknown (Trilean! refinement per ADR-0021)."
+      category: logic
+      bit_width: 8
+      freestanding: true
+      fields:
+      - name: refined
+        type: bool
+        description: "True \u2192 Trilean! (statically non-Unknown). False \u2192\
+          \ generic Trilean (may be Unknown)."
+    - name: Unit
+      discriminant: 5
+      description: "Zero-sized unit type `()`. Void functions return Unit. Carries\
+        \ no data \u2014 NOT a composite pointer."
+      category: scalar
+      bit_width: 0
+      freestanding: true
+  '=== SECTION 2: COMPOSITE TYPE CONSTRUCTORS (need allocator, Ring-3 user-space) ===': "\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500"
+  CompositeTypeConstructor:
+    kind: enum
+    description: Type constructors that build complex types from simpler ones. Some
+      require heap allocation (String, Vector, HashMap) and are NOT available in freestanding
+      mode.
+    variants:
+    - name: String
+      discriminant: 100
+      description: "UTF-8 owned text. Heap-allocated \u2014 NOT available in freestanding\
+        \ kernel mode."
+      requires_allocator: true
+      freestanding: false
+    - name: Nullable
+      discriminant: 101
+      description: 'Optional type `T?`. Trit-discriminated logically (Trit::Zero =
+        null, Trit::Positive = Some). Memory layout is determined by the compiler
+        backend: if T has a Niche (e.g., non-null pointer), Nullable<T> has the same
+        size as T and uses the Niche as the null state. Otherwise, it uses a discriminant
+        + payload.'
+      requires_allocator: false
+      freestanding: true
+      type_parameter:
+        name: T
+        description: The wrapped type.
+    - name: Tuple
+      discriminant: 102
+      description: Fixed-size heterogeneous collection. `(Integer, String, Trilean)`.
+      requires_allocator: false
+      freestanding: true
+      type_parameters:
+        kind: variadic
+        description: Zero or more element types.
+    - name: Range
+      discriminant: 103
+      description: Range type `Range<T>` produced by `a..b` or `a..=b` syntax.
+      requires_allocator: false
+      freestanding: true
+      type_parameter:
+        name: T
+        description: Element type (must be numeric for iteration).
+    - name: Vector
+      discriminant: 104
+      description: "Growable array `Vector<T>`. Heap-allocated \u2014 NOT available\
+        \ in freestanding. Functional style: push() returns a new Vector, does not\
+        \ mutate in place."
+      requires_allocator: true
+      freestanding: false
+      type_parameter:
+        name: T
+        description: Element type.
+    - name: HashMap
+      discriminant: 105
+      description: "Key-value map `HashMap<K, V>`. Heap-allocated \u2014 NOT available\
+        \ in freestanding."
+      requires_allocator: true
+      freestanding: false
+      type_parameters:
+      - name: K
+        description: Key type.
+      - name: V
+        description: Value type.
+    - name: Outcome
+      discriminant: 106
+      description: 'Error-handling type `T~E` per ADR-0020. Binary outcome: success
+        T (Trit::Positive) or failure E (Trit::Negative). Trit::Zero is invalid.'
+      requires_allocator: false
+      freestanding: true
+      fields:
+      - name: value_type
+        type: Type
+        ownership: owned
+        description: Success-arm payload.
+      - name: error_type
+        type: Type
+        ownership: owned
+        description: Failure-arm payload.
+    - name: TernaryOutcome
+      discriminant: 109
+      description: 'Error-handling type `T?~E` per ADR-0020. Ternary outcome: success
+        T (Trit::Positive), null (Trit::Zero), or failure E (Trit::Negative). All
+        three states valid at the same level.'
+      requires_allocator: false
+      freestanding: true
+      fields:
+      - name: value_type
+        type: Type
+        ownership: owned
+        description: Success-arm payload.
+      - name: error_type
+        type: Type
+        ownership: owned
+        description: Failure-arm payload.
+    - name: Function
+      discriminant: 107
+      description: Function type `(P1, P2) -> R`. Used for closures and higher-order
+        functions. Carries type parameters for generic functions.
+      requires_allocator: false
+      freestanding: true
+      fields:
+      - name: type_params
+        type: vector<TypeParam>
+        ownership: owned
+        description: Generic type parameters (empty for monomorphic functions).
+      - name: parameters
+        type: vector<Type>
+        description: Parameter types in declaration order.
+      - name: return_type
+        type: Type
+        description: Return type.
+  "=== SECTION 3: S6 OWNERSHIP MODEL (the heart of Tri\u1EBFt's memory safety) ===": "\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500"
+  ReferenceForm:
+    kind: enum
+    description: "S6 \u2014 Single-form Ownership with 6 trits. The 5 reference forms\
+      \ that govern ALL memory access in Tri\u1EBFt. Every value in Tri\u1EBFt is\
+      \ accessed through exactly one of these forms at any point. The borrow checker\
+      \ enforces exclusivity at compile time."
+    design_rule: No lifetime annotations. No 'unsafe' keyword. Safety through capability
+      gates, not escape hatches.
+    variants:
+    - name: StrongFrozen
+      discriminant: 0
+      syntax: '&+ T'
+      trit_polarity: 1
+      ownership: unique_owner
+      mutable: false
+      aliasing: no_alias
+      rust_equivalent: Box<T> (frozen)
+      send_across_thread: true
+      description: Strong unique owner, immutable. The owning reference form that
+        prevents mutation. Send-safe because frozen = no concurrent mutation possible.
+        Use this as the default owning form.
+      borrow_rules:
+        can_create:
+        - BorrowReadOnly
+        - WeakObserver
+        cannot_create:
+        - StrongFrozen
+        - StrongMutable
+        - BorrowExclusiveMutable
+        on_scope_end: owned value is dropped (unless moved)
+    - name: StrongMutable
+      discriminant: 1
+      syntax: '&+ mutable T'
+      trit_polarity: 1
+      ownership: unique_owner
+      mutable: true
+      aliasing: no_alias
+      rust_equivalent: Box<T> (mutable)
+      send_across_thread: false
+      description: "Strong unique owner, mutable. The only way to mutate owned data.\
+        \ NOT Send across thread boundary \u2014 mutable + shared = race condition."
+      borrow_rules:
+        can_create:
+        - BorrowExclusiveMutable
+        cannot_create:
+        - StrongFrozen
+        - StrongMutable
+        - BorrowReadOnly
+        - WeakObserver
+        on_scope_end: owned value is dropped (unless moved)
+    - name: BorrowReadOnly
+      discriminant: 2
+      syntax: '&0 T'
+      trit_polarity: 0
+      ownership: borrow
+      mutable: false
+      aliasing: shared_read
+      rust_equivalent: '&T'
+      send_across_thread: true
+      description: "Scope-limited read-only borrow. Multiple &0 T can coexist. Cannot\
+        \ mutate the borrowed value. Lifetime bounded by the owner's scope \u2014\
+        \ NLL enforces this at compile time."
+      borrow_rules:
+        can_create:
+        - BorrowReadOnly
+        - WeakObserver
+        cannot_create:
+        - StrongFrozen
+        - StrongMutable
+        - BorrowExclusiveMutable
+        on_scope_end: borrow expires, owner regains full access
+    - name: BorrowExclusiveMutable
+      discriminant: 3
+      syntax: '&0 mutable T'
+      trit_polarity: 0
+      ownership: borrow
+      mutable: true
+      aliasing: exclusive
+      rust_equivalent: '&mut T'
+      send_across_thread: false
+      description: "Scope-limited exclusive mutable borrow. ONLY ONE &0 mutable T\
+        \ can exist at a time \u2014 no other references (not even read-only) can\
+        \ coexist. This is the mechanism that prevents data races at compile time."
+      borrow_rules:
+        can_create: []
+        cannot_create:
+        - StrongFrozen
+        - StrongMutable
+        - BorrowReadOnly
+        - BorrowExclusiveMutable
+        - WeakObserver
+        on_scope_end: borrow expires, owner regains full access
+    - name: WeakObserver
+      discriminant: 4
+      syntax: '&- T'
+      trit_polarity: -1
+      ownership: weak_observe
+      mutable: false
+      aliasing: shared_weak
+      rust_equivalent: Weak<T> (compile-time checked)
+      send_across_thread: false
+      description: "Weak observer \u2014 does not own, cannot mutate, read-only after\
+        \ upgrade to &0. Used to break cycles in graph-like data structures. Must\
+        \ be upgraded to &0 T before reading (the upgrade is compile-time verified\
+        \ to ensure the owner still exists)."
+      borrow_rules:
+        can_create:
+        - WeakObserver
+        cannot_create:
+        - StrongFrozen
+        - StrongMutable
+        - BorrowReadOnly
+        - BorrowExclusiveMutable
+        upgrade_rule: '&- T can be upgraded to &0 T if and only if the owner''s lifetime
+          is proven to outlive the upgrade site (NLL). After upgrade, the &0 follows
+          standard &0 rules.'
+        on_scope_end: weak reference expires (no drop, no refcount decrement)
+  Atomic:
+    kind: type_constructor
+    description: "`Atomic<T>` \u2014 interior mutability for shared-memory concurrency.\
+      \ Allows mutation through a shared reference `&+ Atomic<T>` via atomic CPU instructions.\
+      \ This is the ONLY mechanism for mutable shared state in Tri\u1EBFt. There is\
+      \ no `Rc<RefCell>` equivalent."
+    type_parameter:
+      name: T
+      bound: AtomicValue
+      description: 'Must implement the AtomicValue marker trait. Qualifying types:
+        Trit, Tryte, Integer, Trilean, Pointer.'
+    ordering:
+      kind: enum
+      name: Ordering
+      description: "Memory ordering mapped to Trit polarity per ADR-0028 \xA73."
+      variants:
+      - name: Relaxed
+        trit: -1
+        description: No ordering guarantees. Single-bit / flag patterns only.
+      - name: Synchronized
+        trit: 0
+        description: Acquire-release semantics. Default for most atomic operations.
+      - name: Strict
+        trit: 1
+        description: "Sequential consistency. Strongest barrier \u2014 use for critical\
+          \ section boundaries."
+    operations:
+      load: 'fn load(self: &+ Atomic<T>, ordering: Ordering) -> T'
+      store: 'fn store(self: &+ Atomic<T>, value: T, ordering: Ordering) -> Unit'
+      swap: 'fn swap(self: &+ Atomic<T>, value: T, ordering: Ordering) -> T'
+      compare_exchange: 'fn compare_exchange(self: &+ Atomic<T>, expected: T, desired:
+        T, success: Ordering, failure: Ordering) -> Outcome<T, T>'
+      fetch_add: 'fn fetch_add(self: &+ Atomic<Integer>, delta: Integer, ordering:
+        Ordering) -> Integer'
+      fetch_sub: 'fn fetch_sub(self: &+ Atomic<Integer>, delta: Integer, ordering:
+        Ordering) -> Integer'
+      fetch_bitwise_and: 'fn fetch_bitwise_and(self: &+ Atomic<Integer>, mask: Integer,
+        ordering: Ordering) -> Integer'
+      fetch_bitwise_or: 'fn fetch_bitwise_or(self: &+ Atomic<Integer>, mask: Integer,
+        ordering: Ordering) -> Integer'
+      fetch_bitwise_xor: 'fn fetch_bitwise_xor(self: &+ Atomic<Integer>, mask: Integer,
+        ordering: Ordering) -> Integer'
+    send_rule: "Atomic<T> is Send if T is Send. &+ Atomic<T> (frozen) is Send \u2014\
+      \ the interior mutability is safe because Atomic operations use CPU-level atomic\
+      \ instructions, not borrow-checker exclusivity."
+  '=== SECTION 4: SEND RULES (concurrency safety boundary) ===': "\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  SendRules:
+    kind: specification
+    description: "BYOS (Bring Your Own Scheduler) per ADR-0026 v2. Tri\u1EBFt core\
+      \ does NOT provide a scheduler \u2014 it provides Send derivation rules that\
+      \ any scheduler (stdlib or external) can rely on. A type is Send if it is safe\
+      \ to transfer ownership across a thread/actor boundary."
+    classification:
+    - category: always_send
+      types:
+      - Trit
+      - Tryte
+      - Integer
+      - Long
+      - Trilean
+      - Unit
+      - String
+      rationale: Primitives and immutable values are trivially Send.
+    - category: send_if_inner_send
+      types:
+      - Nullable<T>
+      - Tuple<T...>
+      - Range<T>
+      - Vector<T>
+      - HashMap<K,V>
+      - BinaryOutcome<V,E>
+      - TernaryOutcome<V,E>
+      - Atomic<T>
+      rationale: Composite is Send iff all its type parameters are Send.
+    - category: never_send
+      types:
+      - Pointer
+      - RawMemory
+      - '&+ mutable T'
+      - '&0 mutable T'
+      - '&- T'
+      rationale: Mutable references, weak observers, and raw pointers cannot cross
+        thread boundary safely.
+    - category: send_if_frozen
+      types:
+      - '&+ T'
+      rationale: Frozen strong owner is Send (immutable => no data race). &+ mutable
+        is NOT Send.
+    - category: send_if_all_fields_send
+      types:
+      - UserStruct { fields }
+      - UserEnum { variants }
+      rationale: "Structural Send derivation \u2014 struct/enum is Send iff every\
+        \ field is Send."
+    error_codes:
+      E2500: "NotSendCannotCrossBoundary \u2014 type does not satisfy Send, cannot\
+        \ cross thread boundary"
+      E2510: "ScopeRefLeakage \u2014 borrow (&0 / &0 mutable) outlives its scope boundary"
+      E2520: "MutableShareAntiPattern \u2014 attempted to share &+ mutable across\
+        \ threads"
+  '=== SECTION 5: TYPE SYSTEM (resolved types for typechecking) ===': "\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500"
+  Type:
+    kind: enum
+    description: "The canonical resolved-type representation. This is what the type\
+      \ checker produces \u2014 distinct from TypeExpr (syntax). Every expression\
+      \ in a Tri\u1EBFt program has a Type. The type checker resolves TypeExpr \u2192\
+      \ Type, inferring generics and validating constraints."
+    variants:
+    - name: Trit
+      discriminant: 0
+    - name: Tryte
+      discriminant: 1
+    - name: Integer
+      discriminant: 2
+    - name: Long
+      discriminant: 3
+    - name: Trilean
+      discriminant: 4
+      fields:
+      - name: refined
+        type: bool
+    - name: Unit
+      discriminant: 5
+    - name: I8
+      discriminant: 20
+      description: 8-bit signed integer. Binary native for MMIO and syscalls.
+    - name: U8
+      discriminant: 21
+      description: 8-bit unsigned integer. Byte-level data.
+    - name: I16
+      discriminant: 22
+      description: 16-bit signed integer. Port I/O, UTF-16.
+    - name: U16
+      discriminant: 23
+      description: 16-bit unsigned integer. Port I/O, UTF-16.
+    - name: I32
+      discriminant: 24
+      description: 32-bit signed integer. Syscall return values, file descriptors.
+    - name: U32
+      discriminant: 25
+      description: 32-bit unsigned integer.
+    - name: I64
+      discriminant: 26
+      description: 64-bit signed integer. Size_t, DMA addresses.
+    - name: U64
+      discriminant: 27
+      description: 64-bit unsigned integer. Size_t, DMA addresses.
+    - name: F64
+      discriminant: 28
+      description: 64-bit floating point.
+    - name: Pointer
+      discriminant: 29
+      description: Raw pointer, FFI opaque handles.
+    - name: String
+      discriminant: 6
+    - name: Nullable
+      discriminant: 7
+      fields:
+      - name: inner
+        type: Type
+    - name: Tuple
+      discriminant: 8
+      fields:
+      - name: elements
+        type: vector<Type>
+    - name: Range
+      discriminant: 9
+      fields:
+      - name: element_type
+        type: Type
+    - name: Vector
+      discriminant: 10
+      fields:
+      - name: element_type
+        type: Type
+    - name: HashMap
+      discriminant: 11
+      fields:
+      - name: key_type
+        type: Type
+      - name: value_type
+        type: Type
+    - name: Function
+      discriminant: 12
+      fields:
+      - name: type_params
+        type: vector<TypeParam>
+      - name: parameters
+        type: vector<Type>
+      - name: return_type
+        type: Type
+    - name: BinaryOutcome
+      discriminant: 13
+      fields:
+      - name: value_type
+        type: Type
+      - name: error_type
+        type: Type
+      description: "Error-handling type `T~E` per ADR-0020. Binary outcome: success\
+        \ T (Trit::Positive) or failure E (Trit::Negative). Trit::Zero is NOT valid\
+        \ \u2014 constructing `~0` on T~E is a compile-time error (E1025). Pattern\
+        \ matching MUST cover both arms; no null arm exists."
+    - name: TernaryOutcome
+      discriminant: 19
+      fields:
+      - name: value_type
+        type: Type
+      - name: error_type
+        type: Type
+      description: "Error-handling type `T?~E` per ADR-0020. Ternary outcome: success\
+        \ T (Trit::Positive), null (Trit::Zero), or failure E (Trit::Negative). All\
+        \ three states are valid. Pattern matching MUST cover all three arms. Unlike\
+        \ binary Outcome, the null state is first-class \u2014 this is NOT the same\
+        \ as Nullable<Outcome<T,E>> because the Trit discriminator carries all three\
+        \ states at the same level."
+    - name: UserStruct
+      discriminant: 14
+      fields:
+      - name: name
+        type: string
+      - name: type_params
+        type: vector<TypeParam>
+      - name: fields
+        type: vector<StructField>
+    - name: UserEnum
+      discriminant: 15
+      fields:
+      - name: name
+        type: string
+      - name: type_params
+        type: vector<TypeParam>
+      - name: variants
+        type: vector<EnumVariant>
+    - name: TypeParam
+      discriminant: 16
+      fields:
+      - name: name
+        type: string
+      description: 'A generic type parameter: `T` in `struct Box<T>`.'
+    - name: Reference
+      discriminant: 17
+      fields:
+      - name: form
+        type: ReferenceForm
+      - name: inner
+        type: Type
+      description: "A reference type: `&+ Integer`, `&0 mutable String`, etc. One\
+        \ of the 5 S6 reference forms. A value accessed through a reference \u2014\
+        \ the reference form determines aliasing, mutability, and Send capability."
+    - name: Atomic
+      discriminant: 18
+      fields:
+      - name: inner
+        type: Type
+    - name: Unknown
+      discriminant: 255
+      description: "Recovery placeholder \u2014 type checker could not determine this\
+        \ type. Used to suppress cascading errors. Never valid in a successfully-compiled\
+        \ program."
+  StructField:
+    kind: struct
+    description: A field in a struct definition. Fields are immutable by default;
+      `mutable` keyword enables mutation after construction.
+    fields:
+    - name: name
+      type: string
+      description: Field name.
+    - name: field_type
+      type: TypeId
+      ownership: borrow
+      description: Field type.
+    - name: is_mutable
+      type: bool
+      default: false
+      description: True if declared with `mutable` keyword.
+    - name: visibility
+      type: Visibility
+      ownership: owned
+      description: public / public(package) / private.
+  EnumVariant:
+    kind: struct
+    description: A variant in an enum definition. May carry an optional payload type.
+    fields:
+    - name: name
+      type: string
+      description: Variant name.
+    - name: payload
+      type: option<Type>
+      ownership: owned
+      description: Optional payload type. None = unit variant (no data).
+    - name: discriminant_value
+      type: option<Integer>
+      description: Explicit discriminant value for FFI compatibility. Auto-assigned
+        if None.
+  Visibility:
+    kind: enum
+    description: Item visibility per ADR-0005.
+    variants:
+    - name: Private
+      discriminant: 0
+      syntax: (no keyword)
+      description: Visible only within the current module.
+    - name: PublicPackage
+      discriminant: 1
+      syntax: public(package)
+      description: Visible within the same package.
+    - name: Public
+      discriminant: 2
+      syntax: public
+      description: Visible to all importing code.
+  "=== SECTION 6: AST \u2014 Expressions ===": "\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  Expr:
+    kind: enum
+    description: "An expression \u2014 anything that produces a value. Recursive children\
+      \ reference other nodes through arena handles (ExprId, PatternId, TypeId) for\
+      \ memory efficiency and cache locality."
+    storage: arena
+    variants:
+    - name: IntegerLiteral
+      category: literal
+      fields:
+      - name: value
+        type: i128
+      - name: suffix
+        type: option<NumericSuffix>
+        description: 'Optional explicit type: 1_tryte, 42_integer.'
+    - name: TernaryLiteral
+      category: literal
+      fields:
+      - name: value
+        type: i128
+        description: Balanced-ternary literal 0t+0-+ decoded to numeric value.
+    - name: TritLiteral
+      category: literal
+      fields:
+      - name: value
+        type: i8
+        description: -1_trit, 0_trit, or 1_trit.
+    - name: TrileanLiteral
+      category: literal
+      fields:
+      - name: value
+        type: TrileanValue
+        description: true, false, or unknown.
+    - name: StringLiteral
+      category: literal
+      fields:
+      - name: value
+        type: string
+    - name: FStringLiteral
+      category: literal
+      fields:
+      - name: segments
+        type: vector<FStringPart>
+        description: Interleaved string parts and expression interpolations.
+    - name: NullLiteral
+      category: literal
+      fields: []
+      description: "`null` \u2014 only valid where Nullable<T> is expected."
+    - name: Identifier
+      category: name
+      fields:
+      - name: name
+        type: string
+    - name: FieldAccess
+      category: access
+      fields:
+      - name: object
+        type: ExprId
+        ownership: borrow
+      - name: field
+        type: string
+    - name: TupleIndex
+      category: access
+      fields:
+      - name: tuple
+        type: ExprId
+        ownership: borrow
+      - name: index
+        type: usize
+    - name: Call
+      category: call
+      fields:
+      - name: callee
+        type: ExprId
+        ownership: borrow
+      - name: arguments
+        type: vector<ExprId>
+        ownership: borrow
+        description: Positional arguments.
+    - name: MethodCall
+      category: call
+      fields:
+      - name: receiver
+        type: ExprId
+        ownership: borrow
+      - name: method
+        type: string
+      - name: arguments
+        type: vector<ExprId>
+        ownership: borrow
+    - name: BinaryOp
+      category: operator
+      fields:
+      - name: operator
+        type: BinaryOperator
+      - name: left
+        type: ExprId
+        ownership: borrow
+      - name: right
+        type: ExprId
+        ownership: borrow
+    - name: UnaryOp
+      category: operator
+      fields:
+      - name: operator
+        type: UnaryOperator
+      - name: operand
+        type: ExprId
+        ownership: borrow
+    - name: Borrow
+      category: ownership
+      description: "Borrow expression: `&+ x`, `&0 mutable x`, `&- x`, etc. Prefix\
+        \ unary tier. Operand restricted to IDENT + field-access chains per ADR-0031\
+        \ \xA72."
+      fields:
+      - name: form
+        type: ReferenceForm
+      - name: operand
+        type: ExprId
+        ownership: borrow
+    - name: Block
+      category: control_flow
+      description: Block expression `{ ... }`. Evaluates to the last expression's
+        value (or Unit if empty).
+      fields:
+      - name: statements
+        type: vector<StmtId>
+        ownership: owned
+      - name: final_expr
+        type: option<ExprId>
+        ownership: owned
+        description: Optional trailing expression whose value becomes the block's
+          value.
+    - name: If
+      category: control_flow
+      description: "`if cond { ... }` (optionally `else { ... }`), per SPEC grammar\
+        \ `if_expr = (\"if\" | \"if?\") expr block (\"else\" block)?`. Plain `if`\
+        \ requires Trilean! (refined, non-Unknown) per ADR-0021 \u2014 unrefined Trilean\
+        \ raises E1033. `if?` accepts unrefined Trilean and treats Unknown as false;\
+        \ it parses to the SAME shape with `treat_unknown_as_false = true`. Lowering\
+        \ the flag into a 3-way trit branch is triet-lower's job (MIR), not the AST's."
+      fields:
+      - name: condition
+        type: ExprId
+        ownership: borrow
+      - name: then_branch
+        type: ExprId
+        ownership: owned
+      - name: else_branch
+        type: option<ExprId>
+        ownership: owned
+        description: None = implicit `else {}` returning Unit.
+      - name: treat_unknown_as_false
+        type: bool
+        description: "True for `if?` \u2014 Unknown condition takes the else branch.\
+          \ False for plain `if` (which requires Trilean!)."
+    - name: While
+      category: control_flow
+      fields:
+      - name: condition
+        type: ExprId
+        ownership: borrow
+        type_constraint: 'Trilean { refined: true }'
+      - name: body
+        type: ExprId
+        ownership: owned
+    - name: Match
+      category: control_flow
+      description: "Pattern match on enum/struct/trilean. Must be exhaustive \u2014\
+        \ compiler checks every variant is covered."
+      fields:
+      - name: scrutinee
+        type: ExprId
+        ownership: borrow
+      - name: arms
+        type: vector<MatchArm>
+        ownership: owned
+    - name: Lambda
+      category: function
+      description: "Anonymous function `|x, y| x + y`. Captures variables from enclosing\
+        \ scope \u2014 borrow checker validates capture lifetimes."
+      fields:
+      - name: parameters
+        type: vector<LambdaParam>
+        ownership: owned
+      - name: return_type_annotation
+        type: option<TypeId>
+        ownership: borrow
+      - name: body
+        type: ExprId
+        ownership: owned
+    - name: Return
+      category: control_flow
+      fields:
+      - name: value
+        type: option<ExprId>
+        ownership: owned
+        description: None = `return;` in void function.
+    - name: StructLiteral
+      category: construction
+      description: 'Struct construction: `Point { x: 10, y: 20 }`. All fields must
+        be provided (no default field values in v1.0).'
+      fields:
+      - name: struct_name
+        type: string
+      - name: fields
+        type: vector<(string, ExprId)>
+        ownership: owned
+        description: "Field name \u2192 value pairs, in source order."
+    - name: OutcomeConstructor
+      category: construction
+      description: "Outcome constructors per ADR-0020: `~+ value` (success), `~0`\
+        \ (null \u2014 T?~E only), `~- error` (failure)."
+      fields:
+      - name: arm
+        type: OutcomeArmDiscriminant
+      - name: payload
+        type: option<ExprId>
+        ownership: owned
+        description: None for ~0.
+    - name: OutcomePropagate
+      category: control_flow
+      description: "Propagation operator `expr ~? |capture| early_return` per ADR-0020.\
+        \ If expr is ~+ \u2192 unwrap success. If ~- \u2192 bind error to capture\
+        \ variable, execute early_return (typically `return ~- capture`). If ~0 \u2192\
+        \ propagate null (T?~E only)."
+      fields:
+      - name: expr
+        type: ExprId
+        ownership: borrow
+      - name: capture_var
+        type: string
+        description: Variable name that captures the error value on failure.
+      - name: early_return
+        type: ExprId
+        ownership: owned
+    - name: OutcomeDefault
+      category: control_flow
+      description: "Default operator `expr ~: default_value` per ADR-0020. If expr\
+        \ is ~+ \u2192 unwrap success. Otherwise \u2192 replace with default_value."
+      fields:
+      - name: expr
+        type: ExprId
+        ownership: borrow
+      - name: default_value
+        type: ExprId
+        ownership: owned
+    - name: SafeFieldAccess
+      category: access
+      description: "Safe field access `obj?.field` — yields null if the object is null. Nullable sugar."
+      fields:
+      - name: object
+        type: ExprId
+        ownership: borrow
+      - name: field
+        type: string
+    - name: SafeMethodCall
+      category: call
+      description: "Safe method call `obj?.method(args)` — yields null if the object is null. Nullable sugar."
+      fields:
+      - name: receiver
+        type: ExprId
+        ownership: borrow
+      - name: method
+        type: string
+      - name: arguments
+        type: vector<ExprId>
+        ownership: borrow
+    - name: ElvisOp
+      category: operator
+      description: "Elvis operator `obj ?: default` — replace null with default value. Nullable sugar."
+      fields:
+      - name: object
+        type: ExprId
+        ownership: borrow
+      - name: default
+        type: ExprId
+        ownership: owned
+    - name: ForceUnwrap
+      category: operator
+      description: "Force unwrap `expr!!` — panic if null. Deliberately verbose per explicit-strictness convention."
+      fields:
+      - name: operand
+        type: ExprId
+        ownership: borrow
+    - name: Tuple
+      category: construction
+      description: "Tuple literal `(a, b, c)`. Fixed-size heterogeneous collection."
+      fields:
+      - name: elements
+        type: vector<ExprId>
+        ownership: owned
+    - name: Range
+      category: construction
+      description: "Range expression `start..end` (exclusive) or `start..=end` (inclusive)."
+      fields:
+      - name: start
+        type: ExprId
+        ownership: borrow
+      - name: end
+        type: ExprId
+        ownership: borrow
+      - name: inclusive
+        type: bool
+    - name: EnumLiteral
+      category: construction
+      description: "Enum variant literal `Some(5)`, `None`. Constructs an enum value."
+      fields:
+      - name: name
+        type: string
+        description: Enum type name.
+      - name: variant_name
+        type: string
+        description: Variant name within the enum.
+      - name: payload
+        type: option<ExprId>
+        ownership: owned
+        description: Optional payload. None = unit variant.
+    - name: OutcomeArmHandler
+      category: control_flow
+      description: "Ternary arm handler per ADR-0020 §3: `expr ~+> |v| body` / `expr ~0> body` / `expr ~-> |e| body`. Targets exactly one trit arm of the outcome discriminator."
+      fields:
+      - name: inner
+        type: ExprId
+        ownership: borrow
+      - name: arm
+        type: OutcomeArmDiscriminant
+      - name: capture_name
+        type: option<string>
+        description: Name to bind arm payload. None for `~0>` or `|_|` discard.
+      - name: body
+        type: ExprId
+        ownership: owned
+  BinaryOperator:
+    kind: enum
+    description: "All binary operators in Tri\u1EBFt. Symbolic form is preferred per\
+      \ user convention. Both symbolic and keyword forms are valid and parse to the\
+      \ same variant."
+    variants:
+    - name: Add
+      symbol: +
+      category: arithmetic
+    - name: Sub
+      symbol: '-'
+      category: arithmetic
+    - name: Mul
+      symbol: '*'
+      category: arithmetic
+    - name: Div
+      symbol: /
+      category: arithmetic
+    - name: Mod
+      symbol: '%'
+      category: arithmetic
+    - name: Pow
+      symbol: '**'
+      category: arithmetic
+    - name: Eq
+      symbol: ==
+      category: comparison
+      note: "\u01413-aware per ADR-0010: Unknown == Unknown \u2192 Unknown (not True)."
+    - name: Ne
+      symbol: '!='
+      category: comparison
+      note: "\u01413-aware: Unknown != Unknown \u2192 Unknown."
+    - name: Lt
+      symbol: <
+      category: comparison
+    - name: Le
+      symbol: <=
+      category: comparison
+    - name: Gt
+      symbol: '>'
+      category: comparison
+    - name: Ge
+      symbol: '>='
+      category: comparison
+    - name: LukAnd
+      symbol: '&&'
+      keyword: and
+      category: logic
+      semantics: "\u0141ukasiewicz \u01413 conjunction"
+    - name: LukOr
+      symbol: '||'
+      keyword: or
+      category: logic
+      semantics: "\u0141ukasiewicz \u01413 disjunction"
+    - name: LukXor
+      symbol: ^
+      keyword: xor
+      category: logic
+      semantics: "\u0141ukasiewicz \u01413 exclusive-or"
+    - name: LukImplies
+      symbol: =>
+      keyword: implies
+      category: logic
+      semantics: "\u0141ukasiewicz \u01413 implication"
+    - name: LukIff
+      symbol: <=>
+      keyword: iff
+      category: logic
+      semantics: "\u0141ukasiewicz \u01413 if-and-only-if"
+    - name: KleeneImplies
+      symbol: ~>
+      keyword: kleene_implies
+      category: logic
+      semantics: Kleene K3 implication
+    - name: KleeneXor
+      symbol: ~^
+      keyword: kleene_xor
+      category: logic
+      semantics: Kleene K3 exclusive-or
+    - name: KleeneIff
+      symbol: <~>
+      keyword: kleene_iff
+      category: logic
+      semantics: Kleene K3 if-and-only-if
+  UnaryOperator:
+    kind: enum
+    description: Unary operators.
+    variants:
+    - name: Negate
+      symbol: '-'
+      category: arithmetic
+      description: "Ternary negation: maps (+,0,-) \u2192 (-,0,+)."
+    - name: Not
+      symbol: '!'
+      keyword: not
+      category: logic
+      description: "\u0141ukasiewicz \u01413 negation."
+    - name: KleeneNot
+      symbol: ~!
+      keyword: kleene_not
+      category: logic
+      description: Kleene K3 negation.
+  TrileanValue:
+    kind: enum
+    description: Compile-time-known Trilean literal values.
+    variants:
+    - name: 'True'
+      trit: 1
+      refinement: Trilean!
+    - name: 'False'
+      trit: -1
+      refinement: Trilean!
+    - name: Unknown
+      trit: 0
+      refinement: Trilean
+  "=== SECTION 7: AST \u2014 Statements ===": "\u2500\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  Stmt:
+    kind: enum
+    storage: arena
+    description: "A statement \u2014 an action that executes for its side effect,\
+      \ producing no value (or Unit)."
+    variants:
+    - name: Let
+      fields:
+      - name: name
+        type: string
+      - name: type_annotation
+        type: option<TypeId>
+        ownership: borrow
+      - name: is_mutable
+        type: bool
+        default: false
+      - name: init
+        type: ExprId
+        ownership: owned
+    - name: Expression
+      fields:
+      - name: expr
+        type: ExprId
+        ownership: owned
+      description: "Expression used as statement \u2014 value discarded."
+    - name: Assignment
+      fields:
+      - name: target
+        type: ExprId
+        ownership: borrow
+        constraint: Must be a mutable binding or mutable field.
+      - name: value
+        type: ExprId
+        ownership: owned
+      description: 'Assignment to mutable binding: `x = 42`. Only valid for `mutable`
+        bindings and `mutable` struct fields.'
+    - name: While
+      category: control_flow
+      description: "While loop as statement. Condition must be Trilean!."
+      fields:
+      - name: condition
+        type: ExprId
+        ownership: borrow
+      - name: body
+        type: ExprId
+        ownership: owned
+      - name: treat_unknown_as_false
+        type: bool
+        default: false
+    - name: For
+      category: control_flow
+      description: "For-in loop over an iterable."
+      fields:
+      - name: variable
+        type: PatternId
+      - name: iterable
+        type: ExprId
+        ownership: borrow
+      - name: body
+        type: ExprId
+        ownership: owned
+    - name: Loop
+      category: control_flow
+      description: "Infinite loop `loop { ... }`."
+      fields:
+      - name: body
+        type: ExprId
+        ownership: owned
+    - name: Break
+      category: control_flow
+      description: "Break out of the enclosing loop."
+    - name: Continue
+      category: control_flow
+      description: "Continue to the next iteration of the enclosing loop."
+    - name: Return
+      category: control_flow
+      description: "Return from function (statement form)."
+      fields:
+      - name: value
+        type: option<ExprId>
+        ownership: owned
+    - name: Const
+      category: declaration
+      description: "Compile-time constant: `constant NAME: Type = value;`."
+      fields:
+      - name: name
+        type: string
+      - name: type_annotation
+        type: option<TypeId>
+        ownership: borrow
+      - name: value
+        type: ExprId
+        ownership: owned
+  "=== SECTION 8: AST \u2014 Top-Level Items ===": "\u2500\u2500\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  FunctionParam:
+    kind: struct
+    description: A function parameter. Parameters are read-only by default. To mutate
+      a parameter, declare it as `mutable` on the binding, or take ownership via `&+`/`&+
+      mutable`.
+    fields:
+    - name: name
+      type: string
+    - name: type_annotation
+      type: TypeId
+      ownership: borrow
+    - name: passing_mode
+      type: ParameterPassing
+      default: Borrow
+      description: 'How the argument is passed: borrow (default &0), move (&+), or
+        mutable borrow (&0 mutable).'
+  ParameterPassing:
+    kind: enum
+    description: How a function parameter receives its argument. Default is Borrow
+      (implicit &0).
+    variants:
+    - name: Borrow
+      description: "Default. Implicit &0 \u2014 read-only borrow. Multiple callers\
+        \ can borrow simultaneously."
+    - name: Move
+      description: "Explicit &+ \u2014 caller transfers ownership. After call, caller\
+        \ cannot use the value (E2420)."
+    - name: MutableBorrow
+      description: "Explicit &0 mutable \u2014 exclusive mutable borrow. Caller loses\
+        \ access for the borrow's duration."
+  FunctionDef:
+    kind: struct
+    description: "A function definition. `function name(params) -> ReturnType { body\
+      \ }`. Functions are the fundamental unit of computation in Tri\u1EBFt."
+    fields:
+    - name: name
+      type: string
+    - name: type_params
+      type: vector<TypeParam>
+      ownership: owned
+      description: Generic type parameters. Empty = monomorphic.
+    - name: params
+      type: vector<FunctionParam>
+      ownership: owned
+    - name: return_type
+      type: option<TypeId>
+      ownership: borrow
+      description: Return type annotation. None = inferred (single-expression `= expr` bodies).
+    - name: body
+      type: FunctionBody
+      ownership: owned
+    - name: visibility
+      type: Visibility
+      default: Private
+  FunctionBody:
+    kind: enum
+    description: "Function body \u2014 either a block or external (FFI)."
+    variants:
+    - name: Block
+      fields:
+      - name: block
+        type: ExprId
+        ownership: owned
+    - name: Expression
+      fields:
+      - name: expr
+        type: ExprId
+        ownership: owned
+      description: "Single-expression body without braces."
+    - name: External
+      fields:
+      - name: abi
+        type: string
+        description: e.g. 'C', 'C-unwind'
+      description: "FFI function \u2014 body is provided by external C/Rust code."
+  StructDef:
+    kind: struct
+    description: '`struct Name { field: Type, ... }`.'
+    fields:
+    - name: name
+      type: string
+    - name: type_params
+      type: vector<TypeParam>
+      ownership: owned
+    - name: fields
+      type: vector<StructField>
+      ownership: owned
+    - name: visibility
+      type: Visibility
+      default: Private
+  EnumDef:
+    kind: struct
+    description: '`enum Name { Variant(Payload), Variant2, ... }`.'
+    fields:
+    - name: name
+      type: string
+    - name: type_params
+      type: vector<TypeParam>
+      ownership: owned
+    - name: variants
+      type: vector<EnumVariant>
+      ownership: owned
+    - name: visibility
+      type: Visibility
+      default: Private
+  TypeParam:
+    kind: struct
+    description: 'A generic type parameter declaration: `T` in `function id<T>(x:
+      T) -> T`.'
+    fields:
+    - name: name
+      type: string
+    - name: bounds
+      type: vector<GenericBound>
+      ownership: owned
+      description: Trait/interface bounds (empty = unconstrained).
+  Import:
+    kind: struct
+    description: 'Import declaration: `from std.io import println, read_line`.'
+    fields:
+    - name: module_path
+      type: ImportPath
+      ownership: owned
+    - name: names
+      type: vector<ImportName>
+      ownership: owned
+  ModuleContent:
+    kind: enum
+    description: "Body of a module declaration. Per ADR-0005 module declarations\
+      \ are first-class: file layout is convention, not semantics."
+    variants:
+    - name: Inline
+      fields:
+      - name: items
+        type: vector<Spanned<Item>>
+        ownership: owned
+      description: "`module foo { items }` — body inlined at the declaration site.\
+        \ Items carry source spans for diagnostics."
+    - name: External
+      description: "`module foo;` — body lives in `foo.tri` or `foo/foo.tri`;\
+        \ the module loader resolves the file."
+  ModuleItem:
+    kind: struct
+    description: "A module declaration: `module foo { ... }` (inline) or `module foo;`\
+      \ (file-bound). Per ADR-0005."
+    fields:
+    - name: name
+      type: string
+    - name: content
+      type: ModuleContent
+      ownership: owned
+    - name: visibility
+      type: Visibility
+      default: Private
+  Item:
+    kind: enum
+    description: "A top-level item in a Tri\u1EBFt source file."
+    variants:
+    - name: Function
+      fields:
+      - name: def
+        type: FunctionDef
+        ownership: owned
+    - name: Struct
+      fields:
+      - name: def
+        type: StructDef
+        ownership: owned
+    - name: Enum
+      fields:
+      - name: def
+        type: EnumDef
+        ownership: owned
+    - name: Import
+      fields:
+      - name: import
+        type: Import
+        ownership: owned
+    - name: Module
+      fields:
+      - name: module
+        type: ModuleItem
+        ownership: owned
+    - name: Constant
+      fields:
+      - name: name
+        type: string
+      - name: type_annotation
+        type: option<TypeId>
+        ownership: borrow
+      - name: value
+        type: ExprId
+        ownership: owned
+      - name: visibility
+        type: Visibility
+        default: Private
+      description: 'Compile-time constant: `constant PI: Integer = 3`.'
+    - name: ImportFrom
+      fields:
+      - name: module_path
+        type: ImportPath
+        ownership: owned
+      - name: names
+        type: vector<ImportName>
+        ownership: owned
+      description: "Import declaration: `from std.io import println`."
+    - name: TypeAlias
+      fields:
+      - name: name
+        type: string
+      - name: type_annotation
+        type: TypeId
+        ownership: borrow
+      - name: visibility
+        type: Visibility
+        default: Private
+      description: "Type alias: `type Name = SomeType;`."
+  Program:
+    kind: struct
+    description: "Root of a Tri\u1EBFt compilation unit. Owns its Arena \u2014 all\
+      \ AST nodes live here. This is the parser's output and the type checker's input."
+    fields:
+    - name: arena
+      type: Arena
+      ownership: owned
+    - name: items
+      type: vector<Spanned<Item>>
+      ownership: owned
+    - name: source_file
+      type: string
+      description: Path of the source file (for diagnostics).
+  '=== SECTION 9: BORROW CHECKER (compile-time safety rules) ===': "\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  BorrowChecker:
+    kind: specification
+    description: "Compile-time enforcement of the S6 ownership model. The borrow checker\
+      \ runs on the AST after type checking. It tracks every reference's scope, exclusivity,\
+      \ and lifetime \u2014 rejecting any program that violates memory safety. No\
+      \ runtime checks. No garbage collector."
+    rules:
+    - id: E2420
+      name: UseAfterMove
+      severity: error
+      description: "A value that has been moved (ownership transferred via `&+` or\
+        \ `owned`) is used again. Tri\u1EBFt tracks move sites and marks the source\
+        \ binding dead."
+      example_bad: 'let x = &+ buffer; let y = x; let z = x;  // E2420: x was moved
+        into y'
+      status: SHIPPED v0.9
+    - id: E2440
+      name: NllExclusivityViolation
+      severity: error
+      description: "Two mutable references (`&0 mutable` or `&+ mutable`) to the same\
+        \ value exist simultaneously. Or a mutable reference coexists with any other\
+        \ reference. Non-Lexical Lifetime (NLL) determines when borrows actually end\
+        \ \u2014 not block scope, but last use."
+      example_bad: let b1 = &0 mutable x; let b2 = &0 mutable x;  // E2440
+      status: SHIPPED v0.10
+    - id: E2400
+      name: LifetimeInferenceFailure
+      severity: error
+      description: "A borrow's lifetime cannot be proven to outlive a use. Tri\u1EBF\
+        t uses 3-rule lifetime elision (ADR-0025 \xA76): (1) each elided parameter\
+        \ gets its own lifetime, (2) if there is exactly one input lifetime, assign\
+        \ it to all output lifetimes, (3) if there are multiple input lifetimes but\
+        \ one is `self`, assign `self`'s lifetime to all output lifetimes. If elision\
+        \ cannot resolve, the compiler requests explicit lifetime annotation (rare\
+        \ \u2014 <5% of cases in practice)."
+      status: SHIPPED v0.10
+    - id: E2403
+      name: WeakUpgradeFailure
+      severity: error
+      description: An attempt to upgrade `&- T` to `&0 T` where the owner's lifetime
+        cannot be proven to outlive the upgrade site.
+      status: DEFERRED v0.11+
+    - id: E2410
+      name: MutabilityViolation
+      severity: error
+      description: Mutation through a non-mutable reference. Assigning to a field
+        declared without `mutable`. Writing through `&0 T` (read-only borrow) instead
+        of `&0 mutable T`.
+      status: DEFERRED v0.11+
+  '=== SECTION 10: HARDWARE TOKEN (kernel-mode singleton) ===': "\u2500\u2500\u2500\
+    \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  HardwareToken:
+    kind: specification
+    description: "Capability security via S6 ownership \u2014 ZERO runtime overhead.\
+      \ Hardware resources are represented as ZST (Zero-Sized Type) tokens at compile\
+      \ time. The borrow checker enforces exclusive access via move semantics. At\
+      \ runtime, all tokens vanish (0 bytes) \u2014 only the driver's hardcoded hardware\
+      \ addresses remain. This is the same principle as Rust's zero-cost abstractions:\
+      \ the type system proves safety, the CPU sees raw pointers."
+    how_it_works:
+      step1: 'Hardware resources are ZST structs: `public struct VgaBuffer {}` (sizeof
+        = 0).'
+      step2: "The Hardware struct aggregates ZST tokens. Since all fields are ZST,\
+        \ Hardware itself is ZST \u2014 pass-by-value copies 0 bytes."
+      step3: "Resources are extracted via destructuring: `let vga: VgaBuffer = hw.vga`\
+        \ \u2014 this is a MOVE at compile time, but copies 0 bytes at runtime."
+      step4: "After move, the source field is dead. `hw.vga` cannot be accessed again\
+        \ \u2014 E2420 UseAfterMove."
+      step5: 'Dynamic resources (delegation) use small metadata structs: `VgaRegion
+        { base: &0 mutable VgaBuffer, offset_x, offset_y, width, height }`. Only metadata
+        is copied (40 bytes), not the buffer.'
+      step6: No ACL, no syscall, no runtime check. No exception unwinding (kernel
+        panic = abort).
+    why_no_special_ast_node:
+      principle: "Hardware access uses standard language constructs: struct destructuring,\
+        \ pass-by-value, borrows. The borrow checker enforces exclusivity \u2014 no\
+        \ parser magic needed."
+      precedent: C has no VgaBufferNode in its AST. Rust has no FileDescriptor AST
+        node. A struct field access is a struct field access.
+    entry_point:
+      signature: 'public function kernel_main(hw: Hardware) -> Unit'
+      note: Hardware is passed by value. Since all fields are ZST, this copies 0 bytes.
+        The exact entry point name is platform-dependent (multiboot, UEFI, etc.).
+    example:
+    - "// All hardware resource types are ZST \u2014 compile-time tokens only"
+    - 'public struct VgaBuffer {}       // ZST: sizeof = 0'
+    - 'public struct UartPort {}        // ZST: sizeof = 0'
+    - ''
+    - "// Hardware aggregates ZST tokens \u2014 itself ZST"
+    - public struct Hardware {
+    - '    vga: VgaBuffer,'
+    - '    uart: UartPort,'
+    - '}'
+    - ''
+    - // ---- kernel entry point ----
+    - 'public function kernel_main(hw: Hardware) -> Unit {'
+    - '    // Destructure: move ZST fields out of hw (0 bytes copied)'
+    - '    let vga: VgaBuffer = hw.vga;'
+    - '    let uart: UartPort = hw.uart;'
+    - "    // hw consumed \u2014 ZST, no drop code"
+    - ''
+    - '    // Each driver receives a ZST token'
+    - "    vga_driver(vga);     // vga MOVED \u2014 compile-time, 0 bytes"
+    - '    uart_driver(uart);'
+    - ''
+    - "    // vga_driver(vga);  // E2420 UseAfterMove \u2014 compile-time error!"
+    - '    loop {};'
+    - '}'
+    design_properties:
+    - 'Zero-cost: hardware tokens are ZST at runtime, 0 bytes copied.'
+    - 'Compile-time: borrow checker proves each resource taken exactly once.'
+    - "No ACL, no syscall, no runtime check \u2014 capability = ownership."
+    - "No exception unwinding \u2014 kernel panic = abort (no destructors)."
+    - 'Platform-agnostic: Hardware struct defined per-platform; type system is universal.'
+    - 'Extensible: new driver = new ZST field + destructure. No parser changes.'
+codegen_example:
+  description: Example of what the code generator produces from this schema.
+  input: "Type enum definition from \xA75"
+  output_rust:
+  - '#[derive(Clone, Debug, PartialEq, Eq, Hash)]'
+  - '#[derive(::serde::Serialize, ::serde::Deserialize)]'
+  - pub enum Type {
+  - '    Trit,'
+  - '    Tryte,'
+  - '    Integer,'
+  - '    Long,'
+  - '    Trilean { refined: bool },'
+  - '    Unit,'
+  - '    String,'
+  - '    Nullable(Box<Type>),'
+  - '    Tuple(Vec<Type>),'
+  - '    Range(Box<Type>),'
+  - '    Vector(Box<Type>),'
+  - '    HashMap { key_type: Box<Type>, value_type: Box<Type> },'
+  - '    Function {'
+  - '        type_params: Vec<TypeParam>,'
+  - '        parameters: Vec<Type>,'
+  - '        return_type: Box<Type>,'
+  - '    },'
+  - '    Outcome {'
+  - '        value_type: Box<Type>,'
+  - '        error_type: Box<Type>,'
+  - '    },'
+  - '    UserStruct { name: String, type_params: Vec<TypeParam>, fields: Vec<StructField>
+    },'
+  - '    UserEnum { name: String, type_params: Vec<TypeParam>, variants: Vec<EnumVariant>
+    },'
+  - '    TypeParam(String),'
+  - '    Reference(ReferenceForm, Box<Type>),'
+  - '    Atomic(Box<Type>),'
+  - '    TernaryOutcome { value_type: Box<Type>, error_type: Box<Type> },'
+  - '    Unknown,'
+  - '}'
+  - ''
+  - '// Generated visitor trait:'
+  - pub trait TypeVisitor<R> {
+  - '    fn visit_trit(&mut self) -> R;'
+  - '    fn visit_tryte(&mut self) -> R;'
+  - '    fn visit_integer(&mut self) -> R;'
+  - '    // ... one method per variant, auto-generated'
+  - '}'
+  - ''
+  - impl Type {
+  - '    pub fn accept<R>(&self, visitor: &mut impl TypeVisitor<R>) -> R {'
+  - '        match self {'
+  - '            Type::Trit => visitor.visit_trit(),'
+  - '            Type::Tryte => visitor.visit_tryte(),'
+  - '            // ... auto-generated dispatch'
+  - '        }'
+  - '    }'
+  - '}'
+  - ''
+  - '// Generated Display impl:'
+  - impl fmt::Display for Type {
+  - '    fn fmt(&self, f: &mut fmt::Formatter<''_>) -> fmt::Result {'
+  - '        match self {'
+  - '            Type::Trit => write!(f, "Trit"),'
+  - '            Type::Trilean { refined: true } => write!(f, "Trilean!"),'
+  - '            Type::Trilean { refined: false } => write!(f, "Trilean"),'
+  - '            Type::Reference(form, inner) => write!(f, "{} {}", form, inner),'
+  - '            // ... auto-generated'
+  - '        }'
+  - '    }'
+  - '}'

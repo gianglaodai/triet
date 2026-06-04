@@ -1,0 +1,12 @@
+[package]
+name = "triet-lower"
+version = "0.1.0"
+edition = "2024"
+description = "Triết AST → MIR lowering — flattens typed AST into flat MIR control-flow graph"
+
+[dependencies]
+triet-mir = { path = "../triet-mir" }
+triet-syntax = { path = "../triet-syntax" }
+
+[dev-dependencies]
+triet-parser = { path = "../triet-parser" }

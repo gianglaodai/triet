@@ -89,8 +89,8 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
 
         for item in &module.items {
             match &item.node {
-                Item::Import(import_path) => {
-                    if let Some(target) = resolve_import_target(&import_path.segments) {
+                Item::Import { import } => {
+                    if let Some(target) = resolve_import_target(&import.module_path.segments) {
                         // Skip stdlib edges — synthetic, cannot cycle.
                         if !target.is_reserved_root() {
                             edges.push(ImportEdge {
@@ -100,8 +100,8 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
                         }
                     }
                 }
-                Item::ImportFrom(import_from) => {
-                    if let Some(target) = resolve_import_target(&import_from.source)
+                Item::ImportFrom { module_path, .. } => {
+                    if let Some(target) = resolve_import_target(&module_path.segments)
                         && !target.is_reserved_root()
                     {
                         edges.push(ImportEdge {
@@ -114,7 +114,7 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
                 Item::Function { .. }
                 | Item::Struct { .. }
                 | Item::Enum { .. }
-                | Item::Const { .. }
+                | Item::Constant { .. }
                 | Item::Module { .. }
                 | Item::TypeAlias { .. } => {}
             }

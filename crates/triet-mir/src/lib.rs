@@ -1,0 +1,894 @@
+//! Triết MIR (Mid-level Intermediate Representation).
+//!
+//! A flat, non-nested, control-flow-graph-based IR that sits between the
+//! AST and the borrow checker / codegen backend. MIR eliminates AST nesting,
+//! makes control flow explicit, and enables dataflow analysis (liveness,
+//! NLL borrow checking).
+//!
+//! # Pipeline position
+//!
+//! ```text
+//! AST → MIR (lowering) → CFG (build) → Borrow Check (dataflow) → Codegen
+//! ```
+//!
+//! # Design principles
+//!
+//! - **Flat:** Every temporary, variable, and intermediate value gets a
+//!   `Local` index. No nesting, no trees.
+//! - **Explicit control flow:** Basic blocks connected by terminators.
+//!   No implicit fall-through beyond block boundaries.
+//! - **Ownership-annotated:** Function signatures carry parameter passing
+//!   modes (Borrow/Move/MutableBorrow) and return-borrow dependency info.
+//! - **Independent crate:** MIR is consumed by both the borrow checker and
+//!   the codegen backend. It does NOT depend on AST types.
+
+#![warn(missing_docs)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+// ── Index types ──────────────────────────────────────────────
+
+/// Index into a function's local variable table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Local(pub usize);
+
+impl fmt::Display for Local {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "_{}", self.0)
+    }
+}
+
+/// Index identifying a basic block within a function body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BasicBlock(pub usize);
+
+impl fmt::Display for BasicBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "bb{}", self.0)
+    }
+}
+
+/// Index into a function table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionId(pub usize);
+
+// ── Places + projections ────────────────────────────────────
+
+/// A single step in a [`Place`] projection chain.
+///
+/// Projections refine a base [`Local`] down to a sub-location. The borrow
+/// checker derives a field path from these to track loans at field
+/// granularity (e.g. borrowing `vga.left` must not freeze `vga.right`) —
+/// `Field(name)` maps directly to the borrow checker's `FieldPath::Field`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Projection {
+    /// `*p` — dereference a reference/pointer.
+    Deref,
+    /// `p.name` — access a named struct field.
+    Field(String),
+    /// `p[i]` — index into a collection by the value held in a local.
+    Index(Local),
+}
+
+/// A memory location: a base [`Local`] refined by zero or more projections.
+///
+/// A bare local is `Place { local, projection: [] }`. `obj.field` is
+/// `Place { local: obj, projection: [Field("field")] }`. `*r` is
+/// `Place { local: r, projection: [Deref] }`. Chains compose left-to-right.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Place {
+    /// The base local the projection chain starts from.
+    pub local: Local,
+    /// Projection steps applied in order.
+    pub projection: Vec<Projection>,
+}
+
+impl Place {
+    /// A place referring to a whole local with no projections.
+    #[must_use]
+    pub const fn local(local: Local) -> Self {
+        Self {
+            local,
+            projection: Vec::new(),
+        }
+    }
+
+    /// Return a new place with `proj` appended to this place's chain.
+    #[must_use]
+    pub fn project(&self, proj: Projection) -> Self {
+        let mut projection = self.projection.clone();
+        projection.push(proj);
+        Self {
+            local: self.local,
+            projection,
+        }
+    }
+}
+
+impl From<Local> for Place {
+    fn from(local: Local) -> Self {
+        Self::local(local)
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = self.local.to_string();
+        for proj in &self.projection {
+            s = match proj {
+                Projection::Deref => format!("(*{s})"),
+                Projection::Field(name) => format!("{s}.{name}"),
+                Projection::Index(i) => format!("{s}[{i}]"),
+            };
+        }
+        f.write_str(&s)
+    }
+}
+
+/// Declaration of a local: its type (as a display string) and mutability.
+///
+/// MIR stays independent of AST types, so the type is carried as a name
+/// string rather than a `triet_syntax::Type`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalDecl {
+    /// Type name, for diagnostics and layout lookup (e.g. "Integer", "Point").
+    pub ty: String,
+    /// Whether the binding is mutable.
+    pub mutable: bool,
+}
+
+impl LocalDecl {
+    /// A temporary/local of the given type, immutable by default.
+    #[must_use]
+    pub fn new(ty: &str) -> Self {
+        Self {
+            ty: ty.to_string(),
+            mutable: false,
+        }
+    }
+}
+
+// ── MIR statements ──────────────────────────────────────────
+
+/// A single MIR statement — a simple, flat operation.
+///
+/// Each statement operates on `Local` values only. Any nesting in the
+/// original AST is broken into temporaries during lowering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Statement {
+    /// Mark a local as live (created). Must precede any use.
+    StorageLive(Local),
+
+    /// Mark a local as dead (dropped). Must follow the last use.
+    StorageDead(Local),
+
+    /// `dest = source` — copy or move depending on types.
+    Assign {
+        /// Destination place.
+        dest: Place,
+        /// Source place.
+        source: Place,
+    },
+
+    /// `dest = &form source` — create a reference to source.
+    Borrow {
+        /// Destination place (the new reference).
+        dest: Place,
+        /// Which S6 reference form.
+        form: ReferenceForm,
+        /// The place being borrowed (may be a field/deref projection).
+        source: Place,
+    },
+
+    /// `dest = const` — load a compile-time constant.
+    Const {
+        /// Destination place.
+        dest: Place,
+        /// Constant value as a human-readable string (placeholder).
+        value: ConstValue,
+    },
+
+    /// Binary operation: `dest = left op right`.
+    BinaryOp {
+        /// Destination place.
+        dest: Place,
+        /// Operator kind.
+        op: BinOp,
+        /// Left operand.
+        left: Place,
+        /// Right operand.
+        right: Place,
+    },
+
+    /// Discriminant of an Outcome value: `dest = discriminant(source)`.
+    /// Returns a Trit indicating the Outcome arm.
+    OutcomeDiscriminant {
+        /// Destination place (Trit).
+        dest: Place,
+        /// Source Outcome value.
+        source: Place,
+    },
+
+    /// Unwrap success arm of Outcome: `dest = unwrap_value(source)`.
+    OutcomeUnwrap {
+        /// Destination place (success payload).
+        dest: Place,
+        /// Source Outcome value.
+        source: Place,
+    },
+
+    /// Unwrap error arm of Outcome: `dest = unwrap_error(source)`.
+    OutcomeUnwrapError {
+        /// Destination place (error payload).
+        dest: Place,
+        /// Source Outcome value.
+        source: Place,
+    },
+
+    /// Drop a local's value (decrement refcount or free memory).
+    Drop(Local),
+}
+
+/// Compile-time constant value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstValue {
+    /// Integer literal.
+    Integer(i128),
+    /// Trit literal: -1, 0, or 1.
+    Trit(i8),
+    /// Unit `()`.
+    Unit,
+    /// String literal placeholder.
+    String(String),
+}
+
+/// Binary operators in MIR (subset of AST BinaryOperator).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    /// Arithmetic addition.
+    Add,
+    /// Arithmetic subtraction.
+    Sub,
+    /// Arithmetic multiplication.
+    Mul,
+    /// Greater-than comparison.
+    Gt,
+    /// Less-than-or-equal comparison.
+    Le,
+}
+
+/// S6 reference forms (mirrors triet_syntax::ReferenceForm).
+///
+/// Duplicated here to keep triet-mir independent of triet-syntax.
+/// Must stay in sync with the AST definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ReferenceForm {
+    /// `&+ T` — strong owner, frozen.
+    StrongFrozen,
+    /// `&+ mutable T` — strong owner, mutable.
+    StrongMutable,
+    /// `&0 T` — scope borrow, read-only.
+    BorrowReadOnly,
+    /// `&0 mutable T` — scope borrow, exclusive mutable.
+    BorrowExclusiveMutable,
+    /// `&- T` — weak observer.
+    WeakObserver,
+}
+
+impl fmt::Display for ReferenceForm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StrongFrozen => write!(f, "&+"),
+            Self::StrongMutable => write!(f, "&+ mutable"),
+            Self::BorrowReadOnly => write!(f, "&0"),
+            Self::BorrowExclusiveMutable => write!(f, "&0 mutable"),
+            Self::WeakObserver => write!(f, "&-"),
+        }
+    }
+}
+
+/// How a parameter is passed at a call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterPassing {
+    /// Borrow (default `&0`) — callee borrows, caller retains ownership.
+    Borrow,
+    /// Move (`&+` / `owned`) — ownership transferred to callee.
+    Move,
+    /// Mutable borrow (`&0 mutable`) — exclusive borrow for call duration.
+    MutableBorrow,
+}
+
+impl fmt::Display for ParameterPassing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Borrow => write!(f, "borrow"),
+            Self::Move => write!(f, "move"),
+            Self::MutableBorrow => write!(f, "mut_borrow"),
+        }
+    }
+}
+
+// ── MIR terminators ─────────────────────────────────────────
+
+/// A terminator — the last instruction in a basic block that transfers
+/// control to another block (or exits the function).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Terminator {
+    /// Return from the function.
+    /// Length matches the function's `ReturnShape::arity()`:
+    /// - Unit: empty
+    /// - Scalar: 1 local
+    /// - BinaryOutcome/TernaryOutcome: 2 locals (discriminant, payload)
+    Return {
+        /// Values to return. Must match `ReturnShape::arity()`.
+        values: Vec<Local>,
+    },
+
+    /// Unconditional jump to another block.
+    Goto {
+        /// Target block.
+        target: BasicBlock,
+    },
+
+    /// Conditional branch based on a Trilean discriminant.
+    ///
+    /// For refined `Trilean!` (non-Unknown): only `positive` and `negative`
+    /// are reachable. `zero` may point to an unreachable block.
+    If {
+        /// Condition local (Trilean).
+        cond: Local,
+        /// Branch taken when cond = Trit::Positive (True).
+        positive_bb: BasicBlock,
+        /// Branch taken when cond = Trit::Zero (Unknown) — only for full
+        /// Trilean branching (`if?`).
+        zero_bb: Option<BasicBlock>,
+        /// Branch taken when cond = Trit::Negative (False).
+        negative_bb: BasicBlock,
+    },
+
+    /// Function call. Triết is a kernel language — there is no exception
+    /// unwinding. If the callee panics, the entire process aborts immediately.
+    /// Therefore, CallDispatch has exactly ONE successor: `return_bb`.
+    CallDispatch {
+        /// Callee function ID (for internal tracking).
+        callee: FunctionId,
+        /// Callee function name (for diagnostics / Display).
+        callee_name: String,
+        /// Argument locals.
+        args: Vec<Local>,
+        /// Block to jump to on normal return.
+        return_bb: BasicBlock,
+        /// Destination locals for return values (in return_bb).
+        /// Length matches the callee's `ReturnShape::arity()`:
+        /// - Unit: empty
+        /// - Scalar: 1 local (the value)
+        /// - BinaryOutcome/TernaryOutcome: 2 locals (discriminant, payload)
+        dest: Vec<Local>,
+    },
+
+    /// Unreachable point — after infinite loop or guaranteed panic.
+    Unreachable,
+}
+
+// ── Function signature ──────────────────────────────────────
+
+/// The return shape of a function — encodes the number and meaning
+/// of return values. Mirrors the Type system: `Unit` → 0 values,
+/// `Scalar` → 1 value, `BinaryOutcome` → 2 values (no Trit::Zero),
+/// `TernaryOutcome` → 2 values (Trit::Zero valid).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnShape {
+    /// `()` — no return value (void).
+    Unit,
+    /// Any single-value type: Integer, Trilean, reference, etc.
+    /// One Cranelift return value.
+    Scalar,
+    /// `T~E` — binary Outcome. Returns 2 values (discriminant + payload).
+    /// Trit::Zero is INVALID (compile-time error E1025).
+    BinaryOutcome,
+    /// `T?~E` — ternary Outcome. Returns 2 values (discriminant + payload).
+    /// Trit::Zero IS valid (null state).
+    TernaryOutcome,
+}
+
+impl ReturnShape {
+    /// Number of return values in the ABI (0, 1, or 2).
+    #[must_use]
+    pub const fn arity(self) -> usize {
+        match self {
+            Self::Unit => 0,
+            Self::Scalar => 1,
+            Self::BinaryOutcome | Self::TernaryOutcome => 2,
+        }
+    }
+}
+
+/// A path into the return value, used to track which part of a returned
+/// reference borrows from which parameter (field-level granularity).
+///
+/// `Root` is the whole return value (a direct reference return). `Field(name)`
+/// is a named field of a returned struct (so `split` can return `{left, right}`
+/// where each field borrows a different parameter). Mirrors the borrow
+/// checker's `FieldPath` per `phase2-borrow-checker-design.md`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FieldPath {
+    /// The whole return value.
+    Root,
+    /// A named field of the returned value.
+    Field(String),
+}
+
+/// Maps each field path of the return value to the set of parameter indices
+/// its borrow depends on (from lifetime elision, ADR-0025 §6).
+///
+/// Empty when the function returns a non-reference type, or no returned part
+/// borrows from any parameter.
+pub type ReturnBorrowMap = BTreeMap<FieldPath, BTreeSet<usize>>;
+
+/// A function signature as seen by MIR.
+///
+/// Carries the information the borrow checker needs to reason about
+/// cross-function borrow propagation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionSignature {
+    /// Function name for diagnostics.
+    pub name: String,
+    /// Parameters: (name, passing_mode).
+    pub params: Vec<(String, ParameterPassing)>,
+    /// Return type name for display.
+    pub return_type: String,
+    /// The shape of the return value (Unit, Scalar, BinaryOutcome, TernaryOutcome).
+    /// Determines how many values the function returns in the ABI.
+    pub return_shape: ReturnShape,
+    /// For each field path of the return value, the parameter indices its
+    /// borrow depends on. Drives cross-call loan propagation.
+    pub return_borrow_map: ReturnBorrowMap,
+}
+
+// ── MIR body ────────────────────────────────────────────────
+
+/// The MIR representation of a single function body.
+///
+/// A body is a collection of basic blocks. The `blocks` vector is indexed
+/// by `BasicBlock(usize)`. `entry_block` identifies where execution starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Body {
+    /// Function signature.
+    pub signature: FunctionSignature,
+    /// All basic blocks in this function.
+    pub blocks: Vec<BlockData>,
+    /// Index of the entry block.
+    pub entry_block: BasicBlock,
+    /// Number of locals allocated for this function (including parameters).
+    pub num_locals: usize,
+    /// Per-local declarations (type + mutability), indexed by `Local`.
+    /// Length should equal `num_locals`.
+    pub local_decls: Vec<LocalDecl>,
+    /// Struct layouts for user-defined types referenced in this function.
+    /// Carries enough info for the codegen backend to compute field offsets
+    /// for native stack allocation (Bậc C). Empty for functions that don't
+    /// use user-defined structs.
+    pub struct_layouts: Vec<StructLayout>,
+}
+
+/// Memory layout of a user-defined struct.
+///
+/// Carries the information the codegen backend needs to allocate the struct
+/// on the stack and compute field offsets — without requiring the full AST
+/// type definition. This is the IR-level complement to `TypeTag::Opaque`:
+/// `Opaque` means "the IR does not track this type's layout," while
+/// `StructLayout` means "here is the layout, use it for native codegen."
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructLayout {
+    /// Struct name (for diagnostics).
+    pub name: String,
+    /// Fields in declaration order, with byte size and offset.
+    pub fields: Vec<FieldLayout>,
+    /// Total size in bytes (including alignment padding).
+    pub total_size: usize,
+    /// Alignment in bytes.
+    pub alignment: usize,
+}
+
+/// Layout of a single struct field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldLayout {
+    /// Field name.
+    pub name: String,
+    /// Byte offset from the start of the struct.
+    pub offset: usize,
+    /// Byte size of the field.
+    pub size: usize,
+    /// Byte alignment of the field (must be a power of 2).
+    /// Alignment is a property of the TYPE, not the size —
+    /// e.g. `[u8; 5]` has size=5 but alignment=1.
+    pub alignment: usize,
+}
+
+/// Known alignment values for primitive types (in bytes, on 64-bit targets).
+/// These are the ONLY valid alignment values — all must be powers of 2.
+pub mod align {
+    /// Trit (2-bit) — byte-aligned.
+    pub const TRIT: usize = 1;
+    /// Tryte (16-bit) — 2-byte aligned.
+    pub const TRYTE: usize = 2;
+    /// Integer (64-bit) — 8-byte aligned.
+    pub const INTEGER: usize = 8;
+    /// Long (128-bit) — 16-byte aligned.
+    pub const LONG: usize = 16;
+    /// Trilean (8-bit) — byte-aligned.
+    pub const TRILEAN: usize = 1;
+    /// Pointer/reference (64-bit) — 8-byte aligned.
+    pub const POINTER: usize = 8;
+    /// Unit / ZST — alignment 1 (zero-sized, no real constraint).
+    pub const UNIT: usize = 1;
+}
+
+impl StructLayout {
+    /// Compute field offsets from (name, size, alignment) tuples.
+    ///
+    /// Each field's alignment must be a power of 2. The struct's
+    /// alignment is the maximum of its fields' alignments.
+    /// Total size is padded to the struct alignment.
+    #[must_use]
+    pub fn compute(name: &str, fields: &[(String, usize, usize)]) -> Self {
+        let mut offset = 0usize;
+        let mut max_align = 1usize;
+        let mut field_layouts = Vec::new();
+        for (field_name, size, align) in fields {
+            assert!(
+                align.is_power_of_two(),
+                "alignment must be power of 2: field '{field_name}' has align={align}"
+            );
+            max_align = max_align.max(*align);
+            // Align offset to field alignment
+            offset = (offset + align - 1) & !(align - 1);
+            field_layouts.push(FieldLayout {
+                name: field_name.clone(),
+                offset,
+                size: *size,
+                alignment: *align,
+            });
+            offset += size;
+        }
+        // Pad total size to struct alignment
+        let total_size = (offset + max_align - 1) & !(max_align - 1);
+        Self {
+            name: name.to_string(),
+            fields: field_layouts,
+            total_size,
+            alignment: max_align,
+        }
+    }
+}
+
+/// Data for one basic block: a sequence of statements followed by a
+/// terminator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockData {
+    /// Statements executed in order when the block is entered.
+    pub statements: Vec<Statement>,
+    /// Terminator that transfers control at the end of the block.
+    pub terminator: Terminator,
+}
+
+// ── Control Flow Graph ──────────────────────────────────────
+
+/// A control-flow graph built from a MIR body.
+///
+/// The CFG makes predecessor/successor relationships explicit and is
+/// the structure the borrow checker performs dataflow analysis on.
+#[derive(Clone, Debug)]
+pub struct ControlFlowGraph {
+    /// Per-block data.
+    pub blocks: Vec<CfgBlock>,
+    /// Entry block.
+    pub entry: BasicBlock,
+    /// Exit blocks (those with Return terminators).
+    pub exits: Vec<BasicBlock>,
+}
+
+/// One block in the CFG, with predecessor/successor edges resolved.
+#[derive(Clone, Debug)]
+pub struct CfgBlock {
+    /// Incoming edges from other blocks.
+    pub predecessors: Vec<BasicBlock>,
+    /// Outgoing edges to other blocks (not counting Return/Unreachable).
+    pub successors: Vec<BasicBlock>,
+    /// The original block data.
+    pub data: BlockData,
+}
+
+impl Body {
+    /// Build the control-flow graph from this MIR body.
+    #[must_use]
+    pub fn build_cfg(&self) -> ControlFlowGraph {
+        let mut blocks: Vec<CfgBlock> = self
+            .blocks
+            .iter()
+            .map(|_| CfgBlock {
+                predecessors: Vec::new(),
+                successors: Vec::new(),
+                data: BlockData {
+                    statements: Vec::new(),
+                    terminator: Terminator::Unreachable,
+                },
+            })
+            .collect();
+
+        // Copy block data + collect successors
+        let mut successors: Vec<Vec<BasicBlock>> = Vec::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            blocks[i].data = block.clone();
+            let succ = terminator_successors(&block.terminator);
+            successors.push(succ);
+            blocks[i].successors = successors[i].clone();
+        }
+
+        // Compute predecessors from successors
+        for (i, succs) in successors.iter().enumerate() {
+            for &succ in succs {
+                if succ.0 < blocks.len() {
+                    blocks[succ.0].predecessors.push(BasicBlock(i));
+                }
+            }
+        }
+
+        // Collect exit blocks
+        let exits: Vec<BasicBlock> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| matches!(b.terminator, Terminator::Return { .. }))
+            .map(|(i, _)| BasicBlock(i))
+            .collect();
+
+        ControlFlowGraph {
+            blocks,
+            entry: self.entry_block,
+            exits,
+        }
+    }
+}
+
+/// Return the successor blocks of a terminator.
+fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
+    match terminator {
+        Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
+        Terminator::Goto { target } => vec![*target],
+        Terminator::If {
+            positive_bb,
+            zero_bb,
+            negative_bb,
+            ..
+        } => {
+            let mut succs = vec![*positive_bb, *negative_bb];
+            if let Some(zero) = zero_bb {
+                succs.push(*zero);
+            }
+            succs
+        }
+        Terminator::CallDispatch { return_bb, .. } => {
+            vec![*return_bb]
+        }
+    }
+}
+
+// ── Display implementations ─────────────────────────────────
+
+impl fmt::Display for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "fn {}(...) -> {} {{",
+            self.signature.name, self.signature.return_type
+        )?;
+        for (i, block) in self.blocks.iter().enumerate() {
+            writeln!(f, "  bb{}: {{", i)?;
+            for stmt in &block.statements {
+                writeln!(f, "    {stmt}")?;
+            }
+            writeln!(f, "    {term}", term = block.terminator)?;
+            writeln!(f, "  }}")?;
+        }
+        writeln!(f, "}}")?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Statement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StorageLive(l) => write!(f, "StorageLive({l})"),
+            Self::StorageDead(l) => write!(f, "StorageDead({l})"),
+            Self::Assign { dest, source } => write!(f, "{dest} = move {source}"),
+            Self::Borrow { dest, form, source } => write!(f, "{dest} = {form} {source}"),
+            Self::Const { dest, value } => write!(f, "{dest} = const {value}"),
+            Self::BinaryOp {
+                dest,
+                op,
+                left,
+                right,
+            } => write!(f, "{dest} = {left} {op} {right}"),
+            Self::OutcomeDiscriminant { dest, source } => {
+                write!(f, "{dest} = discriminant({source})")
+            }
+            Self::OutcomeUnwrap { dest, source } => write!(f, "{dest} = unwrap_value({source})"),
+            Self::OutcomeUnwrapError { dest, source } => {
+                write!(f, "{dest} = unwrap_error({source})")
+            }
+            Self::Drop(l) => write!(f, "Drop({l})"),
+        }
+    }
+}
+
+impl fmt::Display for Terminator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Return { values } if values.is_empty() => write!(f, "Return(())"),
+            Self::Return { values } => {
+                let vs: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+                write!(f, "Return({})", vs.join(", "))
+            }
+            Self::Goto { target } => write!(f, "Goto({target})"),
+            Self::If {
+                cond,
+                positive_bb,
+                zero_bb: Some(zero),
+                negative_bb,
+            } => {
+                write!(
+                    f,
+                    "IfTernary({cond}) → +:{positive_bb}, 0:{zero}, -:{negative_bb}"
+                )
+            }
+            Self::If {
+                cond,
+                positive_bb,
+                zero_bb: None,
+                negative_bb,
+            } => {
+                write!(f, "If({cond}) → +:{positive_bb}, -:{negative_bb}")
+            }
+            Self::CallDispatch {
+                callee_name,
+                args,
+                return_bb,
+                dest,
+                ..
+            } => {
+                let args_str: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                write!(
+                    f,
+                    "Call {callee_name}({args}) → {return_bb}",
+                    args = args_str.join(", ")
+                )?;
+                if !dest.is_empty() {
+                    let dest_str: Vec<String> = dest.iter().map(|d| d.to_string()).collect();
+                    write!(f, " → [{}]", dest_str.join(", "))?;
+                }
+                Ok(())
+            }
+            Self::Unreachable => write!(f, "Unreachable"),
+        }
+    }
+}
+
+impl fmt::Display for ConstValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Integer(v) => write!(f, "{v}"),
+            Self::Trit(v) => write!(f, "{v}_trit"),
+            Self::Unit => write!(f, "()"),
+            Self::String(s) => write!(f, "\"{s}\""),
+        }
+    }
+}
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Add => write!(f, "+"),
+            Self::Sub => write!(f, "-"),
+            Self::Mul => write!(f, "*"),
+            Self::Gt => write!(f, ">"),
+            Self::Le => write!(f, "<="),
+        }
+    }
+}
+
+impl fmt::Display for ControlFlowGraph {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "CFG:")?;
+        writeln!(f, "  entry: {}", self.entry)?;
+        writeln!(f, "  exits: {:?}", self.exits)?;
+        for (i, block) in self.blocks.iter().enumerate() {
+            writeln!(f, "  bb{i}:")?;
+            writeln!(f, "    preds: {:?}", block.predecessors)?;
+            writeln!(f, "    succs: {:?}", block.successors)?;
+            for stmt in &block.data.statements {
+                writeln!(f, "    {stmt}")?;
+            }
+            writeln!(f, "    {}", block.data.terminator)?;
+        }
+        Ok(())
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn struct_layout_point() {
+        // struct Point { x: Integer, y: Integer }
+        // Integer = 8 bytes, align 8
+        let layout = StructLayout::compute(
+            "Point",
+            &[
+                ("x".into(), 8, align::INTEGER),
+                ("y".into(), 8, align::INTEGER),
+            ],
+        );
+        assert_eq!(layout.alignment, 8);
+        assert_eq!(layout.total_size, 16); // 8 + 8, no padding needed
+        assert_eq!(layout.fields[0].offset, 0);
+        assert_eq!(layout.fields[1].offset, 8);
+    }
+
+    #[test]
+    fn struct_layout_mixed_alignment() {
+        // struct Mixed { a: Trit, b: Integer, c: Trilean }
+        // Trit = 1 byte, align 1
+        // Integer = 8 bytes, align 8
+        // Trilean = 1 byte, align 1
+        let layout = StructLayout::compute(
+            "Mixed",
+            &[
+                ("a".into(), 1, align::TRIT),
+                ("b".into(), 8, align::INTEGER),
+                ("c".into(), 1, align::TRILEAN),
+            ],
+        );
+        assert_eq!(
+            layout.alignment, 8,
+            "struct alignment = max field alignment = 8"
+        );
+        assert_eq!(layout.fields[0].offset, 0); // a at 0
+        assert_eq!(layout.fields[1].offset, 8); // b at 8 (padded from 1 to 8)
+        assert_eq!(layout.fields[2].offset, 16); // c at 16 (after 8-byte b)
+        assert_eq!(layout.total_size, 24); // 16 + 1 = 17, padded to 24 (multiple of 8)
+    }
+
+    #[test]
+    fn struct_layout_array_field() {
+        // struct Buffer { header: Integer, data: [u8; 5] }
+        // Integer = 8 bytes, align 8
+        // [u8; 5] = 5 bytes, align 1 (NOT align 5!)
+        let layout = StructLayout::compute(
+            "Buffer",
+            &[
+                ("header".into(), 8, align::INTEGER),
+                ("data".into(), 5, 1), // 5-byte array, alignment 1
+            ],
+        );
+        assert_eq!(layout.alignment, 8);
+        assert_eq!(layout.fields[0].offset, 0);
+        assert_eq!(layout.fields[1].offset, 8); // right after header, no padding needed
+        assert_eq!(layout.total_size, 16); // 8 + 5 = 13, padded to 16
+    }
+
+    #[test]
+    #[should_panic(expected = "alignment must be power of 2")]
+    fn struct_layout_rejects_non_power_of_two_alignment() {
+        StructLayout::compute(
+            "Bad",
+            &[
+                ("x".into(), 5, 5), // alignment 5 is invalid
+            ],
+        );
+    }
+}

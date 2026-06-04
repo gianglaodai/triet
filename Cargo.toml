@@ -7,13 +7,11 @@ members = [
     "crates/triet-lexer",
     "crates/triet-parser",
     "crates/triet-modules",
-    "crates/triet-ir",
-    "crates/triet-jit",
     "crates/triet-pack",
     "crates/triet-typecheck",
-    "crates/triet-interpreter",
-    "crates/triet-cli",
-    "crates/triet-bootstrap",
+    "crates/triet-lower",
+    "crates/triet-mir",
+    "crates/triet-borrowck",
 ]
 
 [workspace.package]

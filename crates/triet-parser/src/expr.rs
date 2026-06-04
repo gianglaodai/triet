@@ -5,13 +5,13 @@
 //! comparison, equality, and range operators. F-strings are parsed
 //! inline (consuming the mode-aware token sequence emitted by the lexer).
 
+use crate::{error::ParseError, parser::Parser, pattern::parse_pattern, type_expr::parse_type};
 use triet_lexer::{IntLiteral as LexIntLiteral, Span, Token};
+use triet_syntax::stmt::Block;
 use triet_syntax::{
-    BinaryOperator, Block, Expr, ExprId, FStringPart, FStringSegments, LambdaParam, MatchArm,
+    BinaryOperator, Expr, ExprId, FStringPart, FStringSegments, LambdaParam, MatchArm,
     NumericSuffix as AstSuffix, OutcomeArm, ReferenceForm, Spanned, TrileanValue, UnaryOperator,
 };
-
-use crate::{error::ParseError, parser::Parser, pattern::parse_pattern, type_expr::parse_type};
 
 /// Parse a full expression at minimum binding power 0.
 pub(crate) fn parse_expression(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
@@ -51,7 +51,7 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
             // Extract the type name before the speculative parse
             // (which borrows `parser` mutably).
             let struct_name = match &parser.arena.expression(lhs).node {
-                Expr::Identifier(n) => Some(n.clone()),
+                Expr::Identifier { name: n } => Some(n.clone()),
                 _ => None,
             };
             if let Some(name) = struct_name
@@ -60,9 +60,13 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
                 let lhs_span = arena_span(parser, lhs);
                 let end = parser.previous_token_end(lhs_span.end);
                 let span = lhs_span.start..end;
-                lhs = parser
-                    .arena
-                    .alloc_expression(Spanned::new(Expr::StructLiteral { name, fields }, span));
+                lhs = parser.arena.alloc_expression(Spanned::new(
+                    Expr::StructLiteral {
+                        struct_name: name,
+                        fields,
+                    },
+                    span,
+                ));
                 continue;
             }
             // Not an identifier LHS or struct parse failed — `{` is
@@ -97,6 +101,10 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
 
         let op_span = parser.current_span();
         parser.advance(); // consume the operator token
+
+        // Capture the no-chain class before the match below consumes `op_kind`
+        // (the `Plain` arm moves the non-`Copy` `BinaryOperator` out of it).
+        let next_no_chain_class = op_kind.no_chain_class();
 
         // Special structural operators that don't fit the BinaryOp shape.
         match op_kind {
@@ -137,7 +145,7 @@ fn parse_expression_bp(parser: &mut Parser<'_>, min_bp: u8) -> Result<ExprId, Pa
             }
         }
 
-        last_no_chain_class = op_kind.no_chain_class();
+        last_no_chain_class = next_no_chain_class;
         // The operator span is unused for further error context, but is
         // available if future passes want it.
         let _ = op_span;
@@ -179,25 +187,32 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
             parser.advance();
             Ok(parser
                 .arena
-                .alloc_expression(Spanned::new(Expr::StringLiteral(text), span)))
+                .alloc_expression(Spanned::new(Expr::StringLiteral { value: text }, span)))
         }
         Token::True => {
             parser.advance();
-            Ok(parser
-                .arena
-                .alloc_expression(Spanned::new(Expr::TrileanLiteral(TrileanValue::True), span)))
+            Ok(parser.arena.alloc_expression(Spanned::new(
+                Expr::TrileanLiteral {
+                    value: TrileanValue::True,
+                },
+                span,
+            )))
         }
         Token::False => {
             parser.advance();
             Ok(parser.arena.alloc_expression(Spanned::new(
-                Expr::TrileanLiteral(TrileanValue::False),
+                Expr::TrileanLiteral {
+                    value: TrileanValue::False,
+                },
                 span,
             )))
         }
         Token::Unknown => {
             parser.advance();
             Ok(parser.arena.alloc_expression(Spanned::new(
-                Expr::TrileanLiteral(TrileanValue::Unknown),
+                Expr::TrileanLiteral {
+                    value: TrileanValue::Unknown,
+                },
                 span,
             )))
         }
@@ -211,7 +226,7 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
             parser.advance();
             Ok(parser
                 .arena
-                .alloc_expression(Spanned::new(Expr::Identifier(name), span)))
+                .alloc_expression(Spanned::new(Expr::Identifier { name }, span)))
         }
         Token::FStringStart => parse_f_string(parser),
         Token::LParen => parse_paren_or_tuple(parser, span),
@@ -327,7 +342,7 @@ fn parse_borrow_operand(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
     parser.advance();
     let mut node_id = parser
         .arena
-        .alloc_expression(Spanned::new(Expr::Identifier(name), span));
+        .alloc_expression(Spanned::new(Expr::Identifier { name }, span));
     while let Some((Token::Dot, _)) = parser.peek() {
         parser.advance(); // consume `.`
         let (field_tok, field_span) =
@@ -414,9 +429,12 @@ fn parse_paren_or_tuple(parser: &mut Parser<'_>, open_span: Span) -> Result<Expr
         // Empty tuple `()` — useful as Unit literal.
         let close = parser.expect(&Token::RParen, "`)`")?;
         let span = open_span.start..close.end;
-        return Ok(parser
-            .arena
-            .alloc_expression(Spanned::new(Expr::Tuple(Vec::new()), span)));
+        return Ok(parser.arena.alloc_expression(Spanned::new(
+            Expr::Tuple {
+                elements: Vec::new(),
+            },
+            span,
+        )));
     }
 
     let mut elements = vec![parse_expression(parser)?];
@@ -437,17 +455,24 @@ fn parse_paren_or_tuple(parser: &mut Parser<'_>, open_span: Span) -> Result<Expr
     let span = open_span.start..close_span.end;
     Ok(parser
         .arena
-        .alloc_expression(Spanned::new(Expr::Tuple(elements), span)))
+        .alloc_expression(Spanned::new(Expr::Tuple { elements }, span)))
 }
 
-fn parse_block_expression(parser: &mut Parser<'_>, open_span: Span) -> Result<ExprId, ParseError> {
+pub(crate) fn parse_block_expression(
+    parser: &mut Parser<'_>,
+    open_span: Span,
+) -> Result<ExprId, ParseError> {
     let block = parse_block(parser, open_span.clone())?;
     // Reconstruct span: start at `{`, end at `}` (the parse_block helper
     // returns the closing-brace span via its own bookkeeping below).
     let span = open_span.start..parser.previous_token_end(open_span.end);
-    Ok(parser
-        .arena
-        .alloc_expression(Spanned::new(Expr::Block(block), span)))
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::Block {
+            statements: block.statements,
+            final_expr: block.final_expression,
+        },
+        span,
+    )))
 }
 
 /// Parse `{ stmts? final_expr? }` into a `Block`. Used both as block
@@ -480,26 +505,23 @@ pub(crate) fn parse_block(parser: &mut Parser<'_>, _open_span: Span) -> Result<B
 
 fn parse_if_expression(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
     let (head_token, head_span) = parser.peek().cloned().expect("caller checked");
+    // `if?` (IfQ) parses to the same shape as `if` with this flag set; lowering
+    // it to a 3-way trit branch is triet-lower's job (SPEC grammar §if_expr).
     let treat_unknown_as_false = matches!(head_token, Token::IfQ);
     parser.advance();
 
     let condition = parse_expression(parser)?;
 
     let then_open = parser.current_span();
-    let then_branch = parse_block(parser, then_open)?;
+    let then_branch = parse_block_expression(parser, then_open)?;
 
     let else_branch = if parser.eat(&Token::Else) {
         if matches!(parser.peek_token(), Some(Token::If | Token::IfQ)) {
-            // `else if` chain — wrap as block whose final expression is
-            // the inner `if` expression.
-            let inner = parse_if_expression(parser)?;
-            Some(Block {
-                statements: Vec::new(),
-                final_expression: Some(inner),
-            })
+            // `else if` chain — the inner `if` expression is the else branch.
+            Some(parse_if_expression(parser)?)
         } else {
             let else_open = parser.current_span();
-            Some(parse_block(parser, else_open)?)
+            Some(parse_block_expression(parser, else_open)?)
         }
     } else {
         None
@@ -619,7 +641,7 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
     Ok(parser.arena.alloc_expression(Spanned::new(
         Expr::Lambda {
             parameters,
-            return_type,
+            return_type_annotation: return_type,
             body,
         },
         span,
@@ -657,7 +679,7 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
             let span = arena_span(parser, lhs).start..bang_span.end;
             Ok(parser
                 .arena
-                .alloc_expression(Spanned::new(Expr::ForceUnwrap(lhs), span)))
+                .alloc_expression(Spanned::new(Expr::ForceUnwrap { operand: lhs }, span)))
         }
         Token::TildePlusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Positive),
         Token::TildeZeroGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Zero),
@@ -720,8 +742,8 @@ fn parse_outcome_propagate(parser: &mut Parser<'_>, inner: ExprId) -> Result<Exp
     let span = arena_span(parser, inner).start..arena_span(parser, early_return).end;
     Ok(parser.arena.alloc_expression(Spanned::new(
         Expr::OutcomePropagate {
-            inner,
-            capture_name,
+            expr: inner,
+            capture_var: capture_name.unwrap_or_default(),
             early_return,
         },
         span,
@@ -820,9 +842,13 @@ fn parse_outcome_default(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprI
     parser.expect(&Token::TildeColon, "`~:`")?;
     let default = parse_expression_bp(parser, 0)?;
     let span = arena_span(parser, inner).start..arena_span(parser, default).end;
-    Ok(parser
-        .arena
-        .alloc_expression(Spanned::new(Expr::OutcomeDefault { inner, default }, span)))
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::OutcomeDefault {
+            expr: inner,
+            default_value: default,
+        },
+        span,
+    )))
 }
 
 fn parse_dot_postfix(
@@ -977,9 +1003,12 @@ fn parse_f_string(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                 let end_span = span.end;
                 let segments = FStringSegments { parts };
                 let full_span = start_span.start..end_span;
-                return Ok(parser
-                    .arena
-                    .alloc_expression(Spanned::new(Expr::FStringLiteral(segments), full_span)));
+                return Ok(parser.arena.alloc_expression(Spanned::new(
+                    Expr::FStringLiteral {
+                        segments: segments.parts,
+                    },
+                    full_span,
+                )));
             }
             other => {
                 return Err(ParseError::InvalidInterpolation {
@@ -1025,7 +1054,9 @@ mod tests;
 // ============================================================================
 
 /// What kind of binary expression a token introduces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Not `Copy`: the schema-generated `BinaryOperator` carried by `Plain` is not
+// `Copy`, so neither can this be.
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum BinaryOpKind {
     Plain(BinaryOperator),
     Range { inclusive: bool },
@@ -1033,56 +1064,48 @@ enum BinaryOpKind {
 }
 
 impl BinaryOpKind {
-    const fn binding_power(self) -> (u8, u8) {
+    const fn binding_power(&self) -> (u8, u8) {
         match self {
             // Right-associative implication — lowest precedence
-            Self::Plain(BinaryOperator::Implies | BinaryOperator::KleeneImplies) => (1, 0),
+            Self::Plain(BinaryOperator::LukImplies | BinaryOperator::KleeneImplies) => (1, 0),
             // Left-associative biconditional
-            Self::Plain(BinaryOperator::Iff | BinaryOperator::KleeneIff) => (2, 3),
+            Self::Plain(BinaryOperator::LukIff | BinaryOperator::KleeneIff) => (2, 3),
             // Left-associative or — loosest of the boolean trio
-            Self::Plain(BinaryOperator::Or) => (4, 5),
+            Self::Plain(BinaryOperator::LukOr) => (4, 5),
             // Left-associative xor — between or and and (per SPEC §12.1
             // level 5; AND-tighter-than-XOR-tighter-than-OR)
-            Self::Plain(BinaryOperator::Xor | BinaryOperator::KleeneXor) => (6, 7),
+            Self::Plain(BinaryOperator::LukXor | BinaryOperator::KleeneXor) => (6, 7),
             // Left-associative and — tightest of the boolean trio
-            Self::Plain(BinaryOperator::And) => (8, 9),
+            Self::Plain(BinaryOperator::LukAnd) => (8, 9),
             // Equality (no chain — the no-chain rule is enforced by the
             // class check; the binding-power table itself is consistent
             // with left-associative).
-            Self::Plain(BinaryOperator::Equal | BinaryOperator::NotEqual) => (10, 11),
+            Self::Plain(BinaryOperator::Eq | BinaryOperator::Ne) => (10, 11),
             // Comparison
             Self::Plain(
-                BinaryOperator::LessThan
-                | BinaryOperator::LessEqual
-                | BinaryOperator::GreaterThan
-                | BinaryOperator::GreaterEqual,
+                BinaryOperator::Lt | BinaryOperator::Le | BinaryOperator::Gt | BinaryOperator::Ge,
             ) => (12, 13),
             // Elvis — right-associative
             Self::Elvis => (15, 14),
             // Range — no chain
             Self::Range { .. } => (16, 17),
             // Additive
-            Self::Plain(BinaryOperator::Add | BinaryOperator::Subtract) => (18, 19),
+            Self::Plain(BinaryOperator::Add | BinaryOperator::Sub) => (18, 19),
             // Multiplicative
-            Self::Plain(
-                BinaryOperator::Multiply | BinaryOperator::Divide | BinaryOperator::Modulo,
-            ) => (20, 21),
+            Self::Plain(BinaryOperator::Mul | BinaryOperator::Div | BinaryOperator::Mod) => {
+                (20, 21)
+            }
             // Power — right-associative, higher than unary (handled by
             // unary right_bp = 23 so prefix `-` binds looser than `**`)
-            Self::Plain(BinaryOperator::Power) => (26, 25),
+            Self::Plain(BinaryOperator::Pow) => (26, 25),
         }
     }
 
-    const fn no_chain_class(self) -> Option<NoChainClass> {
+    const fn no_chain_class(&self) -> Option<NoChainClass> {
         match self {
-            Self::Plain(BinaryOperator::Equal | BinaryOperator::NotEqual) => {
-                Some(NoChainClass::Equality)
-            }
+            Self::Plain(BinaryOperator::Eq | BinaryOperator::Ne) => Some(NoChainClass::Equality),
             Self::Plain(
-                BinaryOperator::LessThan
-                | BinaryOperator::LessEqual
-                | BinaryOperator::GreaterThan
-                | BinaryOperator::GreaterEqual,
+                BinaryOperator::Lt | BinaryOperator::Le | BinaryOperator::Gt | BinaryOperator::Ge,
             ) => Some(NoChainClass::Comparison),
             Self::Range { .. } => Some(NoChainClass::Range),
             _ => None,
@@ -1112,27 +1135,27 @@ impl NoChainClass {
 const fn classify_binary(token: &Token) -> Option<BinaryOpKind> {
     Some(match token {
         Token::Plus => BinaryOpKind::Plain(BinaryOperator::Add),
-        Token::Minus => BinaryOpKind::Plain(BinaryOperator::Subtract),
-        Token::Star => BinaryOpKind::Plain(BinaryOperator::Multiply),
-        Token::Slash => BinaryOpKind::Plain(BinaryOperator::Divide),
-        Token::PercentPercent => BinaryOpKind::Plain(BinaryOperator::Modulo),
-        Token::StarStar => BinaryOpKind::Plain(BinaryOperator::Power),
+        Token::Minus => BinaryOpKind::Plain(BinaryOperator::Sub),
+        Token::Star => BinaryOpKind::Plain(BinaryOperator::Mul),
+        Token::Slash => BinaryOpKind::Plain(BinaryOperator::Div),
+        Token::PercentPercent => BinaryOpKind::Plain(BinaryOperator::Mod),
+        Token::StarStar => BinaryOpKind::Plain(BinaryOperator::Pow),
 
-        Token::EqEq => BinaryOpKind::Plain(BinaryOperator::Equal),
-        Token::NotEq => BinaryOpKind::Plain(BinaryOperator::NotEqual),
-        Token::Lt => BinaryOpKind::Plain(BinaryOperator::LessThan),
-        Token::LtEq => BinaryOpKind::Plain(BinaryOperator::LessEqual),
-        Token::Gt => BinaryOpKind::Plain(BinaryOperator::GreaterThan),
-        Token::GtEq => BinaryOpKind::Plain(BinaryOperator::GreaterEqual),
+        Token::EqEq => BinaryOpKind::Plain(BinaryOperator::Eq),
+        Token::NotEq => BinaryOpKind::Plain(BinaryOperator::Ne),
+        Token::Lt => BinaryOpKind::Plain(BinaryOperator::Lt),
+        Token::LtEq => BinaryOpKind::Plain(BinaryOperator::Le),
+        Token::Gt => BinaryOpKind::Plain(BinaryOperator::Gt),
+        Token::GtEq => BinaryOpKind::Plain(BinaryOperator::Ge),
 
-        Token::AndAnd | Token::And => BinaryOpKind::Plain(BinaryOperator::And),
-        Token::OrOr | Token::Or => BinaryOpKind::Plain(BinaryOperator::Or),
+        Token::AndAnd | Token::And => BinaryOpKind::Plain(BinaryOperator::LukAnd),
+        Token::OrOr | Token::Or => BinaryOpKind::Plain(BinaryOperator::LukOr),
 
-        Token::Caret | Token::Xor => BinaryOpKind::Plain(BinaryOperator::Xor),
+        Token::Caret | Token::Xor => BinaryOpKind::Plain(BinaryOperator::LukXor),
         Token::TildeCaret | Token::KleeneXor => BinaryOpKind::Plain(BinaryOperator::KleeneXor),
-        Token::LtEqGt | Token::Iff => BinaryOpKind::Plain(BinaryOperator::Iff),
+        Token::LtEqGt | Token::Iff => BinaryOpKind::Plain(BinaryOperator::LukIff),
         Token::LtTildeGt | Token::KleeneIff => BinaryOpKind::Plain(BinaryOperator::KleeneIff),
-        Token::FatArrow | Token::Implies => BinaryOpKind::Plain(BinaryOperator::Implies),
+        Token::FatArrow | Token::Implies => BinaryOpKind::Plain(BinaryOperator::LukImplies),
         Token::TildeArrow | Token::KleeneImplies => {
             BinaryOpKind::Plain(BinaryOperator::KleeneImplies)
         }

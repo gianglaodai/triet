@@ -20,7 +20,7 @@ fn try_parse_expr(source: &str) -> Result<(Parser<'static>, ExprId), ParseError>
 
 fn binary_op_of(parser: &Parser<'_>, id: ExprId) -> BinaryOperator {
     match &parser.arena.expression(id).node {
-        Expr::BinaryOp { operator, .. } => *operator,
+        Expr::BinaryOp { operator, .. } => operator.clone(),
         other => panic!("expected BinaryOp, got {other:?}"),
     }
 }
@@ -67,7 +67,7 @@ fn parses_ternary_literal() {
 fn parses_string_literal() {
     let (parser, id) = parse_expr(r#""hi""#);
     match &parser.arena.expression(id).node {
-        Expr::StringLiteral(s) => assert_eq!(s, "hi"),
+        Expr::StringLiteral { value: s } => assert_eq!(s, "hi"),
         other => panic!("got {other:?}"),
     }
 }
@@ -81,7 +81,7 @@ fn parses_trilean_literals() {
     ] {
         let (parser, id) = parse_expr(source);
         match &parser.arena.expression(id).node {
-            Expr::TrileanLiteral(value) => assert_eq!(*value, expected),
+            Expr::TrileanLiteral { value } => assert_eq!(*value, expected),
             other => panic!("expected Trilean, got {other:?}"),
         }
     }
@@ -100,7 +100,7 @@ fn parses_null_literal() {
 fn parses_identifier() {
     let (parser, id) = parse_expr("name");
     match &parser.arena.expression(id).node {
-        Expr::Identifier(n) => assert_eq!(n, "name"),
+        Expr::Identifier { name: n } => assert_eq!(n, "name"),
         other => panic!("got {other:?}"),
     }
 }
@@ -113,25 +113,25 @@ fn multiplication_binds_tighter_than_addition() {
     let (parser, id) = parse_expr("a + b * c");
     assert_eq!(binary_op_of(&parser, id), BinaryOperator::Add);
     let right = right_of(&parser, id);
-    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Multiply);
+    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Mul);
 }
 
 #[test]
 fn power_binds_tighter_than_multiplication() {
     // a * b ** c → a * (b ** c)
     let (parser, id) = parse_expr("a * b ** c");
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Multiply);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Mul);
     let right = right_of(&parser, id);
-    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Power);
+    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Pow);
 }
 
 #[test]
 fn power_is_right_associative() {
     // 2 ** 3 ** 2 → 2 ** (3 ** 2)
     let (parser, id) = parse_expr("2 ** 3 ** 2");
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Power);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Pow);
     let right = right_of(&parser, id);
-    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Power);
+    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Pow);
     let left = left_of(&parser, id);
     assert_eq!(integer_value_of(&parser, left), 2);
 }
@@ -153,7 +153,7 @@ fn unary_minus_binds_looser_than_power() {
             operator: UnaryOperator::Negate,
             operand,
         } => {
-            assert_eq!(binary_op_of(&parser, *operand), BinaryOperator::Power);
+            assert_eq!(binary_op_of(&parser, *operand), BinaryOperator::Pow);
         }
         other => panic!("expected UnaryOp wrapping Power, got {other:?}"),
     }
@@ -163,7 +163,7 @@ fn unary_minus_binds_looser_than_power() {
 fn unary_minus_binds_tighter_than_multiplication() {
     // -a * b → (-a) * b
     let (parser, id) = parse_expr("-a * b");
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Multiply);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Mul);
     let left = left_of(&parser, id);
     assert!(matches!(
         parser.arena.expression(left).node,
@@ -177,27 +177,27 @@ fn unary_minus_binds_tighter_than_multiplication() {
 fn and_binds_tighter_than_or() {
     // a or b and c → a or (b and c)
     let (parser, id) = parse_expr("a or b and c");
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Or);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::LukOr);
     let right = right_of(&parser, id);
-    assert_eq!(binary_op_of(&parser, right), BinaryOperator::And);
+    assert_eq!(binary_op_of(&parser, right), BinaryOperator::LukAnd);
 }
 
 #[test]
 fn xor_between_and_and_or() {
     // a or b xor c and d → a or (b xor (c and d))
     let (parser, id) = parse_expr("a or b xor c and d");
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Or);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::LukOr);
     let right = right_of(&parser, id);
-    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Xor);
+    assert_eq!(binary_op_of(&parser, right), BinaryOperator::LukXor);
 }
 
 #[test]
 fn implication_is_right_associative() {
     // a => b => c → a => (b => c)
     let (parser, id) = parse_expr("a => b => c");
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::Implies);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::LukImplies);
     let right = right_of(&parser, id);
-    assert_eq!(binary_op_of(&parser, right), BinaryOperator::Implies);
+    assert_eq!(binary_op_of(&parser, right), BinaryOperator::LukImplies);
 }
 
 #[test]
@@ -394,7 +394,7 @@ fn parses_force_unwrap() {
     let (parser, id) = parse_expr("name!!");
     assert!(matches!(
         parser.arena.expression(id).node,
-        Expr::ForceUnwrap(_)
+        Expr::ForceUnwrap { .. }
     ));
 }
 
@@ -454,7 +454,7 @@ fn parens_around_single_expr_unwrap() {
 fn tuple_with_two_elements() {
     let (parser, id) = parse_expr("(1, 2)");
     match &parser.arena.expression(id).node {
-        Expr::Tuple(elements) => assert_eq!(elements.len(), 2),
+        Expr::Tuple { elements } => assert_eq!(elements.len(), 2),
         other => panic!("expected Tuple, got {other:?}"),
     }
 }
@@ -463,7 +463,7 @@ fn tuple_with_two_elements() {
 fn empty_tuple() {
     let (parser, id) = parse_expr("()");
     match &parser.arena.expression(id).node {
-        Expr::Tuple(elements) => assert!(elements.is_empty()),
+        Expr::Tuple { elements } => assert!(elements.is_empty()),
         other => panic!("expected Tuple, got {other:?}"),
     }
 }
@@ -472,7 +472,7 @@ fn empty_tuple() {
 fn singleton_tuple_with_trailing_comma() {
     let (parser, id) = parse_expr("(42,)");
     match &parser.arena.expression(id).node {
-        Expr::Tuple(elements) => assert_eq!(elements.len(), 1),
+        Expr::Tuple { elements } => assert_eq!(elements.len(), 1),
         other => panic!("expected 1-tuple, got {other:?}"),
     }
 }
@@ -483,9 +483,12 @@ fn singleton_tuple_with_trailing_comma() {
 fn parses_block_expression_with_final_value() {
     let (parser, id) = parse_expr("{ 42 }");
     match &parser.arena.expression(id).node {
-        Expr::Block(block) => {
-            assert!(block.statements.is_empty());
-            assert!(block.final_expression.is_some());
+        Expr::Block {
+            statements,
+            final_expr,
+        } => {
+            assert!(statements.is_empty());
+            assert!(final_expr.is_some());
         }
         other => panic!("expected Block, got {other:?}"),
     }
@@ -495,9 +498,12 @@ fn parses_block_expression_with_final_value() {
 fn parses_block_with_statements_and_final_expr() {
     let (parser, id) = parse_expr("{ let x = 5; x }");
     match &parser.arena.expression(id).node {
-        Expr::Block(block) => {
-            assert_eq!(block.statements.len(), 1);
-            assert!(block.final_expression.is_some());
+        Expr::Block {
+            statements,
+            final_expr,
+        } => {
+            assert_eq!(statements.len(), 1);
+            assert!(final_expr.is_some());
         }
         other => panic!("expected Block, got {other:?}"),
     }
@@ -585,13 +591,10 @@ fn parses_match_with_guard() {
 fn parses_simple_f_string_with_interpolation() {
     let (parser, id) = parse_expr(r#"f"hi {name}""#);
     match &parser.arena.expression(id).node {
-        Expr::FStringLiteral(segments) => {
-            assert_eq!(segments.parts.len(), 2);
-            assert!(matches!(&segments.parts[0], FStringPart::Text(t) if t == "hi "));
-            assert!(matches!(
-                &segments.parts[1],
-                FStringPart::Interpolation { .. }
-            ));
+        Expr::FStringLiteral { segments } => {
+            assert_eq!(segments.len(), 2);
+            assert!(matches!(&segments[0], FStringPart::Text(t) if t == "hi "));
+            assert!(matches!(&segments[1], FStringPart::Interpolation { .. }));
         }
         other => panic!("got {other:?}"),
     }
@@ -601,7 +604,7 @@ fn parses_simple_f_string_with_interpolation() {
 fn parses_empty_f_string() {
     let (parser, id) = parse_expr(r#"f"""#);
     match &parser.arena.expression(id).node {
-        Expr::FStringLiteral(segments) => assert!(segments.parts.is_empty()),
+        Expr::FStringLiteral { segments } => assert!(segments.is_empty()),
         other => panic!("got {other:?}"),
     }
 }
@@ -610,9 +613,9 @@ fn parses_empty_f_string() {
 fn parses_f_string_with_complex_interpolation() {
     let (parser, id) = parse_expr(r#"f"sum: {a + b * 2}""#);
     match &parser.arena.expression(id).node {
-        Expr::FStringLiteral(segments) => {
-            assert_eq!(segments.parts.len(), 2);
-            if let FStringPart::Interpolation { expression, .. } = &segments.parts[1] {
+        Expr::FStringLiteral { segments } => {
+            assert_eq!(segments.len(), 2);
+            if let FStringPart::Interpolation { expression, .. } = &segments[1] {
                 assert!(matches!(
                     parser.arena.expression(*expression).node,
                     Expr::BinaryOp { .. },
@@ -691,7 +694,7 @@ fn parses_logical_chain_from_measles_demo() {
     let source = "fever and rash and not vaccinated";
     let (parser, id) = parse_expr(source);
     // Outer should be a binary And.
-    assert_eq!(binary_op_of(&parser, id), BinaryOperator::And);
+    assert_eq!(binary_op_of(&parser, id), BinaryOperator::LukAnd);
 }
 
 // === Outcome constructors + operators (v0.7.4.3-error per ADR-0020) ===
@@ -720,7 +723,7 @@ fn parses_outcome_negative_constructor_with_identifier_payload() {
             assert_eq!(*arm, triet_syntax::OutcomeArm::Negative);
             let payload_id = payload.expect("negative arm carries payload");
             match &parser.arena.expression(payload_id).node {
-                Expr::Identifier(name) => assert_eq!(name, "err"),
+                Expr::Identifier { name } => assert_eq!(name, "err"),
                 other => panic!("expected Identifier payload, got {other:?}"),
             }
         }
@@ -781,13 +784,13 @@ fn parses_outcome_propagate_with_named_capture() {
     let (parser, id) = parse_expr("read_file ~? |err| ~- err");
     match &parser.arena.expression(id).node {
         Expr::OutcomePropagate {
-            capture_name,
-            inner,
+            capture_var,
+            expr,
             early_return,
         } => {
-            assert_eq!(capture_name.as_deref(), Some("err"));
-            match &parser.arena.expression(*inner).node {
-                Expr::Identifier(name) => assert_eq!(name, "read_file"),
+            assert_eq!(capture_var, "err");
+            match &parser.arena.expression(*expr).node {
+                Expr::Identifier { name } => assert_eq!(name, "read_file"),
                 other => panic!("expected Identifier as inner, got {other:?}"),
             }
             // Early-return shape exists; deep-walk in v0.7.4.3-error.2.
@@ -802,10 +805,10 @@ fn parses_outcome_propagate_with_named_capture() {
 fn parses_outcome_propagate_with_underscore_discard() {
     let (parser, id) = parse_expr("read_file ~? |_| ~- err");
     match &parser.arena.expression(id).node {
-        Expr::OutcomePropagate { capture_name, .. } => {
+        Expr::OutcomePropagate { capture_var, .. } => {
             assert!(
-                capture_name.is_none(),
-                "|_| capture must produce None for capture_name"
+                capture_var.is_empty(),
+                "|_| capture must produce an empty capture_var"
             );
         }
         other => panic!("expected OutcomePropagate, got {other:?}"),
@@ -817,12 +820,15 @@ fn parses_outcome_propagate_with_underscore_discard() {
 fn parses_outcome_default_operator() {
     let (parser, id) = parse_expr("parse_count ~: 0");
     match &parser.arena.expression(id).node {
-        Expr::OutcomeDefault { inner, default } => {
-            match &parser.arena.expression(*inner).node {
-                Expr::Identifier(name) => assert_eq!(name, "parse_count"),
+        Expr::OutcomeDefault {
+            expr,
+            default_value,
+        } => {
+            match &parser.arena.expression(*expr).node {
+                Expr::Identifier { name } => assert_eq!(name, "parse_count"),
                 other => panic!("expected Identifier as inner, got {other:?}"),
             }
-            assert_eq!(integer_value_of(&parser, *default), 0);
+            assert_eq!(integer_value_of(&parser, *default_value), 0);
         }
         other => panic!("expected OutcomeDefault, got {other:?}"),
     }
@@ -845,7 +851,7 @@ fn parses_strong_frozen_borrow() {
     let (form, operand) = borrow_of(&parser, id);
     assert_eq!(form, ReferenceForm::StrongFrozen);
     match &parser.arena.expression(operand).node {
-        Expr::Identifier(name) => assert_eq!(name, "x"),
+        Expr::Identifier { name } => assert_eq!(name, "x"),
         other => panic!("expected Identifier operand, got {other:?}"),
     }
 }
@@ -888,7 +894,7 @@ fn parses_borrow_with_field_access_operand() {
         Expr::FieldAccess { object, field } => {
             assert_eq!(field, "field");
             match &parser.arena.expression(*object).node {
-                Expr::Identifier(name) => assert_eq!(name, "obj"),
+                Expr::Identifier { name } => assert_eq!(name, "obj"),
                 other => panic!("expected Identifier object, got {other:?}"),
             }
         }

@@ -19,7 +19,7 @@ use std::{
 };
 
 use triet_parser::parse;
-use triet_syntax::{Item, ModuleContent, ModuleDecl, Span, Spanned};
+use triet_syntax::{Item, ModuleContent, ModuleItem, Span, Spanned};
 
 use crate::{
     cycle::detect_cycles,
@@ -334,7 +334,7 @@ impl LoaderState {
 
         for item in items {
             match item.node {
-                Item::Module(decl) => {
+                Item::Module { module: decl } => {
                     if let Some(child_id) = self.process_module_decl(
                         parent_path,
                         parent_arena,
@@ -359,13 +359,15 @@ impl LoaderState {
         parent_arena: ArenaId,
         parent_search_chain: Option<&[PathBuf]>,
         parent_id: ModuleId,
-        decl: ModuleDecl,
+        decl: ModuleItem,
         decl_span: Span,
     ) -> Option<ModuleId> {
         let child_path = parent_path.child(&decl.name);
 
         match decl.content {
-            ModuleContent::Inline(inline_items) => {
+            ModuleContent::Inline {
+                items: inline_items,
+            } => {
                 // Inline `module inner` carves a virtual nested dir
                 // (`<primary>/<inner>/`) atop the parent chain so any
                 // external child of the inline scope resolves under

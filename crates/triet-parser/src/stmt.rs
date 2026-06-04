@@ -2,11 +2,11 @@
 //! `for`, `while`, `while?`, `loop`, plus expression-statements.
 
 use triet_lexer::{Span, Token};
-use triet_syntax::{Block, Expr, ExprId, Spanned, Stmt, StmtId};
+use triet_syntax::{Expr, ExprId, Spanned, Stmt, StmtId};
 
 use crate::{
     error::ParseError,
-    expr::{parse_block, parse_expression},
+    expr::{parse_block_expression, parse_expression},
     parser::Parser,
     pattern::parse_pattern,
     type_expr::parse_type,
@@ -95,9 +95,9 @@ fn parse_let(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseEr
     Ok(parser.arena.alloc_statement(Spanned::new(
         Stmt::Let {
             name,
-            mutable,
+            is_mutable: mutable,
             type_annotation,
-            value,
+            init: value,
         },
         span,
     )))
@@ -163,7 +163,7 @@ fn parse_return(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, Pars
     let span = head_span.start..end;
     Ok(parser
         .arena
-        .alloc_statement(Spanned::new(Stmt::Return(value), span)))
+        .alloc_statement(Spanned::new(Stmt::Return { value }, span)))
 }
 
 fn parse_break(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseError> {
@@ -181,7 +181,7 @@ fn parse_break(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, Parse
     let span = head_span.start..end;
     Ok(parser
         .arena
-        .alloc_statement(Spanned::new(Stmt::Break(value), span)))
+        .alloc_statement(Spanned::new(Stmt::Break, span)))
 }
 
 fn parse_for(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseError> {
@@ -190,7 +190,7 @@ fn parse_for(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseEr
     parser.expect(&Token::In, "`in`")?;
     let iterable = parse_expression(parser)?;
     let body_span = parser.current_span();
-    let body = parse_block(parser, body_span)?;
+    let body = parse_block_expression(parser, body_span)?;
     let span = head_span.start..parser.previous_token_end(head_span.end);
     Ok(parser.arena.alloc_statement(Spanned::new(
         Stmt::For {
@@ -208,7 +208,7 @@ fn parse_while(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, Parse
     parser.advance();
     let condition = parse_expression(parser)?;
     let body_span = parser.current_span();
-    let body = parse_block(parser, body_span)?;
+    let body = parse_block_expression(parser, body_span)?;
     let span = head_span.start..parser.previous_token_end(head_span.end);
     Ok(parser.arena.alloc_statement(Spanned::new(
         Stmt::While {
@@ -223,11 +223,11 @@ fn parse_while(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, Parse
 fn parse_loop(parser: &mut Parser<'_>, head_span: Span) -> Result<StmtId, ParseError> {
     parser.expect(&Token::Loop, "`loop`")?;
     let body_span = parser.current_span();
-    let body = parse_block(parser, body_span)?;
+    let body = parse_block_expression(parser, body_span)?;
     let span = head_span.start..parser.previous_token_end(head_span.end);
     Ok(parser
         .arena
-        .alloc_statement(Spanned::new(Stmt::Loop(body), span)))
+        .alloc_statement(Spanned::new(Stmt::Loop { body }, span)))
 }
 
 /// Parse what looks like an expression and decide whether it is a
@@ -247,7 +247,7 @@ fn parse_expression_or_final(parser: &mut Parser<'_>) -> Result<StatementOrFinal
         let span = parser.arena.expression(expr).span.clone();
         let stmt = parser
             .arena
-            .alloc_statement(Spanned::new(Stmt::ExprStmt(expr), span));
+            .alloc_statement(Spanned::new(Stmt::Expression { expr }, span));
         return Ok(StatementOrFinal::Statement(stmt));
     }
 
@@ -260,7 +260,7 @@ fn parse_expression_or_final(parser: &mut Parser<'_>) -> Result<StatementOrFinal
     let span = parser.arena.expression(expr).span.clone();
     let stmt = parser
         .arena
-        .alloc_statement(Spanned::new(Stmt::ExprStmt(expr), span));
+        .alloc_statement(Spanned::new(Stmt::Expression { expr }, span));
     Ok(StatementOrFinal::Statement(stmt))
 }
 
@@ -280,7 +280,9 @@ fn parse_assignment_after_target(
 
     let value_span = parser.arena.expression(value).span.clone();
 
-    let Expr::Identifier(target) = target_node else {
+    // Only identifier targets are assignable. `Stmt::Assignment` stores the
+    // target as an `ExprId` (the parsed lvalue expression) per the schema AST.
+    let Expr::Identifier { .. } = target_node else {
         // Recovery: emit an error and degrade to an expr-stmt of the
         // RHS so parsing can continue.
         parser.record_error(ParseError::InvalidAssignmentTarget {
@@ -289,13 +291,19 @@ fn parse_assignment_after_target(
         });
         let stmt = parser
             .arena
-            .alloc_statement(Spanned::new(Stmt::ExprStmt(value), value_span));
+            .alloc_statement(Spanned::new(Stmt::Expression { expr: value }, value_span));
         return Ok(StatementOrFinal::Statement(stmt));
     };
 
     let span = target_span.start..value_span.end;
     Ok(StatementOrFinal::Statement(parser.arena.alloc_statement(
-        Spanned::new(Stmt::Assign { target, value }, span),
+        Spanned::new(
+            Stmt::Assignment {
+                target: target_expr,
+                value,
+            },
+            span,
+        ),
     )))
 }
 
@@ -305,10 +313,11 @@ pub(crate) fn parse_assignment_body(parser: &mut Parser<'_>) -> Result<ExprId, P
     parse_expression(parser)
 }
 
-/// Parse a top-level block (used by `function name(...) { body }`).
-pub(crate) fn parse_top_block(parser: &mut Parser<'_>) -> Result<Block, ParseError> {
+/// Parse a top-level block (used by `function name(...) { body }`),
+/// allocating it as an `Expr::Block` and returning its handle.
+pub(crate) fn parse_top_block(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
     let span = parser.current_span();
-    parse_block(parser, span)
+    parse_block_expression(parser, span)
 }
 
 #[cfg(test)]
@@ -342,7 +351,7 @@ mod tests {
         match &parser.arena.statement(id).node {
             Stmt::Let {
                 name,
-                mutable,
+                is_mutable: mutable,
                 type_annotation,
                 ..
             } => {
@@ -358,7 +367,7 @@ mod tests {
     fn parses_let_mut() {
         let (parser, id) = parse_stmt("let mutable count = 0");
         match &parser.arena.statement(id).node {
-            Stmt::Let { mutable, .. } => assert!(*mutable),
+            Stmt::Let { is_mutable, .. } => assert!(*is_mutable),
             other => panic!("expected Let, got {other:?}"),
         }
     }
@@ -387,7 +396,7 @@ mod tests {
     fn parses_return_with_value() {
         let (parser, id) = parse_stmt("return 5");
         match &parser.arena.statement(id).node {
-            Stmt::Return(Some(_)) => {}
+            Stmt::Return { value: Some(_) } => {}
             other => panic!("expected Return(Some), got {other:?}"),
         }
     }
@@ -396,7 +405,7 @@ mod tests {
     fn parses_return_without_value() {
         let (parser, id) = parse_stmt("return");
         match &parser.arena.statement(id).node {
-            Stmt::Return(None) => {}
+            Stmt::Return { value: None } => {}
             other => panic!("expected Return(None), got {other:?}"),
         }
     }
@@ -404,16 +413,16 @@ mod tests {
     #[test]
     fn parses_break_no_value() {
         let (parser, id) = parse_stmt("break");
-        assert!(matches!(parser.arena.statement(id).node, Stmt::Break(None)));
+        assert!(matches!(parser.arena.statement(id).node, Stmt::Break));
     }
 
     #[test]
     fn parses_break_with_value() {
         let (parser, id) = parse_stmt("break 42");
-        assert!(matches!(
-            parser.arena.statement(id).node,
-            Stmt::Break(Some(_))
-        ));
+        // `Stmt::Break` is a unit variant in the schema AST — `break <expr>`
+        // parses without error but carries no value (break-with-value is not
+        // modeled). This asserts the statement parses to a Break.
+        assert!(matches!(parser.arena.statement(id).node, Stmt::Break));
     }
 
     #[test]
@@ -470,7 +479,10 @@ mod tests {
     #[test]
     fn parses_loop() {
         let (parser, id) = parse_stmt("loop { }");
-        assert!(matches!(parser.arena.statement(id).node, Stmt::Loop(_)));
+        assert!(matches!(
+            parser.arena.statement(id).node,
+            Stmt::Loop { body: _ }
+        ));
     }
 
     #[test]
@@ -492,8 +504,11 @@ mod tests {
     fn parses_assignment_with_identifier_target() {
         let (parser, id) = parse_stmt("count = 5");
         match &parser.arena.statement(id).node {
-            Stmt::Assign { target, value } => {
-                assert_eq!(target, "count");
+            Stmt::Assignment { target, value } => {
+                match &parser.arena.expression(*target).node {
+                    Expr::Identifier { name } => assert_eq!(name, "count"),
+                    other => panic!("expected Identifier target, got {other:?}"),
+                }
                 let val_expr = &parser.arena.expression(*value).node;
                 assert!(matches!(val_expr, Expr::IntegerLiteral { value: 5, .. }));
             }
@@ -505,8 +520,11 @@ mod tests {
     fn parses_assignment_with_complex_rhs() {
         let (parser, id) = parse_stmt("count = count + 1");
         match &parser.arena.statement(id).node {
-            Stmt::Assign { target, value } => {
-                assert_eq!(target, "count");
+            Stmt::Assignment { target, value } => {
+                match &parser.arena.expression(*target).node {
+                    Expr::Identifier { name } => assert_eq!(name, "count"),
+                    other => panic!("expected Identifier target, got {other:?}"),
+                }
                 assert!(matches!(
                     parser.arena.expression(*value).node,
                     Expr::BinaryOp { .. }

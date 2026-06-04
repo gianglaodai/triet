@@ -44,7 +44,7 @@ mod stmt;
 mod type_expr;
 
 use triet_lexer::{LexError, SpannedToken, lex};
-use triet_syntax::Program;
+use triet_syntax::{Arena, Program};
 
 pub use error::ParseError;
 
@@ -61,7 +61,14 @@ pub fn parse(source: &str) -> (Program, Vec<ParseError>) {
     let tokens = match lex(source) {
         Ok(tokens) => tokens,
         Err(error) => {
-            return (Program::default(), vec![ParseError::from(error)]);
+            return (
+                Program {
+                    arena: Arena::new(),
+                    items: vec![],
+                    source_file: String::new(),
+                },
+                vec![ParseError::from(error)],
+            );
         }
     };
     parse_tokens(&tokens)
@@ -94,7 +101,14 @@ pub fn parse_tokens(tokens: &[SpannedToken]) -> (Program, Vec<ParseError>) {
     }
 
     let (arena, errors) = parser.finish();
-    (Program { arena, items }, errors)
+    (
+        Program {
+            arena,
+            items,
+            source_file: String::new(),
+        },
+        errors,
+    )
 }
 
 // Re-export `LexError` so callers don't need to depend on `triet-lexer`
@@ -134,7 +148,7 @@ mod integration_tests {
         let (program, errors) = parse("function main() { }");
         assert_no_errors(&errors);
         assert_eq!(program.items.len(), 1);
-        assert!(matches!(program.items[0].node, Item::Function(_)));
+        assert!(matches!(program.items[0].node, Item::Function { def: _ }));
     }
 
     #[test]
@@ -165,12 +179,12 @@ mod integration_tests {
         assert_no_errors(&errors);
         assert_eq!(program.items.len(), 1);
 
-        let Item::Function(def) = &program.items[0].node else {
+        let Item::Function { def } = &program.items[0].node else {
             panic!("expected function");
         };
         assert_eq!(def.name, "fizzbuzz");
 
-        let FunctionBody::Expression(body) = &def.body else {
+        let FunctionBody::Expression { expr: body } = &def.body else {
             panic!("expected expression body");
         };
         match &program.arena.expression(*body).node {
@@ -191,10 +205,10 @@ mod integration_tests {
         assert_no_errors(&errors);
         assert_eq!(program.items.len(), 1);
 
-        let Item::Function(def) = &program.items[0].node else {
+        let Item::Function { def } = &program.items[0].node else {
             panic!("expected function");
         };
-        assert_eq!(def.parameters.len(), 3);
+        assert_eq!(def.params.len(), 3);
     }
 
     #[test]
@@ -244,10 +258,10 @@ mod integration_tests {
         "#;
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
-        let Item::Function(def) = &program.items[0].node else {
+        let Item::Function { def } = &program.items[0].node else {
             panic!();
         };
-        let FunctionBody::Expression(body) = &def.body else {
+        let FunctionBody::Expression { expr: body } = &def.body else {
             panic!();
         };
         let Expr::Match { arms, .. } = &program.arena.expression(*body).node else {
@@ -271,14 +285,21 @@ mod integration_tests {
         ";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
-        let Item::Function(def) = &program.items[0].node else {
+        let Item::Function { def } = &program.items[0].node else {
             panic!()
         };
-        let FunctionBody::Block(block) = &def.body else {
+        let FunctionBody::Block { block } = &def.body else {
             panic!()
         };
-        assert_eq!(block.statements.len(), 2);
-        assert!(block.final_expression.is_some());
+        let Expr::Block {
+            statements,
+            final_expr,
+        } = &program.arena.expression(*block).node
+        else {
+            panic!("expected block expression")
+        };
+        assert_eq!(statements.len(), 2);
+        assert!(final_expr.is_some());
     }
 
     #[test]
@@ -353,15 +374,15 @@ mod integration_tests {
         assert_eq!(program.items.len(), 2);
 
         // Verify shape of each function.
-        let Item::Function(fb) = &program.items[0].node else {
+        let Item::Function { def: fb } = &program.items[0].node else {
             panic!()
         };
         assert_eq!(fb.name, "fizzbuzz");
-        let Item::Function(main_fn) = &program.items[1].node else {
+        let Item::Function { def: main_fn } = &program.items[1].node else {
             panic!()
         };
         assert_eq!(main_fn.name, "main");
-        assert!(matches!(main_fn.body, FunctionBody::Block(_)));
+        assert!(matches!(main_fn.body, FunctionBody::Block { block: _ }));
     }
 
     // Reassignment (`x = expr`) is implemented as `Stmt::Assign` —
@@ -391,15 +412,18 @@ mod integration_tests {
         let source = "function ord() { let a = 1 let b = 2 let c = 3 }";
         let (program, errors) = parse(source);
         assert_no_errors(&errors);
-        let Item::Function(def) = &program.items[0].node else {
+        let Item::Function { def } = &program.items[0].node else {
             panic!()
         };
-        let FunctionBody::Block(block) = &def.body else {
+        let FunctionBody::Block { block } = &def.body else {
             panic!()
         };
-        assert_eq!(block.statements.len(), 3);
+        let Expr::Block { statements, .. } = &program.arena.expression(*block).node else {
+            panic!("expected block expression")
+        };
+        assert_eq!(statements.len(), 3);
         for (i, expected) in ["a", "b", "c"].iter().enumerate() {
-            let stmt = program.arena.statement(block.statements[i]);
+            let stmt = program.arena.statement(statements[i]);
             match &stmt.node {
                 Stmt::Let { name, .. } => assert_eq!(name, expected),
                 other => panic!("expected Let, got {other:?}"),

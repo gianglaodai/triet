@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 triet-core.workspace = true
-triet-ir.workspace = true
 triet-modules.workspace = true
 thiserror.workspace = true
 miette.workspace = true

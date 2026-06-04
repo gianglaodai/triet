@@ -2,8 +2,8 @@
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
-    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, ImportFrom,
-    ImportName, ImportPath, Item, ModuleContent, ModuleDecl, ParameterPassing, Spanned, StructDef,
+    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, Import,
+    ImportName, ImportPath, Item, ModuleContent, ModuleItem, ParameterPassing, Spanned, StructDef,
     StructField, TypeParam, Visibility,
 };
 
@@ -150,8 +150,12 @@ fn parse_function(
 
     // Body — either `{ ... }` or `= expr`.
     let body = match parser.peek_token() {
-        Some(Token::LBrace) => FunctionBody::Block(parse_top_block(parser)?),
-        Some(Token::Assign) => FunctionBody::Expression(parse_assignment_body(parser)?),
+        Some(Token::LBrace) => FunctionBody::Block {
+            block: parse_top_block(parser)?,
+        },
+        Some(Token::Assign) => FunctionBody::Expression {
+            expr: parse_assignment_body(parser)?,
+        },
         _ => {
             return Err(ParseError::UnexpectedToken {
                 expected: "function body (`{...}` or `= expr`)".to_owned(),
@@ -164,14 +168,16 @@ fn parse_function(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Function(FunctionDef {
-            visibility,
-            name,
-            type_params,
-            parameters,
-            return_type,
-            body,
-        }),
+        Item::Function {
+            def: FunctionDef {
+                visibility,
+                name,
+                type_params,
+                params: parameters,
+                return_type,
+                body,
+            },
+        },
         span,
     ))
 }
@@ -196,11 +202,11 @@ fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParam>, P
 fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError> {
     // Optional passing mode prefix: `mutable` or `owned`.
     let passing = if parser.eat(&Token::Mutable) {
-        ParameterPassing::Mutable
+        ParameterPassing::MutableBorrow
     } else if parser.eat(&Token::Owned) {
-        ParameterPassing::Owned
+        ParameterPassing::Move
     } else {
-        ParameterPassing::Borrowed
+        ParameterPassing::Borrow
     };
 
     let (name_token, _) = parser
@@ -230,7 +236,7 @@ fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError>
     Ok(FunctionParam {
         name,
         type_annotation,
-        passing,
+        passing_mode: passing,
     })
 }
 
@@ -255,7 +261,7 @@ fn parse_const_item(
     let end = parser.arena.expression(value).span.end;
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Const {
+        Item::Constant {
             visibility,
             name,
             type_annotation,
@@ -281,9 +287,9 @@ fn parse_type_alias(
     let span = head_span.start..end;
     Ok(Spanned::new(
         Item::TypeAlias {
-            visibility,
             name,
-            target,
+            type_annotation: target,
+            visibility,
         },
         span,
     ))
@@ -296,7 +302,15 @@ fn parse_import(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item
 
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
-    Ok(Spanned::new(Item::Import(ImportPath { segments }), span))
+    Ok(Spanned::new(
+        Item::Import {
+            import: Import {
+                module_path: ImportPath { segments },
+                names: vec![],
+            },
+        },
+        span,
+    ))
 }
 
 /// Parse a Python-style `from path import a, b as c` statement.
@@ -317,7 +331,10 @@ fn parse_from_import(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::ImportFrom(ImportFrom { source, names }),
+        Item::ImportFrom {
+            module_path: ImportPath { segments: source },
+            names,
+        },
         span,
     ))
 }
@@ -491,7 +508,7 @@ fn parse_module(
             items.push(parse_item(parser)?);
         }
         parser.expect(&Token::RBrace, "`}`")?;
-        ModuleContent::Inline(items)
+        ModuleContent::Inline { items }
     } else {
         let _ = parser.eat(&Token::Semi);
         ModuleContent::External
@@ -500,11 +517,13 @@ fn parse_module(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Module(ModuleDecl {
-            visibility,
-            name,
-            content,
-        }),
+        Item::Module {
+            module: ModuleItem {
+                name,
+                content,
+                visibility,
+            },
+        },
         span,
     ))
 }
@@ -526,12 +545,14 @@ fn parse_struct(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Struct(StructDef {
-            visibility,
-            name,
-            type_params,
-            fields,
-        }),
+        Item::Struct {
+            def: StructDef {
+                visibility,
+                name,
+                type_params,
+                fields,
+            },
+        },
         span,
     ))
 }
@@ -577,12 +598,14 @@ fn parse_enum(
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Enum(EnumDef {
-            visibility,
-            name,
-            type_params,
-            variants,
-        }),
+        Item::Enum {
+            def: EnumDef {
+                visibility,
+                name,
+                type_params,
+                variants,
+            },
+        },
         span,
     ))
 }
@@ -613,7 +636,7 @@ fn parse_enum_variants(parser: &mut Parser<'_>) -> Result<Vec<EnumVariant>, Pars
     Ok(variants)
 }
 
-/// Parse optional generic type parameters: `<T, U>` or `<F: Send>`. Returns an empty
+/// Parse optional generic type params: `<T, U>` or `<F: Send>`. Returns an empty
 /// vec if the next token is not `<`.
 fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<TypeParam>, ParseError> {
     if !matches!(parser.peek_token(), Some(Token::Lt)) {
@@ -743,10 +766,10 @@ mod tests {
     fn parses_no_arg_function_with_block_body() {
         let (_, item) = parse("function main() { }");
         match &item.node {
-            Item::Function(def) => {
+            Item::Function { def } => {
                 assert_eq!(def.name, "main");
-                assert!(def.parameters.is_empty());
-                assert!(matches!(def.body, FunctionBody::Block(_)));
+                assert!(def.params.is_empty());
+                assert!(matches!(def.body, FunctionBody::Block { block: _ }));
             }
             other => panic!("expected Function, got {other:?}"),
         }
@@ -756,10 +779,10 @@ mod tests {
     fn parses_function_with_expression_body() {
         let (_, item) = parse("function double(n: Integer) -> Integer = n * 2");
         match &item.node {
-            Item::Function(def) => {
-                assert_eq!(def.parameters.len(), 1);
+            Item::Function { def } => {
+                assert_eq!(def.params.len(), 1);
                 assert!(def.return_type.is_some());
-                assert!(matches!(def.body, FunctionBody::Expression(_)));
+                assert!(matches!(def.body, FunctionBody::Expression { expr: _ }));
             }
             other => panic!("expected Function, got {other:?}"),
         }
@@ -769,7 +792,7 @@ mod tests {
     fn parses_function_with_multiple_params() {
         let (_, item) = parse("function add(a: Integer, b: Integer) -> Integer = a + b");
         match &item.node {
-            Item::Function(def) => assert_eq!(def.parameters.len(), 2),
+            Item::Function { def } => assert_eq!(def.params.len(), 2),
             other => panic!("got {other:?}"),
         }
     }
@@ -778,9 +801,9 @@ mod tests {
     fn parses_function_with_mut_parameter() {
         let (_, item) = parse("function append(mutable buffer: String, suffix: String) { }");
         match &item.node {
-            Item::Function(def) => {
-                assert_eq!(def.parameters[0].passing, ParameterPassing::Mutable);
-                assert_eq!(def.parameters[1].passing, ParameterPassing::Borrowed);
+            Item::Function { def } => {
+                assert_eq!(def.params[0].passing_mode, ParameterPassing::MutableBorrow);
+                assert_eq!(def.params[1].passing_mode, ParameterPassing::Borrow);
             }
             other => panic!("got {other:?}"),
         }
@@ -790,8 +813,8 @@ mod tests {
     fn parses_function_with_owned_parameter() {
         let (_, item) = parse("function consume(owned data: String) -> String = data");
         match &item.node {
-            Item::Function(def) => {
-                assert_eq!(def.parameters[0].passing, ParameterPassing::Owned);
+            Item::Function { def } => {
+                assert_eq!(def.params[0].passing_mode, ParameterPassing::Move);
             }
             other => panic!("got {other:?}"),
         }
@@ -804,7 +827,7 @@ mod tests {
     fn parses_function_with_single_type_param() {
         let (_, item) = parse("function identity<T>(x: T) -> T = x");
         match &item.node {
-            Item::Function(def) => {
+            Item::Function { def } => {
                 assert_eq!(
                     def.type_params,
                     vec![TypeParam {
@@ -812,7 +835,7 @@ mod tests {
                         bound: None
                     }]
                 );
-                assert_eq!(def.parameters.len(), 1);
+                assert_eq!(def.params.len(), 1);
                 assert!(def.return_type.is_some());
             }
             other => panic!("expected Function, got {other:?}"),
@@ -826,7 +849,7 @@ mod tests {
     fn parses_function_with_multiple_type_params() {
         let (_, item) = parse("function pair<K, V>(k: K, v: V) -> K = k");
         match &item.node {
-            Item::Function(def) => {
+            Item::Function { def } => {
                 assert_eq!(
                     def.type_params,
                     vec![
@@ -840,7 +863,7 @@ mod tests {
                         }
                     ]
                 );
-                assert_eq!(def.parameters.len(), 2);
+                assert_eq!(def.params.len(), 2);
             }
             other => panic!("expected Function, got {other:?}"),
         }
@@ -851,7 +874,7 @@ mod tests {
     fn parses_function_without_type_params_has_empty_type_params() {
         let (_, item) = parse("function add(a: Integer, b: Integer) -> Integer = a + b");
         match &item.node {
-            Item::Function(def) => {
+            Item::Function { def } => {
                 assert!(
                     def.type_params.is_empty(),
                     "non-generic function must have empty type_params, got {:?}",
@@ -866,7 +889,7 @@ mod tests {
     fn parses_const_with_annotation() {
         let (_, item) = parse("constant PI: Integer = 3");
         match &item.node {
-            Item::Const {
+            Item::Constant {
                 name,
                 type_annotation,
                 ..
@@ -882,7 +905,7 @@ mod tests {
     fn parses_const_without_annotation() {
         let (_, item) = parse("constant ANSWER = 42");
         match &item.node {
-            Item::Const { name, .. } => assert_eq!(name, "ANSWER"),
+            Item::Constant { name, .. } => assert_eq!(name, "ANSWER"),
             other => panic!("got {other:?}"),
         }
     }
@@ -909,7 +932,7 @@ mod tests {
     fn parses_simple_import() {
         let (_, item) = parse("import std");
         match &item.node {
-            Item::Import(path) => assert_eq!(path.segments, vec!["std"]),
+            Item::Import { import: path } => assert_eq!(path.module_path.segments, vec!["std"]),
             other => panic!("got {other:?}"),
         }
     }
@@ -918,7 +941,7 @@ mod tests {
     fn parses_dotted_import() {
         let (_, item) = parse("import std.io.println");
         match &item.node {
-            Item::Import(path) => assert_eq!(path.segments.len(), 3),
+            Item::Import { import: path } => assert_eq!(path.module_path.segments.len(), 3),
             other => panic!("got {other:?}"),
         }
     }
@@ -926,7 +949,7 @@ mod tests {
     #[test]
     fn default_function_visibility_is_private() {
         let (_, item) = parse("function greet() { }");
-        let Item::Function(def) = &item.node else {
+        let Item::Function { def } = &item.node else {
             panic!("expected function")
         };
         assert_eq!(def.visibility, Visibility::Private);
@@ -935,7 +958,7 @@ mod tests {
     #[test]
     fn pub_function_captures_public_visibility() {
         let (_, item) = parse("public function greet() { }");
-        let Item::Function(def) = &item.node else {
+        let Item::Function { def } = &item.node else {
             panic!("expected function")
         };
         assert_eq!(def.visibility, Visibility::Public);
@@ -945,7 +968,7 @@ mod tests {
     #[test]
     fn pub_pkg_function_captures_publicpkg_visibility() {
         let (_, item) = parse("public(package) function helper() { }");
-        let Item::Function(def) = &item.node else {
+        let Item::Function { def } = &item.node else {
             panic!("expected function")
         };
         assert_eq!(def.visibility, Visibility::PublicPackage);
@@ -954,7 +977,7 @@ mod tests {
     #[test]
     fn pub_struct_captures_visibility() {
         let (_, item) = parse("public struct Point { x: Integer, y: Integer }");
-        let Item::Struct(def) = &item.node else {
+        let Item::Struct { def } = &item.node else {
             panic!("expected struct")
         };
         assert_eq!(def.visibility, Visibility::Public);
@@ -964,7 +987,7 @@ mod tests {
     #[test]
     fn pub_enum_captures_visibility() {
         let (_, item) = parse("public enum Option<T> { Some(T), None }");
-        let Item::Enum(def) = &item.node else {
+        let Item::Enum { def } = &item.node else {
             panic!("expected enum")
         };
         assert_eq!(def.visibility, Visibility::Public);
@@ -973,7 +996,7 @@ mod tests {
     #[test]
     fn pub_const_captures_visibility() {
         let (_, item) = parse("public constant PI: Integer = 3");
-        let Item::Const {
+        let Item::Constant {
             visibility, name, ..
         } = &item.node
         else {
@@ -1096,13 +1119,13 @@ mod tests {
         // are themselves valid identifiers — keyword matching is not
         // greedy, and reserved-name comparison is exact.
         let (_, item) = parse("function crater() { }");
-        let Item::Function(def) = &item.node else {
+        let Item::Function { def } = &item.node else {
             panic!("expected function")
         };
         assert_eq!(def.name, "crater");
 
         let (_, item) = parse("struct Stderr { }");
-        let Item::Struct(def) = &item.node else {
+        let Item::Struct { def } = &item.node else {
             panic!("expected struct")
         };
         assert_eq!(def.name, "Stderr");
@@ -1148,8 +1171,8 @@ mod tests {
     #[test]
     fn parses_empty_struct() {
         let (_, item) = parse("struct Empty { }");
-        assert!(matches!(item.node, Item::Struct(_)));
-        if let Item::Struct(def) = &item.node {
+        assert!(matches!(item.node, Item::Struct { def: _ }));
+        if let Item::Struct { def } = &item.node {
             assert_eq!(def.name, "Empty");
             assert!(def.fields.is_empty());
         }
@@ -1158,8 +1181,8 @@ mod tests {
     #[test]
     fn parses_struct_with_fields() {
         let (_, item) = parse("struct Point { x: Integer, y: Integer }");
-        assert!(matches!(item.node, Item::Struct(_)));
-        if let Item::Struct(def) = &item.node {
+        assert!(matches!(item.node, Item::Struct { def: _ }));
+        if let Item::Struct { def } = &item.node {
             assert_eq!(def.name, "Point");
             assert_eq!(def.fields.len(), 2);
             assert_eq!(def.fields[0].name, "x");
@@ -1170,8 +1193,8 @@ mod tests {
     #[test]
     fn parses_enum_with_unit_variants() {
         let (_, item) = parse("enum Color { Red, Green, Blue }");
-        assert!(matches!(item.node, Item::Enum(_)));
-        if let Item::Enum(def) = &item.node {
+        assert!(matches!(item.node, Item::Enum { def: _ }));
+        if let Item::Enum { def } = &item.node {
             assert_eq!(def.name, "Color");
             assert_eq!(def.variants.len(), 3);
             assert_eq!(def.variants[0].name, "Red");
@@ -1182,8 +1205,8 @@ mod tests {
     #[test]
     fn parses_enum_with_payload_variants() {
         let (_, item) = parse("enum Maybe { Some(Integer), None }");
-        assert!(matches!(item.node, Item::Enum(_)));
-        if let Item::Enum(def) = &item.node {
+        assert!(matches!(item.node, Item::Enum { def: _ }));
+        if let Item::Enum { def } = &item.node {
             assert_eq!(def.name, "Maybe");
             assert_eq!(def.variants.len(), 2);
             assert_eq!(def.variants[0].name, "Some");
@@ -1198,7 +1221,7 @@ mod tests {
     #[test]
     fn parses_external_module_declaration() {
         let (_, item) = parse("module foo");
-        let Item::Module(decl) = &item.node else {
+        let Item::Module { module: decl } = &item.node else {
             panic!("expected module")
         };
         assert_eq!(decl.name, "foo");
@@ -1209,7 +1232,7 @@ mod tests {
     #[test]
     fn parses_external_module_with_trailing_semi() {
         let (_, item) = parse("module foo;");
-        let Item::Module(decl) = &item.node else {
+        let Item::Module { module: decl } = &item.node else {
             panic!("expected module")
         };
         assert!(matches!(decl.content, ModuleContent::External));
@@ -1218,11 +1241,11 @@ mod tests {
     #[test]
     fn parses_inline_empty_module() {
         let (_, item) = parse("module foo { }");
-        let Item::Module(decl) = &item.node else {
+        let Item::Module { module: decl } = &item.node else {
             panic!("expected module")
         };
         match &decl.content {
-            ModuleContent::Inline(items) => assert!(items.is_empty()),
+            ModuleContent::Inline { items } => assert!(items.is_empty()),
             other @ ModuleContent::External => panic!("expected inline, got {other:?}"),
         }
     }
@@ -1232,14 +1255,14 @@ mod tests {
         let (_, item) = parse(
             "module greet {\n    public function hello() { }\n    constant N: Integer = 1\n}",
         );
-        let Item::Module(decl) = &item.node else {
+        let Item::Module { module: decl } = &item.node else {
             panic!("expected module")
         };
         match &decl.content {
-            ModuleContent::Inline(items) => {
+            ModuleContent::Inline { items } => {
                 assert_eq!(items.len(), 2);
-                assert!(matches!(items[0].node, Item::Function(_)));
-                assert!(matches!(items[1].node, Item::Const { .. }));
+                assert!(matches!(items[0].node, Item::Function { def: _ }));
+                assert!(matches!(items[1].node, Item::Constant { .. }));
             }
             other @ ModuleContent::External => panic!("expected inline, got {other:?}"),
         }
@@ -1248,7 +1271,7 @@ mod tests {
     #[test]
     fn parses_public_module() {
         let (_, item) = parse("public module exposed");
-        let Item::Module(decl) = &item.node else {
+        let Item::Module { module: decl } = &item.node else {
             panic!("expected module")
         };
         assert_eq!(decl.visibility, Visibility::Public);
@@ -1258,7 +1281,7 @@ mod tests {
     #[test]
     fn parses_public_package_module() {
         let (_, item) = parse("public(package) module internal { }");
-        let Item::Module(decl) = &item.node else {
+        let Item::Module { module: decl } = &item.node else {
             panic!("expected module")
         };
         assert_eq!(decl.visibility, Visibility::PublicPackage);
@@ -1267,13 +1290,13 @@ mod tests {
     #[test]
     fn parses_nested_inline_modules() {
         let (_, item) = parse("module outer { module inner { } }");
-        let Item::Module(outer) = &item.node else {
+        let Item::Module { module: outer } = &item.node else {
             panic!("expected outer module")
         };
         match &outer.content {
-            ModuleContent::Inline(items) => {
+            ModuleContent::Inline { items } => {
                 assert_eq!(items.len(), 1);
-                let Item::Module(inner) = &items[0].node else {
+                let Item::Module { module: inner } = &items[0].node else {
                     panic!("expected inner module")
                 };
                 assert_eq!(inner.name, "inner");
@@ -1310,84 +1333,84 @@ mod tests {
     #[test]
     fn parses_from_import_single_name() {
         let (_, item) = parse("from std.io import println");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { module_path, names } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.source, vec!["std", "io"]);
-        assert_eq!(import.names.len(), 1);
-        assert_eq!(import.names[0].name, "println");
-        assert!(import.names[0].alias.is_none());
+        assert_eq!(module_path.segments, vec!["std", "io"]);
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0].name, "println");
+        assert!(names[0].alias.is_none());
     }
 
     #[test]
     fn parses_from_import_multiple_names() {
         let (_, item) = parse("from std.io import println, print, read_line");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { names, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.names.len(), 3);
-        assert_eq!(import.names[0].name, "println");
-        assert_eq!(import.names[1].name, "print");
-        assert_eq!(import.names[2].name, "read_line");
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[0].name, "println");
+        assert_eq!(names[1].name, "print");
+        assert_eq!(names[2].name, "read_line");
     }
 
     #[test]
     fn parses_from_import_with_alias() {
         let (_, item) = parse("from std.io import println as out");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { names, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.names[0].name, "println");
-        assert_eq!(import.names[0].alias.as_deref(), Some("out"));
+        assert_eq!(names[0].name, "println");
+        assert_eq!(names[0].alias.as_deref(), Some("out"));
     }
 
     #[test]
     fn parses_from_import_mixed_aliases() {
         let (_, item) = parse("from std.io import println, print as p, read_line");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { names, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.names.len(), 3);
-        assert!(import.names[0].alias.is_none());
-        assert_eq!(import.names[1].alias.as_deref(), Some("p"));
-        assert!(import.names[2].alias.is_none());
+        assert_eq!(names.len(), 3);
+        assert!(names[0].alias.is_none());
+        assert_eq!(names[1].alias.as_deref(), Some("p"));
+        assert!(names[2].alias.is_none());
     }
 
     #[test]
     fn parses_from_import_with_path_keyword_root() {
         // `khi.` as path root is valid per ADR-0005 + ADR-0024.
         let (_, item) = parse("from khi.utils import helper");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { module_path, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.source, vec!["khi", "utils"]);
+        assert_eq!(module_path.segments, vec!["khi", "utils"]);
     }
 
     #[test]
     fn parses_from_import_with_self_root() {
         let (_, item) = parse("from self.helpers import twice");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { module_path, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.source[0], "self");
+        assert_eq!(module_path.segments[0], "self");
     }
 
     #[test]
     fn parses_from_import_with_super_root() {
         let (_, item) = parse("from super.api import handle");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { module_path, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.source[0], "super");
+        assert_eq!(module_path.segments[0], "super");
     }
 
     #[test]
     fn parses_from_import_trailing_comma() {
         let (_, item) = parse("from std.io import println, print,");
-        let Item::ImportFrom(import) = &item.node else {
+        let Item::ImportFrom { names, .. } = &item.node else {
             panic!("expected ImportFrom")
         };
-        assert_eq!(import.names.len(), 2);
+        assert_eq!(names.len(), 2);
     }
 
     #[test]
@@ -1420,9 +1443,9 @@ mod tests {
     fn import_with_path_keyword_root_is_accepted() {
         // ADR-0005 + ADR-0024 allow `khi.` / `self.` / `super.` as path roots.
         let (_, item) = parse("import khi.utils.helper");
-        let Item::Import(path) = &item.node else {
+        let Item::Import { import: path } = &item.node else {
             panic!("expected Import")
         };
-        assert_eq!(path.segments, vec!["khi", "utils", "helper"]);
+        assert_eq!(path.module_path.segments, vec!["khi", "utils", "helper"]);
     }
 }

@@ -8,7 +8,7 @@
 //! `check` can call it; helper sub-checks stay private to this file.
 
 use triet_syntax::{
-    BinaryOperator, Block, Expr, ExprId, FStringPart, MatchArm, NumericSuffix, ReferenceForm, Span,
+    BinaryOperator, Expr, ExprId, FStringPart, MatchArm, NumericSuffix, ReferenceForm, Span,
     UnaryOperator,
 };
 
@@ -35,17 +35,33 @@ impl Checker<'_> {
                 Some(NumericSuffix::Integer) | None => Type::Integer,
             },
             Expr::TernaryLiteral { .. } => Type::Integer,
+            Expr::TritLiteral { .. } => Type::Trit,
+            // Control-flow-as-expression forms in the schema AST. The
+            // parser currently lowers `while` / `return` to statements
+            // (`Stmt::While` / `Stmt::Return`), so these arms are
+            // dormant; handle them minimally for exhaustiveness.
+            Expr::While { condition, body } => {
+                let _ = self.infer_expression(condition);
+                let _ = self.infer_expression(body);
+                Type::Unit
+            }
+            Expr::Return { value } => {
+                if let Some(value) = value {
+                    let _ = self.infer_expression(value);
+                }
+                Type::Unit
+            }
             // ADR-0021 §2.1: `true` / `false` literals are Trilean!
             // (statically proven non-Unknown). Only `unknown` literal
             // produces generic Trilean.
-            Expr::TrileanLiteral(value) => match value {
+            Expr::TrileanLiteral { value } => match value {
                 triet_syntax::numeric::TrileanValue::Unknown => Type::TRILEAN,
                 triet_syntax::numeric::TrileanValue::True
                 | triet_syntax::numeric::TrileanValue::False => Type::TRILEAN_KNOWN,
             },
-            Expr::StringLiteral(_) => Type::String,
-            Expr::FStringLiteral(segments) => {
-                for part in &segments.parts {
+            Expr::StringLiteral { .. } => Type::String,
+            Expr::FStringLiteral { segments } => {
+                for part in &segments {
                     if let FStringPart::Interpolation { expression, .. } = part {
                         // The expression must be type-checkable; its type
                         // is converted via Display by the runtime.
@@ -62,7 +78,7 @@ impl Checker<'_> {
                 self.errors.push(TypeError::NullDeprecated { span });
                 Type::Nullable(Box::new(Type::Unknown))
             }
-            Expr::Identifier(name) => {
+            Expr::Identifier { name } => {
                 // v0.9.x.atomic.7d: E2420 UseAfterMove check per
                 // ADR-0025 §5.1 + ADR-0031 §4. Fires only on moved
                 // local bindings (params + lets); ignored for
@@ -84,7 +100,12 @@ impl Checker<'_> {
                 right,
             } => self.check_binary_op(operator, left, right, span),
             Expr::UnaryOp {
-                operator: UnaryOperator::Negate,
+                // The parser collapses `-` / `!` / `not` / `~!` to a single
+                // unary form; `check_unary_negate` dispatches on the operand
+                // type (arithmetic on Integer, logical on Trilean). The
+                // schema's separate `Not` / `KleeneNot` variants are dormant
+                // until the parser distinguishes them.
+                operator: UnaryOperator::Negate | UnaryOperator::Not | UnaryOperator::KleeneNot,
                 operand,
             } => self.check_unary_negate(operand, span),
             // v0.9.x.atomic.7b: borrow expression typecheck per ADR-0031
@@ -110,7 +131,7 @@ impl Checker<'_> {
                 arguments,
             } => self.check_safe_method_call(receiver, &method, &arguments, span),
             Expr::ElvisOp { object, default } => self.check_elvis(object, default, span),
-            Expr::ForceUnwrap(inner) => self.check_force_unwrap(inner, span),
+            Expr::ForceUnwrap { operand: inner } => self.check_force_unwrap(inner, span),
             Expr::If {
                 condition,
                 then_branch,
@@ -118,20 +139,23 @@ impl Checker<'_> {
                 treat_unknown_as_false,
             } => self.check_if(
                 condition,
-                &then_branch,
-                else_branch.as_ref(),
+                then_branch,
+                else_branch,
                 treat_unknown_as_false,
                 span,
             ),
             Expr::Match { scrutinee, arms } => self.check_match(scrutinee, &arms, span),
-            Expr::Block(block) => self.check_block(&block),
-            Expr::Tuple(elements) => {
+            Expr::Block {
+                statements,
+                final_expr,
+            } => self.check_block(&statements, final_expr),
+            Expr::Tuple { elements } => {
                 let types = elements.iter().map(|e| self.infer_expression(*e)).collect();
                 Type::Tuple(types)
             }
             Expr::Lambda {
                 parameters,
-                return_type,
+                return_type_annotation,
                 body,
             } => {
                 let param_types: Vec<Type> = parameters
@@ -146,7 +170,7 @@ impl Checker<'_> {
                     self.env.declare(&param.name, ty.clone());
                 }
                 let body_ty = self.infer_expression(body);
-                let declared_return = return_type.map(|id| self.resolve_type(id));
+                let declared_return = return_type_annotation.map(|id| self.resolve_type(id));
                 let return_ty = declared_return.unwrap_or_else(|| body_ty.clone());
                 self.env.pop_frame();
                 Type::Function {
@@ -170,7 +194,10 @@ impl Checker<'_> {
                 }
                 Type::Range(Box::new(start_ty))
             }
-            Expr::StructLiteral { name, fields } => self.check_struct_literal(&name, &fields, span),
+            Expr::StructLiteral {
+                struct_name,
+                fields,
+            } => self.check_struct_literal(&struct_name, &fields, span),
             Expr::EnumLiteral {
                 name,
                 variant_name,
@@ -199,11 +226,22 @@ impl Checker<'_> {
                 body,
             } => self.check_outcome_arm_handler(inner, arm, capture_name.as_deref(), body, span),
             Expr::OutcomePropagate {
-                inner,
-                capture_name,
+                expr,
+                capture_var,
                 early_return,
-            } => self.check_outcome_propagate(inner, capture_name.as_deref(), early_return, span),
-            Expr::OutcomeDefault { inner, default } => self.check_outcome_default(inner, default),
+            } => {
+                // `capture_var` is `String` ("" means `|_|` discard).
+                let capture = if capture_var.is_empty() {
+                    None
+                } else {
+                    Some(capture_var.as_str())
+                };
+                self.check_outcome_propagate(expr, capture, early_return, span)
+            }
+            Expr::OutcomeDefault {
+                expr,
+                default_value,
+            } => self.check_outcome_default(expr, default_value),
         }
     }
 
@@ -407,11 +445,11 @@ impl Checker<'_> {
 
         match operator {
             BinaryOperator::Add
-            | BinaryOperator::Subtract
-            | BinaryOperator::Multiply
-            | BinaryOperator::Divide
-            | BinaryOperator::Modulo
-            | BinaryOperator::Power => {
+            | BinaryOperator::Sub
+            | BinaryOperator::Mul
+            | BinaryOperator::Div
+            | BinaryOperator::Mod
+            | BinaryOperator::Pow => {
                 if !(left_ty.is_numeric() || matches!(left_ty, Type::Unknown))
                     || !(right_ty.is_numeric() || matches!(right_ty, Type::Unknown))
                     || !left_ty.matches(&right_ty)
@@ -427,7 +465,7 @@ impl Checker<'_> {
                 }
                 left_ty
             }
-            BinaryOperator::Equal | BinaryOperator::NotEqual => {
+            BinaryOperator::Eq | BinaryOperator::Ne => {
                 if !left_ty.matches(&right_ty) {
                     self.errors.push(TypeError::InvalidOperands {
                         operator: operator_symbol(operator).to_owned(),
@@ -441,10 +479,7 @@ impl Checker<'_> {
                 // ADR-0021 §2.2: comparison refinement propagation.
                 eq_result_type(&left_ty, &right_ty)
             }
-            BinaryOperator::LessThan
-            | BinaryOperator::LessEqual
-            | BinaryOperator::GreaterThan
-            | BinaryOperator::GreaterEqual => {
+            BinaryOperator::Lt | BinaryOperator::Le | BinaryOperator::Gt | BinaryOperator::Ge => {
                 if !(left_ty.is_numeric() || matches!(left_ty, Type::Unknown))
                     || !(right_ty.is_numeric() || matches!(right_ty, Type::Unknown))
                     || !left_ty.matches(&right_ty)
@@ -463,11 +498,11 @@ impl Checker<'_> {
                 // Long; Trit has total ordering too).
                 Type::TRILEAN_KNOWN
             }
-            BinaryOperator::And
-            | BinaryOperator::Or
-            | BinaryOperator::Xor
-            | BinaryOperator::Iff
-            | BinaryOperator::Implies
+            BinaryOperator::LukAnd
+            | BinaryOperator::LukOr
+            | BinaryOperator::LukXor
+            | BinaryOperator::LukIff
+            | BinaryOperator::LukImplies
             | BinaryOperator::KleeneXor
             | BinaryOperator::KleeneIff
             | BinaryOperator::KleeneImplies => {
@@ -632,7 +667,9 @@ impl Checker<'_> {
         }
 
         // Try enum variant construction: `Some(5)`, `None`.
-        if let Expr::Identifier(ref callee_name) = self.arena.expression(callee).node
+        if let Expr::Identifier {
+            name: ref callee_name,
+        } = self.arena.expression(callee).node
             && let Some(enum_ty) = self.lookup_enum_variant(callee_name)
         {
             let Type::UserEnum {
@@ -1001,8 +1038,8 @@ impl Checker<'_> {
     fn check_if(
         &mut self,
         condition: ExprId,
-        then_branch: &Block,
-        else_branch: Option<&Block>,
+        then_branch: ExprId,
+        else_branch: Option<ExprId>,
         treat_unknown_as_false: bool,
         span: Span,
     ) -> Type {
@@ -1014,7 +1051,7 @@ impl Checker<'_> {
         // join semantics. Snapshot before each branch, walk, restore;
         // join the two end states with any-branch-moves-wins.
         let snapshot = self.snapshot_moves();
-        let then_ty = self.check_block(then_branch);
+        let then_ty = self.infer_expression(then_branch);
         let after_then = std::mem::replace(&mut self.move_states, snapshot.clone());
 
         match else_branch {
@@ -1025,7 +1062,7 @@ impl Checker<'_> {
                 Type::Unit
             }
             Some(block) => {
-                let else_ty = self.check_block(block);
+                let else_ty = self.infer_expression(block);
                 let after_else = std::mem::take(&mut self.move_states);
                 self.move_states = Checker::join_moves(after_then, after_else);
                 if let Ok(unified) = try_unify(&then_ty, &else_ty) {
@@ -1219,7 +1256,7 @@ impl Checker<'_> {
 /// ADR-0028 §10 conservative scope.
 fn callee_name_is(node: &Expr, expected: &str) -> bool {
     match node {
-        Expr::Identifier(name) => name == expected,
+        Expr::Identifier { name } => name == expected,
         Expr::FieldAccess { field, .. } => field == expected,
         _ => false,
     }
@@ -1237,7 +1274,7 @@ fn is_ordering_enum(ty: &Type) -> bool {
 /// argument is anything other than a bare identifier on a known variant
 /// (dynamic ordering values escape v0.9 detection — corpus-deferred).
 fn ordering_strength(node: &Expr) -> Option<(&'static str, u8)> {
-    let Expr::Identifier(name) = node else {
+    let Expr::Identifier { name } = node else {
         return None;
     };
     match name.as_str() {
@@ -1459,22 +1496,22 @@ fn extract_type_params(
 const fn operator_symbol(operator: BinaryOperator) -> &'static str {
     match operator {
         BinaryOperator::Add => "+",
-        BinaryOperator::Subtract => "-",
-        BinaryOperator::Multiply => "*",
-        BinaryOperator::Divide => "/",
-        BinaryOperator::Modulo => "%%",
-        BinaryOperator::Power => "**",
-        BinaryOperator::Equal => "==",
-        BinaryOperator::NotEqual => "!=",
-        BinaryOperator::LessThan => "<",
-        BinaryOperator::LessEqual => "<=",
-        BinaryOperator::GreaterThan => ">",
-        BinaryOperator::GreaterEqual => ">=",
-        BinaryOperator::And => "and",
-        BinaryOperator::Or => "or",
-        BinaryOperator::Xor => "xor",
-        BinaryOperator::Iff => "iff",
-        BinaryOperator::Implies => "implies",
+        BinaryOperator::Sub => "-",
+        BinaryOperator::Mul => "*",
+        BinaryOperator::Div => "/",
+        BinaryOperator::Mod => "%%",
+        BinaryOperator::Pow => "**",
+        BinaryOperator::Eq => "==",
+        BinaryOperator::Ne => "!=",
+        BinaryOperator::Lt => "<",
+        BinaryOperator::Le => "<=",
+        BinaryOperator::Gt => ">",
+        BinaryOperator::Ge => ">=",
+        BinaryOperator::LukAnd => "and",
+        BinaryOperator::LukOr => "or",
+        BinaryOperator::LukXor => "xor",
+        BinaryOperator::LukIff => "iff",
+        BinaryOperator::LukImplies => "implies",
         BinaryOperator::KleeneXor => "kleene_xor",
         BinaryOperator::KleeneIff => "kleene_iff",
         BinaryOperator::KleeneImplies => "kleene_implies",
