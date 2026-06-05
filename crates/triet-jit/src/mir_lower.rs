@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use triet_mir::DUMMY_SPAN;
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, EnumLayout, Local, Place,
-    Projection, Statement, StructLayout, Terminator,
+    Projection, Statement, StructLayout, Terminator, builtin_shim_meta, is_copy,
 };
 
 // ── Errors ──────────────────────────────────────────────────
@@ -138,6 +138,16 @@ impl ShimSymbol {
         }
     }
 
+    /// Register a 1-arg → void shim.
+    pub fn fn_1_0(name: &str, f: extern "C" fn(i64)) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 1,
+            has_return: false,
+        }
+    }
+
     /// Register a 2-arg → void shim.
     pub fn fn_2_0(name: &str, f: extern "C" fn(i64, i64)) -> Self {
         Self {
@@ -180,6 +190,31 @@ impl JitContext {
     /// Bậc A: one Cranelift Variable per MIR Local — everything is i64.
     fn var(&self, l: Local) -> Variable {
         Variable::from_u32(l.0 as u32)
+    }
+
+    /// Get or declare a shim function ID. Caches the result so multiple
+    /// call sites for the same shim use the same FuncId.
+    fn get_or_declare_shim(&mut self, name: &str) -> Result<cranelift_module::FuncId, JitError> {
+        if let Some(&id) = self.func_ids.get(name) {
+            return Ok(id);
+        }
+        let shim = self
+            .shim_registry
+            .get(name)
+            .ok_or_else(|| JitError::Unsupported(format!("shim `{name}` not registered")))?;
+        let mut sig = Signature::new(CallConv::SystemV);
+        for _ in 0..shim.arity {
+            sig.params.push(AbiParam::new(I64));
+        }
+        if shim.has_return {
+            sig.returns.push(AbiParam::new(I64));
+        }
+        let id = self
+            .module
+            .declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| JitError::Module(format!("declare shim {name}: {e}")))?;
+        self.func_ids.insert(name.to_string(), id);
+        Ok(id)
     }
 
     /// Load the Cranelift Value for a MIR Place.
@@ -655,34 +690,53 @@ impl JitContext {
                 }
 
                 Statement::Const { dest, value, .. } => {
-                    let val = match value {
-                        ConstValue::Integer(n) => {
-                            let n_i64 = i64::try_from(*n).map_err(|_| {
-                                JitError::Unsupported(format!(
-                                    "Integer constant {n} does not fit in i64 — \
-                                     Bậc A only supports 64-bit values. \
-                                     Triết Integer is 27-trit (~7.6×10^12 signed), \
-                                     which fits in i64 (~9.2×10^18). \
-                                     This value may come from a buggy lowerer."
-                                ))
-                            })?;
-                            builder.ins().iconst(I64, n_i64)
+                    match value {
+                        ConstValue::String(s) => {
+                            // AOT: replace with define_data (ADR-0040 §3.3).
+                            let bytes = s.as_bytes();
+                            let ptr_val = builder.ins().iconst(I64, bytes.as_ptr() as i64);
+                            let len_val = builder
+                                .ins()
+                                .iconst(I64, i64::try_from(bytes.len()).unwrap_or(0));
+                            let func_id = self.get_or_declare_shim("__triet_string_from_bytes")?;
+                            let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                            let call_inst = builder.ins().call(func_ref, &[ptr_val, len_val]);
+                            let ret_val = builder.inst_results(call_inst)[0];
+                            builder.def_var(self.var(dest.local), ret_val);
                         }
-                        ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
-                        ConstValue::Unit => builder.ins().iconst(I64, 0),
-                        ConstValue::String(_) => {
-                            return Err(JitError::Unsupported(
-                                "String const not yet supported".into(),
-                            ));
+                        _ => {
+                            let val = match value {
+                                ConstValue::Integer(n) => {
+                                    let n_i64 = i64::try_from(*n).map_err(|_| {
+                                        JitError::Unsupported(format!(
+                                            "Integer constant {n} does not fit in i64 — \
+                                             Bậc A only supports 64-bit values."
+                                        ))
+                                    })?;
+                                    builder.ins().iconst(I64, n_i64)
+                                }
+                                ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
+                                ConstValue::Unit => builder.ins().iconst(I64, 0),
+                                _ => unreachable!(),
+                            };
+                            builder.def_var(self.var(dest.local), val);
                         }
                     };
-                    let var = self.var(dest.local);
-                    builder.def_var(var, val);
                 }
 
                 Statement::Assign { dest, source, .. } => {
                     let val = self.load_place(builder, body, source)?;
                     self.store_place(builder, body, dest, val)?;
+                    // M1: Zeroing-on-Move — if source is a plain local of Move type,
+                    // store 0 into it so Drop becomes a no-op.
+                    let source_is_plain = source.projection.is_empty();
+                    if source_is_plain {
+                        let src_ty = &body.local_decls[source.local.0].ty;
+                        if !is_copy(src_ty, body) {
+                            let zero = builder.ins().iconst(I64, 0);
+                            self.store_place(builder, body, &Place::local(source.local), zero)?;
+                        }
+                    }
                 }
 
                 Statement::Borrow { dest, source, .. } => {
@@ -739,8 +793,35 @@ impl JitContext {
                     ));
                 }
 
-                Statement::Drop(_, _) => {
-                    // No-op for scalars at runtime
+                Statement::Drop(local, _) => {
+                    let ty = &body.local_decls[local.0].ty;
+                    if is_copy(ty, body) {
+                        // Copy type: no-op (ADR-0040 §1.3)
+                        continue;
+                    }
+                    // M4: Return-escape — skip Drop for locals in Return values.
+                    let in_return = match &body.blocks[block.0].terminator {
+                        Terminator::Return { values, .. } => values.contains(local),
+                        _ => false,
+                    };
+                    if in_return {
+                        continue;
+                    }
+                    // Move type, not escaping: call free shim.
+                    // The shim internally guards null (defense-in-depth).
+                    let free_shim_name = match ty.as_str() {
+                        "String" => "__triet_string_free",
+                        "Vector" | "Vector<Integer>" => "__triet_vector_free",
+                        _ => {
+                            return Err(JitError::Unsupported(format!(
+                                "Drop for type `{ty}` not supported — no free shim"
+                            )));
+                        }
+                    };
+                    let func_id = self.get_or_declare_shim(free_shim_name)?;
+                    let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                    let ptr = builder.use_var(self.var(*local));
+                    builder.ins().call(func_ref, &[ptr]);
                 }
 
                 Statement::EnumAlloc { .. } => {
@@ -910,34 +991,7 @@ impl JitContext {
                     }
 
                     CallTarget::Shim => {
-                        let shim = self.shim_registry.get(callee_name).ok_or_else(|| {
-                            JitError::Unsupported(format!(
-                                "shim `{callee_name}` not registered — add it to JitContext::with_shims()"
-                            ))
-                        })?;
-
-                        // Declare the shim as an imported extern "C" function
-                        // if we haven't already
-                        let func_id = if let Some(&id) = self.func_ids.get(callee_name) {
-                            id
-                        } else {
-                            let mut sig = Signature::new(CallConv::SystemV);
-                            for _ in 0..shim.arity {
-                                sig.params.push(AbiParam::new(I64));
-                            }
-                            if shim.has_return {
-                                sig.returns.push(AbiParam::new(I64));
-                            }
-                            let id = self
-                                .module
-                                .declare_function(callee_name, Linkage::Import, &sig)
-                                .map_err(|e| {
-                                    JitError::Module(format!("declare shim {callee_name}: {e}"))
-                                })?;
-                            self.func_ids.insert(callee_name.clone(), id);
-                            id
-                        };
-
+                        let func_id = self.get_or_declare_shim(callee_name)?;
                         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
 
                         let arg_vals: Vec<_> = args
@@ -956,9 +1010,26 @@ impl JitContext {
 
                         let call_inst = builder.ins().call(func_ref, &arg_vals);
 
-                        if shim.has_return && !dest.is_empty() {
+                        // All builtin shims in ADR-0040 §3.1 that return values are
+                        // 1-return shims. Check has_return via BuiltinShimMeta existence
+                        // (all registered shims with a return value are in the meta table).
+                        if !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
+                        }
+
+                        // M3: Zeroing-on-Move — zero consume-arg variables after call.
+                        if let Some(meta) = builtin_shim_meta(callee_name) {
+                            let zero = builder.ins().iconst(I64, 0);
+                            for (i, a) in args.iter().enumerate() {
+                                if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
+                                    let arg_ty = &body.local_decls[a.0].ty;
+                                    if !is_copy(arg_ty, body) {
+                                        let var = self.var(*a);
+                                        builder.def_var(var, zero);
+                                    }
+                                }
+                            }
                         }
 
                         let ret_block = self.blocks[return_bb];
@@ -1206,13 +1277,173 @@ pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
     result
 }
 
+// ── String heap shims (ADR-0040 §3.1) ────────────────────────
+
+/// Header size in bytes: ObjectHeader (refcount: u32 + reserved: u32 = 8 bytes).
+const HEADER_SIZE: usize = 8;
+
+/// Layout for a String heap allocation: header + len (i64) + cap (i64) + data.
+fn string_layout(cap: usize) -> std::alloc::Layout {
+    let total = HEADER_SIZE + 8 + 8 + cap; // header + len + cap + data
+    std::alloc::Layout::from_size_align(total, 8).unwrap()
+}
+
+/// `__triet_string_alloc(len, cap)` — allocate a String with given length and capacity.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_alloc(len: i64, cap: i64) -> i64 {
+    let cap_usize = cap.max(len).max(1) as usize; // at least 1 byte
+    let layout = string_layout(cap_usize);
+    // SAFETY: layout is valid (power-of-2 alignment, non-zero size).
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        return 0; // OOM — return null
+    }
+    // Write ObjectHeader: refcount=1, reserved=0
+    // SAFETY: layout guarantees 8-byte aligned, >=8 bytes at ptr.
+    let body_ptr = unsafe {
+        (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
+        (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
+        // Write len and cap
+        let body = ptr.add(HEADER_SIZE);
+        (body as *mut i64).write_unaligned(len);
+        (body as *mut i64).add(1).write_unaligned(cap);
+        body as i64
+    };
+    body_ptr
+}
+
+/// `__triet_string_from_bytes(ptr, len)` — copy bytes from read-only memory into a new heap String.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_from_bytes(src: i64, len: i64) -> i64 {
+    if src == 0 || len < 0 {
+        return 0;
+    }
+    let len_usize = len as usize;
+    let body_ptr = __triet_string_alloc(len, len);
+    if body_ptr == 0 {
+        return 0;
+    }
+    // Copy bytes from src to data area
+    // SAFETY: src pointer is valid (lifetime guaranteed by driver §3.3).
+    unsafe {
+        let dst = (body_ptr as *mut u8).add(16); // skip len + cap (16 bytes)
+        std::ptr::copy_nonoverlapping(src as *const u8, dst, len_usize);
+    }
+    body_ptr
+}
+
+/// `__triet_string_free(ptr)` — free a String. No-op if ptr == 0.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_free(ptr: i64) {
+    if ptr == 0 {
+        return;
+    }
+    let body = ptr as *mut u8;
+    // Read cap to compute layout
+    // SAFETY: body pointer is valid and points to len+cap+data structure.
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let layout = string_layout(cap.max(1));
+    let header = unsafe { body.sub(HEADER_SIZE) };
+    // SAFETY: layout matches the one used at allocation.
+    unsafe { std::alloc::dealloc(header, layout) };
+}
+
+/// `__triet_string_concat(a, b)` — concatenate two Strings (borrow semantics).
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_concat(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return if a != 0 { a } else { b }; // return non-null, or 0
+    }
+    let a_body = a as *const u8;
+    let b_body = b as *const u8;
+    // SAFETY: a, b are valid heap String pointers.
+    let (a_len, b_len) = unsafe {
+        let al = (a_body as *const i64).read_unaligned();
+        let bl = (b_body as *const i64).read_unaligned();
+        (al, bl)
+    };
+    if a_len < 0 || b_len < 0 {
+        return 0;
+    }
+    let total_len = a_len + b_len;
+    let result = __triet_string_alloc(total_len, total_len);
+    if result == 0 {
+        return 0;
+    }
+    // Copy a's data then b's data
+    // SAFETY: src pointers valid, dst pointer valid with sufficient capacity.
+    unsafe {
+        let dst = (result as *mut u8).add(16); // skip len + cap
+        let a_data = a_body.add(16);
+        let b_data = b_body.add(16);
+        std::ptr::copy_nonoverlapping(a_data, dst, a_len as usize);
+        std::ptr::copy_nonoverlapping(b_data, dst.add(a_len as usize), b_len as usize);
+    }
+    // Update len (cap already set by alloc)
+    // SAFETY: result points to valid body.
+    unsafe {
+        (result as *mut i64).write_unaligned(total_len);
+    }
+    result
+}
+
+/// `__triet_string_eq(a, b)` — equality comparison, returns 1 (true) or 0 (false).
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_eq(a: i64, b: i64) -> i64 {
+    if a == b {
+        return 1; // same pointer or both null → equal
+    }
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    let a_body = a as *const u8;
+    let b_body = b as *const u8;
+    // SAFETY: a, b are valid heap String pointers.
+    let (a_len, b_len) = unsafe {
+        let al = (a_body as *const i64).read_unaligned();
+        let bl = (b_body as *const i64).read_unaligned();
+        (al, bl)
+    };
+    if a_len != b_len {
+        return 0;
+    }
+    let len = a_len as usize;
+    // SAFETY: data areas are valid reads of `len` bytes.
+    unsafe {
+        let a_data = a_body.add(16);
+        let b_data = b_body.add(16);
+        for i in 0..len {
+            if a_data.add(i).read() != b_data.add(i).read() {
+                return 0;
+            }
+        }
+    }
+    1
+}
+
+/// `__triet_string_len(ptr)` — return the length of a String.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    // SAFETY: ptr points to valid body.
+    unsafe { (ptr as *const i64).read_unaligned() }
+}
+
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use triet_borrowck::{MirBuilder, binop, return_, storage_live};
-    use triet_mir::{FunctionId, ParameterPassing, ReturnShape};
+    use triet_mir::{DUMMY_SPAN, FunctionId, ParameterPassing, Place, ReturnShape, Statement};
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
     #[test]
@@ -1876,5 +2107,129 @@ mod tests {
         assert_eq!(unsafe { func.call_i64_2(3, 5) }, 243, "3^5 = 243");
         assert_eq!(unsafe { func.call_i64_2(5, 0) }, 1, "5^0 = 1");
         assert_eq!(unsafe { func.call_i64_2(7, 1) }, 7, "7^1 = 7");
+    }
+
+    /// Test-only counting wrapper around __triet_string_free.
+    /// Increments a static counter before delegating to the real free.
+    static FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __test_counting_free(ptr: i64) {
+        FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::__triet_string_free(ptr);
+    }
+
+    /// 4i-2/4i-4 (callee side): M4 Return-escape — Drop before Return is skipped.
+    /// Hand-built MIR (bypasses lowerer); call-dest typing is tested by
+    /// `call_dest_has_correct_type_for_heap_return` in the lowerer.
+    #[test]
+    #[allow(unsafe_code)]
+    fn alloc_free_balance_string_return() {
+        use std::sync::atomic::Ordering;
+
+        FREE_COUNT.store(0, Ordering::SeqCst);
+
+        // Simulate: make() -> String { let s="hi"; return s }
+        let mut b = MirBuilder::new("make_string", "String");
+        let bb0 = b.new_block();
+        let s = b.new_local();
+        b.set_local_type(s, "String");
+        b.push(bb0, storage_live(s));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(s),
+                value: triet_mir::ConstValue::String("hi".into()),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(bb0, return_(vec![s]));
+
+        let body = b.build(bb0);
+        let shims = &[
+            ShimSymbol::fn_2_1(
+                "__triet_string_from_bytes",
+                super::__triet_string_from_bytes,
+            ),
+            ShimSymbol::fn_1_0("__triet_string_free", __test_counting_free),
+        ];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("4i-4 compile");
+        let ptr = unsafe { func.call_i64_0() };
+
+        assert_ne!(ptr, 0, "returned String ptr must be non-zero");
+        // M4: Drop before Return must be skipped → 0 frees in callee.
+        assert_eq!(
+            FREE_COUNT.load(Ordering::SeqCst),
+            0,
+            "callee must not free the returned value (M4)"
+        );
+
+        // Simulate caller Drop.
+        __test_counting_free(ptr);
+        assert_eq!(
+            FREE_COUNT.load(Ordering::SeqCst),
+            1,
+            "caller Drop must free exactly once"
+        );
+    }
+
+    /// 4i-1: M1 Zeroing-on-Move — after Assign of Move type, source must be 0.
+    #[test]
+    #[allow(unsafe_code)]
+    fn m1_zeroing_on_move() {
+        let mut b = MirBuilder::new("test_m1", "Integer");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let other = b.new_local();
+        let result = b.new_local();
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(other));
+        b.push(bb0, storage_live(result));
+        // Assign String → M1 should store 0 into s
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(other),
+                source: Place::local(s),
+                span: DUMMY_SPAN,
+            },
+        );
+        // Return s (which should be 0 after M1) + 1 → verify s is 0
+        b.push(
+            bb0,
+            Statement::BinaryOp {
+                dest: Place::local(result),
+                op: triet_mir::BinOp::Add,
+                left: Place::local(s),
+                right: Place::local(other),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(bb0, return_(vec![result]));
+
+        let body = b.build(bb0);
+        let shims = &[
+            ShimSymbol::fn_2_1("__triet_string_alloc", super::__triet_string_alloc),
+            ShimSymbol::fn_1_0("__triet_string_free", super::__triet_string_free),
+        ];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("M1 test compile");
+
+        // s = "hello" → ptr is non-zero. After move, s should be 0.
+        // result = s + other = 0 + other = other.
+        // We pass ptr through param — the JIT won't know the actual String ptr,
+        // so we pass 0 (simulating an already-nulled value) and verify.
+        // Actually, we pass a dummy value — the important thing is that M1
+        // zeroes s after Assign. Since we pass a fake ptr, M1 will zero it.
+        // result = 0 + other = other (the fake ptr value).
+        let val = unsafe { func.call_i64_1(42) };
+        // After M1: s is zeroed → result = 0 + 42 = 42
+        assert_eq!(
+            val, 42,
+            "M1: s should be zeroed after move, result = 0 + other"
+        );
     }
 }

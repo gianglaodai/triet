@@ -64,6 +64,38 @@ impl LowerError {
             span,
         }
     }
+
+    fn heap_type_not_supported(what: &str, span: Span) -> Self {
+        Self {
+            message: format!(
+                "heap types (String, Vector, HashMap) are not yet supported in this position: {what}. \
+                 Only bare local variables may hold heap values in Bậc A."
+            ),
+            span,
+        }
+    }
+
+    fn heap_param_not_supported(name: &str, ty: &str, span: Span) -> Self {
+        Self {
+            message: format!(
+                "function parameter `{name}: {ty}` is a heap type — \
+                 heap types cannot cross user-defined function boundaries in Bậc A. \
+                 Use builtin shim functions (e.g. concat, push) instead."
+            ),
+            span,
+        }
+    }
+
+    fn heap_user_fn_arg_not_supported(name: &str, span: Span) -> Self {
+        Self {
+            message: format!(
+                "argument `{name}` has a heap type and the callee is a user-defined function — \
+                 heap types cannot cross user-defined function boundaries in Bậc A. \
+                 Use builtin shim functions instead."
+            ),
+            span,
+        }
+    }
 }
 
 impl std::fmt::Display for LowerError {
@@ -440,6 +472,14 @@ pub fn lower_function(
 
     for p in &func.params {
         let ty = type_name(arena, p.type_annotation);
+        // B7: heap types cannot cross user-defined function boundaries.
+        if !simple_is_copy(&ty) {
+            return Err(LowerError::heap_param_not_supported(
+                &p.name,
+                &ty,
+                arena.type_expression(p.type_annotation).span.clone(),
+            ));
+        }
         let l = c.alloc_local_ty(&ty);
         c.vars.insert(p.name.clone(), l);
         c.push_owned(l);
@@ -499,6 +539,13 @@ fn type_name(arena: &Arena, id: TypeId) -> String {
     }
 }
 
+/// Simplified is_copy for use during lowering (before Body is built).
+/// Only handles primitive type names and known heap types — does NOT
+/// recurse into struct/enum layouts (those aren't built yet).
+fn simple_is_copy(ty: &str) -> bool {
+    !matches!(ty, "String" | "Vector" | "HashMap")
+}
+
 // ── Block lowering ──────────────────────────────────────────
 
 /// Lower a block expression (statements + optional final expression) into
@@ -534,8 +581,29 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
     match stmt {
         Stmt::Let { name, init, .. } => {
             let v = lower_expr(*init, arena, c)?;
-            c.vars.insert(name.clone(), v);
-            c.push_owned(v);
+            // M2: If init is an Identifier of a Move type, emit Assign + new local
+            // instead of aliasing. This creates a genuine move-site so JIT's
+            // Zeroing-on-Move (M1) can zero the source variable.
+            let is_move_binding =
+                if let Expr::Identifier { name: _ } = &arena.expression(*init).node {
+                    let ty = &c.local_decls[v.0].ty;
+                    !simple_is_copy(ty)
+                } else {
+                    false
+                };
+            if is_move_binding {
+                let new_local = c.alloc_local_ty(&c.local_decls[v.0].ty.clone());
+                c.push(Statement::Assign {
+                    dest: Place::local(new_local),
+                    source: Place::local(v),
+                    span: stmt_span.clone(),
+                });
+                c.vars.insert(name.clone(), new_local);
+                c.push_owned(new_local);
+            } else {
+                c.vars.insert(name.clone(), v);
+                c.push_owned(v);
+            }
         }
         Stmt::Expression { expr } => {
             lower_expr(*expr, arena, c)?;
@@ -751,6 +819,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             });
             Ok(d)
         }
+        Expr::StringLiteral { value } => {
+            let d = c.alloc_local_ty("String");
+            c.push(Statement::StorageLive(d, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(d),
+                value: ConstValue::String(value.clone()),
+                span: expr_span,
+            });
+            Ok(d)
+        }
         Expr::Identifier { name } => {
             // Check if this is a local variable first.
             if let Some(&local) = c.vars.get(name) {
@@ -861,6 +939,17 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         span: expr_span.clone(),
                     });
                     let val = lower_expr(arguments[0], arena, c)?;
+                    // B8: aggregate-containing-heap — enum payload with Move type not supported.
+                    let payload_ty = &c.local_decls[val.0].ty;
+                    if !simple_is_copy(payload_ty) {
+                        return Err(LowerError::heap_type_not_supported(
+                            &format!(
+                                "enum variant `{}.{}` payload type `{}`",
+                                resolution.enum_name, resolution.variant_name, payload_ty
+                            ),
+                            expr_span,
+                        ));
+                    }
                     c.push(Statement::Assign {
                         dest: Place::local(d)
                             .project(Projection::Payload(resolution.variant_name.clone())),
@@ -932,6 +1021,40 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 Expr::Identifier { name } => name.clone(),
                 other => return Err(LowerError::unsupported_callee(other, expr_span)),
             };
+
+            // ── Builtin string functions (ADR-0040 §3.1) ──
+            // Dispatch concat/len/eq directly to shims.
+            if let Some((shim_name, ret_ty)) = match callee_name.as_str() {
+                "concat" => Some(("__triet_string_concat", "String")),
+                "len" => Some(("__triet_string_len", "Integer")),
+                "eq" => Some(("__triet_string_eq", "Integer")),
+                _ => None,
+            } {
+                let args: Vec<Local> = arguments
+                    .iter()
+                    .map(|a| lower_expr(*a, arena, c))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let dest = c.alloc_local_ty(ret_ty);
+                c.push(Statement::StorageLive(dest, expr_span.clone()));
+                let ret_bb = c.alloc_bb();
+                let call_bb = c.cur;
+                c.term(
+                    call_bb,
+                    Terminator::CallDispatch {
+                        callee: triet_mir::FunctionId(0),
+                        callee_name: shim_name.into(),
+                        target: CallTarget::Shim,
+                        args,
+                        return_bb: ret_bb,
+                        dest: vec![dest],
+                        return_shape: triet_mir::ReturnShape::Scalar,
+                        span: expr_span,
+                    },
+                );
+                c.cur = ret_bb;
+                return Ok(dest);
+            }
+
             let callee_ret = c
                 .func_return_types
                 .get(&callee_name)
@@ -943,6 +1066,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .iter()
                 .map(|a| lower_expr(*a, arena, c))
                 .collect::<Result<Vec<_>, _>>()?;
+
+            // B7: heap types cannot be passed to user-defined functions.
+            for &arg in &args {
+                let arg_ty = &c.local_decls[arg.0].ty;
+                if !simple_is_copy(arg_ty) {
+                    return Err(LowerError::heap_user_fn_arg_not_supported(
+                        arg_ty, expr_span,
+                    ));
+                }
+            }
 
             if is_struct_ret {
                 // sret: allocate struct local for return, pass as hidden arg[0].
@@ -975,7 +1108,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 c.cur = ret_bb;
                 Ok(ret_local)
             } else {
-                let dest = c.alloc_local();
+                let dest = c.alloc_local_ty(&callee_ret);
                 c.push(Statement::StorageLive(dest, expr_span.clone()));
                 let ret_bb = c.alloc_bb();
                 let call_bb = c.cur;
@@ -1184,6 +1317,14 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             });
             for (field_name, field_expr) in fields {
                 let field_val = lower_expr(*field_expr, arena, c)?;
+                // B8: aggregate-containing-heap — struct field with Move type not supported.
+                let field_ty = &c.local_decls[field_val.0].ty;
+                if !simple_is_copy(field_ty) {
+                    return Err(LowerError::heap_type_not_supported(
+                        &format!("struct `{struct_name}` field `{field_name}` type `{field_ty}`"),
+                        expr_span,
+                    ));
+                }
                 c.push(Statement::Assign {
                     dest: Place::local(d).project(Projection::Field(field_name.clone())),
                     source: Place::local(field_val),
@@ -1228,6 +1369,14 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             });
             if let Some(payload_expr) = payload {
                 let val = lower_expr(*payload_expr, arena, c)?;
+                // B8: aggregate-containing-heap — enum payload with Move type not supported.
+                let payload_ty = &c.local_decls[val.0].ty;
+                if !simple_is_copy(payload_ty) {
+                    return Err(LowerError::heap_type_not_supported(
+                        &format!("enum `{name}.{variant_name}` payload type `{payload_ty}`"),
+                        expr_span,
+                    ));
+                }
                 c.push(Statement::Assign {
                     dest: Place::local(d).project(Projection::Payload(variant_name.clone())),
                     source: Place::local(val),
@@ -1558,6 +1707,79 @@ mod tests {
         );
         // The single `Point`-less function's param gets a typed LocalDecl.
         assert_eq!(body.local_decls[0].ty, "Integer");
+    }
+
+    /// M2: `let b = a` with Move-type local (String) must emit an Assign
+    /// and create a new local, not alias the same Local.
+    #[test]
+    fn let_move_type_emits_assign_not_alias() {
+        let body = lower_source("function f() -> Integer { let s = \"hi\"; let b = s; return 1; }");
+        println!("=== MIR (M2) ===\n{body}");
+        // Must have an Assign from old String local to new local (M2).
+        let assigns: Vec<_> = body.blocks[0]
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Assign { dest, source, .. } => Some((dest.local, source.local)),
+                _ => None,
+            })
+            .collect();
+        assert!(!assigns.is_empty(), "M2: let-Move-type must emit Assign");
+        // Source and dest must be different locals (not aliased).
+        for (dest, src) in &assigns {
+            assert_ne!(dest, src, "M2: source and dest must be different locals");
+        }
+    }
+
+    /// 4i-4: Call destination for user-function returning a Move type
+    /// must have the correct type (e.g. "String"), not "?".
+    /// Teeth: revert call-dest fix → type is "?" → test RED.
+    #[test]
+    fn call_dest_has_correct_type_for_heap_return() {
+        let source = "
+function make() -> String {
+    let s = \"hi\";
+    return s;
+}
+function main() -> Integer {
+    let t = make();
+    return 1;
+}
+";
+        let (prog, errors) = triet_parser::parse(source);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+
+        let bodies = lower_program(&prog, &ExprResolutions::new(), &PatternResolutions::new())
+            .expect("lowering");
+
+        // Find main's body.
+        let main_body = bodies
+            .iter()
+            .find(|b| b.signature.name == "main")
+            .expect("main not found");
+
+        println!("=== MAIN MIR ===\n{main_body}");
+
+        // Find the CallDispatch terminator and get its dest local.
+        let dest_locals: Vec<_> = main_body
+            .blocks
+            .iter()
+            .filter_map(|b| match &b.terminator {
+                Terminator::CallDispatch { dest, .. } => Some(dest.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(!dest_locals.is_empty(), "main must have a CallDispatch");
+        let dest = dest_locals[0][0];
+
+        // Check the type of the dest local.
+        let dest_ty = &main_body.local_decls[dest.0].ty;
+        assert_eq!(
+            dest_ty, "String",
+            "4i-4: call-dest for make()->String must have type String, got `{dest_ty}` \
+             (call-dest fix regressed — using alloc_local() instead of alloc_local_ty(&callee_ret))"
+        );
     }
 
     #[test]

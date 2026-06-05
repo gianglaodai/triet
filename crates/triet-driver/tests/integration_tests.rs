@@ -105,10 +105,30 @@ fn run_fixture(source: &str) -> Result<i64, String> {
 
     // ── Phase 5: JIT compile ──
     let body_refs: Vec<&triet_mir::Body> = bodies.iter().collect();
-    let shims = &[ShimSymbol::fn_2_1(
-        "__triet_pow",
-        triet_jit::mir_lower::__triet_pow,
-    )];
+    let shims = &[
+        ShimSymbol::fn_2_1("__triet_pow", triet_jit::mir_lower::__triet_pow),
+        ShimSymbol::fn_2_1(
+            "__triet_string_alloc",
+            triet_jit::mir_lower::__triet_string_alloc,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_string_from_bytes",
+            triet_jit::mir_lower::__triet_string_from_bytes,
+        ),
+        ShimSymbol::fn_1_0(
+            "__triet_string_free",
+            triet_jit::mir_lower::__triet_string_free,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_string_concat",
+            triet_jit::mir_lower::__triet_string_concat,
+        ),
+        ShimSymbol::fn_2_1("__triet_string_eq", triet_jit::mir_lower::__triet_string_eq),
+        ShimSymbol::fn_1_1(
+            "__triet_string_len",
+            triet_jit::mir_lower::__triet_string_len,
+        ),
+    ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx
         .compile_multi(&body_refs)

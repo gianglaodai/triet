@@ -31,7 +31,10 @@
 //!   loans — the references would become dangling.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use triet_mir::{BasicBlock, Local, Place, Projection, ReferenceForm, Span, Statement, Terminator};
+use triet_mir::{
+    BasicBlock, Local, Place, Projection, ReferenceForm, Span, Statement, Terminator,
+    builtin_shim_meta, is_copy,
+};
 
 use miette::Diagnostic;
 use thiserror::Error;
@@ -781,6 +784,25 @@ fn process_block(
         }
     }
 
+    // M3: builtin shim consume-arg tracking (ADR-0040 §3.6).
+    // After a CallDispatch to a builtin shim, mark consume-args Moved
+    // so that subsequent uses are E2420.
+    if let Terminator::CallDispatch {
+        callee_name, args, ..
+    } = &block_data.terminator
+    {
+        if let Some(meta) = builtin_shim_meta(callee_name) {
+            for (i, arg) in args.iter().enumerate() {
+                if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
+                    let arg_ty = &body.local_decls[arg.0].ty;
+                    if !is_copy(arg_ty, &body) {
+                        state.var_states.insert(*arg, VarState::Moved);
+                    }
+                }
+            }
+        }
+    }
+
     (state, errors)
 }
 
@@ -1456,6 +1478,102 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
             "should have E2420 UseAfterMove for returned Moved value, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// F1 end-to-end with Move type via enum payload (ADR-0040 §7 fixture 37).
+    /// Hand-built MIR: Move String into enum payload, then Return the original
+    /// local → E2420. Tests that M1+M2 Marks Moved correctly through Payload assign.
+    #[test]
+    fn f1_enum_payload_move_type() {
+        let mut b = MirBuilder::new("f1_enum_payload", "Unit");
+        b.add_enum_layout(triet_mir::EnumLayout::compute(
+            "OptionString",
+            &[("Some".into(), 0, Some(("String".into(), 8, 8, vec![])))],
+        ));
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let a = b.new_local();
+        b.set_local_type(a, "OptionString");
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(a));
+        b.push(
+            bb0,
+            Statement::EnumAlloc {
+                dest: a,
+                enum_name: "OptionString".into(),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::SetDiscriminant {
+                dest: a,
+                value: 0,
+                span: DUMMY_SPAN,
+            },
+        );
+        // Move String s into enum payload → M1 marks s Moved
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place {
+                    local: a,
+                    projection: vec![Projection::Payload("Some".into())],
+                },
+                source: Place::local(s),
+                span: DUMMY_SPAN,
+            },
+        );
+        // Return s after it was moved → E2420
+        b.set_terminator(bb0, return_(vec![s]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        assert!(
+            !result.is_ok(),
+            "F1 enum payload: must reject use of moved s"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
+            "should have E2420, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// E2450: dropping a heap value while a borrow is still active.
+    #[test]
+    fn e2450_heap_drop_while_borrowed() {
+        let mut b = MirBuilder::new("e2450_heap", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let r = b.new_local();
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, borrow(r, ReferenceForm::BorrowReadOnly, s)); // &0 s
+        // Drop s while r (the borrow) is still live → E2450
+        b.push(bb0, Statement::Drop(s, DUMMY_SPAN));
+        b.push(bb0, Statement::Drop(r, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        assert!(
+            !result.is_ok(),
+            "E2450: Drop with active borrow must be rejected"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::DropWhileBorrowed { .. })),
+            "should have E2450, got: {:?}",
             result.errors
         );
     }

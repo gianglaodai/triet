@@ -1,0 +1,6 @@
+// EXPECT: 42
+// String literal with multi-byte UTF-8 characters.
+function main() -> Integer {
+    let msg = "tiếng Việt";
+    return 42;
+}

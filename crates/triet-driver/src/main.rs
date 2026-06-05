@@ -120,7 +120,20 @@ fn main() -> ExitCode {
     // at compile time — no manual arity counting needed.
     use triet_jit::mir_lower;
 
-    let shims = &[ShimSymbol::fn_2_1("__triet_pow", mir_lower::__triet_pow)];
+    // ADR-0040 §3.3: String literal bytes live in ConstValue::String within Body.
+    // Body must outlive the JIT module. `bodies` stays alive until process exit.
+    let shims = &[
+        ShimSymbol::fn_2_1("__triet_pow", mir_lower::__triet_pow),
+        ShimSymbol::fn_2_1("__triet_string_alloc", mir_lower::__triet_string_alloc),
+        ShimSymbol::fn_2_1(
+            "__triet_string_from_bytes",
+            mir_lower::__triet_string_from_bytes,
+        ),
+        ShimSymbol::fn_1_0("__triet_string_free", mir_lower::__triet_string_free),
+        ShimSymbol::fn_2_1("__triet_string_concat", mir_lower::__triet_string_concat),
+        ShimSymbol::fn_2_1("__triet_string_eq", mir_lower::__triet_string_eq),
+        ShimSymbol::fn_1_1("__triet_string_len", mir_lower::__triet_string_len),
+    ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = match ctx.compile_multi(&body_refs) {
         Ok(c) => c,

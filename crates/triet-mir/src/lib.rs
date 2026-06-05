@@ -662,6 +662,73 @@ pub struct Body {
     pub enum_layouts: Vec<EnumLayout>,
 }
 
+// ── Builtin shim metadata ──────────────────────────────────────
+
+/// Metadata for a builtin runtime shim callable via `CallDispatch`.
+///
+/// Shared between borrowck (marks consume-args Moved after call) and JIT
+/// (zeroes consume-arg variables after call). One source of truth, two
+/// consumers — schema-first discipline.
+#[derive(Clone, Debug)]
+pub struct BuiltinShimMeta {
+    /// Shim name (e.g. `"__triet_vector_push"`).
+    pub name: &'static str,
+    /// Per-arg ownership: `true` = consume (caller loses ownership,
+    /// variable must be zeroed), `false` = borrow/copy (caller retains).
+    pub arg_consumes: &'static [bool],
+}
+
+/// Builtin shim metadata table consumed by borrowck and JIT.
+///
+/// Sorted by name for deterministic lookup. Every shim listed in
+/// ADR-0040 §3.1 must have an entry here.
+#[must_use]
+pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
+    match name {
+        "__triet_string_alloc" => Some(BuiltinShimMeta {
+            name: "__triet_string_alloc",
+            arg_consumes: &[false, false],
+        }),
+        "__triet_string_concat" => Some(BuiltinShimMeta {
+            name: "__triet_string_concat",
+            arg_consumes: &[false, false],
+        }),
+        "__triet_string_eq" => Some(BuiltinShimMeta {
+            name: "__triet_string_eq",
+            arg_consumes: &[false, false],
+        }),
+        "__triet_string_free" => Some(BuiltinShimMeta {
+            name: "__triet_string_free",
+            arg_consumes: &[true],
+        }),
+        "__triet_string_from_bytes" => Some(BuiltinShimMeta {
+            name: "__triet_string_from_bytes",
+            arg_consumes: &[false, false],
+        }),
+        "__triet_string_len" => Some(BuiltinShimMeta {
+            name: "__triet_string_len",
+            arg_consumes: &[false],
+        }),
+        "__triet_vector_alloc" => Some(BuiltinShimMeta {
+            name: "__triet_vector_alloc",
+            arg_consumes: &[false, false],
+        }),
+        "__triet_vector_free" => Some(BuiltinShimMeta {
+            name: "__triet_vector_free",
+            arg_consumes: &[true],
+        }),
+        "__triet_vector_len" => Some(BuiltinShimMeta {
+            name: "__triet_vector_len",
+            arg_consumes: &[false],
+        }),
+        "__triet_vector_push" => Some(BuiltinShimMeta {
+            name: "__triet_vector_push",
+            arg_consumes: &[true, false],
+        }),
+        _ => None,
+    }
+}
+
 /// Memory layout of a user-defined struct.
 ///
 /// Carries the information the codegen backend needs to allocate the struct

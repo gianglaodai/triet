@@ -29,6 +29,8 @@ must_use_candidate = "allow"
 [dependencies]
 # Track B — MIR-based JIT. Only needs triet-mir.
 triet-mir = { path = "../triet-mir" }
+# Heap allocation header (ObjectHeader) for String/Vector shims.
+triet-core = { path = "../triet-core" }
 # Cranelift JIT backend
 cranelift-codegen = "0.132"
 cranelift-frontend = "0.132"

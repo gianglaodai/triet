@@ -1,0 +1,9 @@
+// EXPECT: 3
+// Triple move chain: M2 ensures each let creates a genuine Assign with zeroing.
+// (len() builtin not yet wired through typechecker — use constant return.)
+function main() -> Integer {
+    let a = "x";
+    let b = a;
+    let c = b;
+    return 3;
+}

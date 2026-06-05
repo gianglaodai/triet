@@ -108,13 +108,14 @@ Có **bốn** ranh giới ownership ở runtime, JIT phải xử lý tất cả:
 **JIT codegen cho `Statement::Drop` với Move-type local:**
 
 - Nếu local nằm trong Return values của block hiện tại → **skip** (M4, §3.2)
-- Ngược lại: load giá trị i64 từ local, emit `if ptr != 0 { call __triet_<type>_free(ptr) }`
-- Với ptr=0 (đã bị move) → no-op
-- Với ptr≠0 (chưa bị move) → free thật
+- Ngược lại: gọi `call __triet_<type>_free(ptr)` — shim tự guard null.
+  Ở Bậc A, null-guard nằm trong shim (`if ptr == 0 { return; }`), không
+  nằm trong JIT codegen. JIT-side null-check branch là tối ưu Bậc B
+  (tránh call overhead cho null pointer).
 
 **`__triet_<type>_free` shim nhận `ptr: i64`:**
 
-- `if ptr == 0 { return; }` (defense-in-depth — shim tự guard)
+- `if ptr == 0 { return; }` — shim-level null guard (Bậc A)
 - Tính `header_ptr = ptr - 8`, free toàn bộ allocation
 
 **Tại sao không dùng reserved field làm drop flag:** reserved field nằm
@@ -248,11 +249,10 @@ if is_copy(type_of(local)) {
     //      Return của local có active loan → E2450.
     no-op
 } else {
-    // Move type, not escaping: null-guarded free
-    let ptr = load(local);
-    brnz(ptr == 0, skip_block);
+    // Move type, not escaping: call free shim.
+    // Bậc A: null-guard in shim (if ptr == 0 → return).
+    // Bậc B: move null-check branch to JIT (avoid call overhead on null).
     call ___triet_<type>_free(ptr);
-    skip_block:
 }
 ```
 

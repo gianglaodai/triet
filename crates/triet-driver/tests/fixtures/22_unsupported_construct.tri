@@ -1,6 +1,8 @@
-// ERROR: String
-// String literals are not yet supported by the lowerer.
+// ERROR: heap
+// B7: heap type through user-function boundary — unsupported in Bậc A.
+function take_string(s: String) -> Integer {
+    return 1;
+}
 function main() -> Integer {
-    let msg = "hello";
     return 42;
 }

@@ -10,7 +10,12 @@ Sub-task tracking for the current phase (Phase 4 & 5).
   - *Parser: bare-variant resolution is global name-match (lowerer scans all enum_layouts). Lowerer tự resolve thay vì tiêu thụ typecheck decision = cross-layer mismatch. Diagnostic khó hiểu khi hai enum có variant trùng tên. Defer: typecheck annotate variant resolved lên AST.*
   - *Known: enum payload qua function param chưa hỗ trợ (JIT: "Payload access on non-enum local"). Cần sret-like by-pointer cho enum params → Bậc B/C.*
   - *Known: construct semantic = COPY (không MOVE) per SPEC §10.1 stack primitives. Fixture 28 pin hành vi này. MIR hiện ghi "move" trong Display nhưng borrowck không enforce (transition Moved→Ended cho phép Return). Latent Bậc B/C: payload heap sẽ cần phân biệt Copy/Move type.*
-- [ ] String, Vector, HashMap literal lowering.
+- [x] String literal lowering (Phase 4.3a).
+  - *Shims: alloc, from_bytes, free, concat, eq, len — implemented and registered.*
+  - *M1-M4: Assign zero, let-Move-type→Assign, CallDispatch consume zero, Return-escape.*
+  - *B7/B8: heap types refused at user-fn boundary and aggregate payload/field.*
+  - *Deferred: `concat`/`len`/`eq` as surface builtin functions (type checker needs builtin signature support — currently E1002). Lowerer dispatch code exists (lib.rs:1030-1065), blocked on typechecker.*
+- [ ] Vector, HashMap literal lowering.
 - [x] ReturnShape::Struct for multi-field returns in MIR.
 - [x] MIR verifier: structural invariants cho enum (4i-1 đến 4i-7).
 - [ ] Shim registry for Track B aggregates (`__triet_alloc_struct`, `__triet_set_field`, etc. if fallback is needed, though StackSlot is preferred).

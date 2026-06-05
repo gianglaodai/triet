@@ -1,0 +1,10 @@
+// EXPECT: 1
+// String return through user-function boundary — tests call-dest type + M4 Return-escape.
+function make() -> String {
+    let s = "hello";
+    return s;
+}
+function main() -> Integer {
+    let t = make();
+    return 1;
+}
