@@ -87,8 +87,16 @@ impl Checker<'_> {
                 // Try variable/function binding first, then enum variant.
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     ty
-                } else if let Some(enum_ty) = self.lookup_enum_variant(&name) {
-                    enum_ty
+                } else if let Some(resolution) = self.resolve_enum_variant(&name, &span) {
+                    // Record the resolution so the lowerer doesn't
+                    // need to re-scan enum layouts by string match.
+                    let enum_name = resolution.enum_name.clone();
+                    self.expr_resolutions.insert(id, resolution);
+                    // Look up the enum type in the environment.
+                    self.env
+                        .lookup(&enum_name)
+                        .cloned()
+                        .unwrap_or(Type::Unknown)
                 } else {
                     self.errors.push(TypeError::UndefinedName { name, span });
                     Type::Unknown
@@ -114,7 +122,20 @@ impl Checker<'_> {
             // (consume-once E2420 fires .7d; NLL + lifetime elision
             // defer v0.10 per §10.1 backlog).
             Expr::Borrow { form, operand } => self.check_borrow(form, operand, span),
-            Expr::Call { callee, arguments } => self.check_call(callee, &arguments, span),
+            Expr::Call { callee, arguments } => {
+                // Record enum variant constructor resolution before
+                // delegating to check_call. The lowerer needs the
+                // call expression's ID → resolution mapping.
+                if let Expr::Identifier { name: variant_name } = &self.arena.expression(callee).node
+                {
+                    if let Some(resolution) = self.resolve_enum_variant(variant_name, &span)
+                        && resolution.has_payload
+                    {
+                        self.expr_resolutions.insert(id, resolution);
+                    }
+                }
+                self.check_call(callee, &arguments, span)
+            }
             Expr::MethodCall {
                 receiver,
                 method,
@@ -751,6 +772,61 @@ impl Checker<'_> {
             }
         }
         None
+    }
+
+    /// Resolve a bare enum variant name to its full resolution data.
+    ///
+    /// Returns `None` if the variant is not found or is ambiguous
+    /// (present in multiple enum types). On ambiguity, emits
+    /// [`TypeError::AmbiguousEnumVariant`].
+    ///
+    /// This is the canonical resolution point — the lowerer consumes
+    /// the resolution map rather than re-scanning enum layouts.
+    fn resolve_enum_variant(
+        &mut self,
+        name: &str,
+        span: &Span,
+    ) -> Option<crate::EnumVariantResolution> {
+        let root_frame = self.env.frames.first()?;
+        let mut matches: Vec<(&str, &Vec<(String, Option<Box<Type>>)>)> = Vec::new();
+        for binding in root_frame.names.values() {
+            if let Type::UserEnum {
+                name: enum_name,
+                variants,
+                ..
+            } = &binding.ty
+            {
+                if variants.iter().any(|(n, _)| n == name) {
+                    matches.push((enum_name.as_str(), variants));
+                }
+            }
+        }
+        match matches.len() {
+            0 => None,
+            1 => {
+                let (enum_name, variants) = matches[0];
+                let variant = variants.iter().find(|(n, _)| n == name)?;
+                let disc = variants
+                    .iter()
+                    .position(|(n, _)| n == name)
+                    .map(|i| i as i64)?;
+                Some(crate::EnumVariantResolution {
+                    enum_name: enum_name.to_string(),
+                    variant_name: name.to_string(),
+                    discriminant: disc,
+                    has_payload: variant.1.is_some(),
+                })
+            }
+            _ => {
+                self.errors.push(TypeError::AmbiguousEnumVariant {
+                    variant: name.to_string(),
+                    enum_a: matches[0].0.to_string(),
+                    enum_b: matches[1].0.to_string(),
+                    span: span.clone(),
+                });
+                None
+            }
+        }
     }
 
     fn check_method_call(

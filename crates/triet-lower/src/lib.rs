@@ -20,8 +20,8 @@ use triet_mir::{
     StructLayout, Terminator,
 };
 use triet_syntax::{
-    Arena, BinaryOperator, Expr, ExprId, FunctionBody, FunctionDef, Item, Program, Stmt, TypeExpr,
-    TypeId,
+    Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDef, Item,
+    PatternResolutions, Program, Stmt, TypeExpr, TypeId,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -93,7 +93,15 @@ struct Ctx {
     #[allow(dead_code)]
     enum_names: std::collections::HashSet<String>,
     /// Enum layouts keyed by name (cloned from lower_program's computation).
+    /// Still needed by the JIT for layout sizes/offsets. Variant resolution
+    /// is handled by the type checker — these are NOT scanned by the lowerer
+    /// for name→discriminant mapping.
     enum_layouts: HashMap<String, EnumLayout>,
+    /// Resolved enum variants from the type checker, keyed by expression ID.
+    /// The lowerer reads these instead of scanning enum_layouts by string match.
+    expr_resolutions: ExprResolutions,
+    /// Resolved enum variants from the type checker, keyed by pattern ID.
+    pattern_resolutions: PatternResolutions,
     /// Map from function name to its return type name.
     func_return_types: HashMap<String, String>,
     /// If this function returns a struct, the local holding the sret pointer.
@@ -116,6 +124,8 @@ impl Ctx {
         struct_layouts: HashMap<String, StructLayout>,
         enum_names: std::collections::HashSet<String>,
         enum_layouts: HashMap<String, EnumLayout>,
+        expr_resolutions: ExprResolutions,
+        pattern_resolutions: PatternResolutions,
         func_return_types: HashMap<String, String>,
     ) -> Self {
         let is_struct_return = struct_names.contains(ret);
@@ -145,6 +155,8 @@ impl Ctx {
             struct_layouts,
             enum_names,
             enum_layouts,
+            expr_resolutions,
+            pattern_resolutions,
             func_return_types,
             sret_ptr: None,
             owned_locals: Vec::new(),
@@ -274,7 +286,11 @@ impl Ctx {
 /// Struct definitions in the program are lowered to `StructLayout` entries
 /// and attached to every function body so that the JIT backend can compute
 /// field offsets. In Bậc A every field is 8 bytes (i64), alignment 8.
-pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
+pub fn lower_program(
+    prog: &Program,
+    expr_resolutions: &ExprResolutions,
+    pattern_resolutions: &PatternResolutions,
+) -> Result<Vec<Body>, LowerError> {
     // ── Collect struct layouts from struct definitions ──────────
     // Bậc A: every field is 8 bytes, alignment 8 (single i64).
     // Bậc C will compute real sizes from type information.
@@ -363,6 +379,8 @@ pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
                 struct_map.clone(),
                 enum_names.clone(),
                 enum_map.clone(),
+                expr_resolutions.clone(),
+                pattern_resolutions.clone(),
                 func_return_types.clone(),
             )?;
             body.struct_layouts = struct_layouts.clone();
@@ -385,6 +403,8 @@ pub fn lower_function(
     struct_layouts: HashMap<String, StructLayout>,
     enum_names: std::collections::HashSet<String>,
     enum_layouts: HashMap<String, EnumLayout>,
+    expr_resolutions: ExprResolutions,
+    pattern_resolutions: PatternResolutions,
     func_return_types: HashMap<String, String>,
 ) -> Result<Body, LowerError> {
     let ret_ty = func
@@ -399,6 +419,8 @@ pub fn lower_function(
         struct_layouts,
         enum_names,
         enum_layouts,
+        expr_resolutions,
+        pattern_resolutions,
         func_return_types,
     );
     let entry = c.cur;
@@ -725,29 +747,27 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             if let Some(&local) = c.vars.get(name) {
                 return Ok(local);
             }
-            // Check if it's an enum unit variant (e.g. `Red` for Color::Red).
-            let variant_info: Option<(String, i64)> =
-                c.enum_layouts.iter().find_map(|(enum_name, layout)| {
-                    layout
-                        .variants
-                        .iter()
-                        .find(|v| v.name == *name && v.payload.is_none())
-                        .map(|v| (enum_name.clone(), v.discriminant_value))
-                });
-            if let Some((enum_name, disc)) = variant_info {
-                let d = c.alloc_local_ty(&enum_name);
-                c.push(Statement::StorageLive(d, expr_span.clone()));
-                c.push(Statement::EnumAlloc {
-                    dest: d,
-                    enum_name,
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::SetDiscriminant {
-                    dest: d,
-                    value: disc,
-                    span: expr_span.clone(),
-                });
-                return Ok(d);
+            // Check the type checker's resolution map for unit enum variants.
+            // Resolution is done by the type checker — the lowerer just reads
+            // the map and emits MIR. No string-scanning of enum_layouts.
+            // Clone to release the immutable borrow before mutating ctx.
+            let resolution = c.expr_resolutions.get(&expr_id).cloned();
+            if let Some(resolution) = resolution {
+                if !resolution.has_payload {
+                    let d = c.alloc_local_ty(&resolution.enum_name);
+                    c.push(Statement::StorageLive(d, expr_span.clone()));
+                    c.push(Statement::EnumAlloc {
+                        dest: d,
+                        enum_name: resolution.enum_name.clone(),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::SetDiscriminant {
+                        dest: d,
+                        value: resolution.discriminant,
+                        span: expr_span.clone(),
+                    });
+                    return Ok(d);
+                }
             }
             return Err(LowerError::undefined_local(name, expr_span));
         }
@@ -803,59 +823,52 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         }
         Expr::Call { callee, arguments } => {
             // Detect enum literal via direct variant call: `Variant(args)`.
-            // The type checker resolves these via lookup_enum_variant.
-            if let Expr::Identifier { name: variant_name } = &arena.expression(*callee).node {
-                let variant_info: Option<(String, i64, bool)> =
-                    c.enum_layouts.iter().find_map(|(enum_name, layout)| {
-                        layout
-                            .variants
-                            .iter()
-                            .find(|v| v.name == *variant_name)
-                            .map(|v| (enum_name.clone(), v.discriminant_value, v.payload.is_some()))
-                    });
-                if let Some((enum_name, disc, has_payload)) = variant_info {
-                    if has_payload {
-                        if arguments.len() != 1 {
-                            return Err(LowerError {
-                                message: format!(
-                                    "enum variant '{variant_name}' expects 1 argument, got {}",
-                                    arguments.len()
-                                ),
-                                span: expr_span.clone(),
-                            });
-                        }
-                        let d = c.alloc_local_ty(&enum_name);
-                        c.push(Statement::StorageLive(d, expr_span.clone()));
-                        c.push(Statement::EnumAlloc {
-                            dest: d,
-                            enum_name,
-                            span: expr_span.clone(),
-                        });
-                        c.push(Statement::SetDiscriminant {
-                            dest: d,
-                            value: disc,
-                            span: expr_span.clone(),
-                        });
-                        let val = lower_expr(arguments[0], arena, c)?;
-                        c.push(Statement::Assign {
-                            dest: Place::local(d)
-                                .project(Projection::Payload(variant_name.clone())),
-                            source: Place::local(val),
-                            span: expr_span.clone(),
-                        });
-                        return Ok(d);
-                    }
-                    // Unit variant with args — error.
-                    if !arguments.is_empty() {
+            // The type checker resolves these via resolve_enum_variant.
+            // Resolution data is stored keyed by call expression ID.
+            // Clone to release the immutable borrow before mutating ctx.
+            let resolution = c.expr_resolutions.get(&expr_id).cloned();
+            if let Some(resolution) = resolution {
+                if resolution.has_payload {
+                    if arguments.len() != 1 {
                         return Err(LowerError {
                             message: format!(
-                                "unit variant '{variant_name}' does not take arguments"
+                                "enum variant '{}' expects 1 argument, got {}",
+                                resolution.variant_name,
+                                arguments.len()
                             ),
                             span: expr_span.clone(),
                         });
                     }
-                    // Fall through to normal function call — this shouldn't happen
-                    // since the type checker resolves unit variants separately.
+                    let d = c.alloc_local_ty(&resolution.enum_name);
+                    c.push(Statement::StorageLive(d, expr_span.clone()));
+                    c.push(Statement::EnumAlloc {
+                        dest: d,
+                        enum_name: resolution.enum_name.clone(),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::SetDiscriminant {
+                        dest: d,
+                        value: resolution.discriminant,
+                        span: expr_span.clone(),
+                    });
+                    let val = lower_expr(arguments[0], arena, c)?;
+                    c.push(Statement::Assign {
+                        dest: Place::local(d)
+                            .project(Projection::Payload(resolution.variant_name.clone())),
+                        source: Place::local(val),
+                        span: expr_span.clone(),
+                    });
+                    return Ok(d);
+                }
+                // Unit variant with args — error.
+                if !arguments.is_empty() {
+                    return Err(LowerError {
+                        message: format!(
+                            "unit variant '{}' does not take arguments",
+                            resolution.variant_name
+                        ),
+                        span: expr_span.clone(),
+                    });
                 }
             }
 
@@ -1229,11 +1242,6 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         Expr::Match { scrutinee, arms } => {
             // Lower scrutinee into a temp.
             let scrut_local = lower_expr(*scrutinee, arena, c)?;
-            let scrut_ty = c
-                .local_decls
-                .get(scrut_local.0)
-                .map(|d| d.ty.clone())
-                .unwrap_or_else(|| "?".to_string());
 
             // Read discriminant.
             let disc_local = c.alloc_local();
@@ -1250,38 +1258,32 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             let result = c.alloc_local();
             c.push(Statement::StorageLive(result, expr_span.clone()));
 
-            // Pre-compute variant→discriminant mapping so we don't hold
-            // an immutable borrow on c.enum_layouts across mutable calls.
-            let disc_map: HashMap<String, i64> = c
-                .enum_layouts
-                .get(&scrut_ty)
-                .map(|el| {
-                    el.variants
-                        .iter()
-                        .map(|v| (v.name.clone(), v.discriminant_value))
-                        .collect()
-                })
-                .unwrap_or_default();
             let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
 
             // Pre-allocate arm blocks and emit body lowering for each.
+            // Variant resolution is provided by the type checker via
+            // pattern_resolutions — the lowerer does NOT scan enum_layouts.
             for arm in arms.iter() {
                 let arm_bb = c.alloc_bb();
                 let pat = arena.pattern(arm.pattern);
 
+                // Look up the type checker's resolution for this pattern.
+                // Clone to release the immutable borrow before mutating ctx.
+                let resolution = c.pattern_resolutions.get(&arm.pattern).cloned();
+
                 match &pat.node {
                     triet_syntax::Pattern::EnumVariant {
-                        name: _enum_name,
                         variant_name,
                         payload: sub_pattern,
+                        ..
                     } => {
-                        let disc = disc_map.get(variant_name).ok_or_else(|| LowerError {
+                        let res = resolution.ok_or_else(|| LowerError {
                             message: format!(
-                                "unknown variant '{variant_name}' in enum '{scrut_ty}'"
+                                "unresolved enum variant '{variant_name}' — type checker should have resolved this"
                             ),
                             span: expr_span.clone(),
                         })?;
-                        cases.push((*disc, arm_bb));
+                        cases.push((res.discriminant, arm_bb));
 
                         c.cur = arm_bb;
                         c.push_scope();
@@ -1334,10 +1336,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         );
                         c.pop_scope();
                     }
-                    triet_syntax::Pattern::Variable(var_name) => {
-                        // May be a unit variant of the enum — check disc_map.
-                        if let Some(disc) = disc_map.get(var_name) {
-                            cases.push((*disc, arm_bb));
+                    triet_syntax::Pattern::Variable(_var_name) => {
+                        // Unit variant of the enum — the type checker
+                        // records this in pattern_resolutions when the
+                        // scrutinee is an enum and the name matches a
+                        // unit variant.
+                        if let Some(res) = resolution {
+                            cases.push((res.discriminant, arm_bb));
                             c.cur = arm_bb;
                             c.push_scope();
                             // No payload to bind — unit variant.
@@ -1359,7 +1364,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         } else {
                             return Err(LowerError {
                                 message: format!(
-                                    "unsupported match pattern (expected enum variant, got variable '{var_name}' not in enum '{scrut_ty}')"
+                                    "unsupported match pattern (expected enum variant, got variable not resolved by type checker)"
                                 ),
                                 span: expr_span.clone(),
                             });
@@ -1472,6 +1477,8 @@ mod tests {
             HashMap::new(),
             std::collections::HashSet::new(),
             HashMap::new(),
+            ExprResolutions::new(),
+            PatternResolutions::new(),
             HashMap::new(),
         )
         .expect("lowering failed")

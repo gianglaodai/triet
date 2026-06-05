@@ -37,17 +37,28 @@ pub(crate) enum MoveState {
     },
 }
 
-/// Type-check a `Program`, returning all errors found.
+/// Type-check a `Program`, returning all errors found and enum variant
+/// resolutions for the lowerer.
 ///
 /// Returns an empty `Vec` on success. The checker accumulates errors
 /// rather than aborting on the first one, so a single call can surface
 /// every problem at once. `Type::Unknown` is used as a recovery
 /// placeholder so cascading errors don't compound.
 #[must_use]
-pub fn check(program: &Program) -> Vec<TypeError> {
+pub fn check(
+    program: &Program,
+) -> (
+    Vec<TypeError>,
+    crate::ExprResolutions,
+    crate::PatternResolutions,
+) {
     let mut checker = Checker::new(program);
     checker.check_program();
-    checker.errors
+    (
+        checker.errors,
+        checker.expr_resolutions,
+        checker.pattern_resolutions,
+    )
 }
 
 /// Type-check a `Program` with a pre-seeded [`TypeEnvironment`].
@@ -89,6 +100,12 @@ struct Checker<'p> {
     ///
     /// [ADR-0025]: ../../../docs/decisions/0025-borrow-checker-rules.md
     pub(crate) local_let_names: std::collections::HashSet<String>,
+    /// Resolved enum variants keyed by expression ID. Populated during
+    /// type inference; consumed by the lowerer (no re-scanning).
+    pub(crate) expr_resolutions: crate::ExprResolutions,
+    /// Resolved enum variants keyed by pattern ID. Populated during
+    /// pattern binding; consumed by the lowerer.
+    pub(crate) pattern_resolutions: crate::PatternResolutions,
     errors: Vec<TypeError>,
 }
 
@@ -102,6 +119,8 @@ impl<'p> Checker<'p> {
             expected_type_stack: Vec::new(),
             move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),
+            expr_resolutions: crate::ExprResolutions::new(),
+            pattern_resolutions: crate::PatternResolutions::new(),
             errors: Vec::new(),
         }
     }
@@ -117,6 +136,8 @@ impl<'p> Checker<'p> {
             expected_type_stack: Vec::new(),
             move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),
+            expr_resolutions: crate::ExprResolutions::new(),
+            pattern_resolutions: crate::PatternResolutions::new(),
             errors: Vec::new(),
         }
     }
@@ -822,6 +843,32 @@ impl<'p> Checker<'p> {
         match pattern {
             Pattern::Wildcard | Pattern::Null => {}
             Pattern::Variable(name) => {
+                // If the scrutinee is an enum type and the variable name
+                // matches a unit variant, record the resolution for the
+                // lowerer (the pattern binds nothing — it's a match arm
+                // for a unit variant, not a variable capture).
+                if let Type::UserEnum {
+                    name: enum_name,
+                    variants,
+                    ..
+                } = scrutinee
+                {
+                    if let Some(variant_idx) =
+                        variants.iter().position(|(n, p)| n == &name && p.is_none())
+                    {
+                        self.pattern_resolutions.insert(
+                            id,
+                            crate::EnumVariantResolution {
+                                enum_name: enum_name.clone(),
+                                variant_name: name.clone(),
+                                discriminant: variant_idx as i64,
+                                has_payload: false,
+                            },
+                        );
+                        // Don't declare as a variable — it's a unit variant match.
+                        return;
+                    }
+                }
                 self.env.declare(&name, scrutinee.clone());
             }
             Pattern::Tuple(children) => {
@@ -849,13 +896,34 @@ impl<'p> Checker<'p> {
                 payload,
                 ..
             } => {
-                if let Type::UserEnum { variants, .. } = scrutinee
-                    && let Some((_, def_payload)) = variants
+                if let Type::UserEnum {
+                    name: enum_name,
+                    variants,
+                    ..
+                } = scrutinee
+                {
+                    // Record the resolution for the lowerer — pattern ID
+                    // maps to (enum_name, variant_name, discriminant, has_payload).
+                    if let Some(variant_idx) = variants.iter().position(|(n, _)| n == &variant_name)
+                    {
+                        let has_payload = variants[variant_idx].1.is_some();
+                        self.pattern_resolutions.insert(
+                            id,
+                            crate::EnumVariantResolution {
+                                enum_name: enum_name.clone(),
+                                variant_name: variant_name.clone(),
+                                discriminant: variant_idx as i64,
+                                has_payload,
+                            },
+                        );
+                    }
+                    if let Some((_, def_payload)) = variants
                         .iter()
                         .find(|(n, _)| n.as_str() == variant_name.as_str())
-                    && let (Some(sub_pattern), Some(payload_ty)) = (payload, def_payload)
-                {
-                    self.bind_pattern(sub_pattern, payload_ty);
+                        && let (Some(sub_pattern), Some(payload_ty)) = (payload, def_payload)
+                    {
+                        self.bind_pattern(sub_pattern, payload_ty);
+                    }
                 }
             }
             // v0.7.4.3-error.2 (ADR-0020 §5): outcome arm patterns.

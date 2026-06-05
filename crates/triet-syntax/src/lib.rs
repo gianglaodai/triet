@@ -27,3 +27,25 @@ pub use generated::{
     ModuleContent, ModuleItem, ParameterPassing, Program, Stmt, StructDef, UnaryOperator,
     Visibility,
 };
+
+/// Resolution of an enum variant to its enum type and discriminant.
+///
+/// Produced by the type checker during name resolution and consumed by
+/// the lowerer to emit correct MIR without re-scanning enum layouts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumVariantResolution {
+    /// The enum type name (e.g. `"Color"`).
+    pub enum_name: String,
+    /// The variant name (e.g. `"Red"`).
+    pub variant_name: String,
+    /// The integer discriminant value (0, 1, 2, …).
+    pub discriminant: i64,
+    /// Whether this variant has a payload.
+    pub has_payload: bool,
+}
+
+/// Maps expression IDs to resolved enum variants.
+pub type ExprResolutions = std::collections::HashMap<ExprId, EnumVariantResolution>;
+
+/// Maps pattern IDs to resolved enum variants.
+pub type PatternResolutions = std::collections::HashMap<PatternId, EnumVariantResolution>;

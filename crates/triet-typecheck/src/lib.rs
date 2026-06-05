@@ -43,6 +43,7 @@ pub use check::check;
 pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
 pub use error::{BorrowError, ConcurrencyError, TypeError};
+pub use triet_syntax::{EnumVariantResolution, ExprResolutions, PatternResolutions};
 pub use types::Type;
 
 #[cfg(test)]
@@ -54,7 +55,8 @@ mod tests {
     fn check_source(source: &str) -> Vec<TypeError> {
         let (program, parse_errors) = parse(source);
         assert!(parse_errors.is_empty(), "parse errors: {parse_errors:#?}");
-        check(&program)
+        let (errors, _, _) = check(&program);
+        errors
     }
 
     fn assert_ok(source: &str) {

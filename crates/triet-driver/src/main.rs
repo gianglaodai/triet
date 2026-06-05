@@ -54,7 +54,7 @@ fn main() -> ExitCode {
     // ── Phase 2: Typecheck ──
     // Type errors are FATAL — the pipeline must not feed invalid AST
     // to the lowerer/borrowck/JIT layers.
-    let type_errors = triet_typecheck::check(&program);
+    let (type_errors, expr_resolutions, pattern_resolutions) = triet_typecheck::check(&program);
     if !type_errors.is_empty() {
         let src = NamedSource::new(path, source.clone());
         for err in &type_errors {
@@ -65,7 +65,8 @@ fn main() -> ExitCode {
     }
 
     // ── Phase 3: Lower to MIR ──
-    let bodies = match triet_lower::lower_program(&program) {
+    let bodies = match triet_lower::lower_program(&program, &expr_resolutions, &pattern_resolutions)
+    {
         Ok(b) => b,
         Err(e) => {
             eprintln!("{path}: lowerer error: {e}");

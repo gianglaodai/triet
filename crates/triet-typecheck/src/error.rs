@@ -39,6 +39,27 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// A bare enum variant name (e.g. `None`) matches variants in
+    /// multiple enum types. The user must fully qualify with `Enum.Variant`.
+    #[error(
+        "ambiguous enum variant `{variant}` — found in {enum_a} and {enum_b}. Use fully qualified syntax: `{enum_a}.{variant}` or `{enum_b}.{variant}`"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1018),
+        help("prefix the variant with the enum type name to disambiguate")
+    )]
+    AmbiguousEnumVariant {
+        /// The bare variant name.
+        variant: String,
+        /// First enum containing this variant.
+        enum_a: String,
+        /// Second enum containing this variant.
+        enum_b: String,
+        /// Source location.
+        #[label("`{variant}` is ambiguous")]
+        span: Span,
+    },
+
     /// Two values were expected to share a type but didn't.
     #[error("type mismatch: expected {expected}, found {found}")]
     #[diagnostic(code(triet::typecheck::E1003))]
@@ -597,6 +618,7 @@ impl TypeError {
             | Self::WrongArity { span, .. }
             | Self::NotCallable { span, .. }
             | Self::AmbiguousCondition { span }
+            | Self::AmbiguousEnumVariant { span, .. }
             | Self::NonTrileanCondition { span, .. }
             | Self::DuplicateName { span, .. }
             | Self::NullLiteralInNonNullableContext { span }
