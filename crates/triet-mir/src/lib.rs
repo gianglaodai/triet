@@ -1118,17 +1118,17 @@ impl Body {
 
             // ── INV-3 helper: verify Payload projection ──
             let check_payload = |base: Local, variant: &str| -> Result<(), MirError> {
-                if let Some(ty) = self.local_decls.get(base.0).map(|d| d.ty.as_str()) {
-                    if let Some(el) = find_enum_by_type(ty) {
-                        if !el.variants.iter().any(|v| v.name == variant) {
-                            return Err(MirError::PayloadVariantNotFound {
-                                enum_name: el.name.clone(),
-                                variant: variant.to_string(),
-                                span: DUMMY_SPAN.clone(),
-                            });
-                        }
-                        return Ok(());
+                if let Some(ty) = self.local_decls.get(base.0).map(|d| d.ty.as_str())
+                    && let Some(el) = find_enum_by_type(ty)
+                {
+                    if !el.variants.iter().any(|v| v.name == variant) {
+                        return Err(MirError::PayloadVariantNotFound {
+                            enum_name: el.name.clone(),
+                            variant: variant.to_string(),
+                            span: DUMMY_SPAN.clone(),
+                        });
                     }
+                    return Ok(());
                 }
                 // If we can't resolve the type, don't fail — the type
                 // may be a non-enum type using Payload projection (caught
@@ -1244,14 +1244,14 @@ impl Body {
                         check_place(dest)?;
                         check_place(source)?;
                         // 4i-4: source must have enum type
-                        if let Some(decl) = self.local_decls.get(source.local.0) {
-                            if find_enum_by_type(&decl.ty).is_none() {
-                                return Err(MirError::GetDiscriminantNonEnum {
-                                    local: source.local,
-                                    found_type: decl.ty.clone(),
-                                    span: DUMMY_SPAN.clone(),
-                                });
-                            }
+                        if let Some(decl) = self.local_decls.get(source.local.0)
+                            && find_enum_by_type(&decl.ty).is_none()
+                        {
+                            return Err(MirError::GetDiscriminantNonEnum {
+                                local: source.local,
+                                found_type: decl.ty.clone(),
+                                span: DUMMY_SPAN.clone(),
+                            });
                         }
                     }
                     Statement::StructAlloc { dest, .. } => check_local(*dest)?,
@@ -1260,11 +1260,11 @@ impl Body {
                     } => {
                         check_local(*dest)?;
                         // 4i-1: dest type must be this enum
-                        if let Some(decl) = self.local_decls.get(dest.0) {
-                            if decl.ty != *enum_name {
-                                // Warn but don't fail — the type string
-                                // may be resolved differently by the lowerer.
-                            }
+                        if let Some(decl) = self.local_decls.get(dest.0)
+                            && decl.ty != *enum_name
+                        {
+                            // Warn but don't fail — the type string
+                            // may be resolved differently by the lowerer.
                         }
                         // 4i-1: enum_name must exist in enum_layouts
                         if find_enum(enum_name).is_none() {
@@ -1278,17 +1278,17 @@ impl Body {
                         check_local(*dest)?;
                         // 4i-2: dest must have enum type
                         // 4i-3: value must be in range [0, n_variants)
-                        if let Some(decl) = self.local_decls.get(dest.0) {
-                            if let Some(el) = find_enum_by_type(&decl.ty) {
-                                let n = el.variants.len() as i64;
-                                if *value < 0 || *value >= n {
-                                    return Err(MirError::SetDiscriminantValueOutOfRange {
-                                        enum_name: el.name.clone(),
-                                        value: *value,
-                                        num_variants: el.variants.len(),
-                                        span: DUMMY_SPAN.clone(),
-                                    });
-                                }
+                        if let Some(decl) = self.local_decls.get(dest.0)
+                            && let Some(el) = find_enum_by_type(&decl.ty)
+                        {
+                            let n = el.variants.len() as i64;
+                            if *value < 0 || *value >= n {
+                                return Err(MirError::SetDiscriminantValueOutOfRange {
+                                    enum_name: el.name.clone(),
+                                    value: *value,
+                                    num_variants: el.variants.len(),
+                                    span: DUMMY_SPAN.clone(),
+                                });
                             }
                         }
                     }
@@ -2049,7 +2049,7 @@ pub fn is_copy(ty: &str, body: &Body) -> bool {
                 return e
                     .variants
                     .iter()
-                    .all(|v| v.payload.as_ref().map_or(true, |p| is_copy(&p.ty, body)));
+                    .all(|v| v.payload.as_ref().is_none_or(|p| is_copy(&p.ty, body)));
             }
             // Unknown types default to Move (Refuse-over-guess)
             false
@@ -2074,13 +2074,12 @@ pub fn place_type(place: &Place, body: &Body) -> String {
                     // Look up in enum payload layouts (for struct-payload variants).
                     let mut found = None;
                     for variant in &e.variants {
-                        if let Some(ref payload) = variant.payload {
-                            if let Some(field) =
+                        if let Some(ref payload) = variant.payload
+                            && let Some(field) =
                                 payload.fields.iter().find(|f| f.name == name.as_str())
-                            {
-                                found = Some(field.ty.clone());
-                                break;
-                            }
+                        {
+                            found = Some(field.ty.clone());
+                            break;
                         }
                     }
                     found.unwrap_or_else(|| "?".to_string())

@@ -790,14 +790,13 @@ fn process_block(
     if let Terminator::CallDispatch {
         callee_name, args, ..
     } = &block_data.terminator
+        && let Some(meta) = builtin_shim_meta(callee_name)
     {
-        if let Some(meta) = builtin_shim_meta(callee_name) {
-            for (i, arg) in args.iter().enumerate() {
-                if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
-                    let arg_ty = &body.local_decls[arg.0].ty;
-                    if !is_copy(arg_ty, &body) {
-                        state.var_states.insert(*arg, VarState::Moved);
-                    }
+        for (i, arg) in args.iter().enumerate() {
+            if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
+                let arg_ty = &body.local_decls[arg.0].ty;
+                if !is_copy(arg_ty, body) {
+                    state.var_states.insert(*arg, VarState::Moved);
                 }
             }
         }
