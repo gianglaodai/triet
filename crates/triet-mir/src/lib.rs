@@ -1160,10 +1160,23 @@ impl Body {
                     }
                     Statement::OutcomeDiscriminant { dest, source, .. }
                     | Statement::OutcomeUnwrap { dest, source, .. }
-                    | Statement::OutcomeUnwrapError { dest, source, .. }
-                    | Statement::GetDiscriminant { dest, source, .. } => {
+                    | Statement::OutcomeUnwrapError { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
+                    }
+                    Statement::GetDiscriminant { dest, source, .. } => {
+                        check_place(dest)?;
+                        check_place(source)?;
+                        // 4i-4: source must have enum type
+                        if let Some(decl) = self.local_decls.get(source.local.0) {
+                            if find_enum_by_type(&decl.ty).is_none() {
+                                return Err(MirError::GetDiscriminantNonEnum {
+                                    local: source.local,
+                                    found_type: decl.ty.clone(),
+                                    span: DUMMY_SPAN.clone(),
+                                });
+                            }
+                        }
                     }
                     Statement::StructAlloc { dest, .. } => check_local(*dest)?,
                     Statement::EnumAlloc {
@@ -1267,6 +1280,15 @@ pub enum MirError {
         /// Source location.
         span: Span,
     },
+    /// `GetDiscriminant.source` is not an enum type (4i-4).
+    GetDiscriminantNonEnum {
+        /// The local being read from.
+        local: Local,
+        /// The type that was found instead of an enum.
+        found_type: String,
+        /// Source location.
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -1319,6 +1341,14 @@ impl fmt::Display for MirError {
                 write!(
                     f,
                     "MIR verification error: Payload variant '{variant}' not found in enum '{enum_name}'"
+                )
+            }
+            Self::GetDiscriminantNonEnum {
+                local, found_type, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: GetDiscriminant source {local} has non-enum type '{found_type}'"
                 )
             }
         }

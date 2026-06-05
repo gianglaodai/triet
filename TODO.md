@@ -20,6 +20,11 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [ ] Packed Outcome ABI (bit extraction for discrim/payload).
 - [ ] Multi-value return (>1 return value).
 
+## Deferred — design locked, chờ tiền đề (KHÔNG build tạm)
+- [ ] **Trait system** (trait decl + impl + dispatch). Author 2026-06-05: Triết chắc chắn làm Trait, không Interface. Phase riêng, chưa xếp lịch.
+- [ ] **`Comparable` trait, `compare() -> Trit`** — design lock tại [ADR-0038](docs/decisions/0038-comparable-trait-deferred.md). Chờ Trait system; KHÔNG làm built-in special-case. Trit (không enum Ordering), tổng thứ tự only, unknown ở lại với operator Ł3.
+- [ ] **Họ toán tử Nullable `?+>`** (map+flatMap cho `T?`, auto-flatten) + `?:` RHS = Expression + cấm `?->` (E1041) — design lock tại [ADR-0039](docs/decisions/0039-nullable-operator-family.md). Chờ nullable/Outcome lowering (Bậc B/C). SPEC §Elvis cần thêm câu "RHS là Expression" khi sync.
+
 ## Integration Test Corpus
 - [x] Basic test harness (`cargo test -p triet-driver`).
 - [x] `while` loop hang fixed.
