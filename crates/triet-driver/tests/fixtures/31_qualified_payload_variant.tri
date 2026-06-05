@@ -1,11 +1,12 @@
-// EXPECT: 42
+// EXPECT: 99
+// Pin: qualified payload variant with disc≠0 (NoneInt = disc 1).
 enum OptionA { SomeInt(Integer), NoneInt }
 enum OptionB { SomeInt(Integer), NoneInt }
 
 function main() -> Integer = {
-    let a = OptionA.SomeInt(42);
+    let a = OptionA.NoneInt;
     return match a {
         SomeInt(x) => x,
-        NoneInt => 0,
+        NoneInt => 99,
     };
 }

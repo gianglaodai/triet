@@ -1,0 +1,17 @@
+// EXPECT: 2
+// Pin: non-first discriminant via param — was silently miscompiled
+// (callee always received 0 because caller arg-prep ignored enum_slots).
+
+enum Color { Red, Green, Blue }
+
+function map_color(c: Color) -> Integer =
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+
+function main() -> Integer = {
+    let c = Green;
+    return map_color(c);
+}

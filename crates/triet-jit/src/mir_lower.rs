@@ -873,12 +873,21 @@ impl JitContext {
                         // Import callee into current function
                         let func_ref = self.module.declare_func_in_func(callee_id, builder.func);
 
-                        // Prepare arguments. Struct locals → stack_addr; scalars → use_var.
+                        // Prepare arguments.
+                        // Struct locals → stack_addr (pass by-pointer).
+                        // Enum locals → stack_load discriminant (raw i64 per Bậc A ABI).
+                        // Scalars → use_var.
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
                                 if let Some((slot, _)) = self.struct_slots.get(a) {
                                     builder.ins().stack_addr(I64, *slot, 0)
+                                } else if let Some((slot, _)) = self.enum_slots.get(a) {
+                                    // Pass discriminant as raw i64 for enum params.
+                                    // Callee's GetDiscriminant will read it via
+                                    // use_var (Bậc A contract: the discriminant IS
+                                    // the value for non-slot enum locals).
+                                    builder.ins().stack_load(I64, *slot, 0)
                                 } else {
                                     let var = self.var(*a);
                                     builder.use_var(var)
@@ -934,8 +943,14 @@ impl JitContext {
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
-                                let var = self.var(*a);
-                                builder.use_var(var)
+                                if let Some((slot, _)) = self.struct_slots.get(a) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else if let Some((slot, _)) = self.enum_slots.get(a) {
+                                    builder.ins().stack_load(I64, *slot, 0)
+                                } else {
+                                    let var = self.var(*a);
+                                    builder.use_var(var)
+                                }
                             })
                             .collect();
 
