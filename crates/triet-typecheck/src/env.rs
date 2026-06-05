@@ -211,6 +211,28 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
+    // ── Phase 4.3c: String builtins (deferred from 4.3a) ──
+
+    // `concat(String, String) -> String` — borrow semantics (arg_consumes = [false, false]).
+    env.declare(
+        "concat",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![String.clone(), String.clone()],
+            return_type: Box::new(String.clone()),
+        },
+    );
+
+    // `eq(String, String) -> Integer` — returns 1 (true) or 0 (false).
+    env.declare(
+        "eq",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![String.clone(), String.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+
     // ── Phase 4.3b: Vector builtins (ADR-0040 §3.1) ──
 
     // `vector_new() -> Vector<Integer>` — heap-allocate an empty vector.

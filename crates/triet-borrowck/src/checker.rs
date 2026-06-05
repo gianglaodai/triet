@@ -316,6 +316,8 @@ fn build_local_names(body: &triet_mir::Body) -> LocalNames {
     for (i, (name, _)) in body.signature.params.iter().enumerate() {
         names.insert(Local(i), name.clone());
     }
+    // Merge let-bound local names from the lowerer.
+    names.extend(body.local_names.clone());
     names
 }
 

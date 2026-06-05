@@ -29,7 +29,7 @@ use triet_mir::{
     Statement, Terminator,
 };
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // ── MIR builder (convenience API for constructing MIR by hand) ─
 
@@ -181,6 +181,7 @@ impl MirBuilder {
             local_decls,
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
+            local_names: BTreeMap::new(),
         }
     }
 }

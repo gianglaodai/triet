@@ -1,10 +1,12 @@
-// EXPECT: 1
-// String return through user-function boundary — tests call-dest type + M4 Return-escape.
+// EXPECT: 10
+// String return through user-function boundary + concat observable.
+// Phase 4.3c: concat wired through typechecker — no more constant return.
 function make() -> String {
     let s = "hello";
     return s;
 }
 function main() -> Integer {
     let t = make();
-    return 1;
+    let u = concat(t, "world");
+    return len(u);
 }

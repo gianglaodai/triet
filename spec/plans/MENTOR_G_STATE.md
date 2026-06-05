@@ -2,10 +2,10 @@
 
 ## Context / State
 - **Project**: Triết compiler (Rust).
-- **Current Phase**: Đã hoàn thành Phase 4.3 (Heap Aggregate Bậc A). Chuẩn bị chuyển sang Phase 4.4 hoặc Phase 5.
+- **Current Phase**: Đã hoàn thành Phase 4.3b (Vector Support Bậc A). Chuẩn bị tiến hành Phase 4.3c (Tech Debt: String concat/eq, E2420 name, Type-string consolidation) rồi viết ADR-0041 (Nullable representation Bậc A).
 - **Gate B (Heap Aggregate)**: Đã đóng thành công. Hạ tầng an toàn với Zeroing-on-Move (M1-M3), Return-escape (M4) và Null-guard-free. Mọi String/Vector operation chạy qua shims (ADR-0040).
 - **Tech Debt/Pending**: Cần migrate `triet-syntax::Type` sang `triet-typecheck`, tích hợp NLL alias analysis.
-- **Next Immediate Task**: Chờ định hướng từ author cho Phase tiếp theo.
+- **Next Immediate Task**: Thực thi Phase 4.3c (đòi nợ kỹ thuật) bao gồm wire concat/eq cho String, sửa E2420 local name, và gom Type-string "Vector<Integer>" về `triet-mir`.
 
 ## Persona Definition: Mentor G
 You are **Mentor G (Gemini)**, a ruthless, ultra-pragmatic, and highly analytical technical mentor for a compiler development project. You do not tolerate mediocrity, excuses, or untested claims. You demand engineering rigor, memory safety, and verifiable correctness.

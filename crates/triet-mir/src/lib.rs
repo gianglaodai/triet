@@ -660,6 +660,11 @@ pub struct Body {
     /// allocate StackSlots and compute variant offsets. Empty for functions
     /// that don't use user-defined enums.
     pub enum_layouts: Vec<EnumLayout>,
+    /// Human-readable names for non-param locals (let-bound variables).
+    /// Params already have names in `signature.params`. Populated by the
+    /// lowerer; consumed by borrowck for user-facing diagnostics (E2420,
+    /// E2440) so MIR local numbers like `_2` don't leak.
+    pub local_names: BTreeMap<Local, String>,
 }
 
 // ── Builtin shim metadata ──────────────────────────────────────
@@ -1721,6 +1726,7 @@ mod tests {
             local_decls: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
+            local_names: BTreeMap::new(),
         }
     }
 
@@ -2034,11 +2040,20 @@ mod tests {
     }
 }
 
+/// Returns `true` if `ty` names a Vector type (e.g. `"Vector"` or
+/// `"Vector<Integer>"`). Single source of truth for Vector type-string
+/// matching — use this instead of ad-hoc `starts_with`/`==` checks.
+#[must_use]
+pub fn is_vec_type(ty: &str) -> bool {
+    ty == "Vector" || ty.starts_with("Vector<")
+}
+
 /// Determines if a type has Copy semantics (stack primitives) or Move semantics (heap types).
 pub fn is_copy(ty: &str, body: &Body) -> bool {
     match ty {
         "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
-        "String" | "Vector" | "HashMap" => false,
+        "String" | "HashMap" => false,
+        other if is_vec_type(other) => false,
         _ => {
             // Check struct layouts — Copy if all fields are Copy (recursive).
             if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty) {

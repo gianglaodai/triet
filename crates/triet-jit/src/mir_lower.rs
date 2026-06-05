@@ -806,7 +806,7 @@ impl JitContext {
                     // The shim internally guards null (defense-in-depth).
                     let free_shim_name = match ty.as_str() {
                         "String" => "__triet_string_free",
-                        "Vector" | "Vector<Integer>" => "__triet_vector_free",
+                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_free",
                         _ => {
                             return Err(JitError::Unsupported(format!(
                                 "Drop for type `{ty}` not supported — no free shim"

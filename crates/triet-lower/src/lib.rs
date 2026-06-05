@@ -12,7 +12,7 @@
 
 #![warn(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, EnumLayout, FieldLayout,
@@ -146,6 +146,9 @@ struct Ctx {
     /// pushes the current length; `pop_scope` drops everything from that
     /// snapshot to the end and truncates.
     scope_snapshots: Vec<usize>,
+    /// Human-readable names for let-bound locals. Populated by `Stmt::Let`;
+    /// passed through to `Body::local_names` for borrowck diagnostics.
+    local_names: BTreeMap<Local, String>,
 }
 
 impl Ctx {
@@ -193,6 +196,7 @@ impl Ctx {
             sret_ptr: None,
             owned_locals: Vec::new(),
             scope_snapshots: Vec::new(),
+            local_names: BTreeMap::new(),
         };
         // If returning a struct, allocate the sret pointer as Local(0).
         // The JIT will receive this as a hidden first parameter.
@@ -304,6 +308,7 @@ impl Ctx {
             local_decls: self.local_decls,
             struct_layouts: Vec::new(),
             enum_layouts: self.enum_layouts.values().cloned().collect(),
+            local_names: self.local_names,
         }
     }
 }
@@ -565,7 +570,7 @@ fn simple_is_copy(
         "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
         // Heap types — Move.
         "String" | "HashMap" => false,
-        other if other.starts_with("Vector") => false,
+        other if triet_mir::is_vec_type(other) => false,
         other if struct_names.contains(other) => true,
         other if enum_names.contains(other) => true,
         // Unknown types default to Move (refuse-over-guess).
@@ -657,9 +662,11 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                     span: stmt_span.clone(),
                 });
                 c.vars.insert(name.clone(), new_local);
+                c.local_names.insert(new_local, name.clone());
                 c.push_owned(new_local);
             } else {
                 c.vars.insert(name.clone(), v);
+                c.local_names.insert(v, name.clone());
                 c.push_owned(v);
             }
         }
@@ -1111,7 +1118,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let arg_ty = &c.local_decls[arg.0].ty;
                     let shim_name = match arg_ty.as_str() {
                         "String" => "__triet_string_len",
-                        ty if ty.starts_with("Vector") => "__triet_vector_len",
+                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
                         other => {
                             return Err(LowerError::heap_type_not_supported(
                                 &format!("len() on type `{other}` — expected String or Vector"),
