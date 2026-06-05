@@ -493,6 +493,14 @@ reaching-def là defense-in-depth cho Bậc C, không nằm trong scope Phase 4.
 - **Partial-Moved tracking cho enum — defer Bậc B/C.** Destructure dùng copy
   ở Bậc A → không cần. Khi heap payload có destructor thực sự, move-out
   semantics mới có giá trị.
+- **Enum variant resolution là context-free (2026-06-05 addendum).** Type
+  checker resolve bare variant name (`None`, `SomeInt`) dựa trên global scan
+  tất cả enum types trong root frame. Type annotation (`let n: CD = None`)
+  **không** được dùng để disambiguate — nếu 2 enum cùng có variant `None`,
+  compiler emit E1018 bắt user qualify (`CD.None`). Đây là design nhất quán
+  với nguyên tắc AI-first explicit: compiler không đoán ý định từ type
+  context. Qualified syntax (`TypeName.Variant`) luôn hoạt động cho cả unit
+  variant (FieldAccess) và payload variant (MethodCall/Call+FieldAccess).
 
 ## Tham chiếu
 

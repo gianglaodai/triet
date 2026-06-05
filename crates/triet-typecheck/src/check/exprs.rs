@@ -126,13 +126,43 @@ impl Checker<'_> {
                 // Record enum variant constructor resolution before
                 // delegating to check_call. The lowerer needs the
                 // call expression's ID → resolution mapping.
-                if let Expr::Identifier { name: variant_name } = &self.arena.expression(callee).node
-                {
-                    if let Some(resolution) = self.resolve_enum_variant(variant_name, &span)
-                        && resolution.has_payload
-                    {
-                        self.expr_resolutions.insert(id, resolution);
+                //
+                // Two syntaxes are supported:
+                //   bare:    `SomeInt(5)`  — callee is Identifier
+                //   qualified: `CD.SomeInt(5)` — callee is FieldAccess
+                match &self.arena.expression(callee).node {
+                    Expr::Identifier { name: variant_name } => {
+                        if let Some(resolution) = self.resolve_enum_variant(variant_name, &span)
+                            && resolution.has_payload
+                        {
+                            self.expr_resolutions.insert(id, resolution);
+                        }
                     }
+                    Expr::FieldAccess { object, field } => {
+                        if let Expr::Identifier { name: enum_name } =
+                            &self.arena.expression(*object).node
+                        {
+                            if let Some(enum_ty) = self.env.lookup(enum_name).cloned() {
+                                if let Type::UserEnum { variants, .. } = &enum_ty {
+                                    if let Some(variant_idx) =
+                                        variants.iter().position(|(n, _)| n == field)
+                                    {
+                                        let (_, payload) = &variants[variant_idx];
+                                        self.expr_resolutions.insert(
+                                            id,
+                                            triet_syntax::EnumVariantResolution {
+                                                enum_name: enum_name.clone(),
+                                                variant_name: field.clone(),
+                                                discriminant: variant_idx as i64,
+                                                has_payload: payload.is_some(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 self.check_call(callee, &arguments, span)
             }
@@ -140,8 +170,33 @@ impl Checker<'_> {
                 receiver,
                 method,
                 arguments,
-            } => self.check_method_call(receiver, &method, &arguments, span),
-            Expr::FieldAccess { object, field } => self.check_field_access(object, &field, span),
+            } => {
+                // Detect qualified enum variant construction:
+                // `OptionA.SomeInt(42)` parses as MethodCall.
+                if let Expr::Identifier { name: enum_name } = &self.arena.expression(receiver).node
+                {
+                    if let Some(Type::UserEnum { variants, .. }) =
+                        self.env.lookup(enum_name).cloned()
+                    {
+                        if let Some(variant_idx) = variants.iter().position(|(n, _)| n == &method) {
+                            let (_, payload) = &variants[variant_idx];
+                            self.expr_resolutions.insert(
+                                id,
+                                triet_syntax::EnumVariantResolution {
+                                    enum_name: enum_name.clone(),
+                                    variant_name: method.clone(),
+                                    discriminant: variant_idx as i64,
+                                    has_payload: payload.is_some(),
+                                },
+                            );
+                        }
+                    }
+                }
+                self.check_method_call(receiver, &method, &arguments, span)
+            }
+            Expr::FieldAccess { object, field } => {
+                self.check_field_access(id, object, &field, span)
+            }
             Expr::TupleIndex { tuple, index } => self.check_tuple_index(tuple, index, span),
             Expr::SafeFieldAccess { object, field } => {
                 self.check_safe_field_access(object, &field, span)
@@ -687,6 +742,50 @@ impl Checker<'_> {
             return return_type.substitute(&sub_map);
         }
 
+        // Try qualified enum variant construction: `CD.SomeInt(5)`.
+        // The callee is a FieldAccess into an enum type for a payload
+        // variant. The resolution was already recorded by infer_expression.
+        if let Expr::FieldAccess { object, field } = &self.arena.expression(callee).node {
+            if let Expr::Identifier { name: enum_name } = &self.arena.expression(*object).node {
+                if let Some(Type::UserEnum { variants, .. }) = self.env.lookup(enum_name).cloned() {
+                    if let Some((_variant_name, payload)) =
+                        variants.iter().find(|(n, _)| n == field)
+                    {
+                        // Check arity and payload type.
+                        match (arguments.len(), payload) {
+                            (1, Some(expected_ty)) => {
+                                let arg_ty = self.infer_expression(arguments[0]);
+                                if !expected_ty.matches(&arg_ty) {
+                                    self.errors.push(TypeError::Mismatch {
+                                        expected: (**expected_ty).clone(),
+                                        found: arg_ty,
+                                        span: self.arena.expression(arguments[0]).span.clone(),
+                                    });
+                                }
+                            }
+                            (0, None) => {} // unit variant — OK
+                            (n, Some(_)) => {
+                                self.errors.push(TypeError::WrongArity {
+                                    expected: 1,
+                                    found: n,
+                                    span: span.clone(),
+                                });
+                            }
+                            (n, None) if n > 0 => {
+                                self.errors.push(TypeError::WrongArity {
+                                    expected: 0,
+                                    found: n,
+                                    span: span.clone(),
+                                });
+                            }
+                            _ => {}
+                        }
+                        return self.env.lookup(enum_name).cloned().unwrap_or(Type::Unknown);
+                    }
+                }
+            }
+        }
+
         // Try enum variant construction: `Some(5)`, `None`.
         if let Expr::Identifier {
             name: ref callee_name,
@@ -848,6 +947,36 @@ impl Checker<'_> {
             return Type::Unknown;
         }
 
+        // Qualified enum variant construction via method-call syntax:
+        // `OptionA.SomeInt(42)` parses as MethodCall.
+        if let Type::UserEnum { variants, .. } = &receiver_ty {
+            if let Some((_variant_name, payload)) = variants.iter().find(|(n, _)| n == method) {
+                // Check arity and payload type.
+                match (arguments.len(), payload) {
+                    (1, Some(expected_ty)) => {
+                        let arg_ty = self.infer_expression(arguments[0]);
+                        if !expected_ty.matches(&arg_ty) {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: (**expected_ty).clone(),
+                                found: arg_ty,
+                                span: self.arena.expression(arguments[0]).span.clone(),
+                            });
+                        }
+                    }
+                    (0, None) => {} // unit variant via method call — unusual but valid
+                    (n, Some(_)) => {
+                        self.errors.push(TypeError::WrongArity {
+                            expected: 1,
+                            found: n,
+                            span: span.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+                return receiver_ty.clone();
+            }
+        }
+
         self.errors.push(TypeError::UnknownMember {
             member: method.to_owned(),
             found: receiver_ty,
@@ -974,7 +1103,13 @@ impl Checker<'_> {
         ty.clone()
     }
 
-    fn check_field_access(&mut self, object: ExprId, field: &str, span: Span) -> Type {
+    fn check_field_access(
+        &mut self,
+        field_access_id: ExprId,
+        object: ExprId,
+        field: &str,
+        span: Span,
+    ) -> Type {
         let object_ty = self.infer_expression(object);
         if matches!(object_ty, Type::Unknown) {
             return Type::Unknown;
@@ -987,6 +1122,47 @@ impl Checker<'_> {
             self.errors.push(TypeError::UnknownMember {
                 member: field.to_owned(),
                 found: object_ty,
+                span,
+            });
+            return Type::Unknown;
+        }
+        // Qualified enum unit variant: `CD.None`, `Color.Red`.
+        // Resolve at typecheck time; lowerer consumes the resolution map.
+        if let Type::UserEnum {
+            name: enum_name,
+            variants,
+            ..
+        } = &object_ty
+        {
+            if let Some(variant_idx) = variants.iter().position(|(n, _)| n == field) {
+                let (_variant_name, payload) = &variants[variant_idx];
+                let has_payload = payload.is_some();
+                // Record resolution for the lowerer — same path as
+                // bare-variant Identifier and Call constructor.
+                self.expr_resolutions.insert(
+                    field_access_id,
+                    triet_syntax::EnumVariantResolution {
+                        enum_name: enum_name.clone(),
+                        variant_name: field.to_string(),
+                        discriminant: variant_idx as i64,
+                        has_payload,
+                    },
+                );
+                // Return the enum type itself. If the variant has a
+                // payload, the user must use call syntax:
+                // `CD.SomeInt(5)` which routes through
+                // `Expr::Call` + `Expr::FieldAccess`.
+                if has_payload {
+                    // Payload variant accessed without args — this
+                    // is the enum type (the variant isn't being
+                    // constructed, just referenced).
+                    return object_ty.clone();
+                }
+                return object_ty.clone();
+            }
+            self.errors.push(TypeError::UnknownMember {
+                member: field.to_owned(),
+                found: object_ty.clone(),
                 span,
             });
             return Type::Unknown;

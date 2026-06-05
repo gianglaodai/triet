@@ -1126,42 +1126,30 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         // `obj.field` as an rvalue: read through the projected place into a temp.
         // Also handles `Type.variant` enum literals — if the base is a known
         // enum type, route to EnumLiteral lowering.
-        Expr::FieldAccess { object, field } => {
-            // Check if this is actually an enum literal (TypeName.variant).
-            let obj_expr = arena.expression(*object);
-            if let Expr::Identifier { name: base_name } = &obj_expr.node {
-                if c.is_enum_type(base_name) {
-                    // Lower as enum literal: TypeName.Variant
-                    let d = c.alloc_local_ty(base_name);
+        Expr::FieldAccess { .. } => {
+            // Check the type checker's resolution map first.
+            // Qualified enum variants (`Color.Red`, `CD.None`) are
+            // resolved by the type checker via check_field_access.
+            let resolution = c.expr_resolutions.get(&expr_id).cloned();
+            if let Some(res) = resolution {
+                if !res.has_payload {
+                    // Unit variant constructor: `TypeName.Variant`
+                    let d = c.alloc_local_ty(&res.enum_name);
                     c.push(Statement::StorageLive(d, expr_span.clone()));
                     c.push(Statement::EnumAlloc {
                         dest: d,
-                        enum_name: base_name.clone(),
+                        enum_name: res.enum_name.clone(),
                         span: expr_span.clone(),
                     });
-                    let disc = {
-                        let layout = c.enum_layouts.get(base_name).ok_or_else(|| LowerError {
-                            message: format!("unknown enum '{base_name}'"),
-                            span: expr_span.clone(),
-                        })?;
-                        layout
-                            .variants
-                            .iter()
-                            .find(|v| v.name == *field)
-                            .map(|v| v.discriminant_value)
-                            .ok_or_else(|| LowerError {
-                                message: format!("unknown variant '{field}' in enum '{base_name}'"),
-                                span: expr_span.clone(),
-                            })?
-                    };
                     c.push(Statement::SetDiscriminant {
                         dest: d,
-                        value: disc,
+                        value: res.discriminant,
                         span: expr_span.clone(),
                     });
-                    // Unit variant — no payload to assign
                     return Ok(d);
                 }
+                // Payload variant without call syntax — shouldn't happen
+                // (parser routes those through Call), but handle gracefully.
             }
 
             let source = lower_place(expr_id, arena, c)?;
@@ -1404,6 +1392,44 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             c.cur = merge_bb;
             Ok(result)
+        }
+        Expr::MethodCall {
+            receiver: _,
+            method: _,
+            arguments,
+        } => {
+            // Qualified enum variant construction:
+            // `OptionA.SomeInt(42)` parses as MethodCall.
+            // Resolution was recorded by the type checker.
+            let resolution = c.expr_resolutions.get(&expr_id).cloned();
+            if let Some(res) = resolution {
+                let d = c.alloc_local_ty(&res.enum_name);
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                c.push(Statement::EnumAlloc {
+                    dest: d,
+                    enum_name: res.enum_name.clone(),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::SetDiscriminant {
+                    dest: d,
+                    value: res.discriminant,
+                    span: expr_span.clone(),
+                });
+                if res.has_payload {
+                    let val = lower_expr(arguments[0], arena, c)?;
+                    c.push(Statement::Assign {
+                        dest: Place::local(d)
+                            .project(Projection::Payload(res.variant_name.clone())),
+                        source: Place::local(val),
+                        span: expr_span.clone(),
+                    });
+                }
+                return Ok(d);
+            }
+            return Err(LowerError::unsupported_expr(
+                &arena.expression(expr_id).node,
+                expr_span,
+            ));
         }
         other => Err(LowerError::unsupported_expr(other, expr_span)),
     }

@@ -1,0 +1,11 @@
+// EXPECT: 42
+enum OptionA { SomeInt(Integer), NoneInt }
+enum OptionB { SomeInt(Integer), NoneInt }
+
+function main() -> Integer = {
+    let a = OptionA.SomeInt(42);
+    return match a {
+        SomeInt(x) => x,
+        NoneInt => 0,
+    };
+}

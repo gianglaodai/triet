@@ -1,0 +1,12 @@
+// EXPECT: 1
+enum Color { Red, Green, Blue }
+enum Status { Active, Red, Inactive }
+
+function main() -> Integer = {
+    let c = Color.Red;
+    return match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    };
+}
