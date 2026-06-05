@@ -1,0 +1,9 @@
+// ERROR: E2420
+// Phase 4.3b: use-after-push — v1 is consumed by push, len(v1) fires E2420.
+// M3 marks arg[0] Moved via BuiltinShimMeta (push: arg_consumes = [true, false]).
+function main() -> Integer {
+    let v1 = vector_new();
+    let v2 = push(v1, 42);
+    let x = len(v1);
+    return x;
+}

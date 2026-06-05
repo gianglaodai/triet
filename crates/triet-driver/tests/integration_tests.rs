@@ -128,6 +128,23 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_string_len",
             triet_jit::mir_lower::__triet_string_len,
         ),
+        // Vector shims (ADR-0040 §5)
+        ShimSymbol::fn_2_1(
+            "__triet_vector_alloc",
+            triet_jit::mir_lower::__triet_vector_alloc,
+        ),
+        ShimSymbol::fn_1_0(
+            "__triet_vector_free",
+            triet_jit::mir_lower::__triet_vector_free,
+        ),
+        ShimSymbol::fn_1_1(
+            "__triet_vector_len",
+            triet_jit::mir_lower::__triet_vector_len,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_vector_push",
+            triet_jit::mir_lower::__triet_vector_push,
+        ),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx

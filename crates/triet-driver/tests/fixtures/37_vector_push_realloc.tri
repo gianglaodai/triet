@@ -1,0 +1,11 @@
+// EXPECT: 3
+// Phase 4.3b: push 3 elements with initial cap=2 → realloc on 3rd push.
+// shim __triet_vector_push allocs new block, copies, frees old.
+// len() verifies observable count — no constant return.
+function main() -> Integer {
+    let v1 = vector_new();
+    let v2 = push(v1, 10);
+    let v3 = push(v2, 20);
+    let v4 = push(v3, 30);
+    return len(v4);
+}

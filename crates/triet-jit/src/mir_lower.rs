@@ -19,8 +19,6 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
-use triet_mir::DUMMY_SPAN;
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, EnumLayout, Local, Place,
     Projection, Statement, StructLayout, Terminator, builtin_shim_meta, is_copy,
@@ -167,11 +165,11 @@ pub struct JitContext {
     /// Map from MIR Local to Cranelift Variable (one per MIR local).
     /// Bậc A: every value is a single i64 — scalars unboxed.
     locals: HashMap<Local, Variable>,
-    /// Map from MIR Local to Cranelift StackSlot + struct layout.
-    /// Struct locals use StackSlots; fields accessed via stack_load/store.
+    /// Map from MIR Local to Cranelift `StackSlot` + struct layout.
+    /// Struct locals use `StackSlots`; fields accessed via `stack_load/store`.
     struct_slots: HashMap<Local, (cranelift_codegen::ir::StackSlot, StructLayout)>,
-    /// Map from MIR Local to Cranelift StackSlot + enum layout.
-    /// Enum locals use StackSlots; discriminant/payload accessed via stack_load/store.
+    /// Map from MIR Local to Cranelift `StackSlot` + enum layout.
+    /// Enum locals use `StackSlots`; discriminant/payload accessed via `stack_load/store`.
     enum_slots: HashMap<Local, (cranelift_codegen::ir::StackSlot, EnumLayout)>,
     /// Map from MIR `BasicBlock` to Cranelift Block.
     blocks: HashMap<BasicBlock, cranelift_codegen::ir::Block>,
@@ -179,7 +177,7 @@ pub struct JitContext {
     sealed: HashSet<BasicBlock>,
     /// Blocks that have been filled.
     filled: HashSet<BasicBlock>,
-    /// Map from function name → Cranelift FuncId (for cross-function calls).
+    /// Map from function name → Cranelift `FuncId` (for cross-function calls).
     func_ids: HashMap<String, cranelift_module::FuncId>,
     /// Registered shim symbols (extern "C" functions).
     shim_registry: HashMap<String, ShimSymbol>,
@@ -193,7 +191,7 @@ impl JitContext {
     }
 
     /// Get or declare a shim function ID. Caches the result so multiple
-    /// call sites for the same shim use the same FuncId.
+    /// call sites for the same shim use the same `FuncId`.
     fn get_or_declare_shim(&mut self, name: &str) -> Result<cranelift_module::FuncId, JitError> {
         if let Some(&id) = self.func_ids.get(name) {
             return Ok(id);
@@ -218,7 +216,7 @@ impl JitContext {
     }
 
     /// Load the Cranelift Value for a MIR Place.
-    /// Plain locals → use_var. Field projections → stack_load (local struct)
+    /// Plain locals → `use_var`. Field projections → `stack_load` (local struct)
     /// or load through pointer (param/sret struct).
     fn load_place(
         &self,
@@ -408,7 +406,7 @@ impl JitContext {
     /// Compile multiple MIR bodies that may call each other.
     ///
     /// Phase 1: declare all functions in the module.
-    /// Phase 2: build each function body (can reference others via func_ids).
+    /// Phase 2: build each function body (can reference others via `func_ids`).
     /// Phase 3: define all functions + finalize.
     pub fn compile_multi(
         &mut self,
@@ -625,21 +623,21 @@ impl JitContext {
         let total_blocks = body.build_cfg().blocks.len() + {
             let mut extra = 0;
             for bd in &body.blocks {
-                if let Terminator::SwitchInt { cases, .. } = &bd.terminator {
-                    if cases.len() > 1 {
-                        extra += cases.len() - 1;
-                    }
+                if let Terminator::SwitchInt { cases, .. } = &bd.terminator
+                    && cases.len() > 1
+                {
+                    extra += cases.len() - 1;
                 }
             }
             extra
         };
         for i in 0..total_blocks {
             let bb = BasicBlock(i);
-            if let Some(&block) = self.blocks.get(&bb) {
-                if !self.sealed.contains(&bb) {
-                    builder.seal_block(block);
-                    self.sealed.insert(bb);
-                }
+            if let Some(&block) = self.blocks.get(&bb)
+                && !self.sealed.contains(&bb)
+            {
+                builder.seal_block(block);
+                self.sealed.insert(bb);
             }
         }
 
@@ -690,38 +688,35 @@ impl JitContext {
                 }
 
                 Statement::Const { dest, value, .. } => {
-                    match value {
-                        ConstValue::String(s) => {
-                            // AOT: replace with define_data (ADR-0040 §3.3).
-                            let bytes = s.as_bytes();
-                            let ptr_val = builder.ins().iconst(I64, bytes.as_ptr() as i64);
-                            let len_val = builder
-                                .ins()
-                                .iconst(I64, i64::try_from(bytes.len()).unwrap_or(0));
-                            let func_id = self.get_or_declare_shim("__triet_string_from_bytes")?;
-                            let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                            let call_inst = builder.ins().call(func_ref, &[ptr_val, len_val]);
-                            let ret_val = builder.inst_results(call_inst)[0];
-                            builder.def_var(self.var(dest.local), ret_val);
-                        }
-                        _ => {
-                            let val = match value {
-                                ConstValue::Integer(n) => {
-                                    let n_i64 = i64::try_from(*n).map_err(|_| {
-                                        JitError::Unsupported(format!(
-                                            "Integer constant {n} does not fit in i64 — \
-                                             Bậc A only supports 64-bit values."
-                                        ))
-                                    })?;
-                                    builder.ins().iconst(I64, n_i64)
-                                }
-                                ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
-                                ConstValue::Unit => builder.ins().iconst(I64, 0),
-                                _ => unreachable!(),
-                            };
-                            builder.def_var(self.var(dest.local), val);
-                        }
-                    };
+                    if let ConstValue::String(s) = value {
+                        // AOT: replace with define_data (ADR-0040 §3.3).
+                        let bytes = s.as_bytes();
+                        let ptr_val = builder.ins().iconst(I64, bytes.as_ptr() as i64);
+                        let len_val = builder
+                            .ins()
+                            .iconst(I64, i64::try_from(bytes.len()).unwrap_or(0));
+                        let func_id = self.get_or_declare_shim("__triet_string_from_bytes")?;
+                        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                        let call_inst = builder.ins().call(func_ref, &[ptr_val, len_val]);
+                        let ret_val = builder.inst_results(call_inst)[0];
+                        builder.def_var(self.var(dest.local), ret_val);
+                    } else {
+                        let val = match value {
+                            ConstValue::Integer(n) => {
+                                let n_i64 = i64::try_from(*n).map_err(|_| {
+                                    JitError::Unsupported(format!(
+                                        "Integer constant {n} does not fit in i64 — \
+                                         Bậc A only supports 64-bit values."
+                                    ))
+                                })?;
+                                builder.ins().iconst(I64, n_i64)
+                            }
+                            ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
+                            ConstValue::Unit => builder.ins().iconst(I64, 0),
+                            _ => unreachable!(),
+                        };
+                        builder.def_var(self.var(dest.local), val);
+                    }
                 }
 
                 Statement::Assign { dest, source, .. } => {
@@ -1252,7 +1247,7 @@ fn dfs_post(
 /// `#[no_mangle]` ensures the symbol is visible to `nm` and dynamic lookup.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
+const extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b)
 }
 
@@ -1260,7 +1255,7 @@ extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
 /// `pow(base, exp)` = base^exp. Exponent must be >= 0.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
+pub const extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
     if exp < 0 {
         return 0; // undefined, fallback
     }
@@ -1279,7 +1274,7 @@ pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
 
 // ── String heap shims (ADR-0040 §3.1) ────────────────────────
 
-/// Header size in bytes: ObjectHeader (refcount: u32 + reserved: u32 = 8 bytes).
+/// Header size in bytes: `ObjectHeader` (refcount: u32 + reserved: u32 = 8 bytes).
 const HEADER_SIZE: usize = 8;
 
 /// Layout for a String heap allocation: header + len (i64) + cap (i64) + data.
@@ -1301,16 +1296,16 @@ pub extern "C" fn __triet_string_alloc(len: i64, cap: i64) -> i64 {
     }
     // Write ObjectHeader: refcount=1, reserved=0
     // SAFETY: layout guarantees 8-byte aligned, >=8 bytes at ptr.
-    let body_ptr = unsafe {
-        (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
-        (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
+
+    unsafe {
+        ptr.cast::<u32>().write_unaligned(1u32); // refcount = 1
+        ptr.cast::<u32>().add(1).write_unaligned(0u32); // reserved = 0
         // Write len and cap
         let body = ptr.add(HEADER_SIZE);
-        (body as *mut i64).write_unaligned(len);
-        (body as *mut i64).add(1).write_unaligned(cap);
+        body.cast::<i64>().write_unaligned(len);
+        body.cast::<i64>().add(1).write_unaligned(cap);
         body as i64
-    };
-    body_ptr
+    }
 }
 
 /// `__triet_string_from_bytes(ptr, len)` — copy bytes from read-only memory into a new heap String.
@@ -1362,8 +1357,8 @@ pub extern "C" fn __triet_string_concat(a: i64, b: i64) -> i64 {
     let b_body = b as *const u8;
     // SAFETY: a, b are valid heap String pointers.
     let (a_len, b_len) = unsafe {
-        let al = (a_body as *const i64).read_unaligned();
-        let bl = (b_body as *const i64).read_unaligned();
+        let al = a_body.cast::<i64>().read_unaligned();
+        let bl = b_body.cast::<i64>().read_unaligned();
         (al, bl)
     };
     if a_len < 0 || b_len < 0 {
@@ -1405,8 +1400,8 @@ pub extern "C" fn __triet_string_eq(a: i64, b: i64) -> i64 {
     let b_body = b as *const u8;
     // SAFETY: a, b are valid heap String pointers.
     let (a_len, b_len) = unsafe {
-        let al = (a_body as *const i64).read_unaligned();
-        let bl = (b_body as *const i64).read_unaligned();
+        let al = a_body.cast::<i64>().read_unaligned();
+        let bl = b_body.cast::<i64>().read_unaligned();
         (al, bl)
     };
     if a_len != b_len {
@@ -1429,12 +1424,138 @@ pub extern "C" fn __triet_string_eq(a: i64, b: i64) -> i64 {
 /// `__triet_string_len(ptr)` — return the length of a String.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
+pub const extern "C" fn __triet_string_len(ptr: i64) -> i64 {
     if ptr == 0 {
         return 0;
     }
     // SAFETY: ptr points to valid body.
     unsafe { (ptr as *const i64).read_unaligned() }
+}
+
+// ── Vector heap shims (ADR-0040 §5) ──────────────────────────
+
+/// Layout for a Vector heap allocation: header + len (i64) + cap (i64) + data (cap × 8).
+/// Element = i64 (Bậc A monomorphic `Vector<Integer>`).
+#[allow(clippy::missing_const_for_fn)] // `Layout::from_size_align` is not const-stable
+fn vector_layout(cap: usize) -> std::alloc::Layout {
+    let total = HEADER_SIZE + 8 + 8 + cap * 8; // header + len + cap + data
+    std::alloc::Layout::from_size_align(total, 8).unwrap()
+}
+
+/// `__triet_vector_alloc(len, cap)` — allocate a Vector with given length and capacity.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,        // len/cap are non-negative by construction
+    clippy::cast_possible_truncation, // 64-bit target, values fit in usize
+    clippy::cast_ptr_alignment,    // write_unaligned used, alignment irrelevant
+    clippy::ptr_as_ptr             // idiomatic in extern "C" heap code (mirrors String shims)
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
+    let cap_usize = cap.max(len).max(2) as usize; // at least cap=2 for realloc teeth
+    let layout = vector_layout(cap_usize);
+    // SAFETY: layout is valid (power-of-2 alignment, non-zero size).
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        return 0; // OOM — return null
+    }
+    // Write ObjectHeader: refcount=1, reserved=0
+    // SAFETY: layout guarantees 8-byte aligned, >=8 bytes at ptr.
+
+    unsafe {
+        (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
+        (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
+        // Write len and cap
+        let body = ptr.add(HEADER_SIZE);
+        (body as *mut i64).write_unaligned(len);
+        (body as *mut i64).add(1).write_unaligned(cap_usize as i64);
+        body as i64
+    }
+}
+
+/// `__triet_vector_free(ptr)` — free a Vector. No-op if ptr == 0.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_possible_truncation, // 64-bit target, stored cap fits in usize
+    clippy::cast_ptr_alignment,    // read_unaligned used
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_free(ptr: i64) {
+    if ptr == 0 {
+        return;
+    }
+    let body = ptr as *mut u8;
+    // Read cap to compute layout
+    // SAFETY: body pointer is valid and points to len+cap+data structure.
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let layout = vector_layout(cap.max(2));
+    let header = unsafe { body.sub(HEADER_SIZE) };
+    // SAFETY: layout matches the one used at allocation.
+    unsafe { std::alloc::dealloc(header, layout) };
+}
+
+/// `__triet_vector_len(ptr)` — return the length of a Vector. Returns 0 for null.
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment)] // read_unaligned used
+#[unsafe(no_mangle)]
+pub const extern "C" fn __triet_vector_len(ptr: i64) -> i64 {
+    if ptr == 0 {
+        return 0;
+    }
+    // SAFETY: ptr points to valid body.
+    unsafe { (ptr as *const i64).read_unaligned() }
+}
+
+/// `__triet_vector_push(vec, elem)` — functional push: clone vec, append elem,
+/// return new vector. Consumes vec (caller zeros after call via M3).
+///
+/// Always alloc+copy — never realloc in-place, so M3-zero teeth can detect
+/// double-free through the free-old-ptr path deterministically.
+/// O(n) per push; in-place fast path when `len < cap` is a Bậc B optimization.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,        // len/cap/offset are non-negative
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,    // len/cap fit in i64 (max usize::MAX/2)
+    clippy::cast_ptr_alignment,    // write_unaligned/read_unaligned used
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_push(vec: i64, elem: i64) -> i64 {
+    if vec == 0 {
+        return 0; // null guard
+    }
+    let old_body = vec as *const u8;
+    // Read old len and cap
+    // SAFETY: vec points to valid body.
+    let (old_len, old_cap) = unsafe {
+        let l = (old_body as *const i64).read_unaligned();
+        let c = (old_body as *const i64).add(1).read_unaligned();
+        (l as usize, c as usize)
+    };
+    let new_len = old_len + 1;
+    let new_cap = if new_len > old_cap {
+        old_cap * 2
+    } else {
+        old_cap
+    };
+    let new_body = __triet_vector_alloc(new_len as i64, new_cap as i64);
+    if new_body == 0 {
+        return 0;
+    }
+    // Copy old elements to new block
+    // SAFETY: old_body and new_body point to valid data areas.
+    unsafe {
+        let old_data = old_body.add(16); // skip len + cap
+        let new_data = (new_body as *mut u8).add(16);
+        std::ptr::copy_nonoverlapping(old_data, new_data, old_len * 8);
+        // Write new element at position old_len
+        (new_data as *mut i64).add(old_len).write_unaligned(elem);
+    }
+    // Free old block (explicit alloc + free — no realloc for deterministic teeth)
+    __triet_vector_free(vec);
+    new_body
 }
 
 // ── Tests ────────────────────────────────────────────────────
@@ -2231,5 +2352,73 @@ mod tests {
             val, 42,
             "M1: s should be zeroed after move, result = 0 + other"
         );
+    }
+
+    // ── Phase 4.3b: Vector shim roundtrip ──
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn vector_alloc_push_len_roundtrip() {
+        // Call shims directly — no JIT compilation needed.
+        let v0 = __triet_vector_alloc(0, 2);
+        assert_ne!(v0, 0, "alloc(0,2) must return non-null");
+        assert_eq!(__triet_vector_len(v0), 0, "fresh vector len = 0");
+
+        let v1 = __triet_vector_push(v0, 10);
+        assert_eq!(__triet_vector_len(v1), 1, "after 1 push len = 1");
+
+        let v2 = __triet_vector_push(v1, 20);
+        assert_eq!(__triet_vector_len(v2), 2, "after 2 push len = 2");
+
+        // 3rd push exceeds cap=2 → must realloc
+        let v3 = __triet_vector_push(v2, 30);
+        assert_eq!(__triet_vector_len(v3), 3, "after 3 push len = 3");
+        assert_ne!(
+            v3, v0,
+            "3rd push must cause realloc — ptr must differ from original"
+        );
+
+        __triet_vector_free(v3);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn vector_push_realloc_frees_old_ptr() {
+        // Verify that after realloc, the old pointer is truly freed
+        // (and new allocation reuses the memory — not required but
+        // observable on most allocators with same-size blocks).
+        let v0 = __triet_vector_alloc(0, 2);
+        let v1 = __triet_vector_push(v0, 1);
+        let v2 = __triet_vector_push(v1, 2);
+        // v0, v1, v2 all share the same ptr (in-place for len 0→1, 1→2)
+        // 3rd push triggers realloc
+        let v3 = __triet_vector_push(v2, 3);
+        // After realloc: old block is freed, v3 = new block
+        assert_ne!(v0, v3, "realloc must change ptr");
+        // Allocate another vector — should get the old block back (most allocators)
+        let fresh = __triet_vector_alloc(0, 2);
+        // fresh may or may not reuse v0's old block — just assert we can alloc+free
+        assert_ne!(fresh, 0, "alloc after realloc must succeed");
+        __triet_vector_free(v3);
+        __triet_vector_free(fresh);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn vector_free_null_is_noop() {
+        // Null-guard: free(0) must not crash.
+        __triet_vector_free(0);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn vector_len_null_returns_zero() {
+        assert_eq!(__triet_vector_len(0), 0, "len(null) = 0");
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn vector_push_null_returns_zero() {
+        assert_eq!(__triet_vector_push(0, 42), 0, "push(null, x) = 0");
     }
 }

@@ -1,0 +1,13 @@
+// EXPECT: 3
+// Phase 4.3b: M2 let-bind of Move type emits Assign + new local.
+// let w = v3 copies the pointer (M2 Assign), zeros v3 (M1).
+// push(w, 99) appends to w's copy → 3 elements total (10, 20, 99).
+// len(x) = 3 proves w survived and was usable after v3 was zeroed.
+function main() -> Integer {
+    let v1 = vector_new();
+    let v2 = push(v1, 10);
+    let v3 = push(v2, 20);
+    let w = v3;
+    let x = push(w, 99);
+    return len(x);
+}

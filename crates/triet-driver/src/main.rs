@@ -133,6 +133,11 @@ fn main() -> ExitCode {
         ShimSymbol::fn_2_1("__triet_string_concat", mir_lower::__triet_string_concat),
         ShimSymbol::fn_2_1("__triet_string_eq", mir_lower::__triet_string_eq),
         ShimSymbol::fn_1_1("__triet_string_len", mir_lower::__triet_string_len),
+        // Vector shims (ADR-0040 §5)
+        ShimSymbol::fn_2_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
+        ShimSymbol::fn_1_0("__triet_vector_free", mir_lower::__triet_vector_free),
+        ShimSymbol::fn_1_1("__triet_vector_len", mir_lower::__triet_vector_len),
+        ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = match ctx.compile_multi(&body_refs) {
