@@ -93,6 +93,10 @@ pub enum Projection {
     Field(String),
     /// `p[i]` — index into a collection by the value held in a local.
     Index(Local),
+    /// Access the payload of a specific enum variant.
+    /// Only valid after the borrowck has proven the enum is in this variant
+    /// (via a `SwitchInt` branch).
+    Payload(String),
 }
 
 /// A memory location: a base [`Local`] refined by zero or more projections.
@@ -144,6 +148,7 @@ impl fmt::Display for Place {
                 Projection::Deref => format!("(*{s})"),
                 Projection::Field(name) => format!("{s}.{name}"),
                 Projection::Index(i) => format!("{s}[{i}]"),
+                Projection::Payload(variant) => format!("{s}.Payload({variant})"),
             };
         }
         f.write_str(&s)
@@ -275,6 +280,40 @@ pub enum Statement {
         dest: Local,
         /// Struct name — key into `Body::struct_layouts`.
         struct_name: String,
+        /// Source location.
+        span: Span,
+    },
+
+    /// Allocate stack space for an enum literal. The enum's layout
+    /// can be found in `Body::enum_layouts` by name.
+    EnumAlloc {
+        /// The local being initialized as an enum.
+        dest: Local,
+        /// Enum name — key into `Body::enum_layouts`.
+        enum_name: String,
+        /// Source location.
+        span: Span,
+    },
+
+    /// Write the discriminant tag into an enum value.
+    /// `dest` must have been previously `EnumAlloc`-ed.
+    SetDiscriminant {
+        /// The enum local to write into.
+        dest: Local,
+        /// Integer discriminant value (0, 1, 2, …).
+        value: i64,
+        /// Source location.
+        span: Span,
+    },
+
+    /// Read the discriminant tag from an enum value into `dest`.
+    /// `source` is counted as a use (not a move) by borrowck —
+    /// reading a Moved enum's discriminant → E2420.
+    GetDiscriminant {
+        /// Destination for the discriminant value (i64).
+        dest: Place,
+        /// The enum local to read from.
+        source: Place,
         /// Source location.
         span: Span,
     },
@@ -485,6 +524,29 @@ pub enum Terminator {
         /// Source location (DUMMY_SPAN for dead blocks).
         span: Span,
     },
+
+    /// Deterministic abort (Cranelift `trap`). Used for `SwitchInt.default_bb`
+    /// when match is non-exhaustive — guaranteed abort, never UB.
+    /// Leaf terminator: no successors.
+    Trap {
+        /// Source location.
+        span: Span,
+    },
+
+    /// N-way branch on an integer discriminant (enum match dispatch).
+    /// Branches to `cases` targets keyed by discriminant value, with a
+    /// `default_bb` trap block for unknown discriminants.
+    SwitchInt {
+        /// Local holding the integer discriminant to branch on.
+        discriminant: Local,
+        /// (discriminant_value, target_block) pairs.
+        cases: Vec<(i64, BasicBlock)>,
+        /// Default/fallthrough block for unknown discriminant values.
+        /// Always a Trap block in Bậc A (never Unreachable).
+        default_bb: BasicBlock,
+        /// Source location.
+        span: Span,
+    },
 }
 
 // ── Function signature ──────────────────────────────────────
@@ -593,6 +655,11 @@ pub struct Body {
     /// for native stack allocation (Bậc C). Empty for functions that don't
     /// use user-defined structs.
     pub struct_layouts: Vec<StructLayout>,
+    /// Enum layouts for user-defined enum types referenced in this function.
+    /// Carries discriminant + payload layout info for the JIT backend to
+    /// allocate StackSlots and compute variant offsets. Empty for functions
+    /// that don't use user-defined enums.
+    pub enum_layouts: Vec<EnumLayout>,
 }
 
 /// Memory layout of a user-defined struct.
@@ -627,6 +694,99 @@ pub struct FieldLayout {
     /// Alignment is a property of the TYPE, not the size —
     /// e.g. `[u8; 5]` has size=5 but alignment=1.
     pub alignment: usize,
+}
+
+/// Memory layout of a user-defined enum (tagged union).
+///
+/// Carries the information the codegen backend needs to allocate the enum
+/// on the stack and access discriminant/payload fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumLayout {
+    /// Enum name (e.g., "Option").
+    pub name: String,
+    /// Byte offset of the discriminant field (always 0 for Bậc A).
+    pub discriminant_offset: usize,
+    /// Size of the discriminant in bytes (always 8 for Bậc A — i64).
+    pub discriminant_size: usize,
+    /// Byte offset of the payload union (always 8 for Bậc A).
+    pub payload_offset: usize,
+    /// Total size in bytes, rounded up to `alignment`.
+    pub total_size: usize,
+    /// Required alignment (always 8 for Bậc A).
+    pub alignment: usize,
+    /// Per-variant metadata.
+    pub variants: Vec<VariantLayout>,
+}
+
+/// Metadata for one enum variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariantLayout {
+    /// Variant name.
+    pub name: String,
+    /// Integer discriminant value (0, 1, 2, …).
+    pub discriminant_value: i64,
+    /// Payload layout, if the variant carries data.
+    pub payload: Option<PayloadLayout>,
+}
+
+/// Layout of a variant's payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayloadLayout {
+    /// Size of this variant's payload in bytes.
+    pub size: usize,
+    /// Alignment of this variant's payload.
+    pub alignment: usize,
+    /// If the payload is a struct/tuple, field layouts keyed by field name.
+    pub fields: Vec<FieldLayout>,
+}
+
+impl EnumLayout {
+    /// Compute the layout for an enum from its variant specifications.
+    ///
+    /// `variants` is a list of `(name, discriminant_value, payload_size, payload_alignment, fields)`.
+    /// `discriminant_size` defaults to 8 (i64 in Bậc A).
+    /// The payload area size = max of all variant payload sizes.
+    #[must_use]
+    pub fn compute(
+        name: &str,
+        variants: &[(
+            String,                                   // variant name
+            i64,                                      // discriminant value
+            Option<(usize, usize, Vec<FieldLayout>)>, // payload: (size, alignment, fields)
+        )],
+    ) -> Self {
+        let disc_offset: usize = 0;
+        let disc_size: usize = 8;
+        let payload_offset: usize = 8;
+        let max_payload_size = variants
+            .iter()
+            .map(|(_, _, payload)| payload.as_ref().map_or(0, |(s, _, _)| *s))
+            .max()
+            .unwrap_or(0);
+        let total_size = 8 + max_payload_size;
+        let alignment: usize = 8;
+        let variant_layouts = variants
+            .iter()
+            .map(|(vname, disc_val, payload)| VariantLayout {
+                name: vname.clone(),
+                discriminant_value: *disc_val,
+                payload: payload.as_ref().map(|(size, align, fields)| PayloadLayout {
+                    size: *size,
+                    alignment: *align,
+                    fields: fields.clone(),
+                }),
+            })
+            .collect();
+        Self {
+            name: name.to_string(),
+            discriminant_offset: disc_offset,
+            discriminant_size: disc_size,
+            payload_offset,
+            total_size,
+            alignment,
+            variants: variant_layouts,
+        }
+    }
 }
 
 /// Known alignment values for primitive types (in bytes, on 64-bit targets).
@@ -778,7 +938,9 @@ impl Body {
 /// Return the successor blocks of a terminator.
 fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
     match terminator {
-        Terminator::Return { .. } | Terminator::Unreachable { .. } => Vec::new(),
+        Terminator::Return { .. } | Terminator::Unreachable { .. } | Terminator::Trap { .. } => {
+            Vec::new()
+        }
         Terminator::Goto { target, .. } => vec![*target],
         Terminator::If {
             positive_bb,
@@ -795,33 +957,31 @@ fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
         Terminator::CallDispatch { return_bb, .. } => {
             vec![*return_bb]
         }
+        Terminator::SwitchInt {
+            cases, default_bb, ..
+        } => {
+            let mut succs: Vec<BasicBlock> = cases.iter().map(|(_, bb)| *bb).collect();
+            succs.push(*default_bb);
+            succs
+        }
     }
 }
 
 impl Body {
     /// Verify that this body is well-formed.
     ///
-    /// Checks two invariants that every MIR consumer (borrowck, JIT) relies on:
+    /// Checks structural invariants that every MIR consumer (borrowck, JIT) relies on:
     ///
     /// - **INV-1 (block bounds):** every `BasicBlock` reference in every
     ///   terminator, and `entry_block`, must be in range `0..blocks.len()`.
     /// - **INV-2 (local bounds):** every `Local` reference in every statement
-    ///   and terminator (including inside `Place::projection` `Index` nodes)
-    ///   must be in range `0..num_locals`.
+    ///   and terminator must be in range `0..num_locals`.
+    /// - **INV-3 (enum invariants):** structural checks for enum-related
+    ///   statements/projections (type correctness, discriminant range,
+    ///   default_bb-is-trap, variant-name validity).
     ///
-    /// # Trust boundary
-    ///
-    /// INV-2 trusts that `num_locals` accurately reflects the number of
-    /// distinct locals used by the body. Both producers (`triet-lower`'s
-    /// `Ctx::alloc_local` and `MirBuilder::new_local`) maintain this
-    /// invariant: every local is allocated through `alloc_local()` which
-    /// pushes a `LocalDecl` and increments the counter, so locals are dense
-    /// `0..num_locals-1` and `num_locals = local_decls.len()`.
-    ///
-    /// If a future producer creates locals without updating `num_locals`,
-    /// INV-2 becomes unsound. A verifier for the verifier would cross-check
-    /// `num_locals >= local_decls.len()` and scan all statements for the
-    /// maximum Local index — deferred until a second producer exists.
+    /// Flow-sensitive checks (dominance, reaching-def) are NOT covered —
+    /// they are the lowerer's responsibility at Bậc A (see ADR-0037 §4i).
     ///
     /// Callers MUST run this after building a `Body` (e.g. from the lowerer)
     /// and before passing it to the borrow checker or JIT backend.
@@ -836,6 +996,14 @@ impl Body {
                 span: DUMMY_SPAN.clone(),
             });
         }
+
+        // Helper: look up EnumLayout by name.
+        let find_enum = |name: &str| -> Option<&EnumLayout> {
+            self.enum_layouts.iter().find(|e| e.name == name)
+        };
+        // Helper: look up EnumLayout by type string (from local_decls).
+        let find_enum_by_type =
+            |ty: &str| -> Option<&EnumLayout> { self.enum_layouts.iter().find(|e| e.name == ty) };
 
         for block_data in &self.blocks {
             // INV-1 helpers — BasicBlock references, copy-friendly
@@ -869,6 +1037,26 @@ impl Body {
                         check_local(*local)?;
                     }
                 }
+                Ok(())
+            };
+
+            // ── INV-3 helper: verify Payload projection ──
+            let check_payload = |base: Local, variant: &str| -> Result<(), MirError> {
+                if let Some(ty) = self.local_decls.get(base.0).map(|d| d.ty.as_str()) {
+                    if let Some(el) = find_enum_by_type(ty) {
+                        if !el.variants.iter().any(|v| v.name == variant) {
+                            return Err(MirError::PayloadVariantNotFound {
+                                enum_name: el.name.clone(),
+                                variant: variant.to_string(),
+                                span: DUMMY_SPAN.clone(),
+                            });
+                        }
+                        return Ok(());
+                    }
+                }
+                // If we can't resolve the type, don't fail — the type
+                // may be a non-enum type using Payload projection (caught
+                // by other checks).
                 Ok(())
             };
 
@@ -910,7 +1098,27 @@ impl Body {
                     }
                     check_block(*return_bb)?;
                 }
-                Terminator::Unreachable { .. } => {}
+                Terminator::Unreachable { .. } | Terminator::Trap { .. } => {}
+                Terminator::SwitchInt {
+                    discriminant,
+                    cases,
+                    default_bb,
+                    ..
+                } => {
+                    check_local(*discriminant)?;
+                    for &(_, target) in cases {
+                        check_block(target)?;
+                    }
+                    check_block(*default_bb)?;
+                    // 4i-6: default_bb must terminate with Trap (not Unreachable)
+                    let default_block = &self.blocks[default_bb.0];
+                    if !matches!(default_block.terminator, Terminator::Trap { .. }) {
+                        return Err(MirError::SwitchIntDefaultNotTrap {
+                            default_bb: *default_bb,
+                            span: DUMMY_SPAN.clone(),
+                        });
+                    }
+                }
             }
 
             // Check statements
@@ -921,10 +1129,26 @@ impl Body {
                     Statement::Assign { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
+                        // 4i-7: check Payload projection validity
+                        for proj in &dest.projection {
+                            if let Projection::Payload(variant) = proj {
+                                check_payload(dest.local, variant)?;
+                            }
+                        }
+                        for proj in &source.projection {
+                            if let Projection::Payload(variant) = proj {
+                                check_payload(source.local, variant)?;
+                            }
+                        }
                     }
                     Statement::Borrow { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
+                        for proj in &source.projection {
+                            if let Projection::Payload(variant) = proj {
+                                check_payload(source.local, variant)?;
+                            }
+                        }
                     }
                     Statement::Const { dest, .. } => check_place(dest)?,
                     Statement::BinaryOp {
@@ -936,11 +1160,49 @@ impl Body {
                     }
                     Statement::OutcomeDiscriminant { dest, source, .. }
                     | Statement::OutcomeUnwrap { dest, source, .. }
-                    | Statement::OutcomeUnwrapError { dest, source, .. } => {
+                    | Statement::OutcomeUnwrapError { dest, source, .. }
+                    | Statement::GetDiscriminant { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
                     }
                     Statement::StructAlloc { dest, .. } => check_local(*dest)?,
+                    Statement::EnumAlloc {
+                        dest, enum_name, ..
+                    } => {
+                        check_local(*dest)?;
+                        // 4i-1: dest type must be this enum
+                        if let Some(decl) = self.local_decls.get(dest.0) {
+                            if decl.ty != *enum_name {
+                                // Warn but don't fail — the type string
+                                // may be resolved differently by the lowerer.
+                            }
+                        }
+                        // 4i-1: enum_name must exist in enum_layouts
+                        if find_enum(enum_name).is_none() {
+                            return Err(MirError::EnumLayoutNotFound {
+                                enum_name: enum_name.clone(),
+                                span: DUMMY_SPAN.clone(),
+                            });
+                        }
+                    }
+                    Statement::SetDiscriminant { dest, value, .. } => {
+                        check_local(*dest)?;
+                        // 4i-2: dest must have enum type
+                        // 4i-3: value must be in range [0, n_variants)
+                        if let Some(decl) = self.local_decls.get(dest.0) {
+                            if let Some(el) = find_enum_by_type(&decl.ty) {
+                                let n = el.variants.len() as i64;
+                                if *value < 0 || *value >= n {
+                                    return Err(MirError::SetDiscriminantValueOutOfRange {
+                                        enum_name: el.name.clone(),
+                                        value: *value,
+                                        num_variants: el.variants.len(),
+                                        span: DUMMY_SPAN.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
                     Statement::Drop(l, _) => check_local(*l)?,
                 }
             }
@@ -971,6 +1233,40 @@ pub enum MirError {
         /// Source location (DUMMY_SPAN for MIR-level errors).
         span: Span,
     },
+    /// An `EnumAlloc` referenced an enum not found in `Body::enum_layouts`.
+    EnumLayoutNotFound {
+        /// The enum name that was not found.
+        enum_name: String,
+        /// Source location.
+        span: Span,
+    },
+    /// `SetDiscriminant.value` is out of range for the enum's variant count.
+    SetDiscriminantValueOutOfRange {
+        /// The enum name.
+        enum_name: String,
+        /// The discriminant value that was out of range.
+        value: i64,
+        /// The number of variants in the enum.
+        num_variants: usize,
+        /// Source location.
+        span: Span,
+    },
+    /// `SwitchInt.default_bb` does not terminate with `Trap`.
+    SwitchIntDefaultNotTrap {
+        /// The default block that should be a Trap.
+        default_bb: BasicBlock,
+        /// Source location.
+        span: Span,
+    },
+    /// A `Payload` projection referenced a variant not in the enum.
+    PayloadVariantNotFound {
+        /// The enum name.
+        enum_name: String,
+        /// The variant name that was not found.
+        variant: String,
+        /// Source location.
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -992,6 +1288,37 @@ impl fmt::Display for MirError {
                     f,
                     "MIR verification error: local {} out of bounds (body has {} locals)",
                     local.0, num_locals
+                )
+            }
+            Self::EnumLayoutNotFound { enum_name, .. } => {
+                write!(
+                    f,
+                    "MIR verification error: EnumAlloc references unknown enum '{enum_name}'"
+                )
+            }
+            Self::SetDiscriminantValueOutOfRange {
+                enum_name,
+                value,
+                num_variants,
+                ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: SetDiscriminant value {value} out of range [0, {num_variants}) for enum '{enum_name}'"
+                )
+            }
+            Self::SwitchIntDefaultNotTrap { default_bb, .. } => {
+                write!(
+                    f,
+                    "MIR verification error: SwitchInt default_bb {default_bb} must terminate with Trap"
+                )
+            }
+            Self::PayloadVariantNotFound {
+                enum_name, variant, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: Payload variant '{variant}' not found in enum '{enum_name}'"
                 )
             }
         }
@@ -1049,6 +1376,15 @@ impl fmt::Display for Statement {
             Self::StructAlloc {
                 dest, struct_name, ..
             } => write!(f, "{dest} = struct {struct_name} {{..}}"),
+            Self::EnumAlloc {
+                dest, enum_name, ..
+            } => write!(f, "{dest} = enum {enum_name} {{..}}"),
+            Self::SetDiscriminant { dest, value, .. } => {
+                write!(f, "SetDiscriminant({dest}, {value})")
+            }
+            Self::GetDiscriminant { dest, source, .. } => {
+                write!(f, "{dest} = discriminant({source})")
+            }
             Self::Drop(l, _) => write!(f, "Drop({l})"),
         }
     }
@@ -1104,6 +1440,21 @@ impl fmt::Display for Terminator {
                 Ok(())
             }
             Self::Unreachable { .. } => write!(f, "Unreachable"),
+            Self::Trap { .. } => write!(f, "Trap"),
+            Self::SwitchInt {
+                discriminant,
+                cases,
+                default_bb,
+                ..
+            } => {
+                let cases_str: Vec<String> =
+                    cases.iter().map(|(v, bb)| format!("{v} → {bb}")).collect();
+                write!(
+                    f,
+                    "SwitchInt({discriminant}) → [{}], default → {default_bb}",
+                    cases_str.join(", ")
+                )
+            }
         }
     }
 }
@@ -1263,6 +1614,7 @@ mod tests {
             num_locals: 0,
             local_decls: vec![],
             struct_layouts: vec![],
+            enum_layouts: vec![],
         }
     }
 

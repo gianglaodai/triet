@@ -147,6 +147,7 @@ impl MirBuilder {
             num_locals: self.next_local,
             local_decls,
             struct_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         }
     }
 }

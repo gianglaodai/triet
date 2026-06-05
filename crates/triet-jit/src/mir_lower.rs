@@ -22,8 +22,8 @@ use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use triet_mir::DUMMY_SPAN;
 use triet_mir::{
-    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, Local, Place, Projection,
-    Statement, StructLayout, Terminator,
+    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, EnumLayout, Local, Place,
+    Projection, Statement, StructLayout, Terminator,
 };
 
 // ── Errors ──────────────────────────────────────────────────
@@ -160,6 +160,9 @@ pub struct JitContext {
     /// Map from MIR Local to Cranelift StackSlot + struct layout.
     /// Struct locals use StackSlots; fields accessed via stack_load/store.
     struct_slots: HashMap<Local, (cranelift_codegen::ir::StackSlot, StructLayout)>,
+    /// Map from MIR Local to Cranelift StackSlot + enum layout.
+    /// Enum locals use StackSlots; discriminant/payload accessed via stack_load/store.
+    enum_slots: HashMap<Local, (cranelift_codegen::ir::StackSlot, EnumLayout)>,
     /// Map from MIR `BasicBlock` to Cranelift Block.
     blocks: HashMap<BasicBlock, cranelift_codegen::ir::Block>,
     /// Blocks that have been sealed.
@@ -196,42 +199,55 @@ impl JitContext {
                 "nested projections not supported".into(),
             ));
         }
-        if let Projection::Field(field_name) = &place.projection[0] {
-            let ty = &body.local_decls[place.local.0].ty;
-            let layout = body
-                .struct_layouts
-                .iter()
-                .find(|l| l.name == *ty)
-                .ok_or_else(|| {
-                    JitError::Unsupported(format!(
-                        "type '{ty}' is not a known struct (local {})",
-                        place.local
-                    ))
-                })?;
-            let field = layout
-                .fields
-                .iter()
-                .find(|f| f.name == *field_name)
-                .ok_or_else(|| {
-                    JitError::Unsupported(format!(
-                        "field '{field_name}' not found in struct '{ty}'"
-                    ))
-                })?;
-            let offset = i32::try_from(field.offset)
-                .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
-            if let Some((slot, _)) = self.struct_slots.get(&place.local) {
-                return Ok(builder.ins().stack_load(I64, *slot, offset));
+        match &place.projection[0] {
+            Projection::Field(field_name) => {
+                let ty = &body.local_decls[place.local.0].ty;
+                let layout = body
+                    .struct_layouts
+                    .iter()
+                    .find(|l| l.name == *ty)
+                    .ok_or_else(|| {
+                        JitError::Unsupported(format!(
+                            "type '{ty}' is not a known struct (local {})",
+                            place.local
+                        ))
+                    })?;
+                let field = layout
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *field_name)
+                    .ok_or_else(|| {
+                        JitError::Unsupported(format!(
+                            "field '{field_name}' not found in struct '{ty}'"
+                        ))
+                    })?;
+                let offset = i32::try_from(field.offset)
+                    .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
+                if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+                    return Ok(builder.ins().stack_load(I64, *slot, offset));
+                }
+                // Pointer-based: param or sret. Load pointer, add offset, load.
+                let ptr = builder.use_var(self.var(place.local));
+                let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
+                return Ok(builder.ins().load(
+                    I64,
+                    cranelift_codegen::ir::MemFlags::new(),
+                    addr,
+                    0,
+                ));
             }
-            // Pointer-based: param or sret. Load pointer, add offset, load.
-            let ptr = builder.use_var(self.var(place.local));
-            let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
-            return Ok(builder
-                .ins()
-                .load(I64, cranelift_codegen::ir::MemFlags::new(), addr, 0));
+            Projection::Payload(_) => {
+                let payload_offset: i32 = 8;
+                if let Some((slot, _)) = self.enum_slots.get(&place.local) {
+                    return Ok(builder.ins().stack_load(I64, *slot, payload_offset));
+                }
+                return Err(JitError::Unsupported(
+                    "Payload access on non-enum local".into(),
+                ));
+            }
+            _ => {}
         }
-        Err(JitError::Unsupported(
-            "non-Field projections not supported".into(),
-        ))
+        Err(JitError::Unsupported("unsupported projection".into()))
     }
 
     /// Store a Cranelift Value into a MIR Place.
@@ -251,44 +267,55 @@ impl JitContext {
                 "nested projections not supported".into(),
             ));
         }
-        if let Projection::Field(field_name) = &place.projection[0] {
-            let ty = &body.local_decls[place.local.0].ty;
-            let layout = body
-                .struct_layouts
-                .iter()
-                .find(|l| l.name == *ty)
-                .ok_or_else(|| {
-                    JitError::Unsupported(format!(
-                        "type '{ty}' is not a known struct (local {})",
-                        place.local
-                    ))
-                })?;
-            let field = layout
-                .fields
-                .iter()
-                .find(|f| f.name == *field_name)
-                .ok_or_else(|| {
-                    JitError::Unsupported(format!(
-                        "field '{field_name}' not found in struct '{ty}'"
-                    ))
-                })?;
-            let offset = i32::try_from(field.offset)
-                .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
-            if let Some((slot, _)) = self.struct_slots.get(&place.local) {
-                builder.ins().stack_store(value, *slot, offset);
+        match &place.projection[0] {
+            Projection::Field(field_name) => {
+                let ty = &body.local_decls[place.local.0].ty;
+                let layout = body
+                    .struct_layouts
+                    .iter()
+                    .find(|l| l.name == *ty)
+                    .ok_or_else(|| {
+                        JitError::Unsupported(format!(
+                            "type '{ty}' is not a known struct (local {})",
+                            place.local
+                        ))
+                    })?;
+                let field = layout
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *field_name)
+                    .ok_or_else(|| {
+                        JitError::Unsupported(format!(
+                            "field '{field_name}' not found in struct '{ty}'"
+                        ))
+                    })?;
+                let offset = i32::try_from(field.offset)
+                    .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
+                if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+                    builder.ins().stack_store(value, *slot, offset);
+                    return Ok(());
+                }
+                // Pointer-based: load pointer, add offset, store.
+                let ptr = builder.use_var(self.var(place.local));
+                let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
+                builder
+                    .ins()
+                    .store(cranelift_codegen::ir::MemFlags::new(), value, addr, 0);
                 return Ok(());
             }
-            // Pointer-based: load pointer, add offset, store.
-            let ptr = builder.use_var(self.var(place.local));
-            let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
-            builder
-                .ins()
-                .store(cranelift_codegen::ir::MemFlags::new(), value, addr, 0);
-            return Ok(());
+            Projection::Payload(_) => {
+                let payload_offset: i32 = 8;
+                if let Some((slot, _)) = self.enum_slots.get(&place.local) {
+                    builder.ins().stack_store(value, *slot, payload_offset);
+                    return Ok(());
+                }
+                return Err(JitError::Unsupported(
+                    "Payload store to non-enum local".into(),
+                ));
+            }
+            _ => {}
         }
-        Err(JitError::Unsupported(
-            "non-Field projections not supported".into(),
-        ))
+        Err(JitError::Unsupported("unsupported projection".into()))
     }
 
     /// Create a new JIT context with host ISA detection (no shims).
@@ -323,6 +350,7 @@ impl JitContext {
             module,
             locals: HashMap::new(),
             struct_slots: HashMap::new(),
+            enum_slots: HashMap::new(),
             blocks: HashMap::new(),
             sealed: HashSet::new(),
             filled: HashSet::new(),
@@ -442,11 +470,12 @@ impl JitContext {
         // ── Declare variables ──
         self.locals.clear();
         self.struct_slots.clear();
+        self.enum_slots.clear();
         for i in 0..body.num_locals {
             let var = builder.declare_var(I64);
             self.locals.insert(Local(i), var);
         }
-        // ── Create StackSlots for local structs ──
+        // ── Create StackSlots for local structs and enums ──
         for block in &body.blocks {
             for stmt in &block.statements {
                 if let Statement::StructAlloc {
@@ -468,6 +497,25 @@ impl JitContext {
                     ));
                     self.struct_slots.insert(*dest, (slot, layout.clone()));
                 }
+                if let Statement::EnumAlloc {
+                    dest, enum_name, ..
+                } = stmt
+                {
+                    let layout = body
+                        .enum_layouts
+                        .iter()
+                        .find(|l| l.name == *enum_name)
+                        .ok_or_else(|| {
+                            JitError::Unsupported(format!("enum layout not found: {enum_name}"))
+                        })?;
+                    let align_shift = layout.alignment.ilog2() as u8;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        layout.total_size as u32,
+                        align_shift,
+                    ));
+                    self.enum_slots.insert(*dest, (slot, layout.clone()));
+                }
             }
         }
 
@@ -478,11 +526,26 @@ impl JitContext {
 
         let entry_block = builder.create_block();
         self.blocks.insert(cfg.entry, entry_block);
+        let mut next_synthetic = cfg.blocks.len();
         for i in 0..cfg.blocks.len() {
             let bb = BasicBlock(i);
             if bb != cfg.entry {
                 let block = builder.create_block();
                 self.blocks.insert(bb, block);
+            }
+            // Pre-allocate cascade blocks for SwitchInt terminators.
+            // Each SwitchInt with N cases needs N-1 intermediate fallthrough blocks.
+            let block_data = &cfg.blocks[i].data;
+            if let Terminator::SwitchInt { cases, .. } = &block_data.terminator {
+                let n_cases = cases.len();
+                if n_cases > 1 {
+                    for _ in 0..(n_cases - 1) {
+                        let synth_bb = BasicBlock(next_synthetic);
+                        next_synthetic += 1;
+                        let block = builder.create_block();
+                        self.blocks.insert(synth_bb, block);
+                    }
+                }
             }
         }
 
@@ -523,13 +586,25 @@ impl JitContext {
             self.lower_block(builder, body, block)?;
         }
 
-        // Seal unsealed
-        for i in 0..cfg.blocks.len() {
+        // Seal unsealed (including synthetic blocks allocated for SwitchInt cascades)
+        let total_blocks = body.build_cfg().blocks.len() + {
+            let mut extra = 0;
+            for bd in &body.blocks {
+                if let Terminator::SwitchInt { cases, .. } = &bd.terminator {
+                    if cases.len() > 1 {
+                        extra += cases.len() - 1;
+                    }
+                }
+            }
+            extra
+        };
+        for i in 0..total_blocks {
             let bb = BasicBlock(i);
-            if !self.sealed.contains(&bb) {
-                let block = self.blocks[&bb];
-                builder.seal_block(block);
-                self.sealed.insert(bb);
+            if let Some(&block) = self.blocks.get(&bb) {
+                if !self.sealed.contains(&bb) {
+                    builder.seal_block(block);
+                    self.sealed.insert(bb);
+                }
             }
         }
 
@@ -666,6 +741,29 @@ impl JitContext {
 
                 Statement::Drop(_, _) => {
                     // No-op for scalars at runtime
+                }
+
+                Statement::EnumAlloc { .. } => {
+                    // No-op — StackSlot already created in build_body
+                }
+                Statement::SetDiscriminant { dest, value, .. } => {
+                    if let Some((slot, _)) = self.enum_slots.get(dest) {
+                        let disc_val = builder.ins().iconst(I64, *value);
+                        builder.ins().stack_store(disc_val, *slot, 0);
+                    }
+                }
+                Statement::GetDiscriminant { dest, source, .. } => {
+                    // If the source has an enum StackSlot, read discriminant from it.
+                    // Otherwise, the source IS the discriminant (Bậc A: enum params
+                    // and temporaries are passed as raw i64 discriminant values).
+                    let disc_val = if let Some((slot, _)) = self.enum_slots.get(&source.local) {
+                        builder.ins().stack_load(I64, *slot, 0)
+                    } else {
+                        // Plain local — the value itself IS the discriminant.
+                        builder.use_var(self.var(source.local))
+                    };
+                    let var = self.var(dest.local);
+                    builder.def_var(var, disc_val);
                 }
             }
 
@@ -857,7 +955,62 @@ impl JitContext {
             Terminator::Unreachable { .. } => {
                 builder
                     .ins()
-                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
+                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+            }
+
+            Terminator::Trap { .. } => {
+                builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+            }
+
+            Terminator::SwitchInt {
+                discriminant,
+                cases,
+                default_bb,
+                ..
+            } => {
+                let disc_val = builder.use_var(self.var(*discriminant));
+                let default_block = *self.blocks.get(default_bb).ok_or_else(|| {
+                    JitError::Unsupported("SwitchInt default_bb not found".into())
+                })?;
+
+                if cases.is_empty() {
+                    builder.ins().jump(default_block, &[]);
+                } else {
+                    // Synthesised block indices are allocated after the MIR
+                    // blocks during `build_body`. The first synthetic block
+                    // index = cfg.blocks.len().
+                    let synth_base = body.build_cfg().blocks.len();
+                    // Lower as a cascading if-chain using pre-allocated
+                    // synthetic blocks for fall-though. Each comparison
+                    // uses brif: match → target, no-match → fallthrough.
+                    for (i, (disc_val_expected, target_bb)) in cases.iter().enumerate() {
+                        let target = *self.blocks.get(target_bb).ok_or_else(|| {
+                            JitError::Unsupported("SwitchInt case target not found".into())
+                        })?;
+                        let expected = builder.ins().iconst(I64, *disc_val_expected);
+                        let is_eq = builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            disc_val,
+                            expected,
+                        );
+                        if i + 1 < cases.len() {
+                            let fallthrough_bb = BasicBlock(synth_base + i);
+                            let fallthrough =
+                                *self.blocks.get(&fallthrough_bb).ok_or_else(|| {
+                                    JitError::Unsupported(
+                                        "SwitchInt synthetic fallthrough block not found".into(),
+                                    )
+                                })?;
+                            builder.ins().brif(is_eq, target, &[], fallthrough, &[]);
+                            builder.switch_to_block(fallthrough);
+                        } else {
+                            // Last case: match → target, miss → default
+                            builder.ins().brif(is_eq, target, &[], default_block, &[]);
+                        }
+                    }
+                }
             }
         }
 

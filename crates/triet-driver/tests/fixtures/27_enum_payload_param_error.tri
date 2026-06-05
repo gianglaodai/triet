@@ -1,0 +1,13 @@
+// ERROR: Payload access on non-enum local
+enum OptionInt { SomeInt(Integer), NoneInt }
+
+function unwrap_or_default(opt: OptionInt, default_val: Integer) -> Integer =
+    match opt {
+        SomeInt(x) => x,
+        NoneInt => default_val,
+    }
+
+function main() -> Integer = {
+    let a = SomeInt(52);
+    return unwrap_or_default(a, 0);
+}

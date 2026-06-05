@@ -309,6 +309,7 @@ fn place_name(place: &Place, names: &LocalNames) -> String {
             Projection::Deref => format!("(*{s})"),
             Projection::Field(f) => format!("{s}.{f}"),
             Projection::Index(i) => format!("{s}[{i}]"),
+            Projection::Payload(v) => format!("{s}.Payload({v})"),
         };
     }
     s
@@ -586,6 +587,31 @@ fn process_block(
                 // to Owned. StructAlloc just declares stack layout.
             }
 
+            Statement::EnumAlloc { .. } => {
+                // No borrow-check impact — same reasoning as StructAlloc.
+                // StorageLive already owns the local; EnumAlloc just declares
+                // stack layout.
+            }
+
+            Statement::SetDiscriminant { .. } => {
+                // No borrow-check impact — unconditional write to metadata.
+                // Discriminant is not a user-accessible field and can't be
+                // borrowed separately.
+            }
+
+            Statement::GetDiscriminant { dest, source, span } => {
+                // Reading the discriminant is a USE of the enum (not a move).
+                // If the enum has been moved → E2420.
+                if state.var_states.get(&source.local) == Some(&VarState::Moved) {
+                    errors.push(BorrowError::UseAfterMove {
+                        local: source.local,
+                        name: place_name(source, names),
+                        span: span.clone(),
+                    });
+                }
+                state.var_states.insert(dest.local, VarState::Owned);
+            }
+
             Statement::Drop(l, span) => {
                 // Check for active loans on the dropped variable — dropping
                 // while borrows are still live would create dangling references.
@@ -715,7 +741,9 @@ fn terminator_span(term: &Terminator) -> Span {
         | Terminator::Goto { span, .. }
         | Terminator::If { span, .. }
         | Terminator::CallDispatch { span, .. }
-        | Terminator::Unreachable { span } => span.clone(),
+        | Terminator::Unreachable { span }
+        | Terminator::Trap { span }
+        | Terminator::SwitchInt { span, .. } => span.clone(),
     }
 }
 
@@ -726,7 +754,8 @@ fn terminator_reads(term: &Terminator) -> Vec<Local> {
         Terminator::Goto { .. } => Vec::new(),
         Terminator::If { cond, .. } => vec![*cond],
         Terminator::CallDispatch { args, .. } => args.clone(),
-        Terminator::Unreachable { .. } => Vec::new(),
+        Terminator::Unreachable { .. } | Terminator::Trap { .. } => Vec::new(),
+        Terminator::SwitchInt { discriminant, .. } => vec![*discriminant],
     }
 }
 

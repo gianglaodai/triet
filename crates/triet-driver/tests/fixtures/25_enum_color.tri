@@ -1,0 +1,14 @@
+// EXPECT: 1
+enum Color { Red, Green, Blue }
+
+function map_color(c: Color) -> Integer =
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+
+function main() -> Integer = {
+    let c = Red;
+    return map_color(c);
+}

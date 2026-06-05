@@ -15,8 +15,9 @@
 use std::collections::HashMap;
 
 use triet_mir::{
-    BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, FunctionSignature, Local,
-    LocalDecl, ParameterPassing, Place, Projection, Span, Statement, StructLayout, Terminator,
+    BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, EnumLayout, FieldLayout,
+    FunctionSignature, Local, LocalDecl, ParameterPassing, Place, Projection, Span, Statement,
+    StructLayout, Terminator,
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, FunctionBody, FunctionDef, Item, Program, Stmt, TypeExpr,
@@ -87,6 +88,12 @@ struct Ctx {
     struct_names: std::collections::HashSet<String>,
     /// Struct layouts keyed by name (cloned from lower_program's computation).
     struct_layouts: HashMap<String, StructLayout>,
+    /// Set of type names that are user-defined enums.
+    /// Used for enum type detection (e.g., enum copy lowering — future commit).
+    #[allow(dead_code)]
+    enum_names: std::collections::HashSet<String>,
+    /// Enum layouts keyed by name (cloned from lower_program's computation).
+    enum_layouts: HashMap<String, EnumLayout>,
     /// Map from function name to its return type name.
     func_return_types: HashMap<String, String>,
     /// If this function returns a struct, the local holding the sret pointer.
@@ -107,6 +114,8 @@ impl Ctx {
         ret: &str,
         struct_names: std::collections::HashSet<String>,
         struct_layouts: HashMap<String, StructLayout>,
+        enum_names: std::collections::HashSet<String>,
+        enum_layouts: HashMap<String, EnumLayout>,
         func_return_types: HashMap<String, String>,
     ) -> Self {
         let is_struct_return = struct_names.contains(ret);
@@ -134,6 +143,8 @@ impl Ctx {
             },
             struct_names,
             struct_layouts,
+            enum_names,
+            enum_layouts,
             func_return_types,
             sret_ptr: None,
             owned_locals: Vec::new(),
@@ -149,6 +160,11 @@ impl Ctx {
 
     fn is_struct_type(&self, name: &str) -> bool {
         self.struct_names.contains(name)
+    }
+
+    #[allow(dead_code)]
+    fn is_enum_type(&self, name: &str) -> bool {
+        self.enum_names.contains(name)
     }
 
     /// Allocate a fresh local with a declared type name.
@@ -243,6 +259,7 @@ impl Ctx {
             num_locals: self.local_decls.len(),
             local_decls: self.local_decls,
             struct_layouts: Vec::new(),
+            enum_layouts: self.enum_layouts.values().cloned().collect(),
         }
     }
 }
@@ -282,6 +299,43 @@ pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
         .map(|l| (l.name.clone(), l.clone()))
         .collect();
 
+    // ── Collect enum layouts from enum definitions ──────────────
+    // Bậc A: every payload is 8 bytes (i64), alignment 8.
+    // Unit variants have no payload (size 0).
+    let enum_layouts: Vec<EnumLayout> = prog
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Enum { def } = &item.node {
+                let variants: Vec<(String, i64, Option<(usize, usize, Vec<FieldLayout>)>)> = def
+                    .variants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let disc = i as i64;
+                        let payload = if v.payload.is_some() {
+                            // Bậc A: every type is 8-byte i64
+                            Some((8usize, 8usize, Vec::new()))
+                        } else {
+                            None
+                        };
+                        (v.name.clone(), disc, payload)
+                    })
+                    .collect();
+                Some(EnumLayout::compute(&def.name, &variants))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let enum_names: std::collections::HashSet<String> =
+        enum_layouts.iter().map(|l| l.name.clone()).collect();
+    let enum_map: HashMap<String, EnumLayout> = enum_layouts
+        .iter()
+        .map(|l| (l.name.clone(), l.clone()))
+        .collect();
+
     let func_return_types: HashMap<String, String> = prog
         .items
         .iter()
@@ -307,9 +361,12 @@ pub fn lower_program(prog: &Program) -> Result<Vec<Body>, LowerError> {
                 item.span.clone(),
                 struct_names.clone(),
                 struct_map.clone(),
+                enum_names.clone(),
+                enum_map.clone(),
                 func_return_types.clone(),
             )?;
             body.struct_layouts = struct_layouts.clone();
+            body.enum_layouts = enum_layouts.clone();
             bodies.push(body);
         }
     }
@@ -326,6 +383,8 @@ pub fn lower_function(
     _span: Span,
     struct_names: std::collections::HashSet<String>,
     struct_layouts: HashMap<String, StructLayout>,
+    enum_names: std::collections::HashSet<String>,
+    enum_layouts: HashMap<String, EnumLayout>,
     func_return_types: HashMap<String, String>,
 ) -> Result<Body, LowerError> {
     let ret_ty = func
@@ -338,6 +397,8 @@ pub fn lower_function(
         &ret_ty,
         struct_names,
         struct_layouts,
+        enum_names,
+        enum_layouts,
         func_return_types,
     );
     let entry = c.cur;
@@ -660,11 +721,35 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::Identifier { name } => {
-            let &local = c
-                .vars
-                .get(name)
-                .ok_or_else(|| LowerError::undefined_local(name, expr_span))?;
-            return Ok(local);
+            // Check if this is a local variable first.
+            if let Some(&local) = c.vars.get(name) {
+                return Ok(local);
+            }
+            // Check if it's an enum unit variant (e.g. `Red` for Color::Red).
+            let variant_info: Option<(String, i64)> =
+                c.enum_layouts.iter().find_map(|(enum_name, layout)| {
+                    layout
+                        .variants
+                        .iter()
+                        .find(|v| v.name == *name && v.payload.is_none())
+                        .map(|v| (enum_name.clone(), v.discriminant_value))
+                });
+            if let Some((enum_name, disc)) = variant_info {
+                let d = c.alloc_local_ty(&enum_name);
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                c.push(Statement::EnumAlloc {
+                    dest: d,
+                    enum_name,
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::SetDiscriminant {
+                    dest: d,
+                    value: disc,
+                    span: expr_span.clone(),
+                });
+                return Ok(d);
+            }
+            return Err(LowerError::undefined_local(name, expr_span));
         }
         Expr::BinaryOp {
             operator,
@@ -717,6 +802,110 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::Call { callee, arguments } => {
+            // Detect enum literal via direct variant call: `Variant(args)`.
+            // The type checker resolves these via lookup_enum_variant.
+            if let Expr::Identifier { name: variant_name } = &arena.expression(*callee).node {
+                let variant_info: Option<(String, i64, bool)> =
+                    c.enum_layouts.iter().find_map(|(enum_name, layout)| {
+                        layout
+                            .variants
+                            .iter()
+                            .find(|v| v.name == *variant_name)
+                            .map(|v| (enum_name.clone(), v.discriminant_value, v.payload.is_some()))
+                    });
+                if let Some((enum_name, disc, has_payload)) = variant_info {
+                    if has_payload {
+                        if arguments.len() != 1 {
+                            return Err(LowerError {
+                                message: format!(
+                                    "enum variant '{variant_name}' expects 1 argument, got {}",
+                                    arguments.len()
+                                ),
+                                span: expr_span.clone(),
+                            });
+                        }
+                        let d = c.alloc_local_ty(&enum_name);
+                        c.push(Statement::StorageLive(d, expr_span.clone()));
+                        c.push(Statement::EnumAlloc {
+                            dest: d,
+                            enum_name,
+                            span: expr_span.clone(),
+                        });
+                        c.push(Statement::SetDiscriminant {
+                            dest: d,
+                            value: disc,
+                            span: expr_span.clone(),
+                        });
+                        let val = lower_expr(arguments[0], arena, c)?;
+                        c.push(Statement::Assign {
+                            dest: Place::local(d)
+                                .project(Projection::Payload(variant_name.clone())),
+                            source: Place::local(val),
+                            span: expr_span.clone(),
+                        });
+                        return Ok(d);
+                    }
+                    // Unit variant with args — error.
+                    if !arguments.is_empty() {
+                        return Err(LowerError {
+                            message: format!(
+                                "unit variant '{variant_name}' does not take arguments"
+                            ),
+                            span: expr_span.clone(),
+                        });
+                    }
+                    // Fall through to normal function call — this shouldn't happen
+                    // since the type checker resolves unit variants separately.
+                }
+            }
+
+            // Detect enum literal: `TypeName.Variant(payload)` parses as
+            // Call(FieldAccess(Identifier(TypeName), Variant), [payload]).
+            if let Expr::FieldAccess { object, field } = &arena.expression(*callee).node {
+                if let Expr::Identifier { name: enum_name } = &arena.expression(*object).node {
+                    if c.is_enum_type(enum_name) && arguments.len() == 1 {
+                        // Lower as enum literal with payload.
+                        let d = c.alloc_local_ty(enum_name);
+                        c.push(Statement::StorageLive(d, expr_span.clone()));
+                        c.push(Statement::EnumAlloc {
+                            dest: d,
+                            enum_name: enum_name.clone(),
+                            span: expr_span.clone(),
+                        });
+                        let disc = {
+                            let layout =
+                                c.enum_layouts.get(enum_name).ok_or_else(|| LowerError {
+                                    message: format!("unknown enum '{enum_name}'"),
+                                    span: expr_span.clone(),
+                                })?;
+                            layout
+                                .variants
+                                .iter()
+                                .find(|v| v.name == *field)
+                                .map(|v| v.discriminant_value)
+                                .ok_or_else(|| LowerError {
+                                    message: format!(
+                                        "unknown variant '{field}' in enum '{enum_name}'"
+                                    ),
+                                    span: expr_span.clone(),
+                                })?
+                        };
+                        c.push(Statement::SetDiscriminant {
+                            dest: d,
+                            value: disc,
+                            span: expr_span.clone(),
+                        });
+                        let val = lower_expr(arguments[0], arena, c)?;
+                        c.push(Statement::Assign {
+                            dest: Place::local(d).project(Projection::Payload(field.clone())),
+                            source: Place::local(val),
+                            span: expr_span.clone(),
+                        });
+                        return Ok(d);
+                    }
+                }
+            }
+
             let callee_name = match &arena.expression(*callee).node {
                 Expr::Identifier { name } => name.clone(),
                 other => return Err(LowerError::unsupported_callee(other, expr_span)),
@@ -922,7 +1111,46 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(dest)
         }
         // `obj.field` as an rvalue: read through the projected place into a temp.
-        Expr::FieldAccess { .. } => {
+        // Also handles `Type.variant` enum literals — if the base is a known
+        // enum type, route to EnumLiteral lowering.
+        Expr::FieldAccess { object, field } => {
+            // Check if this is actually an enum literal (TypeName.variant).
+            let obj_expr = arena.expression(*object);
+            if let Expr::Identifier { name: base_name } = &obj_expr.node {
+                if c.is_enum_type(base_name) {
+                    // Lower as enum literal: TypeName.Variant
+                    let d = c.alloc_local_ty(base_name);
+                    c.push(Statement::StorageLive(d, expr_span.clone()));
+                    c.push(Statement::EnumAlloc {
+                        dest: d,
+                        enum_name: base_name.clone(),
+                        span: expr_span.clone(),
+                    });
+                    let disc = {
+                        let layout = c.enum_layouts.get(base_name).ok_or_else(|| LowerError {
+                            message: format!("unknown enum '{base_name}'"),
+                            span: expr_span.clone(),
+                        })?;
+                        layout
+                            .variants
+                            .iter()
+                            .find(|v| v.name == *field)
+                            .map(|v| v.discriminant_value)
+                            .ok_or_else(|| LowerError {
+                                message: format!("unknown variant '{field}' in enum '{base_name}'"),
+                                span: expr_span.clone(),
+                            })?
+                    };
+                    c.push(Statement::SetDiscriminant {
+                        dest: d,
+                        value: disc,
+                        span: expr_span.clone(),
+                    });
+                    // Unit variant — no payload to assign
+                    return Ok(d);
+                }
+            }
+
             let source = lower_place(expr_id, arena, c)?;
             let d = c.alloc_local();
             c.push(Statement::StorageLive(d, expr_span.clone()));
@@ -953,6 +1181,224 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 });
             }
             Ok(d)
+        }
+        Expr::EnumLiteral {
+            name,
+            variant_name,
+            payload,
+        } => {
+            let d = c.alloc_local_ty(name);
+            c.push(Statement::StorageLive(d, expr_span.clone()));
+            c.push(Statement::EnumAlloc {
+                dest: d,
+                enum_name: name.clone(),
+                span: expr_span.clone(),
+            });
+            // Look up the discriminant value for this variant.
+            // Clone the value out of the HashMap before mutating ctx.
+            let disc = {
+                let layout = c.enum_layouts.get(name).ok_or_else(|| LowerError {
+                    message: format!("unknown enum '{name}'"),
+                    span: expr_span.clone(),
+                })?;
+                layout
+                    .variants
+                    .iter()
+                    .find(|v| v.name == *variant_name)
+                    .map(|v| v.discriminant_value)
+                    .ok_or_else(|| LowerError {
+                        message: format!("unknown variant '{variant_name}' in enum '{name}'"),
+                        span: expr_span.clone(),
+                    })?
+            };
+            c.push(Statement::SetDiscriminant {
+                dest: d,
+                value: disc,
+                span: expr_span.clone(),
+            });
+            if let Some(payload_expr) = payload {
+                let val = lower_expr(*payload_expr, arena, c)?;
+                c.push(Statement::Assign {
+                    dest: Place::local(d).project(Projection::Payload(variant_name.clone())),
+                    source: Place::local(val),
+                    span: expr_span.clone(),
+                });
+            }
+            Ok(d)
+        }
+        Expr::Match { scrutinee, arms } => {
+            // Lower scrutinee into a temp.
+            let scrut_local = lower_expr(*scrutinee, arena, c)?;
+            let scrut_ty = c
+                .local_decls
+                .get(scrut_local.0)
+                .map(|d| d.ty.clone())
+                .unwrap_or_else(|| "?".to_string());
+
+            // Read discriminant.
+            let disc_local = c.alloc_local();
+            c.push(Statement::StorageLive(disc_local, expr_span.clone()));
+            c.push(Statement::GetDiscriminant {
+                dest: Place::local(disc_local),
+                source: Place::local(scrut_local),
+                span: expr_span.clone(),
+            });
+
+            // Build target blocks for each arm and the final merge.
+            let cur_bb = c.cur;
+            let merge_bb = c.alloc_bb();
+            let result = c.alloc_local();
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+
+            // Pre-compute variant→discriminant mapping so we don't hold
+            // an immutable borrow on c.enum_layouts across mutable calls.
+            let disc_map: HashMap<String, i64> = c
+                .enum_layouts
+                .get(&scrut_ty)
+                .map(|el| {
+                    el.variants
+                        .iter()
+                        .map(|v| (v.name.clone(), v.discriminant_value))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
+
+            // Pre-allocate arm blocks and emit body lowering for each.
+            for arm in arms.iter() {
+                let arm_bb = c.alloc_bb();
+                let pat = arena.pattern(arm.pattern);
+
+                match &pat.node {
+                    triet_syntax::Pattern::EnumVariant {
+                        name: _enum_name,
+                        variant_name,
+                        payload: sub_pattern,
+                    } => {
+                        let disc = disc_map.get(variant_name).ok_or_else(|| LowerError {
+                            message: format!(
+                                "unknown variant '{variant_name}' in enum '{scrut_ty}'"
+                            ),
+                            span: expr_span.clone(),
+                        })?;
+                        cases.push((*disc, arm_bb));
+
+                        c.cur = arm_bb;
+                        c.push_scope();
+
+                        // Bind payload variable if present.
+                        if let Some(sub_pat) = sub_pattern {
+                            let sub_pat = arena.pattern(*sub_pat);
+                            match &sub_pat.node {
+                                triet_syntax::Pattern::Variable(var_name) => {
+                                    let bind_local = c.alloc_local_ty("?");
+                                    c.push(Statement::StorageLive(bind_local, expr_span.clone()));
+                                    // Read payload into the binding.
+                                    c.push(Statement::Assign {
+                                        dest: Place::local(bind_local),
+                                        source: Place::local(scrut_local)
+                                            .project(Projection::Payload(variant_name.clone())),
+                                        span: expr_span.clone(),
+                                    });
+                                    c.vars.insert(var_name.clone(), bind_local);
+                                    c.push_owned(bind_local);
+                                }
+                                triet_syntax::Pattern::Wildcard => {
+                                    // _ — do nothing, no binding
+                                }
+                                other => {
+                                    return Err(LowerError {
+                                        message: format!(
+                                            "unsupported match sub-pattern: {other:?}"
+                                        ),
+                                        span: expr_span.clone(),
+                                    });
+                                }
+                            }
+                        }
+
+                        // Lower arm body.
+                        let body_val = lower_expr(arm.body, arena, c)?;
+                        let arm_end = c.cur;
+                        c.push(Statement::Assign {
+                            dest: Place::local(result),
+                            source: Place::local(body_val),
+                            span: expr_span.clone(),
+                        });
+                        c.term(
+                            arm_end,
+                            Terminator::Goto {
+                                target: merge_bb,
+                                span: DUMMY_SPAN,
+                            },
+                        );
+                        c.pop_scope();
+                    }
+                    triet_syntax::Pattern::Variable(var_name) => {
+                        // May be a unit variant of the enum — check disc_map.
+                        if let Some(disc) = disc_map.get(var_name) {
+                            cases.push((*disc, arm_bb));
+                            c.cur = arm_bb;
+                            c.push_scope();
+                            // No payload to bind — unit variant.
+                            let body_val = lower_expr(arm.body, arena, c)?;
+                            let arm_end = c.cur;
+                            c.push(Statement::Assign {
+                                dest: Place::local(result),
+                                source: Place::local(body_val),
+                                span: expr_span.clone(),
+                            });
+                            c.term(
+                                arm_end,
+                                Terminator::Goto {
+                                    target: merge_bb,
+                                    span: DUMMY_SPAN,
+                                },
+                            );
+                            c.pop_scope();
+                        } else {
+                            return Err(LowerError {
+                                message: format!(
+                                    "unsupported match pattern (expected enum variant, got variable '{var_name}' not in enum '{scrut_ty}')"
+                                ),
+                                span: expr_span.clone(),
+                            });
+                        }
+                    }
+                    other => {
+                        return Err(LowerError {
+                            message: format!(
+                                "unsupported match pattern (expected enum variant): {other:?}"
+                            ),
+                            span: expr_span.clone(),
+                        });
+                    }
+                }
+            }
+
+            // Create trap block for unknown discriminants.
+            let trap_bb = c.alloc_bb();
+            c.cur = trap_bb;
+            c.term(
+                trap_bb,
+                Terminator::Trap {
+                    span: expr_span.clone(),
+                },
+            );
+
+            // Emit SwitchInt terminator.
+            c.term(
+                cur_bb,
+                Terminator::SwitchInt {
+                    discriminant: disc_local,
+                    cases,
+                    default_bb: trap_bb,
+                    span: expr_span.clone(),
+                },
+            );
+
+            c.cur = merge_bb;
+            Ok(result)
         }
         other => Err(LowerError::unsupported_expr(other, expr_span)),
     }
@@ -1022,6 +1468,8 @@ mod tests {
             &func.0,
             &prog.arena,
             func.1,
+            std::collections::HashSet::new(),
+            HashMap::new(),
             std::collections::HashSet::new(),
             HashMap::new(),
             HashMap::new(),

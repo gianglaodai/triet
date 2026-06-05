@@ -189,6 +189,9 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::OutcomeUnwrapError { source, .. } => vec![source.local],
         Statement::Drop(l, _) => vec![*l],
         Statement::StructAlloc { .. } => Vec::new(),
+        Statement::EnumAlloc { .. } => Vec::new(),
+        Statement::SetDiscriminant { .. } => Vec::new(),
+        Statement::GetDiscriminant { source, .. } => vec![source.local],
     }
 }
 
@@ -202,9 +205,12 @@ fn statement_writes(stmt: &Statement) -> Vec<Local> {
         | Statement::BinaryOp { dest, .. }
         | Statement::OutcomeDiscriminant { dest, .. }
         | Statement::OutcomeUnwrap { dest, .. }
-        | Statement::OutcomeUnwrapError { dest, .. } => vec![dest.local],
+        | Statement::OutcomeUnwrapError { dest, .. }
+        | Statement::GetDiscriminant { dest, .. } => vec![dest.local],
         Statement::Drop(_, _) => Vec::new(),
         Statement::StructAlloc { dest, .. } => vec![*dest],
+        Statement::EnumAlloc { dest, .. } => vec![*dest],
+        Statement::SetDiscriminant { .. } => Vec::new(),
     }
 }
 
@@ -215,7 +221,8 @@ fn terminator_reads(term: &Terminator) -> Vec<Local> {
         Terminator::Goto { .. } => Vec::new(),
         Terminator::If { cond, .. } => vec![*cond],
         Terminator::CallDispatch { args, .. } => args.clone(),
-        Terminator::Unreachable { .. } => Vec::new(),
+        Terminator::Unreachable { .. } | Terminator::Trap { .. } => Vec::new(),
+        Terminator::SwitchInt { discriminant, .. } => vec![*discriminant],
     }
 }
 
