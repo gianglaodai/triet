@@ -11,12 +11,19 @@ pub struct TypeEnvironment {
     /// The frame stack. Accessible to the checker for enum-variant
     /// scanning; prefer `lookup()` / `declare()` for normal use.
     pub(crate) frames: Vec<Frame>,
+    /// Overloaded function signatures per frame. Used when a single name
+    /// (e.g. `len`) has multiple type signatures depending on argument
+    /// types. Each frame holds a map from name → candidate types.
+    /// Lookups here are separate from `names` — a name can be in one,
+    /// both, or neither.
+    pub(crate) overloads: Vec<HashMap<String, Vec<Type>>>,
 }
 
 impl Default for TypeEnvironment {
     fn default() -> Self {
         Self {
             frames: vec![Frame::default()],
+            overloads: vec![HashMap::new()],
         }
     }
 }
@@ -49,6 +56,7 @@ impl TypeEnvironment {
     /// Push a new (empty) frame onto the stack.
     pub fn push_frame(&mut self) {
         self.frames.push(Frame::default());
+        self.overloads.push(HashMap::new());
     }
 
     /// Pop the top frame. Panics if only the root frame remains.
@@ -58,6 +66,7 @@ impl TypeEnvironment {
             "cannot pop the root environment frame",
         );
         self.frames.pop();
+        self.overloads.pop();
     }
 
     /// Bind `name` to `ty` in the current top frame as immutable. Returns
@@ -92,6 +101,31 @@ impl TypeEnvironment {
         }
         None
     }
+
+    /// Register an overloaded function signature for `name` in the
+    /// current top frame. If the name already has overloads in this
+    /// frame, the new type is appended.
+    pub fn declare_overload(&mut self, name: &str, ty: Type) {
+        let top = self
+            .overloads
+            .last_mut()
+            .expect("at least one overload frame");
+        top.entry(name.to_owned()).or_default().push(ty);
+    }
+
+    /// Look up all overloaded function signatures for `name`, walking
+    /// frames from innermost out. Returns owned `Type` values to avoid
+    /// borrowing `self` across a mutable call in `check_call`.
+    /// Returns `None` if no overloads exist for this name.
+    #[must_use]
+    pub fn lookup_all(&self, name: &str) -> Option<Vec<Type>> {
+        for frame in self.overloads.iter().rev() {
+            if let Some(types) = frame.get(name) {
+                return Some(types.clone());
+            }
+        }
+        None
+    }
 }
 
 /// Populate the root frame with built-in functions used by the v0.1
@@ -99,9 +133,10 @@ impl TypeEnvironment {
 /// is intentionally minimal — extending it lives alongside library
 /// growth, not the type-checker core.
 fn bind_prelude(env: &mut TypeEnvironment) {
-    use Type::{Integer, Long, String, Tryte, Unit};
+    use Type::{Integer, Long, String, Tryte, Unit, Vector};
     // Trilean is now a struct variant — use the const helpers (ADR-0021).
     let trilean = Type::TRILEAN;
+    let vector_integer = Vector(Box::new(Integer.clone()));
 
     env.declare(
         "print",
@@ -172,6 +207,47 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         Type::Function {
             type_params: Vec::new(),
             parameters: vec![String.clone()],
+            return_type: Box::new(Integer),
+        },
+    );
+
+    // ── Phase 4.3b: Vector builtins (ADR-0040 §3.1) ──
+
+    // `vector_new() -> Vector<Integer>` — heap-allocate an empty vector.
+    env.declare(
+        "vector_new",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: Vec::new(),
+            return_type: Box::new(vector_integer.clone()),
+        },
+    );
+
+    // `push(Vector<Integer>, Integer) -> Vector<Integer>` — consume vec, append elem.
+    env.declare(
+        "push",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![vector_integer.clone(), Integer.clone()],
+            return_type: Box::new(vector_integer.clone()),
+        },
+    );
+
+    // `len` is overloaded: works on String and Vector<Integer>.
+    // Registered via overloads so check_call can try each candidate.
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![String.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![vector_integer],
             return_type: Box::new(Integer),
         },
     );

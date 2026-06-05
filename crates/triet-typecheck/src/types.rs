@@ -35,6 +35,9 @@ pub enum Type {
     },
     /// UTF-8 owned text.
     String,
+    /// Heap-allocated growable array. The element type is monomorphic
+    /// in Bậc A (always `Integer`); generic `Vector<T>` is Bậc B/C.
+    Vector(Box<Self>),
     /// `()` zero-sized value.
     Unit,
     /// Nullable wrapper `T?`.
@@ -222,6 +225,14 @@ impl Type {
         if matches!(self, Self::Integer) && matches!(other, Self::Trilean { refined: true }) {
             return true;
         }
+        // Vector structural match: Vector<X> matches Vector<Y> if X matches Y.
+        // TypeParam in element position is a wildcard — generic `Vector<T>`
+        // must match concrete `Vector<Integer>` during stdlib stub validation.
+        if let (Self::Vector(a), Self::Vector(b)) = (self, other) {
+            return matches!(a.as_ref(), Self::TypeParam(_))
+                || matches!(b.as_ref(), Self::TypeParam(_))
+                || a.matches(b);
+        }
         // Same-name user types match even with different type params
         // (e.g., `Option<T>` vs `Option<Integer>`). Structural
         // comparison of variants/fields catches actual mismatches.
@@ -245,6 +256,7 @@ impl Type {
             | Self::Trilean { .. }
             | Self::Unit
             | Self::String => true,
+            Self::Vector(inner) => inner.is_send(),
             Self::Tuple(elements) => elements.iter().all(Self::is_send),
             Self::Nullable(inner) => inner.is_send(),
             Self::Outcome {
@@ -396,6 +408,7 @@ impl Type {
             },
             Self::Reference(form, inner) => Self::Reference(*form, Box::new(inner.substitute(map))),
             Self::Atomic(inner) => Self::Atomic(Box::new(inner.substitute(map))),
+            Self::Vector(inner) => Self::Vector(Box::new(inner.substitute(map))),
             // Primitives and Unknown are unchanged.
             other => other.clone(),
         }
@@ -412,6 +425,7 @@ impl fmt::Display for Type {
             Self::Trilean { refined: true } => formatter.write_str("Trilean!"),
             Self::Trilean { refined: false } => formatter.write_str("Trilean"),
             Self::String => formatter.write_str("String"),
+            Self::Vector(inner) => write!(formatter, "Vector<{inner}>"),
             Self::Unit => formatter.write_str("Unit"),
             Self::Nullable(inner) => {
                 if matches!(inner.as_ref(), Self::Unknown) {

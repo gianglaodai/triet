@@ -39,6 +39,23 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// A function name has overloaded signatures but none match the
+    /// given argument types.
+    #[error("no overload of `{name}` matches the given argument types")]
+    #[diagnostic(
+        code(triet::typecheck::E1041),
+        help("available overloads: {candidates}")
+    )]
+    NoMatchingOverload {
+        /// The function name.
+        name: String,
+        /// Human-readable list of candidate signatures.
+        candidates: String,
+        /// Source location.
+        #[label("no matching overload")]
+        span: Span,
+    },
+
     /// A bare enum variant name (e.g. `None`) matches variants in
     /// multiple enum types. The user must fully qualify with `Enum.Variant`.
     #[error(
@@ -612,6 +629,7 @@ impl TypeError {
             Self::Borrow(err) => err.span(),
             Self::UnknownType { span, .. }
             | Self::UndefinedName { span, .. }
+            | Self::NoMatchingOverload { span, .. }
             | Self::Mismatch { span, .. }
             | Self::InvalidOperands { span, .. }
             | Self::InvalidUnary { span, .. }

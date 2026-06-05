@@ -1380,4 +1380,71 @@ mod tests {
             "
         ));
     }
+
+    // ── Phase 4.3b: Vector builtin overload resolution ──
+
+    #[test]
+    fn overload_len_string_selects_correct_signature() {
+        // `len("hi")` → String overload → returns Integer.
+        let source = r#"function main() -> Integer { return len("hi") }"#;
+        let errors = check_source(source);
+        assert!(
+            errors.is_empty(),
+            "len(String) should typecheck: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn overload_len_vector_selects_correct_signature() {
+        // `len(vector_new())` → Vector overload → returns Integer.
+        let source = r#"function main() -> Integer { let v = vector_new(); return len(v) }"#;
+        let errors = check_source(source);
+        assert!(
+            errors.is_empty(),
+            "len(Vector) should typecheck: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn overload_len_integer_rejected() {
+        // `len(42)` → no matching overload → E1041.
+        let source = r#"function main() -> Integer { return len(42) }"#;
+        assert_has_error(
+            source,
+            |e| matches!(e, TypeError::NoMatchingOverload { name, .. } if name == "len"),
+        );
+    }
+
+    #[test]
+    fn generic_body_type_mismatch_must_not_be_silenced_by_typeparam_wildcard() {
+        // Regression B2: TypeParam must NOT be a universal wildcard in matches().
+        // Returning `x: T` where `Integer` is expected must fire E1003 Mismatch.
+        // If this fails, the TypeParam wildcard is leaking beyond the Vector arm.
+        assert_has_error("function identity<T>(x: T) -> Integer { return x; }", |e| {
+            matches!(e, TypeError::Mismatch { .. })
+        });
+    }
+
+    #[test]
+    fn vector_annotation_matches_init_type() {
+        // `let v: Vector<Integer> = vector_new()` — annotation and init must agree.
+        let source =
+            r#"function main() -> Integer { let v: Vector<Integer> = vector_new(); return 0 }"#;
+        let errors = check_source(source);
+        assert!(
+            errors.is_empty(),
+            "Vector<Integer> annotation should match vector_new(): {errors:?}"
+        );
+    }
+
+    #[test]
+    fn push_vector_returns_same_type() {
+        // `push(v, 1)` where v: Vector<Integer> returns Vector<Integer>.
+        let source = r#"function main() -> Integer { let v = vector_new(); let v2 = push(v, 1); return len(v2) }"#;
+        let errors = check_source(source);
+        assert!(
+            errors.is_empty(),
+            "push should return Vector<Integer>: {errors:?}"
+        );
+    }
 }

@@ -320,14 +320,12 @@ fn resolve_type_expr_with_params(
         // to Unknown here — they're handled during full per-module
         // checking via the env-lookup path.
         TypeExpr::Generic { name, arguments } if name == "Vector" && arguments.len() == 1 => {
-            Type::UserStruct {
-                name: "Vector".into(),
-                type_params: Vec::new(),
-                fields: vec![(
-                    "__element".into(),
-                    resolve_type_expr_with_params(arena, arguments[0], type_params, name_table),
-                )],
-            }
+            Type::Vector(Box::new(resolve_type_expr_with_params(
+                arena,
+                arguments[0],
+                type_params,
+                name_table,
+            )))
         }
         TypeExpr::Generic { name, arguments } if name == "HashMap" && arguments.len() == 2 => {
             Type::UserStruct {

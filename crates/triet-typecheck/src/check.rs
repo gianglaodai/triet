@@ -852,22 +852,20 @@ impl<'p> Checker<'p> {
                     variants,
                     ..
                 } = scrutinee
-                {
-                    if let Some(variant_idx) =
+                    && let Some(variant_idx) =
                         variants.iter().position(|(n, p)| n == &name && p.is_none())
-                    {
-                        self.pattern_resolutions.insert(
-                            id,
-                            crate::EnumVariantResolution {
-                                enum_name: enum_name.clone(),
-                                variant_name: name.clone(),
-                                discriminant: variant_idx as i64,
-                                has_payload: false,
-                            },
-                        );
-                        // Don't declare as a variable — it's a unit variant match.
-                        return;
-                    }
+                {
+                    self.pattern_resolutions.insert(
+                        id,
+                        crate::EnumVariantResolution {
+                            enum_name: enum_name.clone(),
+                            variant_name: name.clone(),
+                            discriminant: variant_idx as i64,
+                            has_payload: false,
+                        },
+                    );
+                    // Don't declare as a variable — it's a unit variant match.
+                    return;
                 }
                 self.env.declare(&name, scrutinee.clone());
             }
@@ -1013,11 +1011,7 @@ impl<'p> Checker<'p> {
                         return Type::Atomic(Box::new(inner));
                     }
                     ("Vector", 1) => {
-                        return Type::UserStruct {
-                            name: "Vector".into(),
-                            type_params: Vec::new(),
-                            fields: vec![("__element".into(), args.into_iter().next().unwrap())],
-                        };
+                        return Type::Vector(Box::new(args.into_iter().next().unwrap()));
                     }
                     ("HashMap", 2) => {
                         let mut iter = args.into_iter();

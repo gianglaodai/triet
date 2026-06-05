@@ -84,9 +84,17 @@ impl Checker<'_> {
                 // local bindings (params + lets); ignored for
                 // functions, types, imports (not movable values).
                 self.check_used(&name, &span);
-                // Try variable/function binding first, then enum variant.
+                // Try variable/function binding first, then overloads, then enum variant.
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     ty
+                } else if let Some(candidates) = self.env.lookup_all(&name) {
+                    // Return the first overload candidate. This is a
+                    // deliberate Bậc A choice — overloaded functions
+                    // (like `len`) are never used as values; the only
+                    // context that reaches here is an errant non-call
+                    // use. Actual overload resolution happens in
+                    // `check_call` where argument types are visible.
+                    candidates.into_iter().next().unwrap_or(Type::Unknown)
                 } else if let Some(resolution) = self.resolve_enum_variant(&name, &span) {
                     // Record the resolution so the lowerer doesn't
                     // need to re-scan enum layouts by string match.
@@ -141,25 +149,20 @@ impl Checker<'_> {
                     Expr::FieldAccess { object, field } => {
                         if let Expr::Identifier { name: enum_name } =
                             &self.arena.expression(*object).node
+                            && let Some(enum_ty) = self.env.lookup(enum_name).cloned()
+                            && let Type::UserEnum { variants, .. } = &enum_ty
+                            && let Some(variant_idx) = variants.iter().position(|(n, _)| n == field)
                         {
-                            if let Some(enum_ty) = self.env.lookup(enum_name).cloned() {
-                                if let Type::UserEnum { variants, .. } = &enum_ty {
-                                    if let Some(variant_idx) =
-                                        variants.iter().position(|(n, _)| n == field)
-                                    {
-                                        let (_, payload) = &variants[variant_idx];
-                                        self.expr_resolutions.insert(
-                                            id,
-                                            triet_syntax::EnumVariantResolution {
-                                                enum_name: enum_name.clone(),
-                                                variant_name: field.clone(),
-                                                discriminant: variant_idx as i64,
-                                                has_payload: payload.is_some(),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
+                            let (_, payload) = &variants[variant_idx];
+                            self.expr_resolutions.insert(
+                                id,
+                                triet_syntax::EnumVariantResolution {
+                                    enum_name: enum_name.clone(),
+                                    variant_name: field.clone(),
+                                    discriminant: variant_idx as i64,
+                                    has_payload: payload.is_some(),
+                                },
+                            );
                         }
                     }
                     _ => {}
@@ -174,23 +177,20 @@ impl Checker<'_> {
                 // Detect qualified enum variant construction:
                 // `OptionA.SomeInt(42)` parses as MethodCall.
                 if let Expr::Identifier { name: enum_name } = &self.arena.expression(receiver).node
-                {
-                    if let Some(Type::UserEnum { variants, .. }) =
+                    && let Some(Type::UserEnum { variants, .. }) =
                         self.env.lookup(enum_name).cloned()
-                    {
-                        if let Some(variant_idx) = variants.iter().position(|(n, _)| n == &method) {
-                            let (_, payload) = &variants[variant_idx];
-                            self.expr_resolutions.insert(
-                                id,
-                                triet_syntax::EnumVariantResolution {
-                                    enum_name: enum_name.clone(),
-                                    variant_name: method.clone(),
-                                    discriminant: variant_idx as i64,
-                                    has_payload: payload.is_some(),
-                                },
-                            );
-                        }
-                    }
+                    && let Some(variant_idx) = variants.iter().position(|(n, _)| n == &method)
+                {
+                    let (_, payload) = &variants[variant_idx];
+                    self.expr_resolutions.insert(
+                        id,
+                        triet_syntax::EnumVariantResolution {
+                            enum_name: enum_name.clone(),
+                            variant_name: method.clone(),
+                            discriminant: variant_idx as i64,
+                            has_payload: payload.is_some(),
+                        },
+                    );
                 }
                 self.check_method_call(receiver, &method, &arguments, span)
             }
@@ -658,6 +658,18 @@ impl Checker<'_> {
 
     #[allow(clippy::too_many_lines)]
     fn check_call(&mut self, callee: ExprId, arguments: &[ExprId], span: Span) -> Type {
+        // ── Overload resolution ──
+        // If the callee is a simple identifier that has overloaded
+        // signatures but NO regular binding, try each candidate and
+        // pick the first match. A regular binding (user-defined or
+        // prelude) takes precedence.
+        if let Expr::Identifier { name } = &self.arena.expression(callee).node
+            && self.env.lookup(name).is_none()
+            && let Some(candidates) = self.env.lookup_all(name)
+        {
+            return self.resolve_overload(name, &candidates, arguments, &span);
+        }
+
         let callee_ty = self.infer_expression(callee);
 
         // Try function call first.
@@ -745,45 +757,41 @@ impl Checker<'_> {
         // Try qualified enum variant construction: `CD.SomeInt(5)`.
         // The callee is a FieldAccess into an enum type for a payload
         // variant. The resolution was already recorded by infer_expression.
-        if let Expr::FieldAccess { object, field } = &self.arena.expression(callee).node {
-            if let Expr::Identifier { name: enum_name } = &self.arena.expression(*object).node {
-                if let Some(Type::UserEnum { variants, .. }) = self.env.lookup(enum_name).cloned() {
-                    if let Some((_variant_name, payload)) =
-                        variants.iter().find(|(n, _)| n == field)
-                    {
-                        // Check arity and payload type.
-                        match (arguments.len(), payload) {
-                            (1, Some(expected_ty)) => {
-                                let arg_ty = self.infer_expression(arguments[0]);
-                                if !expected_ty.matches(&arg_ty) {
-                                    self.errors.push(TypeError::Mismatch {
-                                        expected: (**expected_ty).clone(),
-                                        found: arg_ty,
-                                        span: self.arena.expression(arguments[0]).span.clone(),
-                                    });
-                                }
-                            }
-                            (0, None) => {} // unit variant — OK
-                            (n, Some(_)) => {
-                                self.errors.push(TypeError::WrongArity {
-                                    expected: 1,
-                                    found: n,
-                                    span: span.clone(),
-                                });
-                            }
-                            (n, None) if n > 0 => {
-                                self.errors.push(TypeError::WrongArity {
-                                    expected: 0,
-                                    found: n,
-                                    span: span.clone(),
-                                });
-                            }
-                            _ => {}
-                        }
-                        return self.env.lookup(enum_name).cloned().unwrap_or(Type::Unknown);
+        if let Expr::FieldAccess { object, field } = &self.arena.expression(callee).node
+            && let Expr::Identifier { name: enum_name } = &self.arena.expression(*object).node
+            && let Some(Type::UserEnum { variants, .. }) = self.env.lookup(enum_name).cloned()
+            && let Some((_variant_name, payload)) = variants.iter().find(|(n, _)| n == field)
+        {
+            // Check arity and payload type.
+            match (arguments.len(), payload) {
+                (1, Some(expected_ty)) => {
+                    let arg_ty = self.infer_expression(arguments[0]);
+                    if !expected_ty.matches(&arg_ty) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: (**expected_ty).clone(),
+                            found: arg_ty,
+                            span: self.arena.expression(arguments[0]).span.clone(),
+                        });
                     }
                 }
+                (0, None) => {} // unit variant — OK
+                (n, Some(_)) => {
+                    self.errors.push(TypeError::WrongArity {
+                        expected: 1,
+                        found: n,
+                        span: span.clone(),
+                    });
+                }
+                (n, None) if n > 0 => {
+                    self.errors.push(TypeError::WrongArity {
+                        expected: 0,
+                        found: n,
+                        span: span.clone(),
+                    });
+                }
+                _ => {}
             }
+            return self.env.lookup(enum_name).cloned().unwrap_or(Type::Unknown);
         }
 
         // Try enum variant construction: `Some(5)`, `None`.
@@ -855,6 +863,60 @@ impl Checker<'_> {
         Type::Unknown
     }
 
+    /// Try each overloaded function signature for `name` against the
+    /// given arguments. Returns the return type of the first candidate
+    /// whose parameter types all match. Emits `UndefinedName` if no
+    /// candidate matches (the name exists in overloads but no signature
+    /// fits the argument types).
+    fn resolve_overload(
+        &mut self,
+        name: &str,
+        candidates: &[Type],
+        arguments: &[ExprId],
+        span: &Span,
+    ) -> Type {
+        // Infer argument types once.
+        let arg_tys: Vec<Type> = arguments
+            .iter()
+            .map(|a| self.infer_expression(*a))
+            .collect();
+
+        for candidate in candidates {
+            if let Type::Function {
+                type_params,
+                parameters,
+                return_type,
+            } = candidate
+            {
+                if !type_params.is_empty() {
+                    continue; // skip generic overloads in Bậc A
+                }
+                if arguments.len() != parameters.len() {
+                    continue;
+                }
+                let all_match = parameters
+                    .iter()
+                    .zip(&arg_tys)
+                    .all(|(expected, found)| expected.matches(found));
+                if all_match {
+                    return *return_type.clone();
+                }
+            }
+        }
+
+        // No matching overload — list candidates in the error message.
+        let candidate_list: Vec<String> = candidates
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        self.errors.push(TypeError::NoMatchingOverload {
+            name: name.to_owned(),
+            candidates: candidate_list.join(", "),
+            span: span.clone(),
+        });
+        Type::Unknown
+    }
+
     /// Scan the type environment for an enum variant with the given
     /// name. Returns the enum type that owns the variant.
     fn lookup_enum_variant(&self, name: &str) -> Option<Type> {
@@ -894,10 +956,9 @@ impl Checker<'_> {
                 variants,
                 ..
             } = &binding.ty
+                && variants.iter().any(|(n, _)| n == name)
             {
-                if variants.iter().any(|(n, _)| n == name) {
-                    matches.push((enum_name.as_str(), variants));
-                }
+                matches.push((enum_name.as_str(), variants));
             }
         }
         match matches.len() {
@@ -949,32 +1010,32 @@ impl Checker<'_> {
 
         // Qualified enum variant construction via method-call syntax:
         // `OptionA.SomeInt(42)` parses as MethodCall.
-        if let Type::UserEnum { variants, .. } = &receiver_ty {
-            if let Some((_variant_name, payload)) = variants.iter().find(|(n, _)| n == method) {
-                // Check arity and payload type.
-                match (arguments.len(), payload) {
-                    (1, Some(expected_ty)) => {
-                        let arg_ty = self.infer_expression(arguments[0]);
-                        if !expected_ty.matches(&arg_ty) {
-                            self.errors.push(TypeError::Mismatch {
-                                expected: (**expected_ty).clone(),
-                                found: arg_ty,
-                                span: self.arena.expression(arguments[0]).span.clone(),
-                            });
-                        }
-                    }
-                    (0, None) => {} // unit variant via method call — unusual but valid
-                    (n, Some(_)) => {
-                        self.errors.push(TypeError::WrongArity {
-                            expected: 1,
-                            found: n,
-                            span: span.clone(),
+        if let Type::UserEnum { variants, .. } = &receiver_ty
+            && let Some((_variant_name, payload)) = variants.iter().find(|(n, _)| n == method)
+        {
+            // Check arity and payload type.
+            match (arguments.len(), payload) {
+                (1, Some(expected_ty)) => {
+                    let arg_ty = self.infer_expression(arguments[0]);
+                    if !expected_ty.matches(&arg_ty) {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: (**expected_ty).clone(),
+                            found: arg_ty,
+                            span: self.arena.expression(arguments[0]).span.clone(),
                         });
                     }
-                    _ => {}
                 }
-                return receiver_ty.clone();
+                (0, None) => {} // unit variant via method call — unusual but valid
+                (n, Some(_)) => {
+                    self.errors.push(TypeError::WrongArity {
+                        expected: 1,
+                        found: n,
+                        span,
+                    });
+                }
+                _ => {}
             }
+            return receiver_ty.clone();
         }
 
         self.errors.push(TypeError::UnknownMember {

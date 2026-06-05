@@ -473,7 +473,7 @@ pub fn lower_function(
     for p in &func.params {
         let ty = type_name(arena, p.type_annotation);
         // B7: heap types cannot cross user-defined function boundaries.
-        if !simple_is_copy(&ty) {
+        if !simple_is_copy(&ty, &c.struct_names, &c.enum_names) {
             return Err(LowerError::heap_param_not_supported(
                 &p.name,
                 &ty,
@@ -542,8 +542,66 @@ fn type_name(arena: &Arena, id: TypeId) -> String {
 /// Simplified is_copy for use during lowering (before Body is built).
 /// Only handles primitive type names and known heap types — does NOT
 /// recurse into struct/enum layouts (those aren't built yet).
-fn simple_is_copy(ty: &str) -> bool {
-    !matches!(ty, "String" | "Vector" | "HashMap")
+///
+/// Must match the canonical [`triet_mir::is_copy`] semantics:
+/// - Known stack primitives → Copy (Integer, Trit, Tryte, Long, Trilean,
+///   Unit, "?").
+/// - Known heap types → Move (String, Vector, HashMap). Vector uses a
+///   prefix match ("Vector<Integer>" etc.).
+/// - User-defined struct/enum types → Copy.
+///   SOUND ONLY WHILE B8 REFUSES CONSTRUCTION of aggregates with heap
+///   fields (B8 blocks StructLiteral/enum-payload construction, not
+///   declaration). When B8 is relaxed in Bậc B, this function must
+///   consult layout field types or be replaced by the canonical
+///   [`triet_mir::is_copy`] which recurses into layouts.
+/// - Unknown types → Move (refuse-over-guess, same as canonical).
+fn simple_is_copy(
+    ty: &str,
+    struct_names: &std::collections::HashSet<String>,
+    enum_names: &std::collections::HashSet<String>,
+) -> bool {
+    match ty {
+        // Stack primitives — Copy per SPEC §10.1.
+        "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
+        // Heap types — Move.
+        "String" | "HashMap" => false,
+        other if other.starts_with("Vector") => false,
+        other if struct_names.contains(other) => true,
+        other if enum_names.contains(other) => true,
+        // Unknown types default to Move (refuse-over-guess).
+        _ => false,
+    }
+}
+
+/// Emit a `CallDispatch` terminator targeting a builtin shim, allocate a
+/// return local of `dest_ty`, and advance `c.cur` to the return block.
+/// Returns the destination local holding the shim's return value.
+fn emit_shim_call(
+    c: &mut Ctx,
+    shim_name: &str,
+    args: Vec<Local>,
+    dest_ty: &str,
+    span: Span,
+) -> Local {
+    let dest = c.alloc_local_ty(dest_ty);
+    c.push(Statement::StorageLive(dest, span.clone()));
+    let ret_bb = c.alloc_bb();
+    let call_bb = c.cur;
+    c.term(
+        call_bb,
+        Terminator::CallDispatch {
+            callee: triet_mir::FunctionId(0),
+            callee_name: shim_name.into(),
+            target: CallTarget::Shim,
+            args,
+            return_bb: ret_bb,
+            dest: vec![dest],
+            return_shape: triet_mir::ReturnShape::Scalar,
+            span,
+        },
+    );
+    c.cur = ret_bb;
+    dest
 }
 
 // ── Block lowering ──────────────────────────────────────────
@@ -587,7 +645,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             let is_move_binding =
                 if let Expr::Identifier { name: _ } = &arena.expression(*init).node {
                     let ty = &c.local_decls[v.0].ty;
-                    !simple_is_copy(ty)
+                    !simple_is_copy(ty, &c.struct_names, &c.enum_names)
                 } else {
                     false
                 };
@@ -839,24 +897,24 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // the map and emits MIR. No string-scanning of enum_layouts.
             // Clone to release the immutable borrow before mutating ctx.
             let resolution = c.expr_resolutions.get(&expr_id).cloned();
-            if let Some(resolution) = resolution {
-                if !resolution.has_payload {
-                    let d = c.alloc_local_ty(&resolution.enum_name);
-                    c.push(Statement::StorageLive(d, expr_span.clone()));
-                    c.push(Statement::EnumAlloc {
-                        dest: d,
-                        enum_name: resolution.enum_name.clone(),
-                        span: expr_span.clone(),
-                    });
-                    c.push(Statement::SetDiscriminant {
-                        dest: d,
-                        value: resolution.discriminant,
-                        span: expr_span.clone(),
-                    });
-                    return Ok(d);
-                }
+            if let Some(resolution) = resolution
+                && !resolution.has_payload
+            {
+                let d = c.alloc_local_ty(&resolution.enum_name);
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                c.push(Statement::EnumAlloc {
+                    dest: d,
+                    enum_name: resolution.enum_name.clone(),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::SetDiscriminant {
+                    dest: d,
+                    value: resolution.discriminant,
+                    span: expr_span.clone(),
+                });
+                return Ok(d);
             }
-            return Err(LowerError::undefined_local(name, expr_span));
+            Err(LowerError::undefined_local(name, expr_span))
         }
         Expr::BinaryOp {
             operator,
@@ -941,7 +999,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let val = lower_expr(arguments[0], arena, c)?;
                     // B8: aggregate-containing-heap — enum payload with Move type not supported.
                     let payload_ty = &c.local_decls[val.0].ty;
-                    if !simple_is_copy(payload_ty) {
+                    if !simple_is_copy(payload_ty, &c.struct_names, &c.enum_names) {
                         return Err(LowerError::heap_type_not_supported(
                             &format!(
                                 "enum variant `{}.{}` payload type `{}`",
@@ -972,49 +1030,46 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             // Detect enum literal: `TypeName.Variant(payload)` parses as
             // Call(FieldAccess(Identifier(TypeName), Variant), [payload]).
-            if let Expr::FieldAccess { object, field } = &arena.expression(*callee).node {
-                if let Expr::Identifier { name: enum_name } = &arena.expression(*object).node {
-                    if c.is_enum_type(enum_name) && arguments.len() == 1 {
-                        // Lower as enum literal with payload.
-                        let d = c.alloc_local_ty(enum_name);
-                        c.push(Statement::StorageLive(d, expr_span.clone()));
-                        c.push(Statement::EnumAlloc {
-                            dest: d,
-                            enum_name: enum_name.clone(),
+            if let Expr::FieldAccess { object, field } = &arena.expression(*callee).node
+                && let Expr::Identifier { name: enum_name } = &arena.expression(*object).node
+                && c.is_enum_type(enum_name)
+                && arguments.len() == 1
+            {
+                // Lower as enum literal with payload.
+                let d = c.alloc_local_ty(enum_name);
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                c.push(Statement::EnumAlloc {
+                    dest: d,
+                    enum_name: enum_name.clone(),
+                    span: expr_span.clone(),
+                });
+                let disc = {
+                    let layout = c.enum_layouts.get(enum_name).ok_or_else(|| LowerError {
+                        message: format!("unknown enum '{enum_name}'"),
+                        span: expr_span.clone(),
+                    })?;
+                    layout
+                        .variants
+                        .iter()
+                        .find(|v| v.name == *field)
+                        .map(|v| v.discriminant_value)
+                        .ok_or_else(|| LowerError {
+                            message: format!("unknown variant '{field}' in enum '{enum_name}'"),
                             span: expr_span.clone(),
-                        });
-                        let disc = {
-                            let layout =
-                                c.enum_layouts.get(enum_name).ok_or_else(|| LowerError {
-                                    message: format!("unknown enum '{enum_name}'"),
-                                    span: expr_span.clone(),
-                                })?;
-                            layout
-                                .variants
-                                .iter()
-                                .find(|v| v.name == *field)
-                                .map(|v| v.discriminant_value)
-                                .ok_or_else(|| LowerError {
-                                    message: format!(
-                                        "unknown variant '{field}' in enum '{enum_name}'"
-                                    ),
-                                    span: expr_span.clone(),
-                                })?
-                        };
-                        c.push(Statement::SetDiscriminant {
-                            dest: d,
-                            value: disc,
-                            span: expr_span.clone(),
-                        });
-                        let val = lower_expr(arguments[0], arena, c)?;
-                        c.push(Statement::Assign {
-                            dest: Place::local(d).project(Projection::Payload(field.clone())),
-                            source: Place::local(val),
-                            span: expr_span.clone(),
-                        });
-                        return Ok(d);
-                    }
-                }
+                        })?
+                };
+                c.push(Statement::SetDiscriminant {
+                    dest: d,
+                    value: disc,
+                    span: expr_span.clone(),
+                });
+                let val = lower_expr(arguments[0], arena, c)?;
+                c.push(Statement::Assign {
+                    dest: Place::local(d).project(Projection::Payload(field.clone())),
+                    source: Place::local(val),
+                    span: expr_span.clone(),
+                });
+                return Ok(d);
             }
 
             let callee_name = match &arena.expression(*callee).node {
@@ -1022,37 +1077,97 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 other => return Err(LowerError::unsupported_callee(other, expr_span)),
             };
 
-            // ── Builtin string functions (ADR-0040 §3.1) ──
-            // Dispatch concat/len/eq directly to shims.
-            if let Some((shim_name, ret_ty)) = match callee_name.as_str() {
-                "concat" => Some(("__triet_string_concat", "String")),
-                "len" => Some(("__triet_string_len", "Integer")),
-                "eq" => Some(("__triet_string_eq", "Integer")),
-                _ => None,
-            } {
-                let args: Vec<Local> = arguments
-                    .iter()
-                    .map(|a| lower_expr(*a, arena, c))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let dest = c.alloc_local_ty(ret_ty);
-                c.push(Statement::StorageLive(dest, expr_span.clone()));
-                let ret_bb = c.alloc_bb();
-                let call_bb = c.cur;
-                c.term(
-                    call_bb,
-                    Terminator::CallDispatch {
-                        callee: triet_mir::FunctionId(0),
-                        callee_name: shim_name.into(),
-                        target: CallTarget::Shim,
-                        args,
-                        return_bb: ret_bb,
-                        dest: vec![dest],
-                        return_shape: triet_mir::ReturnShape::Scalar,
-                        span: expr_span,
-                    },
-                );
-                c.cur = ret_bb;
-                return Ok(dest);
+            // ── Builtin shim dispatch (ADR-0040 §3.1 + §5) ──
+            // String: concat, eq. String+Vector: len (type-aware).
+            // Vector: vector_new, push.
+            match callee_name.as_str() {
+                "concat" => {
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let dest =
+                        emit_shim_call(c, "__triet_string_concat", args, "String", expr_span);
+                    return Ok(dest);
+                }
+                "eq" => {
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let dest = emit_shim_call(c, "__triet_string_eq", args, "Integer", expr_span);
+                    return Ok(dest);
+                }
+                "len" => {
+                    // Type-aware dispatch: String → string_len, Vector → vector_len.
+                    // Refuse over guess for any other type.
+                    if arguments.len() != 1 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let arg = lower_expr(arguments[0], arena, c)?;
+                    let arg_ty = &c.local_decls[arg.0].ty;
+                    let shim_name = match arg_ty.as_str() {
+                        "String" => "__triet_string_len",
+                        ty if ty.starts_with("Vector") => "__triet_vector_len",
+                        other => {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!("len() on type `{other}` — expected String or Vector"),
+                                expr_span,
+                            ));
+                        }
+                    };
+                    let dest = emit_shim_call(c, shim_name, vec![arg], "Integer", expr_span);
+                    return Ok(dest);
+                }
+                "push" => {
+                    if arguments.len() != 2 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let vec_ty = c.local_decls[args[0].0].ty.clone();
+                    let dest = emit_shim_call(c, "__triet_vector_push", args, &vec_ty, expr_span);
+                    return Ok(dest);
+                }
+                "vector_new" => {
+                    if !arguments.is_empty() {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    // vector_new() → __triet_vector_alloc(0, 2)
+                    // cap=2 to ensure realloc exercises the free-old-ptr path.
+                    let len_local = c.alloc_local_ty("Integer");
+                    c.push(Statement::Const {
+                        dest: Place::local(len_local),
+                        value: ConstValue::Integer(0),
+                        span: DUMMY_SPAN,
+                    });
+                    let cap_local = c.alloc_local_ty("Integer");
+                    c.push(Statement::Const {
+                        dest: Place::local(cap_local),
+                        value: ConstValue::Integer(2),
+                        span: DUMMY_SPAN,
+                    });
+                    let dest = emit_shim_call(
+                        c,
+                        "__triet_vector_alloc",
+                        vec![len_local, cap_local],
+                        "Vector<Integer>",
+                        expr_span,
+                    );
+                    return Ok(dest);
+                }
+                _ => { /* fall through to user-defined function dispatch */ }
             }
 
             let callee_ret = c
@@ -1070,7 +1185,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // B7: heap types cannot be passed to user-defined functions.
             for &arg in &args {
                 let arg_ty = &c.local_decls[arg.0].ty;
-                if !simple_is_copy(arg_ty) {
+                if !simple_is_copy(arg_ty, &c.struct_names, &c.enum_names) {
                     return Err(LowerError::heap_user_fn_arg_not_supported(
                         arg_ty, expr_span,
                     ));
@@ -1273,26 +1388,26 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Qualified enum variants (`Color.Red`, `CD.None`) are
             // resolved by the type checker via check_field_access.
             let resolution = c.expr_resolutions.get(&expr_id).cloned();
-            if let Some(res) = resolution {
-                if !res.has_payload {
-                    // Unit variant constructor: `TypeName.Variant`
-                    let d = c.alloc_local_ty(&res.enum_name);
-                    c.push(Statement::StorageLive(d, expr_span.clone()));
-                    c.push(Statement::EnumAlloc {
-                        dest: d,
-                        enum_name: res.enum_name.clone(),
-                        span: expr_span.clone(),
-                    });
-                    c.push(Statement::SetDiscriminant {
-                        dest: d,
-                        value: res.discriminant,
-                        span: expr_span.clone(),
-                    });
-                    return Ok(d);
-                }
-                // Payload variant without call syntax — shouldn't happen
-                // (parser routes those through Call), but handle gracefully.
+            if let Some(res) = resolution
+                && !res.has_payload
+            {
+                // Unit variant constructor: `TypeName.Variant`
+                let d = c.alloc_local_ty(&res.enum_name);
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                c.push(Statement::EnumAlloc {
+                    dest: d,
+                    enum_name: res.enum_name.clone(),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::SetDiscriminant {
+                    dest: d,
+                    value: res.discriminant,
+                    span: expr_span.clone(),
+                });
+                return Ok(d);
             }
+            // Payload variant without call syntax — shouldn't happen
+            // (parser routes those through Call), but handle gracefully.
 
             let source = lower_place(expr_id, arena, c)?;
             let d = c.alloc_local();
@@ -1319,7 +1434,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 let field_val = lower_expr(*field_expr, arena, c)?;
                 // B8: aggregate-containing-heap — struct field with Move type not supported.
                 let field_ty = &c.local_decls[field_val.0].ty;
-                if !simple_is_copy(field_ty) {
+                if !simple_is_copy(field_ty, &c.struct_names, &c.enum_names) {
                     return Err(LowerError::heap_type_not_supported(
                         &format!("struct `{struct_name}` field `{field_name}` type `{field_ty}`"),
                         expr_span,
@@ -1371,7 +1486,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 let val = lower_expr(*payload_expr, arena, c)?;
                 // B8: aggregate-containing-heap — enum payload with Move type not supported.
                 let payload_ty = &c.local_decls[val.0].ty;
-                if !simple_is_copy(payload_ty) {
+                if !simple_is_copy(payload_ty, &c.struct_names, &c.enum_names) {
                     return Err(LowerError::heap_type_not_supported(
                         &format!("enum `{name}.{variant_name}` payload type `{payload_ty}`"),
                         expr_span,
@@ -1509,9 +1624,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             c.pop_scope();
                         } else {
                             return Err(LowerError {
-                                message: format!(
-                                    "unsupported match pattern (expected enum variant, got variable not resolved by type checker)"
-                                ),
+                                message: "unsupported match pattern (expected enum variant, got variable not resolved by type checker)".to_string(),
                                 span: expr_span.clone(),
                             });
                         }
@@ -1584,10 +1697,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 }
                 return Ok(d);
             }
-            return Err(LowerError::unsupported_expr(
+            Err(LowerError::unsupported_expr(
                 &arena.expression(expr_id).node,
                 expr_span,
-            ));
+            ))
         }
         other => Err(LowerError::unsupported_expr(other, expr_span)),
     }
@@ -1642,6 +1755,26 @@ mod tests {
     fn lower_source(source: &str) -> Body {
         let (prog, errors) = triet_parser::parse(source);
         assert!(errors.is_empty(), "parse errors: {errors:?}");
+        // Scan for struct/enum definitions so simple_is_copy recognizes them.
+        // Must match production (lib.rs:349/389): struct_names and enum_names
+        // are separate sets — mixing them would cause is_struct_return to
+        // misclassify enum-returning functions as struct returns.
+        let struct_names: std::collections::HashSet<String> = prog
+            .items
+            .iter()
+            .filter_map(|item| match &item.node {
+                Item::Struct { def, .. } => Some(def.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let enum_names: std::collections::HashSet<String> = prog
+            .items
+            .iter()
+            .filter_map(|item| match &item.node {
+                Item::Enum { def, .. } => Some(def.name.clone()),
+                _ => None,
+            })
+            .collect();
         let func = prog
             .items
             .iter()
@@ -1657,9 +1790,9 @@ mod tests {
             &func.0,
             &prog.arena,
             func.1,
-            std::collections::HashSet::new(),
+            struct_names,
             HashMap::new(),
-            std::collections::HashSet::new(),
+            enum_names,
             HashMap::new(),
             ExprResolutions::new(),
             PatternResolutions::new(),
@@ -1786,8 +1919,9 @@ function main() -> Integer {
     fn lowers_field_borrow_into_projected_place() {
         // `&0 obj.x` must lower to a Borrow whose source is the projected
         // Place { local: _0 (obj), projection: [Field("x")] }.
-        let body =
-            lower_source("function f(obj: Point) -> Integer { let r = &0 obj.x; return r; }");
+        let body = lower_source(
+            "struct Point { x: Integer } function f(obj: Point) -> Integer { let r = &0 obj.x; return r; }",
+        );
         println!("=== MIR ===\n{body}");
 
         let borrow_source = body
@@ -1810,5 +1944,92 @@ function main() -> Integer {
             vec![Projection::Field("x".to_string())],
             "borrow source must carry a Field(\"x\") projection, not the whole struct"
         );
+    }
+
+    // ── Phase 4.3b: Vector builtin dispatch ──
+
+    #[test]
+    fn push_emits_vector_push_shim() {
+        let body = lower_source("function main() { let v = vector_new(); let v2 = push(v, 1); }");
+        println!("=== MIR ===\n{body}");
+        let has_push = body.blocks.iter().any(|b| {
+            matches!(
+                &b.terminator,
+                Terminator::CallDispatch {
+                    callee_name,
+                    target: CallTarget::Shim,
+                    ..
+                } if callee_name == "__triet_vector_push"
+            )
+        });
+        assert!(has_push, "expected __triet_vector_push CallDispatch in MIR");
+    }
+
+    #[test]
+    fn len_dispatches_by_arg_type() {
+        // len(string) → __triet_string_len
+        let body_str = lower_source(r#"function main() { let x = len("hello") }"#);
+        println!("=== MIR string_len ===\n{body_str}");
+        let has_str_len = body_str.blocks.iter().any(|b| {
+            matches!(
+                &b.terminator,
+                Terminator::CallDispatch {
+                    callee_name,
+                    target: CallTarget::Shim,
+                    ..
+                } if callee_name == "__triet_string_len"
+            )
+        });
+        assert!(
+            has_str_len,
+            "len(String) should dispatch to __triet_string_len"
+        );
+
+        // len(vector) → __triet_vector_len
+        let body_vec = lower_source("function main() { let v = vector_new(); let x = len(v) }");
+        println!("=== MIR vector_len ===\n{body_vec}");
+        let has_vec_len = body_vec.blocks.iter().any(|b| {
+            matches!(
+                &b.terminator,
+                Terminator::CallDispatch {
+                    callee_name,
+                    target: CallTarget::Shim,
+                    ..
+                } if callee_name == "__triet_vector_len"
+            )
+        });
+        assert!(
+            has_vec_len,
+            "len(Vector) should dispatch to __triet_vector_len"
+        );
+    }
+
+    #[test]
+    fn simple_is_copy_agrees_with_canonical_is_copy() {
+        // Phase 4.3b M1.3: lowerer's simple_is_copy must match
+        // triet_mir::is_copy for all type strings used in Bậc A.
+        // Build a minimal body via lower_source so the struct shapes
+        // are always correct without hardcoding field lists.
+        let body = lower_source("function test() {}");
+        let cases = &[
+            ("Integer", true),
+            ("String", false),
+            ("HashMap", false),
+            ("Vector<Integer>", false),
+            ("Vector", false),
+            ("Trilean", true),
+            ("Unit", true),
+            ("UnknownType", false), // canonical is_copy default-Move
+        ];
+        for &(ty, expected) in cases {
+            let empty_set = std::collections::HashSet::new();
+            let simple = simple_is_copy(ty, &empty_set, &empty_set);
+            let canonical = triet_mir::is_copy(ty, &body);
+            assert_eq!(
+                simple, canonical,
+                "simple_is_copy({ty:?}) = {simple}, triet_mir::is_copy = {canonical} — must agree"
+            );
+            assert_eq!(simple, expected, "is_copy({ty:?}) should be {expected}");
+        }
     }
 }
