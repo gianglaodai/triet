@@ -14,8 +14,9 @@ Sub-task tracking for the current phase (Phase 4 & 5).
   - *Shims: alloc, from_bytes, free, concat, eq, len — implemented and registered.*
   - *M1-M4: Assign zero, let-Move-type→Assign, CallDispatch consume zero, Return-escape.*
   - *B7/B8: heap types refused at user-fn boundary and aggregate payload/field.*
-  - *Deferred: `concat`/`len`/`eq` as surface builtin functions (type checker needs builtin signature support — currently E1002). Lowerer dispatch code exists (lib.rs:1030-1065), blocked on typechecker.*
-- [ ] Vector, HashMap literal lowering.
+  - *Deferred: `concat`/`eq` as surface builtin functions — lowerer dispatch code exists (lib.rs:1030-1065), blocked on typechecker prelude signatures. `len` was wired in 4.3b via overload resolution.*
+- [x] Vector support (Phase 4.3b).
+- [ ] HashMap support (Deferred to Bậc B).
 - [x] ReturnShape::Struct for multi-field returns in MIR.
 - [x] MIR verifier: structural invariants cho enum (4i-1 đến 4i-7).
 - [ ] Shim registry for Track B aggregates (`__triet_alloc_struct`, `__triet_set_field`, etc. if fallback is needed, though StackSlot is preferred).
@@ -39,6 +40,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 ## Tech Debt / Cleanup
 - [x] Deleted orphaned `compiler/` directory (Track A legacy).
 - [ ] Schema unification: fully migrate generated `Type` into typechecker.
+- [ ] codegen.py emit clippy-clean output — codegen bug
 - [ ] Alias analysis: replace `conservative=true` band-aid with proper NLL alias analysis.
 - [ ] Version bump: `Cargo.toml` 0.10.0 → 0.11.0-dev or 1.0.0-dev.
 - [ ] Fix fixture 27: match error-code thay vì match internal JIT string (brittle, rò rỉ representation).
