@@ -45,6 +45,12 @@ pub struct MirBuilder {
     next_func: usize,
     /// Cache of function name → FunctionId for `func_id_for`.
     func_ids: HashMap<String, FunctionId>,
+    /// Types for locals.
+    local_types: HashMap<Local, String>,
+    /// Struct layouts for type resolution.
+    struct_layouts: Vec<triet_mir::StructLayout>,
+    /// Enum layouts for type resolution.
+    enum_layouts: Vec<triet_mir::EnumLayout>,
 }
 
 impl MirBuilder {
@@ -64,6 +70,9 @@ impl MirBuilder {
             next_block: 0,
             next_func: 0,
             func_ids: HashMap::new(),
+            local_types: HashMap::new(),
+            struct_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
         }
     }
 
@@ -92,6 +101,21 @@ impl MirBuilder {
         let l = Local(self.next_local);
         self.next_local += 1;
         l
+    }
+
+    /// Set the type of a local.
+    pub fn set_local_type(&mut self, local: Local, ty: &str) {
+        self.local_types.insert(local, ty.to_string());
+    }
+
+    /// Add a struct layout for type resolution (used by `place_type`).
+    pub fn add_struct_layout(&mut self, layout: triet_mir::StructLayout) {
+        self.struct_layouts.push(layout);
+    }
+
+    /// Add an enum layout for type resolution (used by `place_type`).
+    pub fn add_enum_layout(&mut self, layout: triet_mir::EnumLayout) {
+        self.enum_layouts.push(layout);
     }
 
     /// Allocate a fresh basic block.
@@ -139,15 +163,24 @@ impl MirBuilder {
     /// Build the MIR body.
     #[must_use]
     pub fn build(self, entry: BasicBlock) -> Body {
-        let local_decls = (0..self.next_local).map(|_| LocalDecl::new("?")).collect();
+        let local_decls = (0..self.next_local)
+            .map(|i| {
+                let ty = self
+                    .local_types
+                    .get(&Local(i))
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+                LocalDecl::new(ty)
+            })
+            .collect();
         Body {
             signature: self.signature,
             blocks: self.blocks,
             entry_block: entry,
             num_locals: self.next_local,
             local_decls,
-            struct_layouts: Vec::new(),
-            enum_layouts: Vec::new(),
+            struct_layouts: self.struct_layouts,
+            enum_layouts: self.enum_layouts,
         }
     }
 }

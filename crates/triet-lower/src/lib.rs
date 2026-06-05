@@ -299,8 +299,14 @@ pub fn lower_program(
         .iter()
         .filter_map(|item| {
             if let Item::Struct { def } = &item.node {
-                let fields: Vec<(String, usize, usize)> =
-                    def.fields.iter().map(|f| (f.name.clone(), 8, 8)).collect();
+                let fields: Vec<(String, String, usize, usize)> = def
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        let ty = type_name(&prog.arena, f.type_annotation);
+                        (f.name.clone(), ty, 8, 8)
+                    })
+                    .collect();
                 Some(StructLayout::compute(&def.name, &fields))
             } else {
                 None
@@ -323,18 +329,21 @@ pub fn lower_program(
         .iter()
         .filter_map(|item| {
             if let Item::Enum { def } = &item.node {
-                let variants: Vec<(String, i64, Option<(usize, usize, Vec<FieldLayout>)>)> = def
+                let variants: Vec<(
+                    String,
+                    i64,
+                    Option<(String, usize, usize, Vec<FieldLayout>)>,
+                )> = def
                     .variants
                     .iter()
                     .enumerate()
                     .map(|(i, v)| {
                         let disc = i as i64;
-                        let payload = if v.payload.is_some() {
+                        let payload = v.payload.map(|tid| {
+                            let ty_name = type_name(&prog.arena, tid);
                             // Bậc A: every type is 8-byte i64
-                            Some((8usize, 8usize, Vec::new()))
-                        } else {
-                            None
-                        };
+                            (ty_name, 8usize, 8usize, Vec::new())
+                        });
                         (v.name.clone(), disc, payload)
                     })
                     .collect();

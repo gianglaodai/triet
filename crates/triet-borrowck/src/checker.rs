@@ -214,6 +214,24 @@ impl BlockState {
 /// A borrow-check error with source-level diagnostics.
 #[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
 pub enum BorrowError {
+    /// E2423: Cannot copy Move type out of projection.
+    #[error(
+        "E2423: cannot extract type `{ty}` from `{place}` by value because it has Move semantics"
+    )]
+    #[diagnostic(
+        code(triet::borrow::E2423),
+        help("borrow the field instead of moving it out")
+    )]
+    CannotCopyMoveTypeOut {
+        /// The place being extracted from.
+        place: String,
+        /// The type of the value being extracted.
+        ty: String,
+        /// Source location.
+        #[label("cannot copy move type out here")]
+        span: Span,
+    },
+
     /// E2420: Use after move — a variable was used after its ownership was transferred.
     #[error("E2420: use after move — `{name}` was used after its ownership was transferred")]
     #[diagnostic(
@@ -367,6 +385,7 @@ pub fn check_body_with(
     let (entry_exit, entry_errs) = process_block(
         cfg.entry,
         &entry_states[cfg.entry.0],
+        body,
         &cfg,
         &liveness,
         &names,
@@ -400,6 +419,7 @@ pub fn check_body_with(
         let (new_exit, block_errs) = process_block(
             block,
             &entry_states[block.0],
+            body,
             &cfg,
             &liveness,
             &names,
@@ -431,6 +451,7 @@ pub fn check_body_with(
 fn process_block(
     block: BasicBlock,
     entry_state: &BlockState,
+    body: &triet_mir::Body,
     cfg: &triet_mir::ControlFlowGraph,
     liveness: &LivenessResult,
     names: &LocalNames,
@@ -515,6 +536,18 @@ fn process_block(
                 // source (no projections) is a genuine move of the base.
                 let is_field_read = !source.projection.is_empty();
 
+                // Δ3: Refuse to copy a Move type out of a projection
+                if is_field_read {
+                    let extracted_ty = triet_mir::place_type(source, body);
+                    if !triet_mir::is_copy(&extracted_ty, body) {
+                        errors.push(BorrowError::CannotCopyMoveTypeOut {
+                            place: place_name(source, names),
+                            ty: extracted_ty,
+                            span: span.clone(),
+                        });
+                    }
+                }
+
                 if !is_field_read && state.var_states.get(&source.local) == Some(&VarState::Moved) {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
@@ -527,6 +560,15 @@ fn process_block(
                 // a different local, because a reference could alias
                 // the moved value. Conservative: assume overlap.
                 // Field reads do not conflict (they don't move the base).
+                //
+                // TODO(F-d): After Copy/Move type-awareness, a Copy-type
+                // plain-source read should NOT conflict with a shared &0
+                // borrow (only exclusive). Currently flagging ALL loans
+                // for ALL plain-source assigns is conservative — safe but
+                // false-positive on Copy reads under shared borrows.
+                // SPEC §10.1: Copy types read without move; S6: shared
+                // borrow plus read is valid. Fix when places_conflict is
+                // refined to distinguish Copy-read vs Move-source.
                 if !is_field_read {
                     let conflicting = state
                         .active_loans
@@ -541,7 +583,11 @@ fn process_block(
                             span: span.clone(),
                         });
                     }
-                    state.var_states.insert(source.local, VarState::Moved);
+                    // Δ1: Assign plain-source only marks Moved if type is Move
+                    let source_ty = &body.local_decls[source.local.0].ty;
+                    if !triet_mir::is_copy(source_ty, body) {
+                        state.var_states.insert(source.local, VarState::Moved);
+                    }
                 }
                 state.var_states.insert(dest.local, VarState::Owned);
             }
@@ -634,9 +680,13 @@ fn process_block(
                 // caught by subsequent reads/writes (and by the Return terminator
                 // check below).
                 //
-                // Use `Ended` (not `Moved`) so Return can still consume the value
-                // without a false-positive UseAfterMove.
-                state.var_states.insert(*l, VarState::Ended);
+                // Δ2: `Moved` is sticky. If it was `Moved`, it stays `Moved`.
+                // For `Copy` types, they never become `Moved` on assign, so they safely
+                // transition to `Ended`. Move types that are `Moved` will stay `Moved`,
+                // correctly failing the Return check if F1 gap is triggered.
+                if state.var_states.get(l) != Some(&VarState::Moved) {
+                    state.var_states.insert(*l, VarState::Ended);
+                }
                 state.active_loans.retain(|loan| loan.source.local != *l);
             }
         }
@@ -792,6 +842,7 @@ mod tests {
     fn use_after_move_across_blocks_rejected() {
         let mut b = MirBuilder::new("cross_block_move", "Unit");
         let vga = b.add_param("vga", ParameterPassing::Move);
+        b.set_local_type(vga, "String");
         let other = b.new_local();
         let consume_id = b.new_func_id();
 
@@ -998,9 +1049,10 @@ mod tests {
 
     /// Moving a borrowed variable within the same block.
     #[test]
-    fn use_after_move_rejected() {
-        let mut b = MirBuilder::new("use_after_move", "Unit");
+    fn move_while_borrowed_rejected() {
+        let mut b = MirBuilder::new("move_while_borrowed", "Unit");
         let vga = b.add_param("vga", ParameterPassing::Move);
+        b.set_local_type(vga, "String");
         let b1 = b.new_local();
         let write_cell_id = b.new_func_id();
 
@@ -1008,7 +1060,7 @@ mod tests {
         b.push(bb0, storage_live(b1));
         b.push(bb0, borrow(b1, ReferenceForm::BorrowExclusiveMutable, vga));
         let moved_vga = b.new_local();
-        b.push(bb0, crate::assign(moved_vga, vga));
+        b.push(bb0, crate::assign(moved_vga, vga)); // move while &0 mutable borrow is active
 
         let cell_h = b.new_local();
         let attr = b.new_local();
@@ -1041,7 +1093,7 @@ mod tests {
         let body = b.build(bb0);
         let result = check_body(&body);
 
-        println!("=== BORROW CHECK (use after move) ===");
+        println!("=== BORROW CHECK (move while borrowed) ===");
         for err in &result.errors {
             println!("  {err}");
         }
@@ -1056,6 +1108,49 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BorrowError::NllExclusivityViolation { .. })),
             "should have E2440 for moving a borrowed value"
+        );
+    }
+
+    /// Δ1: plain-source assign of a Move type marks the source Moved,
+    /// and subsequent use of the source is E2420 UseAfterMove.
+    #[test]
+    fn use_after_move_rejected() {
+        let mut b = MirBuilder::new("use_after_move", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let other = b.new_local();
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(other));
+        b.push(bb0, crate::assign(other, s)); // move s → other
+        // try to use s after move → E2420
+        let s2 = b.new_local();
+        b.push(bb0, crate::assign(s2, s));
+
+        b.push(bb0, storage_dead(other));
+        b.push(bb0, storage_dead(s2));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (use_after_move) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (use_after_move) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            !result.is_ok(),
+            "use-after-move of a Move type MUST be rejected"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
+            "should have E2420 UseAfterMove, got: {:?}",
+            result.errors
         );
     }
 
@@ -1272,6 +1367,96 @@ mod tests {
             without_prop.is_ok(),
             "without propagation the bridge is blind; expected no error, got: {:?}",
             without_prop.errors
+        );
+    }
+
+    /// Δ3: copying a Move type out of a struct field is forbidden (E2423).
+    #[test]
+    fn cannot_copy_move_type_out_of_field() {
+        let mut b = MirBuilder::new("extract_string_field", "Unit");
+        // Add a struct layout with a String field
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "HasString",
+            &[("body".into(), "String".into(), 8, triet_mir::align::INTEGER)],
+        ));
+        let obj = b.add_param("obj", ParameterPassing::Move);
+        b.set_local_type(obj, "HasString");
+
+        let bb0 = b.new_block();
+        let dest = b.new_local();
+        b.push(bb0, storage_live(dest));
+        // Assign from obj.body (projected field of Move type) → E2423
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(dest),
+                source: field(obj, "body"),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_dead(dest));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (extract_string_field) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (extract_string_field) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            !result.is_ok(),
+            "copying a Move type out of a projection MUST be rejected"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
+            "should have E2423 CannotCopyMoveTypeOut, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// F1 chain: Move type assign → Drop → Return must trigger E2420.
+    /// The Moved state must be sticky through Drop so that Return sees it.
+    #[test]
+    fn move_through_drop_to_return_rejected() {
+        let mut b = MirBuilder::new("f1_chain", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let other = b.new_local();
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(other));
+        b.push(bb0, crate::assign(other, s)); // move s → other — s now Moved
+        // Drop(s) must NOT clear Moved → s stays Moved
+        b.push(bb0, crate::Statement::Drop(s, triet_mir::DUMMY_SPAN));
+        // Return(s) with s still Moved → E2420 (the F1 gap)
+        b.set_terminator(bb0, return_(vec![s]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (f1_chain) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (f1_chain) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            !result.is_ok(),
+            "F1: move → Drop → Return MUST be UseAfterMove"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
+            "should have E2420 UseAfterMove for returned Moved value, got: {:?}",
+            result.errors
         );
     }
 }

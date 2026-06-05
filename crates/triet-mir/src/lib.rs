@@ -686,6 +686,8 @@ pub struct StructLayout {
 pub struct FieldLayout {
     /// Field name.
     pub name: String,
+    /// Field type name (e.g. "Integer", "String").
+    pub ty: String,
     /// Byte offset from the start of the struct.
     pub offset: usize,
     /// Byte size of the field.
@@ -732,6 +734,8 @@ pub struct VariantLayout {
 /// Layout of a variant's payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadLayout {
+    /// Type name of the payload (e.g. "Integer", "Point").
+    pub ty: String,
     /// Size of this variant's payload in bytes.
     pub size: usize,
     /// Alignment of this variant's payload.
@@ -743,16 +747,17 @@ pub struct PayloadLayout {
 impl EnumLayout {
     /// Compute the layout for an enum from its variant specifications.
     ///
-    /// `variants` is a list of `(name, discriminant_value, payload_size, payload_alignment, fields)`.
+    /// `variants` is a list of `(name, discriminant_value, payload)`.
+    /// Payload is `Option<(ty, size, alignment, fields)>`.
     /// `discriminant_size` defaults to 8 (i64 in Bậc A).
     /// The payload area size = max of all variant payload sizes.
     #[must_use]
     pub fn compute(
         name: &str,
         variants: &[(
-            String,                                   // variant name
-            i64,                                      // discriminant value
-            Option<(usize, usize, Vec<FieldLayout>)>, // payload: (size, alignment, fields)
+            String,                                           // variant name
+            i64,                                              // discriminant value
+            Option<(String, usize, usize, Vec<FieldLayout>)>, // payload: (ty, size, alignment, fields)
         )],
     ) -> Self {
         let disc_offset: usize = 0;
@@ -760,7 +765,7 @@ impl EnumLayout {
         let payload_offset: usize = 8;
         let max_payload_size = variants
             .iter()
-            .map(|(_, _, payload)| payload.as_ref().map_or(0, |(s, _, _)| *s))
+            .map(|(_, _, payload)| payload.as_ref().map_or(0, |(_, s, _, _)| *s))
             .max()
             .unwrap_or(0);
         let total_size = 8 + max_payload_size;
@@ -770,11 +775,14 @@ impl EnumLayout {
             .map(|(vname, disc_val, payload)| VariantLayout {
                 name: vname.clone(),
                 discriminant_value: *disc_val,
-                payload: payload.as_ref().map(|(size, align, fields)| PayloadLayout {
-                    size: *size,
-                    alignment: *align,
-                    fields: fields.clone(),
-                }),
+                payload: payload
+                    .as_ref()
+                    .map(|(ty, size, align, fields)| PayloadLayout {
+                        ty: ty.clone(),
+                        size: *size,
+                        alignment: *align,
+                        fields: fields.clone(),
+                    }),
             })
             .collect();
         Self {
@@ -809,17 +817,17 @@ pub mod align {
 }
 
 impl StructLayout {
-    /// Compute field offsets from (name, size, alignment) tuples.
+    /// Compute field offsets from (name, ty, size, alignment) tuples.
     ///
     /// Each field's alignment must be a power of 2. The struct's
     /// alignment is the maximum of its fields' alignments.
     /// Total size is padded to the struct alignment.
     #[must_use]
-    pub fn compute(name: &str, fields: &[(String, usize, usize)]) -> Self {
+    pub fn compute(name: &str, fields: &[(String, String, usize, usize)]) -> Self {
         let mut offset = 0usize;
         let mut max_align = 1usize;
         let mut field_layouts = Vec::new();
-        for (field_name, size, align) in fields {
+        for (field_name, field_ty, size, align) in fields {
             assert!(
                 align.is_power_of_two(),
                 "alignment must be power of 2: field '{field_name}' has align={align}"
@@ -829,6 +837,7 @@ impl StructLayout {
             offset = (offset + align - 1) & !(align - 1);
             field_layouts.push(FieldLayout {
                 name: field_name.clone(),
+                ty: field_ty.clone(),
                 offset,
                 size: *size,
                 alignment: *align,
@@ -1558,8 +1567,8 @@ mod tests {
         let layout = StructLayout::compute(
             "Point",
             &[
-                ("x".into(), 8, align::INTEGER),
-                ("y".into(), 8, align::INTEGER),
+                ("x".into(), "Integer".into(), 8, align::INTEGER),
+                ("y".into(), "Integer".into(), 8, align::INTEGER),
             ],
         );
         assert_eq!(layout.alignment, 8);
@@ -1577,9 +1586,9 @@ mod tests {
         let layout = StructLayout::compute(
             "Mixed",
             &[
-                ("a".into(), 1, align::TRIT),
-                ("b".into(), 8, align::INTEGER),
-                ("c".into(), 1, align::TRILEAN),
+                ("a".into(), "Trit".into(), 1, align::TRIT),
+                ("b".into(), "Integer".into(), 8, align::INTEGER),
+                ("c".into(), "Trilean".into(), 1, align::TRILEAN),
             ],
         );
         assert_eq!(
@@ -1600,8 +1609,8 @@ mod tests {
         let layout = StructLayout::compute(
             "Buffer",
             &[
-                ("header".into(), 8, align::INTEGER),
-                ("data".into(), 5, 1), // 5-byte array, alignment 1
+                ("header".into(), "Integer".into(), 8, align::INTEGER),
+                ("data".into(), "?".into(), 5, 1), // 5-byte array, alignment 1
             ],
         );
         assert_eq!(layout.alignment, 8);
@@ -1616,7 +1625,7 @@ mod tests {
         let _ = StructLayout::compute(
             "Bad",
             &[
-                ("x".into(), 5, 5), // alignment 5 is invalid
+                ("x".into(), "Integer".into(), 5, 5), // alignment 5 is invalid
             ],
         );
     }
@@ -1810,4 +1819,229 @@ mod tests {
              The JIT would use_var on an undeclared Cranelift Variable."
         );
     }
+
+    // ── place_type tests ─────────────────────────────────────
+
+    #[test]
+    fn place_type_plain_local() {
+        let body = Body {
+            local_decls: vec![LocalDecl::new("Integer")],
+            ..well_formed_body()
+        };
+        let place = Place::local(Local(0));
+        assert_eq!(place_type(&place, &body), "Integer");
+    }
+
+    #[test]
+    fn place_type_struct_field() {
+        let layout = StructLayout::compute(
+            "Point",
+            &[
+                ("x".into(), "Integer".into(), 8, align::INTEGER),
+                ("y".into(), "String".into(), 8, align::INTEGER),
+            ],
+        );
+        let body = Body {
+            local_decls: vec![LocalDecl::new("Point")],
+            struct_layouts: vec![layout],
+            ..well_formed_body()
+        };
+        let place = Place {
+            local: Local(0),
+            projection: vec![Projection::Field("x".into())],
+        };
+        assert_eq!(place_type(&place, &body), "Integer");
+        let place_y = Place {
+            local: Local(0),
+            projection: vec![Projection::Field("y".into())],
+        };
+        assert_eq!(place_type(&place_y, &body), "String");
+    }
+
+    #[test]
+    fn place_type_enum_payload() {
+        let layout = EnumLayout::compute(
+            "Option",
+            &[("Some".into(), 0, Some(("Integer".into(), 8, 8, vec![])))],
+        );
+        let body = Body {
+            local_decls: vec![LocalDecl::new("Option")],
+            enum_layouts: vec![layout],
+            ..well_formed_body()
+        };
+        let place = Place {
+            local: Local(0),
+            projection: vec![Projection::Payload("Some".into())],
+        };
+        assert_eq!(place_type(&place, &body), "Integer");
+    }
+
+    #[test]
+    fn place_type_unknown_projection() {
+        let body = Body {
+            local_decls: vec![LocalDecl::new("UnknownType")],
+            ..well_formed_body()
+        };
+        // Field on unknown type → "?"
+        let place = Place {
+            local: Local(0),
+            projection: vec![Projection::Field("x".into())],
+        };
+        assert_eq!(place_type(&place, &body), "?");
+        // Unknown projection kind → "?"
+        let place2 = Place {
+            local: Local(0),
+            projection: vec![Projection::Deref],
+        };
+        assert_eq!(place_type(&place2, &body), "?");
+    }
+
+    // ── is_copy tests ────────────────────────────────────────
+
+    #[test]
+    fn is_copy_primitives() {
+        let body = well_formed_body();
+        assert!(is_copy("Integer", &body));
+        assert!(is_copy("Trit", &body));
+        assert!(is_copy("Tryte", &body));
+        assert!(is_copy("Long", &body));
+        assert!(is_copy("Trilean", &body));
+        assert!(is_copy("Unit", &body));
+        assert!(is_copy("?", &body));
+    }
+
+    #[test]
+    fn is_copy_heap_types() {
+        let body = well_formed_body();
+        assert!(!is_copy("String", &body));
+        assert!(!is_copy("Vector", &body));
+        assert!(!is_copy("HashMap", &body));
+    }
+
+    #[test]
+    fn is_copy_struct_recursive() {
+        let layout = StructLayout::compute(
+            "HasString",
+            &[
+                ("header".into(), "Integer".into(), 8, 8),
+                ("body".into(), "String".into(), 8, 8),
+            ],
+        );
+        let body = Body {
+            struct_layouts: vec![layout],
+            ..well_formed_body()
+        };
+        // Struct with a Move field is itself Move
+        assert!(!is_copy("HasString", &body));
+    }
+
+    #[test]
+    fn is_copy_enum_recursive() {
+        let layout = EnumLayout::compute(
+            "Either",
+            &[("Left".into(), 0, Some(("Integer".into(), 8, 8, vec![])))],
+        );
+        let body = Body {
+            enum_layouts: vec![layout],
+            ..well_formed_body()
+        };
+        // All payloads are Integer → Copy
+        assert!(is_copy("Either", &body));
+
+        let layout2 = EnumLayout::compute(
+            "EitherString",
+            &[("Right".into(), 0, Some(("String".into(), 8, 8, vec![])))],
+        );
+        let body2 = Body {
+            enum_layouts: vec![layout2],
+            ..well_formed_body()
+        };
+        // A payload is String → Move
+        assert!(!is_copy("EitherString", &body2));
+    }
+
+    #[test]
+    fn is_copy_unknown_defaults_move() {
+        let body = well_formed_body();
+        assert!(!is_copy("UnknownType", &body));
+    }
+}
+
+/// Determines if a type has Copy semantics (stack primitives) or Move semantics (heap types).
+pub fn is_copy(ty: &str, body: &Body) -> bool {
+    match ty {
+        "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
+        "String" | "Vector" | "HashMap" => false,
+        _ => {
+            // Check struct layouts — Copy if all fields are Copy (recursive).
+            if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty) {
+                return s.fields.iter().all(|f| is_copy(&f.ty, body));
+            }
+            // Check enum layouts — Copy if all payloads are Copy (recursive).
+            if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty) {
+                return e
+                    .variants
+                    .iter()
+                    .all(|v| v.payload.as_ref().map_or(true, |p| is_copy(&p.ty, body)));
+            }
+            // Unknown types default to Move (Refuse-over-guess)
+            false
+        }
+    }
+}
+
+/// Computes the type of a Place by walking its projection chain.
+pub fn place_type(place: &Place, body: &Body) -> String {
+    let mut current_ty = body.local_decls[place.local.0].ty.clone();
+    for proj in &place.projection {
+        current_ty = match proj {
+            Projection::Field(name) => {
+                // Look up the field type in struct layouts.
+                if let Some(s) = body.struct_layouts.iter().find(|s| s.name == current_ty) {
+                    if let Some(field) = s.fields.iter().find(|f| f.name == name.as_str()) {
+                        field.ty.clone()
+                    } else {
+                        "?".to_string()
+                    }
+                } else if let Some(e) = body.enum_layouts.iter().find(|e| e.name == current_ty) {
+                    // Look up in enum payload layouts (for struct-payload variants).
+                    let mut found = None;
+                    for variant in &e.variants {
+                        if let Some(ref payload) = variant.payload {
+                            if let Some(field) =
+                                payload.fields.iter().find(|f| f.name == name.as_str())
+                            {
+                                found = Some(field.ty.clone());
+                                break;
+                            }
+                        }
+                    }
+                    found.unwrap_or_else(|| "?".to_string())
+                } else {
+                    "?".to_string()
+                }
+            }
+            Projection::Payload(variant) => {
+                // Look up the payload type in enum layouts.
+                if let Some(e) = body.enum_layouts.iter().find(|e| e.name == current_ty) {
+                    if let Some(v) = e.variants.iter().find(|v| &v.name == variant) {
+                        if let Some(ref payload) = v.payload {
+                            payload.ty.clone()
+                        } else {
+                            "?".to_string()
+                        }
+                    } else {
+                        "?".to_string()
+                    }
+                } else {
+                    "?".to_string()
+                }
+            }
+            _ => {
+                // Other projections (Deref, Downcast, Index) — can't resolve yet.
+                "?".to_string()
+            }
+        };
+    }
+    current_ty
 }
