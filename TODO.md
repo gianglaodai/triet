@@ -16,6 +16,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
   - *B7/B8: heap types refused at user-fn boundary and aggregate payload/field.*
   - *Deferred: `concat`/`eq` as surface builtin functions — lowerer dispatch code exists (lib.rs:1030-1065), blocked on typechecker prelude signatures. `len` was wired in 4.3b via overload resolution.*
 - [x] Vector support (Phase 4.3b).
+- [ ] Nullable (`T?`) representation Bậc A — ADR-0041 locked (PA-3c uniform MIN). Móng: NULL_SENTINEL + is_nullable_type + is_copy + canary N1/N2. Xây: widening + ~0 + Elvis + get + fixtures 40-46. Match ~+/~0 defer Bậc B.
 - [ ] HashMap support (Deferred to Bậc B).
 - [x] ReturnShape::Struct for multi-field returns in MIR.
 - [x] MIR verifier: structural invariants cho enum (4i-1 đến 4i-7).

@@ -69,3 +69,41 @@ match maybe_user {
 ```
 
 **Migration:** `dao fmt --fix --migrate-null` auto-rewrites both literal and pattern occurrences. See [ADR-0020 §10.5](0020-outcome-error-handling.md) for tool specification.
+
+---
+
+## Addendum — 2026-06-06 (ADR-0041 review: trit assignment + `T??` flatten)
+
+Per [ADR-0041](0041-nullable-representation-bac-a.md) (2026-06-06), two
+clauses in this ADR's original body are overridden by later LOCKED decisions:
+
+### 1. Trit assignment table
+
+The original body assigns `is_null: -1 = null, +1 = present, 0 reserved`.
+[ADR-0020 §10.1](0020-outcome-error-handling.md) (2026-05-17, LOCKED) assigns
+**`+1 = value, 0 = null, -1 = reserved/error`**. The v0.7.4.3 addendum above
+changed the *syntax* for the null literal but did NOT update the trit encoding
+table — the two ADRs have been in conflict since ADR-0020 was locked.
+
+**Correction:** The canonical trit encoding for `T?` is:
+
+```
+T?  ::=  discriminator: 1 trit  +  payload: T
+         (+1 = value ("present"),  0 = null,  -1 = reserved)
+```
+
+This matches ADR-0020 §10.1 and the entire `~+`/`~0`/`~-` operator family.
+The encoding in the original body (`-1 = null, +1 = present`) is **superseded**.
+
+### 2. `T??` non-flatten
+
+The original "Hậu quả" section states: "Nullable composition (`T??`) **không**
+flatten — `T??` là `(is_null₂, (is_null₁, T))`, hai tầng phân biệt được."
+
+[ADR-0039](0039-nullable-operator-family.md) (2026-06-05, LOCKED) overrides
+this: **`T??` does not exist — auto-flatten.** Applying `?` to an already-nullable
+type is a no-op at the type level; the typechecker folds `T??` → `T?`.
+
+**Correction:** `T??` auto-flattens to `T?`. The two-layer discriminator model
+in the original body is **superseded** — no backend ever implemented it, and
+the rewrite (Track B) enforces C6 of ADR-0041: `T??` không tồn tại.
