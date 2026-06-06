@@ -1,0 +1,10 @@
+// EXPECT: 3
+// Fixture 47: get does not consume vec — len(v) still works after get.
+function main() -> Integer {
+    let v = vector_new();
+    let v1 = push(v, 10);
+    let v2 = push(v1, 20);
+    let v3 = push(v2, 30);
+    let x = get(v3, 1) ?: -1;
+    return len(v3);
+}

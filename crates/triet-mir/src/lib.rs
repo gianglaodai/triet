@@ -730,6 +730,11 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             name: "__triet_vector_push",
             arg_consumes: &[true, false],
         }),
+        "__triet_vector_get" => Some(BuiltinShimMeta {
+            name: "__triet_vector_get",
+            // [false, false]: borrow vec (không consume, khác push), copy index.
+            arg_consumes: &[false, false],
+        }),
         _ => None,
     }
 }

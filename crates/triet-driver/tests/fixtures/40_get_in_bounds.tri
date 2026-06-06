@@ -1,0 +1,9 @@
+// EXPECT: 42
+// Fixture 40: get in-bounds — get(v, 1) returns the element at index 1.
+function main() -> Integer {
+    let v = vector_new();
+    let v1 = push(v, 10);
+    let v2 = push(v1, 42);
+    let v3 = push(v2, 99);
+    return get(v3, 1) ?: -1;
+}

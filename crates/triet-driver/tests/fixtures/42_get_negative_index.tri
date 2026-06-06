@@ -1,0 +1,7 @@
+// EXPECT: 7
+// Fixture 42: get negative index — idx < 0 returns null (Elvis → default).
+function main() -> Integer {
+    let v = vector_new();
+    let v1 = push(v, 10);
+    return get(v1, -1) ?: 7;
+}

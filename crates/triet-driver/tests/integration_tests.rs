@@ -145,6 +145,10 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_vector_push",
             triet_jit::mir_lower::__triet_vector_push,
         ),
+        ShimSymbol::fn_2_1(
+            "__triet_vector_get",
+            triet_jit::mir_lower::__triet_vector_get,
+        ),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx

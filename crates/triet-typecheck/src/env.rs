@@ -269,8 +269,19 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "len",
         Type::Function {
             type_params: Vec::new(),
-            parameters: vec![vector_integer],
+            parameters: vec![vector_integer.clone()],
             return_type: Box::new(Integer),
+        },
+    );
+
+    // ── ADR-0041 Bước 4: get(Vector<Integer>, Integer) -> Integer? ──
+    // Total function: bounds-check returns null (NULL_SENTINEL), never panics.
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![vector_integer, Integer],
+            return_type: Box::new(Type::Nullable(Box::new(Integer))),
         },
     );
 }

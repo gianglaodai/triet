@@ -1329,11 +1329,12 @@ pub extern "C" fn __triet_string_from_bytes(src: i64, len: i64) -> i64 {
     body_ptr
 }
 
-/// `__triet_string_free(ptr)` — free a String. No-op if ptr == 0.
+/// `__triet_string_free(ptr)` — free a String. No-op if ptr == 0 or
+/// ptr == `NULL_SENTINEL` (C4 moved-out + ADR-0041 §5.5 null guard).
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_free(ptr: i64) {
-    if ptr == 0 {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
         return;
     }
     let body = ptr as *mut u8;
@@ -1350,8 +1351,9 @@ pub extern "C" fn __triet_string_free(ptr: i64) {
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_concat(a: i64, b: i64) -> i64 {
+    // C9 trap-on-0: neither argument may be a dead value.
     if a == 0 || b == 0 {
-        return if a != 0 { a } else { b }; // return non-null, or 0
+        std::process::abort();
     }
     let a_body = a as *const u8;
     let b_body = b as *const u8;
@@ -1390,11 +1392,12 @@ pub extern "C" fn __triet_string_concat(a: i64, b: i64) -> i64 {
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_eq(a: i64, b: i64) -> i64 {
-    if a == b {
-        return 1; // same pointer or both null → equal
-    }
+    // C9 trap-on-0: check BEFORE shortcut — eq(0,0) must trap, not return 1.
     if a == 0 || b == 0 {
-        return 0;
+        std::process::abort();
+    }
+    if a == b {
+        return 1; // same pointer → equal
     }
     let a_body = a as *const u8;
     let b_body = b as *const u8;
@@ -1424,9 +1427,10 @@ pub extern "C" fn __triet_string_eq(a: i64, b: i64) -> i64 {
 /// `__triet_string_len(ptr)` — return the length of a String.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub const extern "C" fn __triet_string_len(ptr: i64) -> i64 {
+pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
+    // C9 trap-on-0: 0 = dead value (moved-out / OOM), never a valid heap ptr.
     if ptr == 0 {
-        return 0;
+        std::process::abort();
     }
     // SAFETY: ptr points to valid body.
     unsafe { (ptr as *const i64).read_unaligned() }
@@ -1473,7 +1477,8 @@ pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
     }
 }
 
-/// `__triet_vector_free(ptr)` — free a Vector. No-op if ptr == 0.
+/// `__triet_vector_free(ptr)` — free a Vector. No-op if ptr == 0 or
+/// ptr == `NULL_SENTINEL` (C4 moved-out + ADR-0041 §5.5 null guard).
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_possible_truncation, // 64-bit target, stored cap fits in usize
@@ -1482,7 +1487,7 @@ pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_vector_free(ptr: i64) {
-    if ptr == 0 {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
         return;
     }
     let body = ptr as *mut u8;
@@ -1499,9 +1504,10 @@ pub extern "C" fn __triet_vector_free(ptr: i64) {
 #[allow(unsafe_code)]
 #[allow(clippy::cast_ptr_alignment)] // read_unaligned used
 #[unsafe(no_mangle)]
-pub const extern "C" fn __triet_vector_len(ptr: i64) -> i64 {
+pub extern "C" fn __triet_vector_len(ptr: i64) -> i64 {
+    // C9 trap-on-0: 0 = dead value, never a valid heap ptr.
     if ptr == 0 {
-        return 0;
+        std::process::abort();
     }
     // SAFETY: ptr points to valid body.
     unsafe { (ptr as *const i64).read_unaligned() }
@@ -1523,8 +1529,9 @@ pub const extern "C" fn __triet_vector_len(ptr: i64) -> i64 {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_vector_push(vec: i64, elem: i64) -> i64 {
+    // C9 trap-on-0: vec == 0 means dead value (moved-out) — trap, don't silently return.
     if vec == 0 {
-        return 0; // null guard
+        std::process::abort();
     }
     let old_body = vec as *const u8;
     // Read old len and cap
@@ -1556,6 +1563,42 @@ pub extern "C" fn __triet_vector_push(vec: i64, elem: i64) -> i64 {
     // Free old block (explicit alloc + free — no realloc for deterministic teeth)
     __triet_vector_free(vec);
     new_body
+}
+
+/// `__triet_vector_get(vec, idx)` — bounds-checked element access.
+///
+/// Returns the element at `idx` if `0 <= idx < len`, otherwise
+/// [`NULL_SENTINEL`](triet_mir::NULL_SENTINEL). Total function per
+/// ADR-0041: never panics, out-of-bounds or null → null sentinel.
+///
+/// Guard 1 (C9 trap-on-0): `vec == 0` → SIGABRT (dead value).
+/// Guard 2 (bounds): `idx` out of range → return `NULL_SENTINEL`.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,        // len is non-negative, idx < len guard
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,     // len/cap fit in i64
+    clippy::cast_ptr_alignment,    // read_unaligned used
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_get(vec: i64, idx: i64) -> i64 {
+    // C9 trap-on-0: vec == 0 means dead value, not a valid vector.
+    if vec == 0 {
+        std::process::abort();
+    }
+    let body = vec as *const u8;
+    // SAFETY: vec points to valid heap body (len + cap + data).
+    let len = unsafe { (body as *const i64).read_unaligned() };
+    // Bounds check: out-of-range → null sentinel (total function contract).
+    if idx < 0 || idx >= len {
+        return triet_mir::NULL_SENTINEL;
+    }
+    // SAFETY: idx is in [0, len), data area starts at offset 16.
+    unsafe {
+        let data = body.add(16);
+        (data as *const i64).add(idx as usize).read_unaligned()
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────
@@ -2406,19 +2449,63 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn vector_free_null_is_noop() {
-        // Null-guard: free(0) must not crash.
+        // C9: free(0) must NOT trap — Drop of moved-out value must be silent.
         __triet_vector_free(0);
     }
 
+    /// N7 — trap-on-0: calling a read/consume shim with 0 must SIGABRT.
+    /// Spawns a subprocess that calls `__triet_string_len(0)` and asserts
+    /// it exits with signal 6 (SIGABRT). Also verifies `free(0)` does NOT
+    /// trap (reuses `vector_free_null_is_noop` above).
     #[test]
-    #[allow(unsafe_code)]
-    fn vector_len_null_returns_zero() {
-        assert_eq!(__triet_vector_len(0), 0, "len(null) = 0");
+    fn n7_shim_trap_on_zero() {
+        // Child process guard: if this env var is set, we're the child —
+        // call the shim with 0 and abort (shouldn't reach exit).
+        if let Ok(test_name) = std::env::var("_TRIET_N7_TRAP_CHILD") {
+            match test_name.as_str() {
+                "eq" => {
+                    // eq(0, 0) must trap — shortcut a==b must NOT fire before trap.
+                    let _ = __triet_string_eq(0, 0);
+                }
+                _ => {
+                    let _ = __triet_string_len(0);
+                }
+            }
+            std::process::exit(0); // unreachable if abort works
+        }
+
+        // Parent: spawn children that call shims with 0.
+        let exe = std::env::current_exe().expect("current_exe");
+        for test_name in &["len", "eq"] {
+            let status = std::process::Command::new(&exe)
+                .env("_TRIET_N7_TRAP_CHILD", test_name)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap_or_else(|_| panic!("spawn child for {test_name}"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                assert_eq!(
+                    status.signal(),
+                    Some(6),
+                    "{test_name}: expected SIGABRT (signal 6), got: {:?}",
+                    status.signal()
+                );
+            }
+            #[cfg(not(unix))]
+            {
+                assert!(!status.success(), "{test_name}: child should have aborted");
+            }
+        }
     }
 
+    /// F1: `free(NULL_SENTINEL)` must be no-op (null has no allocation).
     #[test]
-    #[allow(unsafe_code)]
-    fn vector_push_null_returns_zero() {
-        assert_eq!(__triet_vector_push(0, 42), 0, "push(null, x) = 0");
+    fn free_null_sentinel_is_noop() {
+        // String free
+        __triet_string_free(triet_mir::NULL_SENTINEL);
+        // Vector free
+        __triet_vector_free(triet_mir::NULL_SENTINEL);
     }
 }

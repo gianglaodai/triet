@@ -1277,6 +1277,22 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let dest = emit_shim_call(c, shim_name, vec![arg], "Integer", expr_span);
                     return Ok(dest);
                 }
+                "get" => {
+                    // `get(Vector, Integer) -> Integer?`
+                    // Total function: bounds-check → NULL_SENTINEL, never panics.
+                    if arguments.len() != 2 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let dest = emit_shim_call(c, "__triet_vector_get", args, "Integer?", expr_span);
+                    return Ok(dest);
+                }
                 "push" => {
                     if arguments.len() != 2 {
                         return Err(LowerError::unsupported_expr(

@@ -1,0 +1,9 @@
+// ERROR: E2420
+// Fixture 46: E2420 — get after push-consume (move use-after-move).
+// v1 is consumed by push, get(v1, 0) is a use-after-move → borrowck error.
+function main() -> Integer {
+    let v = vector_new();
+    let v1 = push(v, 10);
+    let v2 = push(v1, 20);
+    return get(v1, 0) ?: -1;
+}
