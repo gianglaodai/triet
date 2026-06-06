@@ -804,6 +804,39 @@ fn process_block(
         }
     }
 
+    // M3+ (ADR-0042 Q4): user function move-marking.
+    // Keyed by CallTarget::Jit — all Move-type args are consumed.
+    // Check-then-mark: aliased double-move (e.g. foo(s, s)) → E2420
+    // BEFORE marking, so that the callee never receives two params
+    // pointing to the same heap allocation (would double-free inside
+    // the callee, which caller zeroing cannot fix).
+    if let Terminator::CallDispatch {
+        target: triet_mir::CallTarget::Jit,
+        args,
+        ..
+    } = &block_data.terminator
+    {
+        for arg in args.iter() {
+            let arg_ty = &body.local_decls[arg.0].ty;
+            if !is_copy(arg_ty, body) {
+                if matches!(state.var_states.get(arg), Some(VarState::Moved)) {
+                    let name = body
+                        .local_names
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| format!("_{}", arg.0));
+                    errors.push(BorrowError::UseAfterMove {
+                        local: *arg,
+                        name,
+                        span: terminator_span(&block_data.terminator),
+                    });
+                } else {
+                    state.var_states.insert(*arg, VarState::Moved);
+                }
+            }
+        }
+    }
+
     (state, errors)
 }
 
@@ -840,8 +873,8 @@ mod tests {
         storage_live,
     };
     use triet_mir::{
-        DUMMY_SPAN, FieldPath, FunctionSignature, ParameterPassing, Place, Projection,
-        ReferenceForm,
+        CallTarget, DUMMY_SPAN, FieldPath, FunctionSignature, Local, ParameterPassing, Place,
+        Projection, ReferenceForm, ReturnShape, Statement, Terminator,
     };
 
     fn field(local: Local, name: &str) -> Place {
@@ -1576,6 +1609,111 @@ mod tests {
                 .any(|e| matches!(e, BorrowError::DropWhileBorrowed { .. })),
             "should have E2450, got: {:?}",
             result.errors
+        );
+    }
+
+    /// ADR-0042 Q4: E2420 use-after-move qua user function call
+    /// (CallTarget::Jit). M3+ marks Move-type args as Moved after
+    /// a CallDispatch to a Jit target. Subsequent use → E2420.
+    #[test]
+    fn e2420_use_after_move_via_jit_call() {
+        let mut b = MirBuilder::new("caller", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let callee_id = b.new_func_id();
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+        let bb2 = b.new_block();
+
+        // Call consume(my_string) — s is Move-type, must be marked Moved.
+        b.set_terminator(
+            bb0,
+            Terminator::CallDispatch {
+                callee: callee_id,
+                callee_name: "consume".to_string(),
+                target: CallTarget::Jit,
+                args: vec![s],
+                return_bb: bb1,
+                dest: vec![],
+                return_shape: ReturnShape::Scalar,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // bb1: use s (Assign reads it) after it was moved → E2420
+        let t = b.new_local();
+        b.push(bb1, storage_live(t));
+        b.push(
+            bb1,
+            Statement::Assign {
+                dest: Place::local(t),
+                source: Place::local(s),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(bb1, return_(vec![]));
+
+        b.set_terminator(bb2, return_(vec![]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        assert!(
+            !result.is_ok(),
+            "ADR-0042 Q4: using s after consume(s) must be E2420"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
+            "should have E2420 after Jit call, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0042 Q4 teeth: gỡ move-marking cho CallTarget::Jit → test này đỏ
+    /// (không có E2420, pipeline xanh oan).
+    #[test]
+    fn e2420_jit_call_teeth_requires_marking() {
+        let mut b = MirBuilder::new("caller", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let callee_id = b.new_func_id();
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            Terminator::CallDispatch {
+                callee: callee_id,
+                callee_name: "consume".to_string(),
+                target: CallTarget::Jit,
+                args: vec![s],
+                return_bb: bb1,
+                dest: vec![],
+                return_shape: ReturnShape::Scalar,
+                span: DUMMY_SPAN,
+            },
+        );
+        // Use s after call — marking code must fire E2420.
+        let t = b.new_local();
+        b.push(bb1, storage_live(t));
+        b.push(
+            bb1,
+            Statement::Assign {
+                dest: Place::local(t),
+                source: Place::local(s),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(bb1, return_(vec![]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        assert!(
+            !result.is_ok(),
+            "E2420 teeth: marking must fire; got Ok (no errors)"
         );
     }
 }
