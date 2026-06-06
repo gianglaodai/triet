@@ -196,6 +196,13 @@ pub enum Statement {
     /// Mark a local as dead (dropped). Must follow the last use.
     StorageDead(Local, Span),
 
+    /// Tombstone a local: write 0 (dead value) to signal the runtime
+    /// that this slot holds an invalid pointer. Used for caller zeroing
+    /// after a Move-type argument is passed to a user function
+    /// (ADR-0042 §Q1). Borrowck treats this as a move (→ Moved), NOT
+    /// a re-initialization — the zero is a tombstone, not a user value.
+    Deinit(Local, Span),
+
     /// `dest = source` — copy or move depending on types.
     Assign {
         /// Destination place.
@@ -1212,6 +1219,7 @@ impl Body {
                 match stmt {
                     Statement::StorageLive(l, _) => check_local(*l)?,
                     Statement::StorageDead(l, _) => check_local(*l)?,
+                    Statement::Deinit(l, _) => check_local(*l)?,
                     Statement::Assign { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
@@ -1468,6 +1476,7 @@ impl fmt::Display for Statement {
         match self {
             Self::StorageLive(l, _) => write!(f, "StorageLive({l})"),
             Self::StorageDead(l, _) => write!(f, "StorageDead({l})"),
+            Self::Deinit(l, _) => write!(f, "Deinit({l})"),
             Self::Assign { dest, source, .. } => write!(f, "{dest} = move {source}"),
             Self::Borrow {
                 dest, form, source, ..

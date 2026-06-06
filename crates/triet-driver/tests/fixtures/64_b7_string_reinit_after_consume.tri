@@ -1,0 +1,10 @@
+// EXPECT: 3
+// Fixture 64 (PB): re-init String after move — user Assign revives Owned
+function consume(s: String) {
+}
+function main() -> Integer {
+    let mutable s: String = "hello";
+    consume(s);
+    s = "xyz";
+    return len(s);
+}

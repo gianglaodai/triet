@@ -477,6 +477,15 @@ fn process_block(
                 state.var_states.remove(l);
             }
 
+            // ADR-0042 Δ4: Deinit = tombstone. Not a user re-init —
+            // compiler-emitted zero after a Move-type arg is passed to
+            // a Jit call. Sets the local to Moved so that subsequent
+            // uses are E2420. Contrast with user Assign/Const which
+            // revive to Owned (valid re-initialization).
+            Statement::Deinit(l, _) => {
+                state.var_states.insert(*l, VarState::Moved);
+            }
+
             Statement::Borrow {
                 dest,
                 form,
@@ -594,19 +603,11 @@ fn process_block(
                         state.var_states.insert(source.local, VarState::Moved);
                     }
                 }
-                // Δ4 (ADR-0042): preserve Moved state on dest.
-                // Zeroing a moved-out slot (caller zeroing after move) must
-                // NOT revive the value — the tombstone is not a valid user
-                // value and subsequent uses must still report E2420.
-                if state.var_states.get(&dest.local) != Some(&VarState::Moved) {
-                    state.var_states.insert(dest.local, VarState::Owned);
-                }
+                state.var_states.insert(dest.local, VarState::Owned);
             }
 
             Statement::Const { dest, .. } => {
-                if state.var_states.get(&dest.local) != Some(&VarState::Moved) {
-                    state.var_states.insert(dest.local, VarState::Owned);
-                }
+                state.var_states.insert(dest.local, VarState::Owned);
             }
 
             Statement::BinaryOp {
@@ -1728,6 +1729,104 @@ mod tests {
         assert!(
             !result.is_ok(),
             "E2420 teeth: marking must fire; got Ok (no errors)"
+        );
+    }
+
+    /// ADR-0042 Δ4: Deinit = tombstone (→ Moved), but user Assign
+    /// revives to Owned (valid re-init after move).
+    #[test]
+    fn deinit_tombstone_user_assign_revives() {
+        let mut b = MirBuilder::new("test", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+
+        // Jit call: consume(s) — marks s Moved
+        let callee_id = b.new_func_id();
+        b.set_terminator(
+            bb0,
+            Terminator::CallDispatch {
+                callee: callee_id,
+                callee_name: "consume".to_string(),
+                target: CallTarget::Jit,
+                args: vec![s],
+                return_bb: bb1,
+                dest: vec![],
+                return_shape: ReturnShape::Scalar,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // bb1: Deinit(s) — tombstone, keeps Moved
+        b.push(bb1, Statement::Deinit(s, DUMMY_SPAN));
+
+        // user Assign s = new_value — revives to Owned
+        let new_val = b.new_local();
+        b.set_local_type(new_val, "String");
+        b.push(bb1, storage_live(new_val));
+        b.push(
+            bb1,
+            Statement::Assign {
+                dest: Place::local(s),
+                source: Place::local(new_val),
+                span: DUMMY_SPAN,
+            },
+        );
+        // Use s after re-init → no error
+        b.set_terminator(bb1, return_(vec![s]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        assert!(
+            result.is_ok(),
+            "Deinit→Assign: user re-init must revive Owned, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0042 Δ4: Deinit + use without re-init → E2420.
+    #[test]
+    fn deinit_without_reinit_is_e2420() {
+        let mut b = MirBuilder::new("test", "Unit");
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+
+        let callee_id = b.new_func_id();
+        b.set_terminator(
+            bb0,
+            Terminator::CallDispatch {
+                callee: callee_id,
+                callee_name: "consume".to_string(),
+                target: CallTarget::Jit,
+                args: vec![s],
+                return_bb: bb1,
+                dest: vec![],
+                return_shape: ReturnShape::Scalar,
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb1, Statement::Deinit(s, DUMMY_SPAN));
+        // Use s after Deinit without re-init → E2420
+        b.set_terminator(bb1, return_(vec![s]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        assert!(
+            !result.is_ok(),
+            "Deinit→use: must be E2420 (tombstone, no re-init)"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
+            "should have E2420, got: {:?}",
+            result.errors
         );
     }
 }

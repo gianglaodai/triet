@@ -97,6 +97,27 @@ trap-on-0 sai. Đã lưu vào `MENTOR_G_STATE.md`.
 | C4 | E2420 khi dùng lại biến đã move vào user fn | P3: `len(s)` sau `consume(s)` → E2420 |
 | C5 | E2420 khi aliased move: `foo(s, s)` | P6: double-move → E2420 |
 | C6 | `Integer?` qua boundary nguyên vẹn | P5: `maybe_value(0) ?: 7` → 7 |
+| C7 | Deinit tombstone ≠ user re-init | PB: `s = "xyz"` sau `consume(s)` → 3; PC: `v = push(v,5)` → 1 |
+| C8 | Deinit + use không re-init → E2420 | 59 (len sau consume → E2420), 62 (foo(s,s) → E2420) |
+
+### §2.1 — Δ4: Deinit vs Assign (2026-06-07)
+
+**Vấn đề:** Zeroing sau call (Const 0 + Assign) ghi đè VarState Moved → Owned
+trong borrowck, triệt tiêu E2420. Nhưng bản vá Δ4 ban đầu (sticky-Moved) giết
+user re-init hợp lệ (`s = "xyz"` sau `consume(s)`, `v = push(v, x)`).
+
+**Giải pháp:** Tách tombstone khỏi user Assign bằng `Statement::Deinit`:
+
+- **MIR:** `Statement::Deinit(Local, Span)` — tombstone compiler-emit, không phải
+  user value.
+- **Lowerer:** Emit `Deinit(arg)` thay vì `Const(0)+Assign(temp→arg)` sau
+  `CallDispatch::Jit`.
+- **Borrowck:** `Deinit` → set `VarState::Moved` (tombstone). `Assign`/`Const`
+  trở về hành vi cũ: luôn revive `Owned` (user re-init hợp lệ).
+- **JIT:** `Deinit` → `def_var(iconst 0)` — đúng mã máy cũ.
+
+**Tính đúng đắn:** Deinit + use không re-init → E2420 (fixture 59, 62).
+Deinit + user Assign → Owned revived (fixture 64, 65).
 
 ---
 
@@ -119,10 +140,12 @@ trap-on-0 sai. Đã lưu vào `MENTOR_G_STATE.md`.
    thêm nhánh `CallTarget::Jit` cạnh M3, check-then-mark. Unit test hand-built
    MIR: heap arg → dùng lại → E2420; gỡ marking → test đỏ.
 3. **feat(track-b): caller zeroing sau CallDispatch::Jit** — lowerer: sau
-   `CallDispatch::Jit`, zero Move-type args. Unit test MIR-level.
-4. **feat(track-b): B7-lift — gỡ refusal + fixtures 58-63** — xóa 2 guard
-   `:492`/`:1360`. Fixtures: 58=P1, 59=P3 (E2420), 60=P4 (→5), 61=P5 (→7),
-   62=P6 (E2420 aliased), 63=temp-arg.
+   `CallDispatch::Jit`, emit `Statement::Deinit(arg)`. Unit test MIR-level
+   (deinit_tombstone_user_assign_revives, deinit_without_reinit_is_e2420).
+4. **feat(track-b): B7-lift — gỡ refusal + Deinit + fixtures 58-65** — xóa 2
+   guard `:492`/`:1360`. Fixtures: 58=P1, 59=P3 (E2420), 60=P4 (→5), 61=P5
+   (→7), 62=P6 (E2420 aliased), 63=temp-arg, 64=PB (re-init →3), 65=PC
+   (v=push(v,5) →1).
 
 ---
 

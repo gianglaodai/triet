@@ -179,7 +179,9 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
     // Liveness is tracked at whole-local granularity, so a projected place's
     // base local is what counts as read.
     match stmt {
-        Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => Vec::new(),
+        Statement::StorageLive(_, _) | Statement::StorageDead(_, _) | Statement::Deinit(_, _) => {
+            Vec::new()
+        }
         Statement::Assign { source, .. } => vec![source.local],
         Statement::Borrow { source, .. } => vec![source.local],
         Statement::Const { .. } => Vec::new(),
@@ -198,7 +200,9 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
 /// Return the locals WRITTEN by a statement.
 fn statement_writes(stmt: &Statement) -> Vec<Local> {
     match stmt {
-        Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => Vec::new(),
+        Statement::StorageLive(_, _) | Statement::StorageDead(_, _) | Statement::Deinit(_, _) => {
+            Vec::new()
+        }
         Statement::Assign { dest, .. }
         | Statement::Borrow { dest, .. }
         | Statement::Const { dest, .. }

@@ -683,6 +683,13 @@ impl JitContext {
                 Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => {
                     // No-op at runtime — borrow checker verified safety
                 }
+                Statement::Deinit(l, _) => {
+                    // ADR-0042: tombstone — zero the slot. The callee
+                    // already freed the heap value; zeroing the caller's
+                    // slot ensures the eventual free(0) on Drop is safe.
+                    let zero = builder.ins().iconst(I64, 0);
+                    builder.def_var(self.var(*l), zero);
+                }
                 Statement::StructAlloc { .. } => {
                     // No-op at runtime — stack slot allocated during build_body
                 }

@@ -1,0 +1,7 @@
+// EXPECT: 1
+// Fixture 65 (PC): v = push(v, x) — idiomatic Vector re-assign after move
+function main() -> Integer {
+    let mutable v = vector_new();
+    v = push(v, 5);
+    return len(v);
+}

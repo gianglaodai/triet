@@ -75,32 +75,6 @@ impl LowerError {
         }
     }
 
-    // Dead-code after B7-lift (ADR-0042 Q3): move-only scope; borrow-param
-    // refusal deferred to Bậc C. Keep for reuse when borrow params are gated.
-    #[allow(dead_code)]
-    fn heap_param_not_supported(name: &str, ty: &str, span: Span) -> Self {
-        Self {
-            message: format!(
-                "function parameter `{name}: {ty}` is a heap type — \
-                 heap types cannot cross user-defined function boundaries in Bậc A. \
-                 Use builtin shim functions (e.g. concat, push) instead."
-            ),
-            span,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn heap_user_fn_arg_not_supported(name: &str, span: Span) -> Self {
-        Self {
-            message: format!(
-                "argument `{name}` has a heap type and the callee is a user-defined function — \
-                 heap types cannot cross user-defined function boundaries in Bậc A. \
-                 Use builtin shim functions instead."
-            ),
-            span,
-        }
-    }
-
     fn null_literal_without_expected_type(span: Span) -> Self {
         Self {
             message: "`~0` (null literal) requires an expected type from context \
@@ -1393,19 +1367,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     },
                 );
                 c.cur = ret_bb;
+                // ADR-0042 Q1: Deinit tomb-stones Move-type args.
                 for &arg in &to_zero {
-                    let zero = c.alloc_local();
-                    c.push(Statement::StorageLive(zero, DUMMY_SPAN));
-                    c.push(Statement::Const {
-                        dest: Place::local(zero),
-                        value: ConstValue::Integer(0),
-                        span: DUMMY_SPAN,
-                    });
-                    c.push(Statement::Assign {
-                        dest: Place::local(arg),
-                        source: Place::local(zero),
-                        span: DUMMY_SPAN,
-                    });
+                    c.push(Statement::Deinit(arg, DUMMY_SPAN));
                 }
                 Ok(ret_local)
             } else {
@@ -1435,19 +1399,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     },
                 );
                 c.cur = ret_bb;
+                // ADR-0042 Q1: Deinit tomb-stones Move-type args.
                 for &arg in &to_zero {
-                    let zero = c.alloc_local();
-                    c.push(Statement::StorageLive(zero, DUMMY_SPAN));
-                    c.push(Statement::Const {
-                        dest: Place::local(zero),
-                        value: ConstValue::Integer(0),
-                        span: DUMMY_SPAN,
-                    });
-                    c.push(Statement::Assign {
-                        dest: Place::local(arg),
-                        source: Place::local(zero),
-                        span: DUMMY_SPAN,
-                    });
+                    c.push(Statement::Deinit(arg, DUMMY_SPAN));
                 }
                 Ok(dest)
             }
