@@ -1,0 +1,9 @@
+// EXPECT: 1
+// Fixture 58 (P1): consume(String) — caller zeroes slot, no double-free
+function consume(s: String) {
+}
+function main() -> Integer {
+    let my_string: String = "hello";
+    consume(my_string);
+    return 1;
+}

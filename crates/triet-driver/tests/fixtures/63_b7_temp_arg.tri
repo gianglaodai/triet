@@ -1,0 +1,8 @@
+// EXPECT: 5
+// Fixture 63: temp-arg — consume(make()) with inline allocation
+function consume(s: String) -> Integer {
+    return len(s);
+}
+function main() -> Integer {
+    return consume("hello");
+}

@@ -1,0 +1,9 @@
+// ERROR: E2420
+// Fixture 59 (P3): E2420 use-after-move qua user function call
+function consume(s: String) {
+}
+function main() -> Integer {
+    let my_string: String = "hello";
+    consume(my_string);
+    return len(my_string);
+}

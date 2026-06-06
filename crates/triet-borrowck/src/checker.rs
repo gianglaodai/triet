@@ -594,11 +594,19 @@ fn process_block(
                         state.var_states.insert(source.local, VarState::Moved);
                     }
                 }
-                state.var_states.insert(dest.local, VarState::Owned);
+                // Δ4 (ADR-0042): preserve Moved state on dest.
+                // Zeroing a moved-out slot (caller zeroing after move) must
+                // NOT revive the value — the tombstone is not a valid user
+                // value and subsequent uses must still report E2420.
+                if state.var_states.get(&dest.local) != Some(&VarState::Moved) {
+                    state.var_states.insert(dest.local, VarState::Owned);
+                }
             }
 
             Statement::Const { dest, .. } => {
-                state.var_states.insert(dest.local, VarState::Owned);
+                if state.var_states.get(&dest.local) != Some(&VarState::Moved) {
+                    state.var_states.insert(dest.local, VarState::Owned);
+                }
             }
 
             Statement::BinaryOp {
@@ -804,6 +812,12 @@ fn process_block(
         }
     }
 
+    // M3+ (ADR-0042 Q4): user function move-marking.
+    // Keyed by CallTarget::Jit — all Move-type args are consumed.
+    // Check-then-mark: aliased double-move (e.g. foo(s, s)) → E2420
+    // BEFORE marking, so that the callee never receives two params
+    // pointing to the same heap allocation (would double-free inside
+    // the callee, which caller zeroing cannot fix).
     // M3+ (ADR-0042 Q4): user function move-marking.
     // Keyed by CallTarget::Jit — all Move-type args are consumed.
     // Check-then-mark: aliased double-move (e.g. foo(s, s)) → E2420

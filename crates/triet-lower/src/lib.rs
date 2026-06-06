@@ -75,6 +75,9 @@ impl LowerError {
         }
     }
 
+    // Dead-code after B7-lift (ADR-0042 Q3): move-only scope; borrow-param
+    // refusal deferred to Bậc C. Keep for reuse when borrow params are gated.
+    #[allow(dead_code)]
     fn heap_param_not_supported(name: &str, ty: &str, span: Span) -> Self {
         Self {
             message: format!(
@@ -86,6 +89,7 @@ impl LowerError {
         }
     }
 
+    #[allow(dead_code)]
     fn heap_user_fn_arg_not_supported(name: &str, span: Span) -> Self {
         Self {
             message: format!(
@@ -487,14 +491,8 @@ pub fn lower_function(
 
     for p in &func.params {
         let ty = type_name(arena, p.type_annotation);
-        // B7: heap types cannot cross user-defined function boundaries.
-        if !simple_is_copy(&ty, &c.struct_names, &c.enum_names) {
-            return Err(LowerError::heap_param_not_supported(
-                &p.name,
-                &ty,
-                arena.type_expression(p.type_annotation).span.clone(),
-            ));
-        }
+        // B7-lift (ADR-0042): heap types now allowed as parameters.
+        // Move semantics: callee owns + drops, caller zeroes slot after call.
         let l = c.alloc_local_ty(&ty);
         c.vars.insert(p.name.clone(), l);
         c.push_owned(l);
@@ -1353,16 +1351,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .map(|a| lower_expr(*a, arena, c))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // B7: heap types cannot be passed to user-defined functions.
-            for &arg in &args {
-                let arg_ty = &c.local_decls[arg.0].ty;
-                if !simple_is_copy(arg_ty, &c.struct_names, &c.enum_names) {
-                    return Err(LowerError::heap_user_fn_arg_not_supported(
-                        arg_ty, expr_span,
-                    ));
-                }
-            }
-
+            // B7-lift (ADR-0042): heap args now allowed.
+            // Move semantics: caller zeroes slot after call, borrowck
+            // enforces E2420 use-after-move.
             if is_struct_ret {
                 // sret: allocate struct local for return, pass as hidden arg[0].
                 let ret_local = c.alloc_local_ty(&callee_ret);

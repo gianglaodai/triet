@@ -1,0 +1,9 @@
+// ERROR: E2420
+// Fixture 62 (P6): aliased double-move foo(s, s) — E2420 check-then-mark
+function consume_two(a: String, b: String) {
+}
+function main() -> Integer {
+    let s: String = "hello";
+    consume_two(s, s);
+    return 1;
+}

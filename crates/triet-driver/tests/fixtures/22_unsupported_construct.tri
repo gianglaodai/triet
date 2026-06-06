@@ -1,5 +1,5 @@
-// ERROR: heap
-// B7: heap type through user-function boundary — unsupported in Bậc A.
+// EXPECT: 42
+// Fixture 22: heap param through user-function boundary — now supported (B7-lift ADR-0042)
 function take_string(s: String) -> Integer {
     return 1;
 }

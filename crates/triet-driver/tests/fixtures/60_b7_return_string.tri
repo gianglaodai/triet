@@ -1,0 +1,9 @@
+// EXPECT: 5
+// Fixture 60 (P4): return String from user function — M4 return-escape
+function make() -> String {
+    return "world";
+}
+function main() -> Integer {
+    let t: String = make();
+    return len(t);
+}
