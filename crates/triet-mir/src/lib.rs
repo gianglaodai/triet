@@ -2038,6 +2038,133 @@ mod tests {
         let body = well_formed_body();
         assert!(!is_copy("UnknownType", &body));
     }
+
+    // ── Nullable representation tests (ADR-0041) ──────────────────
+
+    /// N1 — Canary: `NULL_SENTINEL` must lie outside every Triết scalar range.
+    /// If this test fails, someone changed the scalar range (or trit width)
+    /// without updating the sentinel — the niche is no longer valid.
+    /// Ràng vào hằng triet-core, không hardcode lại số.
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    // ^-- This IS a compile-time invariant guard. The whole point is to break
+    //     loudly at test time if someone changes Integer/Tryte width without
+    //     updating NULL_SENTINEL. clippy's "this is always true" is the desired
+    //     property — when it becomes false, the canary did its job.
+    fn nullable_sentinel_outside_scalar_ranges() {
+        // Integer: MIN = -3_812_798_742_493
+        assert!(
+            NULL_SENTINEL < triet_core::Integer::MIN.to_i64(),
+            "NULL_SENTINEL ({NULL_SENTINEL}) must be < Integer::MIN ({})",
+            triet_core::Integer::MIN.to_i64()
+        );
+        // Tryte: MIN = -9_841
+        assert!(
+            NULL_SENTINEL < triet_core::Tryte::MIN.to_i64(),
+            "NULL_SENTINEL ({NULL_SENTINEL}) must be < Tryte::MIN ({})",
+            triet_core::Tryte::MIN.to_i64()
+        );
+        // Trit: min = Negative = -1 (this also covers Trilean — same domain)
+        assert!(
+            NULL_SENTINEL < i64::from(triet_core::Trit::Negative.to_i8()),
+            "NULL_SENTINEL ({NULL_SENTINEL}) must be < Trit::Negative (-1)"
+        );
+    }
+
+    /// N2 — `is_nullable_type` / `nullable_payload` round-trip and pins.
+    #[test]
+    fn nullable_type_helpers() {
+        // Round-trip: Integer?
+        assert!(is_nullable_type("Integer?"));
+        assert_eq!(nullable_payload("Integer?"), Some("Integer"));
+
+        // Round-trip: String?
+        assert!(is_nullable_type("String?"));
+        assert_eq!(nullable_payload("String?"), Some("String"));
+
+        // Pin: "?" trần must NOT be nullable (type-unknown).
+        assert!(!is_nullable_type("?"), "bare '?' must not be nullable");
+        assert_eq!(nullable_payload("?"), None);
+
+        // Pin: is_vec_type must NOT consume nullable vector type-string.
+        assert!(is_nullable_type("Vector<Integer>?"));
+        assert_eq!(
+            nullable_payload("Vector<Integer>?"),
+            Some("Vector<Integer>")
+        );
+        // Payload of "Vector<Integer>?" is "Vector<Integer>" which IS a vec type.
+        let payload = nullable_payload("Vector<Integer>?").unwrap();
+        assert!(
+            is_vec_type(payload),
+            "payload of nullable Vector should be Vector<Integer>"
+        );
+
+        // Non-nullable: plain types.
+        assert!(!is_nullable_type("Integer"));
+        assert_eq!(nullable_payload("Integer"), None);
+        assert!(!is_nullable_type("String"));
+        assert_eq!(nullable_payload("String"), None);
+        assert!(!is_nullable_type("Vector"));
+        assert_eq!(nullable_payload("Vector"), None);
+
+        // Edge case: "Integer??" — can't happen (C6: T?? auto-flatten),
+        // but helper must be defined. Mechanical strip: last ? only.
+        assert!(is_nullable_type("Integer??"));
+        assert_eq!(nullable_payload("Integer??"), Some("Integer?"));
+    }
+
+    /// N2 extension — `is_copy` integration: nullable delegates to payload.
+    #[test]
+    fn nullable_is_copy_delegation() {
+        let body = well_formed_body();
+
+        // Integer? → payload Integer → Copy
+        assert!(is_copy("Integer?", &body));
+        // String? → payload String → Move
+        assert!(!is_copy("String?", &body));
+        // Vector<Integer>? → payload Vector<Integer> → Move (via is_vec_type)
+        assert!(!is_copy("Vector<Integer>?", &body));
+        // ? trần → NOT nullable → falls through to Copy (existing behavior)
+        assert!(is_copy("?", &body));
+    }
+}
+
+/// Sentinel encoding the `~0` (null) state of **all** `T?` at Bậc A
+/// (scalar and heap — uniform). INVARIANT: lies outside every Triết
+/// scalar range (see canary test N1 in the test module, and
+/// [ADR-0041 §6.2](../../docs/decisions/0041-nullable-representation-bac-a.md#62--scalar-debt-d1-phantom-null-qua-arithmetic-khng-wrap)).
+pub const NULL_SENTINEL: i64 = i64::MIN;
+
+/// Returns `true` if `ty` names a nullable type (e.g. `"Integer?"`,
+/// `"String?"`, `"Vector<Integer>?"`).
+///
+/// **Ordering rule:** this MUST be called BEFORE any other type-string
+/// classifier (`is_vec_type`, etc.) at every consumer. Reason:
+/// `"Vector<Integer>?"` starts with `"Vector<"` and would be
+/// misclassified as a bare Vector by `is_vec_type`.
+///
+/// **Pin:** `is_nullable_type("?")` returns `false`. The bare `"?"`
+/// type-string means "type unknown" (`is_copy` treats it as Copy) —
+/// it must NOT be classified as "nullable of empty string."
+#[must_use]
+pub fn is_nullable_type(ty: &str) -> bool {
+    ty.ends_with('?') && ty != "?"
+}
+
+/// Strips the trailing `?` from a nullable type-string.
+///
+/// `"Integer?"` → `Some("Integer")`; non-nullable → `None`.
+///
+/// **Pin:** `nullable_payload("Vector<Integer>?")` returns
+/// `Some("Vector<Integer>")` — `is_vec_type` must NOT consume
+/// a nullable type-string. Verify in N2.
+#[must_use]
+pub fn nullable_payload(ty: &str) -> Option<&str> {
+    if is_nullable_type(ty) {
+        Some(&ty[..ty.len() - 1])
+    } else {
+        None
+    }
 }
 
 /// Returns `true` if `ty` names a Vector type (e.g. `"Vector"` or
@@ -2050,6 +2177,11 @@ pub fn is_vec_type(ty: &str) -> bool {
 
 /// Determines if a type has Copy semantics (stack primitives) or Move semantics (heap types).
 pub fn is_copy(ty: &str, body: &Body) -> bool {
+    // Nullable types delegate to their payload (ordering rule: BEFORE all
+    // other classifiers — is_vec_type would misclassify "Vector<Integer>?").
+    if let Some(payload) = nullable_payload(ty) {
+        return is_copy(payload, body);
+    }
     match ty {
         "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
         "String" | "HashMap" => false,

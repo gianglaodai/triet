@@ -3,3 +3,6 @@ name = "triet-mir"
 version = "0.1.0-dev"
 edition = "2024"
 description = "Triết Mid-level Intermediate Representation — flat, non-nested IR for borrow checking and codegen"
+
+[dependencies]
+triet-core = { workspace = true }
