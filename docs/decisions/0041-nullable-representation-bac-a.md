@@ -1,6 +1,6 @@
 # ADR-0041: Nullable (`T?`) Representation — Bậc A
 
-**Status:** Mentor O đã ký (semantics & soundness, 2026-06-06 — implementation Bước 1-4 verified). Chờ ký Mentor G (layout, ABI, codegen).
+**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-06) + Mentor G ĐÃ KÝ (layout/ABI/codegen, 2026-06-07). Implementation Bước 1-4 verified, 43 fixtures, 1070 tests, 0 warnings. Implementation complete at `28c1a5f`.
 **Date:** 2026-06-06
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
@@ -488,3 +488,21 @@ PA-3c chạm ít file nhất hôm nay và không chôn quyết định nào cả
    trong một lần — §0.1.
 7. **Thứ tự implement:** canary N1 + helpers → widening + `~0` + Elvis →
    `get` + fixtures 40-46. Đăng ký shim cả driver lẫn harness (bài học 4.3b).
+
+---
+
+## §12 — Addendum (2026-06-07, Bậc B lát a)
+
+Match `~+/~0` 2-arm cho `T?` (deferred từ Bậc A Q4) được implement ở Bậc B.
+
+- **E1026** mở rộng: exhaustiveness check cho `Type::Nullable` — đòi `~+` (present)
+  và `~0` (null), hoặc wildcard `_`. Dùng chung `NonExhaustiveOutcomeMatch` với
+  `Type::Outcome`, message sửa generic: "non-exhaustive match: missing arm(s) …".
+- **E1035** cấp mới: `NegativeArmOnNullable` — reject `~-` trên `T?` (nullable
+  không có error state, `~-` chỉ valid trên `T~E` / `T?~E`).
+- **Lowering:** branch-based so sánh `NULL_SENTINEL` (mẫu Elvis), 3 guard
+  (duplicate arm, wildcard-last, sub-pattern Variable/Wildcard) bảo đảm
+  slot-model ≡ first-match-wins.
+- **Fixtures:** 48–57 (10 fixtures: present, null, wildcard, wildcard-fallback×2,
+  non-exhaustive E1026, `~-` rejection E1035, wildcard-not-last, duplicate-`~+`,
+  literal-subpattern).
