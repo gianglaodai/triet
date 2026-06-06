@@ -1,0 +1,10 @@
+// ERROR: not valid on nullable type
+// Fixture 52: ~- arm on nullable T? is rejected
+function main() -> Integer {
+    let x: Integer? = 42;
+    match x {
+        ~+ val => val,
+        ~- err => 0,
+        ~0 => 0,
+    }
+}

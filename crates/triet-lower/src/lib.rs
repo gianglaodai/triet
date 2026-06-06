@@ -1767,6 +1767,254 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Lower scrutinee into a temp.
             let scrut_local = lower_expr(*scrutinee, arena, c)?;
 
+            // ── Nullable match: branch on ~+ / ~0 via NULL_SENTINEL ──
+            let scrut_ty = c.local_decls[scrut_local.0].ty.clone();
+            if triet_mir::is_nullable_type(&scrut_ty) {
+                use triet_syntax::{MatchArm, OutcomeArm, Pattern};
+                let payload_ty = triet_mir::nullable_payload(&scrut_ty)
+                    .ok_or_else(|| {
+                        LowerError::unsupported_expr(
+                            &arena.expression(expr_id).node,
+                            expr_span.clone(),
+                        )
+                    })?
+                    .to_string();
+
+                // ── Scan arms (first-match-wins via slot-per-state ──
+                // Guards enforce that the slot model is equivalent to
+                // first-match-wins for all accepted programs:
+                //   1. No duplicate arms of the same kind.
+                //   2. Wildcard must be last (any arm after _ is unreachable).
+                //   3. ~+ sub-patterns must be Variable or Wildcard.
+                let mut wildcard_arm: Option<&MatchArm> = None;
+                let mut present_arm: Option<&MatchArm> = None;
+                let mut null_arm: Option<&MatchArm> = None;
+
+                for arm in arms.iter() {
+                    let pat = arena.pattern(arm.pattern);
+                    let pat_span = pat.span.clone();
+
+                    // Guard 2: any arm after wildcard is unreachable.
+                    if wildcard_arm.is_some() {
+                        return Err(LowerError {
+                            message: "wildcard `_` must be the last arm in a nullable match — \
+                                      arms after wildcard are unreachable"
+                                .to_string(),
+                            span: pat_span,
+                        });
+                    }
+
+                    match &pat.node {
+                        Pattern::Wildcard => wildcard_arm = Some(arm),
+                        Pattern::OutcomeArm {
+                            arm: OutcomeArm::Positive,
+                            payload,
+                        } => {
+                            // Guard 1: duplicate ~+ arm.
+                            if present_arm.is_some() {
+                                return Err(LowerError {
+                                    message: "duplicate `~+` arm in nullable match".to_string(),
+                                    span: pat_span,
+                                });
+                            }
+                            // Guard 3: sub-pattern must be Variable or Wildcard.
+                            if let Some(sub_pat) = payload {
+                                match &arena.pattern(*sub_pat).node {
+                                    Pattern::Variable(_) | Pattern::Wildcard => {}
+                                    other => {
+                                        return Err(LowerError {
+                                            message: format!(
+                                                "unsupported sub-pattern in `~+` arm: \
+                                                 {other:?} — only variable bindings and `_` \
+                                                 are supported"
+                                            ),
+                                            span: arena.pattern(*sub_pat).span.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            present_arm = Some(arm);
+                        }
+                        Pattern::OutcomeArm {
+                            arm: OutcomeArm::Zero,
+                            ..
+                        } => {
+                            // Guard 1: duplicate ~0 arm.
+                            if null_arm.is_some() {
+                                return Err(LowerError {
+                                    message: "duplicate `~0` arm in nullable match".to_string(),
+                                    span: pat_span,
+                                });
+                            }
+                            null_arm = Some(arm);
+                        }
+                        Pattern::OutcomeArm {
+                            arm: OutcomeArm::Negative,
+                            ..
+                        } => {
+                            return Err(LowerError {
+                                message:
+                                    "`~-` arm on nullable type — typechecker should have rejected this"
+                                        .to_string(),
+                                span: pat_span,
+                            });
+                        }
+                        other => {
+                            return Err(LowerError {
+                                message: format!(
+                                    "unsupported match pattern on nullable scrutinee: {other:?}"
+                                ),
+                                span: pat_span,
+                            });
+                        }
+                    }
+                }
+
+                // Wildcard-only: no branching needed.
+                if let Some(arm) = wildcard_arm
+                    && present_arm.is_none()
+                    && null_arm.is_none()
+                {
+                    c.push_scope();
+                    let body_val = lower_expr(arm.body, arena, c)?;
+                    let result = c.alloc_local_ty(&payload_ty);
+                    c.push(Statement::StorageLive(result, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    c.pop_scope();
+                    return Ok(result);
+                }
+
+                // ── Branch-based lowering (Elvis pattern) ──
+                let merge_bb = c.alloc_bb();
+                let result = c.alloc_local_ty(&payload_ty);
+                c.push(Statement::StorageLive(result, expr_span.clone()));
+
+                let null_bb = c.alloc_bb();
+                let present_bb = c.alloc_bb();
+
+                // Create NULL_SENTINEL constant.
+                let sentinel = c.alloc_local();
+                c.push(Statement::StorageLive(sentinel, expr_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(sentinel),
+                    value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                    span: expr_span.clone(),
+                });
+
+                // Compare scrutinee == NULL_SENTINEL.
+                let cmp = c.alloc_local();
+                c.push(Statement::StorageLive(cmp, expr_span.clone()));
+                c.push(Statement::BinaryOp {
+                    dest: Place::local(cmp),
+                    op: triet_mir::BinOp::Eq,
+                    left: Place::local(scrut_local),
+                    right: Place::local(sentinel),
+                    span: expr_span.clone(),
+                });
+
+                let cur_bb = c.cur;
+                c.term(
+                    cur_bb,
+                    Terminator::If {
+                        cond: cmp,
+                        positive_bb: null_bb,
+                        zero_bb: None,
+                        negative_bb: present_bb,
+                        span: expr_span.clone(),
+                    },
+                );
+
+                // Helper: lower an arm body (no pattern binding).
+                let lower_arm_no_bind = |arm: &MatchArm,
+                                         c: &mut Ctx,
+                                         arena,
+                                         result: Local,
+                                         merge_bb: BasicBlock,
+                                         expr_span: Span|
+                 -> Result<(), LowerError> {
+                    c.push_scope();
+                    let body_val = lower_expr(arm.body, arena, c)?;
+                    let arm_end = c.cur;
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    c.term(
+                        arm_end,
+                        Terminator::Goto {
+                            target: merge_bb,
+                            span: DUMMY_SPAN,
+                        },
+                    );
+                    c.pop_scope();
+                    Ok(())
+                };
+
+                // ── Null branch: ~0 arm or wildcard fallback ──
+                c.cur = null_bb;
+                let arm_for_null = null_arm.or(wildcard_arm).ok_or_else(|| LowerError {
+                    message: "nullable match: no arm for null (~0) state — \
+                              typechecker should have rejected this"
+                        .to_string(),
+                    span: expr_span.clone(),
+                })?;
+                lower_arm_no_bind(arm_for_null, c, arena, result, merge_bb, expr_span.clone())?;
+
+                // ── Present branch: ~+ arm or wildcard fallback ──
+                c.cur = present_bb;
+                let arm_for_present = present_arm.or(wildcard_arm).ok_or_else(|| LowerError {
+                    message: "nullable match: no arm for present (~+) state — \
+                              typechecker should have rejected this"
+                        .to_string(),
+                    span: expr_span.clone(),
+                })?;
+
+                c.push_scope();
+                // Bind ~+ variable if present and has a variable sub-pattern.
+                if let Pattern::OutcomeArm {
+                    arm: OutcomeArm::Positive,
+                    payload: Some(sub_pat),
+                } = &arena.pattern(arm_for_present.pattern).node
+                {
+                    let sub_pat = arena.pattern(*sub_pat);
+                    if let Pattern::Variable(var_name) = &sub_pat.node {
+                        // PA-3c: identity — scrutinee IS the payload.
+                        let bind_local = c.alloc_local_ty(&payload_ty);
+                        c.push(Statement::StorageLive(bind_local, expr_span.clone()));
+                        c.push(Statement::Assign {
+                            dest: Place::local(bind_local),
+                            source: Place::local(scrut_local),
+                            span: expr_span.clone(),
+                        });
+                        c.vars.insert(var_name.clone(), bind_local);
+                        c.push_owned(bind_local);
+                    }
+                }
+                let body_val = lower_expr(arm_for_present.body, arena, c)?;
+                let arm_end = c.cur;
+                c.push(Statement::Assign {
+                    dest: Place::local(result),
+                    source: Place::local(body_val),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    arm_end,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+                c.pop_scope();
+
+                c.cur = merge_bb;
+                return Ok(result);
+            }
+
             // Read discriminant.
             let disc_local = c.alloc_local();
             c.push(Statement::StorageLive(disc_local, expr_span.clone()));

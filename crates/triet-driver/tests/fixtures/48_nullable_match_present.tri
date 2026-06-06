@@ -1,0 +1,9 @@
+// EXPECT: 42
+// Fixture 48: match Integer? with ~+ present arm — identity under PA-3c
+function main() -> Integer {
+    let x: Integer? = 42;
+    return match x {
+        ~+ val => val,
+        ~0 => 0,
+    };
+}

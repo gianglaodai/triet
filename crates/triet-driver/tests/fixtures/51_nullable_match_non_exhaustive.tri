@@ -1,0 +1,8 @@
+// ERROR: missing arm(s)
+// Fixture 51: non-exhaustive match on nullable — missing ~0 arm
+function main() -> Integer {
+    let x: Integer? = 42;
+    match x {
+        ~+ val => val,
+    }
+}

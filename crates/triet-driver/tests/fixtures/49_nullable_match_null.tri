@@ -1,0 +1,9 @@
+// EXPECT: 0
+// Fixture 49: match Integer? with ~0 null arm
+function main() -> Integer {
+    let x: Integer? = ~0;
+    return match x {
+        ~+ val => val,
+        ~0 => 0,
+    };
+}

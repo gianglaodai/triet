@@ -1,0 +1,9 @@
+// ERROR: unsupported sub-pattern in `~+` arm
+// Fixture 57: ~+ with literal sub-pattern (not variable/wildcard)
+function main() -> Integer {
+    let x: Integer? = 42;
+    return match x {
+        ~+ 5 => 1,
+        ~0 => 0,
+    };
+}

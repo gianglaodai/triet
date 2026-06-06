@@ -1394,6 +1394,22 @@ impl Checker<'_> {
 
     fn check_match(&mut self, scrutinee: ExprId, arms: &[MatchArm], span: Span) -> Type {
         let scrutinee_ty = self.infer_expression(scrutinee);
+
+        // E1035: reject ~- arm on nullable type (T? has no error state).
+        if matches!(scrutinee_ty, Type::Nullable(_)) {
+            for arm in arms {
+                if let triet_syntax::Pattern::OutcomeArm {
+                    arm: triet_syntax::OutcomeArm::Negative,
+                    ..
+                } = &self.arena.pattern(arm.pattern).node
+                {
+                    self.errors.push(TypeError::NegativeArmOnNullable {
+                        span: self.arena.pattern(arm.pattern).span.clone(),
+                    });
+                }
+            }
+        }
+
         let mut arm_type: Option<Type> = None;
 
         // v0.9.x.atomic.7d: branch-aware move tracking per ADR-0031 §4.
@@ -1451,6 +1467,11 @@ impl Checker<'_> {
             self.check_outcome_exhaustiveness(arms, *allow_null_state, span.clone());
         }
 
+        // Nullable T? exhaustiveness: requires ~+ and ~0 (or _ wildcard).
+        if let Type::Nullable(_) = &scrutinee_ty {
+            self.check_nullable_exhaustiveness(arms, span.clone());
+        }
+
         arm_type.unwrap_or_else(|| {
             // Empty match — flag as a type error.
             self.errors.push(TypeError::Mismatch {
@@ -1503,6 +1524,48 @@ impl Checker<'_> {
             missing.push("`~-`");
         }
         if allow_null_state && !has_zero {
+            missing.push("`~0`");
+        }
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveOutcomeMatch {
+                missing: missing.join(", "),
+                span,
+            });
+        }
+    }
+
+    /// Verify a match on nullable `T?` covers required arms (E1026).
+    /// Requires `~+` (present) and `~0` (null). Wildcard `_` short-circuits.
+    fn check_nullable_exhaustiveness(&mut self, arms: &[MatchArm], span: Span) {
+        // Wildcard short-circuit.
+        for arm in arms {
+            if matches!(
+                self.arena.pattern(arm.pattern).node,
+                triet_syntax::Pattern::Wildcard
+            ) {
+                return;
+            }
+        }
+        let mut has_pos = false;
+        let mut has_zero = false;
+        for arm in arms {
+            if let triet_syntax::Pattern::OutcomeArm {
+                arm: outcome_arm, ..
+            } = &self.arena.pattern(arm.pattern).node
+            {
+                match outcome_arm {
+                    triet_syntax::OutcomeArm::Positive => has_pos = true,
+                    triet_syntax::OutcomeArm::Zero => has_zero = true,
+                    // ~- on nullable is rejected by E1035 — ignore here.
+                    triet_syntax::OutcomeArm::Negative => {}
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        if !has_pos {
+            missing.push("`~+`");
+        }
+        if !has_zero {
             missing.push("`~0`");
         }
         if !missing.is_empty() {

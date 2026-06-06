@@ -310,7 +310,7 @@ pub enum TypeError {
     },
 
     /// E1026: non-exhaustive match on outcome type.
-    #[error("non-exhaustive `match` on outcome type: missing arm(s) {missing}")]
+    #[error("non-exhaustive `match`: missing arm(s) {missing}")]
     #[diagnostic(
         code(triet::typecheck::E1026),
         help("add the missing arm(s) or use `_` wildcard to cover them")
@@ -319,7 +319,7 @@ pub enum TypeError {
         /// Comma-separated list of missing arm tokens (e.g. "`~+`, `~-`").
         missing: String,
         /// Source location of the `match` expression.
-        #[label("this match does not cover all outcome arms")]
+        #[label("this match does not cover all arms")]
         span: Span,
     },
 
@@ -456,6 +456,26 @@ pub enum TypeError {
     TrileanReturnNotRefined {
         /// Source location of the function return expression / body.
         #[label("body produces `Trilean`, declared returns `Trilean!`")]
+        span: Span,
+    },
+
+    /// E1035: `~-` arm on nullable type (`T?` has no error state).
+    /// Per [ADR-0020] §10.1: `T?` discriminator values are `+` (value)
+    /// and `0` (null). `-` is reserved for outcome types `T~E` / `T?~E`.
+    ///
+    /// [ADR-0020]: ../../../docs/decisions/0020-outcome-error-handling.md
+    #[error(
+        "`~-` arm is not valid on nullable type `T?` — `~-` is reserved for outcome types `T~E`/`T?~E`"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1035),
+        help(
+            "nullable `T?` has only two states: present (`~+`) and null (`~0`). Remove the `~-` arm."
+        )
+    )]
+    NegativeArmOnNullable {
+        /// Source location of the offending `~-` arm.
+        #[label("`~-` not valid on nullable type")]
         span: Span,
     },
 
@@ -656,6 +676,7 @@ impl TypeError {
             | Self::PatternMissingExplicitConstructor { span }
             | Self::PossiblyUnknownCondition { span }
             | Self::TrileanReturnNotRefined { span }
+            | Self::NegativeArmOnNullable { span }
             | Self::NonAtomicValueType { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }

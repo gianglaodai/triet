@@ -1,0 +1,9 @@
+// EXPECT: 99
+// Fixture 54: wildcard covers ~0 when only ~+ is explicit, value is null
+function main() -> Integer {
+    let x: Integer? = ~0;
+    return match x {
+        ~+ val => val,
+        _ => 99,
+    };
+}

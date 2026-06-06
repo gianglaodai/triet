@@ -1,0 +1,9 @@
+// ERROR: wildcard `_` must be the last arm
+// Fixture 55: wildcard must be the last arm in nullable match
+function main() -> Integer {
+    let x: Integer? = ~0;
+    return match x {
+        _ => 99,
+        ~0 => 0,
+    };
+}

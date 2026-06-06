@@ -1,0 +1,10 @@
+// ERROR: duplicate `~+` arm
+// Fixture 56: duplicate ~+ arms in nullable match
+function main() -> Integer {
+    let x: Integer? = 42;
+    return match x {
+        ~+ a => 1,
+        ~+ b => 2,
+        ~0 => 0,
+    };
+}

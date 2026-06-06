@@ -1,0 +1,8 @@
+// EXPECT: 99
+// Fixture 50: match Integer? with wildcard (_) — covers all states
+function main() -> Integer {
+    let x: Integer? = 77;
+    return match x {
+        _ => 99,
+    };
+}
