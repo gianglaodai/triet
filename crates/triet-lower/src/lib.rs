@@ -1374,6 +1374,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 });
                 // Insert sret pointer as first argument.
                 args.insert(0, ret_local);
+                // ADR-0042 Q1: collect Move-type args for zeroing
+                // BEFORE the CallDispatch consumes `args`.
+                // Skip arg[0] — sret pointer is not user-visible.
+                let to_zero: Vec<Local> = args[1..]
+                    .iter()
+                    .filter(|&&arg| {
+                        !simple_is_copy(&c.local_decls[arg.0].ty, &c.struct_names, &c.enum_names)
+                    })
+                    .copied()
+                    .collect();
                 let ret_bb = c.alloc_bb();
                 let call_bb = c.cur;
                 c.term(
@@ -1392,10 +1402,32 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     },
                 );
                 c.cur = ret_bb;
+                for &arg in &to_zero {
+                    let zero = c.alloc_local();
+                    c.push(Statement::StorageLive(zero, DUMMY_SPAN));
+                    c.push(Statement::Const {
+                        dest: Place::local(zero),
+                        value: ConstValue::Integer(0),
+                        span: DUMMY_SPAN,
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(arg),
+                        source: Place::local(zero),
+                        span: DUMMY_SPAN,
+                    });
+                }
                 Ok(ret_local)
             } else {
                 let dest = c.alloc_local_ty(&callee_ret);
                 c.push(Statement::StorageLive(dest, expr_span.clone()));
+                // ADR-0042 Q1: collect Move-type args before CallDispatch consumes them.
+                let to_zero: Vec<Local> = args
+                    .iter()
+                    .filter(|&&arg| {
+                        !simple_is_copy(&c.local_decls[arg.0].ty, &c.struct_names, &c.enum_names)
+                    })
+                    .copied()
+                    .collect();
                 let ret_bb = c.alloc_bb();
                 let call_bb = c.cur;
                 c.term(
@@ -1412,6 +1444,20 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     },
                 );
                 c.cur = ret_bb;
+                for &arg in &to_zero {
+                    let zero = c.alloc_local();
+                    c.push(Statement::StorageLive(zero, DUMMY_SPAN));
+                    c.push(Statement::Const {
+                        dest: Place::local(zero),
+                        value: ConstValue::Integer(0),
+                        span: DUMMY_SPAN,
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(arg),
+                        source: Place::local(zero),
+                        span: DUMMY_SPAN,
+                    });
+                }
                 Ok(dest)
             }
         }
