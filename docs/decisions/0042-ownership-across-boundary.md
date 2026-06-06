@@ -1,6 +1,6 @@
 # ADR-0042: Ownership Across Function Boundary — B7-lift (Move-only)
 
-**Status:** Draft — CHỜ KÝ Mentor O (semantics/soundness) + Mentor G (layout/ABI).
+**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics/soundness, 2026-06-07) + Mentor G ĐÃ KÝ (layout/ABI, 2026-06-07). Implementation complete at `86b7039`.
 **Date:** 2026-06-07
 **Author:** AI (triển khai), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
