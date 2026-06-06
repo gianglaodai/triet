@@ -1,0 +1,12 @@
+// EXPECT: 7
+// Fixture 44: widening + ~0 qua return — function returns Integer?, caller Elvis
+function maybe_value(flag: Integer) -> Integer? {
+    if flag <= 0 {
+        return ~0;
+    }
+    return 42;
+}
+function main() -> Integer {
+    let x: Integer? = maybe_value(0);
+    return x ?: 7;
+}

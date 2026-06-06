@@ -47,3 +47,4 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [ ] Fix fixture 27: match error-code thay vì match internal JIT string (brittle, rò rỉ representation).
 - [ ] Enum exhaustiveness checker (currently non-exhaustive match = runtime Trap).
 - [ ] Pattern::Wildcard support trong enum match (Bậc A hiện chỉ handle EnumVariant + Variable patterns).
+- [ ] **D1 (ADR-0041 §6.2):** Arithmetic fidelity — enforce ternary range mod-3²⁷ at runtime (JIT arithmetic is raw i64, niche NULL_SENTINEL = i64::MIN not enforce-protected). Khi Bậc B wrap đúng mod-3²⁷, D1 tự đóng — không cần đổi repr.

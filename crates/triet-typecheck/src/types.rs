@@ -196,6 +196,12 @@ impl Type {
             return a.matches(b);
         }
         // Widening: Nullable(T) accepts T (e.g. Integer ⊂ Integer?)
+        // TODO(ADR-0041 §watch-list.6): inner.as_ref() == other uses
+        // structural equality (PartialEq), not .matches(). This means
+        // `let x: Trilean? = true` (Trilean! → Trilean?) is wrongly
+        // rejected because Trilean! != Trilean by ==. Should use
+        // inner.as_ref().matches(other) instead. Defer to Bậc B —
+        // Bậc A target type is Integer?, not Trilean?.
         if let Self::Nullable(inner) = self
             && inner.as_ref() == other
         {

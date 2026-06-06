@@ -1,0 +1,9 @@
+// ERROR: type mismatch
+// N6: Integer? cannot be used where Integer is expected (narrowing rejected).
+function expects_integer(x: Integer) -> Integer {
+    return x;
+}
+function main() -> Integer {
+    let y: Integer? = 42;
+    return expects_integer(y);
+}

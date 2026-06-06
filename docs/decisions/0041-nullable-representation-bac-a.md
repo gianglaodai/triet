@@ -1,6 +1,6 @@
 # ADR-0041: Nullable (`T?`) Representation — Bậc A
 
-**Status:** Mentor O đã ký (semantics & soundness, 2026-06-06). Chờ ký Mentor G (layout, ABI, codegen).
+**Status:** Mentor O đã ký (semantics & soundness, 2026-06-06 — implementation Bước 1-4 verified). Chờ ký Mentor G (layout, ABI, codegen).
 **Date:** 2026-06-06
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
@@ -424,13 +424,14 @@ PA-3c chạm ít file nhất hôm nay và không chôn quyết định nào cả
 
 | # | Fixture | Kỳ vọng |
 |---|---------|---------|
-| 40 | `get` in-bounds: push 3 phần tử, `get(v,1) ?: -1` | EXPECT: phần tử |
+| 40 | `get` in-bounds: push 3 phần tử, `get(v,1) ?: -1` | EXPECT: 42 |
 | 41 | `get` out-of-bounds: `get(v,99) ?: -1` | EXPECT: -1 |
 | 42 | `get` index âm: `get(v,-1) ?: 7` | EXPECT: 7 |
-| 43 | Elvis với widening: `let x: Integer? = 5; x ?: 0` | EXPECT: 5 (Elvis trên non-null) |
-| 44 | widening + `~0` qua return: fn trả `Integer?`, caller Elvis | EXPECT |
-| 45 | `get` không consume vec: get rồi `len(v)` vẫn dùng được | EXPECT: len |
-| 46 | E2420: dùng `get` làm use-site sau move của vector (push xong gọi get) | EXPECT: E2420 (đối ngẫu tĩnh của fixture 38) |
+| 43 | Elvis với widening: `let x: Integer? = 5; x ?: 0` | EXPECT: 5 |
+| 44 | widening + `~0` qua return: fn trả `Integer?`, caller Elvis | EXPECT: 7 |
+| 45 | N6: `Integer?` narrowing rejected (dùng `Integer?` ở vị trí đòi `Integer`) | ERROR: type mismatch |
+| 46 | E2420: dùng `get` làm use-site sau move của vector (push xong gọi get) | ERROR: E2420 |
+| 47 | `get` không consume vec: get rồi `len(v)` vẫn dùng được | EXPECT: 3 |
 
 ### Teeth (đỏ-khi-sai, không chỉ xanh-khi-đúng)
 

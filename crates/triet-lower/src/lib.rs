@@ -21,7 +21,7 @@ use triet_mir::{
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDef, Item,
-    PatternResolutions, Program, Stmt, TypeExpr, TypeId,
+    PatternResolutions, Program, Stmt, TypeExpr, TypeId, UnaryOperator,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -93,6 +93,16 @@ impl LowerError {
                  heap types cannot cross user-defined function boundaries in Bậc A. \
                  Use builtin shim functions instead."
             ),
+            span,
+        }
+    }
+
+    fn null_literal_without_expected_type(span: Span) -> Self {
+        Self {
+            message: "`~0` (null literal) requires an expected type from context \
+                 (e.g. `let x: Integer? = ~0` or `return ~0` from a function returning `T?`). \
+                 Standalone `~0` without a type annotation is not supported in Bậc A."
+                .to_string(),
             span,
         }
     }
@@ -540,6 +550,10 @@ pub fn lower_function(
 fn type_name(arena: &Arena, id: TypeId) -> String {
     match &arena.type_expression(id).node {
         TypeExpr::Named(n) => n.clone(),
+        TypeExpr::Nullable(inner) => {
+            let inner_name = type_name(arena, *inner);
+            format!("{inner_name}?")
+        }
         _ => "?".to_string(),
     }
 }
@@ -638,36 +652,96 @@ fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) -> Result<(), Low
     Ok(())
 }
 
+// ── Helpers ─────────────────────────────────────────────────
+
+/// Returns `true` if the expression is a null literal (`null` keyword
+/// or `~0` OutcomeConstructor with Zero arm and no payload).
+fn is_null_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::NullLiteral)
+        || matches!(
+            expr,
+            Expr::OutcomeConstructor {
+                arm: triet_syntax::OutcomeArm::Zero,
+                payload: None
+            }
+        )
+}
+
 // ── Statement lowering ──────────────────────────────────────
 
 fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Result<(), LowerError> {
     match stmt {
-        Stmt::Let { name, init, .. } => {
-            let v = lower_expr(*init, arena, c)?;
-            // M2: If init is an Identifier of a Move type, emit Assign + new local
-            // instead of aliasing. This creates a genuine move-site so JIT's
-            // Zeroing-on-Move (M1) can zero the source variable.
-            let is_move_binding =
-                if let Expr::Identifier { name: _ } = &arena.expression(*init).node {
-                    let ty = &c.local_decls[v.0].ty;
-                    !simple_is_copy(ty, &c.struct_names, &c.enum_names)
-                } else {
-                    false
-                };
-            if is_move_binding {
-                let new_local = c.alloc_local_ty(&c.local_decls[v.0].ty.clone());
-                c.push(Statement::Assign {
-                    dest: Place::local(new_local),
-                    source: Place::local(v),
+        Stmt::Let {
+            name,
+            init,
+            type_annotation,
+            ..
+        } => {
+            // ── NullLiteral ~0 with expected type ──
+            // Under PA-3c uniform, ~0 is always iconst(MIN) — type-agnostic.
+            // The annotation tells us the local's type so is_copy/is_nullable_type
+            // delegation works downstream.
+            if is_null_expr(&arena.expression(*init).node) {
+                let ann_ty = type_annotation
+                    .as_ref()
+                    .map(|tid| type_name(arena, *tid))
+                    .ok_or_else(|| {
+                        LowerError::null_literal_without_expected_type(stmt_span.clone())
+                    })?;
+                let d = c.alloc_local_ty(&ann_ty);
+                c.push(Statement::StorageLive(d, stmt_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(d),
+                    value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
                     span: stmt_span.clone(),
                 });
-                c.vars.insert(name.clone(), new_local);
-                c.local_names.insert(new_local, name.clone());
-                c.push_owned(new_local);
+                c.vars.insert(name.clone(), d);
+                c.local_names.insert(d, name.clone());
+                c.push_owned(d);
             } else {
-                c.vars.insert(name.clone(), v);
-                c.local_names.insert(v, name.clone());
-                c.push_owned(v);
+                let v = lower_expr(*init, arena, c)?;
+                // ── Widening: override init local's type from annotation ──
+                // `let x: Integer? = 5` → x should be typed "Integer?" not "?".
+                // Under PA-3c widening is identity (same i64 value), so we only
+                // need to fix the type string for downstream is_copy/is_nullable_type.
+                // TODO(heap-nullable): when String?/Vector? arrive, overriding
+                // the init local's type in-place mutates the source local when
+                // init is an Identifier (x aliases the same local as y in
+                // `let y = ...; let x: T? = y`). Safe today because widening
+                // is a no-op and all nullable types are Copy. When heap-nullable
+                // arrives, emit an Assign to a new typed local (M2 pattern)
+                // instead of mutating.
+                if let Some(tid) = type_annotation {
+                    let ann_ty = type_name(arena, *tid);
+                    if ann_ty != "?" {
+                        c.local_decls[v.0].ty = ann_ty;
+                    }
+                }
+                // M2: If init is an Identifier of a Move type, emit Assign + new local
+                // instead of aliasing. This creates a genuine move-site so JIT's
+                // Zeroing-on-Move (M1) can zero the source variable.
+                let is_move_binding =
+                    if let Expr::Identifier { name: _ } = &arena.expression(*init).node {
+                        let ty = &c.local_decls[v.0].ty;
+                        !simple_is_copy(ty, &c.struct_names, &c.enum_names)
+                    } else {
+                        false
+                    };
+                if is_move_binding {
+                    let new_local = c.alloc_local_ty(&c.local_decls[v.0].ty.clone());
+                    c.push(Statement::Assign {
+                        dest: Place::local(new_local),
+                        source: Place::local(v),
+                        span: stmt_span.clone(),
+                    });
+                    c.vars.insert(name.clone(), new_local);
+                    c.local_names.insert(new_local, name.clone());
+                    c.push_owned(new_local);
+                } else {
+                    c.vars.insert(name.clone(), v);
+                    c.local_names.insert(v, name.clone());
+                    c.push_owned(v);
+                }
             }
         }
         Stmt::Expression { expr } => {
@@ -709,7 +783,22 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             } else {
                 let mut values = Vec::new();
                 if let Some(v) = value {
-                    values.push(lower_expr(*v, arena, c)?);
+                    // ── NullLiteral ~0 in return position ──
+                    // Under PA-3c uniform, ~0 is always iconst(MIN).
+                    // The function's return type provides the local's type.
+                    if is_null_expr(&arena.expression(*v).node) {
+                        let ret_ty = c.sig.return_type.clone();
+                        let d = c.alloc_local_ty(&ret_ty);
+                        c.push(Statement::StorageLive(d, stmt_span.clone()));
+                        c.push(Statement::Const {
+                            dest: Place::local(d),
+                            value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                            span: stmt_span.clone(),
+                        });
+                        values.push(d);
+                    } else {
+                        values.push(lower_expr(*v, arena, c)?);
+                    }
                 }
                 // Drop owned locals before Return, so the borrowck can
                 // flag dangling references (E2450) on the return value.
@@ -884,6 +973,35 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             });
             Ok(d)
         }
+        Expr::NullLiteral => {
+            // null keyword (deprecated) — same as ~0.
+            Err(LowerError::null_literal_without_expected_type(expr_span))
+        }
+        Expr::OutcomeConstructor { arm, payload } => match arm {
+            triet_syntax::OutcomeArm::Positive => {
+                // ~+ e — identity/widening, lower the payload directly.
+                if let Some(p) = payload {
+                    lower_expr(*p, arena, c)
+                } else {
+                    // ~+ with no payload (bare Positive arm) — unsupported.
+                    Err(LowerError::unsupported_expr(
+                        &arena.expression(expr_id).node,
+                        expr_span,
+                    ))
+                }
+            }
+            triet_syntax::OutcomeArm::Zero => {
+                // ~0 without expected type — same as NullLiteral.
+                Err(LowerError::null_literal_without_expected_type(expr_span))
+            }
+            triet_syntax::OutcomeArm::Negative => {
+                // ~- e — Outcome error arm, not in Bậc A scope.
+                Err(LowerError::unsupported_expr(
+                    &arena.expression(expr_id).node,
+                    expr_span,
+                ))
+            }
+        },
         Expr::StringLiteral { value } => {
             let d = c.alloc_local_ty("String");
             c.push(Statement::StorageLive(d, expr_span.clone()));
@@ -922,6 +1040,36 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 return Ok(d);
             }
             Err(LowerError::undefined_local(name, expr_span))
+        }
+        Expr::UnaryOp { operator, operand } => {
+            let val = lower_expr(*operand, arena, c)?;
+            let d = c.alloc_local();
+            c.push(Statement::StorageLive(d, expr_span.clone()));
+            match operator {
+                UnaryOperator::Negate => {
+                    // -x → 0 - x
+                    let zero = c.alloc_local();
+                    c.push(Statement::Const {
+                        dest: Place::local(zero),
+                        value: ConstValue::Integer(0),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::BinaryOp {
+                        dest: Place::local(d),
+                        op: BinOp::Sub,
+                        left: Place::local(zero),
+                        right: Place::local(val),
+                        span: expr_span.clone(),
+                    });
+                }
+                UnaryOperator::Not | UnaryOperator::KleeneNot => {
+                    return Err(LowerError::unsupported_expr(
+                        &arena.expression(expr_id).node,
+                        expr_span,
+                    ));
+                }
+            }
+            Ok(d)
         }
         Expr::BinaryOp {
             operator,
@@ -1370,6 +1518,98 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 });
                 Ok(u)
             }
+        }
+        Expr::ElvisOp { object, default } => {
+            // `e ?: default` — if e is null (NULL_SENTINEL), evaluate
+            // default; otherwise use e. RHS is an Expression with possible
+            // side effects → branch-based, NOT select (ADR-0039).
+            let obj_val = lower_expr(*object, arena, c)?;
+
+            // Create a const local holding NULL_SENTINEL for comparison.
+            let sentinel = c.alloc_local();
+            c.push(Statement::StorageLive(sentinel, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(sentinel),
+                value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                span: expr_span.clone(),
+            });
+
+            // Compare object == NULL_SENTINEL → Trilean! (+1 if null, -1 if present).
+            let cmp = c.alloc_local();
+            c.push(Statement::StorageLive(cmp, expr_span.clone()));
+            c.push(Statement::BinaryOp {
+                dest: Place::local(cmp),
+                op: triet_mir::BinOp::Eq,
+                left: Place::local(obj_val),
+                right: Place::local(sentinel),
+                span: expr_span.clone(),
+            });
+
+            // Branch: positive → null (use default), negative → present (use object).
+            let null_bb = c.alloc_bb();
+            let present_bb = c.alloc_bb();
+            let merge_bb = c.alloc_bb();
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::If {
+                    cond: cmp,
+                    positive_bb: null_bb,
+                    zero_bb: None,
+                    negative_bb: present_bb,
+                    span: expr_span.clone(),
+                },
+            );
+
+            // ── Result type = T (payload), NOT T? ──
+            // Must derive from the object's type to prevent "?"-typed locals
+            // from carrying heap values downstream (ADR-0040 / bài học 4.3a
+            // call-dest-"?" bug). Sentinel/cmp can stay "?" — scratch scalars.
+            let obj_ty = c.local_decls[obj_val.0].ty.clone();
+            let payload_ty = triet_mir::nullable_payload(&obj_ty)
+                .ok_or_else(|| {
+                    LowerError::unsupported_expr(&arena.expression(expr_id).node, expr_span.clone())
+                })?
+                .to_string();
+
+            // ── Null path: evaluate default expression ──
+            c.cur = null_bb;
+            let default_val = lower_expr(*default, arena, c)?;
+            let null_end = c.cur;
+            let result = c.alloc_local_ty(&payload_ty);
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(result),
+                source: Place::local(default_val),
+                span: expr_span.clone(),
+            });
+            c.term(
+                null_end,
+                Terminator::Goto {
+                    target: merge_bb,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            // ── Present path: use the original object value ──
+            c.cur = present_bb;
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(result),
+                source: Place::local(obj_val),
+                span: expr_span.clone(),
+            });
+            let present_end = c.cur;
+            c.term(
+                present_end,
+                Terminator::Goto {
+                    target: merge_bb,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            c.cur = merge_bb;
+            Ok(result)
         }
         Expr::Borrow { form, operand } => {
             let mir_form = lower_ref_form(*form);
@@ -2038,5 +2278,60 @@ function main() -> Integer {
             );
             assert_eq!(simple, expected, "is_copy({ty:?}) should be {expected}");
         }
+    }
+
+    // ── Nullable lowering tests (ADR-0041 Bước 3) ──────────────
+
+    /// N3: `~0` without expected type → `Err(LowerError)` with span, not panic.
+    #[test]
+    fn null_literal_without_expected_type_is_error() {
+        // Positive: `let x: Integer? = ~0` has expected type → must succeed.
+        let body = lower_source("function test() { let x: Integer? = ~0; }");
+        assert!(
+            body.local_decls.iter().any(|d| d.ty == "Integer?"),
+            "~0 with annotation should produce Integer? local"
+        );
+
+        // Negative: `~0` as a standalone expression statement — no expected type.
+        let result = std::panic::catch_unwind(|| {
+            lower_source("function test() { ~0; }");
+        });
+        match result {
+            Err(panic) => {
+                let msg = panic
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown");
+                assert!(
+                    msg.contains("requires an expected type"),
+                    "error should mention expected type, got: {msg}"
+                );
+            }
+            Ok(_body) => {
+                panic!("~0 without expected type should have failed to lower");
+            }
+        }
+    }
+
+    /// Point 1 + M1: type_name emits "Integer?" + Elvis result typed T (not T?).
+    #[test]
+    fn type_name_nullable_and_elvis_result_typed_correctly() {
+        let body =
+            lower_source("function test() -> Integer { let x: Integer? = 5; return x ?: 0; }");
+        // type_name must emit "Integer?" for the let binding.
+        let has_nullable_local = body.local_decls.iter().any(|d| d.ty == "Integer?");
+        assert!(
+            has_nullable_local,
+            "expected a local with type 'Integer?', got locals: {:?}",
+            body.local_decls.iter().map(|d| &d.ty).collect::<Vec<_>>()
+        );
+        // M1: Elvis result must be typed "Integer" (payload, not T? and not "?").
+        let has_result_integer = body.local_decls.iter().any(|d| d.ty == "Integer");
+        assert!(
+            has_result_integer,
+            "Elvis result local must be typed Integer (payload), got locals: {:?}",
+            body.local_decls.iter().map(|d| &d.ty).collect::<Vec<_>>()
+        );
     }
 }
