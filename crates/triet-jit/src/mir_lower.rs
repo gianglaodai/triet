@@ -2937,7 +2937,8 @@ mod tests {
         assert_n7_signal("n7_overflow_pow_range", status, 6);
     }
 
-    // A1: JIT BinOp::Add(M, 1) → trapnz SIGILL (4).
+    // A1: JIT BinOp::Add(M, M) → range check trapnz SIGILL (4).
+    // Input = M (in-range). M+M = 2M >> M → trap.
     #[test]
     #[allow(unsafe_code)]
     fn n7_overflow_add_above_max() {
@@ -2954,13 +2955,14 @@ mod tests {
             let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
             let mut ctx = JitContext::with_shims(shims);
             let compiled = ctx.compile(&body).expect("compile A1");
-            let _ = unsafe { compiled.call_i64_1(3_812_798_742_493 + 1) };
+            let _ = unsafe { compiled.call_i64_1(3_812_798_742_493) };
         });
         let status = spawn_n7_child("n7_overflow_add_above_max");
         assert_n7_signal("n7_overflow_add_above_max", status, 4);
     }
 
     // A2: JIT BinOp::Sub(−M, 1) → trapnz SIGILL (4).
+    // Input = −M (in-range). −M − 1 < −M → trap.
     #[test]
     #[allow(unsafe_code)]
     fn n7_overflow_sub_below_min() {
@@ -2971,7 +2973,6 @@ mod tests {
             let bb0 = b.new_block();
             let r = b.new_local();
             b.push(bb0, storage_live(r));
-            // Use Const(0) for rhs=1 to get −M − 1 (not a − a = 0).
             let one = b.new_local();
             b.push(bb0, storage_live(one));
             b.push(bb0, const_int(one, 1));
@@ -2987,7 +2988,9 @@ mod tests {
         assert_n7_signal("n7_overflow_sub_below_min", status, 4);
     }
 
-    // A3: JIT BinOp::Mul(M, M) → smulhi + trapnz SIGILL (4).
+    // A3: JIT BinOp::Mul(2³², 2³²) → carrier wrap fools range check.
+    // 2³² × 2³² = 2⁶⁴ ≡ 0 (mod i64) — range check sees 0 ∈ [−M,M], passes.
+    // smulhi = 1 ≠ sign-ext(0) = 0 → carrier trap. Only smulhi catches this.
     #[test]
     #[allow(unsafe_code)]
     fn n7_overflow_mul_carrier() {
@@ -3004,8 +3007,7 @@ mod tests {
             let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
             let mut ctx = JitContext::with_shims(shims);
             let compiled = ctx.compile(&body).expect("compile A3");
-            let m: i64 = 3_812_798_742_493;
-            let _ = unsafe { compiled.call_i64_1(m) };
+            let _ = unsafe { compiled.call_i64_1(4_294_967_296) }; // 2³²
         });
         let status = spawn_n7_child("n7_overflow_mul_carrier");
         assert_n7_signal("n7_overflow_mul_carrier", status, 4);
