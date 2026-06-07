@@ -53,3 +53,4 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [ ] **D1 (ADR-0041 §6.2):** Arithmetic fidelity — enforce ternary range mod-3²⁷ at runtime (JIT arithmetic is raw i64, niche NULL_SENTINEL = i64::MIN not enforce-protected). Khi Bậc B wrap đúng mod-3²⁷, D1 tự đóng — không cần đổi repr.
 - [ ] **D1-literal (họ D1):** Literal Integer không bị range-check — `-9223372036854775808` qua typecheck sạch (probe O 2026-06-07). Range check `±(3²⁷−1)/2` là việc typecheck, làm cùng lượt wrap mod-3²⁷.
 - [ ] **D2 (ADR-0043 Q6):** `HashMap::insert` reject-on-insert giá trị `i64::MIN` (ambiguous sentinel — `get` trả MIN cho cả "có, value=MIN" lẫn "không có key"). Gỡ reject khi arithmetic wrap mod-3²⁷ (cùng điều kiện D1).
+- [ ] **D3 (họ D1):** Shim read (len/get/insert) trap-on-0 nhưng không guard MIN-input (NULL_SENTINEL map handle). Khớp convention `__triet_vector_len` hiện hành nên không phải bug hiện tại — gộp chung với MIN-guard tất cả shim khi có trigger thực tế.

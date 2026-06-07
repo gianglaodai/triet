@@ -1623,7 +1623,7 @@ pub extern "C" fn __triet_vector_get(vec: i64, idx: i64) -> i64 {
 const HASHMAP_SLOT_SIZE: usize = 24; // key(8) + value(8) + state(1) + pad(7)
 const HASHMAP_HEADER_SIZE: usize = HEADER_SIZE; // 8B ObjectHeader
 
-#[allow(clippy::missing_const_for_fn)]
+#[allow(clippy::missing_const_for_fn)] // Layout::from_size_align is not const-stable
 // Layout: header(8) + len(8) + cap(8) + cap × 24.
 fn hashmap_layout(cap: usize) -> std::alloc::Layout {
     let total = HASHMAP_HEADER_SIZE + 8 + 8 + cap * HASHMAP_SLOT_SIZE;
@@ -1631,6 +1631,7 @@ fn hashmap_layout(cap: usize) -> std::alloc::Layout {
 }
 
 #[allow(clippy::missing_const_for_fn)]
+// contains unsafe block, not const-stable
 // Return state byte pointer for slot. Caller ensures idx < cap, body valid.
 #[allow(unsafe_code)]
 unsafe fn hashmap_state_ptr(body: *mut u8, idx: usize) -> *mut u8 {
@@ -1638,6 +1639,7 @@ unsafe fn hashmap_state_ptr(body: *mut u8, idx: usize) -> *mut u8 {
 }
 
 #[allow(clippy::missing_const_for_fn)]
+// contains unsafe block, not const-stable
 // Return key/value pointers for slot. Caller ensures idx < cap, body valid.
 #[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
 unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
@@ -1658,7 +1660,10 @@ unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
-    let cap_usize = cap.max(2).max(len) as usize;
+    // Invariant (ADR-0043 Q3): load factor < 1 requires cap > len.
+    // Clamp at 4 to guarantee at least 1 EMPTY slot after any valid
+    // insert — prevents infinite probe when no slot is empty.
+    let cap_usize = (cap.max(4) as usize).max(len as usize + 1).max(4);
     let layout = hashmap_layout(cap_usize);
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
@@ -1783,13 +1788,24 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
         (body, cap)
     };
 
-    // Insert new entry via linear probing
+    // Insert or update via linear probing
     let hash = (k % cap_used as i64 + cap_used as i64) % cap_used as i64;
     let mut probe = hash as usize;
+    let mut is_update = false;
     loop {
         let state = unsafe { *hashmap_state_ptr(body_ptr, probe) };
-        if state == 0u8 {
-            // EMPTY — write entry
+        if state == 1u8 {
+            // OCCUPIED — check if key matches
+            let (nk, _nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
+            if unsafe { nk.read_unaligned() } == k {
+                // Update existing value, len unchanged
+                let (_, nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
+                unsafe { nv.write_unaligned(v) };
+                is_update = true;
+                break;
+            }
+        } else if state == 0u8 {
+            // EMPTY — write new entry
             let (nk, nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
             unsafe {
                 nk.write_unaligned(k);
@@ -1800,9 +1816,11 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
         }
         probe = (probe + 1) % cap_used;
     }
-    // Increment len
-    let new_len = (len + 1) as i64;
-    unsafe { (body_ptr as *mut i64).write_unaligned(new_len) };
+    if !is_update {
+        // Increment len only for new entries
+        let new_len = (len + 1) as i64;
+        unsafe { (body_ptr as *mut i64).write_unaligned(new_len) };
+    }
 
     // Return body pointer (or header+offset for consistency)
     // body_ptr is already the body address (ptr + HEADER_SIZE)
@@ -2769,6 +2787,17 @@ mod tests {
         assert_eq!(__triet_hashmap_get(m, 1), 100);
         // Key not found
         assert_eq!(__triet_hashmap_get(m, 2), triet_mir::NULL_SENTINEL);
+        __triet_hashmap_free(m);
+    }
+
+    /// C9: insert same key must UPDATE value, len unchanged.
+    #[test]
+    fn hashmap_insert_same_key_updates_value() {
+        let m = __triet_hashmap_alloc(0, 4);
+        let m = __triet_hashmap_insert(m, 1, 10);
+        let m = __triet_hashmap_insert(m, 1, 20);
+        assert_eq!(__triet_hashmap_get(m, 1), 20);
+        assert_eq!(__triet_hashmap_len(m), 1);
         __triet_hashmap_free(m);
     }
 

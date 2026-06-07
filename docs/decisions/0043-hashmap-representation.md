@@ -78,7 +78,9 @@ empty. Chỉ VALUE bị reject (Q6).
 
 Open addressing với linear probing: `idx = (hash + i) % cap` cho i = 0, 1, 2, …
 
-- Insert: probe đến EMPTY → ghi entry (chuyển state thành OCCUPIED).
+- Insert: probe đến OCCUPIED với key khớp → **ghi đè value (update)**, len không
+  đổi, return. Key đã tồn tại không tạo entry mới.
+- Insert (key mới): probe đến EMPTY → ghi entry mới, len++, state → OCCUPIED.
 - Get: probe đến OCCUPIED với key khớp → trả value; đến EMPTY → không có (trả
   NULL_SENTINEL).
 - Remove: KHÔNG có trong scope Bậc B (defer). TOMBSTONE sẽ dùng cho remove
@@ -175,6 +177,7 @@ Tất cả dùng functional style: `insert` trả HashMap mới, consume map cũ
 | C6 | Realloc khi vượt load factor → không mất dữ liệu | Fixture (insert nhiều) |
 | C7 | `insert` consume-and-return — dùng lại map cũ → E2420 | Fixture |
 | C8 | `m = insert(m, k, v)` idiom → functional update hoạt động | Fixture |
+| C9 | Insert key đã tồn tại → update value, len không đổi | Unit test |
 
 ---
 
