@@ -1144,54 +1144,44 @@ fn lower_binop(
     let m = builder.ins().iconst(i64, 3_812_798_742_493_i64); // MAX
     let neg_m = builder.ins().iconst(i64, -3_812_798_742_493_i64); // MIN
 
-    // Emit a cold trap block: branch if `cond` is true → trap.
-    let trap_if = |builder: &mut FunctionBuilder<'_>, cond: cranelift_codegen::ir::Value| {
-        let trap_bb = builder.create_block();
-        let cont_bb = builder.create_block();
-        builder.ins().brif(cond, trap_bb, &[], cont_bb, &[]);
-        builder.switch_to_block(trap_bb);
-        builder.ins().trap(TrapCode::unwrap_user(1));
-        builder.switch_to_block(cont_bb);
-    };
+    let trap_code = TrapCode::unwrap_user(1);
 
     match op {
         // ── Arithmetic with range enforcement ──
         BinOp::Add => {
             let result = builder.ins().iadd(lhs, rhs);
-            // |a+b| ≤ 2M ≈ 7.6×10¹² ≪ i64::MAX — carrier never overflows (F5).
-            // Check result > MAX || result < MIN.
+            // |a+b| ≤ 2M ≪ i64::MAX — carrier never overflows (F5).
             let above_max = builder.ins().icmp(IntCC::SignedGreaterThan, result, m);
-            trap_if(builder, above_max);
+            builder.ins().trapnz(above_max, trap_code);
             let below_min = builder.ins().icmp(IntCC::SignedLessThan, result, neg_m);
-            trap_if(builder, below_min);
+            builder.ins().trapnz(below_min, trap_code);
             result
         }
         BinOp::Sub => {
             let result = builder.ins().isub(lhs, rhs);
             let above_max = builder.ins().icmp(IntCC::SignedGreaterThan, result, m);
-            trap_if(builder, above_max);
+            builder.ins().trapnz(above_max, trap_code);
             let below_min = builder.ins().icmp(IntCC::SignedLessThan, result, neg_m);
-            trap_if(builder, below_min);
+            builder.ins().trapnz(below_min, trap_code);
             result
         }
         BinOp::Mul => {
             // F6: carrier can overflow — use smulhi before post-check.
-            // i128 product = lhs × rhs; smulhi = upper 64 bits, result = lower 64.
             let result = builder.ins().imul(lhs, rhs);
             let upper = builder.ins().smulhi(lhs, rhs);
-            // Sign-extend lower half: if result >= 0 then 0 else -1.
+            // Sign-extend lower half: 0 if result ≥ 0, −1 if negative.
             let zero = builder.ins().iconst(i64, 0);
             let neg_one = builder.ins().iconst(i64, -1_i64);
             let is_neg = builder.ins().icmp(IntCC::SignedLessThan, result, zero);
             let sign_ext = builder.ins().select(is_neg, neg_one, zero);
-            // upper != sign_ext → carrier overflow.
+            // upper != sign_ext → carrier overflow → trap.
             let carrier_overflow = builder.ins().icmp(IntCC::NotEqual, upper, sign_ext);
-            trap_if(builder, carrier_overflow);
+            builder.ins().trapnz(carrier_overflow, trap_code);
             // Carrier OK — range-check lower half.
             let above_max = builder.ins().icmp(IntCC::SignedGreaterThan, result, m);
-            trap_if(builder, above_max);
+            builder.ins().trapnz(above_max, trap_code);
             let below_min = builder.ins().icmp(IntCC::SignedLessThan, result, neg_m);
-            trap_if(builder, below_min);
+            builder.ins().trapnz(below_min, trap_code);
             result
         }
         // Div/Mod: quy nạp — input in-range → |a/b| ≤ |a| ≤ M, |a%b| < |b| ≤ M.

@@ -479,6 +479,30 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1036: integer literal exceeds `Integer` range (±(3²⁷−1)/2 ≈ ±3.81×10¹²).
+    /// Per [ADR-0044] Q2, literals are checked at compile time separately from
+    /// runtime overflow traps.
+    ///
+    /// [ADR-0044]: ../../../docs/decisions/0044-arithmetic-range-enforcement.md
+    #[error("integer literal `{value}` exceeds `Integer` range (±{max})")]
+    #[diagnostic(
+        code(triet::typecheck::E1036),
+        help(
+            "Suggested fixes:\n\n\
+            [Fix 1] Use a smaller value within ±3_812_798_742_493 (27-trit Integer range)\n\n\
+            [Fix 2] Use `{value}_long` for 81-trit Long precision"
+        )
+    )]
+    IntegerLiteralOverflow {
+        /// The literal value that exceeds the range.
+        value: i64,
+        /// The maximum absolute value allowed for `Integer`.
+        max: i64,
+        /// Source location of the literal.
+        #[label("literal exceeds `Integer` range")]
+        span: Span,
+    },
+
     /// E1040: `Atomic<T>` payload `T` is not a member of `AtomicValue`
     /// per [ADR-0028] §2. Only ternary primitives với hardware atomic
     /// support qualify: Trit, Tryte, Integer, Trilean. Long excluded
@@ -677,6 +701,7 @@ impl TypeError {
             | Self::PossiblyUnknownCondition { span }
             | Self::TrileanReturnNotRefined { span }
             | Self::NegativeArmOnNullable { span }
+            | Self::IntegerLiteralOverflow { span, .. }
             | Self::NonAtomicValueType { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }

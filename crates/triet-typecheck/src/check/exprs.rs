@@ -28,13 +28,40 @@ impl Checker<'_> {
         let node = self.arena.expression(id).node.clone();
 
         match node {
-            Expr::IntegerLiteral { suffix, .. } => match suffix {
-                Some(NumericSuffix::Trit) => Type::Trit,
-                Some(NumericSuffix::Tryte) => Type::Tryte,
-                Some(NumericSuffix::Long) => Type::Long,
-                Some(NumericSuffix::Integer) | None => Type::Integer,
-            },
-            Expr::TernaryLiteral { .. } => Type::Integer,
+            Expr::IntegerLiteral { value, suffix } => {
+                // ADR-0044 Q2: range-check Integer literal (E1036).
+                let is_integer_ty = matches!(suffix, Some(NumericSuffix::Integer) | None);
+                if is_integer_ty {
+                    let max_i128 = triet_core::Integer::MAX.to_i128();
+                    if value > max_i128 || value < -max_i128 {
+                        // Truncation is safe: value already passed i128 range check.
+                        #[allow(clippy::cast_possible_truncation)]
+                        self.errors.push(TypeError::IntegerLiteralOverflow {
+                            value: value as i64,
+                            max: triet_core::Integer::MAX.to_i64(),
+                            span: span.clone(),
+                        });
+                    }
+                }
+                match suffix {
+                    Some(NumericSuffix::Trit) => Type::Trit,
+                    Some(NumericSuffix::Tryte) => Type::Tryte,
+                    Some(NumericSuffix::Long) => Type::Long,
+                    Some(NumericSuffix::Integer) | None => Type::Integer,
+                }
+            }
+            Expr::TernaryLiteral { value } => {
+                let max_i128 = triet_core::Integer::MAX.to_i128();
+                if value > max_i128 || value < -max_i128 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    self.errors.push(TypeError::IntegerLiteralOverflow {
+                        value: value as i64,
+                        max: triet_core::Integer::MAX.to_i64(),
+                        span: span.clone(),
+                    });
+                }
+                Type::Integer
+            }
             Expr::TritLiteral { .. } => Type::Trit,
             // Control-flow-as-expression forms in the schema AST. The
             // parser currently lowers `while` / `return` to statements
