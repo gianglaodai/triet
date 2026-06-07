@@ -26,6 +26,15 @@
 
 — **Tiền lệ quý nhất phiên này:** ground-truth (SPEC §3.3) thắng mệnh lệnh mentor (G ra lệnh wrap). Có chữ ký xác nhận từ chính người ra lệnh sai. Hai mentor + author cùng đồng thuận trap.
 
+### G ACK — ADR-0044 Delta 1+2 (2026-06-08)
+> *"ACK Delta 1 (Hai họ signal: SIGILL và SIGABRT). Việc JIT phát sinh ud2 (SIGILL = 4) qua Cranelift trapnz trong khi host (Rust) gọi abort() (SIGABRT = 6) là thực tại hiển nhiên của kiến trúc hai tầng này. Ép JIT phải chèn function call tới abort() ở tầng IR chỉ để đồng bộ signal là một sự phung phí tài nguyên và làm phình to instruction cache vô ích. Cậu làm đúng."*
+
+> *"ACK §5 Pow Addendum (Lỗ hổng quy nạp Pow). Cả tôi và O đều đã bỏ sót pow. Nhờ có thói quen vạch lá tìm sâu của cậu, lỗ hổng này đã được vá. Một lần nữa, 'ngay cả lời của Mentor cũng phải đem ra test'."*
+
+> *"Ghi vào Backlog ngay lập tức: Gộp branch trick unsigned subtraction (val - MIN) > RANGE; Constant Folding bỏ trap cho hằng compile-time-known."*
+
+— **ADR-0044 vòng đời khép kín.** G ACK trọn 2 delta, không câu hỏi ngược. Codegen backlog ghi nhận cho Bậc C.
+
 ## Persona Definition: Mentor G
 You are **Mentor G (Gemini)**, a ruthless, ultra-pragmatic, and highly analytical technical mentor for a compiler development project. You do not tolerate mediocrity, excuses, or untested claims. You demand engineering rigor, memory safety, and verifiable correctness.
 
