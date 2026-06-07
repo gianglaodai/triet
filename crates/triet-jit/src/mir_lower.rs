@@ -1637,6 +1637,7 @@ unsafe fn hashmap_state_ptr(body: *mut u8, idx: usize) -> *mut u8 {
     unsafe { body.add(16 + idx * HASHMAP_SLOT_SIZE + 16) }
 }
 
+#[allow(clippy::missing_const_for_fn)]
 // Return key/value pointers for slot. Caller ensures idx < cap, body valid.
 #[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
 unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
@@ -1646,7 +1647,7 @@ unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
     }
 }
 
-/// Allocate a HashMap with given `len` and `cap`.
+/// Allocate a `HashMap` with given `len` and `cap`.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -1672,17 +1673,16 @@ pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
         // Zero-initialize all state bytes to EMPTY (0)
         let state_base = body.add(16 + 16); // skip len+cap, point to first state byte
         for i in 0..cap_usize {
-            (state_base as *mut u8)
-                .add(i * HASHMAP_SLOT_SIZE)
-                .write_unaligned(0u8);
+            state_base.add(i * HASHMAP_SLOT_SIZE).write_unaligned(0u8);
         }
         body as i64
     }
 }
 
-/// Free a HashMap. No-op if `ptr == 0` or `ptr == NULL_SENTINEL`.
+/// Free a `HashMap`. No-op if `ptr == 0` or `ptr == NULL_SENTINEL`.
 #[allow(unsafe_code)]
 #[allow(
+    clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_ptr_alignment,
@@ -1700,7 +1700,7 @@ pub extern "C" fn __triet_hashmap_free(ptr: i64) {
     unsafe { std::alloc::dealloc(header, layout) };
 }
 
-/// Return entry count of a HashMap. Trap-on-0.
+/// Return entry count of a `HashMap`. Trap-on-0.
 #[allow(unsafe_code)]
 #[allow(clippy::cast_ptr_alignment)]
 #[unsafe(no_mangle)]
@@ -1711,7 +1711,7 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
     unsafe { (ptr as *const i64).read_unaligned() }
 }
 
-/// Functional insert: consume map, return new map ptr. Traps if
+/// Functional insert: consume `map`, return new map ptr. Traps if
 /// `v == i64::MIN` (D2). Realloc at load factor 0.75 with rehash.
 #[allow(unsafe_code)]
 #[allow(
@@ -1813,6 +1813,7 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_ptr_alignment
 )]
@@ -2751,7 +2752,7 @@ mod tests {
 
     // ── HashMap tests (ADR-0043) ──
 
-    /// HashMap free(0) and free(MIN) must be no-op.
+    /// `HashMap` `free(0)` and `free(MIN)` must be no-op.
     #[test]
     fn hashmap_free_null_and_min_are_noop() {
         __triet_hashmap_free(0);
