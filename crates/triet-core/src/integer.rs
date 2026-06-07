@@ -490,4 +490,20 @@ mod tests {
         assert_eq!(-Integer::MAX, Integer::MIN);
         assert_eq!(Integer::MAX.to_i64(), -Integer::MIN.to_i64());
     }
+
+    /// ADR-0044 canary: MAX computed as literal == (3^27 - 1) / 2
+    /// computed from actual 3^27. If someone changes MODULUS without
+    /// updating MAX (or vice versa), this goes red.
+    #[test]
+    fn integer_range_canary_modulus_consistent() {
+        // 3^27
+        let three_pow_27: i128 = 3_i128.pow(Integer::TRIT_COUNT);
+        assert_eq!(three_pow_27, Integer::MODULUS);
+        // MAX = (3^27 - 1) / 2
+        let max_from_formula: i128 = (three_pow_27 - 1) / 2;
+        assert_eq!(max_from_formula, Integer::MAX.to_i64() as i128);
+        // MIN = -MAX (balanced ternary symmetry)
+        let min_from_formula: i128 = -max_from_formula;
+        assert_eq!(min_from_formula, Integer::MIN.to_i64() as i128);
+    }
 }
