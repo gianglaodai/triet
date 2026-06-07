@@ -1,6 +1,6 @@
 # ADR-0043: HashMap Representation & Runtime Shims — Bậc B
 
-**Status:** Draft — CHỜ KÝ Mentor O (semantics/soundness) + Mentor G (layout/ABI).
+**Status:** Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-07). Mentor G CHỜ KÝ (layout/ABI).
 **Date:** 2026-06-07
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
@@ -63,9 +63,9 @@ Layout: HEADER(8) + len(8) + cap(8) + cap × 24
 ### Q2: Hash function
 
 `K=Integer`: `hash(k) = (k % cap + cap) % cap` — Euclidean modulo, luôn không
-âm kể cả với `k = i64::MIN` (C `%` cho kết quả âm với toán hạng âm; double-mod
-chuẩn hóa về `[0, cap)`). Identity hash — không cần hàm băm phức tạp cho
-Integer key.
+âm kể cả với `k = i64::MIN` (Rust `%` là truncating remainder — cho kết quả âm
+với toán hạng âm; double-mod chuẩn hóa về `[0, cap)`). Identity hash — không
+cần hàm băm phức tạp cho Integer key.
 
 Khi String key đến (Bậc C), thay bằng hash function tổng quát (FNV-1a hoặc
 SipHash).
