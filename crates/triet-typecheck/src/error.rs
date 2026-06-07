@@ -536,7 +536,7 @@ pub enum TypeError {
     /// function requires PropagatedLoan wiring in the borrow checker
     /// (deferred to a future slice). This is a temporary refusal — it
     /// will be lifted when the return-borrow feature lands.
-    #[error("returning a reference type `-> {return_ty}` is not yet supported")]
+    #[error("E1042: returning a reference type `-> {return_ty}` is not yet supported")]
     #[diagnostic(
         code(triet::typecheck::E1042),
         help(
@@ -738,7 +738,7 @@ impl TypeError {
 #[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
 pub enum BorrowError {
     /// E2400: `BorrowLifetimeInferenceFailed` (ADR-0025 §3.4)
-    #[error("Cannot infer which input the returned borrow ties to")]
+    #[error("E2400: cannot infer which input the returned borrow ties to")]
     #[diagnostic(
         code(triet::borrow::E2400),
         help(

@@ -12,12 +12,12 @@
 
 #![warn(missing_docs)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, EnumLayout, FieldLayout,
-    FunctionSignature, Local, LocalDecl, ParameterPassing, Place, Projection, Span, Statement,
-    StructLayout, Terminator,
+    FieldPath, FunctionSignature, Local, LocalDecl, ParameterPassing, Place, Projection, Span,
+    Statement, StructLayout, Terminator,
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDef, Item,
@@ -165,8 +165,10 @@ impl Ctx {
                 name: name.to_string(),
                 params: Vec::new(),
                 return_type: ret.to_string(),
-                // TODO(lát return-borrow): populate return_borrow_map when
-                // callee returns &0 T. See ADR-0045 §4.
+                // ADR-0046 §3: return_borrow_map is now populated after the
+                // parameter loop (see lower_function). The initial map is empty;
+                // for &0 T return types with exactly 1 ref-param, it gets filled
+                // there. count≠1 → Err(LowerError) defense-in-depth.
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape: if is_struct_return {
                     triet_mir::ReturnShape::Struct {
@@ -226,16 +228,27 @@ impl Ctx {
     }
 
     /// Pop the innermost scope and emit [`Statement::Drop`] for every
-    /// owned local registered in it, in reverse allocation order.
-    /// No-op if all scopes were already flushed by a `return`.
+    /// owned local registered in it.
+    ///
+    /// ADR-0046: reference types (`&0 T` etc.) are sorted to drop BEFORE
+    /// non-reference types, regardless of allocation order. This ensures
+    /// borrowers die before their owners, preventing spurious E2450 when
+    /// a PropagatedLoan ties a returned reference back to its source.
     fn pop_scope(&mut self) {
         let Some(snapshot) = self.scope_snapshots.pop() else {
             return;
         };
-        for i in (snapshot..self.owned_locals.len()).rev() {
-            self.push(Statement::Drop(self.owned_locals[i], DUMMY_SPAN));
+        // Collect indices with sort key, then emit Drop in sorted order.
+        // Avoids borrowing self.owned_locals and self.local_decls
+        // simultaneously (they're both fields of self).
+        let mut locals: Vec<Local> = self.owned_locals.drain(snapshot..).collect();
+        locals.sort_by_key(|&l| {
+            let ty = &self.local_decls[l.0].ty;
+            ty.starts_with('&')
+        });
+        for l in locals.into_iter().rev() {
+            self.push(Statement::Drop(l, DUMMY_SPAN));
         }
-        self.owned_locals.truncate(snapshot);
     }
 
     /// Register a local as needing Drop at the end of the current scope.
@@ -434,7 +447,7 @@ pub fn lower_program(
 pub fn lower_function(
     func: &FunctionDef,
     arena: &Arena,
-    _span: Span,
+    span: Span,
     struct_names: std::collections::HashSet<String>,
     struct_layouts: HashMap<String, StructLayout>,
     enum_names: std::collections::HashSet<String>,
@@ -486,6 +499,49 @@ pub fn lower_function(
             c.push_owned(l);
         }
         c.sig.params.push((p.name.clone(), passing));
+    }
+
+    // ADR-0046 §3: populate return_borrow_map for return-borrow elision.
+    // If the return type is &0 T, tie it to the single ref-param.
+    // Elision rule (check_lifetime_elision, check.rs:494) guarantees
+    // exactly 0 or 1 non-owning ref-params — 0 = fn with no ref params
+    // returning &0 T (unusual but valid: return a borrowed static/global);
+    // 1 = tie to that param. 2+ is refused by E2400 (fatal at typecheck).
+    // defense-in-depth: if typecheck leaks, Err — not panic — because
+    // the harness (integration_tests.rs:64) runs through type errors and
+    // panic would SIGABRT the entire corpus.
+    if c.sig.return_type.starts_with("&0 ") {
+        let ref_param_indices: Vec<usize> = c
+            .sig
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, passing))| {
+                matches!(
+                    passing,
+                    ParameterPassing::Borrow | ParameterPassing::MutableBorrow
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        match ref_param_indices.len() {
+            0 => {} // No ref-params to tie to — valid (static/global return).
+            1 => {
+                c.sig
+                    .return_borrow_map
+                    .insert(FieldPath::Root, BTreeSet::from([ref_param_indices[0]]));
+            }
+            _ => {
+                return Err(LowerError {
+                    message: format!(
+                        "internal: return-borrow elision expects exactly 1 ref-param \
+                         (found {}; typecheck E2400 should have rejected this)",
+                        ref_param_indices.len()
+                    ),
+                    span,
+                });
+            }
+        }
     }
 
     match &func.body {

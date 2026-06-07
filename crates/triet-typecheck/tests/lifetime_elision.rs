@@ -216,7 +216,7 @@ fn e2400_error_message_has_borrow_lifetime_inference_failed() {
         .expect("expected E2400");
     let msg = format!("{e2400}");
     assert!(
-        msg.contains("Cannot infer which input the returned borrow ties to"),
+        msg.contains("cannot infer which input the returned borrow ties to"),
         "expected canonical E2400 message, got: {msg:?}"
     );
 }

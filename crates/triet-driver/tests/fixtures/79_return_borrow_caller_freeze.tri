@@ -1,0 +1,14 @@
+// ERROR: E2440
+// ADR-0046 §5 Nhóm A: caller-hole regression test.
+// `id(&0 m)` returns a reference borrowed from `m`.
+// Moving `m` while `r` is still live must be rejected.
+function id(s: &0 String) -> &0 String {
+    return s
+}
+function main() -> Integer {
+    let m = "hello"
+    let r = id(&0 m)
+    let stolen = m
+    let n = length(r)
+    return n
+}

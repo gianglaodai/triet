@@ -1,0 +1,9 @@
+// ERROR: E2400
+// ADR-0046 §5 Nhóm C: 2+ ref-params, return &0 T → ambiguous lifetime.
+// Cannot infer which input the returned borrow ties to.
+function bad_multi_param(a: &0 String, b: &0 String) -> &0 String {
+    return a
+}
+function main() -> Integer {
+    return 0
+}

@@ -1,0 +1,9 @@
+// ERROR: E2400
+// ADR-0046 §5 Nhóm C: 0 ref-params, return &0 T → cannot infer lifetime.
+// No input borrow to tie the return to.
+function bad_no_param() -> &0 String {
+    return "literal"
+}
+function main() -> Integer {
+    return 0
+}

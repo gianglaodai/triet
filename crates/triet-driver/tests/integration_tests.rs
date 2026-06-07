@@ -89,8 +89,14 @@ fn run_fixture(source: &str) -> Result<i64, String> {
     }
 
     // ── Phase 4: Borrow check ──
+    // ADR-0045 §2/B4 + ADR-0046 §3: collect callee signatures for
+    // cross-call loan propagation (PropagatedLoan) via return_borrow_map.
+    let callee_sigs: std::collections::BTreeMap<String, triet_mir::FunctionSignature> = bodies
+        .iter()
+        .map(|b| (b.signature.name.clone(), b.signature.clone()))
+        .collect();
     for body in &bodies {
-        let result = triet_borrowck::checker::check_body(body);
+        let result = triet_borrowck::checker::check_body_with(body, &callee_sigs);
         if !result.is_ok() {
             for err in &result.errors {
                 errors.push(format!("borrow error: {err}"));

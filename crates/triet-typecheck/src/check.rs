@@ -6,8 +6,8 @@ mod methods;
 use std::collections::HashMap;
 
 use triet_syntax::{
-    Arena, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, Span, Spanned,
-    Stmt, StmtId, TypeExpr, TypeId,
+    Arena, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, ReferenceForm,
+    Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
 };
 
 use crate::{
@@ -393,18 +393,20 @@ impl<'p> Checker<'p> {
 
         self.current_return_type = Some(return_type.clone());
 
-        // ADR-0045 §5: refuse `-> &0 T` / `-> &+ T` / `-> &- T`.
-        // PropagatedLoan wiring needed for return-borrow is deferred.
-        if let Type::Reference(_, _) = &return_type {
-            let return_ty_str = return_type.to_string();
-            let span = def
-                .return_type
-                .map(|id| self.arena.type_expression(id).span.clone())
-                .unwrap_or(0..0);
-            self.errors.push(TypeError::BorrowReturnNotYetSupported {
-                return_ty: return_ty_str,
-                span,
-            });
+        // ADR-0046 §1: whitelist `-> &0 T` return-borrow; refuse
+        // `-> &+ T` / `-> &0 mutable T` / `-> &- T` (deferred).
+        if let Type::Reference(form, _) = &return_type {
+            if *form != ReferenceForm::BorrowReadOnly {
+                let return_ty_str = return_type.to_string();
+                let span = def
+                    .return_type
+                    .map(|id| self.arena.type_expression(id).span.clone())
+                    .unwrap_or(0..0);
+                self.errors.push(TypeError::BorrowReturnNotYetSupported {
+                    return_ty: return_ty_str,
+                    span,
+                });
+            }
         }
 
         for parameter in &def.params {

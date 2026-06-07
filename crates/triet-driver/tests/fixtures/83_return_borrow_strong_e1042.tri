@@ -1,0 +1,9 @@
+// ERROR: E1042
+// ADR-0046 §1: regression — `-> &+ T` (strong owning) still refused by E1042.
+// Only `&0` (BorrowReadOnly) is whitelisted for return-borrow.
+function bad_return_strong(s: &+ String) -> &+ String {
+    return s
+}
+function main() -> Integer {
+    return 0
+}

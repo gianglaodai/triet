@@ -1,0 +1,11 @@
+// ERROR: E2450
+// ADR-0046 §5 Nhóm B: returning a borrow of a local must be rejected.
+// `let x` creates a local; `&0 x` borrows it; returning that borrow is
+// dangling — the local dies at function end.
+function bad_return_local() -> &0 String {
+    let x = "local"
+    return &0 x
+}
+function main() -> Integer {
+    return 0
+}
