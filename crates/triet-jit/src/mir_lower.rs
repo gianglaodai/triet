@@ -1316,7 +1316,8 @@ const extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
 /// Integer power via exponentiation by squaring (`extern "C"` ABI).
 /// `pow(base, exp)` = base^exp. Exponent must be >= 0.
 #[allow(unsafe_code)]
-#[allow(clippy::manual_unwrap_or_default)]
+// checked_mul + range check pattern (rule 5)
+#[allow(clippy::option_if_let_else)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
     if exp < 0 {
@@ -1929,7 +1930,7 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use triet_borrowck::{MirBuilder, binop, return_, storage_live};
+    use triet_borrowck::{MirBuilder, binop, const_int, return_, storage_live};
     use triet_mir::{DUMMY_SPAN, FunctionId, ParameterPassing, Place, ReturnShape, Statement};
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
@@ -2970,13 +2971,17 @@ mod tests {
             let bb0 = b.new_block();
             let r = b.new_local();
             b.push(bb0, storage_live(r));
-            b.push(bb0, binop(r, triet_mir::BinOp::Sub, a, a));
+            // Use Const(0) for rhs=1 to get −M − 1 (not a − a = 0).
+            let one = b.new_local();
+            b.push(bb0, storage_live(one));
+            b.push(bb0, const_int(one, 1));
+            b.push(bb0, binop(r, triet_mir::BinOp::Sub, a, one));
             b.set_terminator(bb0, return_(vec![r]));
             let body = b.build(bb0);
             let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
             let mut ctx = JitContext::with_shims(shims);
             let compiled = ctx.compile(&body).expect("compile A2");
-            let _ = unsafe { compiled.call_i64_1(-3_812_798_742_493 - 1) };
+            let _ = unsafe { compiled.call_i64_1(-3_812_798_742_493) };
         });
         let status = spawn_n7_child("n7_overflow_sub_below_min");
         assert_n7_signal("n7_overflow_sub_below_min", status, 4);
