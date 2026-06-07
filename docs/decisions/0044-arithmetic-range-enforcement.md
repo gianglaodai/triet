@@ -55,16 +55,14 @@ in-range → chỉ cần check kết quả.
    arithmetic tường minh. Khi method dispatch có mặt (Bậc C+), công thức
    balanced-modular trong §A sẽ được dùng cho method đó.
 
-**Cơ chế trap:** Cranelift `trapnz` (→ `ud2` → SIGILL trên x86_64,
-SIGTRAP trên macOS). Không dùng abort-shim cold-block (phức tạp block
-sealing trong FunctionBuilder). Semantics tương đương: kill process
-ngay tại điểm overflow, không cần gọi hàm.
-
-**Cơ chế trap:** branch tới cold trap block → gọi `abort()` (Cranelift
-`libcall` tới `std::process::abort` hoặc `__builtin_trap` shim). Sinh
-SIGABRT (signal 6) — đồng bộ với hạ tầng N7 hiện có (trap-on-0,
-reject-MIN). Mọi test trap dùng pattern subprocess N7: spawn child +
-env var + check signal 6.
+**Cơ chế trap — hai họ signal:**
+- **JIT `trapnz`:** Cranelift `trapnz` (→ `ud2` → **SIGILL** (4) trên
+  x86_64, SIGTRAP trên macOS). Dùng cho Add/Sub/Mul trong `lower_binop`.
+  Không cần cold block — `trapnz` là conditional trap instruction.
+- **Shim `abort()`:** `std::process::abort()` (→ **SIGABRT** (6)). Dùng
+  cho `__triet_pow` và D2 reject-MIN.
+- Mọi N7 test dùng `assert_n7_signal(name, status, expected_signal)` —
+  mỗi test assert đúng signal của họ mình.
 
 ### Q2: Bảng per-op
 

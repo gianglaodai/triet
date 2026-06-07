@@ -2936,33 +2936,73 @@ mod tests {
         assert_n7_signal("n7_overflow_pow_range", status, 6);
     }
 
-    // A1: range check via pow shim — M+1 overwrites.
+    // A1: JIT BinOp::Add(M, 1) → trapnz SIGILL (4).
     #[test]
+    #[allow(unsafe_code)]
     fn n7_overflow_add_above_max() {
         n7_child_guard("n7_overflow_add_above_max", || {
-            let _ = __triet_pow(3_812_798_742_494, 1);
+            let mut b = MirBuilder::new("add_test", "Integer");
+            let a = b.add_param("a", ParameterPassing::Borrow);
+            b.set_local_type(a, "Integer");
+            let bb0 = b.new_block();
+            let r = b.new_local();
+            b.push(bb0, storage_live(r));
+            b.push(bb0, binop(r, triet_mir::BinOp::Add, a, a));
+            b.set_terminator(bb0, return_(vec![r]));
+            let body = b.build(bb0);
+            let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
+            let mut ctx = JitContext::with_shims(shims);
+            let compiled = ctx.compile(&body).expect("compile A1");
+            let _ = unsafe { compiled.call_i64_1(3_812_798_742_493 + 1) };
         });
         let status = spawn_n7_child("n7_overflow_add_above_max");
-        assert_n7_signal("n7_overflow_add_above_max", status, 6);
+        assert_n7_signal("n7_overflow_add_above_max", status, 4);
     }
 
-    // A2: range check via pow shim — -M-1 overwrites.
+    // A2: JIT BinOp::Sub(−M, 1) → trapnz SIGILL (4).
     #[test]
+    #[allow(unsafe_code)]
     fn n7_overflow_sub_below_min() {
         n7_child_guard("n7_overflow_sub_below_min", || {
-            let _ = __triet_pow(-3_812_798_742_494, 1);
+            let mut b = MirBuilder::new("sub_test", "Integer");
+            let a = b.add_param("a", ParameterPassing::Borrow);
+            b.set_local_type(a, "Integer");
+            let bb0 = b.new_block();
+            let r = b.new_local();
+            b.push(bb0, storage_live(r));
+            b.push(bb0, binop(r, triet_mir::BinOp::Sub, a, a));
+            b.set_terminator(bb0, return_(vec![r]));
+            let body = b.build(bb0);
+            let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
+            let mut ctx = JitContext::with_shims(shims);
+            let compiled = ctx.compile(&body).expect("compile A2");
+            let _ = unsafe { compiled.call_i64_1(-3_812_798_742_493 - 1) };
         });
         let status = spawn_n7_child("n7_overflow_sub_below_min");
-        assert_n7_signal("n7_overflow_sub_below_min", status, 6);
+        assert_n7_signal("n7_overflow_sub_below_min", status, 4);
     }
 
-    // A3: smulhi carrier overflow via pow shim — M*M.
+    // A3: JIT BinOp::Mul(M, M) → smulhi + trapnz SIGILL (4).
     #[test]
+    #[allow(unsafe_code)]
     fn n7_overflow_mul_carrier() {
         n7_child_guard("n7_overflow_mul_carrier", || {
-            let _ = __triet_pow(3_812_798_742_493, 2);
+            let mut b = MirBuilder::new("mul_test", "Integer");
+            let a = b.add_param("a", ParameterPassing::Borrow);
+            b.set_local_type(a, "Integer");
+            let bb0 = b.new_block();
+            let r = b.new_local();
+            b.push(bb0, storage_live(r));
+            b.push(bb0, binop(r, triet_mir::BinOp::Mul, a, a));
+            b.set_terminator(bb0, return_(vec![r]));
+            let body = b.build(bb0);
+            let shims = &[ShimSymbol::fn_2_1("__triet_pow", super::__triet_pow)];
+            let mut ctx = JitContext::with_shims(shims);
+            let compiled = ctx.compile(&body).expect("compile A3");
+            let m: i64 = 3_812_798_742_493;
+            let _ = unsafe { compiled.call_i64_1(m) };
         });
         let status = spawn_n7_child("n7_overflow_mul_carrier");
-        assert_n7_signal("n7_overflow_mul_carrier", status, 6);
+        assert_n7_signal("n7_overflow_mul_carrier", status, 4);
     }
 }
