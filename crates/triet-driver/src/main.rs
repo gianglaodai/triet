@@ -90,10 +90,16 @@ fn main() -> ExitCode {
     }
 
     // ── Phase 4: Borrow check ──
+    // ADR-0045 §2/B4: collect callee signatures for cross-call loan
+    // propagation (PropagatedLoan) and M3+ move-mark by passing mode.
+    let callee_sigs: std::collections::BTreeMap<String, triet_mir::FunctionSignature> = bodies
+        .iter()
+        .map(|b| (b.signature.name.clone(), b.signature.clone()))
+        .collect();
     let mut has_errors = false;
     let src = NamedSource::new(path, source.clone());
     for body in &bodies {
-        let result = triet_borrowck::checker::check_body(body);
+        let result = triet_borrowck::checker::check_body_with(body, &callee_sigs);
         if !result.is_ok() {
             has_errors = true;
             for err in &result.errors {

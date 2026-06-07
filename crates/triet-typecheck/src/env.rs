@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::types::Type;
+use triet_syntax::ReferenceForm;
 
 /// A stack of name → binding frames. Entering a block / function pushes
 /// a frame; leaving pops it. Lookup walks from innermost to outermost.
@@ -200,13 +201,25 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
-    // `length` on String is exposed as a free function for v0.1; in
-    // v0.2 it should become a method.
-    env.declare(
+    // `length` is overloaded: works on String (owned) and
+    // &0 String (shared borrow, ADR-0045 §8). Registered via
+    // declare_overload so check_call tries each candidate.
+    env.declare_overload(
         "length",
         Type::Function {
             type_params: Vec::new(),
             parameters: vec![String.clone()],
+            return_type: Box::new(Integer),
+        },
+    );
+    env.declare_overload(
+        "length",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![Type::Reference(
+                ReferenceForm::BorrowReadOnly,
+                Box::new(String.clone()),
+            )],
             return_type: Box::new(Integer),
         },
     );

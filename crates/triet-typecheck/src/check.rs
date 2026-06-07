@@ -393,6 +393,20 @@ impl<'p> Checker<'p> {
 
         self.current_return_type = Some(return_type.clone());
 
+        // ADR-0045 §5: refuse `-> &0 T` / `-> &+ T` / `-> &- T`.
+        // PropagatedLoan wiring needed for return-borrow is deferred.
+        if let Type::Reference(_, _) = &return_type {
+            let return_ty_str = return_type.to_string();
+            let span = def
+                .return_type
+                .map(|id| self.arena.type_expression(id).span.clone())
+                .unwrap_or(0..0);
+            self.errors.push(TypeError::BorrowReturnNotYetSupported {
+                return_ty: return_ty_str,
+                span,
+            });
+        }
+
         for parameter in &def.params {
             let ty = self.resolve_type(parameter.type_annotation);
             self.env.declare(&parameter.name, ty);

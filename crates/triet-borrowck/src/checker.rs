@@ -852,6 +852,17 @@ fn process_block(
         }
     }
 
+    // NLL: end loans whose dest is no longer live after the terminator.
+    // Without this, a borrow temporary passed to a call stays "alive"
+    // across the terminator boundary and blocks Drop in the successor
+    // block (E2450 false positive). The statement-level cleanup at line
+    // 708 only handles intra-block statements; the terminator needs its
+    // own pass because the dest's last use is the call itself.
+    let term_idx = block_data.statements.len();
+    state
+        .active_loans
+        .retain(|loan| liveness.is_live_after(block, term_idx, loan.dest));
+
     (state, errors)
 }
 

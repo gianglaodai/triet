@@ -2018,6 +2018,19 @@ mod tests {
     }
 
     #[test]
+    fn is_copy_reference_types() {
+        // ADR-0045 §3: reference types are Copy by design —
+        // copying a handle is safe because the callee doesn't Drop it.
+        let body = well_formed_body();
+        assert!(is_copy("&0 String", &body));
+        assert!(is_copy("&0 Vector<Integer>", &body));
+        assert!(is_copy("&0 HashMap<String, Integer>", &body));
+        assert!(is_copy("&+ String", &body));
+        assert!(is_copy("&+ mutable String", &body));
+        assert!(is_copy("&- String", &body));
+    }
+
+    #[test]
     fn is_copy_heap_types() {
         let body = well_formed_body();
         assert!(!is_copy("String", &body));
@@ -2229,6 +2242,9 @@ pub fn is_copy(ty: &str, body: &Body) -> bool {
         "String" | "HashMap" => false,
         other if is_vec_type(other) => false,
         other if is_hashmap_type(other) => false,
+        // Reference types — Copy by design (ADR-0045 §3).
+        // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
+        other if other.starts_with('&') => true,
         _ => {
             // Check struct layouts — Copy if all fields are Copy (recursive).
             if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty) {

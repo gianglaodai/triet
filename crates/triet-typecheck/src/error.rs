@@ -531,6 +531,31 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1042: borrowed return type `-> &0 T` / `-> &+ T` / `-> &- T` is
+    /// not yet supported (ADR-0045 §5). Returning a reference from a
+    /// function requires PropagatedLoan wiring in the borrow checker
+    /// (deferred to a future slice). This is a temporary refusal — it
+    /// will be lifted when the return-borrow feature lands.
+    #[error("returning a reference type `-> {return_ty}` is not yet supported")]
+    #[diagnostic(
+        code(triet::typecheck::E1042),
+        help(
+            "E1042: `-> {return_ty}` borrow-return is not yet implemented.\n\n\
+            [Fix 1] Return a non-reference type instead:\n\
+            Change `-> {return_ty}` to `-> Integer` (or the payload type)\n\n\
+            [Fix 2] Clone/heap-copy (not available — defer to clone support):\n\
+            When clone is implemented, return a cloned value instead of a reference\n\n\
+            This refusal is temporary per ADR-0045 §5."
+        )
+    )]
+    BorrowReturnNotYetSupported {
+        /// The reference return type (e.g. `&0 String`).
+        return_ty: String,
+        /// Source location of the return type annotation.
+        #[label("return-borrow `-> {return_ty}` not yet supported")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -703,6 +728,7 @@ impl TypeError {
             | Self::NegativeArmOnNullable { span }
             | Self::IntegerLiteralOverflow { span, .. }
             | Self::NonAtomicValueType { span, .. }
+            | Self::BorrowReturnNotYetSupported { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }

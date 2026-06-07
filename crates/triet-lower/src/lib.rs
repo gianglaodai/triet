@@ -21,7 +21,7 @@ use triet_mir::{
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDef, Item,
-    PatternResolutions, Program, Stmt, TypeExpr, TypeId, UnaryOperator,
+    PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId, UnaryOperator,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -165,6 +165,8 @@ impl Ctx {
                 name: name.to_string(),
                 params: Vec::new(),
                 return_type: ret.to_string(),
+                // TODO(lát return-borrow): populate return_borrow_map when
+                // callee returns &0 T. See ADR-0045 §4.
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape: if is_struct_return {
                     triet_mir::ReturnShape::Struct {
@@ -467,14 +469,22 @@ pub fn lower_function(
         let ty = type_name(arena, p.type_annotation);
         // B7-lift (ADR-0042): heap types now allowed as parameters.
         // Move semantics: callee owns + drops, caller zeroes slot after call.
+        // ADR-0045 §2: reference types (&0 String etc.) are borrow params
+        // — callee does NOT own, must NOT drop. Heap types with non-ref
+        // annotations (e.g. s: String) remain Move.
         let l = c.alloc_local_ty(&ty);
         c.vars.insert(p.name.clone(), l);
-        c.push_owned(l);
         let passing = match p.passing_mode {
             triet_syntax::ParameterPassing::Borrow => ParameterPassing::Borrow,
             triet_syntax::ParameterPassing::Move => ParameterPassing::Move,
             triet_syntax::ParameterPassing::MutableBorrow => ParameterPassing::MutableBorrow,
         };
+        // Only push_owned for Move params and non-reference types.
+        // Reference types (&0 String) — callee borrows, no Drop.
+        let is_ref_type = ty.starts_with('&');
+        if matches!(passing, ParameterPassing::Move) || !is_ref_type {
+            c.push_owned(l);
+        }
         c.sig.params.push((p.name.clone(), passing));
     }
 
@@ -526,6 +536,18 @@ fn type_name(arena: &Arena, id: TypeId) -> String {
             let inner_name = type_name(arena, *inner);
             format!("{inner_name}?")
         }
+        TypeExpr::Reference { form, inner } => {
+            let inner_name = type_name(arena, *inner);
+            // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
+            let prefix = match form {
+                ReferenceForm::StrongFrozen => "&+ ",
+                ReferenceForm::StrongMutable => "&+ mutable ",
+                ReferenceForm::BorrowReadOnly => "&0 ",
+                ReferenceForm::BorrowExclusiveMutable => "&0 mutable ",
+                ReferenceForm::WeakObserver => "&- ",
+            };
+            format!("{prefix}{inner_name}")
+        }
         _ => "?".to_string(),
     }
 }
@@ -554,6 +576,9 @@ fn simple_is_copy(
     match ty {
         // Stack primitives — Copy per SPEC §10.1.
         "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
+        // Reference types — Copy by design (ADR-0045 §3).
+        // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
+        other if other.starts_with('&') => true,
         // Heap types — Move.
         "String" | "HashMap" => false,
         other if triet_mir::is_vec_type(other) => false,
@@ -1226,9 +1251,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let dest = emit_shim_call(c, "__triet_string_eq", args, "Integer", expr_span);
                     return Ok(dest);
                 }
-                "len" => {
+                "len" | "length" => {
                     // Type-aware dispatch: String → string_len, Vector → vector_len.
-                    // Refuse over guess for any other type.
+                    // ADR-0045 §8: strip reference prefix to accept &0 String etc.
+                    // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
                     if arguments.len() != 1 {
                         return Err(LowerError::unsupported_expr(
                             &arena.expression(*callee).node,
@@ -1237,7 +1263,14 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let arg = lower_expr(arguments[0], arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
-                    let shim_name = match arg_ty.as_str() {
+                    let base_ty = arg_ty
+                        .strip_prefix("&0 ")
+                        .or_else(|| arg_ty.strip_prefix("&+ "))
+                        .or_else(|| arg_ty.strip_prefix("&+ mutable "))
+                        .or_else(|| arg_ty.strip_prefix("&0 mutable "))
+                        .or_else(|| arg_ty.strip_prefix("&- "))
+                        .unwrap_or(arg_ty);
+                    let shim_name = match base_ty {
                         "String" => "__triet_string_len",
                         ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
                         ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
@@ -1393,13 +1426,17 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 });
                 // Insert sret pointer as first argument.
                 args.insert(0, ret_local);
-                // ADR-0042 Q1: collect Move-type args for zeroing
-                // BEFORE the CallDispatch consumes `args`.
+                // ADR-0042 Q1 + ADR-0045 §2: collect args for zeroing.
                 // Skip arg[0] — sret pointer is not user-visible.
+                // Skip reference types (&0 String etc.) — callee borrows.
                 let to_zero: Vec<Local> = args[1..]
                     .iter()
                     .filter(|&&arg| {
-                        !simple_is_copy(&c.local_decls[arg.0].ty, &c.struct_names, &c.enum_names)
+                        let ty = &c.local_decls[arg.0].ty;
+                        if ty.starts_with('&') {
+                            return false;
+                        }
+                        !simple_is_copy(ty, &c.struct_names, &c.enum_names)
                     })
                     .copied()
                     .collect();
@@ -1429,11 +1466,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             } else {
                 let dest = c.alloc_local_ty(&callee_ret);
                 c.push(Statement::StorageLive(dest, expr_span.clone()));
-                // ADR-0042 Q1: collect Move-type args before CallDispatch consumes them.
+                // ADR-0042 Q1 + ADR-0045 §2: collect args for zeroing.
+                // Skip reference types (&0 String etc.) — callee borrows.
                 let to_zero: Vec<Local> = args
                     .iter()
                     .filter(|&&arg| {
-                        !simple_is_copy(&c.local_decls[arg.0].ty, &c.struct_names, &c.enum_names)
+                        let ty = &c.local_decls[arg.0].ty;
+                        if ty.starts_with('&') {
+                            return false;
+                        }
+                        !simple_is_copy(ty, &c.struct_names, &c.enum_names)
                     })
                     .copied()
                     .collect();
@@ -1678,7 +1720,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // ADR-0031 §2) — lower it to a projected Place so the borrow
             // checker can track the loan at field granularity.
             let source = lower_place(*operand, arena, c)?;
-            let dest = c.alloc_local();
+            // ADR-0045 §3: set the borrow temporary's type to the real
+            // reference type (e.g., "&0 String") so downstream dispatch
+            // can strip the prefix and match the base heap type.
+            let prefix = match mir_form {
+                triet_mir::ReferenceForm::BorrowReadOnly => "&0 ",
+                triet_mir::ReferenceForm::BorrowExclusiveMutable => "&0 mutable ",
+                triet_mir::ReferenceForm::StrongFrozen => "&+ ",
+                triet_mir::ReferenceForm::StrongMutable => "&+ mutable ",
+                triet_mir::ReferenceForm::WeakObserver => "&- ",
+            };
+            let source_ty = &c.local_decls[source.local.0].ty;
+            let ref_ty = format!("{prefix}{source_ty}");
+            let dest = c.alloc_local_ty(&ref_ty);
             c.push(Statement::StorageLive(dest, expr_span.clone()));
             c.push(Statement::Borrow {
                 dest: Place::local(dest),
@@ -2642,5 +2696,36 @@ function main() -> Integer {
             "Elvis result local must be typed Integer (payload), got locals: {:?}",
             body.local_decls.iter().map(|d| &d.ty).collect::<Vec<_>>()
         );
+    }
+
+    /// B1 (§3): type_name renders reference types (e.g. "&0 String"),
+    /// not the old "?" fallback.
+    #[test]
+    fn type_name_renders_reference_type() {
+        let body = lower_source(
+            "function process(s: &0 String) -> Integer { return 0; } \
+             function main() -> Integer { return 0; }",
+        );
+        let param_ty = &body.local_decls[0].ty;
+        assert_eq!(
+            param_ty, "&0 String",
+            "B1 regression: reference param must carry real type, not '?'"
+        );
+    }
+
+    /// B2 (§2 callee): no Drop for reference-type borrow params.
+    /// Callee receives a reference handle — it does not own the heap.
+    #[test]
+    fn borrow_param_no_drop_in_callee() {
+        let body = lower_source(
+            "function peek(s: &0 String) -> Integer { return 0; } \
+             function main() -> Integer { return 0; }",
+        );
+        let has_drop = body
+            .blocks
+            .iter()
+            .flat_map(|b| &b.statements)
+            .any(|stmt| matches!(stmt, Statement::Drop(local, _) if local.0 == 0));
+        assert!(!has_drop, "B2 regression: borrow param must NOT have Drop.");
     }
 }
