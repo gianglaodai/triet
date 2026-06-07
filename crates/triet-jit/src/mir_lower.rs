@@ -1652,11 +1652,11 @@ unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
 /// Allocate a `HashMap` with given `len` and `cap`.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment,
-    clippy::ptr_as_ptr
+    clippy::cast_sign_loss,           // len/cap are non-negative by construction
+    clippy::cast_possible_truncation, // 64-bit target, values fit in usize
+    clippy::cast_possible_wrap,       // cap max is bounded by memory, won't wrap i64
+    clippy::cast_ptr_alignment,       // write_unaligned used, alignment irrelevant
+    clippy::ptr_as_ptr                // idiomatic in extern "C" heap code
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
@@ -1687,11 +1687,11 @@ pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
 /// Free a `HashMap`. No-op if `ptr == 0` or `ptr == NULL_SENTINEL`.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment,
-    clippy::ptr_as_ptr
+    clippy::cast_sign_loss,           // cap read from valid allocation, non-negative
+    clippy::cast_possible_truncation, // 64-bit target, cap fits in usize
+    clippy::cast_possible_wrap,       // cap max bounded by memory
+    clippy::cast_ptr_alignment,       // read_unaligned used
+    clippy::ptr_as_ptr                // idiomatic in extern "C" heap code
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_free(ptr: i64) {
@@ -1720,12 +1720,12 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
 /// `v == i64::MIN` (D2). Realloc at load factor 0.75 with rehash.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment,
-    clippy::ptr_as_ptr,
-    clippy::similar_names
+    clippy::cast_sign_loss,           // len/cap are non-negative by construction
+    clippy::cast_possible_truncation, // 64-bit target, values fit in usize
+    clippy::cast_possible_wrap,       // size bounded by memory
+    clippy::cast_ptr_alignment,       // write_unaligned/read_unaligned used
+    clippy::ptr_as_ptr,               // idiomatic in extern "C" heap code
+    clippy::similar_names             // probe vs probe variable in rehash + insert loops
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
@@ -1830,10 +1830,10 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
 /// Look up key, return value or `NULL_SENTINEL`. Trap-on-0 for map handle.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment
+    clippy::cast_sign_loss,           // hash may produce negative, intentionally handled
+    clippy::cast_possible_truncation, // cap read from valid allocation
+    clippy::cast_possible_wrap,       // double-mod normalizes to [0, cap)
+    clippy::cast_ptr_alignment        // read_unaligned used
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
@@ -2802,20 +2802,24 @@ mod tests {
     }
 
     /// Rehash: insert beyond load factor 0.75 triggers realloc.
+    /// Keys are displaced (k%4 ≠ k%8) so old index ≠ new index —
+    /// a rehash-broken-to-memcpy would fail assertions.
+    /// Key 13 (13%8=5) additionally tests collision probing after
+    /// realloc (slot 5 already occupied by key 5).
     #[test]
     fn hashmap_rehash_on_realloc() {
         let m = __triet_hashmap_alloc(0, 4); // cap=4, load factor at 0.75 → 3 max before realloc
-        let m = __triet_hashmap_insert(m, 1, 10);
-        let m = __triet_hashmap_insert(m, 2, 20);
-        let m = __triet_hashmap_insert(m, 3, 30);
-        // 4th insert triggers realloc (3 >= 4*3/4 = 3)
-        let m = __triet_hashmap_insert(m, 4, 40);
+        let m = __triet_hashmap_insert(m, 5, 50);
+        let m = __triet_hashmap_insert(m, 6, 60);
+        let m = __triet_hashmap_insert(m, 7, 70);
+        // 4th insert triggers realloc (3 >= 4*3/4 = 3). cap→8.
+        let m = __triet_hashmap_insert(m, 13, 130);
         assert_eq!(__triet_hashmap_len(m), 4);
-        // All keys survive rehash
-        assert_eq!(__triet_hashmap_get(m, 1), 10);
-        assert_eq!(__triet_hashmap_get(m, 2), 20);
-        assert_eq!(__triet_hashmap_get(m, 3), 30);
-        assert_eq!(__triet_hashmap_get(m, 4), 40);
+        // All keys survive rehash with displaced positions
+        assert_eq!(__triet_hashmap_get(m, 5), 50);
+        assert_eq!(__triet_hashmap_get(m, 6), 60);
+        assert_eq!(__triet_hashmap_get(m, 7), 70);
+        assert_eq!(__triet_hashmap_get(m, 13), 130);
         __triet_hashmap_free(m);
     }
 
