@@ -1129,23 +1129,76 @@ impl Default for JitContext {
 ///
 /// All values are i64. Trilean-typed results use the encoding:
 ///   +1 = True, 0 = Unknown, -1 = False.
+#[allow(clippy::too_many_lines)] // match-heavy dispatch, naturally long
 fn lower_binop(
     builder: &mut FunctionBuilder<'_>,
     op: BinOp,
     lhs: cranelift_codegen::ir::Value,
     rhs: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
+    use cranelift_codegen::ir::TrapCode;
+
     let i64 = I64;
 
+    // ADR-0044: Integer range enforcement constants.
+    let m = builder.ins().iconst(i64, 3_812_798_742_493_i64); // MAX
+    let neg_m = builder.ins().iconst(i64, -3_812_798_742_493_i64); // MIN
+
+    // Emit a cold trap block: branch if `cond` is true → trap.
+    let trap_if = |builder: &mut FunctionBuilder<'_>, cond: cranelift_codegen::ir::Value| {
+        let trap_bb = builder.create_block();
+        let cont_bb = builder.create_block();
+        builder.ins().brif(cond, trap_bb, &[], cont_bb, &[]);
+        builder.switch_to_block(trap_bb);
+        builder.ins().trap(TrapCode::unwrap_user(1));
+        builder.switch_to_block(cont_bb);
+    };
+
     match op {
-        // ── Arithmetic ──
-        BinOp::Add => builder.ins().iadd(lhs, rhs),
-        BinOp::Sub => builder.ins().isub(lhs, rhs),
-        BinOp::Mul => builder.ins().imul(lhs, rhs),
+        // ── Arithmetic with range enforcement ──
+        BinOp::Add => {
+            let result = builder.ins().iadd(lhs, rhs);
+            // |a+b| ≤ 2M ≈ 7.6×10¹² ≪ i64::MAX — carrier never overflows (F5).
+            // Check result > MAX || result < MIN.
+            let above_max = builder.ins().icmp(IntCC::SignedGreaterThan, result, m);
+            trap_if(builder, above_max);
+            let below_min = builder.ins().icmp(IntCC::SignedLessThan, result, neg_m);
+            trap_if(builder, below_min);
+            result
+        }
+        BinOp::Sub => {
+            let result = builder.ins().isub(lhs, rhs);
+            let above_max = builder.ins().icmp(IntCC::SignedGreaterThan, result, m);
+            trap_if(builder, above_max);
+            let below_min = builder.ins().icmp(IntCC::SignedLessThan, result, neg_m);
+            trap_if(builder, below_min);
+            result
+        }
+        BinOp::Mul => {
+            // F6: carrier can overflow — use smulhi before post-check.
+            // i128 product = lhs × rhs; smulhi = upper 64 bits, result = lower 64.
+            let result = builder.ins().imul(lhs, rhs);
+            let upper = builder.ins().smulhi(lhs, rhs);
+            // Sign-extend lower half: if result >= 0 then 0 else -1.
+            let zero = builder.ins().iconst(i64, 0);
+            let neg_one = builder.ins().iconst(i64, -1_i64);
+            let is_neg = builder.ins().icmp(IntCC::SignedLessThan, result, zero);
+            let sign_ext = builder.ins().select(is_neg, neg_one, zero);
+            // upper != sign_ext → carrier overflow.
+            let carrier_overflow = builder.ins().icmp(IntCC::NotEqual, upper, sign_ext);
+            trap_if(builder, carrier_overflow);
+            // Carrier OK — range-check lower half.
+            let above_max = builder.ins().icmp(IntCC::SignedGreaterThan, result, m);
+            trap_if(builder, above_max);
+            let below_min = builder.ins().icmp(IntCC::SignedLessThan, result, neg_m);
+            trap_if(builder, below_min);
+            result
+        }
+        // Div/Mod: quy nạp — input in-range → |a/b| ≤ |a| ≤ M, |a%b| < |b| ≤ M.
         BinOp::Div => builder.ins().sdiv(lhs, rhs),
         BinOp::Mod => builder.ins().srem(lhs, rhs),
 
-        // ── Ternary negation ──
+        // ── Ternary negation (no range check — symmetric: F4) ──
         BinOp::Neg => builder.ins().ineg(lhs),
 
         // ── Comparisons → Trilean! (+1 / -1, never Unknown) ──
