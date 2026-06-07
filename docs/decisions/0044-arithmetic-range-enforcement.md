@@ -1,6 +1,6 @@
 # ADR-0044: Integer Arithmetic Range Enforcement — Bậc C ưu tiên 1
 
-**Status:** Draft — CHỌ KÝ Mentor O (semantics/soundness) + Mentor G (layout/ABI).
+**Status:** Draft — CHỜ KÝ Mentor O (semantics/soundness) + Mentor G (layout/ABI).
 **Date:** 2026-06-07
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
@@ -53,7 +53,13 @@ in-range → chỉ cần check kết quả.
 2. **Rẻ hơn wrap:** 1-2 chu kỳ (icmp + brif predicted-not-taken) vs 15-35.
 3. **Wrap là việc của `add_and_truncate`** — method opt-in cho modular
    arithmetic tường minh. Khi method dispatch có mặt (Bậc C+), công thức
-   balanced-modular trong §B sẽ được dùng cho method đó.
+   balanced-modular trong §A sẽ được dùng cho method đó.
+
+**Cơ chế trap:** branch tới cold trap block → gọi `abort()` (Cranelift
+`libcall` tới `std::process::abort` hoặc `__builtin_trap` shim). Sinh
+SIGABRT (signal 6) — đồng bộ với hạ tầng N7 hiện có (trap-on-0,
+reject-MIN). Mọi test trap dùng pattern subprocess N7: spawn child +
+env var + check signal 6.
 
 ### Q2: Bảng per-op
 
@@ -96,7 +102,24 @@ Typecheck: literal Integer ngoài `±M` → E1036 `IntegerLiteralOverflow`.
 
 ---
 
-## §2 — Implementation plan
+## §2 — Acceptance criteria
+
+| # | Tiêu chí | Cách verify |
+|---|----------|-------------|
+| A1 | `M + 1` → SIGABRT (trap) | N7 subprocess |
+| A2 | `−M − 1` → SIGABRT (trap) | N7 subprocess |
+| A3 | Mul carrier: hai số in-range lớn (vd `M × M`) → SIGABRT, KHÔNG trả rác | N7 subprocess — đây là test ăn tiền của `smulhi` |
+| A4 | Mul in-range (vd `1_000_000 × 1_000`) → đúng giá trị | Fixture EXPECT |
+| A5 | Biên: `M + 0`, `−M + 0`, `M + (−M)` → pass (trap không bắn oan) | Fixture EXPECT |
+| A6 | Literal ngoài `±M` → E1036 | Fixture ERROR (compile-time) |
+| A7 | D2 reject-MIN vẫn sống | N7 test hiện có |
+
+A5 quan trọng ngang A3: off-by-one ở biên (`>` vs `>=`) là bug kinh điển
+của range check — trap bắn oan tại `M` là reject chương trình hợp lệ.
+
+---
+
+## §3 — Implementation plan
 
 1. **feat(track-c): Integer range constants** — `INTEGER_MAX`/`MIN`/`RANGE` trong
    `triet-core`, dùng cho cả typecheck và JIT.
@@ -110,7 +133,7 @@ Typecheck: literal Integer ngoài `±M` → E1036 `IntegerLiteralOverflow`.
 
 ---
 
-## §3 — Đường migration
+## §4 — Đường migration
 
 | Mốc | Việc |
 |-----|------|
@@ -120,7 +143,7 @@ Typecheck: literal Integer ngoài `±M` → E1036 `IntegerLiteralOverflow`.
 
 ---
 
-## §A — Balanced modular formula (dành cho `add_and_truncate` tương lai)
+## §A — Balanced modular formula (dành cho `add_and_truncate`) (dành cho `add_and_truncate` tương lai)
 
 ```
 M = (3²⁷−1)/2
