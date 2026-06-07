@@ -824,6 +824,7 @@ impl JitContext {
                     let free_shim_name = match ty.as_str() {
                         "String" => "__triet_string_free",
                         ty if triet_mir::is_vec_type(ty) => "__triet_vector_free",
+                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_free",
                         _ => {
                             return Err(JitError::Unsupported(format!(
                                 "Drop for type `{ty}` not supported — no free shim"

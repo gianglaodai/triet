@@ -2209,6 +2209,14 @@ pub fn is_vec_type(ty: &str) -> bool {
     ty == "Vector" || ty.starts_with("Vector<")
 }
 
+/// Returns `true` if `ty` names a HashMap type (e.g. `"HashMap"` or
+/// `"HashMap<Integer,Integer>"`). Single source of truth — use this
+/// instead of ad-hoc matching.
+#[must_use]
+pub fn is_hashmap_type(ty: &str) -> bool {
+    ty == "HashMap" || ty.starts_with("HashMap<")
+}
+
 /// Determines if a type has Copy semantics (stack primitives) or Move semantics (heap types).
 pub fn is_copy(ty: &str, body: &Body) -> bool {
     // Nullable types delegate to their payload (ordering rule: BEFORE all
@@ -2220,6 +2228,7 @@ pub fn is_copy(ty: &str, body: &Body) -> bool {
         "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
         "String" | "HashMap" => false,
         other if is_vec_type(other) => false,
+        other if is_hashmap_type(other) => false,
         _ => {
             // Check struct layouts — Copy if all fields are Copy (recursive).
             if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty) {

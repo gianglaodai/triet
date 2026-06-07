@@ -557,6 +557,7 @@ fn simple_is_copy(
         // Heap types — Move.
         "String" | "HashMap" => false,
         other if triet_mir::is_vec_type(other) => false,
+        other if triet_mir::is_hashmap_type(other) => false,
         other if struct_names.contains(other) => true,
         other if enum_names.contains(other) => true,
         // Unknown types default to Move (refuse-over-guess).
@@ -1239,9 +1240,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let shim_name = match arg_ty.as_str() {
                         "String" => "__triet_string_len",
                         ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
+                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
                         other => {
                             return Err(LowerError::heap_type_not_supported(
-                                &format!("len() on type `{other}` — expected String or Vector"),
+                                &format!(
+                                    "len() on type `{other}` — expected String, Vector, or HashMap"
+                                ),
                                 expr_span,
                             ));
                         }
@@ -1250,8 +1254,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     return Ok(dest);
                 }
                 "get" => {
-                    // `get(Vector, Integer) -> Integer?`
-                    // Total function: bounds-check → NULL_SENTINEL, never panics.
+                    // Type-aware dispatch: Vector → __triet_vector_get,
+                    // HashMap → __triet_hashmap_get.
                     if arguments.len() != 2 {
                         return Err(LowerError::unsupported_expr(
                             &arena.expression(*callee).node,
@@ -1262,7 +1266,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         .iter()
                         .map(|a| lower_expr(*a, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let dest = emit_shim_call(c, "__triet_vector_get", args, "Integer?", expr_span);
+                    let arg0_ty = &c.local_decls[args[0].0].ty;
+                    let shim_name = if triet_mir::is_hashmap_type(arg0_ty) {
+                        "__triet_hashmap_get"
+                    } else if triet_mir::is_vec_type(arg0_ty) {
+                        "__triet_vector_get"
+                    } else {
+                        return Err(LowerError::heap_type_not_supported(
+                            &format!("get() on type `{arg0_ty}` — expected Vector or HashMap"),
+                            expr_span,
+                        ));
+                    };
+                    let dest = emit_shim_call(c, shim_name, args, "Integer?", expr_span);
                     return Ok(dest);
                 }
                 "push" => {
@@ -1308,6 +1323,45 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         "Vector<Integer>",
                         expr_span,
                     );
+                    return Ok(dest);
+                }
+                // ── ADR-0043: HashMap builtins ──
+                "hashmap_new" => {
+                    if !arguments.is_empty() {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let len_local = c.alloc_local_ty("Integer");
+                    c.push(Statement::Const {
+                        dest: Place::local(len_local),
+                        value: ConstValue::Integer(0),
+                        span: DUMMY_SPAN,
+                    });
+                    let cap_local = c.alloc_local_ty("Integer");
+                    c.push(Statement::Const {
+                        dest: Place::local(cap_local),
+                        value: ConstValue::Integer(4),
+                        span: DUMMY_SPAN,
+                    });
+                    let dest = emit_shim_call(
+                        c,
+                        "__triet_hashmap_alloc",
+                        vec![len_local, cap_local],
+                        "HashMap<Integer,Integer>",
+                        expr_span,
+                    );
+                    return Ok(dest);
+                }
+                "insert" => {
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let map_ty = c.local_decls[args[0].0].ty.clone();
+                    let dest =
+                        emit_shim_call(c, "__triet_hashmap_insert", args, &map_ty, expr_span);
                     return Ok(dest);
                 }
                 _ => { /* fall through to user-defined function dispatch */ }

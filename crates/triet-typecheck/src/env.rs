@@ -284,6 +284,56 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(Type::Nullable(Box::new(Integer))),
         },
     );
+
+    // ── ADR-0043: HashMap builtins ──
+    let hashmap_ii = Type::UserStruct {
+        name: "HashMap".into(),
+        type_params: Vec::new(),
+        fields: vec![
+            ("__key".into(), Integer.clone()),
+            ("__value".into(), Integer.clone()),
+        ],
+    };
+
+    // `hashmap_new() -> HashMap<Integer,Integer>`
+    env.declare(
+        "hashmap_new",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: Vec::new(),
+            return_type: Box::new(hashmap_ii.clone()),
+        },
+    );
+
+    // `insert(HashMap<Integer,Integer>, Integer, Integer) -> HashMap<Integer,Integer>`
+    env.declare(
+        "insert",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![hashmap_ii.clone(), Integer.clone(), Integer.clone()],
+            return_type: Box::new(hashmap_ii.clone()),
+        },
+    );
+
+    // `get(HashMap<Integer,Integer>, Integer) -> Integer?`
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![hashmap_ii.clone(), Integer.clone()],
+            return_type: Box::new(Type::Nullable(Box::new(Integer))),
+        },
+    );
+
+    // `len` overload for HashMap
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![hashmap_ii],
+            return_type: Box::new(Integer),
+        },
+    );
 }
 
 #[cfg(test)]
