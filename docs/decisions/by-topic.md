@@ -1,6 +1,6 @@
 # ADR Index — by Topic
 
-Cross-reference vào 36 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?".
+Cross-reference vào 44 ADRs theo **topic cluster** thay vì chronological number. Hữu ích khi câu hỏi là "rule về X ở đâu?" thay vì "ADR-0NNN nói gì?". (0001-0036: compiler cũ; 0037-0044: rewrite backend — xem §7b.)
 
 > **Note:** ADRs là *immutable historical records* — file content không thay đổi sau khi đạt "Quyết định" status. Index này chỉ point đến chúng, không duplicate. Active language semantics nằm ở [`SPEC.md`](../../SPEC.md).
 >
@@ -101,6 +101,24 @@ Cross-reference vào 36 ADRs theo **topic cluster** thay vì chronological numbe
 | [0033](0033-aot-cache-cranelift-object.md) | AOT cache via `cranelift-object` — refines ADR-0030 §13 backlog. Backend hybrid (`cranelift-jit` Path B fresh compile + `cranelift-object` Path A persistence). Version pinning manifest (`cranelift_version` + `shim_abi_version` + `target_triple`) — mismatch silent-fallback Path B. Symbol resolution via direct `SHIM_TABLE`/`LIBCALL_TABLE` lookup (NOT `dlsym`) — reuses ADR-0032 §6. GC integration: `jit/{triple}/{impl_hash}/` swept against `live_mods`; new `GcReport.swept_jit_dirs`; conservative-on-corruption uniform. Per-triple path separation. Determinism preserved (cache state runtime-only). Synchronous atomic-install on Path B success. Silent-fallback corruption recovery. Unblocks v0.10.x.jit.3 + chained .4 bootstrap gate lift | Locked |
 
 > Self-host source code: `compiler/` directory (~23K LOC). Cross-cutting: [ADR-0009](0009-version-gate-policy.md) cho gate matrix; [ADR-0027](0027-diagnostic-format-standard.md) cho diagnostic format.
+
+---
+
+## 7b. Rewrite backend (2026-06-04+ — compiler MỚI, tất cả hai-chữ-ký O+G)
+
+| ADR | Title | Status |
+|---|---|---|
+| [0037](0037-enum-tagged-union-layout.md) | Enum tagged-union layout — discriminant + payload StackSlot (Bậc A) | Locked |
+| [0038](0038-comparable-trait-deferred.md) | Comparable trait — `compare() -> Trit` locked, defer chờ Trait system | Deferred-locked |
+| [0039](0039-nullable-operator-family.md) | Nullable operator family — `?+>` map/flatMap auto-flatten, `?0>` cấm, `?->` E1041 | Locked (defer impl) |
+| [0040](0040-heap-aggregate-layout.md) | Heap aggregate layout — String/Vector shims, ObjectHeader, M1-M4 zeroing-on-move | Locked |
+| [0041](0041-nullable-representation-bac-a.md) | Nullable `T?` repr — PA-3c uniform `i64::MIN` sentinel, trap-on-0, Elvis; §12: match 2-arm + E1035/E1026 | Locked |
+| [0042](0042-ownership-across-boundary.md) | Ownership across boundary (B7-lift) — move-only, `Deinit` tombstone, borrowck M3+ `CallTarget::Jit` | Locked |
+| [0043](0043-hashmap-representation.md) | HashMap repr & shims — open addressing 24B slot, insert-or-update, D2 reject-MIN | Locked |
+| [0044](0044-arithmetic-range-enforcement.md) | Arithmetic range enforcement — trap-on-overflow (2 họ signal: JIT SIGILL / shim SIGABRT), smulhi Mul carrier, E1036; §5 Pow addendum | Locked |
+
+> Debt registry sống ở `TODO.md` (D1-D3 + F6). Test infra: N7 subprocess
+> (`spawn_n7_child --exact`), `scripts/gate.sh`.
 
 ---
 

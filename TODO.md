@@ -27,6 +27,9 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 
 ## Phase 5 — Bậc C
 - [x] **ADR-0044 trap-on-overflow:** `1fbf6ab`. JIT range check (Add/Sub/Mul trapnz SIGILL), E1036 literal overflow, pow checked_mul+range. D1/D1-literal/D3 ĐÓNG. D2 giữ defense-in-depth. 8 N7 subprocess tests, 4/4 teeth đỏ. `scripts/gate.sh`.
+- [ ] **Borrow params heap (Bậc C lát 2 — G ra lệnh 2026-06-07):** `&+ T`/`&0 T`/`&- T` qua user-fn boundary (ADR-0042 Q3 OUT → IN). Phase-0 probe: PropagatedLoan/return_borrow_map (`checker.rs:745-787`, có sẵn — sống hay trang trí?), JIT pass-by-ref heap handle. → ADR-0045 hai chữ ký trước code.
+- [ ] **Codegen opt (G, ADR-0044 ack §iii):** range check 1-instruction — `(val−MIN) >ᵤ 2M` unsigned-sub trick; fallback `bor` gộp 2 icmp trước trapnz. Cắt nửa instruction check mỗi Add/Sub.
+- [ ] **Constant folding pass (G, ADR-0044 ack §iii):** toán hạng const in-range → tính compile-time, bỏ trap block.
 - [ ] Native struct layout (StackSlot with MIR StructLayout sizes).
 - [ ] Packed Outcome ABI (bit extraction for discrim/payload).
 - [ ] Multi-value return (>1 return value).

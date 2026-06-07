@@ -116,6 +116,23 @@ prior decision, write a new ADR that supersedes it.
 |---|---|---|
 | [0036](0036-typetag-opaque-aggregate.md) | `TypeTag::Opaque` — disambiguating user-defined aggregates from true `Unit` (disc 12, .triv version 7 → 8, self-host lockstep, resolves Unit ambiguity to unblock 410 cross-mode tier-downs) | Locked |
 
+### Rewrite backend (2026-06-04+ — compiler MỚI; mọi ADR hai-chữ-ký Mentor O + Mentor G)
+
+> Mốc: backend v0.2-v0.10 bị xóa 2026-06-04, dựng lại từ MIR+NLL+Cranelift.
+> ADR 0001-0036 ở trên thuộc compiler cũ (xem `docs/ARCHIVE.md` §2 cho tag
+> LIVE/HISTORICAL từng cái). Từ 0037 trở đi là quyết định của compiler hiện hành.
+
+| ADR | Title | Status |
+|---|---|---|
+| [0037](0037-enum-tagged-union-layout.md) | Enum tagged-union layout — discriminant + payload StackSlot (Bậc A) | Locked |
+| [0038](0038-comparable-trait-deferred.md) | Comparable trait — `compare() -> Trit`, defer chờ Trait system | Deferred-locked |
+| [0039](0039-nullable-operator-family.md) | Nullable operator family — `?+>`/`?0>`/`?->`, defer implementation | Locked |
+| [0040](0040-heap-aggregate-layout.md) | Heap aggregate layout — String/Vector shims, M1-M4 zeroing-on-move | Locked |
+| [0041](0041-nullable-representation-bac-a.md) | Nullable `T?` Bậc A — PA-3c `i64::MIN`, trap-on-0; §12 match 2-arm | Locked |
+| [0042](0042-ownership-across-boundary.md) | B7-lift — move-only qua user-fn, `Deinit` tombstone, M3+ | Locked |
+| [0043](0043-hashmap-representation.md) | HashMap — open addressing 24B slot, insert-or-update, D2 | Locked |
+| [0044](0044-arithmetic-range-enforcement.md) | Arithmetic range enforcement — trap-on-overflow 2 họ signal, smulhi, E1036 | Locked |
+
 ## How to read an ADR
 
 Every ADR follows the same shape:

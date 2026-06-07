@@ -81,12 +81,14 @@ permanently (git history retains them). **Do not assume any of these exist.**
   architecture + a **classified catalog of all 36 ADRs** (LIVE / TOOLING /
   HISTORICAL). The old `docs/ARCHITECTURE.md` + `docs/plans/` were folded into
   this and removed (full text in git history). Read for *intent*, not layout.
-- `docs/decisions/` — **36 ADRs (0001-0036)**. The ones that lock **language
-  semantics** (error codes, diagnostic format, Outcome, Trilean! refinement,
-  S6 reference forms, keyword conventions) **remain authoritative** — the rewrite
-  does NOT change the language, only the compiler internals. ADRs that describe
-  the deleted *architecture* (VM, bootstrap, old JIT shim ABI) are history.
-  See `docs/ARCHIVE.md` §2 for the live/dead tag on each ADR.
+- `docs/decisions/` — **44 ADRs**. 0001-0036 thuộc compiler cũ: the ones that
+  lock **language semantics** (error codes, diagnostic format, Outcome, Trilean!
+  refinement, S6 reference forms, keyword conventions) **remain authoritative**;
+  ADRs that describe the deleted *architecture* (VM, bootstrap, old JIT shim ABI)
+  are history — see `docs/ARCHIVE.md` §2 for the live/dead tag on each.
+  **0037-0044 thuộc compiler MỚI** (rewrite-era, all two-mentor-signed):
+  0040 heap layout · 0041 nullable PA-3c · 0042 ownership-across-boundary/Deinit ·
+  0043 HashMap · 0044 arithmetic range enforcement.
 
 ### The current compiler (the rewrite — formerly "Track B")
 
@@ -104,14 +106,19 @@ A single pipeline. Reused frontend + a new backend built from scratch:
     ▼  triet-driver                     pipeline binary        [NEW]
 ```
 
-**Maturity (be honest about this — it is NOT a 96%-complete compiler):**
-the new backend compiles **scalar + arithmetic + logic-op** programs end-to-end
-(`main() → 42`, `2**10`, Ł3/K3 truth tables, recursive fib) and runs the NLL
-borrow checker. **NOT yet rebuilt:** aggregate types (String/Vector/HashMap/Enum/
-Struct literals all `Err` out of the lowerer), self-host, AOT cache, multi-value
-return, MIR verifier. Backend test count is ~22 (lower 3 + mir 4 + jit 15) — the
-1637-test safety net was deleted with the VM. Frontend tests (parser/typecheck/
-pack/modules) survive because the frontend was reused.
+**Maturity (cập nhật 2026-06-08 — Bậc A + Bậc B complete, Bậc C in progress):**
+the backend compiles end-to-end: scalars, arithmetic (**range-enforced
+trap-on-overflow per ADR-0044** — Add/Sub/Mul + pow shim, E1036 literal check),
+logic ops, control flow, recursion, flat structs (StackSlot + sret), enums
+(discriminant switch), **String/Vector/HashMap** (heap shims, move-only +
+Deinit tombstone per ADR-0042), **nullable `T?`** (PA-3c `i64::MIN` sentinel,
+Elvis, `match ~+/~0`), heap values across user-fn boundaries (B7-lift), NLL
+borrowck (E2420/E2440/E2450 + M3/M3+ move tracking), MIR verifier (INV-1/2 +
+enum invariants). **NOT yet rebuilt:** borrow params for heap types (`&+ T` —
+Bậc C lát 2, next), Outcome 2-reg ABI, multi-value return, native layout,
+self-host, AOT cache. Workspace tests: **~1086** (gate: `scripts/gate.sh`);
+integration corpus **72 fixtures** (driver, numbered 01-76 khuyết 16-19) — the
+1637-test VM safety net remains deleted; this is the new net.
 
 Design principles of the rewrite:
 - **Schema-driven types:** `spec/schema/triet-schema.yaml` is the SINGLE SOURCE
@@ -121,8 +128,11 @@ Design principles of the rewrite:
 - **MIR layer:** Flat, non-nested IR with explicit CFG — purpose-built for
   borrow checking and dataflow analysis.
 - **NLL borrow checker:** Polonius-style forward+backward dataflow on the CFG.
-- **Native JIT:** Cranelift codegen. Today every value is a single `i64`
-  (Bậc A); native struct `StackSlot` layout + heap-type shims are future work.
+- **Native JIT:** Cranelift codegen. Every value is a single `i64` (Bậc A/B);
+  flat structs use `StackSlot` + sret; heap types (String/Vector/HashMap) live
+  behind `extern "C"` Rust shims in `triet-jit/src/mir_lower.rs`; arithmetic
+  is range-enforced (`trapnz` → SIGILL; shim traps → SIGABRT — two signal
+  families per ADR-0044). Native multi-field layout = Bậc C future work.
 - **Hardware Token capability:** ZST compile-time tokens enforced by the borrow
   checker — zero runtime overhead (design, not yet implemented).
 
@@ -141,10 +151,11 @@ Design principles of the rewrite:
   reads **v0.10** and describes the deleted compiler's state — the *semantics*
   are current, the *implementation-status* claims are stale).
 - `VISION.md` — 5 architectural pillars + OS-capable trajectory.
-- `ROADMAP.md` — ⚠️ STALE: still says "v0.10 ✅ shipped" and `Cargo.toml` is
-  `0.10.0`; both describe the deleted compiler, not the rewrite's actual state.
-- `TODO.md` — ⚠️ STALE: tracks the deleted v0.11 JIT work; not the rewrite backlog.
-- `docs/decisions/` — **38 ADRs**; the language-semantics ones are preserved in
+- `ROADMAP.md` — ⚠️ phasing v0.2→v3.0 mô tả lộ trình compiler CŨ; chưa viết lại
+  cho thực tại Bậc A/B/C của rewrite. Đọc TODO.md cho backlog thật.
+- `TODO.md` — **backlog hiện hành của rewrite** (Track B/C, per-step với commit
+  hash + debt registry D1-D3). Cập nhật mỗi lát.
+- `docs/decisions/` — **44 ADRs**; the language-semantics ones are preserved in
   the rewrite, the architecture ones are history (see "What this is").
 - `spec/schema/triet-schema.yaml` — **canonical AST + S6 ownership** (design authority; ⚠️ type system spec-only, hand-written in typecheck).
 - `spec/plans/` — **phase designs** for the rewrite (design authority);
@@ -286,9 +297,13 @@ cargo test -p triet-parser test_name     # one test
 cargo clippy --workspace --all-targets   # lint (workspace lints are strict — fix every new warning)
 cargo fmt --all                          # format
 
+# GATE — chạy TRƯỚC mọi commit/báo cáo; report = dán raw output, không chép tay
+bash scripts/gate.sh                     # build warnings + test results + fixtures + clippy location-set
+
 # Run a .tri program (build the binary first)
 # The binary is `triet-driver` (the old `dao` CLI was deleted).
-# Only scalar/arithmetic/logic programs compile today — aggregate examples Err.
+# Scalars/structs/enums/String/Vector/HashMap/nullable/match đều chạy;
+# arithmetic ngoài ±(3²⁷−1)/2 trap per ADR-0044.
 cargo build --release
 ./target/release/triet-driver examples/hello_jit.tri        # check: parse→typecheck→lower→borrowck
 ./target/release/triet-driver run examples/hello_jit.tri    # run:   + JIT compile + execute → 42
@@ -330,16 +345,15 @@ New backend crates:
 - `triet-mir` — flat, non-nested MIR with `Body`, `Statement`, `Terminator`, `ControlFlowGraph`, `StructLayout`. Independent of AST types. Every field populated, no dead data.
 - `triet-lower` — AST→MIR lowering bridge. `lower_program() -> Result<Vec<Body>, LowerError>` — **0 panic!()**. Populates `StructLayout` from `Item::Struct`. Consumes `triet-syntax` + `triet-typecheck`.
 - `triet-borrowck` — NLL borrow checker with forward/backward dataflow over CFG. Liveness analysis + loan tracking + `places_conflict(conservative)` — conservative alias assumption for `&0`/`&-`. Error codes: E2420, E2440, **E2450**.
-- `triet-jit` — Cranelift JIT compiler consuming MIR `Body` directly. Bậc A: single i64 ABI (every value is one `i64`; aggregates/Outcome are pass-through, NOT yet correctly extracted — see the soundness note below). Native struct layout + heap-type shims are future work.
+- `triet-jit` — Cranelift JIT compiler consuming MIR `Body` directly. Single-i64 ABI; flat struct `StackSlot` + sret; heap shims (`__triet_string_*`/`__triet_vector_*`/`__triet_hashmap_*` — Rust `extern "C"` in `mir_lower.rs`, KHÔNG có file .c); arithmetic range-enforced (trapnz SIGILL; shim abort SIGABRT). N7 subprocess test infra (`spawn_n7_child` với `--exact --test-threads=1` — KHÔNG spawn không filter, fork bomb đã nổ một lần). Outcome ops vẫn guarded `Err` (chưa có producer).
 - `triet-driver` — pipeline binary. `check` mode: parse→typecheck→lower→borrowck. `run` mode: +JIT compile+execute. Handles `Result` from all phases, exits with diagnostic on error.
 
-> ⚠️ KNOWN SOUNDNESS DEBT (2026-06-04): the JIT's Outcome ops
-> (`OutcomeDiscriminant`/`OutcomeUnwrap`/`OutcomeUnwrapError`) are all identity
-> copies of the same i64 — a latent miscompile that is harmless ONLY because the
-> lowerer cannot yet produce real `~+`/`~-` Outcome values. When aggregate
-> lowering lands, these must become a tier-down/`Err`, not a silent copy. There
-> is no MIR verifier, and `execute_main` ignores `main` parameters. See
-> `spec/plans/REPORT-2026-06-04.md` §5 for the full 15-item debt list.
+> ⚠️ DEBT REGISTRY (cập nhật 2026-06-08): nợ sống ở **TODO.md** (nguồn duy nhất).
+> Đã đóng so với note cũ 2026-06-04: MIR verifier TỒN TẠI (INV-1/INV-2 + enum
+> invariants — nhưng F6: chưa bắt block thiếu terminator); Outcome ops guarded
+> `Err` (không còn identity-copy); D1/D1-literal/D3 đóng bởi ADR-0044. Còn treo:
+> D2 (reject-MIN = defense), F6 verifier, typecheck unreachable-arm, Tryte range
+> chưa enforce, `execute_main` ignores `main` parameters, heap-nullable producer.
 
 **Historical phase summary** — describes the DELETED v0.2-v0.10 compiler.
 Kept for ADR/intent context only; the crates and architecture below **no longer
@@ -358,7 +372,7 @@ exist** (deep dive ở [`docs/ARCHIVE.md`](docs/ARCHIVE.md)):
 
 - `triet::lex::E0000` — lexer
 - `triet::parse::E000X` — parser
-- `triet::typecheck::E10XX` — type checker (E1024-E1032 + E1037-E1039 ADR-0020 Outcome; E1033/E1034 ADR-0021 Trilean!)
+- `triet::typecheck::E10XX` — type checker (E1024-E1032 + E1037-E1039 ADR-0020 Outcome; E1033/E1034 ADR-0021 Trilean!; **E1035** NegativeArmOnNullable ADR-0041 §12; **E1036** IntegerLiteralOverflow ADR-0044 Q2)
 - `triet::runtime::E20XX` — interpreter (DELETED crate; codes reserved, no live emitter)
 - `triet::modules::E21XX` — loader / resolver (E2100 cyclic, E2101 file-not-found, …)
 - `triet::capability::E22XX` — capability system (E2200-E2208)
@@ -446,8 +460,10 @@ then update the consumers (parser, typecheck, lowerer).
 
 The user follows a per-step commit pattern:
 1. Pick the next sub-task from `TODO.md`.
-2. Implement, run `cargo test --workspace` and `cargo clippy --workspace`.
-3. Commit with conventional format: `<type>(<scope>): subject` — examples in `git log`. The most recent scope pattern is `fix(v0.8.x.review.N): …` / `docs(v0.8.x.review.N): …` (post-v0.8 audit phase). Earlier patterns: `feat(v0.8.N): …` / `feat(v0.7.4.N-error): …` / `feat(v0.6.N): …` / `docs(v0.5.x.review.N): …`.
+2. Implement, run **`bash scripts/gate.sh`** (build + test + fixtures + clippy
+   location-set). Báo cáo/review = dán RAW OUTPUT của script — không chép tay
+   con số (quy ước từ 2026-06-07 sau 3 claim không đo).
+3. Commit with conventional format: `<type>(<scope>): subject` — scope hiện hành: `feat(track-c): …` / `fix(track-c): …` / `docs(adr): …` (trước đó: `track-b`). Examples in `git log`.
 4. Push.
 5. Update `TODO.md` to mark `[x]` and append the commit short-hash.
 6. The `.githooks/post-commit` hook auto-rebuilds the knowledge graph (graphify-out/) in the background after the commit (AST-only, no API cost) — no manual step needed in the normal case. See the **graphify** section below for the freshness check + manual-fallback conditions.
@@ -459,11 +475,14 @@ When a decision affects future architecture (module shape, ABI, type system), wr
 ## Examples
 
 `examples/*.tri` is a MIX of survivors from the deleted VM-era compiler and new
-driver smoke tests. **Most old examples do NOT run on `triet-driver` yet** — they
-use String/Vector/Enum/Struct, which the new lowerer rejects. Do not treat a
-failed old example as a regression.
+driver smoke tests. **String/Vector/HashMap/Enum/Struct/nullable nay đã chạy
+trên `triet-driver`** (Bậc B) — nhưng examples cũ chưa được re-validate hàng
+loạt: chúng có thể dùng builtin/idiom của VM cũ chưa được wire (vd `concat`,
+f-string runtime). Lưới test thật là `crates/triet-driver/tests/fixtures/`
+(72 fixtures); examples chỉ là demo. Do not treat a failed old example as a
+regression — nhưng nếu fail, ghi nhận để prune/re-validate.
 
-Known-good on the current driver (scalar/arith/logic only):
+Known-good on the current driver:
 ```bash
 ./target/release/triet-driver run examples/hello_jit.tri        # → 42
 ./target/release/triet-driver run examples/test_pow.tri         # → 1024
