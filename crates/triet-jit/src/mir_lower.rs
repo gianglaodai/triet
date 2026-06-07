@@ -1316,11 +1316,13 @@ const extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
 /// Integer power via exponentiation by squaring (`extern "C"` ABI).
 /// `pow(base, exp)` = base^exp. Exponent must be >= 0.
 #[allow(unsafe_code)]
+#[allow(clippy::manual_unwrap_or_default)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
     if exp < 0 {
-        return 0; // undefined, fallback
+        return 0;
     }
+    let max_val = triet_core::Integer::MAX.to_i64();
     let mut result: i64 = 1;
     let mut e = exp;
     let mut b = base;
@@ -1330,12 +1332,20 @@ pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
                 Some(v) => v,
                 None => std::process::abort(),
             };
+            if result > max_val || result < -max_val {
+                std::process::abort();
+            }
         }
         e >>= 1;
-        b = match b.checked_mul(b) {
-            Some(v) => v,
-            None => std::process::abort(),
-        };
+        if e > 0 {
+            b = match b.checked_mul(b) {
+                Some(v) => v,
+                None => std::process::abort(),
+            };
+            if b > max_val || b < -max_val {
+                std::process::abort();
+            }
+        }
     }
     result
 }
@@ -2772,8 +2782,9 @@ mod tests {
     /// Uses `_TRIET_N7` env var to trigger child path. Fork-bomb safe.
     fn spawn_n7_child(test_name: &str) -> std::process::ExitStatus {
         let exe = std::env::current_exe().expect("current_exe");
+        let full_name = format!("mir_lower::tests::{test_name}");
         std::process::Command::new(&exe)
-            .args([test_name, "--exact", "--test-threads=1"])
+            .args([&full_name, "--exact", "--test-threads=1"])
             .env("_TRIET_N7", test_name)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2781,15 +2792,16 @@ mod tests {
             .unwrap_or_else(|_| panic!("spawn child for {test_name}"))
     }
 
-    /// Assert child died from a fatal signal.
-    fn assert_n7_signal(test_name: &str, status: std::process::ExitStatus) {
+    /// Assert child died from signal `expected` (e.g. 6=SIGABRT, 4=SIGILL).
+    fn assert_n7_signal(test_name: &str, status: std::process::ExitStatus, expected: i32) {
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
-            assert!(
-                status.signal().is_some(),
-                "{test_name}: expected signal death, got exit code {:?}",
-                status.code()
+            assert_eq!(
+                status.signal(),
+                Some(expected),
+                "{test_name}: expected signal {expected}, got: {:?}",
+                status.signal()
             );
         }
         #[cfg(not(unix))]
@@ -2816,7 +2828,7 @@ mod tests {
             let _ = __triet_string_len(0);
         });
         let status = spawn_n7_child("n7_shim_trap_on_zero_len");
-        assert_n7_signal("n7_shim_trap_on_zero_len", status);
+        assert_n7_signal("n7_shim_trap_on_zero_len", status, 6);
     }
 
     /// N7: trap-on-0 for string eq (shortcut must NOT fire before trap).
@@ -2826,7 +2838,7 @@ mod tests {
             let _ = __triet_string_eq(0, 0);
         });
         let status = spawn_n7_child("n7_shim_trap_on_zero_eq");
-        assert_n7_signal("n7_shim_trap_on_zero_eq", status);
+        assert_n7_signal("n7_shim_trap_on_zero_eq", status, 6);
     }
 
     /// F1: `free(NULL_SENTINEL)` must be no-op (null has no allocation).
@@ -2901,16 +2913,56 @@ mod tests {
             let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL);
         });
         let status = spawn_n7_child("n7_hashmap_insert_min_value_rejected");
-        assert_n7_signal("n7_hashmap_insert_min_value_rejected", status);
+        assert_n7_signal("n7_hashmap_insert_min_value_rejected", status, 6);
     }
 
-    // A8: 2**100 → abort (checked_mul overflow in pow).
+    // A8: 2**100 → abort (checked_mul + range in pow).
     #[test]
     fn n7_overflow_pow_checked() {
         n7_child_guard("n7_overflow_pow_checked", || {
             let _ = __triet_pow(2, 100);
         });
         let status = spawn_n7_child("n7_overflow_pow_checked");
-        assert_n7_signal("n7_overflow_pow_checked", status);
+        assert_n7_signal("n7_overflow_pow_checked", status, 6);
+    }
+
+    // A8+: 3**30 → abort (fits i64 but exceeds Integer range 3.8e12).
+    #[test]
+    fn n7_overflow_pow_range() {
+        n7_child_guard("n7_overflow_pow_range", || {
+            let _ = __triet_pow(3, 30);
+        });
+        let status = spawn_n7_child("n7_overflow_pow_range");
+        assert_n7_signal("n7_overflow_pow_range", status, 6);
+    }
+
+    // A1: range check via pow shim — M+1 overwrites.
+    #[test]
+    fn n7_overflow_add_above_max() {
+        n7_child_guard("n7_overflow_add_above_max", || {
+            let _ = __triet_pow(3_812_798_742_494, 1);
+        });
+        let status = spawn_n7_child("n7_overflow_add_above_max");
+        assert_n7_signal("n7_overflow_add_above_max", status, 6);
+    }
+
+    // A2: range check via pow shim — -M-1 overwrites.
+    #[test]
+    fn n7_overflow_sub_below_min() {
+        n7_child_guard("n7_overflow_sub_below_min", || {
+            let _ = __triet_pow(-3_812_798_742_494, 1);
+        });
+        let status = spawn_n7_child("n7_overflow_sub_below_min");
+        assert_n7_signal("n7_overflow_sub_below_min", status, 6);
+    }
+
+    // A3: smulhi carrier overflow via pow shim — M*M.
+    #[test]
+    fn n7_overflow_mul_carrier() {
+        n7_child_guard("n7_overflow_mul_carrier", || {
+            let _ = __triet_pow(3_812_798_742_493, 2);
+        });
+        let status = spawn_n7_child("n7_overflow_mul_carrier");
+        assert_n7_signal("n7_overflow_mul_carrier", status, 6);
     }
 }

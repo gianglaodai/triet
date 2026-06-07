@@ -55,6 +55,11 @@ in-range → chỉ cần check kết quả.
    arithmetic tường minh. Khi method dispatch có mặt (Bậc C+), công thức
    balanced-modular trong §A sẽ được dùng cho method đó.
 
+**Cơ chế trap:** Cranelift `trapnz` (→ `ud2` → SIGILL trên x86_64,
+SIGTRAP trên macOS). Không dùng abort-shim cold-block (phức tạp block
+sealing trong FunctionBuilder). Semantics tương đương: kill process
+ngay tại điểm overflow, không cần gọi hàm.
+
 **Cơ chế trap:** branch tới cold trap block → gọi `abort()` (Cranelift
 `libcall` tới `std::process::abort` hoặc `__builtin_trap` shim). Sinh
 SIGABRT (signal 6) — đồng bộ với hạ tầng N7 hiện có (trap-on-0,
