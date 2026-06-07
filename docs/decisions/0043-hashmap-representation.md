@@ -1,6 +1,6 @@
 # ADR-0043: HashMap Representation & Runtime Shims — Bậc B
 
-**Status:** Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-07). Mentor G CHỜ KÝ (layout/ABI).
+**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-07) + Mentor G ĐÃ KÝ (layout/ABI, 2026-06-07).
 **Date:** 2026-06-07
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)

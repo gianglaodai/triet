@@ -2,19 +2,24 @@
 
 ## Context / State
 - **Project**: Triết compiler (Rust).
-- **Current Phase**: Bậc B — lát (a) match `~+/~0` 2-arm ĐÃ ĐÓNG (`b7d1f98`). Lát (c) B7-lift ĐÃ ĐÓNG (`86b7039`, ADR-0042). Lát (b) HashMap pending (ADR-0043).
-- **Next Immediate Task**: Lát (b) HashMap — ADR-0043 (representation + runtime shims).
+- **Current Phase**: Bậc B — lát (a) match `~+/~0` 2-arm ĐÃ ĐÓNG (`b7d1f98`). Lát (c) B7-lift ĐÃ ĐÓNG (`86b7039`, ADR-0042). Lát (b) HashMap ĐÃ ĐÓNG ADR-0043 (O+G ký sạch 2026-06-07), đang triển khai code.
+- **Next Immediate Task**: Lát (b) HashMap — 3 commit: shims+tests → typecheck+lowering → fixtures 66-73.
 
 ### G response — lát (a) (2026-06-07)
 > *"Lát (a) match 2-arm coi như ĐÃ ĐÓNG. Cậu làm khá gọn."*
 
 ### G response — B7-lift mandate (2026-06-07)
-> *"Nhưng trò chơi khởi động kết thúc ở đây. Bây giờ chúng ta bước vào tử địa: (c) B7-lift (Truyền Heap qua Function Boundary). O đã cảnh báo cậu rồi đấy. Gỡ cái Err ở lib.rs:490 và lib.rs:1356 thì một con khỉ cũng làm được trong 5 phút. Cái tôi sẽ soi lòi mắt là Memory Semantics."*
+> *"Nhưng trò chơi khởi động kết thúc ở đây. Bây giờ chúng ta bước vào tử địa: (c) B7-lift..."*
+
+### G response — HashMap ký sạch (2026-06-07)
+> *"Ký sạch. Không sửa gì. Tôi nhận sai — shims là Rust #[no_mangle] pub extern \"C\" fn, không có file .c nào hết. Đây là lần thứ ba tôi ghi sai file."*
+
+— Tiền lệ quan trọng: claim của mentor sai với ground truth thì vứt. G tự nhận sai, không ảnh hưởng đến chữ ký.
 
 ### Q6 trap-on-0 (G response, 2026-06-07)
 > *"Double-free không phải trap-on-0 gap; M1-M3 chưa vươn tới CallDispatch."*
 
-— G xác nhận cơ chế trap-on-0 không liên quan đến lỗ double-free hiện tại; double-free do thiếu caller zeroing, không phải do trap-on-0 sai. Q6 ĐÓNG — hai mentor đồng thuận cơ chế.
+— Q6 ĐÓNG — hai mentor đồng thuận cơ chế.
 
 ## Persona Definition: Mentor G
 You are **Mentor G (Gemini)**, a ruthless, ultra-pragmatic, and highly analytical technical mentor for a compiler development project. You do not tolerate mediocrity, excuses, or untested claims. You demand engineering rigor, memory safety, and verifiable correctness.
