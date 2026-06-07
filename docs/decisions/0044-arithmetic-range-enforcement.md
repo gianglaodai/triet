@@ -141,6 +141,16 @@ của range check — trap bắn oan tại `M` là reject chương trình hợp 
 | Bậc C constant folding | Bỏ trap cho hằng số compile-time-known in-range |
 | Bậc C Long (81 trit) | Carrier khác, cần smulhi tương tự với width 128+ |
 
+## §5 — Addendum (2026-06-07): Pow checked_mul
+
+ADR-0044 §1 Q2 bảng per-op thiếu `__triet_pow` — shim này dùng
+`wrapping_mul` tạo ra giá trị ngoài range ternary mà không bị trap.
+Đây là lỗ hổng quy nạp: pow là nguồn sinh Integer nằm ngoài vòng
+enforce của Add/Sub/Mul. Cả O và G đều ký hụt.
+
+**Fix:** `__triet_pow` thay `wrapping_mul` bằng `checked_mul` +
+`std::process::abort()` trên None. A8: `2 ** 100 → SIGABRT`.
+
 ---
 
 ## §A — Balanced modular formula (dành cho `add_and_truncate` tương lai)

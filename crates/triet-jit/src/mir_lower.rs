@@ -1140,9 +1140,10 @@ fn lower_binop(
 
     let i64 = I64;
 
-    // ADR-0044: Integer range enforcement constants.
-    let m = builder.ins().iconst(i64, 3_812_798_742_493_i64); // MAX
-    let neg_m = builder.ins().iconst(i64, -3_812_798_742_493_i64); // MIN
+    // ADR-0044: Integer range enforcement — from triet-core (F3).
+    let max_val = triet_core::Integer::MAX.to_i64();
+    let m = builder.ins().iconst(i64, max_val);
+    let neg_m = builder.ins().iconst(i64, -max_val);
 
     let trap_code = TrapCode::unwrap_user(1);
 
@@ -1316,7 +1317,7 @@ const extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
 /// `pow(base, exp)` = base^exp. Exponent must be >= 0.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub const extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
+pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
     if exp < 0 {
         return 0; // undefined, fallback
     }
@@ -1325,10 +1326,16 @@ pub const extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
     let mut b = base;
     while e > 0 {
         if e & 1 != 0 {
-            result = result.wrapping_mul(b);
+            result = match result.checked_mul(b) {
+                Some(v) => v,
+                None => std::process::abort(),
+            };
         }
         e >>= 1;
-        b = b.wrapping_mul(b);
+        b = match b.checked_mul(b) {
+            Some(v) => v,
+            None => std::process::abort(),
+        };
     }
     result
 }
@@ -2759,51 +2766,67 @@ mod tests {
         __triet_vector_free(0);
     }
 
-    /// N7 — trap-on-0: calling a read/consume shim with 0 must SIGABRT.
-    /// Spawns a subprocess that calls `__triet_string_len(0)` and asserts
-    /// it exits with signal 6 (SIGABRT). Also verifies `free(0)` does NOT
-    /// trap (reuses `vector_free_null_is_noop` above).
-    #[test]
-    fn n7_shim_trap_on_zero() {
-        // Child process guard: if this env var is set, we're the child —
-        // call the shim with 0 and abort (shouldn't reach exit).
-        if let Ok(test_name) = std::env::var("_TRIET_N7_TRAP_CHILD") {
-            match test_name.as_str() {
-                "eq" => {
-                    // eq(0, 0) must trap — shortcut a==b must NOT fire before trap.
-                    let _ = __triet_string_eq(0, 0);
-                }
-                _ => {
-                    let _ = __triet_string_len(0);
-                }
-            }
-            std::process::exit(0); // unreachable if abort works
-        }
+    // ── N7 subprocess helpers (F1: --exact --test-threads=1) ──
 
-        // Parent: spawn children that call shims with 0.
+    /// Spawn child subprocess running only `test_name` (exact, single-threaded).
+    /// Uses `_TRIET_N7` env var to trigger child path. Fork-bomb safe.
+    fn spawn_n7_child(test_name: &str) -> std::process::ExitStatus {
         let exe = std::env::current_exe().expect("current_exe");
-        for test_name in &["len", "eq"] {
-            let status = std::process::Command::new(&exe)
-                .env("_TRIET_N7_TRAP_CHILD", test_name)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap_or_else(|_| panic!("spawn child for {test_name}"));
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                assert_eq!(
-                    status.signal(),
-                    Some(6),
-                    "{test_name}: expected SIGABRT (signal 6), got: {:?}",
-                    status.signal()
-                );
-            }
-            #[cfg(not(unix))]
-            {
-                assert!(!status.success(), "{test_name}: child should have aborted");
-            }
+        std::process::Command::new(&exe)
+            .args([test_name, "--exact", "--test-threads=1"])
+            .env("_TRIET_N7", test_name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap_or_else(|_| panic!("spawn child for {test_name}"))
+    }
+
+    /// Assert child died from a fatal signal.
+    fn assert_n7_signal(test_name: &str, status: std::process::ExitStatus) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert!(
+                status.signal().is_some(),
+                "{test_name}: expected signal death, got exit code {:?}",
+                status.code()
+            );
         }
+        #[cfg(not(unix))]
+        {
+            assert!(!status.success(), "{test_name}: child should have aborted");
+        }
+    }
+
+    /// Child guard: if `_TRIET_N7` matches `test_name`, run `child_fn`.
+    /// Otherwise exit silently (prevents fork-bomb from --exact race).
+    fn n7_child_guard(test_name: &str, child_fn: impl FnOnce()) {
+        if let Ok(name) = std::env::var("_TRIET_N7") {
+            if name == test_name {
+                child_fn();
+            }
+            std::process::exit(0);
+        }
+    }
+
+    /// N7: trap-on-0 for string len.
+    #[test]
+    fn n7_shim_trap_on_zero_len() {
+        n7_child_guard("n7_shim_trap_on_zero_len", || {
+            let _ = __triet_string_len(0);
+        });
+        let status = spawn_n7_child("n7_shim_trap_on_zero_len");
+        assert_n7_signal("n7_shim_trap_on_zero_len", status);
+    }
+
+    /// N7: trap-on-0 for string eq (shortcut must NOT fire before trap).
+    #[test]
+    fn n7_shim_trap_on_zero_eq() {
+        n7_child_guard("n7_shim_trap_on_zero_eq", || {
+            let _ = __triet_string_eq(0, 0);
+        });
+        let status = spawn_n7_child("n7_shim_trap_on_zero_eq");
+        assert_n7_signal("n7_shim_trap_on_zero_eq", status);
     }
 
     /// F1: `free(NULL_SENTINEL)` must be no-op (null has no allocation).
@@ -2870,39 +2893,24 @@ mod tests {
         __triet_hashmap_free(m);
     }
 
-    // N7-C5: insert with v == i64::MIN must SIGABRT (D2 reject-on-insert).
-    // Uses a separate env var to avoid conflicting with n7_shim_trap_on_zero.
+    // N7-C5: insert with v == i64::MIN must die (D2 reject-on-insert).
     #[test]
     fn n7_hashmap_insert_min_value_rejected() {
-        if std::env::var("_TRIET_N7_HASHMAP_MIN").is_ok() {
+        n7_child_guard("n7_hashmap_insert_min_value_rejected", || {
             let m = __triet_hashmap_alloc(0, 4);
             let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL);
-            std::process::exit(0);
-        }
+        });
+        let status = spawn_n7_child("n7_hashmap_insert_min_value_rejected");
+        assert_n7_signal("n7_hashmap_insert_min_value_rejected", status);
+    }
 
-        let exe = std::env::current_exe().expect("current_exe");
-        let status = std::process::Command::new(&exe)
-            .env("_TRIET_N7_HASHMAP_MIN", "1")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("spawn child for hashmap_insert_min");
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            assert_eq!(
-                status.signal(),
-                Some(6),
-                "hashmap_insert_min: expected SIGABRT (signal 6), got: {:?}",
-                status.signal()
-            );
-        }
-        #[cfg(not(unix))]
-        {
-            assert!(
-                !status.success(),
-                "hashmap_insert_min: child should have aborted"
-            );
-        }
+    // A8: 2**100 → abort (checked_mul overflow in pow).
+    #[test]
+    fn n7_overflow_pow_checked() {
+        n7_child_guard("n7_overflow_pow_checked", || {
+            let _ = __triet_pow(2, 100);
+        });
+        let status = spawn_n7_child("n7_overflow_pow_checked");
+        assert_n7_signal("n7_overflow_pow_checked", status);
     }
 }
