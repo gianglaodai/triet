@@ -1,7 +1,7 @@
 # Phase 6 — Capability Security via S6 Ownership
 
 **Status:** Design only — not implemented (2026-06-04)
-**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+**See also:** `TODO.md` (live backlog + debt registry). REPORT-2026-06-04.md đã xóa — git history giữ.
 
 **Dependency note:** Phase numbering ≠ build order. Capability security depends on
 Phase 5 (S6 ownership) and Phase 2 (borrowck). Hardware Token pattern requires

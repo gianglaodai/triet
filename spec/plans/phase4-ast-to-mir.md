@@ -1,7 +1,7 @@
 # Phase 4 — AST → MIR Lowering
 
 **Status:** Partial — scalar + control flow + borrow; aggregates Err (2026-06-04)
-**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+**See also:** `TODO.md` (live backlog + debt registry). REPORT-2026-06-04.md đã xóa — git history giữ.
 
 **Dependency note:** Phase numbering ≠ build order. This phase (AST→MIR lowering)
 is the prerequisite for Phase 2 (borrowck) and Phase 3 (JIT) — both consume MIR

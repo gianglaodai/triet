@@ -1,7 +1,7 @@
 # Phase 1 — Schema / S6 Ownership Model
 
 **Status:** Partial — AST + ownership schema-driven; type system hand-written (2026-06-04)
-**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+**See also:** `TODO.md` (live backlog + debt registry). REPORT-2026-06-04.md đã xóa — git history giữ.
 
 **Dependency note:** Phase numbering ≠ build order. Phase 4 (AST→MIR lowering)
 is the prerequisite for Phase 2 (borrowck) and Phase 3 (JIT). The lowerer was

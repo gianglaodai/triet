@@ -2,7 +2,7 @@
 
 **Status:** Bậc-A complete — scalar + control flow + call + flat struct; clean
 refusals for everything beyond (2026-06-05).
-**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+**See also:** `TODO.md` (live backlog + debt registry). REPORT-2026-06-04.md đã xóa — git history giữ.
 
 **Dependency note:** Phase numbering ≠ build order. The JIT depends on Phase 4
 (AST→MIR lowerer) which produces MIR bodies, and Phase 2 (borrowck) which

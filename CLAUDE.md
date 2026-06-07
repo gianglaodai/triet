@@ -158,8 +158,9 @@ Design principles of the rewrite:
 - `docs/decisions/` — **44 ADRs**; the language-semantics ones are preserved in
   the rewrite, the architecture ones are history (see "What this is").
 - `spec/schema/triet-schema.yaml` — **canonical AST + S6 ownership** (design authority; ⚠️ type system spec-only, hand-written in typecheck).
-- `spec/plans/` — **phase designs** for the rewrite (design authority);
-  `spec/plans/REPORT-2026-06-04.md` is the most accurate current-state report.
+- `spec/plans/` — **phase designs** for the rewrite (design authority).
+  Trạng thái sống: `TODO.md` + `CLAUDE.md` §Maturity. (REPORT-2026-06-04.md —
+  báo cáo 3 bên author/O/G thời điểm rewrite — đã xóa, git history giữ.)
 
 ## Development principles
 

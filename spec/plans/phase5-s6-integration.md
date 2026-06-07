@@ -1,7 +1,7 @@
 # Phase 5 — S6 Ownership Pipeline Integration
 
 **Status:** Partial — borrowck done (2/5 codes), full test suite not yet (2026-06-04)
-**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+**See also:** `TODO.md` (live backlog + debt registry). REPORT-2026-06-04.md đã xóa — git history giữ.
 
 **Dependency note:** Phase numbering ≠ build order. S6 integration depends on
 Phase 4 (lowerer emits borrow ops) and Phase 2 (borrowck validates them).

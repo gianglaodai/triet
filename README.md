@@ -108,7 +108,7 @@ triet/
 ├── examples/              # .tri programs (mix of new + stale VM-era fixtures)
 ├── spec/                  # design authority: schema + phase plans
 │   ├── schema/triet-schema.yaml   # single source of truth for types/AST/ownership
-│   └── plans/                     # phase designs + REPORT-2026-06-04.md
+│   └── plans/                     # phase designs (rewrite Bậc A/B/C)
 ├── docs/
 │   ├── decisions/         # 36 ADRs (language-semantics ones remain authoritative)
 │   └── ARCHIVE.md         # digest of the deleted v0.2–v0.10 compiler + ADR catalog

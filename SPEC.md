@@ -1,8 +1,12 @@
-# Triết — Đặc tả ngôn ngữ v0.10
+# Triết — Đặc tả ngôn ngữ
 
 > Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, với tham vọng **đủ năng lực viết hệ điều hành** khi phần cứng tam phân xuất hiện. Lấy cảm hứng từ Setun (Liên Xô, 1958) và logic Łukasiewicz Ł3 (1920).
 >
-> Tài liệu này đặc tả semantics ngôn ngữ. Tầm nhìn dài hạn ở [VISION.md](VISION.md), lộ trình triển khai phasing ở [ROADMAP.md](ROADMAP.md), quyết định kiến trúc ở [docs/decisions/](docs/decisions/).
+> Tài liệu này đặc tả **semantics ngôn ngữ** — authoritative và độc lập với
+> trạng thái compiler. (Semantics được chốt qua các phase v0.2–v0.10 của
+> compiler cũ và KHÔNG đổi trong cuộc rewrite 2026-06-04; mức độ compiler
+> hiện hành đã implement tới đâu: xem `CLAUDE.md` §Maturity + `TODO.md`.)
+> Tầm nhìn dài hạn ở [VISION.md](VISION.md), lộ trình ở [ROADMAP.md](ROADMAP.md), quyết định kiến trúc ở [docs/decisions/](docs/decisions/).
 
 ---
 

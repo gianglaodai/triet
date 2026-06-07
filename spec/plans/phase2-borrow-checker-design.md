@@ -1,7 +1,7 @@
 # Phase 2 — Borrow Checker Design (dựa trên CFG + NLL)
 
 **Status:** Partial — 2/5 error codes fire end-to-end; regression vs v0.10 borrowck (2026-06-04)
-**See also:** `spec/plans/REPORT-2026-06-04.md` for current-state summary.
+**See also:** `TODO.md` (live backlog + debt registry). REPORT-2026-06-04.md đã xóa — git history giữ.
 
 **Dependency note:** Phase numbering ≠ build order. The borrow checker depends on
 Phase 4 (AST→MIR lowerer) which produces the MIR bodies that borrowck analyzes.
