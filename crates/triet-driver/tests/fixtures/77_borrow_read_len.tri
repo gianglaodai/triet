@@ -1,0 +1,11 @@
+// EXPECT: 10
+function peek(s: &0 String) -> Integer {
+    return length(s)
+}
+function main() -> Integer {
+    let msg: String = "hello"
+    let n = peek(&0 msg)
+    // Reuse msg after borrow — must NOT get E2420.
+    let m = length(msg)
+    return n + m
+}

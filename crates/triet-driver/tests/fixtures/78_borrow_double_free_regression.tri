@@ -1,0 +1,13 @@
+// EXPECT: 5
+// Regression: `evil(s: String) -> String` moves the arg, not borrows.
+// The callee owns `s`, caller Deinit-zeroes `m` after the call.
+// This MUST NOT double-free (exit 134 / SIGABRT).
+// If borrowck or lowerer regresses and treats `s: String` as Borrow,
+// both `m` (zeroed) and `r` point to the same allocation → double-free.
+function evil(s: String) -> String { return s; }
+function main() -> Integer {
+    let m = "hello";
+    let r = evil(m);
+    let n = length(r);
+    return n;
+}
