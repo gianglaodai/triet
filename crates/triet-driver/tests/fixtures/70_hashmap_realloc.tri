@@ -1,0 +1,12 @@
+// EXPECT: 61
+// Fixture 70 (C6): insert 6 keys with cap=4 → realloc, all survive
+function main() -> Integer {
+    let m = hashmap_new();
+    let m = insert(m, 10, 11);
+    let m = insert(m, 20, 21);
+    let m = insert(m, 30, 31);
+    let m = insert(m, 40, 41);
+    let m = insert(m, 50, 51);
+    let m = insert(m, 60, 61);
+    return get(m, 60) ?: -1;
+}

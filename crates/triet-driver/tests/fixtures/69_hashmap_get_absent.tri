@@ -1,0 +1,6 @@
+// EXPECT: 7
+// Fixture 69 (C4): get absent → NULL_SENTINEL → Elvis default
+function main() -> Integer {
+    let m = hashmap_new();
+    return get(m, 99) ?: 7;
+}

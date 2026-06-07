@@ -1,0 +1,6 @@
+// EXPECT: 0
+// Fixture 66 (C1): hashmap_new() → len 0
+function main() -> Integer {
+    let m = hashmap_new();
+    return len(m);
+}

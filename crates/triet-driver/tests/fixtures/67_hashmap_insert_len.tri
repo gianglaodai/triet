@@ -1,0 +1,8 @@
+// EXPECT: 2
+// Fixture 67 (C2): insert → len tăng
+function main() -> Integer {
+    let m = hashmap_new();
+    let m = insert(m, 1, 100);
+    let m = insert(m, 2, 200);
+    return len(m);
+}

@@ -1,0 +1,9 @@
+// EXPECT: 3
+// Fixture 72 (C8): m = insert(m, k, v) idiom — functional update
+function main() -> Integer {
+    let m = hashmap_new();
+    let m = insert(m, 1, 10);
+    let m = insert(m, 2, 20);
+    let m = insert(m, 3, 30);
+    return len(m);
+}

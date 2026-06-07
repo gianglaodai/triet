@@ -1,0 +1,7 @@
+// EXPECT: 100
+// Fixture 68 (C3): get sau insert → value
+function main() -> Integer {
+    let m = hashmap_new();
+    let m = insert(m, 1, 100);
+    return get(m, 1) ?: -1;
+}

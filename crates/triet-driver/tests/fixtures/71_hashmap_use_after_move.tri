@@ -1,0 +1,7 @@
+// ERROR: E2420
+// Fixture 71 (C7): use map after insert consume → E2420
+function main() -> Integer {
+    let m = hashmap_new();
+    let m2 = insert(m, 1, 10);
+    return len(m);
+}

@@ -1,0 +1,8 @@
+// EXPECT: 20
+// Fixture 73 (C9): m = insert(m, k, v1); m = insert(m, k, v2); get → v2
+function main() -> Integer {
+    let m = hashmap_new();
+    let m = insert(m, 1, 10);
+    let m = insert(m, 1, 20);
+    return get(m, 1) ?: -1;
+}
