@@ -1,6 +1,6 @@
 # ADR-0044: Integer Arithmetic Range Enforcement — Bậc C ưu tiên 1
 
-**Status:** Draft — CHỜ KÝ Mentor O (semantics/soundness) + Mentor G (layout/ABI).
+**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-07) + Mentor G ĐÃ KÝ (layout/ABI, 2026-06-07).
 **Date:** 2026-06-07
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)
@@ -143,7 +143,7 @@ của range check — trap bắn oan tại `M` là reject chương trình hợp 
 
 ---
 
-## §A — Balanced modular formula (dành cho `add_and_truncate`) (dành cho `add_and_truncate` tương lai)
+## §A — Balanced modular formula (dành cho `add_and_truncate` tương lai)
 
 ```
 M = (3²⁷−1)/2

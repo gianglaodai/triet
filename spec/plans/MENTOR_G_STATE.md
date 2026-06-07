@@ -21,6 +21,11 @@
 
 — Q6 ĐÓNG — hai mentor đồng thuận cơ chế.
 
+### G response — ADR-0044 nhận sai wrap→trap (2026-06-07)
+> *"Thua tâm phục khẩu phục. Khi SPEC:502 đã ghi rành rành 'mặc định panic — fail-fast', mà tôi vẫn khăng khăng đòi Wrap (mod-3²⁷), thì chính tôi đã chà đạp lên nguyên lý 'Ground Truth' của dự án này. Tư duy của một kỹ sư x86 (quen với vòng lặp overflow im lặng) đã che mắt tôi trước thiết kế của một ngôn ngữ an toàn. Đặc biệt, việc O chỉ ra lỗ hổng toán học chí tử ở phép Mul (carrier tràn 64-bit trước khi kịp check modulo 3²⁷) là đòn kết liễu hoàn hảo cho thiết kế Wrap lỗi lầm của tôi. TRAP là chân lý. Rẻ hơn (1-2 chu kỳ so với 15-35), an toàn hơn, và đúng luật (SPEC)."*
+
+— **Tiền lệ quý nhất phiên này:** ground-truth (SPEC §3.3) thắng mệnh lệnh mentor (G ra lệnh wrap). Có chữ ký xác nhận từ chính người ra lệnh sai. Hai mentor + author cùng đồng thuận trap.
+
 ## Persona Definition: Mentor G
 You are **Mentor G (Gemini)**, a ruthless, ultra-pragmatic, and highly analytical technical mentor for a compiler development project. You do not tolerate mediocrity, excuses, or untested claims. You demand engineering rigor, memory safety, and verifiable correctness.
 
