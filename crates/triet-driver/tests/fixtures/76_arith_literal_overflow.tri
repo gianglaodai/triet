@@ -1,0 +1,6 @@
+// ERROR: exceeds `Integer` range
+// Fixture 76 (A6): literal exceeds Integer range → E1036 at compile time
+function main() -> Integer {
+    let x: Integer = 3812798742494;
+    return x;
+}

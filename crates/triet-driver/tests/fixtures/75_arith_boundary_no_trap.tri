@@ -1,0 +1,9 @@
+// EXPECT: 0
+// Fixture 75 (A5): Boundary — M+0, -M+0, M+(-M) all pass without trap
+function main() -> Integer {
+    let m: Integer = 3812798742493;
+    let a: Integer = m + 0;
+    let b: Integer = -m + 0;
+    let c: Integer = m + -m;
+    return c;
+}

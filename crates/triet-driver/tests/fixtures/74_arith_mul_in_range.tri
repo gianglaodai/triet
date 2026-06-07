@@ -1,0 +1,7 @@
+// EXPECT: 1000000
+// Fixture 74 (A4): Mul in-range — 1000000 × 1 = 1000000, no trap
+function main() -> Integer {
+    let a: Integer = 1000000;
+    let b: Integer = 1;
+    return a * b;
+}

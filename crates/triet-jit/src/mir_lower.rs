@@ -1773,7 +1773,10 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
-    // D2: reject MIN value
+    // D2 defense-in-depth: reject MIN value (ADR-0044 Q4).
+    // Arithmetic trap makes MIN unreachable, but this guard
+    // stays as the last net — cost ≈ 0, catches any gap in
+    // the inductive range-enforcement argument.
     if v == triet_mir::NULL_SENTINEL {
         std::process::abort();
     }
