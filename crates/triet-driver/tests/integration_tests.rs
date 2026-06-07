@@ -149,6 +149,26 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_vector_get",
             triet_jit::mir_lower::__triet_vector_get,
         ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_alloc",
+            triet_jit::mir_lower::__triet_hashmap_alloc,
+        ),
+        ShimSymbol::fn_1_0(
+            "__triet_hashmap_free",
+            triet_jit::mir_lower::__triet_hashmap_free,
+        ),
+        ShimSymbol::fn_1_1(
+            "__triet_hashmap_len",
+            triet_jit::mir_lower::__triet_hashmap_len,
+        ),
+        ShimSymbol::fn_3_1(
+            "__triet_hashmap_insert",
+            triet_jit::mir_lower::__triet_hashmap_insert,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get",
+            triet_jit::mir_lower::__triet_hashmap_get,
+        ),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx

@@ -742,6 +742,26 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             // [false, false]: borrow vec (không consume, khác push), copy index.
             arg_consumes: &[false, false],
         }),
+        "__triet_hashmap_alloc" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_alloc",
+            arg_consumes: &[false, false],
+        }),
+        "__triet_hashmap_free" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_free",
+            arg_consumes: &[true],
+        }),
+        "__triet_hashmap_len" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_len",
+            arg_consumes: &[false],
+        }),
+        "__triet_hashmap_insert" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_insert",
+            arg_consumes: &[true, false, false],
+        }),
+        "__triet_hashmap_get" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_get",
+            arg_consumes: &[false, false],
+        }),
         _ => None,
     }
 }

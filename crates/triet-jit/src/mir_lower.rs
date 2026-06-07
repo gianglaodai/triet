@@ -146,6 +146,16 @@ impl ShimSymbol {
         }
     }
 
+    /// Register a 3-arg → 1-return shim.
+    pub fn fn_3_1(name: &str, f: extern "C" fn(i64, i64, i64) -> i64) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 3,
+            has_return: true,
+        }
+    }
+
     /// Register a 2-arg → void shim.
     pub fn fn_2_0(name: &str, f: extern "C" fn(i64, i64)) -> Self {
         Self {
@@ -1608,6 +1618,229 @@ pub extern "C" fn __triet_vector_get(vec: i64, idx: i64) -> i64 {
     }
 }
 
+// ── HashMap shims (ADR-0043) ─────────────────────────────────
+
+const HASHMAP_SLOT_SIZE: usize = 24; // key(8) + value(8) + state(1) + pad(7)
+const HASHMAP_HEADER_SIZE: usize = HEADER_SIZE; // 8B ObjectHeader
+
+#[allow(clippy::missing_const_for_fn)]
+// Layout: header(8) + len(8) + cap(8) + cap × 24.
+fn hashmap_layout(cap: usize) -> std::alloc::Layout {
+    let total = HASHMAP_HEADER_SIZE + 8 + 8 + cap * HASHMAP_SLOT_SIZE;
+    std::alloc::Layout::from_size_align(total, 8).unwrap()
+}
+
+#[allow(clippy::missing_const_for_fn)]
+// Return state byte pointer for slot. Caller ensures idx < cap, body valid.
+#[allow(unsafe_code)]
+unsafe fn hashmap_state_ptr(body: *mut u8, idx: usize) -> *mut u8 {
+    unsafe { body.add(16 + idx * HASHMAP_SLOT_SIZE + 16) }
+}
+
+// Return key/value pointers for slot. Caller ensures idx < cap, body valid.
+#[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
+    unsafe {
+        let base = body.add(16 + idx * HASHMAP_SLOT_SIZE);
+        (base as *mut i64, base.add(8) as *mut i64)
+    }
+}
+
+/// Allocate a HashMap with given `len` and `cap`.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
+    let cap_usize = cap.max(2).max(len) as usize;
+    let layout = hashmap_layout(cap_usize);
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        return 0; // OOM
+    }
+    unsafe {
+        (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
+        (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
+        let body = ptr.add(HASHMAP_HEADER_SIZE);
+        (body as *mut i64).write_unaligned(len);
+        (body as *mut i64).add(1).write_unaligned(cap_usize as i64);
+        // Zero-initialize all state bytes to EMPTY (0)
+        let state_base = body.add(16 + 16); // skip len+cap, point to first state byte
+        for i in 0..cap_usize {
+            (state_base as *mut u8)
+                .add(i * HASHMAP_SLOT_SIZE)
+                .write_unaligned(0u8);
+        }
+        body as i64
+    }
+}
+
+/// Free a HashMap. No-op if `ptr == 0` or `ptr == NULL_SENTINEL`.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_free(ptr: i64) {
+    if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+        return;
+    }
+    let body = ptr as *mut u8;
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let layout = hashmap_layout(cap.max(2));
+    let header = unsafe { body.sub(HASHMAP_HEADER_SIZE) };
+    unsafe { std::alloc::dealloc(header, layout) };
+}
+
+/// Return entry count of a HashMap. Trap-on-0.
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
+    if ptr == 0 {
+        std::process::abort();
+    }
+    unsafe { (ptr as *const i64).read_unaligned() }
+}
+
+/// Functional insert: consume map, return new map ptr. Traps if
+/// `v == i64::MIN` (D2). Realloc at load factor 0.75 with rehash.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr,
+    clippy::similar_names
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
+    // D2: reject MIN value
+    if v == triet_mir::NULL_SENTINEL {
+        std::process::abort();
+    }
+    if map == 0 {
+        std::process::abort(); // trap-on-0
+    }
+    let body = map as *mut u8;
+    let len = unsafe { (body as *const i64).read_unaligned() } as usize;
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+
+    // Check load factor
+    let new_cap = if len * 4 >= cap * 3 {
+        // Realloc: double capacity
+        (cap * 2).max(4)
+    } else {
+        0 // no realloc needed
+    };
+
+    let (body_ptr, cap_used) = if new_cap > 0 {
+        // Allocate new map + rehash all OCCUPIED entries
+        let new_map = __triet_hashmap_alloc(0, new_cap as i64);
+        if new_map == 0 {
+            return 0; // OOM
+        }
+        let new_body = new_map as *mut u8;
+        // Rehash all OCCUPIED entries from old map
+        for i in 0..cap {
+            let state = unsafe { *hashmap_state_ptr(body, i) };
+            if state == 1u8 {
+                let (k_ptr, v_ptr) = unsafe { hashmap_kv_ptrs(body, i) };
+                let old_k = unsafe { k_ptr.read_unaligned() };
+                let old_v = unsafe { v_ptr.read_unaligned() };
+                let nc = new_cap as i64;
+                let hash = (old_k % nc + nc) % nc;
+                let mut probe = hash as usize;
+                loop {
+                    let st = unsafe { *hashmap_state_ptr(new_body, probe) };
+                    if st == 0u8 {
+                        let (nk, nv) = unsafe { hashmap_kv_ptrs(new_body, probe) };
+                        unsafe {
+                            nk.write_unaligned(old_k);
+                            nv.write_unaligned(old_v);
+                            *hashmap_state_ptr(new_body, probe) = 1u8;
+                        }
+                        break;
+                    }
+                    probe = (probe + 1) % new_cap;
+                }
+            }
+        }
+        // Update len in new map
+        unsafe { (new_body as *mut i64).write_unaligned(len as i64) };
+        __triet_hashmap_free(map);
+        (new_body, new_cap)
+    } else {
+        (body, cap)
+    };
+
+    // Insert new entry via linear probing
+    let hash = (k % cap_used as i64 + cap_used as i64) % cap_used as i64;
+    let mut probe = hash as usize;
+    loop {
+        let state = unsafe { *hashmap_state_ptr(body_ptr, probe) };
+        if state == 0u8 {
+            // EMPTY — write entry
+            let (nk, nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
+            unsafe {
+                nk.write_unaligned(k);
+                nv.write_unaligned(v);
+                *hashmap_state_ptr(body_ptr, probe) = 1u8;
+            }
+            break;
+        }
+        probe = (probe + 1) % cap_used;
+    }
+    // Increment len
+    let new_len = (len + 1) as i64;
+    unsafe { (body_ptr as *mut i64).write_unaligned(new_len) };
+
+    // Return body pointer (or header+offset for consistency)
+    // body_ptr is already the body address (ptr + HEADER_SIZE)
+    body_ptr as i64
+}
+
+/// Look up key, return value or `NULL_SENTINEL`. Trap-on-0 for map handle.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
+    if map == 0 {
+        std::process::abort();
+    }
+    let body = map as *mut u8;
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let hash = (k % cap as i64 + cap as i64) % cap as i64;
+    let mut probe = hash as usize;
+    loop {
+        let state = unsafe { *hashmap_state_ptr(body, probe) };
+        if state == 0u8 {
+            return triet_mir::NULL_SENTINEL; // EMPTY — key not found
+        }
+        if state == 1u8 {
+            let (k_ptr, v_ptr) = unsafe { hashmap_kv_ptrs(body, probe) };
+            let stored_k = unsafe { k_ptr.read_unaligned() };
+            if stored_k == k {
+                return unsafe { v_ptr.read_unaligned() };
+            }
+        }
+        probe = (probe + 1) % cap;
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2514,5 +2747,81 @@ mod tests {
         __triet_string_free(triet_mir::NULL_SENTINEL);
         // Vector free
         __triet_vector_free(triet_mir::NULL_SENTINEL);
+    }
+
+    // ── HashMap tests (ADR-0043) ──
+
+    /// HashMap free(0) and free(MIN) must be no-op.
+    #[test]
+    fn hashmap_free_null_and_min_are_noop() {
+        __triet_hashmap_free(0);
+        __triet_hashmap_free(triet_mir::NULL_SENTINEL);
+    }
+
+    /// Basic insert + get round-trip.
+    #[test]
+    fn hashmap_insert_get_roundtrip() {
+        let m = __triet_hashmap_alloc(0, 4);
+        assert_eq!(__triet_hashmap_len(m), 0);
+        let m = __triet_hashmap_insert(m, 1, 100);
+        assert_eq!(__triet_hashmap_len(m), 1);
+        assert_eq!(__triet_hashmap_get(m, 1), 100);
+        // Key not found
+        assert_eq!(__triet_hashmap_get(m, 2), triet_mir::NULL_SENTINEL);
+        __triet_hashmap_free(m);
+    }
+
+    /// Rehash: insert beyond load factor 0.75 triggers realloc.
+    #[test]
+    fn hashmap_rehash_on_realloc() {
+        let m = __triet_hashmap_alloc(0, 4); // cap=4, load factor at 0.75 → 3 max before realloc
+        let m = __triet_hashmap_insert(m, 1, 10);
+        let m = __triet_hashmap_insert(m, 2, 20);
+        let m = __triet_hashmap_insert(m, 3, 30);
+        // 4th insert triggers realloc (3 >= 4*3/4 = 3)
+        let m = __triet_hashmap_insert(m, 4, 40);
+        assert_eq!(__triet_hashmap_len(m), 4);
+        // All keys survive rehash
+        assert_eq!(__triet_hashmap_get(m, 1), 10);
+        assert_eq!(__triet_hashmap_get(m, 2), 20);
+        assert_eq!(__triet_hashmap_get(m, 3), 30);
+        assert_eq!(__triet_hashmap_get(m, 4), 40);
+        __triet_hashmap_free(m);
+    }
+
+    // N7-C5: insert with v == i64::MIN must SIGABRT (D2 reject-on-insert).
+    // Uses a separate env var to avoid conflicting with n7_shim_trap_on_zero.
+    #[test]
+    fn n7_hashmap_insert_min_value_rejected() {
+        if std::env::var("_TRIET_N7_HASHMAP_MIN").is_ok() {
+            let m = __triet_hashmap_alloc(0, 4);
+            let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL);
+            std::process::exit(0);
+        }
+
+        let exe = std::env::current_exe().expect("current_exe");
+        let status = std::process::Command::new(&exe)
+            .env("_TRIET_N7_HASHMAP_MIN", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn child for hashmap_insert_min");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                status.signal(),
+                Some(6),
+                "hashmap_insert_min: expected SIGABRT (signal 6), got: {:?}",
+                status.signal()
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(
+                !status.success(),
+                "hashmap_insert_min: child should have aborted"
+            );
+        }
     }
 }

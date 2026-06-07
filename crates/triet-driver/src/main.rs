@@ -139,6 +139,12 @@ fn main() -> ExitCode {
         ShimSymbol::fn_1_1("__triet_vector_len", mir_lower::__triet_vector_len),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_2_1("__triet_vector_get", mir_lower::__triet_vector_get),
+        // HashMap shims (ADR-0043)
+        ShimSymbol::fn_2_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
+        ShimSymbol::fn_1_1("__triet_hashmap_len", mir_lower::__triet_hashmap_len),
+        ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = match ctx.compile_multi(&body_refs) {
