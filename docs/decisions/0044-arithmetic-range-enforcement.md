@@ -1,6 +1,6 @@
 # ADR-0044: Integer Arithmetic Range Enforcement — Bậc C ưu tiên 1
 
-**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-07) + Mentor G ĐÃ KÝ (layout/ABI, 2026-06-07).
+**Status:** ĐÃ ĐÓNG — Mentor O ĐÃ KÝ (semantics & soundness, 2026-06-07) + Mentor G ĐÃ KÝ (layout/ABI, 2026-06-07). Implementation complete at `1fbf6ab`.
 **Date:** 2026-06-07
 **Author:** AI (khảo sát + đề xuất), quyết định cuối: Giang Hoàng
 **Reviewers:** Mentor G (layout, ABI, codegen), Mentor O (semantics, soundness)

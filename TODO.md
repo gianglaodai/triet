@@ -25,7 +25,8 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] MIR verifier: structural invariants cho enum (4i-1 đến 4i-7).
 - [ ] Shim registry for Track B aggregates (`__triet_alloc_struct`, `__triet_set_field`, etc. if fallback is needed, though StackSlot is preferred).
 
-## Phase 5 — Bậc C (Native Layout)
+## Phase 5 — Bậc C
+- [x] **ADR-0044 trap-on-overflow:** `1fbf6ab`. JIT range check (Add/Sub/Mul trapnz SIGILL), E1036 literal overflow, pow checked_mul+range. D1/D1-literal/D3 ĐÓNG. D2 giữ defense-in-depth. 8 N7 subprocess tests, 4/4 teeth đỏ. `scripts/gate.sh`.
 - [ ] Native struct layout (StackSlot with MIR StructLayout sizes).
 - [ ] Packed Outcome ABI (bit extraction for discrim/payload).
 - [ ] Multi-value return (>1 return value).
@@ -50,7 +51,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [ ] Fix fixture 27: match error-code thay vì match internal JIT string (brittle, rò rỉ representation).
 - [ ] Enum exhaustiveness checker (currently non-exhaustive match = runtime Trap).
 - [ ] Pattern::Wildcard support trong enum match (Bậc A hiện chỉ handle EnumVariant + Variable patterns).
-- [ ] **D1 (ADR-0041 §6.2):** Arithmetic fidelity — enforce ternary range mod-3²⁷ at runtime (JIT arithmetic is raw i64, niche NULL_SENTINEL = i64::MIN not enforce-protected). Khi Bậc B wrap đúng mod-3²⁷, D1 tự đóng — không cần đổi repr.
-- [ ] **D1-literal (họ D1):** Literal Integer không bị range-check — `-9223372036854775808` qua typecheck sạch (probe O 2026-06-07). Range check `±(3²⁷−1)/2` là việc typecheck, làm cùng lượt wrap mod-3²⁷.
-- [ ] **D2 (ADR-0043 Q6):** `HashMap::insert` reject-on-insert giá trị `i64::MIN` (ambiguous sentinel — `get` trả MIN cho cả "có, value=MIN" lẫn "không có key"). Gỡ reject khi arithmetic wrap mod-3²⁷ (cùng điều kiện D1).
-- [ ] **D3 (họ D1):** Shim read (len/get/insert) trap-on-0 nhưng không guard MIN-input (NULL_SENTINEL map handle). Khớp convention `__triet_vector_len` hiện hành nên không phải bug hiện tại — gộp chung với MIN-guard tất cả shim khi có trigger thực tế.
+- [x] **D1 (ADR-0041 §6.2):** Arithmetic fidelity — JIT trap-on-overflow (ADR-0044). `1fbf6ab`. ĐÓNG.
+- [x] **D1-literal (họ D1):** Typecheck E1036 range-check Integer/Ternary literal (ADR-0044 Q2). ĐÓNG.
+- [ ] **D2 (ADR-0043 Q6):** `HashMap::insert` reject-on-insert giá trị `i64::MIN` (defense-in-depth, ADR-0044 Q4). GIỮ — gỡ khi arithmetic wrap mod-3²⁷ (cùng điều kiện D1).
+- [x] **D3 (họ D1):** Shim MIN-input — MIN không còn reachable từ arithmetic. ĐÓNG.
