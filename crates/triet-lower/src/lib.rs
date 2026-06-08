@@ -1445,29 +1445,41 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let arg = lower_expr(arguments[0], arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
-                    // Strip reference prefix to dispatch len shim.
-                    let base_ty = arg_ty
-                        .strip_prefix("&0 ")
-                        .or_else(|| arg_ty.strip_prefix("&+ "))
-                        .or_else(|| arg_ty.strip_prefix("&+ mutable "))
-                        .or_else(|| arg_ty.strip_prefix("&0 mutable "))
-                        .or_else(|| arg_ty.strip_prefix("&- "))
-                        .unwrap_or(arg_ty);
-                    let len_shim = match base_ty {
-                        "String" => "__triet_string_len",
-                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
-                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
-                        other => {
-                            return Err(LowerError::heap_type_not_supported(
-                                &format!(
-                                    "is_empty() on type `{other}` — expected String, Vector, or HashMap"
-                                ),
-                                expr_span,
-                            ));
-                        }
+
+                    // ADR-0049 Lát 6.3: for owned String, read len from
+                    // StackSlot (field projection), not heap shim.
+                    // Same pattern as `length`/`len`.
+                    let len_dest = if arg_ty == "String" {
+                        let d = c.alloc_local_ty("Integer");
+                        c.push(Statement::Assign {
+                            dest: Place::local(d),
+                            source: Place::local(arg).project(Projection::Field("len".to_string())),
+                            span: expr_span.clone(),
+                        });
+                        d
+                    } else {
+                        let base_ty = arg_ty
+                            .strip_prefix("&0 ")
+                            .or_else(|| arg_ty.strip_prefix("&+ "))
+                            .or_else(|| arg_ty.strip_prefix("&+ mutable "))
+                            .or_else(|| arg_ty.strip_prefix("&0 mutable "))
+                            .or_else(|| arg_ty.strip_prefix("&- "))
+                            .unwrap_or(arg_ty);
+                        let len_shim = match base_ty {
+                            "String" => "__triet_string_len",
+                            ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
+                            ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
+                            other => {
+                                return Err(LowerError::heap_type_not_supported(
+                                    &format!(
+                                        "is_empty() on type `{other}` — expected String, Vector, or HashMap"
+                                    ),
+                                    expr_span,
+                                ));
+                            }
+                        };
+                        emit_shim_call(c, len_shim, vec![arg], "Integer", expr_span.clone())
                     };
-                    let len_dest =
-                        emit_shim_call(c, len_shim, vec![arg], "Integer", expr_span.clone());
                     // Compare len == 0 → Trilean encoding (Eq returns 1 or -1).
                     let result = c.alloc_local_ty("Trilean");
                     let zero = c.alloc_local_ty("Integer");

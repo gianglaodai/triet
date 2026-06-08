@@ -797,14 +797,12 @@ impl JitContext {
                         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                         let call_inst = builder.ins().call(func_ref, &[ptr_val, len_val]);
                         let handle = builder.inst_results(call_inst)[0];
-                        // ADR-0049 Phase-1 Lát 1 B2: populate pre-allocated String slot.
+                        // ADR-0049 Lát 6.3: populate String slot from
+                        // compile-time-known values (no heap len/cap).
                         if let Some((slot, _layout)) = self.struct_slots.get(&dest.local) {
-                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
                             builder.ins().stack_store(handle, *slot, 0);
-                            let heap_len = builder.ins().load(I64, mem_flags, handle, 0);
-                            builder.ins().stack_store(heap_len, *slot, 8);
-                            let heap_cap = builder.ins().load(I64, mem_flags, handle, 8);
-                            builder.ins().stack_store(heap_cap, *slot, 16);
+                            builder.ins().stack_store(len_val, *slot, 8);
+                            builder.ins().stack_store(len_val, *slot, 16); // cap = len
                         }
                         builder.def_var(self.var(dest.local), handle);
                     } else {
@@ -829,17 +827,21 @@ impl JitContext {
                 Statement::Assign { dest, source, .. } => {
                     let val = self.load_place(builder, body, source)?;
                     self.store_place(builder, body, dest, val)?;
-                    // ADR-0049 Lát 1/3: sync String slot after assign.
-                    // Slots for ALL String locals are pre-allocated in the
-                    // pre-pass — just write the current handle+len+cap.
-                    if dest.projection.is_empty() {
-                        if let Some((slot, _)) = self.struct_slots.get(&dest.local) {
-                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
-                            builder.ins().stack_store(val, *slot, 0);
-                            let heap_len = builder.ins().load(I64, mem_flags, val, 0);
-                            builder.ins().stack_store(heap_len, *slot, 8);
-                            let heap_cap = builder.ins().load(I64, mem_flags, val, 8);
-                            builder.ins().stack_store(heap_cap, *slot, 16);
+                    // ADR-0049 Lát 6.3: sync String slot from source slot.
+                    // Read {ptr,len,cap} from source slot if available;
+                    // fall back to heap-read for non-slot sources (should
+                    // not occur for String after Lát 3 pre-allocation).
+                    if dest.projection.is_empty()
+                        && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
+                    {
+                        builder.ins().stack_store(val, *dest_slot, 0);
+                        if source.projection.is_empty()
+                            && let Some((src_slot, _)) = self.struct_slots.get(&source.local)
+                        {
+                            let src_len = builder.ins().stack_load(I64, *src_slot, 8);
+                            let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
+                            builder.ins().stack_store(src_len, *dest_slot, 8);
+                            builder.ins().stack_store(src_cap, *dest_slot, 16);
                         }
                     }
                     // M1: Zeroing-on-Move — if source is a plain local of Move type,
@@ -863,11 +865,21 @@ impl JitContext {
                 }
 
                 Statement::Borrow { dest, source, .. } => {
-                    // S6 references = raw pointers at runtime — just copy
-                    let src_var = self.var(source.local);
-                    let val = builder.use_var(src_var);
-                    let dest_var = self.var(dest.local);
-                    builder.def_var(dest_var, val);
+                    // S6 references = raw pointers at runtime.
+                    // ADR-0049 Lát 6.3: for String, pass pointer-to-slot so
+                    // the callee can read {ptr,len,cap} (no heap len/cap).
+                    if let Some((slot, layout)) = self.struct_slots.get(&source.local)
+                        && layout.name == "String"
+                    {
+                        let val = builder.ins().stack_addr(I64, *slot, 0);
+                        let dest_var = self.var(dest.local);
+                        builder.def_var(dest_var, val);
+                    } else {
+                        let src_var = self.var(source.local);
+                        let val = builder.use_var(src_var);
+                        let dest_var = self.var(dest.local);
+                        builder.def_var(dest_var, val);
+                    }
                 }
 
                 Statement::BinaryOp {
@@ -947,15 +959,19 @@ impl JitContext {
                     // ADR-0049 Lát 3: String free(ptr, cap) 2-arg bung field.
                     // Slot: stack_load ptr+cap; no-slot: use_var ptr + load cap heap.
                     if ty == "String" {
-                        let mem_flags = cranelift_codegen::ir::MemFlags::new();
                         let (ptr, cap) = if let Some((slot, _)) = self.struct_slots.get(local) {
                             let p = builder.ins().stack_load(I64, *slot, 0);
                             let c = builder.ins().stack_load(I64, *slot, 16);
                             (p, c)
                         } else {
-                            let handle = builder.use_var(self.var(*local));
-                            let c = builder.ins().load(I64, mem_flags, handle, 8);
-                            (handle, c)
+                            // ADR-0049 Lát 6.3: heap no longer carries
+                            // len/cap — universal pre-allocated String
+                            // slots must cover every String local.
+                            return Err(JitError::Unsupported(
+                                "String Drop without pre-allocated slot — \
+                                 universal-slot invariant violated"
+                                    .into(),
+                            ));
                         };
                         builder.ins().call(func_ref, &[ptr, cap]);
                     } else {
@@ -1145,20 +1161,12 @@ impl JitContext {
                         let call_inst = builder.ins().call(func_ref, &arg_vals);
 
                         // Store return value (single i64 in Bậc A).
+                        // ADR-0049 L6-2: all String returns use sret — this
+                        // non-sret path is unreachable for String. Heap len/cap
+                        // was removed in L6-3; String would be unpopulatable here.
                         if !is_sret_call && !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
-                            // ADR-0049 Lát 3: populate String slot from returned handle.
-                            if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
-                                && layout.name == "String"
-                            {
-                                let mem_flags = cranelift_codegen::ir::MemFlags::new();
-                                builder.ins().stack_store(ret_val, *slot, 0);
-                                let heap_len = builder.ins().load(I64, mem_flags, ret_val, 0);
-                                builder.ins().stack_store(heap_len, *slot, 8);
-                                let heap_cap = builder.ins().load(I64, mem_flags, ret_val, 8);
-                                builder.ins().stack_store(heap_cap, *slot, 16);
-                            }
                         }
 
                         // Jump to return block
@@ -1190,11 +1198,29 @@ impl JitContext {
                                     vals.push(ptr);
                                     vals.push(len);
                                 } else {
-                                    let handle = builder.use_var(self.var(*a));
-                                    let mem_flags = cranelift_codegen::ir::MemFlags::new();
-                                    let len = builder.ins().load(I64, mem_flags, handle, 0);
-                                    vals.push(handle);
-                                    vals.push(len);
+                                    // ADR-0049 Lát 6.3: for &-reference to
+                                    // String, the var holds a slot_addr.
+                                    // Load {ptr,len} from the pointed-to slot.
+                                    let arg_ty = &body.local_decls[a.0].ty;
+                                    if arg_ty.starts_with('&') {
+                                        let slot_ptr = builder.use_var(self.var(*a));
+                                        let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                        let ptr = builder.ins().load(I64, mem_flags, slot_ptr, 0);
+                                        let len = builder.ins().load(I64, mem_flags, slot_ptr, 8);
+                                        vals.push(ptr);
+                                        vals.push(len);
+                                    } else {
+                                        // ADR-0049 Lát 6.3: heap len/cap
+                                        // removed — this fallback would
+                                        // read garbage. Every String-typed
+                                        // local must have a pre-allocated
+                                        // slot; this path is unreachable.
+                                        return Err(JitError::Unsupported(
+                                            "bung_fields: String arg without slot — \
+                                             universal-slot invariant violated"
+                                                .into(),
+                                        ));
+                                    }
                                 }
                             }
                             vals
@@ -1255,16 +1281,36 @@ impl JitContext {
                         if !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
-                            // ADR-0049 Lát 3: populate String slot from returned handle.
+                            // ADR-0049 Lát 6.3: populate String slot from shim args
+                            // (no len/cap on heap). Derive len/cap from known args.
                             if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
                                 && layout.name == "String"
                             {
-                                let mem_flags = cranelift_codegen::ir::MemFlags::new();
                                 builder.ins().stack_store(ret_val, *slot, 0);
-                                let heap_len = builder.ins().load(I64, mem_flags, ret_val, 0);
-                                builder.ins().stack_store(heap_len, *slot, 8);
-                                let heap_cap = builder.ins().load(I64, mem_flags, ret_val, 8);
-                                builder.ins().stack_store(heap_cap, *slot, 16);
+                                let (slot_len, slot_cap) = match callee_name.as_str() {
+                                    "__triet_string_from_bytes" => {
+                                        // args: (ptr, len) — len is arg_vals[1]
+                                        (arg_vals[1], arg_vals[1])
+                                    }
+                                    "__triet_string_alloc" => {
+                                        // args: (len, cap)
+                                        (arg_vals[0], arg_vals[1])
+                                    }
+                                    "__triet_string_concat" => {
+                                        // args: (a_ptr, a_len, b_ptr, b_len)
+                                        let total_len =
+                                            builder.ins().iadd(arg_vals[1], arg_vals[3]);
+                                        (total_len, total_len)
+                                    }
+                                    _ => {
+                                        // Other shims don't return String.
+                                        return Err(JitError::Unsupported(format!(
+                                            "unexpected String return from shim `{callee_name}`"
+                                        )));
+                                    }
+                                };
+                                builder.ins().stack_store(slot_len, *slot, 8);
+                                builder.ins().stack_store(slot_cap, *slot, 16);
                             }
                         }
 
@@ -1598,9 +1644,10 @@ pub extern "C" fn __triet_pow(base: i64, exp: i64) -> i64 {
 /// Header size in bytes: `ObjectHeader` (refcount: u32 + reserved: u32 = 8 bytes).
 const HEADER_SIZE: usize = 8;
 
-/// Layout for a String heap allocation: header + len (i64) + cap (i64) + data.
+/// Layout for a String heap allocation: header + data.
+/// ADR-0049 Lát 6.3: len/cap removed from heap — sole truth in `StackSlot`.
 fn string_layout(cap: usize) -> std::alloc::Layout {
-    let total = HEADER_SIZE + 8 + 8 + cap; // header + len + cap + data
+    let total = HEADER_SIZE + cap; // header + data (no len/cap on heap)
     std::alloc::Layout::from_size_align(total, 8).unwrap()
 }
 
@@ -1616,16 +1663,13 @@ pub extern "C" fn __triet_string_alloc(len: i64, cap: i64) -> i64 {
         return 0; // OOM — return null
     }
     // Write ObjectHeader: refcount=1, reserved=0
+    // ADR-0049 Lát 6.3: no len/cap on heap — only header.
     // SAFETY: layout guarantees 8-byte aligned, >=8 bytes at ptr.
 
     unsafe {
         ptr.cast::<u32>().write_unaligned(1u32); // refcount = 1
         ptr.cast::<u32>().add(1).write_unaligned(0u32); // reserved = 0
-        // Write len and cap
-        let body = ptr.add(HEADER_SIZE);
-        body.cast::<i64>().write_unaligned(len);
-        body.cast::<i64>().add(1).write_unaligned(cap);
-        body as i64
+        ptr.add(HEADER_SIZE) as i64 // body = data area
     }
 }
 
@@ -1641,10 +1685,11 @@ pub extern "C" fn __triet_string_from_bytes(src: i64, len: i64) -> i64 {
     if body_ptr == 0 {
         return 0;
     }
-    // Copy bytes from src to data area
+    // Copy bytes from src to data area.
+    // ADR-0049 Lát 6.3: no len/cap on heap — data starts at body_ptr.
     // SAFETY: src pointer is valid (lifetime guaranteed by driver §3.3).
     unsafe {
-        let dst = (body_ptr as *mut u8).add(16); // skip len + cap (16 bytes)
+        let dst = body_ptr as *mut u8;
         std::ptr::copy_nonoverlapping(src as *const u8, dst, len_usize);
     }
     body_ptr
@@ -1667,8 +1712,9 @@ pub extern "C" fn __triet_string_free(ptr: i64, cap: i64) {
 }
 
 /// `__triet_string_concat(a_ptr, a_len, b_ptr, b_len)` — concatenate two Strings.
-/// ADR-0049 Lát 3b: len passed explicitly (no heap read).
-/// Returns new heap handle (sret deferred to Lát 3c).
+///
+/// ADR-0049 Lát 3b/6.3: len passed explicitly, data starts at body (no heap len/cap).
+/// Returns new heap handle (sret deferred).
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_concat(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i64) -> i64 {
@@ -1683,18 +1729,14 @@ pub extern "C" fn __triet_string_concat(a_ptr: i64, a_len: i64, b_ptr: i64, b_le
     if result == 0 {
         return 0;
     }
-    let a_body = a_ptr as *const u8;
-    let b_body = b_ptr as *const u8;
+    let a_data = a_ptr as *const u8;
+    let b_data = b_ptr as *const u8;
+    // ADR-0049 Lát 6.3: no len/cap on heap — data starts at body_ptr.
     // SAFETY: src pointers valid, dst pointer valid with sufficient capacity.
     unsafe {
-        let dst = (result as *mut u8).add(16);
-        let a_data = a_body.add(16);
-        let b_data = b_body.add(16);
+        let dst = result as *mut u8;
         std::ptr::copy_nonoverlapping(a_data, dst, a_len as usize);
         std::ptr::copy_nonoverlapping(b_data, dst.add(a_len as usize), b_len as usize);
-    }
-    unsafe {
-        (result as *mut i64).write_unaligned(total_len);
     }
     result
 }
@@ -1716,12 +1758,11 @@ pub extern "C" fn __triet_string_eq(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i
         return -1;
     }
     let len = a_len as usize;
-    let a_data = a_ptr as *const u8;
-    let b_data = b_ptr as *const u8;
+    // ADR-0049 Lát 6.3: no len/cap on heap — data starts at body (ptr itself).
     // SAFETY: data areas are valid reads of `len` bytes.
     unsafe {
-        let a_bytes = a_data.add(16);
-        let b_bytes = b_data.add(16);
+        let a_bytes = a_ptr as *const u8;
+        let b_bytes = b_ptr as *const u8;
         for i in 0..len {
             if a_bytes.add(i).read() != b_bytes.add(i).read() {
                 return -1;
@@ -1732,15 +1773,20 @@ pub extern "C" fn __triet_string_eq(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i
 }
 
 /// `__triet_string_len(ptr)` — return the length of a String.
+///
+/// ADR-0049 Lát 6.3: for borrowed String, `ptr` is a pointer to the owner's
+/// `StackSlot` (`slot_addr` from Borrow). Len lives at slot offset 8.
+/// Owned String `length` is handled by `Field("len")` projection in the JIT
+/// and never calls this shim.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
-    // C9 trap-on-0: 0 = dead value (moved-out / OOM), never a valid heap ptr.
+    // C9 trap-on-0: 0 = dead value (moved-out / OOM), never a valid pointer.
     if ptr == 0 {
         std::process::abort();
     }
-    // SAFETY: ptr points to valid body.
-    unsafe { (ptr as *const i64).read_unaligned() }
+    // SAFETY: ptr points to a StackSlot; len is at offset 8.
+    unsafe { (ptr as *const i64).add(1).read_unaligned() }
 }
 
 // ADR-0049 Lát 5: fat-pointer layout mirrored in shim for writeback.
@@ -1764,8 +1810,7 @@ pub extern "C" fn __triet_string_clear(slot: i64) -> i64 {
             std::process::abort();
         }
         (*slot).len = 0;
-        // Writeback to heap for boundary compatibility (Lát 6 will remove).
-        ((*slot).ptr as *mut i64).write_unaligned(0);
+        // ADR-0049 Lát 6.3: no heap len/cap — slot is sole truth.
     }
     0 // Unit
 }
@@ -1792,10 +1837,10 @@ pub extern "C" fn __triet_string_append(slot: i64, byte: i64) -> i64 {
             if new_body == 0 {
                 return 0; // OOM
             }
-            // Copy old data: header + len + cap + data bytes
+            // ADR-0049 Lát 6.3: copy header + data (no len/cap on heap).
             let old_header = (ptr as *mut u8).sub(HEADER_SIZE);
             let new_header = (new_body as *mut u8).sub(HEADER_SIZE);
-            let old_total = HEADER_SIZE + 16 + cap as usize;
+            let old_total = HEADER_SIZE + cap as usize;
             std::ptr::copy_nonoverlapping(old_header, new_header, old_total);
             // Free old block
             let old_layout = string_layout(cap.max(1) as usize);
@@ -1804,18 +1849,15 @@ pub extern "C" fn __triet_string_append(slot: i64, byte: i64) -> i64 {
             cap = new_cap;
         }
 
-        // Write byte at data+len
-        let data = (ptr as *mut u8).add(16);
+        // Write byte at data[len].
+        // ADR-0049 Lát 6.3: data starts at ptr (no len/cap prefix).
+        let data = ptr as *mut u8;
         data.add(len as usize).write(byte as u8);
 
-        // Writeback to slot
+        // Writeback to slot — sole truth.
         (*slot).ptr = ptr;
         (*slot).len = len + 1;
         (*slot).cap = cap;
-
-        // Writeback to heap (boundary compatibility, removed at Lát 6)
-        (ptr as *mut i64).write_unaligned(len + 1);
-        (ptr as *mut i64).add(1).write_unaligned(cap);
     }
     0 // Unit
 }
@@ -1838,12 +1880,11 @@ pub extern "C" fn __triet_string_contains(h_ptr: i64, h_len: i64, n_ptr: i64, n_
     if n_len > h_len {
         return -1;
     }
-    let h_bytes = h_ptr as *const u8;
-    let n_bytes = n_ptr as *const u8;
+    // ADR-0049 Lát 6.3: no len/cap on heap — data starts at body (ptr itself).
     // SAFETY: data areas are valid reads.
     unsafe {
-        let h_data = h_bytes.add(16);
-        let n_data = n_bytes.add(16);
+        let h_data = h_ptr as *const u8;
+        let n_data = n_ptr as *const u8;
         for start in 0..=(h_len - n_len) {
             let mut matched = true;
             for off in 0..n_len {
