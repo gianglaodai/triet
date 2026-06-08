@@ -1,6 +1,6 @@
 # ADR-0047: Read-ops Extension — Bậc C lát 4
 
-**Status:** DRAFT — chờ O + G ký
+**Status:** ACCEPTED — O + G ký 2026-06-08
 **Date:** 2026-06-08
 **Author:** AI (đồng nghiệp D, implement)
 **Reviewers:** Mentor O (semantics, soundness) · Mentor G (codegen, ABI)
