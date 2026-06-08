@@ -23,7 +23,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] HashMap support (Bậc B lát b). `2b72c62` `3951821` `d2e3043` `a08916d` `ed71185` `07da95f` `247a3be`. ADR-0043 ĐÓNG TRỌN (O+G 2026-06-07). 5 shim (alloc/insert/get/len/free), insert-or-update, rehash, D2 reject-MIN, cap.max(4) invariant. 5/5 teeth đỏ (reject-MIN, free-guard, rehash-displaced, insert-update, arg_consumes). Fixtures 66-73 (8 fixtures) + C9 unit test.
 - [x] ReturnShape::Struct for multi-field returns in MIR.
 - [x] MIR verifier: structural invariants cho enum (4i-1 đến 4i-7).
-- [ ] Shim registry for Track B aggregates (`__triet_alloc_struct`, `__triet_set_field`, etc. if fallback is needed, though StackSlot is preferred).
+- [x] ~~Shim registry for Track B aggregates~~ — N/A OBSOLETE. StackSlot đã thắng toàn tuyến (struct/enum/String/Vector/HashMap đều dùng StackSlot + shim chuyên biệt). Chưa từng tồn tại.
 
 ## Phase 5 — Bậc C
 - [x] **ADR-0044 trap-on-overflow:** `1fbf6ab`. JIT range check (Add/Sub/Mul trapnz SIGILL), E1036 literal overflow, pow checked_mul+range. D1/D1-literal/D3 ĐÓNG. D2 giữ defense-in-depth. 8 N7 subprocess tests, 4/4 teeth đỏ. `scripts/gate.sh`.
@@ -55,16 +55,55 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] Trilean logic ops fixed in typechecker/JIT.
 - [x] Enum fixtures: unit match (color), payload local, payload param error, construct reuse.
 
-## Tech Debt / Cleanup
-- [x] Deleted orphaned `compiler/` directory (Track A legacy).
-- [ ] Schema unification: fully migrate generated `Type` into typechecker.
-- [ ] codegen.py emit clippy-clean output — codegen bug
-- [ ] Alias analysis: replace `conservative=true` band-aid with proper NLL alias analysis.
-- [ ] Version bump: `Cargo.toml` 0.10.0 → 0.11.0-dev or 1.0.0-dev.
-- [ ] Fix fixture 27: match error-code thay vì match internal JIT string (brittle, rò rỉ representation).
-- [ ] Enum exhaustiveness checker (currently non-exhaustive match = runtime Trap).
-- [ ] Pattern::Wildcard support trong enum match (Bậc A hiện chỉ handle EnumVariant + Variable patterns).
-- [x] **D1 (ADR-0041 §6.2):** Arithmetic fidelity — JIT trap-on-overflow (ADR-0044). `1fbf6ab`. ĐÓNG.
-- [x] **D1-literal (họ D1):** Typecheck E1036 range-check Integer/Ternary literal (ADR-0044 Q2). ĐÓNG.
-- [ ] **D2 (ADR-0043 Q6):** `HashMap::insert` reject-on-insert giá trị `i64::MIN` (defense-in-depth, ADR-0044 Q4). GIỮ — gỡ khi arithmetic wrap mod-3²⁷ (cùng điều kiện D1).
-- [x] **D3 (họ D1):** Shim MIN-input — MIN không còn reachable từ arithmetic. ĐÓNG.
+## Tech Debt — Chiến Dịch Trả Nợ (O+G classified 2026-06-09)
+
+**Strategy (G-approved, reversed): A1 → B1 (móng) → B2 → B3 → C/D/E. A2+A3 chèn bất kỳ lúc nào.**
+
+### 🔴 A. BOM — sai im lặng / UB tiềm tàng (trả TRƯỚC)
+
+- [ ] **A1: `is_propagated` nested-scope (Crusade #1).** ADR-0046. Giả định "không nested block scope" — sai khi scope lồng → use-after-free. **Độc lập, làm ngay.**
+- [ ] **A2: F6 MIR verifier nuốt block thiếu terminator.** TODO L21 note. Non-exhaustive match → lowerer emit null_bb rỗng → JIT trả 0 im lặng.
+- [ ] **A3: Enum exhaustiveness checker.** Non-exhaustive match = runtime Trap/0 im lặng. Cùng họ A2.
+
+### 🟡 B. NỢ-MÓNG — sai thiết kế, chặn nợ khác
+
+- [ ] **B1: Rombac Type System — bỏ MIR string-match (Crusade #3).** CLAUDE.md "type system spec-only, hand-written"; fallback-invariant Bậc D dựa string-match. Schema unification: migrate generated `Type` into typechecker.
+- [ ] **B2: Sáp nhập 2 tầng borrowck typecheck+MIR (Crusade #2).** ADR-0048 §2. E2440 không teeth-isolate được vì 2 tầng.
+- [ ] **B3: Alias analysis thật thay `conservative=true`.** checker.rs:64,505. SOUND nhưng over-reject.
+
+### 🟡 C. FEATURE GAP — thiếu, không sai
+
+- [ ] **C1: Enum payload qua function param.** Fixture 27 ghim bằng string-match.
+- [ ] **C2: Pattern::Wildcard trong enum match.**
+- [ ] **C3: Native struct multi-field layout.** CLAUDE.md "Bậc C future work".
+- [ ] **C4: Packed Outcome ABI.** Outcome ops guarded Err, chưa có producer.
+- [ ] **C5: Multi-value return (>1 return value).**
+- [ ] **C6: concat sret.** G-approved backlog.
+
+### 🟢 D. PERF (G ack §iii, không chặn)
+
+- [ ] **D1: Codegen opt range-check 1-instruction.** `(val−MIN) >ᵤ 2M` unsigned-sub trick + fallback `bor` gộp 2 icmp.
+- [ ] **D2: Constant folding pass.** Toán hạng const in-range → tính compile-time, bỏ trap block.
+
+### ⚪ E. CLEANUP
+
+- [ ] **E1: codegen.py clippy-clean.** 208 clippy chủ yếu từ file generated `ast_*.rs`.
+- [ ] **E2: Fix fixture 27.** Thay match JIT string bằng error-code (dính C1).
+
+### ⚫ F. DEFERRED-BY-DESIGN (có ADR, KHÔNG phải nợ)
+
+- [x] **D1 (ADR-0041 §6.2):** Arithmetic fidelity — JIT trap-on-overflow (ADR-0044). ĐÓNG.
+- [x] **D1-literal:** Typecheck E1036 range-check Integer/Ternary literal. ĐÓNG.
+- [x] **D3:** Shim MIN-input — MIN không còn reachable từ arithmetic. ĐÓNG.
+- [ ] **D2 (ADR-0043 Q6):** `HashMap::insert` reject-on-insert `i64::MIN` — GIỮ defense-in-depth.
+- [ ] Trait system (ADR-0038 Comparable, ADR-0039 Nullable-op family).
+
+## Bậc D — Fat-Pointer ABI (ADR-0049) — ĐÓNG (O+G 2026-06-09)
+
+- [x] **L6-1:** param fat-String by-pointer. `626390c`.
+- [x] **L6-2:** return fat-String sret (Lối d). `9caa350`.
+- [x] **L6-3+L6-4:** trảm heap len/cap + rút Lối B. `d60eb9b`.
+  - Heap: `[Header 8B][data…]`. Data offset +16→+0. Slot là chân lý duy nhất.
+  - Mọi shim cập nhật. Borrow String: `stack_addr` thay heap handle.
+  - Fallback heap-read → `Err(JitError::Unsupported)` (universal-slot invariant).
+- [x] **Endgame fixture 100:** String round-trip 5-boundary. `9b28c54`.
