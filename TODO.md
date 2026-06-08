@@ -62,8 +62,8 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 ### 🔴 A. BOM — sai im lặng / UB tiềm tàng (trả TRƯỚC)
 
 - [ ] **A1: `is_propagated` nested-scope (Crusade #1).** ADR-0046. Giả định "không nested block scope" — sai khi scope lồng → use-after-free. **Độc lập, làm ngay.**
-- [ ] **A2: F6 MIR verifier nuốt block thiếu terminator.** TODO L21 note. Non-exhaustive match → lowerer emit null_bb rỗng → JIT trả 0 im lặng.
-- [ ] **A3: Enum exhaustiveness checker.** Non-exhaustive match = runtime Trap/0 im lặng. Cùng họ A2.
+- [x] **A2: F6 MIR verifier INV-4.** `d8e1ba9`. Bắt block có Unreachable terminator nhưng được tham chiếu (lowerer quên gọi term()). 2 unit test: referenced-fail + unreferenced-ok.
+- [x] **A3: Enum exhaustiveness checker.** `d8e1ba9`. Typechecker check_enum_exhaustiveness dùng pattern_resolutions, fire E1026 nếu thiếu variant. Fixture 103 (negative, missing Red).
 
 ### 🟡 B. NỢ-MÓNG — sai thiết kế, chặn nợ khác
 
