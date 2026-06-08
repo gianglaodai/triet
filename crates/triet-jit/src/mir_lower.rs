@@ -1519,6 +1519,10 @@ pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
 /// Returns 1 (true) if `needle` is a substring of `haystack`,
 /// -1 (false) otherwise. Never returns 0.
 #[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,           // heap len ≥ 0, shim aborts on null
+    clippy::cast_possible_truncation  // len fits in usize (max alloc < 2^48)
+)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_contains(haystack: i64, needle: i64) -> i64 {
     if haystack == 0 || needle == 0 {
@@ -1739,10 +1743,10 @@ pub extern "C" fn __triet_vector_contains(vec: i64, elem: i64) -> i64 {
     }
     let body = vec as *const u8;
     // SAFETY: vec points to valid heap body (len + cap + data).
-    let len = unsafe { (body as *const i64).read_unaligned() } as usize;
+    let len = unsafe { body.cast::<i64>().read_unaligned() } as usize;
     // SAFETY: data area starts at offset 16.
     unsafe {
-        let data = body.add(16) as *const i64;
+        let data = body.add(16).cast::<i64>();
         for i in 0..len {
             if data.add(i).read_unaligned() == elem {
                 return 1;
