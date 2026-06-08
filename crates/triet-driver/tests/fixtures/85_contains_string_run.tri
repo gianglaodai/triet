@@ -1,0 +1,5 @@
+// EXPECT: 1
+// ADR-0047: contains on String — hit.
+function main() -> Integer {
+    return contains("hello", "ell")
+}

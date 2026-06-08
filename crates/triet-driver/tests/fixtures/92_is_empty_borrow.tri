@@ -1,0 +1,8 @@
+// EXPECT: 1
+// ADR-0047: is_empty via &0 borrow — read-op, reuse owner after.
+function main() -> Integer {
+    let s = ""
+    let result = is_empty(&0 s)
+    let n = length(s)
+    return result
+}

@@ -1348,6 +1348,97 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let dest = emit_shim_call(c, shim_name, vec![arg], "Integer", expr_span);
                     return Ok(dest);
                 }
+                "contains" => {
+                    // ADR-0047 §1: type-aware dispatch — String/Vector/HashMap.
+                    // Lối 1: strip reference prefix, dispatch by TYPE-STRING.
+                    if arguments.len() != 2 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let arg0_ty = &c.local_decls[args[0].0].ty;
+                    // Lối 1: strip &0 /&+ /&- prefix to get base type.
+                    let base_ty = arg0_ty
+                        .strip_prefix("&0 ")
+                        .or_else(|| arg0_ty.strip_prefix("&+ "))
+                        .or_else(|| arg0_ty.strip_prefix("&+ mutable "))
+                        .or_else(|| arg0_ty.strip_prefix("&0 mutable "))
+                        .or_else(|| arg0_ty.strip_prefix("&- "))
+                        .unwrap_or(arg0_ty);
+                    let shim_name = match base_ty {
+                        "String" => "__triet_string_contains",
+                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_contains",
+                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_contains",
+                        other => {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!(
+                                    "contains() on type `{other}` — expected String, Vector, or HashMap"
+                                ),
+                                expr_span,
+                            ));
+                        }
+                    };
+                    let dest = emit_shim_call(c, shim_name, args, "Trilean", expr_span);
+                    return Ok(dest);
+                }
+                "is_empty" => {
+                    // ADR-0047 §2: derive len(x) == 0 via BinOp::Eq.
+                    // Eq returns select(cmp, 1, -1) — correct Trilean encoding.
+                    if arguments.len() != 1 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let arg = lower_expr(arguments[0], arena, c)?;
+                    let arg_ty = &c.local_decls[arg.0].ty;
+                    // Strip reference prefix to dispatch len shim.
+                    let base_ty = arg_ty
+                        .strip_prefix("&0 ")
+                        .or_else(|| arg_ty.strip_prefix("&+ "))
+                        .or_else(|| arg_ty.strip_prefix("&+ mutable "))
+                        .or_else(|| arg_ty.strip_prefix("&0 mutable "))
+                        .or_else(|| arg_ty.strip_prefix("&- "))
+                        .unwrap_or(arg_ty);
+                    let len_shim = match base_ty {
+                        "String" => "__triet_string_len",
+                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
+                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
+                        other => {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!(
+                                    "is_empty() on type `{other}` — expected String, Vector, or HashMap"
+                                ),
+                                expr_span,
+                            ));
+                        }
+                    };
+                    let len_dest =
+                        emit_shim_call(c, len_shim, vec![arg], "Integer", expr_span.clone());
+                    // Compare len == 0 → Trilean encoding (Eq returns 1 or -1).
+                    let result = c.alloc_local_ty("Trilean");
+                    let zero = c.alloc_local_ty("Integer");
+                    c.push(Statement::StorageLive(result, expr_span.clone()));
+                    c.push(Statement::StorageLive(zero, expr_span.clone()));
+                    c.push(Statement::Const {
+                        dest: Place::local(zero),
+                        value: ConstValue::Integer(0),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::BinaryOp {
+                        dest: Place::local(result),
+                        op: BinOp::Eq,
+                        left: Place::local(len_dest),
+                        right: Place::local(zero),
+                        span: expr_span,
+                    });
+                    return Ok(result);
+                }
                 "get" => {
                     // Type-aware dispatch: Vector → __triet_vector_get,
                     // HashMap → __triet_hashmap_get.

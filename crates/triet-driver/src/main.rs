@@ -151,6 +151,19 @@ fn main() -> ExitCode {
         ShimSymbol::fn_1_1("__triet_hashmap_len", mir_lower::__triet_hashmap_len),
         ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
+        // ADR-0047: contains shims
+        ShimSymbol::fn_2_1(
+            "__triet_string_contains",
+            mir_lower::__triet_string_contains,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_vector_contains",
+            mir_lower::__triet_vector_contains,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_contains",
+            mir_lower::__triet_hashmap_contains,
+        ),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = match ctx.compile_multi(&body_refs) {

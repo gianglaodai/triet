@@ -1515,6 +1515,48 @@ pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
     unsafe { (ptr as *const i64).read_unaligned() }
 }
 
+/// `__triet_string_contains(haystack, needle)` — substring search.
+/// Returns 1 (true) if `needle` is a substring of `haystack`,
+/// -1 (false) otherwise. Never returns 0.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_contains(haystack: i64, needle: i64) -> i64 {
+    if haystack == 0 || needle == 0 {
+        std::process::abort(); // trap-on-0
+    }
+    // SAFETY: haystack and needle are valid heap String pointers.
+    let (h_len, n_len) = unsafe {
+        let hl = (haystack as *const i64).read_unaligned();
+        let nl = (needle as *const i64).read_unaligned();
+        (hl as usize, nl as usize)
+    };
+    if n_len == 0 {
+        return 1; // empty needle always matches
+    }
+    if n_len > h_len {
+        return -1;
+    }
+    let h_data = haystack as *const u8;
+    // SAFETY: data areas are valid reads.
+    unsafe {
+        let h_bytes = h_data.add(16); // skip len+cap header
+        let n_bytes = (needle as *const u8).add(16);
+        for start in 0..=(h_len - n_len) {
+            let mut matched = true;
+            for off in 0..n_len {
+                if h_bytes.add(start + off).read() != n_bytes.add(off).read() {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return 1;
+            }
+        }
+    }
+    -1
+}
+
 // ── Vector heap shims (ADR-0040 §5) ──────────────────────────
 
 /// Layout for a Vector heap allocation: header + len (i64) + cap (i64) + data (cap × 8).
@@ -1678,6 +1720,36 @@ pub extern "C" fn __triet_vector_get(vec: i64, idx: i64) -> i64 {
         let data = body.add(16);
         (data as *const i64).add(idx as usize).read_unaligned()
     }
+}
+
+/// `__triet_vector_contains(vec, elem)` — linear scan.
+/// Returns 1 (true) if `elem` is found, -1 (false) otherwise.
+/// Never returns 0.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_contains(vec: i64, elem: i64) -> i64 {
+    if vec == 0 {
+        std::process::abort(); // trap-on-0
+    }
+    let body = vec as *const u8;
+    // SAFETY: vec points to valid heap body (len + cap + data).
+    let len = unsafe { (body as *const i64).read_unaligned() } as usize;
+    // SAFETY: data area starts at offset 16.
+    unsafe {
+        let data = body.add(16) as *const i64;
+        for i in 0..len {
+            if data.add(i).read_unaligned() == elem {
+                return 1;
+            }
+        }
+    }
+    -1
 }
 
 // ── HashMap shims (ADR-0043) ─────────────────────────────────
@@ -1919,6 +1991,41 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
             let stored_k = unsafe { k_ptr.read_unaligned() };
             if stored_k == k {
                 return unsafe { v_ptr.read_unaligned() };
+            }
+        }
+        probe = (probe + 1) % cap;
+    }
+}
+
+/// `__triet_hashmap_contains(map, key)` — key lookup.
+/// Returns 1 (true) if `key` exists in the map, -1 (false) otherwise.
+/// Never returns 0.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
+    if map == 0 {
+        std::process::abort(); // trap-on-0
+    }
+    let body = map as *mut u8;
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let hash = (k % cap as i64 + cap as i64) % cap as i64;
+    let mut probe = hash as usize;
+    loop {
+        let state = unsafe { *hashmap_state_ptr(body, probe) };
+        if state == 0u8 {
+            return -1; // EMPTY — key not found
+        }
+        if state == 1u8 {
+            let (k_ptr, _v_ptr) = unsafe { hashmap_kv_ptrs(body, probe) };
+            let stored_k = unsafe { k_ptr.read_unaligned() };
+            if stored_k == k {
+                return 1; // FOUND
             }
         }
         probe = (probe + 1) % cap;

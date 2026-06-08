@@ -1,0 +1,5 @@
+// EXPECT: -1
+// ADR-0047: is_empty on non-empty String.
+function main() -> Integer {
+    return is_empty("hello")
+}

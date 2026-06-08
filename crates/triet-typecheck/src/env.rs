@@ -293,7 +293,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "get",
         Type::Function {
             type_params: Vec::new(),
-            parameters: vec![vector_integer, Integer],
+            parameters: vec![vector_integer.clone(), Integer],
             return_type: Box::new(Type::Nullable(Box::new(Integer))),
         },
     );
@@ -343,8 +343,123 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "len",
         Type::Function {
             type_params: Vec::new(),
-            parameters: vec![hashmap_ii],
+            parameters: vec![hashmap_ii.clone()],
             return_type: Box::new(Integer),
+        },
+    );
+
+    // ── ADR-0047: contains + is_empty read-ops ──
+
+    let trilean_refined = Type::Trilean { refined: true }; // Trilean!
+
+    // `contains` overloads — owned variants
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![String.clone(), String.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![vector_integer.clone(), Integer.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![hashmap_ii.clone(), Integer.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+
+    let ref_string = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(String.clone()));
+    let ref_vector = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(vector_integer.clone()),
+    );
+    let ref_hashmap = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(hashmap_ii.clone()));
+
+    // `contains` overloads — &0 borrow variants
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_string.clone(), String.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_vector.clone(), Integer.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_hashmap.clone(), Integer.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+
+    // `is_empty` overloads — owned variants
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![String.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![vector_integer.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![hashmap_ii.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+
+    // `is_empty` overloads — &0 borrow variants
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_string],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_vector],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_hashmap],
+            return_type: Box::new(trilean_refined),
         },
     );
 }

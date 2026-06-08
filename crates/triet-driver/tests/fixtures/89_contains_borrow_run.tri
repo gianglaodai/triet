@@ -1,0 +1,8 @@
+// EXPECT: 1
+// ADR-0047: contains via &0 borrow — read-op, reuse owner after.
+function main() -> Integer {
+    let s = "hello"
+    let result = contains(&0 s, "ell")
+    let n = length(s)
+    return result
+}

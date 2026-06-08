@@ -1,0 +1,7 @@
+// EXPECT: 1
+// ADR-0047: contains on HashMap — hit.
+function main() -> Integer {
+    let m = hashmap_new()
+    let m2 = insert(m, 100, 1)
+    return contains(m2, 100)
+}

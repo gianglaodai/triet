@@ -175,6 +175,19 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_get",
             triet_jit::mir_lower::__triet_hashmap_get,
         ),
+        // ADR-0047: contains shims
+        ShimSymbol::fn_2_1(
+            "__triet_string_contains",
+            triet_jit::mir_lower::__triet_string_contains,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_vector_contains",
+            triet_jit::mir_lower::__triet_vector_contains,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_contains",
+            triet_jit::mir_lower::__triet_hashmap_contains,
+        ),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx
