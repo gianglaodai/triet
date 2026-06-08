@@ -35,6 +35,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] **B5 (§5) Typecheck refuse `-> &0 T`:** E1042 `BorrowReturnNotYetSupported`. Đóng accepted-wrong.
 - [x] **B6 (§8) Mở read-op `length`:** wire `length` alias `len`, strip `&0 ` prefix. `length(&0 s)` RUN.
 - [x] **B7 (§4) TODO + giữ engine:** TODO tại checker.rs:754, lower/lib.rs:168.
+- [x] **ADR-0046 Return-borrow Elision — O+G ký 2026-06-08:** `cfae64d` `034ba0d` `d6e3da0`. Mở `-> &0 T` return type qua 3 bước: §1 E1042 form-gate whitelist BorrowReadOnly, §2 reuse E2400 elision, §3 lower populate return_borrow_map (đếm theo type-string &, count≠1→Err). Blocker fixes: mixed-param false Err (đếm theo type, không ParameterPassing) + E2450 false-positive (is_propagated skip + dest-loan removal). Positive fixture 84 RUN ra 5. TECH-DEBT: is_propagated skip dựa trên giả định không nested block scope.
 - [ ] **Codegen opt (G, ADR-0044 ack §iii):** range check 1-instruction — `(val−MIN) >ᵤ 2M` unsigned-sub trick; fallback `bor` gộp 2 icmp trước trapnz. Cắt nửa instruction check mỗi Add/Sub.
 - [ ] **Constant folding pass (G, ADR-0044 ack §iii):** toán hạng const in-range → tính compile-time, bỏ trap block.
 - [ ] Native struct layout (StackSlot with MIR StructLayout sizes).

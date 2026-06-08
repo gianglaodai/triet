@@ -110,6 +110,13 @@ _ => return Err(LowerError {
 **Tiền lệ:** `lib.rs:1200` — `ok_or_else(|| LowerError { ... })` cho enum variant
 không tìm thấy. Pattern giống hệt: internal invariant bị phá → Err, không panic.
 
+**TECH-DEBT (O, 2026-06-08):** `is_propagated` skip E2450 ở Drop (checker.rs:692)
+dựa trên giả định: Triết chưa có nested block scope + move-sớm đã bị E2440 chặn,
+nên propagated ref KHÔNG THỂ outlive owner. Nếu sau này thêm block-scope lồng hoặc
+cho phép ref escape rộng hơn (vd capture trong closure, return ref qua nhiều tầng),
+phải re-audit cái skip này — propagated ref có thể outlive owner thật trong các
+cấu trúc đó. Ghi nhận để không quên khi mở rộng scope system.
+
 ---
 
 ## §4 — BỎ E1043 (ghi rõ lý do)
