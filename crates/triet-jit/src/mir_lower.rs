@@ -1197,10 +1197,10 @@ impl JitContext {
                                                 }
                                             },
                                         );
-                                    if let Some(src) = source_local {
-                                        if let Some((slot, _)) = self.struct_slots.get(&src) {
-                                            return builder.ins().stack_addr(I64, *slot, 0);
-                                        }
+                                    if let Some(src) = source_local
+                                        && let Some((slot, _)) = self.struct_slots.get(&src)
+                                    {
+                                        return builder.ins().stack_addr(I64, *slot, 0);
                                     }
                                     // Fallback: pass the arg directly (non-String).
                                     builder.use_var(self.var(*a))
@@ -1277,13 +1277,7 @@ impl JitContext {
                 }
             }
 
-            Terminator::Unreachable { .. } => {
-                builder
-                    .ins()
-                    .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
-            }
-
-            Terminator::Trap { .. } => {
+            Terminator::Unreachable { .. } | Terminator::Trap { .. } => {
                 builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));

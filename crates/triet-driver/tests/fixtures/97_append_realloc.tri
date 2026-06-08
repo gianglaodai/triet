@@ -1,5 +1,7 @@
-// EXPECT: 5
-// ADR-0049 Lát 5: append multiple bytes, trigger realloc (cap=1→doubling).
+// EXPECT: 1
+// ADR-0049 Lát 5: append multiple bytes, trigger realloc (cap=1→doubling),
+// verify content with eq. Content teeth: if append writes wrong byte/offset,
+// eq returns -1 instead of 1.
 function main() -> Integer {
     let m = "";
     append(&0 mutable m, 104); // h
@@ -7,5 +9,5 @@ function main() -> Integer {
     append(&0 mutable m, 108); // l
     append(&0 mutable m, 108); // l
     append(&0 mutable m, 111); // o
-    return length(m);
+    return eq(m, "hello");
 }

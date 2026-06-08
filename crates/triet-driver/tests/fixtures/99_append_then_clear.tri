@@ -1,0 +1,10 @@
+// EXPECT: 0
+// ADR-0049 Lát 5: append then clear — length returns to 0.
+// Writeback teeth: clear must zero slot len even after append wrote to it.
+function main() -> Integer {
+    let m = "";
+    append(&0 mutable m, 65);
+    append(&0 mutable m, 66);
+    clear(&0 mutable m);
+    return length(m);
+}
