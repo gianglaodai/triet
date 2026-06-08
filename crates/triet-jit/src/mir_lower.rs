@@ -2974,8 +2974,9 @@ mod tests {
             "callee must not free the returned value (M4)"
         );
 
-        // Simulate caller Drop.
-        __test_counting_free(ptr);
+        // Simulate caller Drop. alloc(len, len) → cap == len for literals.
+        let cap = unsafe { (ptr as *const i64).add(1).read_unaligned() };
+        __test_counting_free(ptr, cap);
         assert_eq!(
             FREE_COUNT.load(Ordering::SeqCst),
             1,
