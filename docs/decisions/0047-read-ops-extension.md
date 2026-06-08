@@ -34,7 +34,7 @@ không sở hữu mới, không struct-chứa-ref.
 ## §1 — `contains`: shim mới cho 3 type
 
 **Quyết định:** Viết 3 shim `extern "C"` — String, Vector, HashMap. Mỗi shim nhận
-handle i64 (và key/element), trả về i64 (1 = true, 0 = false).
+handle i64 (và key/element), trả về i64 (1 = true, -1 = false), tuyệt đối không 0.
 
 ### String: `__triet_string_contains(haystack: i64, needle: i64) -> i64`
 
