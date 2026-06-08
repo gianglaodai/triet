@@ -668,14 +668,16 @@ impl JitContext {
             let var = self.var(local);
             let param_val = builder.block_params(entry_block)[bp_idx];
             builder.def_var(var, param_val);
-            // ADR-0049 Lát 3: populate String param slot from handle.
+            // ADR-0049 Lát 6: String param received as pointer-to-caller-slot.
+            // Load {ptr,len,cap} from the caller's slot into our own slot.
             if body.local_decls[local.0].ty == "String" {
                 if let Some((slot, _)) = self.struct_slots.get(&local) {
-                    builder.ins().stack_store(param_val, *slot, 0);
-                    let heap_len = builder.ins().load(I64, mem_flags, param_val, 0);
-                    builder.ins().stack_store(heap_len, *slot, 8);
-                    let heap_cap = builder.ins().load(I64, mem_flags, param_val, 8);
-                    builder.ins().stack_store(heap_cap, *slot, 16);
+                    let src_ptr = builder.ins().load(I64, mem_flags, param_val, 0);
+                    let src_len = builder.ins().load(I64, mem_flags, param_val, 8);
+                    let src_cap = builder.ins().load(I64, mem_flags, param_val, 16);
+                    builder.ins().stack_store(src_ptr, *slot, 0);
+                    builder.ins().stack_store(src_len, *slot, 8);
+                    builder.ins().stack_store(src_cap, *slot, 16);
                 }
             }
             bp_idx += 1;
@@ -1018,7 +1020,15 @@ impl JitContext {
                     let val = builder.ins().iconst(I64, 0);
                     builder.ins().return_(&[val]);
                 } else {
-                    let val = builder.use_var(self.var(values[0]));
+                    // ADR-0049 Lát 6: String return reads handle from slot,
+                    // not var (var holds pointer-to-caller-slot after L6-1).
+                    let val = if let Some((slot, layout)) = self.struct_slots.get(&values[0])
+                        && layout.name == "String"
+                    {
+                        builder.ins().stack_load(I64, *slot, 0)
+                    } else {
+                        builder.use_var(self.var(values[0]))
+                    };
                     builder.ins().return_(&[val]);
                 }
             }
@@ -1093,24 +1103,20 @@ impl JitContext {
 
                         // Prepare arguments.
                         // Struct locals → stack_addr (pass by-pointer).
-                        // Enum locals → stack_load discriminant (raw i64 per Bậc A ABI).
+                        // String locals → stack_addr (Lát 6: fat-String by-pointer).
+                        // Enum locals → stack_load discriminant (raw i64).
                         // Scalars → use_var.
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
-                                // ADR-0049: String has a struct_slot but is still
-                                // passed by-value (i64 handle) in Lát 1-3.
                                 if let Some((slot, layout)) = self.struct_slots.get(a) {
                                     if layout.name == "String" {
-                                        builder.use_var(self.var(*a))
+                                        // ADR-0049 Lát 6: param fat-String by-pointer
+                                        builder.ins().stack_addr(I64, *slot, 0)
                                     } else {
                                         builder.ins().stack_addr(I64, *slot, 0)
                                     }
                                 } else if let Some((slot, _)) = self.enum_slots.get(a) {
-                                    // Pass discriminant as raw i64 for enum params.
-                                    // Callee's GetDiscriminant will read it via
-                                    // use_var (Bậc A contract: the discriminant IS
-                                    // the value for non-slot enum locals).
                                     builder.ins().stack_load(I64, *slot, 0)
                                 } else {
                                     let var = self.var(*a);
