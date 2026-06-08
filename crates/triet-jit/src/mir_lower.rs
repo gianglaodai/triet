@@ -279,12 +279,10 @@ impl JitContext {
                     return Ok(builder.ins().stack_load(I64, *slot, offset));
                 }
                 // Pointer-based: param or sret. Load pointer, add offset, load.
-                // ADR-0049: String slot layout has ptr@0 before len@8/cap@16,
-                // but the heap handle points directly to body where len@0/cap@8.
-                // Map slot offset → heap offset by subtracting the "ptr" field.
-                let heap_offset = if ty == "String" { offset - 8 } else { offset };
+                // (String never reaches here — universal slots always return
+                // via stack_load above.)
                 let ptr = builder.use_var(self.var(place.local));
-                let addr = builder.ins().iadd_imm(ptr, i64::from(heap_offset));
+                let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
                 return Ok(builder.ins().load(
                     I64,
                     cranelift_codegen::ir::MemFlags::new(),
