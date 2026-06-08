@@ -1,0 +1,7 @@
+// EXPECT: 1
+// ADR-0049 Lát 5: append one byte to empty String, no realloc needed.
+function main() -> Integer {
+    let m = "";
+    append(&0 mutable m, 65);
+    return length(m);
+}

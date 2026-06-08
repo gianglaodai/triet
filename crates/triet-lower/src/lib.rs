@@ -1499,6 +1499,36 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let dest = emit_shim_call(c, shim_name, vec![arg], "Integer", expr_span);
                     return Ok(dest);
                 }
+                "append" => {
+                    // ADR-0049 Lát 5: append(&0 mutable String, byte).
+                    if arguments.len() != 2 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let arg = lower_expr(arguments[0], arena, c)?;
+                    let byte_arg = lower_expr(arguments[1], arena, c)?;
+                    let arg_ty = &c.local_decls[arg.0].ty;
+                    let base_ty = arg_ty
+                        .strip_prefix("&0 mutable ")
+                        .or_else(|| arg_ty.strip_prefix("&0 "))
+                        .or_else(|| arg_ty.strip_prefix("&+ "))
+                        .or_else(|| arg_ty.strip_prefix("&- "))
+                        .unwrap_or(arg_ty);
+                    let shim_name = match base_ty {
+                        "String" => "__triet_string_append",
+                        other => {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!("append() on type `{other}` — expected String"),
+                                expr_span,
+                            ));
+                        }
+                    };
+                    let dest =
+                        emit_shim_call(c, shim_name, vec![arg, byte_arg], "Integer", expr_span);
+                    return Ok(dest);
+                }
                 "get" => {
                     // Type-aware dispatch: Vector → __triet_vector_get,
                     // HashMap → __triet_hashmap_get.

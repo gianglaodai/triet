@@ -1148,13 +1148,16 @@ impl JitContext {
                         let func_id = self.get_or_declare_shim(callee_name)?;
                         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
 
-                        // ADR-0049 Lát 3b: eq/contains bung (ptr, len) for each
-                        // String arg from slot, so shim never reads heap.
+                        // ADR-0049 Lát 3b/5: dispatch by shim ABI class.
                         let bung_fields = matches!(
                             callee_name.as_str(),
                             "__triet_string_eq"
                                 | "__triet_string_contains"
                                 | "__triet_string_concat"
+                        );
+                        let mutate_writeback = matches!(
+                            callee_name.as_str(),
+                            "__triet_string_clear" | "__triet_string_append"
                         );
                         let arg_vals: Vec<_> = if bung_fields {
                             let mut vals = Vec::with_capacity(args.len() * 2);
@@ -1165,8 +1168,6 @@ impl JitContext {
                                     vals.push(ptr);
                                     vals.push(len);
                                 } else {
-                                    // No-slot fallback (defense): pass handle
-                                    // and load len from heap.
                                     let handle = builder.use_var(self.var(*a));
                                     let mem_flags = cranelift_codegen::ir::MemFlags::new();
                                     let len = builder.ins().load(I64, mem_flags, handle, 0);
@@ -1175,6 +1176,36 @@ impl JitContext {
                                 }
                             }
                             vals
+                        } else if mutate_writeback {
+                            // Pass stack_addr(slot) for the source String local.
+                            // The MIR arg is a &0 mutable String borrow — walk
+                            // the Borrow statement to find the owned String local.
+                            args.iter()
+                                .map(|a| {
+                                    // Find the Borrow source for this arg.
+                                    let source_local =
+                                        body.blocks.iter().flat_map(|b| &b.statements).find_map(
+                                            |s| {
+                                                if let Statement::Borrow { dest, source, .. } = s {
+                                                    if dest.local == *a {
+                                                        Some(source.local)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                }
+                                            },
+                                        );
+                                    if let Some(src) = source_local {
+                                        if let Some((slot, _)) = self.struct_slots.get(&src) {
+                                            return builder.ins().stack_addr(I64, *slot, 0);
+                                        }
+                                    }
+                                    // Fallback: pass the arg directly (non-String).
+                                    builder.use_var(self.var(*a))
+                                })
+                                .collect()
                         } else {
                             args.iter()
                                 .map(|a| {
@@ -1237,35 +1268,8 @@ impl JitContext {
                             }
                         }
 
-                        // ADR-0049 Phase-1 Lát 1 B3.5: clear zeroes heap len; sync
-                        // slot field-1. The arg is a &0 mutable String borrow;
-                        // walk back to its Borrow source to find the owned local.
-                        if callee_name == "__triet_string_clear" {
-                            if let Some(arg0) = args.first() {
-                                // Find the Borrow that created this reference.
-                                for blk in &body.blocks {
-                                    for stmt in &blk.statements {
-                                        if let Statement::Borrow {
-                                            dest,
-                                            source,
-                                            form: _,
-                                            ..
-                                        } = stmt
-                                        {
-                                            if dest.local == *arg0 {
-                                                if let Some((slot, _)) =
-                                                    self.struct_slots.get(&source.local)
-                                                {
-                                                    let zero = builder.ins().iconst(I64, 0);
-                                                    builder.ins().stack_store(zero, *slot, 8);
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // ADR-0049 Lát 5: clear/append writeback via *mut FatStr;
+                        // no manual sync needed — shim handles it.
 
                         let ret_block = self.blocks[return_bb];
                         builder.ins().jump(ret_block, &[]);
@@ -1723,19 +1727,80 @@ pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
     unsafe { (ptr as *const i64).read_unaligned() }
 }
 
-/// `__triet_string_clear(ptr)` — in-place: set len=0. NO realloc, ptr bất biến.
-/// SOUND vì E2440 đảm bảo &0 mutable độc quyền — không read song song.
+// ADR-0049 Lát 5: fat-pointer layout mirrored in shim for writeback.
+// Must match StackSlot: ptr@0, len@8, cap@16.
+#[repr(C)]
+struct FatStr {
+    ptr: i64,
+    len: i64,
+    cap: i64,
+}
+
+/// `__triet_string_clear(slot_ptr)` — *mut FatStr writeback: len=0, ptr unchanged.
+/// ADR-0049 Lát 5: receives pointer to caller's StackSlot, writes back via pointer.
 #[allow(unsafe_code)]
-#[allow(clippy::cast_ptr_alignment)] // write_unaligned used
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_clear(ptr: i64) -> i64 {
-    // C9 trap-on-0: 0 = dead value, never a valid heap ptr.
-    if ptr == 0 {
-        std::process::abort();
+pub extern "C" fn __triet_string_clear(slot: i64) -> i64 {
+    let slot = slot as *mut FatStr;
+    // SAFETY: slot is a valid StackSlot pointer (caller-allocated).
+    unsafe {
+        if (*slot).ptr == 0 {
+            std::process::abort();
+        }
+        (*slot).len = 0;
+        // Writeback to heap for boundary compatibility (Lát 6 will remove).
+        ((*slot).ptr as *mut i64).write_unaligned(0);
     }
-    // SAFETY: ptr trỏ String body; len@0, cap@8, bytes@16. Chỉ ghi len.
-    // KHÔNG đụng cap/bytes — realloc = BẬC D (handle-indirection/fat-pointer).
-    unsafe { (ptr as *mut i64).write_unaligned(0) };
+    0 // Unit
+}
+
+/// `__triet_string_append(slot_ptr, byte)` — append one byte, realloc if needed.
+/// ADR-0049 Lát 5: *mut FatStr writeback. Reads {ptr,len,cap} from slot,
+/// grows if len==cap, writes byte, writebacks {ptr,len+1,cap} to slot+heap.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_append(slot: i64, byte: i64) -> i64 {
+    let slot = slot as *mut FatStr;
+    unsafe {
+        if (*slot).ptr == 0 {
+            std::process::abort();
+        }
+        let mut ptr = (*slot).ptr;
+        let mut cap = (*slot).cap;
+        let len = (*slot).len;
+
+        if len >= cap {
+            // Realloc: double capacity (min 4).
+            let new_cap = (cap * 2).max(4);
+            let new_body = __triet_string_alloc(new_cap, new_cap);
+            if new_body == 0 {
+                return 0; // OOM
+            }
+            // Copy old data: header + len + cap + data bytes
+            let old_header = (ptr as *mut u8).sub(HEADER_SIZE);
+            let new_header = (new_body as *mut u8).sub(HEADER_SIZE);
+            let old_total = HEADER_SIZE + 16 + cap as usize;
+            std::ptr::copy_nonoverlapping(old_header, new_header, old_total);
+            // Free old block
+            let old_layout = string_layout(cap.max(1) as usize);
+            std::alloc::dealloc(old_header, old_layout);
+            ptr = new_body;
+            cap = new_cap;
+        }
+
+        // Write byte at data+len
+        let data = (ptr as *mut u8).add(16);
+        data.add(len as usize).write(byte as u8);
+
+        // Writeback to slot
+        (*slot).ptr = ptr;
+        (*slot).len = len + 1;
+        (*slot).cap = cap;
+
+        // Writeback to heap (boundary compatibility, removed at Lát 6)
+        (ptr as *mut i64).write_unaligned(len + 1);
+        (ptr as *mut i64).add(1).write_unaligned(cap);
+    }
     0 // Unit
 }
 

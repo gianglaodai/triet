@@ -478,6 +478,24 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(Integer), // Unit-equivalent
         },
     );
+
+    // ── ADR-0049 Lát 5: append op ──
+
+    // `append(&0 mutable String, Integer)` — append one byte, realloc if needed.
+    env.declare_overload(
+        "append",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![
+                Type::Reference(
+                    ReferenceForm::BorrowExclusiveMutable,
+                    Box::new(String.clone()),
+                ),
+                Integer.clone(),
+            ],
+            return_type: Box::new(Integer), // Unit-equivalent
+        },
+    );
 }
 
 #[cfg(test)]

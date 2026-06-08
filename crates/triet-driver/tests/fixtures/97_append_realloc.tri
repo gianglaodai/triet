@@ -1,0 +1,11 @@
+// EXPECT: 5
+// ADR-0049 Lát 5: append multiple bytes, trigger realloc (cap=1→doubling).
+function main() -> Integer {
+    let m = "";
+    append(&0 mutable m, 104); // h
+    append(&0 mutable m, 101); // e
+    append(&0 mutable m, 108); // l
+    append(&0 mutable m, 108); // l
+    append(&0 mutable m, 111); // o
+    return length(m);
+}
