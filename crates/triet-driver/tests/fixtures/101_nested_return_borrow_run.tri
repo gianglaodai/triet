@@ -1,0 +1,17 @@
+// EXPECT: 5
+// A1: nested scope return-borrow exercises is_propagated guard.
+// liveness-based guard (not blind skip) correctly handles
+// propagated loans: suppress when dest is dead, fire when dest
+// escapes to successor blocks.
+function nested_id(s: &0 String) -> &0 String {
+    // Nested block scope — return-borrow inside.
+    {
+        return s
+    }
+}
+function main() -> Integer {
+    let msg = "hello"
+    let r = nested_id(&0 msg)
+    let n = length(r)
+    return n
+}

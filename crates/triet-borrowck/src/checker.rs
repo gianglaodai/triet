@@ -693,13 +693,16 @@ fn process_block(
                 // while borrows are still live would create dangling references.
                 //
                 // ADR-0046: propagated loans (return-borrow) are bounded by
-                // the dest's liveness, not StorageDead. Skip E2450 for them
-                // — they'll be cleaned up below via dest removal. Only
-                // direct loans (is_propagated=false) trigger E2450 here.
-                let has_active_loans = state
-                    .active_loans
-                    .iter()
-                    .any(|loan| loan.source.local == *l && !loan.is_propagated);
+                // the dest's liveness, not StorageDead. A propagated loan
+                // is only safe to suppress if the dest reference is already
+                // dead at this Drop point. If the dest is still live (e.g.,
+                // nested scope where Drop(source) precedes a use of the
+                // returned reference), fire E2450.
+                let has_active_loans = state.active_loans.iter().any(|loan| {
+                    loan.source.local == *l
+                        && (!loan.is_propagated
+                            || liveness.blocks[block.0].live_out.contains(&loan.dest))
+                });
                 if has_active_loans {
                     let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
                     errors.push(BorrowError::DropWhileBorrowed {

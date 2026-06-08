@@ -1,0 +1,15 @@
+// ERROR: E2450
+// A1 live-bomb regression guard: nested block scope drops the
+// borrowed source (inner) before the propagated borrow (r) is
+// used — must fire E2450. Blind-skip code lets this through
+// silently (UAF). live_out guard catches it.
+function id(s: &0 String) -> &0 String {
+    return s
+}
+function main() -> Integer {
+    let r = {
+        let inner = "hello"
+        id(&0 inner)
+    }
+    return length(r)
+}
