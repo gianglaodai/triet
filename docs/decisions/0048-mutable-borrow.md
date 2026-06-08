@@ -25,8 +25,8 @@ nợ `is_propagated`×mutable.
 | # | Dữ kiện | Vị trí |
 |---|---------|--------|
 | F1 | `Loan.form: ReferenceForm` có sẵn, phân biệt BorrowReadOnly/BorrowExclusiveMutable/… | `checker.rs:93-104` |
-| F2 | `conflicts_with` rule: `BorrowExclusiveMutable` → conflict với BẤT KỲ loan nào (true), kể cả shared &0. Đây là cơ chế exclusivity. | `checker.rs:113-124` |
-| F3 | E2440 fire site: `places_conflict` + `loan.conflicts_with(*form)` → bắn `NllExclusivityViolation`. | `checker.rs:507-515` |
+| F2 | Exclusivity hai tầng: typecheck `borrow_check.rs` Pass-3 `forms_conflict` (ADR-0025 §2, fatal first-line) + MIR `checker.rs:113-124` `conflicts_with` (defense-in-depth). `BorrowExclusiveMutable` → conflict với BẤT KỲ loan nào. | `borrow_check.rs` (typecheck), `checker.rs:113-124` |
+| F3 | E2440 fire site MIR: `places_conflict` + `loan.conflicts_with(*form)` → bắn `NllExclusivityViolation`. Fire site typecheck: `forms_conflict` trả E2440. | `checker.rs:507-515`, `borrow_check.rs` (typecheck) |
 | F4 | Probe: `2× &0 mutable m` → E2440 nổ. Hạ tầng exclusivity đã hoạt động, không cần viết lại. | Phase-0 |
 | F5 | Probe: `modify(&0 mutable m)` e2e compile+RUN — &0 mutable param qua typecheck+lower+jit không vấn đề. | Phase-0 |
 | F6 | E1042 gate (check.rs:398-408) đang chặn TẤT CẢ `-> Ref T` trừ `BorrowReadOnly`. `&0 mutable` return đã bị chặn sẵn — không cần action thêm. | `check.rs:398-399` |
@@ -66,12 +66,24 @@ tại mỗi thời điểm.
 `places_conflict` (checker.rs:507) đã có sẵn và đã được verify (Phase-0). Không
 viết lại, không thêm rule mới.
 
-**E2440 rule cho `&0 mutable`:**
-- `BorrowExclusiveMutable` → `conflicts_with` trả `true` cho MỌI form (kể cả
-  `BorrowReadOnly`, `WeakObserver`, chính nó).
+**E2440 rule cho `&0 mutable` — hai tầng song song:**
+
+1. **Typecheck (fatal first-line):** `borrow_check.rs` Pass-3 kiểm tra
+   `forms_conflict` (ADR-0025 §2) — chặn sớm tại typecheck, không cần tới MIR.
+
+2. **MIR borrowck (defense-in-depth):** `checker.rs:113-124` `conflicts_with` —
+   `BorrowExclusiveMutable` → `true` cho MỌI form. Fire site `checker.rs:507-515`.
+
 - Hệ quả: một local có `&0 mutable` đang active → không ai có thể tạo borrow mới
-  trên cùng local (dù shared hay exclusive).
+  trên cùng local (dù shared hay exclusive). Guard redundant tối thiểu 4 đường
+  (typecheck + MIR + E2450 drop-while-borrowed), over-defended.
+
 - Đây là đảm bảo exclusivity — aliasing XOR mutability.
+
+**TECH-DEBT (O, 2026-06-08):** Hai tầng borrow-check song song (typecheck-era
+  v0.10 ADR-0025 + MIR-borrowck mới) là nợ kiến trúc. Teeth-isolation trên E2440
+  thất bại vì quá nhiều guard redundant — không sai (defense-in-depth) nhưng nên
+  hợp nhất khi Bậc C khép.
 
 ---
 
