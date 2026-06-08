@@ -1627,7 +1627,7 @@ pub extern "C" fn __triet_vector_free(ptr: i64) {
 
 /// `__triet_vector_len(ptr)` — return the length of a Vector. Returns 0 for null.
 #[allow(unsafe_code)]
-#[allow(clippy::cast_ptr_alignment)] // read_unaligned used
+#[allow(clippy::cast_ptr_alignment)] // read_unaligned used // read_unaligned used
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_vector_len(ptr: i64) -> i64 {
     // C9 trap-on-0: 0 = dead value, never a valid heap ptr.
@@ -1845,7 +1845,7 @@ pub extern "C" fn __triet_hashmap_free(ptr: i64) {
 
 /// Return entry count of a `HashMap`. Trap-on-0.
 #[allow(unsafe_code)]
-#[allow(clippy::cast_ptr_alignment)]
+#[allow(clippy::cast_ptr_alignment)] // read_unaligned used
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
     if ptr == 0 {
