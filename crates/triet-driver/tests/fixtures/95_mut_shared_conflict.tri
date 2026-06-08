@@ -1,0 +1,8 @@
+// ERROR: E2440
+// ADR-0048: &0 mutable + &0 shared on same local — conflict.
+function main() -> Integer {
+    let m = "hello"
+    let a = &0 mutable m
+    let b = &0 m
+    return 0
+}

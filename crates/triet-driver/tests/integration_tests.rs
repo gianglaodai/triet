@@ -188,6 +188,11 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_contains",
             triet_jit::mir_lower::__triet_hashmap_contains,
         ),
+        // ADR-0048: mutable borrow — clear
+        ShimSymbol::fn_1_1(
+            "__triet_string_clear",
+            triet_jit::mir_lower::__triet_string_clear,
+        ),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx

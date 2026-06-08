@@ -1,0 +1,7 @@
+// EXPECT: 0
+// ADR-0048: clear(&0 mutable String) — length after clear = 0.
+function main() -> Integer {
+    let m = "hello"
+    clear(&0 mutable m)
+    return length(m)
+}

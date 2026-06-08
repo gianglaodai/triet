@@ -1515,6 +1515,22 @@ pub extern "C" fn __triet_string_len(ptr: i64) -> i64 {
     unsafe { (ptr as *const i64).read_unaligned() }
 }
 
+/// `__triet_string_clear(ptr)` — in-place: set len=0. NO realloc, ptr bất biến.
+/// SOUND vì E2440 đảm bảo &0 mutable độc quyền — không read song song.
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment)] // write_unaligned used
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_clear(ptr: i64) -> i64 {
+    // C9 trap-on-0: 0 = dead value, never a valid heap ptr.
+    if ptr == 0 {
+        std::process::abort();
+    }
+    // SAFETY: ptr trỏ String body; len@0, cap@8, bytes@16. Chỉ ghi len.
+    // KHÔNG đụng cap/bytes — realloc = BẬC D (handle-indirection/fat-pointer).
+    unsafe { (ptr as *mut i64).write_unaligned(0) };
+    0 // Unit
+}
+
 /// `__triet_string_contains(haystack, needle)` — substring search.
 /// Returns 1 (true) if `needle` is a substring of `haystack`,
 /// -1 (false) otherwise. Never returns 0.

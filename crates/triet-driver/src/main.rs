@@ -164,6 +164,8 @@ fn main() -> ExitCode {
             "__triet_hashmap_contains",
             mir_lower::__triet_hashmap_contains,
         ),
+        // ADR-0048: mutable borrow — clear
+        ShimSymbol::fn_1_1("__triet_string_clear", mir_lower::__triet_string_clear),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = match ctx.compile_multi(&body_refs) {

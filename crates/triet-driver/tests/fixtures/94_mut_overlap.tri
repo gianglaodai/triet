@@ -1,0 +1,8 @@
+// ERROR: E2440
+// ADR-0048: 2× &0 mutable on same local — exclusivity violation.
+function main() -> Integer {
+    let m = "hello"
+    let a = &0 mutable m
+    let b = &0 mutable m
+    return 0
+}

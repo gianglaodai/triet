@@ -462,6 +462,22 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(trilean_refined),
         },
     );
+
+    // ── ADR-0048: mutable borrow — clear op ──
+
+    // `clear(&0 mutable String)` — set len=0 in-place.
+    // Only accepts &0 mutable (not shared &0, not owned String).
+    env.declare_overload(
+        "clear",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![Type::Reference(
+                ReferenceForm::BorrowExclusiveMutable,
+                Box::new(String.clone()),
+            )],
+            return_type: Box::new(Integer), // Unit-equivalent
+        },
+    );
 }
 
 #[cfg(test)]
