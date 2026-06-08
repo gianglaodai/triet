@@ -703,11 +703,11 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
         }),
         "__triet_string_concat" => Some(BuiltinShimMeta {
             name: "__triet_string_concat",
-            arg_consumes: &[false, false],
+            arg_consumes: &[false, false, false, false],
         }),
         "__triet_string_eq" => Some(BuiltinShimMeta {
             name: "__triet_string_eq",
-            arg_consumes: &[false, false],
+            arg_consumes: &[false, false, false, false],
         }),
         "__triet_string_free" => Some(BuiltinShimMeta {
             name: "__triet_string_free",

@@ -125,11 +125,11 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_string_free",
             triet_jit::mir_lower::__triet_string_free,
         ),
-        ShimSymbol::fn_2_1(
+        ShimSymbol::fn_4_1(
             "__triet_string_concat",
             triet_jit::mir_lower::__triet_string_concat,
         ),
-        ShimSymbol::fn_2_1("__triet_string_eq", triet_jit::mir_lower::__triet_string_eq),
+        ShimSymbol::fn_4_1("__triet_string_eq", triet_jit::mir_lower::__triet_string_eq),
         ShimSymbol::fn_1_1(
             "__triet_string_len",
             triet_jit::mir_lower::__triet_string_len,
@@ -176,7 +176,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             triet_jit::mir_lower::__triet_hashmap_get,
         ),
         // ADR-0047: contains shims
-        ShimSymbol::fn_2_1(
+        ShimSymbol::fn_4_1(
             "__triet_string_contains",
             triet_jit::mir_lower::__triet_string_contains,
         ),

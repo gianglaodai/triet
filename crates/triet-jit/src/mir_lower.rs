@@ -165,6 +165,16 @@ impl ShimSymbol {
             has_return: false,
         }
     }
+
+    /// Register a 4-arg → 1-return shim.
+    pub fn fn_4_1(name: &str, f: extern "C" fn(i64, i64, i64, i64) -> i64) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 4,
+            has_return: true,
+        }
+    }
 }
 
 // ── JIT context ─────────────────────────────────────────────
@@ -1138,25 +1148,51 @@ impl JitContext {
                         let func_id = self.get_or_declare_shim(callee_name)?;
                         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
 
-                        let arg_vals: Vec<_> = args
-                            .iter()
-                            .map(|a| {
-                                // ADR-0049: String has a struct_slot but is still
-                                // passed by-value (i64 handle) in Lát 1-3.
-                                if let Some((slot, layout)) = self.struct_slots.get(a) {
-                                    if layout.name == "String" {
-                                        builder.use_var(self.var(*a))
-                                    } else {
-                                        builder.ins().stack_addr(I64, *slot, 0)
-                                    }
-                                } else if let Some((slot, _)) = self.enum_slots.get(a) {
-                                    builder.ins().stack_load(I64, *slot, 0)
+                        // ADR-0049 Lát 3b: eq/contains bung (ptr, len) for each
+                        // String arg from slot, so shim never reads heap.
+                        let bung_fields = matches!(
+                            callee_name.as_str(),
+                            "__triet_string_eq"
+                                | "__triet_string_contains"
+                                | "__triet_string_concat"
+                        );
+                        let arg_vals: Vec<_> = if bung_fields {
+                            let mut vals = Vec::with_capacity(args.len() * 2);
+                            for a in args {
+                                if let Some((slot, _)) = self.struct_slots.get(a) {
+                                    let ptr = builder.ins().stack_load(I64, *slot, 0);
+                                    let len = builder.ins().stack_load(I64, *slot, 8);
+                                    vals.push(ptr);
+                                    vals.push(len);
                                 } else {
-                                    let var = self.var(*a);
-                                    builder.use_var(var)
+                                    // No-slot fallback (defense): pass handle
+                                    // and load len from heap.
+                                    let handle = builder.use_var(self.var(*a));
+                                    let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                    let len = builder.ins().load(I64, mem_flags, handle, 0);
+                                    vals.push(handle);
+                                    vals.push(len);
                                 }
-                            })
-                            .collect();
+                            }
+                            vals
+                        } else {
+                            args.iter()
+                                .map(|a| {
+                                    if let Some((slot, layout)) = self.struct_slots.get(a) {
+                                        if layout.name == "String" {
+                                            builder.use_var(self.var(*a))
+                                        } else {
+                                            builder.ins().stack_addr(I64, *slot, 0)
+                                        }
+                                    } else if let Some((slot, _)) = self.enum_slots.get(a) {
+                                        builder.ins().stack_load(I64, *slot, 0)
+                                    } else {
+                                        let var = self.var(*a);
+                                        builder.use_var(var)
+                                    }
+                                })
+                                .collect()
+                        };
 
                         let call_inst = builder.ins().call(func_ref, &arg_vals);
 
@@ -1610,22 +1646,15 @@ pub extern "C" fn __triet_string_free(ptr: i64, cap: i64) {
     unsafe { std::alloc::dealloc(header, layout) };
 }
 
-/// `__triet_string_concat(a, b)` — concatenate two Strings (borrow semantics).
+/// `__triet_string_concat(a_ptr, a_len, b_ptr, b_len)` — concatenate two Strings.
+/// ADR-0049 Lát 3b: len passed explicitly (no heap read).
+/// Returns new heap handle (sret deferred to Lát 3c).
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_concat(a: i64, b: i64) -> i64 {
-    // C9 trap-on-0: neither argument may be a dead value.
-    if a == 0 || b == 0 {
+pub extern "C" fn __triet_string_concat(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i64) -> i64 {
+    if a_ptr == 0 || b_ptr == 0 {
         std::process::abort();
     }
-    let a_body = a as *const u8;
-    let b_body = b as *const u8;
-    // SAFETY: a, b are valid heap String pointers.
-    let (a_len, b_len) = unsafe {
-        let al = a_body.cast::<i64>().read_unaligned();
-        let bl = b_body.cast::<i64>().read_unaligned();
-        (al, bl)
-    };
     if a_len < 0 || b_len < 0 {
         return 0;
     }
@@ -1634,53 +1663,48 @@ pub extern "C" fn __triet_string_concat(a: i64, b: i64) -> i64 {
     if result == 0 {
         return 0;
     }
-    // Copy a's data then b's data
+    let a_body = a_ptr as *const u8;
+    let b_body = b_ptr as *const u8;
     // SAFETY: src pointers valid, dst pointer valid with sufficient capacity.
     unsafe {
-        let dst = (result as *mut u8).add(16); // skip len + cap
+        let dst = (result as *mut u8).add(16);
         let a_data = a_body.add(16);
         let b_data = b_body.add(16);
         std::ptr::copy_nonoverlapping(a_data, dst, a_len as usize);
         std::ptr::copy_nonoverlapping(b_data, dst.add(a_len as usize), b_len as usize);
     }
-    // Update len (cap already set by alloc)
-    // SAFETY: result points to valid body.
     unsafe {
         (result as *mut i64).write_unaligned(total_len);
     }
     result
 }
 
-/// `__triet_string_eq(a, b)` — equality comparison, returns 1 (true) or 0 (false).
+/// `__triet_string_eq(a_ptr, a_len, b_ptr, b_len)` — equality comparison.
+/// ADR-0049 Lát 3b: len passed explicitly (no heap read).
+/// Returns 1 (true) or -1 (false) per ADR-0047 Trilean encoding.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_eq(a: i64, b: i64) -> i64 {
-    // C9 trap-on-0: check BEFORE shortcut — eq(0,0) must trap, not return 1.
-    if a == 0 || b == 0 {
+pub extern "C" fn __triet_string_eq(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i64) -> i64 {
+    // C9 trap-on-0: neither pointer may be a dead value.
+    if a_ptr == 0 || b_ptr == 0 {
         std::process::abort();
     }
-    if a == b {
+    if a_ptr == b_ptr {
         return 1; // same pointer → equal
     }
-    let a_body = a as *const u8;
-    let b_body = b as *const u8;
-    // SAFETY: a, b are valid heap String pointers.
-    let (a_len, b_len) = unsafe {
-        let al = a_body.cast::<i64>().read_unaligned();
-        let bl = b_body.cast::<i64>().read_unaligned();
-        (al, bl)
-    };
     if a_len != b_len {
-        return 0;
+        return -1;
     }
     let len = a_len as usize;
+    let a_data = a_ptr as *const u8;
+    let b_data = b_ptr as *const u8;
     // SAFETY: data areas are valid reads of `len` bytes.
     unsafe {
-        let a_data = a_body.add(16);
-        let b_data = b_body.add(16);
+        let a_bytes = a_data.add(16);
+        let b_bytes = b_data.add(16);
         for i in 0..len {
-            if a_data.add(i).read() != b_data.add(i).read() {
-                return 0;
+            if a_bytes.add(i).read() != b_bytes.add(i).read() {
+                return -1;
             }
         }
     }
@@ -1715,40 +1739,34 @@ pub extern "C" fn __triet_string_clear(ptr: i64) -> i64 {
     0 // Unit
 }
 
-/// `__triet_string_contains(haystack, needle)` — substring search.
-/// Returns 1 (true) if `needle` is a substring of `haystack`,
-/// -1 (false) otherwise. Never returns 0.
+/// `__triet_string_contains(h_ptr, h_len, n_ptr, n_len)` — substring search.
+/// ADR-0049 Lát 3b: len passed explicitly (no heap read).
+/// Returns 1 (true) if needle is substring, -1 (false) otherwise. Never 0.
 #[allow(unsafe_code)]
-#[allow(
-    clippy::cast_sign_loss,           // heap len ≥ 0, shim aborts on null
-    clippy::cast_possible_truncation  // len fits in usize (max alloc < 2^48)
-)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_contains(haystack: i64, needle: i64) -> i64 {
-    if haystack == 0 || needle == 0 {
-        std::process::abort(); // trap-on-0
+pub extern "C" fn __triet_string_contains(h_ptr: i64, h_len: i64, n_ptr: i64, n_len: i64) -> i64 {
+    if h_ptr == 0 || n_ptr == 0 {
+        std::process::abort();
     }
-    // SAFETY: haystack and needle are valid heap String pointers.
-    let (h_len, n_len) = unsafe {
-        let hl = (haystack as *const i64).read_unaligned();
-        let nl = (needle as *const i64).read_unaligned();
-        (hl as usize, nl as usize)
-    };
+    let h_len = h_len as usize;
+    let n_len = n_len as usize;
     if n_len == 0 {
-        return 1; // empty needle always matches
+        return 1;
     }
     if n_len > h_len {
         return -1;
     }
-    let h_data = haystack as *const u8;
+    let h_bytes = h_ptr as *const u8;
+    let n_bytes = n_ptr as *const u8;
     // SAFETY: data areas are valid reads.
     unsafe {
-        let h_bytes = h_data.add(16); // skip len+cap header
-        let n_bytes = (needle as *const u8).add(16);
+        let h_data = h_bytes.add(16);
+        let n_data = n_bytes.add(16);
         for start in 0..=(h_len - n_len) {
             let mut matched = true;
             for off in 0..n_len {
-                if h_bytes.add(start + off).read() != n_bytes.add(off).read() {
+                if h_data.add(start + off).read() != n_data.add(off).read() {
                     matched = false;
                     break;
                 }
@@ -3155,7 +3173,7 @@ mod tests {
     #[test]
     fn n7_shim_trap_on_zero_eq() {
         n7_child_guard("n7_shim_trap_on_zero_eq", || {
-            let _ = __triet_string_eq(0, 0);
+            let _ = __triet_string_eq(0, 0, 0, 0);
         });
         let status = spawn_n7_child("n7_shim_trap_on_zero_eq");
         assert_n7_signal("n7_shim_trap_on_zero_eq", status, 6);

@@ -136,8 +136,8 @@ fn main() -> ExitCode {
             mir_lower::__triet_string_from_bytes,
         ),
         ShimSymbol::fn_2_0("__triet_string_free", mir_lower::__triet_string_free),
-        ShimSymbol::fn_2_1("__triet_string_concat", mir_lower::__triet_string_concat),
-        ShimSymbol::fn_2_1("__triet_string_eq", mir_lower::__triet_string_eq),
+        ShimSymbol::fn_4_1("__triet_string_concat", mir_lower::__triet_string_concat),
+        ShimSymbol::fn_4_1("__triet_string_eq", mir_lower::__triet_string_eq),
         ShimSymbol::fn_1_1("__triet_string_len", mir_lower::__triet_string_len),
         // Vector shims (ADR-0040 §5)
         ShimSymbol::fn_2_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
@@ -152,7 +152,7 @@ fn main() -> ExitCode {
         ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
         // ADR-0047: contains shims
-        ShimSymbol::fn_2_1(
+        ShimSymbol::fn_4_1(
             "__triet_string_contains",
             mir_lower::__triet_string_contains,
         ),
