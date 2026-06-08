@@ -1,0 +1,16 @@
+// EXPECT: 1
+// ADR-0049 endgame: String round-trip qua mọi boundary.
+// L6-1 param fat · L6-2 sret return · L6-3 slot sole truth.
+function build(s: String) -> String {
+    append(&0 mutable s, 33);   // '!' realloc trong callee, ptr ĐỔI
+    return s;                    // sret fat-String về caller (L6-2)
+}
+function main() -> Integer {
+    let base = "";
+    append(&0 mutable base, 104); // 'h'
+    let r = build(base);          // param fat vào (L6-1) → callee append+return
+    append(&0 mutable r, 105);    // 'i'
+    append(&0 mutable r, 106);    // 'j'
+    append(&0 mutable r, 107);    // 'k' → ép realloc lần 2 phía caller trên buffer-từ-sret
+    return eq(r, "h!ijk");        // content qua mọi realloc/boundary
+}
