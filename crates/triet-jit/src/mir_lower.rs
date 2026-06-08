@@ -733,7 +733,17 @@ impl JitContext {
                     // already freed the heap value; zeroing the caller's
                     // slot ensures the eventual free(0) on Drop is safe.
                     let zero = builder.ins().iconst(I64, 0);
-                    builder.def_var(self.var(*l), zero);
+                    // ADR-0049 Lát 2 L2-2: Slot-Truth Edict — for String,
+                    // stack_store is the SOLE guard. def_var is dead (Drop
+                    // reads slot, not var). No-slot String still needs
+                    // def_var.
+                    if let Some((slot, layout)) = self.struct_slots.get(l)
+                        && layout.name == "String"
+                    {
+                        builder.ins().stack_store(zero, *slot, 0);
+                    } else {
+                        builder.def_var(self.var(*l), zero);
+                    }
                 }
                 Statement::StructAlloc { .. } => {
                     // No-op at runtime — stack slot allocated during build_body
@@ -804,7 +814,15 @@ impl JitContext {
                         let src_ty = &body.local_decls[source.local.0].ty;
                         if !is_copy(src_ty, body) {
                             let zero = builder.ins().iconst(I64, 0);
-                            self.store_place(builder, body, &Place::local(source.local), zero)?;
+                            // ADR-0049 Lát 2 L2-2: Slot-Truth — for String,
+                            // stack_store is the sole guard; def_var dead.
+                            if let Some((slot, layout)) = self.struct_slots.get(&source.local)
+                                && layout.name == "String"
+                            {
+                                builder.ins().stack_store(zero, *slot, 0);
+                            } else {
+                                self.store_place(builder, body, &Place::local(source.local), zero)?;
+                            }
                         }
                     }
                 }
@@ -891,7 +909,17 @@ impl JitContext {
                     };
                     let func_id = self.get_or_declare_shim(free_shim_name)?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                    let ptr = builder.use_var(self.var(*local));
+                    // ADR-0049 Lát 2 L2-1: Slot-Truth Edict — for String-slot
+                    // locals, the slot field-0 is the sole source of truth.
+                    // Read via stack_load so tombstone stack_store(0,slot,0)
+                    // makes Drop → free(0) = no-op.
+                    let ptr = if let Some((slot, layout)) = self.struct_slots.get(local)
+                        && layout.name == "String"
+                    {
+                        builder.ins().stack_load(I64, *slot, 0)
+                    } else {
+                        builder.use_var(self.var(*local))
+                    };
                     builder.ins().call(func_ref, &[ptr]);
                 }
 
@@ -1107,8 +1135,16 @@ impl JitContext {
                                 if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
                                     let arg_ty = &body.local_decls[a.0].ty;
                                     if !is_copy(arg_ty, body) {
-                                        let var = self.var(*a);
-                                        builder.def_var(var, zero);
+                                        // ADR-0049 Lát 2 L2-2: Slot-Truth —
+                                        // stack_store sole guard for String.
+                                        if let Some((slot, layout)) = self.struct_slots.get(a)
+                                            && layout.name == "String"
+                                        {
+                                            builder.ins().stack_store(zero, *slot, 0);
+                                        } else {
+                                            let var = self.var(*a);
+                                            builder.def_var(var, zero);
+                                        }
                                     }
                                 }
                             }
