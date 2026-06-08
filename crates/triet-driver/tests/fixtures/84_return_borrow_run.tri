@@ -1,0 +1,14 @@
+// EXPECT: 5
+// ADR-0046: positive fixture — return-borrow through &0.
+// `id(&0 msg)` returns a reference borrowed from `msg`,
+// `length(r)` reads through the returned reference,
+// result is 5 (length of "hello").
+function id(s: &0 String) -> &0 String {
+    return s
+}
+function main() -> Integer {
+    let msg = "hello"
+    let r = id(&0 msg)
+    let n = length(r)
+    return n
+}

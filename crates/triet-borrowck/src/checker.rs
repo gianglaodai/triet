@@ -101,6 +101,11 @@ struct Loan {
     issued_in: BasicBlock,
     /// Statement index within `issued_in` where the borrow was created.
     issued_at: usize,
+    /// ADR-0046: true for PropagatedLoan (return-borrow at call site).
+    /// Propagated loans are bounded by the dest's liveness, not StorageDead
+    /// — E2450 is skipped when the source drops because the dest is already
+    /// dead. Direct loans (is_propagated=false) are bounded by scope exit.
+    is_propagated: bool,
 }
 
 impl Loan {
@@ -537,6 +542,7 @@ fn process_block(
                             form: *form,
                             issued_in: block,
                             issued_at: stmt_idx,
+                            is_propagated: false,
                         });
                     }
                 }
@@ -675,10 +681,15 @@ fn process_block(
             Statement::Drop(l, span) => {
                 // Check for active loans on the dropped variable — dropping
                 // while borrows are still live would create dangling references.
+                //
+                // ADR-0046: propagated loans (return-borrow) are bounded by
+                // the dest's liveness, not StorageDead. Skip E2450 for them
+                // — they'll be cleaned up below via dest removal. Only
+                // direct loans (is_propagated=false) trigger E2450 here.
                 let has_active_loans = state
                     .active_loans
                     .iter()
-                    .any(|loan| loan.source.local == *l);
+                    .any(|loan| loan.source.local == *l && !loan.is_propagated);
                 if has_active_loans {
                     let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
                     errors.push(BorrowError::DropWhileBorrowed {
@@ -702,6 +713,10 @@ fn process_block(
                     state.var_states.insert(*l, VarState::Ended);
                 }
                 state.active_loans.retain(|loan| loan.source.local != *l);
+                // ADR-0046: also remove loans where this local is the dest.
+                // When a reference local dies, any loan it created (via
+                // PropagatedLoan or direct borrow) is released.
+                state.active_loans.retain(|loan| loan.dest != *l);
             }
         }
 
@@ -789,6 +804,7 @@ fn process_block(
                         form: orig.form,
                         issued_in: block,
                         issued_at: term_idx,
+                        is_propagated: true,
                     });
                 }
             }

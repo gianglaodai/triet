@@ -516,11 +516,17 @@ pub fn lower_function(
             .params
             .iter()
             .enumerate()
-            .filter(|(_, (_, passing))| {
-                matches!(
-                    passing,
-                    ParameterPassing::Borrow | ParameterPassing::MutableBorrow
-                )
+            .filter(|(_, (name, _))| {
+                // ADR-0046 Blocker 2 fix: count by type-string & prefix
+                // (Lối 1 — Move-vs-Borrow quyết theo type, không theo
+                // ParameterPassing).  Mọi non-owning ref (&0/&0 mutable/&-)
+                // bắt đầu bằng '&' nhưng KHÔNG bằng "&+".
+                if let Some(&local) = c.vars.get(name) {
+                    let ty = &c.local_decls[local.0].ty;
+                    ty.starts_with('&') && !ty.starts_with("&+")
+                } else {
+                    false
+                }
             })
             .map(|(i, _)| i)
             .collect();
