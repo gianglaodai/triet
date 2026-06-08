@@ -152,6 +152,8 @@ impl Ctx {
         func_return_types: HashMap<String, String>,
     ) -> Self {
         let is_struct_return = struct_names.contains(ret);
+        // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
+        let is_fat_return = is_struct_return || ret == "String";
         let mut ctx = Self {
             vars: HashMap::new(),
             local_decls: Vec::new(),
@@ -165,12 +167,8 @@ impl Ctx {
                 name: name.to_string(),
                 params: Vec::new(),
                 return_type: ret.to_string(),
-                // ADR-0046 §3: return_borrow_map is now populated after the
-                // parameter loop (see lower_function). The initial map is empty;
-                // for &0 T return types with exactly 1 ref-param, it gets filled
-                // there. count≠1 → Err(LowerError) defense-in-depth.
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
-                return_shape: if is_struct_return {
+                return_shape: if is_fat_return {
                     triet_mir::ReturnShape::Struct {
                         struct_name: ret.to_string(),
                     }
@@ -190,14 +188,17 @@ impl Ctx {
             scope_snapshots: Vec::new(),
             local_names: BTreeMap::new(),
         };
-        // If returning a struct, allocate the sret pointer as Local(0).
-        // The JIT will receive this as a hidden first parameter.
-        if is_struct_return {
+        if is_fat_return {
             ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
         }
         ctx
     }
 
+    fn is_fat_type(&self, name: &str) -> bool {
+        self.struct_names.contains(name) || name == "String"
+    }
+
+    #[allow(dead_code)]
     fn is_struct_type(&self, name: &str) -> bool {
         self.struct_names.contains(name)
     }
@@ -830,34 +831,50 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // Struct return via sret: copy struct fields to the caller's buffer.
                 let struct_local = lower_expr(*v, arena, c)?;
                 let source_ty = c.local_decls[struct_local.0].ty.clone();
-                if let Some(layout) = c.struct_layouts.get(&source_ty) {
-                    let field_names: Vec<String> =
-                        layout.fields.iter().map(|f| f.name.clone()).collect();
-                    for field_name in field_names {
-                        let dest_place =
-                            Place::local(sret).project(Projection::Field(field_name.clone()));
-                        let source_place =
-                            Place::local(struct_local).project(Projection::Field(field_name));
-                        c.push(Statement::Assign {
-                            dest: dest_place,
-                            source: source_place,
-                            span: stmt_span.clone(),
-                        });
+                if c.struct_names.contains(&source_ty) {
+                    // Copy struct: copy fields to sret buffer.
+                    if let Some(layout) = c.struct_layouts.get(&source_ty) {
+                        let field_names: Vec<String> =
+                            layout.fields.iter().map(|f| f.name.clone()).collect();
+                        for field_name in field_names {
+                            let dest_place =
+                                Place::local(sret).project(Projection::Field(field_name.clone()));
+                            let source_place =
+                                Place::local(struct_local).project(Projection::Field(field_name));
+                            c.push(Statement::Assign {
+                                dest: dest_place,
+                                source: source_place,
+                                span: stmt_span.clone(),
+                            });
+                        }
                     }
+                    c.flush_all_for_return();
+                    let cur = c.cur;
+                    c.term(
+                        cur,
+                        Terminator::Return {
+                            values: Vec::new(),
+                            span: stmt_span.clone(),
+                        },
+                    );
+                    let dead = c.alloc_bb();
+                    c.cur = dead;
+                } else {
+                    // ADR-0049 Lát 6 Lối d: String sret — emit Return[s]
+                    // (M4 escape). JIT Return handler writes {ptr,len,cap}
+                    // from slot to sret buffer.
+                    c.flush_all_for_return();
+                    let cur = c.cur;
+                    c.term(
+                        cur,
+                        Terminator::Return {
+                            values: vec![struct_local],
+                            span: stmt_span.clone(),
+                        },
+                    );
+                    let dead = c.alloc_bb();
+                    c.cur = dead;
                 }
-                // Drop owned locals before Return, so the borrowck can
-                // flag dangling references (E2450) on the return value.
-                c.flush_all_for_return();
-                let cur = c.cur;
-                c.term(
-                    cur,
-                    Terminator::Return {
-                        values: Vec::new(),
-                        span: stmt_span.clone(),
-                    },
-                );
-                let dead = c.alloc_bb();
-                c.cur = dead;
             } else {
                 let mut values = Vec::new();
                 if let Some(v) = value {
@@ -1648,7 +1665,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .get(&callee_name)
                 .cloned()
                 .unwrap_or_else(|| "Integer".to_string());
-            let is_struct_ret = c.is_struct_type(&callee_ret);
+            let is_fat_ret = c.is_fat_type(&callee_ret);
 
             let mut args: Vec<Local> = arguments
                 .iter()
@@ -1658,7 +1675,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // B7-lift (ADR-0042): heap args now allowed.
             // Move semantics: caller zeroes slot after call, borrowck
             // enforces E2420 use-after-move.
-            if is_struct_ret {
+            if is_fat_ret {
                 // sret: allocate struct local for return, pass as hidden arg[0].
                 let ret_local = c.alloc_local_ty(&callee_ret);
                 c.push(Statement::StorageLive(ret_local, expr_span.clone()));
@@ -2757,7 +2774,20 @@ function main() -> Integer {
             .collect();
 
         assert!(!dest_locals.is_empty(), "main must have a CallDispatch");
-        let dest = dest_locals[0][0];
+        // ADR-0049 L6: sret calls have empty dest (return via sret buffer).
+        // Find first CallDispatch with a non-empty dest.
+        let dest = dest_locals
+            .iter()
+            .find(|d| !d.is_empty())
+            .map(|d| d[0])
+            .or_else(|| {
+                // All dests are empty (sret) — use the sret local from args.
+                main_body.blocks.iter().find_map(|b| match &b.terminator {
+                    Terminator::CallDispatch { args, .. } if !args.is_empty() => Some(args[0]),
+                    _ => None,
+                })
+            })
+            .expect("must have a dest or sret arg");
 
         // Check the type of the dest local.
         let dest_ty = &main_body.local_decls[dest.0].ty;

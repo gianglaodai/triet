@@ -1015,6 +1015,22 @@ impl JitContext {
                     triet_mir::ReturnShape::Struct { .. }
                 );
                 if is_sret_ret {
+                    // ADR-0049 Lát 6 Lối d: String sret — write {ptr,len,cap}
+                    // from local slot to caller's sret buffer (Local(0)).
+                    if !values.is_empty() {
+                        if let Some((slot, layout)) = self.struct_slots.get(&values[0])
+                            && layout.name == "String"
+                        {
+                            let sret_ptr = builder.use_var(self.var(Local(0)));
+                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                            let ptr = builder.ins().stack_load(I64, *slot, 0);
+                            let len = builder.ins().stack_load(I64, *slot, 8);
+                            let cap = builder.ins().stack_load(I64, *slot, 16);
+                            builder.ins().store(mem_flags, ptr, sret_ptr, 0);
+                            builder.ins().store(mem_flags, len, sret_ptr, 8);
+                            builder.ins().store(mem_flags, cap, sret_ptr, 16);
+                        }
+                    }
                     builder.ins().return_(&[]);
                 } else if values.is_empty() {
                     let val = builder.ins().iconst(I64, 0);

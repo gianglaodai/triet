@@ -65,7 +65,7 @@ Trước khi bước vào code thực tế, 4 câu hỏi ABI đã được mổ 
 ### 6.2. Implementation steps
 
 1. **L6-1: param fat-String by-pointer.** Caller: trước call, nếu param type = "String" → `stack_addr(slot, 0)`. Callee: nhận qua sret-style block param → `def_var(Local(0), sret_val)`. Regression: 77/84 xanh.
-2. **L6-2: return fat-String sret.** Lowerer: `ReturnShape::Struct` cho String return. JIT: callee nhận sret_ptr implicit first arg → ghi {ptr,len,cap} vào slot. Caller: cấp slot → truyền addr làm first arg. Regression: 35/60/78 xanh.
+2. **L6-2: return fat-String sret (Lối d: JIT-only, MIR giữ M4-escape).** String-sret = move-escape semantics trên MIR (giữ nguyên M4). sret populate thực hiện ẩn dưới JIT, KHÔNG dùng `Stmt::Return` copy-fields như struct(Copy). Lowerer: đặt `ReturnShape::Struct` cho JIT biết dùng sret 24B, nhưng KHÔNG alloc `sret_ptr` + KHÔNG đi copy-fields path. Giữ `Return[s]` thuần. JIT callee: gặp `Return[s]` + ReturnShape::Struct + type=String → `stack_load` {ptr,len,cap} từ slot → store vào sret buffer. JIT caller: cấp sret-slot trước call, truyền addr làm implicit-first-arg; sau call đọc slot đã được callee ghi. Concat shim: (sret_ptr, a_ptr,a_len, b_ptr,b_len) → ghi {ptr,len,cap} vào sret. Regression: 35/60/78 xanh.
 3. **L6-3: trảm heap len/cap.** `alloc`: gỡ `+8+8` len/cap → heap chỉ `[Header][data]`. Data offset +16→+8 trong mọi shim (eq/contains/concat/append/clear/from_bytes). `free(ptr, cap)`: dealloc `ptr−8` với `layout(cap)` (cap từ tham số).
 4. **L6-4: rút Lối B.** Xóa caller-populate heap-read (param entry + return-value populate). Xóa append heap-sync. Slot là chân lý duy nhất.
 

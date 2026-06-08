@@ -854,10 +854,16 @@ fn process_block(
     if let Terminator::CallDispatch {
         target: triet_mir::CallTarget::Jit,
         args,
+        return_shape,
         ..
     } = &block_data.terminator
     {
-        for arg in args.iter() {
+        // ADR-0049 Lát 6: sret arg[0] is write-only — caller keeps ownership.
+        let skip_sret = matches!(return_shape, triet_mir::ReturnShape::Struct { .. });
+        for (i, arg) in args.iter().enumerate() {
+            if skip_sret && i == 0 {
+                continue;
+            }
             let arg_ty = &body.local_decls[arg.0].ty;
             if !is_copy(arg_ty, body) {
                 if matches!(state.var_states.get(arg), Some(VarState::Moved)) {
