@@ -235,6 +235,15 @@ impl JitContext {
         place: &Place,
     ) -> Result<cranelift_codegen::ir::Value, JitError> {
         if place.projection.is_empty() {
+            // ADR-0049 Phase-1 Lát 1 B3: whole-read bridge for String.
+            // String has a struct_slot but the "whole value" (for shim
+            // compatibility) is field-0 (heap handle). User structs keep
+            // the old use_var path.
+            if let Some((slot, layout)) = self.struct_slots.get(&place.local)
+                && layout.name == "String"
+            {
+                return Ok(builder.ins().stack_load(I64, *slot, 0));
+            }
             return Ok(builder.use_var(self.var(place.local)));
         }
         if place.projection.len() != 1 {
@@ -270,8 +279,12 @@ impl JitContext {
                     return Ok(builder.ins().stack_load(I64, *slot, offset));
                 }
                 // Pointer-based: param or sret. Load pointer, add offset, load.
+                // ADR-0049: String slot layout has ptr@0 before len@8/cap@16,
+                // but the heap handle points directly to body where len@0/cap@8.
+                // Map slot offset → heap offset by subtracting the "ptr" field.
+                let heap_offset = if ty == "String" { offset - 8 } else { offset };
                 let ptr = builder.use_var(self.var(place.local));
-                let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
+                let addr = builder.ins().iadd_imm(ptr, i64::from(heap_offset));
                 return Ok(builder.ins().load(
                     I64,
                     cranelift_codegen::ir::MemFlags::new(),
@@ -559,6 +572,27 @@ impl JitContext {
                     ));
                     self.enum_slots.insert(*dest, (slot, layout.clone()));
                 }
+                // ADR-0049 Phase-1 Lát 1 B2: pre-allocate StackSlot for String locals.
+                // Slot creation must happen BEFORE switch_to_block (Cranelift constraint).
+                if let Statement::Const {
+                    dest,
+                    value: ConstValue::String(_),
+                    ..
+                } = stmt
+                {
+                    let layout = body
+                        .struct_layouts
+                        .iter()
+                        .find(|l| l.name == "String")
+                        .ok_or_else(|| JitError::Unsupported("String layout not found".into()))?;
+                    let align_shift = layout.alignment.ilog2() as u8;
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        layout.total_size as u32,
+                        align_shift,
+                    ));
+                    self.struct_slots.insert(dest.local, (slot, layout.clone()));
+                }
             }
         }
 
@@ -599,12 +633,13 @@ impl JitContext {
         );
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
-        let mut bp_idx = 0;
-        if is_sret {
+        let mut bp_idx = if is_sret {
             let sret_val = builder.block_params(entry_block)[0];
             builder.def_var(self.var(Local(0)), sret_val);
-            bp_idx = 1;
-        }
+            1
+        } else {
+            0
+        };
         for (i, _) in body.signature.params.iter().enumerate() {
             let local = if is_sret { Local(i + 1) } else { Local(i) };
             let var = self.var(local);
@@ -715,8 +750,17 @@ impl JitContext {
                         let func_id = self.get_or_declare_shim("__triet_string_from_bytes")?;
                         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                         let call_inst = builder.ins().call(func_ref, &[ptr_val, len_val]);
-                        let ret_val = builder.inst_results(call_inst)[0];
-                        builder.def_var(self.var(dest.local), ret_val);
+                        let handle = builder.inst_results(call_inst)[0];
+                        // ADR-0049 Phase-1 Lát 1 B2: populate pre-allocated String slot.
+                        if let Some((slot, _layout)) = self.struct_slots.get(&dest.local) {
+                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                            builder.ins().stack_store(handle, *slot, 0);
+                            let heap_len = builder.ins().load(I64, mem_flags, handle, 0);
+                            builder.ins().stack_store(heap_len, *slot, 8);
+                            let heap_cap = builder.ins().load(I64, mem_flags, handle, 8);
+                            builder.ins().stack_store(heap_cap, *slot, 16);
+                        }
+                        builder.def_var(self.var(dest.local), handle);
                     } else {
                         let val = match value {
                             ConstValue::Integer(n) => {
@@ -739,6 +783,20 @@ impl JitContext {
                 Statement::Assign { dest, source, .. } => {
                     let val = self.load_place(builder, body, source)?;
                     self.store_place(builder, body, dest, val)?;
+                    // ADR-0049 Lát 1: sync String slot after assign, so
+                    // subsequent field-reads (e.g. length) see fresh len/cap.
+                    if dest.projection.is_empty() {
+                        if let Some((slot, layout)) = self.struct_slots.get(&dest.local) {
+                            if layout.name == "String" {
+                                let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                builder.ins().stack_store(val, *slot, 0);
+                                let heap_len = builder.ins().load(I64, mem_flags, val, 0);
+                                builder.ins().stack_store(heap_len, *slot, 8);
+                                let heap_cap = builder.ins().load(I64, mem_flags, val, 8);
+                                builder.ins().stack_store(heap_cap, *slot, 16);
+                            }
+                        }
+                    }
                     // M1: Zeroing-on-Move — if source is a plain local of Move type,
                     // store 0 into it so Drop becomes a no-op.
                     let source_is_plain = source.projection.is_empty();
@@ -910,8 +968,7 @@ impl JitContext {
                 negative_bb,
                 ..
             } => {
-                let cond_var = self.var(*cond);
-                let cond_val = builder.use_var(cond_var);
+                let cond_val = builder.use_var(self.var(*cond));
                 let pos_block = self.blocks[positive_bb];
                 let neg_block = self.blocks[negative_bb];
                 // cond_val is i64 (all MIR locals are i64). Trilean encoding:
@@ -974,8 +1031,14 @@ impl JitContext {
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
-                                if let Some((slot, _)) = self.struct_slots.get(a) {
-                                    builder.ins().stack_addr(I64, *slot, 0)
+                                // ADR-0049: String has a struct_slot but is still
+                                // passed by-value (i64 handle) in Lát 1-3.
+                                if let Some((slot, layout)) = self.struct_slots.get(a) {
+                                    if layout.name == "String" {
+                                        builder.use_var(self.var(*a))
+                                    } else {
+                                        builder.ins().stack_addr(I64, *slot, 0)
+                                    }
                                 } else if let Some((slot, _)) = self.enum_slots.get(a) {
                                     // Pass discriminant as raw i64 for enum params.
                                     // Callee's GetDiscriminant will read it via
@@ -1010,8 +1073,14 @@ impl JitContext {
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
-                                if let Some((slot, _)) = self.struct_slots.get(a) {
-                                    builder.ins().stack_addr(I64, *slot, 0)
+                                // ADR-0049: String has a struct_slot but is still
+                                // passed by-value (i64 handle) in Lát 1-3.
+                                if let Some((slot, layout)) = self.struct_slots.get(a) {
+                                    if layout.name == "String" {
+                                        builder.use_var(self.var(*a))
+                                    } else {
+                                        builder.ins().stack_addr(I64, *slot, 0)
+                                    }
                                 } else if let Some((slot, _)) = self.enum_slots.get(a) {
                                     builder.ins().stack_load(I64, *slot, 0)
                                 } else {
@@ -1040,6 +1109,36 @@ impl JitContext {
                                     if !is_copy(arg_ty, body) {
                                         let var = self.var(*a);
                                         builder.def_var(var, zero);
+                                    }
+                                }
+                            }
+                        }
+
+                        // ADR-0049 Phase-1 Lát 1 B3.5: clear zeroes heap len; sync
+                        // slot field-1. The arg is a &0 mutable String borrow;
+                        // walk back to its Borrow source to find the owned local.
+                        if callee_name == "__triet_string_clear" {
+                            if let Some(arg0) = args.first() {
+                                // Find the Borrow that created this reference.
+                                for blk in &body.blocks {
+                                    for stmt in &blk.statements {
+                                        if let Statement::Borrow {
+                                            dest,
+                                            source,
+                                            form: _,
+                                            ..
+                                        } = stmt
+                                        {
+                                            if dest.local == *arg0 {
+                                                if let Some((slot, _)) =
+                                                    self.struct_slots.get(&source.local)
+                                                {
+                                                    let zero = builder.ins().iconst(I64, 0);
+                                                    builder.ins().stack_store(zero, *slot, 8);
+                                                }
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2504,11 +2603,9 @@ mod tests {
     /// Expected Ł3 implies per triet-logic reference.
     fn expected_luk_implies(a: i64, b: i64) -> i64 {
         match (a, b) {
-            (-1, _) => 1, // False → anything = True
-            (1, x) => x,  // True → x = x
-            (0, 1) => 1,  // Unknown → True = True
-            (0, 0) => 1,  // Unknown → Unknown = True (Ł3 signature)
-            (0, -1) => 0, // Unknown → False = Unknown
+            (-1, _) | (0, 1) | (0, 0) => 1,
+            (1, x) => x,
+            (0, -1) => 0,
             _ => unreachable!(),
         }
     }
@@ -2724,7 +2821,7 @@ mod tests {
         assert_eq!(unsafe { func.call_i64_2(7, 1) }, 7, "7^1 = 7");
     }
 
-    /// Test-only counting wrapper around __triet_string_free.
+    /// Test-only counting wrapper around `__triet_string_free`.
     /// Increments a static counter before delegating to the real free.
     static FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -2747,6 +2844,15 @@ mod tests {
 
         // Simulate: make() -> String { let s="hi"; return s }
         let mut b = MirBuilder::new("make_string", "String");
+        // ADR-0049: String layout required for JIT StackSlot pre-pass.
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "String",
+            &[
+                ("ptr".to_string(), "Integer".to_string(), 8, 8),
+                ("len".to_string(), "Integer".to_string(), 8, 8),
+                ("cap".to_string(), "Integer".to_string(), 8, 8),
+            ],
+        ));
         let bb0 = b.new_block();
         let s = b.new_local();
         b.set_local_type(s, "String");

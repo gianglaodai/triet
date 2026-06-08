@@ -566,6 +566,16 @@ fn process_block(
                             span: span.clone(),
                         });
                     }
+                    // ADR-0049: field-read on a moved base = use-after-move.
+                    // Reading any part of a moved value is unsound even if
+                    // the field type is Copy — the base has been zeroed/Deinit.
+                    if state.var_states.get(&source.local) == Some(&VarState::Moved) {
+                        errors.push(BorrowError::UseAfterMove {
+                            local: source.local,
+                            name: place_name(source, names),
+                            span: span.clone(),
+                        });
+                    }
                 }
 
                 if !is_field_read && state.var_states.get(&source.local) == Some(&VarState::Moved) {

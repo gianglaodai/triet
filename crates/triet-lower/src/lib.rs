@@ -334,7 +334,7 @@ pub fn lower_program(
     // ── Collect struct layouts from struct definitions ──────────
     // Bậc A: every field is 8 bytes, alignment 8 (single i64).
     // Bậc C will compute real sizes from type information.
-    let struct_layouts: Vec<StructLayout> = prog
+    let mut struct_layouts: Vec<StructLayout> = prog
         .items
         .iter()
         .filter_map(|item| {
@@ -356,10 +356,28 @@ pub fn lower_program(
 
     let struct_names: std::collections::HashSet<String> =
         struct_layouts.iter().map(|l| l.name.clone()).collect();
-    let struct_map: HashMap<String, StructLayout> = struct_layouts
+    let mut struct_map: HashMap<String, StructLayout> = struct_layouts
         .iter()
         .map(|l| (l.name.clone(), l.clone()))
         .collect();
+
+    // ADR-0049 Phase-1 Lát 1: synthetic String layout for fat-pointer StackSlot.
+    // Heap still carries [Header 8B][len 8B][cap 8B][data…] in Lát 1-3;
+    // the slot is a cache. Field order: ptr@0 (heap handle), len@8, cap@16.
+    // Total 24 bytes, 8-byte aligned.
+    // IMPORTANT: String is NOT added to struct_names — it has its own return ABI
+    // (single i64, not sret) and Move semantics (not Copy). The layout exists
+    // purely for JIT StackSlot allocation and field-offset computation.
+    let string_layout = StructLayout::compute(
+        "String",
+        &[
+            ("ptr".to_string(), "Integer".to_string(), 8, 8),
+            ("len".to_string(), "Integer".to_string(), 8, 8),
+            ("cap".to_string(), "Integer".to_string(), 8, 8),
+        ],
+    );
+    struct_layouts.push(string_layout.clone());
+    struct_map.insert("String".to_string(), string_layout);
 
     // ── Collect enum layouts from enum definitions ──────────────
     // Bậc A: every payload is 8 bytes (i64), alignment 8.
@@ -1325,6 +1343,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let arg = lower_expr(arguments[0], arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
+                    // ADR-0049 Phase-1 Lát 1 B4: length on owned String reads
+                    // field-1 (len) from the StackSlot, not from the heap shim.
+                    // Borrow (&0 String etc.) keeps the shim — the handle still
+                    // points to the heap where len@body+0.
+                    if arg_ty == "String" {
+                        let d = c.alloc_local_ty("Integer");
+                        c.push(Statement::Assign {
+                            dest: Place::local(d),
+                            source: Place::local(arg).project(Projection::Field("len".to_string())),
+                            span: expr_span.clone(),
+                        });
+                        return Ok(d);
+                    }
                     let base_ty = arg_ty
                         .strip_prefix("&0 ")
                         .or_else(|| arg_ty.strip_prefix("&+ "))
@@ -2759,22 +2790,25 @@ function main() -> Integer {
 
     #[test]
     fn len_dispatches_by_arg_type() {
-        // len(string) → __triet_string_len
+        // ADR-0049: len(owned String) → field-read "len" from slot, not shim.
         let body_str = lower_source(r#"function main() { let x = len("hello") }"#);
         println!("=== MIR string_len ===\n{body_str}");
-        let has_str_len = body_str.blocks.iter().any(|b| {
-            matches!(
-                &b.terminator,
-                Terminator::CallDispatch {
-                    callee_name,
-                    target: CallTarget::Shim,
-                    ..
-                } if callee_name == "__triet_string_len"
-            )
+        let has_field_read = body_str.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| {
+                matches!(s,
+                    Statement::Assign {
+                        source: Place {
+                            projection,
+                            ..
+                        },
+                        ..
+                    } if projection == &vec![triet_mir::Projection::Field("len".into())]
+                )
+            })
         });
         assert!(
-            has_str_len,
-            "len(String) should dispatch to __triet_string_len"
+            has_field_read,
+            "len(owned String) should emit field-read `_0.len`, not shim"
         );
 
         // len(vector) → __triet_vector_len
