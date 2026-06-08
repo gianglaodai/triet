@@ -121,7 +121,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_string_from_bytes",
             triet_jit::mir_lower::__triet_string_from_bytes,
         ),
-        ShimSymbol::fn_1_0(
+        ShimSymbol::fn_2_0(
             "__triet_string_free",
             triet_jit::mir_lower::__triet_string_free,
         ),

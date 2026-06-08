@@ -531,6 +531,31 @@ impl JitContext {
             let var = builder.declare_var(I64);
             self.locals.insert(Local(i), var);
         }
+        // ADR-0049 Lát 3: pre-allocate StackSlot for EVERY String-typed local.
+        // Ensures all String locals (including move targets from Assign) have
+        // slots before switch_to_block, so Drop/free can read cap from slot.
+        // Field-0 initialized to 0 so unpopulated locals (params, returns)
+        // produce free(0, _) = no-op instead of garbage pointer.
+        let string_layout = body
+            .struct_layouts
+            .iter()
+            .find(|l| l.name == "String")
+            .cloned();
+        if let Some(ref layout) = string_layout {
+            let align_shift = layout.alignment.ilog2() as u8;
+            for i in 0..body.num_locals {
+                let local = Local(i);
+                let ty = &body.local_decls[i].ty;
+                if ty == "String" {
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        layout.total_size as u32,
+                        align_shift,
+                    ));
+                    self.struct_slots.insert(local, (slot, layout.clone()));
+                }
+            }
+        }
         // ── Create StackSlots for local structs and enums ──
         for block in &body.blocks {
             for stmt in &block.statements {
@@ -572,27 +597,7 @@ impl JitContext {
                     ));
                     self.enum_slots.insert(*dest, (slot, layout.clone()));
                 }
-                // ADR-0049 Phase-1 Lát 1 B2: pre-allocate StackSlot for String locals.
-                // Slot creation must happen BEFORE switch_to_block (Cranelift constraint).
-                if let Statement::Const {
-                    dest,
-                    value: ConstValue::String(_),
-                    ..
-                } = stmt
-                {
-                    let layout = body
-                        .struct_layouts
-                        .iter()
-                        .find(|l| l.name == "String")
-                        .ok_or_else(|| JitError::Unsupported("String layout not found".into()))?;
-                    let align_shift = layout.alignment.ilog2() as u8;
-                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        layout.total_size as u32,
-                        align_shift,
-                    ));
-                    self.struct_slots.insert(dest.local, (slot, layout.clone()));
-                }
+                // (String slots now pre-allocated for ALL locals above.)
             }
         }
 
@@ -640,13 +645,34 @@ impl JitContext {
         } else {
             0
         };
-        for (i, _) in body.signature.params.iter().enumerate() {
+        // ADR-0049 Lát 3: init all String slot field-0 to 0 FIRST.
+        // Param pop below overwrites for String params.
+        let zero = builder.ins().iconst(I64, 0);
+        for (_local, (slot, layout)) in &self.struct_slots {
+            if layout.name == "String" {
+                builder.ins().stack_store(zero, *slot, 0);
+            }
+        }
+
+        let mem_flags = cranelift_codegen::ir::MemFlags::new();
+        for (i, _param) in body.signature.params.iter().enumerate() {
             let local = if is_sret { Local(i + 1) } else { Local(i) };
             let var = self.var(local);
             let param_val = builder.block_params(entry_block)[bp_idx];
             builder.def_var(var, param_val);
+            // ADR-0049 Lát 3: populate String param slot from handle.
+            if body.local_decls[local.0].ty == "String" {
+                if let Some((slot, _)) = self.struct_slots.get(&local) {
+                    builder.ins().stack_store(param_val, *slot, 0);
+                    let heap_len = builder.ins().load(I64, mem_flags, param_val, 0);
+                    builder.ins().stack_store(heap_len, *slot, 8);
+                    let heap_cap = builder.ins().load(I64, mem_flags, param_val, 8);
+                    builder.ins().stack_store(heap_cap, *slot, 16);
+                }
+            }
             bp_idx += 1;
         }
+
         builder.seal_block(entry_block);
         self.sealed.insert(cfg.entry);
         self.filled.insert(cfg.entry);
@@ -793,18 +819,17 @@ impl JitContext {
                 Statement::Assign { dest, source, .. } => {
                     let val = self.load_place(builder, body, source)?;
                     self.store_place(builder, body, dest, val)?;
-                    // ADR-0049 Lát 1: sync String slot after assign, so
-                    // subsequent field-reads (e.g. length) see fresh len/cap.
+                    // ADR-0049 Lát 1/3: sync String slot after assign.
+                    // Slots for ALL String locals are pre-allocated in the
+                    // pre-pass — just write the current handle+len+cap.
                     if dest.projection.is_empty() {
-                        if let Some((slot, layout)) = self.struct_slots.get(&dest.local) {
-                            if layout.name == "String" {
-                                let mem_flags = cranelift_codegen::ir::MemFlags::new();
-                                builder.ins().stack_store(val, *slot, 0);
-                                let heap_len = builder.ins().load(I64, mem_flags, val, 0);
-                                builder.ins().stack_store(heap_len, *slot, 8);
-                                let heap_cap = builder.ins().load(I64, mem_flags, val, 8);
-                                builder.ins().stack_store(heap_cap, *slot, 16);
-                            }
+                        if let Some((slot, _)) = self.struct_slots.get(&dest.local) {
+                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                            builder.ins().stack_store(val, *slot, 0);
+                            let heap_len = builder.ins().load(I64, mem_flags, val, 0);
+                            builder.ins().stack_store(heap_len, *slot, 8);
+                            let heap_cap = builder.ins().load(I64, mem_flags, val, 8);
+                            builder.ins().stack_store(heap_cap, *slot, 16);
                         }
                     }
                     // M1: Zeroing-on-Move — if source is a plain local of Move type,
@@ -909,18 +934,24 @@ impl JitContext {
                     };
                     let func_id = self.get_or_declare_shim(free_shim_name)?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                    // ADR-0049 Lát 2 L2-1: Slot-Truth Edict — for String-slot
-                    // locals, the slot field-0 is the sole source of truth.
-                    // Read via stack_load so tombstone stack_store(0,slot,0)
-                    // makes Drop → free(0) = no-op.
-                    let ptr = if let Some((slot, layout)) = self.struct_slots.get(local)
-                        && layout.name == "String"
-                    {
-                        builder.ins().stack_load(I64, *slot, 0)
+                    // ADR-0049 Lát 3: String free(ptr, cap) 2-arg bung field.
+                    // Slot: stack_load ptr+cap; no-slot: use_var ptr + load cap heap.
+                    if ty == "String" {
+                        let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                        let (ptr, cap) = if let Some((slot, _)) = self.struct_slots.get(local) {
+                            let p = builder.ins().stack_load(I64, *slot, 0);
+                            let c = builder.ins().stack_load(I64, *slot, 16);
+                            (p, c)
+                        } else {
+                            let handle = builder.use_var(self.var(*local));
+                            let c = builder.ins().load(I64, mem_flags, handle, 8);
+                            (handle, c)
+                        };
+                        builder.ins().call(func_ref, &[ptr, cap]);
                     } else {
-                        builder.use_var(self.var(*local))
-                    };
-                    builder.ins().call(func_ref, &[ptr]);
+                        let ptr = builder.use_var(self.var(*local));
+                        builder.ins().call(func_ref, &[ptr]);
+                    }
                 }
 
                 Statement::EnumAlloc { .. } => {
@@ -1087,6 +1118,17 @@ impl JitContext {
                         if !is_sret_call && !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
+                            // ADR-0049 Lát 3: populate String slot from returned handle.
+                            if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
+                                && layout.name == "String"
+                            {
+                                let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                builder.ins().stack_store(ret_val, *slot, 0);
+                                let heap_len = builder.ins().load(I64, mem_flags, ret_val, 0);
+                                builder.ins().stack_store(heap_len, *slot, 8);
+                                let heap_cap = builder.ins().load(I64, mem_flags, ret_val, 8);
+                                builder.ins().stack_store(heap_cap, *slot, 16);
+                            }
                         }
 
                         // Jump to return block
@@ -1126,6 +1168,17 @@ impl JitContext {
                         if !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
+                            // ADR-0049 Lát 3: populate String slot from returned handle.
+                            if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
+                                && layout.name == "String"
+                            {
+                                let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                                builder.ins().stack_store(ret_val, *slot, 0);
+                                let heap_len = builder.ins().load(I64, mem_flags, ret_val, 0);
+                                builder.ins().stack_store(heap_len, *slot, 8);
+                                let heap_cap = builder.ins().load(I64, mem_flags, ret_val, 8);
+                                builder.ins().stack_store(heap_cap, *slot, 16);
+                            }
                         }
 
                         // M3: Zeroing-on-Move — zero consume-arg variables after call.
@@ -1543,19 +1596,17 @@ pub extern "C" fn __triet_string_from_bytes(src: i64, len: i64) -> i64 {
     body_ptr
 }
 
-/// `__triet_string_free(ptr)` — free a String. No-op if ptr == 0 or
-/// ptr == `NULL_SENTINEL` (C4 moved-out + ADR-0041 §5.5 null guard).
+/// `__triet_string_free(ptr, cap)` — free a String. No-op if ptr == 0.
+/// ADR-0049 Lát 3: cap passed explicitly (heap no longer source-of-truth).
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_free(ptr: i64) {
+pub extern "C" fn __triet_string_free(ptr: i64, cap: i64) {
     if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
         return;
     }
+    let cap_usize = cap.max(1) as usize;
+    let layout = string_layout(cap_usize);
     let body = ptr as *mut u8;
-    // Read cap to compute layout
-    // SAFETY: body pointer is valid and points to len+cap+data structure.
-    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let layout = string_layout(cap.max(1));
     let header = unsafe { body.sub(HEADER_SIZE) };
     // SAFETY: layout matches the one used at allocation.
     unsafe { std::alloc::dealloc(header, layout) };
@@ -2863,9 +2914,9 @@ mod tests {
 
     #[allow(unsafe_code)]
     #[unsafe(no_mangle)]
-    extern "C" fn __test_counting_free(ptr: i64) {
+    extern "C" fn __test_counting_free(ptr: i64, cap: i64) {
         FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        super::__triet_string_free(ptr);
+        super::__triet_string_free(ptr, cap);
     }
 
     /// 4i-2/4i-4 (callee side): M4 Return-escape — Drop before Return is skipped.
@@ -2909,7 +2960,7 @@ mod tests {
                 "__triet_string_from_bytes",
                 super::__triet_string_from_bytes,
             ),
-            ShimSymbol::fn_1_0("__triet_string_free", __test_counting_free),
+            ShimSymbol::fn_2_0("__triet_string_free", __test_counting_free),
         ];
         let mut ctx = JitContext::with_shims(shims);
         let func = ctx.compile(&body).expect("4i-4 compile");
@@ -2970,7 +3021,7 @@ mod tests {
         let body = b.build(bb0);
         let shims = &[
             ShimSymbol::fn_2_1("__triet_string_alloc", super::__triet_string_alloc),
-            ShimSymbol::fn_1_0("__triet_string_free", super::__triet_string_free),
+            ShimSymbol::fn_2_0("__triet_string_free", super::__triet_string_free),
         ];
         let mut ctx = JitContext::with_shims(shims);
         let func = ctx.compile(&body).expect("M1 test compile");
@@ -3115,7 +3166,7 @@ mod tests {
     #[test]
     fn free_null_sentinel_is_noop() {
         // String free
-        __triet_string_free(triet_mir::NULL_SENTINEL);
+        __triet_string_free(triet_mir::NULL_SENTINEL, 1);
         // Vector free
         __triet_vector_free(triet_mir::NULL_SENTINEL);
     }
