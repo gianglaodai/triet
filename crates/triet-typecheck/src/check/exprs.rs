@@ -1499,6 +1499,11 @@ impl Checker<'_> {
             self.check_nullable_exhaustiveness(arms, span.clone());
         }
 
+        // Enum exhaustiveness: requires all variants covered (or _ wildcard).
+        if let Type::UserEnum { name, .. } = &scrutinee_ty {
+            self.check_enum_exhaustiveness(name, arms, span.clone());
+        }
+
         arm_type.unwrap_or_else(|| {
             // Empty match — flag as a type error.
             self.errors.push(TypeError::Mismatch {
@@ -1597,6 +1602,55 @@ impl Checker<'_> {
         }
         if !missing.is_empty() {
             self.errors.push(TypeError::NonExhaustiveOutcomeMatch {
+                missing: missing.join(", "),
+                span,
+            });
+        }
+    }
+
+    /// Verify a match on an enum covers all variants (E1026). Wildcard
+    /// `_` arm short-circuits. Scans `self.items` for the enum definition
+    /// by matching the scrutinee type name against each `Item::Enum`.
+    fn check_enum_exhaustiveness(&mut self, enum_name: &str, arms: &[MatchArm], span: Span) {
+        // Wildcard short-circuit.
+        for arm in arms {
+            if matches!(
+                self.arena.pattern(arm.pattern).node,
+                triet_syntax::Pattern::Wildcard
+            ) {
+                return;
+            }
+        }
+        // Find the enum definition.
+        let variants: Vec<String> = self
+            .items
+            .iter()
+            .find_map(|item| match &item.node {
+                triet_syntax::Item::Enum { def } if def.name == enum_name => {
+                    Some(def.variants.iter().map(|v| v.name.clone()).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        if variants.is_empty() {
+            return; // Can't verify — type resolution issue.
+        }
+        // Use resolved patterns: the typechecker populates pattern_resolutions
+        // for every enum variant arm during bind_pattern. AST patterns are
+        // Variable("Red") — the resolution tells us it's a Color::Red variant.
+        let mut covered: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for arm in arms {
+            if let Some(res) = self.pattern_resolutions.get(&arm.pattern) {
+                covered.insert(res.variant_name.as_str());
+            }
+        }
+        let missing: Vec<String> = variants
+            .iter()
+            .filter(|v| !covered.contains(v.as_str()))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveEnumMatch {
                 missing: missing.join(", "),
                 span,
             });

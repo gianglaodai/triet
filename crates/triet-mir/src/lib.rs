@@ -1335,6 +1335,67 @@ impl Body {
             }
         }
 
+        // ── INV-4: referenced blocks must have real terminators ──
+        // Collect every block that is referenced by a terminator (Goto target,
+        // If branches, CallDispatch return_bb, SwitchInt cases/default).
+        // The entry block is implicitly referenced (it's where execution starts).
+        // Any such block whose terminator is still `Unreachable` (the alloc_bb
+        // default) means the lowerer forgot to call `term()` on it — a silent
+        // fallthrough in the JIT that returns garbage (typically 0).
+        let mut referenced = BTreeSet::new();
+        referenced.insert(self.entry_block);
+        for bd in &self.blocks {
+            match &bd.terminator {
+                Terminator::Goto { target, .. } => {
+                    referenced.insert(*target);
+                }
+                Terminator::If {
+                    positive_bb,
+                    zero_bb,
+                    negative_bb,
+                    ..
+                } => {
+                    referenced.insert(*positive_bb);
+                    referenced.insert(*negative_bb);
+                    if let Some(zb) = zero_bb {
+                        referenced.insert(*zb);
+                    }
+                }
+                Terminator::CallDispatch { return_bb, .. } => {
+                    referenced.insert(*return_bb);
+                }
+                Terminator::SwitchInt {
+                    cases, default_bb, ..
+                } => {
+                    for &(_, target) in cases {
+                        referenced.insert(target);
+                    }
+                    referenced.insert(*default_bb);
+                }
+                Terminator::Return { .. } | Terminator::Trap { .. } => {}
+                // Unreachable in a source block is fine — only the target
+                // blocks are checked below.
+                Terminator::Unreachable { .. } => {}
+            }
+        }
+        for &bb in &referenced {
+            if bb.0 >= num_blocks {
+                // Already caught by INV-1 — don't double-report.
+                continue;
+            }
+            if matches!(self.blocks[bb.0].terminator, Terminator::Unreachable { .. }) {
+                return Err(MirError::ReferencedBlockUnreachable {
+                    block: bb,
+                    referenced_by: if bb == self.entry_block {
+                        "entry block".to_string()
+                    } else {
+                        "another block".to_string()
+                    },
+                    span: DUMMY_SPAN.clone(),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -1403,6 +1464,17 @@ pub enum MirError {
         /// Source location.
         span: Span,
     },
+    /// INV-4: a block referenced by a terminator (or the entry block)
+    /// has `Unreachable` as its terminator — the lowerer forgot to set
+    /// a real terminator on this reachable block.
+    ReferencedBlockUnreachable {
+        /// The block that has an `Unreachable` terminator.
+        block: BasicBlock,
+        /// The block that references it (if known).
+        referenced_by: String,
+        /// Source location.
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -1463,6 +1535,16 @@ impl fmt::Display for MirError {
                 write!(
                     f,
                     "MIR verification error: GetDiscriminant source {local} has non-enum type '{found_type}'"
+                )
+            }
+            Self::ReferencedBlockUnreachable {
+                block,
+                referenced_by,
+                ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: block {block} has Unreachable terminator but is referenced by {referenced_by}"
                 )
             }
         }
@@ -2173,6 +2255,47 @@ mod tests {
         assert!(!is_copy("Vector<Integer>?", &body));
         // ? trần → NOT nullable → falls through to Copy (existing behavior)
         assert!(is_copy("?", &body));
+    }
+
+    /// INV-4: a block referenced by a Goto must not have `Unreachable`
+    /// as its terminator — that indicates the lowerer forgot to call
+    /// `term()` on it (silent fallthrough = wrong answer).
+    #[test]
+    fn verify_rejects_referenced_block_with_unreachable_terminator() {
+        let mut body = well_formed_body();
+        // Add a second block (bb1) with Unreachable — this is what
+        // alloc_bb creates before term() is called.
+        body.blocks.push(BlockData {
+            statements: vec![],
+            terminator: Terminator::Unreachable { span: DUMMY_SPAN },
+        });
+        // Make bb0 Goto bb1 — now bb1 is referenced but has Unreachable.
+        body.blocks[0].terminator = Terminator::Goto {
+            target: BasicBlock(1),
+            span: DUMMY_SPAN,
+        };
+        let err = body
+            .verify()
+            .expect_err("should reject Goto target with Unreachable terminator");
+        assert!(
+            matches!(err, MirError::ReferencedBlockUnreachable { .. }),
+            "expected ReferencedBlockUnreachable, got {err:?}"
+        );
+    }
+
+    /// INV-4 regression: a legitimately dead block (not referenced by
+    /// anything) with Unreachable is fine — it was allocated but never
+    /// wired into the CFG.
+    #[test]
+    fn verify_accepts_unreferenced_block_with_unreachable() {
+        let mut body = well_formed_body();
+        body.blocks.push(BlockData {
+            statements: vec![],
+            terminator: Terminator::Unreachable { span: DUMMY_SPAN },
+        });
+        // bb0 stays as Return — no reference to bb1.
+        body.verify()
+            .expect("unreferenced Unreachable block is fine");
     }
 }
 

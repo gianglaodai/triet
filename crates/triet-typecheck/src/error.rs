@@ -323,6 +323,20 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1026: non-exhaustive match on enum type.
+    #[error("non-exhaustive `match`: missing enum variant(s) {missing}")]
+    #[diagnostic(
+        code(triet::typecheck::E1026),
+        help("add the missing variant(s) or use `_` wildcard to cover them")
+    )]
+    NonExhaustiveEnumMatch {
+        /// Comma-separated list of missing variant names.
+        missing: String,
+        /// Source location of the `match` expression.
+        #[label("this match does not cover all enum variants")]
+        span: Span,
+    },
+
     /// E1027: mixing `Result<T, E>` and `T~E` without explicit conversion.
     #[error("cannot mix `Result<T, E>` and `T~E` without explicit conversion")]
     #[diagnostic(
@@ -717,6 +731,7 @@ impl TypeError {
             | Self::NullableErrorInOutcomeType { span }
             | Self::NullStateInBinaryOutcome { span }
             | Self::NonExhaustiveOutcomeMatch { span, .. }
+            | Self::NonExhaustiveEnumMatch { span, .. }
             | Self::OutcomeTypeMismatch { span }
             | Self::PropagateInNonFallibleContext { span }
             | Self::ErrorTypeMismatch { span, .. }
