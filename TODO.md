@@ -67,13 +67,11 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 
 ### 🟡 B. NỢ-MÓNG — sai thiết kế, chặn nợ khác
 
-- [ ] **B1: Rombac Type System — bỏ MIR string-match (Crusade #3).** ADR-0050 ký O+G 2026-06-09. Phase-0 Spike done:
-  - `enum MirType` 14 variant (scalar·heap·modifier·Struct/Enum TÁCH) gánh được toàn bộ semantics hiện tại.
-  - Round-trip Display↔parse: 21/21 fixture string pass (kể cả bare Vector/HashMap backward-compat).
-  - `is_copy` parity: 9/9 test port pass (primitive·reference·heap·struct/Enum recursive·nullable delegation).
-  - **Phát hiện:** cấu trúc fix ordering-rule bug — `is_vec_type("Vector<Integer>?")` cũ trả `true` (sai), `MirType::Nullable(Vector(_)).is_vec()` trả `false` (đúng).
-  - Blast radius: ~189 site (36 is_copy · 21 is_vec/hashmap · 14 is_nullable · 14 nullable_payload · 8 starts_with('&') · 19 == "String" · 40 .ty field access · 12 simple_is_copy · 35 struct/enum_names · 4 TECH-DEBT comment).
-  - **Production:** S1→S4 theo ADR-0050 §6. Bắt đầu S1.
+- [x] **B1: Rombac Type System — bỏ MIR string-match (Crusade #3).** ✅ ĐÓNG TRỌN (O+G ký 2026-06-09). ADR-0050. 4 lát S1-S4, net −470 dòng:
+  - `S1 76b53cb` MirType 14 variant song song · `S2 fe80b8c` flip field String→MirType + producer lower_type + xóa simple_is_copy · `S3 ec6d32f` thanh trừng String: TypeKind ItemSymbolTable + triệt 5 free helper + Display-bridge · `S4 9af6afd` trảm parse + 3 From-shim (acid test toàn vẹn, 0 production lén parse).
+  - **Đã diệt:** stringly-typed MIR (`ty:String` + ngữ pháp nhúng), ordering-rule ngầm (→kết cấu Nullable), simple_is_copy (bản sao logic), 2 HashSet (→TypeKind map). Gate 0·0·99·203.
+  - **14 vòng O chặn** (verify-don't-trust): bom lớn nhất = producer-ngụy-trang (đẻ String rồi parse ngược) → luật verify-producer-trước-consumer + poison-phải-đỏ. Acid test S4: xóa parse → workspace không nổ = migrate thật.
+  - **Nợ mang sang:** móng Struct/Enum no-consumer (khép khi C1 enum-payload) · lower_function 9-param → LoweringInput struct (defer, allow justify).
 - [ ] **B2: Sáp nhập 2 tầng borrowck typecheck+MIR (Crusade #2).** ADR-0048 §2. E2440 không teeth-isolate được vì 2 tầng.
 - [ ] **B3: Alias analysis thật thay `conservative=true`.** checker.rs:64,505. SOUND nhưng over-reject.
 
