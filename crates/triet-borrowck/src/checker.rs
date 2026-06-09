@@ -31,6 +31,8 @@
 //!   loans — the references would become dangling.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(test)]
+use triet_mir::MirType;
 use triet_mir::{
     BasicBlock, Local, Place, Projection, ReferenceForm, Span, Statement, Terminator,
     builtin_shim_meta,
@@ -957,7 +959,7 @@ mod tests {
     /// ```
     #[test]
     fn use_after_move_across_blocks_rejected() {
-        let mut b = MirBuilder::new("cross_block_move", "Unit");
+        let mut b = MirBuilder::new("cross_block_move", MirType::Unit);
         let vga = b.add_param("vga", ParameterPassing::Move);
         b.set_local_type(vga, "String");
         let other = b.new_local();
@@ -1016,7 +1018,7 @@ mod tests {
     /// NLL violation: two `&0 mutable` borrows where the first is still alive.
     #[test]
     fn nll_double_exclusive_borrow_rejected() {
-        let mut b = MirBuilder::new("double_borrow", "Unit");
+        let mut b = MirBuilder::new("double_borrow", MirType::Unit);
         let vga = b.add_param("vga", ParameterPassing::Move);
         let b1 = b.new_local();
         let b2 = b.new_local();
@@ -1081,7 +1083,7 @@ mod tests {
     /// Correct NLL: sequential `&0 mutable` borrows in different blocks.
     #[test]
     fn nll_sequential_borrow_accepted() {
-        let mut b = MirBuilder::new("sequential_borrow", "Unit");
+        let mut b = MirBuilder::new("sequential_borrow", MirType::Unit);
         let vga = b.add_param("vga", ParameterPassing::Move);
         let b1 = b.new_local();
         let b2 = b.new_local();
@@ -1167,7 +1169,7 @@ mod tests {
     /// Moving a borrowed variable within the same block.
     #[test]
     fn move_while_borrowed_rejected() {
-        let mut b = MirBuilder::new("move_while_borrowed", "Unit");
+        let mut b = MirBuilder::new("move_while_borrowed", MirType::Unit);
         let vga = b.add_param("vga", ParameterPassing::Move);
         b.set_local_type(vga, "String");
         let b1 = b.new_local();
@@ -1232,7 +1234,7 @@ mod tests {
     /// and subsequent use of the source is E2420 UseAfterMove.
     #[test]
     fn use_after_move_rejected() {
-        let mut b = MirBuilder::new("use_after_move", "Unit");
+        let mut b = MirBuilder::new("use_after_move", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
         let other = b.new_local();
@@ -1276,7 +1278,7 @@ mod tests {
     /// to a call, so both loans are active at the second borrow's creation.
     #[test]
     fn disjoint_field_borrows_accepted() {
-        let mut b = MirBuilder::new("split", "Unit");
+        let mut b = MirBuilder::new("split", MirType::Unit);
         let obj = b.add_param("obj", ParameterPassing::MutableBorrow);
         let use_id = b.new_func_id();
         let r_x = b.new_local();
@@ -1325,7 +1327,7 @@ mod tests {
     /// so Drop(x) fires before Drop(r) can trigger NLL cleanup of the loan.
     #[test]
     fn e2450_return_borrowed_value() {
-        let mut b = MirBuilder::new("demo", "Integer");
+        let mut b = MirBuilder::new("demo", MirType::Integer);
         let x = b.add_param("x", ParameterPassing::Move);
         let r = b.new_local();
         let bb0 = b.new_block();
@@ -1361,7 +1363,7 @@ mod tests {
     /// not over-permit.
     #[test]
     fn same_field_borrows_rejected() {
-        let mut b = MirBuilder::new("clash", "Unit");
+        let mut b = MirBuilder::new("clash", MirType::Unit);
         let obj = b.add_param("obj", ParameterPassing::MutableBorrow);
         let use_id = b.new_func_id();
         let r1 = b.new_local();
@@ -1418,7 +1420,7 @@ mod tests {
     #[test]
     fn returned_reference_extends_source_lifetime() {
         // Callee signature: return value (Root) borrows from param 0.
-        let mut cb = MirBuilder::new("get_cell", "Cell");
+        let mut cb = MirBuilder::new("get_cell", MirType::Struct("Cell".into()));
         cb.add_param("obj", ParameterPassing::MutableBorrow);
         cb.set_return_borrow(FieldPath::Root, vec![0]);
         let cbb = cb.new_block();
@@ -1428,7 +1430,7 @@ mod tests {
         sigs.insert("get_cell".to_string(), callee.signature.clone());
 
         // Caller: r1 = &mut obj; ret = get_cell(r1); r3 = &mut obj; use(ret, r3).
-        let mut b = MirBuilder::new("caller", "Unit");
+        let mut b = MirBuilder::new("caller", MirType::Unit);
         let obj = b.add_param("obj", ParameterPassing::MutableBorrow);
         let get_id = b.new_func_id();
         let use_id = b.new_func_id();
@@ -1490,11 +1492,11 @@ mod tests {
     /// Δ3: copying a Move type out of a struct field is forbidden (E2423).
     #[test]
     fn cannot_copy_move_type_out_of_field() {
-        let mut b = MirBuilder::new("extract_string_field", "Unit");
+        let mut b = MirBuilder::new("extract_string_field", MirType::Unit);
         // Add a struct layout with a String field
         b.add_struct_layout(triet_mir::StructLayout::compute(
             "HasString",
-            &[("body".into(), "String".into(), 8, triet_mir::align::INTEGER)],
+            &[("body".into(), MirType::String, 8, triet_mir::align::INTEGER)],
         ));
         let obj = b.add_param("obj", ParameterPassing::Move);
         b.set_local_type(obj, "HasString");
@@ -1541,7 +1543,7 @@ mod tests {
     /// The Moved state must be sticky through Drop so that Return sees it.
     #[test]
     fn move_through_drop_to_return_rejected() {
-        let mut b = MirBuilder::new("f1_chain", "Unit");
+        let mut b = MirBuilder::new("f1_chain", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
         let other = b.new_local();
@@ -1582,10 +1584,10 @@ mod tests {
     /// local → E2420. Tests that M1+M2 Marks Moved correctly through Payload assign.
     #[test]
     fn f1_enum_payload_move_type() {
-        let mut b = MirBuilder::new("f1_enum_payload", "Unit");
+        let mut b = MirBuilder::new("f1_enum_payload", MirType::Unit);
         b.add_enum_layout(triet_mir::EnumLayout::compute(
             "OptionString",
-            &[("Some".into(), 0, Some(("String".into(), 8, 8, vec![])))],
+            &[("Some".into(), 0, Some((MirType::String, 8, 8, vec![])))],
         ));
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
@@ -1644,7 +1646,7 @@ mod tests {
     /// E2450: dropping a heap value while a borrow is still active.
     #[test]
     fn e2450_heap_drop_while_borrowed() {
-        let mut b = MirBuilder::new("e2450_heap", "Unit");
+        let mut b = MirBuilder::new("e2450_heap", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
         let r = b.new_local();
@@ -1678,7 +1680,7 @@ mod tests {
     /// a CallDispatch to a Jit target. Subsequent use → E2420.
     #[test]
     fn e2420_use_after_move_via_jit_call() {
-        let mut b = MirBuilder::new("caller", "Unit");
+        let mut b = MirBuilder::new("caller", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
         let callee_id = b.new_func_id();
@@ -1737,7 +1739,7 @@ mod tests {
     /// (không có E2420, pipeline xanh oan).
     #[test]
     fn e2420_jit_call_teeth_requires_marking() {
-        let mut b = MirBuilder::new("caller", "Unit");
+        let mut b = MirBuilder::new("caller", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
         let callee_id = b.new_func_id();
@@ -1782,7 +1784,7 @@ mod tests {
     /// revives to Owned (valid re-init after move).
     #[test]
     fn deinit_tombstone_user_assign_revives() {
-        let mut b = MirBuilder::new("test", "Unit");
+        let mut b = MirBuilder::new("test", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
 
@@ -1835,7 +1837,7 @@ mod tests {
     /// ADR-0042 Δ4: Deinit + use without re-init → E2420.
     #[test]
     fn deinit_without_reinit_is_e2420() {
-        let mut b = MirBuilder::new("test", "Unit");
+        let mut b = MirBuilder::new("test", MirType::Unit);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
 

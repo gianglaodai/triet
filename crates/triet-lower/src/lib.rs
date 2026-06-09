@@ -798,7 +798,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                     .ok_or_else(|| {
                         LowerError::null_literal_without_expected_type(stmt_span.clone())
                     })?;
-                let d = c.alloc_local_ty(&ann_ty);
+                let d = c.alloc_local_ty(ann_ty.clone());
                 c.push(Statement::StorageLive(d, stmt_span.clone()));
                 c.push(Statement::Const {
                     dest: Place::local(d),
@@ -914,7 +914,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                     // The function's return type provides the local's type.
                     if is_null_expr(&arena.expression(*v).node) {
                         let ret_ty = c.sig.return_type.clone();
-                        let d = c.alloc_local_ty(&ret_ty);
+                        let d = c.alloc_local_ty(ret_ty.clone());
                         c.push(Statement::StorageLive(d, stmt_span.clone()));
                         c.push(Statement::Const {
                             dest: Place::local(d),
@@ -1129,7 +1129,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             }
         },
         Expr::StringLiteral { value } => {
-            let d = c.alloc_local_ty("String");
+            let d = c.alloc_local_ty(MirType::String);
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
@@ -1151,7 +1151,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             if let Some(resolution) = resolution
                 && !resolution.has_payload
             {
-                let d = c.alloc_local_ty(&resolution.enum_name);
+                let d = c.alloc_local_ty(MirType::Enum(resolution.enum_name.clone()));
                 c.push(Statement::StorageLive(d, expr_span.clone()));
                 c.push(Statement::EnumAlloc {
                     dest: d,
@@ -1265,7 +1265,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             span: expr_span.clone(),
                         });
                     }
-                    let d = c.alloc_local_ty(&resolution.enum_name);
+                    let d = c.alloc_local_ty(MirType::Enum(resolution.enum_name.clone()));
                     c.push(Statement::StorageLive(d, expr_span.clone()));
                     c.push(Statement::EnumAlloc {
                         dest: d,
@@ -1317,7 +1317,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 && arguments.len() == 1
             {
                 // Lower as enum literal with payload.
-                let d = c.alloc_local_ty(enum_name);
+                let d = c.alloc_local_ty(MirType::Enum(enum_name.to_string()));
                 c.push(Statement::StorageLive(d, expr_span.clone()));
                 c.push(Statement::EnumAlloc {
                     dest: d,
@@ -1367,8 +1367,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         .iter()
                         .map(|a| lower_expr(*a, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let dest =
-                        emit_shim_call(c, "__triet_string_concat", args, "String", expr_span);
+                    let dest = emit_shim_call(
+                        c,
+                        "__triet_string_concat",
+                        args,
+                        MirType::String,
+                        expr_span,
+                    );
                     return Ok(dest);
                 }
                 "eq" => {
@@ -1376,7 +1381,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         .iter()
                         .map(|a| lower_expr(*a, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let dest = emit_shim_call(c, "__triet_string_eq", args, "Integer", expr_span);
+                    let dest =
+                        emit_shim_call(c, "__triet_string_eq", args, MirType::Integer, expr_span);
                     return Ok(dest);
                 }
                 "len" | "length" => {
@@ -1396,7 +1402,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     // Borrow (&0 String etc.) keeps the shim — the handle still
                     // points to the heap where len@body+0.
                     if matches!(arg_ty, MirType::String) {
-                        let d = c.alloc_local_ty("Integer");
+                        let d = c.alloc_local_ty(MirType::Integer);
                         c.push(Statement::Assign {
                             dest: Place::local(d),
                             source: Place::local(arg).project(Projection::Field("len".to_string())),
@@ -1422,7 +1428,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             ));
                         }
                     };
-                    let dest = emit_shim_call(c, shim_name, vec![arg], "Integer", expr_span);
+                    let dest = emit_shim_call(c, shim_name, vec![arg], MirType::Integer, expr_span);
                     return Ok(dest);
                 }
                 "contains" => {
@@ -1458,7 +1464,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             ));
                         }
                     };
-                    let dest = emit_shim_call(c, shim_name, args, "Trilean", expr_span);
+                    let dest = emit_shim_call(c, shim_name, args, MirType::Trilean, expr_span);
                     return Ok(dest);
                 }
                 "is_empty" => {
@@ -1477,7 +1483,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     // StackSlot (field projection), not heap shim.
                     // Same pattern as `length`/`len`.
                     let len_dest = if matches!(arg_ty, MirType::String) {
-                        let d = c.alloc_local_ty("Integer");
+                        let d = c.alloc_local_ty(MirType::Integer);
                         c.push(Statement::Assign {
                             dest: Place::local(d),
                             source: Place::local(arg).project(Projection::Field("len".to_string())),
@@ -1503,11 +1509,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                                 ));
                             }
                         };
-                        emit_shim_call(c, len_shim, vec![arg], "Integer", expr_span.clone())
+                        emit_shim_call(c, len_shim, vec![arg], MirType::Integer, expr_span.clone())
                     };
                     // Compare len == 0 → Trilean encoding (Eq returns 1 or -1).
-                    let result = c.alloc_local_ty("Trilean");
-                    let zero = c.alloc_local_ty("Integer");
+                    let result = c.alloc_local_ty(MirType::Trilean);
+                    let zero = c.alloc_local_ty(MirType::Integer);
                     c.push(Statement::StorageLive(result, expr_span.clone()));
                     c.push(Statement::StorageLive(zero, expr_span.clone()));
                     c.push(Statement::Const {
@@ -1549,7 +1555,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             ));
                         }
                     };
-                    let dest = emit_shim_call(c, shim_name, vec![arg], "Integer", expr_span);
+                    let dest = emit_shim_call(c, shim_name, vec![arg], MirType::Integer, expr_span);
                     return Ok(dest);
                 }
                 "append" => {
@@ -1577,8 +1583,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             ));
                         }
                     };
-                    let dest =
-                        emit_shim_call(c, shim_name, vec![arg, byte_arg], "Integer", expr_span);
+                    let dest = emit_shim_call(
+                        c,
+                        shim_name,
+                        vec![arg, byte_arg],
+                        MirType::Integer,
+                        expr_span,
+                    );
                     return Ok(dest);
                 }
                 "get" => {
@@ -1605,7 +1616,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span,
                         ));
                     };
-                    let dest = emit_shim_call(c, shim_name, args, "Integer?", expr_span);
+                    let dest = emit_shim_call(
+                        c,
+                        shim_name,
+                        args,
+                        MirType::Nullable(Box::new(MirType::Integer)),
+                        expr_span,
+                    );
                     return Ok(dest);
                 }
                 "push" => {
@@ -1632,13 +1649,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     // vector_new() → __triet_vector_alloc(0, 2)
                     // cap=2 to ensure realloc exercises the free-old-ptr path.
-                    let len_local = c.alloc_local_ty("Integer");
+                    let len_local = c.alloc_local_ty(MirType::Integer);
                     c.push(Statement::Const {
                         dest: Place::local(len_local),
                         value: ConstValue::Integer(0),
                         span: DUMMY_SPAN,
                     });
-                    let cap_local = c.alloc_local_ty("Integer");
+                    let cap_local = c.alloc_local_ty(MirType::Integer);
                     c.push(Statement::Const {
                         dest: Place::local(cap_local),
                         value: ConstValue::Integer(2),
@@ -1648,7 +1665,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         c,
                         "__triet_vector_alloc",
                         vec![len_local, cap_local],
-                        "Vector<Integer>",
+                        MirType::Vector,
                         expr_span,
                     );
                     return Ok(dest);
@@ -1661,13 +1678,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span,
                         ));
                     }
-                    let len_local = c.alloc_local_ty("Integer");
+                    let len_local = c.alloc_local_ty(MirType::Integer);
                     c.push(Statement::Const {
                         dest: Place::local(len_local),
                         value: ConstValue::Integer(0),
                         span: DUMMY_SPAN,
                     });
-                    let cap_local = c.alloc_local_ty("Integer");
+                    let cap_local = c.alloc_local_ty(MirType::Integer);
                     c.push(Statement::Const {
                         dest: Place::local(cap_local),
                         value: ConstValue::Integer(4),
@@ -1677,7 +1694,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         c,
                         "__triet_hashmap_alloc",
                         vec![len_local, cap_local],
-                        "HashMap<Integer,Integer>",
+                        MirType::HashMap,
                         expr_span,
                     );
                     return Ok(dest);
@@ -1712,7 +1729,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // enforces E2420 use-after-move.
             if is_fat_ret {
                 // sret: allocate struct local for return, pass as hidden arg[0].
-                let ret_local = c.alloc_local_ty(&callee_ret);
+                let ret_local = c.alloc_local_ty(callee_ret.clone());
                 c.push(Statement::StorageLive(ret_local, expr_span.clone()));
                 c.push(Statement::StructAlloc {
                     dest: ret_local,
@@ -1759,7 +1776,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 }
                 Ok(ret_local)
             } else {
-                let dest = c.alloc_local_ty(&callee_ret);
+                let dest = c.alloc_local_ty(callee_ret.clone());
                 c.push(Statement::StorageLive(dest, expr_span.clone()));
                 // ADR-0042 Q1 + ADR-0045 §2: collect args for zeroing.
                 // Skip reference types (&0 String etc.) — callee borrows.
@@ -1969,13 +1986,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .ok_or_else(|| {
                     LowerError::unsupported_expr(&arena.expression(expr_id).node, expr_span.clone())
                 })?
-                .to_string();
+                .clone();
 
             // ── Null path: evaluate default expression ──
             c.cur = null_bb;
             let default_val = lower_expr(*default, arena, c)?;
             let null_end = c.cur;
-            let result = c.alloc_local_ty(&payload_ty);
+            let result = c.alloc_local_ty(payload_ty.clone());
             c.push(Statement::StorageLive(result, expr_span.clone()));
             c.push(Statement::Assign {
                 dest: Place::local(result),
@@ -2016,19 +2033,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // ADR-0031 §2) — lower it to a projected Place so the borrow
             // checker can track the loan at field granularity.
             let source = lower_place(*operand, arena, c)?;
-            // ADR-0045 §3: set the borrow temporary's type to the real
-            // reference type (e.g., "&0 String") so downstream dispatch
-            // can strip the prefix and match the base heap type.
-            let prefix = match mir_form {
-                triet_mir::ReferenceForm::BorrowReadOnly => "&0 ",
-                triet_mir::ReferenceForm::BorrowExclusiveMutable => "&0 mutable ",
-                triet_mir::ReferenceForm::StrongFrozen => "&+ ",
-                triet_mir::ReferenceForm::StrongMutable => "&+ mutable ",
-                triet_mir::ReferenceForm::WeakObserver => "&- ",
+            // S4: construct MirType::Reference directly — no string round-trip.
+            let source_ty = c.local_decls[source.local.0].ty.clone();
+            let ref_ty = MirType::Reference {
+                form: mir_form,
+                inner: Box::new(source_ty),
             };
-            let source_ty = &c.local_decls[source.local.0].ty;
-            let ref_ty = format!("{prefix}{source_ty}");
-            let dest = c.alloc_local_ty(&ref_ty);
+            let dest = c.alloc_local_ty(ref_ty);
             c.push(Statement::StorageLive(dest, expr_span.clone()));
             c.push(Statement::Borrow {
                 dest: Place::local(dest),
@@ -2050,7 +2061,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 && !res.has_payload
             {
                 // Unit variant constructor: `TypeName.Variant`
-                let d = c.alloc_local_ty(&res.enum_name);
+                let d = c.alloc_local_ty(MirType::Enum(res.enum_name.clone()));
                 c.push(Statement::StorageLive(d, expr_span.clone()));
                 c.push(Statement::EnumAlloc {
                     dest: d,
@@ -2081,7 +2092,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             struct_name,
             fields,
         } => {
-            let d = c.alloc_local_ty(struct_name);
+            let d = c.alloc_local_ty(MirType::Struct(struct_name.to_string()));
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::StructAlloc {
                 dest: d,
@@ -2111,7 +2122,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             variant_name,
             payload,
         } => {
-            let d = c.alloc_local_ty(name);
+            let d = c.alloc_local_ty(MirType::Struct(name.to_string()));
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::EnumAlloc {
                 dest: d,
@@ -2174,7 +2185,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span.clone(),
                         )
                     })?
-                    .to_string();
+                    .clone();
 
                 // ── Scan arms (first-match-wins via slot-per-state ──
                 // Guards enforce that the slot model is equivalent to
@@ -2273,7 +2284,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 {
                     c.push_scope();
                     let body_val = lower_expr(arm.body, arena, c)?;
-                    let result = c.alloc_local_ty(&payload_ty);
+                    let result = c.alloc_local_ty(payload_ty.clone());
                     c.push(Statement::StorageLive(result, expr_span.clone()));
                     c.push(Statement::Assign {
                         dest: Place::local(result),
@@ -2286,7 +2297,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
                 // ── Branch-based lowering (Elvis pattern) ──
                 let merge_bb = c.alloc_bb();
-                let result = c.alloc_local_ty(&payload_ty);
+                let result = c.alloc_local_ty(payload_ty.clone());
                 c.push(Statement::StorageLive(result, expr_span.clone()));
 
                 let null_bb = c.alloc_bb();
@@ -2380,7 +2391,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let sub_pat = arena.pattern(*sub_pat);
                     if let Pattern::Variable(var_name) = &sub_pat.node {
                         // PA-3c: identity — scrutinee IS the payload.
-                        let bind_local = c.alloc_local_ty(&payload_ty);
+                        let bind_local = c.alloc_local_ty(payload_ty.clone());
                         c.push(Statement::StorageLive(bind_local, expr_span.clone()));
                         c.push(Statement::Assign {
                             dest: Place::local(bind_local),
@@ -2461,7 +2472,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             let sub_pat = arena.pattern(*sub_pat);
                             match &sub_pat.node {
                                 triet_syntax::Pattern::Variable(var_name) => {
-                                    let bind_local = c.alloc_local_ty("?");
+                                    let bind_local = c.alloc_local_ty(MirType::Unknown);
                                     c.push(Statement::StorageLive(bind_local, expr_span.clone()));
                                     // Read payload into the binding.
                                     c.push(Statement::Assign {
@@ -2581,7 +2592,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Resolution was recorded by the type checker.
             let resolution = c.expr_resolutions.get(&expr_id).cloned();
             if let Some(res) = resolution {
-                let d = c.alloc_local_ty(&res.enum_name);
+                let d = c.alloc_local_ty(MirType::Enum(res.enum_name.clone()));
                 c.push(Statement::StorageLive(d, expr_span.clone()));
                 c.push(Statement::EnumAlloc {
                     dest: d,
@@ -2927,7 +2938,7 @@ function main() -> Integer {
         assert!(
             body.local_decls
                 .iter()
-                .any(|d| d.ty == MirType::parse("Integer?")),
+                .any(|d| d.ty == MirType::Nullable(Box::new(MirType::Integer))),
             "~0 with annotation should produce Integer? local"
         );
 

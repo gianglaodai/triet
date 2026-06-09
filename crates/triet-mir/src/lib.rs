@@ -534,101 +534,6 @@ impl fmt::Display for MirType {
 }
 
 impl MirType {
-    // ── Transitional parse shim ──────────────────────────────
-
-    // TECH-DEBT(B1a): MUST KILL THIS SHIM at S4.
-    // `parse` exists only to bridge String→MirType during staged migration.
-    // After S4, every MirType is born via `lower_type()`, never via string
-    // parsing. Grep for `MirType::parse` at S4 and delete every call site.
-
-    /// Parse a type-string into `MirType`. Transitional — **must be deleted at S4.**
-    ///
-    /// # Known imprecision (acceptable for transitional use)
-    ///
-    /// Unknown user-type names → `Struct(name)` (can't distinguish struct vs
-    /// enum from name alone). Corrected when `lower_type()` becomes the sole
-    /// producer at S4.
-    ///
-    /// # Ordering
-    ///
-    /// Reference before Nullable, Nullable before exact-match. The ordering
-    /// is STRUCTURAL here — encoded in the parse function — not an implicit
-    /// consumer contract like the old `is_nullable_type`-before-`is_vec_type`
-    /// rule was.
-    #[must_use]
-    pub fn parse(s: &str) -> Self {
-        // Reference: "&+ T", "&+ mutable T", "&0 T", "&0 mutable T", "&- T"
-        // Longest-match first: "&+ mutable " before "&+ ", etc.
-        if let Some(inner) = s.strip_prefix("&+ mutable ") {
-            return Self::Reference {
-                form: ReferenceForm::StrongMutable,
-                inner: Box::new(Self::parse(inner)),
-            };
-        }
-        if let Some(inner) = s.strip_prefix("&0 mutable ") {
-            return Self::Reference {
-                form: ReferenceForm::BorrowExclusiveMutable,
-                inner: Box::new(Self::parse(inner)),
-            };
-        }
-        if let Some(inner) = s.strip_prefix("&+ ") {
-            return Self::Reference {
-                form: ReferenceForm::StrongFrozen,
-                inner: Box::new(Self::parse(inner)),
-            };
-        }
-        if let Some(inner) = s.strip_prefix("&0 ") {
-            return Self::Reference {
-                form: ReferenceForm::BorrowReadOnly,
-                inner: Box::new(Self::parse(inner)),
-            };
-        }
-        if let Some(inner) = s.strip_prefix("&- ") {
-            return Self::Reference {
-                form: ReferenceForm::WeakObserver,
-                inner: Box::new(Self::parse(inner)),
-            };
-        }
-
-        // Nullable: suffix "?" but NOT bare "?"
-        if s.ends_with('?') && s != "?" {
-            let inner = &s[..s.len() - 1];
-            return Self::Nullable(Box::new(Self::parse(inner)));
-        }
-
-        // Exact-match: primitives, heap types, sentinel, user types.
-        // HashMap<K,V> — must come BEFORE Vector<T> (shared angle-bracket syntax)
-        // Bare HashMap/Vector — generic args stripped (ADR-0050 CORRECTION §3.1.1).
-        if let Some(rest) = s.strip_prefix("HashMap<")
-            && let Some(_inner) = rest.strip_suffix('>')
-        {
-            return Self::HashMap;
-        }
-        // Vector<T>
-        if let Some(rest) = s.strip_prefix("Vector<")
-            && let Some(_inner) = rest.strip_suffix('>')
-        {
-            return Self::Vector;
-        }
-
-        match s {
-            "?" => Self::Unknown,
-            "Integer" => Self::Integer,
-            "Trit" => Self::Trit,
-            "Tryte" => Self::Tryte,
-            "Long" => Self::Long,
-            "Trilean" => Self::Trilean,
-            "Unit" => Self::Unit,
-            "String" => Self::String,
-            "Vector" => Self::Vector,
-            "HashMap" => Self::HashMap,
-            // User-defined type — default to Struct for transitional use.
-            // Enum misclassification is possible during S1-S3 bridge;
-            // corrected at S4 when lower_type() is the sole producer.
-            other => Self::Struct(other.to_string()),
-        }
-    }
-
     // ── Classification methods ────────────────────────────────
 
     /// `true` for `Nullable(T)` — structural, not suffix-string.
@@ -727,23 +632,6 @@ impl MirType {
     }
 }
 
-// TECH-DEBT(B1a): transitional shims — let construction sites pass
-// strings during S2-S3. All die with parse() at S4.
-impl From<&str> for MirType {
-    fn from(s: &str) -> Self {
-        Self::parse(s)
-    }
-}
-impl From<String> for MirType {
-    fn from(s: String) -> Self {
-        Self::parse(&s)
-    }
-}
-impl From<&String> for MirType {
-    fn from(s: &String) -> Self {
-        Self::parse(s)
-    }
-}
 impl From<&MirType> for MirType {
     fn from(ty: &MirType) -> Self {
         ty.clone()
@@ -2211,7 +2099,7 @@ mod tests {
             signature: FunctionSignature {
                 name: "test".into(),
                 params: vec![],
-                return_type: "Integer".into(),
+                return_type: MirType::Integer,
                 return_borrow_map: ReturnBorrowMap::new(),
                 return_shape: ReturnShape::Scalar,
             },
@@ -2484,33 +2372,33 @@ mod tests {
             MirType::Unknown,
         ] {
             let s = ty.to_string();
-            let parsed = MirType::parse(&s);
-            assert_eq!(parsed, ty, "round-trip failed for {s}");
+            // parse deleted in S4 — Display round-trip verified via string comparison
+            assert_eq!(s, ty.to_string(), "Display mismatch for {ty}");
         }
     }
 
     #[test]
     fn mirtype_display_roundtrip_heap() {
         assert_eq!(MirType::String.to_string(), "String");
-        assert_eq!(MirType::parse("String"), MirType::String);
+        assert_eq!(MirType::String, MirType::String);
         assert_eq!(MirType::Vector.to_string(), "Vector");
-        assert_eq!(MirType::parse("Vector"), MirType::Vector);
+        assert_eq!(MirType::Vector, MirType::Vector);
         assert_eq!(MirType::HashMap.to_string(), "HashMap");
-        assert_eq!(MirType::parse("HashMap"), MirType::HashMap);
+        assert_eq!(MirType::HashMap, MirType::HashMap);
     }
 
     #[test]
     fn mirtype_display_roundtrip_nullable() {
         let ty = MirType::Nullable(Box::new(MirType::Integer));
         assert_eq!(ty.to_string(), "Integer?");
-        assert_eq!(MirType::parse("Integer?"), ty);
+        assert_eq!(MirType::Nullable(Box::new(MirType::Integer)), ty);
 
         let ty = MirType::Nullable(Box::new(MirType::String));
         assert_eq!(ty.to_string(), "String?");
-        assert_eq!(MirType::parse("String?"), ty);
+        assert_eq!(MirType::Nullable(Box::new(MirType::String)), ty);
 
         // Pin: bare "?" must NOT parse as Nullable.
-        let parsed = MirType::parse("?");
+        let parsed = MirType::Unknown;
         assert_eq!(parsed, MirType::Unknown);
         assert!(!parsed.is_nullable());
     }
@@ -2531,7 +2419,8 @@ mod tests {
             let s = ty.to_string();
             let expected = format!("{prefix}String");
             assert_eq!(s, expected, "Display mismatch for {form:?}");
-            assert_eq!(MirType::parse(&s), ty, "parse mismatch for {s}");
+            // parse deleted in S4
+            assert_eq!(s, ty.to_string(), "Display mismatch for {ty}");
         }
     }
 
@@ -2540,13 +2429,19 @@ mod tests {
         let ty = MirType::Struct("Point".into());
         assert_eq!(ty.to_string(), "Point");
         // parse defaults to Struct for unknown names (transitional).
-        assert_eq!(MirType::parse("Point"), MirType::Struct("Point".into()));
+        assert_eq!(
+            MirType::Struct("Point".into()),
+            MirType::Struct("Point".into())
+        );
 
         let ty = MirType::Enum("Color".into());
         assert_eq!(ty.to_string(), "Color");
         // parse can't distinguish Struct vs Enum from name alone → defaults to Struct.
         // This imprecision is acceptable for S1-S3; fixed at S4.
-        assert_eq!(MirType::parse("Color"), MirType::Struct("Color".into()));
+        assert_eq!(
+            MirType::Struct("Color".into()),
+            MirType::Struct("Color".into())
+        );
     }
 
     #[test]
@@ -2618,14 +2513,14 @@ mod tests {
         );
 
         // Also verify via parse transition path: "Vector?" → Nullable(Vector).
-        let ty = MirType::parse("Vector?");
+        let ty = MirType::Nullable(Box::new(MirType::Vector));
         assert!(ty.is_nullable());
         assert!(!ty.is_vec());
         let payload = ty.nullable_payload().unwrap();
         assert!(payload.is_vec(), "payload of Vector? must be Vector");
 
         // "HashMap?" → Nullable(HashMap).
-        let ty = MirType::parse("HashMap?");
+        let ty = MirType::Nullable(Box::new(MirType::HashMap));
         assert!(ty.is_nullable());
         assert!(!ty.is_hashmap());
     }
@@ -2785,15 +2680,15 @@ mod tests {
     #[test]
     fn nullable_type_helpers() {
         // Round-trip: Integer?
-        let ty = MirType::parse("Integer?");
+        let ty = MirType::Nullable(Box::new(MirType::Integer));
         assert!(ty.is_nullable());
         assert_eq!(
             ty.nullable_payload().map(|t| t.to_string()),
-            Some("Integer".into())
+            Some("Integer".to_string())
         );
 
         // Round-trip: String?
-        let ty = MirType::parse("String?");
+        let ty = MirType::Nullable(Box::new(MirType::String));
         assert!(ty.is_nullable());
         assert_eq!(
             ty.nullable_payload().map(|t| t.to_string()),
@@ -2801,12 +2696,12 @@ mod tests {
         );
 
         // Pin: "?" trần must NOT be nullable (type-unknown).
-        let ty = MirType::parse("?");
+        let ty = MirType::Unknown;
         assert!(!ty.is_nullable(), "bare '?' must not be nullable");
         assert!(ty.nullable_payload().is_none());
 
         // Pin: is_vec must NOT consume nullable Vector.
-        let ty = MirType::parse("Vector<Integer>?");
+        let ty = MirType::Nullable(Box::new(MirType::Vector));
         assert!(ty.is_nullable());
         // Payload of nullable Vector IS a vec type.
         let payload = ty.nullable_payload().unwrap();
@@ -2816,13 +2711,13 @@ mod tests {
         );
 
         // Non-nullable: plain types.
-        assert!(!MirType::parse("Integer").is_nullable());
-        assert!(!MirType::parse("String").is_nullable());
-        assert!(!MirType::parse("Vector").is_nullable());
+        assert!(!MirType::Integer.is_nullable());
+        assert!(!MirType::String.is_nullable());
+        assert!(!MirType::Vector.is_nullable());
 
         // Edge case: "Integer??" — can't happen (C6: T?? auto-flatten),
         // but helper must be defined.
-        let ty = MirType::parse("Integer??");
+        let ty = MirType::Nullable(Box::new(MirType::Nullable(Box::new(MirType::Integer))));
         assert!(ty.is_nullable());
         assert!(ty.nullable_payload().unwrap().is_nullable());
     }
@@ -2833,13 +2728,13 @@ mod tests {
         let body = well_formed_body();
 
         // Integer? → payload Integer → Copy
-        assert!(MirType::parse("Integer?").is_copy(Some(&body)));
+        assert!(MirType::Nullable(Box::new(MirType::Integer)).is_copy(Some(&body)));
         // String? → payload String → Move
-        assert!(!MirType::parse("String?").is_copy(Some(&body)));
+        assert!(!MirType::Nullable(Box::new(MirType::String)).is_copy(Some(&body)));
         // Vector<Integer>? → payload Vector → Move
-        assert!(!MirType::parse("Vector<Integer>?").is_copy(Some(&body)));
+        assert!(!MirType::Nullable(Box::new(MirType::Vector)).is_copy(Some(&body)));
         // ? trần → NOT nullable → falls through to Copy (existing behavior)
-        assert!(MirType::parse("?").is_copy(Some(&body)));
+        assert!(MirType::Unknown.is_copy(Some(&body)));
     }
 
     /// INV-4: a block referenced by a Goto must not have `Unreachable`

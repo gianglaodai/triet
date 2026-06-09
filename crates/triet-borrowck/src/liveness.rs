@@ -27,6 +27,8 @@
 //! - `def[B]`: variables written in B before being read
 
 use std::collections::BTreeSet;
+#[cfg(test)]
+use triet_mir::MirType;
 use triet_mir::{BasicBlock, ControlFlowGraph, Local, Statement, Terminator};
 
 /// Live variable sets for a single basic block.
@@ -240,7 +242,7 @@ mod tests {
     /// Live: x is live from its def until the add; y is live from its def until return
     #[test]
     fn liveness_simple_block() {
-        let mut b = MirBuilder::new("test", "Integer");
+        let mut b = MirBuilder::new("test", MirType::Integer);
         let x = b.new_local();
         let y = b.new_local();
 

@@ -170,7 +170,11 @@ impl MirBuilder {
                     .get(&Local(i))
                     .map(|s| s.as_str())
                     .unwrap_or("?");
-                LocalDecl::new(ty)
+                LocalDecl::new(if ty == "?" {
+                    MirType::Unknown
+                } else {
+                    MirType::Struct(ty.to_string())
+                })
             })
             .collect();
         Body {
@@ -323,7 +327,7 @@ mod tests {
     /// ```
     #[test]
     fn mir_cfg_write_twice_multi_block() {
-        let mut b = MirBuilder::new("write_twice", "Unit");
+        let mut b = MirBuilder::new("write_twice", MirType::Unit);
 
         let vga = b.add_param("vga", ParameterPassing::Move);
         let write_cell_id = b.new_func_id();
@@ -442,7 +446,7 @@ mod tests {
     /// abs_diff with proper terminator-based CFG.
     #[test]
     fn mir_cfg_abs_diff_branching() {
-        let mut b = MirBuilder::new("abs_diff", "Integer");
+        let mut b = MirBuilder::new("abs_diff", MirType::Integer);
 
         let a = b.add_param("a", ParameterPassing::Borrow);
         let b_param = b.add_param("b", ParameterPassing::Borrow);

@@ -2399,7 +2399,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn abs_diff_jit_compile_and_run() {
-        let mut b = MirBuilder::new("abs_diff_jit_test", "Integer");
+        let mut b = MirBuilder::new("abs_diff_jit_test", MirType::Integer);
         let a = b.add_param("a", ParameterPassing::Borrow);
         let b_param = b.add_param("b", ParameterPassing::Borrow);
 
@@ -2455,7 +2455,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn simple_add_jit_compile_and_run() {
-        let mut b = MirBuilder::new("add_jit_test", "Integer");
+        let mut b = MirBuilder::new("add_jit_test", MirType::Integer);
         let a = b.add_param("a", ParameterPassing::Borrow);
         let b_param = b.add_param("b", ParameterPassing::Borrow);
 
@@ -2488,7 +2488,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn fibonacci_jit_compile_and_run() {
-        let mut b = MirBuilder::new("fibonacci", "Integer");
+        let mut b = MirBuilder::new("fibonacci", MirType::Integer);
         let n = b.add_param("n", ParameterPassing::Borrow);
 
         let cond = b.new_local();
@@ -2636,7 +2636,7 @@ mod tests {
     /// identical payloads.
     #[test]
     fn outcome_discriminant_jit_refuses_to_compile() {
-        let mut b = MirBuilder::new("outcome_disc_test", "Integer");
+        let mut b = MirBuilder::new("outcome_disc_test", MirType::Integer);
         let _dummy = b.add_param("dummy", ParameterPassing::Borrow);
         let outcome_val = b.new_local();
         let disc_result = b.new_local();
@@ -2707,7 +2707,7 @@ mod tests {
     #[test]
     fn multi_value_return_refuses_to_compile() {
         // Build a callee that returns 2 values (BinaryOutcome)
-        let mut callee = MirBuilder::new("make_outcome", "Outcome");
+        let mut callee = MirBuilder::new("make_outcome", MirType::Unknown);
         callee.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
         let _dummy = callee.add_param("dummy", ParameterPassing::Borrow);
         let disc_val = callee.new_local();
@@ -2778,7 +2778,7 @@ mod tests {
 
     /// Build a MIR function `op(a, b)` that applies `binop` and returns the result.
     fn build_binop_tester(op: BinOp) -> Body {
-        let mut b = MirBuilder::new(&format!("test_{op:?}"), "Integer");
+        let mut b = MirBuilder::new(&format!("test_{op:?}"), MirType::Integer);
         let a = b.add_param("a", ParameterPassing::Borrow);
         let b_param = b.add_param("b", ParameterPassing::Borrow);
         let result = b.new_local();
@@ -2957,7 +2957,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn neg_truth_table() {
-        let mut b = MirBuilder::new("test_neg", "Integer");
+        let mut b = MirBuilder::new("test_neg", MirType::Integer);
         let a = b.add_param("a", ParameterPassing::Borrow);
         let result = b.new_local();
         let bb0 = b.new_block();
@@ -2982,7 +2982,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn shim_call_multiply_via_jit() {
         // Build a JIT function that calls __test_shim_multiply via Shim
-        let mut b = MirBuilder::new("test_shim_mul", "Integer");
+        let mut b = MirBuilder::new("test_shim_mul", MirType::Integer);
         let a = b.add_param("a", ParameterPassing::Borrow);
         let b_param = b.add_param("b", ParameterPassing::Borrow);
         let result = b.new_local();
@@ -3023,7 +3023,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn shim_call_pow_via_jit() {
         // Build a JIT function that calls __triet_pow via Shim
-        let mut b = MirBuilder::new("test_pow", "Integer");
+        let mut b = MirBuilder::new("test_pow", MirType::Integer);
         let base = b.add_param("base", ParameterPassing::Borrow);
         let exp = b.add_param("exp", ParameterPassing::Borrow);
         let result = b.new_local();
@@ -3079,7 +3079,7 @@ mod tests {
         FREE_COUNT.store(0, Ordering::SeqCst);
 
         // Simulate: make() -> String { let s="hi"; return s }
-        let mut b = MirBuilder::new("make_string", "String");
+        let mut b = MirBuilder::new("make_string", MirType::String);
         // ADR-0049: String layout required for JIT StackSlot pre-pass.
         b.add_struct_layout(triet_mir::StructLayout::compute(
             "String",
@@ -3137,7 +3137,7 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn m1_zeroing_on_move() {
-        let mut b = MirBuilder::new("test_m1", "Integer");
+        let mut b = MirBuilder::new("test_m1", MirType::Integer);
         let s = b.add_param("s", ParameterPassing::Move);
         b.set_local_type(s, "String");
         let other = b.new_local();
@@ -3413,7 +3413,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn n7_overflow_add_above_max() {
         n7_child_guard("n7_overflow_add_above_max", || {
-            let mut b = MirBuilder::new("add_test", "Integer");
+            let mut b = MirBuilder::new("add_test", MirType::Integer);
             let a = b.add_param("a", ParameterPassing::Borrow);
             b.set_local_type(a, "Integer");
             let bb0 = b.new_block();
@@ -3437,7 +3437,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn n7_overflow_sub_below_min() {
         n7_child_guard("n7_overflow_sub_below_min", || {
-            let mut b = MirBuilder::new("sub_test", "Integer");
+            let mut b = MirBuilder::new("sub_test", MirType::Integer);
             let a = b.add_param("a", ParameterPassing::Borrow);
             b.set_local_type(a, "Integer");
             let bb0 = b.new_block();
@@ -3465,7 +3465,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn n7_overflow_mul_carrier() {
         n7_child_guard("n7_overflow_mul_carrier", || {
-            let mut b = MirBuilder::new("mul_test", "Integer");
+            let mut b = MirBuilder::new("mul_test", MirType::Integer);
             let a = b.add_param("a", ParameterPassing::Borrow);
             b.set_local_type(a, "Integer");
             let bb0 = b.new_block();
