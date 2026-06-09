@@ -40,8 +40,8 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] **ADR-0048 Mutable Borrow — O+G ký 2026-06-08:** `7390012` `d556f2a` `bdaa5e3`. `clear(&0 mutable String)` set len=0 in-place (no realloc — append CẮT vì realloc mìn → Bậc D). E2440 exclusivity REUSE (hai tầng typecheck+MIR). Return-mut `-> &0 mutable T` CẮT (E1042). 3 fixtures: 93 clear RUN, 94/95 exclusivity E2440. TECH-DEBT: hai tầng borrowck song song (typecheck ADR-0025 + MIR) — hợp nhất sau.
 - [ ] **Codegen opt (G, ADR-0044 ack §iii):** range check 1-instruction — `(val−MIN) >ᵤ 2M` unsigned-sub trick; fallback `bor` gộp 2 icmp trước trapnz. Cắt nửa instruction check mỗi Add/Sub.
 - [ ] **Constant folding pass (G, ADR-0044 ack §iii):** toán hạng const in-range → tính compile-time, bỏ trap block.
-- [ ] Native struct layout (StackSlot with MIR StructLayout sizes).
-- [ ] Packed Outcome ABI (bit extraction for discrim/payload).
+- [~] Native struct layout (StackSlot with MIR StructLayout sizes). → **PHONG ẤN Nhóm E (G defer 2026-06-10).** Spike O: JIT field-offset ĐÃ sạch (dùng field.offset); vấn đề thật = value-model "single i64" + MirType-byte-size CHƯA có (0 fixture Trit/Tryte trong struct). 3 điều kiện mở: fixture Trit/Tryte-in-struct + ADR byte-size mapping + value-model stack_load_8/16+extend. Xem `spec/plans/phase10-native-struct-layout.md`.
+- [~] Packed Outcome ABI (bit extraction for discrim/payload). → **PHONG ẤN Nhóm E (đi kèm Native, cùng cần pack byte nhỏ).**
 - [ ] Multi-value return (>1 return value).
 
 ## Deferred — design locked, chờ tiền đề (KHÔNG build tạm)
