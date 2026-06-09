@@ -429,6 +429,296 @@ impl fmt::Display for ReferenceForm {
     }
 }
 
+// ── MirType ──────────────────────────────────────────────────
+
+/// MIR-native type representation — hand-written, independent of AST types.
+///
+/// Replaces the implicit string-match language (`"Integer"`, `starts_with('&')`,
+/// `ends_with('?')`) with a structural enum. The lowerer is the **single
+/// producer**; all downstream consumers match on the enum instead of parsing
+/// strings.
+///
+/// # Design authority
+///
+/// ADR-0050. 3 invariants: ① hand-written in `triet-mir` (no schema dep),
+/// ② `Struct`/`Enum` TÁCH (not fused into `UserType`), ③ transitional
+/// `parse(&str)` shim dies at the last commit of B1a.
+///
+/// # Variant notes
+///
+/// - `Trilean` is bare — refinement (`Trilean!`) is a frontend gate (ADR-0021),
+///   checked before MIR. No backend consumer reads a `refined` field.
+/// - `Vector`/`HashMap` are bare — no backend consumer reads generic element/
+///   key/value types. Payloads return when Bậc C needs generic heap types
+///   (with a producer at the same commit — Track B Rule #4).
+/// - `Unknown` replaces the sentinel string `"?"` — type checker could not
+///   determine this type. Treated as Copy (refuse-over-guess on the safe side).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MirType {
+    // ── Scalars (Copy per SPEC §10.1) ──
+    /// `Integer` — 27-trit signed integer.
+    Integer,
+    /// `Trit` — 1-trit numeric atom.
+    Trit,
+    /// `Tryte` — 9-trit integer.
+    Tryte,
+    /// `Long` — 81-trit integer.
+    Long,
+    /// `Trilean` — three-valued truth (Ł3). Bare — refinement is frontend-only.
+    Trilean,
+    /// `Unit` — zero-sized `()`.
+    Unit,
+
+    // ── Sentinel ──
+    /// Recovery placeholder. Was the bare `"?"` string. Copy semantics.
+    Unknown,
+
+    // ── Heap (Move per ADR-0042) ──
+    /// `String` — UTF-8 owned text, heap-allocated.
+    String,
+    /// `Vector` — heap-allocated growable array. Bare (no element type yet).
+    Vector,
+    /// `HashMap` — heap-allocated key-value map. Bare (no key/value types yet).
+    HashMap,
+
+    // ── Modifiers ──
+    /// `T?` — nullable wrapper. KẾT CẤU — kills the old ordering-rule bug
+    /// where `is_vec_type("Vector<Integer>?")` returned `true`.
+    Nullable(Box<MirType>),
+    /// `&+ T`, `&0 T`, `&- T`, etc. One of the 5 S6 reference forms.
+    Reference {
+        /// Which reference form.
+        form: ReferenceForm,
+        /// The type being referenced.
+        inner: Box<MirType>,
+    },
+
+    // ── User-defined (TÁCH per ADR-0050 ruling ②) ──
+    /// User-defined struct — resolved via `body.struct_layouts`.
+    Struct(String),
+    /// User-defined enum — resolved via `body.enum_layouts`.
+    Enum(String),
+}
+
+impl fmt::Display for MirType {
+    /// Round-trip to the legacy string form for diagnostic/fixture stability.
+    ///
+    /// This MUST produce the same output as the old `lower::type_name()` for
+    /// every type that existed before B1a. Fixture `.expected` files and
+    /// diagnostic messages depend on this format.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Integer => write!(f, "Integer"),
+            Self::Trit => write!(f, "Trit"),
+            Self::Tryte => write!(f, "Tryte"),
+            Self::Long => write!(f, "Long"),
+            Self::Trilean => write!(f, "Trilean"),
+            Self::Unit => write!(f, "Unit"),
+            Self::Unknown => write!(f, "?"),
+            Self::String => write!(f, "String"),
+            Self::Vector => write!(f, "Vector"),
+            Self::HashMap => write!(f, "HashMap"),
+            Self::Nullable(inner) => write!(f, "{inner}?"),
+            Self::Reference { form, inner } => match form {
+                ReferenceForm::StrongFrozen => write!(f, "&+ {inner}"),
+                ReferenceForm::StrongMutable => write!(f, "&+ mutable {inner}"),
+                ReferenceForm::BorrowReadOnly => write!(f, "&0 {inner}"),
+                ReferenceForm::BorrowExclusiveMutable => write!(f, "&0 mutable {inner}"),
+                ReferenceForm::WeakObserver => write!(f, "&- {inner}"),
+            },
+            Self::Struct(name) | Self::Enum(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+impl MirType {
+    // ── Transitional parse shim ──────────────────────────────
+
+    // TECH-DEBT(B1a): MUST KILL THIS SHIM at S4.
+    // `parse` exists only to bridge String→MirType during staged migration.
+    // After S4, every MirType is born via `lower_type()`, never via string
+    // parsing. Grep for `MirType::parse` at S4 and delete every call site.
+
+    /// Parse a type-string into `MirType`. Transitional — **must be deleted at S4.**
+    ///
+    /// # Known imprecision (acceptable for transitional use)
+    ///
+    /// Unknown user-type names → `Struct(name)` (can't distinguish struct vs
+    /// enum from name alone). Corrected when `lower_type()` becomes the sole
+    /// producer at S4.
+    ///
+    /// # Ordering
+    ///
+    /// Reference before Nullable, Nullable before exact-match. The ordering
+    /// is STRUCTURAL here — encoded in the parse function — not an implicit
+    /// consumer contract like the old `is_nullable_type`-before-`is_vec_type`
+    /// rule was.
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        // Reference: "&+ T", "&+ mutable T", "&0 T", "&0 mutable T", "&- T"
+        // Longest-match first: "&+ mutable " before "&+ ", etc.
+        if let Some(inner) = s.strip_prefix("&+ mutable ") {
+            return Self::Reference {
+                form: ReferenceForm::StrongMutable,
+                inner: Box::new(Self::parse(inner)),
+            };
+        }
+        if let Some(inner) = s.strip_prefix("&0 mutable ") {
+            return Self::Reference {
+                form: ReferenceForm::BorrowExclusiveMutable,
+                inner: Box::new(Self::parse(inner)),
+            };
+        }
+        if let Some(inner) = s.strip_prefix("&+ ") {
+            return Self::Reference {
+                form: ReferenceForm::StrongFrozen,
+                inner: Box::new(Self::parse(inner)),
+            };
+        }
+        if let Some(inner) = s.strip_prefix("&0 ") {
+            return Self::Reference {
+                form: ReferenceForm::BorrowReadOnly,
+                inner: Box::new(Self::parse(inner)),
+            };
+        }
+        if let Some(inner) = s.strip_prefix("&- ") {
+            return Self::Reference {
+                form: ReferenceForm::WeakObserver,
+                inner: Box::new(Self::parse(inner)),
+            };
+        }
+
+        // Nullable: suffix "?" but NOT bare "?"
+        if s.ends_with('?') && s != "?" {
+            let inner = &s[..s.len() - 1];
+            return Self::Nullable(Box::new(Self::parse(inner)));
+        }
+
+        // Exact-match: primitives, heap types, sentinel, user types.
+        match s {
+            "?" => Self::Unknown,
+            "Integer" => Self::Integer,
+            "Trit" => Self::Trit,
+            "Tryte" => Self::Tryte,
+            "Long" => Self::Long,
+            "Trilean" => Self::Trilean,
+            "Unit" => Self::Unit,
+            "String" => Self::String,
+            "Vector" => Self::Vector,
+            "HashMap" => Self::HashMap,
+            // User-defined type — default to Struct for transitional use.
+            // Enum misclassification is possible during S1-S3 bridge;
+            // corrected at S4 when lower_type() is the sole producer.
+            other => Self::Struct(other.to_string()),
+        }
+    }
+
+    // ── Classification methods ────────────────────────────────
+
+    /// `true` for `Nullable(T)` — structural, not suffix-string.
+    ///
+    /// Kills the old ordering-rule: every consumer had to call
+    /// `is_nullable_type` BEFORE `is_vec_type`, otherwise
+    /// `"Vector<Integer>?"` was misclassified as bare Vector.
+    #[must_use]
+    pub fn is_nullable(&self) -> bool {
+        matches!(self, Self::Nullable(_))
+    }
+
+    /// Strip `Nullable` wrapper. `Nullable(T)` → `Some(&T)`, else `None`.
+    #[must_use]
+    pub fn nullable_payload(&self) -> Option<&Self> {
+        if let Self::Nullable(inner) = self {
+            Some(inner)
+        } else {
+            None
+        }
+    }
+
+    /// `true` for any reference form (`&+`, `&0`, `&-`).
+    #[must_use]
+    pub fn is_reference(&self) -> bool {
+        matches!(self, Self::Reference { .. })
+    }
+
+    /// `true` for `Vector` (bare — no element type query yet).
+    #[must_use]
+    pub fn is_vec(&self) -> bool {
+        matches!(self, Self::Vector)
+    }
+
+    /// `true` for `HashMap` (bare — no key/value type query yet).
+    #[must_use]
+    pub fn is_hashmap(&self) -> bool {
+        matches!(self, Self::HashMap)
+    }
+
+    // ── Semantics ─────────────────────────────────────────────
+
+    /// Copy semantics: no heap ownership.
+    ///
+    /// - `is_copy(None)`: classify by variant alone — Struct/Enum default to
+    ///   Copy. Used during lowering before `Body` is built. **SOUND ONLY WHILE
+    ///   B8 blocks construction of aggregates with heap fields** (B8 rejects
+    ///   `StructLiteral`/enum-payload construction with heap-typed fields, not
+    ///   declaration). When B8 is relaxed in Bậc B, the caller MUST pass
+    ///   `Some(&body)` so struct/enum layouts are consulted.
+    /// - `is_copy(Some(&body))`: recurse into `body.struct_layouts`/
+    ///   `body.enum_layouts` for `Struct`/`Enum` variants. Used by borrowck
+    ///   and JIT.
+    ///
+    /// This is the SINGLE source of truth for move/copy classification —
+    /// replaces the old dual `is_copy(&str, &Body)` + `simple_is_copy(&str, …)`.
+    #[must_use]
+    pub fn is_copy(&self, body: Option<&crate::Body>) -> bool {
+        match self {
+            // Nullable delegates to payload (ordering: BEFORE other classifiers).
+            Self::Nullable(inner) => inner.is_copy(body),
+            // Stack primitives — Copy per SPEC §10.1.
+            Self::Integer
+            | Self::Trit
+            | Self::Tryte
+            | Self::Long
+            | Self::Trilean
+            | Self::Unit
+            | Self::Unknown => true,
+            // Heap types — Move.
+            Self::String | Self::Vector | Self::HashMap => false,
+            // Reference types — Copy by design (ADR-0045 §3).
+            Self::Reference { .. } => true,
+            // User types.
+            Self::Struct(name) => {
+                if let Some(body) = body {
+                    if let Some(s) = body.struct_layouts.iter().find(|s| s.name == *name) {
+                        // Recursion: parse field types (still String during S1-S2).
+                        return s
+                            .fields
+                            .iter()
+                            .all(|f| Self::parse(&f.ty).is_copy(Some(body)));
+                    }
+                    false // Unknown struct → Move (refuse-over-guess)
+                } else {
+                    true // No body → assume Copy (SOUND only while B8 blocks heap fields)
+                }
+            }
+            Self::Enum(name) => {
+                if let Some(body) = body {
+                    if let Some(e) = body.enum_layouts.iter().find(|e| e.name == *name) {
+                        return e.variants.iter().all(|v| {
+                            v.payload
+                                .as_ref()
+                                .is_none_or(|p| Self::parse(&p.ty).is_copy(Some(body)))
+                        });
+                    }
+                    false // Unknown enum → Move (refuse-over-guess)
+                } else {
+                    true // No body → assume Copy (sound while B8 blocks heap fields)
+                }
+            }
+        }
+    }
+}
+
 /// How a parameter is passed at a call site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParameterPassing {
@@ -2085,7 +2375,286 @@ mod tests {
         assert_eq!(place_type(&place2, &body), "?");
     }
 
-    // ── is_copy tests ────────────────────────────────────────
+    // ── MirType tests (ADR-0050 B1a) ──────────────────────────
+
+    #[test]
+    fn mirtype_display_roundtrip_primitives() {
+        for ty in [
+            MirType::Integer,
+            MirType::Trit,
+            MirType::Tryte,
+            MirType::Long,
+            MirType::Trilean,
+            MirType::Unit,
+            MirType::Unknown,
+        ] {
+            let s = ty.to_string();
+            let parsed = MirType::parse(&s);
+            assert_eq!(parsed, ty, "round-trip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn mirtype_display_roundtrip_heap() {
+        assert_eq!(MirType::String.to_string(), "String");
+        assert_eq!(MirType::parse("String"), MirType::String);
+        assert_eq!(MirType::Vector.to_string(), "Vector");
+        assert_eq!(MirType::parse("Vector"), MirType::Vector);
+        assert_eq!(MirType::HashMap.to_string(), "HashMap");
+        assert_eq!(MirType::parse("HashMap"), MirType::HashMap);
+    }
+
+    #[test]
+    fn mirtype_display_roundtrip_nullable() {
+        let ty = MirType::Nullable(Box::new(MirType::Integer));
+        assert_eq!(ty.to_string(), "Integer?");
+        assert_eq!(MirType::parse("Integer?"), ty);
+
+        let ty = MirType::Nullable(Box::new(MirType::String));
+        assert_eq!(ty.to_string(), "String?");
+        assert_eq!(MirType::parse("String?"), ty);
+
+        // Pin: bare "?" must NOT parse as Nullable.
+        let parsed = MirType::parse("?");
+        assert_eq!(parsed, MirType::Unknown);
+        assert!(!parsed.is_nullable());
+    }
+
+    #[test]
+    fn mirtype_display_roundtrip_references() {
+        for (form, prefix) in [
+            (ReferenceForm::StrongFrozen, "&+ "),
+            (ReferenceForm::StrongMutable, "&+ mutable "),
+            (ReferenceForm::BorrowReadOnly, "&0 "),
+            (ReferenceForm::BorrowExclusiveMutable, "&0 mutable "),
+            (ReferenceForm::WeakObserver, "&- "),
+        ] {
+            let ty = MirType::Reference {
+                form,
+                inner: Box::new(MirType::String),
+            };
+            let s = ty.to_string();
+            let expected = format!("{prefix}String");
+            assert_eq!(s, expected, "Display mismatch for {form:?}");
+            assert_eq!(MirType::parse(&s), ty, "parse mismatch for {s}");
+        }
+    }
+
+    #[test]
+    fn mirtype_display_roundtrip_user_types() {
+        let ty = MirType::Struct("Point".into());
+        assert_eq!(ty.to_string(), "Point");
+        // parse defaults to Struct for unknown names (transitional).
+        assert_eq!(MirType::parse("Point"), MirType::Struct("Point".into()));
+
+        let ty = MirType::Enum("Color".into());
+        assert_eq!(ty.to_string(), "Color");
+        // parse can't distinguish Struct vs Enum from name alone → defaults to Struct.
+        // This imprecision is acceptable for S1-S3; fixed at S4.
+        assert_eq!(MirType::parse("Color"), MirType::Struct("Color".into()));
+    }
+
+    #[test]
+    fn mirtype_classification_methods() {
+        assert!(MirType::Nullable(Box::new(MirType::Integer)).is_nullable());
+        assert!(!MirType::Integer.is_nullable());
+        assert!(!MirType::Unknown.is_nullable());
+
+        assert_eq!(
+            MirType::Nullable(Box::new(MirType::Integer))
+                .nullable_payload()
+                .map(|t| t.to_string()),
+            Some("Integer".to_string())
+        );
+        assert!(MirType::Integer.nullable_payload().is_none());
+
+        assert!(
+            MirType::Reference {
+                form: ReferenceForm::BorrowReadOnly,
+                inner: Box::new(MirType::Integer),
+            }
+            .is_reference()
+        );
+        assert!(!MirType::Integer.is_reference());
+
+        assert!(MirType::Vector.is_vec());
+        assert!(!MirType::HashMap.is_vec());
+        assert!(!MirType::String.is_vec());
+
+        assert!(MirType::HashMap.is_hashmap());
+        assert!(!MirType::Vector.is_hashmap());
+    }
+
+    /// Proves the structural fix for the ordering-rule bug (ADR-0050 §2.1).
+    ///
+    /// Old `is_vec_type("Vector<Integer>?")` returned `true` because
+    /// `"Vector<Integer>?"` starts with `"Vector<"` — the suffix-`?`
+    /// nullable was invisible to the prefix check. The structural
+    /// `Nullable(Vector).is_vec()` correctly returns `false` — a nullable
+    /// wrapper is NOT a Vector, regardless of payload.
+    ///
+    /// This test uses `Nullable(Vector)` directly (not `Nullable(Integer)`)
+    /// because the bug specifically manifests when the payload IS a heap
+    /// type that the old prefix-match would misclassify.
+    #[test]
+    fn mirtype_structural_fixes_nullable_vec_misclassification() {
+        // Nullable(Vector) — exactly the pattern old is_vec_type got wrong.
+        let ty = MirType::Nullable(Box::new(MirType::Vector));
+        assert!(ty.is_nullable(), "Nullable(Vector) must be nullable");
+        assert!(
+            !ty.is_vec(),
+            "Nullable(Vector) must NOT be classified as Vector"
+        );
+        assert!(
+            !ty.is_hashmap(),
+            "Nullable(Vector) must NOT be classified as HashMap"
+        );
+
+        // Symmetric: Nullable(HashMap) — same structural protection.
+        let ty = MirType::Nullable(Box::new(MirType::HashMap));
+        assert!(ty.is_nullable(), "Nullable(HashMap) must be nullable");
+        assert!(
+            !ty.is_hashmap(),
+            "Nullable(HashMap) must NOT be classified as HashMap"
+        );
+        assert!(
+            !ty.is_vec(),
+            "Nullable(HashMap) must NOT be classified as Vector"
+        );
+
+        // Also verify via parse transition path: "Vector?" → Nullable(Vector).
+        let ty = MirType::parse("Vector?");
+        assert!(ty.is_nullable());
+        assert!(!ty.is_vec());
+        let payload = ty.nullable_payload().unwrap();
+        assert!(payload.is_vec(), "payload of Vector? must be Vector");
+
+        // "HashMap?" → Nullable(HashMap).
+        let ty = MirType::parse("HashMap?");
+        assert!(ty.is_nullable());
+        assert!(!ty.is_hashmap());
+    }
+
+    // ── MirType::is_copy tests ────────────────────────────────
+
+    #[test]
+    fn mirtype_is_copy_primitives() {
+        let body = well_formed_body();
+        assert!(MirType::Integer.is_copy(Some(&body)));
+        assert!(MirType::Trit.is_copy(Some(&body)));
+        assert!(MirType::Tryte.is_copy(Some(&body)));
+        assert!(MirType::Long.is_copy(Some(&body)));
+        assert!(MirType::Trilean.is_copy(Some(&body)));
+        assert!(MirType::Unit.is_copy(Some(&body)));
+        assert!(MirType::Unknown.is_copy(Some(&body)));
+        // is_copy(None) — same results for primitives.
+        assert!(MirType::Integer.is_copy(None));
+        assert!(MirType::Unknown.is_copy(None));
+    }
+
+    #[test]
+    fn mirtype_is_copy_references() {
+        let body = well_formed_body();
+        for form in [
+            ReferenceForm::StrongFrozen,
+            ReferenceForm::StrongMutable,
+            ReferenceForm::BorrowReadOnly,
+            ReferenceForm::BorrowExclusiveMutable,
+            ReferenceForm::WeakObserver,
+        ] {
+            let ty = MirType::Reference {
+                form,
+                inner: Box::new(MirType::String),
+            };
+            assert!(ty.is_copy(Some(&body)), "reference {form:?} should be Copy");
+            assert!(
+                ty.is_copy(None),
+                "reference {form:?} should be Copy (no body)"
+            );
+        }
+    }
+
+    #[test]
+    fn mirtype_is_copy_heap_types() {
+        let body = well_formed_body();
+        assert!(!MirType::String.is_copy(Some(&body)));
+        assert!(!MirType::Vector.is_copy(Some(&body)));
+        assert!(!MirType::HashMap.is_copy(Some(&body)));
+        // is_copy(None) — same results.
+        assert!(!MirType::String.is_copy(None));
+        assert!(!MirType::Vector.is_copy(None));
+        assert!(!MirType::HashMap.is_copy(None));
+    }
+
+    #[test]
+    fn mirtype_is_copy_struct_recursive() {
+        let layout = StructLayout::compute(
+            "HasString",
+            &[
+                ("header".into(), "Integer".into(), 8, 8),
+                ("body".into(), "String".into(), 8, 8),
+            ],
+        );
+        let body = Body {
+            struct_layouts: vec![layout],
+            ..well_formed_body()
+        };
+        // With body: struct with String field → Move.
+        assert!(!MirType::Struct("HasString".into()).is_copy(Some(&body)));
+        // Without body: assume Copy (sound while B8 blocks construction).
+        assert!(MirType::Struct("HasString".into()).is_copy(None));
+    }
+
+    #[test]
+    fn mirtype_is_copy_enum_recursive() {
+        let layout = EnumLayout::compute(
+            "Either",
+            &[("Left".into(), 0, Some(("Integer".into(), 8, 8, vec![])))],
+        );
+        let body = Body {
+            enum_layouts: vec![layout],
+            ..well_formed_body()
+        };
+        // All payloads are Integer → Copy.
+        assert!(MirType::Enum("Either".into()).is_copy(Some(&body)));
+
+        let layout2 = EnumLayout::compute(
+            "EitherString",
+            &[("Right".into(), 0, Some(("String".into(), 8, 8, vec![])))],
+        );
+        let body2 = Body {
+            enum_layouts: vec![layout2],
+            ..well_formed_body()
+        };
+        // A payload is String → Move.
+        assert!(!MirType::Enum("EitherString".into()).is_copy(Some(&body2)));
+    }
+
+    #[test]
+    fn mirtype_is_copy_unknown_defaults_move() {
+        let body = well_formed_body();
+        // With body: unknown struct/enum names → Move (refuse-over-guess).
+        assert!(!MirType::Struct("UnknownType".into()).is_copy(Some(&body)));
+        assert!(!MirType::Enum("UnknownType".into()).is_copy(Some(&body)));
+    }
+
+    #[test]
+    fn mirtype_nullable_is_copy_delegation() {
+        let body = well_formed_body();
+        // Integer? → payload Integer → Copy
+        assert!(MirType::Nullable(Box::new(MirType::Integer)).is_copy(Some(&body)));
+        // String? → payload String → Move
+        assert!(!MirType::Nullable(Box::new(MirType::String)).is_copy(Some(&body)));
+        // Vector? → payload Vector → Move
+        assert!(!MirType::Nullable(Box::new(MirType::Vector)).is_copy(Some(&body)));
+        // Unknown? → payload Unknown → Copy
+        assert!(MirType::Nullable(Box::new(MirType::Unknown)).is_copy(Some(&body)));
+        // is_copy(None)
+        assert!(MirType::Nullable(Box::new(MirType::Integer)).is_copy(None));
+        assert!(!MirType::Nullable(Box::new(MirType::String)).is_copy(None));
+    }
+
+    // ── Existing is_copy tests (keep — verify old API still works) ──
 
     #[test]
     fn is_copy_primitives() {
