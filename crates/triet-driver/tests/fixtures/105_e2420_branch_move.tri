@@ -1,0 +1,13 @@
+// ERROR: E2420
+// B2.1 (d): branch-join "any-branch-moves => moved".
+// One branch moves x via &+ x, the other doesn't.
+// After join, x is Moved (conservative rule) → subsequent use fires E2420.
+function main() -> Integer {
+    let x = 42;
+    if true {
+        let r = &+ x;  // this branch moves x
+    } else {
+        let y = x + 1; // this branch doesn't
+    }
+    return x;          // E2420: x moved in one branch → Moved after join
+}

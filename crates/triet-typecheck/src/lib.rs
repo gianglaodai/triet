@@ -1112,12 +1112,6 @@ mod tests {
     // Branch-aware: if/match snapshot+join with any-branch-moves
     // semantics; loops join initial state with after-body state.
 
-    fn assert_use_after_move(source: &str) {
-        assert_has_error(source, |e| {
-            matches!(e, TypeError::Borrow(BorrowError::UseAfterMove { .. }))
-        });
-    }
-
     fn assert_no_use_after_move(source: &str) {
         let errors = check_source(source);
         assert!(
@@ -1125,35 +1119,6 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, TypeError::Borrow(BorrowError::UseAfterMove { .. }))),
             "expected no E2420 fire, got: {errors:#?}",
-        );
-    }
-
-    #[test]
-    fn e2420_fires_after_strong_frozen_borrow() {
-        // `&+ x` moves x; subsequent identifier use fires E2420.
-        assert_use_after_move(
-            r"
-            function takes_strong(r: &+ Integer) {}
-            function main() {
-                let x: Integer = 1
-                takes_strong(&+ x)
-                takes_strong(&+ x)
-            }
-            ",
-        );
-    }
-
-    #[test]
-    fn e2420_fires_after_strong_mutable_borrow() {
-        assert_use_after_move(
-            r"
-            function takes_mut(r: &+ mutable Integer) {}
-            function main() {
-                let x: Integer = 1
-                takes_mut(&+ mutable x)
-                takes_mut(&+ mutable x)
-            }
-            ",
         );
     }
 
@@ -1204,39 +1169,6 @@ mod tests {
     }
 
     #[test]
-    fn e2420_fires_on_use_after_field_access_move() {
-        // `&+ obj.field` moves the base identifier `obj` per ADR-0031
-        // §4 conservative semantics. Subsequent `obj.other` fires E2420.
-        assert_use_after_move(
-            r"
-            struct Pair { left: Integer, right: Integer }
-            function take(r: &+ Integer) {}
-            function main() {
-                let p = Pair { left: 1, right: 2 }
-                take(&+ p.left)
-                take(&+ p.right)
-            }
-            ",
-        );
-    }
-
-    #[test]
-    fn e2420_fires_on_plain_use_after_move() {
-        // Move via `&+`, then direct identifier use (not borrow) fires.
-        assert_use_after_move(
-            r"
-            function take(r: &+ Integer) {}
-            function inspect(x: Integer) {}
-            function main() {
-                let x: Integer = 1
-                take(&+ x)
-                inspect(x)
-            }
-            ",
-        );
-    }
-
-    #[test]
     fn e2420_single_use_clean() {
         assert_no_use_after_move(
             r"
@@ -1244,29 +1176,6 @@ mod tests {
             function main() {
                 let x: Integer = 1
                 take(&+ x)
-            }
-            ",
-        );
-    }
-
-    #[test]
-    fn e2420_fires_after_if_branch_move() {
-        // Over-strict any-branch-moves join: if any branch moves x,
-        // the after-if state treats x as moved per ADR-0031 §4 +
-        // §10.1 (NLL refinement defers v0.10).
-        assert_use_after_move(
-            r"
-            function take(r: &+ Integer) {}
-            function inspect(x: Integer) {}
-            function main() {
-                let x: Integer = 1
-                let cond = true
-                if cond {
-                    take(&+ x)
-                } else {
-                    inspect(x)
-                }
-                inspect(x)
             }
             ",
         );
@@ -1287,43 +1196,6 @@ mod tests {
                     inspect(x)
                 }
                 inspect(x)
-            }
-            ",
-        );
-    }
-
-    #[test]
-    fn e2420_fires_after_loop_body_move() {
-        // Loop may iterate 0 or N times. Conservative: after-loop
-        // state = join(initial, after_body). If body moves x,
-        // post-loop x is moved.
-        assert_use_after_move(
-            r"
-            function take(r: &+ Integer) {}
-            function inspect(x: Integer) {}
-            function main() {
-                let x: Integer = 1
-                let cond = false
-                while cond {
-                    take(&+ x)
-                }
-                inspect(x)
-            }
-            ",
-        );
-    }
-
-    #[test]
-    fn e2420_fires_on_double_borrow_in_demo_pattern() {
-        // The exact pattern .7e demo would catch — the canonical
-        // atomic_counter "use after &+" anti-pattern.
-        assert_use_after_move(
-            r"
-            function fetch_add(r: &+ Integer, delta: Integer) -> Integer = 0
-            function main() {
-                let counter: Integer = 0
-                let prev1 = fetch_add(&+ counter, 1)
-                let prev2 = fetch_add(&+ counter, 1)
             }
             ",
         );

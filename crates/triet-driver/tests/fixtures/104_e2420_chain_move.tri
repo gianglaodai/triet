@@ -1,0 +1,11 @@
+// ERROR: E2420
+// B2.1 (c): move via chain — &+ obj.field moves base `obj`.
+// Subsequent use of `obj` fires E2420 UseAfterMove.
+// The move-state machine resolves field-access chains to the root identifier.
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let p = Point { x: 1, y: 2 };
+    let r = &+ p.x;    // &+ p.x moves p (base resolve)
+    return p.y;        // E2420: p was moved by &+ p.x
+}

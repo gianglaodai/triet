@@ -3,8 +3,6 @@
 mod exprs;
 mod methods;
 
-use std::collections::HashMap;
-
 use triet_syntax::{
     Arena, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, ReferenceForm,
     Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
@@ -23,20 +21,6 @@ use crate::{
 /// Tracks whether a local binding (function parameter or `let`-bound
 /// name) is still owning its value (`Alive`) or has been consumed by
 /// an owning-reference borrow expression (`Moved`). The `at` span
-/// records the move site for richer diagnostics in future iterations.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MoveState {
-    /// Binding still owns its value; references and use sites are OK.
-    Alive,
-    /// Binding was consumed by `&+ x` / `&+ mutable x` (or a chain
-    /// whose base resolves to this binding). Subsequent use fires
-    /// E2420 `UseAfterMove`.
-    Moved {
-        /// Span of the move expression (currently informational only).
-        at: Span,
-    },
-}
-
 /// Type-check a `Program`, returning all errors found and enum variant
 /// resolutions for the lowerer.
 ///
@@ -90,8 +74,6 @@ struct Checker<'p> {
     /// v0.9.x.atomic.7d: per-function move state map per ADR-0025 §5.1.
     /// Reset on function entry; tracks local bindings (params + lets).
     /// Lookups for names NOT in the map are ignored (functions, types,
-    /// imports — none of which are movable values).
-    pub(crate) move_states: HashMap<String, MoveState>,
     /// v0.10.x.borrow.3: per-function set of names introduced by
     /// `let` bindings (NOT parameters). Used by E2403 enforcement to
     /// distinguish "weak ref to local owner" (escapes when returned)
@@ -117,7 +99,6 @@ impl<'p> Checker<'p> {
             env: TypeEnvironment::with_prelude(),
             current_return_type: None,
             expected_type_stack: Vec::new(),
-            move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),
             expr_resolutions: crate::ExprResolutions::new(),
             pattern_resolutions: crate::PatternResolutions::new(),
@@ -134,7 +115,7 @@ impl<'p> Checker<'p> {
             env,
             current_return_type: None,
             expected_type_stack: Vec::new(),
-            move_states: HashMap::new(),
+            // B2.1a DELETED:             move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),
             expr_resolutions: crate::ExprResolutions::new(),
             pattern_resolutions: crate::PatternResolutions::new(),
@@ -161,47 +142,14 @@ impl<'p> Checker<'p> {
 
     /// Mark a local binding as moved, recording the move-site span.
     /// No-op when the name isn't a tracked local (functions, types,
-    /// imports — not movable values).
-    pub(crate) fn mark_moved(&mut self, name: &str, at: Span) {
-        if self.move_states.contains_key(name) {
-            self.move_states
-                .insert(name.to_string(), MoveState::Moved { at });
-        }
-    }
-
     /// Check whether using a name at a given span is valid. Fires
     /// E2420 `UseAfterMove` if the binding is currently in `Moved`
-    /// state.
-    pub(crate) fn check_used(&mut self, name: &str, span: &Span) {
-        if matches!(self.move_states.get(name), Some(MoveState::Moved { .. })) {
-            self.errors
-                .push(TypeError::Borrow(BorrowError::UseAfterMove {
-                    name: name.to_string(),
-                    span: span.clone(),
-                }));
-        }
-    }
-
     /// Walk an expression node looking for the **base identifier** of
     /// an operand chain. `Expr::Identifier(name)` → `name`;
     /// `Expr::FieldAccess { object, .. }` → recurse into `object`.
     /// Any other expression form → `None` (operand grammar per
-    /// ADR-0031 §2 ensures this only walks IDENT + field-access).
-    pub(crate) fn extract_base_identifier(&self, expr_id: ExprId) -> Option<String> {
-        match &self.arena.expression(expr_id).node {
-            triet_syntax::Expr::Identifier { name } => Some(name.clone()),
-            triet_syntax::Expr::FieldAccess { object, .. } => self.extract_base_identifier(*object),
-            _ => None,
-        }
-    }
-
     /// Snapshot the current move-state map. Used by branch-aware
     /// constructs (`if` / `match` / loop bodies) to evaluate each
-    /// branch from the same starting state.
-    fn snapshot_moves(&self) -> HashMap<String, MoveState> {
-        self.move_states.clone()
-    }
-
     /// Join two branch-end move-state maps with **any-branch-moves**
     /// semantics per ADR-0031 §4 over-strict approach: a binding is
     /// `Moved` in the join iff it's `Moved` in either branch. Span
@@ -209,28 +157,6 @@ impl<'p> Checker<'p> {
     ///
     /// This is conservative — rejects code that NLL would accept
     /// (one branch moves, other doesn't, join point only reachable
-    /// via no-move path). Per "refuse over guess" + v0.10 NLL refines.
-    fn join_moves(
-        mut a: HashMap<String, MoveState>,
-        b: HashMap<String, MoveState>,
-    ) -> HashMap<String, MoveState> {
-        for (name, state_b) in b {
-            let current = a.get(&name).cloned();
-            match (current, state_b) {
-                (Some(MoveState::Moved { .. }), _) => {
-                    // Already moved in `a` — keep it.
-                }
-                (_, moved @ MoveState::Moved { .. }) => {
-                    a.insert(name, moved);
-                }
-                _ => {
-                    // Both Alive (or missing) — leave `a` as is.
-                }
-            }
-        }
-        a
-    }
-
     fn check_program(&mut self) {
         // Pass 1: register every top-level function/const so calls and
         // references can resolve forward.
@@ -369,7 +295,6 @@ impl<'p> Checker<'p> {
     fn check_function(&mut self, def: &FunctionDef) {
         // v0.9.x.atomic.7d: save/restore move state across function
         // boundary — each function body has its own move-tracking map.
-        let saved_moves = std::mem::take(&mut self.move_states);
         // v0.10.x.borrow.3: save/restore local-let-name set per
         // function for E2403 escape detection (ADR-0025 §8.2). The set
         // is populated by Stmt::Let; parameters are NOT in it (they
@@ -414,8 +339,7 @@ impl<'p> Checker<'p> {
             self.env.declare(&parameter.name, ty);
             // v0.9.x.atomic.7d: track parameter as Alive at entry.
             // Any function body move site updates this map.
-            self.move_states
-                .insert(parameter.name.clone(), MoveState::Alive);
+            // B2.1a DELETED:             self.move_states
         }
 
         // v0.10.x.borrow.2 (ADR-0025 §3): lifetime elision check.
@@ -470,7 +394,6 @@ impl<'p> Checker<'p> {
         self.current_return_type = None;
         self.env.pop_frame();
         // v0.9.x.atomic.7d: restore move state from caller's frame.
-        self.move_states = saved_moves;
         // v0.10.x.borrow.3: restore local-let-name set.
         self.local_let_names = saved_local_lets;
     }
@@ -597,7 +520,7 @@ impl<'p> Checker<'p> {
                 let ty = self.check_initializer(type_annotation, init);
                 self.env.declare_with_mut(&name, ty, is_mutable);
                 // v0.9.x.atomic.7d: new local binding starts Alive.
-                self.move_states.insert(name.clone(), MoveState::Alive);
+                // B2.1a DELETED:                 self.move_states.insert(name.clone(), MoveState::Alive);
                 // v0.10.x.borrow.3: track as local-let (NOT parameter)
                 // for E2403 escape detection (ADR-0025 §8.2).
                 self.local_let_names.insert(name.clone());
@@ -651,10 +574,7 @@ impl<'p> Checker<'p> {
                 self.bind_pattern(variable, &element_ty);
                 // v0.9.x.atomic.7d: for-body may iterate 0 or N times;
                 // same join semantics as while/loop.
-                let pre_loop = self.snapshot_moves();
                 let _ = self.infer_expression(body);
-                let after_body = std::mem::take(&mut self.move_states);
-                self.move_states = Self::join_moves(pre_loop, after_body);
                 self.env.pop_frame();
             }
             Stmt::While {
@@ -668,17 +588,11 @@ impl<'p> Checker<'p> {
                 // v0.9.x.atomic.7d: loop body may run 0 or N times.
                 // Snapshot before; walk body; join initial with
                 // after-body to model "didn't enter" vs "ran ≥1 time".
-                let pre_loop = self.snapshot_moves();
                 let _ = self.infer_expression(body);
-                let after_body = std::mem::take(&mut self.move_states);
-                self.move_states = Self::join_moves(pre_loop, after_body);
             }
             Stmt::Loop { body } => {
                 // Same as while — body may not run (`loop { break }`).
-                let pre_loop = self.snapshot_moves();
                 let _ = self.infer_expression(body);
-                let after_body = std::mem::take(&mut self.move_states);
-                self.move_states = Self::join_moves(pre_loop, after_body);
             }
             Stmt::Expression { expr } => {
                 let _ = self.infer_expression(expr);
@@ -724,8 +638,9 @@ impl<'p> Checker<'p> {
         let value_span = self.arena.expression(value).span.clone();
         // `Stmt::Assignment` stores the target as an `ExprId`; only
         // identifier targets are assignable (parser-enforced).
-        let Some(name) = self.extract_base_identifier(target) else {
-            return;
+        let name = match &self.arena.expression(target).node {
+            triet_syntax::Expr::Identifier { name } => name.clone(),
+            _ => return,
         };
         let Some(binding) = self.env.lookup_binding(&name).cloned() else {
             self.errors.push(TypeError::UndefinedName {
@@ -819,8 +734,8 @@ impl<'p> Checker<'p> {
         let expr = self.arena.expression(expr_id).clone();
         if let triet_syntax::Expr::Borrow { form, operand } = expr.node
             && form == triet_syntax::ReferenceForm::WeakObserver
-            && let Some(base) = self.extract_base_identifier(operand)
-            && self.local_let_names.contains(&base)
+            && let triet_syntax::Expr::Identifier { name } = &self.arena.expression(operand).node
+            && self.local_let_names.contains(name)
         {
             self.errors
                 .push(TypeError::Borrow(BorrowError::EscapingBorrow {
