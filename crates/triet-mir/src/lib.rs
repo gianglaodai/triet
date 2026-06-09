@@ -155,24 +155,26 @@ impl fmt::Display for Place {
     }
 }
 
-/// Declaration of a local: its type (as a display string) and mutability.
+/// Declaration of a local: its type and mutability.
 ///
-/// MIR stays independent of AST types, so the type is carried as a name
-/// string rather than a `triet_syntax::Type`.
+/// Type is carried as a [`MirType`] enum — no more string-match guessing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalDecl {
-    /// Type name, for diagnostics and layout lookup (e.g. "Integer", "Point").
-    pub ty: String,
+    /// Type of this local.
+    pub ty: MirType,
     /// Whether the binding is mutable.
     pub mutable: bool,
 }
 
 impl LocalDecl {
     /// A temporary/local of the given type, immutable by default.
+    ///
+    /// Accepts both `MirType` values and `&str` literals (via the
+    /// transitional `From<&str>` impl — dies at S4 with `parse()`).
     #[must_use]
-    pub fn new(ty: &str) -> Self {
+    pub fn new(ty: impl Into<MirType>) -> Self {
         Self {
-            ty: ty.to_string(),
+            ty: ty.into(),
             mutable: false,
         }
     }
@@ -453,7 +455,7 @@ impl fmt::Display for ReferenceForm {
 ///   (with a producer at the same commit — Track B Rule #4).
 /// - `Unknown` replaces the sentinel string `"?"` — type checker could not
 ///   determine this type. Treated as Copy (refuse-over-guess on the safe side).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MirType {
     // ── Scalars (Copy per SPEC §10.1) ──
     /// `Integer` — 27-trit signed integer.
@@ -595,6 +597,20 @@ impl MirType {
         }
 
         // Exact-match: primitives, heap types, sentinel, user types.
+        // HashMap<K,V> — must come BEFORE Vector<T> (shared angle-bracket syntax)
+        // Bare HashMap/Vector — generic args stripped (ADR-0050 CORRECTION §3.1.1).
+        if let Some(rest) = s.strip_prefix("HashMap<")
+            && let Some(_inner) = rest.strip_suffix('>')
+        {
+            return Self::HashMap;
+        }
+        // Vector<T>
+        if let Some(rest) = s.strip_prefix("Vector<")
+            && let Some(_inner) = rest.strip_suffix('>')
+        {
+            return Self::Vector;
+        }
+
         match s {
             "?" => Self::Unknown,
             "Integer" => Self::Integer,
@@ -687,35 +703,50 @@ impl MirType {
             // Reference types — Copy by design (ADR-0045 §3).
             Self::Reference { .. } => true,
             // User types.
-            Self::Struct(name) => {
+            // TECH-DEBT(B1a S2): Struct/Enum may be misclassified by parse().
+            // Search BOTH layout tables (refuse-over-guess in reverse).
+            Self::Struct(name) | Self::Enum(name) => {
                 if let Some(body) = body {
+                    // Check struct layouts
                     if let Some(s) = body.struct_layouts.iter().find(|s| s.name == *name) {
-                        // Recursion: parse field types (still String during S1-S2).
-                        return s
-                            .fields
-                            .iter()
-                            .all(|f| Self::parse(&f.ty).is_copy(Some(body)));
+                        return s.fields.iter().all(|f| f.ty.is_copy(Some(body)));
                     }
-                    false // Unknown struct → Move (refuse-over-guess)
+                    // Check enum layouts
+                    if let Some(e) = body.enum_layouts.iter().find(|e| e.name == *name) {
+                        return e
+                            .variants
+                            .iter()
+                            .all(|v| v.payload.as_ref().is_none_or(|p| p.ty.is_copy(Some(body))));
+                    }
+                    false // Unknown type → Move (refuse-over-guess)
                 } else {
                     true // No body → assume Copy (SOUND only while B8 blocks heap fields)
                 }
             }
-            Self::Enum(name) => {
-                if let Some(body) = body {
-                    if let Some(e) = body.enum_layouts.iter().find(|e| e.name == *name) {
-                        return e.variants.iter().all(|v| {
-                            v.payload
-                                .as_ref()
-                                .is_none_or(|p| Self::parse(&p.ty).is_copy(Some(body)))
-                        });
-                    }
-                    false // Unknown enum → Move (refuse-over-guess)
-                } else {
-                    true // No body → assume Copy (sound while B8 blocks heap fields)
-                }
-            }
         }
+    }
+}
+
+// TECH-DEBT(B1a): transitional shims — let construction sites pass
+// strings during S2-S3. All die with parse() at S4.
+impl From<&str> for MirType {
+    fn from(s: &str) -> Self {
+        Self::parse(s)
+    }
+}
+impl From<String> for MirType {
+    fn from(s: String) -> Self {
+        Self::parse(&s)
+    }
+}
+impl From<&String> for MirType {
+    fn from(s: &String) -> Self {
+        Self::parse(s)
+    }
+}
+impl From<&MirType> for MirType {
+    fn from(ty: &MirType) -> Self {
+        ty.clone()
     }
 }
 
@@ -918,7 +949,8 @@ pub struct FunctionSignature {
     pub name: String,
     /// Parameters: (name, passing_mode).
     pub params: Vec<(String, ParameterPassing)>,
-    /// Return type name for display.
+    /// Return type name for diagnostics/layout lookup.
+    /// TECH-DEBT(B1a): migrate to MirType in S3.
     pub return_type: String,
     /// The shape of the return value (Unit, Scalar, BinaryOutcome, TernaryOutcome).
     /// Determines how many values the function returns in the ABI.
@@ -1080,8 +1112,8 @@ pub struct StructLayout {
 pub struct FieldLayout {
     /// Field name.
     pub name: String,
-    /// Field type name (e.g. "Integer", "String").
-    pub ty: String,
+    /// Field type.
+    pub ty: MirType,
     /// Byte offset from the start of the struct.
     pub offset: usize,
     /// Byte size of the field.
@@ -1128,8 +1160,8 @@ pub struct VariantLayout {
 /// Layout of a variant's payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadLayout {
-    /// Type name of the payload (e.g. "Integer", "Point").
-    pub ty: String,
+    /// Type of the payload.
+    pub ty: MirType,
     /// Size of this variant's payload in bytes.
     pub size: usize,
     /// Alignment of this variant's payload.
@@ -1143,15 +1175,19 @@ impl EnumLayout {
     ///
     /// `variants` is a list of `(name, discriminant_value, payload)`.
     /// Payload is `Option<(ty, size, alignment, fields)>`.
+    /// Field types in the payload use [`MirType`].
     /// `discriminant_size` defaults to 8 (i64 in Bậc A).
     /// The payload area size = max of all variant payload sizes.
+    #[allow(clippy::type_complexity)]
+    // ^-- Complex tuple payload type (String, i64, Option<(MirType, usize, usize, Vec<FieldLayout>)>).
+    //     Simplifies when EnumLayout gets dedicated type aliases at S3.
     #[must_use]
     pub fn compute(
         name: &str,
         variants: &[(
-            String,                                           // variant name
-            i64,                                              // discriminant value
-            Option<(String, usize, usize, Vec<FieldLayout>)>, // payload: (ty, size, alignment, fields)
+            String,                                            // variant name
+            i64,                                               // discriminant value
+            Option<(MirType, usize, usize, Vec<FieldLayout>)>, // payload: (ty, size, alignment, fields)
         )],
     ) -> Self {
         let disc_offset: usize = 0;
@@ -1217,7 +1253,7 @@ impl StructLayout {
     /// alignment is the maximum of its fields' alignments.
     /// Total size is padded to the struct alignment.
     #[must_use]
-    pub fn compute(name: &str, fields: &[(String, String, usize, usize)]) -> Self {
+    pub fn compute(name: &str, fields: &[(String, MirType, usize, usize)]) -> Self {
         let mut offset = 0usize;
         let mut max_align = 1usize;
         let mut field_layouts = Vec::new();
@@ -1404,9 +1440,11 @@ impl Body {
         let find_enum = |name: &str| -> Option<&EnumLayout> {
             self.enum_layouts.iter().find(|e| e.name == name)
         };
-        // Helper: look up EnumLayout by type string (from local_decls).
-        let find_enum_by_type =
-            |ty: &str| -> Option<&EnumLayout> { self.enum_layouts.iter().find(|e| e.name == ty) };
+        // Helper: look up EnumLayout from a MirType.
+        let find_enum_by_type = |ty: &MirType| -> Option<&EnumLayout> {
+            let name = ty.to_string();
+            self.enum_layouts.iter().find(|e| e.name == name)
+        };
 
         for block_data in &self.blocks {
             // INV-1 helpers — BasicBlock references, copy-friendly
@@ -1445,7 +1483,9 @@ impl Body {
 
             // ── INV-3 helper: verify Payload projection ──
             let check_payload = |base: Local, variant: &str| -> Result<(), MirError> {
-                if let Some(ty) = self.local_decls.get(base.0).map(|d| d.ty.as_str())
+                // Display-bridge: .ty is MirType, extract name for lookup (S2 transitional).
+                let ty_opt = self.local_decls.get(base.0).map(|d| &d.ty);
+                if let Some(ty) = ty_opt
                     && let Some(el) = find_enum_by_type(ty)
                 {
                     if !el.variants.iter().any(|v| v.name == variant) {
@@ -1587,13 +1627,6 @@ impl Body {
                         dest, enum_name, ..
                     } => {
                         check_local(*dest)?;
-                        // 4i-1: dest type must be this enum
-                        if let Some(decl) = self.local_decls.get(dest.0)
-                            && decl.ty != *enum_name
-                        {
-                            // Warn but don't fail — the type string
-                            // may be resolved differently by the lowerer.
-                        }
                         // 4i-1: enum_name must exist in enum_layouts
                         if find_enum(enum_name).is_none() {
                             return Err(MirError::EnumLayoutNotFound {
@@ -1750,7 +1783,7 @@ pub enum MirError {
         /// The local being read from.
         local: Local,
         /// The type that was found instead of an enum.
-        found_type: String,
+        found_type: MirType,
         /// Source location.
         span: Span,
     },
@@ -2035,6 +2068,9 @@ impl fmt::Display for ControlFlowGraph {
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+// ^-- TECH-DEBT(B1a S2): old free helper functions follow the test module.
+//     These helpers are deleted at S3 when all consumers migrate to MirType methods.
 mod tests {
     use super::*;
 
@@ -2045,8 +2081,8 @@ mod tests {
         let layout = StructLayout::compute(
             "Point",
             &[
-                ("x".into(), "Integer".into(), 8, align::INTEGER),
-                ("y".into(), "Integer".into(), 8, align::INTEGER),
+                ("x".into(), MirType::Integer, 8, align::INTEGER),
+                ("y".into(), MirType::Integer, 8, align::INTEGER),
             ],
         );
         assert_eq!(layout.alignment, 8);
@@ -2064,9 +2100,9 @@ mod tests {
         let layout = StructLayout::compute(
             "Mixed",
             &[
-                ("a".into(), "Trit".into(), 1, align::TRIT),
-                ("b".into(), "Integer".into(), 8, align::INTEGER),
-                ("c".into(), "Trilean".into(), 1, align::TRILEAN),
+                ("a".into(), MirType::Trit, 1, align::TRIT),
+                ("b".into(), MirType::Integer, 8, align::INTEGER),
+                ("c".into(), MirType::Trilean, 1, align::TRILEAN),
             ],
         );
         assert_eq!(
@@ -2087,8 +2123,8 @@ mod tests {
         let layout = StructLayout::compute(
             "Buffer",
             &[
-                ("header".into(), "Integer".into(), 8, align::INTEGER),
-                ("data".into(), "?".into(), 5, 1), // 5-byte array, alignment 1
+                ("header".into(), MirType::Integer, 8, align::INTEGER),
+                ("data".into(), MirType::Unknown, 5, 1), // 5-byte array, alignment 1
             ],
         );
         assert_eq!(layout.alignment, 8);
@@ -2103,7 +2139,7 @@ mod tests {
         let _ = StructLayout::compute(
             "Bad",
             &[
-                ("x".into(), "Integer".into(), 5, 5), // alignment 5 is invalid
+                ("x".into(), MirType::Integer, 5, 5), // alignment 5 is invalid
             ],
         );
     }
@@ -2304,11 +2340,11 @@ mod tests {
     #[test]
     fn place_type_plain_local() {
         let body = Body {
-            local_decls: vec![LocalDecl::new("Integer")],
+            local_decls: vec![LocalDecl::new(MirType::Integer)],
             ..well_formed_body()
         };
         let place = Place::local(Local(0));
-        assert_eq!(place_type(&place, &body), "Integer");
+        assert_eq!(place_type(&place, &body), MirType::Integer);
     }
 
     #[test]
@@ -2316,12 +2352,12 @@ mod tests {
         let layout = StructLayout::compute(
             "Point",
             &[
-                ("x".into(), "Integer".into(), 8, align::INTEGER),
-                ("y".into(), "String".into(), 8, align::INTEGER),
+                ("x".into(), MirType::Integer, 8, align::INTEGER),
+                ("y".into(), MirType::String, 8, align::INTEGER),
             ],
         );
         let body = Body {
-            local_decls: vec![LocalDecl::new("Point")],
+            local_decls: vec![LocalDecl::new(MirType::Struct("Point".into()))],
             struct_layouts: vec![layout],
             ..well_formed_body()
         };
@@ -2329,22 +2365,22 @@ mod tests {
             local: Local(0),
             projection: vec![Projection::Field("x".into())],
         };
-        assert_eq!(place_type(&place, &body), "Integer");
+        assert_eq!(place_type(&place, &body), MirType::Integer);
         let place_y = Place {
             local: Local(0),
             projection: vec![Projection::Field("y".into())],
         };
-        assert_eq!(place_type(&place_y, &body), "String");
+        assert_eq!(place_type(&place_y, &body), MirType::String);
     }
 
     #[test]
     fn place_type_enum_payload() {
         let layout = EnumLayout::compute(
             "Option",
-            &[("Some".into(), 0, Some(("Integer".into(), 8, 8, vec![])))],
+            &[("Some".into(), 0, Some((MirType::Integer, 8, 8, vec![])))],
         );
         let body = Body {
-            local_decls: vec![LocalDecl::new("Option")],
+            local_decls: vec![LocalDecl::new(MirType::Enum("Option".into()))],
             enum_layouts: vec![layout],
             ..well_formed_body()
         };
@@ -2352,13 +2388,13 @@ mod tests {
             local: Local(0),
             projection: vec![Projection::Payload("Some".into())],
         };
-        assert_eq!(place_type(&place, &body), "Integer");
+        assert_eq!(place_type(&place, &body), MirType::Integer);
     }
 
     #[test]
     fn place_type_unknown_projection() {
         let body = Body {
-            local_decls: vec![LocalDecl::new("UnknownType")],
+            local_decls: vec![LocalDecl::new(MirType::Struct("UnknownType".into()))],
             ..well_formed_body()
         };
         // Field on unknown type → "?"
@@ -2366,13 +2402,13 @@ mod tests {
             local: Local(0),
             projection: vec![Projection::Field("x".into())],
         };
-        assert_eq!(place_type(&place, &body), "?");
+        assert_eq!(place_type(&place, &body), MirType::Unknown);
         // Unknown projection kind → "?"
         let place2 = Place {
             local: Local(0),
             projection: vec![Projection::Deref],
         };
-        assert_eq!(place_type(&place2, &body), "?");
+        assert_eq!(place_type(&place2, &body), MirType::Unknown);
     }
 
     // ── MirType tests (ADR-0050 B1a) ──────────────────────────
@@ -2591,8 +2627,8 @@ mod tests {
         let layout = StructLayout::compute(
             "HasString",
             &[
-                ("header".into(), "Integer".into(), 8, 8),
-                ("body".into(), "String".into(), 8, 8),
+                ("header".into(), MirType::Integer, 8, 8),
+                ("body".into(), MirType::String, 8, 8),
             ],
         );
         let body = Body {
@@ -2609,7 +2645,7 @@ mod tests {
     fn mirtype_is_copy_enum_recursive() {
         let layout = EnumLayout::compute(
             "Either",
-            &[("Left".into(), 0, Some(("Integer".into(), 8, 8, vec![])))],
+            &[("Left".into(), 0, Some((MirType::Integer, 8, 8, vec![])))],
         );
         let body = Body {
             enum_layouts: vec![layout],
@@ -2620,7 +2656,7 @@ mod tests {
 
         let layout2 = EnumLayout::compute(
             "EitherString",
-            &[("Right".into(), 0, Some(("String".into(), 8, 8, vec![])))],
+            &[("Right".into(), 0, Some((MirType::String, 8, 8, vec![])))],
         );
         let body2 = Body {
             enum_layouts: vec![layout2],
@@ -2694,8 +2730,8 @@ mod tests {
         let layout = StructLayout::compute(
             "HasString",
             &[
-                ("header".into(), "Integer".into(), 8, 8),
-                ("body".into(), "String".into(), 8, 8),
+                ("header".into(), MirType::Integer, 8, 8),
+                ("body".into(), MirType::String, 8, 8),
             ],
         );
         let body = Body {
@@ -2710,7 +2746,7 @@ mod tests {
     fn is_copy_enum_recursive() {
         let layout = EnumLayout::compute(
             "Either",
-            &[("Left".into(), 0, Some(("Integer".into(), 8, 8, vec![])))],
+            &[("Left".into(), 0, Some((MirType::Integer, 8, 8, vec![])))],
         );
         let body = Body {
             enum_layouts: vec![layout],
@@ -2721,7 +2757,7 @@ mod tests {
 
         let layout2 = EnumLayout::compute(
             "EitherString",
-            &[("Right".into(), 0, Some(("String".into(), 8, 8, vec![])))],
+            &[("Right".into(), 0, Some((MirType::String, 8, 8, vec![])))],
         );
         let body2 = Body {
             enum_layouts: vec![layout2],
@@ -2939,15 +2975,16 @@ pub fn is_copy(ty: &str, body: &Body) -> bool {
         other if other.starts_with('&') => true,
         _ => {
             // Check struct layouts — Copy if all fields are Copy (recursive).
+            // Display-bridge: field ty is now MirType, call is_copy directly.
             if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty) {
-                return s.fields.iter().all(|f| is_copy(&f.ty, body));
+                return s.fields.iter().all(|f| f.ty.is_copy(Some(body)));
             }
             // Check enum layouts — Copy if all payloads are Copy (recursive).
             if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty) {
                 return e
                     .variants
                     .iter()
-                    .all(|v| v.payload.as_ref().is_none_or(|p| is_copy(&p.ty, body)));
+                    .all(|v| v.payload.as_ref().is_none_or(|p| p.ty.is_copy(Some(body))));
             }
             // Unknown types default to Move (Refuse-over-guess)
             false
@@ -2956,19 +2993,20 @@ pub fn is_copy(ty: &str, body: &Body) -> bool {
 }
 
 /// Computes the type of a Place by walking its projection chain.
-pub fn place_type(place: &Place, body: &Body) -> String {
+pub fn place_type(place: &Place, body: &Body) -> MirType {
     let mut current_ty = body.local_decls[place.local.0].ty.clone();
     for proj in &place.projection {
         current_ty = match proj {
             Projection::Field(name) => {
                 // Look up the field type in struct layouts.
-                if let Some(s) = body.struct_layouts.iter().find(|s| s.name == current_ty) {
+                let ty_name = current_ty.to_string();
+                if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty_name) {
                     if let Some(field) = s.fields.iter().find(|f| f.name == name.as_str()) {
                         field.ty.clone()
                     } else {
-                        "?".to_string()
+                        MirType::Unknown
                     }
-                } else if let Some(e) = body.enum_layouts.iter().find(|e| e.name == current_ty) {
+                } else if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty_name) {
                     // Look up in enum payload layouts (for struct-payload variants).
                     let mut found = None;
                     for variant in &e.variants {
@@ -2980,30 +3018,31 @@ pub fn place_type(place: &Place, body: &Body) -> String {
                             break;
                         }
                     }
-                    found.unwrap_or_else(|| "?".to_string())
+                    found.unwrap_or(MirType::Unknown)
                 } else {
-                    "?".to_string()
+                    MirType::Unknown
                 }
             }
             Projection::Payload(variant) => {
                 // Look up the payload type in enum layouts.
-                if let Some(e) = body.enum_layouts.iter().find(|e| e.name == current_ty) {
+                let ty_name = current_ty.to_string();
+                if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty_name) {
                     if let Some(v) = e.variants.iter().find(|v| &v.name == variant) {
                         if let Some(ref payload) = v.payload {
                             payload.ty.clone()
                         } else {
-                            "?".to_string()
+                            MirType::Unknown
                         }
                     } else {
-                        "?".to_string()
+                        MirType::Unknown
                     }
                 } else {
-                    "?".to_string()
+                    MirType::Unknown
                 }
             }
             _ => {
                 // Other projections (Deref, Downcast, Index) — can't resolve yet.
-                "?".to_string()
+                MirType::Unknown
             }
         };
     }

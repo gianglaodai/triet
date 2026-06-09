@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use triet_mir::{
     BasicBlock, Local, Place, Projection, ReferenceForm, Span, Statement, Terminator,
-    builtin_shim_meta, is_copy,
+    builtin_shim_meta,
 };
 
 use miette::Diagnostic;
@@ -559,10 +559,10 @@ fn process_block(
                 // Δ3: Refuse to copy a Move type out of a projection
                 if is_field_read {
                     let extracted_ty = triet_mir::place_type(source, body);
-                    if !triet_mir::is_copy(&extracted_ty, body) {
+                    if !extracted_ty.is_copy(Some(body)) {
                         errors.push(BorrowError::CannotCopyMoveTypeOut {
                             place: place_name(source, names),
-                            ty: extracted_ty,
+                            ty: extracted_ty.to_string(),
                             span: span.clone(),
                         });
                     }
@@ -615,7 +615,7 @@ fn process_block(
                     }
                     // Δ1: Assign plain-source only marks Moved if type is Move
                     let source_ty = &body.local_decls[source.local.0].ty;
-                    if !triet_mir::is_copy(source_ty, body) {
+                    if !source_ty.is_copy(Some(body)) {
                         state.var_states.insert(source.local, VarState::Moved);
                     }
                 }
@@ -835,7 +835,7 @@ fn process_block(
         for (i, arg) in args.iter().enumerate() {
             if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
                 let arg_ty = &body.local_decls[arg.0].ty;
-                if !is_copy(arg_ty, body) {
+                if !arg_ty.is_copy(Some(body)) {
                     state.var_states.insert(*arg, VarState::Moved);
                 }
             }
@@ -868,7 +868,7 @@ fn process_block(
                 continue;
             }
             let arg_ty = &body.local_decls[arg.0].ty;
-            if !is_copy(arg_ty, body) {
+            if !arg_ty.is_copy(Some(body)) {
                 if matches!(state.var_states.get(arg), Some(VarState::Moved)) {
                     let name = body
                         .local_names

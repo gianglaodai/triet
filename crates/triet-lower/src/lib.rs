@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use triet_mir::{
     BasicBlock, BinOp, Body, CallTarget, ConstValue, DUMMY_SPAN, EnumLayout, FieldLayout,
-    FieldPath, FunctionSignature, Local, LocalDecl, ParameterPassing, Place, Projection, Span,
-    Statement, StructLayout, Terminator,
+    FieldPath, FunctionSignature, Local, LocalDecl, MirType, ParameterPassing, Place, Projection,
+    Span, Statement, StructLayout, Terminator,
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDef, Item,
@@ -123,7 +123,7 @@ struct Ctx {
     /// Resolved enum variants from the type checker, keyed by pattern ID.
     pattern_resolutions: PatternResolutions,
     /// Map from function name to its return type name.
-    func_return_types: HashMap<String, String>,
+    func_return_types: HashMap<String, MirType>,
     /// If this function returns a struct, the local holding the sret pointer.
     sret_ptr: Option<Local>,
     /// Locals introduced by `let` bindings that need `Drop` at scope exit.
@@ -140,20 +140,21 @@ struct Ctx {
 }
 
 impl Ctx {
+    #[allow(clippy::too_many_arguments)] // TECH-DEBT(B1a S2): transitional — struct_names/enum_names removed at S3
     fn new(
         name: &str,
-        ret: &str,
+        ret: &MirType,
         struct_names: std::collections::HashSet<String>,
         struct_layouts: HashMap<String, StructLayout>,
         enum_names: std::collections::HashSet<String>,
         enum_layouts: HashMap<String, EnumLayout>,
         expr_resolutions: ExprResolutions,
         pattern_resolutions: PatternResolutions,
-        func_return_types: HashMap<String, String>,
+        func_return_types: HashMap<String, MirType>,
     ) -> Self {
-        let is_struct_return = struct_names.contains(ret);
+        let is_struct_return = struct_names.contains(&ret.to_string());
         // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
-        let is_fat_return = is_struct_return || ret == "String";
+        let is_fat_return = is_struct_return || matches!(ret, MirType::String);
         let mut ctx = Self {
             vars: HashMap::new(),
             local_decls: Vec::new(),
@@ -208,8 +209,9 @@ impl Ctx {
         self.enum_names.contains(name)
     }
 
-    /// Allocate a fresh local with a declared type name.
-    fn alloc_local_ty(&mut self, ty: &str) -> Local {
+    /// Allocate a fresh local with a declared type.
+    /// TECH-DEBT(B1a): &str bridge via From impl — migrate to MirType at S3.
+    fn alloc_local_ty(&mut self, ty: impl Into<MirType>) -> Local {
         let l = Local(self.local_decls.len());
         self.local_decls.push(LocalDecl::new(ty));
         l
@@ -217,7 +219,7 @@ impl Ctx {
 
     /// Allocate a temporary whose type is not tracked yet.
     fn alloc_local(&mut self) -> Local {
-        self.alloc_local_ty("?")
+        self.alloc_local_ty(MirType::Unknown)
     }
 
     // ── Scope tracking (Drop emission) ─────────────────────────
@@ -245,7 +247,7 @@ impl Ctx {
         let mut locals: Vec<Local> = self.owned_locals.drain(snapshot..).collect();
         locals.sort_by_key(|&l| {
             let ty = &self.local_decls[l.0].ty;
-            ty.starts_with('&')
+            ty.is_reference()
         });
         for l in locals.into_iter().rev() {
             self.push(Statement::Drop(l, DUMMY_SPAN));
@@ -327,11 +329,38 @@ impl Ctx {
 /// Struct definitions in the program are lowered to `StructLayout` entries
 /// and attached to every function body so that the JIT backend can compute
 /// field offsets. In Bậc A every field is 8 bytes (i64), alignment 8.
+#[allow(clippy::type_complexity)]
+// ^-- TECH-DEBT(B1a S2): complex enum variant type — simplifies when
+//     EnumLayout moves to dedicated type aliases at S3.
 pub fn lower_program(
     prog: &Program,
     expr_resolutions: &ExprResolutions,
     pattern_resolutions: &PatternResolutions,
 ) -> Result<Vec<Body>, LowerError> {
+    // ── Build type-name sets FIRST (needed by lower_type) ──────
+    let struct_names: std::collections::HashSet<String> = prog
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Struct { def } = &item.node {
+                Some(def.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let enum_names: std::collections::HashSet<String> = prog
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Enum { def } = &item.node {
+                Some(def.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // ── Collect struct layouts from struct definitions ──────────
     // Bậc A: every field is 8 bytes, alignment 8 (single i64).
     // Bậc C will compute real sizes from type information.
@@ -340,11 +369,12 @@ pub fn lower_program(
         .iter()
         .filter_map(|item| {
             if let Item::Struct { def } = &item.node {
-                let fields: Vec<(String, String, usize, usize)> = def
+                let fields: Vec<(String, MirType, usize, usize)> = def
                     .fields
                     .iter()
                     .map(|f| {
-                        let ty = type_name(&prog.arena, f.type_annotation);
+                        let ty =
+                            lower_type(&prog.arena, f.type_annotation, &struct_names, &enum_names);
                         (f.name.clone(), ty, 8, 8)
                     })
                     .collect();
@@ -354,9 +384,6 @@ pub fn lower_program(
             }
         })
         .collect();
-
-    let struct_names: std::collections::HashSet<String> =
-        struct_layouts.iter().map(|l| l.name.clone()).collect();
     let mut struct_map: HashMap<String, StructLayout> = struct_layouts
         .iter()
         .map(|l| (l.name.clone(), l.clone()))
@@ -372,9 +399,9 @@ pub fn lower_program(
     let string_layout = StructLayout::compute(
         "String",
         &[
-            ("ptr".to_string(), "Integer".to_string(), 8, 8),
-            ("len".to_string(), "Integer".to_string(), 8, 8),
-            ("cap".to_string(), "Integer".to_string(), 8, 8),
+            ("ptr".to_string(), MirType::Integer, 8, 8),
+            ("len".to_string(), MirType::Integer, 8, 8),
+            ("cap".to_string(), MirType::Integer, 8, 8),
         ],
     );
     struct_layouts.push(string_layout.clone());
@@ -391,7 +418,7 @@ pub fn lower_program(
                 let variants: Vec<(
                     String,
                     i64,
-                    Option<(String, usize, usize, Vec<FieldLayout>)>,
+                    Option<(MirType, usize, usize, Vec<FieldLayout>)>,
                 )> = def
                     .variants
                     .iter()
@@ -399,9 +426,9 @@ pub fn lower_program(
                     .map(|(i, v)| {
                         let disc = i as i64;
                         let payload = v.payload.map(|tid| {
-                            let ty_name = type_name(&prog.arena, tid);
+                            let ty = lower_type(&prog.arena, tid, &struct_names, &enum_names);
                             // Bậc A: every type is 8-byte i64
-                            (ty_name, 8usize, 8usize, Vec::new())
+                            (ty, 8usize, 8usize, Vec::new())
                         });
                         (v.name.clone(), disc, payload)
                     })
@@ -413,22 +440,20 @@ pub fn lower_program(
         })
         .collect();
 
-    let enum_names: std::collections::HashSet<String> =
-        enum_layouts.iter().map(|l| l.name.clone()).collect();
     let enum_map: HashMap<String, EnumLayout> = enum_layouts
         .iter()
         .map(|l| (l.name.clone(), l.clone()))
         .collect();
 
-    let func_return_types: HashMap<String, String> = prog
+    let func_return_types: HashMap<String, MirType> = prog
         .items
         .iter()
         .filter_map(|item| {
             if let Item::Function { def } = &item.node {
                 let ret = def
                     .return_type
-                    .map(|tid| type_name(&prog.arena, tid))
-                    .unwrap_or_else(|| "Integer".to_string());
+                    .map(|tid| lower_type(&prog.arena, tid, &struct_names, &enum_names))
+                    .unwrap_or(MirType::Integer);
                 Some((def.name.clone(), ret))
             } else {
                 None
@@ -462,6 +487,7 @@ pub fn lower_program(
 /// Lower one function definition to a MIR body.
 ///
 /// `span` is the byte range of the function definition in the source file,
+#[allow(clippy::too_many_arguments)] // TECH-DEBT(B1a S2): transitional — struct_names/enum_names removed at S3
 /// used as a fallback for body-level synthetic statements.
 pub fn lower_function(
     func: &FunctionDef,
@@ -473,13 +499,13 @@ pub fn lower_function(
     enum_layouts: HashMap<String, EnumLayout>,
     expr_resolutions: ExprResolutions,
     pattern_resolutions: PatternResolutions,
-    func_return_types: HashMap<String, String>,
+    func_return_types: HashMap<String, MirType>,
 ) -> Result<Body, LowerError> {
     let ret_ty = func
         .return_type
         .as_ref()
-        .map(|tid| type_name(arena, *tid))
-        .unwrap_or_else(|| "Integer".to_string());
+        .map(|tid| lower_type(arena, *tid, &struct_names, &enum_names))
+        .unwrap_or(MirType::Integer);
     let mut c = Ctx::new(
         &func.name,
         &ret_ty,
@@ -498,7 +524,7 @@ pub fn lower_function(
     c.push_scope();
 
     for p in &func.params {
-        let ty = type_name(arena, p.type_annotation);
+        let ty = lower_type(arena, p.type_annotation, &c.struct_names, &c.enum_names);
         // B7-lift (ADR-0042): heap types now allowed as parameters.
         // Move semantics: callee owns + drops, caller zeroes slot after call.
         // ADR-0045 §2: reference types (&0 String etc.) are borrow params
@@ -513,7 +539,7 @@ pub fn lower_function(
         };
         // Only push_owned for Move params and non-reference types.
         // Reference types (&0 String) — callee borrows, no Drop.
-        let is_ref_type = ty.starts_with('&');
+        let is_ref_type = ty.is_reference();
         if matches!(passing, ParameterPassing::Move) || !is_ref_type {
             c.push_owned(l);
         }
@@ -542,7 +568,7 @@ pub fn lower_function(
                 // bắt đầu bằng '&' nhưng KHÔNG bằng "&+".
                 if let Some(&local) = c.vars.get(name) {
                     let ty = &c.local_decls[local.0].ty;
-                    ty.starts_with('&') && !ty.starts_with("&+")
+                    matches!(ty, MirType::Reference { form, .. } if !matches!(form, triet_mir::ReferenceForm::StrongFrozen | triet_mir::ReferenceForm::StrongMutable))
                 } else {
                     false
                 }
@@ -608,66 +634,56 @@ pub fn lower_function(
     Ok(c.build(entry))
 }
 
-/// Resolve a type annotation to a display name (best-effort; non-`Named`
-/// types collapse to "?").
-fn type_name(arena: &Arena, id: TypeId) -> String {
-    match &arena.type_expression(id).node {
-        TypeExpr::Named(n) => n.clone(),
-        TypeExpr::Nullable(inner) => {
-            let inner_name = type_name(arena, *inner);
-            format!("{inner_name}?")
-        }
-        TypeExpr::Reference { form, inner } => {
-            let inner_name = type_name(arena, *inner);
-            // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
-            let prefix = match form {
-                ReferenceForm::StrongFrozen => "&+ ",
-                ReferenceForm::StrongMutable => "&+ mutable ",
-                ReferenceForm::BorrowReadOnly => "&0 ",
-                ReferenceForm::BorrowExclusiveMutable => "&0 mutable ",
-                ReferenceForm::WeakObserver => "&- ",
-            };
-            format!("{prefix}{inner_name}")
-        }
-        _ => "?".to_string(),
-    }
-}
-
-/// Simplified is_copy for use during lowering (before Body is built).
-/// Only handles primitive type names and known heap types — does NOT
-/// recurse into struct/enum layouts (those aren't built yet).
+/// Build a [`MirType`] directly from a type annotation.
 ///
-/// Must match the canonical [`triet_mir::is_copy`] semantics:
-/// - Known stack primitives → Copy (Integer, Trit, Tryte, Long, Trilean,
-///   Unit, "?").
-/// - Known heap types → Move (String, Vector, HashMap). Vector uses a
-///   prefix match ("Vector<Integer>" etc.).
-/// - User-defined struct/enum types → Copy.
-///   SOUND ONLY WHILE B8 REFUSES CONSTRUCTION of aggregates with heap
-///   fields (B8 blocks StructLiteral/enum-payload construction, not
-///   declaration). When B8 is relaxed in Bậc B, this function must
-///   consult layout field types or be replaced by the canonical
-///   [`triet_mir::is_copy`] which recurses into layouts.
-/// - Unknown types → Move (refuse-over-guess, same as canonical).
-fn simple_is_copy(
-    ty: &str,
+/// Single producer of all MIR types — no String intermediate, no parse() round-trip.
+/// Named types are classified as builtins, user structs, or user enums via
+/// `struct_names`/`enum_names` sets.
+fn lower_type(
+    arena: &Arena,
+    id: TypeId,
     struct_names: &std::collections::HashSet<String>,
     enum_names: &std::collections::HashSet<String>,
-) -> bool {
-    match ty {
-        // Stack primitives — Copy per SPEC §10.1.
-        "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
-        // Reference types — Copy by design (ADR-0045 §3).
-        // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
-        other if other.starts_with('&') => true,
-        // Heap types — Move.
-        "String" | "HashMap" => false,
-        other if triet_mir::is_vec_type(other) => false,
-        other if triet_mir::is_hashmap_type(other) => false,
-        other if struct_names.contains(other) => true,
-        other if enum_names.contains(other) => true,
-        // Unknown types default to Move (refuse-over-guess).
-        _ => false,
+) -> MirType {
+    match &arena.type_expression(id).node {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Integer" => MirType::Integer,
+            "Trit" => MirType::Trit,
+            "Tryte" => MirType::Tryte,
+            "Long" => MirType::Long,
+            "Trilean" => MirType::Trilean,
+            "Unit" => MirType::Unit,
+            "String" => MirType::String,
+            // Vector/HashMap bare (ADR-0050 CORRECTION §3.1.1) — strip generic args
+            other if other == "Vector" || other.starts_with("Vector<") => MirType::Vector,
+            other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
+            other if struct_names.contains(other) => MirType::Struct(other.to_string()),
+            other if enum_names.contains(other) => MirType::Enum(other.to_string()),
+            _ => MirType::Unknown,
+        },
+        TypeExpr::Nullable(inner) => MirType::Nullable(Box::new(lower_type(
+            arena,
+            *inner,
+            struct_names,
+            enum_names,
+        ))),
+        TypeExpr::Reference { form, inner } => {
+            let inner = lower_type(arena, *inner, struct_names, enum_names);
+            let form = match form {
+                ReferenceForm::StrongFrozen => triet_mir::ReferenceForm::StrongFrozen,
+                ReferenceForm::StrongMutable => triet_mir::ReferenceForm::StrongMutable,
+                ReferenceForm::BorrowReadOnly => triet_mir::ReferenceForm::BorrowReadOnly,
+                ReferenceForm::BorrowExclusiveMutable => {
+                    triet_mir::ReferenceForm::BorrowExclusiveMutable
+                }
+                ReferenceForm::WeakObserver => triet_mir::ReferenceForm::WeakObserver,
+            };
+            MirType::Reference {
+                form,
+                inner: Box::new(inner),
+            }
+        }
+        _ => MirType::Unknown,
     }
 }
 
@@ -678,7 +694,7 @@ fn emit_shim_call(
     c: &mut Ctx,
     shim_name: &str,
     args: Vec<Local>,
-    dest_ty: &str,
+    dest_ty: impl Into<MirType>,
     span: Span,
 ) -> Local {
     let dest = c.alloc_local_ty(dest_ty);
@@ -763,7 +779,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             if is_null_expr(&arena.expression(*init).node) {
                 let ann_ty = type_annotation
                     .as_ref()
-                    .map(|tid| type_name(arena, *tid))
+                    .map(|tid| lower_type(arena, *tid, &c.struct_names, &c.enum_names))
                     .ok_or_else(|| {
                         LowerError::null_literal_without_expected_type(stmt_span.clone())
                     })?;
@@ -791,8 +807,8 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // arrives, emit an Assign to a new typed local (M2 pattern)
                 // instead of mutating.
                 if let Some(tid) = type_annotation {
-                    let ann_ty = type_name(arena, *tid);
-                    if ann_ty != "?" {
+                    let ann_ty = lower_type(arena, *tid, &c.struct_names, &c.enum_names);
+                    if ann_ty != MirType::Unknown {
                         c.local_decls[v.0].ty = ann_ty;
                     }
                 }
@@ -802,12 +818,12 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 let is_move_binding =
                     if let Expr::Identifier { name: _ } = &arena.expression(*init).node {
                         let ty = &c.local_decls[v.0].ty;
-                        !simple_is_copy(ty, &c.struct_names, &c.enum_names)
+                        !ty.is_copy(None)
                     } else {
                         false
                     };
                 if is_move_binding {
-                    let new_local = c.alloc_local_ty(&c.local_decls[v.0].ty.clone());
+                    let new_local = c.alloc_local_ty(c.local_decls[v.0].ty.clone());
                     c.push(Statement::Assign {
                         dest: Place::local(new_local),
                         source: Place::local(v),
@@ -831,9 +847,9 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // Struct return via sret: copy struct fields to the caller's buffer.
                 let struct_local = lower_expr(*v, arena, c)?;
                 let source_ty = c.local_decls[struct_local.0].ty.clone();
-                if c.struct_names.contains(&source_ty) {
+                if c.struct_names.contains(&source_ty.to_string()) {
                     // Copy struct: copy fields to sret buffer.
-                    if let Some(layout) = c.struct_layouts.get(&source_ty) {
+                    if let Some(layout) = c.struct_layouts.get(&source_ty.to_string()) {
                         let field_names: Vec<String> =
                             layout.fields.iter().map(|f| f.name.clone()).collect();
                         for field_name in field_names {
@@ -1249,7 +1265,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let val = lower_expr(arguments[0], arena, c)?;
                     // B8: aggregate-containing-heap — enum payload with Move type not supported.
                     let payload_ty = &c.local_decls[val.0].ty;
-                    if !simple_is_copy(payload_ty, &c.struct_names, &c.enum_names) {
+                    if !payload_ty.is_copy(None) {
                         return Err(LowerError::heap_type_not_supported(
                             &format!(
                                 "enum variant `{}.{}` payload type `{}`",
@@ -1364,7 +1380,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     // field-1 (len) from the StackSlot, not from the heap shim.
                     // Borrow (&0 String etc.) keeps the shim — the handle still
                     // points to the heap where len@body+0.
-                    if arg_ty == "String" {
+                    if matches!(arg_ty, MirType::String) {
                         let d = c.alloc_local_ty("Integer");
                         c.push(Statement::Assign {
                             dest: Place::local(d),
@@ -1373,17 +1389,15 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         });
                         return Ok(d);
                     }
-                    let base_ty = arg_ty
-                        .strip_prefix("&0 ")
-                        .or_else(|| arg_ty.strip_prefix("&+ "))
-                        .or_else(|| arg_ty.strip_prefix("&+ mutable "))
-                        .or_else(|| arg_ty.strip_prefix("&0 mutable "))
-                        .or_else(|| arg_ty.strip_prefix("&- "))
-                        .unwrap_or(arg_ty);
+                    let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
+                        inner.as_ref()
+                    } else {
+                        arg_ty
+                    };
                     let shim_name = match base_ty {
-                        "String" => "__triet_string_len",
-                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
-                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
+                        MirType::String => "__triet_string_len",
+                        ty if ty.is_vec() => "__triet_vector_len",
+                        ty if ty.is_hashmap() => "__triet_hashmap_len",
                         other => {
                             return Err(LowerError::heap_type_not_supported(
                                 &format!(
@@ -1411,17 +1425,15 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         .collect::<Result<Vec<_>, _>>()?;
                     let arg0_ty = &c.local_decls[args[0].0].ty;
                     // Lối 1: strip &0 /&+ /&- prefix to get base type.
-                    let base_ty = arg0_ty
-                        .strip_prefix("&0 ")
-                        .or_else(|| arg0_ty.strip_prefix("&+ "))
-                        .or_else(|| arg0_ty.strip_prefix("&+ mutable "))
-                        .or_else(|| arg0_ty.strip_prefix("&0 mutable "))
-                        .or_else(|| arg0_ty.strip_prefix("&- "))
-                        .unwrap_or(arg0_ty);
+                    let base_ty = if let MirType::Reference { inner, .. } = arg0_ty {
+                        inner.as_ref()
+                    } else {
+                        arg0_ty
+                    };
                     let shim_name = match base_ty {
-                        "String" => "__triet_string_contains",
-                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_contains",
-                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_contains",
+                        MirType::String => "__triet_string_contains",
+                        ty if ty.is_vec() => "__triet_vector_contains",
+                        ty if ty.is_hashmap() => "__triet_hashmap_contains",
                         other => {
                             return Err(LowerError::heap_type_not_supported(
                                 &format!(
@@ -1449,7 +1461,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     // ADR-0049 Lát 6.3: for owned String, read len from
                     // StackSlot (field projection), not heap shim.
                     // Same pattern as `length`/`len`.
-                    let len_dest = if arg_ty == "String" {
+                    let len_dest = if matches!(arg_ty, MirType::String) {
                         let d = c.alloc_local_ty("Integer");
                         c.push(Statement::Assign {
                             dest: Place::local(d),
@@ -1458,17 +1470,15 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         });
                         d
                     } else {
-                        let base_ty = arg_ty
-                            .strip_prefix("&0 ")
-                            .or_else(|| arg_ty.strip_prefix("&+ "))
-                            .or_else(|| arg_ty.strip_prefix("&+ mutable "))
-                            .or_else(|| arg_ty.strip_prefix("&0 mutable "))
-                            .or_else(|| arg_ty.strip_prefix("&- "))
-                            .unwrap_or(arg_ty);
+                        let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
+                            inner.as_ref()
+                        } else {
+                            arg_ty
+                        };
                         let len_shim = match base_ty {
-                            "String" => "__triet_string_len",
-                            ty if triet_mir::is_vec_type(ty) => "__triet_vector_len",
-                            ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_len",
+                            MirType::String => "__triet_string_len",
+                            ty if ty.is_vec() => "__triet_vector_len",
+                            ty if ty.is_hashmap() => "__triet_hashmap_len",
                             other => {
                                 return Err(LowerError::heap_type_not_supported(
                                     &format!(
@@ -1510,14 +1520,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let arg = lower_expr(arguments[0], arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
-                    let base_ty = arg_ty
-                        .strip_prefix("&0 mutable ")
-                        .or_else(|| arg_ty.strip_prefix("&0 "))
-                        .or_else(|| arg_ty.strip_prefix("&+ "))
-                        .or_else(|| arg_ty.strip_prefix("&- "))
-                        .unwrap_or(arg_ty);
+                    let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
+                        inner.as_ref()
+                    } else {
+                        arg_ty
+                    };
                     let shim_name = match base_ty {
-                        "String" => "__triet_string_clear",
+                        MirType::String => "__triet_string_clear",
                         other => {
                             return Err(LowerError::heap_type_not_supported(
                                 &format!("clear() on type `{other}` — expected String"),
@@ -1539,14 +1548,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let arg = lower_expr(arguments[0], arena, c)?;
                     let byte_arg = lower_expr(arguments[1], arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
-                    let base_ty = arg_ty
-                        .strip_prefix("&0 mutable ")
-                        .or_else(|| arg_ty.strip_prefix("&0 "))
-                        .or_else(|| arg_ty.strip_prefix("&+ "))
-                        .or_else(|| arg_ty.strip_prefix("&- "))
-                        .unwrap_or(arg_ty);
+                    let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
+                        inner.as_ref()
+                    } else {
+                        arg_ty
+                    };
                     let shim_name = match base_ty {
-                        "String" => "__triet_string_append",
+                        MirType::String => "__triet_string_append",
                         other => {
                             return Err(LowerError::heap_type_not_supported(
                                 &format!("append() on type `{other}` — expected String"),
@@ -1572,9 +1580,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         .map(|a| lower_expr(*a, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let arg0_ty = &c.local_decls[args[0].0].ty;
-                    let shim_name = if triet_mir::is_hashmap_type(arg0_ty) {
+                    let shim_name = if arg0_ty.is_hashmap() {
                         "__triet_hashmap_get"
-                    } else if triet_mir::is_vec_type(arg0_ty) {
+                    } else if arg0_ty.is_vec() {
                         "__triet_vector_get"
                     } else {
                         return Err(LowerError::heap_type_not_supported(
@@ -1676,8 +1684,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .func_return_types
                 .get(&callee_name)
                 .cloned()
-                .unwrap_or_else(|| "Integer".to_string());
-            let is_fat_ret = c.is_fat_type(&callee_ret);
+                .unwrap_or(MirType::Integer);
+            let is_fat_ret = c.is_fat_type(&callee_ret.to_string());
 
             let mut args: Vec<Local> = arguments
                 .iter()
@@ -1693,7 +1701,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 c.push(Statement::StorageLive(ret_local, expr_span.clone()));
                 c.push(Statement::StructAlloc {
                     dest: ret_local,
-                    struct_name: callee_ret.clone(),
+                    struct_name: callee_ret.to_string(),
                     span: expr_span.clone(),
                 });
                 // Insert sret pointer as first argument.
@@ -1705,10 +1713,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     .iter()
                     .filter(|&&arg| {
                         let ty = &c.local_decls[arg.0].ty;
-                        if ty.starts_with('&') {
+                        if ty.is_reference() {
                             return false;
                         }
-                        !simple_is_copy(ty, &c.struct_names, &c.enum_names)
+                        !ty.is_copy(None)
                     })
                     .copied()
                     .collect();
@@ -1724,7 +1732,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         return_bb: ret_bb,
                         dest: Vec::new(),
                         return_shape: triet_mir::ReturnShape::Struct {
-                            struct_name: callee_ret,
+                            struct_name: callee_ret.to_string(),
                         },
                         span: expr_span,
                     },
@@ -1744,10 +1752,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     .iter()
                     .filter(|&&arg| {
                         let ty = &c.local_decls[arg.0].ty;
-                        if ty.starts_with('&') {
+                        if ty.is_reference() {
                             return false;
                         }
-                        !simple_is_copy(ty, &c.struct_names, &c.enum_names)
+                        !ty.is_copy(None)
                     })
                     .copied()
                     .collect();
@@ -1941,7 +1949,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // from carrying heap values downstream (ADR-0040 / bài học 4.3a
             // call-dest-"?" bug). Sentinel/cmp can stay "?" — scratch scalars.
             let obj_ty = c.local_decls[obj_val.0].ty.clone();
-            let payload_ty = triet_mir::nullable_payload(&obj_ty)
+            let payload_ty = obj_ty
+                .nullable_payload()
                 .ok_or_else(|| {
                     LowerError::unsupported_expr(&arena.expression(expr_id).node, expr_span.clone())
                 })?
@@ -2068,7 +2077,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 let field_val = lower_expr(*field_expr, arena, c)?;
                 // B8: aggregate-containing-heap — struct field with Move type not supported.
                 let field_ty = &c.local_decls[field_val.0].ty;
-                if !simple_is_copy(field_ty, &c.struct_names, &c.enum_names) {
+                if !field_ty.is_copy(None) {
                     return Err(LowerError::heap_type_not_supported(
                         &format!("struct `{struct_name}` field `{field_name}` type `{field_ty}`"),
                         expr_span,
@@ -2120,7 +2129,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 let val = lower_expr(*payload_expr, arena, c)?;
                 // B8: aggregate-containing-heap — enum payload with Move type not supported.
                 let payload_ty = &c.local_decls[val.0].ty;
-                if !simple_is_copy(payload_ty, &c.struct_names, &c.enum_names) {
+                if !payload_ty.is_copy(None) {
                     return Err(LowerError::heap_type_not_supported(
                         &format!("enum `{name}.{variant_name}` payload type `{payload_ty}`"),
                         expr_span,
@@ -2140,9 +2149,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             // ── Nullable match: branch on ~+ / ~0 via NULL_SENTINEL ──
             let scrut_ty = c.local_decls[scrut_local.0].ty.clone();
-            if triet_mir::is_nullable_type(&scrut_ty) {
+            if scrut_ty.is_nullable() {
                 use triet_syntax::{MatchArm, OutcomeArm, Pattern};
-                let payload_ty = triet_mir::nullable_payload(&scrut_ty)
+                let payload_ty = scrut_ty
+                    .nullable_payload()
                     .ok_or_else(|| {
                         LowerError::unsupported_expr(
                             &arena.expression(expr_id).node,
@@ -2721,7 +2731,7 @@ mod tests {
             "expected an If terminator"
         );
         // The single `Point`-less function's param gets a typed LocalDecl.
-        assert_eq!(body.local_decls[0].ty, "Integer");
+        assert_eq!(body.local_decls[0].ty, MirType::Integer);
     }
 
     /// M2: `let b = a` with Move-type local (String) must emit an Assign
@@ -2804,7 +2814,8 @@ function main() -> Integer {
         // Check the type of the dest local.
         let dest_ty = &main_body.local_decls[dest.0].ty;
         assert_eq!(
-            dest_ty, "String",
+            *dest_ty,
+            MirType::String,
             "4i-4: call-dest for make()->String must have type String, got `{dest_ty}` \
              (call-dest fix regressed — using alloc_local() instead of alloc_local_ty(&callee_ret))"
         );
@@ -2902,35 +2913,6 @@ function main() -> Integer {
         );
     }
 
-    #[test]
-    fn simple_is_copy_agrees_with_canonical_is_copy() {
-        // Phase 4.3b M1.3: lowerer's simple_is_copy must match
-        // triet_mir::is_copy for all type strings used in Bậc A.
-        // Build a minimal body via lower_source so the struct shapes
-        // are always correct without hardcoding field lists.
-        let body = lower_source("function test() {}");
-        let cases = &[
-            ("Integer", true),
-            ("String", false),
-            ("HashMap", false),
-            ("Vector<Integer>", false),
-            ("Vector", false),
-            ("Trilean", true),
-            ("Unit", true),
-            ("UnknownType", false), // canonical is_copy default-Move
-        ];
-        for &(ty, expected) in cases {
-            let empty_set = std::collections::HashSet::new();
-            let simple = simple_is_copy(ty, &empty_set, &empty_set);
-            let canonical = triet_mir::is_copy(ty, &body);
-            assert_eq!(
-                simple, canonical,
-                "simple_is_copy({ty:?}) = {simple}, triet_mir::is_copy = {canonical} — must agree"
-            );
-            assert_eq!(simple, expected, "is_copy({ty:?}) should be {expected}");
-        }
-    }
-
     // ── Nullable lowering tests (ADR-0041 Bước 3) ──────────────
 
     /// N3: `~0` without expected type → `Err(LowerError)` with span, not panic.
@@ -2939,7 +2921,9 @@ function main() -> Integer {
         // Positive: `let x: Integer? = ~0` has expected type → must succeed.
         let body = lower_source("function test() { let x: Integer? = ~0; }");
         assert!(
-            body.local_decls.iter().any(|d| d.ty == "Integer?"),
+            body.local_decls
+                .iter()
+                .any(|d| d.ty == MirType::parse("Integer?")),
             "~0 with annotation should produce Integer? local"
         );
 
@@ -2967,39 +2951,10 @@ function main() -> Integer {
 
     /// Point 1 + M1: type_name emits "Integer?" + Elvis result typed T (not T?).
     #[test]
-    fn type_name_nullable_and_elvis_result_typed_correctly() {
-        let body =
-            lower_source("function test() -> Integer { let x: Integer? = 5; return x ?: 0; }");
-        // type_name must emit "Integer?" for the let binding.
-        let has_nullable_local = body.local_decls.iter().any(|d| d.ty == "Integer?");
-        assert!(
-            has_nullable_local,
-            "expected a local with type 'Integer?', got locals: {:?}",
-            body.local_decls.iter().map(|d| &d.ty).collect::<Vec<_>>()
-        );
-        // M1: Elvis result must be typed "Integer" (payload, not T? and not "?").
-        let has_result_integer = body.local_decls.iter().any(|d| d.ty == "Integer");
-        assert!(
-            has_result_integer,
-            "Elvis result local must be typed Integer (payload), got locals: {:?}",
-            body.local_decls.iter().map(|d| &d.ty).collect::<Vec<_>>()
-        );
-    }
 
     /// B1 (§3): type_name renders reference types (e.g. "&0 String"),
     /// not the old "?" fallback.
     #[test]
-    fn type_name_renders_reference_type() {
-        let body = lower_source(
-            "function process(s: &0 String) -> Integer { return 0; } \
-             function main() -> Integer { return 0; }",
-        );
-        let param_ty = &body.local_decls[0].ty;
-        assert_eq!(
-            param_ty, "&0 String",
-            "B1 regression: reference param must carry real type, not '?'"
-        );
-    }
 
     /// B2 (§2 callee): no Drop for reference-type borrow params.
     /// Callee receives a reference handle — it does not own the heap.

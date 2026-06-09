@@ -20,8 +20,8 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 use std::collections::{HashMap, HashSet};
 use triet_mir::{
-    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, EnumLayout, Local, Place,
-    Projection, Statement, StructLayout, Terminator, builtin_shim_meta, is_copy,
+    BasicBlock, BinOp, Body, CallTarget, ConstValue, ControlFlowGraph, EnumLayout, Local, MirType,
+    Place, Projection, Statement, StructLayout, Terminator, builtin_shim_meta,
 };
 
 // ── Errors ──────────────────────────────────────────────────
@@ -267,7 +267,7 @@ impl JitContext {
                 let layout = body
                     .struct_layouts
                     .iter()
-                    .find(|l| l.name == *ty)
+                    .find(|l| l.name == ty.to_string())
                     .ok_or_else(|| {
                         JitError::Unsupported(format!(
                             "type '{ty}' is not a known struct (local {})",
@@ -337,7 +337,7 @@ impl JitContext {
                 let layout = body
                     .struct_layouts
                     .iter()
-                    .find(|l| l.name == *ty)
+                    .find(|l| l.name == ty.to_string())
                     .ok_or_else(|| {
                         JitError::Unsupported(format!(
                             "type '{ty}' is not a known struct (local {})",
@@ -554,7 +554,7 @@ impl JitContext {
             for i in 0..body.num_locals {
                 let local = Local(i);
                 let ty = &body.local_decls[i].ty;
-                if ty == "String" {
+                if matches!(ty, MirType::String) {
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         layout.total_size as u32,
@@ -670,7 +670,7 @@ impl JitContext {
             builder.def_var(var, param_val);
             // ADR-0049 Lát 6: String param received as pointer-to-caller-slot.
             // Load {ptr,len,cap} from the caller's slot into our own slot.
-            if body.local_decls[local.0].ty == "String" {
+            if matches!(body.local_decls[local.0].ty, MirType::String) {
                 if let Some((slot, _)) = self.struct_slots.get(&local) {
                     let src_ptr = builder.ins().load(I64, mem_flags, param_val, 0);
                     let src_len = builder.ins().load(I64, mem_flags, param_val, 8);
@@ -849,7 +849,7 @@ impl JitContext {
                     let source_is_plain = source.projection.is_empty();
                     if source_is_plain {
                         let src_ty = &body.local_decls[source.local.0].ty;
-                        if !is_copy(src_ty, body) {
+                        if !src_ty.is_copy(Some(body)) {
                             let zero = builder.ins().iconst(I64, 0);
                             // ADR-0049 Lát 2 L2-2: Slot-Truth — for String,
                             // stack_store is the sole guard; def_var dead.
@@ -930,7 +930,7 @@ impl JitContext {
 
                 Statement::Drop(local, _) => {
                     let ty = &body.local_decls[local.0].ty;
-                    if is_copy(ty, body) {
+                    if ty.is_copy(Some(body)) {
                         // Copy type: no-op (ADR-0040 §1.3)
                         continue;
                     }
@@ -944,21 +944,22 @@ impl JitContext {
                     }
                     // Move type, not escaping: call free shim.
                     // The shim internally guards null (defense-in-depth).
-                    let free_shim_name = match ty.as_str() {
-                        "String" => "__triet_string_free",
-                        ty if triet_mir::is_vec_type(ty) => "__triet_vector_free",
-                        ty if triet_mir::is_hashmap_type(ty) => "__triet_hashmap_free",
-                        _ => {
-                            return Err(JitError::Unsupported(format!(
-                                "Drop for type `{ty}` not supported — no free shim"
-                            )));
-                        }
+                    let free_shim_name = if matches!(ty, MirType::String) {
+                        "__triet_string_free"
+                    } else if ty.is_vec() {
+                        "__triet_vector_free"
+                    } else if ty.is_hashmap() {
+                        "__triet_hashmap_free"
+                    } else {
+                        return Err(JitError::Unsupported(format!(
+                            "Drop for type `{ty}` not supported — no free shim"
+                        )));
                     };
                     let func_id = self.get_or_declare_shim(free_shim_name)?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     // ADR-0049 Lát 3: String free(ptr, cap) 2-arg bung field.
                     // Slot: stack_load ptr+cap; no-slot: use_var ptr + load cap heap.
-                    if ty == "String" {
+                    if matches!(ty, MirType::String) {
                         let (ptr, cap) = if let Some((slot, _)) = self.struct_slots.get(local) {
                             let p = builder.ins().stack_load(I64, *slot, 0);
                             let c = builder.ins().stack_load(I64, *slot, 16);
@@ -1202,7 +1203,7 @@ impl JitContext {
                                     // String, the var holds a slot_addr.
                                     // Load {ptr,len} from the pointed-to slot.
                                     let arg_ty = &body.local_decls[a.0].ty;
-                                    if arg_ty.starts_with('&') {
+                                    if arg_ty.is_reference() {
                                         let slot_ptr = builder.use_var(self.var(*a));
                                         let mem_flags = cranelift_codegen::ir::MemFlags::new();
                                         let ptr = builder.ins().load(I64, mem_flags, slot_ptr, 0);
@@ -1320,7 +1321,7 @@ impl JitContext {
                             for (i, a) in args.iter().enumerate() {
                                 if i < meta.arg_consumes.len() && meta.arg_consumes[i] {
                                     let arg_ty = &body.local_decls[a.0].ty;
-                                    if !is_copy(arg_ty, body) {
+                                    if !arg_ty.is_copy(Some(body)) {
                                         // ADR-0049 Lát 2 L2-2: Slot-Truth —
                                         // stack_store sole guard for String.
                                         if let Some((slot, layout)) = self.struct_slots.get(a)
@@ -3073,9 +3074,9 @@ mod tests {
         b.add_struct_layout(triet_mir::StructLayout::compute(
             "String",
             &[
-                ("ptr".to_string(), "Integer".to_string(), 8, 8),
-                ("len".to_string(), "Integer".to_string(), 8, 8),
-                ("cap".to_string(), "Integer".to_string(), 8, 8),
+                ("ptr".to_string(), MirType::Integer, 8, 8),
+                ("len".to_string(), MirType::Integer, 8, 8),
+                ("cap".to_string(), MirType::Integer, 8, 8),
             ],
         ));
         let bb0 = b.new_block();
