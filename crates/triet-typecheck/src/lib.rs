@@ -30,7 +30,7 @@
     clippy::missing_panics_doc
 )]
 
-mod borrow_check;
+// mod borrow_check; — deleted (ADR-0051 B2.1b, E2440 moved to MIR)
 mod capability_check;
 mod check;
 mod check_resolved;

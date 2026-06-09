@@ -941,44 +941,7 @@ pub enum BorrowError {
         #[label("inference fails here")]
         span: Span,
     },
-
-    /// E2440: `BorrowExclusivityViolation` (ADR-0025 §2.2)
-    ///
-    /// Two overlapping borrows on the same base identifier have
-    /// conflicting forms. Per ADR-0025 §2.1 conflict table:
-    /// `&0` + `&0 mutable` → conflict (shared vs exclusive);
-    /// `&0 mutable` + `&0 mutable` → conflict (two exclusive).
-    /// `&-` weak observers never conflict with anything; two `&0`
-    /// read-only borrows coexist.
-    #[error("cannot create `{second_form} {base}` while `{first_form} {base}` is still live")]
-    #[diagnostic(
-        code(triet::borrow::E2440),
-        help(
-            "Suggested fixes:\n\n\
-            [Fix 1] Shorten the lifetime of the earlier borrow:\n\
-            Move its last use earlier, before this new borrow is created\n\n\
-            [Fix 2] Reorder so the borrows don't overlap:\n\
-            Drop the earlier borrow's binding (or end its scope) before this one starts\n\n\
-            [Fix 3] If both borrows are read-only, promote them to `&0` instead of \
-            `&0 mutable` (multiple `&0` borrows on the same base coexist)"
-        )
-    )]
-    BorrowExclusivityViolation {
-        /// The shared base identifier the two borrows are rooted at.
-        base: String,
-        /// Reference-form label of the earlier (first-created) borrow.
-        first_form: String,
-        /// Reference-form label of the new (conflicting) borrow.
-        second_form: String,
-        /// Span of the earlier borrow's creation site (informational
-        /// label in the diagnostic).
-        #[label("earlier borrow created here")]
-        first_span: Span,
-        /// Span of the new conflicting borrow's creation site —
-        /// primary diagnostic anchor.
-        #[label("conflicting borrow attempted here")]
-        span: Span,
-    },
+    // BorrowExclusivityViolation: deleted (ADR-0051 B2.1b — E2440 moved to MIR).
 }
 
 impl BorrowError {
@@ -993,8 +956,7 @@ impl BorrowError {
             | Self::UseAfterMove { span, .. }
             | Self::SelfOwnershipParadox { span }
             | Self::NonTerminatingConstruction { span, .. }
-            | Self::NamespaceInferenceFailed { span }
-            | Self::BorrowExclusivityViolation { span, .. } => span.clone(),
+            | Self::NamespaceInferenceFailed { span } => span.clone(),
         }
     }
 }

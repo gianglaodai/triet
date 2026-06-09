@@ -122,31 +122,7 @@ fn e2430_namespace_inference_failed_format() {
     assert!(help.contains("Change to fully qualified capability path"));
 }
 
-#[test]
-fn e2440_borrow_exclusivity_violation_format() {
-    // v0.10.x.borrow.1: skeleton expanded — diagnostic now carries
-    // both borrow forms + both creation spans per ADR-0025 §2.2.
-    let err = BorrowError::BorrowExclusivityViolation {
-        base: "bar".to_string(),
-        first_form: "&0".to_string(),
-        second_form: "&0 mutable".to_string(),
-        first_span: dummy_span(),
-        span: dummy_span(),
-    };
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("&0 mutable bar") && msg.contains("&0 bar"),
-        "expected message to mention both forms, got: {msg}"
-    );
-    let help = err.help().unwrap().to_string();
-    assert!(help.contains("[Fix 1]"));
-    assert!(help.contains("[Fix 2]"));
-    assert!(help.contains("[Fix 3]"));
-    assert!(
-        help.contains("Shorten the lifetime"),
-        "expected canonical Fix 1 text, got: {help}"
-    );
-}
+// e2440_borrow_exclusivity_violation_format: deleted (ADR-0051 B2.1b, variant removed)
 
 #[test]
 fn e2500_not_send_cannot_cross_boundary_format() {

@@ -350,13 +350,7 @@ impl<'p> Checker<'p> {
         // `Vector<&0 T>`, `(&0 T, X)`) defer v0.11+ corpus-driven.
         self.check_lifetime_elision(def, &return_type);
 
-        // v0.10.x.borrow.1 (ADR-0025 §2): NLL borrow-exclusivity
-        // check. Walks the function body, builds a linearized event
-        // stream (BorrowCreate / Use / Loop markers), computes live
-        // ranges, detects pair-wise conflicts. Fires E2440 with both
-        // borrow creation spans for each conflict. Per ADR-0025 §2.1
-        // conflict table.
-        crate::borrow_check::analyze_function(self.arena, def, &mut self.errors);
+        // E2440: moved to MIR NLL borrowck (ADR-0051 B2.1b).
 
         match &def.body {
             FunctionBody::Block { block } => {
