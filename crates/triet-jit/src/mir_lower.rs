@@ -534,6 +534,7 @@ impl JitContext {
     }
 
     /// Build the Cranelift IR for a single function body.
+    #[allow(clippy::too_many_lines)] // match-heavy dispatch + param-entry, naturally long
     fn build_body(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -688,6 +689,28 @@ impl JitContext {
                     builder.ins().stack_store(src_ptr, *slot, 0);
                     builder.ins().stack_store(src_len, *slot, 8);
                     builder.ins().stack_store(src_cap, *slot, 16);
+                }
+            }
+            // C1: Enum param received as pointer-to-caller-slot.
+            // Create enum_slots entry + load [disc][payload] from pointer.
+            // Casts follow struct precedent (StackSlotData API requires u32/u8).
+            #[allow(clippy::cast_possible_truncation)]
+            if let MirType::Enum(enum_name) = &body.local_decls[local.0].ty
+                && let Some(layout) = body.enum_layouts.iter().find(|e| e.name == *enum_name)
+            {
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    layout.total_size as u32,
+                    layout.alignment.ilog2() as u8,
+                ));
+                self.enum_slots.insert(local, (slot, layout.clone()));
+                // Load disc from caller pointer @ offset 0
+                let disc = builder.ins().load(I64, mem_flags, param_val, 0);
+                builder.ins().stack_store(disc, slot, 0);
+                // Load payload area (8B increments)
+                for off in (8..layout.total_size as i32).step_by(8) {
+                    let field = builder.ins().load(I64, mem_flags, param_val, off);
+                    builder.ins().stack_store(field, slot, off);
                 }
             }
             bp_idx += 1;
@@ -1160,7 +1183,8 @@ impl JitContext {
                                         builder.ins().stack_addr(I64, *slot, 0)
                                     }
                                 } else if let Some((slot, _)) = self.enum_slots.get(a) {
-                                    builder.ins().stack_load(I64, *slot, 0)
+                                    // C1: enum param by-pointer (như struct — ADR-0049)
+                                    builder.ins().stack_addr(I64, *slot, 0)
                                 } else {
                                     let var = self.var(*a);
                                     builder.use_var(var)
@@ -1275,7 +1299,8 @@ impl JitContext {
                                             builder.ins().stack_addr(I64, *slot, 0)
                                         }
                                     } else if let Some((slot, _)) = self.enum_slots.get(a) {
-                                        builder.ins().stack_load(I64, *slot, 0)
+                                        // C1: enum param by-pointer (như struct)
+                                        builder.ins().stack_addr(I64, *slot, 0)
                                     } else {
                                         let var = self.var(*a);
                                         builder.use_var(var)

@@ -1,4 +1,5 @@
-// ERROR: Payload access on non-enum local
+// EXPECT: 52
+// C1: Enum payload by-pointer — payload survives crossing function boundary.
 enum OptionInt { SomeInt(Integer), NoneInt }
 
 function unwrap_or_default(opt: OptionInt, default_val: Integer) -> Integer =
