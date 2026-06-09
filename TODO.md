@@ -67,7 +67,13 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 
 ### 🟡 B. NỢ-MÓNG — sai thiết kế, chặn nợ khác
 
-- [ ] **B1: Rombac Type System — bỏ MIR string-match (Crusade #3).** CLAUDE.md "type system spec-only, hand-written"; fallback-invariant Bậc D dựa string-match. Schema unification: migrate generated `Type` into typechecker.
+- [ ] **B1: Rombac Type System — bỏ MIR string-match (Crusade #3).** ADR-0050 ký O+G 2026-06-09. Phase-0 Spike done:
+  - `enum MirType` 14 variant (scalar·heap·modifier·Struct/Enum TÁCH) gánh được toàn bộ semantics hiện tại.
+  - Round-trip Display↔parse: 21/21 fixture string pass (kể cả bare Vector/HashMap backward-compat).
+  - `is_copy` parity: 9/9 test port pass (primitive·reference·heap·struct/Enum recursive·nullable delegation).
+  - **Phát hiện:** cấu trúc fix ordering-rule bug — `is_vec_type("Vector<Integer>?")` cũ trả `true` (sai), `MirType::Nullable(Vector(_)).is_vec()` trả `false` (đúng).
+  - Blast radius: ~189 site (36 is_copy · 21 is_vec/hashmap · 14 is_nullable · 14 nullable_payload · 8 starts_with('&') · 19 == "String" · 40 .ty field access · 12 simple_is_copy · 35 struct/enum_names · 4 TECH-DEBT comment).
+  - **Production:** S1→S4 theo ADR-0050 §6. Bắt đầu S1.
 - [ ] **B2: Sáp nhập 2 tầng borrowck typecheck+MIR (Crusade #2).** ADR-0048 §2. E2440 không teeth-isolate được vì 2 tầng.
 - [ ] **B3: Alias analysis thật thay `conservative=true`.** checker.rs:64,505. SOUND nhưng over-reject.
 
