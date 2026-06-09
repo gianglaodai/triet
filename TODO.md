@@ -18,7 +18,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] Vector support (Phase 4.3b).
 - [x] Nullable (`T?`) representation Bậc A — ADR-0041 locked (PA-3c uniform MIN). Móng: NULL_SENTINEL + is_nullable_type + is_copy + canary N1/N2. Xây: widening + ~0 + Elvis + get + fixtures 40-46.
 - [x] Match `~+/~0` 2-arm cho nullable (Bậc B lát a). `b7d1f98` `279e7f2`. Exhaustiveness E1026, `~-` rejection E1035. Lowering: branch-based sentinel compare (mẫu Elvis) + 3 guard (duplicate arm, wildcard-last, sub-pattern Variable/Wildcard) → slot-model ≡ first-match-wins. Fixtures 48-57 (10 fixtures).
-  - *Debt F6 (Mentor O): non-exhaustive match trôi qua MIR verifier+JIT — verifier không bắt block không terminator. Khi gỡ typecheck guard, lowerer emit null_bb rỗng, JIT compile+run im lặng trả 0. Cùng họ Outcome-guard debt: lowerer dựa hoàn toàn vào typecheck. Cần probe riêng xem INV-1 vì sao nuốt block không terminator.*
+  - *Debt F6 (Mentor O): ✅ ĐÓNG bởi A2+A3 `d8e1ba9`. Block "rỗng" = Unreachable terminator (Body.terminator không Option, default Unreachable) → INV-4 bắt khi referenced (2 unit test: referenced-fail/unreferenced-ok). Non-exhaustive match chặn 2 lớp: A3 E1026 typecheck + A2 INV-4 MIR. Verify O 2026-06-10.*
 - [x] B7-lift — ownership-across-boundary (Bậc B lát c). `d36244a` `d9b5cf4` `a58693e` `0f9b1d8` `86b7039`. ADR-0042 ĐÓNG TRỌN (O+G 2026-06-07). Move-only scope. Deinit tombstone + borrowck M3+ CallTarget::Jit check-then-mark + caller zeroing. Fixtures 58-65 (8 fixtures). Acceptance C1-C8 verified.
 - [x] HashMap support (Bậc B lát b). `2b72c62` `3951821` `d2e3043` `a08916d` `ed71185` `07da95f` `247a3be`. ADR-0043 ĐÓNG TRỌN (O+G 2026-06-07). 5 shim (alloc/insert/get/len/free), insert-or-update, rehash, D2 reject-MIN, cap.max(4) invariant. 5/5 teeth đỏ (reject-MIN, free-guard, rehash-displaced, insert-update, arg_consumes). Fixtures 66-73 (8 fixtures) + C9 unit test.
 - [x] ReturnShape::Struct for multi-field returns in MIR.
@@ -61,7 +61,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 
 ### 🔴 A. BOM — sai im lặng / UB tiềm tàng (trả TRƯỚC)
 
-- [ ] **A1: `is_propagated` nested-scope (Crusade #1).** ADR-0046. Giả định "không nested block scope" — sai khi scope lồng → use-after-free. **Độc lập, làm ngay.**
+- [x] **A1: `is_propagated` nested-scope (Crusade #1).** ✅ ĐÓNG `be37875`. Thay blind-skip bằng `live_out.contains(dest)` — propagated loan chỉ suppress khi dest đã chết; nested scope (Drop(source) trước use returned ref) → fire E2450. Fixtures 101 (nested-return RUN) + 102 (nested-uaf E2450). **Teeth O 2026-06-10: poison live_out→false → fixture 102 ĐỎ "pipeline succeeded" (UAF lọt).**
 - [x] **A2: F6 MIR verifier INV-4.** `d8e1ba9`. Bắt block có Unreachable terminator nhưng được tham chiếu (lowerer quên gọi term()). 2 unit test: referenced-fail + unreferenced-ok.
 - [x] **A3: Enum exhaustiveness checker.** `d8e1ba9`. Typechecker check_enum_exhaustiveness dùng pattern_resolutions, fire E1026 nếu thiếu variant. Fixture 103 (negative, missing Red).
 
@@ -75,7 +75,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] **B2: Sáp nhập 2 tầng borrowck typecheck+MIR (Crusade #2).** ✅ GỠ TRÙNG HOÀN TẤT (O+G ký 2026-06-10). ADR-0051. 3 lát + cleanup:
   - `1e6c14e B2.1a` gỡ E2420 subsystem (MoveState machine + 6 branch-join call-site + 2 caller) · `58dfa4e B2.1b` nổ borrow_check.rs E2440 (502 dòng module + variant) · `HEAD B2 cleanup` tử hình E2410+E2430 dead variant.
   - E2420+E2440 teeth-isolate được — MIR NLL là cảnh sát duy nhất. B2.2 (E2400/E2410) hủy do dead variant. Gate 0·0·101·203.
-- [ ] **B3: Alias analysis thật thay `conservative=true`.** checker.rs:64,505. SOUND nhưng over-reject.
+- [x] **B3: Alias analysis thật thay `conservative=true`.** → **DEFER (YAGNI).** B3.0 spike `11d11cf`: 0 fixture over-reject thật. `conservative=true` giữ defense-in-depth. Mở lại khi có fixture // ERROR: E2440 bị từ chối do khác-allocation-thật. Xem `spec/plans/phase8-b3-alias-analysis.md`.
 
 ### 🟡 C. FEATURE GAP — thiếu, không sai
 
