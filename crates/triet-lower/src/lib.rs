@@ -103,15 +103,10 @@ struct Ctx {
     next_bb: usize,
     mir_blocks: Vec<triet_mir::BlockData>,
     sig: FunctionSignature,
-    /// Set of type names that are user-defined structs. Used to detect
-    /// struct params, returns, and copies.
-    struct_names: std::collections::HashSet<String>,
+
     /// Struct layouts keyed by name (cloned from lower_program's computation).
     struct_layouts: HashMap<String, StructLayout>,
-    /// Set of type names that are user-defined enums.
-    /// Used for enum type detection (e.g., enum copy lowering — future commit).
-    #[allow(dead_code)]
-    enum_names: std::collections::HashSet<String>,
+
     /// Enum layouts keyed by name (cloned from lower_program's computation).
     /// Still needed by the JIT for layout sizes/offsets. Variant resolution
     /// is handled by the type checker — these are NOT scanned by the lowerer
@@ -140,19 +135,16 @@ struct Ctx {
 }
 
 impl Ctx {
-    #[allow(clippy::too_many_arguments)] // TECH-DEBT(B1a S2): transitional — struct_names/enum_names removed at S3
     fn new(
         name: &str,
         ret: &MirType,
-        struct_names: std::collections::HashSet<String>,
         struct_layouts: HashMap<String, StructLayout>,
-        enum_names: std::collections::HashSet<String>,
         enum_layouts: HashMap<String, EnumLayout>,
         expr_resolutions: ExprResolutions,
         pattern_resolutions: PatternResolutions,
         func_return_types: HashMap<String, MirType>,
     ) -> Self {
-        let is_struct_return = struct_names.contains(&ret.to_string());
+        let is_struct_return = matches!(ret, MirType::Struct(_));
         // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
         let is_fat_return = is_struct_return || matches!(ret, MirType::String);
         let mut ctx = Self {
@@ -167,7 +159,7 @@ impl Ctx {
             sig: FunctionSignature {
                 name: name.to_string(),
                 params: Vec::new(),
-                return_type: ret.to_string(),
+                return_type: ret.clone(),
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape: if is_fat_return {
                     triet_mir::ReturnShape::Struct {
@@ -177,9 +169,7 @@ impl Ctx {
                     triet_mir::ReturnShape::Scalar
                 },
             },
-            struct_names,
             struct_layouts,
-            enum_names,
             enum_layouts,
             expr_resolutions,
             pattern_resolutions,
@@ -193,20 +183,6 @@ impl Ctx {
             ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
         }
         ctx
-    }
-
-    fn is_fat_type(&self, name: &str) -> bool {
-        self.struct_names.contains(name) || name == "String"
-    }
-
-    #[allow(dead_code)]
-    fn is_struct_type(&self, name: &str) -> bool {
-        self.struct_names.contains(name)
-    }
-
-    #[allow(dead_code)]
-    fn is_enum_type(&self, name: &str) -> bool {
-        self.enum_names.contains(name)
     }
 
     /// Allocate a fresh local with a declared type.
@@ -321,6 +297,13 @@ impl Ctx {
 
 // ── Public API ──────────────────────────────────────────────
 
+/// Kind of a user-defined type — struct or enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypeKind {
+    Struct,
+    Enum,
+}
+
 /// Lower every function in a parsed program to its MIR body.
 ///
 /// Returns `Err` if any function contains an AST construct the lowerer
@@ -337,27 +320,14 @@ pub fn lower_program(
     expr_resolutions: &ExprResolutions,
     pattern_resolutions: &PatternResolutions,
 ) -> Result<Vec<Body>, LowerError> {
-    // ── Build type-name sets FIRST (needed by lower_type) ──────
-    let struct_names: std::collections::HashSet<String> = prog
+    // ── Build ItemSymbolTable FIRST (Pass-1, needed by lower_type) ──
+    let symbols: std::collections::HashMap<String, TypeKind> = prog
         .items
         .iter()
-        .filter_map(|item| {
-            if let Item::Struct { def } = &item.node {
-                Some(def.name.clone())
-            } else {
-                None
-            }
-        })
-        .collect();
-    let enum_names: std::collections::HashSet<String> = prog
-        .items
-        .iter()
-        .filter_map(|item| {
-            if let Item::Enum { def } = &item.node {
-                Some(def.name.clone())
-            } else {
-                None
-            }
+        .filter_map(|item| match &item.node {
+            Item::Struct { def } => Some((def.name.clone(), TypeKind::Struct)),
+            Item::Enum { def } => Some((def.name.clone(), TypeKind::Enum)),
+            _ => None,
         })
         .collect();
 
@@ -373,8 +343,7 @@ pub fn lower_program(
                     .fields
                     .iter()
                     .map(|f| {
-                        let ty =
-                            lower_type(&prog.arena, f.type_annotation, &struct_names, &enum_names);
+                        let ty = lower_type(&prog.arena, f.type_annotation, &symbols);
                         (f.name.clone(), ty, 8, 8)
                     })
                     .collect();
@@ -426,7 +395,7 @@ pub fn lower_program(
                     .map(|(i, v)| {
                         let disc = i as i64;
                         let payload = v.payload.map(|tid| {
-                            let ty = lower_type(&prog.arena, tid, &struct_names, &enum_names);
+                            let ty = lower_type(&prog.arena, tid, &symbols);
                             // Bậc A: every type is 8-byte i64
                             (ty, 8usize, 8usize, Vec::new())
                         });
@@ -452,7 +421,7 @@ pub fn lower_program(
             if let Item::Function { def } = &item.node {
                 let ret = def
                     .return_type
-                    .map(|tid| lower_type(&prog.arena, tid, &struct_names, &enum_names))
+                    .map(|tid| lower_type(&prog.arena, tid, &symbols))
                     .unwrap_or(MirType::Integer);
                 Some((def.name.clone(), ret))
             } else {
@@ -468,9 +437,8 @@ pub fn lower_program(
                 def,
                 &prog.arena,
                 item.span.clone(),
-                struct_names.clone(),
+                symbols.clone(),
                 struct_map.clone(),
-                enum_names.clone(),
                 enum_map.clone(),
                 expr_resolutions.clone(),
                 pattern_resolutions.clone(),
@@ -487,15 +455,14 @@ pub fn lower_program(
 /// Lower one function definition to a MIR body.
 ///
 /// `span` is the byte range of the function definition in the source file,
-#[allow(clippy::too_many_arguments)] // TECH-DEBT(B1a S2): transitional — struct_names/enum_names removed at S3
 /// used as a fallback for body-level synthetic statements.
-pub fn lower_function(
+#[allow(clippy::too_many_arguments)] // 9 params — symbols+layouts+resolutions bundled into LoweringInput struct deferred (non-blocking for S3)
+pub(crate) fn lower_function(
     func: &FunctionDef,
     arena: &Arena,
     span: Span,
-    struct_names: std::collections::HashSet<String>,
+    symbols: std::collections::HashMap<String, TypeKind>,
     struct_layouts: HashMap<String, StructLayout>,
-    enum_names: std::collections::HashSet<String>,
     enum_layouts: HashMap<String, EnumLayout>,
     expr_resolutions: ExprResolutions,
     pattern_resolutions: PatternResolutions,
@@ -504,14 +471,12 @@ pub fn lower_function(
     let ret_ty = func
         .return_type
         .as_ref()
-        .map(|tid| lower_type(arena, *tid, &struct_names, &enum_names))
+        .map(|tid| lower_type(arena, *tid, &symbols))
         .unwrap_or(MirType::Integer);
     let mut c = Ctx::new(
         &func.name,
         &ret_ty,
-        struct_names,
         struct_layouts,
-        enum_names,
         enum_layouts,
         expr_resolutions,
         pattern_resolutions,
@@ -524,7 +489,7 @@ pub fn lower_function(
     c.push_scope();
 
     for p in &func.params {
-        let ty = lower_type(arena, p.type_annotation, &c.struct_names, &c.enum_names);
+        let ty = lower_type(arena, p.type_annotation, &symbols);
         // B7-lift (ADR-0042): heap types now allowed as parameters.
         // Move semantics: callee owns + drops, caller zeroes slot after call.
         // ADR-0045 §2: reference types (&0 String etc.) are borrow params
@@ -555,7 +520,8 @@ pub fn lower_function(
     // defense-in-depth: if typecheck leaks, Err — not panic — because
     // the harness (integration_tests.rs:64) runs through type errors and
     // panic would SIGABRT the entire corpus.
-    if c.sig.return_type.starts_with("&0 ") {
+    if matches!(&c.sig.return_type, MirType::Reference { form, .. } if matches!(form, triet_mir::ReferenceForm::BorrowReadOnly | triet_mir::ReferenceForm::BorrowExclusiveMutable))
+    {
         let ref_param_indices: Vec<usize> = c
             .sig
             .params
@@ -638,12 +604,11 @@ pub fn lower_function(
 ///
 /// Single producer of all MIR types — no String intermediate, no parse() round-trip.
 /// Named types are classified as builtins, user structs, or user enums via
-/// `struct_names`/`enum_names` sets.
+/// `TypeKind` symbol-table.
 fn lower_type(
     arena: &Arena,
     id: TypeId,
-    struct_names: &std::collections::HashSet<String>,
-    enum_names: &std::collections::HashSet<String>,
+    symbols: &std::collections::HashMap<String, TypeKind>,
 ) -> MirType {
     match &arena.type_expression(id).node {
         TypeExpr::Named(n) => match n.as_str() {
@@ -657,18 +622,68 @@ fn lower_type(
             // Vector/HashMap bare (ADR-0050 CORRECTION §3.1.1) — strip generic args
             other if other == "Vector" || other.starts_with("Vector<") => MirType::Vector,
             other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
-            other if struct_names.contains(other) => MirType::Struct(other.to_string()),
-            other if enum_names.contains(other) => MirType::Enum(other.to_string()),
+            other if symbols.get(other) == Some(&TypeKind::Struct) => {
+                MirType::Struct(other.to_string())
+            }
+            other if symbols.get(other) == Some(&TypeKind::Enum) => {
+                MirType::Enum(other.to_string())
+            }
             _ => MirType::Unknown,
         },
-        TypeExpr::Nullable(inner) => MirType::Nullable(Box::new(lower_type(
-            arena,
-            *inner,
-            struct_names,
-            enum_names,
-        ))),
+        TypeExpr::Nullable(inner) => {
+            MirType::Nullable(Box::new(lower_type(arena, *inner, symbols)))
+        }
         TypeExpr::Reference { form, inner } => {
-            let inner = lower_type(arena, *inner, struct_names, enum_names);
+            let inner = lower_type(arena, *inner, symbols);
+            let form = match form {
+                ReferenceForm::StrongFrozen => triet_mir::ReferenceForm::StrongFrozen,
+                ReferenceForm::StrongMutable => triet_mir::ReferenceForm::StrongMutable,
+                ReferenceForm::BorrowReadOnly => triet_mir::ReferenceForm::BorrowReadOnly,
+                ReferenceForm::BorrowExclusiveMutable => {
+                    triet_mir::ReferenceForm::BorrowExclusiveMutable
+                }
+                ReferenceForm::WeakObserver => triet_mir::ReferenceForm::WeakObserver,
+            };
+            MirType::Reference {
+                form,
+                inner: Box::new(inner),
+            }
+        }
+        _ => MirType::Unknown,
+    }
+}
+
+/// Simplified type builder using Ctx layout tables for Struct/Enum discrimination.
+///
+/// Used in `lower_stmt`/`lower_expr`. Unlike `lower_type`, this does not need
+/// the `struct_names`/`enum_names` HashSets — it discriminates user types
+/// directly from the layout maps on `Ctx`: if the name is in `enum_layouts`,
+/// it's an `Enum`; if in `struct_layouts`, a `Struct`; otherwise `Unknown`
+/// (refuse-over-guess).
+///
+/// TECH-DEBT(B1a S3): merge with `lower_type` when the helper chain is refactored
+/// to carry `struct_names`/`enum_names` uniformly.
+fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
+    match &arena.type_expression(id).node {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Integer" => MirType::Integer,
+            "Trit" => MirType::Trit,
+            "Tryte" => MirType::Tryte,
+            "Long" => MirType::Long,
+            "Trilean" => MirType::Trilean,
+            "Unit" => MirType::Unit,
+            "String" => MirType::String,
+            other if other == "Vector" || other.starts_with("Vector<") => MirType::Vector,
+            other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
+            other if c.struct_layouts.contains_key(other) => MirType::Struct(other.to_string()),
+            other if c.enum_layouts.contains_key(other) => MirType::Enum(other.to_string()),
+            _ => MirType::Unknown, // refuse-over-guess
+        },
+        TypeExpr::Nullable(inner) => {
+            MirType::Nullable(Box::new(lower_type_simple(arena, *inner, c)))
+        }
+        TypeExpr::Reference { form, inner } => {
+            let inner = lower_type_simple(arena, *inner, c);
             let form = match form {
                 ReferenceForm::StrongFrozen => triet_mir::ReferenceForm::StrongFrozen,
                 ReferenceForm::StrongMutable => triet_mir::ReferenceForm::StrongMutable,
@@ -779,7 +794,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             if is_null_expr(&arena.expression(*init).node) {
                 let ann_ty = type_annotation
                     .as_ref()
-                    .map(|tid| lower_type(arena, *tid, &c.struct_names, &c.enum_names))
+                    .map(|tid| lower_type_simple(arena, *tid, c))
                     .ok_or_else(|| {
                         LowerError::null_literal_without_expected_type(stmt_span.clone())
                     })?;
@@ -807,7 +822,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // arrives, emit an Assign to a new typed local (M2 pattern)
                 // instead of mutating.
                 if let Some(tid) = type_annotation {
-                    let ann_ty = lower_type(arena, *tid, &c.struct_names, &c.enum_names);
+                    let ann_ty = lower_type_simple(arena, *tid, c);
                     if ann_ty != MirType::Unknown {
                         c.local_decls[v.0].ty = ann_ty;
                     }
@@ -847,7 +862,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // Struct return via sret: copy struct fields to the caller's buffer.
                 let struct_local = lower_expr(*v, arena, c)?;
                 let source_ty = c.local_decls[struct_local.0].ty.clone();
-                if c.struct_names.contains(&source_ty.to_string()) {
+                if matches!(source_ty, MirType::Struct(_)) {
                     // Copy struct: copy fields to sret buffer.
                     if let Some(layout) = c.struct_layouts.get(&source_ty.to_string()) {
                         let field_names: Vec<String> =
@@ -1298,7 +1313,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Call(FieldAccess(Identifier(TypeName), Variant), [payload]).
             if let Expr::FieldAccess { object, field } = &arena.expression(*callee).node
                 && let Expr::Identifier { name: enum_name } = &arena.expression(*object).node
-                && c.is_enum_type(enum_name)
+                && c.enum_layouts.contains_key(enum_name)
                 && arguments.len() == 1
             {
                 // Lower as enum literal with payload.
@@ -1685,7 +1700,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .get(&callee_name)
                 .cloned()
                 .unwrap_or(MirType::Integer);
-            let is_fat_ret = c.is_fat_type(&callee_ret.to_string());
+            let is_fat_ret = matches!(callee_ret, MirType::Struct(_) | MirType::String);
 
             let mut args: Vec<Local> = arguments
                 .iter()
@@ -2647,23 +2662,13 @@ mod tests {
     fn lower_source(source: &str) -> Body {
         let (prog, errors) = triet_parser::parse(source);
         assert!(errors.is_empty(), "parse errors: {errors:?}");
-        // Scan for struct/enum definitions so simple_is_copy recognizes them.
-        // Must match production (lib.rs:349/389): struct_names and enum_names
-        // are separate sets — mixing them would cause is_struct_return to
-        // misclassify enum-returning functions as struct returns.
-        let struct_names: std::collections::HashSet<String> = prog
+        // Build ItemSymbolTable for lower_type/lower_type_simple.
+        let symbols: std::collections::HashMap<String, TypeKind> = prog
             .items
             .iter()
             .filter_map(|item| match &item.node {
-                Item::Struct { def, .. } => Some(def.name.clone()),
-                _ => None,
-            })
-            .collect();
-        let enum_names: std::collections::HashSet<String> = prog
-            .items
-            .iter()
-            .filter_map(|item| match &item.node {
-                Item::Enum { def, .. } => Some(def.name.clone()),
+                Item::Struct { def, .. } => Some((def.name.clone(), TypeKind::Struct)),
+                Item::Enum { def, .. } => Some((def.name.clone(), TypeKind::Enum)),
                 _ => None,
             })
             .collect();
@@ -2682,9 +2687,8 @@ mod tests {
             &func.0,
             &prog.arena,
             func.1,
-            struct_names,
+            symbols,
             HashMap::new(),
-            enum_names,
             HashMap::new(),
             ExprResolutions::new(),
             PatternResolutions::new(),
@@ -2948,13 +2952,6 @@ function main() -> Integer {
             }
         }
     }
-
-    /// Point 1 + M1: type_name emits "Integer?" + Elvis result typed T (not T?).
-    #[test]
-
-    /// B1 (§3): type_name renders reference types (e.g. "&0 String"),
-    /// not the old "?" fallback.
-    #[test]
 
     /// B2 (§2 callee): no Drop for reference-type borrow params.
     /// Callee receives a reference handle — it does not own the heap.

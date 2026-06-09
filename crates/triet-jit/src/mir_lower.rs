@@ -264,10 +264,15 @@ impl JitContext {
         match &place.projection[0] {
             Projection::Field(field_name) => {
                 let ty = &body.local_decls[place.local.0].ty;
+                let ty_display = ty.to_string();
+                let ty_name = match ty {
+                    MirType::Struct(name) | MirType::Enum(name) => name.as_str(),
+                    _ => ty_display.as_str(),
+                };
                 let layout = body
                     .struct_layouts
                     .iter()
-                    .find(|l| l.name == ty.to_string())
+                    .find(|l| l.name == ty_name)
                     .ok_or_else(|| {
                         JitError::Unsupported(format!(
                             "type '{ty}' is not a known struct (local {})",
@@ -334,10 +339,15 @@ impl JitContext {
         match &place.projection[0] {
             Projection::Field(field_name) => {
                 let ty = &body.local_decls[place.local.0].ty;
+                let ty_display = ty.to_string();
+                let ty_name = match ty {
+                    MirType::Struct(name) | MirType::Enum(name) => name.as_str(),
+                    _ => ty_display.as_str(),
+                };
                 let layout = body
                     .struct_layouts
                     .iter()
-                    .find(|l| l.name == ty.to_string())
+                    .find(|l| l.name == ty_name)
                     .ok_or_else(|| {
                         JitError::Unsupported(format!(
                             "type '{ty}' is not a known struct (local {})",

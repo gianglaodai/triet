@@ -25,8 +25,8 @@ pub mod liveness;
 
 use triet_mir::{
     BasicBlock, BinOp, BlockData, Body, CallTarget, ConstValue, DUMMY_SPAN, FunctionId,
-    FunctionSignature, Local, LocalDecl, ParameterPassing, Place, ReferenceForm, ReturnShape,
-    Statement, Terminator,
+    FunctionSignature, Local, LocalDecl, MirType, ParameterPassing, Place, ReferenceForm,
+    ReturnShape, Statement, Terminator,
 };
 
 use std::collections::{BTreeMap, HashMap};
@@ -56,12 +56,12 @@ pub struct MirBuilder {
 impl MirBuilder {
     /// Create a new MIR builder for a function.
     #[must_use]
-    pub fn new(name: &str, return_type: &str) -> Self {
+    pub fn new(name: &str, return_type: impl Into<MirType>) -> Self {
         Self {
             signature: FunctionSignature {
                 name: name.to_string(),
                 params: Vec::new(),
-                return_type: return_type.to_string(),
+                return_type: return_type.into(),
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape: triet_mir::ReturnShape::Scalar,
             },

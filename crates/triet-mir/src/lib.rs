@@ -949,9 +949,8 @@ pub struct FunctionSignature {
     pub name: String,
     /// Parameters: (name, passing_mode).
     pub params: Vec<(String, ParameterPassing)>,
-    /// Return type name for diagnostics/layout lookup.
-    /// TECH-DEBT(B1a): migrate to MirType in S3.
-    pub return_type: String,
+    /// Return type.
+    pub return_type: MirType,
     /// The shape of the return value (Unit, Scalar, BinaryOutcome, TernaryOutcome).
     /// Determines how many values the function returns in the ABI.
     pub return_shape: ReturnShape,
@@ -2067,10 +2066,70 @@ impl fmt::Display for ControlFlowGraph {
 
 // ── Tests ────────────────────────────────────────────────────
 
+/// Sentinel encoding the `~0` (null) state of **all** `T?` at Bậc A
+/// (scalar and heap — uniform). INVARIANT: lies outside every Triết
+/// scalar range (see canary test N1 in the test module, and
+/// [ADR-0041 §6.2](../../docs/decisions/0041-nullable-representation-bac-a.md#62--scalar-debt-d1-phantom-null-qua-arithmetic-khng-wrap)).
+pub const NULL_SENTINEL: i64 = i64::MIN;
+
+/// Computes the type of a Place by walking its projection chain.
+pub fn place_type(place: &Place, body: &Body) -> MirType {
+    let mut current_ty = body.local_decls[place.local.0].ty.clone();
+    for proj in &place.projection {
+        current_ty = match proj {
+            Projection::Field(name) => {
+                // Look up the field type in struct layouts.
+                let ty_name = current_ty.to_string();
+                if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty_name) {
+                    if let Some(field) = s.fields.iter().find(|f| f.name == name.as_str()) {
+                        field.ty.clone()
+                    } else {
+                        MirType::Unknown
+                    }
+                } else if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty_name) {
+                    // Look up in enum payload layouts (for struct-payload variants).
+                    let mut found = None;
+                    for variant in &e.variants {
+                        if let Some(ref payload) = variant.payload
+                            && let Some(field) =
+                                payload.fields.iter().find(|f| f.name == name.as_str())
+                        {
+                            found = Some(field.ty.clone());
+                            break;
+                        }
+                    }
+                    found.unwrap_or(MirType::Unknown)
+                } else {
+                    MirType::Unknown
+                }
+            }
+            Projection::Payload(variant) => {
+                // Look up the payload type in enum layouts.
+                let ty_name = current_ty.to_string();
+                if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty_name) {
+                    if let Some(v) = e.variants.iter().find(|v| &v.name == variant) {
+                        if let Some(ref payload) = v.payload {
+                            payload.ty.clone()
+                        } else {
+                            MirType::Unknown
+                        }
+                    } else {
+                        MirType::Unknown
+                    }
+                } else {
+                    MirType::Unknown
+                }
+            }
+            _ => {
+                // Other projections (Deref, Downcast, Index) — can't resolve yet.
+                MirType::Unknown
+            }
+        };
+    }
+    current_ty
+}
+
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-// ^-- TECH-DEBT(B1a S2): old free helper functions follow the test module.
-//     These helpers are deleted at S3 when all consumers migrate to MirType methods.
 mod tests {
     use super::*;
 
@@ -2690,89 +2749,6 @@ mod tests {
         assert!(!MirType::Nullable(Box::new(MirType::String)).is_copy(None));
     }
 
-    // ── Existing is_copy tests (keep — verify old API still works) ──
-
-    #[test]
-    fn is_copy_primitives() {
-        let body = well_formed_body();
-        assert!(is_copy("Integer", &body));
-        assert!(is_copy("Trit", &body));
-        assert!(is_copy("Tryte", &body));
-        assert!(is_copy("Long", &body));
-        assert!(is_copy("Trilean", &body));
-        assert!(is_copy("Unit", &body));
-        assert!(is_copy("?", &body));
-    }
-
-    #[test]
-    fn is_copy_reference_types() {
-        // ADR-0045 §3: reference types are Copy by design —
-        // copying a handle is safe because the callee doesn't Drop it.
-        let body = well_formed_body();
-        assert!(is_copy("&0 String", &body));
-        assert!(is_copy("&0 Vector<Integer>", &body));
-        assert!(is_copy("&0 HashMap<String, Integer>", &body));
-        assert!(is_copy("&+ String", &body));
-        assert!(is_copy("&+ mutable String", &body));
-        assert!(is_copy("&- String", &body));
-    }
-
-    #[test]
-    fn is_copy_heap_types() {
-        let body = well_formed_body();
-        assert!(!is_copy("String", &body));
-        assert!(!is_copy("Vector", &body));
-        assert!(!is_copy("HashMap", &body));
-    }
-
-    #[test]
-    fn is_copy_struct_recursive() {
-        let layout = StructLayout::compute(
-            "HasString",
-            &[
-                ("header".into(), MirType::Integer, 8, 8),
-                ("body".into(), MirType::String, 8, 8),
-            ],
-        );
-        let body = Body {
-            struct_layouts: vec![layout],
-            ..well_formed_body()
-        };
-        // Struct with a Move field is itself Move
-        assert!(!is_copy("HasString", &body));
-    }
-
-    #[test]
-    fn is_copy_enum_recursive() {
-        let layout = EnumLayout::compute(
-            "Either",
-            &[("Left".into(), 0, Some((MirType::Integer, 8, 8, vec![])))],
-        );
-        let body = Body {
-            enum_layouts: vec![layout],
-            ..well_formed_body()
-        };
-        // All payloads are Integer → Copy
-        assert!(is_copy("Either", &body));
-
-        let layout2 = EnumLayout::compute(
-            "EitherString",
-            &[("Right".into(), 0, Some((MirType::String, 8, 8, vec![])))],
-        );
-        let body2 = Body {
-            enum_layouts: vec![layout2],
-            ..well_formed_body()
-        };
-        // A payload is String → Move
-        assert!(!is_copy("EitherString", &body2));
-    }
-
-    #[test]
-    fn is_copy_unknown_defaults_move() {
-        let body = well_formed_body();
-        assert!(!is_copy("UnknownType", &body));
-    }
-
     // ── Nullable representation tests (ADR-0041) ──────────────────
 
     /// N1 — Canary: `NULL_SENTINEL` must lie outside every Triết scalar range.
@@ -2805,46 +2781,50 @@ mod tests {
         );
     }
 
-    /// N2 — `is_nullable_type` / `nullable_payload` round-trip and pins.
+    /// N2 — `MirType::is_nullable()` / `MirType::nullable_payload()` round-trip and pins.
     #[test]
     fn nullable_type_helpers() {
         // Round-trip: Integer?
-        assert!(is_nullable_type("Integer?"));
-        assert_eq!(nullable_payload("Integer?"), Some("Integer"));
+        let ty = MirType::parse("Integer?");
+        assert!(ty.is_nullable());
+        assert_eq!(
+            ty.nullable_payload().map(|t| t.to_string()),
+            Some("Integer".into())
+        );
 
         // Round-trip: String?
-        assert!(is_nullable_type("String?"));
-        assert_eq!(nullable_payload("String?"), Some("String"));
+        let ty = MirType::parse("String?");
+        assert!(ty.is_nullable());
+        assert_eq!(
+            ty.nullable_payload().map(|t| t.to_string()),
+            Some("String".into())
+        );
 
         // Pin: "?" trần must NOT be nullable (type-unknown).
-        assert!(!is_nullable_type("?"), "bare '?' must not be nullable");
-        assert_eq!(nullable_payload("?"), None);
+        let ty = MirType::parse("?");
+        assert!(!ty.is_nullable(), "bare '?' must not be nullable");
+        assert!(ty.nullable_payload().is_none());
 
-        // Pin: is_vec_type must NOT consume nullable vector type-string.
-        assert!(is_nullable_type("Vector<Integer>?"));
-        assert_eq!(
-            nullable_payload("Vector<Integer>?"),
-            Some("Vector<Integer>")
-        );
-        // Payload of "Vector<Integer>?" is "Vector<Integer>" which IS a vec type.
-        let payload = nullable_payload("Vector<Integer>?").unwrap();
+        // Pin: is_vec must NOT consume nullable Vector.
+        let ty = MirType::parse("Vector<Integer>?");
+        assert!(ty.is_nullable());
+        // Payload of nullable Vector IS a vec type.
+        let payload = ty.nullable_payload().unwrap();
         assert!(
-            is_vec_type(payload),
-            "payload of nullable Vector should be Vector<Integer>"
+            payload.is_vec(),
+            "payload of nullable Vector should be Vector"
         );
 
         // Non-nullable: plain types.
-        assert!(!is_nullable_type("Integer"));
-        assert_eq!(nullable_payload("Integer"), None);
-        assert!(!is_nullable_type("String"));
-        assert_eq!(nullable_payload("String"), None);
-        assert!(!is_nullable_type("Vector"));
-        assert_eq!(nullable_payload("Vector"), None);
+        assert!(!MirType::parse("Integer").is_nullable());
+        assert!(!MirType::parse("String").is_nullable());
+        assert!(!MirType::parse("Vector").is_nullable());
 
         // Edge case: "Integer??" — can't happen (C6: T?? auto-flatten),
-        // but helper must be defined. Mechanical strip: last ? only.
-        assert!(is_nullable_type("Integer??"));
-        assert_eq!(nullable_payload("Integer??"), Some("Integer?"));
+        // but helper must be defined.
+        let ty = MirType::parse("Integer??");
+        assert!(ty.is_nullable());
+        assert!(ty.nullable_payload().unwrap().is_nullable());
     }
 
     /// N2 extension — `is_copy` integration: nullable delegates to payload.
@@ -2853,13 +2833,13 @@ mod tests {
         let body = well_formed_body();
 
         // Integer? → payload Integer → Copy
-        assert!(is_copy("Integer?", &body));
+        assert!(MirType::parse("Integer?").is_copy(Some(&body)));
         // String? → payload String → Move
-        assert!(!is_copy("String?", &body));
-        // Vector<Integer>? → payload Vector<Integer> → Move (via is_vec_type)
-        assert!(!is_copy("Vector<Integer>?", &body));
+        assert!(!MirType::parse("String?").is_copy(Some(&body)));
+        // Vector<Integer>? → payload Vector → Move
+        assert!(!MirType::parse("Vector<Integer>?").is_copy(Some(&body)));
         // ? trần → NOT nullable → falls through to Copy (existing behavior)
-        assert!(is_copy("?", &body));
+        assert!(MirType::parse("?").is_copy(Some(&body)));
     }
 
     /// INV-4: a block referenced by a Goto must not have `Unreachable`
@@ -2902,149 +2882,4 @@ mod tests {
         body.verify()
             .expect("unreferenced Unreachable block is fine");
     }
-}
-
-/// Sentinel encoding the `~0` (null) state of **all** `T?` at Bậc A
-/// (scalar and heap — uniform). INVARIANT: lies outside every Triết
-/// scalar range (see canary test N1 in the test module, and
-/// [ADR-0041 §6.2](../../docs/decisions/0041-nullable-representation-bac-a.md#62--scalar-debt-d1-phantom-null-qua-arithmetic-khng-wrap)).
-pub const NULL_SENTINEL: i64 = i64::MIN;
-
-/// Returns `true` if `ty` names a nullable type (e.g. `"Integer?"`,
-/// `"String?"`, `"Vector<Integer>?"`).
-///
-/// **Ordering rule:** this MUST be called BEFORE any other type-string
-/// classifier (`is_vec_type`, etc.) at every consumer. Reason:
-/// `"Vector<Integer>?"` starts with `"Vector<"` and would be
-/// misclassified as a bare Vector by `is_vec_type`.
-///
-/// **Pin:** `is_nullable_type("?")` returns `false`. The bare `"?"`
-/// type-string means "type unknown" (`is_copy` treats it as Copy) —
-/// it must NOT be classified as "nullable of empty string."
-#[must_use]
-pub fn is_nullable_type(ty: &str) -> bool {
-    ty.ends_with('?') && ty != "?"
-}
-
-/// Strips the trailing `?` from a nullable type-string.
-///
-/// `"Integer?"` → `Some("Integer")`; non-nullable → `None`.
-///
-/// **Pin:** `nullable_payload("Vector<Integer>?")` returns
-/// `Some("Vector<Integer>")` — `is_vec_type` must NOT consume
-/// a nullable type-string. Verify in N2.
-#[must_use]
-pub fn nullable_payload(ty: &str) -> Option<&str> {
-    if is_nullable_type(ty) {
-        Some(&ty[..ty.len() - 1])
-    } else {
-        None
-    }
-}
-
-/// Returns `true` if `ty` names a Vector type (e.g. `"Vector"` or
-/// `"Vector<Integer>"`). Single source of truth for Vector type-string
-/// matching — use this instead of ad-hoc `starts_with`/`==` checks.
-#[must_use]
-pub fn is_vec_type(ty: &str) -> bool {
-    ty == "Vector" || ty.starts_with("Vector<")
-}
-
-/// Returns `true` if `ty` names a HashMap type (e.g. `"HashMap"` or
-/// `"HashMap<Integer,Integer>"`). Single source of truth — use this
-/// instead of ad-hoc matching.
-#[must_use]
-pub fn is_hashmap_type(ty: &str) -> bool {
-    ty == "HashMap" || ty.starts_with("HashMap<")
-}
-
-/// Determines if a type has Copy semantics (stack primitives) or Move semantics (heap types).
-pub fn is_copy(ty: &str, body: &Body) -> bool {
-    // Nullable types delegate to their payload (ordering rule: BEFORE all
-    // other classifiers — is_vec_type would misclassify "Vector<Integer>?").
-    if let Some(payload) = nullable_payload(ty) {
-        return is_copy(payload, body);
-    }
-    match ty {
-        "Integer" | "Trit" | "Tryte" | "Long" | "Trilean" | "Unit" | "?" => true,
-        "String" | "HashMap" => false,
-        other if is_vec_type(other) => false,
-        other if is_hashmap_type(other) => false,
-        // Reference types — Copy by design (ADR-0045 §3).
-        // TECH-DEBT(ADR-0045): MIR-type-as-string, xem §3.
-        other if other.starts_with('&') => true,
-        _ => {
-            // Check struct layouts — Copy if all fields are Copy (recursive).
-            // Display-bridge: field ty is now MirType, call is_copy directly.
-            if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty) {
-                return s.fields.iter().all(|f| f.ty.is_copy(Some(body)));
-            }
-            // Check enum layouts — Copy if all payloads are Copy (recursive).
-            if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty) {
-                return e
-                    .variants
-                    .iter()
-                    .all(|v| v.payload.as_ref().is_none_or(|p| p.ty.is_copy(Some(body))));
-            }
-            // Unknown types default to Move (Refuse-over-guess)
-            false
-        }
-    }
-}
-
-/// Computes the type of a Place by walking its projection chain.
-pub fn place_type(place: &Place, body: &Body) -> MirType {
-    let mut current_ty = body.local_decls[place.local.0].ty.clone();
-    for proj in &place.projection {
-        current_ty = match proj {
-            Projection::Field(name) => {
-                // Look up the field type in struct layouts.
-                let ty_name = current_ty.to_string();
-                if let Some(s) = body.struct_layouts.iter().find(|s| s.name == ty_name) {
-                    if let Some(field) = s.fields.iter().find(|f| f.name == name.as_str()) {
-                        field.ty.clone()
-                    } else {
-                        MirType::Unknown
-                    }
-                } else if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty_name) {
-                    // Look up in enum payload layouts (for struct-payload variants).
-                    let mut found = None;
-                    for variant in &e.variants {
-                        if let Some(ref payload) = variant.payload
-                            && let Some(field) =
-                                payload.fields.iter().find(|f| f.name == name.as_str())
-                        {
-                            found = Some(field.ty.clone());
-                            break;
-                        }
-                    }
-                    found.unwrap_or(MirType::Unknown)
-                } else {
-                    MirType::Unknown
-                }
-            }
-            Projection::Payload(variant) => {
-                // Look up the payload type in enum layouts.
-                let ty_name = current_ty.to_string();
-                if let Some(e) = body.enum_layouts.iter().find(|e| e.name == ty_name) {
-                    if let Some(v) = e.variants.iter().find(|v| &v.name == variant) {
-                        if let Some(ref payload) = v.payload {
-                            payload.ty.clone()
-                        } else {
-                            MirType::Unknown
-                        }
-                    } else {
-                        MirType::Unknown
-                    }
-                } else {
-                    MirType::Unknown
-                }
-            }
-            _ => {
-                // Other projections (Deref, Downcast, Index) — can't resolve yet.
-                MirType::Unknown
-            }
-        };
-    }
-    current_ty
 }
