@@ -814,33 +814,7 @@ pub enum BorrowError {
         span: Span,
     },
 
-    /// E2410: `CannotMutateFrozenOwner` (ADR-0025 §7.1)
-    ///
-    /// Frozen owner = `&+ T` (NOT `&+ mutable T`). Frozen owners are
-    /// read-only for their entire lifetime. Per ADR-0022 §3.4, frozen
-    /// ownership is permanent — cannot mutate through the reference.
-    #[error("cannot mutate field `{field}` of frozen owner `{ty}`")]
-    #[diagnostic(
-        code(triet::borrow::E2410),
-        help(
-            "Suggested fixes:\n\n\
-            [Fix 1] Declare the owner as mutable at construction site:\n\
-            Change `&+ {ty}` to `&+ mutable {ty}`\n\n\
-            [Fix 2] Construct a fresh owner with the new value (functional style):\n\
-            Replace the assignment with a new binding that copies all fields explicitly \
-            and sets `{field}` to the desired value"
-        )
-    )]
-    CannotMutateFrozenOwner {
-        /// The mutated field name (e.g., `name`, `display_name`).
-        field: String,
-        /// The type string (without the `&+` prefix).
-        ty: String,
-        /// Source location of the mutating expression.
-        #[label("mutation through frozen `&+` reference")]
-        span: Span,
-    },
-
+    // CannotMutateFrozenOwner: deleted (ADR-0051 B2 cleanup — dead variant).
     /// E2411: `CannotPromoteFrozenToMutable` (ADR-0025 §7.2)
     ///
     /// Frozen ownership (`&+ T`) is permanent — cannot be promoted to
@@ -925,22 +899,7 @@ pub enum BorrowError {
         #[label("field makes construction impossible")]
         span: Span,
     },
-
-    /// E2430: `NamespaceInferenceFailed`
-    #[error("namespace inference failed for capability requirement")]
-    #[diagnostic(
-        code(triet::borrow::E2430),
-        help(
-            "Suggested fixes:\n\n\
-            [Fix 1] Provide an explicit namespace root:\n\
-            Change to fully qualified capability path"
-        )
-    )]
-    NamespaceInferenceFailed {
-        /// Source location.
-        #[label("inference fails here")]
-        span: Span,
-    },
+    // NamespaceInferenceFailed: deleted (ADR-0051 B2 cleanup — dead variant).
     // BorrowExclusivityViolation: deleted (ADR-0051 B2.1b — E2440 moved to MIR).
 }
 
@@ -951,12 +910,10 @@ impl BorrowError {
             Self::BorrowLifetimeInferenceFailed { span, .. }
             | Self::BorrowInStructField { span, .. }
             | Self::EscapingBorrow { span }
-            | Self::CannotMutateFrozenOwner { span, .. }
             | Self::CannotPromoteFrozenToMutable { span, .. }
             | Self::UseAfterMove { span, .. }
             | Self::SelfOwnershipParadox { span }
-            | Self::NonTerminatingConstruction { span, .. }
-            | Self::NamespaceInferenceFailed { span } => span.clone(),
+            | Self::NonTerminatingConstruction { span, .. } => span.clone(),
         }
     }
 }

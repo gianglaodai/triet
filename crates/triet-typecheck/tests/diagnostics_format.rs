@@ -44,24 +44,7 @@ fn e2403_escaping_borrow_format() {
     assert!(help.contains("[Fix 2]"));
 }
 
-#[test]
-fn e2410_cannot_mutate_frozen_owner_format() {
-    // v0.10.x.borrow.3: skeleton message corrected — E2410 fires on
-    // `&+ T` frozen-owner mutation, NOT `&0 T`. Fix suggestions point
-    // toward `&+ mutable T`.
-    let err = BorrowError::CannotMutateFrozenOwner {
-        field: "name".to_string(),
-        ty: "User".to_string(),
-        span: dummy_span(),
-    };
-    let help = err.help().unwrap().to_string();
-    assert!(help.contains("[Fix 1]"));
-    assert!(
-        help.contains("Change `&+ User` to `&+ mutable User`"),
-        "expected new &+ → &+ mutable fix text, got: {help}"
-    );
-    assert!(help.contains("[Fix 2]"));
-}
+// e2410_cannot_mutate_frozen_owner_format: deleted (ADR-0051 B2 cleanup).
 
 #[test]
 fn e2411_cannot_promote_frozen_to_mutable_format() {
@@ -114,14 +97,7 @@ fn e2422_non_terminating_construction_format() {
     assert!(help.contains("Change `&+ String` to `Vector<&+ String>`"));
 }
 
-#[test]
-fn e2430_namespace_inference_failed_format() {
-    let err = BorrowError::NamespaceInferenceFailed { span: dummy_span() };
-    let help = err.help().unwrap().to_string();
-    assert!(help.contains("[Fix 1]"));
-    assert!(help.contains("Change to fully qualified capability path"));
-}
-
+// e2430_namespace_inference_failed_format: deleted (ADR-0051 B2 cleanup).
 // e2440_borrow_exclusivity_violation_format: deleted (ADR-0051 B2.1b, variant removed)
 
 #[test]

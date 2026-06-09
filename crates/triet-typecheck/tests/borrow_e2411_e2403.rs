@@ -42,11 +42,7 @@ fn assert_no_borrow_errors(src: &str) {
     let borrow_count = codes
         .iter()
         .filter(|c| {
-            c.contains("E2400")
-                || c.contains("E2402")
-                || c.contains("E2403")
-                || c.contains("E2410")
-                || c.contains("E2411")
+            c.contains("E2400") || c.contains("E2402") || c.contains("E2403") || c.contains("E2411")
         })
         .count();
     assert_eq!(

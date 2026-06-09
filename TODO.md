@@ -72,7 +72,9 @@ Sub-task tracking for the current phase (Phase 4 & 5).
   - **Đã diệt:** stringly-typed MIR (`ty:String` + ngữ pháp nhúng), ordering-rule ngầm (→kết cấu Nullable), simple_is_copy (bản sao logic), 2 HashSet (→TypeKind map). Gate 0·0·99·203.
   - **14 vòng O chặn** (verify-don't-trust): bom lớn nhất = producer-ngụy-trang (đẻ String rồi parse ngược) → luật verify-producer-trước-consumer + poison-phải-đỏ. Acid test S4: xóa parse → workspace không nổ = migrate thật.
   - **Nợ mang sang:** móng Struct/Enum no-consumer (khép khi C1 enum-payload) · lower_function 9-param → LoweringInput struct (defer, allow justify).
-- [ ] **B2: Sáp nhập 2 tầng borrowck typecheck+MIR (Crusade #2).** ADR-0048 §2. E2440 không teeth-isolate được vì 2 tầng.
+- [x] **B2: Sáp nhập 2 tầng borrowck typecheck+MIR (Crusade #2).** ✅ GỠ TRÙNG HOÀN TẤT (O+G ký 2026-06-10). ADR-0051. 3 lát + cleanup:
+  - `1e6c14e B2.1a` gỡ E2420 subsystem (MoveState machine + 6 branch-join call-site + 2 caller) · `58dfa4e B2.1b` nổ borrow_check.rs E2440 (502 dòng module + variant) · `HEAD B2 cleanup` tử hình E2410+E2430 dead variant.
+  - E2420+E2440 teeth-isolate được — MIR NLL là cảnh sát duy nhất. B2.2 (E2400/E2410) hủy do dead variant. Gate 0·0·101·203.
 - [ ] **B3: Alias analysis thật thay `conservative=true`.** checker.rs:64,505. SOUND nhưng over-reject.
 
 ### 🟡 C. FEATURE GAP — thiếu, không sai
