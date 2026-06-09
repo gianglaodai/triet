@@ -1440,9 +1440,12 @@ impl Body {
                         check_block(target)?;
                     }
                     check_block(*default_bb)?;
-                    // 4i-6: default_bb must terminate with Trap (not Unreachable)
+                    // 4i-6: default_bb must terminate with Trap or Goto (Goto for wildcard, C2)
                     let default_block = &self.blocks[default_bb.0];
-                    if !matches!(default_block.terminator, Terminator::Trap { .. }) {
+                    if !matches!(
+                        default_block.terminator,
+                        Terminator::Trap { .. } | Terminator::Goto { .. }
+                    ) {
                         return Err(MirError::SwitchIntDefaultNotTrap {
                             default_bb: *default_bb,
                             span: DUMMY_SPAN.clone(),
@@ -1649,7 +1652,7 @@ pub enum MirError {
         /// Source location.
         span: Span,
     },
-    /// `SwitchInt.default_bb` does not terminate with `Trap`.
+    /// `SwitchInt.default_bb` does not terminate with `Trap` or `Goto`.
     SwitchIntDefaultNotTrap {
         /// The default block that should be a Trap.
         default_bb: BasicBlock,

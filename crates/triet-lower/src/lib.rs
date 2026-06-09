@@ -2439,12 +2439,41 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
 
-            // Pre-allocate arm blocks and emit body lowering for each.
-            // Variant resolution is provided by the type checker via
-            // pattern_resolutions — the lowerer does NOT scan enum_layouts.
+            // C2: Scan for wildcard arm BEFORE lowering.
+            // Wildcard must be the last arm (arms after = unreachable).
+            let mut wildcard_arm: Option<&triet_syntax::MatchArm> = None;
             for arm in arms.iter() {
-                let arm_bb = c.alloc_bb();
                 let pat = arena.pattern(arm.pattern);
+                if matches!(&pat.node, triet_syntax::Pattern::Wildcard) {
+                    if wildcard_arm.is_some() {
+                        return Err(LowerError {
+                            message: "duplicate wildcard `_` in enum match".to_string(),
+                            span: expr_span.clone(),
+                        });
+                    }
+                    wildcard_arm = Some(arm);
+                } else if wildcard_arm.is_some() {
+                    return Err(LowerError {
+                        message: "wildcard `_` must be the last arm in an enum match — \
+                                  arms after wildcard are unreachable"
+                            .to_string(),
+                        span: expr_span.clone(),
+                    });
+                }
+            }
+
+            // Pre-allocate arm blocks and emit body lowering for each
+            // non-wildcard arm. Variant resolution is provided by the type
+            // checker via pattern_resolutions.
+            for arm in arms.iter() {
+                let pat = arena.pattern(arm.pattern);
+
+                // Skip wildcard — lowered separately as default_bb.
+                if matches!(&pat.node, triet_syntax::Pattern::Wildcard) {
+                    continue;
+                }
+
+                let arm_bb = c.alloc_bb();
 
                 // Look up the type checker's resolution for this pattern.
                 // Clone to release the immutable borrow before mutating ctx.
@@ -2558,15 +2587,39 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 }
             }
 
-            // Create trap block for unknown discriminants.
-            let trap_bb = c.alloc_bb();
-            c.cur = trap_bb;
-            c.term(
-                trap_bb,
-                Terminator::Trap {
+            // C2: wildcard arm → default_bb instead of trap.
+            let default_bb = if let Some(wc) = wildcard_arm {
+                let wc_bb = c.alloc_bb();
+                c.cur = wc_bb;
+                c.push_scope();
+                let body_val = lower_expr(wc.body, arena, c)?;
+                let wc_end = c.cur;
+                c.push(Statement::Assign {
+                    dest: Place::local(result),
+                    source: Place::local(body_val),
                     span: expr_span.clone(),
-                },
-            );
+                });
+                c.term(
+                    wc_end,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+                c.pop_scope();
+                wc_bb
+            } else {
+                // No wildcard → trap on unknown discriminant.
+                let trap_bb = c.alloc_bb();
+                c.cur = trap_bb;
+                c.term(
+                    trap_bb,
+                    Terminator::Trap {
+                        span: expr_span.clone(),
+                    },
+                );
+                trap_bb
+            };
 
             // Emit SwitchInt terminator.
             c.term(
@@ -2574,7 +2627,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 Terminator::SwitchInt {
                     discriminant: disc_local,
                     cases,
-                    default_bb: trap_bb,
+                    default_bb,
                     span: expr_span.clone(),
                 },
             );

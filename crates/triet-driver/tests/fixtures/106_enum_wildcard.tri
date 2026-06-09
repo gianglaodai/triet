@@ -1,0 +1,13 @@
+// EXPECT: 0
+// C2: enum match with wildcard fallback.
+// Red→1, Blue→2, _→0. Scrutinee is Green → wildcard arm → 0.
+enum Color { Red, Blue, Green }
+
+function main() -> Integer = {
+    let c = Green;
+    return match c {
+        Red => 1,
+        Blue => 2,
+        _ => 0,
+    };
+}
