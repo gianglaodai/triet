@@ -175,6 +175,16 @@ impl ShimSymbol {
             has_return: true,
         }
     }
+
+    /// Register a 5-arg → 0-return shim (C6: concat sret).
+    pub fn fn_5_0(name: &str, f: extern "C" fn(i64, i64, i64, i64, i64)) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 5,
+            has_return: false,
+        }
+    }
 }
 
 // ── JIT context ─────────────────────────────────────────────
@@ -1216,15 +1226,40 @@ impl JitContext {
                         // ADR-0049 Lát 3b/5: dispatch by shim ABI class.
                         let bung_fields = matches!(
                             callee_name.as_str(),
-                            "__triet_string_eq"
-                                | "__triet_string_contains"
-                                | "__triet_string_concat"
+                            "__triet_string_eq" | "__triet_string_contains"
                         );
+                        let concat_sret = callee_name.as_str() == "__triet_string_concat";
                         let mutate_writeback = matches!(
                             callee_name.as_str(),
                             "__triet_string_clear" | "__triet_string_append"
                         );
-                        let arg_vals: Vec<_> = if bung_fields {
+                        let arg_vals: Vec<_> = if concat_sret {
+                            // C6: concat receives dest_slot as first arg (callee-fill via *mut FatStr).
+                            // Followed by bung-field source args {a_ptr, a_len, b_ptr, b_len}.
+                            let mut vals = Vec::with_capacity(1 + args.len() * 2);
+                            // Pass dest slot pointer as first arg.
+                            if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
+                                vals.push(builder.ins().stack_addr(I64, *slot, 0));
+                            } else {
+                                return Err(JitError::Unsupported(
+                                    "concat: dest slot not found".into(),
+                                ));
+                            }
+                            // Bung source String args.
+                            for a in args {
+                                if let Some((slot, _)) = self.struct_slots.get(a) {
+                                    let ptr = builder.ins().stack_load(I64, *slot, 0);
+                                    let len = builder.ins().stack_load(I64, *slot, 8);
+                                    vals.push(ptr);
+                                    vals.push(len);
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "concat: String arg without slot".into(),
+                                    ));
+                                }
+                            }
+                            vals
+                        } else if bung_fields {
                             let mut vals = Vec::with_capacity(args.len() * 2);
                             for a in args {
                                 if let Some((slot, _)) = self.struct_slots.get(a) {
@@ -1314,7 +1349,8 @@ impl JitContext {
                         // All builtin shims in ADR-0040 §3.1 that return values are
                         // 1-return shims. Check has_return via BuiltinShimMeta existence
                         // (all registered shims with a return value are in the meta table).
-                        if !dest.is_empty() {
+                        // C6: concat returns void (callee writes dest slot via *mut FatStr).
+                        if !dest.is_empty() && !concat_sret {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
                             // ADR-0049 Lát 6.3: populate String slot from shim args
@@ -1331,12 +1367,6 @@ impl JitContext {
                                     "__triet_string_alloc" => {
                                         // args: (len, cap)
                                         (arg_vals[0], arg_vals[1])
-                                    }
-                                    "__triet_string_concat" => {
-                                        // args: (a_ptr, a_len, b_ptr, b_len)
-                                        let total_len =
-                                            builder.ins().iadd(arg_vals[1], arg_vals[3]);
-                                        (total_len, total_len)
                                     }
                                     _ => {
                                         // Other shims don't return String.
@@ -1747,34 +1777,47 @@ pub extern "C" fn __triet_string_free(ptr: i64, cap: i64) {
     unsafe { std::alloc::dealloc(header, layout) };
 }
 
-/// `__triet_string_concat(a_ptr, a_len, b_ptr, b_len)` — concatenate two Strings.
+/// `__triet_string_concat(dest_slot, a_ptr, a_len, b_ptr, b_len)` — concatenate two Strings.
 ///
-/// ADR-0049 Lát 3b/6.3: len passed explicitly, data starts at body (no heap len/cap).
-/// Returns new heap handle (sret deferred).
+/// C6: callee-fill via `*mut FatStr` writeback (append precedent, ADR-0049).
+/// `dest_slot` is a pointer to the caller's StackSlot; the callee writes
+/// `{new_ptr, total_len, total_cap}` directly into it.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_string_concat(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i64) -> i64 {
+pub extern "C" fn __triet_string_concat(
+    dest_slot: i64,
+    a_ptr: i64,
+    a_len: i64,
+    b_ptr: i64,
+    b_len: i64,
+) {
     if a_ptr == 0 || b_ptr == 0 {
         std::process::abort();
     }
-    if a_len < 0 || b_len < 0 {
-        return 0;
-    }
-    let total_len = a_len + b_len;
+    let total_len = if a_len >= 0 && b_len >= 0 {
+        a_len + b_len
+    } else {
+        return; // invalid input — leave slot as-is
+    };
     let result = __triet_string_alloc(total_len, total_len);
     if result == 0 {
-        return 0;
+        return;
     }
     let a_data = a_ptr as *const u8;
     let b_data = b_ptr as *const u8;
-    // ADR-0049 Lát 6.3: no len/cap on heap — data starts at body_ptr.
     // SAFETY: src pointers valid, dst pointer valid with sufficient capacity.
     unsafe {
         let dst = result as *mut u8;
         std::ptr::copy_nonoverlapping(a_data, dst, a_len as usize);
         std::ptr::copy_nonoverlapping(b_data, dst.add(a_len as usize), b_len as usize);
     }
-    result
+    // C6: write {ptr, len, cap} into caller's slot (append precedent).
+    let slot = dest_slot as *mut FatStr;
+    unsafe {
+        (*slot).ptr = result;
+        (*slot).len = total_len;
+        (*slot).cap = total_len;
+    }
 }
 
 /// `__triet_string_eq(a_ptr, a_len, b_ptr, b_len)` — equality comparison.
@@ -1852,7 +1895,7 @@ pub extern "C" fn __triet_string_clear(slot: i64) -> i64 {
 }
 
 /// `__triet_string_append(slot_ptr, byte)` — append one byte, realloc if needed.
-/// ADR-0049 Lát 5: *mut FatStr writeback. Reads {ptr,len,cap} from slot,
+/// ADR-0049 Lát 5: `*mut FatStr` writeback. Reads {ptr,len,cap} from slot,
 /// grows if len==cap, writes byte, writebacks {ptr,len+1,cap} to slot+heap.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]

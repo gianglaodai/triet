@@ -136,7 +136,7 @@ fn main() -> ExitCode {
             mir_lower::__triet_string_from_bytes,
         ),
         ShimSymbol::fn_2_0("__triet_string_free", mir_lower::__triet_string_free),
-        ShimSymbol::fn_4_1("__triet_string_concat", mir_lower::__triet_string_concat),
+        ShimSymbol::fn_5_0("__triet_string_concat", mir_lower::__triet_string_concat),
         ShimSymbol::fn_4_1("__triet_string_eq", mir_lower::__triet_string_eq),
         ShimSymbol::fn_1_1("__triet_string_len", mir_lower::__triet_string_len),
         // Vector shims (ADR-0040 §5)

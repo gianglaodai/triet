@@ -125,7 +125,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_string_free",
             triet_jit::mir_lower::__triet_string_free,
         ),
-        ShimSymbol::fn_4_1(
+        ShimSymbol::fn_5_0(
             "__triet_string_concat",
             triet_jit::mir_lower::__triet_string_concat,
         ),
