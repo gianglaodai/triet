@@ -345,6 +345,22 @@ impl JitContext {
                     "OutcomePayload access on non-Outcome local".into(),
                 ));
             }
+            Projection::OutcomePayloadLen => {
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    return Ok(builder.ins().stack_load(I64, *slot, 16));
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomePayloadLen access on non-Outcome local".into(),
+                ));
+            }
+            Projection::OutcomePayloadCap => {
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    return Ok(builder.ins().stack_load(I64, *slot, 24));
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomePayloadCap access on non-Outcome local".into(),
+                ));
+            }
             _ => {}
         }
         Err(JitError::Unsupported("unsupported projection".into()))
@@ -429,13 +445,30 @@ impl JitContext {
                 ));
             }
             Projection::OutcomePayload => {
-                let payload_offset: i32 = 8;
                 if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, payload_offset);
+                    builder.ins().stack_store(value, *slot, 8);
                     return Ok(());
                 }
                 return Err(JitError::Unsupported(
                     "OutcomePayload store to non-Outcome local".into(),
+                ));
+            }
+            Projection::OutcomePayloadLen => {
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    builder.ins().stack_store(value, *slot, 16);
+                    return Ok(());
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomePayloadLen store to non-Outcome local".into(),
+                ));
+            }
+            Projection::OutcomePayloadCap => {
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    builder.ins().stack_store(value, *slot, 24);
+                    return Ok(());
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomePayloadCap store to non-Outcome local".into(),
                 ));
             }
             _ => {}
@@ -603,6 +636,41 @@ impl JitContext {
         Ok(result)
     }
 
+    /// HP.2: emit inline free for one arm of a heap Outcome drop glue.
+    /// Loads the payload's {ptr, cap} from the Outcome slot and calls
+    /// the type-appropriate free shim. String → 2-arg free(ptr,cap);
+    /// Vector/HashMap → 1-arg free(ptr).
+    fn emit_outcome_payload_free(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        slot: cranelift_codegen::ir::StackSlot,
+        payload_ty: &MirType,
+    ) -> Result<(), JitError> {
+        if !payload_ty.is_any_heap() {
+            return Ok(());
+        }
+        let free_name = if matches!(payload_ty, MirType::String) {
+            "__triet_string_free"
+        } else if payload_ty.is_vec() {
+            "__triet_vector_free"
+        } else if payload_ty.is_hashmap() {
+            "__triet_hashmap_free"
+        } else {
+            return Ok(());
+        };
+        let func_id = self.get_or_declare_shim(free_name)?;
+        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+
+        let ptr = builder.ins().stack_load(I64, slot, 8);
+        if matches!(payload_ty, MirType::String) {
+            let cap = builder.ins().stack_load(I64, slot, 24);
+            builder.ins().call(func_ref, &[ptr, cap]);
+        } else {
+            builder.ins().call(func_ref, &[ptr]);
+        }
+        Ok(())
+    }
+
     /// Build the Cranelift IR for a single function body.
     #[allow(clippy::too_many_lines)] // match-heavy dispatch + param-entry, naturally long
     fn build_body(
@@ -610,13 +678,6 @@ impl JitContext {
         builder: &mut FunctionBuilder<'_>,
         body: &Body,
     ) -> Result<(), JitError> {
-        // HP.1 guard: heap payload Outcome deferred to HP.2 (drop glue).
-        if body.signature.return_type.has_heap_payload() {
-            return Err(JitError::Unsupported(
-                "heap Outcome deferred to HP.2 (drop glue not yet implemented)".into(),
-            ));
-        }
-
         let cfg = body.build_cfg();
 
         // ── Declare variables ──
@@ -1033,10 +1094,9 @@ impl JitContext {
                 Statement::Drop(local, _) => {
                     let ty = &body.local_decls[local.0].ty;
                     if ty.is_copy(Some(body)) {
-                        // Copy type: no-op (ADR-0040 §1.3)
                         continue;
                     }
-                    // M4: Return-escape — skip Drop for locals in Return values.
+                    // M4: Return-escape.
                     let in_return = match &body.blocks[block.0].terminator {
                         Terminator::Return { values, .. } => values.contains(local),
                         _ => false,
@@ -1044,8 +1104,67 @@ impl JitContext {
                     if in_return {
                         continue;
                     }
-                    // Move type, not escaping: call free shim.
-                    // The shim internally guards null (defense-in-depth).
+
+                    // HP.2: heap Outcome — inline disc-dynamic drop glue.
+                    if let MirType::Outcome {
+                        value_type,
+                        error_type,
+                        ..
+                    } = ty
+                    {
+                        if value_type.is_any_heap() || error_type.is_any_heap() {
+                            let slot = *self.outcome_slots.get(local).ok_or_else(|| {
+                                JitError::Unsupported("Outcome Drop without slot".into())
+                            })?;
+                            let disc = builder.ins().stack_load(I64, slot, 0);
+                            let pos_val = builder.ins().iconst(I64, 1);
+                            let neg_val = builder.ins().iconst(I64, -1);
+
+                            let free_pos_bb = builder.create_block();
+                            let free_neg_bb = builder.create_block();
+                            let noop_bb = builder.create_block();
+                            let merge_bb = builder.create_block();
+
+                            // Branch disc == 1 → free_pos.
+                            let is_pos = builder.ins().icmp(IntCC::Equal, disc, pos_val);
+                            let fallthrough1 = builder.create_block();
+                            builder
+                                .ins()
+                                .brif(is_pos, free_pos_bb, &[], fallthrough1, &[]);
+
+                            // Branch disc == -1 → free_neg; else → noop.
+                            builder.switch_to_block(fallthrough1);
+                            let is_neg = builder.ins().icmp(IntCC::Equal, disc, neg_val);
+                            builder.ins().brif(is_neg, free_neg_bb, &[], noop_bb, &[]);
+
+                            // ── free_pos_bb ──
+                            builder.switch_to_block(free_pos_bb);
+                            self.emit_outcome_payload_free(builder, slot, value_type)?;
+                            builder.ins().jump(merge_bb, &[]);
+
+                            // ── free_neg_bb ──
+                            builder.switch_to_block(free_neg_bb);
+                            self.emit_outcome_payload_free(builder, slot, error_type)?;
+                            builder.ins().jump(merge_bb, &[]);
+
+                            // ── noop_bb (Zero / scalar payload) ──
+                            builder.switch_to_block(noop_bb);
+                            builder.ins().jump(merge_bb, &[]);
+
+                            // ── merge ──
+                            builder.switch_to_block(merge_bb);
+                            builder.seal_block(free_pos_bb);
+                            builder.seal_block(free_neg_bb);
+                            builder.seal_block(noop_bb);
+                            builder.seal_block(merge_bb);
+                            builder.seal_block(fallthrough1);
+                            continue;
+                        }
+                        // Scalar Outcome — no-op (both payloads are scalar).
+                        continue;
+                    }
+
+                    // Regular heap types: call free shim.
                     let free_shim_name = if matches!(ty, MirType::String) {
                         "__triet_string_free"
                     } else if ty.is_vec() {
@@ -1054,26 +1173,19 @@ impl JitContext {
                         "__triet_hashmap_free"
                     } else {
                         return Err(JitError::Unsupported(format!(
-                            "Drop for type `{ty}` not supported — no free shim"
+                            "Drop for type `{ty}` not supported"
                         )));
                     };
                     let func_id = self.get_or_declare_shim(free_shim_name)?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                    // ADR-0049 Lát 3: String free(ptr, cap) 2-arg bung field.
-                    // Slot: stack_load ptr+cap; no-slot: use_var ptr + load cap heap.
                     if matches!(ty, MirType::String) {
                         let (ptr, cap) = if let Some((slot, _)) = self.struct_slots.get(local) {
                             let p = builder.ins().stack_load(I64, *slot, 0);
                             let c = builder.ins().stack_load(I64, *slot, 16);
                             (p, c)
                         } else {
-                            // ADR-0049 Lát 6.3: heap no longer carries
-                            // len/cap — universal pre-allocated String
-                            // slots must cover every String local.
                             return Err(JitError::Unsupported(
-                                "String Drop without pre-allocated slot — \
-                                 universal-slot invariant violated"
-                                    .into(),
+                                "String Drop without pre-allocated slot".into(),
                             ));
                         };
                         builder.ins().call(func_ref, &[ptr, cap]);
@@ -3486,6 +3598,17 @@ mod tests {
         super::__triet_string_free(ptr, cap);
     }
 
+    /// HP.2: counting-only free (no real dealloc). Used with fake ptr/cap
+    /// to test drop glue without needing real heap allocations.
+    static HP2_FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __hp2_count_free(ptr: i64, cap: i64) {
+        let _ = (ptr, cap);
+        HP2_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// 4i-2/4i-4 (callee side): M4 Return-escape — Drop before Return is skipped.
     /// Hand-built MIR (bypasses lowerer); call-dest typing is tested by
     /// `call_dest_has_correct_type_for_heap_return` in the lowerer.
@@ -3548,6 +3671,103 @@ mod tests {
             FREE_COUNT.load(Ordering::SeqCst),
             1,
             "caller Drop must free exactly once"
+        );
+    }
+
+    /// HP.2: heap Outcome drop glue — String success payload freed exactly once.
+    /// Poison: swap free-as-T ↔ free-as-E → wrong-arm SIGABRT.
+    /// Poison: Zero no-op removed → tombstone double-free → `FREE_COUNT` 2.
+    #[test]
+    #[allow(unsafe_code)]
+    fn hp2_outcome_drop_glue_frees_exactly_once() {
+        use std::sync::atomic::Ordering;
+
+        HP2_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        // Build a minimal body: Outcome<String,Integer> with disc=1,
+        // non-zero ptr+cap stored directly (no real String allocation).
+        // Drop fires inline SwitchInt → free-as-T → counting shim.
+        let mut b = MirBuilder::new("hp2_drop_pos", MirType::Unit);
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::String),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+
+        let bb0 = b.new_block();
+
+        let o = b.new_local();
+        b.set_local_mir_type(o, outcome_ty);
+        b.push(bb0, storage_live(o));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: o,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // disc = 1
+        let disc_tmp = b.new_local();
+        b.push(bb0, storage_live(disc_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(disc_tmp),
+                value: triet_mir::ConstValue::Trit(1),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(o).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Dummy ptr=1, len=0, cap=8 (non-null → shim calls free; counting-only shim won't crash).
+        for (val, proj) in [
+            (1i128, Projection::OutcomePayload),
+            (0i128, Projection::OutcomePayloadLen),
+            (8i128, Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Const {
+                    dest: Place::local(tmp),
+                    value: triet_mir::ConstValue::Integer(val),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(o).project(proj),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+
+        b.push(bb0, Statement::Drop(o, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (hp2_drop_pos) ===\n{body}");
+
+        let shims = &[ShimSymbol::fn_2_0("__triet_string_free", __hp2_count_free)];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("HP.2 drop glue compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            HP2_FREE_COUNT.load(Ordering::SeqCst),
+            1,
+            "HP.2: Outcome<String,Integer> drop (Positive arm) must free exactly once"
         );
     }
 

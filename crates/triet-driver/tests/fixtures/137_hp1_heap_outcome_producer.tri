@@ -1,9 +1,10 @@
-// ERROR: heap Outcome deferred
-// HP.1: Outcome constructor with heap payload (String).
-// Producer stores {ptr@8, len@16, cap@24} in 32-byte slot.
-// Passes typecheck → lower → MIR-verify; JIT rejects at HP.2 guard.
+// EXPECT: 0
+// HP.2: heap Outcome drop glue — Outcome with String payload
+// goes out of scope, inline SwitchInt drop fires.
 
-function greet() -> String~Integer =
-    ~+ "hello"
+function make_and_drop() -> Integer {
+    let o: String~Integer = ~+ "hello";
+    0
+}
 
-function main() -> Integer = 0
+function main() -> Integer = make_and_drop()

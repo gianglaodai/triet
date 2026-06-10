@@ -1,0 +1,11 @@
+// EXPECT: 0
+// HP.2: heap Outcome drop glue — error arm free.
+// ~- "fail" creates Outcome with String error payload.
+// Drop glue fires free-as-E (String free) on scope exit.
+
+function make_and_drop_error() -> Integer {
+    let o: Integer~String = ~- "fail";
+    0
+}
+
+function main() -> Integer = make_and_drop_error()
