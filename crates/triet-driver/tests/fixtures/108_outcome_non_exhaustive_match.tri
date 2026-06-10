@@ -1,0 +1,11 @@
+// ERROR: E1026
+// OP.1: match on T~E missing ~- arm = non-exhaustive.
+// Binary outcome requires both ~+ and ~- arms.
+function might_fail() -> Integer~String =
+    ~+ 42
+
+function main() -> Integer = {
+    return match might_fail() {
+        ~+ (x) => x + 1
+    }
+}

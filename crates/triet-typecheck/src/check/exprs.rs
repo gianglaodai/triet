@@ -312,10 +312,8 @@ impl Checker<'_> {
             // and let context-sensitive checks (assignment, return,
             // function-call arg) catch shape mismatches.
             Expr::OutcomeConstructor { arm, payload } => {
-                if let Some(inner) = payload {
-                    self.infer_expression(inner);
-                }
-                self.check_outcome_constructor_context(arm, span)
+                let payload_ty = payload.map(|inner| self.infer_expression(inner));
+                self.check_outcome_constructor_context(arm, payload_ty, span)
             }
             Expr::OutcomeArmHandler {
                 inner,
@@ -370,6 +368,7 @@ impl Checker<'_> {
     fn check_outcome_constructor_context(
         &mut self,
         arm: triet_syntax::OutcomeArm,
+        payload_ty: Option<Type>,
         span: Span,
     ) -> Type {
         use triet_syntax::OutcomeArm;
@@ -389,6 +388,34 @@ impl Checker<'_> {
             self.errors
                 .push(TypeError::NullStateInBinaryOutcome { span });
             return Type::Unknown;
+        }
+
+        // OP.1: check payload matches context type.
+        // ~+ payload must match Outcome.value_type; ~- must match error_type.
+        if let Some(payload_ty) = &payload_ty
+            && let Some(Type::Outcome {
+                value_type,
+                error_type,
+                ..
+            }) = &resolved_context
+        {
+            let mismatch = match arm {
+                OutcomeArm::Positive if !value_type.matches(payload_ty) => {
+                    Some(((**value_type).clone(), payload_ty.clone()))
+                }
+                OutcomeArm::Negative if !error_type.matches(payload_ty) => {
+                    Some(((**error_type).clone(), payload_ty.clone()))
+                }
+                OutcomeArm::Zero => None,
+                _ => None,
+            };
+            if let Some((expected, found)) = mismatch {
+                self.errors.push(TypeError::Mismatch {
+                    expected,
+                    found,
+                    span,
+                });
+            }
         }
 
         // For `~0` whose local context is a plain `Nullable<T>`,

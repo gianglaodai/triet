@@ -1,0 +1,5 @@
+// ERROR: E1025
+// OP.1: ~0 on binary T~E (no null state) = E1025.
+// T~E has only ~+ and ~- arms.
+function might_fail() -> Integer~String =
+    ~0

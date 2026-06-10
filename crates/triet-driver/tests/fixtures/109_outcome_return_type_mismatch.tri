@@ -1,0 +1,4 @@
+// ERROR: E1003
+// OP.1: return type mismatch — ~+ String where Integer expected in T~E.
+function wrong_return() -> Integer~String =
+    ~+ "hello"

@@ -78,7 +78,7 @@ pub enum TypeError {
     },
 
     /// Two values were expected to share a type but didn't.
-    #[error("type mismatch: expected {expected}, found {found}")]
+    #[error("E1003: type mismatch: expected {expected}, found {found}")]
     #[diagnostic(code(triet::typecheck::E1003))]
     Mismatch {
         /// Type the checker expected based on context.
@@ -296,7 +296,7 @@ pub enum TypeError {
     },
 
     /// E1025: `~0` constructor used in non-`T?~E` outcome (binary `T~E`).
-    #[error("`~0` constructor requires outcome type with null state (`T?~E`)")]
+    #[error("E1025: `~0` constructor requires outcome type with null state (`T?~E`)")]
     #[diagnostic(
         code(triet::typecheck::E1025),
         help(
@@ -310,7 +310,7 @@ pub enum TypeError {
     },
 
     /// E1026: non-exhaustive match on outcome type.
-    #[error("non-exhaustive `match`: missing arm(s) {missing}")]
+    #[error("E1026: non-exhaustive `match`: missing arm(s) {missing}")]
     #[diagnostic(
         code(triet::typecheck::E1026),
         help("add the missing arm(s) or use `_` wildcard to cover them")
@@ -324,7 +324,7 @@ pub enum TypeError {
     },
 
     /// E1026: non-exhaustive match on enum type.
-    #[error("non-exhaustive `match`: missing enum variant(s) {missing}")]
+    #[error("E1026: non-exhaustive `match`: missing enum variant(s) {missing}")]
     #[diagnostic(
         code(triet::typecheck::E1026),
         help("add the missing variant(s) or use `_` wildcard to cover them")
