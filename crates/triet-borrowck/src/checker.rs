@@ -258,6 +258,30 @@ pub enum BorrowError {
         span: Span,
     },
 
+    /// E2421: Use after storage end — a Move-type variable was used after
+    /// its storage was ended by Drop/StorageDead (ADR-0054).
+    /// Distinct from E2420: E2420 = "moved to someone else" (active transfer);
+    /// E2421 = "lifetime ended by Drop, can't resurrect" (lifetime/deallocation).
+    /// Return can still consume an Ended local (no false-positive at Return).
+    #[error(
+        "E2421: use after storage end — `{name}` was used after its storage was deallocated (Drop)"
+    )]
+    #[diagnostic(
+        code(triet::borrow::E2421),
+        help(
+            "the value has been dropped and can no longer be used; move the use before the drop, or restructure the code to extend the value's lifetime"
+        )
+    )]
+    UseAfterStorageEnd {
+        /// The variable that was used after storage ended.
+        local: Local,
+        /// Human-readable variable name.
+        name: String,
+        /// Source location of the use.
+        #[label("used here after storage was deallocated")]
+        span: Span,
+    },
+
     /// E2440: NLL exclusivity violation — conflicting borrow.
     #[error(
         "E2440: cannot create {new_form} borrow on `{source_name}` — it is already exclusively borrowed"
@@ -345,6 +369,24 @@ fn place_name(place: &Place, names: &LocalNames) -> String {
         };
     }
     s
+}
+
+/// Check if a Move-type local in `Ended` state is being used
+/// and emit E2421 UseAfterStorageEnd (ADR-0054).  Copy types
+/// are exempt — their Drop is a no-op on the stack.
+fn check_use_after_end(
+    state: &BlockState,
+    body: &triet_mir::Body,
+    local: Local,
+    name: String,
+    span: Span,
+    errors: &mut Vec<BorrowError>,
+) {
+    if state.var_states.get(&local) == Some(&VarState::Ended)
+        && !body.local_decls[local.0].ty.is_copy(Some(body))
+    {
+        errors.push(BorrowError::UseAfterStorageEnd { local, name, span });
+    }
 }
 
 // ── Core checker — forward dataflow ─────────────────────────
@@ -526,7 +568,7 @@ fn process_block(
                     }
                 }
 
-                // Check that the borrowed base hasn't been moved.
+                // Check that the borrowed base hasn't been moved/deallocated.
                 if state.var_states.get(&source.local) == Some(&VarState::Moved) {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
@@ -534,6 +576,14 @@ fn process_block(
                         span: span.clone(),
                     });
                 }
+                check_use_after_end(
+                    &state,
+                    body,
+                    source.local,
+                    place_name(source, names),
+                    span.clone(),
+                    &mut errors,
+                );
 
                 match form {
                     ReferenceForm::StrongFrozen | ReferenceForm::StrongMutable => {
@@ -580,6 +630,14 @@ fn process_block(
                             span: span.clone(),
                         });
                     }
+                    check_use_after_end(
+                        &state,
+                        body,
+                        source.local,
+                        place_name(source, names),
+                        span.clone(),
+                        &mut errors,
+                    );
                 }
 
                 if !is_field_read && state.var_states.get(&source.local) == Some(&VarState::Moved) {
@@ -589,6 +647,14 @@ fn process_block(
                         span: span.clone(),
                     });
                 }
+                check_use_after_end(
+                    &state,
+                    body,
+                    source.local,
+                    place_name(source, names),
+                    span.clone(),
+                    &mut errors,
+                );
 
                 // A move must conflict with ANY active loan — even on
                 // a different local, because a reference could alias
@@ -645,6 +711,14 @@ fn process_block(
                             span: span.clone(),
                         });
                     }
+                    check_use_after_end(
+                        &state,
+                        body,
+                        op.local,
+                        place_name(op, names),
+                        span.clone(),
+                        &mut errors,
+                    );
                 }
                 state.var_states.insert(dest.local, VarState::Owned);
             }
@@ -680,6 +754,14 @@ fn process_block(
                         span: span.clone(),
                     });
                 }
+                check_use_after_end(
+                    &state,
+                    body,
+                    source.local,
+                    place_name(source, names),
+                    span.clone(),
+                    &mut errors,
+                );
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
@@ -741,6 +823,9 @@ fn process_block(
     // `Ended` (set by Drop) is acceptable for Return — returning a value
     // after its storage logically ends is fine; the E2450 check below will
     // catch any dangling-reference issues.
+    // ADR-0054: non-Return terminators (If, CallDispatch, SwitchInt) MUST
+    // enforce Ended → E2421 for Move types.
+    let is_return = matches!(&block_data.terminator, Terminator::Return { .. });
     let term_span = terminator_span(&block_data.terminator);
     let term_reads = terminator_reads(&block_data.terminator);
     for r in &term_reads {
@@ -751,6 +836,11 @@ fn process_block(
                 name: r_name,
                 span: term_span.clone(),
             });
+        }
+        // Non-Return terminators: Ended → E2421 (Return stays lenient).
+        if !is_return {
+            let r_name = names.get(r).cloned().unwrap_or_else(|| format!("{r}"));
+            check_use_after_end(&state, body, *r, r_name, term_span.clone(), &mut errors);
         }
     }
 
@@ -871,6 +961,17 @@ fn process_block(
                         .cloned()
                         .unwrap_or_else(|| format!("_{}", arg.0));
                     errors.push(BorrowError::UseAfterMove {
+                        local: *arg,
+                        name,
+                        span: terminator_span(&block_data.terminator),
+                    });
+                } else if matches!(state.var_states.get(arg), Some(VarState::Ended)) {
+                    let name = body
+                        .local_names
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| format!("_{}", arg.0));
+                    errors.push(BorrowError::UseAfterStorageEnd {
                         local: *arg,
                         name,
                         span: terminator_span(&block_data.terminator),
@@ -1262,6 +1363,113 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
             "should have E2420 UseAfterMove, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0054 T1: Drop a Move-type local then use it → E2421 UseAfterStorageEnd.
+    /// Hiện trạng trước fix: `got: []` (mù). Sau fix: E2421.
+    #[test]
+    fn drop_then_move_must_be_rejected() {
+        let mut b = MirBuilder::new("drop_use", MirType::Unit);
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+        let other = b.new_local();
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(other));
+        // Drop s (storage ends)
+        b.push(bb0, Statement::Drop(s, DUMMY_SPAN));
+        // Use s after Drop → phải bị E2421
+        b.push(bb0, crate::assign(other, s));
+
+        b.push(bb0, storage_dead(other));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (drop_then_move) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (drop_then_move) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            !result.is_ok(),
+            "use-after-Drop of a Move type MUST be rejected with E2421"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterStorageEnd { .. })),
+            "should have E2421 UseAfterStorageEnd, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0054 T2b: Drop a Copy-type local then use it → NO E2421 (Copy=no-op).
+    /// Phạm vi Move-only — siết Copy là false-positive.
+    #[test]
+    fn drop_then_use_copy_must_be_allowed() {
+        let mut b = MirBuilder::new("drop_copy", MirType::Unit);
+        let n = b.add_param("n", ParameterPassing::Move);
+        b.set_local_mir_type(n, MirType::Integer); // Copy type (must use MirType, not string)
+        let other = b.new_local();
+
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(other));
+        // Drop n (no-op for Copy — stack-safe)
+        b.push(bb0, Statement::Drop(n, DUMMY_SPAN));
+        // Use n after Drop → OK (Copy type, Drop=no-op)
+        b.push(bb0, crate::assign(other, n));
+
+        b.push(bb0, storage_dead(other));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (drop_copy) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (drop_copy) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            result.is_ok(),
+            "use-after-Drop of a Copy type MUST be allowed (Drop=no-op), got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0054 T2: Return of a Move-type local after Drop is VALID (no E2421).
+    /// Return-leniency carve-out: Ended set by Drop/StorageDead; Return can
+    /// still consume it. This is why Ended was split from Moved originally.
+    #[test]
+    fn return_after_drop_must_be_allowed() {
+        let mut b = MirBuilder::new("return_dropped", MirType::Unit);
+        let s = b.add_param("s", ParameterPassing::Move);
+        b.set_local_type(s, "String");
+
+        let bb0 = b.new_block();
+        // Drop s (Ended) then Return s — must be OK (no E2421, no E2420).
+        b.push(bb0, Statement::Drop(s, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![s]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (return_after_drop) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (return_after_drop) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            result.is_ok(),
+            "Return of a Move-type local after Drop MUST be allowed (Return-leniency), got: {:?}",
             result.errors
         );
     }
