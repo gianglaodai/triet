@@ -27,12 +27,12 @@ Outcome (error-handling core, ADR-0020) Frontend+Typecheck đã sẵn, nhưng **
 ### 3.3. Return: `ReturnShape::BinaryOutcome` (arity 2)
 Fn `-> T~E` → `ReturnShape::BinaryOutcome`, `Return { values: [disc_local, payload_local] }`. JIT: Cranelift `sig.returns` = 2× `AbiParam::new(I64)`, callee `return_(&[disc, payload])`, caller `inst_results[0]=disc, [1]=payload`.
 
-### 3.4. Destructure: discriminant + unwrap
+### 3.4. Destructure: discriminant + unwrap (Từ bỏ Statement ops chuyên biệt)
 `match o { ~+ x => .. ~- e => .. }`:
-- `OutcomeDiscriminant{dest, source}` → đọc `disc` slot (Trit).
-- branch trên Trit (Positive→success arm, Negative→error arm; SwitchInt-style).
-- `OutcomeUnwrap{dest, source}` (success payload) / `OutcomeUnwrapError` (error payload) → đọc `payload` slot.
-MIR ops đã định nghĩa (mir:254-280) — OP wire chúng (bỏ guarded Err).
+- Đọc disc: `Assign { dest, source: outcome.project(OutcomeDiscriminant) }` — stack_load slot@0.
+- Branch trên Trit: `If { cond: disc, positive_bb: success, negative_bb: error, zero_bb: None }`.
+- Đọc payload: `Assign { dest, source: outcome.project(OutcomePayload) }` — stack_load slot@8.
+**Kiến trúc thống nhất projection-based:** tái dùng hạ tầng `Projection`/`Assign`/`StackSlot` giống Struct/Sret. Các `Statement` ops chuyên biệt `OutcomeDiscriminant`/`OutcomeUnwrap`/`OutcomeUnwrapError` (định nghĩa cũ mir:254-280) đã bị xóa — chúng giả định Outcome là 1 value đơn nhất (trước StackSlot refactor OP.3.5), không khớp biểu diễn 2-slot. Projection-based thống nhất toàn bộ đường đọc/ghi offset.
 
 ### 3.5. JIT un-defer C5 (CHỈ Outcome)
 Gỡ guard jit:1070 `if values.len()>1 → Err` **CHỈ khi** `return_shape ∈ {BinaryOutcome, TernaryOutcome}`. Generic >1 values (tuple) vẫn Err (chưa có ngôn ngữ). Cranelift multi-return native — premise nhẹ (C5 spike phase11 proven).
