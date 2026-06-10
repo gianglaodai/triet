@@ -1,0 +1,11 @@
+// EXPECT: -99
+// OP.4b: match on Outcome — ~- arm unwraps error payload.
+
+function fail() -> Integer~Integer =
+    ~- -99
+
+function main() -> Integer =
+    match fail() {
+        ~+ x => 999
+        ~- e => e
+    }

@@ -649,19 +649,6 @@ fn process_block(
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
-            Statement::OutcomeDiscriminant { dest, source, span }
-            | Statement::OutcomeUnwrap { dest, source, span }
-            | Statement::OutcomeUnwrapError { dest, source, span } => {
-                if state.var_states.get(&source.local) == Some(&VarState::Moved) {
-                    errors.push(BorrowError::UseAfterMove {
-                        local: source.local,
-                        name: place_name(source, names),
-                        span: span.clone(),
-                    });
-                }
-                state.var_states.insert(dest.local, VarState::Owned);
-            }
-
             Statement::StructAlloc { .. } => {
                 // No borrow-check impact — StorageLive already set the local
                 // to Owned. StructAlloc just declares stack layout.

@@ -1020,26 +1020,6 @@ impl JitContext {
                 // If they WERE reachable, the current pass-through (identity copy
                 // of a single i64) would be WRONG: a single i64 cannot carry both
                 // the trit discriminant AND the success/error payload. Real
-                // extraction requires a packed representation (Bậc C).
-                //
-                // "Refuse over guess": the JIT refuses to compile these until
-                // the lowerer produces real Outcome values and a packed ABI exists.
-                Statement::OutcomeDiscriminant { .. }
-                | Statement::OutcomeUnwrap { .. }
-                | Statement::OutcomeUnwrapError { .. } => {
-                    return Err(JitError::Unsupported(
-                        "Outcome ops require Bậc C packed ABI; \
-                         the lowerer does not yet produce Outcome values, \
-                         so these MIR statements are unreachable through \
-                         the real pipeline. If you are seeing this error, \
-                         the lowerer has been updated to lower Outcome \
-                         constructors — the JIT backend must be updated \
-                         to implement packed extraction before removing \
-                         this guard."
-                            .into(),
-                    ));
-                }
-
                 Statement::Drop(local, _) => {
                     let ty = &body.local_decls[local.0].ty;
                     if ty.is_copy(Some(body)) {
@@ -1288,11 +1268,17 @@ impl JitContext {
                         // Emit call
                         let call_inst = builder.ins().call(func_ref, &arg_vals);
 
-                        // Store return value (single i64 in Bậc A).
-                        // ADR-0049 L6-2: all String returns use sret — this
-                        // non-sret path is unreachable for String. Heap len/cap
-                        // was removed in L6-3; String would be unpopulatable here.
-                        if !is_sret_call && !dest.is_empty() {
+                        // Store return values.
+                        if matches!(return_shape, triet_mir::ReturnShape::BinaryOutcome) {
+                            // ADR-0052 OP.4a: Outcome call — store 2 return
+                            // values into the dest Outcome slot.
+                            let disc = builder.inst_results(call_inst)[0];
+                            let payload = builder.inst_results(call_inst)[1];
+                            if let Some(&slot) = self.outcome_slots.get(&dest[0]) {
+                                builder.ins().stack_store(disc, slot, 0);
+                                builder.ins().stack_store(payload, slot, 8);
+                            }
+                        } else if !is_sret_call && !dest.is_empty() {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
                         }
@@ -1863,7 +1849,7 @@ pub extern "C" fn __triet_string_free(ptr: i64, cap: i64) {
 /// `__triet_string_concat(dest_slot, a_ptr, a_len, b_ptr, b_len)` — concatenate two Strings.
 ///
 /// C6: callee-fill via `*mut FatStr` writeback (append precedent, ADR-0049).
-/// `dest_slot` is a pointer to the caller's StackSlot; the callee writes
+/// `dest_slot` is a pointer to the caller's `StackSlot`; the callee writes
 /// `{new_ptr, total_len, total_cap}` directly into it.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
@@ -2545,8 +2531,8 @@ mod tests {
     use super::*;
     use triet_borrowck::{MirBuilder, binop, const_int, return_, storage_live};
     use triet_mir::{
-        ConstValue, DUMMY_SPAN, FunctionId, MirType, ParameterPassing, Place, Projection,
-        ReturnShape, Statement, Terminator,
+        CallTarget, ConstValue, DUMMY_SPAN, FunctionId, MirType, ParameterPassing, Place,
+        Projection, ReturnShape, Statement, Terminator,
     };
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
@@ -2774,82 +2760,6 @@ mod tests {
         assert_eq!(result, 55);
     }
 
-    /// Outcome ops are **provably unreachable** through the real pipeline:
-    /// the lowerer returns `Err(LowerError::unsupported_expr)` for
-    /// `Expr::OutcomeConstructor`, and MIR has no `OutcomeNew` statement.
-    ///
-    /// This test hand-builds MIR with `OutcomeDiscriminant` (bypassing the
-    /// lowerer guard) and verifies the JIT **refuses** to compile it. A
-    /// pass-through identity copy would be wrong — a single i64 cannot
-    /// carry both discriminant and payload. Real extraction requires Bậc C
-    /// packed ABI.
-    ///
-    /// **If this test ever fails (JIT compiles successfully), someone
-    /// removed the guard without implementing proper packed extraction.**
-    /// That would be a miscompile — `disc(~+ v) == disc(~- e)` for
-    /// identical payloads.
-    #[test]
-    fn outcome_discriminant_jit_refuses_to_compile() {
-        let mut b = MirBuilder::new("outcome_disc_test", MirType::Integer);
-        let _dummy = b.add_param("dummy", ParameterPassing::Borrow);
-        let outcome_val = b.new_local();
-        let disc_result = b.new_local();
-
-        let bb0 = b.new_block();
-        b.push(bb0, storage_live(outcome_val));
-        b.push(
-            bb0,
-            triet_mir::Statement::Const {
-                dest: outcome_val.into(),
-                value: ConstValue::Integer(1),
-                span: DUMMY_SPAN,
-            },
-        );
-        b.push(bb0, storage_live(disc_result));
-        b.push(
-            bb0,
-            triet_mir::Statement::OutcomeDiscriminant {
-                dest: disc_result.into(),
-                source: outcome_val.into(),
-                span: DUMMY_SPAN,
-            },
-        );
-        b.set_terminator(
-            bb0,
-            Terminator::Return {
-                values: vec![disc_result],
-                span: DUMMY_SPAN,
-            },
-        );
-
-        let body = b.build(bb0);
-        let mut ctx = JitContext::new();
-        let result = ctx.compile(&body);
-
-        match result {
-            Err(JitError::Unsupported(msg)) => {
-                assert!(
-                    msg.contains("Outcome"),
-                    "expected Outcome-related error, got: {msg}"
-                );
-            }
-            Ok(_) => {
-                panic!(
-                    "JIT compiled OutcomeDiscriminant as pass-through — \
-                     this is a miscompile. The JIT guard was removed \
-                     without implementing packed extraction. \
-                     disc(~+ v) would equal disc(~- e) for identical payloads."
-                );
-            }
-            Err(other) => {
-                panic!(
-                    "unexpected JIT error (expected Unsupported, got {other}) — \
-                     if the guard was changed, verify Outcome ops still refuse"
-                );
-            }
-        }
-    }
-
     /// Build and compile an Outcome function via the real `StackSlot` path,
     /// returning `(disc, payload)` through `Repr2`.
     #[allow(unsafe_code, clippy::cast_possible_truncation)]
@@ -3060,6 +2970,204 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Build a callee that returns `(disc, payload)` via `BinaryOutcome`.
+    #[allow(clippy::cast_possible_truncation)]
+    fn build_outcome_callee(disc_val: i64, payload_val: i64) -> Body {
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::Integer),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+        let mut b = MirBuilder::new("make_outcome", outcome_ty);
+        b.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
+        let slot = b.new_local();
+        b.set_local_mir_type(
+            slot,
+            MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            },
+        );
+        let disc_tmp = b.new_local();
+        let payl_tmp = b.new_local();
+        let ld_disc = b.new_local();
+        let ld_payl = b.new_local();
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(slot));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: slot,
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_live(disc_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: disc_tmp.into(),
+                value: ConstValue::Trit(disc_val as i8),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(slot).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_live(payl_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: payl_tmp.into(),
+                value: ConstValue::Integer(i128::from(payload_val)),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(slot).project(Projection::OutcomePayload),
+                source: Place::local(payl_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_live(ld_disc));
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(ld_disc),
+                source: Place::local(slot).project(Projection::OutcomeDiscriminant),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_live(ld_payl));
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(ld_payl),
+                source: Place::local(slot).project(Projection::OutcomePayload),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(
+            bb0,
+            Terminator::Return {
+                values: vec![ld_disc, ld_payl],
+                span: DUMMY_SPAN,
+            },
+        );
+        b.build(bb0)
+    }
+
+    /// Build a caller that calls `callee_name`, receives `BinaryOutcome` into
+    /// a slot, loads from the slot, and returns the 2 values.
+    fn build_outcome_caller(callee_name: &str) -> Body {
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::Integer),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+        let mut b = MirBuilder::new("call", outcome_ty);
+        b.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
+        let dest_slot = b.new_local();
+        b.set_local_mir_type(
+            dest_slot,
+            MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            },
+        );
+        let disc_out = b.new_local();
+        let payl_out = b.new_local();
+        let bb0 = b.new_block();
+        let ret_bb = b.new_block();
+        b.push(bb0, storage_live(dest_slot));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: dest_slot,
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(
+            bb0,
+            Terminator::CallDispatch {
+                callee: FunctionId(0),
+                callee_name: callee_name.into(),
+                target: CallTarget::Jit,
+                args: vec![],
+                return_bb: ret_bb,
+                dest: vec![dest_slot],
+                return_shape: triet_mir::ReturnShape::BinaryOutcome,
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(ret_bb, storage_live(disc_out));
+        b.push(
+            ret_bb,
+            Statement::Assign {
+                dest: Place::local(disc_out),
+                source: Place::local(dest_slot).project(Projection::OutcomeDiscriminant),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(ret_bb, storage_live(payl_out));
+        b.push(
+            ret_bb,
+            Statement::Assign {
+                dest: Place::local(payl_out),
+                source: Place::local(dest_slot).project(Projection::OutcomePayload),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(
+            ret_bb,
+            Terminator::Return {
+                values: vec![disc_out, payl_out],
+                span: DUMMY_SPAN,
+            },
+        );
+        b.build(bb0)
+    }
+
+    /// ADR-0052 `OP.4a`: Outcome caller round-trip.
+    ///
+    /// Callee returns `BinaryOutcome`, caller calls it, stores
+    /// `inst_results` into dest Outcome slot, loads back via projections,
+    /// returns 2 values to Rust. Verifies the full call ABI.
+    #[test]
+    #[allow(unsafe_code)]
+    fn outcome_call_roundtrip() {
+        #[repr(C)]
+        struct Repr2(i64, i64);
+
+        unsafe fn compile_roundtrip(disc_val: i64, payload_val: i64) -> Repr2 {
+            let callee_fn = build_outcome_callee(disc_val, payload_val);
+            let call_site = build_outcome_caller("make_outcome");
+            let funcs = {
+                let mut ctx = JitContext::new();
+                ctx.compile_multi(&[&callee_fn, &call_site]).expect("OP.4a")
+            };
+            let f: extern "C" fn() -> Repr2 =
+                unsafe { std::mem::transmute(funcs["call"].code_ptr) };
+            f()
+        }
+
+        let r = unsafe { compile_roundtrip(1, 42) };
+        assert_eq!(r.0, 1, "discriminant should be Positive(1)");
+        assert_eq!(r.1, 42, "payload should be 42");
+
+        let r = unsafe { compile_roundtrip(-1, -1) };
+        assert_eq!(r.0, -1, "discriminant should be Negative(-1)");
+        assert_eq!(r.1, -1, "payload should be -1");
     }
 
     // ── Logic op truth table tests ─────────────────────────

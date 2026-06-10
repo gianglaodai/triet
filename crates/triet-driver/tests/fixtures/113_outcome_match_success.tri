@@ -1,0 +1,11 @@
+// EXPECT: 42
+// OP.4b: match on Outcome — ~+ arm unwraps success payload.
+
+function succeed() -> Integer~Integer =
+    ~+ 42
+
+function main() -> Integer =
+    match succeed() {
+        ~+ x => x
+        ~- e => -999
+    }

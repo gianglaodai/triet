@@ -259,37 +259,6 @@ pub enum Statement {
         span: Span,
     },
 
-    /// Discriminant of an Outcome value: `dest = discriminant(source)`.
-    /// Returns a Trit indicating the Outcome arm.
-    OutcomeDiscriminant {
-        /// Destination place (Trit).
-        dest: Place,
-        /// Source Outcome value.
-        source: Place,
-        /// Source location.
-        span: Span,
-    },
-
-    /// Unwrap success arm of Outcome: `dest = unwrap_value(source)`.
-    OutcomeUnwrap {
-        /// Destination place (success payload).
-        dest: Place,
-        /// Source Outcome value.
-        source: Place,
-        /// Source location.
-        span: Span,
-    },
-
-    /// Unwrap error arm of Outcome: `dest = unwrap_error(source)`.
-    OutcomeUnwrapError {
-        /// Destination place (error payload).
-        dest: Place,
-        /// Source Outcome value.
-        source: Place,
-        /// Source location.
-        span: Span,
-    },
-
     /// Allocate stack space for a struct literal. The struct's layout
     /// can be found in `Body::struct_layouts` by name.
     StructAlloc {
@@ -1633,12 +1602,6 @@ impl Body {
                         check_place(left)?;
                         check_place(right)?;
                     }
-                    Statement::OutcomeDiscriminant { dest, source, .. }
-                    | Statement::OutcomeUnwrap { dest, source, .. }
-                    | Statement::OutcomeUnwrapError { dest, source, .. } => {
-                        check_place(dest)?;
-                        check_place(source)?;
-                    }
                     Statement::GetDiscriminant { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
@@ -2049,15 +2012,6 @@ impl fmt::Display for Statement {
                 right,
                 ..
             } => write!(f, "{dest} = {left} {op} {right}"),
-            Self::OutcomeDiscriminant { dest, source, .. } => {
-                write!(f, "{dest} = discriminant({source})")
-            }
-            Self::OutcomeUnwrap { dest, source, .. } => {
-                write!(f, "{dest} = unwrap_value({source})")
-            }
-            Self::OutcomeUnwrapError { dest, source, .. } => {
-                write!(f, "{dest} = unwrap_error({source})")
-            }
             Self::StructAlloc {
                 dest, struct_name, ..
             } => write!(f, "{dest} = struct {struct_name} {{..}}"),

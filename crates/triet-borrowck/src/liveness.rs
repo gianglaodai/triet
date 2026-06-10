@@ -188,9 +188,6 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::Borrow { source, .. } => vec![source.local],
         Statement::Const { .. } => Vec::new(),
         Statement::BinaryOp { left, right, .. } => vec![left.local, right.local],
-        Statement::OutcomeDiscriminant { source, .. } => vec![source.local],
-        Statement::OutcomeUnwrap { source, .. } => vec![source.local],
-        Statement::OutcomeUnwrapError { source, .. } => vec![source.local],
         Statement::Drop(l, _) => vec![*l],
         Statement::StructAlloc { .. } => Vec::new(),
         Statement::EnumAlloc { .. } => Vec::new(),
@@ -210,9 +207,6 @@ fn statement_writes(stmt: &Statement) -> Vec<Local> {
         | Statement::Borrow { dest, .. }
         | Statement::Const { dest, .. }
         | Statement::BinaryOp { dest, .. }
-        | Statement::OutcomeDiscriminant { dest, .. }
-        | Statement::OutcomeUnwrap { dest, .. }
-        | Statement::OutcomeUnwrapError { dest, .. }
         | Statement::GetDiscriminant { dest, .. } => vec![dest.local],
         Statement::Drop(_, _) => Vec::new(),
         Statement::StructAlloc { dest, .. } => vec![*dest],

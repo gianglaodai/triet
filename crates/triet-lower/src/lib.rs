@@ -1837,15 +1837,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .get(&callee_name)
                 .cloned()
                 .unwrap_or(MirType::Integer);
-            // Outcome return from callee: multi-value ABI not yet wired in caller
-            // (OP.3). Reject until the caller can handle 2 dest locals.
-            if matches!(callee_ret, MirType::Outcome { .. }) {
-                return Err(LowerError::unsupported_expr(
-                    &arena.expression(expr_id).node,
-                    expr_span,
-                ));
-            }
-
+            let is_outcome_ret = matches!(callee_ret, MirType::Outcome { .. });
             let is_fat_ret = matches!(callee_ret, MirType::Struct(_) | MirType::String);
 
             let mut args: Vec<Local> = arguments
@@ -1904,6 +1896,45 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.push(Statement::Deinit(arg, DUMMY_SPAN));
                 }
                 Ok(ret_local)
+            } else if is_outcome_ret {
+                // ADR-0052 OP.4a: Outcome call — allocate slot, receive 2 return values.
+                let dest = c.alloc_local_ty(callee_ret.clone());
+                c.push(Statement::StorageLive(dest, expr_span.clone()));
+                c.push(Statement::OutcomeAlloc {
+                    dest,
+                    span: expr_span.clone(),
+                });
+                let to_zero: Vec<Local> = args
+                    .iter()
+                    .filter(|&&arg| {
+                        let ty = &c.local_decls[arg.0].ty;
+                        if ty.is_reference() {
+                            return false;
+                        }
+                        !ty.is_copy(None)
+                    })
+                    .copied()
+                    .collect();
+                let ret_bb = c.alloc_bb();
+                let call_bb = c.cur;
+                c.term(
+                    call_bb,
+                    Terminator::CallDispatch {
+                        callee: triet_mir::FunctionId(0),
+                        callee_name,
+                        target: CallTarget::Jit,
+                        args,
+                        return_bb: ret_bb,
+                        dest: vec![dest],
+                        return_shape: triet_mir::ReturnShape::BinaryOutcome,
+                        span: expr_span,
+                    },
+                );
+                c.cur = ret_bb;
+                for &arg in &to_zero {
+                    c.push(Statement::Deinit(arg, DUMMY_SPAN));
+                }
+                Ok(dest)
             } else {
                 let dest = c.alloc_local_ty(callee_ret.clone());
                 c.push(Statement::StorageLive(dest, expr_span.clone()));
@@ -2546,6 +2577,222 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     },
                 );
                 c.pop_scope();
+
+                c.cur = merge_bb;
+                return Ok(result);
+            }
+
+            // ── BinaryOutcome match: branch on disc Trit via If ──
+            if matches!(
+                scrut_ty,
+                MirType::Outcome {
+                    allow_null_state: false,
+                    ..
+                }
+            ) {
+                use triet_syntax::{MatchArm, OutcomeArm, Pattern};
+
+                let mut positive_arm: Option<&MatchArm> = None;
+                let mut negative_arm: Option<&MatchArm> = None;
+                let mut wildcard_arm: Option<&MatchArm> = None;
+
+                for arm in arms.iter() {
+                    let pat = arena.pattern(arm.pattern);
+                    let pat_span = pat.span.clone();
+                    if wildcard_arm.is_some() {
+                        return Err(LowerError {
+                            message: "wildcard `_` must be the last arm".to_string(),
+                            span: pat_span,
+                        });
+                    }
+                    match &pat.node {
+                        Pattern::Wildcard => wildcard_arm = Some(arm),
+                        Pattern::OutcomeArm {
+                            arm: OutcomeArm::Positive,
+                            payload,
+                        } => {
+                            if positive_arm.is_some() {
+                                return Err(LowerError {
+                                    message: "duplicate `~+` arm".to_string(),
+                                    span: pat_span,
+                                });
+                            }
+                            if let Some(sub) = payload {
+                                match &arena.pattern(*sub).node {
+                                    Pattern::Variable(_) | Pattern::Wildcard => {}
+                                    other => {
+                                        return Err(LowerError {
+                                            message: format!(
+                                                "unsupported sub-pattern in `~+` arm: {other:?}"
+                                            ),
+                                            span: arena.pattern(*sub).span.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            positive_arm = Some(arm);
+                        }
+                        Pattern::OutcomeArm {
+                            arm: OutcomeArm::Negative,
+                            payload,
+                        } => {
+                            if negative_arm.is_some() {
+                                return Err(LowerError {
+                                    message: "duplicate `~-` arm".to_string(),
+                                    span: pat_span,
+                                });
+                            }
+                            if let Some(sub) = payload {
+                                match &arena.pattern(*sub).node {
+                                    Pattern::Variable(_) | Pattern::Wildcard => {}
+                                    other => {
+                                        return Err(LowerError {
+                                            message: format!(
+                                                "unsupported sub-pattern in `~-` arm: {other:?}"
+                                            ),
+                                            span: arena.pattern(*sub).span.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            negative_arm = Some(arm);
+                        }
+                        Pattern::OutcomeArm {
+                            arm: OutcomeArm::Zero,
+                            ..
+                        } => {
+                            return Err(LowerError {
+                                message: "`~0` arm on binary Outcome — typechecker should have rejected this".to_string(),
+                                span: pat_span,
+                            });
+                        }
+                        other => {
+                            return Err(LowerError {
+                                message: format!(
+                                    "unsupported pattern on Outcome scrutinee: {other:?}"
+                                ),
+                                span: pat_span,
+                            });
+                        }
+                    }
+                }
+
+                // Read the Outcome discriminant via projection (offset 0).
+                let disc_local = c.alloc_local_ty(MirType::Trit);
+                c.push(Statement::StorageLive(disc_local, expr_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(disc_local),
+                    source: Place::local(scrut_local).project(Projection::OutcomeDiscriminant),
+                    span: expr_span.clone(),
+                });
+
+                let pos_bb = c.alloc_bb();
+                let neg_bb = c.alloc_bb();
+                let merge_bb = c.alloc_bb();
+                let result = c.alloc_local_ty(MirType::Unknown);
+                c.push(Statement::StorageLive(result, expr_span.clone()));
+
+                // Branch on Trit discriminant.
+                let cur_bb = c.cur;
+                c.term(
+                    cur_bb,
+                    Terminator::If {
+                        cond: disc_local,
+                        positive_bb: pos_bb,
+                        zero_bb: None,
+                        negative_bb: neg_bb,
+                        span: expr_span.clone(),
+                    },
+                );
+
+                // Helper: lower an arm with optional OutcomeUnwrap bind.
+                let lower_outcome_arm = |c: &mut Ctx,
+                                         arena: &Arena,
+                                         arm: &MatchArm,
+                                         unwrap_stmt: &dyn Fn(Local) -> Statement,
+                                         result: Local,
+                                         merge_bb: BasicBlock,
+                                         expr_span: &Span|
+                 -> Result<(), LowerError> {
+                    c.push_scope();
+                    // Bind variable if present.
+                    if let Pattern::OutcomeArm {
+                        payload: Some(sub_pat),
+                        ..
+                    } = &arena.pattern(arm.pattern).node
+                    {
+                        let sub = arena.pattern(*sub_pat);
+                        if let Pattern::Variable(var_name) = &sub.node {
+                            let (payload_ty_local, _) =
+                                if let MirType::Outcome { ref value_type, .. } = scrut_ty {
+                                    (value_type.as_ref().clone(), ())
+                                } else {
+                                    (MirType::Unknown, ())
+                                };
+                            let bind_local = c.alloc_local_ty(payload_ty_local);
+                            c.push(Statement::StorageLive(bind_local, expr_span.clone()));
+                            c.push(unwrap_stmt(bind_local));
+                            c.vars.insert(var_name.clone(), bind_local);
+                            c.push_owned(bind_local);
+                        }
+                    }
+                    let body_val = lower_expr(arm.body, arena, c)?;
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    let arm_end = c.cur;
+                    c.term(
+                        arm_end,
+                        Terminator::Goto {
+                            target: merge_bb,
+                            span: DUMMY_SPAN,
+                        },
+                    );
+                    c.pop_scope();
+                    Ok(())
+                };
+
+                // ── Positive arm (~+ x): OutcomeUnwrap → bind payload ──
+                c.cur = pos_bb;
+                let pos_arm = positive_arm.or(wildcard_arm).ok_or_else(|| LowerError {
+                    message: "missing `~+` arm in Outcome match".to_string(),
+                    span: expr_span.clone(),
+                })?;
+                lower_outcome_arm(
+                    c,
+                    arena,
+                    pos_arm,
+                    &|bind_local| Statement::Assign {
+                        dest: Place::local(bind_local),
+                        source: Place::local(scrut_local).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    },
+                    result,
+                    merge_bb,
+                    &expr_span,
+                )?;
+
+                // ── Negative arm (~- e): OutcomeUnwrapError → bind payload ──
+                c.cur = neg_bb;
+                let neg_arm = negative_arm.or(wildcard_arm).ok_or_else(|| LowerError {
+                    message: "missing `~-` arm in Outcome match".to_string(),
+                    span: expr_span.clone(),
+                })?;
+                lower_outcome_arm(
+                    c,
+                    arena,
+                    neg_arm,
+                    &|bind_local| Statement::Assign {
+                        dest: Place::local(bind_local),
+                        source: Place::local(scrut_local).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    },
+                    result,
+                    merge_bb,
+                    &expr_span,
+                )?;
 
                 c.cur = merge_bb;
                 return Ok(result);
