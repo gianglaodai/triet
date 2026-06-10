@@ -132,11 +132,6 @@ struct Ctx {
     /// Human-readable names for let-bound locals. Populated by `Stmt::Let`;
     /// passed through to `Body::local_names` for borrowck diagnostics.
     local_names: BTreeMap<Local, String>,
-    /// Outcome 2-slot pairing: maps the discriminant local to its payload
-    /// local. Populated by `OutcomeConstructor` lowering; consumed by
-    /// `Stmt::Return` and expression-body return to emit the correct
-    /// `Return { values: [disc, payload] }` (ADR-0052 §3.1).
-    outcome_payloads: HashMap<Local, Local>,
 }
 
 impl Ctx {
@@ -188,7 +183,6 @@ impl Ctx {
             owned_locals: Vec::new(),
             scope_snapshots: Vec::new(),
             local_names: BTreeMap::new(),
-            outcome_payloads: HashMap::new(),
         };
         if is_fat_return {
             ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
@@ -578,11 +572,7 @@ pub(crate) fn lower_function(
         }
         FunctionBody::Expression { expr } => {
             let val = lower_expr(*expr, arena, &mut c)?;
-            let mut values = vec![val];
-            // ADR-0052 §3.3: Outcome return → 2 values [disc, payload].
-            if let Some(&payload) = c.outcome_payloads.get(&val) {
-                values.push(payload);
-            }
+            let values = lower_outcome_return_values(val, &mut c);
             let cur = c.cur;
             let expr_span = arena.expression(*expr).span.clone();
             c.term(
@@ -765,6 +755,35 @@ fn emit_shim_call(
     );
     c.cur = ret_bb;
     dest
+}
+
+// ── Outcome helpers ─────────────────────────────────────────
+
+/// Expand an Outcome local into its constituent return values
+/// `[disc, payload]` by loading from the 16-byte slot. Non-Outcome
+/// values pass through as single-element vec.
+fn lower_outcome_return_values(val: Local, c: &mut Ctx) -> Vec<Local> {
+    let ty = &c.local_decls[val.0].ty;
+    if !matches!(ty, MirType::Outcome { .. }) {
+        return vec![val];
+    }
+    // Load disc@0 into a temp.
+    let disc_tmp = c.alloc_local_ty(MirType::Trit);
+    c.push(Statement::StorageLive(disc_tmp, DUMMY_SPAN));
+    c.push(Statement::Assign {
+        dest: Place::local(disc_tmp),
+        source: Place::local(val).project(Projection::OutcomeDiscriminant),
+        span: DUMMY_SPAN,
+    });
+    // Load payload@8 into a temp.
+    let payload_tmp = c.alloc_local_ty(MirType::Unknown);
+    c.push(Statement::StorageLive(payload_tmp, DUMMY_SPAN));
+    c.push(Statement::Assign {
+        dest: Place::local(payload_tmp),
+        source: Place::local(val).project(Projection::OutcomePayload),
+        span: DUMMY_SPAN,
+    });
+    vec![disc_tmp, payload_tmp]
 }
 
 // ── Block lowering ──────────────────────────────────────────
@@ -962,11 +981,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         values.push(d);
                     } else {
                         let val = lower_expr(*v, arena, c)?;
-                        values.push(val);
-                        // ADR-0052 §3.3: Outcome return → 2 values [disc, payload].
-                        if let Some(&payload) = c.outcome_payloads.get(&val) {
-                            values.push(payload);
-                        }
+                        values.extend(lower_outcome_return_values(val, c));
                     }
                 }
                 // Drop owned locals before Return, so the borrowck can
@@ -1147,16 +1162,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Err(LowerError::null_literal_without_expected_type(expr_span))
         }
         Expr::OutcomeConstructor { arm, payload } => {
-            // ── ADR-0052 §3.2: 2-slot constructor (BinaryOutcome only) ──
-            // Outcome value = {disc: i64, payload: i64}.
+            // ── ADR-0052 §3.2 + OP.3.5: StackSlot 16-byte constructor ──
+            // Outcome = 1 local → StackSlot {disc@0, payload@8}.
             // disc encoding: Positive=1, Negative=−1 (Trit).
             // Zero arm (T?~E) deferred to later OP.
             // Payload = value/error scalar (Bậc A — heap deferred).
-            //
-            // Derive payload type from the function's return type for the
-            // return-position case. For non-return contexts (let bindings,
-            // etc.), use MirType::Unknown — the MIR backend does not need
-            // the precise payload type for Bậc A scalars (all i64).
 
             // ~0 (Zero arm) — not yet supported (T?~E deferred).
             if matches!(arm, triet_syntax::OutcomeArm::Zero) {
@@ -1191,37 +1201,52 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 triet_syntax::OutcomeArm::Zero => 0, // unreachable (caught above)
             };
 
-            // Allocate discriminant local.
-            let disc = c.alloc_local_ty(MirType::Trit);
-            c.push(Statement::StorageLive(disc, expr_span.clone()));
-            c.push(Statement::Const {
-                dest: Place::local(disc),
-                value: ConstValue::Trit(disc_value),
+            // Allocate single Outcome local with 16-byte StackSlot.
+            let outcome_ty = c.sig.return_type.clone();
+            let outcome = c.alloc_local_ty(outcome_ty);
+            c.push(Statement::StorageLive(outcome, expr_span.clone()));
+            c.push(Statement::OutcomeAlloc {
+                dest: outcome,
                 span: expr_span.clone(),
             });
 
-            // Lower payload and wire the 2-slot pairing.
-            // ~+ and ~- always have a payload (validated by parser + typecheck).
+            // Store disc at offset 0.
+            let disc_tmp = c.alloc_local_ty(MirType::Trit);
+            c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(disc_tmp),
+                value: ConstValue::Trit(disc_value),
+                span: expr_span.clone(),
+            });
+            c.push(Statement::Assign {
+                dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_tmp),
+                span: expr_span.clone(),
+            });
+
+            // Lower payload and store at offset 8.
             if let Some(payload_expr) = payload {
                 let val = lower_expr(*payload_expr, arena, c)?;
-                let payload_local = c.alloc_local_ty(payload_ty);
-                c.push(Statement::StorageLive(payload_local, expr_span.clone()));
+                let payload_tmp = c.alloc_local_ty(payload_ty);
+                c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
                 c.push(Statement::Assign {
-                    dest: Place::local(payload_local),
+                    dest: Place::local(payload_tmp),
                     source: Place::local(val),
                     span: expr_span.clone(),
                 });
-                c.outcome_payloads.insert(disc, payload_local);
+                c.push(Statement::Assign {
+                    dest: Place::local(outcome).project(Projection::OutcomePayload),
+                    source: Place::local(payload_tmp),
+                    span: expr_span.clone(),
+                });
             } else {
-                // Bare arm (no payload) — shouldn't happen for ~+/~-
-                // (parser requires payload), but handle gracefully.
                 return Err(LowerError::unsupported_expr(
                     &arena.expression(expr_id).node,
                     expr_span,
                 ));
             }
 
-            Ok(disc)
+            Ok(outcome)
         }
         Expr::StringLiteral { value } => {
             let d = c.alloc_local_ty(MirType::String);

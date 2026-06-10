@@ -194,6 +194,7 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::Drop(l, _) => vec![*l],
         Statement::StructAlloc { .. } => Vec::new(),
         Statement::EnumAlloc { .. } => Vec::new(),
+        Statement::OutcomeAlloc { .. } => Vec::new(),
         Statement::SetDiscriminant { .. } => Vec::new(),
         Statement::GetDiscriminant { source, .. } => vec![source.local],
     }
@@ -216,6 +217,7 @@ fn statement_writes(stmt: &Statement) -> Vec<Local> {
         Statement::Drop(_, _) => Vec::new(),
         Statement::StructAlloc { dest, .. } => vec![*dest],
         Statement::EnumAlloc { dest, .. } => vec![*dest],
+        Statement::OutcomeAlloc { dest, .. } => vec![*dest],
         Statement::SetDiscriminant { .. } => Vec::new(),
     }
 }

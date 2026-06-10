@@ -97,6 +97,12 @@ pub enum Projection {
     /// Only valid after the borrowck has proven the enum is in this variant
     /// (via a `SwitchInt` branch).
     Payload(String),
+    /// Access the discriminant field of an Outcome value (offset 0, 8 bytes).
+    /// The base local must be Outcome-allocated (`OutcomeAlloc`).
+    OutcomeDiscriminant,
+    /// Access the payload field of an Outcome value (offset 8, 8 bytes).
+    /// The base local must be Outcome-allocated (`OutcomeAlloc`).
+    OutcomePayload,
 }
 
 /// A memory location: a base [`Local`] refined by zero or more projections.
@@ -149,6 +155,8 @@ impl fmt::Display for Place {
                 Projection::Field(name) => format!("{s}.{name}"),
                 Projection::Index(i) => format!("{s}[{i}]"),
                 Projection::Payload(variant) => format!("{s}.Payload({variant})"),
+                Projection::OutcomeDiscriminant => format!("{s}.disc"),
+                Projection::OutcomePayload => format!("{s}.payload"),
             };
         }
         f.write_str(&s)
@@ -300,6 +308,17 @@ pub enum Statement {
         dest: Local,
         /// Enum name — key into `Body::enum_layouts`.
         enum_name: String,
+        /// Source location.
+        span: Span,
+    },
+
+    /// Allocate a 16-byte Outcome slot on the stack.
+    /// Layout: discriminant at offset 0 (8 bytes), payload at offset 8 (8 bytes).
+    /// Access fields via [`Projection::OutcomeDiscriminant`] and
+    /// [`Projection::OutcomePayload`] on [`Assign`] statements.
+    OutcomeAlloc {
+        /// The local being initialized as an Outcome value.
+        dest: Local,
         /// Source location.
         span: Span,
     },
@@ -1368,6 +1387,44 @@ impl Body {
             });
         }
 
+        // ── INV-Outcome-disc (ADR-0052 OP.3.5): BinaryOutcome disc ≠ Trit(0) ──
+        // Post-StackSlot-refactor: the disc is set via
+        //   Const(tmp, Trit(v)) → Assign(outcome.disc, tmp)
+        // Scan all blocks for Const(Trit(0)) whose dest is later used as
+        // source of an OutcomeDiscriminant store.
+        if matches!(self.signature.return_shape, ReturnShape::BinaryOutcome) {
+            for block_data in &self.blocks {
+                // Collect locals set to Trit(0) in this block.
+                let mut zero_trit_locals: BTreeSet<Local> = BTreeSet::new();
+                for stmt in &block_data.statements {
+                    if let Statement::Const {
+                        dest,
+                        value: ConstValue::Trit(0),
+                        ..
+                    } = stmt
+                    {
+                        zero_trit_locals.insert(dest.local);
+                    }
+                }
+                // Check if any of them is stored into an OutcomeDiscriminant projection.
+                for stmt in &block_data.statements {
+                    if let Statement::Assign { dest, source, .. } = stmt
+                        && dest
+                            .projection
+                            .iter()
+                            .any(|p| matches!(p, Projection::OutcomeDiscriminant))
+                        && source.projection.is_empty()
+                        && zero_trit_locals.contains(&source.local)
+                    {
+                        return Err(MirError::OutcomeDiscriminantInvalid {
+                            disc_value: 0,
+                            span: DUMMY_SPAN.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
         // Helper: look up EnumLayout by name.
         let find_enum = |name: &str| -> Option<&EnumLayout> {
             self.enum_layouts.iter().find(|e| e.name == name)
@@ -1413,6 +1470,20 @@ impl Body {
                 Ok(())
             };
 
+            // ── INV-3 helper: verify Outcome projection ──
+            let check_outcome_projection = |base: Local| -> Result<(), MirError> {
+                if let Some(decl) = self.local_decls.get(base.0)
+                    && !matches!(decl.ty, MirType::Outcome { .. })
+                {
+                    return Err(MirError::OutcomeProjectionNonOutcome {
+                        local: base,
+                        found_type: decl.ty.clone(),
+                        span: DUMMY_SPAN.clone(),
+                    });
+                }
+                Ok(())
+            };
+
             // ── INV-3 helper: verify Payload projection ──
             let check_payload = |base: Local, variant: &str| -> Result<(), MirError> {
                 // Display-bridge: .ty is MirType, extract name for lookup (S2 transitional).
@@ -1452,29 +1523,6 @@ impl Body {
                                 actual: values.len(),
                                 span: DUMMY_SPAN.clone(),
                             });
-                        }
-                    }
-
-                    // ── INV-Outcome-disc (ADR-0052 OP.2) ──
-                    // For BinaryOutcome, if the disc (values[0]) is set by
-                    // a Const in this block, verify it is NOT Zero (Trit::0).
-                    if matches!(self.signature.return_shape, ReturnShape::BinaryOutcome)
-                        && values.len() >= 2
-                    {
-                        let disc = values[0];
-                        for stmt in &block_data.statements {
-                            if let Statement::Const {
-                                dest,
-                                value: ConstValue::Trit(0),
-                                ..
-                            } = stmt
-                                && dest.local == disc
-                            {
-                                return Err(MirError::OutcomeDiscriminantInvalid {
-                                    disc_value: 0,
-                                    span: DUMMY_SPAN.clone(),
-                                });
-                            }
                         }
                     }
                 }
@@ -1544,15 +1592,27 @@ impl Body {
                     Statement::Assign { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
-                        // 4i-7: check Payload projection validity
+                        // 4i-7: check Payload + Outcome projection validity
                         for proj in &dest.projection {
                             if let Projection::Payload(variant) = proj {
                                 check_payload(dest.local, variant)?;
+                            }
+                            if matches!(
+                                proj,
+                                Projection::OutcomeDiscriminant | Projection::OutcomePayload
+                            ) {
+                                check_outcome_projection(dest.local)?;
                             }
                         }
                         for proj in &source.projection {
                             if let Projection::Payload(variant) = proj {
                                 check_payload(source.local, variant)?;
+                            }
+                            if matches!(
+                                proj,
+                                Projection::OutcomeDiscriminant | Projection::OutcomePayload
+                            ) {
+                                check_outcome_projection(source.local)?;
                             }
                         }
                     }
@@ -1602,6 +1662,19 @@ impl Body {
                         if find_enum(enum_name).is_none() {
                             return Err(MirError::EnumLayoutNotFound {
                                 enum_name: enum_name.clone(),
+                                span: DUMMY_SPAN.clone(),
+                            });
+                        }
+                    }
+                    Statement::OutcomeAlloc { dest, .. } => {
+                        check_local(*dest)?;
+                        // 4i-outcome-1: dest must have Outcome type.
+                        if let Some(decl) = self.local_decls.get(dest.0)
+                            && !matches!(decl.ty, MirType::Outcome { .. })
+                        {
+                            return Err(MirError::OutcomeAllocNonOutcome {
+                                local: *dest,
+                                found_type: decl.ty.clone(),
                                 span: DUMMY_SPAN.clone(),
                             });
                         }
@@ -1800,6 +1873,25 @@ pub enum MirError {
         /// Source location.
         span: Span,
     },
+
+    /// 4i-outcome-1: `OutcomeAlloc` on a local whose type is not `MirType::Outcome`.
+    OutcomeAllocNonOutcome {
+        /// The local that was allocated as Outcome.
+        local: Local,
+        /// The type that was found instead.
+        found_type: MirType,
+        /// Source location.
+        span: Span,
+    },
+    /// 4i-outcome-2: Outcome projection on a local whose type is not `MirType::Outcome`.
+    OutcomeProjectionNonOutcome {
+        /// The base local.
+        local: Local,
+        /// The type that was found.
+        found_type: MirType,
+        /// Source location.
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -1896,6 +1988,23 @@ impl fmt::Display for MirError {
                     "MIR verification error: return type is '{return_type}' but return shape is {return_shape:?} — expected matching Outcome shape"
                 )
             }
+
+            Self::OutcomeAllocNonOutcome {
+                local, found_type, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: OutcomeAlloc on local {local} with non-Outcome type '{found_type}'"
+                )
+            }
+            Self::OutcomeProjectionNonOutcome {
+                local, found_type, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: Outcome projection on local {local} with non-Outcome type '{found_type}'"
+                )
+            }
         }
     }
 }
@@ -1955,6 +2064,7 @@ impl fmt::Display for Statement {
             Self::EnumAlloc {
                 dest, enum_name, ..
             } => write!(f, "{dest} = enum {enum_name} {{..}}"),
+            Self::OutcomeAlloc { dest, .. } => write!(f, "{dest} = Outcome {{..}}"),
             Self::SetDiscriminant { dest, value, .. } => {
                 write!(f, "SetDiscriminant({dest}, {value})")
             }

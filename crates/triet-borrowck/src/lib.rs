@@ -45,8 +45,10 @@ pub struct MirBuilder {
     next_func: usize,
     /// Cache of function name → FunctionId for `func_id_for`.
     func_ids: HashMap<String, FunctionId>,
-    /// Types for locals.
+    /// Types for locals (string-based, transitional).
     local_types: HashMap<Local, String>,
+    /// Types for locals (`MirType`-based — preferred over `local_types`).
+    local_mir_types: HashMap<Local, MirType>,
     /// Struct layouts for type resolution.
     struct_layouts: Vec<triet_mir::StructLayout>,
     /// Enum layouts for type resolution.
@@ -71,6 +73,7 @@ impl MirBuilder {
             next_func: 0,
             func_ids: HashMap::new(),
             local_types: HashMap::new(),
+            local_mir_types: HashMap::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
         }
@@ -103,9 +106,14 @@ impl MirBuilder {
         l
     }
 
-    /// Set the type of a local.
+    /// Set the type of a local (string-based, transitional).
     pub fn set_local_type(&mut self, local: Local, ty: &str) {
         self.local_types.insert(local, ty.to_string());
+    }
+
+    /// Set the `MirType` of a local. Takes precedence over [`set_local_type`].
+    pub fn set_local_mir_type(&mut self, local: Local, ty: MirType) {
+        self.local_mir_types.insert(local, ty);
     }
 
     /// Add a struct layout for type resolution (used by `place_type`).
@@ -165,6 +173,9 @@ impl MirBuilder {
     pub fn build(self, entry: BasicBlock) -> Body {
         let local_decls = (0..self.next_local)
             .map(|i| {
+                if let Some(mir_ty) = self.local_mir_types.get(&Local(i)) {
+                    return LocalDecl::new(mir_ty.clone());
+                }
                 let ty = self
                     .local_types
                     .get(&Local(i))

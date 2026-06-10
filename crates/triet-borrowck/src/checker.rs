@@ -340,6 +340,8 @@ fn place_name(place: &Place, names: &LocalNames) -> String {
             Projection::Field(f) => format!("{s}.{f}"),
             Projection::Index(i) => format!("{s}[{i}]"),
             Projection::Payload(v) => format!("{s}.Payload({v})"),
+            Projection::OutcomeDiscriminant => format!("{s}.disc"),
+            Projection::OutcomePayload => format!("{s}.payload"),
         };
     }
     s
@@ -669,6 +671,10 @@ fn process_block(
                 // No borrow-check impact — same reasoning as StructAlloc.
                 // StorageLive already owns the local; EnumAlloc just declares
                 // stack layout.
+            }
+
+            Statement::OutcomeAlloc { .. } => {
+                // No borrow-check impact — same reasoning as StructAlloc.
             }
 
             Statement::SetDiscriminant { .. } => {

@@ -201,6 +201,9 @@ pub struct JitContext {
     /// Map from MIR Local to Cranelift `StackSlot` + enum layout.
     /// Enum locals use `StackSlots`; discriminant/payload accessed via `stack_load/store`.
     enum_slots: HashMap<Local, (cranelift_codegen::ir::StackSlot, EnumLayout)>,
+    /// Map from MIR Local to Cranelift `StackSlot` for Outcome values.
+    /// 16-byte slots: disc@0, payload@8.
+    outcome_slots: HashMap<Local, cranelift_codegen::ir::StackSlot>,
     /// Map from MIR `BasicBlock` to Cranelift Block.
     blocks: HashMap<BasicBlock, cranelift_codegen::ir::Block>,
     /// Blocks that have been sealed.
@@ -324,6 +327,24 @@ impl JitContext {
                     "Payload access on non-enum local".into(),
                 ));
             }
+            Projection::OutcomeDiscriminant => {
+                let disc_offset: i32 = 0;
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    return Ok(builder.ins().stack_load(I64, *slot, disc_offset));
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomeDiscriminant access on non-Outcome local".into(),
+                ));
+            }
+            Projection::OutcomePayload => {
+                let payload_offset: i32 = 8;
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    return Ok(builder.ins().stack_load(I64, *slot, payload_offset));
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomePayload access on non-Outcome local".into(),
+                ));
+            }
             _ => {}
         }
         Err(JitError::Unsupported("unsupported projection".into()))
@@ -397,6 +418,26 @@ impl JitContext {
                     "Payload store to non-enum local".into(),
                 ));
             }
+            Projection::OutcomeDiscriminant => {
+                let disc_offset: i32 = 0;
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    builder.ins().stack_store(value, *slot, disc_offset);
+                    return Ok(());
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomeDiscriminant store to non-Outcome local".into(),
+                ));
+            }
+            Projection::OutcomePayload => {
+                let payload_offset: i32 = 8;
+                if let Some(slot) = self.outcome_slots.get(&place.local) {
+                    builder.ins().stack_store(value, *slot, payload_offset);
+                    return Ok(());
+                }
+                return Err(JitError::Unsupported(
+                    "OutcomePayload store to non-Outcome local".into(),
+                ));
+            }
             _ => {}
         }
         Err(JitError::Unsupported("unsupported projection".into()))
@@ -435,6 +476,7 @@ impl JitContext {
             locals: HashMap::new(),
             struct_slots: HashMap::new(),
             enum_slots: HashMap::new(),
+            outcome_slots: HashMap::new(),
             blocks: HashMap::new(),
             sealed: HashSet::new(),
             filled: HashSet::new(),
@@ -572,6 +614,7 @@ impl JitContext {
         self.locals.clear();
         self.struct_slots.clear();
         self.enum_slots.clear();
+        self.outcome_slots.clear();
         for i in 0..body.num_locals {
             let var = builder.declare_var(I64);
             self.locals.insert(Local(i), var);
@@ -641,6 +684,16 @@ impl JitContext {
                         align_shift,
                     ));
                     self.enum_slots.insert(*dest, (slot, layout.clone()));
+                }
+                if let Statement::OutcomeAlloc { dest, .. } = stmt {
+                    // Outcome slot: 16 bytes (disc@0: i64, payload@8: i64), align 8.
+                    let align_shift = 3u8; // log2(8)
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        16u32,
+                        align_shift,
+                    ));
+                    self.outcome_slots.insert(*dest, slot);
                 }
                 // (String slots now pre-allocated for ALL locals above.)
             }
@@ -1041,6 +1094,9 @@ impl JitContext {
                 }
 
                 Statement::EnumAlloc { .. } => {
+                    // No-op — StackSlot already created in build_body
+                }
+                Statement::OutcomeAlloc { .. } => {
                     // No-op — StackSlot already created in build_body
                 }
                 Statement::SetDiscriminant { dest, value, .. } => {
@@ -2488,7 +2544,10 @@ pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
 mod tests {
     use super::*;
     use triet_borrowck::{MirBuilder, binop, const_int, return_, storage_live};
-    use triet_mir::{DUMMY_SPAN, FunctionId, ParameterPassing, Place, ReturnShape, Statement};
+    use triet_mir::{
+        ConstValue, DUMMY_SPAN, FunctionId, MirType, ParameterPassing, Place, Projection,
+        ReturnShape, Statement, Terminator,
+    };
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
     #[test]
@@ -2791,83 +2850,145 @@ mod tests {
         }
     }
 
-    /// ADR-0052 `OP.3`: `BinaryOutcome` 2-return via Cranelift native multi-return.
-    ///
-    /// Builds two Outcome functions (one `~+`, one `~-`) and calls them through
-    /// `extern "C" fn() -> Repr2` where `Repr2(i64, i64)` maps to `SysV` `rax:rdx`.
-    /// This verifies that:
-    /// - The guard at 1068 now ALLOWS `BinaryOutcome` with 2 values
-    /// - The sig has 2 return params (disc, payload)
-    /// - The return emits disc, payload in correct order
-    #[test]
-    #[allow(unsafe_code)]
-    // `unsafe_code` allow: transmute code_ptr → extern "C" fn pointer.
-    // The pointer is valid as long as `ctx` (JitContext) outlives the call.
-    fn binary_outcome_2return() {
-        // `Repr2` maps to SysV ABI: first i64 in rax, second in rdx.
+    /// Build and compile an Outcome function via the real `StackSlot` path,
+    /// returning `(disc, payload)` through `Repr2`.
+    #[allow(unsafe_code, clippy::cast_possible_truncation)]
+    // `unsafe_code`: transmute code_ptr → extern "C" fn pointer.
+    // `cast_possible_truncation`: disc_val as i8 is always in valid Trit range.
+    unsafe fn compile_outcome_via_slot(disc_val: i64, payload_val: i64) -> (i64, i64) {
         #[repr(C)]
         struct Repr2(i64, i64);
 
-        // Helper: compile and call a BinaryOutcome function returning (disc, payload).
-        // `disc_val` and `payload_val` are always in valid Trit/i64 range.
-        #[allow(clippy::cast_possible_truncation)]
-        unsafe fn compile_and_call(disc_val: i64, payload_val: i64) -> Repr2 {
-            let mut b = MirBuilder::new(
-                "outcome_test",
-                MirType::Outcome {
-                    value_type: Box::new(MirType::Integer),
-                    error_type: Box::new(MirType::Integer),
-                    allow_null_state: false,
-                },
-            );
-            b.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
-            let disc = b.new_local();
-            let payload = b.new_local();
-            let bb0 = b.new_block();
-            b.push(bb0, storage_live(disc));
-            b.push(
-                bb0,
-                triet_mir::Statement::Const {
-                    dest: disc.into(),
-                    value: ConstValue::Trit(disc_val as i8),
-                    span: DUMMY_SPAN,
-                },
-            );
-            b.push(bb0, storage_live(payload));
-            b.push(
-                bb0,
-                triet_mir::Statement::Const {
-                    dest: payload.into(),
-                    value: ConstValue::Integer(i128::from(payload_val)),
-                    span: DUMMY_SPAN,
-                },
-            );
-            b.set_terminator(
-                bb0,
-                Terminator::Return {
-                    values: vec![disc, payload],
-                    span: DUMMY_SPAN,
-                },
-            );
-            let body = b.build(bb0);
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::Integer),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+        let mut b = MirBuilder::new("outcome_test", outcome_ty);
+        b.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
 
-            let func = {
-                let mut ctx = JitContext::new();
-                ctx.compile(&body).expect("BinaryOutcome JIT compilation")
-            };
-            let f: extern "C" fn() -> Repr2 = unsafe { std::mem::transmute(func.code_ptr) };
-            f()
-        }
+        let outcome = b.new_local();
+        b.set_local_mir_type(
+            outcome,
+            MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            },
+        );
+        let disc_tmp = b.new_local();
+        let payload_tmp = b.new_local();
+        let ret_disc = b.new_local();
+        let ret_payload = b.new_local();
+        let bb0 = b.new_block();
 
+        // Allocate 16-byte Outcome slot.
+        b.push(bb0, storage_live(outcome));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: outcome,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Store disc via OutcomeDiscriminant projection (offset 0).
+        b.push(bb0, storage_live(disc_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: disc_tmp.into(),
+                value: ConstValue::Trit(disc_val as i8),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Store payload via OutcomePayload projection (offset 8).
+        b.push(bb0, storage_live(payload_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: payload_tmp.into(),
+                value: ConstValue::Integer(i128::from(payload_val)),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(outcome).project(Projection::OutcomePayload),
+                source: Place::local(payload_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Load disc from slot via projection.
+        b.push(bb0, storage_live(ret_disc));
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(ret_disc),
+                source: Place::local(outcome).project(Projection::OutcomeDiscriminant),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Load payload from slot via projection.
+        b.push(bb0, storage_live(ret_payload));
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(ret_payload),
+                source: Place::local(outcome).project(Projection::OutcomePayload),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        b.set_terminator(
+            bb0,
+            Terminator::Return {
+                values: vec![ret_disc, ret_payload],
+                span: DUMMY_SPAN,
+            },
+        );
+        let body = b.build(bb0);
+
+        let func = {
+            let mut ctx = JitContext::new();
+            ctx.compile(&body).expect("OK")
+        };
+        let f: extern "C" fn() -> Repr2 = unsafe { std::mem::transmute(func.code_ptr) };
+        let r = f();
+        (r.0, r.1)
+    }
+
+    /// `ADR-0052` `OP.3` + `OP.3.5`: `BinaryOutcome` `StackSlot` 16-byte end-to-end.
+    ///
+    /// Routes through the `REAL` path: `OutcomeAlloc` → store disc via
+    /// `OutcomeDiscriminant` projection → store payload via `OutcomePayload`
+    /// projection → load both back via projections → `Return[disc,payload]`.
+    /// This verifies the offset machinery (`disc@0`, `payload@8`) — not just
+    /// the 2-register ABI.
+    #[test]
+    #[allow(unsafe_code)]
+    fn binary_outcome_2return() {
         // ~+ 42 → disc=1, payload=42
-        let r = unsafe { compile_and_call(1, 42) };
-        assert_eq!(r.0, 1, "discriminant should be Positive(1)");
-        assert_eq!(r.1, 42, "payload should be 42");
+        let (disc, payload) = unsafe { compile_outcome_via_slot(1, 42) };
+        assert_eq!(disc, 1, "discriminant should be Positive(1)");
+        assert_eq!(payload, 42, "payload should be 42");
 
         // ~- -1 → disc=-1, payload=-1
-        let r = unsafe { compile_and_call(-1, -1) };
-        assert_eq!(r.0, -1, "discriminant should be Negative(-1)");
-        assert_eq!(r.1, -1, "payload should be -1");
+        let (disc, payload) = unsafe { compile_outcome_via_slot(-1, -1) };
+        assert_eq!(disc, -1, "discriminant should be Negative(-1)");
+        assert_eq!(payload, -1, "payload should be -1");
     }
 
     /// ADR-0052 §3.5: generic multi-value (non-BinaryOutcome) must STILL be
