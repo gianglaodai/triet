@@ -1,0 +1,16 @@
+// EXPECT: -99
+// APP.1: ~-> Mode 2 propagate — error path early-returns error.
+
+function fail() -> Integer~Integer =
+    ~- -99
+
+// On error → early-return from propagate().
+// On success → re-wrap with ~+ (typecheck requires match with fn return type).
+function propagate() -> Integer~Integer =
+    ~+ (fail() ~-> |e| return ~- e)
+
+function main() -> Integer =
+    match propagate() {
+        ~+ x => 999
+        ~- e => e
+    }

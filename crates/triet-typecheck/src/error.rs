@@ -351,8 +351,10 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1028: `~?` propagate used outside fallible function.
-    #[error("`~?` propagate operator requires the enclosing function to return `T~E` or `T?~E`")]
+    /// E1028: propagate used outside fallible function.
+    #[error(
+        "E1028: `~->` propagate operator requires the enclosing function to return `T~E` or `T?~E`"
+    )]
     #[diagnostic(
         code(triet::typecheck::E1028),
         help(
@@ -361,13 +363,13 @@ pub enum TypeError {
     )]
     PropagateInNonFallibleContext {
         /// Source location of the propagate operator.
-        #[label("`~?` requires fallible enclosing function")]
+        #[label("`~->` requires fallible enclosing function")]
         span: Span,
     },
 
     /// E1029: outcome error type mismatch in propagate path.
     #[error(
-        "outcome error type mismatch in `~?`: inner has {inner_error}, caller expects {outer_error}"
+        "E1029: outcome error type mismatch in `~->`: inner has {inner_error}, caller expects {outer_error}"
     )]
     #[diagnostic(
         code(triet::typecheck::E1029),
@@ -385,12 +387,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1030: `~?` right-hand side missing closure capture form.
-    #[error("`~?` operator requires explicit closure capture form")]
+    /// E1030: `~->` right-hand side missing closure capture form.
+    #[error("E1030: `~->` operator requires explicit closure capture form")]
     #[diagnostic(
         code(triet::typecheck::E1030),
         help(
-            "write `~? |binding_name| early_return_form` or `~? |_| early_return_form` to discard the error"
+            "write `~-> |binding_name| return expression` or `~-> |_| return expression` to discard the error"
         )
     )]
     OutcomePropagateMissingCapture {
@@ -399,12 +401,12 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1031: `~?` early-return form must be return/panic/re-propagate.
-    #[error("`~?` early-return form must be a `return` statement, panic, or another `~?`")]
+    /// E1031: `~->` early-return form must be return/panic/re-propagate.
+    #[error("`~->` early-return form must be a `return` statement, panic, or another `~->`")]
     #[diagnostic(
         code(triet::typecheck::E1031),
         help(
-            "falling through after `~?` would leave the binding unbound; emit a `return` or panic"
+            "falling through after `~->` would leave the binding unbound; emit a `return` or panic"
         )
     )]
     OutcomePropagateMalformedReturn {
@@ -514,6 +516,21 @@ pub enum TypeError {
         max: i64,
         /// Source location of the literal.
         #[label("literal exceeds `Integer` range")]
+        span: Span,
+    },
+
+    /// E1037: `~->` arm handler body must be `return` (Mode 2).
+    /// Tail-expression body (Mode 1 map) is deferred to APP.2.
+    #[error(
+        "E1037: `~->` map mode is not yet supported — use `return` statement (Mode 2 propagate)"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1037),
+        help("write `~-> |e| return e` to propagate, or use `match` for explicit handling")
+    )]
+    ArmHandlerMapModeRejected {
+        /// Source location of the body expression.
+        #[label("~-> body must be `return` — map mode deferred to APP.2")]
         span: Span,
     },
 
@@ -741,6 +758,7 @@ impl TypeError {
             | Self::PossiblyUnknownCondition { span }
             | Self::TrileanReturnNotRefined { span }
             | Self::NegativeArmOnNullable { span }
+            | Self::ArmHandlerMapModeRejected { span, .. }
             | Self::IntegerLiteralOverflow { span, .. }
             | Self::NonAtomicValueType { span, .. }
             | Self::BorrowReturnNotYetSupported { span, .. }

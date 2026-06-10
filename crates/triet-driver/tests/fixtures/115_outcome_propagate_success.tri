@@ -1,0 +1,15 @@
+// EXPECT: 42
+// APP.1: ~-> Mode 2 propagate — success path unwraps payload.
+
+function succeed() -> Integer~Integer =
+    ~+ 42
+
+// Propagate error or unwrap: on success → payload value; on error → return error.
+function propagate() -> Integer~Integer =
+    ~+ (succeed() ~-> |e| return ~- e)
+
+function main() -> Integer =
+    match propagate() {
+        ~+ x => x
+        ~- e => -999
+    }

@@ -3049,6 +3049,140 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 expr_span,
             ))
         }
+        Expr::Return { value } => {
+            // `return` in expression position (e.g. inside `~->` body).
+            let mut values = Vec::new();
+            if let Some(v) = value {
+                if is_null_expr(&arena.expression(*v).node)
+                    && !matches!(c.sig.return_type, MirType::Outcome { .. })
+                {
+                    let ret_ty = c.sig.return_type.clone();
+                    let d = c.alloc_local_ty(ret_ty);
+                    c.push(Statement::StorageLive(d, expr_span.clone()));
+                    c.push(Statement::Const {
+                        dest: Place::local(d),
+                        value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                        span: expr_span.clone(),
+                    });
+                    values.push(d);
+                } else {
+                    let val = lower_expr(*v, arena, c)?;
+                    values.extend(lower_outcome_return_values(val, c));
+                }
+            }
+            c.flush_all_for_return();
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::Return {
+                    values,
+                    span: expr_span.clone(),
+                },
+            );
+            // After return, control never reaches — allocate dead block.
+            let dead = c.alloc_bb();
+            c.cur = dead;
+            // Return value is unit (never used).
+            let u = c.alloc_local();
+            c.push(Statement::StorageLive(u, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(u),
+                value: ConstValue::Unit,
+                span: expr_span,
+            });
+            Ok(u)
+        }
+        Expr::OutcomeArmHandler {
+            inner,
+            arm,
+            capture_name,
+            body,
+        } => {
+            // APP.1: ~-> Mode 2 propagate (Negative arm only).
+            // Other arms (~+> / ~0>) deferred.
+            if !matches!(arm, triet_syntax::OutcomeArm::Negative) {
+                return Err(LowerError::unsupported_expr(
+                    &arena.expression(expr_id).node,
+                    expr_span,
+                ));
+            }
+            // Lower inner → Outcome 2-slot value.
+            let inner_val = lower_expr(*inner, arena, c)?;
+
+            // Read disc via projection (offset 0).
+            let disc = c.alloc_local_ty(MirType::Trit);
+            c.push(Statement::StorageLive(disc, expr_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(disc),
+                source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
+                span: expr_span.clone(),
+            });
+
+            let pos_bb = c.alloc_bb();
+            let neg_bb = c.alloc_bb();
+            let merge_bb = c.alloc_bb();
+
+            // Branch on disc Trit.
+            let cur_bb = c.cur;
+            c.term(
+                cur_bb,
+                Terminator::If {
+                    cond: disc,
+                    positive_bb: pos_bb,
+                    zero_bb: None,
+                    negative_bb: neg_bb,
+                    span: expr_span.clone(),
+                },
+            );
+
+            // ── Error arm (negative_bb): bind e = payload@8, lower return ──
+            c.cur = neg_bb;
+            c.push_scope();
+            if let Some(name) = capture_name {
+                let e_local = c.alloc_local_ty(MirType::Unknown);
+                c.push(Statement::StorageLive(e_local, expr_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(e_local),
+                    source: Place::local(inner_val).project(Projection::OutcomePayload),
+                    span: expr_span.clone(),
+                });
+                c.vars.insert(name.clone(), e_local);
+                c.local_names.insert(e_local, name.clone());
+                c.push_owned(e_local);
+            }
+            // Lower the body (which is `return X`).
+            lower_expr(*body, arena, c)?;
+            c.pop_scope();
+            // Terminate error path with Trap (never reaches merge).
+            let neg_end = c.cur;
+            c.term(
+                neg_end,
+                Terminator::Trap {
+                    span: expr_span.clone(),
+                },
+            );
+
+            // ── Success arm (positive_bb): unwrap payload → continue ──
+            c.cur = pos_bb;
+            let result = c.alloc_local_ty(MirType::Unknown);
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(result),
+                source: Place::local(inner_val).project(Projection::OutcomePayload),
+                span: expr_span.clone(),
+            });
+            let pos_end = c.cur;
+            c.term(
+                pos_end,
+                Terminator::Goto {
+                    target: merge_bb,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            c.cur = merge_bb;
+            Ok(result)
+        }
         other => Err(LowerError::unsupported_expr(other, expr_span)),
     }
 }

@@ -458,6 +458,15 @@ impl Checker<'_> {
     ) -> Type {
         use triet_syntax::OutcomeArm;
         if arm == OutcomeArm::Negative {
+            // APP.1: Mode 2 only — body must be `return` statement.
+            // Tail-expr (Mode 1 map) is deferred to APP.2.
+            let body_expr = self.arena.expression(body);
+            if !matches!(body_expr.node, triet_syntax::Expr::Return { .. }) {
+                self.errors.push(TypeError::ArmHandlerMapModeRejected {
+                    span: body_expr.span.clone(),
+                });
+                return Type::Unknown;
+            }
             self.check_outcome_propagate(inner, capture_name, body, span)
         } else {
             // Stub — pending v0.7.4.3-error.5.

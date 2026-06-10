@@ -1,0 +1,11 @@
+// ERROR: E1029
+// APP.1: ~-> error type mismatch — inner error != enclosing error.
+
+function inner() -> Integer~String =
+    ~- "oops"
+
+// Enclosing expects Integer~Integer, but inner has error type String.
+function bad_propagate() -> Integer~Integer =
+    ~+ (inner() ~-> |e| return ~- 0)
+
+function main() -> Integer = 0

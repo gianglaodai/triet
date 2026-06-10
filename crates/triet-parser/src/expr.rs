@@ -233,6 +233,7 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         Token::LBrace => parse_block_expression(parser, span),
         Token::If | Token::IfQ => parse_if_expression(parser),
         Token::Match => parse_match_expression(parser),
+        Token::Return => parse_return_expression(parser, span),
         Token::Pipe | Token::OrOr => parse_lambda(parser),
         // Unary prefix operators
         Token::Minus | Token::Bang | Token::Not => parse_unary(parser),
@@ -371,6 +372,17 @@ fn parse_borrow_operand(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         ));
     }
     Ok(node_id)
+}
+
+/// Parse `return expr` as an expression for use inside `~->` and other
+/// arm-handler bodies where `return` is valid in expression position.
+fn parse_return_expression(parser: &mut Parser<'_>, ret_span: Span) -> Result<ExprId, ParseError> {
+    parser.advance(); // consume `return` token
+    let value = parse_expression_bp(parser, 0)?;
+    let span = ret_span.start..arena_span(parser, value).end;
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Return { value: Some(value) }, span)))
 }
 
 // ============================================================================
