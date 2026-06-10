@@ -3098,14 +3098,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             capture_name,
             body,
         } => {
-            // APP.1: ~-> Mode 2 propagate (Negative arm only).
-            // Other arms (~+> / ~0>) deferred.
-            if !matches!(arm, triet_syntax::OutcomeArm::Negative) {
+            // APP.1: ~-> Mode 2 propagate (Negative, Trap-exit).
+            // APP.2a: ~+> Mode 1 MAP (Positive, CFG-merge).
+            if matches!(arm, triet_syntax::OutcomeArm::Zero) {
                 return Err(LowerError::unsupported_expr(
                     &arena.expression(expr_id).node,
                     expr_span,
                 ));
             }
+            let is_positive = matches!(arm, triet_syntax::OutcomeArm::Positive);
+
             // Lower inner → Outcome 2-slot value.
             let inner_val = lower_expr(*inner, arena, c)?;
 
@@ -3122,6 +3124,21 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             let neg_bb = c.alloc_bb();
             let merge_bb = c.alloc_bb();
 
+            // ── Allocate shared result BEFORE If (both arms write to it) ──
+            let result = if is_positive {
+                let r = c.alloc_local_ty(c.sig.return_type.clone());
+                c.push(Statement::StorageLive(r, expr_span.clone()));
+                c.push(Statement::OutcomeAlloc {
+                    dest: r,
+                    span: expr_span.clone(),
+                });
+                r
+            } else {
+                let r = c.alloc_local_ty(MirType::Unknown);
+                c.push(Statement::StorageLive(r, expr_span.clone()));
+                r
+            };
+
             // Branch on disc Trit.
             let cur_bb = c.cur;
             c.term(
@@ -3135,50 +3152,110 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 },
             );
 
-            // ── Error arm (negative_bb): bind e = payload@8, lower return ──
+            // ── Error arm (negative_bb) ──
             c.cur = neg_bb;
-            c.push_scope();
-            if let Some(name) = capture_name {
-                let e_local = c.alloc_local_ty(MirType::Unknown);
-                c.push(Statement::StorageLive(e_local, expr_span.clone()));
+            if is_positive {
+                // APP.2a: error passthrough — copy inner→result.
                 c.push(Statement::Assign {
-                    dest: Place::local(e_local),
+                    dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomePayload),
                     source: Place::local(inner_val).project(Projection::OutcomePayload),
                     span: expr_span.clone(),
                 });
-                c.vars.insert(name.clone(), e_local);
-                c.local_names.insert(e_local, name.clone());
-                c.push_owned(e_local);
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+            } else {
+                // APP.1: bind e, lower return, Trap exit.
+                c.push_scope();
+                if let Some(name) = capture_name {
+                    let e_local = c.alloc_local_ty(MirType::Unknown);
+                    c.push(Statement::StorageLive(e_local, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(e_local),
+                        source: Place::local(inner_val).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    });
+                    c.vars.insert(name.clone(), e_local);
+                    c.local_names.insert(e_local, name.clone());
+                    c.push_owned(e_local);
+                }
+                lower_expr(*body, arena, c)?;
+                c.pop_scope();
+                c.term(
+                    c.cur,
+                    Terminator::Trap {
+                        span: expr_span.clone(),
+                    },
+                );
             }
-            // Lower the body (which is `return X`).
-            lower_expr(*body, arena, c)?;
-            c.pop_scope();
-            // Terminate error path with Trap (never reaches merge).
-            let neg_end = c.cur;
-            c.term(
-                neg_end,
-                Terminator::Trap {
-                    span: expr_span.clone(),
-                },
-            );
 
-            // ── Success arm (positive_bb): unwrap payload → continue ──
+            // ── Success arm (positive_bb) ──
             c.cur = pos_bb;
-            let result = c.alloc_local_ty(MirType::Unknown);
-            c.push(Statement::StorageLive(result, expr_span.clone()));
-            c.push(Statement::Assign {
-                dest: Place::local(result),
-                source: Place::local(inner_val).project(Projection::OutcomePayload),
-                span: expr_span.clone(),
-            });
-            let pos_end = c.cur;
-            c.term(
-                pos_end,
-                Terminator::Goto {
-                    target: merge_bb,
-                    span: DUMMY_SPAN,
-                },
-            );
+            if is_positive {
+                // APP.2a: bind v, eval body, rewrap ~+ into result.
+                c.push_scope();
+                if let Some(name) = capture_name {
+                    let v_local = c.alloc_local_ty(MirType::Unknown);
+                    c.push(Statement::StorageLive(v_local, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(v_local),
+                        source: Place::local(inner_val).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    });
+                    c.vars.insert(name.clone(), v_local);
+                    c.local_names.insert(v_local, name.clone());
+                    c.push_owned(v_local);
+                }
+                let body_val = lower_expr(*body, arena, c)?;
+                c.pop_scope();
+                let disc_tmp = c.alloc_local_ty(MirType::Trit);
+                c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(disc_tmp),
+                    value: ConstValue::Trit(1),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(disc_tmp),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomePayload),
+                    source: Place::local(body_val),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+            } else {
+                // APP.1: unwrap payload.
+                c.push(Statement::Assign {
+                    dest: Place::local(result),
+                    source: Place::local(inner_val).project(Projection::OutcomePayload),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+            }
 
             c.cur = merge_bb;
             Ok(result)

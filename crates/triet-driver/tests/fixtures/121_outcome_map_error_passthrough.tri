@@ -1,0 +1,15 @@
+// EXPECT: -99
+// APP.2a: ~+> Mode 1 — error passthrough (body not evaluated on error).
+
+function fail() -> Integer~Integer =
+    ~- -99
+
+// Error arm passes through untouched — body only runs on success.
+function map_it() -> Integer~Integer =
+    fail() ~+> |v| v + 1
+
+function main() -> Integer =
+    match map_it() {
+        ~+ x => 999
+        ~- e => e
+    }

@@ -468,10 +468,57 @@ impl Checker<'_> {
                 return Type::Unknown;
             }
             self.check_outcome_propagate(inner, capture_name, body, span)
+        } else if arm == OutcomeArm::Positive {
+            // APP.2a: ~+> Mode 1 MAP (type-preserving, CFG-merge).
+            // Tail-expr body maps success payload; error passthrough.
+            let inner_ty = self.infer_expression(inner);
+            let (success_ty, error_ty, allow_null) = if let Type::Outcome {
+                value_type,
+                error_type,
+                allow_null_state,
+            } = &inner_ty
+            {
+                (
+                    (**value_type).clone(),
+                    (**error_type).clone(),
+                    *allow_null_state,
+                )
+            } else {
+                self.errors.push(TypeError::Mismatch {
+                    expected: Type::Outcome {
+                        value_type: Box::new(Type::Unknown),
+                        error_type: Box::new(Type::Unknown),
+                        allow_null_state: false,
+                    },
+                    found: inner_ty,
+                    span,
+                });
+                return Type::Unknown;
+            };
+
+            // Bind capture variable to success type in body scope.
+            self.env.push_frame();
+            if let Some(name) = capture_name {
+                self.env.declare(name, success_ty.clone());
+            }
+            let body_ty = self.infer_expression(body);
+            self.env.pop_frame();
+
+            // APP.2a: type-preserving only — body type must match success type.
+            if !body_ty.matches(&success_ty) {
+                self.errors.push(TypeError::ArmHandlerMapModeRejected {
+                    span: self.arena.expression(body).span.clone(),
+                });
+                return Type::Unknown;
+            }
+
+            // Result type = Outcome (same as inner — chainable).
+            Type::Outcome {
+                value_type: Box::new(body_ty),
+                error_type: Box::new(error_ty),
+                allow_null_state: allow_null,
+            }
         } else {
-            // Stub — pending v0.7.4.3-error.5.
-            let _ = self.infer_expression(inner);
-            let _ = self.infer_expression(body);
             Type::Unknown
         }
     }

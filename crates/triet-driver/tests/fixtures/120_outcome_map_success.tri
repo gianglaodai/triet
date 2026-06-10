@@ -1,0 +1,15 @@
+// EXPECT: 43
+// APP.2a: ~+> Mode 1 MAP — success arm transforms payload.
+
+function succeed() -> Integer~Integer =
+    ~+ 42
+
+// ~+> |v| body maps success: bind v, eval body, rewrap ~+.
+function map_it() -> Integer~Integer =
+    succeed() ~+> |v| v + 1
+
+function main() -> Integer =
+    match map_it() {
+        ~+ x => x
+        ~- e => -999
+    }

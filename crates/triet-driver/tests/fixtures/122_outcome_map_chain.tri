@@ -1,0 +1,17 @@
+// EXPECT: 50
+// APP.2a: ~+> inline chain — 2 map ops in ONE expression.
+// ((42 + 3) + 5) = 50.  Tests 2 merge_bb in same CFG.
+// First ~+> result flows into second ~+> — merge-block local reuse
+// must not corrupt the first result before the second reads it.
+
+function start() -> Integer~Integer =
+    ~+ 42
+
+function chain() -> Integer~Integer =
+    (start() ~+> |a| a + 3) ~+> |b| b + 5
+
+function main() -> Integer =
+    match chain() {
+        ~+ x => x
+        ~- e => -999
+    }
