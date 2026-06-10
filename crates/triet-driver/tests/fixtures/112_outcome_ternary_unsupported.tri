@@ -1,0 +1,9 @@
+// ERROR: expected matching Outcome shape
+// OP.2 strip: T?~E (TernaryOutcome) is not yet lowered.
+// Returns Scalar shape → INV-Outcome-shape rejects it at MIR verify.
+// This proves the soundness trap: Ternary Outcome does NOT silently miscompile.
+
+function ternary_test() -> Integer?~Integer =
+    ~+ 1
+
+function main() -> Integer = 0

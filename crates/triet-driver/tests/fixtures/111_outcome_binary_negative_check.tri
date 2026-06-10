@@ -1,0 +1,10 @@
+// ERROR: multi-value return requires
+// OP.2: ~- constructor for BinaryOutcome T~E.
+// Parse→typecheck→lower→MIR-verify→borrowck all pass.
+// JIT fails (multi-value not yet supported — OP.3).
+// Verifier checks: ReturnShape::BinaryOutcome, arity=2, disc≠0.
+
+function fail_with() -> Integer~Integer =
+    ~- -1
+
+function main() -> Integer = 0

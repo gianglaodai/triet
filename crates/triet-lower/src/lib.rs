@@ -132,6 +132,11 @@ struct Ctx {
     /// Human-readable names for let-bound locals. Populated by `Stmt::Let`;
     /// passed through to `Body::local_names` for borrowck diagnostics.
     local_names: BTreeMap<Local, String>,
+    /// Outcome 2-slot pairing: maps the discriminant local to its payload
+    /// local. Populated by `OutcomeConstructor` lowering; consumed by
+    /// `Stmt::Return` and expression-body return to emit the correct
+    /// `Return { values: [disc, payload] }` (ADR-0052 §3.1).
+    outcome_payloads: HashMap<Local, Local>,
 }
 
 impl Ctx {
@@ -147,6 +152,17 @@ impl Ctx {
         let is_struct_return = matches!(ret, MirType::Struct(_));
         // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
         let is_fat_return = is_struct_return || matches!(ret, MirType::String);
+        let return_shape = match ret {
+            MirType::Outcome {
+                allow_null_state: false,
+                ..
+            } => triet_mir::ReturnShape::BinaryOutcome,
+            // T?~E deferred — falls to Scalar, rejected by INV-Outcome-shape.
+            _ if is_fat_return => triet_mir::ReturnShape::Struct {
+                struct_name: ret.to_string(),
+            },
+            _ => triet_mir::ReturnShape::Scalar,
+        };
         let mut ctx = Self {
             vars: HashMap::new(),
             local_decls: Vec::new(),
@@ -161,13 +177,7 @@ impl Ctx {
                 params: Vec::new(),
                 return_type: ret.clone(),
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
-                return_shape: if is_fat_return {
-                    triet_mir::ReturnShape::Struct {
-                        struct_name: ret.to_string(),
-                    }
-                } else {
-                    triet_mir::ReturnShape::Scalar
-                },
+                return_shape,
             },
             struct_layouts,
             enum_layouts,
@@ -178,6 +188,7 @@ impl Ctx {
             owned_locals: Vec::new(),
             scope_snapshots: Vec::new(),
             local_names: BTreeMap::new(),
+            outcome_payloads: HashMap::new(),
         };
         if is_fat_return {
             ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
@@ -567,12 +578,17 @@ pub(crate) fn lower_function(
         }
         FunctionBody::Expression { expr } => {
             let val = lower_expr(*expr, arena, &mut c)?;
+            let mut values = vec![val];
+            // ADR-0052 §3.3: Outcome return → 2 values [disc, payload].
+            if let Some(&payload) = c.outcome_payloads.get(&val) {
+                values.push(payload);
+            }
             let cur = c.cur;
             let expr_span = arena.expression(*expr).span.clone();
             c.term(
                 cur,
                 Terminator::Return {
-                    values: vec![val],
+                    values,
                     span: expr_span,
                 },
             );
@@ -649,6 +665,15 @@ fn lower_type(
                 inner: Box::new(inner),
             }
         }
+        TypeExpr::Outcome {
+            value_type,
+            error_type,
+            allow_null_state,
+        } => MirType::Outcome {
+            value_type: Box::new(lower_type(arena, *value_type, symbols)),
+            error_type: Box::new(lower_type(arena, *error_type, symbols)),
+            allow_null_state: *allow_null_state,
+        },
         _ => MirType::Unknown,
     }
 }
@@ -698,6 +723,15 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
                 inner: Box::new(inner),
             }
         }
+        TypeExpr::Outcome {
+            value_type,
+            error_type,
+            allow_null_state,
+        } => MirType::Outcome {
+            value_type: Box::new(lower_type_simple(arena, *value_type, c)),
+            error_type: Box::new(lower_type_simple(arena, *error_type, c)),
+            allow_null_state: *allow_null_state,
+        },
         _ => MirType::Unknown,
     }
 }
@@ -912,7 +946,11 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                     // ── NullLiteral ~0 in return position ──
                     // Under PA-3c uniform, ~0 is always iconst(MIN).
                     // The function's return type provides the local's type.
-                    if is_null_expr(&arena.expression(*v).node) {
+                    // ADR-0052: if the return type is an Outcome (ternary T?~E),
+                    // let OutcomeConstructor handle ~0 as 2-slot {disc:0, payload}.
+                    if is_null_expr(&arena.expression(*v).node)
+                        && !matches!(c.sig.return_type, MirType::Outcome { .. })
+                    {
                         let ret_ty = c.sig.return_type.clone();
                         let d = c.alloc_local_ty(ret_ty.clone());
                         c.push(Statement::StorageLive(d, stmt_span.clone()));
@@ -923,7 +961,12 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         });
                         values.push(d);
                     } else {
-                        values.push(lower_expr(*v, arena, c)?);
+                        let val = lower_expr(*v, arena, c)?;
+                        values.push(val);
+                        // ADR-0052 §3.3: Outcome return → 2 values [disc, payload].
+                        if let Some(&payload) = c.outcome_payloads.get(&val) {
+                            values.push(payload);
+                        }
                     }
                 }
                 // Drop owned locals before Return, so the borrowck can
@@ -1103,31 +1146,83 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // null keyword (deprecated) — same as ~0.
             Err(LowerError::null_literal_without_expected_type(expr_span))
         }
-        Expr::OutcomeConstructor { arm, payload } => match arm {
-            triet_syntax::OutcomeArm::Positive => {
-                // ~+ e — identity/widening, lower the payload directly.
-                if let Some(p) = payload {
-                    lower_expr(*p, arena, c)
-                } else {
-                    // ~+ with no payload (bare Positive arm) — unsupported.
-                    Err(LowerError::unsupported_expr(
+        Expr::OutcomeConstructor { arm, payload } => {
+            // ── ADR-0052 §3.2: 2-slot constructor (BinaryOutcome only) ──
+            // Outcome value = {disc: i64, payload: i64}.
+            // disc encoding: Positive=1, Negative=−1 (Trit).
+            // Zero arm (T?~E) deferred to later OP.
+            // Payload = value/error scalar (Bậc A — heap deferred).
+            //
+            // Derive payload type from the function's return type for the
+            // return-position case. For non-return contexts (let bindings,
+            // etc.), use MirType::Unknown — the MIR backend does not need
+            // the precise payload type for Bậc A scalars (all i64).
+
+            // ~0 (Zero arm) — not yet supported (T?~E deferred).
+            if matches!(arm, triet_syntax::OutcomeArm::Zero) {
+                if matches!(c.sig.return_type, MirType::Outcome { .. }) {
+                    return Err(LowerError::unsupported_expr(
                         &arena.expression(expr_id).node,
                         expr_span,
-                    ))
+                    ));
                 }
+                // ~0 in non-Outcome context → same as NullLiteral.
+                return Err(LowerError::null_literal_without_expected_type(expr_span));
             }
-            triet_syntax::OutcomeArm::Zero => {
-                // ~0 without expected type — same as NullLiteral.
-                Err(LowerError::null_literal_without_expected_type(expr_span))
-            }
-            triet_syntax::OutcomeArm::Negative => {
-                // ~- e — Outcome error arm, not in Bậc A scope.
-                Err(LowerError::unsupported_expr(
+
+            let payload_ty = if let MirType::Outcome {
+                ref value_type,
+                ref error_type,
+                ..
+            } = c.sig.return_type
+            {
+                match arm {
+                    triet_syntax::OutcomeArm::Positive => value_type.as_ref().clone(),
+                    triet_syntax::OutcomeArm::Negative => error_type.as_ref().clone(),
+                    triet_syntax::OutcomeArm::Zero => MirType::Unknown,
+                }
+            } else {
+                MirType::Unknown
+            };
+
+            let disc_value: i8 = match arm {
+                triet_syntax::OutcomeArm::Positive => 1,
+                triet_syntax::OutcomeArm::Negative => -1,
+                triet_syntax::OutcomeArm::Zero => 0, // unreachable (caught above)
+            };
+
+            // Allocate discriminant local.
+            let disc = c.alloc_local_ty(MirType::Trit);
+            c.push(Statement::StorageLive(disc, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(disc),
+                value: ConstValue::Trit(disc_value),
+                span: expr_span.clone(),
+            });
+
+            // Lower payload and wire the 2-slot pairing.
+            // ~+ and ~- always have a payload (validated by parser + typecheck).
+            if let Some(payload_expr) = payload {
+                let val = lower_expr(*payload_expr, arena, c)?;
+                let payload_local = c.alloc_local_ty(payload_ty);
+                c.push(Statement::StorageLive(payload_local, expr_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(payload_local),
+                    source: Place::local(val),
+                    span: expr_span.clone(),
+                });
+                c.outcome_payloads.insert(disc, payload_local);
+            } else {
+                // Bare arm (no payload) — shouldn't happen for ~+/~-
+                // (parser requires payload), but handle gracefully.
+                return Err(LowerError::unsupported_expr(
                     &arena.expression(expr_id).node,
                     expr_span,
-                ))
+                ));
             }
-        },
+
+            Ok(disc)
+        }
         Expr::StringLiteral { value } => {
             let d = c.alloc_local_ty(MirType::String);
             c.push(Statement::StorageLive(d, expr_span.clone()));
@@ -1717,6 +1812,15 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .get(&callee_name)
                 .cloned()
                 .unwrap_or(MirType::Integer);
+            // Outcome return from callee: multi-value ABI not yet wired in caller
+            // (OP.3). Reject until the caller can handle 2 dest locals.
+            if matches!(callee_ret, MirType::Outcome { .. }) {
+                return Err(LowerError::unsupported_expr(
+                    &arena.expression(expr_id).node,
+                    expr_span,
+                ));
+            }
+
             let is_fat_ret = matches!(callee_ret, MirType::Struct(_) | MirType::String);
 
             let mut args: Vec<Local> = arguments

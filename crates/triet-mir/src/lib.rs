@@ -495,6 +495,20 @@ pub enum MirType {
         inner: Box<MirType>,
     },
 
+    // ── Outcome (ADR-0052) ──
+    /// `T~E` / `T?~E` — Outcome type. Carries both payload types + null-state
+    /// flag so the lowerer can emit the correct [`ReturnShape`] without
+    /// string-matching or consulting a side-channel map. Payloads are scalar
+    /// at Bậc A (ADR-0052 §2); heap payloads deferred to Bậc B/C.
+    Outcome {
+        /// Success-arm payload type.
+        value_type: Box<MirType>,
+        /// Failure-arm payload type.
+        error_type: Box<MirType>,
+        /// `true` for `T?~E` (3-state with null); `false` for `T~E` (2-state).
+        allow_null_state: bool,
+    },
+
     // ── User-defined (TÁCH per ADR-0050 ruling ②) ──
     /// User-defined struct — resolved via `body.struct_layouts`.
     Struct(String),
@@ -528,6 +542,16 @@ impl fmt::Display for MirType {
                 ReferenceForm::BorrowExclusiveMutable => write!(f, "&0 mutable {inner}"),
                 ReferenceForm::WeakObserver => write!(f, "&- {inner}"),
             },
+            Self::Outcome {
+                value_type,
+                error_type,
+                allow_null_state: false,
+            } => write!(f, "{value_type}~{error_type}"),
+            Self::Outcome {
+                value_type,
+                error_type,
+                allow_null_state: true,
+            } => write!(f, "{value_type}?~{error_type}"),
             Self::Struct(name) | Self::Enum(name) => write!(f, "{name}"),
         }
     }
@@ -607,6 +631,12 @@ impl MirType {
             Self::String | Self::Vector | Self::HashMap => false,
             // Reference types — Copy by design (ADR-0045 §3).
             Self::Reference { .. } => true,
+            // Outcome: Copy if both payloads are Copy (always true for Bậc A scalars).
+            Self::Outcome {
+                value_type,
+                error_type,
+                ..
+            } => value_type.is_copy(body) && error_type.is_copy(body),
             // User types.
             // TECH-DEBT(B1a S2): Struct/Enum may be misclassified by parse().
             // Search BOTH layout tables (refuse-over-guess in reverse).
@@ -673,7 +703,7 @@ pub enum Terminator {
     /// Length matches the function's `ReturnShape::arity()`:
     /// - Unit: empty
     /// - Scalar: 1 local
-    /// - BinaryOutcome/TernaryOutcome: 2 locals (discriminant, payload)
+    /// - BinaryOutcome: 2 locals (discriminant, payload)
     Return {
         /// Values to return. Must match `ReturnShape::arity()`.
         values: Vec<Local>,
@@ -725,7 +755,7 @@ pub enum Terminator {
         /// Length matches the callee's `ReturnShape::arity()`:
         /// - Unit: empty
         /// - Scalar: 1 local (the value)
-        /// - BinaryOutcome/TernaryOutcome: 2 locals (discriminant, payload)
+        /// - BinaryOutcome: 2 locals (discriminant, payload)
         /// - Struct: empty (data written through sret pointer arg[0])
         dest: Vec<Local>,
         /// The callee's return shape — caller needs this to know whether
@@ -769,8 +799,10 @@ pub enum Terminator {
 
 /// The return shape of a function — encodes the number and meaning
 /// of return values. Mirrors the Type system: `Unit` → 0 values,
-/// `Scalar` → 1 value, `BinaryOutcome` → 2 values (no Trit::Zero),
-/// `TernaryOutcome` → 2 values (Trit::Zero valid).
+/// `Scalar` → 1 value, `BinaryOutcome` → 2 values (no Trit::Zero).
+/// TernaryOutcome (`T?~E`) is deferred to a later OP — the lowerer
+/// does not produce it, and the verifier rejects any Outcome type that
+/// is not BinaryOutcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReturnShape {
     /// `()` — no return value (void).
@@ -781,9 +813,6 @@ pub enum ReturnShape {
     /// `T~E` — binary Outcome. Returns 2 values (discriminant + payload).
     /// Trit::Zero is INVALID (compile-time error E1025).
     BinaryOutcome,
-    /// `T?~E` — ternary Outcome. Returns 2 values (discriminant + payload).
-    /// Trit::Zero IS valid (null state).
-    TernaryOutcome,
     /// Struct return via sret — the caller allocates space and passes a
     /// hidden pointer as the first argument. The callee writes the struct
     /// fields through that pointer and returns 0 values (void).
@@ -800,7 +829,7 @@ impl ReturnShape {
         match self {
             Self::Unit | Self::Struct { .. } => 0,
             Self::Scalar => 1,
-            Self::BinaryOutcome | Self::TernaryOutcome => 2,
+            Self::BinaryOutcome => 2,
         }
     }
 }
@@ -839,7 +868,7 @@ pub struct FunctionSignature {
     pub params: Vec<(String, ParameterPassing)>,
     /// Return type.
     pub return_type: MirType,
-    /// The shape of the return value (Unit, Scalar, BinaryOutcome, TernaryOutcome).
+    /// The shape of the return value (Unit, Scalar, BinaryOutcome, Struct).
     /// Determines how many values the function returns in the ABI.
     pub return_shape: ReturnShape,
     /// For each field path of the return value, the parameter indices its
@@ -1323,6 +1352,22 @@ impl Body {
             });
         }
 
+        // ── INV-Outcome-shape (ADR-0052 OP.2): ReturnShape must be BinaryOutcome ──
+        // Any MirType::Outcome (including T?~E) requires BinaryOutcome shape.
+        // T?~E is not yet lowered — if it reaches MIR with Scalar shape,
+        // this check rejects it. Guards against poison at the ReturnShape
+        // producer (lowerer Ctx::new) and against silent miscompile of
+        // Ternary Outcome as Scalar 1-value.
+        if let MirType::Outcome { .. } = &self.signature.return_type
+            && self.signature.return_shape != ReturnShape::BinaryOutcome
+        {
+            return Err(MirError::OutcomeShapeMismatch {
+                return_type: self.signature.return_type.clone(),
+                return_shape: self.signature.return_shape.clone(),
+                span: DUMMY_SPAN.clone(),
+            });
+        }
+
         // Helper: look up EnumLayout by name.
         let find_enum = |name: &str| -> Option<&EnumLayout> {
             self.enum_layouts.iter().find(|e| e.name == name)
@@ -1395,6 +1440,42 @@ impl Body {
                 Terminator::Return { values, .. } => {
                     for &v in values {
                         check_local(v)?;
+                    }
+
+                    // ── INV-Outcome-arity (ADR-0052 OP.2) ──
+                    // For BinaryOutcome, verify exactly 2 values [disc, payload].
+                    if let ReturnShape::BinaryOutcome = self.signature.return_shape {
+                        let expected = self.signature.return_shape.arity();
+                        if values.len() != expected {
+                            return Err(MirError::OutcomeReturnArityMismatch {
+                                expected,
+                                actual: values.len(),
+                                span: DUMMY_SPAN.clone(),
+                            });
+                        }
+                    }
+
+                    // ── INV-Outcome-disc (ADR-0052 OP.2) ──
+                    // For BinaryOutcome, if the disc (values[0]) is set by
+                    // a Const in this block, verify it is NOT Zero (Trit::0).
+                    if matches!(self.signature.return_shape, ReturnShape::BinaryOutcome)
+                        && values.len() >= 2
+                    {
+                        let disc = values[0];
+                        for stmt in &block_data.statements {
+                            if let Statement::Const {
+                                dest,
+                                value: ConstValue::Trit(0),
+                                ..
+                            } = stmt
+                                && dest.local == disc
+                            {
+                                return Err(MirError::OutcomeDiscriminantInvalid {
+                                    disc_value: 0,
+                                    span: DUMMY_SPAN.clone(),
+                                });
+                            }
+                        }
                     }
                 }
                 Terminator::Goto { target, .. } => {
@@ -1688,6 +1769,37 @@ pub enum MirError {
         /// Source location.
         span: Span,
     },
+    /// INV-Outcome-arity (ADR-0052 OP.2): `Return.values.len()` does not
+    /// match `ReturnShape::arity()`. BinaryOutcome requires exactly
+    /// 2 return values [discriminant, payload].
+    OutcomeReturnArityMismatch {
+        /// Expected number of return values (2 for Outcome).
+        expected: usize,
+        /// Actual number of return values found.
+        actual: usize,
+        /// Source location.
+        span: Span,
+    },
+    /// INV-Outcome-disc (ADR-0052 OP.2): BinaryOutcome discriminant is
+    /// `Trit(0)` (Zero), which is invalid for 2-state Outcome. Only
+    /// `Trit::Positive` (1) and `Trit::Negative` (-1) are valid.
+    OutcomeDiscriminantInvalid {
+        /// The invalid discriminant value found.
+        disc_value: i8,
+        /// Source location.
+        span: Span,
+    },
+    /// INV-Outcome-shape (ADR-0052 OP.2): `Body::return_shape` does not
+    /// match `Body::return_type`. Any Outcome return type requires
+    /// `ReturnShape::BinaryOutcome`.
+    OutcomeShapeMismatch {
+        /// The return type (should be Outcome).
+        return_type: MirType,
+        /// The return shape that was found instead.
+        return_shape: ReturnShape,
+        /// Source location.
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -1758,6 +1870,30 @@ impl fmt::Display for MirError {
                 write!(
                     f,
                     "MIR verification error: block {block} has Unreachable terminator but is referenced by {referenced_by}"
+                )
+            }
+            Self::OutcomeReturnArityMismatch {
+                expected, actual, ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: Outcome return arity mismatch — expected {expected} values, got {actual}"
+                )
+            }
+            Self::OutcomeDiscriminantInvalid { disc_value, .. } => {
+                write!(
+                    f,
+                    "MIR verification error: BinaryOutcome discriminant is Trit({disc_value}) — only Positive(1) and Negative(-1) are valid"
+                )
+            }
+            Self::OutcomeShapeMismatch {
+                return_type,
+                return_shape,
+                ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: return type is '{return_type}' but return shape is {return_shape:?} — expected matching Outcome shape"
                 )
             }
         }
