@@ -423,7 +423,8 @@ let value = expression ~0> body
 
 **Body return:** Plain `T` (auto-wrap `~+`), outcome trực tiếp, hoặc early-return form. No closure capture (null arm carries no payload).
 
-**Type restriction:** Sử dụng `~0>` trên `T~E` (binary, không có null arm) → **E1037 NullArmOnBinaryOutcome**.
+**Type restriction:** Sử dụng `~0>` trên `T~E` (binary, không có null arm) → **E1025 NullStateInBinaryOutcome**.
+(Nguyên bản ADR §3.2 gán E1037; E1037 bị APP.2b chiếm cho `ArmHandlerMapModeRejected` — "body must be Bậc A scalar". E1025 tái dùng cho cùng bản chất "null operation on binary".)
 
 **Examples:**
 
@@ -949,7 +950,8 @@ E1031 OutcomePropagateMalformedReturn
 ### 9.4 — Ternary-family operator typecheck rules (new in 2026-05-26 revision)
 
 ```text
-E1037 NullArmOnBinaryOutcome
+E1025 NullStateInBinaryOutcome
+    (Nguyên bản E1037; đổi thành E1025 vì E1037 bị APP.2b chiếm — cùng bản chất.)
     Operator `~0>` targets the null arm (Trit::Zero), which only exists
     in ternary outcome type `T?~E`. Inner expression has type `T~E` (binary),
     which has no null arm.
