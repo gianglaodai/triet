@@ -1,9 +1,12 @@
-// ERROR: expected matching Outcome shape
-// OP.2 strip: T?~E (TernaryOutcome) is not yet lowered.
-// Returns Scalar shape → INV-Outcome-shape rejects it at MIR verify.
-// This proves the soundness trap: Ternary Outcome does NOT silently miscompile.
+// EXPECT: 42
+// Minimal ternary with 2-arm match (no ~0).
 
-function ternary_test() -> Integer?~Integer =
-    ~+ 1
+function ternary_succeed() -> Integer?~Integer =
+    ~+ 42
 
-function main() -> Integer = 0
+function main() -> Integer =
+    match ternary_succeed() {
+        ~+ x => x
+        ~0 => -1
+        ~- e => -999
+    }

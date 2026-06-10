@@ -787,10 +787,8 @@ pub enum Terminator {
 
 /// The return shape of a function — encodes the number and meaning
 /// of return values. Mirrors the Type system: `Unit` → 0 values,
-/// `Scalar` → 1 value, `BinaryOutcome` → 2 values (no Trit::Zero).
-/// TernaryOutcome (`T?~E`) is deferred to a later OP — the lowerer
-/// does not produce it, and the verifier rejects any Outcome type that
-/// is not BinaryOutcome.
+/// `Scalar` → 1 value, `BinaryOutcome` → 2 values (Trit::Zero invalid),
+/// `TernaryOutcome` → 2 values (Trit::Zero valid for null state).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReturnShape {
     /// `()` — no return value (void).
@@ -801,6 +799,9 @@ pub enum ReturnShape {
     /// `T~E` — binary Outcome. Returns 2 values (discriminant + payload).
     /// Trit::Zero is INVALID (compile-time error E1025).
     BinaryOutcome,
+    /// `T?~E` — ternary Outcome. Returns 2 values (discriminant + payload).
+    /// Trit::Zero IS valid (used for the null state `~0`).
+    TernaryOutcome,
     /// Struct return via sret — the caller allocates space and passes a
     /// hidden pointer as the first argument. The callee writes the struct
     /// fields through that pointer and returns 0 values (void).
@@ -817,7 +818,7 @@ impl ReturnShape {
         match self {
             Self::Unit | Self::Struct { .. } => 0,
             Self::Scalar => 1,
-            Self::BinaryOutcome => 2,
+            Self::BinaryOutcome | Self::TernaryOutcome => 2,
         }
     }
 }
@@ -1340,14 +1341,16 @@ impl Body {
             });
         }
 
-        // ── INV-Outcome-shape (ADR-0052 OP.2): ReturnShape must be BinaryOutcome ──
-        // Any MirType::Outcome (including T?~E) requires BinaryOutcome shape.
-        // T?~E is not yet lowered — if it reaches MIR with Scalar shape,
-        // this check rejects it. Guards against poison at the ReturnShape
+        // ── INV-Outcome-shape (ADR-0052 OP.2): ReturnShape must match ──
+        // Any MirType::Outcome (T~E or T?~E) requires either BinaryOutcome
+        // or TernaryOutcome shape.  Guards against poison at the ReturnShape
         // producer (lowerer Ctx::new) and against silent miscompile of
-        // Ternary Outcome as Scalar 1-value.
+        // ternary Outcome as Scalar 1-value.
         if let MirType::Outcome { .. } = &self.signature.return_type
-            && self.signature.return_shape != ReturnShape::BinaryOutcome
+            && !matches!(
+                self.signature.return_shape,
+                ReturnShape::BinaryOutcome | ReturnShape::TernaryOutcome
+            )
         {
             return Err(MirError::OutcomeShapeMismatch {
                 return_type: self.signature.return_type.clone(),
@@ -1483,8 +1486,10 @@ impl Body {
                     }
 
                     // ── INV-Outcome-arity (ADR-0052 OP.2) ──
-                    // For BinaryOutcome, verify exactly 2 values [disc, payload].
-                    if let ReturnShape::BinaryOutcome = self.signature.return_shape {
+                    // For Outcome shapes, verify exactly 2 values [disc, payload].
+                    if let ReturnShape::BinaryOutcome | ReturnShape::TernaryOutcome =
+                        self.signature.return_shape
+                    {
                         let expected = self.signature.return_shape.arity();
                         if values.len() != expected {
                             return Err(MirError::OutcomeReturnArityMismatch {

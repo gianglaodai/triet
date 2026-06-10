@@ -1,0 +1,11 @@
+// ERROR: E1025
+// ~0> operator on binary Outcome (T~E) — null arm doesn't exist.
+// Fixture 107 covers ~0 constructor; this covers ~0> operator.
+
+function binary() -> Integer~Integer =
+    ~+ 42
+
+function bad() -> Integer~Integer =
+    binary() ~0> 100
+
+function main() -> Integer = 0

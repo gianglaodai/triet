@@ -1,0 +1,13 @@
+// EXPECT: -99
+// Ternary T?~E: ~- arm observable — match extracts error payload.
+// 112 covers ~+ arm, 131 covers ~0 arm, this covers ~- arm.
+
+function fail() -> Integer?~Integer =
+    ~- -99
+
+function main() -> Integer =
+    match fail() {
+        ~+ x => 999
+        ~0 => 0
+        ~- e => e
+    }

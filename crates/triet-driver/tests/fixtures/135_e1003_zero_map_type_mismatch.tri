@@ -1,0 +1,12 @@
+// ERROR: E1003
+// ~0> body must match value_type T (type-PRESERVING, ADR-0020 §3.2).
+// body = 1_trit (Trit), value_type = Integer → mismatch.
+
+function produce() -> Integer?~Integer =
+    ~0
+
+function main() -> Integer =
+    match produce() ~0> 1_trit {
+        ~+ x => x
+        ~- e => -1
+    }

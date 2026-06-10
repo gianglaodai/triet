@@ -152,7 +152,10 @@ impl Ctx {
                 allow_null_state: false,
                 ..
             } => triet_mir::ReturnShape::BinaryOutcome,
-            // T?~E deferred — falls to Scalar, rejected by INV-Outcome-shape.
+            MirType::Outcome {
+                allow_null_state: true,
+                ..
+            } => triet_mir::ReturnShape::TernaryOutcome,
             _ if is_fat_return => triet_mir::ReturnShape::Struct {
                 struct_name: ret.to_string(),
             },
@@ -1168,16 +1171,47 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Zero arm (T?~E) deferred to later OP.
             // Payload = value/error scalar (Bậc A — heap deferred).
 
-            // ~0 (Zero arm) — not yet supported (T?~E deferred).
+            // ~0 (Zero arm) — constructor for T?~E ternary Outcome.
+            // Has no payload — disc = Trit(0), payload = 0 (don't-care).
             if matches!(arm, triet_syntax::OutcomeArm::Zero) {
-                if matches!(c.sig.return_type, MirType::Outcome { .. }) {
-                    return Err(LowerError::unsupported_expr(
-                        &arena.expression(expr_id).node,
-                        expr_span,
-                    ));
+                if !matches!(c.sig.return_type, MirType::Outcome { .. }) {
+                    // ~0 in non-Outcome context → same as NullLiteral.
+                    return Err(LowerError::null_literal_without_expected_type(expr_span));
                 }
-                // ~0 in non-Outcome context → same as NullLiteral.
-                return Err(LowerError::null_literal_without_expected_type(expr_span));
+                let outcome_ty = c.sig.return_type.clone();
+                let outcome = c.alloc_local_ty(outcome_ty);
+                c.push(Statement::StorageLive(outcome, expr_span.clone()));
+                c.push(Statement::OutcomeAlloc {
+                    dest: outcome,
+                    span: expr_span.clone(),
+                });
+                // disc = Trit(0).
+                let disc_tmp = c.alloc_local_ty(MirType::Trit);
+                c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(disc_tmp),
+                    value: ConstValue::Trit(0),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(disc_tmp),
+                    span: expr_span.clone(),
+                });
+                // payload = 0 (don't-care — ~0 has no associated data).
+                let payload_tmp = c.alloc_local_ty(MirType::Integer);
+                c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(payload_tmp),
+                    value: ConstValue::Integer(0),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(outcome).project(Projection::OutcomePayload),
+                    source: Place::local(payload_tmp),
+                    span: expr_span.clone(),
+                });
+                return Ok(outcome);
             }
 
             let payload_ty = if let MirType::Outcome {
@@ -1926,7 +1960,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         args,
                         return_bb: ret_bb,
                         dest: vec![dest],
-                        return_shape: triet_mir::ReturnShape::BinaryOutcome,
+                        return_shape: match &callee_ret {
+                            MirType::Outcome {
+                                allow_null_state: true,
+                                ..
+                            } => triet_mir::ReturnShape::TernaryOutcome,
+                            _ => triet_mir::ReturnShape::BinaryOutcome,
+                        },
                         span: expr_span,
                     },
                 );
@@ -2582,18 +2622,21 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 return Ok(result);
             }
 
-            // ── BinaryOutcome match: branch on disc Trit via If ──
-            if matches!(
-                scrut_ty,
-                MirType::Outcome {
-                    allow_null_state: false,
-                    ..
-                }
-            ) {
+            // ── Outcome match: branch on disc Trit via If ──
+            if matches!(scrut_ty, MirType::Outcome { .. }) {
                 use triet_syntax::{MatchArm, OutcomeArm, Pattern};
+
+                let is_ternary = matches!(
+                    scrut_ty,
+                    MirType::Outcome {
+                        allow_null_state: true,
+                        ..
+                    }
+                );
 
                 let mut positive_arm: Option<&MatchArm> = None;
                 let mut negative_arm: Option<&MatchArm> = None;
+                let mut zero_arm: Option<&MatchArm> = None;
                 let mut wildcard_arm: Option<&MatchArm> = None;
 
                 for arm in arms.iter() {
@@ -2661,10 +2704,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             arm: OutcomeArm::Zero,
                             ..
                         } => {
-                            return Err(LowerError {
-                                message: "`~0` arm on binary Outcome — typechecker should have rejected this".to_string(),
-                                span: pat_span,
-                            });
+                            if !is_ternary {
+                                return Err(LowerError {
+                                    message: "`~0` arm on binary Outcome — typechecker should have rejected this".to_string(),
+                                    span: pat_span,
+                                });
+                            }
+                            if zero_arm.is_some() {
+                                return Err(LowerError {
+                                    message: "duplicate `~0` arm".to_string(),
+                                    span: pat_span,
+                                });
+                            }
+                            zero_arm = Some(arm);
                         }
                         other => {
                             return Err(LowerError {
@@ -2692,14 +2744,15 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 let result = c.alloc_local_ty(MirType::Unknown);
                 c.push(Statement::StorageLive(result, expr_span.clone()));
 
-                // Branch on Trit discriminant.
+                // Branch on Trit discriminant — 3-way for ternary, 2-way for binary.
+                let zero_bb = if is_ternary { Some(c.alloc_bb()) } else { None };
                 let cur_bb = c.cur;
                 c.term(
                     cur_bb,
                     Terminator::If {
                         cond: disc_local,
                         positive_bb: pos_bb,
-                        zero_bb: None,
+                        zero_bb,
                         negative_bb: neg_bb,
                         span: expr_span.clone(),
                     },
@@ -2793,6 +2846,31 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     merge_bb,
                     &expr_span,
                 )?;
+
+                // ── Zero arm (~0): no payload bind, just eval body ──
+                if let Some(zb) = zero_bb {
+                    c.cur = zb;
+                    let z_arm = zero_arm.or(wildcard_arm).ok_or_else(|| LowerError {
+                        message: "missing `~0` arm in ternary Outcome match".to_string(),
+                        span: expr_span.clone(),
+                    })?;
+                    c.push_scope();
+                    // ~0 has no payload — no variable binding.
+                    let body_val = lower_expr(z_arm.body, arena, c)?;
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    c.term(
+                        c.cur,
+                        Terminator::Goto {
+                            target: merge_bb,
+                            span: DUMMY_SPAN,
+                        },
+                    );
+                    c.pop_scope();
+                }
 
                 c.cur = merge_bb;
                 return Ok(result);
@@ -3102,10 +3180,99 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // APP.2a: ~+> Mode 1 MAP (Positive, CFG-merge).
             // APP.2c: ~-> Mode 1 MAP (Negative, CFG-merge) — error transformer.
             if matches!(arm, triet_syntax::OutcomeArm::Zero) {
-                return Err(LowerError::unsupported_expr(
-                    &arena.expression(expr_id).node,
-                    expr_span,
-                ));
+                // APP Mũi-A: ~0> Mode 1 MAP — null-state handler (ternary).
+                // Type-preserving (ADR-0020 §3.2): body must match value_type T.
+                // Zero → eval body, rewrap as ~+ (null eliminated → binary).
+                // Positive/Negative → passthrough inner unchanged.
+                let inner_val = lower_expr(*inner, arena, c)?;
+
+                let disc = c.alloc_local_ty(MirType::Trit);
+                c.push(Statement::StorageLive(disc, expr_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(disc),
+                    source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
+                    span: expr_span.clone(),
+                });
+
+                // Result: binary Outcome (null eliminated).
+                let result = c.alloc_local_ty(MirType::Outcome {
+                    value_type: Box::new(MirType::Unknown),
+                    error_type: Box::new(MirType::Unknown),
+                    allow_null_state: false,
+                });
+                c.push(Statement::StorageLive(result, expr_span.clone()));
+                c.push(Statement::OutcomeAlloc {
+                    dest: result,
+                    span: expr_span.clone(),
+                });
+
+                let zero_bb = c.alloc_bb();
+                let non_zero_bb = c.alloc_bb();
+                let merge_bb = c.alloc_bb();
+
+                // Branch: positive+negative → passthrough, zero → map.
+                let cur_bb = c.cur;
+                c.term(
+                    cur_bb,
+                    Terminator::If {
+                        cond: disc,
+                        positive_bb: non_zero_bb,
+                        zero_bb: Some(zero_bb),
+                        negative_bb: non_zero_bb,
+                        span: expr_span.clone(),
+                    },
+                );
+
+                // ── Non-zero: copy inner → result (passthrough) ──
+                c.cur = non_zero_bb;
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomePayload),
+                    source: Place::local(inner_val).project(Projection::OutcomePayload),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                // ── Zero: eval body (no capture), rewrap as ~+ ──
+                c.cur = zero_bb;
+                let body_val = lower_expr(*body, arena, c)?;
+                let disc_tmp = c.alloc_local_ty(MirType::Trit);
+                c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(disc_tmp),
+                    value: ConstValue::Trit(1),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(disc_tmp),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomePayload),
+                    source: Place::local(body_val),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+
+                c.cur = merge_bb;
+                return Ok(result);
             }
             let is_positive = matches!(arm, triet_syntax::OutcomeArm::Positive);
             // Negative arm with tail-expr body → Mode 1 map (CFG-merge).

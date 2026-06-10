@@ -523,7 +523,8 @@ impl JitContext {
             }
             if !is_sret {
                 match body.signature.return_shape {
-                    triet_mir::ReturnShape::BinaryOutcome => {
+                    triet_mir::ReturnShape::BinaryOutcome
+                    | triet_mir::ReturnShape::TernaryOutcome => {
                         sig.returns.push(AbiParam::new(I64)); // disc
                         sig.returns.push(AbiParam::new(I64)); // payload
                     }
@@ -559,7 +560,8 @@ impl JitContext {
             }
             if !is_sret {
                 match body.signature.return_shape {
-                    triet_mir::ReturnShape::BinaryOutcome => {
+                    triet_mir::ReturnShape::BinaryOutcome
+                    | triet_mir::ReturnShape::TernaryOutcome => {
                         cl_ctx.func.signature.returns.push(AbiParam::new(I64)); // disc
                         cl_ctx.func.signature.returns.push(AbiParam::new(I64)); // payload
                     }
@@ -1121,6 +1123,7 @@ impl JitContext {
                     if !matches!(
                         body.signature.return_shape,
                         triet_mir::ReturnShape::BinaryOutcome
+                            | triet_mir::ReturnShape::TernaryOutcome
                     ) || values.len() != 2
                     {
                         return Err(JitError::Unsupported(
@@ -1205,6 +1208,7 @@ impl JitContext {
                         .ins()
                         .icmp(IntCC::SignedGreaterThan, cond_val, zero_val);
                     builder.ins().brif(is_pos, pos_block, &[], neg_block, &[]);
+                    builder.seal_block(fallthrough);
                 } else {
                     // Binary branch (if): 2-way
                     let is_pos = builder
@@ -1269,7 +1273,11 @@ impl JitContext {
                         let call_inst = builder.ins().call(func_ref, &arg_vals);
 
                         // Store return values.
-                        if matches!(return_shape, triet_mir::ReturnShape::BinaryOutcome) {
+                        if matches!(
+                            return_shape,
+                            triet_mir::ReturnShape::BinaryOutcome
+                                | triet_mir::ReturnShape::TernaryOutcome
+                        ) {
                             // ADR-0052 OP.4a: Outcome call — store 2 return
                             // values into the dest Outcome slot.
                             let disc = builder.inst_results(call_inst)[0];

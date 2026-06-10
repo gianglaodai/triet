@@ -1,0 +1,12 @@
+// EXPECT: 100
+// ~0> desugar: null → body_value (type-preserving, ADR-0020 §3.2).
+// Function returns ~0, ~0> maps null to 100 → ~+ 100 → match extracts 100.
+
+function maybe_null() -> Integer?~Integer =
+    ~0
+
+function main() -> Integer =
+    match maybe_null() ~0> 100 {
+        ~+ x => x      // x=100 (null mapped to success)
+        ~- e => -1
+    }

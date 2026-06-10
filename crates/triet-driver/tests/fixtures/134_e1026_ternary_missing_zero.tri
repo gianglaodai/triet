@@ -1,0 +1,12 @@
+// ERROR: E1026
+// Ternary T?~E requires all three (~+, ~0, ~-).
+// Missing ~0 arm → non-exhaustive.
+
+function maybe_null() -> Integer?~Integer =
+    ~+ 42
+
+function main() -> Integer =
+    match maybe_null() {
+        ~+ x => x
+        ~- e => -1
+    }

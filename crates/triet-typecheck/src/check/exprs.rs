@@ -581,7 +581,56 @@ impl Checker<'_> {
                 error_type: Box::new(error_ty),
                 allow_null_state: allow_null,
             }
+        } else if arm == OutcomeArm::Zero {
+            // ~0> — Elvis for ternary null state (ADR-0020 §3.2).
+            // TYPE-PRESERVING (unlike ~+>/~->): body MUST match value_type T.
+            // Only the ~0 branch goes through body; ~+ passthrough keeps
+            // original T. If body_ty ≠ T, the result slot holds two types.
+            let inner_ty = self.infer_expression(inner);
+            let (success_ty, error_ty) = if let Type::Outcome {
+                value_type,
+                error_type,
+                allow_null_state: true,
+            } = &inner_ty
+            {
+                ((**value_type).clone(), (**error_type).clone())
+            } else {
+                // ~0> on non-Outcome or binary Outcome → E1025.
+                self.errors.push(TypeError::NullStateInBinaryOutcome {
+                    span: self.arena.expression(inner).span.clone(),
+                });
+                return Type::Unknown;
+            };
+
+            // No capture binding (~0 has no payload).
+            let body_ty = self.infer_expression(body);
+
+            // Body must be Bậc A scalar.
+            if !body_ty.is_scalar() {
+                self.errors.push(TypeError::ArmHandlerMapModeRejected {
+                    span: self.arena.expression(body).span.clone(),
+                });
+                return Type::Unknown;
+            }
+
+            // ADR-0020 §3.2: body must match value_type T.
+            if !success_ty.matches(&body_ty) {
+                self.errors.push(TypeError::Mismatch {
+                    expected: success_ty,
+                    found: body_ty,
+                    span: self.arena.expression(body).span.clone(),
+                });
+                return Type::Unknown;
+            }
+
+            // Result = binary Outcome (null eliminated, value_type preserved).
+            Type::Outcome {
+                value_type: Box::new(success_ty),
+                error_type: Box::new(error_ty),
+                allow_null_state: false,
+            }
         } else {
+            // Should be unreachable — OutcomeArm only has Positive/Negative/Zero.
             Type::Unknown
         }
     }

@@ -1,0 +1,12 @@
+// EXPECT: 99
+// Ternary T?~E: ~0 construction, match ~0 arm — observe ~0 arm value.
+
+function maybe_null() -> Integer?~Integer =
+    ~0
+
+function main() -> Integer =
+    match maybe_null() {
+        ~+ x => x
+        ~0 => 99
+        ~- e => -1
+    }
