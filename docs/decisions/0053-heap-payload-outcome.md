@@ -186,4 +186,43 @@ Outcome<T,E> slot = disc(8) + payload_union(max(sizeof(T), sizeof(E)))
    liên hoàn đẻ hàng loạt temporaries; borrowck tracking hụt → lifetime temp kết thúc sớm (use-after-free)
    hoặc sống dai (leak). Tung đội do thám thử ranh giới borrowck TRƯỚC khi D đụng tay Production (HP.4).
 
-**§8 đóng. ADR-0053 sẵn sàng cho G ký duyệt chặng cuối.**
+**§8 đóng. ADR-0053 đã G ký duyệt (xem Status).**
+
+---
+
+## 9. Addendum HP.0 — Spike borrowck (O bắn 2026-06-11, G duyệt phụ lục)
+
+HP.0 spike (gỡ tạm `is_scalar` guard, cho heap Outcome lower tới borrowck check-mode, revert sạch)
+phơi 3 sự thật **đảo lại một phần §3** và lộ một lỗ móng:
+
+### 9.1 — Matched case SOUND ⟹ thu hẹp §3.1 (Drop glue)
+Heap Outcome producer + `match` lower sạch, borrowck OK. Match bind payload theo **type PER-ARM**
+(`~+`→value_type, `~-`→error_type). Heterogeneous `Integer~String`: success bind Integer (`Drop` no-op),
+error bind String (`Drop` free) — đúng. **⟹ disc-dynamic drop glue (§3.1) CHỈ cần cho case UNMATCHED**
+(Outcome owned rời scope mà không bị `match` tiêu thụ). Matched case KHÔNG cần glue. Thu hẹp HP.2/HP.3.
+
+### 9.2 — Đính chính §3.2: passthrough là MOVE, không COPY
+MIR `~+>` nhánh passthrough: `result.payload = move inner.payload` — là `move`, KHÔNG alias/double-own.
+**Lo ngại "copy→double-free" ở §3.2 là SAI cho passthrough.** Bug thật KHÔNG ở passthrough.
+
+### 9.3 — 🔴 CON QUÁI VẬT: desugar map Drop-vs-rewrap race + borrowck MÙ
+MIR thật của `produce() ~+> |v| v` (String), nhánh map:
+```
+_3 = move _0.payload     // bind v
+Drop(_3)                 // scope-pop drop v → FREE String
+_2.payload = move _3     // move _3 (ĐÃ FREE) → use-after-free + double-free
+```
+**borrowck báo "OK (no borrow errors)", exit 0 — KHÔNG BẮT.** Hai tầng:
+- **F1 (lowerer):** desugar map (APP.2a/2c) emit `Drop(biến-capture)` ở scope-pop RỒI rewrap-move chính
+  giá-trị-đó. Scalar: Drop no-op (vô hại). Heap: UAF. ⟹ **gỡ `is_scalar` guard kiểu ngây thơ = UAF câm.**
+- **F2 (borrowck — LỖ MÓNG):** NLL move-tracking KHÔNG model `Drop` như **kill liveness** → bỏ lọt
+  move-after-Drop (đáng E2420). **Đây là lỗ soundness cấp nền, nát MỌI heap type (String/Vector), không
+  riêng Outcome.** Tách thành mặt trận lõi **Core-Borrowck-Patch** (xem ADR-0054, báo động đỏ).
+
+### 9.4 — Lệnh sửa thứ tự (G chốt 2026-06-11)
+1. **HP.4 (map heap) DỪNG** cho tới khi lỗ móng F2 vá xong.
+2. **Core-Borrowck-Patch (ADR-0054) làm TRƯỚC:** dạy NLL — mọi `Drop(x)` trên MIR = thao tác kill
+   liveness; mọi `move`/borrow `x` sau điểm Drop → **E2420**. Teeth độc lập (không dính Outcome):
+   hand-build MIR `Body { Drop(x); Assign move x }`, `check_body()` phải emit E2420 (hiện mù → fail).
+3. **F1 (desugar heap-aware):** map arm KHÔNG Drop giá-trị-sẽ-thành-body_val (hoặc Deinit) — sửa cùng HP.4.
+4. Chỉ khi F2 vá xong, D mới được gỡ `is_scalar` guard cho Outcome heap.
