@@ -101,8 +101,15 @@ pub enum Projection {
     /// The base local must be Outcome-allocated (`OutcomeAlloc`).
     OutcomeDiscriminant,
     /// Access the payload field of an Outcome value (offset 8, 8 bytes).
-    /// The base local must be Outcome-allocated (`OutcomeAlloc`).
+    /// For scalar payloads this is the whole value; for heap payloads
+    /// this is the `ptr` field of the heap aggregate.
     OutcomePayload,
+    /// Access the `len` field of a heap Outcome payload (offset 16, 8 bytes).
+    /// Only valid for Outcome with heap payload (String/Vector/HashMap).
+    OutcomePayloadLen,
+    /// Access the `cap` field of a heap Outcome payload (offset 24, 8 bytes).
+    /// Only valid for Outcome with heap payload (String/Vector/HashMap).
+    OutcomePayloadCap,
 }
 
 /// A memory location: a base [`Local`] refined by zero or more projections.
@@ -157,6 +164,8 @@ impl fmt::Display for Place {
                 Projection::Payload(variant) => format!("{s}.Payload({variant})"),
                 Projection::OutcomeDiscriminant => format!("{s}.disc"),
                 Projection::OutcomePayload => format!("{s}.payload"),
+                Projection::OutcomePayloadLen => format!("{s}.payload_len"),
+                Projection::OutcomePayloadCap => format!("{s}.payload_cap"),
             };
         }
         f.write_str(&s)
@@ -584,6 +593,43 @@ impl MirType {
     #[must_use]
     pub fn is_hashmap(&self) -> bool {
         matches!(self, Self::HashMap)
+    }
+
+    /// `true` for any heap-allocated type (String/Vector/HashMap).
+    /// These have 3-field layout `{ptr, len, cap}` and require Drop glue.
+    #[must_use]
+    pub fn is_any_heap(&self) -> bool {
+        matches!(self, Self::String | Self::Vector | Self::HashMap)
+    }
+
+    /// Outcome slot size in bytes: 16 for scalar payload, 32 for heap.
+    #[must_use]
+    pub fn outcome_slot_size(&self) -> u32 {
+        if let Self::Outcome {
+            value_type,
+            error_type,
+            ..
+        } = self
+            && (value_type.is_any_heap() || error_type.is_any_heap())
+        {
+            return 32;
+        }
+        16
+    }
+
+    /// True if this Outcome has at least one heap payload type.
+    #[must_use]
+    pub fn has_heap_payload(&self) -> bool {
+        if let Self::Outcome {
+            value_type,
+            error_type,
+            ..
+        } = self
+        {
+            value_type.is_any_heap() || error_type.is_any_heap()
+        } else {
+            false
+        }
     }
 
     // ── Semantics ─────────────────────────────────────────────
@@ -2325,6 +2371,96 @@ mod tests {
             enum_layouts: vec![],
             local_names: BTreeMap::new(),
         }
+    }
+
+    /// HP.1: outcome_slot_size — scalar 16, heap 32.
+    #[test]
+    fn outcome_slot_size_scalar_and_heap() {
+        // Scalar payload → 16
+        assert_eq!(
+            MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            }
+            .outcome_slot_size(),
+            16
+        );
+        // Heap success → 32
+        assert_eq!(
+            MirType::Outcome {
+                value_type: Box::new(MirType::String),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            }
+            .outcome_slot_size(),
+            32
+        );
+        // Heap error → 32
+        assert_eq!(
+            MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::String),
+                allow_null_state: false,
+            }
+            .outcome_slot_size(),
+            32
+        );
+        // Both heap → 32
+        assert_eq!(
+            MirType::Outcome {
+                value_type: Box::new(MirType::String),
+                error_type: Box::new(MirType::Vector),
+                allow_null_state: false,
+            }
+            .outcome_slot_size(),
+            32
+        );
+        // Ternary heap → 32
+        assert_eq!(
+            MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::String),
+                allow_null_state: true,
+            }
+            .outcome_slot_size(),
+            32
+        );
+        // Non-Outcome → 16 (default)
+        assert_eq!(MirType::Integer.outcome_slot_size(), 16);
+    }
+
+    /// HP.1: is_any_heap discriminates heap types.
+    #[test]
+    fn is_any_heap_detection() {
+        assert!(MirType::String.is_any_heap());
+        assert!(MirType::Vector.is_any_heap());
+        assert!(MirType::HashMap.is_any_heap());
+        assert!(!MirType::Integer.is_any_heap());
+        assert!(!MirType::Trit.is_any_heap());
+        assert!(!MirType::Trilean.is_any_heap());
+    }
+
+    /// HP.1: has_heap_payload on Outcome types.
+    #[test]
+    fn has_heap_payload_detection() {
+        assert!(
+            MirType::Outcome {
+                value_type: Box::new(MirType::String),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            }
+            .has_heap_payload()
+        );
+        assert!(
+            !MirType::Outcome {
+                value_type: Box::new(MirType::Integer),
+                error_type: Box::new(MirType::Integer),
+                allow_null_state: false,
+            }
+            .has_heap_payload()
+        );
+        assert!(!MirType::Integer.has_heap_payload());
     }
 
     #[test]

@@ -1258,21 +1258,65 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 span: expr_span.clone(),
             });
 
-            // Lower payload and store at offset 8.
+            // Lower payload into the Outcome slot.
             if let Some(payload_expr) = payload {
                 let val = lower_expr(*payload_expr, arena, c)?;
-                let payload_tmp = c.alloc_local_ty(payload_ty);
-                c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
-                c.push(Statement::Assign {
-                    dest: Place::local(payload_tmp),
-                    source: Place::local(val),
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::Assign {
-                    dest: Place::local(outcome).project(Projection::OutcomePayload),
-                    source: Place::local(payload_tmp),
-                    span: expr_span.clone(),
-                });
+                let val_ty = &c.local_decls[val.0].ty;
+                if val_ty.is_any_heap() {
+                    // HP.1: heap payload → store {ptr@8, len@16, cap@24}.
+                    let ptr_tmp = c.alloc_local_ty(MirType::Integer);
+                    c.push(Statement::StorageLive(ptr_tmp, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(ptr_tmp),
+                        source: Place::local(val).project(Projection::Field("ptr".to_string())),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(outcome).project(Projection::OutcomePayload),
+                        source: Place::local(ptr_tmp),
+                        span: expr_span.clone(),
+                    });
+
+                    let len_tmp = c.alloc_local_ty(MirType::Integer);
+                    c.push(Statement::StorageLive(len_tmp, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(len_tmp),
+                        source: Place::local(val).project(Projection::Field("len".to_string())),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(outcome).project(Projection::OutcomePayloadLen),
+                        source: Place::local(len_tmp),
+                        span: expr_span.clone(),
+                    });
+
+                    let cap_tmp = c.alloc_local_ty(MirType::Integer);
+                    c.push(Statement::StorageLive(cap_tmp, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(cap_tmp),
+                        source: Place::local(val).project(Projection::Field("cap".to_string())),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(outcome).project(Projection::OutcomePayloadCap),
+                        source: Place::local(cap_tmp),
+                        span: expr_span.clone(),
+                    });
+                } else {
+                    // Scalar payload → store single i64 at offset 8.
+                    let payload_tmp = c.alloc_local_ty(payload_ty);
+                    c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(payload_tmp),
+                        source: Place::local(val),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(outcome).project(Projection::OutcomePayload),
+                        source: Place::local(payload_tmp),
+                        span: expr_span.clone(),
+                    });
+                }
             } else {
                 return Err(LowerError::unsupported_expr(
                     &arena.expression(expr_id).node,
@@ -3628,6 +3672,63 @@ mod tests {
         );
         // The single `Point`-less function's param gets a typed LocalDecl.
         assert_eq!(body.local_decls[0].ty, MirType::Integer);
+    }
+
+    /// HP.1: heap Outcome producer emits OutcomePayloadLen + OutcomePayloadCap
+    /// for String payload (3-field decomposition into 32-byte slot).
+    #[test]
+    fn heap_outcome_producer_emits_len_cap_projections() {
+        let body = lower_source("function greet() -> String~Integer { ~+ \"hello\" }");
+        println!("=== MIR (heap prod) ===\n{body}");
+        let has_payload_len = body.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| {
+                if let Statement::Assign { dest, .. } = s {
+                    dest.projection
+                        .iter()
+                        .any(|p| matches!(p, Projection::OutcomePayloadLen))
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(
+            has_payload_len,
+            "heap Outcome MUST emit OutcomePayloadLen projection"
+        );
+        let has_payload_cap = body.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| {
+                if let Statement::Assign { dest, .. } = s {
+                    dest.projection
+                        .iter()
+                        .any(|p| matches!(p, Projection::OutcomePayloadCap))
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(
+            has_payload_cap,
+            "heap Outcome MUST emit OutcomePayloadCap projection"
+        );
+    }
+
+    /// HP.1: scalar Outcome does NOT emit heap projections (no regress).
+    #[test]
+    fn scalar_outcome_producer_no_heap_projections() {
+        let body = lower_source("function ok() -> Integer~Integer { ~+ 42 }");
+        println!("=== MIR (scalar prod) ===\n{body}");
+        let has_len = body.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| {
+                if let Statement::Assign { dest, .. } = s {
+                    dest.projection
+                        .iter()
+                        .any(|p| matches!(p, Projection::OutcomePayloadLen))
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(!has_len, "scalar Outcome MUST NOT emit OutcomePayloadLen");
     }
 
     /// M2: `let b = a` with Move-type local (String) must emit an Assign

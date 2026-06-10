@@ -366,6 +366,8 @@ fn place_name(place: &Place, names: &LocalNames) -> String {
             Projection::Payload(v) => format!("{s}.Payload({v})"),
             Projection::OutcomeDiscriminant => format!("{s}.disc"),
             Projection::OutcomePayload => format!("{s}.payload"),
+            Projection::OutcomePayloadLen => format!("{s}.payload_len"),
+            Projection::OutcomePayloadCap => format!("{s}.payload_cap"),
         };
     }
     s

@@ -610,6 +610,13 @@ impl JitContext {
         builder: &mut FunctionBuilder<'_>,
         body: &Body,
     ) -> Result<(), JitError> {
+        // HP.1 guard: heap payload Outcome deferred to HP.2 (drop glue).
+        if body.signature.return_type.has_heap_payload() {
+            return Err(JitError::Unsupported(
+                "heap Outcome deferred to HP.2 (drop glue not yet implemented)".into(),
+            ));
+        }
+
         let cfg = body.build_cfg();
 
         // ── Declare variables ──
@@ -688,11 +695,12 @@ impl JitContext {
                     self.enum_slots.insert(*dest, (slot, layout.clone()));
                 }
                 if let Statement::OutcomeAlloc { dest, .. } = stmt {
-                    // Outcome slot: 16 bytes (disc@0: i64, payload@8: i64), align 8.
+                    // HP.1: dynamic slot size — 16 for scalar, 32 for heap.
+                    let slot_size = body.local_decls[dest.0].ty.outcome_slot_size();
                     let align_shift = 3u8; // log2(8)
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
-                        16u32,
+                        slot_size,
                         align_shift,
                     ));
                     self.outcome_slots.insert(*dest, slot);
