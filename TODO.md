@@ -83,7 +83,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [x] **C2: Pattern::Wildcard trong enum match.** ✅ `a25fbff` (O+G 2026-06-10). Arm-level `_`→default_bb Goto (móng SwitchInt). C2.2 suppress E1026 reuse A3 short-circuit. Nới INV 4i-6 `Trap→Trap|Goto` (Unreachable vẫn reject). Fixture 106. Teeth A3-103-bảo-vệ + wildcard→trap SIGILL.
 - [~] **C3: Native struct multi-field layout.** → **PHONG ẤN Nhóm E** (= Native struct layout, G defer 2026-06-10). Xem phase10.
 - [~] **C4: Packed Outcome ABI.** → **PHONG ẤN Nhóm E** (đi kèm Native). Outcome ops guarded Err, chưa có producer.
-- [ ] **C5: Multi-value return (>1 return value).**
+- [~] **C5: Multi-value return (>1 return value).** → **PHONG ẤN Nhóm E (G defer 2026-06-10).** Spike O: premise NHẸ (ReturnShape 2-value sẵn + Cranelift multi-return native, KHÔNG vỡ value-model như Native) nhưng **0 producer** (Outcome guarded, tuple-return chưa có). YAGNI. Điều kiện mở: Outcome-producer HOẶC tuple-return syntax + fixture use-case. C5+C4 cùng phụ thuộc Outcome producer. Xem `spec/plans/phase11-c5-multivalue-return.md`.
 - [ ] **C6: concat sret.** G-approved backlog.
 
 ### 🟢 D. PERF (G ack §iii, không chặn)
