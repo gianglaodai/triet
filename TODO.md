@@ -84,7 +84,16 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [~] **C3: Native struct multi-field layout.** → **PHONG ẤN Nhóm E** (= Native struct layout, G defer 2026-06-10). Xem phase10.
 - [~] **C4: Packed Outcome ABI.** → **PHONG ẤN Nhóm E** (đi kèm Native). Outcome ops guarded Err, chưa có producer.
 - [~] **C5: Multi-value return (>1 return value).** → **PHONG ẤN Nhóm E (G defer 2026-06-10).** Spike O: premise NHẸ (ReturnShape 2-value sẵn + Cranelift multi-return native, KHÔNG vỡ value-model như Native) nhưng **0 producer** (Outcome guarded, tuple-return chưa có). YAGNI. Điều kiện mở: Outcome-producer HOẶC tuple-return syntax + fixture use-case. C5+C4 cùng phụ thuộc Outcome producer. Xem `spec/plans/phase11-c5-multivalue-return.md`.
-- [ ] **C6: concat sret.** G-approved backlog.
+- [x] **C6: concat sret.** ✅ `992311e` (O+G 2026-06-10). `*mut FatStr` writeback (mẫu (b) append, KHÔNG (a) Rust-auto-sret). Tàn dư Bậc D sạch.
+
+### 🔵 OP. OUTCOME PRODUCER — error-handling core (ADR-0052, O+G ký 2026-06-10)
+
+Frontend ✅ + Typecheck 🟡 (có móng) + Lower 🔴 degenerate (`~+ e`=identity) + JIT 🔴 (multi-value chặn). Mở C5-cho-Outcome (un-defer, premise nhẹ Cranelift native). Payload CHỈ scalar Bậc A (heap defer B/C). Blueprint `spec/plans/phase12-outcome-producer.md`.
+
+- [ ] **OP.1 Typecheck:** verify+bổ sung return-type-match + E1025 (`~0` on T~E) + E1024 exhaustiveness. Fixtures negative check-mode.
+- [ ] **OP.2 Lower:** `~+ v`/`~- e` → 2-slot {disc:Trit, payload} + `ReturnShape::BinaryOutcome` + `Return[disc,payload]`. **Fixtures CHECK-MODE** (MIR verify producer, không JIT — cô lập producer khỏi backend).
+- [ ] **OP.3 JIT (un-defer C5-cho-Outcome):** gỡ guard jit:1070 CHỈ cho BinaryOutcome/TernaryOutcome (Cranelift 2-return, inst_results[0,1]). Tuple generic vẫn Err. Fixtures RUN end-to-end.
+- [ ] **OP.4 Match/unwrap:** `match o { ~+ x => .. ~- e => .. }` OutcomeDiscriminant+branch+Unwrap. Fixtures run.
 
 ### 🟢 D. PERF (G ack §iii, không chặn)
 
