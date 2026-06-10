@@ -520,10 +520,10 @@ pub enum TypeError {
     },
 
     /// E1037: `~+>` / `~->` body type rejected.
-    /// For `~+>`: body must be Bậc A scalar (heap/struct not allowed in i64 slot).
-    /// For `~->`: Mode 1 (tail-expr) deferred.
+    /// For both operators: body must be Bậc A scalar (heap/struct not allowed
+    /// in the 8-byte Outcome payload slot).
     #[error(
-        "E1037: `~+>` body type must be a Bậc A scalar (Integer, Trit, Trilean, Tryte, Long) — heap/struct/enum types cannot fit in the Outcome payload slot"
+        "E1037: `~+>` / `~->` body type must be a Bậc A scalar (Integer, Trit, Trilean, Tryte, Long) — heap/struct/enum types cannot fit in the Outcome payload slot"
     )]
     #[diagnostic(
         code(triet::typecheck::E1037),
@@ -533,7 +533,28 @@ pub enum TypeError {
     )]
     ArmHandlerMapModeRejected {
         /// Source location of the body expression.
-        #[label("~-> body must be `return` — map mode deferred to APP.2")]
+        #[label("body type must be a Bậc A scalar")]
+        span: Span,
+    },
+
+    /// E1039: Ambiguous `~->` map body when success type equals error type
+    /// and the body does not use explicit rewrap (`~- expr`).  The auto-wrap
+    /// is ambiguous because both outcome slots share the same type — the
+    /// compiler cannot determine intent without an explicit rewrap.
+    #[error(
+        "E1039: ambiguous `~->` map body — success and error types are both \
+         `{ty}`, so the auto-wrap is ambiguous; use explicit `~- <expr>` to \
+         confirm error-map intent, or switch to `match` for full control"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1039),
+        help("rewrap the body explicitly with `~- <expr>`, or use `match` for full control")
+    )]
+    AmbiguousAutoWrap {
+        /// The type that is common to both success and error slots.
+        ty: Type,
+        /// Source location of the body expression.
+        #[label("ambiguous body expression")]
         span: Span,
     },
 
@@ -762,6 +783,7 @@ impl TypeError {
             | Self::TrileanReturnNotRefined { span }
             | Self::NegativeArmOnNullable { span }
             | Self::ArmHandlerMapModeRejected { span, .. }
+            | Self::AmbiguousAutoWrap { span, .. }
             | Self::IntegerLiteralOverflow { span, .. }
             | Self::NonAtomicValueType { span, .. }
             | Self::BorrowReturnNotYetSupported { span, .. }

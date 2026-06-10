@@ -1,0 +1,17 @@
+// EXPECT: -99
+// APP.2c: ~-> Mode 1 MAP — error arm transforms payload.
+// inner() -> Integer~Trilean (T ≠ E), ~-> maps error Trilean→Trit.
+// T ≠ E so no E1039.
+
+function fail() -> Integer~Trilean =
+    ~- false
+
+// ~-> |e| body maps error: bind e (Trilean!), eval body (Trit), rewrap ~-.
+function map_err() -> Integer~Trit =
+    fail() ~-> |e| 1_trit
+
+function main() -> Integer =
+    match map_err() {
+        ~+ x => 999
+        ~- t => -99
+    }

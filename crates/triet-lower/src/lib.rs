@@ -3100,6 +3100,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         } => {
             // APP.1: ~-> Mode 2 propagate (Negative, Trap-exit).
             // APP.2a: ~+> Mode 1 MAP (Positive, CFG-merge).
+            // APP.2c: ~-> Mode 1 MAP (Negative, CFG-merge) — error transformer.
             if matches!(arm, triet_syntax::OutcomeArm::Zero) {
                 return Err(LowerError::unsupported_expr(
                     &arena.expression(expr_id).node,
@@ -3107,6 +3108,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 ));
             }
             let is_positive = matches!(arm, triet_syntax::OutcomeArm::Positive);
+            // Negative arm with tail-expr body → Mode 1 map (CFG-merge).
+            // Negative arm with return body → Mode 2 propagate (existing).
+            let is_negative_mode1 = !is_positive
+                && !matches!(
+                    arena.expression(*body).node,
+                    triet_syntax::Expr::Return { .. }
+                );
 
             // Lower inner → Outcome 2-slot value.
             let inner_val = lower_expr(*inner, arena, c)?;
@@ -3125,7 +3133,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             let merge_bb = c.alloc_bb();
 
             // ── Allocate shared result BEFORE If (both arms write to it) ──
-            let result = if is_positive {
+            let result = if is_positive || is_negative_mode1 {
                 // Use generic Outcome type — body_ty may differ from sig
                 // return type (APP.2b-1 type-change scalar). Both are i64.
                 let r = c.alloc_local_ty(MirType::Outcome {
@@ -3170,6 +3178,47 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 c.push(Statement::Assign {
                     dest: Place::local(result).project(Projection::OutcomePayload),
                     source: Place::local(inner_val).project(Projection::OutcomePayload),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+            } else if is_negative_mode1 {
+                // APP.2c: bind e, eval body, rewrap ~- into result.
+                c.push_scope();
+                if let Some(name) = capture_name {
+                    let e_local = c.alloc_local_ty(MirType::Unknown);
+                    c.push(Statement::StorageLive(e_local, expr_span.clone()));
+                    c.push(Statement::Assign {
+                        dest: Place::local(e_local),
+                        source: Place::local(inner_val).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    });
+                    c.vars.insert(name.clone(), e_local);
+                    c.local_names.insert(e_local, name.clone());
+                    c.push_owned(e_local);
+                }
+                let body_val = lower_expr(*body, arena, c)?;
+                c.pop_scope();
+                let disc_tmp = c.alloc_local_ty(MirType::Trit);
+                c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
+                c.push(Statement::Const {
+                    dest: Place::local(disc_tmp),
+                    value: ConstValue::Trit(-1),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(disc_tmp),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomePayload),
+                    source: Place::local(body_val),
                     span: expr_span.clone(),
                 });
                 c.term(
@@ -3238,6 +3287,25 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 c.push(Statement::Assign {
                     dest: Place::local(result).project(Projection::OutcomePayload),
                     source: Place::local(body_val),
+                    span: expr_span.clone(),
+                });
+                c.term(
+                    c.cur,
+                    Terminator::Goto {
+                        target: merge_bb,
+                        span: DUMMY_SPAN,
+                    },
+                );
+            } else if is_negative_mode1 {
+                // APP.2c: success passthrough — copy inner→result.
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                    source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
+                    span: expr_span.clone(),
+                });
+                c.push(Statement::Assign {
+                    dest: Place::local(result).project(Projection::OutcomePayload),
+                    source: Place::local(inner_val).project(Projection::OutcomePayload),
                     span: expr_span.clone(),
                 });
                 c.term(

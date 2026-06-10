@@ -1,0 +1,11 @@
+// ERROR: E1037
+// APP.2c: ~-> body must be Bậc A scalar — String (heap) rejected.
+
+function inner() -> Integer~Integer =
+    ~- -99
+
+// Body returns String — heap type cannot fit in i64 payload slot.
+function bad_map() -> Integer~Integer =
+    inner() ~-> |e| "not a scalar"
+
+function main() -> Integer = 0

@@ -1,0 +1,15 @@
+// EXPECT: 45
+// APP.2c: chain ~+> (map success Integer→Integer) then ~-> (map error Trilean→Trit).
+// Tests 3 merge_bb in one CFG (1 ~+> + 1 ~->).
+
+function start() -> Integer~Trilean =
+    ~+ 42
+
+function chain() -> Integer~Trit =
+    (start() ~+> |a| a + 3) ~-> |e| 1_trit
+
+function main() -> Integer =
+    match chain() {
+        ~+ x => x
+        ~- t => -999
+    }

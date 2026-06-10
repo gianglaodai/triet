@@ -448,6 +448,9 @@ impl Checker<'_> {
     /// For the `Negative` arm, delegates to `check_outcome_propagate`
     /// (identical semantics when body is early-return). Other arms
     /// are stubs for v0.7.4.3-error.4.
+    #[allow(clippy::too_many_lines)] // Mode-1 map for both ~+> and ~-> added ~25 lines;
+    // extracting helpers would scatter related logic
+    // across 3 methods. Defer to post-APP cleanup.
     fn check_outcome_arm_handler(
         &mut self,
         inner: ExprId,
@@ -458,16 +461,74 @@ impl Checker<'_> {
     ) -> Type {
         use triet_syntax::OutcomeArm;
         if arm == OutcomeArm::Negative {
-            // APP.1: Mode 2 only — body must be `return` statement.
-            // Tail-expr (Mode 1 map) is deferred to APP.2.
             let body_expr = self.arena.expression(body);
-            if !matches!(body_expr.node, triet_syntax::Expr::Return { .. }) {
-                self.errors.push(TypeError::ArmHandlerMapModeRejected {
-                    span: body_expr.span.clone(),
-                });
-                return Type::Unknown;
+            if matches!(body_expr.node, triet_syntax::Expr::Return { .. }) {
+                // APP.1: Mode 2 propagate — body is `return` statement.
+                self.check_outcome_propagate(inner, capture_name, body, span)
+            } else {
+                // APP.2c: ~-> Mode 1 MAP — tail-expr body (error transformer).
+                // Symmetrical to ~+> Mode 1, but maps error instead of success.
+                let inner_ty = self.infer_expression(inner);
+                let (success_ty, error_ty, allow_null) = if let Type::Outcome {
+                    value_type,
+                    error_type,
+                    allow_null_state,
+                } = &inner_ty
+                {
+                    (
+                        (**value_type).clone(),
+                        (**error_type).clone(),
+                        *allow_null_state,
+                    )
+                } else {
+                    self.errors.push(TypeError::Mismatch {
+                        expected: Type::Outcome {
+                            value_type: Box::new(Type::Unknown),
+                            error_type: Box::new(Type::Unknown),
+                            allow_null_state: false,
+                        },
+                        found: inner_ty,
+                        span,
+                    });
+                    return Type::Unknown;
+                };
+
+                // Bind capture variable to error type in body scope.
+                self.env.push_frame();
+                if let Some(name) = capture_name {
+                    self.env.declare(name, error_ty.clone());
+                }
+                let body_ty = self.infer_expression(body);
+                self.env.pop_frame();
+
+                // APP.2b-1: body must be Bậc A scalar (i64-compatible).
+                if !body_ty.is_scalar() {
+                    self.errors.push(TypeError::ArmHandlerMapModeRejected {
+                        span: body_expr.span.clone(),
+                    });
+                    return Type::Unknown;
+                }
+
+                // E1039: when T ≡ E, the auto-wrap is ambiguous because
+                // both outcome slots share the same type — the compiler
+                // cannot determine intent.  (is_explicit_rewrap guard
+                // removed: ~- expr body always yields Outcome type, which
+                // is_scalar rejects as E1037 first — dead path per rule #4.)
+                if error_ty.matches(&success_ty) && success_ty.matches(&error_ty) {
+                    self.errors.push(TypeError::AmbiguousAutoWrap {
+                        ty: error_ty,
+                        span: body_expr.span.clone(),
+                    });
+                    return Type::Unknown;
+                }
+
+                // Result type = Outcome(original_success, new_error) — chainable.
+                Type::Outcome {
+                    value_type: Box::new(success_ty),
+                    error_type: Box::new(body_ty),
+                    allow_null_state: allow_null,
+                }
             }
-            self.check_outcome_propagate(inner, capture_name, body, span)
         } else if arm == OutcomeArm::Positive {
             // APP.2a: ~+> Mode 1 MAP (type-preserving, CFG-merge).
             // Tail-expr body maps success payload; error passthrough.

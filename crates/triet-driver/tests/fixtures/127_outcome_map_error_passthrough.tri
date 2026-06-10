@@ -1,0 +1,16 @@
+// EXPECT: 42
+// APP.2c: ~-> passthrough when success (no error to map).
+// inner() -> Integer~Trilean (T ≠ E), success path → passthrough.
+
+function succeed() -> Integer~Trilean =
+    ~+ 42
+
+// ~-> on success: passthrough inner as-is. Body type Trit ≠ success Integer → OK.
+function map_err() -> Integer~Trit =
+    succeed() ~-> |e| 1_trit
+
+function main() -> Integer =
+    match map_err() {
+        ~+ x => x
+        ~- t => -999
+    }

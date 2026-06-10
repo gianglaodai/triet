@@ -1,0 +1,18 @@
+// EXPECT: 50
+// APP.2c: ~-> Mode 1 MAP — observer mapped error value.
+// fail() → ~- 5, ~-> maps e*10 → ~- 50.
+// T=Trilean, E=Integer → T≠E → no E1039.
+// Teeth: if lowerer uses inner payload instead of body_val,
+// v=5 instead of 50 → FAIL.
+
+function fail() -> Trilean~Integer =
+    ~- 5
+
+function map_err() -> Trilean~Integer =
+    fail() ~-> |e| e * 10
+
+function main() -> Integer =
+    match map_err() {
+        ~+ b => -1
+        ~- v => v
+    }

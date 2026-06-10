@@ -1,10 +1,12 @@
-// ERROR: E1037
-// APP.1: ~-> with tail-expr body (Mode 1 map) is rejected.
+// ERROR: E1039
+// APP.2c: ~-> with T ≡ E — body auto-wrap is ambiguous.
+// inner() ~-> |e| e with Integer~Integer: both slots are Integer,
+// the compiler cannot distinguish intent.  Fix: explicit ~- or match.
 
 function fail() -> Integer~Integer =
     ~- -99
 
 function propagate() -> Integer~Integer =
-    fail() ~-> |e| e  // tail-expr, not `return` — Mode 1 rejected
+    fail() ~-> |e| e  // T≡E, auto-wrap ambiguous → E1039
 
 function main() -> Integer = 0
