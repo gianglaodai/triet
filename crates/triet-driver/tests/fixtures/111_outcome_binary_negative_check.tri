@@ -1,8 +1,7 @@
-// ERROR: multi-value return requires
-// OP.2: ~- constructor for BinaryOutcome T~E.
-// Parse→typecheck→lower→MIR-verify→borrowck all pass.
-// JIT fails (multi-value not yet supported — OP.3).
-// Verifier checks: ReturnShape::BinaryOutcome, arity=2, disc≠0.
+// EXPECT: 0
+// OP.3: ~- constructor for BinaryOutcome T~E — JIT now compiles.
+// Parse→typecheck→lower→MIR-verify→borrowck→JIT all pass.
+// main() returns 0 (Outcome function is compiled but not called — caller OP.4).
 
 function fail_with() -> Integer~Integer =
     ~- -1

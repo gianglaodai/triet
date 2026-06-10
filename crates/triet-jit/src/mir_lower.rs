@@ -480,7 +480,15 @@ impl JitContext {
                 sig.params.push(AbiParam::new(I64));
             }
             if !is_sret {
-                sig.returns.push(AbiParam::new(I64));
+                match body.signature.return_shape {
+                    triet_mir::ReturnShape::BinaryOutcome => {
+                        sig.returns.push(AbiParam::new(I64)); // disc
+                        sig.returns.push(AbiParam::new(I64)); // payload
+                    }
+                    _ => {
+                        sig.returns.push(AbiParam::new(I64));
+                    }
+                }
             }
 
             let func_id = self
@@ -508,7 +516,15 @@ impl JitContext {
                 cl_ctx.func.signature.params.push(AbiParam::new(I64));
             }
             if !is_sret {
-                cl_ctx.func.signature.returns.push(AbiParam::new(I64));
+                match body.signature.return_shape {
+                    triet_mir::ReturnShape::BinaryOutcome => {
+                        cl_ctx.func.signature.returns.push(AbiParam::new(I64)); // disc
+                        cl_ctx.func.signature.returns.push(AbiParam::new(I64)); // payload
+                    }
+                    _ => {
+                        cl_ctx.func.signature.returns.push(AbiParam::new(I64));
+                    }
+                }
             }
 
             let mut fn_builder_ctx = FunctionBuilderContext::new();
@@ -1066,9 +1082,20 @@ impl JitContext {
         match &block_data.terminator {
             Terminator::Return { values, .. } => {
                 if values.len() > 1 {
-                    return Err(JitError::Unsupported(
-                        "multi-value return requires Bậc C packed ABI".into(),
-                    ));
+                    if !matches!(
+                        body.signature.return_shape,
+                        triet_mir::ReturnShape::BinaryOutcome
+                    ) || values.len() != 2
+                    {
+                        return Err(JitError::Unsupported(
+                            "multi-value return requires Bậc C packed ABI".into(),
+                        ));
+                    }
+                    // ADR-0052 OP.3: BinaryOutcome 2-return — disc, payload.
+                    let disc_val = builder.use_var(self.var(values[0]));
+                    let payload_val = builder.use_var(self.var(values[1]));
+                    builder.ins().return_(&[disc_val, payload_val]);
+                    return Ok(());
                 }
                 let is_sret_ret = matches!(
                     body.signature.return_shape,
@@ -2764,46 +2791,124 @@ mod tests {
         }
     }
 
-    /// Multi-value return is **provably unreachable** through the real
-    /// pipeline (lowerer does not produce `ReturnShape::BinaryOutcome`).
-    /// This test hand-builds MIR with a 2-value return and verifies the
-    /// JIT **refuses** to compile it.
+    /// ADR-0052 `OP.3`: `BinaryOutcome` 2-return via Cranelift native multi-return.
     ///
-    /// **If this test fails**, someone removed the multi-return guard
-    /// without implementing Bậc C packed ABI. Returning only `values[0]`
-    /// would silently drop the second return value — a miscompile.
+    /// Builds two Outcome functions (one `~+`, one `~-`) and calls them through
+    /// `extern "C" fn() -> Repr2` where `Repr2(i64, i64)` maps to `SysV` `rax:rdx`.
+    /// This verifies that:
+    /// - The guard at 1068 now ALLOWS `BinaryOutcome` with 2 values
+    /// - The sig has 2 return params (disc, payload)
+    /// - The return emits disc, payload in correct order
     #[test]
-    fn multi_value_return_refuses_to_compile() {
-        // Build a callee that returns 2 values (BinaryOutcome)
-        let mut callee = MirBuilder::new("make_outcome", MirType::Unknown);
-        callee.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
+    #[allow(unsafe_code)]
+    // `unsafe_code` allow: transmute code_ptr → extern "C" fn pointer.
+    // The pointer is valid as long as `ctx` (JitContext) outlives the call.
+    fn binary_outcome_2return() {
+        // `Repr2` maps to SysV ABI: first i64 in rax, second in rdx.
+        #[repr(C)]
+        struct Repr2(i64, i64);
+
+        // Helper: compile and call a BinaryOutcome function returning (disc, payload).
+        // `disc_val` and `payload_val` are always in valid Trit/i64 range.
+        #[allow(clippy::cast_possible_truncation)]
+        unsafe fn compile_and_call(disc_val: i64, payload_val: i64) -> Repr2 {
+            let mut b = MirBuilder::new(
+                "outcome_test",
+                MirType::Outcome {
+                    value_type: Box::new(MirType::Integer),
+                    error_type: Box::new(MirType::Integer),
+                    allow_null_state: false,
+                },
+            );
+            b.set_return_shape(triet_mir::ReturnShape::BinaryOutcome);
+            let disc = b.new_local();
+            let payload = b.new_local();
+            let bb0 = b.new_block();
+            b.push(bb0, storage_live(disc));
+            b.push(
+                bb0,
+                triet_mir::Statement::Const {
+                    dest: disc.into(),
+                    value: ConstValue::Trit(disc_val as i8),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(bb0, storage_live(payload));
+            b.push(
+                bb0,
+                triet_mir::Statement::Const {
+                    dest: payload.into(),
+                    value: ConstValue::Integer(i128::from(payload_val)),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.set_terminator(
+                bb0,
+                Terminator::Return {
+                    values: vec![disc, payload],
+                    span: DUMMY_SPAN,
+                },
+            );
+            let body = b.build(bb0);
+
+            let func = {
+                let mut ctx = JitContext::new();
+                ctx.compile(&body).expect("BinaryOutcome JIT compilation")
+            };
+            let f: extern "C" fn() -> Repr2 = unsafe { std::mem::transmute(func.code_ptr) };
+            f()
+        }
+
+        // ~+ 42 → disc=1, payload=42
+        let r = unsafe { compile_and_call(1, 42) };
+        assert_eq!(r.0, 1, "discriminant should be Positive(1)");
+        assert_eq!(r.1, 42, "payload should be 42");
+
+        // ~- -1 → disc=-1, payload=-1
+        let r = unsafe { compile_and_call(-1, -1) };
+        assert_eq!(r.0, -1, "discriminant should be Negative(-1)");
+        assert_eq!(r.1, -1, "payload should be -1");
+    }
+
+    /// ADR-0052 §3.5: generic multi-value (non-BinaryOutcome) must STILL be
+    /// rejected. Only `BinaryOutcome` is un-deferred; tuple/struct multi-return
+    /// requires Bậc C packed ABI.
+    ///
+    /// **If this test fails**, the guard at 1068 was weakened to allow ANY
+    /// shape with `values.len()>1` — a soundness regression per ADR-0052 §3.5.
+    #[test]
+    fn generic_multi_value_refuses_to_compile() {
+        // Build a callee with Scalar return shape but 2 return values.
+        // This should be REJECTED — generic multi-value is NOT un-deferred.
+        let mut callee = MirBuilder::new("generic_multi", MirType::Integer);
+        callee.set_return_shape(triet_mir::ReturnShape::Scalar);
         let _dummy = callee.add_param("dummy", ParameterPassing::Borrow);
-        let disc_val = callee.new_local();
-        let payload_val = callee.new_local();
+        let v0 = callee.new_local();
+        let v1 = callee.new_local();
 
         let bb0 = callee.new_block();
-        callee.push(bb0, storage_live(disc_val));
+        callee.push(bb0, storage_live(v0));
         callee.push(
             bb0,
             triet_mir::Statement::Const {
-                dest: disc_val.into(),
+                dest: v0.into(),
                 value: ConstValue::Integer(1),
                 span: DUMMY_SPAN,
             },
         );
-        callee.push(bb0, storage_live(payload_val));
+        callee.push(bb0, storage_live(v1));
         callee.push(
             bb0,
             triet_mir::Statement::Const {
-                dest: payload_val.into(),
-                value: ConstValue::Integer(42),
+                dest: v1.into(),
+                value: ConstValue::Integer(2),
                 span: DUMMY_SPAN,
             },
         );
         callee.set_terminator(
             bb0,
             Terminator::Return {
-                values: vec![disc_val, payload_val], // 2 values — triggers P6
+                values: vec![v0, v1], // 2 values with Scalar shape → must ERR
                 span: DUMMY_SPAN,
             },
         );
@@ -2821,16 +2926,16 @@ mod tests {
             }
             Ok(_) => {
                 panic!(
-                    "JIT compiled a 2-value return as single i64 — \
+                    "JIT compiled generic 2-value return as single i64 — \
                      this is a miscompile. The multi-return guard was \
-                     removed without implementing Bậc C packed ABI. \
-                     The second return value would be silently dropped."
+                     weakened to allow non-BinaryOutcome shapes. \
+                     Only BinaryOutcome should be un-deferred (ADR-0052 §3.5)."
                 );
             }
             Err(other) => {
                 panic!(
                     "unexpected JIT error (expected Unsupported, got {other}) — \
-                     if the guard was changed, verify multi-return still refuses"
+                     verify the guard still refuses non-BinaryOutcome multi-return"
                 );
             }
         }
