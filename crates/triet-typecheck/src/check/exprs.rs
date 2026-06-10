@@ -499,13 +499,15 @@ impl Checker<'_> {
             // Bind capture variable to success type in body scope.
             self.env.push_frame();
             if let Some(name) = capture_name {
-                self.env.declare(name, success_ty.clone());
+                self.env.declare(name, success_ty);
             }
             let body_ty = self.infer_expression(body);
             self.env.pop_frame();
 
-            // APP.2a: type-preserving only — body type must match success type.
-            if !body_ty.matches(&success_ty) {
+            // APP.2b-1: type-change allowed, but body must be Bậc A scalar
+            // (i64-compatible). Heap/struct/enum payloads cannot fit in the
+            // 8-byte Outcome payload slot.
+            if !body_ty.is_scalar() {
                 self.errors.push(TypeError::ArmHandlerMapModeRejected {
                     span: self.arena.expression(body).span.clone(),
                 });

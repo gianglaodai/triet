@@ -519,14 +519,17 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1037: `~->` arm handler body must be `return` (Mode 2).
-    /// Tail-expression body (Mode 1 map) is deferred to APP.2.
+    /// E1037: `~+>` / `~->` body type rejected.
+    /// For `~+>`: body must be Bậc A scalar (heap/struct not allowed in i64 slot).
+    /// For `~->`: Mode 1 (tail-expr) deferred.
     #[error(
-        "E1037: `~->` map mode is not yet supported — use `return` statement (Mode 2 propagate)"
+        "E1037: `~+>` body type must be a Bậc A scalar (Integer, Trit, Trilean, Tryte, Long) — heap/struct/enum types cannot fit in the Outcome payload slot"
     )]
     #[diagnostic(
         code(triet::typecheck::E1037),
-        help("write `~-> |e| return e` to propagate, or use `match` for explicit handling")
+        help(
+            "change the body expression to return a scalar type, or use `match` for full control"
+        )
     )]
     ArmHandlerMapModeRejected {
         /// Source location of the body expression.

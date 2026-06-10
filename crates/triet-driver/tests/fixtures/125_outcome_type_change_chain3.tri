@@ -1,0 +1,17 @@
+// EXPECT: 42
+// APP.2b-1: 3-type chain liên hoàn Integer → Trit → Integer (Trit ở mắt giữa).
+// Mắt 1 (~+> |a| 1_trit): body type Trit — is_scalar(Trit) pass, value_type đổi Integer→Trit.
+// Mắt 2 (~+> |t| 42): body type Integer — chain về Integer, main lấy thẳng (no widening).
+// Chứng minh: type-change qua Trit chạy end-to-end, 2 merge_bb nối tiếp trong 1 CFG.
+
+function start() -> Integer~Integer =
+    ~+ 7
+
+function chain3() -> Integer~Integer =
+    (start() ~+> |a| 1_trit) ~+> |t| 42
+
+function main() -> Integer =
+    match chain3() {
+        ~+ x => x
+        ~- e => -999
+    }

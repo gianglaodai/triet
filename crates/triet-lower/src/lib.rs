@@ -3126,7 +3126,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             // ── Allocate shared result BEFORE If (both arms write to it) ──
             let result = if is_positive {
-                let r = c.alloc_local_ty(c.sig.return_type.clone());
+                // Use generic Outcome type — body_ty may differ from sig
+                // return type (APP.2b-1 type-change scalar). Both are i64.
+                let r = c.alloc_local_ty(MirType::Outcome {
+                    value_type: Box::new(MirType::Unknown),
+                    error_type: Box::new(MirType::Unknown),
+                    allow_null_state: false,
+                });
                 c.push(Statement::StorageLive(r, expr_span.clone()));
                 c.push(Statement::OutcomeAlloc {
                     dest: r,

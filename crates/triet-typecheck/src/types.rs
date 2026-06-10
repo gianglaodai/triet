@@ -138,6 +138,13 @@ impl Type {
         matches!(self, Self::Trit | Self::Tryte | Self::Integer | Self::Long)
     }
 
+    /// True for Bậc A scalar types that fit in a single i64 slot
+    /// (all numeric + Trilean).
+    #[must_use]
+    pub const fn is_scalar(&self) -> bool {
+        self.is_numeric() || matches!(self, Self::Trilean { .. })
+    }
+
     /// Returns true if this is any Trilean (refined or not). Replaces
     /// the old unit-variant `matches!(t, Type::Trilean)` pattern.
     #[must_use]
