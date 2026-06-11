@@ -1,0 +1,15 @@
+// EXPECT: 42
+// ADR-0058 Lát 2: heap Outcome if/else merge — success arm, scalar payload.
+// if true → make_ok → ~+ 42. Merge copies the 32-byte slot.
+// After match, x = 42 (scalar — no heap involvement).
+
+function make_ok() -> Integer~String = ~+ 42
+function make_err() -> Integer~String = ~- "xyz"
+
+function main() -> Integer {
+    let o = if true { make_ok() } else { make_err() };
+    return match o {
+        ~+ x => x
+        ~- e => len(e)
+    }
+}

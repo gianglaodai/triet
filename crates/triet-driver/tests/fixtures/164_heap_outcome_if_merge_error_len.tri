@@ -1,0 +1,18 @@
+// EXPECT: 3
+// ADR-0058 Lát 2: heap Outcome if/else merge — error arm, consume heap payload.
+// make_ok and make_err return Integer~String. if false → make_err → ~- "xyz".
+// Merge copies the 32-byte slot from call result to merge-result.
+// After match, len(e) = 3 (correct — no garbage from uninitialized slot).
+// Before Lát 2 leak-guard removal: SSA-fresh merge-result disc garbage
+// → wild-pointer free → UB (SIGABRT or garbage length).
+
+function make_ok() -> Integer~String = ~+ 42
+function make_err() -> Integer~String = ~- "xyz"
+
+function main() -> Integer {
+    let o = if false { make_ok() } else { make_err() };
+    return match o {
+        ~+ x => x
+        ~- e => len(e)
+    }
+}

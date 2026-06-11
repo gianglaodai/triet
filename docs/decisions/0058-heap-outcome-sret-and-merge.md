@@ -146,4 +146,35 @@ sized-dealloc allocator (cap matter), HOẶC counting shim assert cap-value → 
 @24 phải có teeth thật. Lát 2 KHÔNG phụ thuộc cap-teeth.
 
 - **Chữ ký amendment:** O ✅ (teeth len thật + cap bất-khả tự chứng minh 2026-06-11) ·
-  G ⏳ (báo để biết — cap defer có chứng minh, §3 decision KHÔNG đổi).
+  G ✅ (ký Lát 1 + §8 cap-defer 2026-06-11).
+
+## 9. Amendment 2026-06-11 — Lát 2 ĐÓNG; lệnh tử hình leak-guard CÓ MÁU (append-only)
+
+**Lát 2 heap merge committed-pending.** 1 điểm chạm: JIT Assign slot-copy
+(`mir_lower.rs:1114`) skip `emit_outcome_drop_glue(dest)` khi `dest_ty.has_heap_payload()`
+(scalar GIỮ leak-guard). Tombstone-source GIỮ. Lower không đụng (ADR-0056 đã type
+merge-result, ADR-0057 đã slot-copy). +13/−5, 1 file.
+
+**Teeth O tự verify (revert sha-identical):**
+- **Heap merge consume:** 164 (`if false`→make_err→`len(e)`)→3 · 165 (`if true`→make_ok→x)→42. ✅
+- **No double-free:** counting test `heap_outcome_if_merge_frees_exactly_once` assert
+  result==3 + FREE_COUNT==1. Teeth THẬT (đếm free qua merge). ✅
+- **⚰️ LỆNH TỬ HÌNH CÓ MÁU (O tự ép — D không tự làm được):** poison = dirty dest slot
+  (disc=-1, payload=0xBAD) + RE-ADD leak-guard cho heap → fixture 164 **STATUS=134
+  "free(): invalid pointer"** (SIGABRT, free wild 0xBAD). **CHỨNG MINH hazard THẬT:** nếu
+  merge-result slot bẩn + leak-guard chạy → wild-free. Xóa leak-guard (Lát 2) là FIX THẬT,
+  KHÔNG phải defensive-vô-nghĩa (khác cap@24 §8). Cranelift không guarantee zeroed slot →
+  D xóa đúng.
+- **Tombstone-source: unobservable trong merge path** (MIR 164: `_2=move _1/_3`, source =
+  call-result sret buffer, KHÔNG có `Drop(_1/_3)` → tombstone bảo vệ drop không xảy ra).
+  D khai trung thực; teeth tombstone ở HP.5 context (let-bound + Deinit), KHÔNG ở merge.
+- **Regression:** 110-129 + 142 + ADR-0055/0056/0057 + Lát1(162/163) XANH. Gate 0·0·160·201.
+
+**D phiên Lát 2 — TRUNG THỰC HOÀN TOÀN (trái ngược Lát 1):** tự khai CẢ HAI poison
+(tombstone + leak-guard) KHÔNG exercise được + giải thích gốc, KHÔNG overclaim soundness.
+Học đúng bài G gõ ("poison X xem hộc máu chưa rồi hãy nói X đúng"). O bổ sung điều D
+thiếu: D re-add leak-guard thấy không crash (fresh-page-zero) rồi dừng — đúng nhưng
+incomplete; O cho nó máu bằng dirty-slot → SIGABRT, chứng minh hazard real.
+
+- **Chữ ký amendment §9:** O ✅ (teeth merge + lệnh-tử-hình-có-máu + tombstone-unobservable
+  tự verify 2026-06-11) · G ⏳ (báo để biết — Lát 2 đóng, ADR-0058 hoàn tất).

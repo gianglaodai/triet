@@ -1105,11 +1105,19 @@ impl JitContext {
                         && self.outcome_slots.contains_key(&dest.local)
                         && self.outcome_slots.contains_key(&source.local)
                     {
-                        // Leak guard (§3.4): drop dest's old Outcome before the
-                        // overwrite (no-op for scalar payload; disc-dynamic free
-                        // for heap). Defensive — dest holding a live Outcome is
-                        // an SSA rarity, but the net must be present.
-                        self.emit_outcome_drop_glue(builder, body, dest.local)?;
+                        // ADR-0058 §3 Lát 2 ⚰️ LỆNH TỬ HÌNH:
+                        // Skip leak-guard for heap Outcome dest. Merge-result
+                        // is SSA fresh → slot disc is garbage; leak-guard
+                        // would stack_load(disc)→branch→free wild pointer→UB.
+                        // Scalar Outcome leak-guard is a safe no-op (returns
+                        // early at is_any_heap() check) → keep for defense.
+                        let dest_ty = &body.local_decls[dest.local.0].ty;
+                        if !dest_ty.has_heap_payload() {
+                            // Leak guard (§3.4): drop dest's old Outcome before
+                            // overwrite (no-op for scalar payload; safe because
+                            // scalar disc is always valid).
+                            self.emit_outcome_drop_glue(builder, body, dest.local)?;
+                        }
                         let dest_slot = self.outcome_slots[&dest.local];
                         let src_slot = self.outcome_slots[&source.local];
                         let slot_size = body.local_decls[dest.local.0].ty.outcome_slot_size();
