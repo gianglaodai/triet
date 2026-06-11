@@ -1,0 +1,15 @@
+// EXPECT: 3
+// C.1 Vector generic return-bind
+
+function make() -> Vector<Integer> {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    return xs;
+}
+
+function main() -> Integer {
+    let ys = make();
+    return len(ys);
+}

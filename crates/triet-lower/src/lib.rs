@@ -785,6 +785,11 @@ fn lower_type(
             error_type: Box::new(lower_type(arena, *error_type, symbols)),
             allow_null_state: *allow_null_state,
         },
+        TypeExpr::Generic { name, .. } => match name.as_str() {
+            "Vector" => MirType::Vector,
+            "HashMap" => MirType::HashMap,
+            _ => MirType::Unknown,
+        },
         _ => MirType::Unknown,
     }
 }
@@ -842,6 +847,11 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
             value_type: Box::new(lower_type_simple(arena, *value_type, c)),
             error_type: Box::new(lower_type_simple(arena, *error_type, c)),
             allow_null_state: *allow_null_state,
+        },
+        TypeExpr::Generic { name, .. } => match name.as_str() {
+            "Vector" => MirType::Vector,
+            "HashMap" => MirType::HashMap,
+            _ => MirType::Unknown,
         },
         _ => MirType::Unknown,
     }
