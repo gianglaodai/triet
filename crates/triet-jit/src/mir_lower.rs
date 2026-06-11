@@ -1348,6 +1348,20 @@ impl JitContext {
                             builder.ins().store(mem_flags, ptr, sret_ptr, 0);
                             builder.ins().store(mem_flags, len, sret_ptr, 8);
                             builder.ins().store(mem_flags, cap, sret_ptr, 16);
+                        } else if let Some(slot) = self.outcome_slots.get(&values[0]) {
+                            // ADR-0058 Lát 1: heap Outcome sret — write
+                            // {disc,payload,len,cap} from slot to caller's
+                            // sret buffer (Local(0)).
+                            let sret_ptr = builder.use_var(self.var(Local(0)));
+                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                            let disc = builder.ins().stack_load(I64, *slot, 0);
+                            let payload = builder.ins().stack_load(I64, *slot, 8);
+                            let len = builder.ins().stack_load(I64, *slot, 16);
+                            let cap = builder.ins().stack_load(I64, *slot, 24);
+                            builder.ins().store(mem_flags, disc, sret_ptr, 0);
+                            builder.ins().store(mem_flags, payload, sret_ptr, 8);
+                            builder.ins().store(mem_flags, len, sret_ptr, 16);
+                            builder.ins().store(mem_flags, cap, sret_ptr, 24);
                         }
                     }
                     builder.ins().return_(&[]);
@@ -1454,6 +1468,10 @@ impl JitContext {
                                     }
                                 } else if let Some((slot, _)) = self.enum_slots.get(a) {
                                     // C1: enum param by-pointer (như struct — ADR-0049)
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else if let Some(slot) = self.outcome_slots.get(a) {
+                                    // ADR-0058 Lát 1: heap Outcome sret buffer
+                                    // — pass by-pointer.
                                     builder.ins().stack_addr(I64, *slot, 0)
                                 } else {
                                     let var = self.var(*a);

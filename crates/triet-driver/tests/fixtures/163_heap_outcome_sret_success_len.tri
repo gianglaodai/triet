@@ -1,0 +1,13 @@
+// EXPECT: 3
+// ADR-0058 Lát 1: heap Outcome success through function boundary — length(s) correct.
+// Callee returns ~+ "xyz" (String); caller matches ~+ s and reads len(s).
+// Before sret: {len,cap} lost → garbage.
+
+function make_ok() -> String~Integer =
+    ~+ "xyz"
+
+function main() -> Integer =
+    match make_ok() {
+        ~+ s => len(s)
+        ~- e => e
+    }

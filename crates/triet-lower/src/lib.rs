@@ -145,9 +145,21 @@ impl Ctx {
         func_return_types: HashMap<String, MirType>,
     ) -> Self {
         let is_struct_return = matches!(ret, MirType::Struct(_));
+        // ADR-0058 Lát 1: heap binary Outcome uses JIT-sret (tái dùng String
+        // machinery).  Scalar Outcome giữ 2-register; Ternary heap = deferred.
+        let is_heap_outcome = matches!(
+            ret,
+            MirType::Outcome {
+                allow_null_state: false,
+                ..
+            }
+        ) && ret.has_heap_payload();
         // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
-        let is_fat_return = is_struct_return || matches!(ret, MirType::String);
+        let is_fat_return = is_struct_return || matches!(ret, MirType::String) || is_heap_outcome;
         let return_shape = match ret {
+            _ if is_heap_outcome => triet_mir::ReturnShape::Struct {
+                struct_name: ret.to_string(),
+            },
             MirType::Outcome {
                 allow_null_state: false,
                 ..
@@ -874,6 +886,10 @@ fn emit_shim_call(
 fn lower_outcome_return_values(val: Local, c: &mut Ctx) -> Vec<Local> {
     let ty = &c.local_decls[val.0].ty;
     if !matches!(ty, MirType::Outcome { .. }) {
+        return vec![val];
+    }
+    // ADR-0058 Lát 1: heap Outcome → sret, return the slot whole.
+    if ty.has_heap_payload() {
         return vec![val];
     }
     // Load disc@0 into a temp.
@@ -2022,7 +2038,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 .cloned()
                 .unwrap_or(MirType::Integer);
             let is_outcome_ret = matches!(callee_ret, MirType::Outcome { .. });
-            let is_fat_ret = matches!(callee_ret, MirType::Struct(_) | MirType::String);
+            // ADR-0058 Lát 1: heap Outcome → sret (treated as fat return).
+            let is_heap_outcome_ret = is_outcome_ret && callee_ret.has_heap_payload();
+            let is_fat_ret =
+                matches!(callee_ret, MirType::Struct(_) | MirType::String) || is_heap_outcome_ret;
 
             let mut args: Vec<Local> = arguments
                 .iter()
@@ -2033,14 +2052,24 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Move semantics: caller zeroes slot after call, borrowck
             // enforces E2420 use-after-move.
             if is_fat_ret {
-                // sret: allocate struct local for return, pass as hidden arg[0].
+                // sret: allocate struct/string/heap-outcome local for return,
+                // pass as hidden arg[0].
                 let ret_local = c.alloc_local_ty(callee_ret.clone());
                 c.push(Statement::StorageLive(ret_local, expr_span.clone()));
-                c.push(Statement::StructAlloc {
-                    dest: ret_local,
-                    struct_name: callee_ret.to_string(),
-                    span: expr_span.clone(),
-                });
+                if is_heap_outcome_ret {
+                    // ADR-0058 Lát 1: heap Outcome sret — OutcomeAlloc
+                    // (JIT no-op; required for verifier/borrowck).
+                    c.push(Statement::OutcomeAlloc {
+                        dest: ret_local,
+                        span: expr_span.clone(),
+                    });
+                } else {
+                    c.push(Statement::StructAlloc {
+                        dest: ret_local,
+                        struct_name: callee_ret.to_string(),
+                        span: expr_span.clone(),
+                    });
+                }
                 // Insert sret pointer as first argument.
                 args.insert(0, ret_local);
                 // ADR-0042 Q1 + ADR-0045 §2: collect args for zeroing.

@@ -1,0 +1,13 @@
+// EXPECT: 4
+// ADR-0058 Lát 1: heap Outcome error through function boundary — length(e) correct.
+// Before sret: 2-register return dropped {len,cap} → length(e) garbage.
+// After sret: callee writes 4-word slot → caller reads correct len.
+
+function make_err() -> Integer~String =
+    ~- "boom"
+
+function main() -> Integer =
+    match make_err() {
+        ~+ x => x
+        ~- e => len(e)
+    }

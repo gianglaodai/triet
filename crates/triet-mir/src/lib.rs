@@ -1387,15 +1387,17 @@ impl Body {
             });
         }
 
-        // ── INV-Outcome-shape (ADR-0052 OP.2): ReturnShape must match ──
-        // Any MirType::Outcome (T~E or T?~E) requires either BinaryOutcome
-        // or TernaryOutcome shape.  Guards against poison at the ReturnShape
-        // producer (lowerer Ctx::new) and against silent miscompile of
-        // ternary Outcome as Scalar 1-value.
+        // ── INV-Outcome-shape (ADR-0052 OP.2, amended ADR-0058 §3): ──
+        // ReturnShape must match.  Any MirType::Outcome requires
+        // BinaryOutcome, TernaryOutcome, or Struct (heap sret — ADR-0058
+        // Lát 1).  Guards against silent miscompile of Outcome as Scalar
+        // 1-value.
         if let MirType::Outcome { .. } = &self.signature.return_type
             && !matches!(
                 self.signature.return_shape,
-                ReturnShape::BinaryOutcome | ReturnShape::TernaryOutcome
+                ReturnShape::BinaryOutcome
+                    | ReturnShape::TernaryOutcome
+                    | ReturnShape::Struct { .. }
             )
         {
             return Err(MirError::OutcomeShapeMismatch {
