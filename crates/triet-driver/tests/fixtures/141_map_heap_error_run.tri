@@ -1,0 +1,18 @@
+// EXPECT: 0
+// HP.4: heap `~->` map (error transformer, identity `|e| e`). make_err() takes
+// the Negative arm with a String error. The map decomposes the String error,
+// tombstones the inner, rewraps it into the result, tombstones the moved value.
+// The mapped result then leaves scope and its drop glue frees the String once.
+// A double-free (F1 / missing Deinit) would SIGABRT before this could print 0.
+// (Matched-consumer of a heap *error* is exercised by the JIT counting test;
+// a latent HP.3 match-bind type defect is tracked separately.)
+
+function make_err() -> Integer~String =
+    ~- "boom"
+
+function map_and_drop() -> Integer {
+    let m: Integer~String = make_err() ~-> |e| e;
+    0
+}
+
+function main() -> Integer = map_and_drop()

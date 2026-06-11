@@ -1,0 +1,19 @@
+// EXPECT: 5
+// HP.4: heap `~+>` map (identity `|v| v`). make() -> String~Integer success.
+// The map decomposes the String success out of the inner Outcome, tombstones
+// the inner (Deinit), rewraps it into the result, then tombstones the moved
+// value — so exactly one heap value is live (the result owns it). The match
+// binds it and it is freed once. A Drop-then-move (F1) or a missing Deinit
+// would double-free (SIGABRT) before this could print 5.
+
+function make_greeting() -> String~Integer =
+    ~+ "hello"
+
+function mapped() -> String~Integer =
+    make_greeting() ~+> |v| v
+
+function main() -> Integer =
+    match mapped() {
+        ~+ s => 5
+        ~- e => -1
+    }

@@ -501,8 +501,10 @@ impl Checker<'_> {
                 let body_ty = self.infer_expression(body);
                 self.env.pop_frame();
 
-                // APP.2b-1: body must be Bậc A scalar (i64-compatible).
-                if !body_ty.is_scalar() {
+                // APP.2b-1: scalar bodies. HP.4: heap bodies (String/Vector)
+                // now allowed — result error slot grows to 32 bytes. Struct/
+                // enum payloads remain sealed.
+                if !body_ty.is_scalar() && !body_ty.is_heap() {
                     self.errors.push(TypeError::ArmHandlerMapModeRejected {
                         span: body_expr.span.clone(),
                     });
@@ -565,10 +567,10 @@ impl Checker<'_> {
             let body_ty = self.infer_expression(body);
             self.env.pop_frame();
 
-            // APP.2b-1: type-change allowed, but body must be Bậc A scalar
-            // (i64-compatible). Heap/struct/enum payloads cannot fit in the
-            // 8-byte Outcome payload slot.
-            if !body_ty.is_scalar() {
+            // APP.2b-1: type-change allowed for scalars. HP.4: heap bodies
+            // (String/Vector) now allowed — result value slot grows to 32
+            // bytes {ptr,len,cap}. Struct/enum payloads remain sealed.
+            if !body_ty.is_scalar() && !body_ty.is_heap() {
                 self.errors.push(TypeError::ArmHandlerMapModeRejected {
                     span: self.arena.expression(body).span.clone(),
                 });

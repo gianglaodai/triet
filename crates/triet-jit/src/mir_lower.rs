@@ -3626,6 +3626,21 @@ mod tests {
         HP3B_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// HP.4: per-test counter for the heap map (`~+>`) free-balance test.
+    /// Mirrors the real `__triet_string_free` ptr==0 guard so it counts only
+    /// frees of LIVE allocations — a tombstoned (Deinit'd, ptr=0) value's Drop
+    /// still *calls* free, but frees nothing, exactly as in production.
+    static HP4_FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __hp4_count_free(ptr: i64, cap: i64) {
+        let _ = cap;
+        if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+            return;
+        }
+        HP4_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// 4i-2/4i-4 (callee side): M4 Return-escape — Drop before Return is skipped.
     /// Hand-built MIR (bypasses lowerer); call-dest typing is tested by
     /// `call_dest_has_correct_type_for_heap_return` in the lowerer.
@@ -4000,6 +4015,201 @@ mod tests {
             HP3B_FREE_COUNT.load(Ordering::SeqCst),
             2,
             "HP.3b: without Deinit, Drop(x)+Drop(o) must free twice (double-free)"
+        );
+    }
+
+    /// HP.4: heap `~+>` map (`|v| v`) free-balance. Replicates the desugar's
+    /// emitted chain for an identity map of `Outcome<String,Integer>`:
+    ///   inner (disc=Pos, heap String) → bind v {ptr,len,cap} → Deinit(inner)
+    ///   → recompose v into result → Deinit(v) → Drop(inner)/Drop(v)/Drop(result).
+    /// Exactly ONE heap value is live (result owns it); the two Deinit
+    /// tombstones make Drop(inner) and Drop(v) no-ops → free count == 1.
+    /// Teeth: drop `Deinit(inner)` → Drop(inner) also frees → count 2.
+    /// Teeth: drop `Deinit(v)` → Drop(v) also frees → count 2.
+    /// Teeth: skip the v→result recompose → result.ptr=0 → count 0 (leak).
+    #[test]
+    #[allow(unsafe_code)]
+    #[allow(clippy::too_many_lines)] // hand-built MIR replicating the map desugar — naturally long
+    fn hp4_heap_map_frees_exactly_once() {
+        use std::sync::atomic::Ordering;
+
+        HP4_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("hp4_map", MirType::Unit);
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::String),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "String",
+            &[
+                ("ptr".to_string(), MirType::Integer, 8, 8),
+                ("len".to_string(), MirType::Integer, 8, 8),
+                ("cap".to_string(), MirType::Integer, 8, 8),
+            ],
+        ));
+
+        let bb0 = b.new_block();
+
+        // ── inner Outcome<String,Integer>, disc=Pos, fake heap String ──
+        let inner = b.new_local();
+        b.set_local_mir_type(inner, outcome_ty.clone());
+        b.push(bb0, storage_live(inner));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: inner,
+                span: DUMMY_SPAN,
+            },
+        );
+        let disc_pos = b.new_local();
+        b.push(bb0, storage_live(disc_pos));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(disc_pos),
+                value: triet_mir::ConstValue::Trit(1),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(inner).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_pos),
+                span: DUMMY_SPAN,
+            },
+        );
+        for (val, proj) in [
+            (1i128, Projection::OutcomePayload),
+            (0i128, Projection::OutcomePayloadLen),
+            (8i128, Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Const {
+                    dest: Place::local(tmp),
+                    value: triet_mir::ConstValue::Integer(val),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(inner).project(proj),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+
+        // ── bind v = decompose inner.payload {ptr,len,cap} ──
+        let v = b.new_local();
+        b.set_local_mir_type(v, MirType::String);
+        b.push(bb0, storage_live(v));
+        for (field, proj) in [
+            ("ptr", Projection::OutcomePayload),
+            ("len", Projection::OutcomePayloadLen),
+            ("cap", Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(tmp),
+                    source: Place::local(inner).project(proj),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(v).project(Projection::Field(field.to_string())),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+        // inner payload moved out → tombstone.
+        b.push(bb0, Statement::Deinit(inner, DUMMY_SPAN));
+
+        // ── result Outcome, disc=Pos, recompose v {ptr,len,cap} ──
+        let result = b.new_local();
+        b.set_local_mir_type(result, outcome_ty);
+        b.push(bb0, storage_live(result));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: result,
+                span: DUMMY_SPAN,
+            },
+        );
+        let disc_pos2 = b.new_local();
+        b.push(bb0, storage_live(disc_pos2));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(disc_pos2),
+                value: triet_mir::ConstValue::Trit(1),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(result).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_pos2),
+                span: DUMMY_SPAN,
+            },
+        );
+        for (field, proj) in [
+            ("ptr", Projection::OutcomePayload),
+            ("len", Projection::OutcomePayloadLen),
+            ("cap", Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(tmp),
+                    source: Place::local(v).project(Projection::Field(field.to_string())),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(result).project(proj),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+        // result now owns the heap value → tombstone v.
+        b.push(bb0, Statement::Deinit(v, DUMMY_SPAN));
+
+        // ── scope-pop Drops (F1 fix order: after the moves) ──
+        b.push(bb0, Statement::Drop(inner, DUMMY_SPAN)); // no-op (Deinit'd)
+        b.push(bb0, Statement::Drop(v, DUMMY_SPAN)); // no-op (Deinit'd)
+        b.push(bb0, Statement::Drop(result, DUMMY_SPAN)); // frees once
+        b.set_terminator(bb0, return_(vec![]));
+        let body = b.build(bb0);
+        println!("=== MIR (hp4_map) ===\n{body}");
+
+        let shims = &[ShimSymbol::fn_2_0("__triet_string_free", __hp4_count_free)];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("HP.4 map compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            HP4_FREE_COUNT.load(Ordering::SeqCst),
+            1,
+            "HP.4: heap map (inner→v→result, 2 Deinit) must free exactly once"
         );
     }
 

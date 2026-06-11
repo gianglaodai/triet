@@ -1,0 +1,15 @@
+// ERROR: E1037
+// HP.4: ~+> body may now be scalar OR heap (String/Vector/HashMap).
+// Struct/enum payloads remain sealed — a struct body is still rejected
+// (it is neither scalar nor a known heap type).
+
+struct Point { x: Integer, y: Integer }
+
+function succeed() -> Integer~Integer =
+    ~+ 42
+
+// Body returns a struct — not scalar, not heap → still E1037.
+function bad_map() -> Integer~Integer =
+    succeed() ~+> |a| Point { x: 1, y: 2 }
+
+function main() -> Integer = 0

@@ -247,6 +247,76 @@ impl Ctx {
         }
     }
 
+    // ── HP.4: heap Outcome payload {ptr,len,cap} move helpers ──────────
+    //
+    // A heap value (String/Vector/HashMap) is 24 bytes `{ptr,len,cap}`; the
+    // Outcome slot holds it at offsets 8/16/24 (ADR-0053 §3.3). Moving such a
+    // payload requires all three words, not just the `ptr` at OutcomePayload.
+
+    /// Decompose a heap payload out of `src` Outcome's slot into a freshly
+    /// typed struct local `dst` (bind capture). Mirror of the match-arm
+    /// decompose (HP.3). Caller must `Deinit(src)` afterwards.
+    fn bind_heap_outcome_payload(&mut self, dst: Local, src: Local, span: &Span) {
+        for (proj, field) in [
+            (Projection::OutcomePayload, "ptr"),
+            (Projection::OutcomePayloadLen, "len"),
+            (Projection::OutcomePayloadCap, "cap"),
+        ] {
+            let tmp = self.alloc_local_ty(MirType::Integer);
+            self.push(Statement::StorageLive(tmp, span.clone()));
+            self.push(Statement::Assign {
+                dest: Place::local(tmp),
+                source: Place::local(src).project(proj),
+                span: span.clone(),
+            });
+            self.push(Statement::Assign {
+                dest: Place::local(dst).project(Projection::Field(field.to_string())),
+                source: Place::local(tmp),
+                span: span.clone(),
+            });
+        }
+    }
+
+    /// Recompose a heap struct local `src` {ptr,len,cap} into `dst` Outcome
+    /// slot's payload (inverse of [`bind_heap_outcome_payload`]). Caller must
+    /// `Deinit(src)` afterwards so its scope-pop `Drop` is a no-op.
+    fn write_heap_outcome_payload(&mut self, dst: Local, src: Local, span: &Span) {
+        for (proj, field) in [
+            (Projection::OutcomePayload, "ptr"),
+            (Projection::OutcomePayloadLen, "len"),
+            (Projection::OutcomePayloadCap, "cap"),
+        ] {
+            let tmp = self.alloc_local_ty(MirType::Integer);
+            self.push(Statement::StorageLive(tmp, span.clone()));
+            self.push(Statement::Assign {
+                dest: Place::local(tmp),
+                source: Place::local(src).project(Projection::Field(field.to_string())),
+                span: span.clone(),
+            });
+            self.push(Statement::Assign {
+                dest: Place::local(dst).project(proj),
+                source: Place::local(tmp),
+                span: span.clone(),
+            });
+        }
+    }
+
+    /// Copy a heap payload {ptr,len,cap} between two Outcome slots
+    /// (passthrough arm). Caller must `Deinit(src)` afterwards.
+    fn copy_heap_outcome_payload(&mut self, dst: Local, src: Local, span: &Span) {
+        for proj in [
+            Projection::OutcomePayload,
+            Projection::OutcomePayloadLen,
+            Projection::OutcomePayloadCap,
+        ] {
+            self.push(Statement::Assign {
+                dest: Place::local(dst).project(proj.clone()),
+                source: Place::local(src).project(proj),
+                span: span.clone(),
+            });
+        }
+    }
+
     /// Emit `Drop` for every currently-owned local BEFORE a Return
     /// terminator, in forward order so the *source* of a loan drops
     /// before its *dest*. This way E2450 fires before NLL cleanup on
@@ -3399,6 +3469,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Lower inner → Outcome 2-slot value.
             let inner_val = lower_expr(*inner, arena, c)?;
 
+            // HP.4: inspect inner Outcome's payload types so each arm can
+            // decide scalar (8-byte) vs heap (24-byte {ptr,len,cap}) moves.
+            let (inner_value_ty, inner_error_ty) = if let MirType::Outcome {
+                value_type,
+                error_type,
+                ..
+            } = &c.local_decls[inner_val.0].ty
+            {
+                ((**value_type).clone(), (**error_type).clone())
+            } else {
+                (MirType::Unknown, MirType::Unknown)
+            };
+
             // Read disc via projection (offset 0).
             let disc = c.alloc_local_ty(MirType::Trit);
             c.push(Statement::StorageLive(disc, expr_span.clone()));
@@ -3455,11 +3538,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
                     span: expr_span.clone(),
                 });
-                c.push(Statement::Assign {
-                    dest: Place::local(result).project(Projection::OutcomePayload),
-                    source: Place::local(inner_val).project(Projection::OutcomePayload),
-                    span: expr_span.clone(),
-                });
+                if inner_error_ty.is_any_heap() {
+                    // HP.4: move 24-byte {ptr,len,cap}; Deinit(inner) so its
+                    // drop glue cannot also free the error → no double-free.
+                    c.copy_heap_outcome_payload(result, inner_val, &expr_span);
+                    c.push(Statement::Deinit(inner_val, expr_span.clone()));
+                } else {
+                    c.push(Statement::Assign {
+                        dest: Place::local(result).project(Projection::OutcomePayload),
+                        source: Place::local(inner_val).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    });
+                }
                 c.term(
                     c.cur,
                     Terminator::Goto {
@@ -3470,20 +3560,40 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             } else if is_negative_mode1 {
                 // APP.2c: bind e, eval body, rewrap ~- into result.
                 c.push_scope();
+                let mapped_heap = inner_error_ty.is_any_heap();
                 if let Some(name) = capture_name {
-                    let e_local = c.alloc_local_ty(MirType::Unknown);
+                    let e_ty = if mapped_heap {
+                        inner_error_ty.clone()
+                    } else {
+                        MirType::Unknown
+                    };
+                    let e_local = c.alloc_local_ty(e_ty);
                     c.push(Statement::StorageLive(e_local, expr_span.clone()));
-                    c.push(Statement::Assign {
-                        dest: Place::local(e_local),
-                        source: Place::local(inner_val).project(Projection::OutcomePayload),
-                        span: expr_span.clone(),
-                    });
+                    if mapped_heap {
+                        // HP.4: decompose heap error into e; tombstone inner.
+                        c.bind_heap_outcome_payload(e_local, inner_val, &expr_span);
+                        c.push(Statement::Deinit(inner_val, expr_span.clone()));
+                    } else {
+                        c.push(Statement::Assign {
+                            dest: Place::local(e_local),
+                            source: Place::local(inner_val).project(Projection::OutcomePayload),
+                            span: expr_span.clone(),
+                        });
+                    }
                     c.vars.insert(name.clone(), e_local);
                     c.local_names.insert(e_local, name.clone());
                     c.push_owned(e_local);
                 }
                 let body_val = lower_expr(*body, arena, c)?;
-                c.pop_scope();
+                // HP.4: result error type = mapped body type (32-byte slot
+                // when heap). Success type = inner success (passthrough).
+                let body_ty = c.local_decls[body_val.0].ty.clone();
+                let body_heap = body_ty.is_any_heap();
+                c.local_decls[result.0].ty = MirType::Outcome {
+                    value_type: Box::new(inner_value_ty.clone()),
+                    error_type: Box::new(body_ty),
+                    allow_null_state: false,
+                };
                 let disc_tmp = c.alloc_local_ty(MirType::Trit);
                 c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
                 c.push(Statement::Const {
@@ -3496,11 +3606,21 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     source: Place::local(disc_tmp),
                     span: expr_span.clone(),
                 });
-                c.push(Statement::Assign {
-                    dest: Place::local(result).project(Projection::OutcomePayload),
-                    source: Place::local(body_val),
-                    span: expr_span.clone(),
-                });
+                if body_heap {
+                    // HP.4 F1: write result THEN Deinit(body_val) so the
+                    // pop_scope Drop of the captured/identity value is a no-op
+                    // (result now owns it) — no Drop-then-move (UAF) race.
+                    c.write_heap_outcome_payload(result, body_val, &expr_span);
+                    c.push(Statement::Deinit(body_val, expr_span.clone()));
+                } else {
+                    c.push(Statement::Assign {
+                        dest: Place::local(result).project(Projection::OutcomePayload),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                }
+                // F1 fix: pop scope AFTER result-write + Deinit, never before.
+                c.pop_scope();
                 c.term(
                     c.cur,
                     Terminator::Goto {
@@ -3538,20 +3658,40 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             if is_positive {
                 // APP.2a: bind v, eval body, rewrap ~+ into result.
                 c.push_scope();
+                let mapped_heap = inner_value_ty.is_any_heap();
                 if let Some(name) = capture_name {
-                    let v_local = c.alloc_local_ty(MirType::Unknown);
+                    let v_ty = if mapped_heap {
+                        inner_value_ty.clone()
+                    } else {
+                        MirType::Unknown
+                    };
+                    let v_local = c.alloc_local_ty(v_ty);
                     c.push(Statement::StorageLive(v_local, expr_span.clone()));
-                    c.push(Statement::Assign {
-                        dest: Place::local(v_local),
-                        source: Place::local(inner_val).project(Projection::OutcomePayload),
-                        span: expr_span.clone(),
-                    });
+                    if mapped_heap {
+                        // HP.4: decompose heap success into v; tombstone inner.
+                        c.bind_heap_outcome_payload(v_local, inner_val, &expr_span);
+                        c.push(Statement::Deinit(inner_val, expr_span.clone()));
+                    } else {
+                        c.push(Statement::Assign {
+                            dest: Place::local(v_local),
+                            source: Place::local(inner_val).project(Projection::OutcomePayload),
+                            span: expr_span.clone(),
+                        });
+                    }
                     c.vars.insert(name.clone(), v_local);
                     c.local_names.insert(v_local, name.clone());
                     c.push_owned(v_local);
                 }
                 let body_val = lower_expr(*body, arena, c)?;
-                c.pop_scope();
+                // HP.4: result success type = mapped body type (32-byte slot
+                // when heap). Error type = inner error (passthrough).
+                let body_ty = c.local_decls[body_val.0].ty.clone();
+                let body_heap = body_ty.is_any_heap();
+                c.local_decls[result.0].ty = MirType::Outcome {
+                    value_type: Box::new(body_ty),
+                    error_type: Box::new(inner_error_ty.clone()),
+                    allow_null_state: false,
+                };
                 let disc_tmp = c.alloc_local_ty(MirType::Trit);
                 c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
                 c.push(Statement::Const {
@@ -3564,11 +3704,21 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     source: Place::local(disc_tmp),
                     span: expr_span.clone(),
                 });
-                c.push(Statement::Assign {
-                    dest: Place::local(result).project(Projection::OutcomePayload),
-                    source: Place::local(body_val),
-                    span: expr_span.clone(),
-                });
+                if body_heap {
+                    // HP.4 F1: write result THEN Deinit(body_val) so the
+                    // pop_scope Drop of the captured/identity value is a no-op
+                    // (result now owns it) — no Drop-then-move (UAF) race.
+                    c.write_heap_outcome_payload(result, body_val, &expr_span);
+                    c.push(Statement::Deinit(body_val, expr_span.clone()));
+                } else {
+                    c.push(Statement::Assign {
+                        dest: Place::local(result).project(Projection::OutcomePayload),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                }
+                // F1 fix: pop scope AFTER result-write + Deinit, never before.
+                c.pop_scope();
                 c.term(
                     c.cur,
                     Terminator::Goto {
@@ -3583,11 +3733,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     source: Place::local(inner_val).project(Projection::OutcomeDiscriminant),
                     span: expr_span.clone(),
                 });
-                c.push(Statement::Assign {
-                    dest: Place::local(result).project(Projection::OutcomePayload),
-                    source: Place::local(inner_val).project(Projection::OutcomePayload),
-                    span: expr_span.clone(),
-                });
+                if inner_value_ty.is_any_heap() {
+                    // HP.4: move 24-byte {ptr,len,cap}; Deinit(inner) so its
+                    // drop glue cannot also free the success → no double-free.
+                    c.copy_heap_outcome_payload(result, inner_val, &expr_span);
+                    c.push(Statement::Deinit(inner_val, expr_span.clone()));
+                } else {
+                    c.push(Statement::Assign {
+                        dest: Place::local(result).project(Projection::OutcomePayload),
+                        source: Place::local(inner_val).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    });
+                }
                 c.term(
                     c.cur,
                     Terminator::Goto {
@@ -3798,6 +3955,73 @@ mod tests {
             })
         });
         assert!(!has_len, "scalar Outcome MUST NOT emit OutcomePayloadLen");
+    }
+
+    /// HP.4: within every block, no local read by an `Assign` source may have
+    /// been `Drop`ped earlier in that block (Drop-then-move = use-after-free).
+    /// This is the structural witness for the F1 fix (ADR-0053 §9.3).
+    fn assert_no_drop_then_move(body: &Body) {
+        for b in &body.blocks {
+            let mut dropped: std::collections::HashSet<Local> = std::collections::HashSet::new();
+            for s in &b.statements {
+                if let Statement::Assign { source, .. } = s {
+                    assert!(
+                        !dropped.contains(&source.local),
+                        "F1 race: local {} moved after Drop (use-after-free)",
+                        source.local
+                    );
+                }
+                if let Statement::Drop(l, _) = s {
+                    dropped.insert(*l);
+                }
+            }
+        }
+    }
+
+    /// HP.4 F1: heap `~+>` map (identity `|v| v`) must move the captured heap
+    /// value into the result BEFORE the scope-pop Drop, and tombstone it via
+    /// Deinit so the Drop is a no-op. Asserts (a) ≥2 Deinit (inner + moved
+    /// value) and (b) no Drop-then-move race.
+    /// Teeth: revert the pop_scope reorder (pop before result-write) → the
+    /// captured local is Dropped, then read by the result Assign → RED.
+    #[test]
+    fn map_heap_success_no_drop_then_move() {
+        let body = lower_source(
+            "function demo() -> String~Integer { let o: String~Integer = ~+ \"hi\"; o ~+> |v| v }",
+        );
+        println!("=== MIR (map heap ~+>) ===\n{body}");
+        let deinit_count = body
+            .blocks
+            .iter()
+            .flat_map(|b| &b.statements)
+            .filter(|s| matches!(s, Statement::Deinit(..)))
+            .count();
+        assert!(
+            deinit_count >= 2,
+            "heap map MUST Deinit inner + moved value (got {deinit_count})"
+        );
+        assert_no_drop_then_move(&body);
+    }
+
+    /// HP.4 F1: heap `~->` map (error transformer, identity `|e| e`) — same
+    /// invariant on the error arm. Success type is scalar (passthrough).
+    #[test]
+    fn map_heap_error_no_drop_then_move() {
+        let body = lower_source(
+            "function demo() -> Integer~String { let o: Integer~String = ~- \"err\"; o ~-> |e| e }",
+        );
+        println!("=== MIR (map heap ~->) ===\n{body}");
+        let deinit_count = body
+            .blocks
+            .iter()
+            .flat_map(|b| &b.statements)
+            .filter(|s| matches!(s, Statement::Deinit(..)))
+            .count();
+        assert!(
+            deinit_count >= 2,
+            "heap error map MUST Deinit inner + moved value (got {deinit_count})"
+        );
+        assert_no_drop_then_move(&body);
     }
 
     /// M2: `let b = a` with Move-type local (String) must emit an Assign

@@ -145,6 +145,13 @@ impl Type {
         self.is_numeric() || matches!(self, Self::Trilean { .. })
     }
 
+    /// True for heap-allocated types (`{ptr,len,cap}`) usable as an Outcome
+    /// payload in Bậc B (HP.4). Excludes struct/enum payloads, still sealed.
+    #[must_use]
+    pub const fn is_heap(&self) -> bool {
+        matches!(self, Self::String | Self::Vector(_))
+    }
+
     /// Returns true if this is any Trilean (refined or not). Replaces
     /// the old unit-variant `matches!(t, Type::Trilean)` pattern.
     #[must_use]
