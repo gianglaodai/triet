@@ -177,4 +177,5 @@ thiếu: D re-add leak-guard thấy không crash (fresh-page-zero) rồi dừng 
 incomplete; O cho nó máu bằng dirty-slot → SIGABRT, chứng minh hazard real.
 
 - **Chữ ký amendment §9:** O ✅ (teeth merge + lệnh-tử-hình-có-máu + tombstone-unobservable
-  tự verify 2026-06-11) · G ⏳ (báo để biết — Lát 2 đóng, ADR-0058 hoàn tất).
+  tự verify 2026-06-11) · G ✅ (ký duyệt hoàn tất toàn bộ ADR-0058 2026-06-11 — chuỗi
+  Outcome 0052→0058 đóng sổ).
