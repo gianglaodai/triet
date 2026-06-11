@@ -1,0 +1,17 @@
+// EXPECT: 7
+// HP.5: match a heap-ERROR Outcome. make_err() -> Integer~String takes the
+// Negative arm with a String error. The match binds `e` (the String error) —
+// which requires the bind local to be typed as the *error* type (String), not
+// the success type (Integer). Before HP.5 the bind was always typed from
+// value_type, so decomposing the heap error into an Integer-typed local made
+// the JIT refuse ("type 'Integer' is not a known struct"). The bound String is
+// freed exactly once on scope exit; a missing Deinit would SIGABRT.
+
+function make_err() -> Integer~String =
+    ~- "boom"
+
+function main() -> Integer =
+    match make_err() {
+        ~+ x => x
+        ~- e => 7
+    }

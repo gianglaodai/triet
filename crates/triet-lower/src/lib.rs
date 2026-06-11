@@ -2878,6 +2878,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                                          arm: &MatchArm,
                                          unwrap_stmt: &dyn Fn(Local) -> Statement,
                                          needs_deinit: bool,
+                                         payload_ty: MirType,
                                          result: Local,
                                          merge_bb: BasicBlock,
                                          expr_span: &Span|
@@ -2892,13 +2893,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     {
                         let sub = arena.pattern(*sub_pat);
                         if let Pattern::Variable(var_name) = &sub.node {
-                            let (payload_ty_local, _) =
-                                if let MirType::Outcome { ref value_type, .. } = scrut_ty {
-                                    (value_type.as_ref().clone(), ())
-                                } else {
-                                    (MirType::Unknown, ())
-                                };
-                            let bind_local = c.alloc_local_ty(payload_ty_local);
+                            // HP.5: bind type is per-arm — `value_type` for the
+                            // `~+` arm, `error_type` for `~-`. A heap error
+                            // (e.g. `Integer~String`) must bind as the String
+                            // struct, not the success type, or the heap
+                            // decompose below targets the wrong layout.
+                            let bind_local = c.alloc_local_ty(payload_ty.clone());
                             c.push(Statement::StorageLive(bind_local, expr_span.clone()));
                             if needs_deinit {
                                 // HP.3: heap payload → decompose {ptr,len,cap}
@@ -2984,11 +2984,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     message: "missing `~+` arm in Outcome match".to_string(),
                     span: expr_span.clone(),
                 })?;
-                let pos_needs_deinit = if let MirType::Outcome { ref value_type, .. } = scrut_ty {
-                    value_type.is_any_heap()
-                } else {
-                    false
-                };
+                let (pos_needs_deinit, pos_payload_ty) =
+                    if let MirType::Outcome { ref value_type, .. } = scrut_ty {
+                        (value_type.is_any_heap(), (**value_type).clone())
+                    } else {
+                        (false, MirType::Unknown)
+                    };
                 lower_outcome_arm(
                     c,
                     arena,
@@ -2999,6 +3000,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         span: expr_span.clone(),
                     },
                     pos_needs_deinit,
+                    pos_payload_ty,
                     result,
                     merge_bb,
                     &expr_span,
@@ -3010,11 +3012,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     message: "missing `~-` arm in Outcome match".to_string(),
                     span: expr_span.clone(),
                 })?;
-                let neg_needs_deinit = if let MirType::Outcome { ref error_type, .. } = scrut_ty {
-                    error_type.is_any_heap()
-                } else {
-                    false
-                };
+                let (neg_needs_deinit, neg_payload_ty) =
+                    if let MirType::Outcome { ref error_type, .. } = scrut_ty {
+                        (error_type.is_any_heap(), (**error_type).clone())
+                    } else {
+                        (false, MirType::Unknown)
+                    };
                 lower_outcome_arm(
                     c,
                     arena,
@@ -3025,6 +3028,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         span: expr_span.clone(),
                     },
                     neg_needs_deinit,
+                    neg_payload_ty,
                     result,
                     merge_bb,
                     &expr_span,
