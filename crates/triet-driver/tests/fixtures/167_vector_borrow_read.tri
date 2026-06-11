@@ -1,0 +1,10 @@
+// EXPECT: 4
+function consume(v: &0 Vector<Integer>) -> Integer { return len(v); }
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 7);
+    xs = push(xs, 8);
+    let n = consume(&0 xs);   // borrow
+    let m = len(xs);          // reuse sau borrow — KHÔNG được E2420
+    return n + m;             // 2 + 2 = 4
+}

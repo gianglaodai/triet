@@ -1936,9 +1936,14 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         .map(|a| lower_expr(*a, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let arg0_ty = &c.local_decls[args[0].0].ty;
-                    let shim_name = if arg0_ty.is_hashmap() {
+                    let base_ty = if let MirType::Reference { inner, .. } = arg0_ty {
+                        inner.as_ref()
+                    } else {
+                        arg0_ty
+                    };
+                    let shim_name = if base_ty.is_hashmap() {
                         "__triet_hashmap_get"
-                    } else if arg0_ty.is_vec() {
+                    } else if base_ty.is_vec() {
                         "__triet_vector_get"
                     } else {
                         return Err(LowerError::heap_type_not_supported(

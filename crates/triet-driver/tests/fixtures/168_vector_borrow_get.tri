@@ -1,0 +1,12 @@
+// EXPECT: 15
+function consume(v: &0 Vector<Integer>, i: Integer) -> Integer {
+    let x = get(v, i);
+    return x ?: 0;
+}
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 15);
+    let n = consume(&0 xs, 0); // 15
+    let m = len(xs); // 1
+    return n * m; // 15
+}

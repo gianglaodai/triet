@@ -385,6 +385,40 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     );
     let ref_hashmap = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(hashmap_ii.clone()));
 
+    // ADR-0059 C.2: `len` and `get` overloads for &0 Vector/HashMap
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_vector.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_hashmap.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_vector.clone(), Integer.clone()],
+            return_type: Box::new(Type::Nullable(Box::new(Integer.clone()))),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_params: Vec::new(),
+            parameters: vec![ref_hashmap.clone(), Integer.clone()],
+            return_type: Box::new(Type::Nullable(Box::new(Integer.clone()))),
+        },
+    );
+
     // `contains` overloads — &0 borrow variants
     env.declare_overload(
         "contains",
