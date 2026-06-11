@@ -89,12 +89,12 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 
 ### 🔵 OP. OUTCOME PRODUCER — error-handling core (ADR-0052, O+G ký 2026-06-10)
 
-Frontend ✅ + Typecheck 🟡 (có móng) + Lower 🔴 degenerate (`~+ e`=identity) + JIT 🔴 (multi-value chặn). Mở C5-cho-Outcome (un-defer, premise nhẹ Cranelift native). Payload CHỈ scalar Bậc A (heap defer B/C). Blueprint `spec/plans/phase12-outcome-producer.md`.
+Frontend ✅ + Typecheck ✅ + Lower ✅ + JIT ✅ (multi-value mở, StackSlot 16-byte). Payload CHỈ scalar Bậc A (heap defer B/C). Blueprint `spec/plans/phase12-outcome-producer.md`. ĐÓNG HOÀN TOÀN.
 
-- [ ] **OP.1 Typecheck:** verify+bổ sung return-type-match + E1025 (`~0` on T~E) + E1024 exhaustiveness. Fixtures negative check-mode.
-- [ ] **OP.2 Lower:** `~+ v`/`~- e` → 2-slot {disc:Trit, payload} + `ReturnShape::BinaryOutcome` + `Return[disc,payload]`. **Fixtures CHECK-MODE** (MIR verify producer, không JIT — cô lập producer khỏi backend).
-- [ ] **OP.3 JIT (un-defer C5-cho-Outcome):** gỡ guard jit:1070 CHỈ cho BinaryOutcome/TernaryOutcome (Cranelift 2-return, inst_results[0,1]). Tuple generic vẫn Err. Fixtures RUN end-to-end.
-- [ ] **OP.4 Match/unwrap:** `match o { ~+ x => .. ~- e => .. }` OutcomeDiscriminant+branch+Unwrap. Fixtures run.
+- [x] **OP.1 Typecheck:** `1e980d0`. verify+bổ sung return-type-match + E1025 (`~0` on T~E) + E1024 exhaustiveness. Fixtures negative check-mode.
+- [x] **OP.2 Lower:** `5a127db`. `~+ v`/`~- e` → 2-slot {disc:Trit, payload} + `ReturnShape::BinaryOutcome` + `Return[disc,payload]`.
+- [x] **OP.3 JIT (un-defer C5-cho-Outcome):** `25e2d38` (2-register) + `58a7b2d` (StackSlot 16-byte). gỡ guard jit:1070 CHỈ cho BinaryOutcome/TernaryOutcome.
+- [x] **OP.4 Match/unwrap:** `6c6e612`. `match o { ~+ x => .. ~- e => .. }` OutcomeDiscriminant+branch+Unwrap. Fixtures run.
 
 ### 🟢 D. PERF (G ack §iii, không chặn)
 
