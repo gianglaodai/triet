@@ -1,0 +1,10 @@
+// EXPECT: 20
+// ADR-0060: nested struct at offset != 0 — inner starts at 8 (after tag).
+// Exercises accumulation in walk_projections: o.inner.y → offset 8 + 8 = 16.
+struct Inner { x: Integer, y: Integer }
+struct Outer { tag: Integer, inner: Inner }
+
+function main() -> Integer {
+    let o = Outer { tag: 5, inner: Inner { x: 10, y: 20 } };
+    return o.inner.y;
+}

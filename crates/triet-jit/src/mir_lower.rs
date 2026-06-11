@@ -363,14 +363,12 @@ impl JitContext {
                 .struct_layouts
                 .iter()
                 .find(|l| l.name == *name)
-                .map(|l| l.total_size)
-                .unwrap_or(8),
+                .map_or(8, |l| l.total_size),
             MirType::Enum(name) => body
                 .enum_layouts
                 .iter()
                 .find(|l| l.name == *name)
-                .map(|l| l.total_size)
-                .unwrap_or(16),
+                .map_or(16, |l| l.total_size),
             _ => 8,
         }
     }
@@ -1200,97 +1198,97 @@ impl JitContext {
                         // a no-op → no double-free of the moved Outcome.
                         let zero = builder.ins().iconst(I64, 0);
                         builder.ins().stack_store(zero, src_slot, 0);
-                    } else if {
+                    } else {
                         // ADR-0060 P2: multi-word copy for struct/enum aggregate.
-                        // Check if source or dest final type is an aggregate (>8B).
-                        let (src_ty, _) = Self::walk_projections(body, source)?;
-                        let (dest_ty, _) = Self::walk_projections(body, dest)?;
-                        Self::ty_total_size(body, &src_ty) > 8
-                            || Self::ty_total_size(body, &dest_ty) > 8
-                    } {
+                        // Walk both places once; if either final type is an aggregate
+                        // (>8 bytes), copy word-by-word instead of the scalar path.
                         let (src_ty, src_off) = Self::walk_projections(body, source)?;
                         let (dest_ty, dest_off) = Self::walk_projections(body, dest)?;
-                        let src_size = Self::ty_total_size(body, &src_ty);
-                        let dest_size = Self::ty_total_size(body, &dest_ty);
-                        let copy_size = src_size.max(dest_size);
-                        let size_i32 = i32::try_from(copy_size).map_err(|_| {
-                            JitError::Unsupported("aggregate copy size exceeds i32".into())
-                        })?;
-                        // Get base stack slots for source and dest.
-                        let src_slot = self
-                            .struct_slots
-                            .get(&source.local)
-                            .map(|(s, _)| *s)
-                            .or_else(|| self.enum_slots.get(&source.local).map(|(s, _)| *s))
-                            .ok_or_else(|| {
-                                JitError::Unsupported(format!(
-                                    "aggregate copy: source local {} has no slot",
-                                    source.local
-                                ))
+                        let is_aggregate = Self::ty_total_size(body, &src_ty) > 8
+                            || Self::ty_total_size(body, &dest_ty) > 8;
+                        if is_aggregate {
+                            let src_size = Self::ty_total_size(body, &src_ty);
+                            let dest_size = Self::ty_total_size(body, &dest_ty);
+                            let copy_size = src_size.max(dest_size);
+                            let size_i32 = i32::try_from(copy_size).map_err(|_| {
+                                JitError::Unsupported("aggregate copy size exceeds i32".into())
                             })?;
-                        let dest_slot = self
-                            .struct_slots
-                            .get(&dest.local)
-                            .map(|(s, _)| *s)
-                            .or_else(|| self.enum_slots.get(&dest.local).map(|(s, _)| *s))
-                            .ok_or_else(|| {
-                                JitError::Unsupported(format!(
-                                    "aggregate copy: dest local {} has no slot",
-                                    dest.local
-                                ))
-                            })?;
-                        let src_off_i32 = src_off;
-                        let dest_off_i32 = dest_off;
-                        let mut off = 0i32;
-                        while off < size_i32 {
-                            let v = builder.ins().stack_load(I64, src_slot, src_off_i32 + off);
-                            builder.ins().stack_store(v, dest_slot, dest_off_i32 + off);
-                            off += 8;
-                        }
-                        // Struct/enum types are Copy in Bậc A — no M1 zeroing needed.
-                    } else {
-                        let val = self.load_place(builder, body, source)?;
-                        self.store_place(builder, body, dest, val)?;
-                        // ADR-0049 Lát 6.3: sync String slot from source slot.
-                        // Read {ptr,len,cap} from source slot if available;
-                        // fall back to heap-read for non-slot sources (should
-                        // not occur for String after Lát 3 pre-allocation).
-                        if dest.projection.is_empty()
-                            && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
-                        {
-                            builder.ins().stack_store(val, *dest_slot, 0);
-                            if source.projection.is_empty()
-                                && let Some((src_slot, _)) = self.struct_slots.get(&source.local)
-                            {
-                                let src_len = builder.ins().stack_load(I64, *src_slot, 8);
-                                let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
-                                builder.ins().stack_store(src_len, *dest_slot, 8);
-                                builder.ins().stack_store(src_cap, *dest_slot, 16);
+                            // Get base stack slots for source and dest.
+                            let src_slot = self
+                                .struct_slots
+                                .get(&source.local)
+                                .map(|(s, _)| *s)
+                                .or_else(|| self.enum_slots.get(&source.local).map(|(s, _)| *s))
+                                .ok_or_else(|| {
+                                    JitError::Unsupported(format!(
+                                        "aggregate copy: source local {} has no slot",
+                                        source.local
+                                    ))
+                                })?;
+                            let dest_slot = self
+                                .struct_slots
+                                .get(&dest.local)
+                                .map(|(s, _)| *s)
+                                .or_else(|| self.enum_slots.get(&dest.local).map(|(s, _)| *s))
+                                .ok_or_else(|| {
+                                    JitError::Unsupported(format!(
+                                        "aggregate copy: dest local {} has no slot",
+                                        dest.local
+                                    ))
+                                })?;
+                            let mut off = 0i32;
+                            while off < size_i32 {
+                                let v = builder.ins().stack_load(I64, src_slot, src_off + off);
+                                builder.ins().stack_store(v, dest_slot, dest_off + off);
+                                off += 8;
                             }
-                        }
-                        // M1: Zeroing-on-Move — if source is a plain local of Move type,
-                        // store 0 into it so Drop becomes a no-op.
-                        let source_is_plain = source.projection.is_empty();
-                        if source_is_plain {
-                            let src_ty = &body.local_decls[source.local.0].ty;
-                            if !src_ty.is_copy(Some(body)) {
-                                let zero = builder.ins().iconst(I64, 0);
-                                // ADR-0049 Lát 2 L2-2: Slot-Truth — for String,
-                                // stack_store is the sole guard; def_var dead.
-                                if let Some((slot, layout)) = self.struct_slots.get(&source.local)
-                                    && layout.name == "String"
+                            // Struct/enum types are Copy in Bậc A — no M1 zeroing needed.
+                        } else {
+                            let val = self.load_place(builder, body, source)?;
+                            self.store_place(builder, body, dest, val)?;
+                            // ADR-0049 Lát 6.3: sync String slot from source slot.
+                            // Read {ptr,len,cap} from source slot if available;
+                            // fall back to heap-read for non-slot sources (should
+                            // not occur for String after Lát 3 pre-allocation).
+                            if dest.projection.is_empty()
+                                && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
+                            {
+                                builder.ins().stack_store(val, *dest_slot, 0);
+                                if source.projection.is_empty()
+                                    && let Some((src_slot, _)) =
+                                        self.struct_slots.get(&source.local)
                                 {
-                                    builder.ins().stack_store(zero, *slot, 0);
-                                } else {
-                                    self.store_place(
-                                        builder,
-                                        body,
-                                        &Place::local(source.local),
-                                        zero,
-                                    )?;
+                                    let src_len = builder.ins().stack_load(I64, *src_slot, 8);
+                                    let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
+                                    builder.ins().stack_store(src_len, *dest_slot, 8);
+                                    builder.ins().stack_store(src_cap, *dest_slot, 16);
                                 }
                             }
-                        }
+                            // M1: Zeroing-on-Move — if source is a plain local of Move type,
+                            // store 0 into it so Drop becomes a no-op.
+                            let source_is_plain = source.projection.is_empty();
+                            if source_is_plain {
+                                let src_ty = &body.local_decls[source.local.0].ty;
+                                if !src_ty.is_copy(Some(body)) {
+                                    let zero = builder.ins().iconst(I64, 0);
+                                    // ADR-0049 Lát 2 L2-2: Slot-Truth — for String,
+                                    // stack_store is the sole guard; def_var dead.
+                                    if let Some((slot, layout)) =
+                                        self.struct_slots.get(&source.local)
+                                        && layout.name == "String"
+                                    {
+                                        builder.ins().stack_store(zero, *slot, 0);
+                                    } else {
+                                        self.store_place(
+                                            builder,
+                                            body,
+                                            &Place::local(source.local),
+                                            zero,
+                                        )?;
+                                    }
+                                }
+                            }
+                        } // if is_aggregate
                     }
                 }
 
