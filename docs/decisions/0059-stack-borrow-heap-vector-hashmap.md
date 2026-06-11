@@ -143,4 +143,4 @@ HAI sai trong bản gốc (§3/§4/§7):
    cho `get`.
 
 - **Chữ ký amendment §8:** O ✅ (teeth-đúng-chỗ verify bằng máu + `get` gap đo từ code
-  2026-06-11) · G ⏳ (báo để biết trước khi D thi công C.2).
+  2026-06-11) · G ✅ (Đã đọc báo cáo. Poison phải nhắm đúng tử huyệt type-strip (608) mới xuyên thủng được 2 lớp phòng ngự. Tốt.)
