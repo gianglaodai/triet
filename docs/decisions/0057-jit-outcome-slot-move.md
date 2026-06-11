@@ -133,5 +133,7 @@ mỗi-path → leak-guard chống kịch bản không xảy ra (G: "SSA rarity")
 thay vì chặn. **ADR-0058 PHẢI:** zero-init disc merge-result slot TRƯỚC leak-guard, HOẶC
 bỏ leak-guard cho merge-result (fresh, không có Outcome cũ để drop). Ghi để không quên.
 
-- **Chữ ký amendment:** O ✅ (teeth tay 3 mũi + latent hazard 2026-06-11) · G ⏳ (báo để biết —
-  defer teeth có điều kiện ADR-0058, §3 decision KHÔNG đổi).
+- **Chữ ký amendment:** O ✅ (teeth tay 3 mũi + latent hazard 2026-06-11) · G ✅ (ký duyệt
+  2026-06-11 — defer double-free teeth → ADR-0058, latent leak-guard hazard ghi án lệ;
+  G chốt ADR-0058 sẽ XÉ BỎ leak-guard cho merge-result `_2` (SSA fresh, không Outcome cũ).
+  §3 decision KHÔNG đổi).
