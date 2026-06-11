@@ -219,6 +219,7 @@ pub struct JitContext {
 impl JitContext {
     /// Return the Cranelift Variable for a MIR Local.
     /// Bậc A: one Cranelift Variable per MIR Local — everything is i64.
+    #[allow(clippy::unused_self)] // method form kept for call-site readability (30+ sites)
     fn var(&self, l: Local) -> Variable {
         Variable::from_u32(l.0 as u32)
     }
@@ -603,7 +604,6 @@ impl JitContext {
         bodies: &[&Body],
     ) -> Result<HashMap<String, CompiledFunction>, JitError> {
         // ── Phase 1: declare all functions ─────────────────
-        let mut sigs: Vec<(String, Signature)> = Vec::new();
         self.func_ids.clear();
 
         for body in bodies {
@@ -637,7 +637,6 @@ impl JitContext {
                 .map_err(|e| JitError::Module(format!("declare {}: {e}", body.signature.name)))?;
 
             self.func_ids.insert(body.signature.name.clone(), func_id);
-            sigs.push((body.signature.name.clone(), sig));
         }
 
         // ── Phase 2: build each function body ──────────────
@@ -968,7 +967,7 @@ impl JitContext {
         // ADR-0049 Lát 3: init all String slot field-0 to 0 FIRST.
         // Param pop below overwrites for String params.
         let zero = builder.ins().iconst(I64, 0);
-        for (_local, (slot, layout)) in &self.struct_slots {
+        for (slot, layout) in self.struct_slots.values() {
             if layout.name == "String" {
                 builder.ins().stack_store(zero, *slot, 0);
             }
@@ -982,15 +981,15 @@ impl JitContext {
             builder.def_var(var, param_val);
             // ADR-0049 Lát 6: String param received as pointer-to-caller-slot.
             // Load {ptr,len,cap} from the caller's slot into our own slot.
-            if matches!(body.local_decls[local.0].ty, MirType::String) {
-                if let Some((slot, _)) = self.struct_slots.get(&local) {
-                    let src_ptr = builder.ins().load(I64, mem_flags, param_val, 0);
-                    let src_len = builder.ins().load(I64, mem_flags, param_val, 8);
-                    let src_cap = builder.ins().load(I64, mem_flags, param_val, 16);
-                    builder.ins().stack_store(src_ptr, *slot, 0);
-                    builder.ins().stack_store(src_len, *slot, 8);
-                    builder.ins().stack_store(src_cap, *slot, 16);
-                }
+            if matches!(body.local_decls[local.0].ty, MirType::String)
+                && let Some((slot, _)) = self.struct_slots.get(&local)
+            {
+                let src_ptr = builder.ins().load(I64, mem_flags, param_val, 0);
+                let src_len = builder.ins().load(I64, mem_flags, param_val, 8);
+                let src_cap = builder.ins().load(I64, mem_flags, param_val, 16);
+                builder.ins().stack_store(src_ptr, *slot, 0);
+                builder.ins().stack_store(src_len, *slot, 8);
+                builder.ins().stack_store(src_cap, *slot, 16);
             }
             // C1: Enum param received as pointer-to-caller-slot.
             // Create enum_slots entry + load [disc][payload] from pointer.
@@ -1095,8 +1094,13 @@ impl JitContext {
         let block_data = &body.blocks[block.0];
         for stmt in &block_data.statements {
             match stmt {
-                Statement::StorageLive(_, _) | Statement::StorageDead(_, _) => {
-                    // No-op at runtime — borrow checker verified safety
+                Statement::StorageLive(_, _)
+                | Statement::StorageDead(_, _)
+                | Statement::StructAlloc { .. }
+                | Statement::EnumAlloc { .. }
+                | Statement::OutcomeAlloc { .. } => {
+                    // No-op at runtime: borrow checker verified safety;
+                    // stack slot allocated during build_body
                 }
                 Statement::Deinit(l, _) => {
                     // ADR-0042: tombstone — zero the slot.
@@ -1115,10 +1119,6 @@ impl JitContext {
                         builder.def_var(self.var(*l), zero);
                     }
                 }
-                Statement::StructAlloc { .. } => {
-                    // No-op at runtime — stack slot allocated during build_body
-                }
-
                 Statement::Const { dest, value, .. } => {
                     if let ConstValue::String(s) = value {
                         // AOT: replace with define_data (ADR-0040 §3.3).
@@ -1152,7 +1152,7 @@ impl JitContext {
                             }
                             ConstValue::Trit(t) => builder.ins().iconst(I64, i64::from(*t)),
                             ConstValue::Unit => builder.ins().iconst(I64, 0),
-                            _ => unreachable!(),
+                            ConstValue::String(_) => unreachable!("String handled by if-let above"),
                         };
                         builder.def_var(self.var(dest.local), val);
                     }
@@ -1381,10 +1381,10 @@ impl JitContext {
                     let func_id = self.get_or_declare_shim(free_shim_name)?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
                     if matches!(ty, MirType::String) {
-                        let (ptr, cap) = if let Some((slot, _)) = self.struct_slots.get(local) {
+                        let [ptr, cap] = if let Some((slot, _)) = self.struct_slots.get(local) {
                             let p = builder.ins().stack_load(I64, *slot, 0);
                             let c = builder.ins().stack_load(I64, *slot, 16);
-                            (p, c)
+                            [p, c]
                         } else {
                             return Err(JitError::Unsupported(
                                 "String Drop without pre-allocated slot".into(),
@@ -1397,12 +1397,6 @@ impl JitContext {
                     }
                 }
 
-                Statement::EnumAlloc { .. } => {
-                    // No-op — StackSlot already created in build_body
-                }
-                Statement::OutcomeAlloc { .. } => {
-                    // No-op — StackSlot already created in build_body
-                }
                 Statement::SetDiscriminant { dest, value, .. } => {
                     if let Some((slot, _)) = self.enum_slots.get(dest) {
                         let disc_val = builder.ins().iconst(I64, *value);
@@ -1588,13 +1582,9 @@ impl JitContext {
                         let arg_vals: Vec<_> = args
                             .iter()
                             .map(|a| {
-                                if let Some((slot, layout)) = self.struct_slots.get(a) {
-                                    if layout.name == "String" {
-                                        // ADR-0049 Lát 6: param fat-String by-pointer
-                                        builder.ins().stack_addr(I64, *slot, 0)
-                                    } else {
-                                        builder.ins().stack_addr(I64, *slot, 0)
-                                    }
+                                if let Some((slot, _)) = self.struct_slots.get(a) {
+                                    // ADR-0049: struct param by-pointer
+                                    builder.ins().stack_addr(I64, *slot, 0)
                                 } else if let Some((slot, _)) = self.enum_slots.get(a) {
                                     // C1: enum param by-pointer (như struct — ADR-0049)
                                     builder.ins().stack_addr(I64, *slot, 0)
@@ -3589,7 +3579,7 @@ mod tests {
     /// Expected Ł3 implies per triet-logic reference.
     fn expected_luk_implies(a: i64, b: i64) -> i64 {
         match (a, b) {
-            (-1, _) | (0, 1) | (0, 0) => 1,
+            (-1, _) | (0, 0 | 1) => 1,
             (1, x) => x,
             (0, -1) => 0,
             _ => unreachable!(),
