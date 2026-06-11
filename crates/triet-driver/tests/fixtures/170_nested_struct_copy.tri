@@ -1,0 +1,11 @@
+// EXPECT: 35
+// ADR-0060: nested struct copy — let o2 = o; o2.inner.x + o2.tag
+struct Inner { x: Integer, y: Integer }
+struct Outer { inner: Inner, tag: Integer }
+
+function main() -> Integer {
+    let o = Outer { inner: Inner { x: 10, y: 20 }, tag: 5 };
+    let o2 = o;
+    // o2.inner is a whole aggregate copy (16 bytes, Điểm 3).
+    return o2.inner.x + o2.inner.y + o2.tag;
+}

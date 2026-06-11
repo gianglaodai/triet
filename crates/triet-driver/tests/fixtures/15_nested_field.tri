@@ -1,4 +1,5 @@
-// ERROR: nested projections not supported
+// EXPECT: 42
+// ADR-0060: nested field access p.inner.val — now supported
 struct Inner {
     val: Integer,
 }

@@ -474,6 +474,44 @@ pub fn lower_program(
         .map(|l| (l.name.clone(), l.clone()))
         .collect();
 
+    // ADR-0060 P2: fixup pass — recompute layouts with correct sizes
+    // for aggregate-typed fields (struct/enum). First pass hardcoded
+    // size=8 for all fields; now replace with the nested struct's
+    // total_size from struct_map. Iterate until stable (handles
+    // A→B→C nesting without topological ordering).
+    loop {
+        let mut changed = false;
+        let mut new_layouts: Vec<StructLayout> = Vec::with_capacity(struct_layouts.len());
+        for layout in &struct_layouts {
+            let new_fields: Vec<(String, MirType, usize, usize)> = layout
+                .fields
+                .iter()
+                .map(|f| {
+                    let size = match &f.ty {
+                        MirType::Struct(name) | MirType::Enum(name) => struct_map
+                            .get(name.as_str())
+                            .map(|l| l.total_size)
+                            .unwrap_or(f.size),
+                        _ => f.size,
+                    };
+                    (f.name.clone(), f.ty.clone(), size, f.alignment)
+                })
+                .collect();
+            let new_layout = StructLayout::compute(&layout.name, &new_fields);
+            if new_layout.total_size != layout.total_size {
+                changed = true;
+            }
+            new_layouts.push(new_layout);
+        }
+        struct_layouts = new_layouts;
+        for l in &struct_layouts {
+            struct_map.insert(l.name.clone(), l.clone());
+        }
+        if !changed {
+            break;
+        }
+    }
+
     // ADR-0049 Phase-1 Lát 1: synthetic String layout for fat-pointer StackSlot.
     // Heap still carries [Header 8B][len 8B][cap 8B][data…] in Lát 1-3;
     // the slot is a cache. Field order: ptr@0 (heap handle), len@8, cap@16.

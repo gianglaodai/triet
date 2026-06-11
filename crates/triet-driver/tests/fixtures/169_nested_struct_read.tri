@@ -1,0 +1,9 @@
+// EXPECT: 42
+// ADR-0060: nested struct field read — o.inner.x / o.inner.y
+struct Inner { x: Integer, y: Integer }
+struct Outer { inner: Inner, tag: Integer }
+
+function main() -> Integer {
+    let o = Outer { inner: Inner { x: 10, y: 20 }, tag: 12 };
+    return o.inner.x + o.inner.y + o.tag;
+}

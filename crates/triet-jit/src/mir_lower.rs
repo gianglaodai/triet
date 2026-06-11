@@ -248,6 +248,133 @@ impl JitContext {
         Ok(id)
     }
 
+    /// ADR-0060 P2: walk through a Place's projections, accumulating byte
+    /// offset from the base local and returning the final field type.
+    /// Handles `Field(name)` and `Payload(variant)` projections; errors
+    /// on unsupported projection types (`Deref`, `Index`).
+    fn walk_projections(body: &Body, place: &Place) -> Result<(MirType, i32), JitError> {
+        let mut current_ty = body.local_decls[place.local.0].ty.clone();
+        let mut total_offset = 0i32;
+        for proj in &place.projection {
+            match proj {
+                Projection::Field(field_name) => {
+                    let ty_name = match &current_ty {
+                        MirType::Struct(name) | MirType::Enum(name) => name.as_str(),
+                        MirType::String => "String",
+                        other => {
+                            return Err(JitError::Unsupported(format!(
+                                "field access on non-aggregate type '{other}'"
+                            )));
+                        }
+                    };
+                    let layout = body
+                        .struct_layouts
+                        .iter()
+                        .find(|l| l.name == ty_name)
+                        .ok_or_else(|| {
+                            JitError::Unsupported(format!(
+                                "type '{current_ty}' is not a known struct (local {})",
+                                place.local
+                            ))
+                        })?;
+                    let field = layout
+                        .fields
+                        .iter()
+                        .find(|f| f.name == *field_name)
+                        .ok_or_else(|| {
+                            JitError::Unsupported(format!(
+                                "field '{field_name}' not found in struct '{current_ty}'"
+                            ))
+                        })?;
+                    let field_off = i32::try_from(field.offset)
+                        .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
+                    total_offset += field_off;
+                    current_ty = field.ty.clone();
+                }
+                Projection::Payload(variant_name) => {
+                    total_offset += 8; // Payload always at offset 8 in Bậc A
+                    let ty_name = match &current_ty {
+                        MirType::Enum(name) => name.as_str(),
+                        other => {
+                            return Err(JitError::Unsupported(format!(
+                                "payload access on non-enum type '{other}'"
+                            )));
+                        }
+                    };
+                    let enum_layout = body
+                        .enum_layouts
+                        .iter()
+                        .find(|e| e.name == ty_name)
+                        .ok_or_else(|| {
+                            JitError::Unsupported(format!("enum '{current_ty}' layout not found"))
+                        })?;
+                    let variant = enum_layout
+                        .variants
+                        .iter()
+                        .find(|v| &v.name == variant_name)
+                        .ok_or_else(|| {
+                            JitError::Unsupported(format!(
+                                "variant '{variant_name}' not found in enum '{current_ty}'"
+                            ))
+                        })?;
+                    if let Some(ref payload) = variant.payload {
+                        current_ty = payload.ty.clone();
+                    } else {
+                        return Err(JitError::Unsupported(format!(
+                            "variant '{variant_name}' has no payload"
+                        )));
+                    }
+                }
+                Projection::OutcomeDiscriminant => {
+                    // discriminant is always at offset 0 in the Outcome slot.
+                    total_offset += 0;
+                    current_ty = MirType::Integer; // disc is i64
+                }
+                Projection::OutcomePayload => {
+                    // payload is always at offset 8 in the Outcome slot.
+                    total_offset += 8;
+                    current_ty = MirType::Integer; // scalar payload is i64
+                }
+                Projection::OutcomePayloadLen => {
+                    // len field at offset 16 (for heap Outcome: {disc@0, ptr@8, len@16, cap@24}).
+                    total_offset += 16;
+                    current_ty = MirType::Integer;
+                }
+                Projection::OutcomePayloadCap => {
+                    // cap field at offset 24.
+                    total_offset += 24;
+                    current_ty = MirType::Integer;
+                }
+                other => {
+                    return Err(JitError::Unsupported(format!(
+                        "unsupported projection in nested position: {other:?}"
+                    )));
+                }
+            }
+        }
+        Ok((current_ty, total_offset))
+    }
+
+    /// ADR-0060 P2: return the total byte size of a `MirType`.
+    /// Struct/enum types look up their layout in `body`; scalars are 8.
+    fn ty_total_size(body: &Body, ty: &MirType) -> usize {
+        match ty {
+            MirType::Struct(name) => body
+                .struct_layouts
+                .iter()
+                .find(|l| l.name == *name)
+                .map(|l| l.total_size)
+                .unwrap_or(8),
+            MirType::Enum(name) => body
+                .enum_layouts
+                .iter()
+                .find(|l| l.name == *name)
+                .map(|l| l.total_size)
+                .unwrap_or(16),
+            _ => 8,
+        }
+    }
+
     /// Load the Cranelift Value for a MIR Place.
     /// Plain locals → `use_var`. Field projections → `stack_load` (local struct)
     /// or load through pointer (param/sret struct).
@@ -258,112 +385,75 @@ impl JitContext {
         place: &Place,
     ) -> Result<cranelift_codegen::ir::Value, JitError> {
         if place.projection.is_empty() {
-            // ADR-0049 Phase-1 Lát 1 B3: whole-read bridge for String.
-            // String has a struct_slot but the "whole value" (for shim
-            // compatibility) is field-0 (heap handle). User structs keep
-            // the old use_var path.
-            if let Some((slot, layout)) = self.struct_slots.get(&place.local)
-                && layout.name == "String"
-            {
+            // ADR-0060 P2: whole-read for struct/enum locals reads from
+            // the stack slot (use_var may be unset — struct fields are
+            // built via field-level stack_store, not def_var).
+            if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+                return Ok(builder.ins().stack_load(I64, *slot, 0));
+            }
+            if let Some((slot, _)) = self.enum_slots.get(&place.local) {
                 return Ok(builder.ins().stack_load(I64, *slot, 0));
             }
             return Ok(builder.use_var(self.var(place.local)));
         }
-        if place.projection.len() != 1 {
-            return Err(JitError::Unsupported(
-                "nested projections not supported".into(),
-            ));
+        // Outcome* projections are always single-level (never nested inside
+        // struct/enum). Handle them before entering the nested walk.
+        if place.projection.len() == 1 {
+            match &place.projection[0] {
+                Projection::OutcomeDiscriminant => {
+                    let disc_offset: i32 = 0;
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        return Ok(builder.ins().stack_load(I64, *slot, disc_offset));
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomeDiscriminant access on non-Outcome local".into(),
+                    ));
+                }
+                Projection::OutcomePayload => {
+                    let payload_offset: i32 = 8;
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        return Ok(builder.ins().stack_load(I64, *slot, payload_offset));
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomePayload access on non-Outcome local".into(),
+                    ));
+                }
+                Projection::OutcomePayloadLen => {
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        return Ok(builder.ins().stack_load(I64, *slot, 16));
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomePayloadLen access on non-Outcome local".into(),
+                    ));
+                }
+                Projection::OutcomePayloadCap => {
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        return Ok(builder.ins().stack_load(I64, *slot, 24));
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomePayloadCap access on non-Outcome local".into(),
+                    ));
+                }
+                _ => {} // Field/Payload: fall through to walk
+            }
         }
-        match &place.projection[0] {
-            Projection::Field(field_name) => {
-                let ty = &body.local_decls[place.local.0].ty;
-                let ty_display = ty.to_string();
-                let ty_name = match ty {
-                    MirType::Struct(name) | MirType::Enum(name) => name.as_str(),
-                    _ => ty_display.as_str(),
-                };
-                let layout = body
-                    .struct_layouts
-                    .iter()
-                    .find(|l| l.name == ty_name)
-                    .ok_or_else(|| {
-                        JitError::Unsupported(format!(
-                            "type '{ty}' is not a known struct (local {})",
-                            place.local
-                        ))
-                    })?;
-                let field = layout
-                    .fields
-                    .iter()
-                    .find(|f| f.name == *field_name)
-                    .ok_or_else(|| {
-                        JitError::Unsupported(format!(
-                            "field '{field_name}' not found in struct '{ty}'"
-                        ))
-                    })?;
-                let offset = i32::try_from(field.offset)
-                    .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
-                if let Some((slot, _)) = self.struct_slots.get(&place.local) {
-                    return Ok(builder.ins().stack_load(I64, *slot, offset));
-                }
-                // Pointer-based: param or sret. Load pointer, add offset, load.
-                // (String never reaches here — universal slots always return
-                // via stack_load above.)
-                let ptr = builder.use_var(self.var(place.local));
-                let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
-                return Ok(builder.ins().load(
-                    I64,
-                    cranelift_codegen::ir::MemFlags::new(),
-                    addr,
-                    0,
-                ));
-            }
-            Projection::Payload(_) => {
-                let payload_offset: i32 = 8;
-                if let Some((slot, _)) = self.enum_slots.get(&place.local) {
-                    return Ok(builder.ins().stack_load(I64, *slot, payload_offset));
-                }
-                return Err(JitError::Unsupported(
-                    "Payload access on non-enum local".into(),
-                ));
-            }
-            Projection::OutcomeDiscriminant => {
-                let disc_offset: i32 = 0;
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    return Ok(builder.ins().stack_load(I64, *slot, disc_offset));
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomeDiscriminant access on non-Outcome local".into(),
-                ));
-            }
-            Projection::OutcomePayload => {
-                let payload_offset: i32 = 8;
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    return Ok(builder.ins().stack_load(I64, *slot, payload_offset));
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomePayload access on non-Outcome local".into(),
-                ));
-            }
-            Projection::OutcomePayloadLen => {
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    return Ok(builder.ins().stack_load(I64, *slot, 16));
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomePayloadLen access on non-Outcome local".into(),
-                ));
-            }
-            Projection::OutcomePayloadCap => {
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    return Ok(builder.ins().stack_load(I64, *slot, 24));
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomePayloadCap access on non-Outcome local".into(),
-                ));
-            }
-            _ => {}
+
+        // ADR-0060 P2: nested projection walk for Field + Payload.
+        // Accumulates offset through each level, then loads from the
+        // base slot (struct_slots or enum_slots) at the final offset.
+        let (_final_ty, total_offset) = Self::walk_projections(body, place)?;
+        if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+            return Ok(builder.ins().stack_load(I64, *slot, total_offset));
         }
-        Err(JitError::Unsupported("unsupported projection".into()))
+        if let Some((slot, _)) = self.enum_slots.get(&place.local) {
+            return Ok(builder.ins().stack_load(I64, *slot, total_offset));
+        }
+        // Pointer-based: param or sret. Load pointer, add offset, load.
+        let ptr = builder.use_var(self.var(place.local));
+        let addr = builder.ins().iadd_imm(ptr, i64::from(total_offset));
+        Ok(builder
+            .ins()
+            .load(I64, cranelift_codegen::ir::MemFlags::new(), addr, 0))
     }
 
     /// Store a Cranelift Value into a MIR Place.
@@ -375,105 +465,81 @@ impl JitContext {
         value: cranelift_codegen::ir::Value,
     ) -> Result<(), JitError> {
         if place.projection.is_empty() {
+            // ADR-0060 P2: for struct/enum locals, also store to the stack slot
+            // so the slot stays in sync with the variable.
+            if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+                builder.ins().stack_store(value, *slot, 0);
+            }
+            if let Some((slot, _)) = self.enum_slots.get(&place.local) {
+                builder.ins().stack_store(value, *slot, 0);
+            }
             builder.def_var(self.var(place.local), value);
             return Ok(());
         }
-        if place.projection.len() != 1 {
-            return Err(JitError::Unsupported(
-                "nested projections not supported".into(),
-            ));
+        // Outcome* projections are always single-level (never nested inside
+        // struct/enum). Handle them before entering the nested walk.
+        if place.projection.len() == 1 {
+            match &place.projection[0] {
+                Projection::OutcomeDiscriminant => {
+                    let disc_offset: i32 = 0;
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        builder.ins().stack_store(value, *slot, disc_offset);
+                        return Ok(());
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomeDiscriminant store to non-Outcome local".into(),
+                    ));
+                }
+                Projection::OutcomePayload => {
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        builder.ins().stack_store(value, *slot, 8);
+                        return Ok(());
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomePayload store to non-Outcome local".into(),
+                    ));
+                }
+                Projection::OutcomePayloadLen => {
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        builder.ins().stack_store(value, *slot, 16);
+                        return Ok(());
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomePayloadLen store to non-Outcome local".into(),
+                    ));
+                }
+                Projection::OutcomePayloadCap => {
+                    if let Some(slot) = self.outcome_slots.get(&place.local) {
+                        builder.ins().stack_store(value, *slot, 24);
+                        return Ok(());
+                    }
+                    return Err(JitError::Unsupported(
+                        "OutcomePayloadCap store to non-Outcome local".into(),
+                    ));
+                }
+                _ => {} // Field/Payload: fall through to walk
+            }
         }
-        match &place.projection[0] {
-            Projection::Field(field_name) => {
-                let ty = &body.local_decls[place.local.0].ty;
-                let ty_display = ty.to_string();
-                let ty_name = match ty {
-                    MirType::Struct(name) | MirType::Enum(name) => name.as_str(),
-                    _ => ty_display.as_str(),
-                };
-                let layout = body
-                    .struct_layouts
-                    .iter()
-                    .find(|l| l.name == ty_name)
-                    .ok_or_else(|| {
-                        JitError::Unsupported(format!(
-                            "type '{ty}' is not a known struct (local {})",
-                            place.local
-                        ))
-                    })?;
-                let field = layout
-                    .fields
-                    .iter()
-                    .find(|f| f.name == *field_name)
-                    .ok_or_else(|| {
-                        JitError::Unsupported(format!(
-                            "field '{field_name}' not found in struct '{ty}'"
-                        ))
-                    })?;
-                let offset = i32::try_from(field.offset)
-                    .map_err(|_| JitError::Unsupported("field offset exceeds i32".into()))?;
-                if let Some((slot, _)) = self.struct_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, offset);
-                    return Ok(());
-                }
-                // Pointer-based: load pointer, add offset, store.
-                let ptr = builder.use_var(self.var(place.local));
-                let addr = builder.ins().iadd_imm(ptr, i64::from(offset));
-                builder
-                    .ins()
-                    .store(cranelift_codegen::ir::MemFlags::new(), value, addr, 0);
-                return Ok(());
-            }
-            Projection::Payload(_) => {
-                let payload_offset: i32 = 8;
-                if let Some((slot, _)) = self.enum_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, payload_offset);
-                    return Ok(());
-                }
-                return Err(JitError::Unsupported(
-                    "Payload store to non-enum local".into(),
-                ));
-            }
-            Projection::OutcomeDiscriminant => {
-                let disc_offset: i32 = 0;
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, disc_offset);
-                    return Ok(());
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomeDiscriminant store to non-Outcome local".into(),
-                ));
-            }
-            Projection::OutcomePayload => {
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, 8);
-                    return Ok(());
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomePayload store to non-Outcome local".into(),
-                ));
-            }
-            Projection::OutcomePayloadLen => {
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, 16);
-                    return Ok(());
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomePayloadLen store to non-Outcome local".into(),
-                ));
-            }
-            Projection::OutcomePayloadCap => {
-                if let Some(slot) = self.outcome_slots.get(&place.local) {
-                    builder.ins().stack_store(value, *slot, 24);
-                    return Ok(());
-                }
-                return Err(JitError::Unsupported(
-                    "OutcomePayloadCap store to non-Outcome local".into(),
-                ));
-            }
-            _ => {}
+
+        // ADR-0060 P2: nested projection walk for Field + Payload.
+        // Accumulates offset through each level, then stores to the
+        // base slot at the final offset.
+        let (_final_ty, total_offset) = Self::walk_projections(body, place)?;
+        if let Some((slot, _)) = self.struct_slots.get(&place.local) {
+            builder.ins().stack_store(value, *slot, total_offset);
+            return Ok(());
         }
-        Err(JitError::Unsupported("unsupported projection".into()))
+        if let Some((slot, _)) = self.enum_slots.get(&place.local) {
+            builder.ins().stack_store(value, *slot, total_offset);
+            return Ok(());
+        }
+        // Pointer-based: load pointer, add offset, store.
+        let ptr = builder.use_var(self.var(place.local));
+        let addr = builder.ins().iadd_imm(ptr, i64::from(total_offset));
+        builder
+            .ins()
+            .store(cranelift_codegen::ir::MemFlags::new(), value, addr, 0);
+        Ok(())
     }
 
     /// Create a new JIT context with host ISA detection (no shims).
@@ -1134,6 +1200,54 @@ impl JitContext {
                         // a no-op → no double-free of the moved Outcome.
                         let zero = builder.ins().iconst(I64, 0);
                         builder.ins().stack_store(zero, src_slot, 0);
+                    } else if {
+                        // ADR-0060 P2: multi-word copy for struct/enum aggregate.
+                        // Check if source or dest final type is an aggregate (>8B).
+                        let (src_ty, _) = Self::walk_projections(body, source)?;
+                        let (dest_ty, _) = Self::walk_projections(body, dest)?;
+                        Self::ty_total_size(body, &src_ty) > 8
+                            || Self::ty_total_size(body, &dest_ty) > 8
+                    } {
+                        let (src_ty, src_off) = Self::walk_projections(body, source)?;
+                        let (dest_ty, dest_off) = Self::walk_projections(body, dest)?;
+                        let src_size = Self::ty_total_size(body, &src_ty);
+                        let dest_size = Self::ty_total_size(body, &dest_ty);
+                        let copy_size = src_size.max(dest_size);
+                        let size_i32 = i32::try_from(copy_size).map_err(|_| {
+                            JitError::Unsupported("aggregate copy size exceeds i32".into())
+                        })?;
+                        // Get base stack slots for source and dest.
+                        let src_slot = self
+                            .struct_slots
+                            .get(&source.local)
+                            .map(|(s, _)| *s)
+                            .or_else(|| self.enum_slots.get(&source.local).map(|(s, _)| *s))
+                            .ok_or_else(|| {
+                                JitError::Unsupported(format!(
+                                    "aggregate copy: source local {} has no slot",
+                                    source.local
+                                ))
+                            })?;
+                        let dest_slot = self
+                            .struct_slots
+                            .get(&dest.local)
+                            .map(|(s, _)| *s)
+                            .or_else(|| self.enum_slots.get(&dest.local).map(|(s, _)| *s))
+                            .ok_or_else(|| {
+                                JitError::Unsupported(format!(
+                                    "aggregate copy: dest local {} has no slot",
+                                    dest.local
+                                ))
+                            })?;
+                        let src_off_i32 = src_off;
+                        let dest_off_i32 = dest_off;
+                        let mut off = 0i32;
+                        while off < size_i32 {
+                            let v = builder.ins().stack_load(I64, src_slot, src_off_i32 + off);
+                            builder.ins().stack_store(v, dest_slot, dest_off_i32 + off);
+                            off += 8;
+                        }
+                        // Struct/enum types are Copy in Bậc A — no M1 zeroing needed.
                     } else {
                         let val = self.load_place(builder, body, source)?;
                         self.store_place(builder, body, dest, val)?;
