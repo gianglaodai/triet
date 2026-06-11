@@ -15,6 +15,8 @@ Usage:
 import yaml
 import sys
 import os
+import subprocess
+import glob
 from textwrap import indent, dedent
 
 
@@ -412,6 +414,19 @@ def generate_all_rust(schema, output_dir):
             item_file.append("")
     with open(os.path.join(output_dir, "ast_item.rs"), "w") as f:
         f.write("\n".join(item_file))
+
+    # Run rustfmt on generated output so raw codegen == committed fmt-canonical form.
+    # Uses the same stable toolchain as the workspace (cadence LUẬT 2).
+    # Nightly-only options in rustfmt.toml (imports_granularity, group_imports)
+    # are silently ignored on stable — cargo fmt still succeeds.
+    # cargo fmt does not accept directories; pass individual .rs files.
+    generated_files = sorted(glob.glob(os.path.join(output_dir, "*.rs")))
+    subprocess.run(
+        ["cargo", "fmt", "--"] + generated_files,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
     return output_dir
 
