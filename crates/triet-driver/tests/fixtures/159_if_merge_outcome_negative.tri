@@ -1,0 +1,4 @@
+// EXPECT: -1
+// ADR-0057: scalar Outcome value-merge through `if`, negative arm.
+function f(n: Integer) -> Integer~Integer = if n == 0 { ~+ 5 } else { ~- -1 }
+function main() -> Integer = match f(1) { ~+ x => x  ~- e => e }

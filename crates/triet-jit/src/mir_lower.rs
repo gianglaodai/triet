@@ -671,6 +671,86 @@ impl JitContext {
         Ok(())
     }
 
+    /// HP.2 / ADR-0057: emit disc-dynamic drop glue for an Outcome `local`.
+    /// Reads the discriminant from the slot and frees the heap payload of
+    /// whichever arm it selects (positive → `value_type`, negative →
+    /// `error_type`, zero → no-op). A scalar Outcome (no heap payload) emits
+    /// nothing. Returns `true` if `local` is an Outcome (so the caller, e.g.
+    /// `Statement::Drop`, knows it was handled), `false` otherwise.
+    ///
+    /// Shared by `Statement::Drop` (free on scope exit) and the ADR-0057
+    /// `Statement::Assign` leak-guard (drop dest's old Outcome before overwrite).
+    fn emit_outcome_drop_glue(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        local: Local,
+    ) -> Result<bool, JitError> {
+        let MirType::Outcome {
+            value_type,
+            error_type,
+            ..
+        } = &body.local_decls[local.0].ty
+        else {
+            return Ok(false);
+        };
+        // Clone to release the immutable borrow on `body` before the
+        // `&mut self` calls to `emit_outcome_payload_free`.
+        let value_type = value_type.clone();
+        let error_type = error_type.clone();
+        if !(value_type.is_any_heap() || error_type.is_any_heap()) {
+            // Scalar Outcome — nothing to free.
+            return Ok(true);
+        }
+        let slot = *self
+            .outcome_slots
+            .get(&local)
+            .ok_or_else(|| JitError::Unsupported("Outcome Drop without slot".into()))?;
+        let disc = builder.ins().stack_load(I64, slot, 0);
+        let pos_val = builder.ins().iconst(I64, 1);
+        let neg_val = builder.ins().iconst(I64, -1);
+
+        let free_pos_bb = builder.create_block();
+        let free_neg_bb = builder.create_block();
+        let noop_bb = builder.create_block();
+        let merge_bb = builder.create_block();
+
+        // Branch disc == 1 → free_pos.
+        let is_pos = builder.ins().icmp(IntCC::Equal, disc, pos_val);
+        let fallthrough1 = builder.create_block();
+        builder
+            .ins()
+            .brif(is_pos, free_pos_bb, &[], fallthrough1, &[]);
+
+        // Branch disc == -1 → free_neg; else → noop.
+        builder.switch_to_block(fallthrough1);
+        let is_neg = builder.ins().icmp(IntCC::Equal, disc, neg_val);
+        builder.ins().brif(is_neg, free_neg_bb, &[], noop_bb, &[]);
+
+        // ── free_pos_bb ──
+        builder.switch_to_block(free_pos_bb);
+        self.emit_outcome_payload_free(builder, slot, &value_type)?;
+        builder.ins().jump(merge_bb, &[]);
+
+        // ── free_neg_bb ──
+        builder.switch_to_block(free_neg_bb);
+        self.emit_outcome_payload_free(builder, slot, &error_type)?;
+        builder.ins().jump(merge_bb, &[]);
+
+        // ── noop_bb (Zero / scalar payload) ──
+        builder.switch_to_block(noop_bb);
+        builder.ins().jump(merge_bb, &[]);
+
+        // ── merge ──
+        builder.switch_to_block(merge_bb);
+        builder.seal_block(free_pos_bb);
+        builder.seal_block(free_neg_bb);
+        builder.seal_block(noop_bb);
+        builder.seal_block(merge_bb);
+        builder.seal_block(fallthrough1);
+        Ok(true)
+    }
+
     /// Build the Cranelift IR for a single function body.
     #[allow(clippy::too_many_lines)] // match-heavy dispatch + param-entry, naturally long
     fn build_body(
@@ -714,6 +794,23 @@ impl JitContext {
                 }
             }
         }
+        // ADR-0057: pre-allocate a StackSlot for EVERY Outcome-typed local,
+        // not just OutcomeAlloc dests. A merge result (`_2 = move _3`) is typed
+        // Outcome (ADR-0056) but never flows through OutcomeAlloc, so without
+        // this it has no slot and `_2.disc` (OutcomeDiscriminant) refuses. This
+        // is the SINGLE source of Outcome slots (the OutcomeAlloc scan below no
+        // longer creates them). Size from outcome_slot_size (16 scalar/32 heap).
+        for i in 0..body.num_locals {
+            if matches!(body.local_decls[i].ty, MirType::Outcome { .. }) {
+                let slot_size = body.local_decls[i].ty.outcome_slot_size();
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    slot_size,
+                    3u8, // log2(8)
+                ));
+                self.outcome_slots.insert(Local(i), slot);
+            }
+        }
         // ── Create StackSlots for local structs and enums ──
         for block in &body.blocks {
             for stmt in &block.statements {
@@ -755,18 +852,8 @@ impl JitContext {
                     ));
                     self.enum_slots.insert(*dest, (slot, layout.clone()));
                 }
-                if let Statement::OutcomeAlloc { dest, .. } = stmt {
-                    // HP.1: dynamic slot size — 16 for scalar, 32 for heap.
-                    let slot_size = body.local_decls[dest.0].ty.outcome_slot_size();
-                    let align_shift = 3u8; // log2(8)
-                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        slot_size,
-                        align_shift,
-                    ));
-                    self.outcome_slots.insert(*dest, slot);
-                }
-                // (String slots now pre-allocated for ALL locals above.)
+                // (Outcome slots pre-allocated for ALL Outcome locals above;
+                //  String slots pre-allocated for ALL String locals above.)
             }
         }
 
@@ -1008,40 +1095,78 @@ impl JitContext {
                 }
 
                 Statement::Assign { dest, source, .. } => {
-                    let val = self.load_place(builder, body, source)?;
-                    self.store_place(builder, body, dest, val)?;
-                    // ADR-0049 Lát 6.3: sync String slot from source slot.
-                    // Read {ptr,len,cap} from source slot if available;
-                    // fall back to heap-read for non-slot sources (should
-                    // not occur for String after Lát 3 pre-allocation).
+                    // ADR-0057: Outcome slot-to-slot move. When both dest and
+                    // source are whole Outcome locals (empty projection) backed
+                    // by slots, the value is a 16/32-byte StackSlot — a 1-word
+                    // load/store would drop everything but the disc. Copy the
+                    // whole slot word-by-word.
                     if dest.projection.is_empty()
-                        && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
+                        && source.projection.is_empty()
+                        && self.outcome_slots.contains_key(&dest.local)
+                        && self.outcome_slots.contains_key(&source.local)
                     {
-                        builder.ins().stack_store(val, *dest_slot, 0);
-                        if source.projection.is_empty()
-                            && let Some((src_slot, _)) = self.struct_slots.get(&source.local)
-                        {
-                            let src_len = builder.ins().stack_load(I64, *src_slot, 8);
-                            let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
-                            builder.ins().stack_store(src_len, *dest_slot, 8);
-                            builder.ins().stack_store(src_cap, *dest_slot, 16);
+                        // Leak guard (§3.4): drop dest's old Outcome before the
+                        // overwrite (no-op for scalar payload; disc-dynamic free
+                        // for heap). Defensive — dest holding a live Outcome is
+                        // an SSA rarity, but the net must be present.
+                        self.emit_outcome_drop_glue(builder, body, dest.local)?;
+                        let dest_slot = self.outcome_slots[&dest.local];
+                        let src_slot = self.outcome_slots[&source.local];
+                        let slot_size = body.local_decls[dest.local.0].ty.outcome_slot_size();
+                        let size_i32 = i32::try_from(slot_size).map_err(|_| {
+                            JitError::Unsupported("Outcome slot size exceeds i32".into())
+                        })?;
+                        let mut off = 0i32;
+                        while off < size_i32 {
+                            let v = builder.ins().stack_load(I64, src_slot, off);
+                            builder.ins().stack_store(v, dest_slot, off);
+                            off += 8;
                         }
-                    }
-                    // M1: Zeroing-on-Move — if source is a plain local of Move type,
-                    // store 0 into it so Drop becomes a no-op.
-                    let source_is_plain = source.projection.is_empty();
-                    if source_is_plain {
-                        let src_ty = &body.local_decls[source.local.0].ty;
-                        if !src_ty.is_copy(Some(body)) {
-                            let zero = builder.ins().iconst(I64, 0);
-                            // ADR-0049 Lát 2 L2-2: Slot-Truth — for String,
-                            // stack_store is the sole guard; def_var dead.
-                            if let Some((slot, layout)) = self.struct_slots.get(&source.local)
-                                && layout.name == "String"
+                        // Tombstone source disc=0 (§3.3): source's Drop becomes
+                        // a no-op → no double-free of the moved Outcome.
+                        let zero = builder.ins().iconst(I64, 0);
+                        builder.ins().stack_store(zero, src_slot, 0);
+                    } else {
+                        let val = self.load_place(builder, body, source)?;
+                        self.store_place(builder, body, dest, val)?;
+                        // ADR-0049 Lát 6.3: sync String slot from source slot.
+                        // Read {ptr,len,cap} from source slot if available;
+                        // fall back to heap-read for non-slot sources (should
+                        // not occur for String after Lát 3 pre-allocation).
+                        if dest.projection.is_empty()
+                            && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
+                        {
+                            builder.ins().stack_store(val, *dest_slot, 0);
+                            if source.projection.is_empty()
+                                && let Some((src_slot, _)) = self.struct_slots.get(&source.local)
                             {
-                                builder.ins().stack_store(zero, *slot, 0);
-                            } else {
-                                self.store_place(builder, body, &Place::local(source.local), zero)?;
+                                let src_len = builder.ins().stack_load(I64, *src_slot, 8);
+                                let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
+                                builder.ins().stack_store(src_len, *dest_slot, 8);
+                                builder.ins().stack_store(src_cap, *dest_slot, 16);
+                            }
+                        }
+                        // M1: Zeroing-on-Move — if source is a plain local of Move type,
+                        // store 0 into it so Drop becomes a no-op.
+                        let source_is_plain = source.projection.is_empty();
+                        if source_is_plain {
+                            let src_ty = &body.local_decls[source.local.0].ty;
+                            if !src_ty.is_copy(Some(body)) {
+                                let zero = builder.ins().iconst(I64, 0);
+                                // ADR-0049 Lát 2 L2-2: Slot-Truth — for String,
+                                // stack_store is the sole guard; def_var dead.
+                                if let Some((slot, layout)) = self.struct_slots.get(&source.local)
+                                    && layout.name == "String"
+                                {
+                                    builder.ins().stack_store(zero, *slot, 0);
+                                } else {
+                                    self.store_place(
+                                        builder,
+                                        body,
+                                        &Place::local(source.local),
+                                        zero,
+                                    )?;
+                                }
                             }
                         }
                     }
@@ -1105,62 +1230,10 @@ impl JitContext {
                         continue;
                     }
 
-                    // HP.2: heap Outcome — inline disc-dynamic drop glue.
-                    if let MirType::Outcome {
-                        value_type,
-                        error_type,
-                        ..
-                    } = ty
-                    {
-                        if value_type.is_any_heap() || error_type.is_any_heap() {
-                            let slot = *self.outcome_slots.get(local).ok_or_else(|| {
-                                JitError::Unsupported("Outcome Drop without slot".into())
-                            })?;
-                            let disc = builder.ins().stack_load(I64, slot, 0);
-                            let pos_val = builder.ins().iconst(I64, 1);
-                            let neg_val = builder.ins().iconst(I64, -1);
-
-                            let free_pos_bb = builder.create_block();
-                            let free_neg_bb = builder.create_block();
-                            let noop_bb = builder.create_block();
-                            let merge_bb = builder.create_block();
-
-                            // Branch disc == 1 → free_pos.
-                            let is_pos = builder.ins().icmp(IntCC::Equal, disc, pos_val);
-                            let fallthrough1 = builder.create_block();
-                            builder
-                                .ins()
-                                .brif(is_pos, free_pos_bb, &[], fallthrough1, &[]);
-
-                            // Branch disc == -1 → free_neg; else → noop.
-                            builder.switch_to_block(fallthrough1);
-                            let is_neg = builder.ins().icmp(IntCC::Equal, disc, neg_val);
-                            builder.ins().brif(is_neg, free_neg_bb, &[], noop_bb, &[]);
-
-                            // ── free_pos_bb ──
-                            builder.switch_to_block(free_pos_bb);
-                            self.emit_outcome_payload_free(builder, slot, value_type)?;
-                            builder.ins().jump(merge_bb, &[]);
-
-                            // ── free_neg_bb ──
-                            builder.switch_to_block(free_neg_bb);
-                            self.emit_outcome_payload_free(builder, slot, error_type)?;
-                            builder.ins().jump(merge_bb, &[]);
-
-                            // ── noop_bb (Zero / scalar payload) ──
-                            builder.switch_to_block(noop_bb);
-                            builder.ins().jump(merge_bb, &[]);
-
-                            // ── merge ──
-                            builder.switch_to_block(merge_bb);
-                            builder.seal_block(free_pos_bb);
-                            builder.seal_block(free_neg_bb);
-                            builder.seal_block(noop_bb);
-                            builder.seal_block(merge_bb);
-                            builder.seal_block(fallthrough1);
-                            continue;
-                        }
-                        // Scalar Outcome — no-op (both payloads are scalar).
+                    // HP.2: heap Outcome — inline disc-dynamic drop glue
+                    // (scalar Outcome → no-op). Shared with the ADR-0057
+                    // Assign leak-guard via `emit_outcome_drop_glue`.
+                    if self.emit_outcome_drop_glue(builder, body, *local)? {
                         continue;
                     }
 

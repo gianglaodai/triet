@@ -106,3 +106,32 @@ ai thêm = lệch scope, REJECT.
   bài học ADR-0055 death-cell). Poison phải đỏ. Gate raw 4 mục.
 - O teeth tay code cuối: poison slot-copy→"non-Outcome"; poison tombstone→free-count↑;
   regression Outcome + 0055/0056 xanh.
+
+## 8. Amendment 2026-06-11 — double-free teeth DEFER + latent leak-guard hazard (append-only)
+
+**Bối cảnh:** implement xong, O teeth tay code cuối (poison + revert sha-identical):
+- **slot-copy** poison→1-word: 158-161 garbage 🔴 (cơ chế sống).
+- **refactor** `emit_outcome_drop_glue` (extract HP.2 drop-glue, shared Drop+leak-guard):
+  byte-identical; poison double-free neg-arm → **138/141 SIGABRT 134** (helper LIVE+faithful).
+- **tombstone** poison (xóa `stack_store zero src_slot 0`): 158-161 **VẪN XANH**.
+
+**RULING O (chuẩn thuận đề xuất D):** **double-free free-count teeth (§4 dòng "double-free")
+DEFER sang ADR-0058.** Grounded: scalar Outcome Drop = no-op (`emit_outcome_drop_glue`
+trả Ok(true) trước khi emit free vì `!is_any_heap`). Tombstone bảo vệ một no-op → không
+observable bằng free-count/behavior trong scope scalar. Ba ràng buộc mâu thuẫn (free-count
+cần heap · heap merge bị §4 cấm · hand-build MirBuilder bị cấm) → teeth bất khả thi ở đây,
+KHÔNG phải D né. Tombstone+leak-guard **read-verified đúng §3.3/§3.4**; drop-glue chúng
+dùng chung đã teeth LIVE (138/141). **ADR-0058 BẮT BUỘC mang teeth double-free tombstone**
+(heap merge `_2=move _3` payload thật free → poison tombstone → count↑).
+
+**🔴 LATENT HAZARD cho ADR-0058 (O phát hiện khi đào leak-guard):** leak-guard
+`emit_outcome_drop_glue(dest)` chạy trên merge-result `_2` — slot pre-alloc **KHÔNG
+zero-init**, disc rác tới lần ghi đầu. Scalar: vô hại (bail tại `!is_any_heap` TRƯỚC khi
+`stack_load(disc)`). **Heap (ADR-0058): leak-guard sẽ `stack_load` disc RÁC từ `_2` chưa
+init → branch → free con trỏ hoang → UB/crash.** Thêm nữa trong SSA merge `_2` ghi-một-lần-
+mỗi-path → leak-guard chống kịch bản không xảy ra (G: "SSA rarity"); với heap nó GÂY bug
+thay vì chặn. **ADR-0058 PHẢI:** zero-init disc merge-result slot TRƯỚC leak-guard, HOẶC
+bỏ leak-guard cho merge-result (fresh, không có Outcome cũ để drop). Ghi để không quên.
+
+- **Chữ ký amendment:** O ✅ (teeth tay 3 mũi + latent hazard 2026-06-11) · G ⏳ (báo để biết —
+  defer teeth có điều kiện ADR-0058, §3 decision KHÔNG đổi).
