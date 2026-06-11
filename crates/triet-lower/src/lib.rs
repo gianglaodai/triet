@@ -3265,7 +3265,30 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             let sub_pat = arena.pattern(*sub_pat);
                             match &sub_pat.node {
                                 triet_syntax::Pattern::Variable(var_name) => {
-                                    let bind_local = c.alloc_local_ty(MirType::Unknown);
+                                    let payload_ty = c
+                                        .enum_layouts
+                                        .get(&res.enum_name)
+                                        .and_then(|layout| {
+                                            layout
+                                                .variants
+                                                .iter()
+                                                .find(|v| v.name == res.variant_name)
+                                                .and_then(|v| {
+                                                    v.payload.as_ref().map(|p| p.ty.clone())
+                                                })
+                                        })
+                                        .unwrap_or(MirType::Unknown);
+                                    let bind_local = c.alloc_local_ty(payload_ty.clone());
+                                    // ADR-0060 P2-Boundary: aggregate payload
+                                    // needs a stack slot (StructAlloc) so the
+                                    // JIT can resolve its address.
+                                    if let MirType::Struct(name) = &payload_ty {
+                                        c.push(Statement::StructAlloc {
+                                            dest: bind_local,
+                                            struct_name: name.clone(),
+                                            span: expr_span.clone(),
+                                        });
+                                    }
                                     c.push(Statement::StorageLive(bind_local, expr_span.clone()));
                                     // Read payload into the binding.
                                     c.push(Statement::Assign {

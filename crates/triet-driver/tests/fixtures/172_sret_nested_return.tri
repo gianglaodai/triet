@@ -1,0 +1,14 @@
+// EXPECT: 35
+// ADR-0060 P2-Boundary B: sret nested return — make() returns Outer,
+// decomposes _0.inner = move _1.inner where _0 is sret pointer.
+struct Inner { x: Integer, y: Integer }
+struct Outer { inner: Inner, tag: Integer }
+
+function make() -> Outer {
+    return Outer { inner: Inner { x: 10, y: 20 }, tag: 5 };
+}
+
+function main() -> Integer {
+    let o = make();
+    return o.inner.x + o.inner.y + o.tag;
+}

@@ -105,3 +105,11 @@ Khi Assign dest hoặc source là field/local kiểu aggregate (≥2 word): copy
    commit** (poison 3 điểm, đo giá-trị-sai/JIT-error trên code CUỐI) → G ký → commit.
    **KHÔNG nhảy cóc** (bài học C.1).
 3. Mỗi lát: cập nhật TODO.md + handoff. Phong ấn P1 ghi rõ vẫn đóng.
+
+## 8. Amendment: P2-Boundary (B+C) đóng mìn §6
+
+Cờ đỏ cắm tại §6 (sret & enum-payload) đã được xác nhận vỡ (driver-run 2026-06-12) và ĐÃ ĐƯỢC GIẢI QUYẾT. 
+Quan trọng: B (sret) và C (enum payload) có hai gốc rễ KHÁC NHAU, dù chung triệu chứng `has no slot`.
+- **B (Sret nested return):** Vỡ do dest local `_0` (return pointer) không có `struct_slot`. Giải pháp: Tách `resolve_addr` per-side, cấp pointer-fallback cho block copy. 
+- **C (Enum payload struct):** Sống nhờ thay đổi tại `lowerer StructAlloc`.
+Cả hai đã được verify độc lập bằng poison. P2 chính thức đóng trọn vẹn (local + sret + enum-payload). Chữ ký: O✅ G✅.

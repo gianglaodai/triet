@@ -1,0 +1,13 @@
+// EXPECT: 30
+// ADR-0060 P2-Boundary C: enum payload containing struct.
+// Construct OptionInner(Inner{10,20}), match→read payload fields.
+struct Inner { x: Integer, y: Integer }
+enum OptionInner { SomeInner(Inner), NoneInner }
+
+function main() -> Integer {
+    let a = SomeInner(Inner { x: 10, y: 20 });
+    return match a {
+        SomeInner(p) => p.x + p.y,
+        NoneInner => 0,
+    };
+}

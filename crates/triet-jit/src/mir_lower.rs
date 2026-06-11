@@ -1199,9 +1199,29 @@ impl JitContext {
                         let zero = builder.ins().iconst(I64, 0);
                         builder.ins().stack_store(zero, src_slot, 0);
                     } else {
-                        // ADR-0060 P2: multi-word copy for struct/enum aggregate.
-                        // Walk both places once; if either final type is an aggregate
-                        // (>8 bytes), copy word-by-word instead of the scalar path.
+                        // ADR-0060 P2-Boundary: per-side address resolver.
+                        // Slot locals → stack_addr; sret/param/match-bind → pointer.
+                        fn resolve_addr(
+                            ctx: &JitContext,
+                            builder: &mut FunctionBuilder<'_>,
+                            local: Local,
+                            offset: i32,
+                        ) -> cranelift_codegen::ir::Value {
+                            let base = if let Some((slot, _)) = ctx.struct_slots.get(&local) {
+                                builder.ins().stack_addr(I64, *slot, 0)
+                            } else if let Some((slot, _)) = ctx.enum_slots.get(&local) {
+                                builder.ins().stack_addr(I64, *slot, 0)
+                            } else {
+                                // Pointer-based: sret, param, or match-binding.
+                                builder.use_var(ctx.var(local))
+                            };
+                            if offset != 0 {
+                                builder.ins().iadd_imm(base, i64::from(offset))
+                            } else {
+                                base
+                            }
+                        }
+                        // Multi-word copy for struct/enum aggregate.
                         let (src_ty, src_off) = Self::walk_projections(body, source)?;
                         let (dest_ty, dest_off) = Self::walk_projections(body, dest)?;
                         let is_aggregate = Self::ty_total_size(body, &src_ty) > 8
@@ -1213,33 +1233,22 @@ impl JitContext {
                             let size_i32 = i32::try_from(copy_size).map_err(|_| {
                                 JitError::Unsupported("aggregate copy size exceeds i32".into())
                             })?;
-                            // Get base stack slots for source and dest.
-                            let src_slot = self
-                                .struct_slots
-                                .get(&source.local)
-                                .map(|(s, _)| *s)
-                                .or_else(|| self.enum_slots.get(&source.local).map(|(s, _)| *s))
-                                .ok_or_else(|| {
-                                    JitError::Unsupported(format!(
-                                        "aggregate copy: source local {} has no slot",
-                                        source.local
-                                    ))
-                                })?;
-                            let dest_slot = self
-                                .struct_slots
-                                .get(&dest.local)
-                                .map(|(s, _)| *s)
-                                .or_else(|| self.enum_slots.get(&dest.local).map(|(s, _)| *s))
-                                .ok_or_else(|| {
-                                    JitError::Unsupported(format!(
-                                        "aggregate copy: dest local {} has no slot",
-                                        dest.local
-                                    ))
-                                })?;
+                            let src_addr = resolve_addr(self, builder, source.local, src_off);
+                            let dest_addr = resolve_addr(self, builder, dest.local, dest_off);
                             let mut off = 0i32;
                             while off < size_i32 {
-                                let v = builder.ins().stack_load(I64, src_slot, src_off + off);
-                                builder.ins().stack_store(v, dest_slot, dest_off + off);
+                                let v = builder.ins().load(
+                                    I64,
+                                    cranelift_codegen::ir::MemFlags::new(),
+                                    src_addr,
+                                    off,
+                                );
+                                builder.ins().store(
+                                    cranelift_codegen::ir::MemFlags::new(),
+                                    v,
+                                    dest_addr,
+                                    off,
+                                );
                                 off += 8;
                             }
                             // Struct/enum types are Copy in Bậc A — no M1 zeroing needed.
