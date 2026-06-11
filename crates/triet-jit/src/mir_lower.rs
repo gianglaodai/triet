@@ -948,15 +948,15 @@ impl JitContext {
                     // No-op at runtime — borrow checker verified safety
                 }
                 Statement::Deinit(l, _) => {
-                    // ADR-0042: tombstone — zero the slot. The callee
-                    // already freed the heap value; zeroing the caller's
-                    // slot ensures the eventual free(0) on Drop is safe.
+                    // ADR-0042: tombstone — zero the slot.
                     let zero = builder.ins().iconst(I64, 0);
-                    // ADR-0049 Lát 2 L2-2: Slot-Truth Edict — for String,
-                    // stack_store is the SOLE guard. def_var is dead (Drop
-                    // reads slot, not var). No-slot String still needs
-                    // def_var.
-                    if let Some((slot, layout)) = self.struct_slots.get(l)
+                    // HP.3: Outcome Deinit → set disc=0 (tombstone).
+                    // Drop glue (HP.2 SwitchInt) sees Zero→no-op.
+                    if self.outcome_slots.contains_key(l) {
+                        if let Some(slot) = self.outcome_slots.get(l) {
+                            builder.ins().stack_store(zero, *slot, 0);
+                        }
+                    } else if let Some((slot, layout)) = self.struct_slots.get(l)
                         && layout.name == "String"
                     {
                         builder.ins().stack_store(zero, *slot, 0);
@@ -3601,12 +3601,29 @@ mod tests {
     /// HP.2: counting-only free (no real dealloc). Used with fake ptr/cap
     /// to test drop glue without needing real heap allocations.
     static HP2_FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
     #[allow(unsafe_code)]
     #[unsafe(no_mangle)]
     extern "C" fn __hp2_count_free(ptr: i64, cap: i64) {
         let _ = (ptr, cap);
         HP2_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// HP.3a: per-test counter for deinit→drop test.
+    static HP3A_FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __hp3a_count_free(ptr: i64, cap: i64) {
+        let _ = (ptr, cap);
+        HP3A_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// HP.3b: per-test counter for no-deinit double-free test.
+    static HP3B_FREE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __hp3b_count_free(ptr: i64, cap: i64) {
+        let _ = (ptr, cap);
+        HP3B_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// 4i-2/4i-4 (callee side): M4 Return-escape — Drop before Return is skipped.
@@ -3762,12 +3779,227 @@ mod tests {
         let shims = &[ShimSymbol::fn_2_0("__triet_string_free", __hp2_count_free)];
         let mut ctx = JitContext::with_shims(shims);
         let func = ctx.compile(&body).expect("HP.2 drop glue compile");
+        HP2_FREE_COUNT.store(0, Ordering::SeqCst);
         let _ = unsafe { func.call_i64_0() };
 
         assert_eq!(
             HP2_FREE_COUNT.load(Ordering::SeqCst),
             1,
             "HP.2: Outcome<String,Integer> drop (Positive arm) must free exactly once"
+        );
+    }
+
+    /// HP.3: Deinit Outcome sets disc=0 → Drop glue no-op.
+    /// Build Outcome<String,Integer> with disc=1, Deinit it,
+    /// then Drop — must NOT call free (count stays 0).
+    #[test]
+    #[allow(unsafe_code)]
+    fn hp3_deinit_then_drop_must_not_free() {
+        use std::sync::atomic::Ordering;
+
+        HP3A_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("hp3_deinit", MirType::Unit);
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::String),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+
+        let bb0 = b.new_block();
+        let o = b.new_local();
+        b.set_local_mir_type(o, outcome_ty);
+        b.push(bb0, storage_live(o));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: o,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        let disc_tmp = b.new_local();
+        b.push(bb0, storage_live(disc_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(disc_tmp),
+                value: triet_mir::ConstValue::Trit(1),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(o).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        for (val, proj) in [
+            (1i128, Projection::OutcomePayload),
+            (0i128, Projection::OutcomePayloadLen),
+            (8i128, Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Const {
+                    dest: Place::local(tmp),
+                    value: triet_mir::ConstValue::Integer(val),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(o).project(proj),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+
+        b.push(bb0, Statement::Deinit(o, DUMMY_SPAN));
+        b.push(bb0, Statement::Drop(o, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+        let body = b.build(bb0);
+
+        let shims = &[ShimSymbol::fn_2_0("__triet_string_free", __hp3a_count_free)];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("HP.3 compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            HP3A_FREE_COUNT.load(Ordering::SeqCst),
+            0,
+            "HP.3a: Deinit→Drop must free 0 times"
+        );
+    }
+
+    /// HP.3b: without Deinit, Drop after bind = double-free (2 frees).
+    #[test]
+    #[allow(unsafe_code)]
+    fn hp3_no_deinit_double_frees() {
+        use std::sync::atomic::Ordering;
+
+        HP3B_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("hp3_nod", MirType::Unit);
+        let outcome_ty = MirType::Outcome {
+            value_type: Box::new(MirType::String),
+            error_type: Box::new(MirType::Integer),
+            allow_null_state: false,
+        };
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "String",
+            &[
+                ("ptr".to_string(), MirType::Integer, 8, 8),
+                ("len".to_string(), MirType::Integer, 8, 8),
+                ("cap".to_string(), MirType::Integer, 8, 8),
+            ],
+        ));
+
+        let bb0 = b.new_block();
+        let o = b.new_local();
+        b.set_local_mir_type(o, outcome_ty);
+        b.push(bb0, storage_live(o));
+        b.push(
+            bb0,
+            Statement::OutcomeAlloc {
+                dest: o,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        let disc_tmp = b.new_local();
+        b.push(bb0, storage_live(disc_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(disc_tmp),
+                value: triet_mir::ConstValue::Trit(1),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(o).project(Projection::OutcomeDiscriminant),
+                source: Place::local(disc_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        for (val, proj) in [
+            (1i128, Projection::OutcomePayload),
+            (0i128, Projection::OutcomePayloadLen),
+            (8i128, Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Const {
+                    dest: Place::local(tmp),
+                    value: triet_mir::ConstValue::Integer(val),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(o).project(proj),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+
+        let x = b.new_local();
+        b.set_local_mir_type(x, MirType::String);
+        b.push(bb0, storage_live(x));
+        for (field, proj) in [
+            ("ptr", Projection::OutcomePayload),
+            ("len", Projection::OutcomePayloadLen),
+            ("cap", Projection::OutcomePayloadCap),
+        ] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(tmp),
+                    source: Place::local(o).project(proj),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(x).project(Projection::Field(field.to_string())),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+
+        b.push(bb0, Statement::Drop(x, DUMMY_SPAN));
+        b.push(bb0, Statement::Drop(o, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+        let body = b.build(bb0);
+
+        let shims = &[ShimSymbol::fn_2_0("__triet_string_free", __hp3b_count_free)];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("HP.3b compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            HP3B_FREE_COUNT.load(Ordering::SeqCst),
+            2,
+            "HP.3b: without Deinit, Drop(x)+Drop(o) must free twice (double-free)"
         );
     }
 

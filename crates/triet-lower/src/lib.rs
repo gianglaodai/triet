@@ -2807,12 +2807,14 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                                          arena: &Arena,
                                          arm: &MatchArm,
                                          unwrap_stmt: &dyn Fn(Local) -> Statement,
+                                         needs_deinit: bool,
                                          result: Local,
                                          merge_bb: BasicBlock,
                                          expr_span: &Span|
                  -> Result<(), LowerError> {
                     c.push_scope();
                     // Bind variable if present.
+                    let mut did_bind = false;
                     if let Pattern::OutcomeArm {
                         payload: Some(sub_pat),
                         ..
@@ -2828,10 +2830,65 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                                 };
                             let bind_local = c.alloc_local_ty(payload_ty_local);
                             c.push(Statement::StorageLive(bind_local, expr_span.clone()));
-                            c.push(unwrap_stmt(bind_local));
+                            if needs_deinit {
+                                // HP.3: heap payload → decompose {ptr,len,cap}
+                                // from Outcome slot into bind_local's struct slot.
+                                let ptr_tmp = c.alloc_local_ty(MirType::Integer);
+                                c.push(Statement::StorageLive(ptr_tmp, expr_span.clone()));
+                                c.push(Statement::Assign {
+                                    dest: Place::local(ptr_tmp),
+                                    source: Place::local(scrut_local)
+                                        .project(Projection::OutcomePayload),
+                                    span: expr_span.clone(),
+                                });
+                                c.push(Statement::Assign {
+                                    dest: Place::local(bind_local)
+                                        .project(Projection::Field("ptr".to_string())),
+                                    source: Place::local(ptr_tmp),
+                                    span: expr_span.clone(),
+                                });
+
+                                let len_tmp = c.alloc_local_ty(MirType::Integer);
+                                c.push(Statement::StorageLive(len_tmp, expr_span.clone()));
+                                c.push(Statement::Assign {
+                                    dest: Place::local(len_tmp),
+                                    source: Place::local(scrut_local)
+                                        .project(Projection::OutcomePayloadLen),
+                                    span: expr_span.clone(),
+                                });
+                                c.push(Statement::Assign {
+                                    dest: Place::local(bind_local)
+                                        .project(Projection::Field("len".to_string())),
+                                    source: Place::local(len_tmp),
+                                    span: expr_span.clone(),
+                                });
+
+                                let cap_tmp = c.alloc_local_ty(MirType::Integer);
+                                c.push(Statement::StorageLive(cap_tmp, expr_span.clone()));
+                                c.push(Statement::Assign {
+                                    dest: Place::local(cap_tmp),
+                                    source: Place::local(scrut_local)
+                                        .project(Projection::OutcomePayloadCap),
+                                    span: expr_span.clone(),
+                                });
+                                c.push(Statement::Assign {
+                                    dest: Place::local(bind_local)
+                                        .project(Projection::Field("cap".to_string())),
+                                    source: Place::local(cap_tmp),
+                                    span: expr_span.clone(),
+                                });
+                            } else {
+                                c.push(unwrap_stmt(bind_local));
+                            }
                             c.vars.insert(var_name.clone(), bind_local);
                             c.push_owned(bind_local);
+                            did_bind = true;
                         }
+                    }
+                    // HP.3: Deinit(o) sau bind heap payload → tombstone disc=0
+                    // → drop glue của o (HP.2 SwitchInt) gặp Zero→no-op → chống double-free.
+                    if did_bind && needs_deinit {
+                        c.push(Statement::Deinit(scrut_local, expr_span.clone()));
                     }
                     let body_val = lower_expr(arm.body, arena, c)?;
                     c.push(Statement::Assign {
@@ -2857,6 +2914,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     message: "missing `~+` arm in Outcome match".to_string(),
                     span: expr_span.clone(),
                 })?;
+                let pos_needs_deinit = if let MirType::Outcome { ref value_type, .. } = scrut_ty {
+                    value_type.is_any_heap()
+                } else {
+                    false
+                };
                 lower_outcome_arm(
                     c,
                     arena,
@@ -2866,6 +2928,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         source: Place::local(scrut_local).project(Projection::OutcomePayload),
                         span: expr_span.clone(),
                     },
+                    pos_needs_deinit,
                     result,
                     merge_bb,
                     &expr_span,
@@ -2877,6 +2940,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     message: "missing `~-` arm in Outcome match".to_string(),
                     span: expr_span.clone(),
                 })?;
+                let neg_needs_deinit = if let MirType::Outcome { ref error_type, .. } = scrut_ty {
+                    error_type.is_any_heap()
+                } else {
+                    false
+                };
                 lower_outcome_arm(
                     c,
                     arena,
@@ -2886,6 +2954,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         source: Place::local(scrut_local).project(Projection::OutcomePayload),
                         span: expr_span.clone(),
                     },
+                    neg_needs_deinit,
                     result,
                     merge_bb,
                     &expr_span,
@@ -3754,6 +3823,25 @@ mod tests {
     }
 
     /// 4i-4: Call destination for user-function returning a Move type
+    /// HP.3: match heap Outcome bind → MIR must contain Deinit(scrut).
+    /// Teeth: poison lowerer 2884 (if false on Deinit) → test RED.
+    #[test]
+    fn match_heap_bind_emits_deinit() {
+        let body = lower_source(
+            "function consume() -> Integer { let o: String~Integer = ~+ \"hi\"; match o { ~+ x => 0  ~- e => 1 } }",
+        );
+        println!("=== MIR (match_deinit) ===\n{body}");
+        let has_deinit = body.blocks.iter().any(|b| {
+            b.statements
+                .iter()
+                .any(|s| matches!(s, Statement::Deinit(..)))
+        });
+        assert!(
+            has_deinit,
+            "match bind heap Outcome MUST emit Deinit(scrut) to tombstone disc=0"
+        );
+    }
+
     /// must have the correct type (e.g. "String"), not "?".
     /// Teeth: revert call-dest fix → type is "?" → test RED.
     #[test]

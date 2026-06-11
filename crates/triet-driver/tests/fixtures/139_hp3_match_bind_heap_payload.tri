@@ -1,0 +1,14 @@
+// EXPECT: 5
+// HP.3: match heap Outcome, bind payload, Deinit scrutinized.
+// ~+ "hello" creates String payload. match ~+ x binds x (owns String).
+// Deinit(o) tombstones disc=0 → drop glue no-op.
+// x goes out of scope → 1 free. Total: 1 (not 2 double-free).
+
+function make_greeting() -> String~Integer =
+    ~+ "hello"
+
+function main() -> Integer =
+    match make_greeting() {
+        ~+ x => 5
+        ~- e => -1
+    }
