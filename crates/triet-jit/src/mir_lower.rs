@@ -550,6 +550,10 @@ impl JitContext {
     ///
     /// Each shim is registered as an `extern "C"` symbol in the JIT module
     /// so that `CallTarget::Shim` calls resolve at link time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the host ISA is not detected or not supported by Cranelift.
     pub fn with_shims(shims: &[ShimSymbol]) -> Self {
         let flag_builder = cranelift_codegen::settings::builder();
         let isa_builder = cranelift_native::builder().expect("host ISA detection failed");
@@ -584,6 +588,15 @@ impl JitContext {
     }
 
     /// Compile a single MIR body (no cross-function calls).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `compile_multi` returns an empty map (internal bug).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JitError::Module`] if a function declaration fails, or
+    /// [`JitError::Unsupported`] if a MIR construct cannot be lowered.
     pub fn compile(&mut self, body: &Body) -> Result<CompiledFunction, JitError> {
         let result = self.compile_multi(&[body])?;
         let compiled = result
@@ -599,6 +612,12 @@ impl JitContext {
     /// Phase 1: declare all functions in the module.
     /// Phase 2: build each function body (can reference others via `func_ids`).
     /// Phase 3: define all functions + finalize.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JitError::Module`] if a function cannot be declared or
+    /// finalized, or [`JitError::Unsupported`] if a MIR construct cannot
+    /// be lowered to Cranelift IR.
     pub fn compile_multi(
         &mut self,
         bodies: &[&Body],
@@ -1085,6 +1104,7 @@ impl JitContext {
     }
 
     /// Lower statements in a block.
+    #[allow(clippy::too_many_lines)] // JIT lowering dispatch — splitting would scatter Cranelift builder state
     fn lower_block_statements(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -1425,6 +1445,7 @@ impl JitContext {
     }
 
     /// Lower a block terminator.
+    #[allow(clippy::too_many_lines)] // JIT lowering dispatch — splitting would scatter Cranelift builder state
     fn lower_block_terminator(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -2126,6 +2147,7 @@ fn string_layout(cap: usize) -> std::alloc::Layout {
 
 /// `__triet_string_alloc(len, cap)` — allocate a String with given length and capacity.
 #[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment)] // write_unaligned does not require alignment
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_alloc(len: i64, cap: i64) -> i64 {
     let cap_usize = i64_to_usize(cap.max(len).max(1)); // at least 1 byte
@@ -2284,8 +2306,8 @@ struct FatStr {
     cap: i64,
 }
 
-/// `__triet_string_clear(slot_ptr)` — *mut FatStr writeback: len=0, ptr unchanged.
-/// ADR-0049 Lát 5: receives pointer to caller's StackSlot, writes back via pointer.
+/// `__triet_string_clear(slot_ptr)` — *mut `FatStr` writeback: len=0, ptr unchanged.
+/// ADR-0049 Lát 5: receives pointer to caller's `StackSlot`, writes back via pointer.
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_clear(slot: i64) -> i64 {
@@ -2302,6 +2324,7 @@ pub extern "C" fn __triet_string_clear(slot: i64) -> i64 {
 }
 
 /// `__triet_string_append(slot_ptr, byte)` — append one byte, realloc if needed.
+///
 /// ADR-0049 Lát 5: `*mut FatStr` writeback. Reads {ptr,len,cap} from slot,
 /// grows if len==cap, writes byte, writebacks {ptr,len+1,cap} to slot+heap.
 #[allow(unsafe_code)]
@@ -2913,7 +2936,7 @@ fn usize_to_i32(v: usize) -> i32 {
     v as i32
 }
 
-/// Cast u32→u8.  Value must fit (\`ilog2()\` ≤ 63 — always true in practice).
+/// Cast u32→u8.  Value must fit (\``ilog2()`\` ≤ 63 — always true in practice).
 #[allow(clippy::cast_possible_truncation, clippy::checked_conversions)]
 fn u32_to_u8(v: u32) -> u8 {
     debug_assert!(v <= u32::from(u8::MAX), "JIT cast u32→u8: overflow {v}");
@@ -2921,9 +2944,9 @@ fn u32_to_u8(v: u32) -> u8 {
 }
 
 /// Cast i64→u8 by truncation (low byte).  This is INTENTIONAL truncation
-/// — the caller (\`__triet_string_append\`) receives a user-supplied \`byte\`
+/// — the caller (\`__`triet_string_append`\`) receives a user-supplied \`byte\`
 /// parameter whose range is defined by language semantics (SPEC), not by
-/// the JIT.  No debug_assert — the range contract belongs to the language
+/// the JIT.  No `debug_assert` — the range contract belongs to the language
 /// spec, and E1b does NOT silently encode one.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 const fn i64_low_byte(v: i64) -> u8 {
@@ -3113,6 +3136,7 @@ mod tests {
     /// ```
     #[test]
     #[allow(unsafe_code)]
+    #[allow(clippy::too_many_lines)] // JIT integration test — refactor not in E1b scope
     fn fibonacci_jit_compile_and_run() {
         let mut b = MirBuilder::new("fibonacci", MirType::Integer);
         let n = b.add_param("n", ParameterPassing::Borrow);
@@ -4255,6 +4279,7 @@ mod tests {
     /// HP.3b: without Deinit, Drop after bind = double-free (2 frees).
     #[test]
     #[allow(unsafe_code)]
+    #[allow(clippy::too_many_lines)] // JIT integration test — refactor not in E1b scope
     fn hp3_no_deinit_double_frees() {
         use std::sync::atomic::Ordering;
 
