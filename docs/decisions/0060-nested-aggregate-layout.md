@@ -1,6 +1,6 @@
 # ADR-0060 — Nested Aggregate Layout (P2): struct-in-struct sizing + JIT nested projection
 
-- **Status:** 🔓 APPROVED (scope) — chờ thi công. Khởi thảo Mentor O 2026-06-12, grounded từ probe driver-run + line-cite + tách bạch P1/P2.
+- **Status:** 🔒 LOCKED — Đã thi công (O+G ký duyệt 2026-06-12). Khởi thảo Mentor O 2026-06-12, grounded từ probe driver-run + line-cite + tách bạch P1/P2.
 - **Date:** 2026-06-12
 - **Khởi thảo:** Mentor O (probe `a.b.c` chạm đáy JIT; tách P2 nested-aggregate khỏi P1 sub-8B packing).
 - **Chữ ký:** O ✅ (root cause proven bằng driver-run; flat-struct sound / nested-broken đo trực tiếp; tách P1/P2) · G ✅ (duyệt scope 3 điểm 2026-06-12 — rút lệnh đập P1 value-model sau phân tích YAGNI, giữ Nhóm E khóa).

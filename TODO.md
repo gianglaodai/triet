@@ -4,7 +4,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 
 ## Phase 4 — Aggregate Type Lowering
 - [x] Struct literal lowering (using Cranelift StackSlot infrastructure).
-  - *Note: JIT hiện tại chưa hỗ trợ nested field access (e.g., `a.b.c`). Cần tính toán offset cộng dồn hoặc stack load chain.*
+  - [x] **Nested field access (ADR-0060 P2):** `f28d14d` `a82e44c`. Offset-chain + multi-word copy ĐÓNG. P1 (Sub-8B packing) vẫn khóa.
 - [x] Enum literal lowering (unit + payload, end-to-end, 24/24 integration green).
   - *MIR: EnumAlloc, SetDiscriminant, GetDiscriminant, SwitchInt, Trap, Payload projection.*
   - *Parser: bare-variant resolution is global name-match (lowerer scans all enum_layouts). Lowerer tự resolve thay vì tiêu thụ typecheck decision = cross-layer mismatch. Diagnostic khó hiểu khi hai enum có variant trùng tên. Defer: typecheck annotate variant resolved lên AST.*
