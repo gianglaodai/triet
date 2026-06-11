@@ -1,0 +1,5 @@
+// EXPECT: 5
+// ADR-0055: block-form body tail = String literal (Fat-Pointer escape).
+// Direct heap escape via Return (3-word {ptr,len,cap}), parity with `= "hello"`.
+function f() -> String { "hello" }
+function main() -> Integer { return len(f()); }

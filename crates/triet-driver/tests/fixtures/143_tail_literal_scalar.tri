@@ -1,0 +1,5 @@
+// EXPECT: 7
+// ADR-0055: block-form body evaluates to its tail expression (scalar literal).
+// Pre-fix this returned 0 (synthetic unit Return discarded the tail).
+function f() -> Integer { 7 }
+function main() -> Integer { return f(); }

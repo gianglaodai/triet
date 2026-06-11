@@ -1,0 +1,5 @@
+// EXPECT: 7
+// ADR-0055 §3 guard `is_open`: an explicit `return` inside a block-form body
+// must still work — the unified path must NOT clobber its terminator / double-Return.
+function f() -> Integer { return 7; }
+function main() -> Integer { return f(); }

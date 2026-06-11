@@ -1,0 +1,7 @@
+// EXPECT: 5
+// ADR-0055 §4 RANH GIỚI SINH TỬ: block-form tail returns an owned heap local
+// that is also scope-pop Drop'd. MIR: `Drop(_1); Return(_1)` — must free exactly
+// once (ADR-0054 Return-leniency). Counting teeth in hp5-style test enforces
+// free==1; this fixture proves correct value + no SIGABRT end-to-end.
+function f() -> String { let s = "hello"; s }
+function main() -> Integer { return len(f()); }

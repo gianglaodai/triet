@@ -1,0 +1,4 @@
+// EXPECT: 5
+// ADR-0055: block-form body tail = nested block yielding an owned String.
+function f() -> String { let s = "hello"; { s } }
+function main() -> Integer { return len(f()); }

@@ -1,0 +1,4 @@
+// EXPECT: 200
+// ADR-0055: block-form body tail = if/else expression (scalar branches).
+function f(n: Integer) -> Integer { if n <= 0 { 100 } else { 200 } }
+function main() -> Integer { return f(5); }

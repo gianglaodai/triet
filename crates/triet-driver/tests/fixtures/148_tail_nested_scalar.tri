@@ -1,0 +1,4 @@
+// EXPECT: 7
+// ADR-0055: block-form body tail = nested block (scalar).
+function f() -> Integer { { 7 } }
+function main() -> Integer { return f(); }

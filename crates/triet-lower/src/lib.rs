@@ -639,24 +639,28 @@ pub(crate) fn lower_function(
         }
     }
 
-    match &func.body {
-        FunctionBody::Block { block } => {
-            lower_block(*block, arena, &mut c)?;
-        }
-        FunctionBody::Expression { expr } => {
-            let val = lower_expr(*expr, arena, &mut c)?;
+    // ADR-0055: a block-form function body IS an expression; its return value
+    // is its tail expression — identical to expr-body `= expr`. The distinction
+    // between `FunctionBody::Block` and `FunctionBody::Expression` is artificial
+    // and unified here: both lower through `lower_expr`. (`lower_block` survives
+    // only for while-body, where discarding the tail is correct.)
+    let body_expr = match &func.body {
+        FunctionBody::Block { block } => Some(*block),
+        FunctionBody::Expression { expr } => Some(*expr),
+        FunctionBody::External { .. } => None,
+    };
+    if let Some(e) = body_expr {
+        let val = lower_expr(e, arena, &mut c)?;
+        // Guard `is_open`: a block-body ending in an explicit `return` has
+        // already closed `cur`; without the guard we'd clobber its terminator
+        // / emit a double Return. For expr-body `cur` is always open here, so
+        // the guard always passes — no behavior change.
+        if c.is_open(c.cur) {
             let values = lower_outcome_return_values(val, &mut c);
+            let span = arena.expression(e).span.clone();
             let cur = c.cur;
-            let expr_span = arena.expression(*expr).span.clone();
-            c.term(
-                cur,
-                Terminator::Return {
-                    values,
-                    span: expr_span,
-                },
-            );
+            c.term(cur, Terminator::Return { values, span });
         }
-        FunctionBody::External { .. } => {}
     }
 
     // Flush owned locals (params + let bindings) before building the body.

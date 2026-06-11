@@ -1,0 +1,5 @@
+// EXPECT: 5
+// ADR-0055: block-form body tail = Outcome constructor (2-register ABI).
+// lower_outcome_return_values splits {disc,payload} on the unified body-path.
+function f() -> Integer~Integer { ~+ 5 }
+function main() -> Integer = match f() { ~+ x => x  ~- e => -1 }
