@@ -1,0 +1,7 @@
+// EXPECT: 5
+// ADR-0055 Bug A: a block-form body ending in an explicit `return` of an
+// Outcome must NOT inject a synthetic arity-1 unit Return into the dead
+// continuation block (which failed Outcome arity verification). The dead
+// block stays Unreachable; the real Return[disc,payload] sits in bb0.
+function f() -> Integer~String { return ~+ 5; }
+function main() -> Integer = match f() { ~+ x => x  ~- e => -1 }

@@ -359,6 +359,32 @@ impl Ctx {
         )
     }
 
+    /// True if any block's terminator has an edge into `bb` (i.e. `bb` has an
+    /// incoming predecessor). Used to tell a reachable open block apart from a
+    /// dead continuation block: `Stmt::Return` leaves `cur` pointing at a fresh
+    /// block with no incoming edge (ADR-0055 Bug A). Such a block must NOT
+    /// receive a synthetic tail `Return` — that arity-1 unit Return fails
+    /// Outcome arity verification, and INV-4 happily leaves it `Unreachable`
+    /// since nothing references it. Mirrors the verifier's reachability scan.
+    fn block_has_incoming(&self, bb: BasicBlock) -> bool {
+        self.mir_blocks.iter().any(|bd| match &bd.terminator {
+            Terminator::Goto { target, .. } => *target == bb,
+            Terminator::If {
+                positive_bb,
+                zero_bb,
+                negative_bb,
+                ..
+            } => *positive_bb == bb || *negative_bb == bb || *zero_bb == Some(bb),
+            Terminator::CallDispatch { return_bb, .. } => *return_bb == bb,
+            Terminator::SwitchInt {
+                cases, default_bb, ..
+            } => *default_bb == bb || cases.iter().any(|&(_, t)| t == bb),
+            Terminator::Return { .. }
+            | Terminator::Unreachable { .. }
+            | Terminator::Trap { .. } => false,
+        })
+    }
+
     fn build(self, entry: BasicBlock) -> Body {
         Body {
             signature: self.sig,
@@ -651,11 +677,15 @@ pub(crate) fn lower_function(
     };
     if let Some(e) = body_expr {
         let val = lower_expr(e, arena, &mut c)?;
-        // Guard `is_open`: a block-body ending in an explicit `return` has
-        // already closed `cur`; without the guard we'd clobber its terminator
-        // / emit a double Return. For expr-body `cur` is always open here, so
-        // the guard always passes — no behavior change.
-        if c.is_open(c.cur) {
+        // Emit the tail Return only into a REACHABLE open block. A block-body
+        // ending in an explicit `return` leaves `cur` pointing at a dead
+        // continuation block (created by Stmt::Return, no incoming edge);
+        // injecting a synthetic unit Return there fails Outcome arity
+        // verification (ADR-0055 Bug A) and is pointless dead code. `is_open`
+        // filters blocks still holding the alloc_bb placeholder; the incoming
+        // check filters dead ones. For expr-body `cur` is the entry (or a
+        // reachable merge) so the guard always passes — no behavior change.
+        if c.is_open(c.cur) && (c.cur == entry || c.block_has_incoming(c.cur)) {
             let values = lower_outcome_return_values(val, &mut c);
             let span = arena.expression(e).span.clone();
             let cur = c.cur;
@@ -669,8 +699,10 @@ pub(crate) fn lower_function(
 
     // A block-form body that falls off the end returns unit.
     // This is a synthetic return — use DUMMY_SPAN since it has no source.
+    // Same reachability guard as above: never inject into a dead continuation
+    // block left behind by an explicit `return` (ADR-0055 Bug A).
     let cur = c.cur;
-    if c.is_open(cur) {
+    if c.is_open(cur) && (cur == entry || c.block_has_incoming(cur)) {
         c.term(
             cur,
             Terminator::Return {

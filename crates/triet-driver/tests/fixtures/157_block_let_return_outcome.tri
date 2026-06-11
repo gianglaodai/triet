@@ -1,0 +1,4 @@
+// EXPECT: 5
+// ADR-0055 Bug A: same dead-block hazard via a let-bound Outcome then return.
+function f() -> Integer~String { let r = ~+ 5; return r; }
+function main() -> Integer = match f() { ~+ x => x  ~- e => -1 }
