@@ -2198,7 +2198,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             c.cur = then_bb;
             let then_val = lower_expr(then_branch, arena, c)?;
             let then_end = c.cur;
-            let result = c.alloc_local();
+            // ADR-0056: type the merge result from the branch value so a
+            // Fat-Pointer ({ptr,len,cap}) survives the merge as a typed move
+            // (JIT typed-Assign copies all 3 words). Untyped → scalar i64 →
+            // only `ptr` moved → len/cap garbage. Type comes FROM the branch
+            // (then_val), so Vector + scalar flow through the same path.
+            let result = c.alloc_local_ty(c.local_decls[then_val.0].ty.clone());
 
             if let Some(eb) = else_branch {
                 c.push(Statement::StorageLive(result, expr_span.clone()));
@@ -3175,6 +3180,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         // Lower arm body.
                         let body_val = lower_expr(arm.body, arena, c)?;
                         let arm_end = c.cur;
+                        // ADR-0056: type the merge result from the arm value so
+                        // a Fat-Pointer survives as a typed move. Idempotent —
+                        // typecheck guarantees every arm has the same type.
+                        c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                         c.push(Statement::Assign {
                             dest: Place::local(result),
                             source: Place::local(body_val),
@@ -3201,6 +3210,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             // No payload to bind — unit variant.
                             let body_val = lower_expr(arm.body, arena, c)?;
                             let arm_end = c.cur;
+                            // ADR-0056: type the merge result from the arm value.
+                            c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                             c.push(Statement::Assign {
                                 dest: Place::local(result),
                                 source: Place::local(body_val),
@@ -3239,6 +3250,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 c.push_scope();
                 let body_val = lower_expr(wc.body, arena, c)?;
                 let wc_end = c.cur;
+                // ADR-0056: type the merge result from the wildcard arm value.
+                c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                 c.push(Statement::Assign {
                     dest: Place::local(result),
                     source: Place::local(body_val),

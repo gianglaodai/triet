@@ -1,0 +1,11 @@
+// EXPECT: 2
+// ADR-0056: if/else value-merge with String (Fat-Pointer) branches.
+// The merge result local is typed from the branch value so {ptr,len,cap}
+// survives as a typed move. Untyped → only ptr moved → len garbage.
+// Observed inline in main: `-> String` user-fn return is blocked by a
+// PRE-EXISTING heap-call-return limit (out of ADR-0056 scope), so the merge
+// is observed via a let-bound local instead.
+function main() -> Integer {
+    let v = if true { "xx" } else { "yyy" };
+    return len(v);
+}

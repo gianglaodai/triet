@@ -1,0 +1,9 @@
+// EXPECT: 2
+// ADR-0056: plain enum match value-merge with Vector (Fat-Pointer) arms.
+// Same fix path as the String arms — type from the arm value, no hardcode.
+enum Color { Red, Green, Blue }
+function main() -> Integer {
+    let c = Green;
+    let v = match c { Red => push(vector_new(), 1), Green => push(push(vector_new(), 1), 2), Blue => vector_new(), };
+    return len(v);
+}

@@ -1,0 +1,10 @@
+// EXPECT: 4
+// ADR-0056: plain enum match value-merge with String (Fat-Pointer) arms.
+// The merge result type is patched from the arm value at each write-site
+// (idempotent — typecheck guarantees all arms share one type).
+enum Color { Red, Green, Blue }
+function main() -> Integer {
+    let c = Green;
+    let s = match c { Red => "xx", Green => "yyyy", Blue => "z", };
+    return len(s);
+}

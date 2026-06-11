@@ -1,0 +1,8 @@
+// EXPECT: 2
+// ADR-0056: if/else value-merge with Vector (Fat-Pointer) branches.
+// Same fix path as String — type comes FROM the branch value, so Vector
+// flows through the same merge-typing with no hardcoded String.
+function main() -> Integer {
+    let v = if false { push(vector_new(), 1) } else { push(push(vector_new(), 1), 2) };
+    return len(v);
+}
