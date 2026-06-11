@@ -221,7 +221,7 @@ impl JitContext {
     /// Bậc A: one Cranelift Variable per MIR Local — everything is i64.
     #[allow(clippy::unused_self)] // method form kept for call-site readability (30+ sites)
     fn var(&self, l: Local) -> Variable {
-        Variable::from_u32(l.0 as u32)
+        Variable::from_u32(usize_to_u32(l.0))
     }
 
     /// Get or declare a shim function ID. Caches the result so multiple
@@ -843,14 +843,14 @@ impl JitContext {
             .find(|l| l.name == "String")
             .cloned();
         if let Some(ref layout) = string_layout {
-            let align_shift = layout.alignment.ilog2() as u8;
+            let align_shift = u32_to_u8(layout.alignment.ilog2());
             for i in 0..body.num_locals {
                 let local = Local(i);
                 let ty = &body.local_decls[i].ty;
                 if matches!(ty, MirType::String) {
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
-                        layout.total_size as u32,
+                        usize_to_u32(layout.total_size),
                         align_shift,
                     ));
                     self.struct_slots.insert(local, (slot, layout.clone()));
@@ -888,10 +888,10 @@ impl JitContext {
                         .ok_or_else(|| {
                             JitError::Unsupported(format!("struct layout not found: {struct_name}"))
                         })?;
-                    let align_shift = layout.alignment.ilog2() as u8;
+                    let align_shift = u32_to_u8(layout.alignment.ilog2());
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
-                        layout.total_size as u32,
+                        usize_to_u32(layout.total_size),
                         align_shift,
                     ));
                     self.struct_slots.insert(*dest, (slot, layout.clone()));
@@ -907,10 +907,10 @@ impl JitContext {
                         .ok_or_else(|| {
                             JitError::Unsupported(format!("enum layout not found: {enum_name}"))
                         })?;
-                    let align_shift = layout.alignment.ilog2() as u8;
+                    let align_shift = u32_to_u8(layout.alignment.ilog2());
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
-                        layout.total_size as u32,
+                        usize_to_u32(layout.total_size),
                         align_shift,
                     ));
                     self.enum_slots.insert(*dest, (slot, layout.clone()));
@@ -1000,7 +1000,7 @@ impl JitContext {
             {
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    layout.total_size as u32,
+                    usize_to_u32(layout.total_size),
                     layout.alignment.ilog2() as u8,
                 ));
                 self.enum_slots.insert(local, (slot, layout.clone()));
@@ -1008,7 +1008,7 @@ impl JitContext {
                 let disc = builder.ins().load(I64, mem_flags, param_val, 0);
                 builder.ins().stack_store(disc, slot, 0);
                 // Load payload area (8B increments)
-                for off in (8..layout.total_size as i32).step_by(8) {
+                for off in (8..usize_to_i32(layout.total_size)).step_by(8) {
                     let field = builder.ins().load(I64, mem_flags, param_val, off);
                     builder.ins().stack_store(field, slot, off);
                 }
@@ -2128,7 +2128,7 @@ fn string_layout(cap: usize) -> std::alloc::Layout {
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_string_alloc(len: i64, cap: i64) -> i64 {
-    let cap_usize = cap.max(len).max(1) as usize; // at least 1 byte
+    let cap_usize = i64_to_usize(cap.max(len).max(1)); // at least 1 byte
     let layout = string_layout(cap_usize);
     // SAFETY: layout is valid (power-of-2 alignment, non-zero size).
     let ptr = unsafe { std::alloc::alloc(layout) };
@@ -2153,7 +2153,7 @@ pub extern "C" fn __triet_string_from_bytes(src: i64, len: i64) -> i64 {
     if src == 0 || len < 0 {
         return 0;
     }
-    let len_usize = len as usize;
+    let len_usize = i64_to_usize(len);
     let body_ptr = __triet_string_alloc(len, len);
     if body_ptr == 0 {
         return 0;
@@ -2176,7 +2176,7 @@ pub extern "C" fn __triet_string_free(ptr: i64, cap: i64) {
     if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
         return;
     }
-    let cap_usize = cap.max(1) as usize;
+    let cap_usize = i64_to_usize(cap.max(1));
     let layout = string_layout(cap_usize);
     let body = ptr as *mut u8;
     let header = unsafe { body.sub(HEADER_SIZE) };
@@ -2215,8 +2215,8 @@ pub extern "C" fn __triet_string_concat(
     // SAFETY: src pointers valid, dst pointer valid with sufficient capacity.
     unsafe {
         let dst = result as *mut u8;
-        std::ptr::copy_nonoverlapping(a_data, dst, a_len as usize);
-        std::ptr::copy_nonoverlapping(b_data, dst.add(a_len as usize), b_len as usize);
+        std::ptr::copy_nonoverlapping(a_data, dst, i64_to_usize(a_len));
+        std::ptr::copy_nonoverlapping(b_data, dst.add(i64_to_usize(a_len)), i64_to_usize(b_len));
     }
     // C6: write {ptr, len, cap} into caller's slot (append precedent).
     let slot = dest_slot as *mut FatStr;
@@ -2243,7 +2243,7 @@ pub extern "C" fn __triet_string_eq(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i
     if a_len != b_len {
         return -1;
     }
-    let len = a_len as usize;
+    let len = i64_to_usize(a_len);
     // ADR-0049 Lát 6.3: no len/cap on heap — data starts at body (ptr itself).
     // SAFETY: data areas are valid reads of `len` bytes.
     unsafe {
@@ -2326,10 +2326,10 @@ pub extern "C" fn __triet_string_append(slot: i64, byte: i64) -> i64 {
             // ADR-0049 Lát 6.3: copy header + data (no len/cap on heap).
             let old_header = (ptr as *mut u8).sub(HEADER_SIZE);
             let new_header = (new_body as *mut u8).sub(HEADER_SIZE);
-            let old_total = HEADER_SIZE + cap as usize;
+            let old_total = HEADER_SIZE + i64_to_usize(cap);
             std::ptr::copy_nonoverlapping(old_header, new_header, old_total);
             // Free old block
-            let old_layout = string_layout(cap.max(1) as usize);
+            let old_layout = string_layout(i64_to_usize(cap.max(1)));
             std::alloc::dealloc(old_header, old_layout);
             ptr = new_body;
             cap = new_cap;
@@ -2338,7 +2338,7 @@ pub extern "C" fn __triet_string_append(slot: i64, byte: i64) -> i64 {
         // Write byte at data[len].
         // ADR-0049 Lát 6.3: data starts at ptr (no len/cap prefix).
         let data = ptr as *mut u8;
-        data.add(len as usize).write(byte as u8);
+        data.add(i64_to_usize(len)).write(i64_low_byte(byte));
 
         // Writeback to slot — sole truth.
         (*slot).ptr = ptr;
@@ -2407,7 +2407,7 @@ fn vector_layout(cap: usize) -> std::alloc::Layout {
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
-    let cap_usize = cap.max(len).max(2) as usize; // at least cap=2 for realloc teeth
+    let cap_usize = i64_to_usize(cap.max(len).max(2)); // at least cap=2 for realloc teeth
     let layout = vector_layout(cap_usize);
     // SAFETY: layout is valid (power-of-2 alignment, non-zero size).
     let ptr = unsafe { std::alloc::alloc(layout) };
@@ -2423,7 +2423,9 @@ pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
         // Write len and cap
         let body = ptr.add(HEADER_SIZE);
         (body as *mut i64).write_unaligned(len);
-        (body as *mut i64).add(1).write_unaligned(cap_usize as i64);
+        (body as *mut i64)
+            .add(1)
+            .write_unaligned(usize_to_i64(cap_usize));
         body as i64
     }
 }
@@ -2444,7 +2446,7 @@ pub extern "C" fn __triet_vector_free(ptr: i64) {
     let body = ptr as *mut u8;
     // Read cap to compute layout
     // SAFETY: body pointer is valid and points to len+cap+data structure.
-    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let cap = i64_to_usize(unsafe { (body as *const i64).add(1).read_unaligned() });
     let layout = vector_layout(cap.max(2));
     let header = unsafe { body.sub(HEADER_SIZE) };
     // SAFETY: layout matches the one used at allocation.
@@ -2490,7 +2492,7 @@ pub extern "C" fn __triet_vector_push(vec: i64, elem: i64) -> i64 {
     let (old_len, old_cap) = unsafe {
         let l = (old_body as *const i64).read_unaligned();
         let c = (old_body as *const i64).add(1).read_unaligned();
-        (l as usize, c as usize)
+        (i64_to_usize(l), i64_to_usize(c))
     };
     let new_len = old_len + 1;
     let new_cap = if new_len > old_cap {
@@ -2638,7 +2640,9 @@ pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
         (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
         let body = ptr.add(HASHMAP_HEADER_SIZE);
         (body as *mut i64).write_unaligned(len);
-        (body as *mut i64).add(1).write_unaligned(cap_usize as i64);
+        (body as *mut i64)
+            .add(1)
+            .write_unaligned(usize_to_i64(cap_usize));
         // Zero-initialize all state bytes to EMPTY (0)
         let state_base = body.add(16 + 16); // skip len+cap, point to first state byte
         for i in 0..cap_usize {
@@ -2862,6 +2866,70 @@ pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
     }
 }
 
+// ── Cast helpers (E1b-2) ─────────────────────────────────────
+// Centralized i64↔machine casts for the JIT value-model.
+// Each wraps a clippy::cast_* allow with a debug_assert that documents
+// and enforces the invariant.  debug_assert fires in debug/test builds
+// → JIT-emit bugs surface AT the cast, not as silent truncation downstream.
+// These invariants are COMPILER-INTERNAL (offset/size/len from layout, ≥0
+// by construction) — never user runtime values.
+
+/// Cast i64→usize.  Value must be ≥ 0 (layout metadata or heap length).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn i64_to_usize(v: i64) -> usize {
+    debug_assert!(v >= 0, "JIT cast i64→usize: negative {v}");
+    v as usize
+}
+
+/// Cast usize→i64.  Value must fit (layout metadata or heap capacity).
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::checked_conversions
+)]
+fn usize_to_i64(v: usize) -> i64 {
+    // `i64::MAX as usize`: on 64-bit this is a no-op; on 32-bit it truncates
+    // to u32::MAX — still a safe upper bound for the assert (any v ≤ u32::MAX
+    // that fits in the assert also fits in i64).
+    debug_assert!(v <= i64::MAX as usize, "JIT cast usize→i64: overflow {v}");
+    v as i64
+}
+
+/// Cast usize→u32.  Value must fit (Variable index, stack size metadata).
+#[allow(clippy::cast_possible_truncation, clippy::checked_conversions)]
+fn usize_to_u32(v: usize) -> u32 {
+    debug_assert!(v <= u32::MAX as usize, "JIT cast usize→u32: overflow {v}");
+    v as u32
+}
+
+/// Cast usize→i32.  Value must fit (non-negative layout metadata).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::checked_conversions
+)]
+fn usize_to_i32(v: usize) -> i32 {
+    debug_assert!(v <= i32::MAX as usize, "JIT cast usize→i32: overflow {v}");
+    v as i32
+}
+
+/// Cast u32→u8.  Value must fit (\`ilog2()\` ≤ 63 — always true in practice).
+#[allow(clippy::cast_possible_truncation, clippy::checked_conversions)]
+fn u32_to_u8(v: u32) -> u8 {
+    debug_assert!(v <= u32::from(u8::MAX), "JIT cast u32→u8: overflow {v}");
+    v as u8
+}
+
+/// Cast i64→u8 by truncation (low byte).  This is INTENTIONAL truncation
+/// — the caller (\`__triet_string_append\`) receives a user-supplied \`byte\`
+/// parameter whose range is defined by language semantics (SPEC), not by
+/// the JIT.  No debug_assert — the range contract belongs to the language
+/// spec, and E1b does NOT silently encode one.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const fn i64_low_byte(v: i64) -> u8 {
+    (v & 0xFF) as u8
+}
+
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2872,6 +2940,86 @@ mod tests {
         CallTarget, ConstValue, DUMMY_SPAN, FunctionId, MirType, ParameterPassing, Place,
         Projection, ReturnShape, Statement, Terminator,
     };
+
+    // ── E1b-2 helper unit tests ────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "JIT cast i64→usize: negative -1")]
+    fn i64_to_usize_rejects_negative() {
+        i64_to_usize(-1); // poison: negative → panic in debug
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)] // i64::MAX as usize — in-range test
+    fn i64_to_usize_happy() {
+        assert_eq!(i64_to_usize(0), 0_usize);
+        assert_eq!(i64_to_usize(42), 42_usize);
+        assert_eq!(i64_to_usize(i64::MAX), i64::MAX as usize);
+    }
+
+    #[test]
+    #[should_panic(expected = "JIT cast usize→i64: overflow")]
+    fn usize_to_i64_rejects_overflow() {
+        usize_to_i64(usize::MAX); // poison: never fits → panic in debug
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)] // i64::MAX as usize — in-range test
+    fn usize_to_i64_happy() {
+        assert_eq!(usize_to_i64(0), 0_i64);
+        assert_eq!(usize_to_i64(42), 42_i64);
+        assert_eq!(usize_to_i64(i64::MAX as usize), i64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "JIT cast usize→u32: overflow")]
+    fn usize_to_u32_rejects_overflow() {
+        usize_to_u32(1 << 33); // poison: 8 GiB → panic in debug
+    }
+
+    #[test]
+    fn usize_to_u32_happy() {
+        assert_eq!(usize_to_u32(0), 0_u32);
+        assert_eq!(usize_to_u32(42), 42_u32);
+        assert_eq!(usize_to_u32(u32::MAX as usize), u32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "JIT cast usize→i32: overflow")]
+    fn usize_to_i32_rejects_overflow() {
+        usize_to_i32(1 << 33); // poison: 8 GiB → panic in debug
+    }
+
+    #[test]
+    fn usize_to_i32_happy() {
+        assert_eq!(usize_to_i32(0), 0_i32);
+        assert_eq!(usize_to_i32(42), 42_i32);
+        assert_eq!(usize_to_i32(i32::MAX as usize), i32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "JIT cast u32→u8: overflow")]
+    fn u32_to_u8_rejects_overflow() {
+        u32_to_u8(256); // poison: outside u8 range → panic in debug
+    }
+
+    #[test]
+    fn u32_to_u8_happy() {
+        assert_eq!(u32_to_u8(0), 0_u8);
+        assert_eq!(u32_to_u8(42), 42_u8);
+        assert_eq!(u32_to_u8(255), 255_u8);
+    }
+
+    #[test]
+    fn i64_low_byte_truncates() {
+        // low-byte extraction, no panic
+        assert_eq!(i64_low_byte(0x00), 0x00_u8);
+        assert_eq!(i64_low_byte(0xFF), 0xFF_u8);
+        assert_eq!(i64_low_byte(0x1FF), 0xFF_u8); // truncation is intentional
+        assert_eq!(i64_low_byte(-1), 0xFF_u8);
+    }
+
+    // ── Pipeline tests ────────────────────────────
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
     #[test]
