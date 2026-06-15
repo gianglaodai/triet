@@ -37,10 +37,26 @@ như free.
 
 ## T2 — Lexer + Parser
 
-- **T2.1** Lexer: thêm keyword `trait`, `implement`, `for`.
-  → **verify:** unit test token.
-- **T2.2** Parser: parse `trait Name { method_sig... }` + `implement Trait for Type { function... }`.
+> **O ruling 2026-06-15 (đính chính tiền đề work order):** `TypeExpr` là
+> **hand-written** (`crates/triet-syntax/src/type_ast.rs:61`), KHÔNG schema-driven
+> (type-system reconcile đã hoãn — CLAUDE.md). Vậy `self`'s type =
+> `TypeExpr::SelfType` thêm **hand-edit** vào `type_ast.rs`, KHÔNG qua schema/regen.
+> Không vi phạm ADR-0061 §2.1 (luật đó áp cho `Item`, đã ở schema). Bác phương án
+> magic-string `TypeExpr::Named("Self")` (string-match = nợ B1/ADR-0050 vừa giết).
+
+- **T2.0** Hand-edit `type_ast.rs`: thêm `TypeExpr::SelfType` (+ manual impl Display/visitor
+  nếu có). Vá ~3 match exhaustive vỡ (`resolve_type` check.rs:894, `resolve_type_expr`
+  check_resolved.rs:238, lower/arena) — arm typecheck = **placeholder** (`Type::Unknown`,
+  KHÔNG `unreachable!` vì T2.4 sinh SelfType reachable; resolve thật = T3).
+  → **verify:** `git diff generated/` rỗng (không chạm schema); build xanh.
+- **T2.1** Lexer: thêm keyword `trait`, `implement` (`for`/`self` đã có sẵn token.rs:90/183).
+  → **verify:** unit test token; regression `self.X` import xanh.
+- **T2.2** Parser: parse `trait Name { method_sig... }` (MethodSignature, no body, no per-method generic)
+  + `implement Trait for Type { function... }` (refactor `parse_function_def()` tái dùng).
   → **verify:** parser unit test dựng AST đúng; **poison** (đổi resolve sai) → test đỏ.
+- **T2.4** `self` param: bare `self` vị-trí-đầu → FunctionParameter{name:"self", SelfType}; vị trí khác → ParseError.
+  → **verify:** `function f(self)` → parameters[0] = SelfType (poison self→Named → đỏ); self-sai-vị-trí → ParseError (negative).
+- **T2.5** `self` expr: primary atom → `Expr::Identifier{name:"self"}`.
 
 ## T3 — Typecheck: registries + coherence
 
