@@ -173,6 +173,14 @@ pub enum Token {
     /// `enum` — enum definition (v0.2+).
     #[token("enum")]
     Enum,
+    /// `trait` — trait declaration (ADR-0061 Tier 1). Full word per
+    /// ADR-0005 verbose-keyword convention.
+    #[token("trait")]
+    Trait,
+    /// `implement` — trait implementation block `implement Trait for Type`
+    /// (ADR-0061 Tier 1). Verbose `implement`, NOT `impl`, per ADR-0005.
+    #[token("implement")]
+    Implement,
     /// `khi` — path keyword: refers to the current khí (package) root.
     /// Reserved per ADR-0005 (formerly `crate`) + ADR-0024 (Khí + Đạo
     /// identity naming, Đạo Đức Kinh §28 phác tán tắc vi khí).

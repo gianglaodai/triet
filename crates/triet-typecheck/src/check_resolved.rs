@@ -390,6 +390,9 @@ fn resolve_type_expr_with_params(
                 resolve_type_expr_with_params(arena, *inner, type_parameters, name_table);
             Type::Reference(*form, Box::new(inner_ty))
         }
+        // ADR-0061 T3: resolve `Self` → receiver type. Placeholder until
+        // impl-context resolution lands; reachable via T2.4 `self` param.
+        TypeExpr::SelfType => Type::Unknown,
     }
 }
 

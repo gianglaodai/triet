@@ -51,7 +51,7 @@ mod tests {
         let source = "function let mutable constant type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
                       kleene_implies kleene_xor kleene_iff import from as module public owned \
-                      struct enum khi self super";
+                      struct enum trait implement khi self super";
         let tokens = lex_only(source);
         assert_eq!(
             tokens,
@@ -92,11 +92,31 @@ mod tests {
                 Owned,
                 Token::Struct,
                 Token::Enum,
+                Token::Trait,
+                Token::Implement,
                 Token::Khi,
                 Token::SelfKw,
                 Token::Super,
             ],
         );
+    }
+
+    #[test]
+    fn lexes_trait_and_implement_keywords() {
+        // ADR-0061 T2.1 teeth: `trait`/`implement` are keywords, not
+        // identifiers. Poison the lexer token map → these go red.
+        assert_eq!(lex_only("trait"), vec![Token::Trait]);
+        assert_eq!(lex_only("implement"), vec![Token::Implement]);
+        // No greedy matching: identifiers that merely start with the
+        // keyword stay identifiers.
+        assert!(matches!(
+            lex_only("traitor").as_slice(),
+            [Token::Identifier(name)] if name == "traitor"
+        ));
+        assert!(matches!(
+            lex_only("implementation").as_slice(),
+            [Token::Identifier(name)] if name == "implementation"
+        ));
     }
 
     #[test]

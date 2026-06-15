@@ -1065,6 +1065,11 @@ impl<'p> Checker<'p> {
             TypeExpr::Reference { form, inner } => {
                 Type::Reference(form, Box::new(self.resolve_type(inner)))
             }
+            // ADR-0061 T3: resolve `Self` → receiver type. T2 only records
+            // the marker (a `self` param carries this), so the resolved type
+            // is a placeholder until impl-context resolution lands. Reachable
+            // via the `self` parameter from T2.4 — NOT unreachable.
+            TypeExpr::SelfType => Type::Unknown,
         }
     }
 

@@ -124,4 +124,11 @@ pub enum TypeExpr {
         /// The inner type (the payload behind the reference).
         inner: TypeId,
     },
+
+    /// The receiver type `self` inside a trait method signature or an
+    /// `implement` body (ADR-0061 Tier 1). Written as a bare `self`
+    /// first parameter (`function compare(self, other: T) -> Trit`).
+    /// Resolution of `Self` → the concrete receiver type happens in
+    /// typecheck (ADR-0061 T3); the parser only records the marker.
+    SelfType,
 }

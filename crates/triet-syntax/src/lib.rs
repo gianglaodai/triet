@@ -24,8 +24,8 @@ pub use type_ast::{ReferenceForm, TypeExpr};
 // ── Generated types ──
 pub use generated::{
     BinaryOperator, EnumDefinition, Expr, FunctionBody, FunctionDefinition, FunctionParameter,
-    Import, Item, ModuleContent, ModuleItem, ParameterPassing, Program, Stmt, StructDefinition,
-    UnaryOperator, Visibility,
+    ImplementationDefinition, Import, Item, MethodSignature, ModuleContent, ModuleItem,
+    ParameterPassing, Program, Stmt, StructDefinition, TraitDefinition, UnaryOperator, Visibility,
 };
 
 /// Resolution of an enum variant to its enum type and discriminant.

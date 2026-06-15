@@ -228,6 +228,20 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                 .arena
                 .alloc_expression(Spanned::new(Expr::Identifier { name }, span)))
         }
+        // ADR-0061 T2.5: `self` as a primary expression (receiver inside an
+        // `implement` method body). Lexed as `SelfKw`; here it becomes a
+        // plain identifier named "self" — resolution is T3/T4. Import-path
+        // `self` (`from self.X import`) uses a separate path (parse_dot_path)
+        // and is unaffected.
+        Token::SelfKw => {
+            parser.advance();
+            Ok(parser.arena.alloc_expression(Spanned::new(
+                Expr::Identifier {
+                    name: "self".to_owned(),
+                },
+                span,
+            )))
+        }
         Token::FStringStart => parse_f_string(parser),
         Token::LParen => parse_paren_or_tuple(parser, span),
         Token::LBrace => parse_block_expression(parser, span),

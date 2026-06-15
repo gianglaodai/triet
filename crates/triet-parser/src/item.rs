@@ -3,8 +3,9 @@
 use triet_lexer::{Span, Token};
 use triet_syntax::{
     EnumDefinition, EnumVariant, FunctionBody, FunctionDefinition, FunctionParameter, GenericBound,
-    Import, ImportName, ImportPath, Item, ModuleContent, ModuleItem, ParameterPassing, Spanned,
-    StructDefinition, StructField, TypeParameter, Visibility,
+    ImplementationDefinition, Import, ImportName, ImportPath, Item, MethodSignature, ModuleContent,
+    ModuleItem, ParameterPassing, Spanned, StructDefinition, StructField, TraitDefinition,
+    TypeExpr, TypeParameter, Visibility,
 };
 
 use crate::{
@@ -49,6 +50,8 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
         Token::Type => parse_type_alias(parser, head_span, visibility),
         Token::Struct => parse_struct(parser, head_span, visibility),
         Token::Enum => parse_enum(parser, head_span, visibility),
+        Token::Trait => parse_trait(parser, head_span, visibility),
+        Token::Implement => parse_implementation(parser, head_span, visibility),
         Token::Module => parse_module(parser, head_span, visibility),
         Token::Import => {
             if visibility != Visibility::Private {
@@ -64,7 +67,7 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
         }
         other => Err(ParseError::UnexpectedToken {
             expected:
-                "`function`, `constant`, `type`, `struct`, `enum`, `module`, `import`, `from`, or `public`"
+                "`function`, `constant`, `type`, `struct`, `enum`, `trait`, `implement`, `module`, `import`, `from`, or `public`"
                     .to_owned(),
             found: format!("{other:?}"),
             span: kw_span,
@@ -131,6 +134,19 @@ fn parse_function(
     head_span: Span,
     visibility: Visibility,
 ) -> Result<Spanned<Item>, ParseError> {
+    let def = parse_function_def(parser, visibility)?;
+    let end = parser.previous_token_end(head_span.end);
+    let span = head_span.start..end;
+    Ok(Spanned::new(Item::Function { def }, span))
+}
+
+/// Parse a `function ...` definition (after optional visibility) into a
+/// [`FunctionDefinition`]. Shared by top-level functions and `implement`
+/// method bodies (ADR-0061 T2.3) so the two parse paths never drift.
+fn parse_function_def(
+    parser: &mut Parser<'_>,
+    visibility: Visibility,
+) -> Result<FunctionDefinition, ParseError> {
     parser.expect(&Token::Function, "`function`")?;
 
     let (name, _) = parse_item_name(parser, "function name")?;
@@ -165,17 +181,106 @@ fn parse_function(
         }
     };
 
+    Ok(FunctionDefinition {
+        visibility,
+        name,
+        type_parameters,
+        parameters,
+        return_type,
+        body,
+    })
+}
+
+/// Parse `trait Name { function sig... }` → `Item::Trait` (ADR-0061 T2.2).
+/// A trait body holds method *signatures* (no body); the `implement` block
+/// supplies the bodies.
+fn parse_trait(
+    parser: &mut Parser<'_>,
+    head_span: Span,
+    visibility: Visibility,
+) -> Result<Spanned<Item>, ParseError> {
+    parser.expect(&Token::Trait, "`trait`")?;
+    let (name, _) = parse_item_name(parser, "trait name")?;
+    let type_parameters = parse_generic_params(parser)?;
+
+    parser.expect(&Token::LBrace, "`{`")?;
+    let mut methods = Vec::new();
+    while !matches!(parser.peek_token(), Some(Token::RBrace)) {
+        methods.push(parse_method_signature(parser)?);
+    }
+    parser.expect(&Token::RBrace, "`}`")?;
+
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::Function {
-            def: FunctionDefinition {
-                visibility,
+        Item::Trait {
+            def: TraitDefinition {
                 name,
                 type_parameters,
-                parameters,
-                return_type,
-                body,
+                methods,
+                visibility,
+            },
+        },
+        span,
+    ))
+}
+
+/// Parse one trait method signature: `function name(params) -> Type` with
+/// no body (ADR-0061 Tier 1). Per-method generics are unsupported
+/// (`MethodSignature` carries no type parameters). A trailing `;` is
+/// optional.
+fn parse_method_signature(parser: &mut Parser<'_>) -> Result<MethodSignature, ParseError> {
+    parser.expect(&Token::Function, "`function`")?;
+    let (name, _) = parse_item_name(parser, "method name")?;
+
+    parser.expect(&Token::LParen, "`(`")?;
+    let parameters = parse_parameter_list(parser)?;
+    parser.expect(&Token::RParen, "`)`")?;
+
+    let return_type = if parser.eat(&Token::ThinArrow) {
+        Some(parse_type(parser)?)
+    } else {
+        None
+    };
+    let _ = parser.eat(&Token::Semi);
+
+    Ok(MethodSignature {
+        name,
+        parameters,
+        return_type,
+    })
+}
+
+/// Parse `implement Trait for Type { function... }` → `Item::Implementation`
+/// (ADR-0061 T2.3). Method bodies are full `FunctionDefinition`s parsed by
+/// the shared `parse_function_def`, so they never drift from top-level
+/// functions. `for_type` is stored as an arena `TypeId`.
+fn parse_implementation(
+    parser: &mut Parser<'_>,
+    head_span: Span,
+    _visibility: Visibility,
+) -> Result<Spanned<Item>, ParseError> {
+    parser.expect(&Token::Implement, "`implement`")?;
+    let (trait_name, _) = parse_item_name(parser, "trait name")?;
+    parser.expect(&Token::For, "`for`")?;
+    let for_type = parse_type(parser)?;
+
+    parser.expect(&Token::LBrace, "`{`")?;
+    let mut methods = Vec::new();
+    while !matches!(parser.peek_token(), Some(Token::RBrace)) {
+        let method_visibility = parse_visibility(parser)?;
+        methods.push(parse_function_def(parser, method_visibility)?);
+    }
+    parser.expect(&Token::RBrace, "`}`")?;
+
+    let end = parser.previous_token_end(head_span.end);
+    let span = head_span.start..end;
+    Ok(Spanned::new(
+        Item::Implementation {
+            def: ImplementationDefinition {
+                trait_name,
+                for_type,
+                methods,
             },
         },
         span,
@@ -188,7 +293,8 @@ fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParameter
         return Ok(parameters);
     }
     loop {
-        parameters.push(parse_parameter(parser)?);
+        let is_first = parameters.is_empty();
+        parameters.push(parse_parameter(parser, is_first)?);
         if !parser.eat(&Token::Comma) {
             break;
         }
@@ -199,7 +305,35 @@ fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParameter
     Ok(parameters)
 }
 
-fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParameter, ParseError> {
+fn parse_parameter(
+    parser: &mut Parser<'_>,
+    is_first: bool,
+) -> Result<FunctionParameter, ParseError> {
+    // ADR-0061 T2.4: bare `self` receiver. Only valid as the first
+    // parameter (`function compare(self, other: T) -> Trit`). It carries
+    // no `: Type` annotation; its type is the marker `TypeExpr::SelfType`,
+    // resolved to the receiver type in typecheck (T3). `self` anywhere
+    // else is a parse error.
+    if matches!(parser.peek_token(), Some(Token::SelfKw)) {
+        let span = parser.current_span();
+        if !is_first {
+            return Err(ParseError::UnexpectedToken {
+                expected: "parameter name (`self` is only valid as the first parameter)".to_owned(),
+                found: "`self`".to_owned(),
+                span,
+            });
+        }
+        parser.advance();
+        let type_annotation = parser
+            .arena
+            .alloc_type(Spanned::new(TypeExpr::SelfType, span));
+        return Ok(FunctionParameter {
+            name: "self".to_owned(),
+            type_annotation,
+            passing_mode: ParameterPassing::Borrow,
+        });
+    }
+
     // Optional passing mode prefix: `mutable` or `owned`.
     let passing = if parser.eat(&Token::Mutable) {
         ParameterPassing::MutableBorrow
@@ -1450,5 +1584,102 @@ mod tests {
             panic!("expected Import")
         };
         assert_eq!(path.module_path.segments, vec!["khi", "utils", "helper"]);
+    }
+
+    // ── ADR-0061 Tier 1: trait / implement / self (T2) ──────────────
+
+    #[test]
+    fn parses_trait_declaration() {
+        let (parser, item) =
+            parse("trait Comparable { function compare(self, other: Integer) -> Trit }");
+        let Item::Trait { def } = &item.node else {
+            panic!("expected Item::Trait, got {:?}", item.node)
+        };
+        assert_eq!(def.name, "Comparable");
+        assert_eq!(def.methods.len(), 1);
+        let method = &def.methods[0];
+        assert_eq!(method.name, "compare");
+        // params[0] is the bare `self` receiver; params[1] is `other`.
+        assert_eq!(method.parameters.len(), 2);
+        assert_eq!(method.parameters[0].name, "self");
+        assert_eq!(method.parameters[1].name, "other");
+        // T2.0 teeth: the receiver carries TypeExpr::SelfType, not a name.
+        let self_ty = &parser
+            .arena
+            .type_expression(method.parameters[0].type_annotation)
+            .node;
+        assert!(
+            matches!(self_ty, TypeExpr::SelfType),
+            "self receiver must be TypeExpr::SelfType, got {self_ty:?}"
+        );
+        assert!(method.return_type.is_some());
+    }
+
+    #[test]
+    fn parses_implementation_block() {
+        let (parser, item) = parse(
+            "implement Comparable for Integer { function compare(self, other: Integer) -> Trit = other }",
+        );
+        let Item::Implementation { def } = &item.node else {
+            panic!("expected Item::Implementation, got {:?}", item.node)
+        };
+        assert_eq!(def.trait_name, "Comparable");
+        // for_type is stored as a TypeId → resolve to the concrete type.
+        let for_ty = &parser.arena.type_expression(def.for_type).node;
+        assert!(
+            matches!(for_ty, TypeExpr::Named(n) if n == "Integer"),
+            "for_type must be Named(\"Integer\"), got {for_ty:?}"
+        );
+        assert_eq!(def.methods.len(), 1);
+        assert_eq!(def.methods[0].name, "compare");
+        // Impl methods carry a full body (unlike trait method signatures).
+        assert!(matches!(
+            def.methods[0].body,
+            FunctionBody::Expression { .. }
+        ));
+    }
+
+    #[test]
+    fn self_param_resolves_to_self_type() {
+        // T2.0/T2.4 teeth: a bare `self` first parameter resolves to the
+        // SelfType marker. Poison parse_parameter (alloc Named("Self")
+        // instead) → this assertion goes red.
+        let (parser, item) = parse("function compare(self, other: Integer) -> Trit = other");
+        let Item::Function { def } = &item.node else {
+            panic!("expected Item::Function")
+        };
+        assert_eq!(def.parameters[0].name, "self");
+        let self_ty = &parser
+            .arena
+            .type_expression(def.parameters[0].type_annotation)
+            .node;
+        assert!(matches!(self_ty, TypeExpr::SelfType), "got {self_ty:?}");
+    }
+
+    #[test]
+    fn self_param_rejected_outside_first_position() {
+        // T2.4 negative: `self` is only valid as the first parameter.
+        let result = try_parse("function bad(x: Integer, self) -> Integer = x");
+        assert!(
+            matches!(result, Err(ParseError::UnexpectedToken { .. })),
+            "self in 2nd position must be a parse error, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn self_parses_as_expression() {
+        // T2.5: `self` at expression position is a plain identifier.
+        let (parser, item) = parse("function get_self(self) -> Integer = self");
+        let Item::Function { def } = &item.node else {
+            panic!("expected Item::Function")
+        };
+        let FunctionBody::Expression { expr } = def.body else {
+            panic!("expected expression body")
+        };
+        let body = &parser.arena.expression(expr).node;
+        assert!(
+            matches!(body, triet_syntax::Expr::Identifier { name } if name == "self"),
+            "self expression must be Identifier(\"self\"), got {body:?}"
+        );
     }
 }
