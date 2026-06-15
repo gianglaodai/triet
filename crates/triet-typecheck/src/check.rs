@@ -37,6 +37,24 @@ pub fn check(
     crate::PatternResolutions,
 ) {
     let mut checker = Checker::new(program);
+    // ADR-0061 T3.3: trait coherence — one `implement` per (Type, Trait).
+    // The single-file path is what the driver runs (see triet-driver
+    // integration_tests), so coherence must be enforced here too. Build a
+    // name_table from this program's own declarations so user `for_type`s
+    // resolve to their real names before keying the coherence check.
+    let name_table: std::collections::HashMap<String, Type> =
+        crate::check_resolved::collect_declared_types(
+            &program.arena,
+            &program.items,
+            &std::collections::HashMap::new(),
+        )
+        .into_iter()
+        .collect();
+    let impl_keys =
+        crate::check_resolved::collect_impl_keys(&program.arena, &program.items, &name_table);
+    checker
+        .errors
+        .extend(crate::check_resolved::check_impl_coherence(impl_keys));
     checker.check_program();
     (
         checker.errors,

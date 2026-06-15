@@ -17,9 +17,55 @@
 use std::collections::HashMap;
 
 use triet_modules::ResolvedProgram;
-use triet_syntax::Item;
+use triet_syntax::{Item, Span};
 
 use crate::{check::check_with_env, env::TypeEnvironment, error::TypeError, types::Type};
+
+/// Key identifying a trait implementation: `(type_name, trait_name)`
+/// (ADR-0061 §2.2). Tier 1 permits at most one impl per key (coherence).
+pub(crate) type ImplKey = (String, String);
+
+/// Collect `(Type, Trait)` keys for every `implement` block in a module,
+/// with the block's span for diagnostics (ADR-0061 T3.3 coherence input).
+/// `for_type` resolves via `name_table` (mirrors [`collect_declared_types`]).
+/// The full method/mangling tables (T3.1) land with the verification pass
+/// (T3.2) that consumes them — they are omitted here to avoid a populated-
+/// but-unread table (Track B rule #4).
+pub(crate) fn collect_impl_keys(
+    arena: &triet_syntax::Arena,
+    items: &[triet_syntax::Spanned<Item>],
+    name_table: &HashMap<String, Type>,
+) -> Vec<(ImplKey, Span)> {
+    let mut keys = Vec::new();
+    for item in items {
+        if let Item::Implementation { def } = &item.node {
+            let type_name = resolve_type_expr(arena, def.for_type, name_table).to_string();
+            keys.push(((type_name, def.trait_name.clone()), item.span.clone()));
+        }
+    }
+    keys
+}
+
+/// Enforce trait coherence: at most one `implement` per `(Type, Trait)`
+/// pair across the whole program (ADR-0061 §2.2). Emits E1043
+/// (`DuplicateImplementation`) for each duplicate. Shared by both the
+/// cross-module and single-file entry points so coherence is checked once.
+pub(crate) fn check_impl_coherence(keys: Vec<(ImplKey, Span)>) -> Vec<TypeError> {
+    let mut seen: std::collections::HashSet<ImplKey> = std::collections::HashSet::new();
+    let mut errors = Vec::new();
+    for (key, span) in keys {
+        if seen.contains(&key) {
+            errors.push(TypeError::DuplicateImplementation {
+                type_name: key.0,
+                trait_name: key.1,
+                span,
+            });
+        } else {
+            seen.insert(key);
+        }
+    }
+    errors
+}
 
 /// Type-check every module in a [`ResolvedProgram`].
 ///
@@ -72,6 +118,20 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
         }
         module_types = next;
     }
+
+    // ADR-0061 T3.3: trait coherence — at most one `implement` per
+    // (Type, Trait) across the whole program. Built once from the
+    // converged name_table so user `for_type`s resolve to their real names.
+    let name_table: HashMap<String, Type> = module_types
+        .iter()
+        .flat_map(|m| m.iter().map(|(n, t)| (n.clone(), t.clone())))
+        .collect();
+    let mut impl_keys = Vec::new();
+    for module in &program.modules {
+        let arena = program.arena(module);
+        impl_keys.extend(collect_impl_keys(arena, &module.items, &name_table));
+    }
+    all_errors.extend(check_impl_coherence(impl_keys));
 
     // Pass 2: For each module, build env with imports, then check.
     for (idx, module) in program.modules.iter().enumerate() {
@@ -133,7 +193,7 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
 /// `name_table` (typically built from the previous Pass 1 iteration) lets
 /// cross-module user-type references resolve into their full `UserStruct`
 /// / `UserEnum` shapes rather than falling through to `Type::Unknown`.
-fn collect_declared_types(
+pub(crate) fn collect_declared_types(
     arena: &triet_syntax::Arena,
     items: &[triet_syntax::Spanned<Item>],
     name_table: &HashMap<String, Type>,
@@ -457,6 +517,43 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, TypeError::Mismatch { .. })),
             "expected Mismatch: {errors:?}"
+        );
+    }
+
+    // ── ADR-0061 T3.3: trait coherence (E1043) ──────────────────────
+
+    #[test]
+    fn single_impl_is_coherent() {
+        // One `implement` per (Type, Trait) → no coherence error.
+        let errors = check_in_memory(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Integer = other }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, TypeError::DuplicateImplementation { .. })),
+            "single impl must not raise E1043: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_impl_emits_e1043() {
+        // Two `implement Comparable for Integer` → coherence conflict E1043.
+        // Poison: make check_impl_coherence skip the duplicate check (always
+        // insert) → this assertion goes red.
+        let errors = check_in_memory(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Integer = other }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Integer = other }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::DuplicateImplementation { .. })),
+            "duplicate (Integer, Comparable) impl must raise E1043: {errors:?}"
         );
     }
 

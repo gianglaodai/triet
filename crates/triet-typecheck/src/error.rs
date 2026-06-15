@@ -611,6 +611,28 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1043: two `implement` blocks for the same `(Type, Trait)` pair
+    /// (ADR-0061 §2.2 coherence). Tier 1 permits exactly one impl per pair.
+    #[error("E1043: conflicting implementations of trait `{trait_name}` for type `{type_name}`")]
+    #[diagnostic(
+        code(triet::typecheck::E1043),
+        help(
+            "E1043: `{type_name}` already implements `{trait_name}`.\n\n\
+            [Fix 1] Remove the duplicate `implement {trait_name} for {type_name}` block.\n\n\
+            [Fix 2] Merge the two blocks into a single implementation.\n\n\
+            Tier 1 coherence (ADR-0061 §2.2) allows one impl per (Type, Trait)."
+        )
+    )]
+    DuplicateImplementation {
+        /// The trait being implemented (e.g. `Comparable`).
+        trait_name: String,
+        /// The concrete type implementing it (e.g. `Integer`).
+        type_name: String,
+        /// Source location of the duplicate `implement` block.
+        #[label("duplicate implementation of `{trait_name}` for `{type_name}`")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -787,6 +809,7 @@ impl TypeError {
             | Self::IntegerLiteralOverflow { span, .. }
             | Self::NonAtomicValueType { span, .. }
             | Self::BorrowReturnNotYetSupported { span, .. }
+            | Self::DuplicateImplementation { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }
