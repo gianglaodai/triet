@@ -1433,6 +1433,54 @@ definitions:
     - name: visibility
       type: Visibility
       default: Private
+  MethodSignature:
+    kind: struct
+    description: "A trait method signature (no body): `compare(other) -> Trit`.\
+      \ The receiver is implicit (the type the trait is implemented for); the\
+      \ `implement` supplies the body as a full FunctionDefinition. ADR-0061 Tier 1."
+    fields:
+    - name: name
+      type: string
+    - name: parameters
+      type: vector<FunctionParameter>
+      ownership: owned
+      description: "Explicitly-written parameters (excludes the implicit receiver)."
+    - name: return_type
+      type: option<TypeId>
+      ownership: borrow
+      description: Return type annotation. None = Unit.
+  TraitDefinition:
+    kind: struct
+    description: "`trait Name { method_sig... }`. Declares a set of method\
+      \ signatures a type can implement. ADR-0061 Tier 1 (static dispatch)."
+    fields:
+    - name: name
+      type: string
+    - name: type_parameters
+      type: vector<TypeParameter>
+      ownership: owned
+    - name: methods
+      type: vector<MethodSignature>
+      ownership: owned
+    - name: visibility
+      type: Visibility
+      default: Private
+  ImplementationDefinition:
+    kind: struct
+    description: "`impl Trait for Type { function... }`. Binds method bodies to\
+      \ a concrete type. ADR-0061 Tier 1: one impl per (Type, Trait) pair\
+      \ (coherence E1043). Methods are lowered as ordinary functions with\
+      \ mangled names `Type$Trait$method`."
+    fields:
+    - name: trait_name
+      type: string
+    - name: for_type
+      type: TypeId
+      ownership: borrow
+      description: The concrete type this impl is for (e.g. `Integer`, `Point`).
+    - name: methods
+      type: vector<FunctionDefinition>
+      ownership: owned
   TypeParameter:
     kind: struct
     description: 'A generic type parameter declaration: `T` in `function id<T>(x:
@@ -1501,6 +1549,18 @@ definitions:
       - name: def
         type: EnumDefinition
         ownership: owned
+    - name: Trait
+      fields:
+      - name: def
+        type: TraitDefinition
+        ownership: owned
+      description: "Trait declaration `trait Name { ... }`. ADR-0061 Tier 1."
+    - name: Implementation
+      fields:
+      - name: def
+        type: ImplementationDefinition
+        ownership: owned
+      description: "Trait implementation `implement Trait for Type { ... }`. ADR-0061 Tier 1."
     - name: Import
       fields:
       - name: import

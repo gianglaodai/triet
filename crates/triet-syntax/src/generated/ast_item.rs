@@ -78,6 +78,34 @@ pub struct EnumDefinition {
     pub visibility: Visibility,                           // default: Private
 }
 
+/// A trait method signature (no body): `compare(other) -> Trit`. The receiver is implicit (the type the trait is implemented for); the `implement` supplies the body as a full FunctionDefinition. ADR-0061 Tier 1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodSignature {
+    pub name: String,
+    /// Explicitly-written parameters (excludes the implicit receiver).
+    pub parameters: Vec<FunctionParameter>, // owned
+    /// Return type annotation. None = Unit.
+    pub return_type: Option<crate::arena::TypeId>, // &0 (borrow)
+}
+
+/// `trait Name { method_sig... }`. Declares a set of method signatures a type can implement. ADR-0061 Tier 1 (static dispatch).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraitDefinition {
+    pub name: String,
+    pub type_parameters: Vec<crate::item::TypeParameter>, // owned
+    pub methods: Vec<MethodSignature>,                    // owned
+    pub visibility: Visibility,                           // default: Private
+}
+
+/// `impl Trait for Type { function... }`. Binds method bodies to a concrete type. ADR-0061 Tier 1: one impl per (Type, Trait) pair (coherence E1043). Methods are lowered as ordinary functions with mangled names `Type$Trait$method`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImplementationDefinition {
+    pub trait_name: String,
+    /// The concrete type this impl is for (e.g. `Integer`, `Point`).
+    pub for_type: crate::arena::TypeId, // &0 (borrow)
+    pub methods: Vec<FunctionDefinition>, // owned
+}
+
 /// Import declaration: `from std.io import println, read_line`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Import {
@@ -116,6 +144,16 @@ pub enum Item {
 
     Enum {
         def: EnumDefinition,
+    }, // owned
+
+    /// Trait declaration `trait Name { ... }`. ADR-0061 Tier 1.
+    Trait {
+        def: TraitDefinition,
+    }, // owned
+
+    /// Trait implementation `implement Trait for Type { ... }`. ADR-0061 Tier 1.
+    Implementation {
+        def: ImplementationDefinition,
     }, // owned
 
     Import {

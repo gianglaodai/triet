@@ -334,6 +334,7 @@ def generate_all_rust(schema, output_dir):
     expr_defs = ["Expr", "MatchArm", "LambdaParameter"]
     stmt_defs = ["Stmt"]
     item_defs = ["FunctionDefinition", "FunctionBody", "StructDefinition", "EnumDefinition",
+                 "MethodSignature", "TraitDefinition", "ImplementationDefinition",
                  "Import", "ModuleContent", "ModuleItem", "Item", "Program", "FunctionParameter", "ImportName", "ImportPath"]
 
 

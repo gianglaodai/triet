@@ -281,6 +281,12 @@ impl<'p> Checker<'p> {
                 };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
+            Item::Trait { .. } | Item::Implementation { .. } => {
+                // ADR-0061 Tier 1: trait/implement declaration + dispatch
+                // routing land in T3/T4 (trait_table / impl_table). The parser
+                // does not yet emit these variants (T2), so this arm is
+                // currently inert — it exists for match exhaustiveness during T1.
+            }
         }
     }
 

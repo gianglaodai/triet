@@ -174,6 +174,8 @@ fn collect_imports(
             Item::Function { .. }
             | Item::Struct { .. }
             | Item::Enum { .. }
+            | Item::Trait { .. }
+            | Item::Implementation { .. }
             | Item::Constant { .. }
             | Item::Module { .. }
             | Item::TypeAlias { .. } => {}
@@ -474,7 +476,12 @@ fn item_name_and_visibility(item: &Item) -> Option<(String, Visibility)> {
         } => Some((name.clone(), visibility.clone())),
         Item::Struct { def } => Some((def.name.clone(), def.visibility.clone())),
         Item::Enum { def } => Some((def.name.clone(), def.visibility.clone())),
-        Item::Import { .. } | Item::ImportFrom { .. } | Item::Module { .. } => None,
+        Item::Trait { def } => Some((def.name.clone(), def.visibility.clone())),
+        // `implement Trait for Type` defines no top-level name to export.
+        Item::Implementation { .. }
+        | Item::Import { .. }
+        | Item::ImportFrom { .. }
+        | Item::Module { .. } => None,
     }
 }
 

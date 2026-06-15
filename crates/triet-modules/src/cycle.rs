@@ -114,6 +114,8 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
                 Item::Function { .. }
                 | Item::Struct { .. }
                 | Item::Enum { .. }
+                | Item::Trait { .. }
+                | Item::Implementation { .. }
                 | Item::Constant { .. }
                 | Item::Module { .. }
                 | Item::TypeAlias { .. } => {}

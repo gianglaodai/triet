@@ -216,7 +216,12 @@ fn collect_declared_types(
                     },
                 ));
             }
-            Item::TypeAlias { .. }
+            // ADR-0061 Tier 1: trait/implement don't contribute a value Type to
+            // the name_table — traits live in a separate trait_table (T3). The
+            // parser does not yet emit these (T2); inert for match exhaustiveness.
+            Item::Trait { .. }
+            | Item::Implementation { .. }
+            | Item::TypeAlias { .. }
             | Item::Import { .. }
             | Item::ImportFrom { .. }
             | Item::Module { .. } => {}
