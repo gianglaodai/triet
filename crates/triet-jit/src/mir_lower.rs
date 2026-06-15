@@ -2360,6 +2360,10 @@ pub extern "C" fn __triet_string_append(slot: i64, byte: i64) -> i64 {
 
         // Write byte at data[len].
         // ADR-0049 Lát 6.3: data starts at ptr (no len/cap prefix).
+        if !(0..=255).contains(&byte) {
+            // E1b-2 / ADR-0044: trap instead of silent truncation
+            std::process::abort();
+        }
         let data = ptr as *mut u8;
         data.add(i64_to_usize(len)).write(i64_low_byte(byte));
 
@@ -4944,5 +4948,48 @@ mod tests {
         });
         let status = spawn_n7_child("n7_overflow_mul_carrier");
         assert_n7_signal("n7_overflow_mul_carrier", status, 4);
+    }
+
+    /// E1b/ADR-0044: `__triet_string_append` with byte > 255 must TRAP
+    /// (SIGABRT), not silently truncate to the low byte. Counterpart to the
+    /// 8 overflow N7 tests — no silent data loss for an out-of-range byte.
+    ///
+    /// Teeth: poison the `0..=255` guard (`mir_lower` append shim) and this
+    /// child stops aborting (writes low-byte 0, returns) → signal becomes
+    /// `None` → the assertion fails. So the guard is load-bearing.
+    #[test]
+    #[allow(unsafe_code)]
+    fn n7_string_append_byte_above_255() {
+        n7_child_guard("n7_string_append_byte_above_255", || {
+            // Valid empty String slot: cap=4, len=0 (no realloc on first append).
+            let body = __triet_string_alloc(0, 4);
+            let mut slot = FatStr {
+                ptr: body,
+                len: 0,
+                cap: 4,
+            };
+            let _ = __triet_string_append(std::ptr::addr_of_mut!(slot) as i64, 256);
+        });
+        let status = spawn_n7_child("n7_string_append_byte_above_255");
+        assert_n7_signal("n7_string_append_byte_above_255", status, 6);
+    }
+
+    /// E1b/ADR-0044: `__triet_string_append` with a negative byte must TRAP.
+    /// `i64_low_byte(-1)` would otherwise silently write 0xFF — rejecting it
+    /// keeps the shim strict per ADR-0044 (no garbage-in pass-through).
+    #[test]
+    #[allow(unsafe_code)]
+    fn n7_string_append_byte_negative() {
+        n7_child_guard("n7_string_append_byte_negative", || {
+            let body = __triet_string_alloc(0, 4);
+            let mut slot = FatStr {
+                ptr: body,
+                len: 0,
+                cap: 4,
+            };
+            let _ = __triet_string_append(std::ptr::addr_of_mut!(slot) as i64, -1);
+        });
+        let status = spawn_n7_child("n7_string_append_byte_negative");
+        assert_n7_signal("n7_string_append_byte_negative", status, 6);
     }
 }

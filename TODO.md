@@ -49,7 +49,7 @@ Sub-task tracking for the current phase (Phase 4 & 5).
 - [ ] **Trait system** (trait decl + impl + dispatch). Author 2026-06-05: Triết chắc chắn làm Trait, không Interface. Phase riêng, chưa xếp lịch.
 - [ ] **`Comparable` trait, `compare() -> Trit`** — design lock tại [ADR-0038](docs/decisions/0038-comparable-trait-deferred.md). Chờ Trait system; KHÔNG làm built-in special-case. Trit (không enum Ordering), tổng thứ tự only, unknown ở lại với operator Ł3.
 - [ ] **Họ toán tử Nullable `?+>`** (map+flatMap cho `T?`, auto-flatten) + `?:` RHS = Expression + cấm `?->` (E1041) — design lock tại [ADR-0039](docs/decisions/0039-nullable-operator-family.md). Chờ nullable/Outcome lowering (Bậc B/C). SPEC §Elvis cần thêm câu "RHS là Expression" khi sync.
-- [ ] **SPEC append(byte) range:** `__triet_string_append(byte: i64)` hiện cắt byte thấp (`i64_low_byte`, `mir_lower.rs`). Triết cho phép tràn ±/cắt hay reject? — Giang chốt ngữ nghĩa. Phát sinh E1b-2 (helper tách, không assert).
+- [x] **SPEC append(byte) range:** `__triet_string_append(byte: i64)` cũ cắt byte thấp (`i64_low_byte`). Đã chốt: REJECT — out-of-range `0..=255` → `std::process::abort()` (tinh thần ADR-0044 no-silent-truncation). 2 N7 subprocess teeth (above_255 + negative → SIGABRT). `mir_lower.rs`.
 
 ## Integration Test Corpus
 - [x] Basic test harness (`cargo test -p triet-driver`).
