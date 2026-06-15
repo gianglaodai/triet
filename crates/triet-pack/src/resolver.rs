@@ -336,8 +336,8 @@ mod tests {
             name: "f".into(),
             module_path: String::new(),
             visibility: Visibility::Public,
-            type_params: Vec::new(),
-            params: vec![Param {
+            type_parameters: Vec::new(),
+            parameters: vec![Param {
                 name: "x".into(),
                 type_ref: TypeRef::Primitive(0x02),
             }],

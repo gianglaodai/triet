@@ -178,7 +178,7 @@ pub enum Type {
 
     /// (disc 12)
     Function {
-        type_params: Vec<crate::item::TypeParam>,
+        type_parameters: Vec<crate::item::TypeParameter>,
         parameters: Vec<Self>,
         return_type: Box<Self>,
     },
@@ -198,19 +198,19 @@ pub enum Type {
     /// (disc 14)
     UserStruct {
         name: String,
-        type_params: Vec<crate::item::TypeParam>,
+        type_parameters: Vec<crate::item::TypeParameter>,
         fields: Vec<crate::item::StructField>,
     },
 
     /// (disc 15)
     UserEnum {
         name: String,
-        type_params: Vec<crate::item::TypeParam>,
+        type_parameters: Vec<crate::item::TypeParameter>,
         variants: Vec<crate::item::EnumVariant>,
     },
 
     /// A generic type parameter: `T` in `struct Box<T>`. (disc 16)
-    TypeParam { name: String },
+    TypeParameter { name: String },
 
     /// A reference type: `&+ Integer`, `&0 mutable String`, etc. One of the 5 S6 reference forms. A value accessed through a reference — the reference form determines aliasing, mutability, and Send capability. (disc 17)
     Reference {
@@ -277,7 +277,7 @@ pub enum ParameterPassing {
 
 /// A generic type parameter declaration: `T` in `function id<T>(x: T) -> T`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypeParam {
+pub struct TypeParameter {
     pub name: String,
     /// Trait/interface bounds (empty = unconstrained).
     pub bounds: Vec<crate::item::GenericBound>, // owned

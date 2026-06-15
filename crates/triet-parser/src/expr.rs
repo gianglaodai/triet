@@ -9,7 +9,7 @@ use crate::{error::ParseError, parser::Parser, pattern::parse_pattern, type_expr
 use triet_lexer::{IntLiteral as LexIntLiteral, Span, Token};
 use triet_syntax::stmt::Block;
 use triet_syntax::{
-    BinaryOperator, Expr, ExprId, FStringPart, FStringSegments, LambdaParam, MatchArm,
+    BinaryOperator, Expr, ExprId, FStringPart, FStringSegments, LambdaParameter, MatchArm,
     NumericSuffix as AstSuffix, OutcomeArm, ReferenceForm, Spanned, TrileanValue, UnaryOperator,
 };
 
@@ -595,9 +595,9 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
     parser.advance();
 
     let parameters = match head_token {
-        Token::OrOr => Vec::new(), // `||` — no params
+        Token::OrOr => Vec::new(), // `||` — no parameters
         Token::Pipe => {
-            let mut params = Vec::new();
+            let mut parameters = Vec::new();
             if !matches!(parser.peek_token(), Some(Token::Pipe)) {
                 loop {
                     let (name_token, _name_span) =
@@ -626,7 +626,7 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                     } else {
                         None
                     };
-                    params.push(LambdaParam {
+                    parameters.push(LambdaParameter {
                         name,
                         type_annotation,
                     });
@@ -636,7 +636,7 @@ fn parse_lambda(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                 }
             }
             parser.expect(&Token::Pipe, "`|`")?;
-            params
+            parameters
         }
         _ => unreachable!("caller filtered"),
     };

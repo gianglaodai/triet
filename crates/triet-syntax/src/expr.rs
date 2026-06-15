@@ -3,7 +3,7 @@
 //! The `Expr` enum and the binary/unary operator enums are schema-generated
 //! (`crate::generated`). What remains here are the small helper types that the
 //! generated `Expr` variants reference through `crate::expr::…` paths: outcome
-//! arms, match arms, lambda params, and f-string segments.
+//! arms, match arms, lambda parameters, and f-string segments.
 
 use crate::arena::{ExprId, PatternId, TypeId};
 
@@ -32,7 +32,7 @@ pub struct MatchArm {
 
 /// A parameter of a closure/lambda.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LambdaParam {
+pub struct LambdaParameter {
     /// Parameter name.
     pub name: String,
     /// Optional explicit type — closures often elide this for inference.

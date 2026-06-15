@@ -19,7 +19,7 @@
 use super::ast_operator::*;
 use super::types::*;
 use crate::arena::{Arena, ExprId, PatternId, StmtId, TypeId};
-use crate::expr::{FStringPart, FStringSegments, LambdaParam, MatchArm, OutcomeArm};
+use crate::expr::{FStringPart, FStringSegments, LambdaParameter, MatchArm, OutcomeArm};
 use crate::item::{GenericBound, ImportName, ImportPath};
 use crate::numeric::{NumericSuffix, TrileanValue};
 use crate::span::{Span, Spanned};
@@ -126,9 +126,9 @@ pub enum Expr {
 
     /// Anonymous function `|x, y| x + y`. Captures variables from enclosing scope — borrow checker validates capture lifetimes.
     Lambda {
-        parameters: Vec<crate::expr::LambdaParam>, // owned
+        parameters: Vec<crate::expr::LambdaParameter>, // owned
         return_type_annotation: Option<crate::arena::TypeId>, // &0 (borrow)
-        body: crate::arena::ExprId,                // owned
+        body: crate::arena::ExprId,                    // owned
     },
 
     Return {

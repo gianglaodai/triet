@@ -900,7 +900,7 @@ pub struct FunctionSignature {
     /// Function name for diagnostics.
     pub name: String,
     /// Parameters: (name, passing_mode).
-    pub params: Vec<(String, ParameterPassing)>,
+    pub parameters: Vec<(String, ParameterPassing)>,
     /// Return type.
     pub return_type: MirType,
     /// The shape of the return value (Unit, Scalar, BinaryOutcome, Struct).
@@ -941,7 +941,7 @@ pub struct Body {
     /// that don't use user-defined enums.
     pub enum_layouts: Vec<EnumLayout>,
     /// Human-readable names for non-param locals (let-bound variables).
-    /// Params already have names in `signature.params`. Populated by the
+    /// Params already have names in `signature.parameters`. Populated by the
     /// lowerer; consumed by borrowck for user-facing diagnostics (E2420,
     /// E2440) so MIR local numbers like `_2` don't leak.
     pub local_names: BTreeMap<Local, String>,
@@ -2354,7 +2354,7 @@ mod tests {
         Body {
             signature: FunctionSignature {
                 name: "test".into(),
-                params: vec![],
+                parameters: vec![],
                 return_type: MirType::Integer,
                 return_borrow_map: ReturnBorrowMap::new(),
                 return_shape: ReturnShape::Scalar,

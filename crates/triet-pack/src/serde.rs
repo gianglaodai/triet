@@ -19,8 +19,9 @@ use crate::hash::{
     compute_term_iface_hash, compute_term_impl_hash,
 };
 use crate::types::{
-    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDef, EnumVariant, FieldDef,
-    FunctionExport, Module, Param, SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,
+    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDefinition, EnumVariant, FieldDef,
+    FunctionExport, Module, Param, SemVer, StructDefinition, TypeDef, TypeKind, TypeRef,
+    Visibility,
 };
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -43,9 +44,9 @@ const ABI_VERSION: u32 = 2;
 mod term_kind {
     /// Function-shaped term — sigs as in `FunctionExport`.
     pub(super) const FUNCTION: u8 = 0;
-    /// Struct type — body is `StructDef`.
+    /// Struct type — body is `StructDefinition`.
     pub(super) const STRUCT: u8 = 1;
-    /// Enum type — body is `EnumDef`.
+    /// Enum type — body is `EnumDefinition`.
     pub(super) const ENUM: u8 = 2;
     /// Generic shell — no body.
     pub(super) const GENERIC_SHELL: u8 = 3;
@@ -258,8 +259,8 @@ pub(crate) fn canonical_term_signature_type(t: &TypeDef) -> Vec<u8> {
     };
     write_u8(&mut buf, kind);
     write_string(&mut buf, &t.name);
-    write_varint(&mut buf, t.type_params.len() as u32);
-    for p in &t.type_params {
+    write_varint(&mut buf, t.type_parameters.len() as u32);
+    for p in &t.type_parameters {
         write_string(&mut buf, p);
     }
     match (t.kind, &t.struct_body, &t.enum_body) {
@@ -278,12 +279,12 @@ pub(crate) fn canonical_term_signature_function(f: &FunctionExport) -> Vec<u8> {
     write_u8(&mut buf, term_kind::FUNCTION);
     write_string(&mut buf, &f.name);
     write_visibility(&mut buf, f.visibility);
-    write_varint(&mut buf, f.type_params.len() as u32);
-    for p in &f.type_params {
+    write_varint(&mut buf, f.type_parameters.len() as u32);
+    for p in &f.type_parameters {
         write_string(&mut buf, p);
     }
-    write_varint(&mut buf, f.params.len() as u32);
-    for p in &f.params {
+    write_varint(&mut buf, f.parameters.len() as u32);
+    for p in &f.parameters {
         write_string(&mut buf, &p.name);
         write_type_ref(&mut buf, &p.type_ref);
     }
@@ -435,8 +436,8 @@ fn write_type_def(buf: &mut Vec<u8>, t: &TypeDef) {
     write_u8(buf, kind_byte);
     write_string(buf, &t.name);
     write_string(buf, &t.module_path);
-    write_varint(buf, t.type_params.len() as u32);
-    for p in &t.type_params {
+    write_varint(buf, t.type_parameters.len() as u32);
+    for p in &t.type_parameters {
         write_string(buf, p);
     }
     match (t.kind, &t.struct_body, &t.enum_body) {
@@ -471,9 +472,9 @@ fn read_type_def(data: &[u8], pos: &mut usize) -> PackResult<TypeDef> {
     let name = read_string(data, pos)?;
     let module_path = read_string(data, pos)?;
     let type_param_count = read_varint(data, pos)?;
-    let mut type_params = Vec::with_capacity(type_param_count as usize);
+    let mut type_parameters = Vec::with_capacity(type_param_count as usize);
     for _ in 0..type_param_count {
-        type_params.push(read_string(data, pos)?);
+        type_parameters.push(read_string(data, pos)?);
     }
     let (struct_body, enum_body) = match kind {
         TypeKind::Struct => (Some(read_struct_def(data, pos)?), None),
@@ -486,7 +487,7 @@ fn read_type_def(data: &[u8], pos: &mut usize) -> PackResult<TypeDef> {
         kind,
         name,
         module_path,
-        type_params,
+        type_parameters,
         struct_body,
         enum_body,
         iface_hash_term,
@@ -494,7 +495,7 @@ fn read_type_def(data: &[u8], pos: &mut usize) -> PackResult<TypeDef> {
     })
 }
 
-fn write_struct_def(buf: &mut Vec<u8>, s: &StructDef) {
+fn write_struct_def(buf: &mut Vec<u8>, s: &StructDefinition) {
     write_varint(buf, s.fields.len() as u32);
     for f in &s.fields {
         write_string(buf, &f.name);
@@ -503,7 +504,7 @@ fn write_struct_def(buf: &mut Vec<u8>, s: &StructDef) {
     }
 }
 
-fn read_struct_def(data: &[u8], pos: &mut usize) -> PackResult<StructDef> {
+fn read_struct_def(data: &[u8], pos: &mut usize) -> PackResult<StructDefinition> {
     let count = read_varint(data, pos)?;
     let mut fields = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -516,10 +517,10 @@ fn read_struct_def(data: &[u8], pos: &mut usize) -> PackResult<StructDef> {
             visibility,
         });
     }
-    Ok(StructDef { fields })
+    Ok(StructDefinition { fields })
 }
 
-fn write_enum_def(buf: &mut Vec<u8>, e: &EnumDef) {
+fn write_enum_def(buf: &mut Vec<u8>, e: &EnumDefinition) {
     write_varint(buf, e.variants.len() as u32);
     for v in &e.variants {
         write_string(buf, &v.name);
@@ -533,7 +534,7 @@ fn write_enum_def(buf: &mut Vec<u8>, e: &EnumDef) {
     }
 }
 
-fn read_enum_def(data: &[u8], pos: &mut usize) -> PackResult<EnumDef> {
+fn read_enum_def(data: &[u8], pos: &mut usize) -> PackResult<EnumDefinition> {
     let count = read_varint(data, pos)?;
     let mut variants = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -551,7 +552,7 @@ fn read_enum_def(data: &[u8], pos: &mut usize) -> PackResult<EnumDef> {
         };
         variants.push(EnumVariant { name, payload });
     }
-    Ok(EnumDef { variants })
+    Ok(EnumDefinition { variants })
 }
 
 // ── TypeRef ────────────────────────────────────────────────────────
@@ -566,7 +567,7 @@ fn write_type_ref(buf: &mut Vec<u8>, t: &TypeRef) {
             write_u8(buf, 0x01);
             write_varint(buf, *idx);
         }
-        TypeRef::TypeParam(idx) => {
+        TypeRef::TypeParameter(idx) => {
             write_u8(buf, 0x02);
             write_varint(buf, *idx);
         }
@@ -595,7 +596,7 @@ fn read_type_ref(data: &[u8], pos: &mut usize) -> PackResult<TypeRef> {
     Ok(match kind {
         0x00 => TypeRef::Primitive(read_u8(data, pos)?),
         0x01 => TypeRef::Local(read_varint(data, pos)?),
-        0x02 => TypeRef::TypeParam(read_varint(data, pos)?),
+        0x02 => TypeRef::TypeParameter(read_varint(data, pos)?),
         0x03 => {
             let dep_idx = read_varint(data, pos)?;
             let type_idx = read_varint(data, pos)?;
@@ -656,12 +657,12 @@ fn write_export_table(buf: &mut Vec<u8>, exports: &[FunctionExport]) {
         write_string(buf, &e.name);
         write_string(buf, &e.module_path);
         write_visibility(buf, e.visibility);
-        write_varint(buf, e.type_params.len() as u32);
-        for p in &e.type_params {
+        write_varint(buf, e.type_parameters.len() as u32);
+        for p in &e.type_parameters {
             write_string(buf, p);
         }
-        write_varint(buf, e.params.len() as u32);
-        for p in &e.params {
+        write_varint(buf, e.parameters.len() as u32);
+        for p in &e.parameters {
             write_string(buf, &p.name);
             write_type_ref(buf, &p.type_ref);
         }
@@ -682,16 +683,16 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
         let module_path = read_string(data, pos)?;
         let visibility = read_visibility(data, pos)?;
         let tp_count = read_varint(data, pos)?;
-        let mut type_params = Vec::with_capacity(tp_count as usize);
+        let mut type_parameters = Vec::with_capacity(tp_count as usize);
         for _ in 0..tp_count {
-            type_params.push(read_string(data, pos)?);
+            type_parameters.push(read_string(data, pos)?);
         }
         let p_count = read_varint(data, pos)?;
-        let mut params = Vec::with_capacity(p_count as usize);
+        let mut parameters = Vec::with_capacity(p_count as usize);
         for _ in 0..p_count {
             let pname = read_string(data, pos)?;
             let ptype = read_type_ref(data, pos)?;
-            params.push(Param {
+            parameters.push(Param {
                 name: pname,
                 type_ref: ptype,
             });
@@ -719,8 +720,8 @@ fn read_export_table(data: &[u8], pos: &mut usize) -> PackResult<Vec<FunctionExp
             name,
             module_path,
             visibility,
-            type_params,
-            params,
+            type_parameters,
+            parameters,
             return_type,
             body_offset,
             iface_hash_term,
@@ -933,8 +934,8 @@ mod tests {
             name: name.into(),
             module_path: String::new(),
             visibility: Visibility::Public,
-            type_params: Vec::new(),
-            params: Vec::new(),
+            type_parameters: Vec::new(),
+            parameters: Vec::new(),
             return_type: integer_primitive(),
             body_offset: 0,
             iface_hash_term: TermIfaceHash::default(),
@@ -967,8 +968,8 @@ mod tests {
             kind: TypeKind::Struct,
             name: "Vec2".into(),
             module_path: String::new(),
-            type_params: Vec::new(),
-            struct_body: Some(StructDef {
+            type_parameters: Vec::new(),
+            struct_body: Some(StructDefinition {
                 fields: vec![
                     FieldDef {
                         name: "x".into(),
@@ -990,8 +991,8 @@ mod tests {
             name: "dot".into(),
             module_path: String::new(),
             visibility: Visibility::Public,
-            type_params: Vec::new(),
-            params: vec![
+            type_parameters: Vec::new(),
+            parameters: vec![
                 Param {
                     name: "a".into(),
                     type_ref: TypeRef::Local(0),
@@ -1048,13 +1049,13 @@ mod tests {
             kind: TypeKind::Enum,
             name: "Option".into(),
             module_path: "std.option".into(),
-            type_params: vec!["T".into()],
+            type_parameters: vec!["T".into()],
             struct_body: None,
-            enum_body: Some(EnumDef {
+            enum_body: Some(EnumDefinition {
                 variants: vec![
                     EnumVariant {
                         name: "Some".into(),
-                        payload: Some(TypeRef::TypeParam(0)),
+                        payload: Some(TypeRef::TypeParameter(0)),
                     },
                     EnumVariant {
                         name: "None".into(),
@@ -1071,12 +1072,12 @@ mod tests {
         let opt = &decoded.types[0];
         assert_eq!(opt.name, "Option");
         assert_eq!(opt.module_path, "std.option");
-        assert_eq!(opt.type_params, vec!["T"]);
+        assert_eq!(opt.type_parameters, vec!["T"]);
         let body = opt.enum_body.as_ref().unwrap();
         assert_eq!(body.variants.len(), 2);
         assert!(matches!(
             body.variants[0].payload,
-            Some(TypeRef::TypeParam(0))
+            Some(TypeRef::TypeParameter(0))
         ));
     }
 

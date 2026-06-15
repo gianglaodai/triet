@@ -386,7 +386,7 @@ mod tests {
 
     /// v0.7.4.1: generic function with single type param.
     /// ADR-0019 Addendum §A7 — unblocks self-host stdlib stubs.
-    /// `T` resolves to `TypeParam`, body uses x flowing as `T`, type
+    /// `T` resolves to `TypeParameter`, body uses x flowing as `T`, type
     /// inferred at call site by argument context.
     #[test]
     fn checks_generic_identity_function() {
@@ -402,7 +402,7 @@ mod tests {
         );
     }
 
-    /// v0.7.4.1: generic function with two type params.
+    /// v0.7.4.1: generic function with two type parameters.
     /// Targets the inference pattern for `function pair<K, V>(...) -> V`.
     #[test]
     fn checks_generic_function_with_two_params() {
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn e2530_does_not_fire_on_unrelated_function_with_two_orderings() {
         // Conservative gate requires both name=`compare_exchange` AND
-        // signature shape. A look-alike helper with two Ordering params
+        // signature shape. A look-alike helper with two Ordering parameters
         // must NOT trigger.
         assert_no_invalid_atomic_ordering(
             r"
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn e2530_does_not_fire_on_compare_exchange_without_ordering_pair() {
-        // Same callee name, different shape: only 4 params and last is
+        // Same callee name, different shape: only 4 parameters and last is
         // not Ordering. Conservative gate must skip.
         assert_no_invalid_atomic_ordering(
             r"
@@ -1289,9 +1289,9 @@ mod tests {
 
     #[test]
     fn generic_body_type_mismatch_must_not_be_silenced_by_typeparam_wildcard() {
-        // Regression B2: TypeParam must NOT be a universal wildcard in matches().
+        // Regression B2: TypeParameter must NOT be a universal wildcard in matches().
         // Returning `x: T` where `Integer` is expected must fire E1003 Mismatch.
-        // If this fails, the TypeParam wildcard is leaking beyond the Vector arm.
+        // If this fails, the TypeParameter wildcard is leaking beyond the Vector arm.
         assert_has_error("function identity<T>(x: T) -> Integer { return x; }", |e| {
             matches!(e, TypeError::Mismatch { .. })
         });

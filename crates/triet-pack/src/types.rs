@@ -55,9 +55,9 @@ pub enum Visibility {
 /// Kind tag for an entry in the type table. Matches ADR-0011 §2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TypeKind {
-    /// Product type — encoded as a [`StructDef`].
+    /// Product type — encoded as a [`StructDefinition`].
     Struct,
-    /// Sum type — encoded as an [`EnumDef`].
+    /// Sum type — encoded as an [`EnumDefinition`].
     Enum,
     /// Generic shell with type parameters but no fields/variants yet.
     /// Used for opaque generic interfaces (rare; reserved for future).
@@ -74,8 +74,8 @@ pub enum TypeRef {
     /// A type defined in *this* package — index into the type table.
     Local(u32),
     /// A type parameter slot — index inside the current scope's
-    /// `type_params` list.
-    TypeParam(u32),
+    /// `type_parameters` list.
+    TypeParameter(u32),
     /// A type defined in a dependency package. First index is into
     /// the dep table, second is into that package's type table.
     External {
@@ -109,14 +109,14 @@ pub struct FieldDef {
 
 /// Struct body — list of named fields. Field order matches source.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct StructDef {
+pub struct StructDefinition {
     /// Fields in declaration order.
     pub fields: Vec<FieldDef>,
 }
 
 /// Enum body — list of variants, each optionally carrying a payload.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct EnumDef {
+pub struct EnumDefinition {
     /// Variants in declaration order. Per ADR-0010, the variant
     /// discriminator encodes naturally onto a balanced trit for the
     /// 2- and 3-variant cases.
@@ -147,11 +147,11 @@ pub struct TypeDef {
     pub module_path: String,
     /// Generic type parameters, in declaration order. Empty for
     /// non-generic types.
-    pub type_params: Vec<String>,
+    pub type_parameters: Vec<String>,
     /// Struct body, if `kind == Struct`.
-    pub struct_body: Option<StructDef>,
+    pub struct_body: Option<StructDefinition>,
     /// Enum body, if `kind == Enum`.
-    pub enum_body: Option<EnumDef>,
+    pub enum_body: Option<EnumDefinition>,
     /// ADR-0014 §2 term iface hash. Populated by `write_khi`
     /// before serialization; left zero in user-built metadata.
     pub iface_hash_term: TermIfaceHash,
@@ -182,9 +182,9 @@ pub struct FunctionExport {
     pub visibility: Visibility,
     /// Generic type parameters, in declaration order. Empty for
     /// non-generic functions.
-    pub type_params: Vec<String>,
+    pub type_parameters: Vec<String>,
     /// Positional parameters.
-    pub params: Vec<Param>,
+    pub parameters: Vec<Param>,
     /// Return type. Use a primitive `Unit` ref when there's no return.
     pub return_type: TypeRef,
     /// Offset (bytes) into the package's IR code section where this

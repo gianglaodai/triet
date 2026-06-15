@@ -458,7 +458,7 @@ mod tests {
         let mut parser = Parser::new(leaked);
         let result = parse_type(&mut parser);
         // Accept either: error today, or successful Function with zero
-        // params if we extend later.
+        // parameters if we extend later.
         assert!(
             result.is_err()
                 || matches!(

@@ -19,7 +19,7 @@
 use super::ast_operator::*;
 use super::types::*;
 use crate::arena::{Arena, ExprId, PatternId, StmtId, TypeId};
-use crate::expr::{FStringPart, FStringSegments, LambdaParam, MatchArm, OutcomeArm};
+use crate::expr::{FStringPart, FStringSegments, LambdaParameter, MatchArm, OutcomeArm};
 use crate::item::{GenericBound, ImportName, ImportPath};
 use crate::numeric::{NumericSuffix, TrileanValue};
 use crate::span::{Span, Spanned};

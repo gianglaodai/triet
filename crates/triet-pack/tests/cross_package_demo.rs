@@ -41,8 +41,8 @@ fn build_math_pkg(version: SemVer) -> AbiMetadata {
         name: "add".into(),
         module_path: String::new(),
         visibility: Visibility::Public,
-        type_params: Vec::new(),
-        params: vec![
+        type_parameters: Vec::new(),
+        parameters: vec![
             Param {
                 name: "a".into(),
                 type_ref: int_ty.clone(),
@@ -76,8 +76,8 @@ fn build_app_pkg() -> AbiMetadata {
         name: "main".into(),
         module_path: String::new(),
         visibility: Visibility::Public,
-        type_params: Vec::new(),
-        params: Vec::new(),
+        type_parameters: Vec::new(),
+        parameters: Vec::new(),
         return_type: TypeRef::Primitive(0x06), // Unit
         body_offset: 0,
         iface_hash_term: TermIfaceHash::default(),

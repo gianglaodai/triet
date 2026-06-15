@@ -61,8 +61,8 @@ fn build_std_pkg() -> Vec<u8> {
         name: "format".into(),
         module_path: "std.text".into(),
         visibility: Visibility::Public,
-        type_params: Vec::new(),
-        params: vec![
+        type_parameters: Vec::new(),
+        parameters: vec![
             Param {
                 name: "s".into(),
                 type_ref: text_ty.clone(),
@@ -95,8 +95,8 @@ fn build_app_pkg(name: &str, body_suffix: u8) -> Vec<u8> {
         name: "format".into(),
         module_path: "std.text".into(),
         visibility: Visibility::Public,
-        type_params: Vec::new(),
-        params: vec![
+        type_parameters: Vec::new(),
+        parameters: vec![
             Param {
                 name: "s".into(),
                 type_ref: text_ty.clone(),
@@ -117,8 +117,8 @@ fn build_app_pkg(name: &str, body_suffix: u8) -> Vec<u8> {
         name: format!("{name}_main"),
         module_path: name.into(),
         visibility: Visibility::Public,
-        type_params: Vec::new(),
-        params: Vec::new(),
+        type_parameters: Vec::new(),
+        parameters: Vec::new(),
         return_type: TypeRef::Primitive(0x06), // Unit
         body_offset: 0,
         iface_hash_term: TermIfaceHash::default(),

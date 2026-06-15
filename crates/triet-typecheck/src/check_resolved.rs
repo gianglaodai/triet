@@ -144,24 +144,24 @@ fn collect_declared_types(
         match &item.node {
             Item::Function { def } => {
                 let parameters: Vec<Type> = def
-                    .params
+                    .parameters
                     .iter()
                     .map(|p| {
                         resolve_type_expr_with_params(
                             arena,
                             p.type_annotation,
-                            &def.type_params,
+                            &def.type_parameters,
                             name_table,
                         )
                     })
                     .collect();
                 let return_type = def.return_type.map_or(Type::Unit, |id| {
-                    resolve_type_expr_with_params(arena, id, &def.type_params, name_table)
+                    resolve_type_expr_with_params(arena, id, &def.type_parameters, name_table)
                 });
                 result.push((
                     def.name.clone(),
                     Type::Function {
-                        type_params: def.type_params.clone(),
+                        type_parameters: def.type_parameters.clone(),
                         parameters,
                         return_type: Box::new(return_type),
                     },
@@ -191,7 +191,7 @@ fn collect_declared_types(
                     def.name.clone(),
                     Type::UserStruct {
                         name: def.name.clone(),
-                        type_params: def.type_params.clone(),
+                        type_parameters: def.type_parameters.clone(),
                         fields,
                     },
                 ));
@@ -211,7 +211,7 @@ fn collect_declared_types(
                     def.name.clone(),
                     Type::UserEnum {
                         name: def.name.clone(),
-                        type_params: def.type_params.clone(),
+                        type_parameters: def.type_parameters.clone(),
                         variants,
                     },
                 ));
@@ -238,8 +238,8 @@ fn resolve_type_expr(
     resolve_type_expr_with_params(arena, id, &[], name_table)
 }
 
-/// Like [`resolve_type_expr`] but treats `type_params` (e.g. `T`, `U`)
-/// as `Type::TypeParam(name)` rather than `Type::Unknown`. Used by
+/// Like [`resolve_type_expr`] but treats `type_parameters` (e.g. `T`, `U`)
+/// as `Type::TypeParameter(name)` rather than `Type::Unknown`. Used by
 /// generic function signature extraction (v0.7.4.1, ADR-0019 Addendum
 /// §A7) so that a parameter typed `T` resolves to a type-param
 /// reference, not the unknown sink.
@@ -247,7 +247,7 @@ fn resolve_type_expr(
 fn resolve_type_expr_with_params(
     arena: &triet_syntax::Arena,
     id: triet_syntax::TypeId,
-    type_params: &[triet_syntax::TypeParam],
+    type_parameters: &[triet_syntax::TypeParameter],
     name_table: &HashMap<String, Type>,
 ) -> Type {
     use triet_syntax::TypeExpr;
@@ -265,36 +265,36 @@ fn resolve_type_expr_with_params(
             "Trilean" => Type::TRILEAN,
             "String" => Type::String,
             "Unit" => Type::Unit,
-            other if type_params.iter().any(|p| p.name == other) => {
-                Type::TypeParam(other.to_owned())
+            other if type_parameters.iter().any(|p| p.name == other) => {
+                Type::TypeParameter(other.to_owned())
             }
             other => name_table.get(other).cloned().unwrap_or(Type::Unknown),
         },
         TypeExpr::Tuple(elements) => Type::Tuple(
             elements
                 .iter()
-                .map(|t| resolve_type_expr_with_params(arena, *t, type_params, name_table))
+                .map(|t| resolve_type_expr_with_params(arena, *t, type_parameters, name_table))
                 .collect(),
         ),
         TypeExpr::Nullable(inner) => Type::Nullable(Box::new(resolve_type_expr_with_params(
             arena,
             *inner,
-            type_params,
+            type_parameters,
             name_table,
         ))),
         TypeExpr::Function {
             parameters,
             return_type,
         } => Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: parameters
                 .iter()
-                .map(|t| resolve_type_expr_with_params(arena, *t, type_params, name_table))
+                .map(|t| resolve_type_expr_with_params(arena, *t, type_parameters, name_table))
                 .collect(),
             return_type: Box::new(resolve_type_expr_with_params(
                 arena,
                 *return_type,
-                type_params,
+                type_parameters,
                 name_table,
             )),
         },
@@ -307,7 +307,8 @@ fn resolve_type_expr_with_params(
             // Returning `Type::Unknown` keeps downstream signature shapes
             // stable while avoiding bad-Atomic cascade. Per ADR-0028 §2
             // AtomicValue membership rule.
-            let inner = resolve_type_expr_with_params(arena, arguments[0], type_params, name_table);
+            let inner =
+                resolve_type_expr_with_params(arena, arguments[0], type_parameters, name_table);
             if !inner.is_atomic_value() {
                 return Type::Unknown;
             }
@@ -323,22 +324,32 @@ fn resolve_type_expr_with_params(
             Type::Vector(Box::new(resolve_type_expr_with_params(
                 arena,
                 arguments[0],
-                type_params,
+                type_parameters,
                 name_table,
             )))
         }
         TypeExpr::Generic { name, arguments } if name == "HashMap" && arguments.len() == 2 => {
             Type::UserStruct {
                 name: "HashMap".into(),
-                type_params: Vec::new(),
+                type_parameters: Vec::new(),
                 fields: vec![
                     (
                         "__key".into(),
-                        resolve_type_expr_with_params(arena, arguments[0], type_params, name_table),
+                        resolve_type_expr_with_params(
+                            arena,
+                            arguments[0],
+                            type_parameters,
+                            name_table,
+                        ),
                     ),
                     (
                         "__value".into(),
-                        resolve_type_expr_with_params(arena, arguments[1], type_params, name_table),
+                        resolve_type_expr_with_params(
+                            arena,
+                            arguments[1],
+                            type_parameters,
+                            name_table,
+                        ),
                     ),
                 ],
             }
@@ -356,13 +367,13 @@ fn resolve_type_expr_with_params(
             value_type: Box::new(resolve_type_expr_with_params(
                 arena,
                 *value_type,
-                type_params,
+                type_parameters,
                 name_table,
             )),
             error_type: Box::new(resolve_type_expr_with_params(
                 arena,
                 *error_type,
-                type_params,
+                type_parameters,
                 name_table,
             )),
             allow_null_state: *allow_null_state,
@@ -370,7 +381,8 @@ fn resolve_type_expr_with_params(
         // v0.7.4.3-debt.1: `Trilean!` annotation per ADR-0021 §2.7.
         TypeExpr::RefinedTrilean => Type::TRILEAN_KNOWN,
         TypeExpr::Reference { form, inner } => {
-            let inner_ty = resolve_type_expr_with_params(arena, *inner, type_params, name_table);
+            let inner_ty =
+                resolve_type_expr_with_params(arena, *inner, type_parameters, name_table);
             Type::Reference(*form, Box::new(inner_ty))
         }
     }

@@ -4,8 +4,8 @@ mod exprs;
 mod methods;
 
 use triet_syntax::{
-    Arena, ExprId, FunctionBody, FunctionDef, Item, Pattern, PatternId, Program, ReferenceForm,
-    Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
+    Arena, ExprId, FunctionBody, FunctionDefinition, Item, Pattern, PatternId, Program,
+    ReferenceForm, Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
 };
 
 use crate::{
@@ -72,7 +72,7 @@ struct Checker<'p> {
     /// function returning `T~E` is accepted without firing E1025.
     expected_type_stack: Vec<Type>,
     /// v0.9.x.atomic.7d: per-function move state map per ADR-0025 §5.1.
-    /// Reset on function entry; tracks local bindings (params + lets).
+    /// Reset on function entry; tracks local bindings (parameters + lets).
     /// Lookups for names NOT in the map are ignored (functions, types,
     /// v0.10.x.borrow.3: per-function set of names introduced by
     /// `let` bindings (NOT parameters). Used by E2403 enforcement to
@@ -176,16 +176,16 @@ impl<'p> Checker<'p> {
     fn declare_item(&mut self, item: &Spanned<Item>) {
         match &item.node {
             Item::Function { def } => {
-                // Push a frame so generic type params are visible
+                // Push a frame so generic type parameters are visible
                 // during parameter/return type resolution (mirror
                 // struct/enum below).
                 self.env.push_frame();
-                for param in &def.type_params {
+                for param in &def.type_parameters {
                     self.env
-                        .declare(&param.name, Type::TypeParam(param.name.clone()));
+                        .declare(&param.name, Type::TypeParameter(param.name.clone()));
                 }
                 let parameters: Vec<Type> = def
-                    .params
+                    .parameters
                     .iter()
                     .map(|p| self.resolve_type(p.type_annotation))
                     .collect();
@@ -194,7 +194,7 @@ impl<'p> Checker<'p> {
                     .map_or(Type::Unit, |id| self.resolve_type(id));
                 self.env.pop_frame();
                 let function_type = Type::Function {
-                    type_params: def.type_params.clone(),
+                    type_parameters: def.type_parameters.clone(),
                     parameters,
                     return_type: Box::new(return_type),
                 };
@@ -239,12 +239,12 @@ impl<'p> Checker<'p> {
                 // and resolve external file-bound modules.
             }
             Item::Struct { def } => {
-                // Push a frame where type params are visible during
+                // Push a frame where type parameters are visible during
                 // field type resolution.
                 self.env.push_frame();
-                for param in &def.type_params {
+                for param in &def.type_parameters {
                     self.env
-                        .declare(&param.name, Type::TypeParam(param.name.clone()));
+                        .declare(&param.name, Type::TypeParameter(param.name.clone()));
                 }
                 let fields: Vec<(String, Type)> = def
                     .fields
@@ -254,16 +254,16 @@ impl<'p> Checker<'p> {
                 self.env.pop_frame();
                 let ty = Type::UserStruct {
                     name: def.name.clone(),
-                    type_params: def.type_params.clone(),
+                    type_parameters: def.type_parameters.clone(),
                     fields,
                 };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
             }
             Item::Enum { def } => {
                 self.env.push_frame();
-                for param in &def.type_params {
+                for param in &def.type_parameters {
                     self.env
-                        .declare(&param.name, Type::TypeParam(param.name.clone()));
+                        .declare(&param.name, Type::TypeParameter(param.name.clone()));
                 }
                 let variants: Vec<(String, Option<Box<Type>>)> = def
                     .variants
@@ -276,7 +276,7 @@ impl<'p> Checker<'p> {
                 self.env.pop_frame();
                 let ty = Type::UserEnum {
                     name: def.name.clone(),
-                    type_params: def.type_params.clone(),
+                    type_parameters: def.type_parameters.clone(),
                     variants,
                 };
                 self.declare_or_record_dup(&def.name, ty, item.span.clone());
@@ -292,7 +292,7 @@ impl<'p> Checker<'p> {
         // (field types are resolved during declaration).
     }
 
-    fn check_function(&mut self, def: &FunctionDef) {
+    fn check_function(&mut self, def: &FunctionDefinition) {
         // v0.9.x.atomic.7d: save/restore move state across function
         // boundary — each function body has its own move-tracking map.
         // v0.10.x.borrow.3: save/restore local-let-name set per
@@ -300,16 +300,16 @@ impl<'p> Checker<'p> {
         // is populated by Stmt::Let; parameters are NOT in it (they
         // come from caller's owner trail).
         let saved_local_lets = std::mem::take(&mut self.local_let_names);
-        // Push a frame so type params are visible during type
+        // Push a frame so type parameters are visible during type
         // resolution of parameters + return type. Reused as the
-        // function body's scope (params live in same frame).
+        // function body's scope (parameters live in same frame).
         self.env.push_frame();
-        // Declare generic type params first so `resolve_type` sees
-        // them as `TypeParam(name)` rather than `Unknown` (v0.7.4.1,
+        // Declare generic type parameters first so `resolve_type` sees
+        // them as `TypeParameter(name)` rather than `Unknown` (v0.7.4.1,
         // ADR-0019 Addendum §A7, Q2-A).
-        for param in &def.type_params {
+        for param in &def.type_parameters {
             self.env
-                .declare(&param.name, Type::TypeParam(param.name.clone()));
+                .declare(&param.name, Type::TypeParameter(param.name.clone()));
         }
 
         let return_type = def
@@ -334,7 +334,7 @@ impl<'p> Checker<'p> {
             });
         }
 
-        for parameter in &def.params {
+        for parameter in &def.parameters {
             let ty = self.resolve_type(parameter.type_annotation);
             self.env.declare(&parameter.name, ty);
             // v0.9.x.atomic.7d: track parameter as Alive at entry.
@@ -410,7 +410,7 @@ impl<'p> Checker<'p> {
     /// refuse-over-guess principle ([VISION §6](../../../../VISION.md)).
     ///
     /// [ADR-0025 §3]: ../../../docs/decisions/0025-borrow-checker-rules.md
-    fn check_lifetime_elision(&mut self, def: &FunctionDef, return_type: &Type) {
+    fn check_lifetime_elision(&mut self, def: &FunctionDefinition, return_type: &Type) {
         // Step 1: only check when the return is a top-level borrow.
         // ReferenceForm partitions into two groups: owning (`&+` /
         // `&+ mutable`, via `is_owning()`) vs borrow (everything else —
@@ -435,7 +435,7 @@ impl<'p> Checker<'p> {
         // the parser accepts `self`-parameter syntax.
         let mut input_borrow_count: usize = 0;
         let mut has_self_borrow_receiver = false;
-        for (i, parameter) in def.params.iter().enumerate() {
+        for (i, parameter) in def.parameters.iter().enumerate() {
             let param_ty = self.resolve_type(parameter.type_annotation);
             if let Type::Reference(form, _) = &param_ty
                 && !form.is_owning()
@@ -897,12 +897,12 @@ impl<'p> Checker<'p> {
                 "String" => Type::String,
                 "Unit" => Type::Unit,
                 _ => {
-                    // Look up user-defined types, type params, or aliases.
+                    // Look up user-defined types, type parameters, or aliases.
                     if let Some(ty) = self.env.lookup(&name).cloned() {
                         match &ty {
                             Type::UserStruct { .. }
                             | Type::UserEnum { .. }
-                            | Type::TypeParam(_) => ty,
+                            | Type::TypeParameter(_) => ty,
                             _ => {
                                 self.errors.push(TypeError::UnknownType { name, span });
                                 Type::Unknown
@@ -948,7 +948,7 @@ impl<'p> Checker<'p> {
                         let value = iter.next().unwrap();
                         return Type::UserStruct {
                             name: "HashMap".into(),
-                            type_params: Vec::new(),
+                            type_parameters: Vec::new(),
                             fields: vec![("__key".into(), key), ("__value".into(), value)],
                         };
                     }
@@ -973,22 +973,26 @@ impl<'p> Checker<'p> {
 
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     match &ty {
-                        Type::UserStruct { type_params, .. }
-                        | Type::UserEnum { type_params, .. } => {
-                            if type_params.len() != args.len() {
+                        Type::UserStruct {
+                            type_parameters, ..
+                        }
+                        | Type::UserEnum {
+                            type_parameters, ..
+                        } => {
+                            if type_parameters.len() != args.len() {
                                 self.errors.push(TypeError::WrongArity {
-                                    expected: type_params.len(),
+                                    expected: type_parameters.len(),
                                     found: args.len(),
                                     span,
                                 });
                                 return Type::Unknown;
                             }
-                            let map: std::collections::HashMap<_, _> = type_params
+                            let map: std::collections::HashMap<_, _> = type_parameters
                                 .iter()
                                 .map(|p| p.name.clone())
                                 .zip(args.iter().cloned())
                                 .collect();
-                            for tp in type_params {
+                            for tp in type_parameters {
                                 if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
                                     && let Some(arg_ty) = map.get(&tp.name)
                                     && !arg_ty.is_send()
@@ -1003,7 +1007,7 @@ impl<'p> Checker<'p> {
                             }
                             return ty.substitute(&map);
                         }
-                        // Non-struct types cannot have type params — fall through to UnknownType.
+                        // Non-struct types cannot have type parameters — fall through to UnknownType.
                         _ => {}
                     }
                 }
@@ -1019,10 +1023,10 @@ impl<'p> Checker<'p> {
                 return_type,
             } => Type::Function {
                 // Function-type literal expressions (e.g., closure
-                // type annotations) don't carry type params — those
+                // type annotations) don't carry type parameters — those
                 // are owned by function definitions, not function
                 // types as values.
-                type_params: Vec::new(),
+                type_parameters: Vec::new(),
                 parameters: parameters.iter().map(|t| self.resolve_type(*t)).collect(),
                 return_type: Box::new(self.resolve_type(return_type)),
             },

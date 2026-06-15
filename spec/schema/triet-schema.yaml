@@ -79,8 +79,8 @@ builtin_types:
     MatchArm:
       rust_type: crate::expr::MatchArm
       description: 'One arm of a match expression: pattern => body.'
-    LambdaParam:
-      rust_type: crate::expr::LambdaParam
+    LambdaParameter:
+      rust_type: crate::expr::LambdaParameter
       description: 'A lambda parameter: |x, y| body.'
     OutcomeArmDiscriminant:
       rust_type: crate::expr::OutcomeArm
@@ -95,8 +95,8 @@ builtin_types:
     ImportName:
       rust_type: crate::item::ImportName
       description: A name imported from a module.
-    TypeParam:
-      rust_type: crate::item::TypeParam
+    TypeParameter:
+      rust_type: crate::item::TypeParameter
       description: 'A generic type parameter: `T` in `struct Box<T>`.'
     StructField:
       rust_type: crate::item::StructField
@@ -337,8 +337,8 @@ definitions:
       requires_allocator: false
       freestanding: true
       fields:
-      - name: type_params
-        type: vector<TypeParam>
+      - name: type_parameters
+        type: vector<TypeParameter>
         ownership: owned
         description: Generic type parameters (empty for monomorphic functions).
       - name: parameters
@@ -656,8 +656,8 @@ definitions:
     - name: Function
       discriminant: 12
       fields:
-      - name: type_params
-        type: vector<TypeParam>
+      - name: type_parameters
+        type: vector<TypeParameter>
       - name: parameters
         type: vector<Type>
       - name: return_type
@@ -691,8 +691,8 @@ definitions:
       fields:
       - name: name
         type: string
-      - name: type_params
-        type: vector<TypeParam>
+      - name: type_parameters
+        type: vector<TypeParameter>
       - name: fields
         type: vector<StructField>
     - name: UserEnum
@@ -700,11 +700,11 @@ definitions:
       fields:
       - name: name
         type: string
-      - name: type_params
-        type: vector<TypeParam>
+      - name: type_parameters
+        type: vector<TypeParameter>
       - name: variants
         type: vector<EnumVariant>
-    - name: TypeParam
+    - name: TypeParameter
       discriminant: 16
       fields:
       - name: name
@@ -966,7 +966,7 @@ definitions:
         \ scope \u2014 borrow checker validates capture lifetimes."
       fields:
       - name: parameters
-        type: vector<LambdaParam>
+        type: vector<LambdaParameter>
         ownership: owned
       - name: return_type_annotation
         type: option<TypeId>
@@ -1328,7 +1328,7 @@ definitions:
         ownership: owned
   "=== SECTION 8: AST \u2014 Top-Level Items ===": "\u2500\u2500\u2500\u2500\u2500\
     \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-  FunctionParam:
+  FunctionParameter:
     kind: struct
     description: A function parameter. Parameters are read-only by default. To mutate
       a parameter, declare it as `mutable` on the binding, or take ownership via `&+`/`&+
@@ -1358,19 +1358,19 @@ definitions:
     - name: MutableBorrow
       description: "Explicit &0 mutable \u2014 exclusive mutable borrow. Caller loses\
         \ access for the borrow's duration."
-  FunctionDef:
+  FunctionDefinition:
     kind: struct
-    description: "A function definition. `function name(params) -> ReturnType { body\
+    description: "A function definition. `function name(parameters) -> ReturnType { body\
       \ }`. Functions are the fundamental unit of computation in Tri\u1EBFt."
     fields:
     - name: name
       type: string
-    - name: type_params
-      type: vector<TypeParam>
+    - name: type_parameters
+      type: vector<TypeParameter>
       ownership: owned
       description: Generic type parameters. Empty = monomorphic.
-    - name: params
-      type: vector<FunctionParam>
+    - name: parameters
+      type: vector<FunctionParameter>
       ownership: owned
     - name: return_type
       type: option<TypeId>
@@ -1403,14 +1403,14 @@ definitions:
         type: string
         description: e.g. 'C', 'C-unwind'
       description: "FFI function \u2014 body is provided by external C/Rust code."
-  StructDef:
+  StructDefinition:
     kind: struct
     description: '`struct Name { field: Type, ... }`.'
     fields:
     - name: name
       type: string
-    - name: type_params
-      type: vector<TypeParam>
+    - name: type_parameters
+      type: vector<TypeParameter>
       ownership: owned
     - name: fields
       type: vector<StructField>
@@ -1418,14 +1418,14 @@ definitions:
     - name: visibility
       type: Visibility
       default: Private
-  EnumDef:
+  EnumDefinition:
     kind: struct
     description: '`enum Name { Variant(Payload), Variant2, ... }`.'
     fields:
     - name: name
       type: string
-    - name: type_params
-      type: vector<TypeParam>
+    - name: type_parameters
+      type: vector<TypeParameter>
       ownership: owned
     - name: variants
       type: vector<EnumVariant>
@@ -1433,7 +1433,7 @@ definitions:
     - name: visibility
       type: Visibility
       default: Private
-  TypeParam:
+  TypeParameter:
     kind: struct
     description: 'A generic type parameter declaration: `T` in `function id<T>(x:
       T) -> T`.'
@@ -1489,17 +1489,17 @@ definitions:
     - name: Function
       fields:
       - name: def
-        type: FunctionDef
+        type: FunctionDefinition
         ownership: owned
     - name: Struct
       fields:
       - name: def
-        type: StructDef
+        type: StructDefinition
         ownership: owned
     - name: Enum
       fields:
       - name: def
-        type: EnumDef
+        type: EnumDefinition
         ownership: owned
     - name: Import
       fields:
@@ -1696,7 +1696,7 @@ codegen_example:
   - '    Vector(Box<Type>),'
   - '    HashMap { key_type: Box<Type>, value_type: Box<Type> },'
   - '    Function {'
-  - '        type_params: Vec<TypeParam>,'
+  - '        type_parameters: Vec<TypeParameter>,'
   - '        parameters: Vec<Type>,'
   - '        return_type: Box<Type>,'
   - '    },'
@@ -1704,11 +1704,11 @@ codegen_example:
   - '        value_type: Box<Type>,'
   - '        error_type: Box<Type>,'
   - '    },'
-  - '    UserStruct { name: String, type_params: Vec<TypeParam>, fields: Vec<StructField>
+  - '    UserStruct { name: String, type_parameters: Vec<TypeParameter>, fields: Vec<StructField>
     },'
-  - '    UserEnum { name: String, type_params: Vec<TypeParam>, variants: Vec<EnumVariant>
+  - '    UserEnum { name: String, type_parameters: Vec<TypeParameter>, variants: Vec<EnumVariant>
     },'
-  - '    TypeParam(String),'
+  - '    TypeParameter(String),'
   - '    Reference(ReferenceForm, Box<Type>),'
   - '    Atomic(Box<Type>),'
   - '    TernaryOutcome { value_type: Box<Type>, error_type: Box<Type> },'

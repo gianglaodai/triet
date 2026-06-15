@@ -29,7 +29,7 @@ Phase doc order:   1 ← 2 ← 3 ← 4 ← 5 ← 6
 | `PrimitiveType` | — | ⚠️ Dead (typecheck has own primitive classification) |
 | `Type` | — | ❌ Dead — 0 consumers |
 | `StructField`, `EnumVariant` | — | ⚠️ Dead (referenced by generated `Type` only) |
-| `TypeParam`, `ParameterPassing` | — | ⚠️ Dead |
+| `TypeParameter`, `ParameterPassing` | — | ⚠️ Dead |
 
 ### S6 ownership model in AST ✅
 
@@ -64,7 +64,7 @@ the schema:
 > "Every `pub enum` / `pub struct` emitted by `codegen.py` must have at least
 > one consumer in the workspace."
 
-`Type`, `PrimitiveType`, `StructField`, `EnumVariant`, `TypeParam`, and
+`Type`, `PrimitiveType`, `StructField`, `EnumVariant`, `TypeParameter`, and
 `ParameterPassing` are all emitted but not consumed. `Type` is the worst
 offender — it's the heart of the type system that schema was supposed to drive.
 

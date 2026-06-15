@@ -634,7 +634,7 @@ impl JitContext {
             if is_sret {
                 sig.params.push(AbiParam::new(I64));
             }
-            for _ in &body.signature.params {
+            for _ in &body.signature.parameters {
                 sig.params.push(AbiParam::new(I64));
             }
             if !is_sret {
@@ -670,7 +670,7 @@ impl JitContext {
             if is_sret {
                 cl_ctx.func.signature.params.push(AbiParam::new(I64));
             }
-            for _ in &body.signature.params {
+            for _ in &body.signature.parameters {
                 cl_ctx.func.signature.params.push(AbiParam::new(I64));
             }
             if !is_sret {
@@ -854,7 +854,7 @@ impl JitContext {
         // ADR-0049 Lát 3: pre-allocate StackSlot for EVERY String-typed local.
         // Ensures all String locals (including move targets from Assign) have
         // slots before switch_to_block, so Drop/free can read cap from slot.
-        // Field-0 initialized to 0 so unpopulated locals (params, returns)
+        // Field-0 initialized to 0 so unpopulated locals (parameters, returns)
         // produce free(0, _) = no-op instead of garbage pointer.
         let string_layout = body
             .struct_layouts
@@ -969,7 +969,7 @@ impl JitContext {
             }
         }
 
-        // Entry block: params → var slots. sret: block param[0] → Local(0).
+        // Entry block: parameters → var slots. sret: block param[0] → Local(0).
         let is_sret = matches!(
             body.signature.return_shape,
             triet_mir::ReturnShape::Struct { .. }
@@ -984,7 +984,7 @@ impl JitContext {
             0
         };
         // ADR-0049 Lát 3: init all String slot field-0 to 0 FIRST.
-        // Param pop below overwrites for String params.
+        // Param pop below overwrites for String parameters.
         let zero = builder.ins().iconst(I64, 0);
         for (slot, layout) in self.struct_slots.values() {
             if layout.name == "String" {
@@ -993,7 +993,7 @@ impl JitContext {
         }
 
         let mem_flags = cranelift_codegen::ir::MemFlags::new();
-        for (i, _param) in body.signature.params.iter().enumerate() {
+        for (i, _param) in body.signature.parameters.iter().enumerate() {
             let local = if is_sret { Local(i + 1) } else { Local(i) };
             let var = self.var(local);
             let param_val = builder.block_params(entry_block)[bp_idx];
@@ -1425,7 +1425,7 @@ impl JitContext {
                 }
                 Statement::GetDiscriminant { dest, source, .. } => {
                     // If the source has an enum StackSlot, read discriminant from it.
-                    // Otherwise, the source IS the discriminant (Bậc A: enum params
+                    // Otherwise, the source IS the discriminant (Bậc A: enum parameters
                     // and temporaries are passed as raw i64 discriminant values).
                     let disc_val = if let Some((slot, _)) = self.enum_slots.get(&source.local) {
                         builder.ins().stack_load(I64, *slot, 0)

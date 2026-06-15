@@ -19,7 +19,7 @@
 use super::ast_operator::*;
 use super::types::*;
 use crate::arena::{Arena, ExprId, PatternId, StmtId, TypeId};
-use crate::expr::{FStringPart, FStringSegments, LambdaParam, MatchArm, OutcomeArm};
+use crate::expr::{FStringPart, FStringSegments, LambdaParameter, MatchArm, OutcomeArm};
 use crate::item::{GenericBound, ImportName, ImportPath};
 use crate::numeric::{NumericSuffix, TrileanValue};
 use crate::span::{Span, Spanned};
@@ -29,17 +29,17 @@ use triet_core::Integer;
 use super::ast_expr::*;
 use super::ast_stmt::*;
 
-/// A function definition. `function name(params) -> ReturnType { body }`. Functions are the fundamental unit of computation in Triết.
+/// A function definition. `function name(parameters) -> ReturnType { body }`. Functions are the fundamental unit of computation in Triết.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionDef {
+pub struct FunctionDefinition {
     pub name: String,
     /// Generic type parameters. Empty = monomorphic.
-    pub type_params: Vec<crate::item::TypeParam>, // owned
-    pub params: Vec<FunctionParam>, // owned
+    pub type_parameters: Vec<crate::item::TypeParameter>, // owned
+    pub parameters: Vec<FunctionParameter>, // owned
     /// Return type annotation. None = inferred (single-expression `= expr` bodies).
     pub return_type: Option<crate::arena::TypeId>, // &0 (borrow)
-    pub body: FunctionBody,         // owned
-    pub visibility: Visibility,     // default: Private
+    pub body: FunctionBody,                 // owned
+    pub visibility: Visibility,             // default: Private
 }
 
 /// Function body — either a block or external (FFI).
@@ -62,20 +62,20 @@ pub enum FunctionBody {
 
 /// `struct Name { field: Type, ... }`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StructDef {
+pub struct StructDefinition {
     pub name: String,
-    pub type_params: Vec<crate::item::TypeParam>, // owned
-    pub fields: Vec<crate::item::StructField>,    // owned
-    pub visibility: Visibility,                   // default: Private
+    pub type_parameters: Vec<crate::item::TypeParameter>, // owned
+    pub fields: Vec<crate::item::StructField>,            // owned
+    pub visibility: Visibility,                           // default: Private
 }
 
 /// `enum Name { Variant(Payload), Variant2, ... }`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EnumDef {
+pub struct EnumDefinition {
     pub name: String,
-    pub type_params: Vec<crate::item::TypeParam>, // owned
-    pub variants: Vec<crate::item::EnumVariant>,  // owned
-    pub visibility: Visibility,                   // default: Private
+    pub type_parameters: Vec<crate::item::TypeParameter>, // owned
+    pub variants: Vec<crate::item::EnumVariant>,          // owned
+    pub visibility: Visibility,                           // default: Private
 }
 
 /// Import declaration: `from std.io import println, read_line`.
@@ -107,15 +107,15 @@ pub struct ModuleItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
     Function {
-        def: FunctionDef,
+        def: FunctionDefinition,
     }, // owned
 
     Struct {
-        def: StructDef,
+        def: StructDefinition,
     }, // owned
 
     Enum {
-        def: EnumDef,
+        def: EnumDefinition,
     }, // owned
 
     Import {
@@ -159,7 +159,7 @@ pub struct Program {
 
 /// A function parameter. Parameters are read-only by default. To mutate a parameter, declare it as `mutable` on the binding, or take ownership via `&+`/`&+ mutable`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionParam {
+pub struct FunctionParameter {
     pub name: String,
     pub type_annotation: crate::arena::TypeId, // &0 (borrow)
     /// How the argument is passed: borrow (default &0), move (&+), or mutable borrow (&0 mutable).

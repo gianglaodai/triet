@@ -37,7 +37,7 @@ Từ schema, code generator sinh ra:
 | `types.rs` | `enum Type`, `enum PrimitiveType`, `enum ReferenceForm`, ... |
 | `ast_expr.rs` | `enum Expr` với tất cả variants |
 | `ast_stmt.rs` | `enum Stmt` |
-| `ast_item.rs` | `enum Item`, `struct FunctionDef`, `struct StructDef`, ... |
+| `ast_item.rs` | `enum Item`, `struct FunctionDefinition`, `struct StructDefinition`, ... |
 | `ast_operator.rs` | `enum BinaryOperator`, `enum UnaryOperator` |
 | `mod.rs` | Module index + re-exports |
 

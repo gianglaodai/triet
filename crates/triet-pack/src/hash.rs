@@ -111,7 +111,7 @@ hash_newtype_impls!(ImplHash, IMPL_HASH_LEN);
 /// Compute a term's iface hash from its canonical signature bytes.
 ///
 /// Caller is responsible for producing canonical signature bytes per
-/// ADR-0014 §2 (term_kind, name, visibility, type params, body). The
+/// ADR-0014 §2 (term_kind, name, visibility, type parameters, body). The
 /// serializer in `serde::canonical_term_signature` does this.
 #[must_use]
 pub fn compute_term_iface_hash(canonical_signature_bytes: &[u8]) -> TermIfaceHash {

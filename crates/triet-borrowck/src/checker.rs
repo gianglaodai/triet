@@ -344,7 +344,7 @@ type LocalNames = BTreeMap<Local, String>;
 
 fn build_local_names(body: &triet_mir::Body) -> LocalNames {
     let mut names = LocalNames::new();
-    for (i, (name, _)) in body.signature.params.iter().enumerate() {
+    for (i, (name, _)) in body.signature.parameters.iter().enumerate() {
         names.insert(Local(i), name.clone());
     }
     // Merge let-bound local names from the lowerer.
@@ -425,7 +425,7 @@ pub fn check_body_with(
     let mut exit_states: Vec<BlockState> = vec![BlockState::default(); num_blocks];
 
     // Initialize entry block with parameters = Owned
-    entry_states[cfg.entry.0] = BlockState::initial(body.signature.params.len());
+    entry_states[cfg.entry.0] = BlockState::initial(body.signature.parameters.len());
 
     // Worklist: blocks whose successors need re-computation
     let mut worklist: VecDeque<BasicBlock> = VecDeque::new();
@@ -932,13 +932,13 @@ fn process_block(
     // M3+ (ADR-0042 Q4): user function move-marking.
     // Keyed by CallTarget::Jit — all Move-type args are consumed.
     // Check-then-mark: aliased double-move (e.g. foo(s, s)) → E2420
-    // BEFORE marking, so that the callee never receives two params
+    // BEFORE marking, so that the callee never receives two parameters
     // pointing to the same heap allocation (would double-free inside
     // the callee, which caller zeroing cannot fix).
     // M3+ (ADR-0042 Q4): user function move-marking.
     // Keyed by CallTarget::Jit — all Move-type args are consumed.
     // Check-then-mark: aliased double-move (e.g. foo(s, s)) → E2420
-    // BEFORE marking, so that the callee never receives two params
+    // BEFORE marking, so that the callee never receives two parameters
     // pointing to the same heap allocation (would double-free inside
     // the callee, which caller zeroing cannot fix).
     if let Terminator::CallDispatch {

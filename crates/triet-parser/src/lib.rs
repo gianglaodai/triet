@@ -208,7 +208,7 @@ mod integration_tests {
         let Item::Function { def } = &program.items[0].node else {
             panic!("expected function");
         };
-        assert_eq!(def.params.len(), 3);
+        assert_eq!(def.parameters.len(), 3);
     }
 
     #[test]

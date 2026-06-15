@@ -209,10 +209,10 @@ fn run_fixture(source: &str) -> Result<i64, String> {
         .find(|b| b.signature.name == "main")
         .ok_or("no main function found")?;
 
-    if !main_body.signature.params.is_empty() {
+    if !main_body.signature.parameters.is_empty() {
         return Err(format!(
-            "main() has {} params — Bậc A JIT does not support arguments to main()",
-            main_body.signature.params.len()
+            "main() has {} parameters — Bậc A JIT does not support arguments to main()",
+            main_body.signature.parameters.len()
         ));
     }
 

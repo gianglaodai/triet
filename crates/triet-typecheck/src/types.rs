@@ -6,7 +6,7 @@
 //! generics, tuples, nullables, and function types are recursive.
 
 use std::fmt;
-use triet_syntax::{ReferenceForm, TypeParam};
+use triet_syntax::{ReferenceForm, TypeParameter};
 
 /// A resolved Triết type.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,15 +48,15 @@ pub enum Type {
     /// type parameters: `<T, U>(P1, P2, ...) -> R`. Generic functions
     /// carry their type-param names so call sites can perform
     /// Rust-style inference per ADR-0019 Addendum §A7 + v0.7.4.1
-    /// Q2-A. Empty `type_params` means a monomorphic function.
+    /// Q2-A. Empty `type_parameters` means a monomorphic function.
     Function {
         /// Generic type parameters declared on the function
         /// (empty for non-generic functions).
-        type_params: Vec<TypeParam>,
-        /// Parameter types, positionally. May contain `TypeParam(name)`
+        type_parameters: Vec<TypeParameter>,
+        /// Parameter types, positionally. May contain `TypeParameter(name)`
         /// when the function is generic.
         parameters: Vec<Self>,
-        /// Return type. May contain `TypeParam(name)` when the
+        /// Return type. May contain `TypeParameter(name)` when the
         /// function is generic.
         return_type: Box<Self>,
     },
@@ -70,7 +70,7 @@ pub enum Type {
         /// Struct name (for Display and error messages).
         name: String,
         /// Generic type parameters (empty for non-generic structs).
-        type_params: Vec<TypeParam>,
+        type_parameters: Vec<TypeParameter>,
         /// Fields in declaration order. Stored as `(name, type)` pairs.
         fields: Vec<(String, Self)>,
     },
@@ -79,12 +79,12 @@ pub enum Type {
         /// Enum name.
         name: String,
         /// Generic type parameters (empty for non-generic enums).
-        type_params: Vec<TypeParam>,
+        type_parameters: Vec<TypeParameter>,
         /// Variants in declaration order. Stored as `(name, optional_payload)`.
         variants: Vec<(String, Option<Box<Self>>)>,
     },
     /// A generic type parameter: `T` in `struct Box<T> { value: T }`.
-    TypeParam(String),
+    TypeParameter(String),
     /// Outcome type per [ADR-0020]:
     ///
     /// - `T~E` binary outcome (`allow_null_state = false`): success T
@@ -246,14 +246,14 @@ impl Type {
             return true;
         }
         // Vector structural match: Vector<X> matches Vector<Y> if X matches Y.
-        // TypeParam in element position is a wildcard — generic `Vector<T>`
+        // TypeParameter in element position is a wildcard — generic `Vector<T>`
         // must match concrete `Vector<Integer>` during stdlib stub validation.
         if let (Self::Vector(a), Self::Vector(b)) = (self, other) {
-            return matches!(a.as_ref(), Self::TypeParam(_))
-                || matches!(b.as_ref(), Self::TypeParam(_))
+            return matches!(a.as_ref(), Self::TypeParameter(_))
+                || matches!(b.as_ref(), Self::TypeParameter(_))
                 || a.matches(b);
         }
-        // Same-name user types match even with different type params
+        // Same-name user types match even with different type parameters
         // (e.g., `Option<T>` vs `Option<Integer>`). Structural
         // comparison of variants/fields catches actual mismatches.
         if let (Self::UserStruct { name: n1, .. }, Self::UserStruct { name: n2, .. })
@@ -292,7 +292,7 @@ impl Type {
             Self::Reference(form, inner) => form.is_owning() && inner.is_send(),
             Self::Atomic(_) => true,
             Self::Function { .. } => true,
-            Self::TypeParam(_) | Self::Unknown | Self::Never => true,
+            Self::TypeParameter(_) | Self::Unknown | Self::Never => true,
         }
     }
 
@@ -300,7 +300,7 @@ impl Type {
     /// ADR-0028 §2 (Atomic primitive types). Only ternary primitives
     /// with hardware atomic support qualify: Trit/Tryte/Integer/Trilean.
     /// Long excluded (81-trit exceeds hardware atomic width).
-    /// TypeParam/Unknown pass through as recovery (don't fire spurious
+    /// TypeParameter/Unknown pass through as recovery (don't fire spurious
     /// errors on generic types or already-failed typecheck).
     #[must_use]
     pub const fn is_atomic_value(&self) -> bool {
@@ -310,7 +310,7 @@ impl Type {
                 | Self::Tryte
                 | Self::Integer
                 | Self::Trilean { .. }
-                | Self::TypeParam(_)
+                | Self::TypeParameter(_)
                 | Self::Unknown
         )
     }
@@ -332,35 +332,35 @@ impl Type {
         matches!(self, Self::Nullable(_))
     }
 
-    /// Replace every `TypeParam(name)` with `map[name]` if present.
+    /// Replace every `TypeParameter(name)` with `map[name]` if present.
     /// Used during monomorphization: `Box<T>` with `T→Integer` becomes
     /// the concrete struct type.
     #[must_use]
     pub fn substitute(&self, map: &std::collections::HashMap<String, Self>) -> Self {
         match self {
-            Self::TypeParam(name) => map.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Self::TypeParameter(name) => map.get(name).cloned().unwrap_or_else(|| self.clone()),
             Self::Nullable(inner) => Self::Nullable(Box::new(inner.substitute(map))),
             Self::Tuple(elements) => {
                 Self::Tuple(elements.iter().map(|e| e.substitute(map)).collect())
             }
             Self::Function {
-                type_params,
+                type_parameters,
                 parameters,
                 return_type,
             } => Self::Function {
-                type_params: type_params.clone(),
+                type_parameters: type_parameters.clone(),
                 parameters: parameters.iter().map(|p| p.substitute(map)).collect(),
                 return_type: Box::new(return_type.substitute(map)),
             },
             Self::Range(inner) => Self::Range(Box::new(inner.substitute(map))),
             Self::UserStruct {
                 name,
-                type_params,
+                type_parameters,
                 fields,
             } => {
-                // Type params are replaced with empty vec — the
-                // monomorphized type has no type params.
-                let local_map: std::collections::HashMap<_, _> = type_params
+                // Type parameters are replaced with empty vec — the
+                // monomorphized type has no type parameters.
+                let local_map: std::collections::HashMap<_, _> = type_parameters
                     .iter()
                     .map(|p| {
                         (
@@ -376,7 +376,7 @@ impl Type {
                 };
                 Self::UserStruct {
                     name: name.clone(),
-                    type_params: Vec::new(),
+                    type_parameters: Vec::new(),
                     fields: fields
                         .iter()
                         .map(|(n, t)| (n.clone(), t.substitute(&merged)))
@@ -385,10 +385,10 @@ impl Type {
             }
             Self::UserEnum {
                 name,
-                type_params,
+                type_parameters,
                 variants,
             } => {
-                let local_map: std::collections::HashMap<_, _> = type_params
+                let local_map: std::collections::HashMap<_, _> = type_parameters
                     .iter()
                     .map(|p| {
                         (
@@ -404,7 +404,7 @@ impl Type {
                 };
                 Self::UserEnum {
                     name: name.clone(),
-                    type_params: Vec::new(),
+                    type_parameters: Vec::new(),
                     variants: variants
                         .iter()
                         .map(|(n, p)| {
@@ -465,13 +465,13 @@ impl fmt::Display for Type {
                 formatter.write_str(")")
             }
             Self::Function {
-                type_params,
+                type_parameters,
                 parameters,
                 return_type,
             } => {
-                if !type_params.is_empty() {
+                if !type_parameters.is_empty() {
                     formatter.write_str("<")?;
-                    for (i, param) in type_params.iter().enumerate() {
+                    for (i, param) in type_parameters.iter().enumerate() {
                         if i > 0 {
                             formatter.write_str(", ")?;
                         }
@@ -491,7 +491,7 @@ impl fmt::Display for Type {
             Self::Range(element) => write!(formatter, "Range<{element}>"),
             Self::UserStruct { name, .. } => formatter.write_str(name),
             Self::UserEnum { name, .. } => formatter.write_str(name),
-            Self::TypeParam(name) => formatter.write_str(name),
+            Self::TypeParameter(name) => formatter.write_str(name),
             Self::Outcome {
                 value_type,
                 error_type,
@@ -569,22 +569,22 @@ mod tests {
         );
         assert_eq!(
             Type::Function {
-                type_params: Vec::new(),
+                type_parameters: Vec::new(),
                 parameters: vec![Type::Integer, Type::Integer],
                 return_type: Box::new(Type::Integer),
             }
             .to_string(),
             "(Integer, Integer) -> Integer",
         );
-        // Generic function display shows the type params prefix.
+        // Generic function display shows the type parameters prefix.
         assert_eq!(
             Type::Function {
-                type_params: vec![TypeParam {
+                type_parameters: vec![TypeParameter {
                     name: "T".into(),
                     bound: None
                 }],
-                parameters: vec![Type::TypeParam("T".into())],
-                return_type: Box::new(Type::TypeParam("T".into())),
+                parameters: vec![Type::TypeParameter("T".into())],
+                return_type: Box::new(Type::TypeParameter("T".into())),
             }
             .to_string(),
             "<T>(T) -> T",

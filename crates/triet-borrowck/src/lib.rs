@@ -62,7 +62,7 @@ impl MirBuilder {
         Self {
             signature: FunctionSignature {
                 name: name.to_string(),
-                params: Vec::new(),
+                parameters: Vec::new(),
                 return_type: return_type.into(),
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape: triet_mir::ReturnShape::Scalar,
@@ -82,7 +82,7 @@ impl MirBuilder {
     /// Add a parameter with the given passing mode.
     pub fn add_param(&mut self, name: &str, passing: ParameterPassing) -> Local {
         let local = self.new_local();
-        self.signature.params.push((name.to_string(), passing));
+        self.signature.parameters.push((name.to_string(), passing));
         local
     }
 

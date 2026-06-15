@@ -143,7 +143,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "print",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Unit.clone()),
         },
@@ -151,7 +151,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "println",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Unit.clone()),
         },
@@ -159,7 +159,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "read_line",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: Vec::new(),
             return_type: Box::new(String.clone()),
         },
@@ -172,7 +172,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "to_string",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![Integer.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -180,7 +180,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "tryte_to_string",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![Tryte.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -188,7 +188,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "long_to_string",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![Long.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -196,7 +196,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "trilean_to_string",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![trilean],
             return_type: Box::new(String.clone()),
         },
@@ -208,7 +208,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "length",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Integer),
         },
@@ -216,7 +216,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "length",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![Type::Reference(
                 ReferenceForm::BorrowReadOnly,
                 Box::new(String.clone()),
@@ -231,7 +231,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "concat",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone(), String.clone()],
             return_type: Box::new(String.clone()),
         },
@@ -241,7 +241,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "eq",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone(), String.clone()],
             return_type: Box::new(Integer.clone()),
         },
@@ -253,7 +253,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "vector_new",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: Vec::new(),
             return_type: Box::new(vector_integer.clone()),
         },
@@ -263,7 +263,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "push",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![vector_integer.clone(), Integer.clone()],
             return_type: Box::new(vector_integer.clone()),
         },
@@ -274,7 +274,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "len",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(Integer.clone()),
         },
@@ -282,7 +282,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "len",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![vector_integer.clone()],
             return_type: Box::new(Integer),
         },
@@ -293,7 +293,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "get",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![vector_integer.clone(), Integer],
             return_type: Box::new(Type::Nullable(Box::new(Integer))),
         },
@@ -302,7 +302,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     // ── ADR-0043: HashMap builtins ──
     let hashmap_ii = Type::UserStruct {
         name: "HashMap".into(),
-        type_params: Vec::new(),
+        type_parameters: Vec::new(),
         fields: vec![
             ("__key".into(), Integer.clone()),
             ("__value".into(), Integer.clone()),
@@ -313,7 +313,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "hashmap_new",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: Vec::new(),
             return_type: Box::new(hashmap_ii.clone()),
         },
@@ -323,7 +323,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare(
         "insert",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![hashmap_ii.clone(), Integer.clone(), Integer.clone()],
             return_type: Box::new(hashmap_ii.clone()),
         },
@@ -333,7 +333,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "get",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![hashmap_ii.clone(), Integer.clone()],
             return_type: Box::new(Type::Nullable(Box::new(Integer))),
         },
@@ -343,7 +343,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "len",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![hashmap_ii.clone()],
             return_type: Box::new(Integer),
         },
@@ -357,7 +357,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "contains",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone(), String.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -365,7 +365,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "contains",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![vector_integer.clone(), Integer.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -373,7 +373,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "contains",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![hashmap_ii.clone(), Integer.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -390,7 +390,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "len",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_vector.clone()],
             return_type: Box::new(Integer.clone()),
         },
@@ -398,7 +398,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "len",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_hashmap.clone()],
             return_type: Box::new(Integer.clone()),
         },
@@ -406,7 +406,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "get",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_vector.clone(), Integer.clone()],
             return_type: Box::new(Type::Nullable(Box::new(Integer.clone()))),
         },
@@ -414,7 +414,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "get",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_hashmap.clone(), Integer.clone()],
             return_type: Box::new(Type::Nullable(Box::new(Integer.clone()))),
         },
@@ -424,7 +424,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "contains",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_string.clone(), String.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -432,7 +432,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "contains",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_vector.clone(), Integer.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -440,7 +440,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "contains",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_hashmap.clone(), Integer.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -450,7 +450,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "is_empty",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![String.clone()],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -458,7 +458,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "is_empty",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![vector_integer],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -466,7 +466,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "is_empty",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![hashmap_ii],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -476,7 +476,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "is_empty",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_string],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -484,7 +484,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "is_empty",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_vector],
             return_type: Box::new(trilean_refined.clone()),
         },
@@ -492,7 +492,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "is_empty",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![ref_hashmap],
             return_type: Box::new(trilean_refined),
         },
@@ -505,7 +505,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "clear",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![Type::Reference(
                 ReferenceForm::BorrowExclusiveMutable,
                 Box::new(String.clone()),
@@ -520,7 +520,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     env.declare_overload(
         "append",
         Type::Function {
-            type_params: Vec::new(),
+            type_parameters: Vec::new(),
             parameters: vec![
                 Type::Reference(
                     ReferenceForm::BorrowExclusiveMutable,

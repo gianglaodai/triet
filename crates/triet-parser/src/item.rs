@@ -2,9 +2,9 @@
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
-    EnumDef, EnumVariant, FunctionBody, FunctionDef, FunctionParam, GenericBound, Import,
-    ImportName, ImportPath, Item, ModuleContent, ModuleItem, ParameterPassing, Spanned, StructDef,
-    StructField, TypeParam, Visibility,
+    EnumDefinition, EnumVariant, FunctionBody, FunctionDefinition, FunctionParameter, GenericBound,
+    Import, ImportName, ImportPath, Item, ModuleContent, ModuleItem, ParameterPassing, Spanned,
+    StructDefinition, StructField, TypeParameter, Visibility,
 };
 
 use crate::{
@@ -136,7 +136,7 @@ fn parse_function(
     let (name, _) = parse_item_name(parser, "function name")?;
     // Optional generic type parameters `<T, U>` per ADR-0019
     // Addendum §A7 (v0.7.4.1). Returns empty Vec when absent.
-    let type_params = parse_generic_params(parser)?;
+    let type_parameters = parse_generic_params(parser)?;
 
     parser.expect(&Token::LParen, "`(`")?;
     let parameters = parse_parameter_list(parser)?;
@@ -169,11 +169,11 @@ fn parse_function(
     let span = head_span.start..end;
     Ok(Spanned::new(
         Item::Function {
-            def: FunctionDef {
+            def: FunctionDefinition {
                 visibility,
                 name,
-                type_params,
-                params: parameters,
+                type_parameters,
+                parameters,
                 return_type,
                 body,
             },
@@ -182,13 +182,13 @@ fn parse_function(
     ))
 }
 
-fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParam>, ParseError> {
-    let mut params = Vec::new();
+fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParameter>, ParseError> {
+    let mut parameters = Vec::new();
     if matches!(parser.peek_token(), Some(Token::RParen)) {
-        return Ok(params);
+        return Ok(parameters);
     }
     loop {
-        params.push(parse_parameter(parser)?);
+        parameters.push(parse_parameter(parser)?);
         if !parser.eat(&Token::Comma) {
             break;
         }
@@ -196,10 +196,10 @@ fn parse_parameter_list(parser: &mut Parser<'_>) -> Result<Vec<FunctionParam>, P
             break;
         }
     }
-    Ok(params)
+    Ok(parameters)
 }
 
-fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError> {
+fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParameter, ParseError> {
     // Optional passing mode prefix: `mutable` or `owned`.
     let passing = if parser.eat(&Token::Mutable) {
         ParameterPassing::MutableBorrow
@@ -233,7 +233,7 @@ fn parse_parameter(parser: &mut Parser<'_>) -> Result<FunctionParam, ParseError>
     parser.expect(&Token::Colon, "`:`")?;
     let type_annotation = parse_type(parser)?;
 
-    Ok(FunctionParam {
+    Ok(FunctionParameter {
         name,
         type_annotation,
         passing_mode: passing,
@@ -536,7 +536,7 @@ fn parse_struct(
     parser.expect(&Token::Struct, "`struct`")?;
 
     let (name, _) = parse_item_name(parser, "struct name")?;
-    let type_params = parse_generic_params(parser)?;
+    let type_parameters = parse_generic_params(parser)?;
 
     parser.expect(&Token::LBrace, "`{`")?;
     let fields = parse_struct_fields(parser)?;
@@ -546,10 +546,10 @@ fn parse_struct(
     let span = head_span.start..end;
     Ok(Spanned::new(
         Item::Struct {
-            def: StructDef {
+            def: StructDefinition {
                 visibility,
                 name,
-                type_params,
+                type_parameters,
                 fields,
             },
         },
@@ -589,7 +589,7 @@ fn parse_enum(
     parser.expect(&Token::Enum, "`enum`")?;
 
     let (name, _) = parse_item_name(parser, "enum name")?;
-    let type_params = parse_generic_params(parser)?;
+    let type_parameters = parse_generic_params(parser)?;
 
     parser.expect(&Token::LBrace, "`{`")?;
     let variants = parse_enum_variants(parser)?;
@@ -599,10 +599,10 @@ fn parse_enum(
     let span = head_span.start..end;
     Ok(Spanned::new(
         Item::Enum {
-            def: EnumDef {
+            def: EnumDefinition {
                 visibility,
                 name,
-                type_params,
+                type_parameters,
                 variants,
             },
         },
@@ -636,14 +636,14 @@ fn parse_enum_variants(parser: &mut Parser<'_>) -> Result<Vec<EnumVariant>, Pars
     Ok(variants)
 }
 
-/// Parse optional generic type params: `<T, U>` or `<F: Send>`. Returns an empty
+/// Parse optional generic type parameters: `<T, U>` or `<F: Send>`. Returns an empty
 /// vec if the next token is not `<`.
-fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<TypeParam>, ParseError> {
+fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<TypeParameter>, ParseError> {
     if !matches!(parser.peek_token(), Some(Token::Lt)) {
         return Ok(Vec::new());
     }
     parser.advance(); // consume `<`
-    let mut params = Vec::new();
+    let mut parameters = Vec::new();
     loop {
         let name = parse_ident(parser, "type parameter")?;
         let mut bound = None;
@@ -670,13 +670,13 @@ fn parse_generic_params(parser: &mut Parser<'_>) -> Result<Vec<TypeParam>, Parse
                 }
             }
         }
-        params.push(TypeParam { name, bound });
+        parameters.push(TypeParameter { name, bound });
         if !parser.eat(&Token::Comma) {
             break;
         }
     }
     parser.expect(&Token::Gt, "`>`")?;
-    Ok(params)
+    Ok(parameters)
 }
 
 fn parse_ident(parser: &mut Parser<'_>, expected: &str) -> Result<String, ParseError> {
@@ -768,7 +768,7 @@ mod tests {
         match &item.node {
             Item::Function { def } => {
                 assert_eq!(def.name, "main");
-                assert!(def.params.is_empty());
+                assert!(def.parameters.is_empty());
                 assert!(matches!(def.body, FunctionBody::Block { block: _ }));
             }
             other => panic!("expected Function, got {other:?}"),
@@ -780,7 +780,7 @@ mod tests {
         let (_, item) = parse("function double(n: Integer) -> Integer = n * 2");
         match &item.node {
             Item::Function { def } => {
-                assert_eq!(def.params.len(), 1);
+                assert_eq!(def.parameters.len(), 1);
                 assert!(def.return_type.is_some());
                 assert!(matches!(def.body, FunctionBody::Expression { expr: _ }));
             }
@@ -792,7 +792,7 @@ mod tests {
     fn parses_function_with_multiple_params() {
         let (_, item) = parse("function add(a: Integer, b: Integer) -> Integer = a + b");
         match &item.node {
-            Item::Function { def } => assert_eq!(def.params.len(), 2),
+            Item::Function { def } => assert_eq!(def.parameters.len(), 2),
             other => panic!("got {other:?}"),
         }
     }
@@ -802,8 +802,11 @@ mod tests {
         let (_, item) = parse("function append(mutable buffer: String, suffix: String) { }");
         match &item.node {
             Item::Function { def } => {
-                assert_eq!(def.params[0].passing_mode, ParameterPassing::MutableBorrow);
-                assert_eq!(def.params[1].passing_mode, ParameterPassing::Borrow);
+                assert_eq!(
+                    def.parameters[0].passing_mode,
+                    ParameterPassing::MutableBorrow
+                );
+                assert_eq!(def.parameters[1].passing_mode, ParameterPassing::Borrow);
             }
             other => panic!("got {other:?}"),
         }
@@ -814,7 +817,7 @@ mod tests {
         let (_, item) = parse("function consume(owned data: String) -> String = data");
         match &item.node {
             Item::Function { def } => {
-                assert_eq!(def.params[0].passing_mode, ParameterPassing::Move);
+                assert_eq!(def.parameters[0].passing_mode, ParameterPassing::Move);
             }
             other => panic!("got {other:?}"),
         }
@@ -829,13 +832,13 @@ mod tests {
         match &item.node {
             Item::Function { def } => {
                 assert_eq!(
-                    def.type_params,
-                    vec![TypeParam {
+                    def.type_parameters,
+                    vec![TypeParameter {
                         name: "T".to_owned(),
                         bound: None
                     }]
                 );
-                assert_eq!(def.params.len(), 1);
+                assert_eq!(def.parameters.len(), 1);
                 assert!(def.return_type.is_some());
             }
             other => panic!("expected Function, got {other:?}"),
@@ -851,19 +854,19 @@ mod tests {
         match &item.node {
             Item::Function { def } => {
                 assert_eq!(
-                    def.type_params,
+                    def.type_parameters,
                     vec![
-                        TypeParam {
+                        TypeParameter {
                             name: "K".to_owned(),
                             bound: None
                         },
-                        TypeParam {
+                        TypeParameter {
                             name: "V".to_owned(),
                             bound: None
                         }
                     ]
                 );
-                assert_eq!(def.params.len(), 2);
+                assert_eq!(def.parameters.len(), 2);
             }
             other => panic!("expected Function, got {other:?}"),
         }
@@ -876,9 +879,9 @@ mod tests {
         match &item.node {
             Item::Function { def } => {
                 assert!(
-                    def.type_params.is_empty(),
-                    "non-generic function must have empty type_params, got {:?}",
-                    def.type_params
+                    def.type_parameters.is_empty(),
+                    "non-generic function must have empty type_parameters, got {:?}",
+                    def.type_parameters
                 );
             }
             other => panic!("got {other:?}"),

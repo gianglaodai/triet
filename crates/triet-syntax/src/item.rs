@@ -15,7 +15,7 @@ pub enum GenericBound {
 
 /// A generic parameter, e.g. `T` or `F: Send`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TypeParam {
+pub struct TypeParameter {
     /// The name of the parameter, e.g. `T`.
     pub name: String,
     /// An optional bound, e.g. `Send`.

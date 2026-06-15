@@ -278,8 +278,8 @@ impl Checker<'_> {
                 Type::Function {
                     // Closure literals don't introduce generic type
                     // parameters at v0.7.4.1 (Q2-A minimal scope —
-                    // only function declarations get type params).
-                    type_params: Vec::new(),
+                    // only function declarations get type parameters).
+                    type_parameters: Vec::new(),
                     parameters: param_types,
                     return_type: Box::new(return_ty),
                 }
@@ -891,7 +891,7 @@ impl Checker<'_> {
 
         // Try function call first.
         if let Type::Function {
-            type_params,
+            type_parameters,
             parameters,
             return_type,
         } = callee_ty.clone()
@@ -906,7 +906,7 @@ impl Checker<'_> {
             //    use and `sys.atomic.compare_exchange` qualified use via
             //    field access).
             // 2. Function signature shape matches: 5 parameters with
-            //    params[3] and params[4] both `Type::UserEnum { name:
+            //    parameters[3] and parameters[4] both `Type::UserEnum { name:
             //    "Ordering", .. }`.
             //
             // Why both: the name alone risks false positives if a user
@@ -924,20 +924,20 @@ impl Checker<'_> {
                 });
             }
             // Generic function inference per Q2-A (v0.7.4.1):
-            // walk param/arg pairs and bind TypeParam(name) → concrete
+            // walk param/arg pairs and bind TypeParameter(name) → concrete
             // arg type into `sub_map`. Reuses existing
             // [`Type::substitute`] machinery shared with generic enum
-            // constructors. Empty `type_params` short-circuits to the
+            // constructors. Empty `type_parameters` short-circuits to the
             // pre-v0.7.4.1 path.
             let mut sub_map: std::collections::HashMap<String, Type> =
                 std::collections::HashMap::new();
             for (i, argument) in arguments.iter().enumerate() {
                 let arg_ty = self.infer_expression(*argument);
                 if let Some(expected) = parameters.get(i) {
-                    if !type_params.is_empty() {
+                    if !type_parameters.is_empty() {
                         extract_type_params(expected, &arg_ty, &mut sub_map);
                     }
-                    // Substitute already-bound type params before
+                    // Substitute already-bound type parameters before
                     // comparing — handles `function f<T>(a: T, b: T)`
                     // where the second arg must match the first's
                     // inferred T.
@@ -951,11 +951,11 @@ impl Checker<'_> {
                     }
                 }
             }
-            if type_params.is_empty() {
+            if type_parameters.is_empty() {
                 return *return_type;
             }
             // Enforce bounds
-            for tp in type_params {
+            for tp in type_parameters {
                 if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
                     && let Some(arg_ty) = sub_map.get(&tp.name)
                     && !arg_ty.is_send()
@@ -1019,7 +1019,7 @@ impl Checker<'_> {
         {
             let Type::UserEnum {
                 name: _enum_name,
-                type_params,
+                type_parameters,
                 variants,
             } = &enum_ty
             else {
@@ -1030,14 +1030,14 @@ impl Checker<'_> {
                 .find(|(n, _)| n == callee_name)
                 .expect("lookup_enum_variant guarantees this");
             // Infer type arguments from the call arguments when
-            // the variant payload uses type params.
+            // the variant payload uses type parameters.
             let mut sub_map: std::collections::HashMap<String, Type> =
                 std::collections::HashMap::new();
             match (arguments.len(), payload) {
                 (1, Some(expected_ty)) => {
                     let arg_ty = self.infer_expression(arguments[0]);
-                    // If the payload type is a TypeParam, infer from arg.
-                    if let Type::TypeParam(tp) = expected_ty.as_ref() {
+                    // If the payload type is a TypeParameter, infer from arg.
+                    if let Type::TypeParameter(tp) = expected_ty.as_ref() {
                         sub_map.insert(tp.clone(), arg_ty);
                     } else if !expected_ty.matches(&arg_ty) {
                         self.errors.push(TypeError::Mismatch {
@@ -1063,9 +1063,9 @@ impl Checker<'_> {
                     });
                 }
             }
-            // If we have type params without inferred concrete types,
-            // leave them as TypeParam (will be caught by context).
-            if !sub_map.is_empty() || type_params.is_empty() {
+            // If we have type parameters without inferred concrete types,
+            // leave them as TypeParameter (will be caught by context).
+            if !sub_map.is_empty() || type_parameters.is_empty() {
                 return enum_ty.substitute(&sub_map);
             }
             return enum_ty.clone();
@@ -1100,12 +1100,12 @@ impl Checker<'_> {
 
         for candidate in candidates {
             if let Type::Function {
-                type_params,
+                type_parameters,
                 parameters,
                 return_type,
             } = candidate
             {
-                if !type_params.is_empty() {
+                if !type_parameters.is_empty() {
                     continue; // skip generic overloads in Bậc A
                 }
                 if arguments.len() != parameters.len() {
@@ -1981,7 +1981,7 @@ fn try_unify(a: &Type, b: &Type) -> Result<Type, ()> {
 }
 
 /// Walk a parameter type alongside the concrete argument type and bind
-/// `TypeParam(name)` slots in `sub_map`. Supports composites: `Nullable`,
+/// `TypeParameter(name)` slots in `sub_map`. Supports composites: `Nullable`,
 /// `Tuple`, `Range`, `Vector` (via `UserStruct` shape if added later),
 /// and the arms reachable from generic stdlib stubs. Conflicting
 /// bindings (e.g. `f<T>(a: T, b: T)` called with `(Integer, String)`)
@@ -1995,21 +1995,21 @@ fn extract_type_params(
     sub_map: &mut std::collections::HashMap<String, Type>,
 ) {
     match (param, arg) {
-        (Type::TypeParam(name), concrete) => {
+        (Type::TypeParameter(name), concrete) => {
             // v0.7.4.3-debt.4 (WA-7): prefer concrete bindings over
-            // TypeParam ones. The naïve `or_insert_with` semantic
+            // TypeParameter ones. The naïve `or_insert_with` semantic
             // lets the first arg "poison" `sub_map[T]` with an
-            // unbound `TypeParam("T")` — e.g. `push(new(), 99)`
+            // unbound `TypeParameter("T")` — e.g. `push(new(), 99)`
             // where `new<T>() -> Vector<T>` returns
-            // `Vector<TypeParam("T"))` because T cannot be inferred
+            // `Vector<TypeParameter("T"))` because T cannot be inferred
             // from a zero-arg call. Pre-fix, that self-binding
             // blocked the subsequent `99` arg from setting T =
             // Integer; now we replace the poisoned binding when a
             // concrete arg comes in.
             //
             // The replacement is restricted: only swap when the
-            // EXISTING binding is a `TypeParam` AND the new
-            // `concrete` is NOT a `TypeParam`. This preserves the
+            // EXISTING binding is a `TypeParameter` AND the new
+            // `concrete` is NOT a `TypeParameter`. This preserves the
             // "first concrete wins" semantic for `f<T>(a: T, b: T)`
             // called with `(Integer, String)` (T stays Integer).
             match sub_map.get(name) {
@@ -2017,8 +2017,8 @@ fn extract_type_params(
                     sub_map.insert(name.clone(), concrete.clone());
                 }
                 Some(existing)
-                    if matches!(existing, Type::TypeParam(_))
-                        && !matches!(concrete, Type::TypeParam(_)) =>
+                    if matches!(existing, Type::TypeParameter(_))
+                        && !matches!(concrete, Type::TypeParameter(_)) =>
                 {
                     sub_map.insert(name.clone(), concrete.clone());
                 }
@@ -2028,7 +2028,7 @@ fn extract_type_params(
         (Type::Nullable(p_inner), Type::Nullable(a_inner)) => {
             extract_type_params(p_inner, a_inner, sub_map);
         }
-        // Subtype rule: T ⊂ T?. If param is Nullable(TypeParam) and
+        // Subtype rule: T ⊂ T?. If param is Nullable(TypeParameter) and
         // arg is concrete, bind T to the arg's bare type.
         (Type::Nullable(p_inner), concrete) => {
             extract_type_params(p_inner, concrete, sub_map);
@@ -2078,7 +2078,7 @@ fn extract_type_params(
                 }
             }
         }
-        // Function types (closure params): walk parameters + return.
+        // Function types (closure parameters): walk parameters + return.
         (
             Type::Function {
                 parameters: p_params,

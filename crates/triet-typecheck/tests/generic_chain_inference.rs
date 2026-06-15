@@ -1,14 +1,14 @@
 //! v0.7.4.3-debt.4 — integration tests for WA-7.
 //!
 //! Pre-fix: `push(new(), 99)` failed with "expected T, found Integer"
-//! because `new()`'s un-inferrable return type `Vector<TypeParam("T"))`
-//! poisoned `sub_map[T] = TypeParam("T")` via `or_insert_with`. The
+//! because `new()`'s un-inferrable return type `Vector<TypeParameter("T"))`
+//! poisoned `sub_map[T] = TypeParameter("T")` via `or_insert_with`. The
 //! subsequent `99` arg couldn't override the entry, so the substitution
-//! `T → TypeParam("T")` left the second param expecting an unbound
-//! `TypeParam`, which doesn't match the concrete `Integer`.
+//! `T → TypeParameter("T")` left the second param expecting an unbound
+//! `TypeParameter`, which doesn't match the concrete `Integer`.
 //!
 //! Fix: `extract_type_params` now prefers concrete bindings over
-//! `TypeParam` ones — same-name `TypeParam("T") → TypeParam("T")`
+//! `TypeParameter` ones — same-name `TypeParameter("T") → TypeParameter("T")`
 //! self-references give way when a concrete arg comes in.
 //!
 //! Tests pin both positive (chains now work) and negative
@@ -62,7 +62,7 @@ fn push_then_push_inline_chain_resolves_t() {
 fn user_pair_function_first_concrete_arg_still_wins() {
     // `pair<T>(a: T, b: T) -> T` with `(Integer, String)` must
     // still emit a Mismatch — the prefer-concrete rule only fires
-    // when the EXISTING binding is a TypeParam; a concrete first
+    // when the EXISTING binding is a TypeParameter; a concrete first
     // binding is preserved.
     let src = r#"
         function pair<T>(a: T, b: T) -> T = a

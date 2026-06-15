@@ -92,6 +92,6 @@ pub use tty_prompt::{
 // API surface we haven't committed to.
 pub use serde::{read_khi, write_khi};
 pub use types::{
-    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDef, FieldDef, FunctionExport, Module,
-    Param, SemVer, StructDef, TypeDef, TypeKind, TypeRef, Visibility,
+    AbiMetadata, CapabilityClaim, CapabilityLevel, Dep, EnumDefinition, FieldDef, FunctionExport,
+    Module, Param, SemVer, StructDefinition, TypeDef, TypeKind, TypeRef, Visibility,
 };

@@ -20,7 +20,7 @@ use triet_mir::{
     Span, Statement, StructLayout, Terminator,
 };
 use triet_syntax::{
-    Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDef, Item,
+    Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDefinition, Item,
     PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId, UnaryOperator,
 };
 
@@ -184,7 +184,7 @@ impl Ctx {
             }],
             sig: FunctionSignature {
                 name: name.to_string(),
-                params: Vec::new(),
+                parameters: Vec::new(),
                 return_type: ret.clone(),
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape,
@@ -610,9 +610,9 @@ pub fn lower_program(
 ///
 /// `span` is the byte range of the function definition in the source file,
 /// used as a fallback for body-level synthetic statements.
-#[allow(clippy::too_many_arguments)] // 9 params — symbols+layouts+resolutions bundled into LoweringInput struct deferred (non-blocking for S3)
+#[allow(clippy::too_many_arguments)] // 9 parameters — symbols+layouts+resolutions bundled into LoweringInput struct deferred (non-blocking for S3)
 pub(crate) fn lower_function(
-    func: &FunctionDef,
+    func: &FunctionDefinition,
     arena: &Arena,
     span: Span,
     symbols: std::collections::HashMap<String, TypeKind>,
@@ -638,15 +638,15 @@ pub(crate) fn lower_function(
     );
     let entry = c.cur;
 
-    // Function scope: Drop all owned locals (params + let bindings) when
+    // Function scope: Drop all owned locals (parameters + let bindings) when
     // the function exits. Must start before pushing parameters.
     c.push_scope();
 
-    for p in &func.params {
+    for p in &func.parameters {
         let ty = lower_type(arena, p.type_annotation, &symbols);
         // B7-lift (ADR-0042): heap types now allowed as parameters.
         // Move semantics: callee owns + drops, caller zeroes slot after call.
-        // ADR-0045 §2: reference types (&0 String etc.) are borrow params
+        // ADR-0045 §2: reference types (&0 String etc.) are borrow parameters
         // — callee does NOT own, must NOT drop. Heap types with non-ref
         // annotations (e.g. s: String) remain Move.
         let l = c.alloc_local_ty(&ty);
@@ -656,19 +656,19 @@ pub(crate) fn lower_function(
             triet_syntax::ParameterPassing::Move => ParameterPassing::Move,
             triet_syntax::ParameterPassing::MutableBorrow => ParameterPassing::MutableBorrow,
         };
-        // Only push_owned for Move params and non-reference types.
+        // Only push_owned for Move parameters and non-reference types.
         // Reference types (&0 String) — callee borrows, no Drop.
         let is_ref_type = ty.is_reference();
         if matches!(passing, ParameterPassing::Move) || !is_ref_type {
             c.push_owned(l);
         }
-        c.sig.params.push((p.name.clone(), passing));
+        c.sig.parameters.push((p.name.clone(), passing));
     }
 
     // ADR-0046 §3: populate return_borrow_map for return-borrow elision.
     // If the return type is &0 T, tie it to the single ref-param.
     // Elision rule (check_lifetime_elision, check.rs:494) guarantees
-    // exactly 0 or 1 non-owning ref-params — 0 = fn with no ref params
+    // exactly 0 or 1 non-owning ref-parameters — 0 = fn with no ref parameters
     // returning &0 T (unusual but valid: return a borrowed static/global);
     // 1 = tie to that param. 2+ is refused by E2400 (fatal at typecheck).
     // defense-in-depth: if typecheck leaks, Err — not panic — because
@@ -678,7 +678,7 @@ pub(crate) fn lower_function(
     {
         let ref_param_indices: Vec<usize> = c
             .sig
-            .params
+            .parameters
             .iter()
             .enumerate()
             .filter(|(_, (name, _))| {
@@ -696,7 +696,7 @@ pub(crate) fn lower_function(
             .map(|(i, _)| i)
             .collect();
         match ref_param_indices.len() {
-            0 => {} // No ref-params to tie to — valid (static/global return).
+            0 => {} // No ref-parameters to tie to — valid (static/global return).
             1 => {
                 c.sig
                     .return_borrow_map
@@ -743,7 +743,7 @@ pub(crate) fn lower_function(
         }
     }
 
-    // Flush owned locals (params + let bindings) before building the body.
+    // Flush owned locals (parameters + let bindings) before building the body.
     // If a `return` already flushed everything, this is a no-op.
     c.pop_scope();
 
@@ -4416,7 +4416,7 @@ function main() -> Integer {
         }
     }
 
-    /// B2 (§2 callee): no Drop for reference-type borrow params.
+    /// B2 (§2 callee): no Drop for reference-type borrow parameters.
     /// Callee receives a reference handle — it does not own the heap.
     #[test]
     fn borrow_param_no_drop_in_callee() {

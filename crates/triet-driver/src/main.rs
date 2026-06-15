@@ -186,14 +186,14 @@ fn main() -> ExitCode {
     match main_entry {
         Some(body) => match compiled.get(&body.signature.name) {
             Some(func) => {
-                // Bậc A: main() must have 0 params — the JIT only
+                // Bậc A: main() must have 0 parameters — the JIT only
                 // supports calling with 0 arguments today.
-                if !body.signature.params.is_empty() {
+                if !body.signature.parameters.is_empty() {
                     eprintln!(
                         "{}: main() has {} parameter(s) — \
                          Bậc A JIT does not support arguments to main()",
                         path,
-                        body.signature.params.len()
+                        body.signature.parameters.len()
                     );
                     return ExitCode::from(3);
                 }

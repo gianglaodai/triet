@@ -290,7 +290,7 @@ use triet_core::Integer;
 
 AST_IMPORT_BLOCK = IMPORT_BLOCK + """\
 use crate::type_ast::ReferenceForm;
-use crate::expr::{FStringPart, FStringSegments, LambdaParam, MatchArm, OutcomeArm};
+use crate::expr::{FStringPart, FStringSegments, LambdaParameter, MatchArm, OutcomeArm};
 use super::types::*;
 use super::ast_operator::*;
 """
@@ -329,12 +329,12 @@ def generate_all_rust(schema, output_dir):
 
     # Categorize definitions
     type_defs = ["PrimitiveType", "ReferenceForm", "Type", "StructField",
-                 "EnumVariant", "Visibility", "ParameterPassing", "TypeParam"]
+                 "EnumVariant", "Visibility", "ParameterPassing", "TypeParameter"]
     operator_defs = ["BinaryOperator", "UnaryOperator"]
-    expr_defs = ["Expr", "MatchArm", "LambdaParam"]
+    expr_defs = ["Expr", "MatchArm", "LambdaParameter"]
     stmt_defs = ["Stmt"]
-    item_defs = ["FunctionDef", "FunctionBody", "StructDef", "EnumDef",
-                 "Import", "ModuleContent", "ModuleItem", "Item", "Program", "FunctionParam", "ImportName", "ImportPath"]
+    item_defs = ["FunctionDefinition", "FunctionBody", "StructDefinition", "EnumDefinition",
+                 "Import", "ModuleContent", "ModuleItem", "Item", "Program", "FunctionParameter", "ImportName", "ImportPath"]
 
 
     # Generate types module
