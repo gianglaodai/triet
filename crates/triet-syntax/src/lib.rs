@@ -49,3 +49,22 @@ pub type ExprResolutions = std::collections::HashMap<ExprId, EnumVariantResoluti
 
 /// Maps pattern IDs to resolved enum variants.
 pub type PatternResolutions = std::collections::HashMap<PatternId, EnumVariantResolution>;
+
+/// Resolution of a trait method call to its concrete implementation.
+///
+/// ADR-0061 T4 Tier 1 static dispatch. Produced by the type checker when
+/// `a.compare(b)` resolves through the `impl_table`; consumed by the
+/// lowerer (T5) to emit a direct `CallDispatch` to the mangled function.
+///
+/// Mirrors [`EnumVariantResolution`]: minimal payload, keyed by `ExprId`.
+/// Only the mangled `concrete_fn` is carried — the return type already
+/// lives on the target `Body`'s MIR signature, so re-storing it here
+/// would be redundant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodResolution {
+    /// Mangled concrete function name `Type$Trait$method` (ADR-0061 §2.4).
+    pub concrete_fn: String,
+}
+
+/// Maps method-call expression IDs to their resolved concrete function.
+pub type MethodResolutions = std::collections::HashMap<ExprId, MethodResolution>;

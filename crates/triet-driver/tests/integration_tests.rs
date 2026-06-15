@@ -56,7 +56,8 @@ fn run_fixture(source: &str) -> Result<i64, String> {
     }
 
     // ── Phase 2: Typecheck ──
-    let (type_errors, expr_resolutions, pattern_resolutions) = triet_typecheck::check(&program);
+    let (type_errors, expr_resolutions, pattern_resolutions, _method_resolutions) =
+        triet_typecheck::check(&program);
     if !type_errors.is_empty() {
         for err in &type_errors {
             errors.push(format!("type error: {err}"));

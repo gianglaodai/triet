@@ -35,6 +35,7 @@ pub fn check(
     Vec<TypeError>,
     crate::ExprResolutions,
     crate::PatternResolutions,
+    crate::MethodResolutions,
 ) {
     let mut checker = Checker::new(program);
     // ADR-0061 T3.3: trait coherence — one `implement` per (Type, Trait).
@@ -71,11 +72,15 @@ pub fn check(
             &trait_table,
             &impl_table,
         ));
+    // ADR-0061 T4: hand the impl_table to the checker so check_method_call
+    // can resolve `a.method(b)` to its concrete mangled function.
+    checker.impl_table = impl_table;
     checker.check_program();
     (
         checker.errors,
         checker.expr_resolutions,
         checker.pattern_resolutions,
+        checker.method_resolutions,
     )
 }
 
@@ -84,8 +89,21 @@ pub fn check(
 /// Import bindings from other modules are injected into the environment
 /// before the declare/check passes. Used by `check_resolved` for
 /// cross-module type checking.
-pub(crate) fn check_with_env(program: &Program, env: TypeEnvironment) -> Vec<TypeError> {
+pub(crate) fn check_with_env(
+    program: &Program,
+    env: TypeEnvironment,
+    impl_table: std::collections::HashMap<
+        crate::check_resolved::ImplKey,
+        crate::check_resolved::ImplInfo,
+    >,
+) -> Vec<TypeError> {
     let mut checker = Checker::with_env(program, env);
+    // ADR-0061 T4: cross-module dispatch — the per-module checker resolves
+    // trait method calls against the program-wide impl_table. The
+    // annotation map is discarded on this path (only single-file `check`
+    // feeds the lowerer); resolution still runs so return types / arg
+    // checks / ambiguity errors are consistent across both entry points.
+    checker.impl_table = impl_table;
     checker.check_program();
     checker.errors
 }
@@ -103,6 +121,15 @@ struct Checker<'p> {
     /// to it inside impl method bodies. `None` outside an impl context —
     /// a `self` there resolves to `Type::Unknown` (self out of place).
     current_self_type: Option<Type>,
+    /// ADR-0061 T4: program-wide trait implementation table, keyed by
+    /// `(type_name, trait_name)`. Read by `check_method_call` to resolve
+    /// `a.compare(b)` to its concrete mangled function. Populated at both
+    /// entry points (`check` + `check_with_env`); empty when no impls.
+    impl_table:
+        std::collections::HashMap<crate::check_resolved::ImplKey, crate::check_resolved::ImplInfo>,
+    /// ADR-0061 T4: resolved trait-method calls, keyed by the `MethodCall`
+    /// expression ID. Produced here, consumed by the lowerer (T5).
+    pub(crate) method_resolutions: crate::MethodResolutions,
     /// Local-context expected-type stack pushed by let/const annotations,
     /// struct-literal field positions, and call-argument positions per
     /// [v0.7.4.3-debt.3] (WA-5). Outcome constructors (`~0` especially)
@@ -138,6 +165,8 @@ impl<'p> Checker<'p> {
             env: TypeEnvironment::with_prelude(),
             current_return_type: None,
             current_self_type: None,
+            impl_table: std::collections::HashMap::new(),
+            method_resolutions: crate::MethodResolutions::new(),
             expected_type_stack: Vec::new(),
             local_let_names: std::collections::HashSet::new(),
             expr_resolutions: crate::ExprResolutions::new(),
@@ -155,6 +184,8 @@ impl<'p> Checker<'p> {
             env,
             current_return_type: None,
             current_self_type: None,
+            impl_table: std::collections::HashMap::new(),
+            method_resolutions: crate::MethodResolutions::new(),
             expected_type_stack: Vec::new(),
             // B2.1a DELETED:             move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),

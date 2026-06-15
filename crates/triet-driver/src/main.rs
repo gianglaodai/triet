@@ -54,7 +54,8 @@ fn main() -> ExitCode {
     // ── Phase 2: Typecheck ──
     // Type errors are FATAL — the pipeline must not feed invalid AST
     // to the lowerer/borrowck/JIT layers.
-    let (type_errors, expr_resolutions, pattern_resolutions) = triet_typecheck::check(&program);
+    let (type_errors, expr_resolutions, pattern_resolutions, _method_resolutions) =
+        triet_typecheck::check(&program);
     if !type_errors.is_empty() {
         let src = NamedSource::new(path, source.clone());
         for err in &type_errors {

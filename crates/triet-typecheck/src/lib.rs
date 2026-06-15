@@ -43,7 +43,9 @@ pub use check::check;
 pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
 pub use error::{BorrowError, ConcurrencyError, TypeError};
-pub use triet_syntax::{EnumVariantResolution, ExprResolutions, PatternResolutions};
+pub use triet_syntax::{
+    EnumVariantResolution, ExprResolutions, MethodResolution, MethodResolutions, PatternResolutions,
+};
 pub use types::Type;
 
 #[cfg(test)]
@@ -55,7 +57,7 @@ mod tests {
     fn check_source(source: &str) -> Vec<TypeError> {
         let (program, parse_errors) = parse(source);
         assert!(parse_errors.is_empty(), "parse errors: {parse_errors:#?}");
-        let (errors, _, _) = check(&program);
+        let (errors, _, _, _) = check(&program);
         errors
     }
 
@@ -1317,6 +1319,73 @@ mod tests {
         assert!(
             errors.is_empty(),
             "push should return Vector<Integer>: {errors:?}"
+        );
+    }
+
+    // ===== ADR-0061 T4: trait method dispatch =====
+
+    /// Full check() of a Comparable impl + a call `a.compare(b)`.
+    const T4_PROGRAM: &str = "trait Comparable { function compare(self, other: Integer) -> Trit }\n\
+         implement Comparable for Integer { function compare(self, other: Integer) -> Trit = 0_trit }\n\
+         function use_it(a: Integer, b: Integer) -> Trit = a.compare(b)\n\
+         function main() -> Integer = 0";
+
+    #[test]
+    fn method_call_resolves_to_mangled_concrete_fn() {
+        // T4.3 teeth (the product of T4): the MethodCall node is annotated
+        // with the mangled concrete function. Routes through real check()
+        // (NOT a hand-built map). Poison: write the wrong mangled name or
+        // skip the insert in check_method_call → this assertion goes red.
+        let (program, parse_errors) = parse(T4_PROGRAM);
+        assert!(parse_errors.is_empty(), "parse: {parse_errors:#?}");
+        let (errors, _, _, method_resolutions) = check(&program);
+        assert!(
+            errors.is_empty(),
+            "T4 program should type-check: {errors:#?}"
+        );
+        assert!(
+            method_resolutions
+                .values()
+                .any(|m| m.concrete_fn == "Integer$Comparable$compare"),
+            "a.compare(b) must resolve to Integer$Comparable$compare: {method_resolutions:?}"
+        );
+    }
+
+    #[test]
+    fn method_call_infers_trait_return_type() {
+        // a.compare(b) infers the trait method's return type (Trit). The
+        // body `= a.compare(b)` is declared `-> Trit`; a wrong inferred
+        // type would fire a return Mismatch. Clean ⟹ inferred Trit.
+        let errors = check_source(T4_PROGRAM);
+        assert!(
+            errors.is_empty(),
+            "a.compare(b) must infer Trit (no mismatch): {errors:#?}"
+        );
+    }
+
+    #[test]
+    fn genuinely_unknown_method_still_unknown_member() {
+        // Negative: a real unknown method must NOT be swallowed by trait
+        // dispatch — it stays UnknownMember.
+        assert_has_error(
+            "implement Comparable for Integer { function compare(self, other: Integer) -> Trit = 0_trit }\n\
+             trait Comparable { function compare(self, other: Integer) -> Trit }\n\
+             function use_it(a: Integer) -> Integer = a.no_such_method()\n\
+             function main() -> Integer = 0",
+            |e| matches!(e, TypeError::UnknownMember { .. }),
+        );
+    }
+
+    #[test]
+    fn method_call_arg_type_mismatch_is_caught() {
+        // Calling compare with a wrong-typed arg (Trit where Integer is
+        // declared) reuses Mismatch (ADR-0061 T4: no new code).
+        assert_has_error(
+            "trait Comparable { function compare(self, other: Integer) -> Trit }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Trit = 0_trit }\n\
+             function use_it(a: Integer) -> Trit = a.compare(0_trit)\n\
+             function main() -> Integer = 0",
+            |e| matches!(e, TypeError::Mismatch { .. }),
         );
     }
 }

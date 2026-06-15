@@ -418,7 +418,7 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
             }
         }
 
-        let errors = check_with_env(&single_program, env);
+        let errors = check_with_env(&single_program, env, impl_table.clone());
         all_errors.extend(errors);
     }
 

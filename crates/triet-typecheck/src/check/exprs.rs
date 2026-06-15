@@ -218,7 +218,7 @@ impl Checker<'_> {
                         },
                     );
                 }
-                self.check_method_call(receiver, &method, &arguments, span)
+                self.check_method_call(id, receiver, &method, &arguments, span)
             }
             Expr::FieldAccess { object, field } => {
                 self.check_field_access(id, object, &field, span)
@@ -1214,12 +1214,15 @@ impl Checker<'_> {
 
     fn check_method_call(
         &mut self,
+        call_id: ExprId,
         receiver: ExprId,
         method: &str,
         arguments: &[ExprId],
         span: Span,
     ) -> Type {
         let receiver_ty = self.infer_expression(receiver);
+        // Dispatch precedence (ADR-0061 §2.3): built-in methods FIRST,
+        // then user trait impls (impl_table), then UnknownMember last.
         if let Some(return_ty) = builtin_method_type(&receiver_ty, method, arguments.len()) {
             for argument in arguments {
                 let _ = self.infer_expression(*argument);
@@ -1229,6 +1232,64 @@ impl Checker<'_> {
 
         if matches!(receiver_ty, Type::Unknown) {
             return Type::Unknown;
+        }
+
+        // ADR-0061 T4.3: trait-method dispatch. Search the impl_table for
+        // an impl (of any trait) on the receiver's concrete type that
+        // declares `method`. Clone the matched method info so the
+        // immutable impl_table borrow ends before the mutable arg checks.
+        let type_name = receiver_ty.to_string();
+        let matched: Vec<crate::check_resolved::ImplMethodInfo> = self
+            .impl_table
+            .iter()
+            .filter(|((ty, _), _)| *ty == type_name)
+            .filter_map(|((_, _), info)| info.methods.get(method).cloned())
+            .collect();
+        match matched.as_slice() {
+            [] => {} // no trait impl provides it — fall through
+            [method_info] => {
+                // Args correspond to parameters[1..] (index 0 is the `self`
+                // receiver). Verify arity + each arg type; reuse WrongArity
+                // / Mismatch (ADR-0061 T4: no new code).
+                let expected_args = &method_info.parameters[1..];
+                if arguments.len() == expected_args.len() {
+                    for (argument, expected) in arguments.iter().zip(expected_args) {
+                        let arg_ty = self.infer_expression(*argument);
+                        if !expected.matches(&arg_ty) {
+                            self.errors.push(TypeError::Mismatch {
+                                expected: expected.clone(),
+                                found: arg_ty,
+                                span: self.arena.expression(*argument).span.clone(),
+                            });
+                        }
+                    }
+                } else {
+                    for argument in arguments {
+                        let _ = self.infer_expression(*argument);
+                    }
+                    self.errors.push(TypeError::WrongArity {
+                        expected: expected_args.len(),
+                        found: arguments.len(),
+                        span,
+                    });
+                }
+                // T4.3: annotate the call node for the lowerer (T5).
+                self.method_resolutions.insert(
+                    call_id,
+                    triet_syntax::MethodResolution {
+                        concrete_fn: method_info.mangled.clone(),
+                    },
+                );
+                return method_info.return_type.clone();
+            }
+            _ => {
+                // ADR-0061 T4.4: ≥2 traits implement `method` for this type
+                // → ambiguous dispatch. Refuse rather than silently pick
+                // (the wrong impl would be a silent miscompile). INTERIM:
+                // fall through to UnknownMember pending O's ruling (mint an
+                // ambiguity code vs Tier-1 assume-single). No annotation is
+                // written, so the lowerer cannot dispatch a guess.
+            }
         }
 
         // Qualified enum variant construction via method-call syntax:
