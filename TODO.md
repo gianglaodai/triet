@@ -104,8 +104,8 @@ Frontend ✅ + Typecheck ✅ + Lower ✅ + JIT ✅ (multi-value mở, StackSlot 
 
 ### ⚪ E. CLEANUP
 
-- [ ] **E1: codegen.py clippy-clean.** 208 clippy chủ yếu từ file generated `ast_*.rs`.
-- [ ] **E2: Fix fixture 27.** Thay match JIT string bằng error-code (dính C1).
+- [x] **E1: codegen.py clippy-clean.** 208 clippy chủ yếu từ file generated `ast_*.rs` (xong nốt 19 clippy còn lại, có `#[allow(cast_possible_wrap)]` kèm comment).
+- [x] **E2: Fix fixture 27.** Thay match JIT string bằng error-code (dính C1, C1 đã biến nó thành positive EXPECT 52).
 
 ### ⚫ F. DEFERRED-BY-DESIGN (có ADR, KHÔNG phải nợ)
 

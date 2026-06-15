@@ -32,10 +32,10 @@ fn parse_directive(source: &str) -> Option<Expected> {
     let first_line = source.lines().next()?;
     if let Some(val) = first_line.strip_prefix("// EXPECT: ") {
         val.trim().parse::<i64>().ok().map(Expected::Value)
-    } else if let Some(code) = first_line.strip_prefix("// ERROR: ") {
-        Some(Expected::Error(code.trim().to_string()))
     } else {
-        None
+        first_line
+            .strip_prefix("// ERROR: ")
+            .map(|code| Expected::Error(code.trim().to_string()))
     }
 }
 

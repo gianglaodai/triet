@@ -133,6 +133,7 @@ impl TypeEnvironment {
 /// demo programs (`print`, `println`, `to_string`, etc.). The prelude
 /// is intentionally minimal — extending it lives alongside library
 /// growth, not the type-checker core.
+#[allow(clippy::too_many_lines)]
 fn bind_prelude(env: &mut TypeEnvironment) {
     use Type::{Integer, Long, String, Tryte, Unit, Vector};
     // Trilean is now a struct variant — use the const helpers (ADR-0021).
@@ -458,7 +459,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "is_empty",
         Type::Function {
             type_params: Vec::new(),
-            parameters: vec![vector_integer.clone()],
+            parameters: vec![vector_integer],
             return_type: Box::new(trilean_refined.clone()),
         },
     );
@@ -466,7 +467,7 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "is_empty",
         Type::Function {
             type_params: Vec::new(),
-            parameters: vec![hashmap_ii.clone()],
+            parameters: vec![hashmap_ii],
             return_type: Box::new(trilean_refined.clone()),
         },
     );

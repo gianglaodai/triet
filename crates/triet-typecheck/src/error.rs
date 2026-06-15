@@ -588,7 +588,7 @@ pub enum TypeError {
 
     /// E1042: borrowed return type `-> &0 T` / `-> &+ T` / `-> &- T` is
     /// not yet supported (ADR-0045 §5). Returning a reference from a
-    /// function requires PropagatedLoan wiring in the borrow checker
+    /// function requires `PropagatedLoan` wiring in the borrow checker
     /// (deferred to a future slice). This is a temporary refusal — it
     /// will be lifted when the return-borrow feature lands.
     #[error("E1042: returning a reference type `-> {return_ty}` is not yet supported")]

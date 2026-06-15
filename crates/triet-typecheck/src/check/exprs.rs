@@ -181,6 +181,8 @@ impl Checker<'_> {
                                 triet_syntax::EnumVariantResolution {
                                     enum_name: enum_name.clone(),
                                     variant_name: field.clone(),
+                                    // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
+                                    #[allow(clippy::cast_possible_wrap)]
                                     discriminant: variant_idx as i64,
                                     has_payload: payload.is_some(),
                                 },
@@ -209,6 +211,8 @@ impl Checker<'_> {
                         triet_syntax::EnumVariantResolution {
                             enum_name: enum_name.clone(),
                             variant_name: method.clone(),
+                            // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
+                            #[allow(clippy::cast_possible_wrap)]
                             discriminant: variant_idx as i64,
                             has_payload: payload.is_some(),
                         },
@@ -1162,6 +1166,7 @@ impl Checker<'_> {
         span: &Span,
     ) -> Option<crate::EnumVariantResolution> {
         let root_frame = self.env.frames.first()?;
+        #[allow(clippy::type_complexity)]
         let mut matches: Vec<(&str, &Vec<(String, Option<Box<Type>>)>)> = Vec::new();
         for binding in root_frame.names.values() {
             if let Type::UserEnum {
@@ -1182,7 +1187,12 @@ impl Checker<'_> {
                 let disc = variants
                     .iter()
                     .position(|(n, _)| n == name)
-                    .map(|i| i as i64)?;
+                    // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
+                    .map(|i| {
+                        #[allow(clippy::cast_possible_wrap)]
+                        let disc = i as i64;
+                        disc
+                    })?;
                 Some(crate::EnumVariantResolution {
                     enum_name: enum_name.to_string(),
                     variant_name: name.to_string(),
@@ -1418,6 +1428,8 @@ impl Checker<'_> {
                     triet_syntax::EnumVariantResolution {
                         enum_name: enum_name.clone(),
                         variant_name: field.to_string(),
+                        // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
+                        #[allow(clippy::cast_possible_wrap)]
                         discriminant: variant_idx as i64,
                         has_payload,
                     },

@@ -320,18 +320,18 @@ impl<'p> Checker<'p> {
 
         // ADR-0046 §1: whitelist `-> &0 T` return-borrow; refuse
         // `-> &+ T` / `-> &0 mutable T` / `-> &- T` (deferred).
-        if let Type::Reference(form, _) = &return_type {
-            if *form != ReferenceForm::BorrowReadOnly {
-                let return_ty_str = return_type.to_string();
-                let span = def
-                    .return_type
-                    .map(|id| self.arena.type_expression(id).span.clone())
-                    .unwrap_or(0..0);
-                self.errors.push(TypeError::BorrowReturnNotYetSupported {
-                    return_ty: return_ty_str,
-                    span,
-                });
-            }
+        if let Type::Reference(form, _) = &return_type
+            && *form != ReferenceForm::BorrowReadOnly
+        {
+            let return_ty_str = return_type.to_string();
+            let span = def
+                .return_type
+                .map(|id| self.arena.type_expression(id).span.clone())
+                .unwrap_or(0..0);
+            self.errors.push(TypeError::BorrowReturnNotYetSupported {
+                return_ty: return_ty_str,
+                span,
+            });
         }
 
         for parameter in &def.params {
@@ -785,6 +785,8 @@ impl<'p> Checker<'p> {
                         crate::EnumVariantResolution {
                             enum_name: enum_name.clone(),
                             variant_name: name.clone(),
+                            // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
+                            #[allow(clippy::cast_possible_wrap)]
                             discriminant: variant_idx as i64,
                             has_payload: false,
                         },
@@ -835,6 +837,8 @@ impl<'p> Checker<'p> {
                             crate::EnumVariantResolution {
                                 enum_name: enum_name.clone(),
                                 variant_name: variant_name.clone(),
+                                // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
+                                #[allow(clippy::cast_possible_wrap)]
                                 discriminant: variant_idx as i64,
                                 has_payload,
                             },

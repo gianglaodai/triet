@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn overload_len_vector_selects_correct_signature() {
         // `len(vector_new())` → Vector overload → returns Integer.
-        let source = r#"function main() -> Integer { let v = vector_new(); return len(v) }"#;
+        let source = r"function main() -> Integer { let v = vector_new(); return len(v) }";
         let errors = check_source(source);
         assert!(
             errors.is_empty(),
@@ -1280,7 +1280,7 @@ mod tests {
     #[test]
     fn overload_len_integer_rejected() {
         // `len(42)` → no matching overload → E1041.
-        let source = r#"function main() -> Integer { return len(42) }"#;
+        let source = r"function main() -> Integer { return len(42) }";
         assert_has_error(
             source,
             |e| matches!(e, TypeError::NoMatchingOverload { name, .. } if name == "len"),
@@ -1301,7 +1301,7 @@ mod tests {
     fn vector_annotation_matches_init_type() {
         // `let v: Vector<Integer> = vector_new()` — annotation and init must agree.
         let source =
-            r#"function main() -> Integer { let v: Vector<Integer> = vector_new(); return 0 }"#;
+            r"function main() -> Integer { let v: Vector<Integer> = vector_new(); return 0 }";
         let errors = check_source(source);
         assert!(
             errors.is_empty(),
@@ -1312,7 +1312,7 @@ mod tests {
     #[test]
     fn push_vector_returns_same_type() {
         // `push(v, 1)` where v: Vector<Integer> returns Vector<Integer>.
-        let source = r#"function main() -> Integer { let v = vector_new(); let v2 = push(v, 1); return len(v2) }"#;
+        let source = r"function main() -> Integer { let v = vector_new(); let v2 = push(v, 1); return len(v2) }";
         let errors = check_source(source);
         assert!(
             errors.is_empty(),
