@@ -1377,6 +1377,35 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_method_call_emits_e1045() {
+        // T4.4: two traits both declare `compare`, both implemented for
+        // Integer → `a.compare(b)` is ambiguous. Must be E1045 (NOT
+        // UnknownMember, NOT a silent pick). Poison: drop the ambiguity
+        // arm → either a wrong-pick (annotates one) or UnknownMember →
+        // this assertion goes red.
+        let source = "trait Comparable { function compare(self, other: Integer) -> Trit }\n\
+             trait Ordered { function compare(self, other: Integer) -> Trit }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Trit = 0_trit }\n\
+             implement Ordered for Integer { function compare(self, other: Integer) -> Trit = 0_trit }\n\
+             function use_it(a: Integer, b: Integer) -> Trit = a.compare(b)\n\
+             function main() -> Integer = 0";
+        let (program, parse_errors) = parse(source);
+        assert!(parse_errors.is_empty(), "parse: {parse_errors:#?}");
+        let (errors, _, _, method_resolutions) = check(&program);
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::AmbiguousMethodCall { .. })),
+            "ambiguous a.compare(b) must raise E1045: {errors:#?}"
+        );
+        // No silent pick: the ambiguous call must NOT be annotated.
+        assert!(
+            method_resolutions.is_empty(),
+            "ambiguous call must not be annotated (no dispatch guess): {method_resolutions:?}"
+        );
+    }
+
+    #[test]
     fn method_call_arg_type_mismatch_is_caught() {
         // Calling compare with a wrong-typed arg (Trit where Integer is
         // declared) reuses Mismatch (ADR-0061 T4: no new code).

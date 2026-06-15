@@ -1212,42 +1212,40 @@ impl Checker<'_> {
         }
     }
 
-    fn check_method_call(
+    /// ADR-0061 T4.3/T4.4: resolve a trait method call against `impl_table`.
+    ///
+    /// Returns `Some(return_type)` when the receiver's concrete type has
+    /// exactly one trait impl declaring `method` (annotating the call node
+    /// with the mangled concrete function), or `Some(Type::Unknown)` after
+    /// emitting E1045 when ≥2 traits declare it (ambiguous — refuse, never
+    /// pick). Returns `None` when no impl provides it (caller falls through
+    /// to enum-variant / `UnknownMember`).
+    fn dispatch_trait_method(
         &mut self,
         call_id: ExprId,
-        receiver: ExprId,
         method: &str,
+        receiver_ty: &Type,
         arguments: &[ExprId],
-        span: Span,
-    ) -> Type {
-        let receiver_ty = self.infer_expression(receiver);
-        // Dispatch precedence (ADR-0061 §2.3): built-in methods FIRST,
-        // then user trait impls (impl_table), then UnknownMember last.
-        if let Some(return_ty) = builtin_method_type(&receiver_ty, method, arguments.len()) {
-            for argument in arguments {
-                let _ = self.infer_expression(*argument);
-            }
-            return return_ty;
-        }
-
-        if matches!(receiver_ty, Type::Unknown) {
-            return Type::Unknown;
-        }
-
-        // ADR-0061 T4.3: trait-method dispatch. Search the impl_table for
-        // an impl (of any trait) on the receiver's concrete type that
-        // declares `method`. Clone the matched method info so the
-        // immutable impl_table borrow ends before the mutable arg checks.
+        span: &Span,
+    ) -> Option<Type> {
+        // Clone matched info so the immutable impl_table borrow ends before
+        // the mutable arg checks below.
         let type_name = receiver_ty.to_string();
-        let matched: Vec<crate::check_resolved::ImplMethodInfo> = self
+        let mut matched: Vec<(String, crate::check_resolved::ImplMethodInfo)> = self
             .impl_table
             .iter()
             .filter(|((ty, _), _)| *ty == type_name)
-            .filter_map(|((_, _), info)| info.methods.get(method).cloned())
+            .filter_map(|((_, trait_name), info)| {
+                info.methods
+                    .get(method)
+                    .map(|m| (trait_name.clone(), m.clone()))
+            })
             .collect();
+        // Stable order so the ambiguity message is deterministic.
+        matched.sort_by(|a, b| a.0.cmp(&b.0));
         match matched.as_slice() {
-            [] => {} // no trait impl provides it — fall through
-            [method_info] => {
+            [] => None, // no trait impl provides it — fall through
+            [(_trait_name, method_info)] => {
                 // Args correspond to parameters[1..] (index 0 is the `self`
                 // receiver). Verify arity + each arg type; reuse WrongArity
                 // / Mismatch (ADR-0061 T4: no new code).
@@ -1270,7 +1268,7 @@ impl Checker<'_> {
                     self.errors.push(TypeError::WrongArity {
                         expected: expected_args.len(),
                         found: arguments.len(),
-                        span,
+                        span: span.clone(),
                     });
                 }
                 // T4.3: annotate the call node for the lowerer (T5).
@@ -1280,16 +1278,62 @@ impl Checker<'_> {
                         concrete_fn: method_info.mangled.clone(),
                     },
                 );
-                return method_info.return_type.clone();
+                Some(method_info.return_type.clone())
             }
             _ => {
                 // ADR-0061 T4.4: ≥2 traits implement `method` for this type
-                // → ambiguous dispatch. Refuse rather than silently pick
-                // (the wrong impl would be a silent miscompile). INTERIM:
-                // fall through to UnknownMember pending O's ruling (mint an
-                // ambiguity code vs Tier-1 assume-single). No annotation is
-                // written, so the lowerer cannot dispatch a guess.
+                // → ambiguous dispatch. Refuse with E1045 rather than
+                // silently pick (a wrong impl would be a silent miscompile).
+                // No annotation is written, so the lowerer cannot dispatch a
+                // guess. Args are still inferred for their own diagnostics.
+                for argument in arguments {
+                    let _ = self.infer_expression(*argument);
+                }
+                let traits = matched
+                    .iter()
+                    .map(|(t, _)| format!("`{t}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.errors.push(TypeError::AmbiguousMethodCall {
+                    method: method.to_owned(),
+                    type_name,
+                    traits,
+                    span: span.clone(),
+                });
+                Some(Type::Unknown)
             }
+        }
+    }
+
+    fn check_method_call(
+        &mut self,
+        call_id: ExprId,
+        receiver: ExprId,
+        method: &str,
+        arguments: &[ExprId],
+        span: Span,
+    ) -> Type {
+        let receiver_ty = self.infer_expression(receiver);
+        // Dispatch precedence (ADR-0061 §2.3): built-in methods FIRST,
+        // then user trait impls (impl_table), then UnknownMember last.
+        if let Some(return_ty) = builtin_method_type(&receiver_ty, method, arguments.len()) {
+            for argument in arguments {
+                let _ = self.infer_expression(*argument);
+            }
+            return return_ty;
+        }
+
+        if matches!(receiver_ty, Type::Unknown) {
+            return Type::Unknown;
+        }
+
+        // ADR-0061 T4.3/T4.4: trait-method dispatch (precedence: after
+        // builtins, before enum-variant + UnknownMember). `Some` = resolved
+        // or ambiguity-refused; `None` = no impl provides it → fall through.
+        if let Some(ty) =
+            self.dispatch_trait_method(call_id, method, &receiver_ty, arguments, &span)
+        {
+            return ty;
         }
 
         // Qualified enum variant construction via method-call syntax:

@@ -745,6 +745,34 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1045: a method call is ambiguous because ≥2 traits implemented for
+    /// the receiver type declare a method with that name (ADR-0061 §2.3,
+    /// Tier 1). The compiler refuses rather than silently pick one impl.
+    #[error(
+        "E1045: method `{method}` is provided by multiple traits implemented for `{type_name}`: {traits}"
+    )]
+    #[diagnostic(
+        code(triet::typecheck::E1045),
+        help(
+            "E1045: `{type_name}` implements more than one trait declaring `{method}` ({traits}).\n\n\
+            [Fix 1] Rename the method in one of the traits so each is unique.\n\n\
+            [Fix 2] Remove one of the conflicting `implement` blocks for `{type_name}`.\n\n\
+            Tier 1 requires a unique method name across the traits a type implements; \
+            qualified-path dispatch is Tier 2/3 (out of scope)."
+        )
+    )]
+    AmbiguousMethodCall {
+        /// The ambiguous method name (e.g. `compare`).
+        method: String,
+        /// The receiver type (e.g. `Integer`).
+        type_name: String,
+        /// The conflicting trait names, comma-joined (e.g. `Comparable`, `Ordered`).
+        traits: String,
+        /// Source location of the call.
+        #[label("ambiguous: `{method}` comes from {traits}")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -923,6 +951,7 @@ impl TypeError {
             | Self::BorrowReturnNotYetSupported { span, .. }
             | Self::DuplicateImplementation { span, .. }
             | Self::TraitImplConformanceMismatch { span, .. }
+            | Self::AmbiguousMethodCall { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }
