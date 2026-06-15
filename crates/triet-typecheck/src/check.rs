@@ -55,6 +55,22 @@ pub fn check(
     checker
         .errors
         .extend(crate::check_resolved::check_impl_coherence(impl_keys));
+    // ADR-0061 T3.1/T3.2: build trait_table + impl_table and verify
+    // conformance (E1044). Same single-file path the driver runs.
+    let trait_table =
+        crate::check_resolved::collect_trait_defs(&program.arena, &program.items, &name_table)
+            .into_iter()
+            .collect();
+    let impl_table =
+        crate::check_resolved::collect_impl_defs(&program.arena, &program.items, &name_table)
+            .into_iter()
+            .collect();
+    checker
+        .errors
+        .extend(crate::check_resolved::check_conformance(
+            &trait_table,
+            &impl_table,
+        ));
     checker.check_program();
     (
         checker.errors,
@@ -82,6 +98,11 @@ struct Checker<'p> {
     /// The function whose body is currently being checked (for return-
     /// type enforcement). `None` at top level.
     current_return_type: Option<Type>,
+    /// ADR-0061 T3.4: the concrete `for_type` of the `implement` block
+    /// currently being checked, so `self` (`TypeExpr::SelfType`) resolves
+    /// to it inside impl method bodies. `None` outside an impl context —
+    /// a `self` there resolves to `Type::Unknown` (self out of place).
+    current_self_type: Option<Type>,
     /// Local-context expected-type stack pushed by let/const annotations,
     /// struct-literal field positions, and call-argument positions per
     /// [v0.7.4.3-debt.3] (WA-5). Outcome constructors (`~0` especially)
@@ -116,6 +137,7 @@ impl<'p> Checker<'p> {
             items: &program.items,
             env: TypeEnvironment::with_prelude(),
             current_return_type: None,
+            current_self_type: None,
             expected_type_stack: Vec::new(),
             local_let_names: std::collections::HashSet::new(),
             expr_resolutions: crate::ExprResolutions::new(),
@@ -132,6 +154,7 @@ impl<'p> Checker<'p> {
             items: &program.items,
             env,
             current_return_type: None,
+            current_self_type: None,
             expected_type_stack: Vec::new(),
             // B2.1a DELETED:             move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),
@@ -309,11 +332,24 @@ impl<'p> Checker<'p> {
     }
 
     fn check_item(&mut self, item: &Spanned<Item>) {
-        if let Item::Function { def } = &item.node {
-            self.check_function(def);
+        match &item.node {
+            Item::Function { def } => self.check_function(def),
+            // ADR-0061 T3.4: typecheck each `implement` method body with
+            // `self` bound to the concrete `for_type`. Conformance of the
+            // signatures themselves (E1044) is verified separately by the
+            // global `check_conformance` pass; here we only check bodies.
+            Item::Implementation { def } => {
+                let self_ty = self.resolve_type(def.for_type);
+                let saved = self.current_self_type.replace(self_ty);
+                for method in &def.methods {
+                    self.check_function(method);
+                }
+                self.current_self_type = saved;
+            }
+            // Struct / Enum definitions have no runtime body to check
+            // (field types are resolved during declaration).
+            _ => {}
         }
-        // Struct / Enum definitions have no runtime body to check
-        // (field types are resolved during declaration).
     }
 
     fn check_function(&mut self, def: &FunctionDefinition) {
@@ -1083,11 +1119,12 @@ impl<'p> Checker<'p> {
             TypeExpr::Reference { form, inner } => {
                 Type::Reference(form, Box::new(self.resolve_type(inner)))
             }
-            // ADR-0061 T3: resolve `Self` → receiver type. T2 only records
-            // the marker (a `self` param carries this), so the resolved type
-            // is a placeholder until impl-context resolution lands. Reachable
-            // via the `self` parameter from T2.4 — NOT unreachable.
-            TypeExpr::SelfType => Type::Unknown,
+            // ADR-0061 T3.4: resolve `Self` → the `implement` block's
+            // concrete `for_type`. Inside an impl method body, `self` is
+            // typed as that receiver type; outside any impl context
+            // (`current_self_type` is None) a stray `self` falls back to
+            // Unknown. Reachable via the `self` parameter (T2.4).
+            TypeExpr::SelfType => self.current_self_type.clone().unwrap_or(Type::Unknown),
         }
     }
 

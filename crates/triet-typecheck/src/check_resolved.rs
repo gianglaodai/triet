@@ -67,6 +67,216 @@ pub(crate) fn check_impl_coherence(keys: Vec<(ImplKey, Span)>) -> Vec<TypeError>
     errors
 }
 
+// ── ADR-0061 T3.1/T3.2: trait_table + impl_table + conformance ──────
+
+/// A resolved trait declaration (ADR-0061 T3.1). Method signatures with
+/// parameter/return types already resolved, so conformance verification
+/// (T3.2) compares against them without re-walking the arena.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TraitInfo {
+    /// Resolved method signatures, in declaration order.
+    pub methods: Vec<TraitMethodSig>,
+}
+
+/// One resolved trait method signature. `parameters` includes the leading
+/// `self` receiver at index 0 (resolved to `Type::Unknown` at the trait
+/// level — the receiver is positional, not part of the verified contract).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TraitMethodSig {
+    /// Method name (e.g. `compare`).
+    pub name: String,
+    /// Resolved parameter types, `self` first.
+    pub parameters: Vec<Type>,
+    /// Resolved return type (`Type::Unit` when omitted).
+    pub return_type: Type,
+}
+
+/// A resolved trait implementation (ADR-0061 T3.1). Maps each method name
+/// to its resolved signature + mangled function name `Type$Trait$method`
+/// (ADR §2.4, consumed by dispatch/lowering in T4/T5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImplInfo {
+    /// Method name → resolved info.
+    pub methods: HashMap<String, ImplMethodInfo>,
+    /// Source span of the `implement` block (diagnostic anchor).
+    pub span: Span,
+}
+
+/// Resolved info for one method inside an `implement` block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImplMethodInfo {
+    /// Mangled function name `Type$Trait$method` (ADR §2.4).
+    pub mangled: String,
+    /// Resolved parameter types, `self` first.
+    pub parameters: Vec<Type>,
+    /// Resolved return type (`Type::Unit` when omitted).
+    pub return_type: Type,
+}
+
+/// Collect resolved trait declarations from a module (ADR-0061 T3.1).
+pub(crate) fn collect_trait_defs(
+    arena: &triet_syntax::Arena,
+    items: &[triet_syntax::Spanned<Item>],
+    name_table: &HashMap<String, Type>,
+) -> Vec<(String, TraitInfo)> {
+    let mut traits = Vec::new();
+    for item in items {
+        if let Item::Trait { def } = &item.node {
+            let methods = def
+                .methods
+                .iter()
+                .map(|m| TraitMethodSig {
+                    name: m.name.clone(),
+                    parameters: m
+                        .parameters
+                        .iter()
+                        .map(|p| resolve_type_expr(arena, p.type_annotation, name_table))
+                        .collect(),
+                    return_type: m
+                        .return_type
+                        .map_or(Type::Unit, |id| resolve_type_expr(arena, id, name_table)),
+                })
+                .collect();
+            traits.push((def.name.clone(), TraitInfo { methods }));
+        }
+    }
+    traits
+}
+
+/// Collect resolved trait implementations from a module (ADR-0061 T3.1).
+/// `self` parameters resolve to `Type::Unknown` here (no impl context in
+/// the free resolver); the receiver is skipped during conformance, and
+/// body checking re-resolves `self` to `for_type` via the Checker.
+pub(crate) fn collect_impl_defs(
+    arena: &triet_syntax::Arena,
+    items: &[triet_syntax::Spanned<Item>],
+    name_table: &HashMap<String, Type>,
+) -> Vec<(ImplKey, ImplInfo)> {
+    let mut impls = Vec::new();
+    for item in items {
+        if let Item::Implementation { def } = &item.node {
+            let type_name = resolve_type_expr(arena, def.for_type, name_table).to_string();
+            let trait_name = def.trait_name.clone();
+            let methods = def
+                .methods
+                .iter()
+                .map(|method| {
+                    let info = ImplMethodInfo {
+                        mangled: format!("{type_name}${trait_name}${}", method.name),
+                        parameters: method
+                            .parameters
+                            .iter()
+                            .map(|p| resolve_type_expr(arena, p.type_annotation, name_table))
+                            .collect(),
+                        return_type: method
+                            .return_type
+                            .map_or(Type::Unit, |id| resolve_type_expr(arena, id, name_table)),
+                    };
+                    (method.name.clone(), info)
+                })
+                .collect();
+            impls.push((
+                (type_name, trait_name),
+                ImplInfo {
+                    methods,
+                    span: item.span.clone(),
+                },
+            ));
+        }
+    }
+    impls
+}
+
+/// Strict conformance comparison with Unknown-tolerance (ADR-0061 T3.2).
+/// G demands an exact 1-1 match, so types must be equal — except either
+/// side being `Type::Unknown` (a resolution-failure recovery placeholder)
+/// passes, to avoid compounding an already-reported error.
+fn types_conform(expected: &Type, found: &Type) -> bool {
+    matches!(expected, Type::Unknown) || matches!(found, Type::Unknown) || expected == found
+}
+
+/// Verify every `implement` block conforms to its trait (ADR-0061 T3.2):
+/// same method set, each with matching arity / parameter types / return
+/// type. Emits E1044 (`TraitImplConformanceMismatch`) per failure. Reads
+/// BOTH tables (defeats dead-field, Track B rule #2/#4). Impls whose trait
+/// is unknown are skipped (no contract to check against — see note to O).
+pub(crate) fn check_conformance(
+    trait_table: &HashMap<String, TraitInfo>,
+    impl_table: &HashMap<ImplKey, ImplInfo>,
+) -> Vec<TypeError> {
+    use crate::error::ConformanceKind;
+    let mut errors = Vec::new();
+
+    for ((type_name, trait_name), impl_info) in impl_table {
+        let Some(trait_info) = trait_table.get(trait_name) else {
+            continue; // unknown trait — no contract to verify against
+        };
+        let span = impl_info.span.clone();
+        let mut push = |kind| {
+            errors.push(TypeError::TraitImplConformanceMismatch {
+                trait_name: trait_name.clone(),
+                type_name: type_name.clone(),
+                kind,
+                span: span.clone(),
+            });
+        };
+
+        // Missing methods: declared by the trait, absent in the impl.
+        for sig in &trait_info.methods {
+            if !impl_info.methods.contains_key(&sig.name) {
+                push(ConformanceKind::MissingMethod {
+                    method: sig.name.clone(),
+                });
+            }
+        }
+        // Extra methods: present in the impl, not declared by the trait.
+        for name in impl_info.methods.keys() {
+            if !trait_info.methods.iter().any(|s| &s.name == name) {
+                push(ConformanceKind::ExtraMethod {
+                    method: name.clone(),
+                });
+            }
+        }
+        // Signature match for methods present on both sides.
+        for sig in &trait_info.methods {
+            let Some(impl_method) = impl_info.methods.get(&sig.name) else {
+                continue;
+            };
+            // Arity counts the `self` receiver on both sides.
+            if sig.parameters.len() != impl_method.parameters.len() {
+                push(ConformanceKind::WrongArity {
+                    method: sig.name.clone(),
+                    expected: sig.parameters.len(),
+                    found: impl_method.parameters.len(),
+                });
+            }
+            // Parameter types: skip index 0 (the positional `self` receiver,
+            // resolved to Unknown here). Compare the overlapping range.
+            let overlap = sig.parameters.len().min(impl_method.parameters.len());
+            for i in 1..overlap {
+                if !types_conform(&sig.parameters[i], &impl_method.parameters[i]) {
+                    push(ConformanceKind::ParamType {
+                        method: sig.name.clone(),
+                        position: i + 1,
+                        expected: sig.parameters[i].to_string(),
+                        found: impl_method.parameters[i].to_string(),
+                    });
+                }
+            }
+            // Return type.
+            if !types_conform(&sig.return_type, &impl_method.return_type) {
+                push(ConformanceKind::ReturnType {
+                    method: sig.name.clone(),
+                    expected: sig.return_type.to_string(),
+                    found: impl_method.return_type.to_string(),
+                });
+            }
+        }
+    }
+
+    errors
+}
+
 /// Type-check every module in a [`ResolvedProgram`].
 ///
 /// This is the primary entry point for the v0.2.x pipeline. Single-file
@@ -132,6 +342,22 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
         impl_keys.extend(collect_impl_keys(arena, &module.items, &name_table));
     }
     all_errors.extend(check_impl_coherence(impl_keys));
+
+    // ADR-0061 T3.1/T3.2: build trait_table + impl_table across all
+    // modules (a trait may be declared in one module, implemented in
+    // another), then verify conformance. Both tables are read here, so
+    // neither is a dead field (Track B rule #2/#4).
+    let trait_table: HashMap<String, TraitInfo> = program
+        .modules
+        .iter()
+        .flat_map(|module| collect_trait_defs(program.arena(module), &module.items, &name_table))
+        .collect();
+    let impl_table: HashMap<ImplKey, ImplInfo> = program
+        .modules
+        .iter()
+        .flat_map(|module| collect_impl_defs(program.arena(module), &module.items, &name_table))
+        .collect();
+    all_errors.extend(check_conformance(&trait_table, &impl_table));
 
     // Pass 2: For each module, build env with imports, then check.
     for (idx, module) in program.modules.iter().enumerate() {
@@ -554,6 +780,167 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, TypeError::DuplicateImplementation { .. })),
             "duplicate (Integer, Comparable) impl must raise E1043: {errors:?}"
+        );
+    }
+
+    // ── ADR-0061 T3.1: trait_table / impl_table build ───────────────
+
+    fn impl_table_of(source: &str) -> HashMap<ImplKey, ImplInfo> {
+        let program = triet_modules::load_program_from_source(source).expect("load");
+        let module = &program.modules[program.root.raw()];
+        let arena = program.arena(module);
+        let name_table: HashMap<String, Type> =
+            collect_declared_types(arena, &module.items, &HashMap::new())
+                .into_iter()
+                .collect();
+        collect_impl_defs(arena, &module.items, &name_table)
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn impl_table_records_mangled_name() {
+        // T3.1 teeth: impl_table holds the mangled `Type$Trait$method`.
+        // Poison: change the `format!` mangling → this assertion goes red.
+        let table = impl_table_of(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Integer = other }\n\
+             function main() -> Integer = 0",
+        );
+        let info = table
+            .get(&("Integer".to_owned(), "Comparable".to_owned()))
+            .expect("impl_table must contain (Integer, Comparable)");
+        assert_eq!(
+            info.methods.get("compare").map(|m| m.mangled.as_str()),
+            Some("Integer$Comparable$compare"),
+            "mangled name must be Integer$Comparable$compare: {info:?}"
+        );
+    }
+
+    // ── ADR-0061 T3.2: conformance (E1044) ──────────────────────────
+
+    use crate::error::ConformanceKind;
+
+    fn conformance_kinds(errors: &[TypeError]) -> Vec<ConformanceKind> {
+        errors
+            .iter()
+            .filter_map(|e| match e {
+                TypeError::TraitImplConformanceMismatch { kind, .. } => Some(kind.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn conformant_impl_is_clean() {
+        let errors = check_in_memory(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Integer = other }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            conformance_kinds(&errors).is_empty(),
+            "conformant impl must not raise E1044: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn conformance_wrong_arity_emits_e1044() {
+        // Impl `compare(self)` is missing `other` → WrongArity.
+        // Poison: skip the arity check → this case slips → red.
+        let errors = check_in_memory(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self) -> Integer = 0 }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            conformance_kinds(&errors)
+                .iter()
+                .any(|k| matches!(k, ConformanceKind::WrongArity { .. })),
+            "missing param must raise E1044 WrongArity: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn conformance_wrong_return_emits_e1044() {
+        let errors = check_in_memory(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self, other: Integer) -> Trit = 0_trit }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            conformance_kinds(&errors)
+                .iter()
+                .any(|k| matches!(k, ConformanceKind::ReturnType { .. })),
+            "wrong return type must raise E1044 ReturnType: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn conformance_wrong_param_type_emits_e1044() {
+        let errors = check_in_memory(
+            "trait Comparable { function compare(self, other: Integer) -> Integer }\n\
+             implement Comparable for Integer { function compare(self, other: Trit) -> Integer = 0 }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            conformance_kinds(&errors)
+                .iter()
+                .any(|k| matches!(k, ConformanceKind::ParamType { .. })),
+            "wrong param type must raise E1044 ParamType: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn conformance_missing_method_emits_e1044() {
+        let errors = check_in_memory(
+            "trait Two { function a(self) -> Integer\n function b(self) -> Integer }\n\
+             implement Two for Integer { function a(self) -> Integer = 0 }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            conformance_kinds(&errors)
+                .iter()
+                .any(|k| matches!(k, ConformanceKind::MissingMethod { method } if method == "b")),
+            "missing method `b` must raise E1044 MissingMethod: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn conformance_extra_method_emits_e1044() {
+        let errors = check_in_memory(
+            "trait One { function a(self) -> Integer }\n\
+             implement One for Integer { function a(self) -> Integer = 0\n function z(self) -> Integer = 0 }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            conformance_kinds(&errors)
+                .iter()
+                .any(|k| matches!(k, ConformanceKind::ExtraMethod { method } if method == "z")),
+            "extra method `z` must raise E1044 ExtraMethod: {errors:?}"
+        );
+    }
+
+    // ── ADR-0061 T3.4: self resolves to for_type in method bodies ────
+
+    #[test]
+    fn self_resolves_to_for_type_in_body() {
+        // The trait+impl signatures conform (both `-> String`), so no
+        // E1044 fires. But the body `= self` returns the receiver, which
+        // is `Integer` (for_type) — not `String`. That return mismatch
+        // (E1004) only appears if `self` resolved to Integer.
+        // Poison: make SelfType resolve to Unknown → Unknown matches
+        // String → the mismatch vanishes → this assertion goes red.
+        let errors = check_in_memory(
+            "trait Id { function get(self) -> String }\n\
+             implement Id for Integer { function get(self) -> String = self }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::Mismatch { .. })),
+            "self typed as Integer must mismatch declared `-> String`: {errors:?}"
         );
     }
 

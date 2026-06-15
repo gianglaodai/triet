@@ -6,6 +6,92 @@ use triet_syntax::Span;
 
 use crate::types::Type;
 
+/// The specific way an `implement` block fails to conform to its trait
+/// (ADR-0061 §2.2, carried by [`TypeError::TraitImplConformanceMismatch`]).
+/// One enum, rich payload — keeps the whole conformance family under a
+/// single error code (E1044) while letting each message be specific.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConformanceKind {
+    /// Method has a different number of parameters than the trait declares
+    /// (the leading `self` receiver is counted on both sides).
+    WrongArity {
+        /// Method name.
+        method: String,
+        /// Parameter count the trait declares.
+        expected: usize,
+        /// Parameter count the impl provides.
+        found: usize,
+    },
+    /// A parameter's type differs from the trait's declaration.
+    ParamType {
+        /// Method name.
+        method: String,
+        /// 1-based parameter position (the `self` receiver is position 1).
+        position: usize,
+        /// Type the trait declares.
+        expected: String,
+        /// Type the impl provides.
+        found: String,
+    },
+    /// The return type differs from the trait's declaration.
+    ReturnType {
+        /// Method name.
+        method: String,
+        /// Return type the trait declares.
+        expected: String,
+        /// Return type the impl provides.
+        found: String,
+    },
+    /// The trait declares a method the impl does not provide.
+    MissingMethod {
+        /// The required method's name.
+        method: String,
+    },
+    /// The impl provides a method the trait does not declare.
+    ExtraMethod {
+        /// The surplus method's name.
+        method: String,
+    },
+}
+
+impl std::fmt::Display for ConformanceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongArity {
+                method,
+                expected,
+                found,
+            } => write!(
+                f,
+                "method `{method}` takes {found} parameter(s) but the trait declares {expected}"
+            ),
+            Self::ParamType {
+                method,
+                position,
+                expected,
+                found,
+            } => write!(
+                f,
+                "parameter {position} of method `{method}` has type `{found}` but the trait declares `{expected}`"
+            ),
+            Self::ReturnType {
+                method,
+                expected,
+                found,
+            } => write!(
+                f,
+                "method `{method}` returns `{found}` but the trait declares `{expected}`"
+            ),
+            Self::MissingMethod { method } => {
+                write!(f, "missing method `{method}` required by the trait")
+            }
+            Self::ExtraMethod { method } => {
+                write!(f, "method `{method}` is not declared by the trait")
+            }
+        }
+    }
+}
+
 /// An error raised while type-checking a `Program`.
 #[derive(Clone, Debug, Error, Diagnostic, PartialEq, Eq)]
 pub enum TypeError {
@@ -633,6 +719,32 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1044: an `implement` block does not conform to the trait it claims
+    /// (ADR-0061 §2.2). One code covers the whole conformance family —
+    /// wrong arity, parameter-type mismatch, return-type mismatch, missing
+    /// method, extra method — distinguished by [`ConformanceKind`] so the
+    /// message is specific per failure (ADR-0027 AI-first).
+    #[error("E1044: `{type_name}` does not correctly implement trait `{trait_name}`: {kind}")]
+    #[diagnostic(
+        code(triet::typecheck::E1044),
+        help(
+            "E1044: the `implement {trait_name} for {type_name}` block must match the \
+            trait declaration exactly — same methods, each with the same parameter \
+            types and return type (ADR-0061 Tier 1). {kind}"
+        )
+    )]
+    TraitImplConformanceMismatch {
+        /// The trait being implemented (e.g. `Comparable`).
+        trait_name: String,
+        /// The concrete type implementing it (e.g. `Integer`).
+        type_name: String,
+        /// Which conformance rule failed.
+        kind: ConformanceKind,
+        /// Source location of the offending `implement` block.
+        #[label("{kind}")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -810,6 +922,7 @@ impl TypeError {
             | Self::NonAtomicValueType { span, .. }
             | Self::BorrowReturnNotYetSupported { span, .. }
             | Self::DuplicateImplementation { span, .. }
+            | Self::TraitImplConformanceMismatch { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }
