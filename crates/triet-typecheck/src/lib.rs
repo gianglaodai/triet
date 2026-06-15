@@ -44,7 +44,8 @@ pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
 pub use error::{BorrowError, ConcurrencyError, TypeError};
 pub use triet_syntax::{
-    EnumVariantResolution, ExprResolutions, MethodResolution, MethodResolutions, PatternResolutions,
+    EnumVariantResolution, ExprResolutions, MethodResolution, MethodResolutions,
+    PatternResolutions, mangle_trait_method,
 };
 pub use types::Type;
 

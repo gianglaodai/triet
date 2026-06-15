@@ -68,3 +68,14 @@ pub struct MethodResolution {
 
 /// Maps method-call expression IDs to their resolved concrete function.
 pub type MethodResolutions = std::collections::HashMap<ExprId, MethodResolution>;
+
+/// Mangle a trait method into its concrete function name `Type$Trait$method`.
+///
+/// ADR-0061 §2.4. **Single source of truth** — the type checker (building
+/// the `impl_table` + annotating calls) and the lowerer (naming the emitted
+/// `Body`) MUST both call this so the dispatch callee always matches an
+/// emitted function. Do not inline the `$`-join anywhere else.
+#[must_use]
+pub fn mangle_trait_method(for_type: &str, trait_name: &str, method_name: &str) -> String {
+    format!("{for_type}${trait_name}${method_name}")
+}

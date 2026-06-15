@@ -162,7 +162,11 @@ pub(crate) fn collect_impl_defs(
                 .iter()
                 .map(|method| {
                     let info = ImplMethodInfo {
-                        mangled: format!("{type_name}${trait_name}${}", method.name),
+                        mangled: triet_syntax::mangle_trait_method(
+                            &type_name,
+                            &trait_name,
+                            &method.name,
+                        ),
                         parameters: method
                             .parameters
                             .iter()

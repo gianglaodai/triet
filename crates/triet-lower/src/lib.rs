@@ -21,7 +21,8 @@ use triet_mir::{
 };
 use triet_syntax::{
     Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDefinition, Item,
-    PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId, UnaryOperator,
+    MethodResolutions, PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId,
+    UnaryOperator,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -117,6 +118,10 @@ struct Ctx {
     expr_resolutions: ExprResolutions,
     /// Resolved enum variants from the type checker, keyed by pattern ID.
     pattern_resolutions: PatternResolutions,
+    /// ADR-0061 T5: resolved trait-method calls (ExprId → mangled concrete
+    /// function), from the type checker. Read at `Expr::MethodCall` to emit
+    /// a direct `CallDispatch` to the impl method's `Body`.
+    method_resolutions: MethodResolutions,
     /// Map from function name to its return type name.
     func_return_types: HashMap<String, MirType>,
     /// If this function returns a struct, the local holding the sret pointer.
@@ -135,6 +140,10 @@ struct Ctx {
 }
 
 impl Ctx {
+    // 8 args — layouts(2) + resolutions(3, incl. method_resolutions for
+    // ADR-0061 T5) + ret + name + func_return_types; mirrors lower_function's
+    // bundle, LoweringInput struct refactor deferred.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: &str,
         ret: &MirType,
@@ -142,6 +151,7 @@ impl Ctx {
         enum_layouts: HashMap<String, EnumLayout>,
         expr_resolutions: ExprResolutions,
         pattern_resolutions: PatternResolutions,
+        method_resolutions: MethodResolutions,
         func_return_types: HashMap<String, MirType>,
     ) -> Self {
         let is_struct_return = matches!(ret, MirType::Struct(_));
@@ -193,6 +203,7 @@ impl Ctx {
             enum_layouts,
             expr_resolutions,
             pattern_resolutions,
+            method_resolutions,
             func_return_types,
             sret_ptr: None,
             owned_locals: Vec::new(),
@@ -435,6 +446,7 @@ pub fn lower_program(
     prog: &Program,
     expr_resolutions: &ExprResolutions,
     pattern_resolutions: &PatternResolutions,
+    method_resolutions: &MethodResolutions,
 ) -> Result<Vec<Body>, LowerError> {
     // ── Build ItemSymbolTable FIRST (Pass-1, needed by lower_type) ──
     let symbols: std::collections::HashMap<String, TypeKind> = prog
@@ -459,7 +471,7 @@ pub fn lower_program(
                     .fields
                     .iter()
                     .map(|f| {
-                        let ty = lower_type(&prog.arena, f.type_annotation, &symbols);
+                        let ty = lower_type(&prog.arena, f.type_annotation, &symbols, None);
                         (f.name.clone(), ty, 8, 8)
                     })
                     .collect();
@@ -549,7 +561,7 @@ pub fn lower_program(
                     .map(|(i, v)| {
                         let disc = i as i64;
                         let payload = v.payload.map(|tid| {
-                            let ty = lower_type(&prog.arena, tid, &symbols);
+                            let ty = lower_type(&prog.arena, tid, &symbols, None);
                             // Bậc A: every type is 8-byte i64
                             (ty, 8usize, 8usize, Vec::new())
                         });
@@ -568,14 +580,14 @@ pub fn lower_program(
         .map(|l| (l.name.clone(), l.clone()))
         .collect();
 
-    let func_return_types: HashMap<String, MirType> = prog
+    let mut func_return_types: HashMap<String, MirType> = prog
         .items
         .iter()
         .filter_map(|item| {
             if let Item::Function { def } = &item.node {
                 let ret = def
                     .return_type
-                    .map(|tid| lower_type(&prog.arena, tid, &symbols))
+                    .map(|tid| lower_type(&prog.arena, tid, &symbols, None))
                     .unwrap_or(MirType::Integer);
                 Some((def.name.clone(), ret))
             } else {
@@ -583,6 +595,30 @@ pub fn lower_program(
             }
         })
         .collect();
+
+    // ADR-0061 T5: register impl methods under their mangled names so a
+    // resolved method call (`MethodResolution.concrete_fn`) can look up its
+    // return type — the dispatch at the MethodCall site reads this map, the
+    // same machinery user functions use. `Self` in the return type resolves
+    // to the impl's `for_type`.
+    for item in &prog.items {
+        if let Item::Implementation { def } = &item.node {
+            let self_ty = lower_type(&prog.arena, def.for_type, &symbols, None);
+            let for_type_name = self_ty.to_string();
+            for method in &def.methods {
+                let mangled = triet_syntax::mangle_trait_method(
+                    &for_type_name,
+                    &def.trait_name,
+                    &method.name,
+                );
+                let ret = method
+                    .return_type
+                    .map(|tid| lower_type(&prog.arena, tid, &symbols, Some(&self_ty)))
+                    .unwrap_or(MirType::Integer);
+                func_return_types.insert(mangled, ret);
+            }
+        }
+    }
 
     let mut bodies = Vec::new();
     for item in &prog.items {
@@ -596,11 +632,48 @@ pub fn lower_program(
                 enum_map.clone(),
                 expr_resolutions.clone(),
                 pattern_resolutions.clone(),
+                method_resolutions.clone(),
                 func_return_types.clone(),
+                None,
             )?;
             body.struct_layouts = struct_layouts.clone();
             body.enum_layouts = enum_layouts.clone();
             bodies.push(body);
+        }
+    }
+
+    // ADR-0061 T5.2: lower each `implement` method into an ordinary Body
+    // named `Type$Trait$method` (the mangled name the dispatch calls). The
+    // method is a normal FunctionDefinition; `impl_ctx` supplies the
+    // mangled name (GAP-A) and the `for_type` that `self` resolves to
+    // (GAP-B). `self` lives in params[0] like any local.
+    for item in &prog.items {
+        if let Item::Implementation { def } = &item.node {
+            let self_ty = lower_type(&prog.arena, def.for_type, &symbols, None);
+            let for_type_name = self_ty.to_string();
+            for method in &def.methods {
+                let mangled = triet_syntax::mangle_trait_method(
+                    &for_type_name,
+                    &def.trait_name,
+                    &method.name,
+                );
+                let mut body = lower_function(
+                    method,
+                    &prog.arena,
+                    item.span.clone(),
+                    symbols.clone(),
+                    struct_map.clone(),
+                    enum_map.clone(),
+                    expr_resolutions.clone(),
+                    pattern_resolutions.clone(),
+                    method_resolutions.clone(),
+                    func_return_types.clone(),
+                    Some((&mangled, self_ty.clone())),
+                )?;
+                body.struct_layouts = struct_layouts.clone();
+                body.enum_layouts = enum_layouts.clone();
+                bodies.push(body);
+            }
         }
     }
     Ok(bodies)
@@ -610,7 +683,13 @@ pub fn lower_program(
 ///
 /// `span` is the byte range of the function definition in the source file,
 /// used as a fallback for body-level synthetic statements.
-#[allow(clippy::too_many_arguments)] // 9 parameters — symbols+layouts+resolutions bundled into LoweringInput struct deferred (non-blocking for S3)
+/// ADR-0061 T5: `impl_ctx` carries the `implement`-block context — the
+/// mangled `Body` name (`Type$Trait$method`) and the `for_type` that
+/// `Self` resolves to. `None` for ordinary top-level functions (name =
+/// `func.name`, no `Self`). `Some` only for trait impl methods: both
+/// halves are always present together, so a single tuple makes the two
+/// illegal states (one-without-the-other) unrepresentable (O ruling).
+#[allow(clippy::too_many_arguments)] // 11 params — resolutions(3)+layouts(2)+impl_ctx; LoweringInput struct refactor deferred
 pub(crate) fn lower_function(
     func: &FunctionDefinition,
     arena: &Arena,
@@ -620,20 +699,27 @@ pub(crate) fn lower_function(
     enum_layouts: HashMap<String, EnumLayout>,
     expr_resolutions: ExprResolutions,
     pattern_resolutions: PatternResolutions,
+    method_resolutions: MethodResolutions,
     func_return_types: HashMap<String, MirType>,
+    impl_ctx: Option<(&str, MirType)>,
 ) -> Result<Body, LowerError> {
+    let (body_name, self_type): (&str, Option<&MirType>) = match &impl_ctx {
+        Some((name, ty)) => (name, Some(ty)),
+        None => (func.name.as_str(), None),
+    };
     let ret_ty = func
         .return_type
         .as_ref()
-        .map(|tid| lower_type(arena, *tid, &symbols))
+        .map(|tid| lower_type(arena, *tid, &symbols, self_type))
         .unwrap_or(MirType::Integer);
     let mut c = Ctx::new(
-        &func.name,
+        body_name,
         &ret_ty,
         struct_layouts,
         enum_layouts,
         expr_resolutions,
         pattern_resolutions,
+        method_resolutions,
         func_return_types,
     );
     let entry = c.cur;
@@ -643,7 +729,7 @@ pub(crate) fn lower_function(
     c.push_scope();
 
     for p in &func.parameters {
-        let ty = lower_type(arena, p.type_annotation, &symbols);
+        let ty = lower_type(arena, p.type_annotation, &symbols, self_type);
         // B7-lift (ADR-0042): heap types now allowed as parameters.
         // Move semantics: callee owns + drops, caller zeroes slot after call.
         // ADR-0045 §2: reference types (&0 String etc.) are borrow parameters
@@ -774,8 +860,14 @@ fn lower_type(
     arena: &Arena,
     id: TypeId,
     symbols: &std::collections::HashMap<String, TypeKind>,
+    self_type: Option<&MirType>,
 ) -> MirType {
     match &arena.type_expression(id).node {
+        // ADR-0061 GAP-B: `self` receiver / `Self` return type. The marker
+        // carries no type of its own — the `implement` block injects its
+        // `for_type` as `self_type` from above. Outside an impl context
+        // (None) it is Unknown (a stray `self` the typechecker rejected).
+        TypeExpr::SelfType => self_type.cloned().unwrap_or(MirType::Unknown),
         TypeExpr::Named(n) => match n.as_str() {
             "Integer" => MirType::Integer,
             "Trit" => MirType::Trit,
@@ -796,10 +888,10 @@ fn lower_type(
             _ => MirType::Unknown,
         },
         TypeExpr::Nullable(inner) => {
-            MirType::Nullable(Box::new(lower_type(arena, *inner, symbols)))
+            MirType::Nullable(Box::new(lower_type(arena, *inner, symbols, self_type)))
         }
         TypeExpr::Reference { form, inner } => {
-            let inner = lower_type(arena, *inner, symbols);
+            let inner = lower_type(arena, *inner, symbols, self_type);
             let form = match form {
                 ReferenceForm::StrongFrozen => triet_mir::ReferenceForm::StrongFrozen,
                 ReferenceForm::StrongMutable => triet_mir::ReferenceForm::StrongMutable,
@@ -819,8 +911,8 @@ fn lower_type(
             error_type,
             allow_null_state,
         } => MirType::Outcome {
-            value_type: Box::new(lower_type(arena, *value_type, symbols)),
-            error_type: Box::new(lower_type(arena, *error_type, symbols)),
+            value_type: Box::new(lower_type(arena, *value_type, symbols, self_type)),
+            error_type: Box::new(lower_type(arena, *error_type, symbols, self_type)),
             allow_null_state: *allow_null_state,
         },
         TypeExpr::Generic { name, .. } => match name.as_str() {
@@ -3431,10 +3523,90 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(result)
         }
         Expr::MethodCall {
-            receiver: _,
+            receiver,
             method: _,
             arguments,
         } => {
+            // ADR-0061 T5.1/T5.3: trait-method dispatch. The type checker
+            // resolved this call to a concrete mangled function; emit a
+            // direct CallDispatch to its Body (no second table lookup — the
+            // mangled name is taken straight from MethodResolution). The
+            // receiver becomes arg[0]; explicit args follow.
+            if let Some(res) = c.method_resolutions.get(&expr_id).cloned() {
+                let callee_name = res.concrete_fn;
+                let callee_ret = c
+                    .func_return_types
+                    .get(&callee_name)
+                    .cloned()
+                    .unwrap_or(MirType::Integer);
+                // T5 scope: scalar (single-i64) return types only — covers
+                // Comparable → Trit and every i64-scalar method. Fat returns
+                // (String / Vector / HashMap / Struct / Enum / Outcome /
+                // Reference) need the sret / 2-register call machinery;
+                // refuse cleanly rather than miscompile (deferred to a
+                // later slice — reported to O).
+                let scalar_ret = matches!(
+                    callee_ret,
+                    MirType::Integer
+                        | MirType::Trit
+                        | MirType::Tryte
+                        | MirType::Long
+                        | MirType::Trilean
+                        | MirType::Unit
+                        | MirType::Unknown
+                        | MirType::Nullable(_)
+                );
+                if !scalar_ret {
+                    return Err(LowerError {
+                        message: format!(
+                            "trait method `{callee_name}` returns `{callee_ret}` — \
+                             non-scalar trait-method returns are not yet lowered (ADR-0061 T5)"
+                        ),
+                        span: expr_span,
+                    });
+                }
+                let mut args = Vec::with_capacity(arguments.len() + 1);
+                args.push(lower_expr(*receiver, arena, c)?);
+                for &a in arguments {
+                    args.push(lower_expr(a, arena, c)?);
+                }
+                let dest = c.alloc_local_ty(callee_ret);
+                c.push(Statement::StorageLive(dest, expr_span.clone()));
+                // ADR-0042 Q1 + ADR-0045 §2: zero Move-type args (skip
+                // borrows + Copy scalars) — same rule as the scalar call.
+                let to_zero: Vec<Local> = args
+                    .iter()
+                    .filter(|&&arg| {
+                        let ty = &c.local_decls[arg.0].ty;
+                        if ty.is_reference() {
+                            return false;
+                        }
+                        !ty.is_copy(None)
+                    })
+                    .copied()
+                    .collect();
+                let ret_bb = c.alloc_bb();
+                let call_bb = c.cur;
+                c.term(
+                    call_bb,
+                    Terminator::CallDispatch {
+                        callee: triet_mir::FunctionId(0),
+                        callee_name,
+                        target: CallTarget::Jit,
+                        args,
+                        return_bb: ret_bb,
+                        dest: vec![dest],
+                        return_shape: triet_mir::ReturnShape::Scalar,
+                        span: expr_span,
+                    },
+                );
+                c.cur = ret_bb;
+                for &arg in &to_zero {
+                    c.push(Statement::Deinit(arg, DUMMY_SPAN));
+                }
+                return Ok(dest);
+            }
+
             // Qualified enum variant construction:
             // `OptionA.SomeInt(42)` parses as MethodCall.
             // Resolution was recorded by the type checker.
@@ -4012,7 +4184,9 @@ mod tests {
             HashMap::new(),
             ExprResolutions::new(),
             PatternResolutions::new(),
+            MethodResolutions::new(),
             HashMap::new(),
+            None,
         )
         .expect("lowering failed")
     }
@@ -4241,8 +4415,13 @@ function main() -> Integer {
         let (prog, errors) = triet_parser::parse(source);
         assert!(errors.is_empty(), "parse errors: {errors:?}");
 
-        let bodies = lower_program(&prog, &ExprResolutions::new(), &PatternResolutions::new())
-            .expect("lowering");
+        let bodies = lower_program(
+            &prog,
+            &ExprResolutions::new(),
+            &PatternResolutions::new(),
+            &MethodResolutions::new(),
+        )
+        .expect("lowering");
 
         // Find main's body.
         let main_body = bodies

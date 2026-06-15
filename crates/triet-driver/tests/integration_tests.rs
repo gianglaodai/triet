@@ -56,7 +56,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
     }
 
     // ── Phase 2: Typecheck ──
-    let (type_errors, expr_resolutions, pattern_resolutions, _method_resolutions) =
+    let (type_errors, expr_resolutions, pattern_resolutions, method_resolutions) =
         triet_typecheck::check(&program);
     if !type_errors.is_empty() {
         for err in &type_errors {
@@ -67,8 +67,12 @@ fn run_fixture(source: &str) -> Result<i64, String> {
     }
 
     // ── Phase 3: Lower to MIR ──
-    let bodies = match triet_lower::lower_program(&program, &expr_resolutions, &pattern_resolutions)
-    {
+    let bodies = match triet_lower::lower_program(
+        &program,
+        &expr_resolutions,
+        &pattern_resolutions,
+        &method_resolutions,
+    ) {
         Ok(b) => b,
         Err(e) => {
             errors.push(format!("lowerer error: {e}"));
