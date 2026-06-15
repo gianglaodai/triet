@@ -209,7 +209,17 @@ pub(crate) fn check_conformance(
 
     for ((type_name, trait_name), impl_info) in impl_table {
         let Some(trait_info) = trait_table.get(trait_name) else {
-            continue; // unknown trait — no contract to verify against
+            // ADR-0061 T3.5: `implement <UnknownTrait> for T` — the trait
+            // name is undefined. Don't silently accept (a compiler never
+            // takes bad input quietly); reuse E1002 UndefinedName (O ruling:
+            // no new code). The unknown-TYPE case (`implement Trait for
+            // Bogus`) is already caught as E1001 by resolve_type during
+            // body checking — verified, not re-emitted here.
+            errors.push(TypeError::UndefinedName {
+                name: trait_name.clone(),
+                span: impl_info.span.clone(),
+            });
+            continue;
         };
         let span = impl_info.span.clone();
         let mut push = |kind| {
@@ -918,6 +928,43 @@ mod tests {
                 .iter()
                 .any(|k| matches!(k, ConformanceKind::ExtraMethod { method } if method == "z")),
             "extra method `z` must raise E1044 ExtraMethod: {errors:?}"
+        );
+    }
+
+    // ── ADR-0061 T3.5: unknown trait / type in `implement` ──────────
+
+    #[test]
+    fn unknown_trait_in_impl_emits_e1002() {
+        // `implement <undeclared trait> for Integer` must not be silently
+        // accepted. Poison: revert the else-arm to a bare `continue` →
+        // this negative test goes red (empty errors).
+        let errors = check_in_memory(
+            "implement Bogus for Integer { function a(self) -> Integer = 0 }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::UndefinedName { name, .. } if name == "Bogus")),
+            "unknown trait `Bogus` in impl must raise E1002: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_type_in_impl_emits_e1001() {
+        // `implement Trait for <unknown type>` is already caught as E1001
+        // UnknownType by resolve_type during body checking — confirm the
+        // hole is closed (not silently accepted), without a second code.
+        let errors = check_in_memory(
+            "trait T { function a(self) -> Integer }\n\
+             implement T for Bogus { function a(self) -> Integer = 0 }\n\
+             function main() -> Integer = 0",
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, TypeError::UnknownType { name, .. } if name == "Bogus")),
+            "unknown type `Bogus` in impl must raise E1001: {errors:?}"
         );
     }
 
