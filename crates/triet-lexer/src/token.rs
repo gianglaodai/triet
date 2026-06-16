@@ -297,6 +297,15 @@ pub enum Token {
     /// `->` — function return type.
     #[token("->")]
     ThinArrow,
+    /// `?+>` — Nullable map/flatMap operator `inner ?+> |bind| body`
+    /// (ADR-0039 §1). 3-char; logos longest-match wins over `?.`/`?:`/`?`.
+    #[token("?+>")]
+    QuestionPlusGt,
+    /// `?->` — RESERVED, always rejected: nullable has no error arm
+    /// (ADR-0039 §3). Lexed so typecheck can emit a precise diagnostic
+    /// rather than a generic parse error.
+    #[token("?->")]
+    QuestionMinusGt,
     /// `?.` — safe call (nullable chain).
     #[token("?.")]
     QuestionDot,

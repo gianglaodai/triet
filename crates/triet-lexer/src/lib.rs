@@ -210,6 +210,24 @@ mod tests {
     }
 
     #[test]
+    fn lexes_nullable_map_operators() {
+        // ADR-0039 §1/§3 (Phase 14.1): `?+>` map/flatMap + reserved `?->`.
+        // Poison the token regex → these go red.
+        assert_eq!(lex_only("?+>"), vec![Token::QuestionPlusGt]);
+        assert_eq!(lex_only("?->"), vec![Token::QuestionMinusGt]);
+        // Longest-match: `?+>` must NOT split into `?` `+` `>`, and `?->`
+        // must NOT split into `?` `->` — the 3-char tokens win.
+        assert_eq!(
+            lex_only("x ?+> y"),
+            vec![
+                Identifier("x".to_owned()),
+                Token::QuestionPlusGt,
+                Identifier("y".to_owned()),
+            ],
+        );
+    }
+
+    #[test]
     fn lexes_function_arrow_distinct_from_minus_gt() {
         assert_eq!(lex_only("->"), vec![ThinArrow]);
         assert_eq!(lex_only("- >"), vec![Minus, Token::Gt]);

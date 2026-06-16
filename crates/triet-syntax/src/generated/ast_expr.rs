@@ -197,4 +197,11 @@ pub enum Expr {
         capture_name: Option<String>,
         body: crate::arena::ExprId, // owned
     },
+
+    /// Nullable map/flatMap per ADR-0039 §1: `inner ?+> |bind| body`. If inner has a real value → bind it, evaluate body (plain U auto-wraps to U? = map; nullable U? auto-flattens, never U?? = flatMap). If inner is null (~0) → pass through unchanged, body not run. Result is T?. Mirrors OutcomeArmHandler; lowered inline (no closure object).
+    NullableMap {
+        inner: crate::arena::ExprId, // &0 (borrow)
+        bind_var: String,
+        body: crate::arena::ExprId, // owned
+    },
 }

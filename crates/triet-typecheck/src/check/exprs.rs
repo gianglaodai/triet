@@ -325,6 +325,11 @@ impl Checker<'_> {
                 capture_name,
                 body,
             } => self.check_outcome_arm_handler(inner, arm, capture_name.as_deref(), body, span),
+            // ADR-0039 §1 (Phase 14.1 scaffold): `?+>` nullable map/flatMap.
+            // Real type rule (inner must be T?, body auto-wrap/flatten → T?)
+            // lands in 14.3; the parser does not yet build this node (14.2),
+            // so this placeholder only keeps the match exhaustive (mẫu T1).
+            Expr::NullableMap { .. } => Type::Unknown,
         }
     }
 

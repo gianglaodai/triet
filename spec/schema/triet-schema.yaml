@@ -1089,6 +1089,23 @@ definitions:
       - name: body
         type: ExprId
         ownership: owned
+    - name: NullableMap
+      category: control_flow
+      description: "Nullable map/flatMap per ADR-0039 §1: `inner ?+> |bind| body`.\
+        \ If inner has a real value → bind it, evaluate body (plain U auto-wraps\
+        \ to U? = map; nullable U? auto-flattens, never U?? = flatMap). If inner is\
+        \ null (~0) → pass through unchanged, body not run. Result is T?. Mirrors\
+        \ OutcomeArmHandler; lowered inline (no closure object)."
+      fields:
+      - name: inner
+        type: ExprId
+        ownership: borrow
+      - name: bind_var
+        type: string
+        description: Name binding the unwrapped value in body. Empty = `|_|` discard.
+      - name: body
+        type: ExprId
+        ownership: owned
   BinaryOperator:
     kind: enum
     description: "All binary operators in Tri\u1EBFt. Symbolic form is preferred per\
