@@ -4225,6 +4225,24 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             c.cur = merge_bb;
             Ok(result)
         }
+        // ADR-0061/ADR-0039 recon (Phase 14.0): general first-class /
+        // escaping closures are sealed (YAGNI). Nullable/Outcome operator
+        // families (`?+>`, `~->`) lower via dedicated inline AST nodes —
+        // there is no first-class closure consumer, so a `Lambda` reaching
+        // the lowerer is refused explicitly rather than via the generic
+        // catch-all (clearer diagnostic + intentional seal, not a gap).
+        // ADR-0061/ADR-0039 recon (Phase 14.0): general first-class /
+        // escaping closures are sealed (YAGNI). Nullable/Outcome operator
+        // families (`?+>`, `~->`) lower via dedicated inline AST nodes —
+        // there is no first-class closure consumer, so a `Lambda` reaching
+        // the lowerer is refused explicitly rather than via the generic
+        // catch-all (clearer diagnostic + intentional seal, not a gap).
+        Expr::Lambda { .. } => Err(LowerError {
+            message: "general escaping closure sealed (YAGNI per ADR-0039 recon — \
+                      nullable/Outcome ops use inline nodes, no first-class closure consumer)"
+                .to_string(),
+            span: expr_span,
+        }),
         other => Err(LowerError::unsupported_expr(other, expr_span)),
     }
 }
@@ -4274,6 +4292,58 @@ fn lower_binop(op: &BinaryOperator) -> Option<BinOp> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Like `lower_source` but returns the `Result` so refusal paths can be
+    /// asserted. Lowers the first function in `source` with empty tables.
+    fn try_lower_first_fn(source: &str) -> Result<Body, LowerError> {
+        let (prog, errors) = triet_parser::parse(source);
+        assert!(errors.is_empty(), "parse errors: {errors:?}");
+        let symbols: std::collections::HashMap<String, TypeKind> = prog
+            .items
+            .iter()
+            .filter_map(|item| match &item.node {
+                Item::Struct { def, .. } => Some((def.name.clone(), TypeKind::Struct)),
+                Item::Enum { def, .. } => Some((def.name.clone(), TypeKind::Enum)),
+                _ => None,
+            })
+            .collect();
+        let func = prog
+            .items
+            .iter()
+            .find_map(|item| match &item.node {
+                Item::Function { def } => Some((def.clone(), item.span.clone())),
+                _ => None,
+            })
+            .expect("no function found");
+        lower_function(
+            &func.0,
+            &prog.arena,
+            func.1,
+            symbols,
+            HashMap::new(),
+            HashMap::new(),
+            ExprResolutions::new(),
+            PatternResolutions::new(),
+            MethodResolutions::new(),
+            HashMap::new(),
+            None,
+        )
+    }
+
+    #[test]
+    fn lambda_is_sealed_yagni() {
+        // Phase 14.0: a first-class/escaping closure reaching the lowerer is
+        // refused with the explicit YAGNI message, NOT the generic
+        // unsupported_expr catch-all. Poison: remove the Expr::Lambda arm →
+        // it falls to the generic catch-all → this assertion goes red.
+        let err = try_lower_first_fn("function main() -> Integer { let f = |x| x; 0 }")
+            .expect_err("lambda must be refused");
+        assert!(
+            err.message.contains("closure sealed (YAGNI"),
+            "lambda must hit the explicit YAGNI seal, got: {}",
+            err.message
+        );
+    }
 
     fn lower_source(source: &str) -> Body {
         let (prog, errors) = triet_parser::parse(source);
