@@ -1,0 +1,23 @@
+// EXPECT: 111
+// ADR-0061 T7 endgame: trait Comparable + impl for Integer + a.compare(b)
+// dispatched to Integer$Comparable$compare, result matched on Trit.
+// classify exercises all three arms; main sums distinct per-arm values
+// (1 + 10 + 100) so a wrong dispatch or any wrong arm changes the total.
+trait Comparable {
+    function compare(self, other: Integer) -> Trit
+}
+
+implement Comparable for Integer {
+    function compare(self, other: Integer) -> Trit =
+        if self < other { -1_trit } else if self == other { 0_trit } else { 1_trit }
+}
+
+function classify(a: Integer, b: Integer) -> Integer =
+    match a.compare(b) {
+        -1_trit => 1
+        0_trit => 10
+        1_trit => 100
+    }
+
+function main() -> Integer =
+    classify(2, 5) + classify(4, 4) + classify(9, 1)
