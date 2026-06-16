@@ -325,23 +325,6 @@ impl Checker<'_> {
                 capture_name,
                 body,
             } => self.check_outcome_arm_handler(inner, arm, capture_name.as_deref(), body, span),
-            Expr::OutcomePropagate {
-                expr,
-                capture_var,
-                early_return,
-            } => {
-                // `capture_var` is `String` ("" means `|_|` discard).
-                let capture = if capture_var.is_empty() {
-                    None
-                } else {
-                    Some(capture_var.as_str())
-                };
-                self.check_outcome_propagate(expr, capture, early_return, span)
-            }
-            Expr::OutcomeDefault {
-                expr,
-                default_value,
-            } => self.check_outcome_default(expr, default_value),
         }
     }
 
@@ -641,8 +624,12 @@ impl Checker<'_> {
         }
     }
 
-    ///    conversion required (E1029) when they differ.
-    /// 4. Capture name binds in the early-return form's scope.
+    /// Check propagation semantics for a `~->` body that is a bare `return`
+    /// (Mode-2, APP.1). Originally the `~?` operator's checker; `~?` was
+    /// deleted (ADR-0020 §3.7, Phase 14.5) but the live `~->` Mode-2 path
+    /// (`check_outcome_arm_handler`, l.454) still routes here — so this is
+    /// SHARED and kept (not a `~?` zombie). Caller must be fallible (E1028)
+    /// and the inner/outer error types must agree (E1029).
     fn check_outcome_propagate(
         &mut self,
         inner: ExprId,
@@ -701,34 +688,6 @@ impl Checker<'_> {
         }
         self.infer_expression(early_return);
         self.env.pop_frame();
-        Type::Unknown
-    }
-
-    /// Check `inner ~: default` per ADR-0020 §3.2. Result type is the
-    /// inner's success type. Default expression must match success type.
-    fn check_outcome_default(&mut self, inner: ExprId, default: ExprId) -> Type {
-        let inner_ty = self.infer_expression(inner);
-        let default_ty = self.infer_expression(default);
-        if let Type::Outcome {
-            value_type,
-            allow_null_state,
-            ..
-        } = &inner_ty
-        {
-            let expected = if *allow_null_state {
-                Type::Nullable(Box::new((**value_type).clone()))
-            } else {
-                (**value_type).clone()
-            };
-            if !expected.matches(&default_ty) {
-                self.errors.push(TypeError::Mismatch {
-                    expected: expected.clone(),
-                    found: default_ty,
-                    span: self.arena.expression(default).span.clone(),
-                });
-            }
-            return expected;
-        }
         Type::Unknown
     }
 

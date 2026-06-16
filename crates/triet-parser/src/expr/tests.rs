@@ -767,70 +767,26 @@ fn parses_outcome_zero_literal_no_payload() {
     }
 }
 
-/// `expr ~? |err| return ~- err` parses as OutcomePropagate with
-/// explicit closure capture binding name "err" and an early-return body.
-///
-/// NOTE: ADR-0020 §3.1 examples use `return ~- err` as the RHS, but
-/// `return` is a Triết Stmt (not Expr) — so bare `return` form is
-/// PARSE-DEFERRED. Two valid forms at v0.7.4.3-error.1:
-///
-/// 1. Expression RHS: `expr ~? |err| ~- err` (re-emits error as value)
-/// 2. Braced block RHS: `expr ~? |err| { return ~- err }`
-///
-/// Unbraced `return` after `|cap|` is tracked as a deferred parse
-/// sugar in ADR-0019 Addendum §A7 for v0.7.4.3-error.2.
-#[test]
-fn parses_outcome_propagate_with_named_capture() {
-    let (parser, id) = parse_expr("read_file ~? |err| ~- err");
-    match &parser.arena.expression(id).node {
-        Expr::OutcomePropagate {
-            capture_var,
-            expr,
-            early_return,
-        } => {
-            assert_eq!(capture_var, "err");
-            match &parser.arena.expression(*expr).node {
-                Expr::Identifier { name } => assert_eq!(name, "read_file"),
-                other => panic!("expected Identifier as inner, got {other:?}"),
-            }
-            // Early-return shape exists; deep-walk in v0.7.4.3-error.2.
-            let _ = early_return;
-        }
-        other => panic!("expected OutcomePropagate, got {other:?}"),
-    }
-}
+// ADR-0020 §3.7 + ADR-0039 §2 (Phase 14.5): `~?` (propagate) and `~:`
+// (default) were deleted — fully migrated to `~->`/`~0>`. Their parser
+// tests are removed with the syntax. The refuse teeth (the tokens no
+// longer lex) live in the lexer crate's test module.
 
-/// `expr ~? |_| ~- err` — `|_|` discards the captured error name.
+/// Phase 14.5: the deleted `~?`/`~:` operators no longer parse. After
+/// the postfix tokens are gone, `~` (the bare outcome-type separator)
+/// cannot chain in expression position, so each form is refused at parse
+/// time — no OutcomePropagate/OutcomeDefault node can be produced.
 #[test]
-fn parses_outcome_propagate_with_underscore_discard() {
-    let (parser, id) = parse_expr("read_file ~? |_| ~- err");
-    match &parser.arena.expression(id).node {
-        Expr::OutcomePropagate { capture_var, .. } => {
-            assert!(
-                capture_var.is_empty(),
-                "|_| capture must produce an empty capture_var"
-            );
-        }
-        other => panic!("expected OutcomePropagate, got {other:?}"),
-    }
-}
-
-/// `expr ~: default_value` parses as OutcomeDefault.
-#[test]
-fn parses_outcome_default_operator() {
-    let (parser, id) = parse_expr("parse_count ~: 0");
-    match &parser.arena.expression(id).node {
-        Expr::OutcomeDefault {
-            expr,
-            default_value,
-        } => {
-            match &parser.arena.expression(*expr).node {
-                Expr::Identifier { name } => assert_eq!(name, "parse_count"),
-                other => panic!("expected Identifier as inner, got {other:?}"),
-            }
-            assert_eq!(integer_value_of(&parser, *default_value), 0);
-        }
-        other => panic!("expected OutcomeDefault, got {other:?}"),
+fn deleted_outcome_propagate_default_no_longer_parse() {
+    for src in [
+        "function f() -> Integer = x ~: 0\n",
+        "function f() -> Integer = r ~? |e| e\n",
+    ] {
+        let (_program, errs) = crate::parse(src);
+        assert!(
+            !errs.is_empty(),
+            "deleted `~?`/`~:` must be refused at parse: {src:?}"
+        );
     }
 }
 

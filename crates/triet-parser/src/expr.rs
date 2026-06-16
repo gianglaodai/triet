@@ -687,9 +687,7 @@ const fn postfix_binding_power(token: &Token) -> Option<u8> {
         | Token::BangBang
         | Token::TildePlusGt
         | Token::TildeZeroGt
-        | Token::TildeMinusGt
-        | Token::TildeQuestion
-        | Token::TildeColon => Some(POSTFIX_LEFT_BP),
+        | Token::TildeMinusGt => Some(POSTFIX_LEFT_BP),
         _ => None,
     }
 }
@@ -710,8 +708,6 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
         Token::TildePlusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Positive),
         Token::TildeZeroGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Zero),
         Token::TildeMinusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Negative),
-        Token::TildeQuestion => parse_outcome_propagate(parser, lhs),
-        Token::TildeColon => parse_outcome_default(parser, lhs),
         Token::LBracket => {
             // Subscript / index access — not in v0.1 SPEC; treat as error
             // for now to keep semantics tight.
@@ -724,56 +720,6 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
         }
         _ => unreachable!("caller filtered postfix tokens"),
     }
-}
-
-/// Parse `inner ~? |capture_name| early_return_form` per ADR-0020 §3.1.
-/// The `|name|` form is mandatory — no implicit error binding.
-/// `|_|` allowed for discard.
-fn parse_outcome_propagate(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprId, ParseError> {
-    parser.expect(&Token::TildeQuestion, "`~?`")?;
-
-    // Expect `|name|` closure-capture marker (single `|` token).
-    parser.expect(&Token::Pipe, "`|` (closure capture for ~?)")?;
-    let (capture_token, capture_span) =
-        parser
-            .peek()
-            .cloned()
-            .ok_or_else(|| ParseError::UnexpectedEof {
-                expected: "binding name or `_`".to_owned(),
-                span: parser.eof_span(),
-            })?;
-    let capture_name = match capture_token {
-        Token::Identifier(name) => {
-            parser.advance();
-            Some(name)
-        }
-        Token::Underscore => {
-            parser.advance();
-            None
-        }
-        other => {
-            return Err(ParseError::UnexpectedToken {
-                expected: "binding name or `_` after `|`".to_owned(),
-                found: format!("{other:?}"),
-                span: capture_span,
-            });
-        }
-    };
-    parser.expect(&Token::Pipe, "closing `|`")?;
-
-    // Parse the early-return form. Typecheck (v0.7.4.3-error.2) enforces
-    // that this is a return/panic/re-fail; parse accepts any expression
-    // and surfaces the constraint at semantic-analysis time.
-    let early_return = parse_expression_bp(parser, 0)?;
-    let span = arena_span(parser, inner).start..arena_span(parser, early_return).end;
-    Ok(parser.arena.alloc_expression(Spanned::new(
-        Expr::OutcomePropagate {
-            expr: inner,
-            capture_var: capture_name.unwrap_or_default(),
-            early_return,
-        },
-        span,
-    )))
 }
 
 /// Parse ternary arm handler `inner ~+> |v| body` / `expr ~0> body` / `expr ~-> |e| body`
@@ -861,20 +807,6 @@ const fn expected_arm_token(arm: OutcomeArm) -> &'static str {
         OutcomeArm::Zero => "`~0>`",
         OutcomeArm::Negative => "`~->`",
     }
-}
-
-/// Parse `inner ~: default_expr` per ADR-0020 §3.2.
-fn parse_outcome_default(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprId, ParseError> {
-    parser.expect(&Token::TildeColon, "`~:`")?;
-    let default = parse_expression_bp(parser, 0)?;
-    let span = arena_span(parser, inner).start..arena_span(parser, default).end;
-    Ok(parser.arena.alloc_expression(Spanned::new(
-        Expr::OutcomeDefault {
-            expr: inner,
-            default_value: default,
-        },
-        span,
-    )))
 }
 
 fn parse_dot_postfix(

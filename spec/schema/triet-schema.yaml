@@ -1003,33 +1003,6 @@ definitions:
         type: option<ExprId>
         ownership: owned
         description: None for ~0.
-    - name: OutcomePropagate
-      category: control_flow
-      description: "Propagation operator `expr ~? |capture| early_return` per ADR-0020.\
-        \ If expr is ~+ \u2192 unwrap success. If ~- \u2192 bind error to capture\
-        \ variable, execute early_return (typically `return ~- capture`). If ~0 \u2192\
-        \ propagate null (T?~E only)."
-      fields:
-      - name: expr
-        type: ExprId
-        ownership: borrow
-      - name: capture_var
-        type: string
-        description: Variable name that captures the error value on failure.
-      - name: early_return
-        type: ExprId
-        ownership: owned
-    - name: OutcomeDefault
-      category: control_flow
-      description: "Default operator `expr ~: default_value` per ADR-0020. If expr\
-        \ is ~+ \u2192 unwrap success. Otherwise \u2192 replace with default_value."
-      fields:
-      - name: expr
-        type: ExprId
-        ownership: borrow
-      - name: default_value
-        type: ExprId
-        ownership: owned
     - name: SafeFieldAccess
       category: access
       description: "Safe field access `obj?.field` — yields null if the object is null. Nullable sugar."

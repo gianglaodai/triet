@@ -286,17 +286,10 @@ pub enum Token {
     /// §10 (replaces deprecated `null` keyword).
     #[token("~0")]
     TildeZero,
-    // ===== Deprecated (v0.7.4.3-error.4 per ADR-0020 §3.7) =====
-    // Legacy propagate/default operators retained in token set so existing
-    // tests/examples can be migrated incrementally. Emit lex warnings at
-    // integration; removed entirely in v0.7.4.3-error.5 final.
-    /// `~?` — [DEPRECATED] Outcome propagate operator. Use `~->` instead.
-    #[token("~?")]
-    TildeQuestion,
-    /// `~:` — [DEPRECATED] Outcome default operator. Use `~0> default`
-    /// or `~-> |_| return ~+ default` instead.
-    #[token("~:")]
-    TildeColon,
+    // ADR-0020 §3.7 + ADR-0039 §2 (Phase 14.5): the deprecated `~?`
+    // (propagate) and `~:` (default) tokens are DELETED. They were
+    // fully migrated to `~->`/`~0>`; the lexer now refuses them
+    // outright (no token → lex error), per "break the symbol immediately".
     /// `~` — Binary outcome type separator (`T~E`). Bare tilde in type
     /// position. Must follow all compound `~X` tokens for longest-match.
     #[token("~")]

@@ -815,15 +815,17 @@ mod tests {
         let _ = TypeError::NullableErrorInOutcomeType { span: 0..0 };
     }
 
-    /// `~?` propagate operator requires the enclosing function to
-    /// return an outcome type (E1028).
+    /// `~->` Mode-2 propagate (body is `return`) requires the enclosing
+    /// function to return an outcome type (E1028). Migrated from the
+    /// deleted `~?` operator (ADR-0020 §3.7 / Phase 14.5) — the propagate
+    /// path itself (check_outcome_propagate) is alive via `~->`.
     #[test]
     fn flags_propagate_outside_fallible_context() {
         assert_has_error(
             r#"
             function dangerous() -> Integer {
                 let result: String~IoError = ~- "err"
-                let value = result ~? |err| ~- err
+                let value = result ~-> |err| return err
                 42
             }
             "#,
@@ -831,15 +833,15 @@ mod tests {
         );
     }
 
-    /// `~?` inside fallible function compiles cleanly when error
-    /// types match.
+    /// `~->` Mode-2 propagate inside a fallible function compiles cleanly
+    /// when error types match (migrated from `~?`).
     #[test]
     fn checks_propagate_in_fallible_function() {
         assert_ok(
             r"
             function safe() -> Integer~String {
                 let result: Integer~String = ~+ 7
-                let value = result ~? |err| ~- err
+                let value = result ~-> |err| return err
                 ~+ value
             }
             ",

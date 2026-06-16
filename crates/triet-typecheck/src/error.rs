@@ -473,34 +473,11 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1030: `~->` right-hand side missing closure capture form.
-    #[error("E1030: `~->` operator requires explicit closure capture form")]
-    #[diagnostic(
-        code(triet::typecheck::E1030),
-        help(
-            "write `~-> |binding_name| return expression` or `~-> |_| return expression` to discard the error"
-        )
-    )]
-    OutcomePropagateMissingCapture {
-        /// Source location of the propagate operator.
-        #[label("missing `|capture|` form")]
-        span: Span,
-    },
-
-    /// E1031: `~->` early-return form must be return/panic/re-propagate.
-    #[error("`~->` early-return form must be a `return` statement, panic, or another `~->`")]
-    #[diagnostic(
-        code(triet::typecheck::E1031),
-        help(
-            "falling through after `~->` would leave the binding unbound; emit a `return` or panic"
-        )
-    )]
-    OutcomePropagateMalformedReturn {
-        /// Source location of the malformed body.
-        #[label("must terminate this branch with return/panic")]
-        span: Span,
-    },
-
+    // E1030/E1031 (OutcomePropagateMissingCapture/MalformedReturn) DELETED
+    // (Phase 14.5 cleanup): pre-existing dead error variants — 0 construct
+    // sites crate-wide (verified by grep), not emitted by any live path.
+    // Not part of the `~?`/`~:` removal; removed here as opportunistic
+    // dead-code cleanup per O's 14.5 scope.
     /// E1032: pattern binding does not implicitly widen `T → T?`.
     #[error("pattern arm for nullable / outcome type must use explicit `~+ binding` constructor")]
     #[diagnostic(
@@ -938,8 +915,6 @@ impl TypeError {
             | Self::OutcomeTypeMismatch { span }
             | Self::PropagateInNonFallibleContext { span }
             | Self::ErrorTypeMismatch { span, .. }
-            | Self::OutcomePropagateMissingCapture { span }
-            | Self::OutcomePropagateMalformedReturn { span }
             | Self::PatternMissingExplicitConstructor { span }
             | Self::PossiblyUnknownCondition { span }
             | Self::TrileanReturnNotRefined { span }

@@ -147,19 +147,6 @@ pub enum Expr {
         payload: Option<crate::arena::ExprId>, // owned
     },
 
-    /// Propagation operator `expr ~? |capture| early_return` per ADR-0020. If expr is ~+ → unwrap success. If ~- → bind error to capture variable, execute early_return (typically `return ~- capture`). If ~0 → propagate null (T?~E only).
-    OutcomePropagate {
-        expr: crate::arena::ExprId, // &0 (borrow)
-        capture_var: String,
-        early_return: crate::arena::ExprId, // owned
-    },
-
-    /// Default operator `expr ~: default_value` per ADR-0020. If expr is ~+ → unwrap success. Otherwise → replace with default_value.
-    OutcomeDefault {
-        expr: crate::arena::ExprId,          // &0 (borrow)
-        default_value: crate::arena::ExprId, // owned
-    },
-
     /// Safe field access `obj?.field` — yields null if the object is null. Nullable sugar.
     SafeFieldAccess {
         object: crate::arena::ExprId, // &0 (borrow)
