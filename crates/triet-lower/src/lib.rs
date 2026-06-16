@@ -2702,8 +2702,132 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // Lower scrutinee into a temp.
             let scrut_local = lower_expr(*scrutinee, arena, c)?;
 
-            // ── Nullable match: branch on ~+ / ~0 via NULL_SENTINEL ──
             let scrut_ty = c.local_decls[scrut_local.0].ty.clone();
+
+            // ── ADR-0061 T6: match on a Trit scrutinee (value-keyed) ──
+            // The scrutinee is already an i64 Trit (-1/0/1); SwitchInt
+            // directly on its value — NO GetDiscriminant (that is the enum
+            // path). Trit-literal arms become cases; a missing value with
+            // no wildcard hits the default Trap (GAP-2: no silent
+            // fall-through, JIT dies at the uncovered value). This branch
+            // must run BEFORE the enum GetDiscriminant fallthrough below,
+            // which would otherwise read a discriminant off a bare Trit.
+            if scrut_ty == MirType::Trit {
+                use triet_syntax::{LiteralPattern, NumericSuffix, Pattern};
+                let cur_bb = c.cur;
+                let merge_bb = c.alloc_bb();
+                let result = c.alloc_local();
+                c.push(Statement::StorageLive(result, expr_span.clone()));
+
+                let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
+                let mut wildcard_arm: Option<&triet_syntax::MatchArm> = None;
+
+                for arm in arms.iter() {
+                    let pat = arena.pattern(arm.pattern);
+                    let pat_span = pat.span.clone();
+                    // Wildcard must be the last arm (arms after = unreachable).
+                    if wildcard_arm.is_some() {
+                        return Err(LowerError {
+                            message: "wildcard `_` must be the last arm in a Trit match — \
+                                      arms after wildcard are unreachable"
+                                .to_string(),
+                            span: pat_span,
+                        });
+                    }
+                    match &pat.node {
+                        Pattern::Wildcard => wildcard_arm = Some(arm),
+                        Pattern::Literal(LiteralPattern::Integer {
+                            value,
+                            suffix: Some(NumericSuffix::Trit),
+                        }) => {
+                            let key = i64::try_from(*value).map_err(|_| LowerError {
+                                message: format!("Trit literal value {value} out of range"),
+                                span: pat_span.clone(),
+                            })?;
+                            let arm_bb = c.alloc_bb();
+                            cases.push((key, arm_bb));
+                            c.cur = arm_bb;
+                            c.push_scope();
+                            let body_val = lower_expr(arm.body, arena, c)?;
+                            let arm_end = c.cur;
+                            // ADR-0056: type merge result from the arm value.
+                            c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
+                            c.push(Statement::Assign {
+                                dest: Place::local(result),
+                                source: Place::local(body_val),
+                                span: expr_span.clone(),
+                            });
+                            c.term(
+                                arm_end,
+                                Terminator::Goto {
+                                    target: merge_bb,
+                                    span: DUMMY_SPAN,
+                                },
+                            );
+                            c.pop_scope();
+                        }
+                        other => {
+                            return Err(LowerError {
+                                message: format!(
+                                    "unsupported pattern in Trit match: {other:?} — expected \
+                                     `-1_trit`/`0_trit`/`1_trit` or `_`"
+                                ),
+                                span: pat_span,
+                            });
+                        }
+                    }
+                }
+
+                // GAP-2: default → wildcard body if present, else Trap. A
+                // Trit value not covered by any arm (and no `_`) traps —
+                // never silently falls through.
+                let default_bb = if let Some(wc) = wildcard_arm {
+                    let wc_bb = c.alloc_bb();
+                    c.cur = wc_bb;
+                    c.push_scope();
+                    let body_val = lower_expr(wc.body, arena, c)?;
+                    let wc_end = c.cur;
+                    c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    c.term(
+                        wc_end,
+                        Terminator::Goto {
+                            target: merge_bb,
+                            span: DUMMY_SPAN,
+                        },
+                    );
+                    c.pop_scope();
+                    wc_bb
+                } else {
+                    let trap_bb = c.alloc_bb();
+                    c.cur = trap_bb;
+                    c.term(
+                        trap_bb,
+                        Terminator::Trap {
+                            span: expr_span.clone(),
+                        },
+                    );
+                    trap_bb
+                };
+
+                c.term(
+                    cur_bb,
+                    Terminator::SwitchInt {
+                        discriminant: scrut_local,
+                        cases,
+                        default_bb,
+                        span: expr_span.clone(),
+                    },
+                );
+                c.cur = merge_bb;
+                return Ok(result);
+            }
+
+            // ── Nullable match: branch on ~+ / ~0 via NULL_SENTINEL ──
             if scrut_ty.is_nullable() {
                 use triet_syntax::{MatchArm, OutcomeArm, Pattern};
                 let payload_ty = scrut_ty
