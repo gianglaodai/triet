@@ -117,6 +117,17 @@ Frontend ✅ + Typecheck ✅ + Lower ✅ + JIT ✅ (multi-value mở, StackSlot 
 
 ## Nợ thiết kế ngôn ngữ
 
+- [ ] **Chiến dịch CFG Tail-Expression** (wire nốt ADR-0055) — block tail-expr
+      gánh giá trị cuối hàm, giảm `return` happy-path. **ĐẬP TRƯỚC TIÊN:**
+      🔴 *expr-body fat-struct return không route sret → SIGILL 132* (free fn
+      `f() -> Point = Point{...}` emit `Return(struct)` by-value thay vì sret;
+      block-body chạy đúng). Crash/soundness hole có sẵn, họ hàng tail-expr.
+      Soundness trước syntax (G 2026-06-17). Sau đó mới gọt `return` happy-path.
+- [x] **return scope ĐÃ KHÓA** (ADR-0020 §3.8) — (i) bỏ `return` cuối-hàm
+      happy-path = làm qua chiến dịch CFG Tail-Expr ở trên; (ii) TRẢM HOÀN TOÀN
+      `return` = BÁC BỎ (va §3.0 mode-inference + early-exit non-Outcome).
+      `return` = early-exit + cọc-tiêu-mode, KHÔNG phải throw.
+
 ### 🟣 Chiến dịch Heap-Nullable (mở khi cleanup đóng)
 
 `T?` cho `T` heap (String / Vector / HashMap / Struct / Enum). Hiện **GATE ở

@@ -576,6 +576,47 @@ Pre-2026-05-26 ADR-0020 có `~?` (propagate) và `~:` (default). Author chốt f
 
 Lexer dứt khoát refuse parse bare `~?` và `~:` tokens (chỉ accept `~+>`, `~0>`, `~->` compound) từ implementation v0.7.4.3-error.3c trở đi. Vì design vẫn pre-ship, không cần warning period — break the symbol immediately. Test corpus + stdlib + examples migrate trong same sub-task.
 
+### 3.8 — Phạm vi của `return` (return scope)
+
+**Lock (author 2026-06-17, sau tranh luận O):** `return` được giữ lại trong
+Triết với phạm vi dùng ĐƯỢC ĐỊNH NGHĨA HẸP. Nó KHÔNG phải `throw`.
+
+**`return` phục vụ đúng HAI vai:**
+
+1. **Early-exit một frame** — thoát sớm khỏi HÀM HIỆN TẠI, trả giá trị cho
+   caller trực tiếp (guard clause). Thoát đúng 1 frame, KHÔNG unwinding qua
+   nhiều frame. Ví dụ: `function fib(n) -> Integer { if n < 2 { return n } ... }`.
+
+2. **Cọc-tiêu-mode cho Outcome** — sự hiện diện của `return` trong body của
+   `~+>`/`~0>`/`~->` phân biệt MAP mode (không return → biến đổi tại chỗ) với
+   EARLY-RETURN mode (có return → propagate, thoát hàm bao). Xem §3.0 + §3.6.
+   `return` ở đây là non-local return của hàm bao, không phải của closure.
+
+**`return` KHÔNG phải gì:**
+
+- KHÔNG phải `throw` — Triết không có exception/catch/unwinding (errors-as-values
+  school, SPEC §103: runtime panic không catch được). Kênh báo lỗi mang-trạng-thái
+  là `~- error` + `~->`, KHÔNG phải `return`.
+- KHÔNG phải kênh trả-giá-trị mặc định cho happy-path — đó là tail-expression
+  (block's last expr, ADR-0055). Mục tiêu phong cách: hàm happy-path KHÔNG rải
+  `return` cuối thân; chỉ dùng `return` khi early-exit thật sự.
+
+**Bốn làn thoát của Triết (không cái nào là throw):**
+
+| Mục đích | Construct |
+|---|---|
+| Trả giá trị happy-path | tail-expression |
+| Thoát sớm 1 frame, không lỗi | `return expr` |
+| Lỗi mang-trạng-thái leo caller | `~- e` + `~->` propagate |
+| Bug không cứu được | panic `.unwrap_*` / trap (uncatchable) |
+
+**Quyết định lịch sử (2026-06-17):** đã cân nhắc TRẢM HOÀN TOÀN `return`
+(expression-oriented thuần). **BÁC BỎ.** Lý do: `return` đang là cọc-tiêu-mode
+khóa cứng trong §3.0 (E1028/E1029 keyed vào form `return`), và early-exit hàm
+non-Outcome không có construct thay thế. Điều kiện tiên quyết nếu tái xét: phải
+có ADR mới thiết kế lại mode-inference của `~->` KHÔNG-dùng-`return`. Diagnostic
+và docs gọi đúng tên: **early-return** và **error-propagation**, KHÔNG gọi "throw".
+
 ## §4 — Safe properties and dangerous methods
 
 **Lock:** Per [`feedback_explicit_strictness.md`](../../README.md) — property access is 100% safe contract; panic-possible operations are verbose methods with mandatory message argument.
