@@ -67,22 +67,28 @@ có `?:` rồi thì không nhân bản.
 > là loop-control (SPEC §quanh 899-915), tính hợp lệ trong RHS Elvis theo luật
 > chung của Expression context, ADR này không cam kết riêng.
 
-## Điều khoản 3 — Cấm tuyệt đối `?->`: **E1041 NullableHasNoErrorState**
+## Điều khoản 3 — Cấm tuyệt đối `?->`: **E1046 NullableHasNoErrorState**
 
 `T?` chỉ có 2 cực: giá trị thực (`+`) và null (`0`). KHÔNG có cực âm (error).
 Dev gõ `opt ?-> |e| ...` → compile error tức thì:
 
 ```
-E1041 NullableHasNoErrorState
+E1046 NullableHasNoErrorState
 Kiểu `T?` không có trạng thái lỗi.
 [Fix 1] Use `T~E` (Outcome) if you need error handling, then `~-> |e| body`.
 [Fix 2] Use `?:` to provide a default when the value is null.
 ```
 
-(Format per ADR-0027. Mã E1041 = mã typecheck tự do kế tiếp sau E1040.)
+(Format per ADR-0027. Mã E1046 = monotonic-next sau E1045.)
+
+> **Đính chính 2026-06-17:** ADR gốc (viết 2026-06-05) ghi mã này là
+> **E1041** (lúc đó E1041 còn trống). Sau đó E1041 bị `NoMatchingOverload`
+> chiếm → mã chính thức của `NullableHasNoErrorState` là **E1046**
+> (monotonic-next sau E1045, tránh lấp gap E1038 đã thuộc ADR-0020). Mọi
+> tham chiếu E1041 trong ADR này đã sửa thành E1046 (Phase 14.3, O duyệt).
 
 **Implementation note:** reserve token `?->` trong lexer (lex được nhưng bị
-từ chối có chủ đích) để bắn E1041 với diagnostic đẹp, thay vì để nó vỡ thành
+từ chối có chủ đích) để bắn E1046 với diagnostic đẹp, thay vì để nó vỡ thành
 `?` + `->` và chết bằng parse error mơ hồ — cùng kỹ thuật lexer-refuses đã dùng
 cho `~?`/`~:` deprecated (ADR-0020 §3.7).
 
@@ -97,7 +103,7 @@ Precedence: cùng tầng với họ `~+>`/`~->` (postfix transformer, SPEC §4.6
 ## Không làm
 
 - **`?0>`** — thừa, xem điều khoản 2.
-- **`?->`** — cấm vĩnh viễn, E1041 (điều khoản 3). Không phải "defer".
+- **`?->`** — cấm vĩnh viễn, E1046 (điều khoản 3). Không phải "defer".
 - **`T??` nested nullable** — vẫn không định nghĩa; auto-flatten né nó.
 - **`~+>` áp trực tiếp lên `T?` thuần** — không; `T?` dùng họ `?`, Outcome dùng
   họ `~`. Hai họ tách bạch theo tiền tố, đó là điểm đối xứng.
@@ -110,13 +116,13 @@ Precedence: cùng tầng với họ `~+>`/`~->` (postfix transformer, SPEC §4.6
 | Fallback (ngắn + block + guard) | `?:` (RHS = mọi Expression) | — (`~:` đã giết, ADR-0020 §3.7) |
 | Map + flatMap cực dương | `?+> \|v\| body` | `~+> \|v\| body` |
 | Xử lý cực không (null) | `?:` | `~0> body` (chỉ `T?~E`) |
-| Xử lý cực âm (error) | ❌ **E1041** | `~-> \|e\| body` |
+| Xử lý cực âm (error) | ❌ **E1046** | `~-> \|e\| body` |
 
 ## Tham chiếu
 
 - [ADR-0020](0020-outcome-error-handling.md) §3.1 (semantics + Body return +
   flatten — nguồn kế thừa trực tiếp), §3.7 (`~:`/`~?` deprecated, lexer refuses).
-- [ADR-0027](0027-diagnostic-format-standard.md) — format diagnostic E1041.
+- [ADR-0027](0027-diagnostic-format-standard.md) — format diagnostic E1046.
 - SPEC.md §quanh 339-342 (`?.`/`?:`), §quanh 1345 (Elvis precedence — cần cập
   nhật thêm câu "RHS là Expression" per điều khoản 2), §quanh 899-915
   (`break`/`continue`).

@@ -325,11 +325,61 @@ impl Checker<'_> {
                 capture_name,
                 body,
             } => self.check_outcome_arm_handler(inner, arm, capture_name.as_deref(), body, span),
-            // ADR-0039 §1 (Phase 14.1 scaffold): `?+>` nullable map/flatMap.
-            // Real type rule (inner must be T?, body auto-wrap/flatten → T?)
-            // lands in 14.3; the parser does not yet build this node (14.2),
-            // so this placeholder only keeps the match exhaustive (mẫu T1).
-            Expr::NullableMap { .. } => Type::Unknown,
+            // ADR-0039 §1 (Phase 14.3): `?+>` nullable map/flatMap.
+            Expr::NullableMap {
+                inner,
+                bind_var,
+                body,
+            } => self.check_nullable_map(inner, &bind_var, body, span),
+            // ADR-0039 §3 (Phase 14.3): `?->` is forbidden — a nullable
+            // type has no error arm. Always E1046 (the node exists only to
+            // carry this diagnostic). Inner is still inferred for its own
+            // errors; the body is not (the program is rejected regardless).
+            Expr::NullableErrorArm { inner, .. } => {
+                let _ = self.infer_expression(inner);
+                self.errors
+                    .push(TypeError::NullableHasNoErrorState { span });
+                Type::Unknown
+            }
+        }
+    }
+
+    /// ADR-0039 §1: `inner ?+> |bind| body`. `inner` must be `T?`; the body
+    /// runs only on the real value (bound to `bind_var`). A plain body `U`
+    /// auto-wraps to `U?` (map); a nullable body `U?` auto-flattens — never
+    /// `U??` (flatMap). Result is always `T?`-shaped (`Nullable<body>`).
+    fn check_nullable_map(
+        &mut self,
+        inner: ExprId,
+        bind_var: &str,
+        body: ExprId,
+        span: Span,
+    ) -> Type {
+        let inner_ty = self.infer_expression(inner);
+        let payload = match &inner_ty {
+            Type::Nullable(p) => (**p).clone(),
+            Type::Unknown => Type::Unknown,
+            other => {
+                self.errors.push(TypeError::NotNullable {
+                    operator: "?+>".to_owned(),
+                    found: other.clone(),
+                    span,
+                });
+                Type::Unknown
+            }
+        };
+        // Bind the unwrapped value in the body's scope (skip `|_|` discard).
+        self.env.push_frame();
+        if !bind_var.is_empty() {
+            self.env.declare(bind_var, payload);
+        }
+        let body_ty = self.infer_expression(body);
+        self.env.pop_frame();
+        // Auto-wrap (map) / auto-flatten (flatMap): the result is always a
+        // single-level nullable — a nullable body is kept as-is (no `U??`).
+        match body_ty {
+            Type::Nullable(_) | Type::Unknown => body_ty,
+            u => Type::Nullable(Box::new(u)),
         }
     }
 

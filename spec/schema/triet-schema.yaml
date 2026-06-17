@@ -1106,6 +1106,23 @@ definitions:
       - name: body
         type: ExprId
         ownership: owned
+    - name: NullableErrorArm
+      category: control_flow
+      description: "FORBIDDEN operator `inner ?-> |bind| body` (ADR-0039 §3). A\
+        \ nullable `T?` has no error arm — `?->` is reserved purely so typecheck\
+        \ rejects it with E1046 (NullableHasNoErrorState) and a precise diagnostic,\
+        \ instead of a vague parse error. Same grammar as `?+>` (shared parse\
+        \ helper); typecheck ALWAYS errors — never reaches lowering."
+      fields:
+      - name: inner
+        type: ExprId
+        ownership: borrow
+      - name: bind_var
+        type: string
+        description: Binding name (unused — the node always errors). Empty = `|_|`.
+      - name: body
+        type: ExprId
+        ownership: owned
   BinaryOperator:
     kind: enum
     description: "All binary operators in Tri\u1EBFt. Symbolic form is preferred per\

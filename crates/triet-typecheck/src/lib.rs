@@ -67,6 +67,37 @@ mod tests {
         assert!(errors.is_empty(), "type errors: {errors:#?}");
     }
 
+    // ===== ADR-0039 §1/§3 (Phase 14.3): ?+> map/flatMap + ?-> refusal =====
+
+    #[test]
+    fn nullable_error_arm_emits_e1046() {
+        // `?->` on a nullable is forbidden — E1046. Poison: drop the refuse
+        // arm (return Unknown without pushing E1046) → no error → red.
+        assert_has_error("function f(o: Integer?) -> Integer = o ?-> |e| 0", |e| {
+            matches!(e, TypeError::NullableHasNoErrorState { .. })
+        });
+    }
+
+    #[test]
+    fn nullable_map_auto_wraps_plain_body() {
+        // map: body `x` is Integer (the unwrapped payload) → result auto-
+        // wraps to Integer?, matching the declared return. Clean iff the
+        // wrap happens (poison: don't wrap → Integer vs Integer? mismatch).
+        assert_ok("function f(o: Integer?) -> Integer? = o ?+> |x| x");
+    }
+
+    #[test]
+    fn nullable_flatmap_flattens_nullable_body() {
+        // flatMap: body `g(x)` returns Integer? → result auto-FLATTENS to
+        // Integer? (NOT Integer??). Declared return Integer? matches only
+        // if flatten happens. THE mine: poison flatten → result Integer??
+        // → mismatch vs Integer? → red.
+        assert_ok(
+            "function g(x: Integer) -> Integer? = x\n\
+             function f(o: Integer?) -> Integer? = o ?+> |x| g(x)",
+        );
+    }
+
     fn assert_has_error<F>(source: &str, predicate: F)
     where
         F: Fn(&TypeError) -> bool,

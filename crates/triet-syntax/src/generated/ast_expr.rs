@@ -204,4 +204,11 @@ pub enum Expr {
         bind_var: String,
         body: crate::arena::ExprId, // owned
     },
+
+    /// FORBIDDEN operator `inner ?-> |bind| body` (ADR-0039 §3). A nullable `T?` has no error arm — `?->` is reserved purely so typecheck rejects it with E1046 (NullableHasNoErrorState) and a precise diagnostic, instead of a vague parse error. Same grammar as `?+>` (shared parse helper); typecheck ALWAYS errors — never reaches lowering.
+    NullableErrorArm {
+        inner: crate::arena::ExprId, // &0 (borrow)
+        bind_var: String,
+        body: crate::arena::ExprId, // owned
+    },
 }

@@ -750,6 +750,27 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1046: the `?->` operator was used, but a nullable `T?` has no error
+    /// arm to map (ADR-0039 §3). `?->` is reserved purely to produce this
+    /// diagnostic. (ADR-0039 originally numbered this E1041; corrected to
+    /// E1046 on 2026-06-17 — E1041 is `NoMatchingOverload`.)
+    #[error("E1046: `?->` is not valid — a nullable type has no error arm to map")]
+    #[diagnostic(
+        code(triet::typecheck::E1046),
+        help(
+            "E1046: `?->` maps an error arm, but `T?` only has a value or null — \
+            there is no error to handle.\n\n\
+            [Fix 1] Use `?+>` to map the value: `opt ?+> |v| ...`\n\n\
+            [Fix 2] Use `?:` (Elvis) for a null fallback: `opt ?: default`\n\n\
+            [Fix 3] If you meant a fallible Outcome (`T~E`), use `~->`: `result ~-> |e| ...`"
+        )
+    )]
+    NullableHasNoErrorState {
+        /// Source location of the `?->` operator.
+        #[label("`?->` not valid on a nullable type")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -927,6 +948,7 @@ impl TypeError {
             | Self::DuplicateImplementation { span, .. }
             | Self::TraitImplConformanceMismatch { span, .. }
             | Self::AmbiguousMethodCall { span, .. }
+            | Self::NullableHasNoErrorState { span }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }

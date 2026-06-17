@@ -688,7 +688,8 @@ const fn postfix_binding_power(token: &Token) -> Option<u8> {
         | Token::TildePlusGt
         | Token::TildeZeroGt
         | Token::TildeMinusGt
-        | Token::QuestionPlusGt => Some(POSTFIX_LEFT_BP),
+        | Token::QuestionPlusGt
+        | Token::QuestionMinusGt => Some(POSTFIX_LEFT_BP),
         _ => None,
     }
 }
@@ -709,7 +710,8 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
         Token::TildePlusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Positive),
         Token::TildeZeroGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Zero),
         Token::TildeMinusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Negative),
-        Token::QuestionPlusGt => parse_nullable_map(parser, lhs),
+        Token::QuestionPlusGt => parse_nullable_postfix(parser, lhs, false),
+        Token::QuestionMinusGt => parse_nullable_postfix(parser, lhs, true),
         Token::LBracket => {
             // Subscript / index access — not in v0.1 SPEC; treat as error
             // for now to keep semantics tight.
@@ -763,22 +765,39 @@ fn parse_outcome_arm_handler(
     )))
 }
 
-/// Parse `inner ?+> |bind| body` → `Expr::NullableMap` (ADR-0039 §1).
-/// Mirrors `~+>`: `|name|` capture mandatory (or `|_|` discard, stored as
-/// the empty string in `bind_var`).
-fn parse_nullable_map(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprId, ParseError> {
-    parser.expect(&Token::QuestionPlusGt, "`?+>`")?;
-    let bind_var = parse_outcome_capture(parser, "`?+>`")?.unwrap_or_default();
+/// Parse `inner ?+> |bind| body` (map/flatMap) or `inner ?-> |bind| body`
+/// (forbidden error-arm) — identical grammar (ADR-0039 §1/§3), so ONE
+/// helper parses the form and wraps it in the node the token selects:
+/// `?+>` → `NullableMap` (valid); `?->` → `NullableErrorArm` (typecheck
+/// rejects with E1046). `|_|` discard stored as the empty `bind_var`.
+fn parse_nullable_postfix(
+    parser: &mut Parser<'_>,
+    inner: ExprId,
+    error_arm: bool,
+) -> Result<ExprId, ParseError> {
+    let (token, label) = if error_arm {
+        (&Token::QuestionMinusGt, "`?->`")
+    } else {
+        (&Token::QuestionPlusGt, "`?+>`")
+    };
+    parser.expect(token, label)?;
+    let bind_var = parse_outcome_capture(parser, label)?.unwrap_or_default();
     let body = parse_expression_bp(parser, 0)?;
     let span = arena_span(parser, inner).start..arena_span(parser, body).end;
-    Ok(parser.arena.alloc_expression(Spanned::new(
+    let node = if error_arm {
+        Expr::NullableErrorArm {
+            inner,
+            bind_var,
+            body,
+        }
+    } else {
         Expr::NullableMap {
             inner,
             bind_var,
             body,
-        },
-        span,
-    )))
+        }
+    };
+    Ok(parser.arena.alloc_expression(Spanned::new(node, span)))
 }
 
 /// Parse `|name|` or `|_|` capture form used by `~?` (legacy), `~+>`, and `~->`.
