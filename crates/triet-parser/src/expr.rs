@@ -687,7 +687,8 @@ const fn postfix_binding_power(token: &Token) -> Option<u8> {
         | Token::BangBang
         | Token::TildePlusGt
         | Token::TildeZeroGt
-        | Token::TildeMinusGt => Some(POSTFIX_LEFT_BP),
+        | Token::TildeMinusGt
+        | Token::QuestionPlusGt => Some(POSTFIX_LEFT_BP),
         _ => None,
     }
 }
@@ -708,6 +709,7 @@ fn parse_postfix(parser: &mut Parser<'_>, lhs: ExprId) -> Result<ExprId, ParseEr
         Token::TildePlusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Positive),
         Token::TildeZeroGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Zero),
         Token::TildeMinusGt => parse_outcome_arm_handler(parser, lhs, OutcomeArm::Negative),
+        Token::QuestionPlusGt => parse_nullable_map(parser, lhs),
         Token::LBracket => {
             // Subscript / index access — not in v0.1 SPEC; treat as error
             // for now to keep semantics tight.
@@ -755,6 +757,24 @@ fn parse_outcome_arm_handler(
             inner,
             arm,
             capture_name,
+            body,
+        },
+        span,
+    )))
+}
+
+/// Parse `inner ?+> |bind| body` → `Expr::NullableMap` (ADR-0039 §1).
+/// Mirrors `~+>`: `|name|` capture mandatory (or `|_|` discard, stored as
+/// the empty string in `bind_var`).
+fn parse_nullable_map(parser: &mut Parser<'_>, inner: ExprId) -> Result<ExprId, ParseError> {
+    parser.expect(&Token::QuestionPlusGt, "`?+>`")?;
+    let bind_var = parse_outcome_capture(parser, "`?+>`")?.unwrap_or_default();
+    let body = parse_expression_bp(parser, 0)?;
+    let span = arena_span(parser, inner).start..arena_span(parser, body).end;
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::NullableMap {
+            inner,
+            bind_var,
             body,
         },
         span,

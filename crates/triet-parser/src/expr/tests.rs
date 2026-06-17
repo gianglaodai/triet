@@ -790,6 +790,44 @@ fn deleted_outcome_propagate_default_no_longer_parse() {
     }
 }
 
+/// ADR-0039 §1 (Phase 14.2): `inner ?+> |bind| body` parses to NullableMap
+/// with the bind name and inner/body wired. Poison a field → assert red.
+#[test]
+fn parses_nullable_map_operator() {
+    let (parser, id) = parse_expr("opt ?+> |x| f(x)");
+    match &parser.arena.expression(id).node {
+        Expr::NullableMap {
+            inner,
+            bind_var,
+            body,
+        } => {
+            assert_eq!(bind_var, "x");
+            match &parser.arena.expression(*inner).node {
+                Expr::Identifier { name } => assert_eq!(name, "opt"),
+                other => panic!("expected `opt` as inner, got {other:?}"),
+            }
+            // body is `f(x)` — a call expression.
+            assert!(matches!(
+                parser.arena.expression(*body).node,
+                Expr::Call { .. }
+            ));
+        }
+        other => panic!("expected NullableMap, got {other:?}"),
+    }
+}
+
+/// `|_|` discard binds the empty string in `bind_var`.
+#[test]
+fn parses_nullable_map_underscore_discard() {
+    let (parser, id) = parse_expr("opt ?+> |_| 0");
+    match &parser.arena.expression(id).node {
+        Expr::NullableMap { bind_var, .. } => {
+            assert!(bind_var.is_empty(), "`|_|` must yield empty bind_var");
+        }
+        other => panic!("expected NullableMap, got {other:?}"),
+    }
+}
+
 // =====================================================================
 // v0.9.x.atomic.7b: Borrow expression syntax (ADR-0031)
 // =====================================================================
