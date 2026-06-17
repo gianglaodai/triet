@@ -1,0 +1,17 @@
+// EXPECT: 117
+// ADR-0039 §1 (Phase 14.4): ?+> map/flatMap end-to-end.
+//   a: map      — real 5 ?+> |x| x+100  → 105, then ?: → 105
+//   b: null     — null ?+> |x| x+100    → null passthrough, ?: 7 → 7
+//   c: flatMap  — real 5 ?+> |x| g(x)   → g(5)=5 (Integer?), flatten → 5
+// Sum 105 + 7 + 5 = 117 is unique: a wrong branch, a missing map, or a
+// broken flatten changes the total.
+function g(x: Integer) -> Integer? = x
+
+function main() -> Integer {
+    let some: Integer? = 5;
+    let none: Integer? = ~0;
+    let a = (some ?+> |x| x + 100) ?: 0;
+    let b = (none ?+> |x| x + 100) ?: 7;
+    let c = (some ?+> |x| g(x)) ?: 0;
+    return a + b + c;
+}

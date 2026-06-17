@@ -2556,6 +2556,110 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             c.cur = merge_bb;
             Ok(result)
         }
+        Expr::NullableMap {
+            inner,
+            bind_var,
+            body,
+        } => {
+            // ADR-0039 §1 (Phase 14.4): inline map/flatMap — NO closure
+            // object. inner real → bind its value to `bind_var`, evaluate
+            // body; the body's i64 IS the result (map auto-wrap and flatMap
+            // flatten are both identity at the Bậc A value level — a
+            // nullable body already carries NULL_SENTINEL-or-value). inner
+            // null → pass NULL_SENTINEL straight through (body not run).
+            let inner_val = lower_expr(*inner, arena, c)?;
+            let inner_ty = c.local_decls[inner_val.0].ty.clone();
+            let payload_ty = inner_ty
+                .nullable_payload()
+                .ok_or_else(|| {
+                    LowerError::unsupported_expr(&arena.expression(expr_id).node, expr_span.clone())
+                })?
+                .clone();
+
+            let sentinel = c.alloc_local();
+            c.push(Statement::StorageLive(sentinel, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(sentinel),
+                value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                span: expr_span.clone(),
+            });
+            let cmp = c.alloc_local();
+            c.push(Statement::StorageLive(cmp, expr_span.clone()));
+            c.push(Statement::BinaryOp {
+                dest: Place::local(cmp),
+                op: triet_mir::BinOp::Eq,
+                left: Place::local(inner_val),
+                right: Place::local(sentinel),
+                span: expr_span.clone(),
+            });
+
+            let null_bb = c.alloc_bb();
+            let present_bb = c.alloc_bb();
+            let merge_bb = c.alloc_bb();
+            // Result is T? (either NULL_SENTINEL or the mapped value).
+            let result = c.alloc_local_ty(inner_ty.clone());
+            let cur = c.cur;
+            c.term(
+                cur,
+                Terminator::If {
+                    cond: cmp,
+                    positive_bb: null_bb,
+                    zero_bb: None,
+                    negative_bb: present_bb,
+                    span: expr_span.clone(),
+                },
+            );
+
+            // ── Null path: pass NULL_SENTINEL straight through ──
+            c.cur = null_bb;
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+            c.push(Statement::Assign {
+                dest: Place::local(result),
+                source: Place::local(sentinel),
+                span: expr_span.clone(),
+            });
+            let null_end = c.cur;
+            c.term(
+                null_end,
+                Terminator::Goto {
+                    target: merge_bb,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            // ── Present path: bind value, evaluate body ──
+            c.cur = present_bb;
+            c.push(Statement::StorageLive(result, expr_span.clone()));
+            c.push_scope();
+            if !bind_var.is_empty() {
+                let bind_local = c.alloc_local_ty(payload_ty.clone());
+                c.push(Statement::StorageLive(bind_local, expr_span.clone()));
+                c.push(Statement::Assign {
+                    dest: Place::local(bind_local),
+                    source: Place::local(inner_val),
+                    span: expr_span.clone(),
+                });
+                c.vars.insert(bind_var.clone(), bind_local);
+            }
+            let body_val = lower_expr(*body, arena, c)?;
+            c.push(Statement::Assign {
+                dest: Place::local(result),
+                source: Place::local(body_val),
+                span: expr_span.clone(),
+            });
+            c.pop_scope();
+            let present_end = c.cur;
+            c.term(
+                present_end,
+                Terminator::Goto {
+                    target: merge_bb,
+                    span: DUMMY_SPAN,
+                },
+            );
+
+            c.cur = merge_bb;
+            Ok(result)
+        }
         Expr::Borrow { form, operand } => {
             let mir_form = lower_ref_form(*form);
             // The operand is an lvalue (IDENT or field-access chain per
