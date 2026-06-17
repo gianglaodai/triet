@@ -1,0 +1,16 @@
+// EXPECT: 5
+// Nợ #2 (ADR-0061): trait method returning String lowers via sret (fat
+// return), same machinery as a free function returning String. Dispatch to
+// Integer$Greeter$greet, then length() reads the returned fat-String.
+trait Greeter {
+    function greet(self) -> String
+}
+
+implement Greeter for Integer {
+    function greet(self) -> String = "hello"
+}
+
+function main() -> Integer = {
+    let s = (1).greet();
+    return length(s);   // length("hello") = 5
+}

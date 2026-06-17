@@ -1,0 +1,24 @@
+// EXPECT: 30
+// Nợ #2 (ADR-0061): trait method returning a flat struct lowers via sret.
+// `self` flows into the struct so both dispatch and sret are load-bearing:
+// (10).make() → Point { x: 10, y: 20 } → 10 + 20 = 30.
+//
+// Block body (`{ return ... }`) is used deliberately: expression-body struct
+// returns (`= Point { ... }`) hit a PRE-EXISTING, orthogonal lowerer bug
+// (tail-expr fat-struct return is emitted by-value instead of via sret →
+// SIGILL) that also affects plain free functions and predates this change.
+// Reported to O as separate debt; this fixture isolates the nợ #2 dispatch.
+struct Point { x: Integer, y: Integer }
+
+trait Maker {
+    function make(self) -> Point
+}
+
+implement Maker for Integer {
+    function make(self) -> Point { return Point { x: self, y: 20 } }
+}
+
+function main() -> Integer = {
+    let p = (10).make();
+    return p.x + p.y;
+}

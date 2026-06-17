@@ -3760,12 +3760,17 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     .get(&callee_name)
                     .cloned()
                     .unwrap_or(MirType::Integer);
-                // T5 scope: scalar (single-i64) return types only — covers
-                // Comparable → Trit and every i64-scalar method. Fat returns
-                // (String / Vector / HashMap / Struct / Enum / Outcome /
-                // Reference) need the sret / 2-register call machinery;
-                // refuse cleanly rather than miscompile (deferred to a
-                // later slice — reported to O).
+                // ADR-0061 nợ #2: trait methods now lower fat returns through
+                // the same sret / 2-register machinery as Expr::Call. Support
+                // set = {Struct, String, heap-binary-Outcome, scalar-Outcome,
+                // scalar}. Everything else (Vector / HashMap / Enum /
+                // Reference) is refused below — falling into the scalar branch
+                // would miscompile a fat pointer into a single i64 (a silent
+                // soundness hole), so refuse cleanly instead.
+                let is_outcome_ret = matches!(callee_ret, MirType::Outcome { .. });
+                let is_heap_outcome_ret = is_outcome_ret && callee_ret.has_heap_payload();
+                let is_fat_ret = matches!(callee_ret, MirType::Struct(_) | MirType::String)
+                    || is_heap_outcome_ret;
                 let scalar_ret = matches!(
                     callee_ret,
                     MirType::Integer
@@ -3777,55 +3782,159 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         | MirType::Unknown
                         | MirType::Nullable(_)
                 );
-                if !scalar_ret {
-                    return Err(LowerError {
-                        message: format!(
-                            "trait method `{callee_name}` returns `{callee_ret}` — \
-                             non-scalar trait-method returns are not yet lowered (ADR-0061 T5)"
-                        ),
-                        span: expr_span,
-                    });
-                }
+                // Receiver becomes arg[0]; explicit args follow. For a fat
+                // return the hidden sret pointer is inserted BEFORE the
+                // receiver → [sret, receiver, explicit...].
                 let mut args = Vec::with_capacity(arguments.len() + 1);
                 args.push(lower_expr(*receiver, arena, c)?);
                 for &a in arguments {
                     args.push(lower_expr(a, arena, c)?);
                 }
-                let dest = c.alloc_local_ty(callee_ret);
-                c.push(Statement::StorageLive(dest, expr_span.clone()));
-                // ADR-0042 Q1 + ADR-0045 §2: zero Move-type args (skip
-                // borrows + Copy scalars) — same rule as the scalar call.
-                let to_zero: Vec<Local> = args
-                    .iter()
-                    .filter(|&&arg| {
-                        let ty = &c.local_decls[arg.0].ty;
-                        if ty.is_reference() {
-                            return false;
-                        }
-                        !ty.is_copy(None)
-                    })
-                    .copied()
-                    .collect();
-                let ret_bb = c.alloc_bb();
-                let call_bb = c.cur;
-                c.term(
-                    call_bb,
-                    Terminator::CallDispatch {
-                        callee: triet_mir::FunctionId(0),
-                        callee_name,
-                        target: CallTarget::Jit,
-                        args,
-                        return_bb: ret_bb,
-                        dest: vec![dest],
-                        return_shape: triet_mir::ReturnShape::Scalar,
-                        span: expr_span,
-                    },
-                );
-                c.cur = ret_bb;
-                for &arg in &to_zero {
-                    c.push(Statement::Deinit(arg, DUMMY_SPAN));
+                if is_fat_ret {
+                    // sret: allocate the struct/string/heap-outcome return
+                    // local and pass it as the hidden arg[0] (ADR-0049/0058).
+                    let ret_local = c.alloc_local_ty(callee_ret.clone());
+                    c.push(Statement::StorageLive(ret_local, expr_span.clone()));
+                    if is_heap_outcome_ret {
+                        c.push(Statement::OutcomeAlloc {
+                            dest: ret_local,
+                            span: expr_span.clone(),
+                        });
+                    } else {
+                        c.push(Statement::StructAlloc {
+                            dest: ret_local,
+                            struct_name: callee_ret.to_string(),
+                            span: expr_span.clone(),
+                        });
+                    }
+                    args.insert(0, ret_local);
+                    // Zero Move-type args; skip arg[0] (sret pointer) and
+                    // borrows + Copy scalars (ADR-0042 Q1 + ADR-0045 §2).
+                    let to_zero: Vec<Local> = args[1..]
+                        .iter()
+                        .filter(|&&arg| {
+                            let ty = &c.local_decls[arg.0].ty;
+                            if ty.is_reference() {
+                                return false;
+                            }
+                            !ty.is_copy(None)
+                        })
+                        .copied()
+                        .collect();
+                    let ret_bb = c.alloc_bb();
+                    let call_bb = c.cur;
+                    c.term(
+                        call_bb,
+                        Terminator::CallDispatch {
+                            callee: triet_mir::FunctionId(0),
+                            callee_name,
+                            target: CallTarget::Jit,
+                            args,
+                            return_bb: ret_bb,
+                            dest: Vec::new(),
+                            return_shape: triet_mir::ReturnShape::Struct {
+                                struct_name: callee_ret.to_string(),
+                            },
+                            span: expr_span,
+                        },
+                    );
+                    c.cur = ret_bb;
+                    for &arg in &to_zero {
+                        c.push(Statement::Deinit(arg, DUMMY_SPAN));
+                    }
+                    return Ok(ret_local);
+                } else if is_outcome_ret {
+                    // ADR-0052 OP.4a: scalar Outcome — slot + 2 return values.
+                    let dest = c.alloc_local_ty(callee_ret.clone());
+                    c.push(Statement::StorageLive(dest, expr_span.clone()));
+                    c.push(Statement::OutcomeAlloc {
+                        dest,
+                        span: expr_span.clone(),
+                    });
+                    let to_zero: Vec<Local> = args
+                        .iter()
+                        .filter(|&&arg| {
+                            let ty = &c.local_decls[arg.0].ty;
+                            if ty.is_reference() {
+                                return false;
+                            }
+                            !ty.is_copy(None)
+                        })
+                        .copied()
+                        .collect();
+                    let ret_bb = c.alloc_bb();
+                    let call_bb = c.cur;
+                    c.term(
+                        call_bb,
+                        Terminator::CallDispatch {
+                            callee: triet_mir::FunctionId(0),
+                            callee_name,
+                            target: CallTarget::Jit,
+                            args,
+                            return_bb: ret_bb,
+                            dest: vec![dest],
+                            return_shape: match &callee_ret {
+                                MirType::Outcome {
+                                    allow_null_state: true,
+                                    ..
+                                } => triet_mir::ReturnShape::TernaryOutcome,
+                                _ => triet_mir::ReturnShape::BinaryOutcome,
+                            },
+                            span: expr_span,
+                        },
+                    );
+                    c.cur = ret_bb;
+                    for &arg in &to_zero {
+                        c.push(Statement::Deinit(arg, DUMMY_SPAN));
+                    }
+                    return Ok(dest);
+                } else if scalar_ret {
+                    let dest = c.alloc_local_ty(callee_ret);
+                    c.push(Statement::StorageLive(dest, expr_span.clone()));
+                    // ADR-0042 Q1 + ADR-0045 §2: zero Move-type args (skip
+                    // borrows + Copy scalars) — same rule as the scalar call.
+                    let to_zero: Vec<Local> = args
+                        .iter()
+                        .filter(|&&arg| {
+                            let ty = &c.local_decls[arg.0].ty;
+                            if ty.is_reference() {
+                                return false;
+                            }
+                            !ty.is_copy(None)
+                        })
+                        .copied()
+                        .collect();
+                    let ret_bb = c.alloc_bb();
+                    let call_bb = c.cur;
+                    c.term(
+                        call_bb,
+                        Terminator::CallDispatch {
+                            callee: triet_mir::FunctionId(0),
+                            callee_name,
+                            target: CallTarget::Jit,
+                            args,
+                            return_bb: ret_bb,
+                            dest: vec![dest],
+                            return_shape: triet_mir::ReturnShape::Scalar,
+                            span: expr_span,
+                        },
+                    );
+                    c.cur = ret_bb;
+                    for &arg in &to_zero {
+                        c.push(Statement::Deinit(arg, DUMMY_SPAN));
+                    }
+                    return Ok(dest);
                 }
-                return Ok(dest);
+                // Refuse NARROW (nợ #2 §2): Vector / HashMap / Enum /
+                // Reference trait-method returns still need their own ABI.
+                // Refuse rather than fall through to a scalar miscompile.
+                return Err(LowerError {
+                    message: format!(
+                        "trait method `{callee_name}` returns `{callee_ret}` — \
+                         Vector/HashMap/Enum/Reference returns deferred (nợ #2 scope)"
+                    ),
+                    span: expr_span,
+                });
             }
 
             // Qualified enum variant construction:

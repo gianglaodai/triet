@@ -1,0 +1,18 @@
+// EXPECT: 42
+// Nợ #2 (ADR-0061): trait method returning a scalar Outcome (Integer~Integer)
+// lowers through the 2-register Outcome ABI (is_outcome_ret branch), same as a
+// free function. (42).run() → ~+ 42, then match unwraps the success payload.
+trait Fallible {
+    function run(self) -> Integer~Integer
+}
+
+implement Fallible for Integer {
+    function run(self) -> Integer~Integer = ~+ self
+}
+
+function main() -> Integer = {
+    return match (42).run() {
+        ~+ x => x
+        ~- e => -999
+    };
+}
