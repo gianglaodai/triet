@@ -95,6 +95,32 @@ impl std::fmt::Display for LowerError {
 
 // ── Lowering context ────────────────────────────────────────
 
+/// Program-wide lowering input, shared by every function/method body.
+///
+/// Bundles the 8 invariant tables that `lower_program` computes once and
+/// every `lower_function` / `Ctx::new` consumes. Passed by `&` and cloned
+/// internally (each `Ctx` owns its own copies) — this is a structural
+/// refactor of the former 11-/8-argument parameter lists, NOT an ownership
+/// change: the clones are identical to the pre-refactor per-call `.clone()`s.
+pub(crate) struct LoweringInput<'a> {
+    /// AST arena, borrowed from the `Program` for the duration of lowering.
+    pub arena: &'a Arena,
+    /// Item symbol table (struct/enum names → kind) for `lower_type`.
+    pub symbols: HashMap<String, TypeKind>,
+    /// Struct layouts keyed by name (`struct_map` in `lower_program`).
+    pub struct_layouts: HashMap<String, StructLayout>,
+    /// Enum layouts keyed by name (`enum_map` in `lower_program`).
+    pub enum_layouts: HashMap<String, EnumLayout>,
+    /// Resolved enum variants from the type checker, keyed by expression ID.
+    pub expr_resolutions: ExprResolutions,
+    /// Resolved enum variants from the type checker, keyed by pattern ID.
+    pub pattern_resolutions: PatternResolutions,
+    /// ADR-0061 T5: resolved trait-method calls (ExprId → mangled fn).
+    pub method_resolutions: MethodResolutions,
+    /// Map from (possibly mangled) function name to its return type.
+    pub func_return_types: HashMap<String, MirType>,
+}
+
 /// Per-function lowering state: local/block allocation, variable scope,
 /// the basic blocks built so far, and the signature under construction.
 struct Ctx {
@@ -140,20 +166,7 @@ struct Ctx {
 }
 
 impl Ctx {
-    // 8 args — layouts(2) + resolutions(3, incl. method_resolutions for
-    // ADR-0061 T5) + ret + name + func_return_types; mirrors lower_function's
-    // bundle, LoweringInput struct refactor deferred.
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        name: &str,
-        ret: &MirType,
-        struct_layouts: HashMap<String, StructLayout>,
-        enum_layouts: HashMap<String, EnumLayout>,
-        expr_resolutions: ExprResolutions,
-        pattern_resolutions: PatternResolutions,
-        method_resolutions: MethodResolutions,
-        func_return_types: HashMap<String, MirType>,
-    ) -> Self {
+    fn new(name: &str, ret: &MirType, input: &LoweringInput) -> Self {
         let is_struct_return = matches!(ret, MirType::Struct(_));
         // ADR-0058 Lát 1: heap binary Outcome uses JIT-sret (tái dùng String
         // machinery).  Scalar Outcome giữ 2-register; Ternary heap = deferred.
@@ -199,12 +212,12 @@ impl Ctx {
                 return_borrow_map: triet_mir::ReturnBorrowMap::new(),
                 return_shape,
             },
-            struct_layouts,
-            enum_layouts,
-            expr_resolutions,
-            pattern_resolutions,
-            method_resolutions,
-            func_return_types,
+            struct_layouts: input.struct_layouts.clone(),
+            enum_layouts: input.enum_layouts.clone(),
+            expr_resolutions: input.expr_resolutions.clone(),
+            pattern_resolutions: input.pattern_resolutions.clone(),
+            method_resolutions: input.method_resolutions.clone(),
+            func_return_types: input.func_return_types.clone(),
             sret_ptr: None,
             owned_locals: Vec::new(),
             scope_snapshots: Vec::new(),
@@ -620,22 +633,26 @@ pub fn lower_program(
         }
     }
 
+    // Bundle the 8 invariant tables once. `symbols`/`struct_map`/`enum_map`/
+    // `func_return_types` are moved in (no longer used directly below — only
+    // via `input.<field>`); the three resolution maps are `&` parameters so
+    // they are cloned. The `struct_layouts`/`enum_layouts` Vecs are NOT moved
+    // here — they stay live to fill `body.struct_layouts`/`enum_layouts`.
+    let input = LoweringInput {
+        arena: &prog.arena,
+        symbols,
+        struct_layouts: struct_map,
+        enum_layouts: enum_map,
+        expr_resolutions: expr_resolutions.clone(),
+        pattern_resolutions: pattern_resolutions.clone(),
+        method_resolutions: method_resolutions.clone(),
+        func_return_types,
+    };
+
     let mut bodies = Vec::new();
     for item in &prog.items {
         if let Item::Function { def } = &item.node {
-            let mut body = lower_function(
-                def,
-                &prog.arena,
-                item.span.clone(),
-                symbols.clone(),
-                struct_map.clone(),
-                enum_map.clone(),
-                expr_resolutions.clone(),
-                pattern_resolutions.clone(),
-                method_resolutions.clone(),
-                func_return_types.clone(),
-                None,
-            )?;
+            let mut body = lower_function(&input, def, item.span.clone(), None)?;
             body.struct_layouts = struct_layouts.clone();
             body.enum_layouts = enum_layouts.clone();
             bodies.push(body);
@@ -649,7 +666,7 @@ pub fn lower_program(
     // (GAP-B). `self` lives in params[0] like any local.
     for item in &prog.items {
         if let Item::Implementation { def } = &item.node {
-            let self_ty = lower_type(&prog.arena, def.for_type, &symbols, None);
+            let self_ty = lower_type(input.arena, def.for_type, &input.symbols, None);
             let for_type_name = self_ty.to_string();
             for method in &def.methods {
                 let mangled = triet_syntax::mangle_trait_method(
@@ -658,16 +675,9 @@ pub fn lower_program(
                     &method.name,
                 );
                 let mut body = lower_function(
+                    &input,
                     method,
-                    &prog.arena,
                     item.span.clone(),
-                    symbols.clone(),
-                    struct_map.clone(),
-                    enum_map.clone(),
-                    expr_resolutions.clone(),
-                    pattern_resolutions.clone(),
-                    method_resolutions.clone(),
-                    func_return_types.clone(),
                     Some((&mangled, self_ty.clone())),
                 )?;
                 body.struct_layouts = struct_layouts.clone();
@@ -689,18 +699,10 @@ pub fn lower_program(
 /// `func.name`, no `Self`). `Some` only for trait impl methods: both
 /// halves are always present together, so a single tuple makes the two
 /// illegal states (one-without-the-other) unrepresentable (O ruling).
-#[allow(clippy::too_many_arguments)] // 11 params — resolutions(3)+layouts(2)+impl_ctx; LoweringInput struct refactor deferred
 pub(crate) fn lower_function(
+    input: &LoweringInput,
     func: &FunctionDefinition,
-    arena: &Arena,
     span: Span,
-    symbols: std::collections::HashMap<String, TypeKind>,
-    struct_layouts: HashMap<String, StructLayout>,
-    enum_layouts: HashMap<String, EnumLayout>,
-    expr_resolutions: ExprResolutions,
-    pattern_resolutions: PatternResolutions,
-    method_resolutions: MethodResolutions,
-    func_return_types: HashMap<String, MirType>,
     impl_ctx: Option<(&str, MirType)>,
 ) -> Result<Body, LowerError> {
     let (body_name, self_type): (&str, Option<&MirType>) = match &impl_ctx {
@@ -710,18 +712,9 @@ pub(crate) fn lower_function(
     let ret_ty = func
         .return_type
         .as_ref()
-        .map(|tid| lower_type(arena, *tid, &symbols, self_type))
+        .map(|tid| lower_type(input.arena, *tid, &input.symbols, self_type))
         .unwrap_or(MirType::Integer);
-    let mut c = Ctx::new(
-        body_name,
-        &ret_ty,
-        struct_layouts,
-        enum_layouts,
-        expr_resolutions,
-        pattern_resolutions,
-        method_resolutions,
-        func_return_types,
-    );
+    let mut c = Ctx::new(body_name, &ret_ty, input);
     let entry = c.cur;
 
     // Function scope: Drop all owned locals (parameters + let bindings) when
@@ -729,7 +722,7 @@ pub(crate) fn lower_function(
     c.push_scope();
 
     for p in &func.parameters {
-        let ty = lower_type(arena, p.type_annotation, &symbols, self_type);
+        let ty = lower_type(input.arena, p.type_annotation, &input.symbols, self_type);
         // B7-lift (ADR-0042): heap types now allowed as parameters.
         // Move semantics: callee owns + drops, caller zeroes slot after call.
         // ADR-0045 §2: reference types (&0 String etc.) are borrow parameters
@@ -812,7 +805,7 @@ pub(crate) fn lower_function(
         FunctionBody::External { .. } => None,
     };
     if let Some(e) = body_expr {
-        let val = lower_expr(e, arena, &mut c)?;
+        let val = lower_expr(e, input.arena, &mut c)?;
         // Emit the tail Return only into a REACHABLE open block. A block-body
         // ending in an explicit `return` leaves `cur` pointing at a dead
         // continuation block (created by Stmt::Return, no incoming edge);
@@ -823,7 +816,7 @@ pub(crate) fn lower_function(
         // reachable merge) so the guard always passes — no behavior change.
         if c.is_open(c.cur) && (c.cur == entry || c.block_has_incoming(c.cur)) {
             let values = lower_outcome_return_values(val, &mut c);
-            let span = arena.expression(e).span.clone();
+            let span = input.arena.expression(e).span.clone();
             let cur = c.cur;
             c.term(cur, Terminator::Return { values, span });
         }
@@ -4419,19 +4412,17 @@ mod tests {
                 _ => None,
             })
             .expect("no function found");
-        lower_function(
-            &func.0,
-            &prog.arena,
-            func.1,
+        let input = LoweringInput {
+            arena: &prog.arena,
             symbols,
-            HashMap::new(),
-            HashMap::new(),
-            ExprResolutions::new(),
-            PatternResolutions::new(),
-            MethodResolutions::new(),
-            HashMap::new(),
-            None,
-        )
+            struct_layouts: HashMap::new(),
+            enum_layouts: HashMap::new(),
+            expr_resolutions: ExprResolutions::new(),
+            pattern_resolutions: PatternResolutions::new(),
+            method_resolutions: MethodResolutions::new(),
+            func_return_types: HashMap::new(),
+        };
+        lower_function(&input, &func.0, func.1, None)
     }
 
     #[test]
@@ -4473,20 +4464,17 @@ mod tests {
                 }
             })
             .expect("no function found");
-        lower_function(
-            &func.0,
-            &prog.arena,
-            func.1,
+        let input = LoweringInput {
+            arena: &prog.arena,
             symbols,
-            HashMap::new(),
-            HashMap::new(),
-            ExprResolutions::new(),
-            PatternResolutions::new(),
-            MethodResolutions::new(),
-            HashMap::new(),
-            None,
-        )
-        .expect("lowering failed")
+            struct_layouts: HashMap::new(),
+            enum_layouts: HashMap::new(),
+            expr_resolutions: ExprResolutions::new(),
+            pattern_resolutions: PatternResolutions::new(),
+            method_resolutions: MethodResolutions::new(),
+            func_return_types: HashMap::new(),
+        };
+        lower_function(&input, &func.0, func.1, None).expect("lowering failed")
     }
 
     #[test]
