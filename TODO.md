@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: origin `96986b4` (2026-06-18). Gate `0·0·176·0`.
+Mốc hiện tại: HEAD `4d51faa` (local, 2026-06-18). Gate `0·0·179·0`.
 
 ---
 
@@ -13,10 +13,11 @@ Mốc hiện tại: origin `96986b4` (2026-06-18). Gate `0·0·176·0`.
 Wire nốt ADR-0055: block tail-expr gánh giá trị cuối hàm.
 return-scope đã khóa (ADR-0020 §3.8): `return` = early-exit + cọc-tiêu-mode, KHÔNG phải throw.
 
-- [ ] **ĐẬP TRƯỚC TIÊN (soundness):** 🔴 expr-body fat-struct return không route sret → **SIGILL 132**.
+- [x] **ĐẬP TRƯỚC TIÊN (soundness):** 🔴 expr-body fat-struct return không route sret → **SIGILL 132**. `4d51faa`
       Free fn `f() -> Point = Point{...}` emit `Return(struct)` by-value thay vì ghi sret slot;
       block-body (`{ return ... }`) chạy đúng. Crash/soundness hole có sẵn, độc lập trait/nợ#2.
-      *Soundness trước syntax (G 2026-06-17).*
+      *Soundness trước syntax (G 2026-06-17).* — ADR-0055 lát 1: helper SSOT `emit_struct_sret_copy`
+      route tail-Return qua sret y hệt Stmt::Return; teeth 182/183/184 poison→SIGILL.
 - [ ] Wire tail-expr gánh giá trị cuối hàm → giảm `return` cuối thân (happy-path). Làm SAU khi SIGILL đóng.
 
 ### 🟣 Chiến dịch Heap-Nullable — saga ~5 lát
@@ -42,6 +43,7 @@ Option-2 (gate free-fn `resolve_type_expr_with_params`, đổi chữ ký + dedup
 
 ### Khác
 - [ ] **D2 HashMap reject-MIN** (ADR-0043 Q6): `insert` reject `i64::MIN` — GIỮ defense-in-depth.
+- [ ] **gate.sh giòn — exit 1 giả khi clippy=0** (G ghi sổ 2026-06-18): dòng cuối `clippy … | grep -- "-->" | sort -u | wc -l` dưới `set -o pipefail` → clippy 0 warning ⇒ grep no-match ⇒ exit 1 ⇒ script exit 1 dù output 4 dòng sạch. Đếm log lởm. Vá ở chiến dịch dọn CI (vd `grep -c` hoặc `|| true` có kiểm). KHÔNG ảnh hưởng soundness C-track.
 
 ---
 
