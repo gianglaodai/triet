@@ -1,0 +1,18 @@
+// EXPECT: 30
+// ADR-0055 lát 1 × nợ #2 (ADR-0061): trait method returning a flat struct via
+// expression-body (`= Point { ... }`). Confirms the sret tail-return fix also
+// covers the dispatch path — (10).make() → Point { x: 10, y: 20 } → 30.
+struct Point { x: Integer, y: Integer }
+
+trait Maker {
+    function make(self) -> Point
+}
+
+implement Maker for Integer {
+    function make(self) -> Point = Point { x: self, y: 20 }
+}
+
+function main() -> Integer = {
+    let p = (10).make();
+    return p.x + p.y;
+}

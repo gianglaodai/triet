@@ -815,10 +815,28 @@ pub(crate) fn lower_function(
         // check filters dead ones. For expr-body `cur` is the entry (or a
         // reachable merge) so the guard always passes — no behavior change.
         if c.is_open(c.cur) && (c.cur == entry || c.block_has_incoming(c.cur)) {
-            let values = lower_outcome_return_values(val, &mut c);
             let span = input.arena.expression(e).span.clone();
-            let cur = c.cur;
-            c.term(cur, Terminator::Return { values, span });
+            if emit_struct_sret_copy(&mut c, val, &span) {
+                // Struct tail-return: fields copied into sret; emit Return(())
+                // then leave `cur` at a fresh dead block so the pop_scope()
+                // below drops owned locals into dead code, never after the
+                // terminator. Mirrors the Stmt::Return struct branch.
+                c.flush_all_for_return();
+                let cur = c.cur;
+                c.term(
+                    cur,
+                    Terminator::Return {
+                        values: vec![],
+                        span,
+                    },
+                );
+                let dead = c.alloc_bb();
+                c.cur = dead;
+            } else {
+                let values = lower_outcome_return_values(val, &mut c);
+                let cur = c.cur;
+                c.term(cur, Terminator::Return { values, span });
+            }
         }
     }
 
@@ -1044,6 +1062,40 @@ fn lower_outcome_return_values(val: Local, c: &mut Ctx) -> Vec<Local> {
     vec![disc_tmp, payload_tmp]
 }
 
+/// Route a struct return value through the sret buffer: copy each top-level
+/// field of `val` into `*sret`. Returns `true` if the copy was emitted (caller
+/// must emit `Return(())`), `false` if `val` is not a struct-sret return
+/// (caller emits the by-value / Outcome `Return` unchanged).
+///
+/// SSOT for sret struct routing — shared by `Stmt::Return` and tail-Return.
+/// Emits no terminator, no flush, and no dead block: each caller owns those
+/// because their flush/dead-block sites differ.
+fn emit_struct_sret_copy(c: &mut Ctx, val: Local, span: &Span) -> bool {
+    let Some(sret) = c.sret_ptr else {
+        return false;
+    };
+    let source_ty = c.local_decls[val.0].ty.clone();
+    if !matches!(source_ty, MirType::Struct(_)) {
+        return false;
+    }
+    // Copy each field into the caller's sret buffer. A struct return with no
+    // registered layout still routes through sret (Return(())), matching the
+    // pre-refactor behavior — the absent layout simply emits no field copies.
+    if let Some(layout) = c.struct_layouts.get(&source_ty.to_string()) {
+        let field_names: Vec<String> = layout.fields.iter().map(|f| f.name.clone()).collect();
+        for field_name in field_names {
+            let dest_place = Place::local(sret).project(Projection::Field(field_name.clone()));
+            let source_place = Place::local(val).project(Projection::Field(field_name));
+            c.push(Statement::Assign {
+                dest: dest_place,
+                source: source_place,
+                span: span.clone(),
+            });
+        }
+    }
+    true
+}
+
 // ── Block lowering ──────────────────────────────────────────
 
 /// Lower a block expression (statements + optional final expression) into
@@ -1169,27 +1221,12 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             lower_expr(*expr, arena, c)?;
         }
         Stmt::Return { value } => {
-            if let (Some(sret), Some(v)) = (c.sret_ptr, value) {
-                // Struct return via sret: copy struct fields to the caller's buffer.
+            if let (Some(_), Some(v)) = (c.sret_ptr, value) {
+                // Fat return via sret. Struct → copy fields into the caller's
+                // buffer (emit_struct_sret_copy); String/heap-Outcome → M4
+                // escape Return[s] (JIT writes {ptr,len,cap} from slot to sret).
                 let struct_local = lower_expr(*v, arena, c)?;
-                let source_ty = c.local_decls[struct_local.0].ty.clone();
-                if matches!(source_ty, MirType::Struct(_)) {
-                    // Copy struct: copy fields to sret buffer.
-                    if let Some(layout) = c.struct_layouts.get(&source_ty.to_string()) {
-                        let field_names: Vec<String> =
-                            layout.fields.iter().map(|f| f.name.clone()).collect();
-                        for field_name in field_names {
-                            let dest_place =
-                                Place::local(sret).project(Projection::Field(field_name.clone()));
-                            let source_place =
-                                Place::local(struct_local).project(Projection::Field(field_name));
-                            c.push(Statement::Assign {
-                                dest: dest_place,
-                                source: source_place,
-                                span: stmt_span.clone(),
-                            });
-                        }
-                    }
+                if emit_struct_sret_copy(c, struct_local, &stmt_span) {
                     c.flush_all_for_return();
                     let cur = c.cur;
                     c.term(

@@ -1,0 +1,13 @@
+// EXPECT: 35
+// ADR-0055 lát 1: expression-body return of a NESTED struct. The sret field
+// copy `_0.inner = move _1.inner` is itself struct-typed, exercising the
+// ADR-0060 multi-word field copy through the tail-Return sret path.
+struct Inner { a: Integer, b: Integer }
+struct Outer { inner: Inner, tag: Integer }
+
+function mk() -> Outer = Outer { inner: Inner { a: 10, b: 20 }, tag: 5 }
+
+function main() -> Integer = {
+    let o = mk();
+    return o.inner.a + o.inner.b + o.tag;
+}

@@ -1,0 +1,13 @@
+// EXPECT: 30
+// ADR-0055 lát 1: free function returning a flat struct via expression-body
+// (`= Point { ... }`). Before the fix, the tail-Return emitted the struct
+// by-value (Return(_1)) instead of routing through sret → SIGILL exit 132.
+// Now the tail copies each field into the sret buffer (Return(())).
+struct Point { x: Integer, y: Integer }
+
+function mk() -> Point = Point { x: 10, y: 20 }
+
+function main() -> Integer = {
+    let p = mk();
+    return p.x + p.y;
+}
