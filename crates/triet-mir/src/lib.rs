@@ -1357,6 +1357,47 @@ fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
     }
 }
 
+/// Nợ #3 (Heap-Nullable gate, ruling β): is `t` a scalar atom that fits the
+/// Bậc A single-i64 nullable sentinel? Mirrors the typecheck-era whitelist.
+fn is_scalar_nullable_payload(t: &MirType) -> bool {
+    matches!(
+        t,
+        MirType::Integer
+            | MirType::Trit
+            | MirType::Tryte
+            | MirType::Long
+            | MirType::Trilean
+            | MirType::Unit
+            | MirType::Unknown
+    )
+}
+
+/// Find a `Nullable(inner)` with a non-scalar `inner` anywhere inside `ty`,
+/// recursing through the type-carrying variants (Nullable/Reference/Outcome).
+/// Returns the offending inner type. Used by [`Body::verify`] to refuse
+/// heap-nullable before it reaches the JIT (ruling β: gate at LOWER, not
+/// typecheck — see `MirError::HeapNullableNotLowered`).
+fn find_heap_nullable(ty: &MirType) -> Option<&MirType> {
+    match ty {
+        MirType::Nullable(inner) => {
+            if is_scalar_nullable_payload(inner) {
+                // Scalar `T?` is representable; still recurse in case `inner`
+                // itself nests a bad type (it cannot here, but keep uniform).
+                find_heap_nullable(inner)
+            } else {
+                Some(inner)
+            }
+        }
+        MirType::Reference { inner, .. } => find_heap_nullable(inner),
+        MirType::Outcome {
+            value_type,
+            error_type,
+            ..
+        } => find_heap_nullable(value_type).or_else(|| find_heap_nullable(error_type)),
+        _ => None,
+    }
+}
+
 impl Body {
     /// Verify that this body is well-formed.
     ///
@@ -1385,6 +1426,56 @@ impl Body {
                 num_blocks,
                 span: DUMMY_SPAN.clone(),
             });
+        }
+
+        // ── INV-HeapNullable (Nợ #3, ruling β): no `T?` with non-scalar `T` ──
+        // The Bậc A nullable repr is a single-i64 sentinel; a heap fat-pointer
+        // or multi-word struct/enum cannot fit it. Refuse at MIR (not
+        // typecheck) so the stdlib can DECLARE heap-nullable API stubs; only
+        // actual compilation is refused. This single chokepoint covers all
+        // positions — return type, every local (params + lets + temps), and
+        // every struct-field / enum-payload type (those live in the layouts,
+        // not as standalone locals) — recursing into Nullable/Reference/
+        // Outcome so nested occurrences are caught too.
+        if let Some(inner) = find_heap_nullable(&self.signature.return_type) {
+            return Err(MirError::HeapNullableNotLowered {
+                inner_type: inner.clone(),
+                position: "function return type".to_string(),
+                span: DUMMY_SPAN.clone(),
+            });
+        }
+        for (i, decl) in self.local_decls.iter().enumerate() {
+            if let Some(inner) = find_heap_nullable(&decl.ty) {
+                return Err(MirError::HeapNullableNotLowered {
+                    inner_type: inner.clone(),
+                    position: format!("local _{i}"),
+                    span: DUMMY_SPAN.clone(),
+                });
+            }
+        }
+        for layout in &self.struct_layouts {
+            for field in &layout.fields {
+                if let Some(inner) = find_heap_nullable(&field.ty) {
+                    return Err(MirError::HeapNullableNotLowered {
+                        inner_type: inner.clone(),
+                        position: format!("struct field `{}.{}`", layout.name, field.name),
+                        span: DUMMY_SPAN.clone(),
+                    });
+                }
+            }
+        }
+        for layout in &self.enum_layouts {
+            for variant in &layout.variants {
+                if let Some(payload) = &variant.payload
+                    && let Some(inner) = find_heap_nullable(&payload.ty)
+                {
+                    return Err(MirError::HeapNullableNotLowered {
+                        inner_type: inner.clone(),
+                        position: format!("enum payload `{}.{}`", layout.name, variant.name),
+                        span: DUMMY_SPAN.clone(),
+                    });
+                }
+            }
         }
 
         // ── INV-Outcome-shape (ADR-0052 OP.2, amended ADR-0058 §3): ──
@@ -1908,6 +1999,22 @@ pub enum MirError {
         /// Source location.
         span: Span,
     },
+    /// Nợ #3 (Heap-Nullable gate, ruling β): a `T?` reached MIR where `T` is
+    /// not a scalar atom. The Bậc A nullable repr is a single-i64 sentinel
+    /// (`i64::MIN`), which cannot hold a heap fat-pointer (String/Vector/
+    /// HashMap = 24 bytes) or a multi-word struct/enum — lowering it would
+    /// silently miscompile. Refused here rather than at typecheck so the
+    /// stdlib can still DECLARE heap-nullable API (`env.get -> String?` etc.)
+    /// as stubs; only actual compilation is refused. Lifted when the
+    /// heap-nullable repr (ptr-sentinel slot + conditional Drop) lands.
+    HeapNullableNotLowered {
+        /// The non-scalar inner type `T` (for the diagnostic).
+        inner_type: MirType,
+        /// Where it was found (return type, a local, a struct field, …).
+        position: String,
+        /// Source location (DUMMY_SPAN for MIR-level errors).
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -2019,6 +2126,16 @@ impl fmt::Display for MirError {
                 write!(
                     f,
                     "MIR verification error: Outcome projection on local {local} with non-Outcome type '{found_type}'"
+                )
+            }
+            Self::HeapNullableNotLowered {
+                inner_type,
+                position,
+                ..
+            } => {
+                write!(
+                    f,
+                    "heap-nullable T? not yet lowered (repr campaign) — T = {inner_type} (at {position})"
                 )
             }
         }

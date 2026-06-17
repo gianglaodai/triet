@@ -115,6 +115,34 @@ Frontend ✅ + Typecheck ✅ + Lower ✅ + JIT ✅ (multi-value mở, StackSlot 
 - [ ] **D2 (ADR-0043 Q6):** `HashMap::insert` reject-on-insert `i64::MIN` — GIỮ defense-in-depth.
 - [ ] Trait system (ADR-0038 Comparable, ADR-0039 Nullable-op family).
 
+## Nợ thiết kế ngôn ngữ
+
+### 🟣 Chiến dịch Heap-Nullable (mở khi cleanup đóng)
+
+`T?` cho `T` heap (String / Vector / HashMap / Struct / Enum). Hiện **GATE ở
+LOWER** bằng `MirError::HeapNullableNotLowered` (MIR verifier refuse), KHÔNG ở
+typecheck.
+
+**Ruling β (G ký 2026-06-18):** gate ở LOWER, KHÔNG typecheck — vì stdlib khai
+heap-nullable làm API chính thức (`env.get/path.parent/text.from_bytes/fs.read
+-> String?`). Declaration vô hại (chỉ là chữ ký stub `= ~0`); chỉ *compilation*
+mới miscompile (Bậc A nullable = single-i64 sentinel, không chứa nổi heap
+fat-pointer 24B). Gate ở typecheck (Option A, thử trước) refuse luôn API surface
+stdlib → 10 test load-stdlib vỡ. β để typecheck nhai `String?` sạch, verifier
+nhè khi thực sự lower. Nếu sau này repr cần chặn sớm ở Pass-1 → mở Option-2
+(gate free-fn `resolve_type_expr_with_params`, cần đổi chữ ký + dedup double-fire).
+
+Móng cần (saga ~5 lát, họ hàng heap-Outcome HP.1-5):
+1. ADR repr — **(a) ptr-sentinel** (G nghiêng): slot `{ptr,len,cap}`,
+   `ptr == NULL_SENTINEL` = null; null-check project `.ptr`, không so cả slot.
+2. Widening `String → String?` + `~0` materialize ptr-sentinel.
+3. JIT conditional Drop (`if ptr != SENTINEL → drop payload`).
+4. Elvis `?:` + match `~+/~0` heap (project `.ptr`, move payload).
+5. `?+>` map/flatMap heap (unwrap move + Deinit/tombstone tránh double-free).
+
+Gỡ gate `HeapNullableNotLowered` (+ `find_heap_nullable`/`is_scalar_nullable_payload`
+helper ở triet-mir) khi móng landed.
+
 ## Bậc D — Fat-Pointer ABI (ADR-0049) — ĐÓNG (O+G 2026-06-09)
 
 - [x] **L6-1:** param fat-String by-pointer. `626390c`.
