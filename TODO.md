@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: HEAD `4d51faa` (local, 2026-06-18). Gate `0·0·179·0`.
+Mốc hiện tại: HEAD `a0eff46` (local, 2026-06-18). Gate `0·0·183·0`. Chiến dịch CFG Tail-Expression HẠ MÀN (lát 1 SIGILL + lát 2 `= ~0`).
 
 ---
 
@@ -18,7 +18,12 @@ return-scope đã khóa (ADR-0020 §3.8): `return` = early-exit + cọc-tiêu-mo
       block-body (`{ return ... }`) chạy đúng. Crash/soundness hole có sẵn, độc lập trait/nợ#2.
       *Soundness trước syntax (G 2026-06-17).* — ADR-0055 lát 1: helper SSOT `emit_struct_sret_copy`
       route tail-Return qua sret y hệt Stmt::Return; teeth 182/183/184 poison→SIGILL.
-- [ ] Wire tail-expr gánh giá trị cuối hàm → giảm `return` cuối thân (happy-path). Làm SAU khi SIGILL đóng.
+- [x] Wire tail-expr gánh giá trị cuối hàm → giảm `return` cuối thân (happy-path). `a0eff46`
+      ADR-0055 lát 2 A-hẹp: phần lớn ĐÃ wire bởi ADR-0055+0056/0057/0058 (probe 20+ dạng:
+      literal/expr/if/match/nested/while-tail/struct/heap-if/heap-match/outcome/nullable-widen
+      đều chạy). Còn đúng MỘT bất đối xứng tail: `= ~0` báo lỗi trong khi `return ~0` chạy →
+      mirror null-~0 special-case sang tail-path. Fixtures 185-188. Gap #2 (`{ ~0 }`/if-arm)
+      đẩy Heap-Nullable (fail y hệt ở return/let, không phải tail-asymmetry).
 
 ### 🟣 Chiến dịch Heap-Nullable — saga ~5 lát
 `T?` cho `T` heap (String/Vector/HashMap/Struct/Enum). Hiện **GATE ở LOWER** bằng
@@ -36,6 +41,7 @@ Option-2 (gate free-fn `resolve_type_expr_with_params`, đổi chữ ký + dedup
 - [ ] 4. Elvis `?:` + match `~+/~0` heap (project `.ptr`, move payload).
 - [ ] 5. `?+>` map/flatMap heap (unwrap move + Deinit/tombstone tránh double-free).
 - [ ] Gỡ gate `HeapNullableNotLowered` (+ `find_heap_nullable`/`is_scalar_nullable_payload` helper ở triet-mir) khi móng landed.
+- [ ] **Gap #2 — expected-type propagation cho `~0`/Outcome-constructor lồng trong block-final/if-arm/match-arm.** `{ ~0 }`, `if…{~0}` fail y hệt ở CẢ `return`/tail/`let` (đã chứng minh, KHÔNG phải tail-asymmetry — Lát-2 A-hẹp chỉ vá expr-body `= ~0`). Cần ADR type-propagation (đẩy expected-type xuống block/if/match arm), KHÔNG chắp vá per-site.
 
 ### 🟢 Perf — ADR-0044 §iii (không chặn)
 - [ ] **D1 Codegen opt range-check 1-instruction:** `(val−MIN) >ᵤ 2M` unsigned-sub trick + fallback `bor` gộp 2 icmp. Cắt nửa instruction mỗi Add/Sub.
