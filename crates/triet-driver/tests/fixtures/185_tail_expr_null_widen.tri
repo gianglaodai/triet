@@ -1,0 +1,10 @@
+// EXPECT: 42
+// ADR-0055 lát 2 (A-hẹp): expr-body `= ~0` materializes the PA-3c sentinel
+// from the function return type, mirroring `return ~0`. Before the fix the
+// tail-path lowered ~0 unconditionally → lowerer error. r is null → Elvis 42.
+function f() -> Integer? = ~0
+
+function main() -> Integer {
+    let r = f();
+    return r ?: 42;
+}

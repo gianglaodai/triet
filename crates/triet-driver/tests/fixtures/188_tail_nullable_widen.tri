@@ -1,0 +1,6 @@
+// EXPECT: 7
+// ADR-0055 regression-lock: block-tail bare value widening Integer → Integer?.
+// k() → 7 (non-null); Elvis keeps it. Green WITHOUT lát-2 Bước A.
+function k() -> Integer? { 7 }
+
+function main() -> Integer = k() ?: 42

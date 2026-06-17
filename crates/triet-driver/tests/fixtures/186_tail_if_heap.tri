@@ -1,0 +1,9 @@
+// EXPECT: 5
+// ADR-0055 regression-lock: tail-`if` whose arms are heap (String) values.
+// g(1) → "hello"; len = 5. Green WITHOUT lát-2 Bước A (already-working
+// capability, fixture pins it against silent regression).
+function g(x: Integer) -> String {
+    if x > 0 { "hello" } else { "hi" }
+}
+
+function main() -> Integer = len(g(1))

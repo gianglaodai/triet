@@ -805,7 +805,26 @@ pub(crate) fn lower_function(
         FunctionBody::External { .. } => None,
     };
     if let Some(e) = body_expr {
-        let val = lower_expr(e, input.arena, &mut c)?;
+        // ADR-0055 (A-hẹp): mirror the Stmt::Return null-~0 special case for
+        // expr-body tail. `= ~0` materializes the PA-3c sentinel from the
+        // function return type, identical to `return ~0` (the Stmt::Return
+        // null branch above). Block-final / if-arm `~0` is a SEPARATE
+        // expected-type-propagation gap (Heap-Nullable backlog) — NOT here.
+        let val = if is_null_expr(&input.arena.expression(e).node)
+            && !matches!(c.sig.return_type, MirType::Outcome { .. })
+        {
+            let span = input.arena.expression(e).span.clone();
+            let d = c.alloc_local_ty(c.sig.return_type.clone());
+            c.push(Statement::StorageLive(d, span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(d),
+                value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                span,
+            });
+            d
+        } else {
+            lower_expr(e, input.arena, &mut c)?
+        };
         // Emit the tail Return only into a REACHABLE open block. A block-body
         // ending in an explicit `return` leaves `cur` pointing at a dead
         // continuation block (created by Stmt::Return, no incoming edge);
