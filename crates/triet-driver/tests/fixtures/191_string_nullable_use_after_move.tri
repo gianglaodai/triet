@@ -1,0 +1,12 @@
+// ERROR: E2420
+// ADR-0062 Heap-Nullable Lát 1: `String?` is Move (is_copy delegates to String).
+// `let b = a` moves the String?; the subsequent `len(b2)` use of the moved `a`
+// must be flagged use-after-move (E2420) — no spurious pass for heap-nullable.
+function f() -> String? = "hi"
+
+function main() -> Integer {
+    let a = f();
+    let b = a;
+    let c = a;
+    return 0;
+}

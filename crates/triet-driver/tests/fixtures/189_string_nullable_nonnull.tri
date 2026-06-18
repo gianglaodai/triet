@@ -1,0 +1,11 @@
+// EXPECT: 0
+// ADR-0062 Heap-Nullable Lát 1: `String?` non-null value. Before Lát 1 this
+// refused at MIR verify (HeapNullableNotLowered). Now it compiles + RUNs:
+// f() returns a non-null String? ("hi"); main binds it (dropped at scope exit,
+// free called once) and returns 0. Lát 1 does not observe the string value.
+function f() -> String? = "hi"
+
+function main() -> Integer {
+    let r = f();
+    return 0;
+}

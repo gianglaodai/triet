@@ -602,6 +602,20 @@ impl MirType {
         matches!(self, Self::String | Self::Vector | Self::HashMap)
     }
 
+    /// `true` for `String` and `String?` (= `Nullable(String)`).
+    ///
+    /// ADR-0062 (Heap-Nullable Lát 1): `String?` shares String's 24-byte slot
+    /// `{ptr@0, len@8, cap@16}`; null is `ptr == NULL_SENTINEL`. Every JIT /
+    /// lowerer site that allocates, fills, returns, or drops a String slot keys
+    /// off THIS predicate (not bare `matches!(Self::String)`) so `String?` rides
+    /// the exact same repr path — widening `String → String?` is a repr no-op.
+    /// Vector?/HashMap? (single i64 handle) and Struct?/Enum? are NOT covered.
+    #[must_use]
+    pub fn is_string_repr(&self) -> bool {
+        matches!(self, Self::String)
+            || matches!(self, Self::Nullable(inner) if matches!(**inner, Self::String))
+    }
+
     /// Outcome slot size in bytes: 16 for scalar payload, 32 for heap.
     #[must_use]
     pub fn outcome_slot_size(&self) -> u32 {
@@ -1372,28 +1386,46 @@ fn is_scalar_nullable_payload(t: &MirType) -> bool {
     )
 }
 
-/// Find a `Nullable(inner)` with a non-scalar `inner` anywhere inside `ty`,
-/// recursing through the type-carrying variants (Nullable/Reference/Outcome).
-/// Returns the offending inner type. Used by [`Body::verify`] to refuse
-/// heap-nullable before it reaches the JIT (ruling β: gate at LOWER, not
-/// typecheck — see `MirError::HeapNullableNotLowered`).
-fn find_heap_nullable(ty: &MirType) -> Option<&MirType> {
+/// ADR-0062 (Heap-Nullable Lát 1): is `Nullable(t)` lowerable to a concrete
+/// repr? Scalars use the PA-3c single-i64 sentinel; `String` uses the
+/// ptr-sentinel in its 24-byte slot (ptr@0 == NULL_SENTINEL). Vector?/HashMap?
+/// (single i64 handle) and Struct?/Enum? (multi-word) stay refused until later
+/// láts — they are NOT scalars and NOT String, so they fall through to refuse.
+fn is_lowerable_nullable_payload(t: &MirType) -> bool {
+    is_scalar_nullable_payload(t) || matches!(t, MirType::String)
+}
+
+/// Find a `Nullable(inner)` whose `inner` is NOT accepted by `allow`, anywhere
+/// inside `ty`, recursing through the type-carrying variants (Nullable/
+/// Reference/Outcome). Returns the offending inner type. Used by [`Body::verify`]
+/// to refuse heap-nullable before it reaches the JIT (ruling β: gate at LOWER,
+/// not typecheck — see `MirError::HeapNullableNotLowered`).
+///
+/// `allow` is position-dependent (ADR-0062 Lát 1):
+/// - **return type + locals** → [`is_lowerable_nullable_payload`] (scalar +
+///   `String?`): Lát 1 reprs `String?` as a top-level 24-byte slot.
+/// - **struct fields + enum payloads** → [`is_scalar_nullable_payload`] (scalar
+///   only): a `String?` embedded in an aggregate is NOT a top-level slot; the
+///   Lát 1 JIT does not place ptr-sentinel slots at field offsets. Keep refusing
+///   until a nested-heap-nullable lát handles it.
+fn find_refused_nullable(ty: &MirType, allow: fn(&MirType) -> bool) -> Option<&MirType> {
     match ty {
         MirType::Nullable(inner) => {
-            if is_scalar_nullable_payload(inner) {
-                // Scalar `T?` is representable; still recurse in case `inner`
-                // itself nests a bad type (it cannot here, but keep uniform).
-                find_heap_nullable(inner)
+            if allow(inner) {
+                // Representable here; still recurse in case `inner` nests a bad
+                // type (it cannot for scalars/String, but keep uniform).
+                find_refused_nullable(inner, allow)
             } else {
                 Some(inner)
             }
         }
-        MirType::Reference { inner, .. } => find_heap_nullable(inner),
+        MirType::Reference { inner, .. } => find_refused_nullable(inner, allow),
         MirType::Outcome {
             value_type,
             error_type,
             ..
-        } => find_heap_nullable(value_type).or_else(|| find_heap_nullable(error_type)),
+        } => find_refused_nullable(value_type, allow)
+            .or_else(|| find_refused_nullable(error_type, allow)),
         _ => None,
     }
 }
@@ -1437,7 +1469,10 @@ impl Body {
         // every struct-field / enum-payload type (those live in the layouts,
         // not as standalone locals) — recursing into Nullable/Reference/
         // Outcome so nested occurrences are caught too.
-        if let Some(inner) = find_heap_nullable(&self.signature.return_type) {
+        // Return type + locals: `String?` allowed (top-level ptr-sentinel slot).
+        if let Some(inner) =
+            find_refused_nullable(&self.signature.return_type, is_lowerable_nullable_payload)
+        {
             return Err(MirError::HeapNullableNotLowered {
                 inner_type: inner.clone(),
                 position: "function return type".to_string(),
@@ -1445,7 +1480,7 @@ impl Body {
             });
         }
         for (i, decl) in self.local_decls.iter().enumerate() {
-            if let Some(inner) = find_heap_nullable(&decl.ty) {
+            if let Some(inner) = find_refused_nullable(&decl.ty, is_lowerable_nullable_payload) {
                 return Err(MirError::HeapNullableNotLowered {
                     inner_type: inner.clone(),
                     position: format!("local _{i}"),
@@ -1453,9 +1488,11 @@ impl Body {
                 });
             }
         }
+        // Struct fields + enum payloads: scalar `T?` only — a `String?` embedded
+        // in an aggregate is not a top-level slot (Lát 1 does not lower it).
         for layout in &self.struct_layouts {
             for field in &layout.fields {
-                if let Some(inner) = find_heap_nullable(&field.ty) {
+                if let Some(inner) = find_refused_nullable(&field.ty, is_scalar_nullable_payload) {
                     return Err(MirError::HeapNullableNotLowered {
                         inner_type: inner.clone(),
                         position: format!("struct field `{}.{}`", layout.name, field.name),
@@ -1467,7 +1504,8 @@ impl Body {
         for layout in &self.enum_layouts {
             for variant in &layout.variants {
                 if let Some(payload) = &variant.payload
-                    && let Some(inner) = find_heap_nullable(&payload.ty)
+                    && let Some(inner) =
+                        find_refused_nullable(&payload.ty, is_scalar_nullable_payload)
                 {
                     return Err(MirError::HeapNullableNotLowered {
                         inner_type: inner.clone(),

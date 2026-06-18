@@ -178,7 +178,8 @@ impl Ctx {
             }
         ) && ret.has_heap_payload();
         // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
-        let is_fat_return = is_struct_return || matches!(ret, MirType::String) || is_heap_outcome;
+        // ADR-0062: `String?` shares String's slot → same fat path (is_string_repr).
+        let is_fat_return = is_struct_return || ret.is_string_repr() || is_heap_outcome;
         let return_shape = match ret {
             _ if is_heap_outcome => triet_mir::ReturnShape::Struct {
                 struct_name: ret.to_string(),
@@ -2234,8 +2235,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             let is_outcome_ret = matches!(callee_ret, MirType::Outcome { .. });
             // ADR-0058 Lát 1: heap Outcome → sret (treated as fat return).
             let is_heap_outcome_ret = is_outcome_ret && callee_ret.has_heap_payload();
-            let is_fat_ret =
-                matches!(callee_ret, MirType::Struct(_) | MirType::String) || is_heap_outcome_ret;
+            // ADR-0062: `String?` call return shares String's fat sret path.
+            let is_fat_ret = matches!(callee_ret, MirType::Struct(_))
+                || callee_ret.is_string_repr()
+                || is_heap_outcome_ret;
+            // sret slot layout name: `String?` reprs as the "String" layout
+            // (ptr-sentinel, same 24-byte slot) — `callee_ret.to_string()`
+            // would be "String?", which has no registered layout.
+            let sret_layout_name = if callee_ret.is_string_repr() {
+                "String".to_string()
+            } else {
+                callee_ret.to_string()
+            };
 
             let mut args: Vec<Local> = arguments
                 .iter()
@@ -2260,7 +2271,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 } else {
                     c.push(Statement::StructAlloc {
                         dest: ret_local,
-                        struct_name: callee_ret.to_string(),
+                        struct_name: sret_layout_name.clone(),
                         span: expr_span.clone(),
                     });
                 }
@@ -2292,7 +2303,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         return_bb: ret_bb,
                         dest: Vec::new(),
                         return_shape: triet_mir::ReturnShape::Struct {
-                            struct_name: callee_ret.to_string(),
+                            struct_name: sret_layout_name,
                         },
                         span: expr_span,
                     },

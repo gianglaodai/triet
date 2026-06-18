@@ -866,7 +866,8 @@ impl JitContext {
             for i in 0..body.num_locals {
                 let local = Local(i);
                 let ty = &body.local_decls[i].ty;
-                if matches!(ty, MirType::String) {
+                // ADR-0062: `String?` shares String's 24-byte slot (ptr-sentinel).
+                if ty.is_string_repr() {
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         usize_to_u32(layout.total_size),
@@ -1000,7 +1001,7 @@ impl JitContext {
             builder.def_var(var, param_val);
             // ADR-0049 Lát 6: String param received as pointer-to-caller-slot.
             // Load {ptr,len,cap} from the caller's slot into our own slot.
-            if matches!(body.local_decls[local.0].ty, MirType::String)
+            if body.local_decls[local.0].ty.is_string_repr()
                 && let Some((slot, _)) = self.struct_slots.get(&local)
             {
                 let src_ptr = builder.ins().load(I64, mem_flags, param_val, 0);
@@ -1175,6 +1176,18 @@ impl JitContext {
                             ConstValue::String(_) => unreachable!("String handled by if-let above"),
                         };
                         builder.def_var(self.var(dest.local), val);
+                        // ADR-0062: `~0` (null) into a `String?` local materializes
+                        // NULL_SENTINEL into the slot's ptr@0 (the repr is the
+                        // 24-byte String slot; len/cap stay don't-care). A scalar
+                        // Integer const into a String-repr local only happens for
+                        // this null-sentinel materialize. len@8/cap@16 left as-is
+                        // — the shim no-ops on ptr@0 == NULL_SENTINEL before
+                        // reading cap, and consumers null-check ptr@0 only.
+                        if dest.projection.is_empty()
+                            && let Some((slot, _)) = self.struct_slots.get(&dest.local)
+                        {
+                            builder.ins().stack_store(val, *slot, 0);
+                        }
                     }
                 }
 
@@ -1387,7 +1400,9 @@ impl JitContext {
                     }
 
                     // Regular heap types: call free shim.
-                    let free_shim_name = if matches!(ty, MirType::String) {
+                    // ADR-0062: `String?` drops via the String free shim — null
+                    // (ptr@0 == NULL_SENTINEL) is a no-op inside the shim (§4).
+                    let free_shim_name = if ty.is_string_repr() {
                         "__triet_string_free"
                     } else if ty.is_vec() {
                         "__triet_vector_free"
@@ -1400,7 +1415,7 @@ impl JitContext {
                     };
                     let func_id = self.get_or_declare_shim(free_shim_name)?;
                     let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-                    if matches!(ty, MirType::String) {
+                    if ty.is_string_repr() {
                         let [ptr, cap] = if let Some((slot, _)) = self.struct_slots.get(local) {
                             let p = builder.ins().stack_load(I64, *slot, 0);
                             let c = builder.ins().stack_load(I64, *slot, 16);

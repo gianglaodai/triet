@@ -1,0 +1,14 @@
+// EXPECT: 0
+// ADR-0062 Heap-Nullable Lát 1: `let s: String? = ~0` is now LOWERED (was
+// refused pre-Lát-1). The let-bound local carries type Nullable(String); `~0`
+// materializes NULL_SENTINEL into its slot's ptr@0. Drop at scope exit calls
+// the String free shim, which no-ops on the sentinel. RUN returns 0.
+//
+// (Converted from 181_heap_nullable_let_refused: WO Lát 1 point 5 places
+// let-binding `~0` in scope; the local-scan gate that refused it is the same
+// scan fixture 190's return-temp needs open, so it could not stay refused.
+// Struct-field/enum-payload String? remain refused — see 180.)
+function main() -> Integer = {
+    let s: String? = ~0;
+    return 0;
+}

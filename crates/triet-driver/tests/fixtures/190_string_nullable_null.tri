@@ -1,0 +1,10 @@
+// EXPECT: 0
+// ADR-0062 Heap-Nullable Lát 1: `String?` null via `= ~0`. Materializes
+// NULL_SENTINEL into the slot's ptr@0. main binds it (Drop → free shim no-ops
+// on NULL_SENTINEL) and returns 0. RUN must not crash.
+function f() -> String? = ~0
+
+function main() -> Integer {
+    let r = f();
+    return 0;
+}
