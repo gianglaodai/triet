@@ -1,298 +1,273 @@
 # Triết — Vision
 
-> Một ngôn ngữ tam phân cân bằng, AI-first, đủ năng lực viết hệ điều hành.
+> Một ngôn ngữ tam phân cân bằng, **AI-first**, thiết kế để không bao giờ đóng
+> cánh cửa xuống tới hệ điều hành.
 
-Tài liệu này là **north star** dài hạn của dự án. Mọi quyết định kiến trúc lớn phải đối chiếu với tầm nhìn ở đây. Khi tầm nhìn cần thay đổi, sửa tài liệu này trước, không phải sau.
+Tài liệu này là **north star** dài hạn của dự án. Mọi quyết định kiến trúc lớn
+phải đối chiếu với tầm nhìn ở đây. Khi tầm nhìn cần thay đổi, sửa tài liệu này
+trước, không phải sau.
+
+> **Trung thực trước (đọc trước mọi thứ).** Triết là tác phẩm dài hạn của **một
+> người** (Giang Hoàng), với phần hiện thực kỹ thuật được giao cho AI. Giá trị
+> của nó nằm ở **craft + một giả thuyết đo được**, KHÔNG ở adoption hay ở việc
+> chờ một sự kiện phần cứng. Tài liệu này cố tình KHÔNG hứa những thứ một dự án
+> một-người không thể giao. Mỗi tham vọng ở đây được dán nhãn rõ là **ràng buộc**
+> (kiểm chứng được, kỷ luật từng quyết định) hay **cảm hứng** (định hình bản sắc,
+> không phải lời hứa). Lẫn lộn hai cái là cái bệnh đã giết phiên bản cũ của tài
+> liệu này — xem §0.
+
+---
+
+## 0. Bài học: tại sao tài liệu này được viết lại
+
+Ngày 2026-06-04, toàn bộ backend compiler v0.2–v0.10 (VM bytecode, interpreter,
+self-host ~23K LOC, ~1637 test) bị **xóa vĩnh viễn** để rewrite từ nền lên. Lý
+do không phải code tệ — mà vì **nền sai**: dự án đã tự lừa mình về việc nó *là*
+cái gì.
+
+Phiên bản cũ của VISION này viết như thể Triết là một **substrate thay-đổi-thế-giới,
+đủ sức viết OS, chờ phần cứng tam phân xuất hiện**. Đó là sương mù: một mục tiêu
+*không thể chứng minh sai* (không ai bác bỏ được "khi phần cứng tam phân tới…")
+nên không kỷ luật được bất kỳ quyết định nào. Nó cũng dán nhãn "✅ shipped" cho
+những trụ cột mà compiler chứa chúng nay **đã bị xóa**.
+
+Bản viết lại này commit vào một kỷ luật: **mọi mục tiêu phải hoặc kiểm chứng
+được, hoặc được gọi thẳng tên là cảm hứng — không có vùng xám ở giữa.**
 
 ---
 
 ## 1. Tại sao Triết tồn tại
 
-Thế giới phần mềm hôm nay là nhị phân. Mọi ngôn ngữ — từ assembly tới TypeScript — đều giả định `bit ∈ {0, 1}`. Đây không phải định luật vật lý mà là di sản kỹ thuật từ điện tử transistor những năm 1950.
+Triết là một thí nghiệm có chủ đích: **một ngôn ngữ được thiết kế tường minh đến
+mức tối đa, để kiểm tra một giả thuyết — rằng ngôn ngữ + diagnostic có thể được
+chế tạo sao cho một AI hội tụ về code đúng nhanh hơn ở các ngôn ngữ mainstream.**
 
-Tam phân cân bằng `{-1, 0, +1}` có lý thuyết mạnh hơn, từng được hiện thực phần cứng (Setun, Liên Xô 1958). Nó tự nhiên biểu diễn:
-- Số có dấu (không cần two's complement)
-- Logic ba giá trị (true / false / unknown — Łukasiewicz Ł3)
-- Trạng thái thiếu thông tin (`null` bẩm sinh, không phải bolt-on)
+Bản sắc của nó là **tam phân cân bằng** `{-1, 0, +1}` và logic **Łukasiewicz Ł3**.
+Hai thứ này không phải lời hứa hiệu năng — chúng là **căn tính thẩm mỹ và cảm
+hứng** (Setun 1958, Łukasiewicz 1920), và chúng làm một số thứ *sạch ở tầng kiểu*:
+- Số có dấu không cần two's complement.
+- Logic ba giá trị (true / false / unknown) là first-class, không bolt-on.
+- `null` bẩm sinh qua 1-trit discriminator, không phải patch về sau.
 
-**Triết tồn tại để chứng minh tam phân không chỉ là điều thú vị mà là nền tảng kỹ thuật vượt trội** — đủ để viết application, library, và một ngày nào đó là OS.
+Giá trị của Triết, nói thẳng, là **(a)** một tác phẩm kỹ thuật mạch lạc với kỷ
+luật cao (ADR-driven, schema-first, compiler-không-bao-giờ-panic), và **(b)** một
+giả thuyết AI-first đo được (§5). Không phải "thế giới cần một ngôn ngữ thứ N".
 
-> Nếu Triết không thể viết được OS, nó sẽ mãi là một thí nghiệm thú vị bên lề thế giới nhị phân.
-> Tham vọng dự án: khi phần cứng tam phân xuất hiện, Triết sẵn sàng làm tầng phần mềm cho nó.
+## 2. Triết KHÔNG là gì (đọc sớm — chống scope creep)
 
-## 2. Mâu thuẫn ngôn ngữ Triết phải giải quyết
+- **Không phải đối thủ của Rust/C++/Go.** Triết không cạnh tranh adoption. Nó là
+  một tác phẩm + một thí nghiệm.
+- **Không phải lời hứa giao một OS.** OS-capable là một **ràng buộc thiết kế**
+  (§7), không phải một đích đến trên roadmap. Dự án này sẽ không "build microkernel".
+- **Không cá cược vào phần cứng tam phân.** Lợi thế phần cứng của tam phân là lý
+  thuyết và đã thua nhị phân suốt 70 năm (§6). Triết không chờ Setun-2.
+- **Không phải "AI-first đã được chứng minh".** Đó là một **giả thuyết chưa đo**
+  (§5). Bất kỳ ai đọc tài liệu này thấy nó được tuyên như sự thật → đó là bug
+  của tài liệu, báo lại.
+- **Không phải fast-iteration scripting.** Trade-off ngược: stability cao hơn,
+  pace chậm hơn. Đó là tính năng.
 
-Ngôn ngữ system hiện đại có ba trục đối lập:
+## 3. Trạng thái thật hôm nay (không tô vẽ)
 
-| Trục | Đại diện | Ưu | Nhược |
-|---|---|---|---|
-| **Linh hoạt** | C++ | Toàn quyền với phần cứng | Unsafe, ABI mong manh |
-| **An toàn** | Rust | Memory safety, không GC | ABI bất ổn, generics phá ABI binary |
-| **Nhất quán** | Java | Tooling đỉnh, ABI ổn định | GC, không xuống được hardware |
-
-Triết nhắm tới **đỉnh tam giác**: linh hoạt như C++, an toàn như Rust, nhất quán như Java. Bằng cách:
-- Tam phân cân bằng giải quyết null/sign tự nhiên ở tầng kiểu
-- Łukasiewicz Ł3 cho logic 3 giá trị làm capability runtime
-- CAS packaging giải quyết DLL Hell ở gốc, không patch
-- Stable ABI thiết kế từ đầu, không bolt-on về sau
-
-## 3. Năm trụ cột kiến trúc
-
-### 3.1 — CAS Packaging (Content-Addressable Storage)
-
-Mỗi module/package được định danh bằng **hash** của nội dung, không phải đường dẫn hay version string.
-
-**Why:**
-- Triệt tiêu DLL Hell: chạy song song N phiên bản cùng thư viện không xung đột.
-- Build deterministic: cùng input → cùng hash → cùng artifact.
-- Shared loading ở OS level: 10 ứng dụng dùng `String.format` chỉ load 1 bản vào RAM.
-- AI-first: hash là địa chỉ ngữ nghĩa hoàn hảo cho LLM tham chiếu code chính xác.
-
-**Prior art:** [Unison language](https://www.unison-lang.org/) (hash AST nội dung, model phân phối phi tập trung), Nix/Guix (CAS ở OS level), Bazel (action cache), Go module sums.
-
-**Triết-specific:** Tách hai cấp hash:
-- `iface_hash` — hash của ABI surface (export, types, signatures) → dùng cho linker
-- `impl_hash` — hash toàn bộ implementation → dùng cho deduplication runtime
-
-Sửa implementation không thay đổi `iface_hash` → không trigger rebuild downstream. Quan trọng cho compile-time scaling.
-
-**Phase:** v0.5 ✅ (shipped). Chi tiết: [ADR-0014](docs/decisions/0014-hash-scheme-refinement.md) (3-cấp hash tree), [ADR-0015](docs/decisions/0015-package-store-layout.md) (package store + atomic install).
-
-### 3.2 — Module System: Hierarchical, Explicit Export
-
-Cấu trúc module phân cấp, **explicit `pub` export**, KHÔNG bind cứng vào filesystem.
-
-**Why:**
-- Hierarchical = predictable navigation, fast compile (compiler không scan blindly).
-- Explicit export = ABI surface rõ ràng, là prerequisite cho stable ABI (trụ cột 3).
-- Không bind filesystem = refactor-friendly. Java đã chính thức từ bỏ ràng buộc filesystem từ JPMS (Java 9).
-
-**Prior art:** Rust mod system (chính), OCaml signatures (deferred), Mojo modules.
-
-**Anti-prior-art:** Java pre-Jigsaw filesystem mapping, Python implicit packages.
-
-**Phase:** v0.2.x ✅ (shipped). Chi tiết: [`docs/decisions/0005-module-system.md`](docs/decisions/0005-module-system.md).
-
-### 3.3 — Stable ABI: Interface-First Design
-
-Mỗi crate-pack mang theo file metadata mô tả ABI surface ở dạng nhị phân gọn. Compiler là gatekeeper: cross-package mismatch = refuse-to-link với diagnostic rõ ràng.
-
-**Why:**
-- ABI bất ổn là điểm yếu chí mạng của Rust và C++. Khắc phục được = lợi thế cạnh tranh thực sự.
-- Triết có lợi thế bẩm sinh: Trit/Tryte/Integer/Long có kích thước cố định, không struct padding ambiguity, không endianness — ABI primitives đã ổn định bẩm sinh.
-
-**Generics ở biên ABI** (vấn đề khó nhất):
-- **Cross-package**: dictionary passing / witness tables (Swift-style). Generics không bị monomorphize qua biên crate-pack → ABI ổn định.
-- **Intra-package**: monomorphization (Rust-style). Tốc độ tối ưu trong cùng compilation unit.
-
-**KHÔNG hứa auto-shim.** ABI breakage *detection* là decidable; *automatic adaptation* không phải general case (semantic change không thể tự động suy luận). Thay vào đó:
-- Compiler refuse-to-link với diff rõ ràng (kiểu miette).
-- Migration tools explicit khi major-version mismatch.
-- Semver-aware: minor mismatch = warning, major = error.
-
-**Prior art:** Swift stable ABI (chính), .NET assemblies, Java `.class`, Mojo `.mojopkg`. Anti-prior-art: C++ ABI (cautionary tale).
-
-**Phase:** v0.4 (sau bytecode IR).
-
-### 3.4 — Crate-Pack & Hybrid Linking
-
-Đơn vị phân phối là **Crate-Pack**: file nhị phân kèm metadata (ABI signatures, dependency hashes, capability claims).
-
-**Hybrid Linking**:
-- **Static link tại build time** cho hot path → tốc độ runtime tối đa.
-- **Dynamic link tại runtime** cho cold path / shared libraries → RAM efficiency.
-
-**Why:** JVM/CLR đã chứng minh mô hình này 25 năm. Không có gì tranh cãi về kỹ thuật.
-
-**Functional error handling:** `Result<T, E>` + `Option<T>` (đã có nền G.1 generics). Triết có lợi thế: `T ⊂ T?` subtyping bẩm sinh → null không cần unwrap dance khi widening.
-
-**Phase:** v0.4 (cùng phase với ABI).
-
-### 3.5 — OS-Native Capability Namespaces
-
-Top-level namespace dành riêng đại diện **Resource Tree** của OS:
-- `sys::` — syscall surface
-- `dev::` — driver / hardware interface
-- `usr::` — user application space
-- `std::` — standard library (mặc định ambient)
-
-Capability không phải convention mà **enforce ở compiler**: ứng dụng `usr::*` không thể `use dev::*` trừ khi có capability token.
-
-**Why đây là trụ cột novel nhất của Triết:**
-1. **Trit-level capability:** capability không phải boolean (cấp/cấm). Là `Trit`:
-   - `-1` = deny (cấm cứng, compile-time error)
-   - `0` = ambient / inherit từ caller
-   - `+1` = grant (cấp explicit)
-2. **Łukasiewicz capability checking:** capability có thể là `Trilean::Unknown` → giải quyết runtime bởi user/policy. Logic 2-giá trị không làm được.
-3. **Tự nhiên ăn nhập** với balanced ternary và Ł3 — không phải bolt-on.
-
-**Prior art:** [Pony](https://www.ponylang.io/) (object capabilities ở type system), [Genode OS](https://genode.org/) / [seL4](https://sel4.systems/) (capability microkernel), E language, Plan 9 namespaces.
-
-**Phase:** v0.6 ✅ (shipped). Chi tiết: [ADR-0016](docs/decisions/0016-capability-type-system.md) (type system), [ADR-0017](docs/decisions/0017-trilean-policy-hook.md) (runtime policy hook), [ADR-0018](docs/decisions/0018-capability-loader-semantics.md) (loader semantics).
-
----
-
-## 4. Mô hình thực thi: IR-centric, multi-backend
-
-Triết là **AOT native language với multi-backend strategy**. KHÔNG phải VM-based language như Java/JVM hay C#/.NET. Phần này định khung lý do tách "ngôn ngữ Triết" khỏi "implementation chạy Triết".
-
-### 4.1 Hai khái niệm cốt lõi cần phân biệt
-
-**IR (Intermediate Representation)** — đặc tả ngôn ngữ máy ảo, là **biên giới giữa "ngôn ngữ Triết" và "phần cứng đích"**. Stable, version-locked sau v1.0. Đây là di sản kỹ thuật thực sự của project: spec sống lâu hơn bất kỳ implementation nào.
-
-**Backend** — implementation chạy IR trên một target cụ thể (VM, JIT, AOT native, ternary native). Có nhiều backend, có thể thay thế / bổ sung qua thời gian. Backend là implementation detail, không phải kiến trúc.
-
-JVM bake VM + IR vào một, ép managed runtime + GC vào ngữ nghĩa ngôn ngữ — đó là lý do Java không viết được OS. Triết tách rõ: **IR là spec, backend là implementation**. Không có "Triết runtime" mãi mãi như JVM runtime.
-
-### 4.2 Bốn backend tiers
+Compiler hiện hành là **bản rewrite** (2026-06 trở đi). Một pipeline duy nhất:
 
 ```
-Triết source (.tri)
-        │
-        ▼  Lower (compile-time)
-   Triết IR (stable spec, ADR-0007)
-        │
-        ├─► Backend 1: Bytecode VM (v0.3) ─► development tier
-        │       Mục đích: fast iteration, IR validation, test oracle.
-        │       KHÔNG phải production runtime.
-        │
-        ├─► Backend 2: JIT (v0.9, Cranelift) ─► hot-path runtime
-        │       Mục đích: tier-up cho code chạy thường xuyên.
-        │       Compile bytecode → machine code at runtime.
-        │
-        ├─► Backend 3: AOT native (v2.0, LLVM) ─► PRODUCTION TARGET nhị phân
-        │       Mục đích: binary .exe native cho x86-64 / ARM64 / RISC-V.
-        │       Zero VM overhead, zero managed runtime.
-        │
-        └─► Backend 4: Trytecode (v∞, ternary hardware) ─► PRODUCTION TARGET tam phân
-                Mục đích: native code cho CPU tam phân thật khi xuất hiện.
-                Trit là unit hardware thực, không emulate qua bit.
+.tri → lexer → parser → modules → typecheck   [REUSED, well-tested]
+     → lower (AST→MIR) → mir → borrowck (NLL) → jit (Cranelift)   [NEW]
+     → driver (check / run)
 ```
 
-### 4.3 Production target qua thời gian
+Đã chạy end-to-end trên JIT: scalar, arithmetic (range-enforced trap-on-overflow,
+ADR-0044), logic Ł3/K3, control flow, đệ quy, flat struct (StackSlot + sret),
+enum, String/Vector/HashMap (heap shim, move-only + Deinit), nullable `T?`
+(PA-3c sentinel), NLL borrowck (E2420/E2440/E2450), MIR verifier.
 
-| Phase | Production runtime | Status |
-|---|---|---|
-| v0.2 | Tree-walking interpreter | Development tier (still runs alongside VM) |
-| v0.3–v1.x | Bytecode VM | Development tier — không phải production |
-| v2.0+ | AOT native binary (LLVM) | **Production target nhị phân** |
-| v∞ | Trytecode native | **Production target tam phân** (cần phần cứng) |
+**Chưa có (nói thẳng):** AOT native, self-host, native multi-field layout, borrow
+params cho heap, Outcome 2-reg ABI, freestanding/no-std target, bề mặt raw-memory.
+Heap types hiện **phụ thuộc allocator + std của Rust** qua `extern "C"` shim. Lưới
+test: ~1086 workspace test + 72 fixture driver. Backlog thật ở [`TODO.md`](TODO.md).
 
-VM ở v0.3 là **scaffolding**, không phải đích cuối. Nó tồn tại để:
+> Hệ quả trung thực cho §7: Triết **chưa** OS-capable *trong hiện thực*. Nó đang
+> *duy trì các ràng buộc* để không đóng cửa đó. Khác nhau một trời một vực.
 
-1. **Validate IR design** — test IR shape qua thực thi trước khi commit IR vào ADR vĩnh viễn. LLVM debug cùng lỗi đó tốn vài tuần.
-2. **Self-hosting platform** — compiler Triết viết bằng Triết (v0.7) cần một runtime để chạy trước khi LLVM landing ở v2.0.
-3. **Differential test oracle** — VM output phải byte-identical với tree-walker (v0.2). Bug regression bắt sớm.
-4. **Ecosystem development** — phát triển stdlib + library + tooling trong khi backend production chưa có.
+## 4. Ba trụ cột thật (phục vụ một chủ: vòng hội tụ AI)
 
-Khi v2.0 LLVM backend landing, VM trở thành tier debug/development không bắt buộc cho production. Khi v∞ trytecode backend landing trên ternary hardware, LLVM backend trở thành compatibility tier cho legacy binary CPU.
+Đây là những trụ cột **kiểm chứng được**, và tất cả đều quy về §5:
 
-### 4.4 Hệ quả: IR phải OS-friendly, không VM-friendly
+### 4.1 — Tường minh triệt để (Explicit > implicit)
+Export, capability, dependency, ownership, ABI surface — tất cả tường minh. Glob
+imports, default-public, ambient capabilities, suy luận kiểu ngầm ở biên — **bị
+cấm**. Ít đường để AI bịa, ít trạng thái ẩn để AI đoán nhầm.
 
-Đây là điểm phân biệt then chốt giữa Triết IR và JVM bytecode:
+### 4.2 — Diagnostic máy-sửa-được (ADR-0027 là hiến pháp)
+Mọi lỗi theo format AI-first khóa ở [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md):
+header `EXXXX Tên` + body + span + khối `[Fix N]` mệnh lệnh (`Change/Wrap/Use/Add/
+Replace/Move X to Y`). 
 
-| Phải có | KHÔNG được có |
+Để tránh lãng phí năng lực AI vào các tác vụ cơ học, diagnostic được chia làm hai lớp rõ rệt:
+- **Machine-Applicable (Deterministic)**: Lỗi mà compiler biết chắc chắn cách sửa. Những lỗi này phải được sửa tự động hoàn toàn bởi công cụ của compiler (ví dụ: `triet fix`), tuyệt đối không bắt LLM làm thay vai trò của một AST transformer.
+- **Intent-Dependent**: Lỗi đòi hỏi hiểu ý định của lập trình viên (ví dụ: mismatch kiểu dữ liệu phức tạp, vi phạm borrowck liên quan đến logic). Đây mới là nơi LLM phát huy vai trò thông qua vòng phản hồi diagnostic để sửa code. Đây là tài sản trung tâm của giả thuyết §5.
+
+### 4.3 — Refuse over guess
+Khi compiler không chắc → error rõ ràng, **không suy luận im lặng**. Một soundness
+hole với test xanh tệ hơn một test đỏ. Borrowck giả định alias khi không chắc
+(conservative). Sai phải lộ ngay để vòng hội tụ §5 bắt được.
+
+## 5. Giả thuyết AI-first (CHƯA ĐO — đây là điều quan trọng nhất phải trung thực)
+
+> **Trạng thái: GIẢ THUYẾT. Chưa có công cụ đo. Instrument sẽ xây sau.**
+> Không một dòng nào trong tài liệu này được tuyên "đã đo" về AI-first.
+
+### 5.1 Sự thật phũ phải đặt lên bàn trước
+Cái quyết định "LLM sinh code đúng" **không phải độ sạch cú pháp — là khối lượng
+corpus huấn luyện**. Một LLM đã nuốt hàng tỉ dòng Python; Triết có **0 dòng** trong
+corpus. Một ngôn ngữ mới toanh là trường hợp **TỆ NHẤT** cho LLM, không phải tốt
+nhất. Vì vậy luận điểm *"LLM viết Triết đúng ngay lần đầu hơn viết Rust"* là
+**thua chắc** và Triết KHÔNG đặt cược vào nó.
+
+### 5.2 Luận điểm duy nhất sống sót: vòng hội tụ
+> **Khi LLM viết SAI (nó sẽ luôn sai vì 0 corpus), Triết đưa nó về xanh trong ÍT
+> LƯỢT hơn** — nhờ explicit syntax (§4.1) + diagnostic máy-sửa-được (§4.2) +
+> refuse-over-guess (§4.3). Không phải "phát một trúng"; là "hội tụ nhanh".
+
+Đây là luận điểm chơi đúng vào ba trụ cột §4 *đã tồn tại trong code*, và nó
+**đo được**.
+
+### 5.3 Instrument dự kiến (sẽ xây sau — chưa có)
+Khi xây, phép đo tối thiểu:
+1. `N≈20` task nhỏ.
+2. Cho LLM **spec + vài ví dụ trong context** (in-context learning thay corpus),
+   yêu cầu sinh Triết.
+3. Chạy qua `triet-driver`. Nếu fail → **đút nguyên diagnostic trở lại**, cho sửa,
+   lặp.
+4. Đo **turns-to-green** + **tỉ lệ tự-sửa-đúng từ diagnostic**.
+5. Baseline trung thực: KHÔNG so first-try với Python (confound corpus) — so
+   *vòng hội tụ*: diagnostic dẫn model sửa đúng, hay làm nó loanh quanh.
+
+Mục tiêu dài hạn: biến turns-to-green thành một **gate hồi quy thiết kế** (kiểu
+`scripts/gate.sh`). Thêm cú pháp / sửa diagnostic mà turns-to-green tăng = vừa làm
+ngôn ngữ tệ đi cho AI. Đó là lúc "AI-first" ngừng là khẩu hiệu và thành kỷ luật.
+
+## 6. Tam phân: bản sắc, không phải tham vọng
+
+Trit / Tryte / Integer (27 trit) / Long (81 trit), balanced ternary arithmetic, và
+Łukasiewicz Ł3 (mặc định) / Kleene K3 là **kiểu nguyên thủy first-class** — không
+phải library trên hệ nhị phân. Đây là căn tính không thể lột bỏ của Triết.
+
+> [!IMPORTANT]
+> **Thừa nhận trung thực về biểu diễn:**
+> Trên phần cứng nhị phân, "tam phân" của Triết phần lớn là câu chuyện ngữ nghĩa và tầng kiểu (type-level semantics), KHÔNG phải biểu diễn vật lý ở runtime. `Integer`/`Long` được compile thẳng ra số nhị phân `i64` có giới hạn giá trị nằm trong dải tam phân — không đóng gói trit, không chia-cho-3 khi tính toán cơ bản. Phép cộng `5 + 3 = 8` chạy bằng chỉ thị `iadd` native của CPU nhị phân.
+>
+> Ai gọi đây là "fake ternary ở runtime" — đúng, và ta **NHẬN**: bản sắc tam phân của Triết sống ở tầng kiểu + logic, không ở mạch điện nhị phân.
+
+Nhưng nói thẳng về phần cứng: lợi thế tam phân là **radix economy** (~5% lý thuyết
+trên `số_chữ_số × cơ_số`, base 3 gần *e* nhất) — một con số đồ chơi đã biết từ 1950.
+Nhị phân thắng vì **kỹ thuật**: transistor bistable chống nhiễu vượt trội. Setun bị
+bỏ vì thua công trạng kỹ thuật, không vì âm mưu. Memristor ternary là research-stage
+"còn 5 năm nữa" suốt 20 năm.
+
+**Triết KHÔNG cược vào phần cứng tam phân.** Backend tam phân (trytecode) là *cảm
+hứng cuối chân trời*, không phải milestone. Giá trị của tam phân ở đây là **thẩm mỹ
+ngôn ngữ và sự sạch sẽ tầng kiểu** (null/sign/3-trạng-thái), không phải hiệu năng
+phần cứng.
+
+> [!NOTE]
+> **Nợ thiết kế về biểu diễn dữ liệu dày (G nêu 2026-06-18):**
+> Khi cần lưu trữ mảng/vector Trit lớn, ta đối mặt với trade-off:
+> 1. Đóng gói chặt lý thuyết (base-3 packing): Tiết kiệm bộ nhớ tối đa nhưng đòi hỏi phép nhân/chia cho 3 để trích xuất, vốn cực kỳ chậm trên CPU nhị phân.
+> 2. Đóng gói thực dụng (2-bit/trit): Phí ~25% không gian so với **đóng gói nhị phân tối ưu (~1.6 bit/trit, vd 5 trit / 8-bit)** — KHÔNG phải so với "1-bit" (một trit mang log₂3 ≈ 1.585 bit, không nhét nổi vào 1 bit). Trích xuất bằng bit-mask/shift, tránh phép chia. (Lưu mỗi Trit *trần* trong i64 mới là phung phí ~40×.) Tuy nhiên, bất kỳ phép toán số học song song nào trên mảng packed này cũng phải unpack trước (hoặc dựng bộ cộng SWAR bitwise tốn kém) vì quy tắc lan truyền số dư (carry propagation) của nhị phân khác tam phân.
+>
+> Đây là bài toán biên-biểu-diễn hẹp, chưa giải, sẽ được quyết định bằng ADR khi có nhu cầu FFI nhị phân hoặc dữ liệu dày.
+
+## 7. OS-capable: một RÀNG BUỘC, không phải một đích đến
+
+Đây là phân biệt sống còn, đã được tranh luận và chốt (2026-06-18):
+
+- **Tiền đề hợp lệ:** no-GC + memory-safe + native → đủ tư cách viết OS *trên phần
+  cứng nhị phân*. Rust đã chứng minh: Redox, Hubris, driver trong Windows/Android.
+  Đây KHÔNG phải fantasy. Triết lấy cảm hứng đúng chỗ này từ Rust.
+- **Nhưng KHÔNG phải đích đến.** "Build một OS/microkernel" là multi-hundred-
+  person-year — một dự án một-người không bao giờ chạm tới. Đặt nó làm milestone =
+  tái phạm tội sương mù §0.
+
+Vì vậy OS-capable ở đây là một **ràng buộc thiết kế, kiểm chứng trên từng feature**:
+
+> **Ngôn ngữ KHÔNG BAO GIỜ được đòi một managed runtime hay GC bắt buộc. Core phải
+> biểu đạt được trong môi trường freestanding (không-OS). Phải có đường tới raw
+> pointer + manual memory model khi cần.**
+
+| Phải giữ (ràng buộc) | Phải cấm (đóng cửa OS) |
 |---|---|
-| Raw pointer + manual memory model (Mojo-style ARC) | GC bắt buộc kiểu JVM |
-| Capability namespace ở IR level (`sys.*`/`dev.*`/`usr.*` preserved) | Sandbox runtime ép buộc |
-| Trit/Tryte/Integer/Long là first-class IR type với type tag | Object reference singleton runtime |
-| Syscall opcodes / FFI primitives (định hình ở v0.4 ABI) | Type erasure kiểu JVM generics |
-| Stable encoding — additive-only sau v1.0 | "Implementation defined" mơ hồ |
+| Manual memory model (ownership/RAII, không GC bắt buộc) | GC bắt buộc kiểu JVM |
+| Core biểu đạt được freestanding/no-std | Managed runtime singleton ép buộc |
+| Đường tới raw pointer / FFI / syscall primitive (thiết kế) | Type erasure / sandbox runtime ép buộc |
+| Trit/Tryte/Integer/Long fixed-size, không padding ambiguity | "Implementation-defined" mơ hồ ở ABI |
 
-JVM không thể làm OS vì nó **cố tình** bake managed runtime vào IR. Triết IR sẽ **cố tình không** bake. Đây là điều ADR-0007 phải bảo vệ qua mọi quyết định opcode + memory model.
+Ràng buộc này **test được trên mỗi feature**: "feature này có ép GC không? có chạy
+không-std được không?" — và nó kỷ luật quyết định ngay hôm nay, kể cả khi OS không
+bao giờ được viết. **Đó là toàn bộ giá trị của nó.**
 
-### 4.5 Trytecode không phải trick — nó là target cuối cùng
+> Trạng thái: Triết hiện **chưa** thỏa ràng buộc này trong hiện thực (heap sau shim
+> Rust/std, chưa freestanding — §3). Đây là **ràng buộc đang được duy trì hướng
+> tới**, không phải năng lực đã có. Khoe khác đi là nói dối.
 
-Một ngày khi phần cứng tam phân xuất hiện (Setun-style modern hoặc memristor-based ternary), backend trytecode sẽ là **production target chính**. Backend nhị phân (v2.0 LLVM) trở thành compatibility tier cho legacy binary CPU.
+## 8. Di sản đã thiết kế — đã từng build — đang chờ rebuild
 
-Đây là lý do "ngôn ngữ Triết" và "Triết IR" được tách rạch ròi:
+Năm "trụ cột" của compiler cũ KHÔNG bị vứt; chúng đã được thiết kế kỹ, **từng được
+build (v0.2–v0.10), rồi bị xóa cùng compiler cũ**. ADR còn sống là di sản thật;
+hiện thực thì chưa được rebuild trong pipeline mới. Trạng thái trung thực:
 
-- **Ngôn ngữ Triết** (SPEC.md) — semantics tam phân, viết một lần, không đổi qua hardware era.
-- **Triết IR** (ADR-0007) — substrate-neutral, có type tag tam phân nhưng không hardcode encoding bit/trit.
-- **Backend nhị phân** — encode `Trit` thành 2 bit, emit x86/ARM. Có overhead encoding nhưng vẫn chạy được.
-- **Backend trytecode** — encode `Trit` thành 1 trit thật, emit native ternary instructions. Zero encoding overhead.
+| Thiết kế | ADR (còn sống) | Hiện thực trong rewrite |
+|---|---|---|
+| CAS Packaging (hash-based identity, Unison-inspired) | 0014, 0015 | **Đã xóa, chưa rebuild** |
+| Module System (hierarchical, explicit export) | 0005 | Frontend REUSED, đang chạy |
+| Stable ABI (witness tables, refuse-to-link) | (v0.4 design) | **Đã xóa, chưa rebuild** |
+| Crate-Pack & Hybrid Linking | 0011–0013 | `triet-pack` còn, **chưa wire** |
+| OS-Native Capability (Trit-level + Ł3 Unknown) | 0016, 0017, 0018 | **Đã xóa, chưa rebuild** |
 
-**Cùng source `.tri`. Cùng IR. Khác backend. Khác hardware.** Người dùng không sửa code khi đổi target — đây là cam kết dài hạn của VISION.
+Điểm **nhất quán (coherence)** đáng giữ trong số này: **capability tam phân** (`-1`
+deny / `0` ambient / `+1` grant native) + **Łukasiewicz capability checking**
+(`Unknown` resolved bởi runtime policy). Đây không phải là tính năng "novel" chưa từng có
+(nhị phân hoàn toàn làm được bằng `enum Permission`), mà là sự đồng bộ hóa (coherence) — dùng
+chung một đại số Ł3 thống nhất cho cả kiểm soát lỗi, logic tính toán và phân quyền trong ngôn ngữ.
+Đáng rebuild — khi tới lượt. Phần còn lại (CAS/ABI/module/link) là *prior art làm tốt*: giữ
+vì craft và vì §7.
 
-**Phase:** v0.3 (IR + backend 1 VM), v0.9 (backend 2 JIT), v2.0 (backend 3 AOT), v∞ (backend 4 trytecode). Chi tiết: [ADR-0007](docs/decisions/0007-ir-design.md).
-
----
-
-## 5. Bản sắc Triết
-
-Ba điều khiến Triết không thể bị thay thế bằng "Rust + Mojo + Nix":
-
-1. **Trit-level capability** — 3-state native, không phải emulate bằng `enum { Allow, Deny, Inherit }`.
-2. **Łukasiewicz capability checking** — `Unknown` capability giải quyết bởi runtime policy, không cần bolt-on policy engine.
-3. **Tam phân ABI ổn định bẩm sinh** — không có struct padding, không endianness, không integer overflow ambiguity. Trit/Tryte/Integer/Long là ABI primitives ổn định trước khi viết dòng compiler nào.
-
-Nếu giữ được 3 điểm này, Triết có lý do tồn tại độc lập — kể cả khi phần cứng tam phân chưa xuất hiện, kể cả khi Rust/Mojo/Pony hoàn thiện stable ABI của họ.
-
-## 6. Nguyên tắc thiết kế (commit hard)
+## 9. Nguyên tắc thiết kế (commit hard)
 
 | Nguyên tắc | Ý nghĩa |
 |---|---|
 | **Stability over speed** | Mọi quyết định kiến trúc có ADR. Không "ship đại rồi sửa". |
-| **Prior art over invention** | Đứng trên vai Unison/Mojo/Pony/Genode/Swift. Phát minh chỉ ở chỗ tam phân thực sự khác biệt. |
-| **AI-first stays** | Cú pháp, error message, package layout đều phải tối ưu cho LLM sinh code đúng lần đầu. |
-| **Tam phân là mặc định, không phụ trợ** | Không có "binary mode". Trit/Tryte/Integer/Long luôn là kiểu nguyên thủy. |
-| **Explicit > implicit** | Export, capability, dependency, ABI surface — tất cả tường minh. Glob imports, `pub` mặc định, ambient capabilities — bị cấm. |
-| **Refuse over guess** | Khi compiler không chắc → error rõ ràng, không suy luận im lặng. |
+| **Refuse over guess** | Compiler không chắc → error rõ ràng, không suy luận im lặng. |
+| **Explicit > implicit** | Export, capability, dependency, ABI — tường minh. Glob, default-public, ambient — cấm. |
+| **Soundness > test color** | Test xanh không chứng minh đúng. Adversarial self-audit trước khi nói "xong". |
+| **Prior art over invention** | Đứng trên vai Unison/Mojo/Pony/Swift/Genode. Phát minh chỉ ở chỗ tam phân thực sự khác. |
+| **Honest over impressive** | Không "✅ shipped" cho thứ đã xóa. Không "đã đo" cho giả thuyết. Không "OS-capable" cho ràng buộc chưa thỏa. |
 
-## 7. Cái Triết KHÔNG là
+## 10. Phạm vi & pace
 
-Để rõ ràng (giúp tránh scope creep):
+Đây là tác phẩm dài hạn của một người, làm cùng AI. Pace **chậm là tính năng**.
+Thước đo thành công KHÔNG phải adoption hay viết được OS — mà là: **(a)** một
+ngôn ngữ + compiler mạch lạc, đúng đắn, kỷ luật; **(b)** giả thuyết AI-first ở §5
+được trang bị công cụ đo và bắt đầu cho ra số. Mọi thứ khác — tam phân hardware,
+OS thật, ecosystem — là *cảm hứng*, không phải cam kết.
 
-- **Không phải replacement cho Rust/C++.** Triết là ngôn ngữ thứ ba, có domain riêng (tam phân + AI-first + capability).
-- **Không phải ngôn ngữ "binary với Ł3 thêm vào".** Tam phân không thể lột bỏ được.
-- **Không phải fast-iteration scripting.** Trade-off ngược: stability cao hơn, pace chậm hơn.
-- **Không phải general-purpose language ngay từ v1.0.** v1.0 ổn định cho domain ngôn ngữ-cấp-OS; general-purpose là hệ quả tự nhiên, không phải mục tiêu chính.
+## 11. Tham chiếu
 
-## 8. Roadmap dài hạn
+**Ngôn ngữ:** [Unison](https://www.unison-lang.org/) (CAS, hash AST) ·
+[Mojo](https://docs.modular.com/mojo/) (ABI metadata) ·
+[Pony](https://www.ponylang.io/) (object capabilities) ·
+[Swift](https://www.swift.org/) (stable ABI) ·
+[Rust](https://www.rust-lang.org/) (no-GC memory safety; bằng chứng OS-trên-nhị-phân:
+[Redox](https://www.redox-os.org/), [Hubris](https://hubris.oxide.computer/)).
 
-Phasing chi tiết: [`ROADMAP.md`](ROADMAP.md).
+**OS / capability:** [Genode](https://genode.org/) · [seL4](https://sel4.systems/) ·
+[Plan 9](https://9p.io/plan9/) namespaces.
 
-Tóm tắt trục thời gian (5–10 năm):
-
-```
-v0.2  ──────►  Struct, enum, generics                     ✅
-v0.2.x ─────►  Module system                              ✅
-v0.3  ──────►  Bytecode VM + Stable IR                    ✅
-v0.4  ──────►  Crate-Pack + ABI metadata                  ✅
-v0.5  ──────►  CAS packaging                              ✅
-v0.6  ──────►  Capability system (sys/dev/usr)            ✅  ← hiện tại
-v0.7  ──────►  Self-hosting compiler                      [next]
-v0.8  ──────►  Concurrency model
-v0.9  ──────►  JIT (Cranelift)
-v1.0  ──────►  Production stability
-v2.0  ──────►  AOT native compile (LLVM)
-v3.0  ──────►  Microkernel POC
-v∞    ──────►  Backend cho phần cứng tam phân
-```
-
-## 9. Tham chiếu
-
-**Languages:**
-- [Unison](https://www.unison-lang.org/) — CAS code, hash AST.
-- [Mojo](https://docs.modular.com/mojo/) — `.mojopkg` ABI metadata.
-- [Pony](https://www.ponylang.io/) — object capabilities.
-- [Swift](https://www.swift.org/) — stable ABI cho generics.
-- [Roc](https://www.roc-lang.org/) — platform model gần với capability namespace.
-
-**Operating Systems:**
-- [Genode](https://genode.org/) — capability-based OS framework.
-- [seL4](https://sel4.systems/) — formally-verified capability microkernel.
-- [Plan 9](https://9p.io/plan9/) — namespace as resource tree.
-
-**Packaging:**
-- [Nix](https://nixos.org/) / [Guix](https://guix.gnu.org/) — CAS packaging ở OS.
-- [WebAssembly Components](https://component-model.bytecodealliance.org/) — interface types, ABI.
-
-**Lý thuyết:**
-- Łukasiewicz Ł3 (1920) — three-valued logic.
-- Setun computer (Brusentsov, 1958) — first balanced-ternary computer.
-- "The Power of Interoperability" (Bird, 2013) — module systems theory.
+**Lý thuyết:** Łukasiewicz Ł3 (1920) · Setun (Brusentsov, 1958) — *cảm hứng lịch
+sử, không phải lộ trình kỹ thuật*.
 
 ---
 
-*Tầm nhìn này là cam kết dài hạn. Pace của dự án sẽ chậm — đó là tính năng, không phải bug.*
+*Tầm nhìn này là cam kết dài hạn về craft và trung thực — không phải về adoption
+hay về việc chờ phần cứng. Pace chậm là tính năng, không phải bug.*

@@ -1,156 +1,126 @@
 # Triết — Roadmap
 
-> Lộ trình từ interpreter v0.2 tới ngôn ngữ-OS v3.0+.
-> **Nguyên tắc:** *stability over speed.* Mỗi version mở khóa version sau.
-
-Xem tầm nhìn dài hạn ở [`VISION.md`](VISION.md).
+> Lộ trình của bản **rewrite** (2026-06 trở đi), chia theo **Bậc A/B/C**.
+> **Nguyên tắc:** *stability over speed* + *soundness over test color*.
+>
+> ⚠️ Đây KHÔNG còn là cuộc hành quân version-number v0.2 → v3.0 → OS. Lộ trình đó
+> thuộc compiler **đã bị xóa** (2026-06-04) và mang cái bệnh sương mù mà
+> [VISION §0](VISION.md) đã mổ. Tiến độ giờ đo bằng **gate của từng Bậc**, không
+> bằng việc tiến tới một đích OS. OS-capable là **ràng buộc thiết kế**, không phải
+> milestone — xem [VISION §7](VISION.md).
 
 ---
 
 ## Triết lý phasing
 
-1. **Mỗi phase có gate rõ ràng.** Không bắt đầu phase N+1 nếu phase N chưa pass gate.
-2. **Quyết định kiến trúc có ADR.** Mỗi trụ cột lớn = một ADR ở `docs/decisions/`.
-3. **Test bao phủ trước khi tiến.** Workspace tests phải xanh và sample programs chạy được trước khi bump version.
-4. **Không skip phase.** v0.5 (CAS) không thể làm trước v0.3 (bytecode) vì hash AST chưa ổn định.
+1. **Mỗi Bậc có gate rõ ràng** (`scripts/gate.sh`: build + test + fixtures +
+   clippy). Không mở Bậc kế khi Bậc hiện tại chưa pass gate.
+2. **Soundness trước syntax.** Một crash/soundness hole có sẵn được đập trước mọi
+   tính năng mới (quy ước G, đã áp dụng nhiều lát — xem `docs/TODO-ARCHIVE.md`).
+3. **Quyết định kiến trúc có ADR**, hai chữ ký (O + G) cho mọi ADR rewrite-era
+   (0037+).
+4. **Không có milestone nào mà dự án một-người không thể giao.** Đích xa (OS thật,
+   phần cứng tam phân) là *cảm hứng*, không phải cam kết — §"Cảm hứng cuối chân trời".
 
 ---
 
-## Trạng thái hiện tại — Rewrite v0.1.0-dev (2026-06-04)
+## Trạng thái hiện tại — rewrite, Bậc C đang chạy
 
-**v0.2–v0.10 đã ship và đã bị xóa.** Ngày 2026-06-04, toàn bộ backend cũ
-(triet-ir, triet-interpreter, triet-bootstrap, triet-cli) bị xóa vĩnh viễn
-trong một cuộc rewrite từ đầu. Frontend (lexer, parser, modules, typecheck)
-được giữ lại. Backend mới: MIR → NLL borrowck → Cranelift JIT.
+**v0.2–v0.10 đã ship và đã bị xóa** (2026-06-04). Frontend (lexer, parser, modules,
+typecheck) giữ lại; backend viết mới: MIR → NLL borrowck → Cranelift JIT.
 
-Pipeline hiện tại: `.tri → parse → typecheck → lower → MIR verify → borrowck → JIT → execute`
-
-**Lộ trình rewrite chia theo Bậc** (thay cho version number của dòng cũ):
+Pipeline: `.tri → parse → typecheck → lower → MIR verify → borrowck → JIT → execute`
 
 | Bậc | Nội dung | Trạng thái |
 |---|---|---|
-| **A** | Scalar + arithmetic + logic + control flow + flat struct (StackSlot/sret) + enum + NLL borrowck + MIR verifier + nullable `T?` (PA-3c) | ✅ Đóng 2026-06-06 |
-| **B** | Heap types (String/Vector/HashMap qua shims) + match `~+/~0` + heap qua user-fn boundary (B7-lift, move-only, `Deinit`) — ADR-0041/0042/0043, đều hai chữ ký O+G | ✅ Đóng 2026-06-07 |
-| **C** | (1) ✅ Arithmetic range enforcement — trap-on-overflow, ADR-0044 (D1/D1-literal/D3 đóng) · (2) ⏳ Borrow params heap `&+ T`/`&0 T`/`&- T` (ADR-0045, next) · (3) Outcome 2-reg ABI · (4) Native layout + String keys HashMap · codegen opt backlog | 🔨 Đang chạy |
-| **Sau C** | Self-host trở lại (compiler/ đã xóa — viết lại trên MIR), AOT cache, wire triet-pack, capability runtime, BYOS concurrency | Chưa xếp lịch |
+| **A** | Scalar + arithmetic + logic Ł3/K3 + control flow + đệ quy + flat struct (StackSlot/sret) + enum + NLL borrowck + MIR verifier + nullable `T?` (PA-3c sentinel) | ✅ Đóng 2026-06-06 |
+| **B** | Heap types (String/Vector/HashMap qua shim Rust) + match `~+/~0` + heap qua biên user-fn (B7-lift, move-only, `Deinit` tombstone) — ADR-0041/0042/0043, hai chữ ký O+G | ✅ Đóng 2026-06-07 |
+| **C** | (1) ✅ Arithmetic range enforcement, trap-on-overflow (ADR-0044) · (2) ✅ CFG tail-expression (ADR-0055, lát 1 SIGILL + lát 2 `= ~0`) · (3) 🔨 Heap-nullable (`T?` cho heap, saga ~5 lát — gate ở LOWER) · (4) ⏳ Borrow params heap `&+ T`/`&0 T`/`&- T` · (5) Outcome 2-reg ABI · (6) Native multi-field layout | 🔨 Đang chạy |
 
-Gate hiện hành: `scripts/gate.sh` (build + test + fixtures + clippy location-set).
-Backlog chi tiết + debt registry (D2, F6, …): `TODO.md`. Trạng thái năng lực
-compiler: `CLAUDE.md` §Maturity.
+Gate hiện hành: `scripts/gate.sh`. Backlog chi tiết + debt registry: [`TODO.md`](TODO.md)
+(nguồn sống duy nhất). Năng lực compiler: [`CLAUDE.md`](CLAUDE.md) §Maturity.
 
-**⚠️ Schema type system gap:** generated `Type` enum is spec-only — typechecker
-uses hand-written Type. Schema drives AST + ownership, NOT the type system.
-See `spec/plans/phase1-schema-s6-model.md`.
+**⚠️ Schema type-system gap:** generated `Type` enum là spec-only; typechecker dùng
+hand-written `Type`. Schema lái AST + ownership, CHƯA lái type system. Xem
+`spec/plans/phase1-schema-s6-model.md`.
 
-Version `0.1.0-dev` thừa nhận đây là một dòng mới — không phải bản nâng cấp từ v0.10.
+---
 
-### Feature inventory from deleted v0.2–v0.10 compiler (HISTORICAL — kept for reference)
+## Sau Bậc C — CHƯA XẾP LỊCH (không hứa version, không hứa ngày)
 
-> ⚠️ EVERY item below describes the DELETED compiler's peak state. None of
-> these backend features exist in the current rewrite. The frontend items
-> marked "giữ lại" survive; everything else was purged 2026-06-04.
+Danh sách trung thực những việc lớn còn lại. Thứ tự sẽ do soundness + nhu cầu thật
+quyết định, KHÔNG do một lộ trình tuyến tính áp đặt:
 
-✅ Tree-walking interpreter + Bytecode VM (register SSA IR, 53 opcodes) — **đã xóa**
-✅ Type checker với inference + monomorphization + Trilean! refinement (ADR-0021) — **giữ lại**
-✅ Outcome error handling — `T~E` / `T?~E` syntax (ADR-0020) — **giữ lại, JIT chưa hỗ trợ**
-✅ Łukasiewicz Ł3 + Kleene K3 — **hoạt động end-to-end**
-✅ Module system — **giữ lại**
-✅ Crate-Pack `.khi` + cross-package linker với semver decision matrix (ADR-0011/0012/0013) — **giữ lại (triet-pack), chưa wired vào pipeline mới**
-✅ CAS Packaging — 3-cấp hash tree, package store `~/.triet/store/`, atomic install, mark-and-sweep GC, `dao.lock` hash-pinned (ADR-0014/0015)
-✅ Capability System — `sys.*`/`dev.*`/`usr.*` 4-state level, `dao.package` + `dao.policy` + `/dev/tty` prompt, E22XX namespace (ADR-0016/0017/0018)
-✅ Self-hosting Compiler — `compiler/` 7 `.tri` files (~23K LOC), 3-stage bootstrap chain; main.tri convergence gate `#[ignore]`'d (ADR-0019). **⚠️ ORPHAN: compiler/ sources exist but target IR/VM was deleted — cannot bootstrap.**
-✅ S6 Ownership Model — 5-form reference `&+`/`&0`/`&-`/`&` + `owned`, `ObjectHeader` 8-byte binary header với refcount atomic ops (ADR-0022)
-✅ Concurrency Primitives (BYOS) — Send derivation cho 13 type categories, E2500 fires, capability gates extended (ADR-0026 v2)
-✅ Borrow Checker NLL enforcement — E2440, E2400 lifetime elision (3 rules), E2411, E2403 (ADR-0025/0027/0031 §10.1) — **đã xóa cùng VM; borrowck mới có ít hơn**
-✅ JIT builtin-shim layer — 36/43 builtins JIT-shimmed, all DELEGATE to `triet_ir::dispatch_builtin` (ADR-0032 §4) — **đã xóa cùng VM**
-✅ Multi-thread Atomic — real `raw_thread.spawn` OS threads, `Atomic<T>` via `Arc<Mutex>` (ADR-0026 v2 §3 + ADR-0028 §5)
-✅ Cargo workspace `version = 0.10.0`, SPEC header v0.10
-✅ Differential tests: 14 single-file + 1 multi-file examples
-✅ **1637 tests workspace-wide** (3 `#[ignore]` documented)
-🔜 (deleted backlog) v0.11 — JIT AOT cache + bootstrap gate lift + ≥10× perf bench
+### 🚨 ƯU TIÊN HÀNG ĐẦU: AI-First Validation (Workstream kiểm chứng bắt buộc)
+
+Để chứng minh dự án là một thí nghiệm khoa học thực thụ chứ không phải là sự trốn tránh thực tế, hai công cụ sau **phải được xây dựng đầu tiên** trước khi tiếp tục mở rộng các tính năng compiler backend khác:
+
+1. **🔬 AI-first instrument (turns-to-green)** (từ [VISION §5.3](VISION.md)): Xây dựng bộ đo turns-to-green tự động (cho LLM spec + ví dụ -> sinh Triết -> chạy driver -> nạp lại diagnostic khi lỗi -> đo số turns và tỷ lệ tự sửa đúng). Đây là gate để quyết định thiết kế ngôn ngữ có thực sự tối ưu cho AI hay không.
+2. **🔨 Auto-fixer (triet fix)**: Xây dựng hạ tầng tự động sửa các lỗi Machine-Applicable (deterministic) trực tiếp trên AST. LLM tuyệt đối không được dùng cho nhóm lỗi này để tránh lãng phí năng lượng và gây nhiễu kết quả đo đạc.
+
+> [!IMPORTANT]
+> **Quy tắc và tính hợp lệ của phép đo (Sanity check cho Benchmark):**
+> - **Chỉ đo trên các tính năng đã hỗ trợ đầy đủ**: Tập task test chỉ được sử dụng các cú pháp và kiểu dữ liệu mà compiler hiện tại đã hạ (lower) và JIT chạy thành công. Không bắt LLM viết code sử dụng các tính năng chưa hoàn thiện (như heap-nullable, borrow-param heap...) rồi quy kết turns-to-green cao là do thiết kế ngôn ngữ tệ cho AI.
+> - **Mục tiêu là lặp (Iteration), không phải tự hủy (Guillotine)**: Kết quả đo đạc ban đầu xấu không có nghĩa là khai tử dự án ngay lập tức. Nó là tín hiệu chỉ ra phân khúc lỗi nào đang bị nghẽn (mượn, kiểu, hay diagnostic mơ hồ) để điều chỉnh thiết kế ngôn ngữ/diagnostic rồi đo lại. Nếu sau nhiều vòng lặp cải tiến thiết kế mà turns-to-green vẫn không nhúc nhích → **rút lại trụ cột "AI-first" một cách trung thực** (VISION §1: dự án vẫn giữ giá trị craft (a), nhưng claim (b) bị khai tử). Đây là rút claim, KHÔNG tự động là xóa dự án.
+
+---
+
+### Các việc lớn khác (Sẽ triển khai sau khi có kết quả đo đạc AI-first)
+
+- **Self-host trở lại** — `compiler/` (~23K LOC `.tri`) là ORPHAN: target IR/VM đã
+  xóa, không bootstrap được. Phải viết lại trên MIR. Multi-month milestone.
+- **AOT cache / native binary** — hiện chỉ có JIT. AOT là tiền đề cho ràng buộc
+  freestanding ([VISION §7](VISION.md)).
+- **Wire `triet-pack`** — `.khi` + cross-package linker còn code (giữ từ compiler
+  cũ), chưa wire vào pipeline mới.
+- **Rebuild capability runtime** — Trit-level + Ł3 `Unknown` (ADR-0016/0017/0018,
+  thiết kế còn sống, hiện thực đã xóa). Phục vụ tính nhất quán thẩm mỹ ([VISION §8](VISION.md)).
+- **CAS packaging + stable ABI rebuild** — ADR-0014/0015 + ABI design còn sống,
+  hiện thực đã xóa.
+- **BYOS concurrency** — ADR-0026 v2, sau khi nền ổn định.
+
+---
+
+## Cảm hứng cuối chân trời — KHÔNG phải milestone cam kết
+
+Những thứ dưới đây là **cảm hứng định hình bản sắc**, không phải đích trên lộ trình.
+Một dự án một-người sẽ không "giao" chúng; chúng tồn tại để **kỷ luật ràng buộc hôm
+nay**, không để hứa hẹn ngày mai. (Đây chính là chỗ VISION cũ tự lừa mình — xem
+[VISION §0](VISION.md).)
+
+- **Production stability ("v1.0")** — đóng băng spec, backwards-compat policy. *Cảm
+  hứng*, mở khi có nền + ecosystem thật, không có ngày.
+- **Native AOT (LLVM)** — production codegen sau Cranelift. Tiền đề cho freestanding.
+- **OS trên phần cứng nhị phân** — Rust chứng minh khả thi (Redox/Hubris). Với Triết
+  đây là **ràng buộc giữ-cửa-mở** (no-GC, freestanding-được), **KHÔNG phải lời hứa
+  build microkernel**. Xem [VISION §7](VISION.md). Không có "v3.0 kernel POC" nữa.
+- **Phần cứng tam phân** — backend trytecode nếu/khi phần cứng tam phân xuất hiện.
+  Lợi thế phần cứng là lý thuyết, dự án **không cược vào nó** ([VISION §6](VISION.md)).
 
 ---
 
 ## Lịch sử v0.2–v0.10 — compiler đã xóa (digest)
 
-> Toàn văn từng phase (deliverables, gates, pivot history) nằm trong git history
-> của file này và trong [`docs/ARCHIVE.md`](docs/ARCHIVE.md) (digest + catalog
-> 36 ADR LIVE/HISTORICAL). Bảng dưới chỉ là mục lục một dòng mỗi phase.
+> ⚠️ Mọi mục dưới đây mô tả trạng thái đỉnh của compiler **ĐÃ BỊ XÓA** 2026-06-04.
+> Trừ frontend "giữ lại", không feature backend nào dưới đây tồn tại trong rewrite.
+> Toàn văn từng phase: git history + [`docs/ARCHIVE.md`](docs/ARCHIVE.md).
 
-| Phase | Nội dung chính | ADR |
-|---|---|---|
-| v0.2.x | Module system (dot paths, verbose keywords) | 0005 |
-| v0.3 + .x | Bytecode VM, register-SSA IR 53 opcodes, ternary-native IR | 0007/0008/0010 |
-| v0.4 | Crate-Pack `.khi` + stable ABI + semver linker | 0011-0013 |
-| v0.5 | CAS packaging, store, GC, `dao.lock` | 0014/0015 |
-| v0.6 | Capability system `sys./dev./usr.` | 0016-0018 |
-| v0.7 | Self-host compiler ~23K LOC + Outcome + Trilean! | 0019-0021/0024 |
-| v0.8 + .x | S6 ownership 5-form + BYOS concurrency + audit/cadence/docs-reorg | 0022/0025-0027 |
-| v0.9 + .x | JIT Cranelift + borrow enforcement + Atomic | 0028-0031 |
-| v0.10 | Builtin-shim layer 36/43 + NLL + multi-thread Atomic (1637 tests) | 0032/0033 |
-| v0.11 (dở dang) | JIT aggregate 96% + AOT cache — bị xóa cùng backend 2026-06-04 | 0034-0036 |
+| Phase | Nội dung chính | ADR | Trạng thái |
+|---|---|---|---|
+| v0.2.x | Module system (dot paths, verbose keywords) | 0005 | **giữ lại** (frontend) |
+| v0.3 | Bytecode VM, register-SSA IR 53 opcodes | 0007/0008/0010 | **đã xóa** |
+| v0.4 | Crate-Pack `.khi` + stable ABI + semver linker | 0011-0013 | triet-pack giữ, **chưa wire** |
+| v0.5 | CAS packaging, store, GC, `dao.lock` | 0014/0015 | **đã xóa** |
+| v0.6 | Capability system `sys./dev./usr.` | 0016-0018 | **đã xóa** (ADR sống) |
+| v0.7 | Self-host ~23K LOC + Outcome + Trilean! | 0019-0021/0024 | ORPHAN (không bootstrap) |
+| v0.8 | S6 ownership 5-form + BYOS concurrency | 0022/0025-0027 | **đã xóa** (semantics giữ) |
+| v0.9 | JIT Cranelift + borrow enforcement + Atomic | 0028-0031 | **đã xóa** |
+| v0.10 | Builtin-shim 36/43 + NLL + Atomic (1637 test) | 0032/0033 | **đã xóa** |
+| v0.11 (dở) | JIT aggregate 96% + AOT cache | 0034-0036 | **đã xóa cùng backend** |
 
----
-
-## v1.0 — Production Stability
-
-**Mục tiêu:** Đóng băng spec ngôn ngữ ở tầng v1.0. Backwards-compat policy có hiệu lực.
-
-**Deliverables:**
-- SPEC.md đóng băng (chỉ thêm, không phá ngữ nghĩa cũ).
-- Stable ABI vĩnh viễn cho v1.x.
-- LTS branch.
-- Toolchain installer (giống `rustup`).
-- Documentation đầy đủ + tutorial sách-style.
-
-**Gate:**
-- 100+ public crate-pack ngoài stdlib.
-- 3+ ứng dụng production thực.
-
----
-
-## v2.0 — Native AOT Compile (LLVM)
-
-**Mục tiêu:** Sản xuất binary native cho x86-64, ARM64, RISC-V.
-
-**Deliverables:**
-- Backend LLVM (Cranelift đã quen từ v0.9 — LLVM cho production codegen).
-- Cross-compile toolchain.
-- Debug symbol format (DWARF compat).
-- FFI ổn định với C ABI (cho legacy interop).
-- **Syscall opcode design** trong IR (VISION §4.4 "OS-friendly properties — syscall opcodes / FFI primitives"). Lock encoding khi LLVM AOT landing — trước đó VM dev tier không cần.
-
-**Gate:** Triết-compiled binary perf ≥80% so với equivalent Rust binary.
-
----
-
-## v3.0 — Microkernel POC
-
-**Mục tiêu:** Chứng minh Triết viết được OS. Đây là **mục tiêu lý tưởng** đặt cọc tầm nhìn.
-
-**Deliverables:**
-- Microkernel boot trên x86-64 (QEMU đầu tiên, sau đó hardware thực).
-- `sys::` namespace là syscall thực.
-- `dev::` driver tối thiểu (UART, disk, ethernet).
-- `usr::` chạy được 1–2 ứng dụng (shell + 1 demo).
-- Capability enforcement runtime ở loader.
-
-**Gate:**
-- Boot tới shell prompt.
-- App `usr::*` không thể chạm hardware không có capability — kernel test xác nhận.
-
-**Đây không phải production OS.** Đây là chứng minh: ngôn ngữ Triết có đủ năng lực ngữ nghĩa và ABI để implement OS. Production OS là dự án riêng.
-
----
-
-## v∞ — Phần cứng tam phân
-
-**Khi phần cứng tam phân xuất hiện** (Setun-style modern, hoặc memristor-based ternary):
-- Backend native cho ternary CPU (không phải emulate trên binary).
-- Trit là unit hardware thực.
-- Discriminator của `T?` là một trit thật, không phải bit-packed.
-
-Triết đã sẵn sàng — semantics tam phân đã có từ v0.1, không cần thay đổi ngôn ngữ. Chỉ cần backend codegen mới.
+Frontend giữ lại đang chạy: typecheck (inference + Trilean! refinement ADR-0021),
+Łukasiewicz Ł3 + Kleene K3, module system, Outcome syntax (`T~E`/`T?~E`, JIT chưa
+hỗ trợ). 1637-test safety net **đã mất**; lưới mới: ~1086 workspace test + 72 fixture.
 
 ---
 
@@ -158,31 +128,20 @@ Triết đã sẵn sàng — semantics tam phân đã có từ v0.1, không cầ
 
 | Đề xuất | Quyết định | Lý do |
 |---|---|---|
-| Java-style strict filesystem mapping | **Reject** | Java đã từ bỏ với JPMS. Refactor unfriendly. |
-| Auto-shim ABI migration | **Reject** | Decidable detection nhưng undecidable adaptation. Misleading promise. |
-| Glob imports `use foo::*` | **Reject ở v0.2.x** | Phá ABI clarity. Có thể revisit v1.0+. |
-| GC | **Reject** | Triết là system language. Memory model tham khảo Rust borrow checker (defer thiết kế đến v0.4+). |
-| Macro hệ thống lớn (Rust-style) | **Defer to v0.7+** | Tăng surface area của ngôn ngữ. Compile-time const eval ưu tiên hơn. |
-| Backwards-compat shim cho v0.x | **No** | Trước v1.0, breaking changes free. Sau v1.0, bound chặt. |
-| Phát minh CAS scheme riêng | **No** | Dùng prior art (Unison/Nix-inspired), bất biến + Triết-specific 2 cấp hash. |
+| "v3.0 microkernel POC" làm milestone | **Reject (2026-06-18)** | OS-trên-nhị-phân khả thi nhưng là multi-hundred-person-year; làm milestone = sương mù unfalsifiable. Giữ làm *ràng buộc*, không *đích*. [VISION §7]. |
+| Cược vào phần cứng tam phân | **Reject** | Lợi thế lý thuyết, thua nhị phân 70 năm. Tam phân là bản sắc, không phải cá cược. [VISION §6]. |
+| Tuyên "AI-first đã chứng minh" | **Reject** | Chưa có phép đo. Giả thuyết-chưa-đo, instrument sẽ xây. [VISION §5]. |
+| GC | **Reject** | System language. Memory model kiểu Rust borrow checker (đã có MIR + NLL borrowck). |
+| Java-style strict filesystem mapping | **Reject** | Java đã bỏ với JPMS. Refactor-unfriendly. |
+| Auto-shim ABI migration | **Reject** | Detection decidable, adaptation undecidable. Misleading promise. |
+| Backwards-compat shim trước v1.0 | **No** | Trước stable, breaking changes free. |
 
 ---
 
-## Pace expectations
+## Pace
 
-| Phase | Realistic timeline (small team) |
-|---|---|
-| v0.2.x | 1–3 tháng |
-| v0.3 (bytecode) | 6–12 tháng |
-| v0.4 (ABI) | 6–12 tháng |
-| v0.5 (CAS) | 4–8 tháng |
-| v0.6 (capability) | 8–12 tháng |
-| v0.7 (self-host) | 12+ tháng |
-| v0.8–v0.9 | 6–12 tháng mỗi phase |
-| v1.0 | tích lũy, release window |
-| v2.0 (LLVM) | 12+ tháng |
-| v3.0 (kernel) | 24+ tháng |
+Không cam kết ngày. Chân trời thật duy nhất hiện nay là **đóng Bậc C**. Mọi thứ sau
+đó (§"Sau Bậc C") xếp theo soundness + nhu cầu, không theo lịch áp đặt. Đích xa là
+cảm hứng, không phải deadline.
 
-**Tổng:** 5–10 năm cho v3.0 với một team nhỏ hoặc 1 người. Dự án được scale theo realistic, không hứa hẹn.
-
-> Stability over speed. Đây là tính năng.
+> Stability over speed. Pace chậm là tính năng, không phải bug.
