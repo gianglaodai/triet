@@ -57,7 +57,25 @@ that gap by grounding every recommendation in the project's own documents.
 ## What this is
 
 Triết is a balanced-ternary, AI-first programming language implemented in Rust.
-Long-term aim is OS-capable.
+
+**Read [VISION.md](VISION.md) before reasoning about the project's purpose** — it
+was rewritten honestly on 2026-06-18 and locks three framings you must not drift
+from:
+- **OS-capable is a design *constraint*, NOT a destination.** The language must
+  never require a mandatory GC / managed runtime and must stay freestanding-
+  expressible (Rust-style; binary-HW OS is legitimate). There is NO promise to
+  build an OS/microkernel — do not propose "v3.0 kernel" milestones (VISION §7).
+- **AI-first is an *unmeasured hypothesis*, not a proven fact.** The real thesis
+  is the *convergence loop* (explicit syntax + machine-fixable diagnostics +
+  refuse-over-guess → an LLM with zero corpus reaches green in fewer turns), and
+  its measurement instrument is not built yet. Never claim it as demonstrated
+  (VISION §5).
+- **Balanced ternary + Ł3 are *identity/inspiration*, NOT a hardware bet.** The
+  project does not wait for ternary hardware (VISION §6).
+
+Honesty rules over impressiveness: no "✅ shipped" for deleted code, no "measured"
+for the AI-first hypothesis, no "OS-capable" for a constraint not yet satisfied
+in the implementation (VISION §3).
 
 **The codebase was REBUILT from the backend up on 2026-06-04.** A complete
 compiler shipped v0.2-v0.10 and was then **deleted** in a ground-up rewrite.
