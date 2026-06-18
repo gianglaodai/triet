@@ -1,0 +1,16 @@
+// EXPECT: 5
+// ADR-0062 Heap-Nullable Lát 4: present arm returns the WHOLE String payload
+// (`~+ s => s`), not a scalar projection like len(s). This exercises the
+// whole-24-byte-slot move (ptr@0/len@8/cap@16) out of the match into `r`, then
+// len(r) is taken in main. f() returns "hello" (non-null) → r = "hello" →
+// len = 5. Proves the move copies the full fat-pointer slot, not just one word.
+function f() -> String? = "hello"
+
+function main() -> Integer {
+    let x = f();
+    let r = match x {
+        ~+ s => s,
+        ~0 => "",
+    };
+    return len(r);
+}

@@ -1,0 +1,21 @@
+// EXPECT: 7
+// ADR-0062 Heap-Nullable Lát 4 — ★ ÁN-TREO §8 GATE (sentinel-vs-zero).
+// f() returns `~0` (null) → slot ptr@0 = NULL_SENTINEL. The null-check reads
+// slot@0 == NULL_SENTINEL → routes to the `~0` arm → returns 7.
+//
+// This is the tooth ADR-0062 §8 exists for. Poison the `~0` sentinel store
+// (triet-jit/src/mir_lower.rs:1189, `stack_store(val, slot, 0)` → offset 8):
+// ptr@0 stays fresh (0), the null-check `0 == NULL_SENTINEL` is false → the
+// null value is misclassified as present → the `~+ s` arm reads garbage
+// len/cap from slot@8 → returns -9223372036854775808 instead of 7 → RED.
+// At Lát 1 this poison was vacuous (no consumer branched on ptr@0); Lát 4
+// makes ptr@0 observable. A green result here under poison = soundness hole.
+function f() -> String? = ~0
+
+function main() -> Integer {
+    let x = f();
+    return match x {
+        ~+ s => len(s),
+        ~0 => 7,
+    };
+}

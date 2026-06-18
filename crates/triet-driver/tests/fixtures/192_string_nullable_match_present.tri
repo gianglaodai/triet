@@ -1,0 +1,15 @@
+// EXPECT: 2
+// ADR-0062 Heap-Nullable Lát 4: match on a non-null `String?`. f() returns
+// "hi" (non-null). The null-check (`x == NULL_SENTINEL`) reads slot@0 (ptr) via
+// load_place — ptr != SENTINEL → routes to the `~+ s` present arm. `s` binds
+// the payload (whole 24-byte slot move + M1 tombstone of the scrutinee), and
+// len(s) = 2. The ~0 arm is not taken.
+function f() -> String? = "hi"
+
+function main() -> Integer {
+    let x = f();
+    return match x {
+        ~+ s => len(s),
+        ~0 => 0,
+    };
+}
