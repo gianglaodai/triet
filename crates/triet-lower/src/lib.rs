@@ -3836,8 +3836,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 // soundness hole), so refuse cleanly instead.
                 let is_outcome_ret = matches!(callee_ret, MirType::Outcome { .. });
                 let is_heap_outcome_ret = is_outcome_ret && callee_ret.has_heap_payload();
-                let is_fat_ret = matches!(callee_ret, MirType::Struct(_) | MirType::String)
+                // ADR-0062 Lát 4.5: `String?` method return shares String's fat
+                // sret path (mirror Expr::Call). `is_string_repr()` covers both
+                // `String` and `String?` (Nullable(String)).
+                let is_fat_ret = matches!(callee_ret, MirType::Struct(_))
+                    || callee_ret.is_string_repr()
                     || is_heap_outcome_ret;
+                // Only SCALAR nullables (Integer? etc., PA-3c single-i64) count
+                // as scalar returns. `Nullable(_)` blanket-matching swallowed
+                // `String?`/`Vector?`/etc. into the scalar branch → miscompile a
+                // fat pointer into one i64. Narrow to the existing
+                // `is_scalar_nullable_payload` predicate; non-scalar nullables
+                // fall through to the clean refuse below.
                 let scalar_ret = matches!(
                     callee_ret,
                     MirType::Integer
@@ -3847,8 +3857,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         | MirType::Trilean
                         | MirType::Unit
                         | MirType::Unknown
-                        | MirType::Nullable(_)
+                ) || matches!(
+                    &callee_ret,
+                    MirType::Nullable(inner) if triet_mir::is_scalar_nullable_payload(inner)
                 );
+                // sret slot layout name: `String?` reprs as the "String" layout
+                // (ptr-sentinel, same 24-byte slot); `to_string()` would yield
+                // "String?", which has no registered layout (mirror Call:2245).
+                let sret_layout_name = if callee_ret.is_string_repr() {
+                    "String".to_string()
+                } else {
+                    callee_ret.to_string()
+                };
                 // Receiver becomes arg[0]; explicit args follow. For a fat
                 // return the hidden sret pointer is inserted BEFORE the
                 // receiver → [sret, receiver, explicit...].
@@ -3870,7 +3890,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     } else {
                         c.push(Statement::StructAlloc {
                             dest: ret_local,
-                            struct_name: callee_ret.to_string(),
+                            struct_name: sret_layout_name.clone(),
                             span: expr_span.clone(),
                         });
                     }
@@ -3900,7 +3920,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             return_bb: ret_bb,
                             dest: Vec::new(),
                             return_shape: triet_mir::ReturnShape::Struct {
-                                struct_name: callee_ret.to_string(),
+                                struct_name: sret_layout_name,
                             },
                             span: expr_span,
                         },

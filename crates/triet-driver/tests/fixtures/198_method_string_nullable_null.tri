@@ -1,0 +1,26 @@
+// EXPECT: 9
+// ADR-0062 Heap-Nullable Lát 4.5 — §8 sentinel tooth over a METHOD return.
+// A trait method `get(self) -> String?` returning `~0` (null). The sret slot's
+// ptr@0 = NULL_SENTINEL → the match null-check routes to the `~0` arm → 9.
+//
+// Poison the `~0` sentinel store (triet-jit/src/mir_lower.rs:1189, offset 0→8):
+// ptr@0 stays 0, the null-check `0 == NULL_SENTINEL` is false → misrouted to
+// `~+ s` → reads garbage len from slot@8 → returns -9223372036854775808
+// instead of 9 → RED. Confirms the §8 sentinel-vs-zero invariant holds across
+// the method/sret return path too, not just free-function returns.
+trait Box {
+    function get(self) -> String?
+}
+
+implement Box for Integer {
+    function get(self) -> String? = ~0
+}
+
+function main() -> Integer {
+    let b = 5;
+    let r = b.get();
+    return match r {
+        ~+ s => len(s),
+        ~0 => 9,
+    };
+}

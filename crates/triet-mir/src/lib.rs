@@ -1373,7 +1373,11 @@ fn terminator_successors(terminator: &Terminator) -> Vec<BasicBlock> {
 
 /// Nợ #3 (Heap-Nullable gate, ruling β): is `t` a scalar atom that fits the
 /// Bậc A single-i64 nullable sentinel? Mirrors the typecheck-era whitelist.
-fn is_scalar_nullable_payload(t: &MirType) -> bool {
+/// Is `t` a scalar nullable payload — i.e. does `Nullable(t)` lower to the
+/// PA-3c single-i64 sentinel (ADR-0041) rather than a heap repr? Used by the
+/// MIR verifier gate and by `triet-lower` to decide whether a `Nullable(_)`
+/// return is a scalar (single i64) or a fat return (`String?` → sret).
+pub fn is_scalar_nullable_payload(t: &MirType) -> bool {
     matches!(
         t,
         MirType::Integer

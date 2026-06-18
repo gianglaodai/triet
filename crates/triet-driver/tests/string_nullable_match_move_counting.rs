@@ -117,3 +117,38 @@ fn present_arm_move_out_freed_once() {
          the scrutinee Drop a no-op (poison slot@0→slot@8 → count 2)"
     );
 }
+
+#[test]
+fn method_return_present_arm_freed_once() {
+    // ADR-0062 Lát 4.5: a `String?` arriving via a trait METHOD sret return
+    // (`b.get() -> String?`), then matched. Same M1-tombstone safety as the
+    // free-function case — the sret return path must not introduce an extra
+    // free or skip the tombstone. Non-null present arm → free-count == 1.
+    //
+    // Poison M1 (mir_lower.rs:1322, slot@0 → slot@8) → scrutinee not
+    // tombstoned → both Drops free the same live pointer → count == 2 → RED.
+    let (result, frees) = run_counting(
+        "trait Box { function get(self) -> String? }\n\
+         implement Box for Integer {\n\
+         \x20   function get(self) -> String? = \"hi\"\n\
+         }\n\
+         function main() -> Integer {\n\
+         \x20   let b = 5;\n\
+         \x20   let r = b.get();\n\
+         \x20   let n = match r {\n\
+         \x20       ~+ s => len(s),\n\
+         \x20       ~0 => 0,\n\
+         \x20   };\n\
+         \x20   return n;\n\
+         }",
+    );
+    assert_eq!(
+        result, 2,
+        "method-return non-null present arm: len(\"hi\") == 2"
+    );
+    assert_eq!(
+        frees, 1,
+        "method-return present-arm move-out must free exactly once \
+         (poison M1 slot@0→slot@8 → count 2)"
+    );
+}

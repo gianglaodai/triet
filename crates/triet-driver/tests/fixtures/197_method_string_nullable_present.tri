@@ -1,0 +1,33 @@
+// EXPECT: 2
+// ADR-0062 Heap-Nullable Lát 4.5 — ★ HEADLINE (Track B rule #1: no panic on
+// valid .tri). A trait method returning `String?` (`get(self) -> String?`).
+// Before this lát, the MethodCall lowering (triet-lower/src/lib.rs:3839) put
+// Nullable(String) in the scalar_ret branch → JIT read inst_results[0] of an
+// sret (void) call → panic mir_lower.rs:1656 "index out of bounds len 0".
+// Fix (two parts): (1) is_fat_ret += is_string_repr() (mirror Expr::Call) so
+// String? routes to the sret path; (2) scalar_ret narrowed from Nullable(_) to
+// is_scalar_nullable_payload so a non-scalar nullable can no longer be silently
+// taken as a scalar. x.get() returns "hi" (non-null) → ~+ s arm → len(s) = 2.
+//
+// Poison: remove is_string_repr() from is_fat_ret. With the narrowed scalar_ret
+// (part 2) String? then matches NEITHER fat NOR scalar → clean refuse
+// (LowerError "trait method returns String? ... deferred") → this fixture fails
+// (expected 2, got error) → RED. (The original HEAD panic at mir_lower.rs:1656
+// required BOTH defects: the panic appears only if scalar_ret also swallows
+// Nullable(_) — i.e. revert part 2 as well.)
+trait Box {
+    function get(self) -> String?
+}
+
+implement Box for Integer {
+    function get(self) -> String? = "hi"
+}
+
+function main() -> Integer {
+    let b = 5;
+    let r = b.get();
+    return match r {
+        ~+ s => len(s),
+        ~0 => 0,
+    };
+}
