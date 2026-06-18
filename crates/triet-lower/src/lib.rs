@@ -2417,7 +2417,37 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 _ => None,
             };
             let result = match final_expr {
-                Some(e) => lower_expr(e, arena, c),
+                Some(e) => {
+                    // Bug A (CFG-tail lát 1): the tail expression is the block's
+                    // VALUE — it escapes the block scope. Returning its local
+                    // directly let pop_scope() drop it as a block-local while a
+                    // caller (e.g. `let v = { … }; len(v)`) still used it →
+                    // E2421 use-after-storage-end. Mirror the Expr::If idiom
+                    // (2472): move the tail value into a fresh result local that
+                    // outlives this scope; the move tombstones the tail local
+                    // (M1), so the pop_scope drop below is a no-op.
+                    //
+                    // Exception — reference tails (`{ … id(&0 x) }`): a reference
+                    // is Copy and is NOT dropped by pop_scope (only the owned
+                    // source it borrows is). The original direct-return is
+                    // already correct, and inserting an Assign would model a
+                    // reborrow that conflicts with the live loan, masking the
+                    // intended drop-while-borrowed diagnostic (E2450 → E2440,
+                    // fixture 102). Reference tails keep the direct path.
+                    let tail_val = lower_expr(e, arena, c)?;
+                    if c.local_decls[tail_val.0].ty.is_reference() {
+                        Ok(tail_val)
+                    } else {
+                        let result = c.alloc_local_ty(c.local_decls[tail_val.0].ty.clone());
+                        c.push(Statement::StorageLive(result, expr_span.clone()));
+                        c.push(Statement::Assign {
+                            dest: Place::local(result),
+                            source: Place::local(tail_val),
+                            span: expr_span.clone(),
+                        });
+                        Ok(result)
+                    }
+                }
                 None => {
                     let u = c.alloc_local();
                     c.push(Statement::StorageLive(u, expr_span.clone()));

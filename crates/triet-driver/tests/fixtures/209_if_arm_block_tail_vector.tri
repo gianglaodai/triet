@@ -1,0 +1,16 @@
+// EXPECT: 1
+// CFG-tail Drop-ordering Lát 1 (Bug A): an if-arm whose body is an
+// expression-block with a heap tail. The Expr::If merge already moves the arm
+// value into a fresh result; fixing Expr::Block makes the inner block tail
+// escape correctly too, so the composed form no longer trips E2421. v = [9] →
+// len 1.
+function main() -> Integer {
+    let v: Vector<Integer> = if true {
+        let mutable t = vector_new();
+        t = push(t, 9);
+        t
+    } else {
+        vector_new()
+    };
+    return len(v);
+}

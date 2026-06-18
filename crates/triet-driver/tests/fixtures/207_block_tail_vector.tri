@@ -1,0 +1,15 @@
+// EXPECT: 1
+// CFG-tail Drop-ordering Lát 1 (Bug A): an expression-block whose tail is a
+// heap value. Before the fix, Expr::Block returned the tail local directly and
+// pop_scope() dropped it as a block-local even though it escapes as the block
+// value → borrowck E2421 "use after storage end" at `len(v)`. The fix moves the
+// tail into a fresh result local (mirror Expr::If), so it survives the scope.
+// v = [7] → len 1.
+function main() -> Integer {
+    let v: Vector<Integer> = {
+        let mutable t = vector_new();
+        t = push(t, 7);
+        t
+    };
+    return len(v);
+}

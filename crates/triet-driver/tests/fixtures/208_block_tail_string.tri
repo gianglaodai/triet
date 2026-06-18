@@ -1,0 +1,10 @@
+// EXPECT: 5
+// CFG-tail Drop-ordering Lát 1 (Bug A): same escape bug for a String block
+// tail. Before the fix, `len(s)` tripped E2421. s = "hello" → len 5.
+function main() -> Integer {
+    let s: String = {
+        let x = "hello";
+        x
+    };
+    return len(s);
+}
