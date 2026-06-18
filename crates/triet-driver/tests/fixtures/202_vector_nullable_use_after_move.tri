@@ -1,0 +1,13 @@
+// ERROR: E2420
+// ADR-0062 Heap-Nullable Lát 4.8: `Vector<Integer>?` is Move (is_copy delegates
+// to Vector). `let b = a` moves the Vector?; the second `let c = a` use of the
+// moved `a` must be flagged use-after-move (E2420) — no spurious Copy for a
+// heap-nullable handle.
+function f() -> Vector<Integer>? = ~0
+
+function main() -> Integer {
+    let a = f();
+    let b = a;
+    let c = a;
+    return 0;
+}

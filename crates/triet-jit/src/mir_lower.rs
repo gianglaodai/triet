@@ -1400,13 +1400,19 @@ impl JitContext {
                     }
 
                     // Regular heap types: call free shim.
-                    // ADR-0062: `String?` drops via the String free shim — null
-                    // (ptr@0 == NULL_SENTINEL) is a no-op inside the shim (§4).
+                    // ADR-0062: heap-nullable (`String?`/`Vector?`/`HashMap?`)
+                    // drops via the same free shim as the non-null type — null
+                    // (handle/ptr@0 == NULL_SENTINEL) is a no-op inside the shim
+                    // (§4). Unwrap `Nullable(inner)` at the dispatch site so
+                    // `Vector?`/`HashMap?` resolve to is_vec/is_hashmap (the
+                    // ptr-sentinel shares the inner's repr); String? is already
+                    // covered by is_string_repr.
+                    let eff = ty.nullable_payload().unwrap_or(ty);
                     let free_shim_name = if ty.is_string_repr() {
                         "__triet_string_free"
-                    } else if ty.is_vec() {
+                    } else if eff.is_vec() {
                         "__triet_vector_free"
-                    } else if ty.is_hashmap() {
+                    } else if eff.is_hashmap() {
                         "__triet_hashmap_free"
                     } else {
                         return Err(JitError::Unsupported(format!(

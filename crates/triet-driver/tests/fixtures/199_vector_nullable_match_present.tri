@@ -1,0 +1,20 @@
+// EXPECT: 2
+// ADR-0062 Heap-Nullable Lát 4.8: match on a non-null `Vector<Integer>?`.
+// Vector is a single i64 handle (not a 24-byte slot like String); the
+// ptr-sentinel lives in the handle itself. f() builds a 2-element vector and
+// returns it as Vector? (widening = no-op). The null-check `x == NULL_SENTINEL`
+// compares the handle directly → present → ~+ v arm → len(v) = 2.
+function f() -> Vector<Integer>? = {
+    let mutable v = vector_new();
+    v = push(v, 5);
+    v = push(v, 6);
+    v
+}
+
+function main() -> Integer {
+    let x = f();
+    return match x {
+        ~+ v => len(v),
+        ~0 => 99,
+    };
+}

@@ -1,0 +1,13 @@
+// EXPECT: 99
+// ADR-0062 Heap-Nullable Lát 4.8: match on a null `HashMap<Integer, Integer>?`.
+// f() returns `~0` → handle = NULL_SENTINEL → null-check routes to the `~0`
+// arm → 99. No dereference of the handle on the null path.
+function f() -> HashMap<Integer, Integer>? = ~0
+
+function main() -> Integer {
+    let x = f();
+    return match x {
+        ~+ m => len(m),
+        ~0 => 99,
+    };
+}

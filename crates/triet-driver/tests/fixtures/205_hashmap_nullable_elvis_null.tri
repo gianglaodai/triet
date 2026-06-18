@@ -1,0 +1,13 @@
+// EXPECT: 2
+// ADR-0062 Heap-Nullable Lát 4.8: Elvis `?:` on a null `HashMap<Integer,
+// Integer>?`. f() returns `~0` → handle == NULL_SENTINEL → Elvis evaluates the
+// default map (2 entries). len(r) = 2 confirms the null branch took the default.
+function f() -> HashMap<Integer, Integer>? = ~0
+
+function main() -> Integer {
+    let mutable d = hashmap_new();
+    d = insert(d, 1, 9);
+    d = insert(d, 2, 9);
+    let r = f() ?: d;
+    return len(r);
+}

@@ -1,0 +1,18 @@
+// EXPECT: 1
+// ADR-0062 Heap-Nullable Lát 4.8: match on a non-null `HashMap<Integer,
+// Integer>?`. HashMap is a single i64 handle like Vector; same ptr-sentinel in
+// the handle. f() inserts one entry and returns it as HashMap?. The null-check
+// compares the handle → present → ~+ m arm → len(m) = 1.
+function f() -> HashMap<Integer, Integer>? = {
+    let mutable m = hashmap_new();
+    m = insert(m, 1, 100);
+    m
+}
+
+function main() -> Integer {
+    let x = f();
+    return match x {
+        ~+ m => len(m),
+        ~0 => 99,
+    };
+}

@@ -1391,12 +1391,13 @@ pub fn is_scalar_nullable_payload(t: &MirType) -> bool {
 }
 
 /// ADR-0062 (Heap-Nullable Lát 1): is `Nullable(t)` lowerable to a concrete
-/// repr? Scalars use the PA-3c single-i64 sentinel; `String` uses the
-/// ptr-sentinel in its 24-byte slot (ptr@0 == NULL_SENTINEL). Vector?/HashMap?
-/// (single i64 handle) and Struct?/Enum? (multi-word) stay refused until later
-/// láts — they are NOT scalars and NOT String, so they fall through to refuse.
+/// repr? Scalars use the PA-3c single-i64 sentinel; the three heap types share
+/// the ptr-sentinel: `String` in its 24-byte slot (ptr@0 == NULL_SENTINEL),
+/// `Vector`/`HashMap` in their single i64 handle (handle == NULL_SENTINEL).
+/// Struct?/Enum? (multi-word, no natural ptr cell) stay refused until a later
+/// ADR — they are neither scalar nor `is_any_heap`, so they fall through.
 fn is_lowerable_nullable_payload(t: &MirType) -> bool {
-    is_scalar_nullable_payload(t) || matches!(t, MirType::String)
+    is_scalar_nullable_payload(t) || t.is_any_heap()
 }
 
 /// Find a `Nullable(inner)` whose `inner` is NOT accepted by `allow`, anywhere

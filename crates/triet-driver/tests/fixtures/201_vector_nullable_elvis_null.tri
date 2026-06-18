@@ -1,0 +1,14 @@
+// EXPECT: 3
+// ADR-0062 Heap-Nullable Lát 4.8: Elvis `?:` on a null `Vector<Integer>?`. f()
+// returns `~0` → handle == NULL_SENTINEL → Elvis evaluates the default vector
+// (3 elements). len(r) = 3 confirms the null branch took the default.
+function f() -> Vector<Integer>? = ~0
+
+function main() -> Integer {
+    let mutable d = vector_new();
+    d = push(d, 1);
+    d = push(d, 2);
+    d = push(d, 3);
+    let r = f() ?: d;
+    return len(r);
+}

@@ -1,0 +1,12 @@
+// ERROR: E2420
+// ADR-0062 Heap-Nullable Lát 4.8: `HashMap<Integer, Integer>?` is Move
+// (is_copy delegates to HashMap). `let b = a` moves it; the second `let c = a`
+// use of the moved `a` must be flagged use-after-move (E2420).
+function f() -> HashMap<Integer, Integer>? = ~0
+
+function main() -> Integer {
+    let a = f();
+    let b = a;
+    let c = a;
+    return 0;
+}
