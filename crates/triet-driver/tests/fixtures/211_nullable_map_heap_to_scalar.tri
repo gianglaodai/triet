@@ -1,0 +1,12 @@
+// EXPECT: 5
+// ADR-0062 Heap-Nullable Lát 5 (Bug B): `?+>` map heap→scalar. Input String?,
+// body returns Integer (len) → result must be Integer?. Before the fix the
+// result was typed from the INPUT (String?), so Drop ran string_free on a
+// scalar value — latent UB. Retyping from the body fixes it. f()="hello",
+// len 5 → Elvis → 5.
+function f() -> String? = "hello"
+
+function main() -> Integer {
+    let r = (f() ?+> |s| len(s)) ?: 0;
+    return r;
+}

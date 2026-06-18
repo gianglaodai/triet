@@ -2732,6 +2732,21 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 c.vars.insert(bind_var.clone(), bind_local);
             }
             let body_val = lower_expr(*body, arena, c)?;
+            // Bug B (ADR-0062 lát 5): the result was allocated with inner_ty
+            // (the INPUT T?) at 2690, but `?+>` produces U? where U is the
+            // body's type. When T ≠ U (e.g. String? ?+> |s| len(s) → Integer?)
+            // the result was mistyped (heap-in scalar-out and vice versa),
+            // making Drop(result) call the wrong free shim on a garbage value
+            // — latent UB that only ran by luck (slot@0 == 0). Retype the
+            // result from the body: flatMap (body already U?) keeps it; map
+            // (body U) wraps to U?.
+            let body_ty = c.local_decls[body_val.0].ty.clone();
+            let result_ty = if body_ty.is_nullable() {
+                body_ty
+            } else {
+                MirType::Nullable(Box::new(body_ty))
+            };
+            c.local_decls[result.0].ty = result_ty;
             c.push(Statement::Assign {
                 dest: Place::local(result),
                 source: Place::local(body_val),

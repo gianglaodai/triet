@@ -1,0 +1,16 @@
+// EXPECT: 5
+// ADR-0062 Heap-Nullable Lát 5 (Bug B): `?+>` map scalar→heap. Input Integer?,
+// body returns String → map auto-wraps to String?. Before the fix the result
+// kept the scalar input type (Integer?), so the mapped String leaked / Drop
+// mis-dispatched. Retyping from the body makes it String?, freed correctly.
+// mk → "world" (len 5) → match present arm → 5.
+function mk(x: Integer) -> String = "world"
+
+function main() -> Integer {
+    let some: Integer? = 1;
+    let r = some ?+> |x| mk(x);
+    return match r {
+        ~+ s => len(s),
+        ~0 => 0,
+    };
+}

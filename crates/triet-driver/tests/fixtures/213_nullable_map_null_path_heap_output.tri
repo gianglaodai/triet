@@ -1,0 +1,16 @@
+// EXPECT: 7
+// ADR-0062 Heap-Nullable Lát 5 (Bug B): `?+>` on a null input with a heap-typed
+// map body. The body is NOT run; NULL_SENTINEL passes straight through, and the
+// result is the heap-output type U? (String?) carrying null. The match null arm
+// returns 7. Confirms the null path of a heap-output map is well-typed (no
+// mistyped Drop on the passthrough sentinel).
+function mk(x: Integer) -> String = "world"
+
+function main() -> Integer {
+    let none: Integer? = ~0;
+    let r = none ?+> |x| mk(x);
+    return match r {
+        ~+ s => len(s),
+        ~0 => 7,
+    };
+}
