@@ -138,6 +138,43 @@ stdlib cần (`fs.read -> String?` v.v.).
 - **Mọi lát:** teeth phải quét CẢ String (24-byte slot) VÀ Vector/HashMap (single handle) —
   hai hình dạng slot khác nhau là hai mặt trận (blind-spot rule).
 
+### 8.1 Amendment (2026-06-18, Lát 4) — double-free reachable Ở LÁT 4, KHÔNG defer
+
+> **Lịch sử ruling (sửa-có-dấu-vết):** trong nghiệm thu Lát 4, Mentor O ban đầu
+> phán "double-free vacuous ở Lát 4, defer sang Lát 5" dựa trên probe dùng
+> `match f() {…}` (scrutinee là **temp** → MIR chỉ `Drop(arm_local)` → một free).
+> O tự lật phán quyết khi đối chiếu fixtures thực: chúng dùng `let x = f(); match x`
+> (scrutinee **named**). Với scrutinee named, drop-elaboration phát ra `Drop`
+> cho CẢ arm-local `s` LẪN scrutinee `x` ở merge block — hai `Drop` trên cùng
+> con trỏ. **Hazard double-free CÓ THẬT và reachable NGAY ở bề mặt Lát 4** (match/
+> Elvis), không phải đợi Lát 5.
+
+- **Cơ chế cứu mạng = M1 zeroing-on-move tombstone** (`triet-jit/src/mir_lower.rs`
+  non-aggregate Assign path, `stack_store(zero, slot, 0)`): khi `s = move x`,
+  ptr@0 của scrutinee bị ghi `0` → `Drop(x)` đọc ptr@0 == 0 → free-shim no-op →
+  còn đúng MỘT free sống. `String?` đi non-aggregate path vì `ty_total_size`
+  của `MirType::String` = 8 (`is_aggregate` false), nên M1 áp được.
+- **Tombstone ghi `0`, KHÔNG `NULL_SENTINEL`** (ruling (b), G+O 2026-06-18, GIỮ
+  NGUYÊN): an toàn vì (1) free-shim no-op trên cả `0` lẫn `NULL_SENTINEL`; (2)
+  slot moved-out là **dead/unreachable** — borrowck E2420 chặn mọi use-after-move
+  (fixture 191), nên bất biến §2 "ptr==SENTINEL ⟺ null, cấm ptr==0" áp cho giá trị
+  **SỐNG**; slot chết miễn nhiễm. M1 dùng chung `layout.name=="String"` với String
+  non-nullable → KHÔNG đổi (đụng move-semantics non-nullable, ngoài scope + rủi ro).
+- **★ COUPLING ghi sổ:** soundness của tombstone-`0` **phụ thuộc borrowck-soundness**
+  (use-after-move bị chặn cho mọi Move type). Nếu borrowck từng cho lọt một
+  use-after-move trên heap-nullable, tombstone-`0` sẽ để lộ slot chết như "uninit
+  (0)" thay vì "null (SENTINEL)" — nhưng đó là lỗ hổng borrowck, không phải repr.
+- **Tooth bắt buộc (KHÔNG incidental crash):** free-count tường minh —
+  `present_arm_move_out_freed_once` (`crates/triet-driver/tests/string_nullable_match_move_counting.rs`):
+  non-null present-arm → count == 1; poison M1 (slot@0→slot@8) → count == 2 → RED.
+  Dùng counting shim, KHÔNG dựa SIGABRT (allocator khoan dung có thể không abort →
+  double-free thành leak câm). 192/196 (value fixtures) bắt M1-hỏng chỉ tình cờ
+  (crash ≠ EXPECT) — không đủ tư cách memory-safety tooth; counting test mới là lưới.
+- **Defer Lát 5 = đường double-free KHÁC:** Lát 5 (`?+>` map/flatMap) payload move
+  vào map-fn trong khi scrutinee có thể bị drop riêng = double-drop trên con trỏ
+  SỐNG (tombstone-trên-move không cứu được nếu move-target escape) — mặt trận
+  riêng, teeth riêng.
+
 ## 9. Consequences
 
 - **Tích cực:** stdlib optional-return (`fs.read`/`env.get -> String?`) compile được; 0 byte
