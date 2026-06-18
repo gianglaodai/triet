@@ -1,0 +1,26 @@
+// ERROR: E2450
+// CFG-tail Lát 2 (ADR-0063): UAF through an If merge. Each arm borrows a
+// block-local String and returns the reference; the If merge consumes the
+// loan-dest (`_4 = move _3`) in the same block, so the loan-dest never reaches
+// the block's live_out and the ADR-0046 Drop-check missed it → `length(r)` read
+// a dangling reference and silently returned 5 (use-after-free). ADR-0063 §3
+// adds point-level read-after-Drop liveness: the dest is READ after Drop(inner)
+// in the same block → the propagated loan is still live → E2450.
+//
+// Poison: delete the dest_used_after clause in the Drop-check
+// (triet-borrowck/src/checker.rs) → the UAF returns (program runs, length 5) →
+// this fixture no longer errors → RED.
+function id(s: &0 String) -> &0 String {
+    return s
+}
+
+function main() -> Integer {
+    let r = if true {
+        let inner = "hello"
+        id(&0 inner)
+    } else {
+        let other = "xx"
+        id(&0 other)
+    };
+    return length(r)
+}

@@ -777,10 +777,33 @@ fn process_block(
                 // dead at this Drop point. If the dest is still live (e.g.,
                 // nested scope where Drop(source) precedes a use of the
                 // returned reference), fire E2450.
+                // ADR-0063 §3: point-level READ-after-Drop liveness. A
+                // propagated loan is also live if its dest reference is READ
+                // (not Drop) by a later statement in THIS block — covers
+                // same-block consumption (e.g. an If/match merge `_4 = move _3`
+                // that consumes the loan-dest before it reaches live_out, so
+                // live_out alone misses the UAF). Drop of the dest itself is NOT
+                // a use — the dest is dying too, so there is no false-positive
+                // by construction (no valid code reads a ref after its source
+                // dies).
+                let dest_used_after = |dest: triet_mir::Local| {
+                    body.blocks[block.0].statements[stmt_idx + 1..]
+                        .iter()
+                        .any(|s| match s {
+                            Statement::Assign { source, .. }
+                            | Statement::Borrow { source, .. }
+                            | Statement::GetDiscriminant { source, .. } => source.local == dest,
+                            Statement::BinaryOp { left, right, .. } => {
+                                left.local == dest || right.local == dest
+                            }
+                            _ => false,
+                        })
+                };
                 let has_active_loans = state.active_loans.iter().any(|loan| {
                     loan.source.local == *l
                         && (!loan.is_propagated
-                            || liveness.blocks[block.0].live_out.contains(&loan.dest))
+                            || liveness.blocks[block.0].live_out.contains(&loan.dest)
+                            || dest_used_after(loan.dest))
                 });
                 if has_active_loans {
                     let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
