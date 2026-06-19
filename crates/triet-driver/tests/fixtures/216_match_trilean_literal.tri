@@ -1,0 +1,12 @@
+// EXPECT: 123
+// ADR-0064: match on a Trilean scrutinee (value-keyed SwitchInt). Trilean
+// literals true/false/unknown encode to i64 1/-1/0; all three covered (no
+// wildcard needed — finite domain). f(true)=1, f(false)=2, f(unknown)=3.
+// 1*100 + 2*10 + 3 = 123 — a wrong encoding (e.g. true↔false) changes the total.
+function f(t: Trilean) -> Integer = match t {
+    true => 1,
+    false => 2,
+    unknown => 3,
+}
+
+function main() -> Integer = f(true) * 100 + f(false) * 10 + f(unknown)

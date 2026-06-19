@@ -3036,6 +3036,240 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 return Ok(result);
             }
 
+            // ── ADR-0064: match on a Trilean scrutinee (value-keyed) ──
+            // Trilean literals true/false/unknown encode to i64 1/-1/0
+            // (lower:1464), the same encoding as the i64 scrutinee. SwitchInt
+            // directly on the value (NO GetDiscriminant); a missing value with
+            // no wildcard hits the default Trap (GAP-2). Mirror of the Trit
+            // branch above; must run BEFORE the enum GetDiscriminant fallthrough.
+            if scrut_ty == MirType::Trilean {
+                use triet_syntax::{LiteralPattern, Pattern, TrileanValue};
+                let cur_bb = c.cur;
+                let merge_bb = c.alloc_bb();
+                let result = c.alloc_local();
+                c.push(Statement::StorageLive(result, expr_span.clone()));
+
+                let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
+                let mut wildcard_arm: Option<&triet_syntax::MatchArm> = None;
+
+                for arm in arms.iter() {
+                    let pat = arena.pattern(arm.pattern);
+                    let pat_span = pat.span.clone();
+                    if wildcard_arm.is_some() {
+                        return Err(LowerError {
+                            message: "wildcard `_` must be the last arm in a Trilean match — \
+                                      arms after wildcard are unreachable"
+                                .to_string(),
+                            span: pat_span,
+                        });
+                    }
+                    match &pat.node {
+                        Pattern::Wildcard => wildcard_arm = Some(arm),
+                        Pattern::Literal(LiteralPattern::Trilean(v)) => {
+                            let key: i64 = match v {
+                                TrileanValue::True => 1,
+                                TrileanValue::False => -1,
+                                TrileanValue::Unknown => 0,
+                            };
+                            let arm_bb = c.alloc_bb();
+                            cases.push((key, arm_bb));
+                            c.cur = arm_bb;
+                            c.push_scope();
+                            let body_val = lower_expr(arm.body, arena, c)?;
+                            let arm_end = c.cur;
+                            // ADR-0056: type merge result from the arm value.
+                            c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
+                            c.push(Statement::Assign {
+                                dest: Place::local(result),
+                                source: Place::local(body_val),
+                                span: expr_span.clone(),
+                            });
+                            c.term(
+                                arm_end,
+                                Terminator::Goto {
+                                    target: merge_bb,
+                                    span: DUMMY_SPAN,
+                                },
+                            );
+                            c.pop_scope();
+                        }
+                        other => {
+                            return Err(LowerError {
+                                message: format!(
+                                    "unsupported pattern in Trilean match: {other:?} — expected \
+                                     `true`/`false`/`unknown` or `_`"
+                                ),
+                                span: pat_span,
+                            });
+                        }
+                    }
+                }
+
+                // GAP-2: default → wildcard body if present, else Trap.
+                let default_bb = if let Some(wc) = wildcard_arm {
+                    let wc_bb = c.alloc_bb();
+                    c.cur = wc_bb;
+                    c.push_scope();
+                    let body_val = lower_expr(wc.body, arena, c)?;
+                    let wc_end = c.cur;
+                    c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    c.term(
+                        wc_end,
+                        Terminator::Goto {
+                            target: merge_bb,
+                            span: DUMMY_SPAN,
+                        },
+                    );
+                    c.pop_scope();
+                    wc_bb
+                } else {
+                    let trap_bb = c.alloc_bb();
+                    c.cur = trap_bb;
+                    c.term(
+                        trap_bb,
+                        Terminator::Trap {
+                            span: expr_span.clone(),
+                        },
+                    );
+                    trap_bb
+                };
+
+                c.term(
+                    cur_bb,
+                    Terminator::SwitchInt {
+                        discriminant: scrut_local,
+                        cases,
+                        default_bb,
+                        span: expr_span.clone(),
+                    },
+                );
+                c.cur = merge_bb;
+                return Ok(result);
+            }
+
+            // ── ADR-0064: match on an Integer scrutinee (value-keyed) ──
+            // The scrutinee is an i64; SwitchInt directly on it. Integer's
+            // domain is infinite, so exhaustiveness REQUIRES a wildcard — an
+            // uncovered value with no `_` hits the default Trap (GAP-2,
+            // runtime enforcement; compile-time exhaustiveness is a separate
+            // campaign per ADR-0064 §4). Mirror of the Trit branch.
+            if scrut_ty == MirType::Integer {
+                use triet_syntax::{LiteralPattern, Pattern};
+                let cur_bb = c.cur;
+                let merge_bb = c.alloc_bb();
+                let result = c.alloc_local();
+                c.push(Statement::StorageLive(result, expr_span.clone()));
+
+                let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
+                let mut wildcard_arm: Option<&triet_syntax::MatchArm> = None;
+
+                for arm in arms.iter() {
+                    let pat = arena.pattern(arm.pattern);
+                    let pat_span = pat.span.clone();
+                    if wildcard_arm.is_some() {
+                        return Err(LowerError {
+                            message: "wildcard `_` must be the last arm in an Integer match — \
+                                      arms after wildcard are unreachable"
+                                .to_string(),
+                            span: pat_span,
+                        });
+                    }
+                    match &pat.node {
+                        Pattern::Wildcard => wildcard_arm = Some(arm),
+                        Pattern::Literal(LiteralPattern::Integer {
+                            value,
+                            suffix: None,
+                        }) => {
+                            let key = i64::try_from(*value).map_err(|_| LowerError {
+                                message: format!("Integer literal value {value} out of range"),
+                                span: pat_span.clone(),
+                            })?;
+                            let arm_bb = c.alloc_bb();
+                            cases.push((key, arm_bb));
+                            c.cur = arm_bb;
+                            c.push_scope();
+                            let body_val = lower_expr(arm.body, arena, c)?;
+                            let arm_end = c.cur;
+                            // ADR-0056: type merge result from the arm value.
+                            c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
+                            c.push(Statement::Assign {
+                                dest: Place::local(result),
+                                source: Place::local(body_val),
+                                span: expr_span.clone(),
+                            });
+                            c.term(
+                                arm_end,
+                                Terminator::Goto {
+                                    target: merge_bb,
+                                    span: DUMMY_SPAN,
+                                },
+                            );
+                            c.pop_scope();
+                        }
+                        other => {
+                            return Err(LowerError {
+                                message: format!(
+                                    "unsupported pattern in Integer match: {other:?} — expected \
+                                     an integer literal or `_`"
+                                ),
+                                span: pat_span,
+                            });
+                        }
+                    }
+                }
+
+                // GAP-2: default → wildcard body if present, else Trap.
+                let default_bb = if let Some(wc) = wildcard_arm {
+                    let wc_bb = c.alloc_bb();
+                    c.cur = wc_bb;
+                    c.push_scope();
+                    let body_val = lower_expr(wc.body, arena, c)?;
+                    let wc_end = c.cur;
+                    c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(body_val),
+                        span: expr_span.clone(),
+                    });
+                    c.term(
+                        wc_end,
+                        Terminator::Goto {
+                            target: merge_bb,
+                            span: DUMMY_SPAN,
+                        },
+                    );
+                    c.pop_scope();
+                    wc_bb
+                } else {
+                    let trap_bb = c.alloc_bb();
+                    c.cur = trap_bb;
+                    c.term(
+                        trap_bb,
+                        Terminator::Trap {
+                            span: expr_span.clone(),
+                        },
+                    );
+                    trap_bb
+                };
+
+                c.term(
+                    cur_bb,
+                    Terminator::SwitchInt {
+                        discriminant: scrut_local,
+                        cases,
+                        default_bb,
+                        span: expr_span.clone(),
+                    },
+                );
+                c.cur = merge_bb;
+                return Ok(result);
+            }
+
             // ── Nullable match: branch on ~+ / ~0 via NULL_SENTINEL ──
             if scrut_ty.is_nullable() {
                 use triet_syntax::{MatchArm, OutcomeArm, Pattern};
