@@ -1,0 +1,16 @@
+// ERROR: E2450
+// ADR-0063: match-arm UAF — loan-liveness construct-agnostic phủ match.
+// Trit-param match; mỗi arm borrow block-local rồi return reference;
+// merge consume loan-dest trong block → live_out miss → dest_used_after
+// (point-level read-after-Drop) bắt → E2450. Poison: gỡ dest_used_after
+// clause (checker.rs) → UAF về (compile+run trả 2) → RED.
+function id(s: &0 String) -> &0 String { return s }
+function pick(t: Trit) -> Integer {
+    let r = match t {
+        -1_trit => { let a = "aa"; id(&0 a) }
+        0_trit => { let b = "bb"; id(&0 b) }
+        1_trit => { let c = "cc"; id(&0 c) }
+    };
+    return length(r)
+}
+function main() -> Integer = pick(1_trit)

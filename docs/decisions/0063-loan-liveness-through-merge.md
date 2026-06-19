@@ -67,7 +67,7 @@ Clean-tree confirm: UAF=5; với fix=E2450 → load-bearing.
 ## 5. Teeth bắt buộc (khi implement)
 - **Headline fixture:** If-reference-arm UAF → E2450. Poison: gỡ `dest_used_after` → trả 5 (UAF về) → RED.
 - **Regression cứng:** 84/101 (return-borrow) GIỮ pass (không false-pos); 102/20/21/24 (E2450/borrow) GIỮ đúng; full 204 + workspace.
-- **match-arm:** cùng Drop-check nên cùng được vá; UNVERIFIED runtime (match-literal limitation chặn repro) — ghi rủi ro, KHÔNG claim test giả.
+- **match-arm:** ✅ VERIFIED qua **Trit-param match** (fixture `214_match_arm_uaf_e2450.tri`) — E2450 fires; poison `dest_used_after` → UAF về (compile+run trả 2) → RED. Drop-check construct-agnostic phủ **If + match (Trit-param)** bằng cùng một điểm. *Note: scrutinee literal Integer/Trilean chưa hỗ trợ (feature riêng — value-keyed SwitchInt), không ảnh hưởng tính construct-agnostic của fix.*
 
 ## 6. Consequences
 - **Tích cực:** bịt UAF class (ref đọc sau source-drop) cho mọi merge; 1 điểm sửa borrowck; 0 regression đo được; KHÔNG đụng lowerer/loan-model (ít rủi ro hơn loan-duplicate).
