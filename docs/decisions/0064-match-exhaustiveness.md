@@ -67,3 +67,5 @@ Triết cho `match` trên `Trit` (value-keyed SwitchInt, T6) + enum (GetDiscrimi
 **Chữ ký amendment:**
 - O: ✅ (recon file:line — gap tại exprs.rs:1797; E1026 error.rs:399 khuôn sẵn; blast-radius ZERO đo bằng quét; trap lower giữ)
 - G: ✅ (duyệt 2026-06-19 — 5 quyết định chốt; trap GAP-2 cấm gỡ; Tryte/Long defer ghi nợ)
+
+**Nợ mới (2026-06-20):** `Pattern::Variable` (catch-all bind name `other =>`) đã được typecheck chấp nhận, nhưng **lowerer (lib.rs:3224) đang refuse** đối với scalar-match. Đây là gap giữa typecheck-accept và lower-refuse. Đã ghi sổ chờ fix (mở rộng lower cho Variable-binding scalar-match).
