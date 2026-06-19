@@ -423,6 +423,20 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1026: non-exhaustive match on a scalar type (Integer/Trilean/Trit).
+    #[error("E1026: non-exhaustive `match`: {missing}")]
+    #[diagnostic(
+        code(triet::typecheck::E1026),
+        help("add the missing arm(s) or a `_` wildcard")
+    )]
+    NonExhaustiveScalarMatch {
+        /// Human-readable description of what is missing.
+        missing: String,
+        /// Source location of the `match` expression.
+        #[label("this match does not cover all values")]
+        span: Span,
+    },
+
     /// E1027: mixing `Result<T, E>` and `T~E` without explicit conversion.
     #[error("cannot mix `Result<T, E>` and `T~E` without explicit conversion")]
     #[diagnostic(
@@ -933,6 +947,7 @@ impl TypeError {
             | Self::NullStateInBinaryOutcome { span }
             | Self::NonExhaustiveOutcomeMatch { span, .. }
             | Self::NonExhaustiveEnumMatch { span, .. }
+            | Self::NonExhaustiveScalarMatch { span, .. }
             | Self::OutcomeTypeMismatch { span }
             | Self::PropagateInNonFallibleContext { span }
             | Self::ErrorTypeMismatch { span, .. }

@@ -50,6 +50,19 @@ fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     .expect("lowering failed")
 }
 
+/// Như `lower_source` nhưng KHÔNG assert type-clean. CHỈ dùng cho test trap
+/// defense-in-depth: non-exhaustive scalar match nay bị typecheck reject (E1026,
+/// ADR-0064 §8), nên driver thật (main.rs:59) bail TRƯỚC khi lower. Helper này cố
+/// ý bypass cổng typecheck để chạm safety-net GAP-2 default→Trap của lowerer —
+/// trap chỉ kích nếu một ngày typecheck escape lọt non-exhaustive match. Trap giữ
+/// load-bearing per ADR-0064 §8 decision #3.
+fn lower_bypassing_typecheck(source: &str) -> Vec<triet_mir::Body> {
+    let (program, parse_errors) = triet_parser::parse(source);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (_type_errors, er, pr, mr) = triet_typecheck::check(&program);
+    triet_lower::lower_program(&program, &er, &pr, &mr).expect("lowering failed")
+}
+
 fn switch_of(
     bodies: &[triet_mir::Body],
 ) -> (Vec<(i64, triet_mir::BasicBlock)>, triet_mir::BasicBlock) {
@@ -95,7 +108,9 @@ fn first_const_in(bodies: &[triet_mir::Body], bb: triet_mir::BasicBlock) -> Opti
 
 #[test]
 fn match_integer_case_value_maps_to_correct_arm() {
-    let bodies = lower_source(INT_NO_WILDCARD);
+    // INT_WITH_WILDCARD (type-clean per ADR-0064 §8): the wildcard routes to
+    // the default, so the value→arm cases are still exactly {1→10, 2→20}.
+    let bodies = lower_source(INT_WITH_WILDCARD);
     let (cases, _default) = switch_of(&bodies);
     for (key, bb) in &cases {
         let got = first_const_in(&bodies, *bb);
@@ -121,7 +136,10 @@ fn match_integer_case_value_maps_to_correct_arm() {
 fn non_exhaustive_integer_match_defaults_to_trap() {
     // GAP-2: Integer match with no wildcard → default→Trap. Poison: route
     // default to a real block → red (uncovered value would fall through).
-    let bodies = lower_source(INT_NO_WILDCARD);
+    // Bypass typecheck: INT_NO_WILDCARD is now rejected at typecheck (E1026,
+    // ADR-0064 §8), so the only way to reach the lower GAP-2 safety-net is to
+    // route around the typecheck gate. The trap stays load-bearing.
+    let bodies = lower_bypassing_typecheck(INT_NO_WILDCARD);
     let (_cases, default_bb) = switch_of(&bodies);
     assert!(
         is_trap(&bodies, default_bb),
@@ -180,7 +198,9 @@ fn match_trilean_value_maps_to_correct_key() {
 #[test]
 fn match_literal_jit_compiles() {
     use triet_jit::mir_lower::{JitContext, ShimSymbol};
-    for src in [INT_NO_WILDCARD, INT_WITH_WILDCARD, TRILEAN_EXHAUSTIVE] {
+    // INT_NO_WILDCARD dropped: non-exhaustive → typecheck E1026 (ADR-0064 §8),
+    // never reaches JIT via the real pipeline.
+    for src in [INT_WITH_WILDCARD, TRILEAN_EXHAUSTIVE] {
         let bodies = lower_source(src);
         for body in &bodies {
             body.verify().expect("MIR verify");

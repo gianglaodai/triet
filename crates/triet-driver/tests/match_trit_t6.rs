@@ -42,6 +42,19 @@ fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     .expect("lowering failed")
 }
 
+/// Như `lower_source` nhưng KHÔNG assert type-clean. CHỈ dùng cho test trap
+/// defense-in-depth: non-exhaustive scalar match nay bị typecheck reject (E1026,
+/// ADR-0064 §8), nên driver thật (main.rs:59) bail TRƯỚC khi lower. Helper này cố
+/// ý bypass cổng typecheck để chạm safety-net GAP-2 default→Trap của lowerer —
+/// trap chỉ kích nếu một ngày typecheck escape lọt non-exhaustive match. Trap giữ
+/// load-bearing per ADR-0064 §8 decision #3.
+fn lower_bypassing_typecheck(source: &str) -> Vec<triet_mir::Body> {
+    let (program, parse_errors) = triet_parser::parse(source);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (_type_errors, er, pr, mr) = triet_typecheck::check(&program);
+    triet_lower::lower_program(&program, &er, &pr, &mr).expect("lowering failed")
+}
+
 /// Find the single SwitchInt in `classify` and return (cases, default_bb).
 fn switch_of(
     bodies: &[triet_mir::Body],
@@ -120,7 +133,10 @@ fn non_exhaustive_trit_match_defaults_to_trap() {
     // wildcard must have default→Trap. Poison: route default to a real
     // block instead of a Trap → this goes red (uncovered value would
     // silently fall through).
-    let bodies = lower_source(NON_EXHAUSTIVE);
+    // Bypass typecheck: NON_EXHAUSTIVE is now rejected at typecheck (E1026,
+    // ADR-0064 §8), so the only way to reach the lower GAP-2 safety-net is to
+    // route around the typecheck gate. The trap stays load-bearing.
+    let bodies = lower_bypassing_typecheck(NON_EXHAUSTIVE);
     let (cases, default_bb) = switch_of(&bodies);
     let mut keys: Vec<i64> = cases.iter().map(|(v, _)| *v).collect();
     keys.sort_unstable();

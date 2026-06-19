@@ -1,0 +1,10 @@
+// ERROR: E1026:
+// ADR-0064 §8: Trit has a finite domain {-1, 0, 1}. A match covering only
+// -1_trit/1_trit without 0_trit and without a `_` wildcard is non-exhaustive
+// → compile-time E1026 (Campaign Typecheck-Exhaustiveness, Mục 1).
+function g(tr: Trit) -> Integer = match tr {
+    -1_trit => 1,
+    1_trit => 3,
+}
+
+function main() -> Integer = g(1_trit)

@@ -1794,6 +1794,16 @@ impl Checker<'_> {
             self.check_enum_exhaustiveness(name, arms, span.clone());
         }
 
+        // ADR-0064 §8: scalar exhaustiveness (Integer/Trilean/Trit) at
+        // compile-time. Closes the §4 debt — a match missing an arm becomes
+        // E1026 here instead of relying on the lower GAP-2 runtime trap.
+        match &scrutinee_ty {
+            Type::Integer => self.check_integer_exhaustiveness(arms, span.clone()),
+            Type::Trilean { .. } => self.check_trilean_exhaustiveness(arms, span.clone()),
+            Type::Trit => self.check_trit_exhaustiveness(arms, span.clone()),
+            _ => {}
+        }
+
         arm_type.unwrap_or_else(|| {
             // Empty match — flag as a type error.
             self.errors.push(TypeError::Mismatch {
@@ -1942,6 +1952,130 @@ impl Checker<'_> {
         if !missing.is_empty() {
             self.errors.push(TypeError::NonExhaustiveEnumMatch {
                 missing: missing.join(", "),
+                span,
+            });
+        }
+    }
+
+    /// Returns `true` if any arm is a catch-all: a `_` wildcard or a bare
+    /// variable binding (`other =>`). ADR-0064 §8 decision #2.
+    fn has_scalar_catch_all(&self, arms: &[MatchArm]) -> bool {
+        arms.iter().any(|arm| {
+            matches!(
+                self.arena.pattern(arm.pattern).node,
+                triet_syntax::Pattern::Wildcard | triet_syntax::Pattern::Variable(_)
+            )
+        })
+    }
+
+    /// Collect literal patterns reachable from `pat`, expanding `Or`
+    /// sub-patterns (`1 | 2 | 3`). ADR-0064 §8.
+    fn collect_literal_patterns(
+        &self,
+        pat: triet_syntax::PatternId,
+        out: &mut Vec<triet_syntax::LiteralPattern>,
+    ) {
+        match &self.arena.pattern(pat).node {
+            triet_syntax::Pattern::Literal(lp) => out.push(lp.clone()),
+            triet_syntax::Pattern::Or(subs) => {
+                for sub in subs {
+                    self.collect_literal_patterns(*sub, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// E1026: `Integer` has an infinite domain — a match requires a `_`
+    /// wildcard (or a variable binding) to be exhaustive. ADR-0064 §8.
+    fn check_integer_exhaustiveness(&mut self, arms: &[MatchArm], span: Span) {
+        if self.has_scalar_catch_all(arms) {
+            return;
+        }
+        self.errors.push(TypeError::NonExhaustiveScalarMatch {
+            missing: "Integer match requires a `_` wildcard arm".to_string(),
+            span,
+        });
+    }
+
+    /// E1026: `Trilean` match must cover {true, false, unknown} or have a
+    /// catch-all. ADR-0064 §8.
+    fn check_trilean_exhaustiveness(&mut self, arms: &[MatchArm], span: Span) {
+        use triet_syntax::{LiteralPattern, TrileanValue};
+        if self.has_scalar_catch_all(arms) {
+            return;
+        }
+        let mut lits = Vec::new();
+        for arm in arms {
+            self.collect_literal_patterns(arm.pattern, &mut lits);
+        }
+        let (mut has_true, mut has_false, mut has_unknown) = (false, false, false);
+        for lp in &lits {
+            if let LiteralPattern::Trilean(v) = lp {
+                match v {
+                    TrileanValue::True => has_true = true,
+                    TrileanValue::False => has_false = true,
+                    TrileanValue::Unknown => has_unknown = true,
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        if !has_true {
+            missing.push("`true`");
+        }
+        if !has_false {
+            missing.push("`false`");
+        }
+        if !has_unknown {
+            missing.push("`unknown`");
+        }
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveScalarMatch {
+                missing: format!("missing {}", missing.join(", ")),
+                span,
+            });
+        }
+    }
+
+    /// E1026: `Trit` match must cover {-1, 0, 1} or have a catch-all.
+    /// ADR-0064 §8.
+    fn check_trit_exhaustiveness(&mut self, arms: &[MatchArm], span: Span) {
+        use triet_syntax::LiteralPattern;
+        if self.has_scalar_catch_all(arms) {
+            return;
+        }
+        let mut lits = Vec::new();
+        for arm in arms {
+            self.collect_literal_patterns(arm.pattern, &mut lits);
+        }
+        let (mut has_neg, mut has_zero, mut has_pos) = (false, false, false);
+        for lp in &lits {
+            if let LiteralPattern::Integer {
+                value,
+                suffix: Some(NumericSuffix::Trit),
+            } = lp
+            {
+                match *value {
+                    -1 => has_neg = true,
+                    0 => has_zero = true,
+                    1 => has_pos = true,
+                    _ => {}
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        if !has_neg {
+            missing.push("`-1_trit`");
+        }
+        if !has_zero {
+            missing.push("`0_trit`");
+        }
+        if !has_pos {
+            missing.push("`1_trit`");
+        }
+        if !missing.is_empty() {
+            self.errors.push(TypeError::NonExhaustiveScalarMatch {
+                missing: format!("missing {}", missing.join(", ")),
                 span,
             });
         }

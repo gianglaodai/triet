@@ -1,0 +1,11 @@
+// ERROR: E1026:
+// ADR-0064 §8: Integer has an infinite domain — a match listing only some
+// values without a `_` wildcard is non-exhaustive → compile-time E1026
+// (Campaign Typecheck-Exhaustiveness, Mục 1). Before the typecheck check,
+// this was swallowed and deferred to the lower GAP-2 runtime trap.
+function classify(x: Integer) -> Integer = match x {
+    1 => 10,
+    2 => 20,
+}
+
+function main() -> Integer = classify(1)

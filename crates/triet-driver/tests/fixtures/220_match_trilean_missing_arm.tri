@@ -1,0 +1,10 @@
+// ERROR: E1026:
+// ADR-0064 §8: Trilean has a finite domain {true, false, unknown}. A match
+// covering only true/false without `unknown` and without a `_` wildcard is
+// non-exhaustive → compile-time E1026 (Campaign Typecheck-Exhaustiveness).
+function f(t: Trilean) -> Integer = match t {
+    true => 1,
+    false => 2,
+}
+
+function main() -> Integer = f(true)
