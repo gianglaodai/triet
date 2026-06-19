@@ -40,3 +40,30 @@ Triết cho `match` trên `Trit` (value-keyed SwitchInt, T6) + enum (GetDiscrimi
 ## 7. Chữ ký
 - O: ✅ (encoding đo từ lower:1464; khuôn Trit-path 2924 tiền lệ; nợ typecheck tách minh bạch)
 - G: ✅ (ký duyệt 2026-06-19 — Rule vét cạn khóa; trap GAP-2 ở lower = BIỆN PHÁP TẠM; nợ Typecheck-Exhaustiveness là campaign RIÊNG, cấm nhồi vào Lát lowering; mirror Trit-path, cấm đẻ pattern rẽ nhánh mới)
+
+---
+
+## 8. AMENDMENT 2026-06-19 — Typecheck Exhaustiveness (đóng nợ §4) — sửa-có-dấu-vết
+
+**Bối cảnh:** §4 ghi nợ "Typecheck Exhaustiveness = campaign riêng". Campaign Latent Type-Inference (Mục 4) đã đổ móng (scrutinee scalar có kiểu tĩnh). Campaign này (Mục 1) đóng nợ §4: **dời enforcement Rule §2 từ runtime-trap (lower) lên compile-time (typecheck).**
+
+**KHÔNG đảo ngược §2/§3** — chỉ thêm tầng enforce. Decisions (G ký 2026-06-19):
+
+| # | Quyết định | Chốt |
+|---|---|---|
+| 1 | Mã lỗi | **Tái dùng E1026** + variant mới `NonExhaustiveScalarMatch { type_name, missing }`. KHÔNG đẻ mã mới (khuôn "1 mã, nhiều variant" như Outcome/Enum). |
+| 2 | Catch-all | `Pattern::Wildcard` (`_`) **HOẶC** `Pattern::Variable(name)` (bind `other =>`) — cả hai short-circuit. |
+| 3 | Trap GAP-2 ở lower | **GIỮ NGUYÊN, cấm gỡ.** Typecheck = tường thành; trap lower = defense-in-depth bất-khả-đạt cho code well-typed. |
+| 4 | ADR | Amend 0064 §8 (đây). ADR-0065 dành Struct?/Enum? heap-nullable. |
+| 5 | Tryte/Long | **DEFER, ghi nợ.** Rule §2 chỉ nêu Integer/Trilean/Trit; lower chưa support match Tryte/Long (refuse, không silent). Áp rule khi lower mở. |
+
+**Enforcement (typecheck `check_match`, exprs.rs:1728, thêm nhánh sau dispatch enum/nullable/outcome):**
+- **`Type::Integer`** (miền vô hạn): KHÔNG catch-all → E1026 "Integer match requires `_` wildcard". (`Range`/`Or` literal KHÔNG thỏa — vẫn cần catch-all.)
+- **`Type::Trilean { .. }`** (cả refined): không catch-all & thiếu mặt nào của {true, false, unknown} → E1026 liệt kê mặt thiếu. `Or` expand sub-pattern.
+- **`Type::Trit`** (−1/0/1): không catch-all & thiếu mặt → E1026 liệt kê. `Or` expand.
+
+**Blast-radius (O quét toàn corpus 2026-06-19):** ZERO fixture vỡ — mọi scalar match hiện có đã exhaustive (215/218 Integer-có-`_`; 174/214 Trit-đủ-3; 216 Trilean-đủ-3).
+
+**Chữ ký amendment:**
+- O: ✅ (recon file:line — gap tại exprs.rs:1797; E1026 error.rs:399 khuôn sẵn; blast-radius ZERO đo bằng quét; trap lower giữ)
+- G: ✅ (duyệt 2026-06-19 — 5 quyết định chốt; trap GAP-2 cấm gỡ; Tryte/Long defer ghi nợ)
