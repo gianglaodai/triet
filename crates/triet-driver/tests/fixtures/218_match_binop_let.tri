@@ -1,0 +1,10 @@
+// EXPECT: 30
+function main() -> Integer {
+    let a = 1;
+    let b = 2;
+    let x = a + b;
+    match x {
+        3 => { 30 }
+        _ => { 99 }
+    }
+}

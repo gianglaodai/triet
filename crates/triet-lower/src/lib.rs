@@ -1723,7 +1723,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         } => {
             let lhs = lower_expr(*left, arena, c)?;
             let rhs = lower_expr(*right, arena, c)?;
-            let d = c.alloc_local();
+            let ty = binop_result_type(operator);
+            let d = c.alloc_local_ty(ty);
 
             // `Pow` is not an ALU instruction — it must go through the
             // `__triet_pow` shim via CallDispatch (extern "C" SystemV).
@@ -4837,6 +4838,17 @@ fn lower_ref_form(form: triet_syntax::type_ast::ReferenceForm) -> triet_mir::Ref
         RF::BorrowReadOnly => MRF::BorrowReadOnly,
         RF::BorrowExclusiveMutable => MRF::BorrowExclusiveMutable,
         RF::WeakObserver => MRF::WeakObserver,
+    }
+}
+
+fn binop_result_type(op: &BinaryOperator) -> triet_mir::MirType {
+    // FIXME(Mentor_G): Đây là tech-debt do Typechecker không pass type xuống MIR.
+    // Phải đập đi xây lại bằng Typecheck->MIR bridge (Option C) ở một campaign khác.
+    use BinaryOperator::*;
+    match op {
+        Add | Sub | Mul | Div | Mod | Pow => triet_mir::MirType::Integer,
+        Eq | Ne | Lt | Le | Gt | Ge | LukAnd | LukOr | LukXor | LukImplies | LukIff
+        | KleeneImplies | KleeneXor | KleeneIff => triet_mir::MirType::Trilean,
     }
 }
 
