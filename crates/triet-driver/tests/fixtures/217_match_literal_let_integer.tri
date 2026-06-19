@@ -1,0 +1,18 @@
+// EXPECT: 129
+// Campaign Latent Type-Inference (Lát 1): a bare `let x = <integer literal>`
+// must stamp x's local with MirType::Integer so `match x` reaches the
+// value-keyed Integer dispatch (ADR-0064) instead of falling through to the
+// enum-path and refusing. Before the literal-arm fix, the literal local was
+// MirType::Unknown → lowerer error "unsupported match pattern (expected enum
+// variant): Literal(Integer{value:1})". This is the exact repro fixture 215
+// flagged as out-of-scope ("a bare `let x = 2` infers MirType::Unknown").
+//
+// Each branch uses a literal-init let (NOT a param/identifier-init, which would
+// already be typed and make this vacuous). pick1=10 (case), pick2=20 (case),
+// pick9=99 (wildcard). 10 + 20 + 99 = 129 — a broken case mapping, lost
+// wildcard, or un-typed scrutinee changes the total or refuses to lower.
+function pick1() -> Integer = { let x = 1; match x { 1 => 10, 2 => 20, _ => 99 } }
+function pick2() -> Integer = { let x = 2; match x { 1 => 10, 2 => 20, _ => 99 } }
+function pick9() -> Integer = { let x = 9; match x { 1 => 10, 2 => 20, _ => 99 } }
+
+function main() -> Integer = pick1() + pick2() + pick9()

@@ -1427,8 +1427,17 @@ fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Place, Low
 fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, LowerError> {
     let expr_span = arena.expression(expr_id).span.clone();
     match &arena.expression(expr_id).node {
-        Expr::IntegerLiteral { value, .. } => {
-            let d = c.alloc_local();
+        Expr::IntegerLiteral { value, suffix } => {
+            // Latent type-inference: stamp the local with the suffix-implied
+            // scalar type so a `match` scrutinee bound to this literal reaches
+            // the correct value-keyed dispatch (Trit/Integer) instead of Unknown.
+            let ty = match suffix {
+                None | Some(triet_syntax::NumericSuffix::Integer) => MirType::Integer,
+                Some(triet_syntax::NumericSuffix::Trit) => MirType::Trit,
+                Some(triet_syntax::NumericSuffix::Tryte) => MirType::Tryte,
+                Some(triet_syntax::NumericSuffix::Long) => MirType::Long,
+            };
+            let d = c.alloc_local_ty(ty);
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
@@ -1438,7 +1447,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::TernaryLiteral { value } => {
-            let d = c.alloc_local();
+            let d = c.alloc_local_ty(MirType::Integer);
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
@@ -1448,7 +1457,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::TritLiteral { value } => {
-            let d = c.alloc_local();
+            let d = c.alloc_local_ty(MirType::Trit);
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
                 dest: Place::local(d),
@@ -1458,7 +1467,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::TrileanLiteral { value } => {
-            let d = c.alloc_local();
+            let d = c.alloc_local_ty(MirType::Trilean);
             c.push(Statement::StorageLive(d, expr_span.clone()));
             let trit: i8 = match value {
                 triet_syntax::TrileanValue::True => 1,
