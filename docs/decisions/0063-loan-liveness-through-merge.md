@@ -78,3 +78,4 @@ Clean-tree confirm: UAF=5; với fix=E2450 → load-bearing.
 ## 7. Chữ ký
 - O: ✅ (recon empirical, 3 phương án đo máu, fix grounded MIR + 0-regression)
 - G: ✅ (ký duyệt 2026-06-19 — ADR mới đè ADR-0046 [không amendment, lịch sử không xóa]; match-arm giữ UNVERIFIED minh bạch; fix point-level READ-after-Drop ở borrowck Drop-check, không lowerer/loan-follow)
+- **Amendment 2026-06-19 (sau ký, sửa-có-dấu-vết):** chữ "match-arm giữ UNVERIFIED" trong chữ ký G ở trên ĐÃ được O xé cờ cùng ngày — verify qua Trit-param match (fixture `214_match_arm_uaf_e2450.tri`, §5): E2450 fires, poison `dest_used_after` → UAF về (trả 2). Chữ ký gốc giữ nguyên làm dấu vết thời điểm ký; **§5 là trạng thái hiện hành** (match-arm VERIFIED, construct-agnostic phủ If + match). Integer/Trilean literal scrutinee vẫn là feature riêng chưa làm.
