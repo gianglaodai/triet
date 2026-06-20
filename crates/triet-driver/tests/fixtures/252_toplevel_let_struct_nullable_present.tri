@@ -1,0 +1,15 @@
+// EXPECT: 3
+// ADR-0065 §12.8: top-level `let x: Point? = ~+ Point{...}`. The redirect lowers
+// the inner `Point` as a PLAIN aggregate; the widening block emits an Assign to
+// a fresh Nullable(Point) local (Delta 4a / JIT taxonomy Widen: set tag@0,
+// copy fields → +8). Without the redirect `~+` → OutcomeAlloc on main's
+// non-Outcome return type (Bug B). Poison the redirect (P1) → red.
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let x: Point? = ~+ Point { x: 3, y: 4 };
+    return match x {
+        ~+ pt => pt.x,
+        ~0 => -1,
+    };
+}

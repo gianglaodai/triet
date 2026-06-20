@@ -1,0 +1,13 @@
+// EXPECT: 5
+// ADR-0065 §12.8: top-level `let x: Integer? = ~+ 5`. Without the redirect the
+// `~+` lowers to an OutcomeConstructor → OutcomeAlloc on main's non-Outcome
+// return type (Bug B → MIR verification error). The redirect lowers `5` plain
+// and the widening block retypes it Nullable(Integer) in-place (PA-3c no-op:
+// present 5 != MIN). Poison the redirect (P1) → reverts to OutcomeAlloc (red).
+function main() -> Integer = {
+    let x: Integer? = ~+ 5;
+    return match x {
+        ~+ v => v,
+        ~0 => -1,
+    };
+}

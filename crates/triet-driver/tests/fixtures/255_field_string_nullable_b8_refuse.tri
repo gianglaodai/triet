@@ -1,0 +1,12 @@
+// ERROR: heap types (String, Vector, HashMap) are not yet supported
+// ADR-0065 §12.8 B8 guard: widening the field gate to accept scalar `T?` must
+// NOT let heap through. `s: String?` set `~+ "hi"` lowers the inner `"hi"` as a
+// PLAIN String → the is_copy check (lib.rs:2977) runs AFTER on every branch →
+// String is not Copy → refuse heap_type_not_supported. Poison (P3: relax the
+// is_copy check for String) → this compiles → SIGSEGV/wrong result (red).
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b = Bad { s: ~+ "hi" };
+    return 0;
+}

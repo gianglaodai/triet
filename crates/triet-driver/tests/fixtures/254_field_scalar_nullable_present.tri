@@ -1,0 +1,23 @@
+// EXPECT: 5
+// ADR-0065 §12.8 Fix 2: a SCALAR nullable field `f: Integer?` set to `~+ 5`.
+// The widened field gate now accepts ANY Nullable field (not just aggregate),
+// so `~+ 5` lowers `5` plain → field Assign stores the i64. Without Fix 2 the
+// scalar field falls through to the Outcome path → OutcomeAlloc on main's
+// non-Outcome return type (Bug B). Poison (P2: revert gate to _agg) → red.
+//
+// NOTE: read is via `let y: Integer? = h.f` (typed-let), NOT a direct
+// `match h.f`. A direct match on a scalar-nullable FIELD is a separate
+// READ-side gap (the field-read temp is Unknown-typed at lib.rs:2904-2911,
+// reserved for scalar-leaf-as-i64 arithmetic) → deferred per ADR-0065 §12.8.
+// The typed-let widens the Unknown temp to Nullable(Integer) so the match
+// routes to the nullable path. This fixture validates the WRITE side (Fix 2).
+struct Holder { f: Integer? }
+
+function main() -> Integer = {
+    let h = Holder { f: ~+ 5 };
+    let y: Integer? = h.f;
+    return match y {
+        ~+ v => v,
+        ~0 => -1,
+    };
+}
