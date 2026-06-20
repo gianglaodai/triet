@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: HEAD `e9bd3e0` (origin synced, 2026-06-20). Gate `0·0·225·0`. ADR-0065 Lát 1 Enum? ĐÓNG+PUSH (disc-sentinel niche). Kế: Lát 2 Struct? (tag 8B Phương án A).
+Mốc hiện tại: HEAD `4b6899f` (feat) (origin synced, 2026-06-20). Gate `0·0·232·0`. ADR-0065 Lát 2 Struct? ĐÓNG+PUSH (tag-word prepend, Phương án A, β). Chuỗi Nullable Aggregate HOÀN TẤT (Enum? + Struct?). Kế: nợ defer (Struct?-field-trong-Struct heap / match Tryte-Long / return happy-path).
 
 ---
 
@@ -52,13 +52,17 @@ chứa Copy field/payload — KHÔNG drop-glue/alloc/free. Value-model i64 KHÔN
       A gate(triet-mir 1399) · B slot-alloc(triet-jit) · C walk_proj unwrap · E result-retype
       (lower, idiom ADR-0056) · F `~0` store disc@0. Fixtures 225-230 (present payload-less/
       payload, ~0 null, Elvis, widening, B8 heap refuse). Poison E/B→SIGSEGV139, F→Trap132.
-- [ ] **Lát 2 — `Struct?` (tag 8B, Phương án A).** Struct KHÔNG có ô tự nhiên → đẻ tag word@0,
-      đẩy field +8: slot `{tag@0:i64, fields@8…}`, total = struct.total_size + 8. tag@0 ==
-      i64::MIN = null. Gate += `MirType::Struct(_)`; layout +8B prepend; widening = tag-store +
-      multi-word-copy (ADR-0060 §Điểm-3); match present-arm bind tại slot+8 (offset-walk +8).
-      Teeth bắt buộc (ADR §9): tag-offset poison bỏ +8 → field đè tag; widening copy 1-word →
-      field sau rác; struct ≥2 field. **Khoai hơn Lát 1** (đụng layout-sizing + offset-walk,
-      KHÔNG còn niche 0-byte). ADR-0065 §3.2/§8 đã vẽ layout.
+- [x] **Lát 2 — `Struct?` (tag 8B, Phương án A, β).** slot `{tag@0:i64, fields@8…}`,
+      total = struct.total_size + 8. tag@0 == i64::MIN = null / +1 = present. **6 delta:**
+      Delta 0 lowerer (Struct→Struct? widening → fresh local + Assign, KHÔNG retype in-place —
+      §9.2, recon-miss của O vá in-scope) · 1 gate += `Struct(_)` · 2 slot-alloc +8 (skip
+      sret/param/String) · 3 walk +8 (helper `nullable_struct_base_offset`) · 4a widening
+      tag=1 + copy→+8 · 4b **β** whole-slot N+8 tag-first (`T?→T?` propagate, KHÔNG refuse).
+      Lệch-lệnh chuẩn thuận: `is_aggregate` + slot-loop skip `Struct("String")` (borrowck builder
+      type String-local thành `Struct("String")` slot-less → tránh deref SIGSEGV). Fixtures
+      231-237; **237 = teeth tag-store** (reassign-widen-over-null, slot tái-dùng MIN). O verify
+      máu P1-P5 RED: P1 walk→231/234 sai · P2 4a-1word→SIGILL · P3 tag-store→237 đỏ (231 tươi
+      KHÔNG bắt) · P4 4b-tag→234/235 đỏ · P5 B8 gate→236+180. Gate `0·0·232·0`.
 
 ### 🟢 Perf — ADR-0044 §iii (không chặn)
 - [ ] **D1 Codegen opt range-check 1-instruction:** `(val−MIN) >ᵤ 2M` unsigned-sub trick + fallback `bor` gộp 2 icmp. Cắt nửa instruction mỗi Add/Sub.
