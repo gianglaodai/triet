@@ -1,6 +1,7 @@
 ---
 name: adr
 description: Scaffold a new Architecture Decision Record in docs/decisions/ following the project template.
+trigger: /adr
 argument-hint: "<number> <title> — e.g., /adr 0008 bytecode-binary-format"
 ---
 

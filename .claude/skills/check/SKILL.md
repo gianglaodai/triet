@@ -1,6 +1,7 @@
 ---
 name: check
 description: Run cargo test --workspace + cargo clippy --workspace --all-targets, the pre-commit validation ritual.
+trigger: /check
 ---
 
 # /check — Pre-commit validation

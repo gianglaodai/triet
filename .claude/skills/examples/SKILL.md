@@ -1,6 +1,7 @@
 ---
 name: examples
 description: Run all .tri example files through the compiler as smoke tests and report pass/fail.
+trigger: /examples
 argument-hint: "[demo-dir] — optional, e.g. /examples demos/02-module-system to test a specific demo"
 ---
 
