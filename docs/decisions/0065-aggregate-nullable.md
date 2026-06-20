@@ -124,6 +124,15 @@ Verify Lát 1 lộ ra B8 refuse qua **hai cổng phân biệt** — teeth phải
 
 Teeth B8 của Lát 1 dùng `String?` payload (cổng `HeapNullableNotLowered`), KHÔNG dùng plain `String` (cổng khác). §9 bullet "B8 guard" ở trên trỏ đúng cổng `HeapNullableNotLowered`.
 
+### 9.2 Amendment (Lát 2, 2026-06-20) — widening `Struct → Struct?` PHẢI sinh Assign (KHÔNG retype in-place)
+
+Verify Lát 2 lộ ra một giả định sai trong WO gốc (recon-miss của O, vá in-scope, β/B8 không đổi):
+
+- **Cơ chế lowerer thật:** `let x: T? = y` ở `triet-lower/src/lib.rs:1207` mặc định **retype local của `y` tại-chỗ** (`local_decls[v].ty = ann_ty`) + alias — KHÔNG sinh `Assign`. Đây CHÍNH là lý do widening Lát 1 (`Enum → Enum?`) là **no-op**: niche disc@0 dùng chung slot, relabel là đủ.
+- **Tại sao Struct? phá:** `Struct?` phình +8B (tag prepend). Retype in-place giữ slot `StructAlloc` 16B (x@0,y@8) nhưng dán nhãn `Nullable(Struct)` → `walk_projections +8` đọc OOB → giá trị rác (fixture 231 trả 6 thay 7). TODO sẵn tại `1200-1206` đã tiên tri đúng ca này ("emit an Assign to a new typed local (M2 pattern) instead of mutating").
+- **Delta 0 (sửa):** khi `init_ty == Struct(_)` **và** `ann_ty == Nullable(Struct(_))` → alloc local `Nullable(Struct)` MỚI + `Assign{new ← v}` (M2 pattern), KÍCH nhánh JIT widening (Delta 4a). **Khoanh chặt** chỉ `Struct→Struct?`; Enum?/scalar/String? giữ in-place (fixture 229 xanh nguyên).
+- **Teeth tag-store (P3):** store `tag=present(1)` trong 4a load-bearing nhưng fixture slot-tươi KHÔNG bắt (uninit tình cờ ≠ MIN). Cần fixture **reassign-widen-over-null** (237: `let mutable n: Pt? = ~0; n = p;` trên slot từng giữ `~0`=MIN): bỏ store → tag cũ MIN sống → match nhầm `~0` → đỏ. §9 bullet "`~0` materialize" mở rộng: teeth widening-tag PHẢI dùng slot tái-dùng-null, không dùng slot tươi.
+
 ## 10. Consequences
 
 - (+) Hoàn tất hệ nullable cho mọi loại; bất biến `tag_cell == i64::MIN ⟺ null` hợp nhất scalar/heap/enum/struct.
