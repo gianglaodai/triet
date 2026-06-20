@@ -1396,10 +1396,15 @@ pub fn is_scalar_nullable_payload(t: &MirType) -> bool {
 /// `Vector`/`HashMap` in their single i64 handle (handle == NULL_SENTINEL).
 /// `Enum?` (ADR-0065 Lát 1) uses the disc-sentinel niche: the enum's disc@0
 /// cell holds `i64::MIN` for null (a real discriminant is always in {0,1,2,…}),
-/// so no extra cell is needed. `Struct?` (multi-word, no natural cell) stays
-/// refused until Lát 2.
+/// so no extra cell is needed. `Struct?` (ADR-0065 Lát 2, Phương án A) prepends
+/// a tag word: the slot is `{tag@0:i64, fields@8…}`, tag@0 == `i64::MIN` for
+/// null. Both are Copy-only (rào B8): heap fields/payloads inside the aggregate
+/// stay refused via the scalar-only field/payload gate below.
 fn is_lowerable_nullable_payload(t: &MirType) -> bool {
-    is_scalar_nullable_payload(t) || t.is_any_heap() || matches!(t, MirType::Enum(_))
+    is_scalar_nullable_payload(t)
+        || t.is_any_heap()
+        || matches!(t, MirType::Enum(_))
+        || matches!(t, MirType::Struct(_))
 }
 
 /// Find a `Nullable(inner)` whose `inner` is NOT accepted by `allow`, anywhere

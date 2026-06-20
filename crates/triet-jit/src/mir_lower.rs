@@ -249,6 +249,19 @@ impl JitContext {
         Ok(id)
     }
 
+    /// ADR-0065 Lát 2: byte offset of the inner aggregate within a base local's
+    /// slot. `Struct?` (Phương án A) prepends a tag word, so its fields start at
+    /// +8; everything else (plain Struct, the `Enum?` disc-niche, scalars) starts
+    /// at 0. This is the single source of the +8 tag shift for downcast
+    /// (`Struct?` whole-bind) and any future `Struct?.field`.
+    fn nullable_struct_base_offset(base_ty: &MirType) -> i32 {
+        if matches!(base_ty, MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_))) {
+            8
+        } else {
+            0
+        }
+    }
+
     /// ADR-0060 P2: walk through a Place's projections, accumulating byte
     /// offset from the base local and returning the final field type.
     /// Handles `Field(name)` and `Payload(variant)` projections; errors
@@ -260,7 +273,7 @@ impl JitContext {
         // emits `_.Payload(V)`). Mirror of Lát 4.8's unwrap-at-site idiom.
         let base_ty = &body.local_decls[place.local.0].ty;
         let mut current_ty = base_ty.nullable_payload().unwrap_or(base_ty).clone();
-        let mut total_offset = 0i32;
+        let mut total_offset = Self::nullable_struct_base_offset(base_ty);
         for proj in &place.projection {
             match proj {
                 Projection::Field(field_name) => {
@@ -971,6 +984,59 @@ impl JitContext {
                 self.enum_slots.insert(local, (slot, layout.clone()));
             }
         }
+        // ── ADR-0065 Lát 2: struct slots for derived Struct / Struct? locals ──
+        // Mirror of the enum loop above, but Phương án A prepends a tag word for
+        // `Struct?`: a `Nullable(Struct)` slot is `{tag@0, fields@8…}` = layout
+        // total_size + 8; a plain `Struct` (match present-bind, Elvis/match
+        // result) keeps total_size. The STORED layout is the plain struct layout
+        // (field offsets relative to the struct base, offset 0); the +8 tag shift
+        // is applied by walk_projections (Delta 3) and the widening/whole-slot
+        // Assign branches (Delta 4) — layout offsets are NEVER mutated. Skip
+        // "String" (slot allocated above) and already-slotted locals (StructAlloc
+        // dests). Phân biệt Struct? (+8) vs Struct (+0) bằng `is_nullable` here —
+        // lẫn hai = SIGSEGV (Nhát dao G #2). EXCLUDE the sret-return local
+        // (Local 0 when the function returns a struct by sret) and parameter
+        // locals: those are received as caller pointers (pointer-based via
+        // use_var), giving them a stack slot would shadow the pointer and
+        // miscompile boundary structs (172/14).
+        let derived_is_sret = matches!(
+            body.signature.return_shape,
+            triet_mir::ReturnShape::Struct { .. }
+        );
+        let reserved_locals = if derived_is_sret {
+            body.signature.parameters.len() + 1
+        } else {
+            body.signature.parameters.len()
+        };
+        for i in 0..body.num_locals {
+            let local = Local(i);
+            if i < reserved_locals {
+                continue;
+            }
+            if self.struct_slots.contains_key(&local) || self.enum_slots.contains_key(&local) {
+                continue;
+            }
+            let ty = &body.local_decls[i].ty;
+            let is_nullable = matches!(ty, MirType::Nullable(_));
+            let eff = ty.nullable_payload().unwrap_or(ty);
+            if let MirType::Struct(struct_name) = eff
+                && struct_name.as_str() != "String"
+                && let Some(layout) = body.struct_layouts.iter().find(|l| l.name == *struct_name)
+            {
+                let size = if is_nullable {
+                    layout.total_size + 8
+                } else {
+                    layout.total_size
+                };
+                let align_shift = u32_to_u8(layout.alignment.ilog2());
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    usize_to_u32(size),
+                    align_shift,
+                ));
+                self.struct_slots.insert(local, (slot, layout.clone()));
+            }
+        }
 
         // Pre-declare blocks
         self.blocks.clear();
@@ -1274,6 +1340,90 @@ impl JitContext {
                         // a no-op → no double-free of the moved Outcome.
                         let zero = builder.ins().iconst(I64, 0);
                         builder.ins().stack_store(zero, src_slot, 0);
+                    } else if dest.projection.is_empty()
+                        && source.projection.is_empty()
+                        && matches!(&body.local_decls[dest.local.0].ty,
+                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)))
+                        && matches!(&body.local_decls[source.local.0].ty, MirType::Struct(_))
+                    {
+                        // ADR-0065 Lát 2 Delta 4a: widen plain Struct into
+                        // Nullable(Struct). Slot = {tag@0, fields@8}. Set the tag
+                        // to present (1), then copy the N field bytes src+0 →
+                        // dest+8. Copy-only (rào B8): no tombstone/zeroing, no
+                        // drop-glue. ALWAYS explicit — never folds into a scalar
+                        // path, regardless of N (Nhát dao G #4).
+                        let dest_slot = self
+                            .struct_slots
+                            .get(&dest.local)
+                            .ok_or_else(|| {
+                                JitError::Unsupported(format!(
+                                    "Struct? dest local {} has no slot",
+                                    dest.local
+                                ))
+                            })?
+                            .0;
+                        let (src_slot, n) = {
+                            let (slot, layout) =
+                                self.struct_slots.get(&source.local).ok_or_else(|| {
+                                    JitError::Unsupported(format!(
+                                        "Struct source local {} has no slot",
+                                        source.local
+                                    ))
+                                })?;
+                            (*slot, layout.total_size)
+                        };
+                        let one = builder.ins().iconst(I64, 1);
+                        builder.ins().stack_store(one, dest_slot, 0);
+                        let n_i32 = i32::try_from(n)
+                            .map_err(|_| JitError::Unsupported("struct size exceeds i32".into()))?;
+                        let mut off = 0i32;
+                        while off < n_i32 {
+                            let v = builder.ins().stack_load(I64, src_slot, off);
+                            builder.ins().stack_store(v, dest_slot, off + 8);
+                            off += 8;
+                        }
+                    } else if dest.projection.is_empty()
+                        && source.projection.is_empty()
+                        && matches!(&body.local_decls[dest.local.0].ty,
+                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)))
+                        && matches!(&body.local_decls[source.local.0].ty,
+                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)))
+                    {
+                        // ADR-0065 Lát 2 Delta 4b (β): whole-slot move
+                        // Nullable(Struct) ← Nullable(Struct). Copy N+8 bytes
+                        // (tag@0 FIRST, then fields) src+0 → dest+0 so the null/
+                        // present tag propagates verbatim — THIS is the β
+                        // soundness property (fixture 235). Copy-only (rào B8):
+                        // no tombstone/zeroing, no drop-glue.
+                        let dest_slot = self
+                            .struct_slots
+                            .get(&dest.local)
+                            .ok_or_else(|| {
+                                JitError::Unsupported(format!(
+                                    "Struct? dest local {} has no slot",
+                                    dest.local
+                                ))
+                            })?
+                            .0;
+                        let (src_slot, n8) = {
+                            let (slot, layout) =
+                                self.struct_slots.get(&source.local).ok_or_else(|| {
+                                    JitError::Unsupported(format!(
+                                        "Struct? source local {} has no slot",
+                                        source.local
+                                    ))
+                                })?;
+                            (*slot, layout.total_size + 8)
+                        };
+                        let n8_i32 = i32::try_from(n8).map_err(|_| {
+                            JitError::Unsupported("struct slot size exceeds i32".into())
+                        })?;
+                        let mut off = 0i32;
+                        while off < n8_i32 {
+                            let v = builder.ins().stack_load(I64, src_slot, off);
+                            builder.ins().stack_store(v, dest_slot, off);
+                            off += 8;
+                        }
                     } else {
                         // ADR-0060 P2-Boundary: per-side address resolver.
                         // Slot locals → stack_addr; sret/param/match-bind → pointer.
@@ -1300,8 +1450,18 @@ impl JitContext {
                         // Multi-word copy for struct/enum aggregate.
                         let (src_ty, src_off) = Self::walk_projections(body, source)?;
                         let (dest_ty, dest_off) = Self::walk_projections(body, dest)?;
+                        // ADR-0065 Lát 2: a downcast of a 1-field (8B) struct
+                        // would otherwise fall to the scalar path and read tag@0
+                        // instead of the field — force aggregate whenever either
+                        // side is a real struct. EXCLUDE "String": hand-built MIR
+                        // types a String local as `Struct("String")` (a slot-less
+                        // pointer param), so forcing it aggregate would deref the
+                        // raw pointer value — same "String" skip as the slot-alloc
+                        // loop and is_string_repr.
                         let is_aggregate = Self::ty_total_size(body, &src_ty) > 8
-                            || Self::ty_total_size(body, &dest_ty) > 8;
+                            || Self::ty_total_size(body, &dest_ty) > 8
+                            || matches!(&src_ty, MirType::Struct(n) if n != "String")
+                            || matches!(&dest_ty, MirType::Struct(n) if n != "String");
                         if is_aggregate {
                             let src_size = Self::ty_total_size(body, &src_ty);
                             let dest_size = Self::ty_total_size(body, &dest_ty);

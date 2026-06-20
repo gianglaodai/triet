@@ -1206,6 +1206,30 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // instead of mutating.
                 if let Some(tid) = type_annotation {
                     let ann_ty = lower_type_simple(arena, *tid, c);
+                    // ADR-0065 Lát 2 / Delta 0: aggregate-widening repr-change.
+                    // `let x: Struct? = y` (y a plain Struct) CANNOT retype
+                    // in-place: the `Struct?` repr prepends a tag word (slot =
+                    // total_size + 8, fields at +8), so widening is NOT the no-op
+                    // that scalar / Enum?-niche / String?-sentinel widening is
+                    // (those share the slot — keep them in-place; fixture 229
+                    // etc. must stay green). Emit a genuine Assign to a fresh
+                    // Nullable(Struct) local — the "M2 pattern" the TODO above
+                    // prescribes — which fires the JIT's Delta 4a widening.
+                    let is_struct_widening = matches!(&c.local_decls[v.0].ty, MirType::Struct(_))
+                        && matches!(&ann_ty,
+                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)));
+                    if is_struct_widening {
+                        let new_local = c.alloc_local_ty(ann_ty);
+                        c.push(Statement::Assign {
+                            dest: Place::local(new_local),
+                            source: Place::local(v),
+                            span: stmt_span.clone(),
+                        });
+                        c.vars.insert(name.clone(), new_local);
+                        c.local_names.insert(new_local, name.clone());
+                        c.push_owned(new_local);
+                        return Ok(());
+                    }
                     if ann_ty != MirType::Unknown {
                         c.local_decls[v.0].ty = ann_ty;
                     }
