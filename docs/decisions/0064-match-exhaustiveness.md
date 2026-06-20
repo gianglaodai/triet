@@ -69,3 +69,46 @@ Triết cho `match` trên `Trit` (value-keyed SwitchInt, T6) + enum (GetDiscrimi
 - G: ✅ (duyệt 2026-06-19 — 5 quyết định chốt; trap GAP-2 cấm gỡ; Tryte/Long defer ghi nợ)
 
 **Nợ mới (2026-06-20) — ✅ ĐÃ ĐÓNG (`fa021b4`):** `Pattern::Variable` (catch-all bind name `other =>`) đã được typecheck chấp nhận, nhưng **lowerer (lib.rs:3224) đang refuse** đối với scalar-match — gap giữa typecheck-accept và lower-refuse. Đóng: lowerer nay bind Variable catch-all vào giá trị scrutinee (`bind_scalar_catch_all`, wiring cả 3 path Trit/Trilean/Integer; scalar Copy nên không push_owned/Drop). Trap GAP-2 giữ nguyên cho path không-catch-all. Teeth: fixtures 222 (Integer value-proof) / 223 (Trit) / 224 (Trilean) đỏ-trước-xanh-sau; poison gỡ Variable arm → refuse trở lại.
+
+---
+
+## A1. AMENDMENT 2026-06-20 — Match Tryte/Long + Tryte range-check (Phụ lục §A1)
+
+**Bối cảnh:** §8 quyết định #5 ghi nợ "Tryte/Long DEFER — Rule §2 chỉ nêu Integer/Trilean/Trit; lower chưa support match Tryte/Long". Campaign này đóng nợ đó: mở `match` value-keyed cho **Tryte** và **Long**, áp Rule vét cạn §2 đồng nhất, và bịt lỗ Tryte range chưa enforce.
+
+**Số đo khắc đá (verify từ `triet_core::Tryte`, KHÔNG tin trí nhớ):** `Tryte::MAX = 9_841`, `Tryte::MIN = -9_841` → Tryte = **9 trit**, miền `[-9841, 9841]` (19_683 giá trị). *(Recon ban đầu nhầm 6 trit / ±364 — đã tự vạch mặt và đo lại bằng `tryte.rs:42`.)*
+
+**KHÔNG đảo ngược §2/§3/§8** — chỉ mở rộng cơ chế đã khóa. Campaign **KHÔNG đụng** value-model i64 ABI, borrowck, drop-glue, JIT shim.
+
+### A1.1 Cơ chế (mechanism)
+- **Tryte/Long literal match → value-keyed SwitchInt, cùng key-extraction i64 như Integer** (cả ba đều map literal → `i64` key trực tiếp). Lower trích **helper dùng chung** gom Integer/Tryte/Long vào 1 lò hạ tầng (diệt 5-copy smell — §8 mở Integer/Trilean, nay thêm Tryte/Long = 3 copy value-keyed nếu không gom).
+- **Trit/Trilean GIỮ RIÊNG** (key khác: Trit = −1/0/1 suffix; Trilean = True/False/Unknown discriminant). Surgical, không nhồi vào helper.
+
+### A1.2 Exhaustiveness (áp Rule §2)
+- **Tryte:** miền hữu hạn `[-9841, 9841]` nhưng **19_683 giá trị** → coi như **miền-lớn**, BẮT BUỘC catch-all `_` (hoặc `Variable`), giống Integer. Liệt kê 19_683 nhánh = phi thực tế; không cho phép "đủ-mặt-bỏ-wildcard" như Trit/Trilean.
+- **Long:** miền ý niệm bignum (thực tế i64-capped, xem A1.4) → BẮT BUỘC catch-all `_`, giống Integer.
+- **Enforce ở typecheck (compile-time), tái dùng E1026** `NonExhaustiveScalarMatch` — cùng khuôn §8 path Integer. Thiếu catch-all → E1026.
+
+### A1.3 Tryte range-check (bịt lỗ giá-trị-lố)
+- **Literal Tryte ngoài `[-9841, 9841]` → E1036** (generalize từ `IntegerLiteralOverflow`). Bắt **CẢ HAI vị trí:**
+  - **Expression:** `let x: Tryte = 9999_tryte` → E1036.
+  - **Pattern literal:** `match t { 9999_tryte => .. }` → E1036. *(Cửa lọt chính: `bind_pattern` hiện no-op trên literal → match-arm là đường giá-trị-lố chui lọt nếu chỉ check expression.)*
+- **E1036 generalize:** thêm `type_name` để message phân biệt `Tryte` (±9_841) vs `Integer` (±3_812_798_742_493). Đúng tinh thần G "không để giá trị lố chui lọt — bít từ lúc lọt lòng Typecheck".
+
+### A1.4 ★ NỢ trung thực — Long i64-cap (khắc đá, KHÔNG vùng tối)
+- **Long range KHÔNG enforce ở lát này.** Long là phần **bignum đã defer** (value-model i64, ADR-0050 MirType). Tryte range bịt ở campaign này; Long range **vẫn treo**.
+- **Hệ quả i64-cap:** Long match-arm với key literal `> i64::MAX` (hoặc `< i64::MIN`) → **lower error "out of range"**, kế thừa thẳng giới hạn i64 của value-model. KHÔNG silent-truncate (tinh thần ADR-0044). Đây là **nợ ghi sổ minh bạch**, không phải feature — sẽ đóng khi bignum value-model lên (tương lai JIT/wide-int).
+
+### A1.5 Bảng quyết định
+
+| # | Quyết định | Chốt |
+|---|---|---|
+| 1 | Cơ chế Tryte/Long match | Value-keyed SwitchInt, key i64 như Integer; helper dùng chung Integer/Tryte/Long. Trit/Trilean giữ riêng. |
+| 2 | Exhaustiveness Tryte | Miền-lớn (19_683 giá trị) → BẮT BUỘC catch-all `_`, giống Integer (không cho đủ-mặt). E1026. |
+| 3 | Exhaustiveness Long | BẮT BUỘC catch-all `_`, giống Integer. E1026. |
+| 4 | Tryte range-check | E1036 generalize (`type_name`); bắt CẢ expression LẪN pattern literal. |
+| 5 | Long range-check | **DEFER** (bignum). Long key > i64 → lower "out of range" (kế thừa i64-cap). Nợ ghi sổ A1.4. |
+
+### A1.6 Chữ ký amendment §A1
+- O: ✅ (số Tryte::MAX=9_841 verify từ tryte.rs:42, tự đính chính recon 6-trit→9-trit; cơ chế cùng key Integer; helper-extraction diệt 5-copy; range bắt CẢ expr+pattern; Long i64-cap khắc đá A1.4 minh bạch — không đụng value-model/borrowck/JIT)
+- G: ✅ (ký duyệt 2026-06-20 — 3 điểm gác-cổng O đồng ý hoàn toàn: helper extraction bắt buộc, Tryte range bắt CẢ Expr+Pattern, Long i64-cap defer khắc đá phụ lục; trap GAP-2 §4 cấm gỡ; mirror khuôn §8, cấm đẻ pattern mới)
