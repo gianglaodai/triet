@@ -2955,6 +2955,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     match &pat.node {
                         Pattern::Wildcard => wildcard_arm = Some(arm),
+                        // ADR-0064 §8: a variable binding (`other =>`) is a
+                        // catch-all — bound to the scrutinee in the default block.
+                        Pattern::Variable(_) => wildcard_arm = Some(arm),
                         Pattern::Literal(LiteralPattern::Integer {
                             value,
                             suffix: Some(NumericSuffix::Trit),
@@ -3004,6 +3007,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let wc_bb = c.alloc_bb();
                     c.cur = wc_bb;
                     c.push_scope();
+                    bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
                     let body_val = lower_expr(wc.body, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3075,6 +3079,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     match &pat.node {
                         Pattern::Wildcard => wildcard_arm = Some(arm),
+                        // ADR-0064 §8: a variable binding (`other =>`) is a
+                        // catch-all — bound to the scrutinee in the default block.
+                        Pattern::Variable(_) => wildcard_arm = Some(arm),
                         Pattern::Literal(LiteralPattern::Trilean(v)) => {
                             let key: i64 = match v {
                                 TrileanValue::True => 1,
@@ -3120,6 +3127,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let wc_bb = c.alloc_bb();
                     c.cur = wc_bb;
                     c.push_scope();
+                    bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
                     let body_val = lower_expr(wc.body, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3191,6 +3199,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     match &pat.node {
                         Pattern::Wildcard => wildcard_arm = Some(arm),
+                        // ADR-0064 §8: a variable binding (`other =>`) is a
+                        // catch-all — bound to the scrutinee in the default block.
+                        Pattern::Variable(_) => wildcard_arm = Some(arm),
                         Pattern::Literal(LiteralPattern::Integer {
                             value,
                             suffix: None,
@@ -3238,6 +3249,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     let wc_bb = c.alloc_bb();
                     c.cur = wc_bb;
                     c.push_scope();
+                    bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
                     let body_val = lower_expr(wc.body, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -4849,6 +4861,29 @@ fn binop_result_type(op: &BinaryOperator) -> triet_mir::MirType {
         Add | Sub | Mul | Div | Mod | Pow => triet_mir::MirType::Integer,
         Eq | Ne | Lt | Le | Gt | Ge | LukAnd | LukOr | LukXor | LukImplies | LukIff
         | KleeneImplies | KleeneXor | KleeneIff => triet_mir::MirType::Trilean,
+    }
+}
+
+/// ADR-0064 §8: bind a scalar-match Variable catch-all (`other =>`) to the
+/// scrutinee value. No-op for `_` wildcard. Scalar types (Integer/Trit/Trilean)
+/// are Copy — no push_owned / Drop. Mirror of the nullable bind idiom.
+fn bind_scalar_catch_all(
+    c: &mut Ctx,
+    arena: &Arena,
+    catch_all: &triet_syntax::MatchArm,
+    scrut_local: Local,
+    scrut_ty: &MirType,
+    span: &Span,
+) {
+    if let triet_syntax::Pattern::Variable(name) = &arena.pattern(catch_all.pattern).node {
+        let bind_local = c.alloc_local_ty(scrut_ty.clone());
+        c.push(Statement::StorageLive(bind_local, span.clone()));
+        c.push(Statement::Assign {
+            dest: Place::local(bind_local),
+            source: Place::local(scrut_local),
+            span: span.clone(),
+        });
+        c.vars.insert(name.clone(), bind_local);
     }
 }
 

@@ -1,0 +1,8 @@
+// EXPECT: 21
+// ADR-0064 §8: Trit match Variable catch-all (`other =>`) routes uncovered
+// values to the binding arm. classify(-1_trit)=1 (case), classify(1_trit)=20
+// (catch-all) → 21. Before the lower wiring this refused with "unsupported
+// pattern in Trit match: Variable".
+function classify(t: Trit) -> Integer = match t { -1_trit => 1, other => 20 }
+
+function main() -> Integer = classify(-1_trit) + classify(1_trit)

@@ -1,0 +1,8 @@
+// EXPECT: 21
+// ADR-0064 §8: Trilean match Variable catch-all (`other =>`) routes uncovered
+// values to the binding arm. classify(true)=1 (case), classify(false)=20
+// (catch-all) → 21. Before the lower wiring this refused with "unsupported
+// pattern in Trilean match: Variable".
+function classify(t: Trilean) -> Integer = match t { true => 1, other => 20 }
+
+function main() -> Integer = classify(true) + classify(false)

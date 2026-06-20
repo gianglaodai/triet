@@ -1,0 +1,9 @@
+// EXPECT: 110
+// ADR-0064 §8: Integer match Variable catch-all (`other =>`) binds the
+// scrutinee value. classify(1)=10 (case), classify(10)=10*10=100 (catch-all
+// binds 10 into the multiply) → 110. Before the lower wiring this refused with
+// "unsupported pattern in Integer match: Variable". Poison the binding → the
+// total changes.
+function classify(x: Integer) -> Integer = match x { 1 => 10, other => other * 10 }
+
+function main() -> Integer = classify(1) + classify(10)
