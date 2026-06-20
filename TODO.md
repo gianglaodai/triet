@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: HEAD `5eeea25` (test) (origin synced, 2026-06-20). Gate `0·0·239·0`. ADR-0064 §A1 Match Tryte/Long ĐÓNG+PUSH (value-keyed SwitchInt cùng helper Integer; Tryte range-check E1036 expr+pattern; Long i64-cap defer khắc đá §A1.4). Kế: nợ defer (Struct?-field-trong-Struct heap — mặt trận lõi kế / return happy-path).
+Mốc hiện tại: HEAD `e6f0418` (test) (origin synced, 2026-06-20). Gate `0·0·245·0`. ADR-0065 §12.7 Nested Nullable Aggregate (Trục A, Copy) ĐÓNG+PUSH — Taxonomy 4-case (faithful walk + WholeCopy/Widen/Downcast, subsume Delta 4a/4b; field-position construction + readback). **Chuỗi Nullable Aggregate HOÀN TẤT TRỌN BỘ Trục A.** Kế: ⚰️ SỔ TỬ THẦN — Trục B (heap-in-aggregate + recursive drop-glue = campaign VISION, ADR trắng, B8 khóa) / `~+` top-level nullable-present (tech-debt) / return happy-path.
 
 ---
 
