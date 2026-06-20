@@ -189,6 +189,21 @@ impl ShimSymbol {
 
 // ── JIT context ─────────────────────────────────────────────
 
+/// ADR-0065 §12.7: which Construction-Taxonomy copy an `Assign` between a
+/// `Struct?` and a `Struct` performs, dispatched on `(src_ty, dest_ty)`.
+#[derive(Clone, Copy)]
+enum NullableStructCopy {
+    /// `Nullable(Struct) ← Nullable(Struct)`: copy N+8 bytes, tag@0 first
+    /// (tag propagates verbatim). Subsumes Delta 4b.
+    WholeCopy,
+    /// `Nullable(Struct) ← Struct`: set tag=present(1)@dest+0, copy N fields
+    /// src+0 → dest+8. Subsumes Delta 4a + field-position construction.
+    Widen,
+    /// `Struct ← Nullable(Struct)`: copy N fields src+8 → dest+0 (drop tag).
+    /// This IS match-bind `pt = scrut`; the old base-downcast made implicit.
+    Downcast,
+}
+
 /// Holds Cranelift JIT state across compilations.
 pub struct JitContext {
     module: JITModule,
@@ -249,23 +264,31 @@ impl JitContext {
         Ok(id)
     }
 
-    /// ADR-0065 Lát 2: byte offset of the inner aggregate within a base local's
-    /// slot. `Struct?` (Phương án A) prepends a tag word, so its fields start at
-    /// +8; everything else (plain Struct, the `Enum?` disc-niche, scalars) starts
-    /// at 0. This is the single source of the +8 tag shift for downcast
-    /// (`Struct?` whole-bind) and any future `Struct?.field`.
-    fn nullable_struct_base_offset(base_ty: &MirType) -> i32 {
-        if matches!(base_ty, MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_))) {
-            8
-        } else {
-            0
+    /// ADR-0065 §12: if `ty` is a nested nullable aggregate, return its
+    /// unwrapped inner type and the tag-shift to apply mid-walk — `Struct?`
+    /// prepends an 8-byte tag word (Phương án A), `Enum?` uses the 0-byte
+    /// disc-niche. `None` for any non-nullable-aggregate type.
+    fn nested_nullable_shift(ty: &MirType) -> Option<(MirType, i32)> {
+        if let MirType::Nullable(inner) = ty {
+            match inner.as_ref() {
+                MirType::Struct(_) => return Some(((**inner).clone(), 8)),
+                MirType::Enum(_) => return Some(((**inner).clone(), 0)),
+                _ => {}
+            }
         }
+        None
     }
 
     /// ADR-0060 P2: walk through a Place's projections, accumulating byte
     /// offset from the base local and returning the final field type.
     /// Handles `Field(name)` and `Payload(variant)` projections; errors
     /// on unsupported projection types (`Deref`, `Index`).
+    // A single flat dispatch over projection kinds that threads the
+    // `total_offset`/`current_ty` accumulators; ADR-0065 §12 added the
+    // nested-nullable unwrap step, nudging it one line past the lint. Splitting
+    // it would scatter the accumulators across helpers and hurt readability more
+    // than the extra line costs.
+    #[allow(clippy::too_many_lines)]
     fn walk_projections(body: &Body, place: &Place) -> Result<(MirType, i32), JitError> {
         // ADR-0065 Lát 1: `Enum?` shares the enum's slot layout (disc-sentinel
         // niche). Unwrap Nullable so payload/field projections resolve against
@@ -273,8 +296,17 @@ impl JitContext {
         // emits `_.Payload(V)`). Mirror of Lát 4.8's unwrap-at-site idiom.
         let base_ty = &body.local_decls[place.local.0].ty;
         let mut current_ty = base_ty.nullable_payload().unwrap_or(base_ty).clone();
-        let mut total_offset = Self::nullable_struct_base_offset(base_ty);
+        // ADR-0065 §12.7: faithful walk — base offset is 0. The `Struct?` tag
+        // shift is NO LONGER baked here (the old base-downcast nuốt the tag in
+        // whole-slot Assign-copy, Bug A). The Construction Taxonomy at the
+        // Assign chokepoint applies the +8 downcast explicitly (case 3).
+        let mut total_offset = 0i32;
         for proj in &place.projection {
+            // ADR-0065 §12: unwrap a nested nullable-aggregate field, +tag-shift.
+            if let Some((unwrapped, shift)) = Self::nested_nullable_shift(&current_ty) {
+                current_ty = unwrapped;
+                total_offset += shift;
+            }
             match proj {
                 Projection::Field(field_name) => {
                     let ty_name = match &current_ty {
@@ -390,6 +422,89 @@ impl JitContext {
                 .map_or(16, |l| l.total_size),
             _ => 8,
         }
+    }
+
+    /// ADR-0060 P2-Boundary: base address of a local + byte offset. Slot-backed
+    /// locals (struct/enum) → `stack_addr`; sret/param/match-binding → the
+    /// pointer value in the variable.
+    fn copy_base_addr(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        local: Local,
+        offset: i32,
+    ) -> cranelift_codegen::ir::Value {
+        let base = if let Some((slot, _)) = self.struct_slots.get(&local) {
+            builder.ins().stack_addr(I64, *slot, 0)
+        } else if let Some((slot, _)) = self.enum_slots.get(&local) {
+            builder.ins().stack_addr(I64, *slot, 0)
+        } else {
+            builder.use_var(self.var(local))
+        };
+        if offset != 0 {
+            builder.ins().iadd_imm(base, i64::from(offset))
+        } else {
+            base
+        }
+    }
+
+    /// ADR-0065 §12.7: resolve a Place's logical type (KEEPING the `Nullable`
+    /// wrapper for a leaf nullable-aggregate field) + its faithful byte offset.
+    /// The Construction Taxonomy dispatches on these types, so the wrapper must
+    /// survive (unlike `walk_projections`, which unwraps the base). Empty
+    /// projection → the local's declared type at offset 0.
+    fn resolve_place_for_copy(body: &Body, place: &Place) -> Result<(MirType, i32), JitError> {
+        if place.projection.is_empty() {
+            Ok((body.local_decls[place.local.0].ty.clone(), 0))
+        } else {
+            Self::walk_projections(body, place)
+        }
+    }
+
+    /// ADR-0065 §12.7: classify an `Assign` between a `Struct?` and a `Struct`
+    /// into a Construction-Taxonomy case. Returns `(case, src_off, dest_off,
+    /// inner_n)` where `inner_n` is the byte count the case copies (N+8 for
+    /// `WholeCopy`, N for `Widen`/`Downcast`). `None` when neither side is a nullable
+    /// struct (the caller falls through to the general aggregate/scalar copy).
+    /// `Nullable(Enum)` is intentionally NOT matched here — its disc-niche has
+    /// 0-byte tag, so the general copy (no shift) already moves it correctly.
+    fn nullable_struct_taxonomy(
+        body: &Body,
+        dest: &Place,
+        source: &Place,
+    ) -> Result<Option<(NullableStructCopy, i32, i32, usize)>, JitError> {
+        // Inner Struct type of a `Nullable(Struct)`, else None.
+        fn nstruct_inner(ty: &MirType) -> Option<MirType> {
+            if let MirType::Nullable(inner) = ty
+                && matches!(**inner, MirType::Struct(_))
+            {
+                return Some((**inner).clone());
+            }
+            None
+        }
+        let is_plain_struct = |ty: &MirType| matches!(ty, MirType::Struct(n) if n != "String");
+
+        let (src_ty, src_off) = Self::resolve_place_for_copy(body, source)?;
+        let (dest_ty, dest_off) = Self::resolve_place_for_copy(body, dest)?;
+        let src_inner = nstruct_inner(&src_ty);
+        let dest_inner = nstruct_inner(&dest_ty);
+
+        let case = match (&src_inner, &dest_inner) {
+            // case 1: Nullable(Struct) ← Nullable(Struct) → whole-copy N+8.
+            (Some(_), Some(di)) => (
+                NullableStructCopy::WholeCopy,
+                Self::ty_total_size(body, di) + 8,
+            ),
+            // case 2: Struct ← (dest Nullable(Struct)) → widen, N fields.
+            (None, Some(di)) if is_plain_struct(&src_ty) => {
+                (NullableStructCopy::Widen, Self::ty_total_size(body, di))
+            }
+            // case 3: Nullable(Struct) → plain Struct → downcast, N fields.
+            (Some(si), None) if is_plain_struct(&dest_ty) => {
+                (NullableStructCopy::Downcast, Self::ty_total_size(body, si))
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some((case.0, src_off, dest_off, case.1)))
     }
 
     /// Load the Cranelift Value for a MIR Place.
@@ -1340,113 +1455,59 @@ impl JitContext {
                         // a no-op → no double-free of the moved Outcome.
                         let zero = builder.ins().iconst(I64, 0);
                         builder.ins().stack_store(zero, src_slot, 0);
-                    } else if dest.projection.is_empty()
-                        && source.projection.is_empty()
-                        && matches!(&body.local_decls[dest.local.0].ty,
-                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)))
-                        && matches!(&body.local_decls[source.local.0].ty, MirType::Struct(_))
+                    } else if let Some((tcase, src_off, dest_off, inner_n)) =
+                        Self::nullable_struct_taxonomy(body, dest, source)?
                     {
-                        // ADR-0065 Lát 2 Delta 4a: widen plain Struct into
-                        // Nullable(Struct). Slot = {tag@0, fields@8}. Set the tag
-                        // to present (1), then copy the N field bytes src+0 →
-                        // dest+8. Copy-only (rào B8): no tombstone/zeroing, no
-                        // drop-glue. ALWAYS explicit — never folds into a scalar
-                        // path, regardless of N (Nhát dao G #4).
-                        let dest_slot = self
-                            .struct_slots
-                            .get(&dest.local)
-                            .ok_or_else(|| {
-                                JitError::Unsupported(format!(
-                                    "Struct? dest local {} has no slot",
-                                    dest.local
-                                ))
-                            })?
-                            .0;
-                        let (src_slot, n) = {
-                            let (slot, layout) =
-                                self.struct_slots.get(&source.local).ok_or_else(|| {
-                                    JitError::Unsupported(format!(
-                                        "Struct source local {} has no slot",
-                                        source.local
-                                    ))
-                                })?;
-                            (*slot, layout.total_size)
-                        };
-                        let one = builder.ins().iconst(I64, 1);
-                        builder.ins().stack_store(one, dest_slot, 0);
-                        let n_i32 = i32::try_from(n)
-                            .map_err(|_| JitError::Unsupported("struct size exceeds i32".into()))?;
-                        let mut off = 0i32;
-                        while off < n_i32 {
-                            let v = builder.ins().stack_load(I64, src_slot, off);
-                            builder.ins().stack_store(v, dest_slot, off + 8);
-                            off += 8;
-                        }
-                    } else if dest.projection.is_empty()
-                        && source.projection.is_empty()
-                        && matches!(&body.local_decls[dest.local.0].ty,
-                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)))
-                        && matches!(&body.local_decls[source.local.0].ty,
-                            MirType::Nullable(inner) if matches!(**inner, MirType::Struct(_)))
-                    {
-                        // ADR-0065 Lát 2 Delta 4b (β): whole-slot move
-                        // Nullable(Struct) ← Nullable(Struct). Copy N+8 bytes
-                        // (tag@0 FIRST, then fields) src+0 → dest+0 so the null/
-                        // present tag propagates verbatim — THIS is the β
-                        // soundness property (fixture 235). Copy-only (rào B8):
-                        // no tombstone/zeroing, no drop-glue.
-                        let dest_slot = self
-                            .struct_slots
-                            .get(&dest.local)
-                            .ok_or_else(|| {
-                                JitError::Unsupported(format!(
-                                    "Struct? dest local {} has no slot",
-                                    dest.local
-                                ))
-                            })?
-                            .0;
-                        let (src_slot, n8) = {
-                            let (slot, layout) =
-                                self.struct_slots.get(&source.local).ok_or_else(|| {
-                                    JitError::Unsupported(format!(
-                                        "Struct? source local {} has no slot",
-                                        source.local
-                                    ))
-                                })?;
-                            (*slot, layout.total_size + 8)
-                        };
-                        let n8_i32 = i32::try_from(n8).map_err(|_| {
+                        // ADR-0065 §12.7: Construction Taxonomy. Faithful walk
+                        // gives the real offsets; dispatch by (src_ty, dest_ty)
+                        // keeping the Nullable wrapper. Subsumes Delta 4a (WIDEN)
+                        // + 4b (WHOLE-COPY) and makes the +8 downcast explicit
+                        // (DOWNCAST). Copy-only (rào B8): no tombstone, no
+                        // drop-glue. Works for projected places (field-position
+                        // construction `_0.p`, readback `_2 = _0.p`) — the gap
+                        // Delta 4a/4b never covered (they gated empty-proj).
+                        let src_addr = self.copy_base_addr(builder, source.local, src_off);
+                        let dest_addr = self.copy_base_addr(builder, dest.local, dest_off);
+                        let n_i32 = i32::try_from(inner_n).map_err(|_| {
                             JitError::Unsupported("struct slot size exceeds i32".into())
                         })?;
-                        let mut off = 0i32;
-                        while off < n8_i32 {
-                            let v = builder.ins().stack_load(I64, src_slot, off);
-                            builder.ins().stack_store(v, dest_slot, off);
-                            off += 8;
-                        }
-                    } else {
-                        // ADR-0060 P2-Boundary: per-side address resolver.
-                        // Slot locals → stack_addr; sret/param/match-bind → pointer.
-                        fn resolve_addr(
-                            ctx: &JitContext,
-                            builder: &mut FunctionBuilder<'_>,
-                            local: Local,
-                            offset: i32,
-                        ) -> cranelift_codegen::ir::Value {
-                            let base = if let Some((slot, _)) = ctx.struct_slots.get(&local) {
-                                builder.ins().stack_addr(I64, *slot, 0)
-                            } else if let Some((slot, _)) = ctx.enum_slots.get(&local) {
-                                builder.ins().stack_addr(I64, *slot, 0)
-                            } else {
-                                // Pointer-based: sret, param, or match-binding.
-                                builder.use_var(ctx.var(local))
-                            };
-                            if offset != 0 {
-                                builder.ins().iadd_imm(base, i64::from(offset))
-                            } else {
-                                base
+                        let mem = cranelift_codegen::ir::MemFlags::new();
+                        match tcase {
+                            NullableStructCopy::WholeCopy => {
+                                // case 1: N+8 bytes, tag@0 FIRST → tag (null/
+                                // present) propagates verbatim. `inner_n` = N+8.
+                                let mut off = 0i32;
+                                while off < n_i32 {
+                                    let v = builder.ins().load(I64, mem, src_addr, off);
+                                    builder.ins().store(mem, v, dest_addr, off);
+                                    off += 8;
+                                }
+                            }
+                            NullableStructCopy::Widen => {
+                                // case 2: set tag=present(1)@dest+0, copy N field
+                                // bytes src+0 → dest+8. `inner_n` = N.
+                                let one = builder.ins().iconst(I64, 1);
+                                builder.ins().store(mem, one, dest_addr, 0);
+                                let mut off = 0i32;
+                                while off < n_i32 {
+                                    let v = builder.ins().load(I64, mem, src_addr, off);
+                                    builder.ins().store(mem, v, dest_addr, off + 8);
+                                    off += 8;
+                                }
+                            }
+                            NullableStructCopy::Downcast => {
+                                // case 3: copy N field bytes src+8 → dest+0
+                                // (drop the tag — this IS match-bind `pt = scrut`).
+                                // `inner_n` = N.
+                                let mut off = 0i32;
+                                while off < n_i32 {
+                                    let v = builder.ins().load(I64, mem, src_addr, off + 8);
+                                    builder.ins().store(mem, v, dest_addr, off);
+                                    off += 8;
+                                }
                             }
                         }
+                    } else {
                         // Multi-word copy for struct/enum aggregate.
                         let (src_ty, src_off) = Self::walk_projections(body, source)?;
                         let (dest_ty, dest_off) = Self::walk_projections(body, dest)?;
@@ -1469,8 +1530,8 @@ impl JitContext {
                             let size_i32 = i32::try_from(copy_size).map_err(|_| {
                                 JitError::Unsupported("aggregate copy size exceeds i32".into())
                             })?;
-                            let src_addr = resolve_addr(self, builder, source.local, src_off);
-                            let dest_addr = resolve_addr(self, builder, dest.local, dest_off);
+                            let src_addr = self.copy_base_addr(builder, source.local, src_off);
+                            let dest_addr = self.copy_base_addr(builder, dest.local, dest_off);
                             let mut off = 0i32;
                             while off < size_i32 {
                                 let v = builder.ins().load(
