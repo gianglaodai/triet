@@ -1,6 +1,7 @@
 ---
 name: close-session
 description: Thủ tục đóng phiên Triết — verify git sạch+synced, đồng bộ memory bàn giao (Mentor O + Đồng nghiệp D), cập nhật state+persona Mentor G (spec/plans/MENTOR_G_STATE.md — file repo cho model non-Claude), xuất 3 prompt khởi động phiên mới ĐỘC LẬP (O+D+G), và dọn session cũ (giữ session hiện tại). Dùng khi tôi nói "đóng phiên".
+trigger: /close-session
 argument-hint: "(không cần arg) — /close-session"
 ---
 
