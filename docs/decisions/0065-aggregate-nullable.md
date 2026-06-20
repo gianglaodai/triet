@@ -274,3 +274,52 @@ scope** (G chốt tách).
   đạp địa chỉ `z` phía sau (offset verify bằng sizing-fixup + walk, KHÔNG tin số gợi ý).
 
 **Chữ ký §12:** (chờ O verify máu + ký; G ký đóng — D KHÔNG tự điền)
+
+### 12.8 Amendment (WO-~+-NULLABLE-UNIFY, 2026-06-21) — `~+ nullable-present` triệt để: top-level `let` + field scalar
+
+**Bối cảnh:** §12.7 đóng field-position construction cho aggregate (`Struct?`/`Enum?`) nhưng ghi nợ
+**hai đường sống** còn lại của Bug B (`OutcomeAlloc on non-Outcome type 'T?'`):
+- **Ổ 1 — top-level `let x: T? = ~+ v`:** `~+` lower thẳng `OutcomeConstructor` → `outcome_ty =
+  return_type` (Integer của `main`, non-Outcome) → `OutcomeAlloc` rác. Chết cả scalar / Struct / Enum
+  (`Integer?`/`Point?`/`Color?` — O probe 3 cùng lỗi).
+- **Ổ 2 — field scalar `Holder{f: ~+ 5}` với `f: T?` scalar:** gate §12.7 chỉ nhận `Nullable(Struct|Enum)`
+  → scalar rơi else → cùng `OutcomeAlloc`. (Field `Struct?`/`Enum?` đã chạy §12.7 — fixture 247/249, KHÔNG đụng.)
+
+**Quyết định — LOWERER-ONLY, tái dùng 100% đường widening, KHÔNG ADR mới:**
+
+- **Fix 1 (top-level let, `lib.rs` đầu nhánh else ~1210):** trước `lower_expr(*init)`, nếu `init` =
+  `OutcomeConstructor{ arm: Positive, payload: Some(inner) }` VÀ annotation lower ra `MirType::Nullable(_)`
+  → lower `*inner` (plain payload) THAY `*init`. Khối widening sẵn có (Lát 2 Delta 0) gánh tiếp:
+  - `Nullable(Struct)` → `is_struct_widening` → Assign fresh → JIT taxonomy **case 2 WIDEN** (chứng minh: 252).
+  - `Nullable(Enum)` → retype in-place → **niche disc@0** (253, mirror 229/225).
+  - `Nullable(scalar)` → retype in-place → **PA-3c no-op** (251).
+
+  KHÔNG nhánh-hóa theo type — cả 3 chảy qua widening đã có răng Trục A. Mirror đối xứng redirect
+  field-position §12.7 (StructLiteral).
+
+- **Fix 2 (field gate, `lib.rs` StructLiteral ~2940):** nới `field_is_nullable_agg`
+  (`Nullable(Struct|Enum)`) → `field_is_nullable = matches!(field_decl_ty, Some(Nullable(_)))`. Scalar
+  `~+ 5` → lower `inner=5` plain → field Assign store i64 (scalar nullable: **value IS repr**, present
+  5 ≠ MIN). **B8 NGUYÊN:** `is_copy` check chạy SAU mọi nhánh — `f: String?` set `~+ "hi"` → inner String
+  → `is_copy` false → refuse (fixture 255).
+
+**Teeth (O verify máu — 3 răng đỏ độc lập, mỗi ngã rẽ một răng):**
+- **P1** tắt redirect Fix 1 → **251+252+253 cùng `OutcomeAlloc on non-Outcome 'Integer?'/'Point?'/'Color?'`**
+  → chứng minh redirect load-bearing CẢ 3 type.
+- **P2** revert gate Fix 2 về `_agg` → **254 `OutcomeAlloc on non-Outcome 'Integer'`** (cô lập field-scalar).
+- **P3** nới `is_copy` cho String → **255 đỏ** (refuse "heap types…" biến mất). B8 có **defense-in-depth 2 lớp**:
+  `is_copy` (lowerer, message fixture 255 pin) lớp 1 + verifier `heap-nullable T? not yet lowered` lớp 2.
+- Widening per-type (case 2 / niche / PA-3c no-op) đã có răng Trục A (231/229/249) — KHÔNG poison lại.
+
+**⛔ NGOÀI SCOPE — defer (G chốt tách, "Separation of Concerns"):** direct `match h.f` trên **scalar-nullable
+FIELD** chết ở `unsupported match pattern (expected enum variant)` — đây là gap **luồng ĐỌC** (field-read temp
+Unknown-typed, `lib.rs:2904-2911`, cố ý giữ scalar-leaf-as-i64 cho số học), KHÁC HẲN Bug B (luồng GHI). Fix
+nó = nới field-read typing 2904, blast-radius CHƯA đo trên 245+ fixture → **Sổ Nợ Kỹ Thuật, KHÔNG mở WO-2 lúc
+này**. Fixture 254 đọc qua `let y: Integer? = h.f` (typed-let widen Unknown→Nullable) làm cầu nối nghiệm thu
+luồng GHI.
+
+**Hệ quả:** sau Fix 1+2, KHÔNG còn site nào `~+` đẻ `OutcomeAlloc-on-non-Outcome`. Chuỗi Nullable Aggregate
+construction đóng trọn (top-level + field, scalar + aggregate). `~+` thuần Outcome (`T~E`/`T?~E`) KHÔNG đổi
+hành vi (annotation non-Nullable → redirect không kích → lower `OutcomeConstructor` bình thường).
+
+**Chữ ký §12.8:** (chờ O verify máu + ký; G ký đóng — D KHÔNG tự điền)
