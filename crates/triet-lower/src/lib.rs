@@ -1208,7 +1208,25 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 c.local_names.insert(d, name.clone());
                 c.push_owned(d);
             } else {
-                let v = lower_expr(*init, arena, c)?;
+                // ── ADR-0065 §12.8: top-level `let x: T? = ~+ v` redirect ──
+                // `~+ v` would lower to an OutcomeConstructor → OutcomeAlloc on
+                // the function's non-Outcome return type (Bug B). When the
+                // annotation is nullable, redirect to lower the PLAIN payload
+                // `v`; the widening block below performs the nullable construct
+                // (Struct → Assign-widen, Enum/scalar → retype-in-place).
+                // Mirrors the field-position `~+` redirect in StructLiteral.
+                let init_id = if let Expr::OutcomeConstructor {
+                    arm: triet_syntax::OutcomeArm::Positive,
+                    payload: Some(inner),
+                } = &arena.expression(*init).node
+                    && let Some(tid) = type_annotation
+                    && matches!(lower_type_simple(arena, *tid, c), MirType::Nullable(_))
+                {
+                    *inner
+                } else {
+                    *init
+                };
+                let v = lower_expr(init_id, arena, c)?;
                 // ── Widening: override init local's type from annotation ──
                 // `let x: Integer? = 5` → x should be typed "Integer?" not "?".
                 // Under PA-3c widening is identity (same i64 value), so we only
@@ -2937,9 +2955,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     .get(struct_name.as_str())
                     .and_then(|l| l.fields.iter().find(|f| &f.name == field_name))
                     .map(|f| f.ty.clone());
-                let field_is_nullable_agg = matches!(&field_decl_ty,
-                    Some(MirType::Nullable(inner))
-                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)));
+                // ADR-0065 §12.8: ANY nullable field (scalar `T?` included), not
+                // just nullable aggregate. Scalar `~+ 5` lowers `5` plain → the
+                // field Assign stores the i64 (scalar nullable: value IS the
+                // repr, present 5 != MIN). B8 (is_copy check below) still gates
+                // heap: `f: String?` set `~+ "hi"` → inner String → refuse.
+                let field_is_nullable = matches!(&field_decl_ty, Some(MirType::Nullable(_)));
 
                 let field_val = if is_null_expr(&arena.expression(*field_expr).node) {
                     // ADR-0065 §12: `~0` in a struct field materializes a
@@ -2957,17 +2978,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         span: expr_span.clone(),
                     });
                     nd
-                } else if field_is_nullable_agg
+                } else if field_is_nullable
                     && let Expr::OutcomeConstructor {
                         arm: triet_syntax::OutcomeArm::Positive,
                         payload: Some(inner),
                     } = &arena.expression(*field_expr).node
                 {
-                    // ADR-0065 §12.7 Lát 3': `~+ inner` into a nullable-aggregate
-                    // field. Lower `inner` as a PLAIN aggregate — the field
-                    // Assign then widens it via JIT taxonomy case 2 (set tag,
-                    // copy fields). Skips the Outcome path (Bug B: `~+` → an
-                    // `OutcomeAlloc` on the function's non-Outcome return type).
+                    // ADR-0065 §12.7 Lát 3' + §12.8: `~+ inner` into a nullable
+                    // field. Lower `inner` as a PLAIN value — the field Assign
+                    // then constructs the nullable repr: aggregate widens via JIT
+                    // taxonomy case 2 (set tag, copy fields); scalar stores the
+                    // i64 directly (value IS the repr). Skips the Outcome path
+                    // (Bug B: `~+` → `OutcomeAlloc` on the non-Outcome return).
                     lower_expr(*inner, arena, c)?
                 } else {
                     lower_expr(*field_expr, arena, c)?
