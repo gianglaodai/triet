@@ -1,0 +1,13 @@
+// ERROR: out of range
+// ADR-0064 §A1.4 (Long i64-cap, khắc đá): Long range is NOT enforced at
+// typecheck (bignum deferred), so a Long literal beyond i64 passes typecheck.
+// At lower, the value-keyed SwitchInt key extraction does `i64::try_from` —
+// 10_000_000_000_000_000_000 > i64::MAX (≈9.22e18) → "Long literal value ...
+// out of range". This inherits the value-model i64 cap; NO silent truncation
+// (ADR-0044 spirit). Closes when a bignum value-model lands.
+function classify(x: Long) -> Integer = match x {
+    10000000000000000000_long => 1,
+    _ => 0,
+}
+
+function main() -> Integer = classify(0_long)

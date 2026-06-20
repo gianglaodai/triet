@@ -1,0 +1,7 @@
+// ERROR: exceeds `Tryte` range
+// ADR-0064 §A1.3: a Tryte-suffixed literal outside [-9841, 9841] is rejected
+// at compile time (E1036, generalized from the Integer check). 9999 > 9841 →
+// "Tryte literal `9999` exceeds `Tryte` range (±9841)". Expression position.
+function f() -> Tryte = 9999_tryte
+
+function main() -> Integer = 0

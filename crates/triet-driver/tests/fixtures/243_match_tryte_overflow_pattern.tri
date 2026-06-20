@@ -1,0 +1,12 @@
+// ERROR: exceeds `Tryte` range
+// ADR-0064 §A1.3: the chokepoint. A pattern literal never passes through
+// infer_expression, so a value-lố in a match arm (`9999_tryte =>`) would slip
+// through if only expressions were checked. bind_pattern range-checks pattern
+// literals → E1036 here too. The wildcard makes the match exhaustive, so E1036
+// (not E1026) is the sole error.
+function classify(x: Tryte) -> Integer = match x {
+    9999_tryte => 1,
+    _ => 0,
+}
+
+function main() -> Integer = classify(1_tryte)

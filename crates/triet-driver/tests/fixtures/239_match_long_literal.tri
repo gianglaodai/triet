@@ -1,0 +1,13 @@
+// EXPECT: 129
+// ADR-0064 §A1.2: match on a Long-typed scrutinee (value-keyed SwitchInt, same
+// i64 key extraction as Integer via lower_value_keyed_match). Long's domain is
+// the bignum ideal (currently i64-capped, §A1.4), so exhaustiveness REQUIRES a
+// `_` wildcard. classify(1_long)=10 (case), classify(2_long)=20 (case),
+// classify(9_long)=99 (wildcard catch-all). 10 + 20 + 99 = 129.
+function classify(x: Long) -> Integer = match x {
+    1_long => 10,
+    2_long => 20,
+    _ => 99,
+}
+
+function main() -> Integer = classify(1_long) + classify(2_long) + classify(9_long)

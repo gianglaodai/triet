@@ -1,0 +1,11 @@
+// ERROR: E1026:
+// ADR-0064 §A1.2: Tryte has an impractically-large domain (19_683 values), so
+// a match listing only some values without a `_` wildcard is non-exhaustive →
+// compile-time E1026 (mirror of the Integer rule §8). Listing all 19_683 arms
+// is infeasible, so the wildcard is mandatory.
+function classify(x: Tryte) -> Integer = match x {
+    1_tryte => 10,
+    2_tryte => 20,
+}
+
+function main() -> Integer = classify(1_tryte)

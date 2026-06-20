@@ -1,0 +1,13 @@
+// EXPECT: 7
+// ADR-0064 §A1.2/§A1.3 (poison-path + boundary): 9841_tryte is exactly
+// Tryte::MAX — the range check must ACCEPT it (an off-by-one `>` vs `>=` would
+// wrongly reject it as E1036). It is unlisted, so the value-keyed SwitchInt
+// falls to the default block, which must route to the `_` wildcard body (= 7),
+// NOT a Trap. A broken boundary check (E1036 on MAX) or a default→Trap
+// regression both break this fixture.
+function f(x: Tryte) -> Integer = match x {
+    1_tryte => 100,
+    _ => 7,
+}
+
+function main() -> Integer = f(9841_tryte)
