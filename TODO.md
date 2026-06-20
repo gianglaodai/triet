@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: HEAD `e6f0418` (test) (origin synced, 2026-06-20). Gate `0·0·245·0`. ADR-0065 §12.7 Nested Nullable Aggregate (Trục A, Copy) ĐÓNG+PUSH — Taxonomy 4-case (faithful walk + WholeCopy/Widen/Downcast, subsume Delta 4a/4b; field-position construction + readback). **Chuỗi Nullable Aggregate HOÀN TẤT TRỌN BỘ Trục A.** Kế: ⚰️ SỔ TỬ THẦN — Trục B (heap-in-aggregate + recursive drop-glue = campaign VISION, ADR trắng, B8 khóa) / `~+` top-level nullable-present (tech-debt) / return happy-path.
+Mốc hiện tại: HEAD `b6dd822` (test) (chờ O ký + push). Gate `0·0·250·0`. ADR-0065 §12.8 `~+` Nullable-Present Unify ĐÓNG (chờ ký) — Fix 1 top-level `let x: T? = ~+ v` (scalar/Struct/Enum) + Fix 2 field scalar `Holder{f: ~+ 5}`, lowerer-only redirect tái dùng widening Trục A; 3 răng P1/P2/P3 đỏ độc lập; B8 defense-in-depth 2 lớp. Bug B (`OutcomeAlloc-on-non-Outcome 'T?'`) **TUYỆT TỰ ở mọi site construction.** Trước đó §12.7 Nested Nullable Aggregate (Trục A, Copy) — Taxonomy 4-case. **Chuỗi Nullable Aggregate HOÀN TẤT TRỌN BỘ Trục A (construction + readback, scalar + aggregate, top-level + field).** Kế: ⚰️ SỔ TỬ THẦN — Trục B (heap-in-aggregate + recursive drop-glue = campaign VISION, ADR trắng, B8 khóa) / direct `match h.f` scalar-nullable field (read-side gap, §12.8 defer) / return happy-path.
 
 ---
 
