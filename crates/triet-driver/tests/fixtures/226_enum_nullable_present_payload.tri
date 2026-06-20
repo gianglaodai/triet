@@ -1,0 +1,22 @@
+// EXPECT: 7
+// ADR-0065 Lát 1: match on a present `Enum?` whose enum carries a payload
+// (total_size > 8B — the multi-word case). `let b: Box? = Full(7)` widens
+// Full(7) → Box? (disc@0 already a valid variant). The nullable match binds
+// `~+ v` to the present enum (whole-slot aggregate copy) and the body reads the
+// variant payload. Exercises gate + slot-alloc + walk_projections/ty_total_size
+// (Nullable unwrap) + result-retype.
+enum Box {
+    Empty,
+    Full(Integer),
+}
+
+function main() -> Integer = {
+    let b: Box? = Full(7);
+    return match b {
+        ~+ v => match v {
+            Empty => 0,
+            Full(x) => x,
+        },
+        ~0 => 99,
+    };
+}

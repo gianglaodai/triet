@@ -254,7 +254,12 @@ impl JitContext {
     /// Handles `Field(name)` and `Payload(variant)` projections; errors
     /// on unsupported projection types (`Deref`, `Index`).
     fn walk_projections(body: &Body, place: &Place) -> Result<(MirType, i32), JitError> {
-        let mut current_ty = body.local_decls[place.local.0].ty.clone();
+        // ADR-0065 Lát 1: `Enum?` shares the enum's slot layout (disc-sentinel
+        // niche). Unwrap Nullable so payload/field projections resolve against
+        // the inner Enum (the construction of a widened `Enum?` local still
+        // emits `_.Payload(V)`). Mirror of Lát 4.8's unwrap-at-site idiom.
+        let base_ty = &body.local_decls[place.local.0].ty;
+        let mut current_ty = base_ty.nullable_payload().unwrap_or(base_ty).clone();
         let mut total_offset = 0i32;
         for proj in &place.projection {
             match proj {
@@ -939,6 +944,33 @@ impl JitContext {
                 //  String slots pre-allocated for ALL String locals above.)
             }
         }
+        // ── ADR-0065 Lát 1: enum slots for derived Enum / Enum? locals ──
+        // EnumAlloc dests get slots above; but `Enum?` locals (`~0` null, match
+        // present-bind) and plain `Enum` match-result locals never flow through
+        // EnumAlloc, so they have no slot — aggregate-copy's resolve_addr would
+        // then fall back to use_var (a garbage pointer). Pre-allocate a slot
+        // (enum total_size) for every Enum / Nullable(Enum) local not already
+        // covered. Unwrap Nullable at the site (no new predicate, per the work
+        // order — mirror of Lát 4.8's `nullable_payload().unwrap_or`).
+        for i in 0..body.num_locals {
+            let local = Local(i);
+            if self.enum_slots.contains_key(&local) {
+                continue;
+            }
+            let ty = &body.local_decls[i].ty;
+            let eff = ty.nullable_payload().unwrap_or(ty);
+            if let MirType::Enum(enum_name) = eff
+                && let Some(layout) = body.enum_layouts.iter().find(|l| l.name == *enum_name)
+            {
+                let align_shift = u32_to_u8(layout.alignment.ilog2());
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    usize_to_u32(layout.total_size),
+                    align_shift,
+                ));
+                self.enum_slots.insert(local, (slot, layout.clone()));
+            }
+        }
 
         // Pre-declare blocks
         self.blocks.clear();
@@ -1185,6 +1217,17 @@ impl JitContext {
                         // reading cap, and consumers null-check ptr@0 only.
                         if dest.projection.is_empty()
                             && let Some((slot, _)) = self.struct_slots.get(&dest.local)
+                        {
+                            builder.ins().stack_store(val, *slot, 0);
+                        }
+                        // ADR-0065 Lát 1: `~0` (null) into an `Enum?` local
+                        // materializes NULL_SENTINEL into the enum slot's disc@0
+                        // (the disc-sentinel niche). A scalar Integer const into
+                        // an enum-repr local only happens for this null-sentinel
+                        // materialize; payload area stays don't-care (the match
+                        // `~0` arm never reads it).
+                        if dest.projection.is_empty()
+                            && let Some((slot, _)) = self.enum_slots.get(&dest.local)
                         {
                             builder.ins().stack_store(val, *slot, 0);
                         }

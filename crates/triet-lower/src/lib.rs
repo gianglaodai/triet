@@ -3402,7 +3402,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 {
                     c.push_scope();
                     let body_val = lower_expr(arm.body, arena, c)?;
-                    let result = c.alloc_local_ty(payload_ty.clone());
+                    let result = c.alloc_local_ty(c.local_decls[body_val.0].ty.clone());
                     c.push(Statement::StorageLive(result, expr_span.clone()));
                     c.push(Statement::Assign {
                         dest: Place::local(result),
@@ -3464,6 +3464,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.push_scope();
                     let body_val = lower_expr(arm.body, arena, c)?;
                     let arm_end = c.cur;
+                    // ADR-0056: merge result type from the arm value. The arm
+                    // body need not have the payload type (e.g. `~+ v => 1`
+                    // returns Integer); pinning result to payload_ty would make
+                    // a >8B Enum? result aggregate-copy a scalar → segfault.
+                    c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                     c.push(Statement::Assign {
                         dest: Place::local(result),
                         source: Place::local(body_val),
@@ -3522,6 +3527,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 }
                 let body_val = lower_expr(arm_for_present.body, arena, c)?;
                 let arm_end = c.cur;
+                // ADR-0056: merge result type from the arm value (see above).
+                c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                 c.push(Statement::Assign {
                     dest: Place::local(result),
                     source: Place::local(body_val),

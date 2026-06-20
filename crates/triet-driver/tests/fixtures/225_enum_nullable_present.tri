@@ -1,0 +1,20 @@
+// EXPECT: 2
+// ADR-0065 Lát 1: match on a present `Enum?` (disc-sentinel niche).
+// `let e: Color? = Green` widens Green → Color? (no-op: disc@0 already a valid
+// variant). The nullable match binds `~+ v` to the present enum and the body
+// matches the variant; the null arm is unreachable here.
+enum Color {
+    Red,
+    Green,
+}
+
+function main() -> Integer = {
+    let e: Color? = Green;
+    return match e {
+        ~+ v => match v {
+            Red => 1,
+            Green => 2,
+        },
+        ~0 => 99,
+    };
+}

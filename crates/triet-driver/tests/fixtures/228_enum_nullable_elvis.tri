@@ -1,0 +1,18 @@
+// EXPECT: 7
+// ADR-0065 Lát 1: Elvis `?:` on a null `Enum?` (payload enum) falls back to the
+// default. `b` is null → `r = d` (whole-enum copy of the default Box), then the
+// variant is read.
+enum Box {
+    Empty,
+    Full(Integer),
+}
+
+function main() -> Integer = {
+    let d: Box = Full(7);
+    let b: Box? = ~0;
+    let r = b ?: d;
+    return match r {
+        Empty => 0,
+        Full(x) => x,
+    };
+}

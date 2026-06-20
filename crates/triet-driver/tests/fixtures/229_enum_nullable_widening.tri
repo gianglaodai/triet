@@ -1,0 +1,21 @@
+// EXPECT: 5
+// ADR-0065 Lát 1: widening `Enum → Enum?` via an identifier binding (payload
+// enum). `let n: Box? = e` copies the present enum into a `Box?` local; the
+// disc@0 stays a valid variant (no-op sentinel), so the match takes the present
+// arm.
+enum Box {
+    Empty,
+    Full(Integer),
+}
+
+function main() -> Integer = {
+    let e: Box = Full(5);
+    let n: Box? = e;
+    return match n {
+        ~+ v => match v {
+            Empty => 0,
+            Full(x) => x,
+        },
+        ~0 => 99,
+    };
+}

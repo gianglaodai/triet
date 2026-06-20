@@ -1,0 +1,19 @@
+// EXPECT: 99
+// ADR-0065 Lát 1: match on a null `Enum?` (payload enum). `let b: Box? = ~0`
+// materializes NULL_SENTINEL into disc@0 of the enum slot; the null-check
+// `disc@0 == i64::MIN` (run BEFORE GetDiscriminant) routes to the `~0` arm.
+enum Box {
+    Empty,
+    Full(Integer),
+}
+
+function main() -> Integer = {
+    let b: Box? = ~0;
+    return match b {
+        ~+ v => match v {
+            Empty => 0,
+            Full(x) => x,
+        },
+        ~0 => 99,
+    };
+}

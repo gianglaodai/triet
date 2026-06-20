@@ -1,0 +1,17 @@
+// ERROR: heap-nullable T?
+// ADR-0065 Lát 1 / B8 guard: a nullable-heap payload (`String?`) inside an enum
+// used as `Enum?` must STAY refused (HeapNullableNotLowered) — the field/payload
+// gate keeps is_scalar_nullable_payload (Lát 1 does not place ptr-sentinel slots
+// at payload offsets). Heap-in-aggregate is a separate campaign.
+enum Bag {
+    None,
+    Has(String?),
+}
+
+function main() -> Integer = {
+    let b: Bag? = None;
+    return match b {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
