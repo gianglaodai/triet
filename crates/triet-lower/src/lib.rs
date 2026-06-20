@@ -518,6 +518,22 @@ pub fn lower_program(
                             .get(name.as_str())
                             .map(|l| l.total_size)
                             .unwrap_or(f.size),
+                        // ADR-0065 §12.1: nested nullable aggregate field size.
+                        MirType::Nullable(inner) => match inner.as_ref() {
+                            // Struct? prepends an 8-byte tag word (Phương án A,
+                            // §2.2) → inner.total + 8.
+                            MirType::Struct(name) => struct_map
+                                .get(name.as_str())
+                                .map(|l| l.total_size + 8)
+                                .unwrap_or(f.size),
+                            // Enum? uses the disc-niche (0-byte overhead, §2.1);
+                            // its size resolves like a plain `Enum` field.
+                            MirType::Enum(name) => struct_map
+                                .get(name.as_str())
+                                .map(|l| l.total_size)
+                                .unwrap_or(f.size),
+                            _ => f.size,
+                        },
                         _ => f.size,
                     };
                     (f.name.clone(), f.ty.clone(), size, f.alignment)
@@ -1444,6 +1460,35 @@ fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Place, Low
             Ok(Place::local(temp))
         }
     }
+}
+
+/// ADR-0065 §12: resolve the result type of a projected `Place` by walking its
+/// `Field` projections through the struct layouts. Unwraps a nullable aggregate
+/// (`Struct?`/`Enum?`) before descending so a field of a `Point?` resolves
+/// against `Point`. Returns `MirType::Unknown` for any projection it cannot
+/// resolve (non-aggregate base, unknown struct/field, non-`Field` projection) —
+/// callers fall back to the legacy untyped temp in that case.
+fn place_result_type(place: &Place, c: &Ctx) -> MirType {
+    let mut ty = c.local_decls[place.local.0].ty.clone();
+    for proj in &place.projection {
+        let Projection::Field(name) = proj else {
+            return MirType::Unknown;
+        };
+        // Unwrap a nullable aggregate to reach the inner struct's fields.
+        let inner = ty.nullable_payload().unwrap_or(&ty).clone();
+        let MirType::Struct(sname) = &inner else {
+            return MirType::Unknown;
+        };
+        match c
+            .struct_layouts
+            .get(sname)
+            .and_then(|layout| layout.fields.iter().find(|f| &f.name == name))
+        {
+            Some(field) => ty = field.ty.clone(),
+            None => return MirType::Unknown,
+        }
+    }
+    ty
 }
 
 // ── Expression lowering ─────────────────────────────────────
@@ -2851,7 +2896,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // (parser routes those through Call), but handle gracefully.
 
             let source = lower_place(expr_id, arena, c)?;
-            let d = c.alloc_local();
+            // ADR-0065 §12: a field whose type is a nullable aggregate
+            // (`Struct?`/`Enum?`) must carry that type so `match`/Elvis route to
+            // the nullable path and the JIT copies the full tagged slot. Other
+            // field reads keep the legacy Unknown-typed temp (scalar leaf loaded
+            // as i64), preserving existing behavior for heap/scalar fields.
+            let field_ty = place_result_type(&source, c);
+            let d = if matches!(&field_ty, MirType::Nullable(inner)
+                if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)))
+            {
+                c.alloc_local_ty(field_ty)
+            } else {
+                c.alloc_local()
+            };
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Assign {
                 dest: Place::local(d),
@@ -2872,7 +2929,49 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 span: expr_span.clone(),
             });
             for (field_name, field_expr) in fields {
-                let field_val = lower_expr(*field_expr, arena, c)?;
+                // The field's declared type, for nullable-aggregate construction
+                // (`~0` null materialize + `~+` widen) — `~0`/`~+` carry no
+                // annotation, so the field layout supplies the expected type.
+                let field_decl_ty = c
+                    .struct_layouts
+                    .get(struct_name.as_str())
+                    .and_then(|l| l.fields.iter().find(|f| &f.name == field_name))
+                    .map(|f| f.ty.clone());
+                let field_is_nullable_agg = matches!(&field_decl_ty,
+                    Some(MirType::Nullable(inner))
+                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)));
+
+                let field_val = if is_null_expr(&arena.expression(*field_expr).node) {
+                    // ADR-0065 §12: `~0` in a struct field materializes a
+                    // NULL_SENTINEL of the field's declared type (mirror of the
+                    // `let x: T? = ~0` path). Works for scalar `T?` and nested
+                    // nullable aggregate `Struct?`/`Enum?` (tag@0 = MIN).
+                    let decl_ty = field_decl_ty.clone().ok_or_else(|| {
+                        LowerError::null_literal_without_expected_type(expr_span.clone())
+                    })?;
+                    let nd = c.alloc_local_ty(decl_ty);
+                    c.push(Statement::StorageLive(nd, expr_span.clone()));
+                    c.push(Statement::Const {
+                        dest: Place::local(nd),
+                        value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                        span: expr_span.clone(),
+                    });
+                    nd
+                } else if field_is_nullable_agg
+                    && let Expr::OutcomeConstructor {
+                        arm: triet_syntax::OutcomeArm::Positive,
+                        payload: Some(inner),
+                    } = &arena.expression(*field_expr).node
+                {
+                    // ADR-0065 §12.7 Lát 3': `~+ inner` into a nullable-aggregate
+                    // field. Lower `inner` as a PLAIN aggregate — the field
+                    // Assign then widens it via JIT taxonomy case 2 (set tag,
+                    // copy fields). Skips the Outcome path (Bug B: `~+` → an
+                    // `OutcomeAlloc` on the function's non-Outcome return type).
+                    lower_expr(*inner, arena, c)?
+                } else {
+                    lower_expr(*field_expr, arena, c)?
+                };
                 // B8: aggregate-containing-heap — struct field with Move type not supported.
                 let field_ty = &c.local_decls[field_val.0].ty;
                 if !field_ty.is_copy(None) {
