@@ -1,0 +1,15 @@
+// ERROR: heap-nullable T?
+// ADR-0065 Lát 2 / B8 guard: `Struct?` is now lowerable (tag-word niche), but a
+// nullable-heap FIELD (`String?`) inside the struct must STAY refused
+// (HeapNullableNotLowered) — the field/payload gate keeps is_scalar_nullable_payload
+// (Lát 2 does not place ptr-sentinel slots at field offsets). Heap-in-aggregate
+// is a separate campaign. Teeth for P5 (widening the field gate to heap).
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b: Bad? = ~0;
+    return match b {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

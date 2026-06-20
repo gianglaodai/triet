@@ -1,0 +1,11 @@
+// EXPECT: 7
+// ADR-0065 Lát 2: Elvis `?:` on a null `Pt?` falls back to the default. `b` is
+// null → `r = d` (whole-struct copy of the default Pt), then both fields read.
+struct Pt { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let d: Pt = Pt { x: 3, y: 4 };
+    let b: Pt? = ~0;
+    let r = b ?: d;
+    return r.x + r.y;
+}

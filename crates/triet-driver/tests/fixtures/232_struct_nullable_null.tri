@@ -1,0 +1,12 @@
+// EXPECT: 99
+// ADR-0065 Lát 2: `~0` into a `Pt?` materializes NULL_SENTINEL into the slot's
+// tag@0. The null-check `tag@0 == i64::MIN` routes to the `~0` arm.
+struct Pt { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let n: Pt? = ~0;
+    return match n {
+        ~+ v => -1,
+        ~0 => 99,
+    };
+}

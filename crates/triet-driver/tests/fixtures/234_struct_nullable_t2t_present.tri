@@ -1,0 +1,17 @@
+// EXPECT: 5
+// ADR-0065 Lát 2 Delta 4b (β): `Pt? <- Pt?` whole-slot move on a PRESENT value,
+// via REASSIGNMENT (not aliasing). `a` widens Pt{5,0} → Pt? (Delta 4a); `b = a`
+// is a Stmt::Assignment between two DISTINCT Nullable(Struct) locals, so the JIT
+// copies the full N+8 slot (tag+fields). The match downcasts and reads q.x.
+struct Pt { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let p: Pt = Pt { x: 5, y: 0 };
+    let a: Pt? = p;
+    let mutable b: Pt? = ~0;
+    b = a;
+    return match b {
+        ~+ q => q.x,
+        ~0 => -1,
+    };
+}

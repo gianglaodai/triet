@@ -1,0 +1,16 @@
+// EXPECT: 7
+// ADR-0065 Lát 2 Delta 4a: widen a plain 2-field struct into `Pt?`. The slot is
+// {tag@0, fields@8}: the widening stores tag=present(1) and copies x,y to +8.
+// The nullable match binds `~+ q` (downcast: walk +8 past the tag) and reads
+// both fields. Teeth for P1 (drop +8), P2 (copy 1-word → q.y garbage),
+// P3 (drop tag store). Needs ≥2 fields so a 1-word copy is observable.
+struct Pt { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let p: Pt = Pt { x: 3, y: 4 };
+    let n: Pt? = p;
+    return match n {
+        ~+ q => q.x + q.y,
+        ~0 => -1,
+    };
+}

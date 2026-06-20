@@ -1,0 +1,18 @@
+// EXPECT: 7
+// ADR-0065 Lát 2 Delta 4b (β) ⚔ SOUNDNESS: `Pt? <- Pt?` whole-slot move on a
+// NULL value, via REASSIGNMENT. `b` starts PRESENT (widened from p), then `b = a`
+// where `a` is null (tag@0 == i64::MIN). 4b MUST copy the tag word first so `b`
+// becomes null. If 4b dropped the tag (copied fields-only from +8), `b` would
+// keep its present tag → match takes `~+` → -1. Teeth for P4.
+struct Pt { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let p: Pt = Pt { x: 5, y: 0 };
+    let a: Pt? = ~0;
+    let mutable b: Pt? = p;
+    b = a;
+    return match b {
+        ~+ _ => -1,
+        ~0 => 7,
+    };
+}

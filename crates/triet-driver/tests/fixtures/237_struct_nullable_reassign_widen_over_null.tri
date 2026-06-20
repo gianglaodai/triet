@@ -1,0 +1,18 @@
+// EXPECT: 7
+// ADR-0065 Lát 2 Delta 4a ⚔ TAG-STORE soundness (P3): widen a plain Struct into a
+// `Pt?` slot that PREVIOUSLY held `~0` (tag@0 == i64::MIN). `n = p` (4a) MUST
+// store tag=present(1) over the stale MIN — otherwise the match still reads MIN
+// and routes to `~0` → -1. Fixtures 231-236 use a fresh slot whose uninit tag
+// happens to differ from MIN, so they do NOT exercise the tag store; this one
+// reuses the null slot so dropping `stack_store(one, dest, 0)` flips it red.
+struct Pt { x: Integer, y: Integer }
+
+function main() -> Integer = {
+    let mutable n: Pt? = ~0;
+    let p: Pt = Pt { x: 3, y: 4 };
+    n = p;
+    return match n {
+        ~+ q => q.x + q.y,
+        ~0 => -1,
+    };
+}
