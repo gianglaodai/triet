@@ -116,6 +116,14 @@ Bất cứ ai (kể cả D) chế thêm `String`-trong-`Struct?`, drop-glue, hay
 - **Blind-spot rule:** teeth phải quét **cả Enum? LẪN Struct?** (Lát 2), và **cả nhánh present LẪN null** (mỗi nhánh một mặt trận — bài học HP.3).
 - **B8 guard (regression):** teeth khẳng định `String`-trong-`Struct?` / `Vector`-trong-`Enum?` payload VẪN refuse `HeapNullableNotLowered` (fixture âm). Poison: nếu ai nới gate scalar→heap cho field/payload, fixture âm phải đỏ.
 
+### 9.1 Amendment (Lát 1, 2026-06-20) — HAI cổng refuse B8 khác mã lỗi (O đo, sửa-có-dấu-vết)
+
+Verify Lát 1 lộ ra B8 refuse qua **hai cổng phân biệt** — teeth phải nhắm đúng cổng của lát này:
+- **`Enum?` với payload nullable-heap** `Has(String?)` → `Body::verify()` enum-payload gate (`triet-mir:1500/1513`, giữ `is_scalar_nullable_payload`) → **`MirError::HeapNullableNotLowered`** "at enum payload `Bag.Has`". **ĐÂY là guard của ADR-0065** (fixture âm 230). Nới gate scalar→heap cho field/payload → fixture 230 phải đỏ.
+- **`Enum` với payload plain-heap** `Has(String)` (không nullable) → chặn sớm hơn ở is_copy construction gate (ADR-0040 **B8 pre-existing**, `triet-lower`) → `LowerError "heap types not supported"`. **Orthogonal** — không phải guard lát này; chỉ bắn khi CONSTRUCT variant.
+
+Teeth B8 của Lát 1 dùng `String?` payload (cổng `HeapNullableNotLowered`), KHÔNG dùng plain `String` (cổng khác). §9 bullet "B8 guard" ở trên trỏ đúng cổng `HeapNullableNotLowered`.
+
 ## 10. Consequences
 
 - (+) Hoàn tất hệ nullable cho mọi loại; bất biến `tag_cell == i64::MIN ⟺ null` hợp nhất scalar/heap/enum/struct.
