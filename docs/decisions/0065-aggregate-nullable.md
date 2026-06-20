@@ -147,3 +147,130 @@ Verify Lát 2 lộ ra một giả định sai trong WO gốc (recon-miss của O
 | Tương lai: niche-fill (C) | Struct? bỏ tag-word cho struct có niche field → 0 byte | Có thể, cục bộ, ADR mới |
 | Heap-trong-aggregate | Drop-glue + free-shim cho aggregate chứa Move field | Campaign riêng |
 | Bậc C packed ABI | tag-word có thể hợp nhất với Outcome disc | Có thể, cục bộ |
+
+---
+
+## 12. AMENDMENT (Lát 3, 2026-06-20) — Nested Nullable Aggregate of Copy (Trục A)
+
+**Bối cảnh:** §8 ghi "NGOÀI scope — defer: nested `Struct?`-field-trong-`Struct`". §4/§9 đã khóa
+B8 (Copy-only). Lát 1 (`Enum?`) + Lát 2 (`Struct?`) chỉ chạy ở vị trí **top-level** (return/local).
+Khi `Struct?`/`Enum?` nằm **làm field/payload của một aggregate khác** (`struct Holder { p: Point? }`),
+ba tầng chặn: gate field/payload (`is_scalar_nullable_payload`, scalar-only), sizing fixup (chỉ map
+`Struct/Enum`, không `Nullable(Struct/Enum)` → field `Point?` rơi default 8B = SAI), offset-walk
+(`walk_projections` không unwrap `Nullable` mid-walk → `h.p.x` fail "field access on non-aggregate").
+**Lát 3 (Trục A)** mở Ca 1 — `struct Holder { p: Point? }`, Point all-scalar — thuần **layout math**,
+KHÔNG allocator, KHÔNG drop-glue.
+
+### 12.1 Cơ chế (kế thừa Lát 1/Lát 2, áp ở vị trí field/payload)
+- **`Nullable(Struct)` field** = `inner.total_size + 8` (tag-word prepend @field-offset, y hệt top-level
+  Lát 2 §2.2). Tag@field-offset == `i64::MIN` ⟺ null; == `+1` ⟺ present. Field thật của Point sống tại
+  `field-offset + 8 + Point.field.offset`.
+- **`Nullable(Enum)` field** = `inner.total_size` (disc-niche, **0 byte** overhead, y hệt Lát 1 §2.1).
+  disc@field-offset == `i64::MIN` ⟺ null.
+- **Offset-walk**: khi `walk_projections` đi VÀO một field kiểu `Nullable(Struct)` → cộng tag-shift +8
+  rồi unwrap về `Struct`; `Nullable(Enum)` → +0 rồi unwrap về `Enum`. Tái dùng tinh thần
+  `nullable_struct_base_offset` (struct→8/enum→0) nhưng áp **mid-walk** thay vì chỉ ở base.
+
+### 12.2 Điều kiện Copy — KHẮC ĐÁ (nếp gấp soundness)
+Chỉ áp khi `inner.is_copy(Some(body))` (`triet-mir:666` — đã đệ quy + body-aware: chui field/variant).
+- Heap-trong-nested-nullable (`struct Bad { s: String }`, `Holder2 { p: Bad? }`) → `Bad.is_copy = false`
+  → gate field/payload **GIỮ refuse** `HeapNullableNotLowered`. **B8 §4 NGUYÊN.**
+- `Nullable(String/Vector/HashMap)` field → inner KHÔNG phải Struct/Enum → refuse (B8 nguyên).
+- **Cảnh báo (G khắc đá):** gate field/payload PHẢI **body-aware**. Nới gate nhận `Nullable(Struct/Enum)`
+  **thuần cấu trúc** (không check `is_copy`) = chỗ B8 lọt → `Bad?` field copy String bytes như Copy =
+  double-free/leak tiềm ẩn. `find_refused_nullable` hiện cầm `allow: fn(&MirType)->bool` KHÔNG thấy body
+  → cơ chế nới phải tải body vào nhánh field/payload (đổi sig hoặc path riêng).
+
+### 12.3 Layout math — offset đệ quy lồng
+Tag-word lớp ngoài (nếu aggregate ngoài cũng nullable) + tag-word lớp trong cộng dồn; padding 8-align.
+Ca 1 (aggregate ngoài KHÔNG nullable):
+
+```
+struct Point  { x: Integer, y: Integer }      → Point.total  = 16  (x@0, y@8)
+                Point?                          → Point?.total = 24  (tag@0, x@8, y@16)  [+8 tag]
+struct Holder { p: Point? }                    → Holder.total = 24  (p@0)
+
+  Holder slot:  offset 0      8      16
+                +------+------+------+
+                | tag  |  x   |  y   |     p@0 → tag@0, Point.x@8, Point.y@16  (tuyệt đối)
+                +------+------+------+
+  đọc h.p.x = load(slot + p.offset(0) + tag-shift(8) + Point.x.offset(0)) = load(slot+8)
+  đọc h.p.y = load(slot + 0 + 8 + 8)                                       = load(slot+16)
+```
+
+`Nullable(Enum)` field: 0-byte tag → field-offset không dịch (disc@field-offset chính là niche).
+
+### 12.4 KHÔNG drop-glue, KHÔNG allocator
+Copy-only (§12.2) → Drop = no-op → 0 drop-glue, 0 free-shim, 0 đụng allocator (kế thừa §4 + §7 + §9).
+Widening `Holder{ p: ~+ Point{...} }` = store tag + multi-word-copy Point fields (tái dùng Lát 2 §2.2
++ ADR-0060 §Điểm-3), KHÔNG alloc.
+
+### 12.5 ⚰️ Phán quyết Trục B — SỔ TỬ THẦN (campaign VISION riêng)
+**Heap-trong-aggregate + recursive drop-glue = Trục B = campaign VISION RIÊNG, KHÔNG phải ADR-0065.**
+ADR cho Trục B còn **trắng** — chưa viết một dòng. **B8 (§4) khóa chặt mọi heap-in-aggregate field-offset
+bất kể nullable.** ADR-0065 (kể cả §12 này) KHÔNG có một chữ nào ngụ ý Trục B được chạm tới trong campaign
+này. Ai chế heap-in-nested-nullable, drop-glue, hay free-shim cho aggregate-nullable = VƯỢT RÀO, review
+chặn thẳng.
+
+### 12.6 Teeth bắt buộc (O verify máu từng lát)
+- **Gate body-aware (Lát 2 WO):** poison nới gate thành thuần-cấu-trúc (bỏ `is_copy`) → fixture `Bad?`-heap-field
+  KHÔNG còn refuse → ĐỎ (chứng minh Copy-check load-bearing chống B8-lọt). Control: `Nullable(String)` field vẫn refuse.
+- **Sizing (Lát 3 WO):** poison bỏ `+8` cho Nullable(Struct) field → Holder.total sai → walk OOB → đọc rác/SIGSEGV ĐỎ.
+- **Offset-walk (Lát 4 WO):** poison tag-shift nested 8→0 (hoặc 8→16) → `h.p.x` đọc lệch byte → giá trị sai/SIGSEGV ĐỎ.
+- **Construction + read-back (Lát 5 WO):** read-back `h.p.x` BẮT BUỘC (construct-only không tính); fixture
+  **field-kế-cận** (struct 2 field + Point? sau, đọc field-sau-nested) chứng minh +8 KHÔNG đạp field sau.
+- **B8 regression:** fixture âm `Bad?` (heap-in-struct) + `Nullable(String)` field VẪN refuse `HeapNullableNotLowered`.
+
+### 12.7 Construction Taxonomy (re-scope 2026-06-20 — sửa-có-dấu-vết, G ký Option a)
+
+**Recon-miss của WO gốc (O tự nhận):** §12.4 ghi "tái dùng widening Lát 2 §2.2 (Delta 4a)". SAI. Delta 4a/4b
+JIT (`mir_lower.rs:1375/1418`) **gate `projection.is_empty()` CẢ HAI bên** → chỉ chạy cho top-level
+`let x: Struct? = y`. Construction (`_0.p = move v` — dest projected) + read-back (`_2 = move h.p` — source
+projected) **KHÔNG BAO GIỜ** chạm 4a/4b → rơi general-copy. **Field-position construction chưa từng được
+implement.** Đây là lỗ hổng lõi, không phải bug vặt.
+
+**Ba bug (O trace tới MIR):**
+- **Bug A — JIT base-downcast nuốt tag** (`walk_projections:297`): `nullable_struct_base_offset` bake `+8`
+  cho mọi `Nullable(Struct)` base. `load_place`/`store_place` empty-proj đọc thẳng `slot@0` (KHÔNG gọi walk
+  → top-level match 231-237 ĐÚNG), NHƯNG Assign-copy gọi walk cả src+dest → whole-slot move bị +8 → **bỏ qua
+  tag@0** → null trả rác. Blast-radius khi gỡ = **HẸP, chỉ Assign-copy**.
+- **Bug B — Lowerer `~+ aggregate` rẽ Outcome** (`lib.rs:1557`): `~+ Point` → `OutcomeAlloc` với
+  `outcome_ty = return_type` (Integer của main) → `OutcomeAlloc non-Outcome Integer`. `~+` thuần Outcome,
+  không có nhánh nullable-present.
+- **Bug C — Lowerer implicit field-widen không set tag** (`lib.rs:2920`): `Point{..}` → plain Struct →
+  `_0.p = move _1` plain Assign, KHÔNG widen, KHÔNG SetTag → present **pass-by-luck** (tag uninit tình cờ ≠ MIN).
+
+**Giải pháp (Option a — faithful walk + Taxonomy 4-case):** bỏ base-downcast khỏi `walk_projections` (làm nó
+**faithful** — offset thật, type `Nullable(Struct)` nguyên). Đưa quyết định downcast/widen/whole-copy vào
+**chốt Assign-copy**, phân xử theo `(src_ty, dest_ty)` SAU faithful-walk:
+
+| dest \ src | plain `Struct` | `Nullable(Struct)` |
+|---|---|---|
+| **plain `Struct`** | general copy (cũ, ADR-0060) | **case 3 DOWNCAST**: copy fields `src+8 → dest+0` (= match-bind `pt = scrut`) |
+| **`Nullable(Struct)`** | **case 2 WIDEN**: set `tag=1@dest+0`, copy fields `src+0 → dest+8` (= 4a cũ + field implicit) | **case 1 WHOLE-COPY**: `N+8` bytes, **tag@0 FIRST**, `src_off → dest_off` (= 4b cũ + construction + readback) |
+
+**5 điểm khắc đá:**
+1. **Faithful-walk:** `walk_projections` trả offset thật (base bare-`Nullable(Struct)` KHÔNG +8); giữ Lát-4
+   `nested_nullable_shift` cho field-INTO-nullable mid-walk.
+2. **Subsume:** Taxonomy gộp Delta 4a (→ case 2) + 4b (→ case 1). **XÓA 4a/4b cũ**, không giữ song song.
+   Downcast +8 (cũ bake mù trong walk) nay là hành vi **tường minh** của case 3.
+3. **Tag bất biến NGUYÊN:** `{tag@0, fields@8}`, `tag@0==MIN ⟺ null`. Case 1 copy **tag-first** → preserve verbatim.
+4. **Enum? field analog:** +0 (niche), tag = `disc@0 == MIN`.
+5. **Copy-only:** KHÔNG drop-glue/allocator. Heap (Trục B) = sổ tử thần, B8 §4 khóa, CẤM chạm.
+
+**Lowerer (Lát 3'):** `~+ inner` ở struct-field khi `field_ty == Nullable(Struct/Enum)` → lower `inner` plain
+(KHÔNG đi `OutcomeConstructor`); field Assign tự widen qua **case 2**. Bug C implicit KHÔNG cần sửa lowerer —
+case 2 JIT tự widen plain Assign. `~+` top-level (`let x: Struct? = ~+ y`) nếu vỡ → **ghi nợ tech-debt, NGOÀI
+scope** (G chốt tách).
+
+**Teeth (re-scope):**
+- **LOCKED 231-237 XANH NGUYÊN** (lưới regression — case 1/2/3 subsume đúng).
+- Poison case 1 (whole-copy → cố +8 downcast) → readback-null lệch → null-fixture ĐỎ.
+- Poison case 2 (bỏ set-tag=1) → present mất tag → present-fixture ĐỎ. **PHẢI fixture quan-sát-được, KHÔNG
+  pass-by-luck** (bài học Lát 2 P3 + reject Lát 5).
+- Poison case 3 (bỏ +8) → match-bind `pt.x` đọc tag thay field → 231-237 + present ĐỎ.
+- Poison `~+`-special-case → `Holder{p:~+ Point{...}}` lại `OutcomeAlloc` ĐỎ.
+- **⚔ field-kế-cận** (`struct H2{a, p:Point?, z}`): construct rồi đọc `z` → tag-8B + nội dung lồng KHÔNG
+  đạp địa chỉ `z` phía sau (offset verify bằng sizing-fixup + walk, KHÔNG tin số gợi ý).
+
+**Chữ ký §12:** (chờ O verify máu + ký; G ký đóng — D KHÔNG tự điền)
