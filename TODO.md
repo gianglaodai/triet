@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: HEAD `a0eff46` (local, 2026-06-18). Gate `0·0·183·0`. Chiến dịch CFG Tail-Expression HẠ MÀN (lát 1 SIGILL + lát 2 `= ~0`).
+Mốc hiện tại: HEAD `e9bd3e0` (origin synced, 2026-06-20). Gate `0·0·225·0`. ADR-0065 Lát 1 Enum? ĐÓNG+PUSH (disc-sentinel niche). Kế: Lát 2 Struct? (tag 8B Phương án A).
 
 ---
 
@@ -42,6 +42,23 @@ Option-2 (gate free-fn `resolve_type_expr_with_params`, đổi chữ ký + dedup
 - [ ] 5. `?+>` map/flatMap heap (unwrap move + Deinit/tombstone tránh double-free).
 - [ ] Gỡ gate `HeapNullableNotLowered` (+ `find_heap_nullable`/`is_scalar_nullable_payload` helper ở triet-mir) khi móng landed.
 - [ ] **Gap #2 — expected-type propagation cho `~0`/Outcome-constructor lồng trong block-final/if-arm/match-arm.** `{ ~0 }`, `if…{~0}` fail y hệt ở CẢ `return`/tail/`let` (đã chứng minh, KHÔNG phải tail-asymmetry — Lát-2 A-hẹp chỉ vá expr-body `= ~0`). Cần ADR type-propagation (đẩy expected-type xuống block/if/match arm), KHÔNG chắp vá per-site.
+
+### 🟣 ADR-0065 Nullable Aggregate (`Enum?` & `Struct?`) — 🔒 LOCKED, 2 lát
+Bất biến hợp nhất: `tag_cell == i64::MIN ⟺ null`. Rào **B8 §4**: aggregate-nullable CHỈ
+chứa Copy field/payload — KHÔNG drop-glue/alloc/free. Value-model i64 KHÔNG đụng.
+
+- [x] **Lát 1 — `Enum?` (disc-sentinel niche, 0 byte).** `1748510` (feat) + `e9bd3e0` (§9.1).
+      disc@0 == i64::MIN = null (discriminant thật ∈ {0,1,2,…}); widening no-op. 5 delta:
+      A gate(triet-mir 1399) · B slot-alloc(triet-jit) · C walk_proj unwrap · E result-retype
+      (lower, idiom ADR-0056) · F `~0` store disc@0. Fixtures 225-230 (present payload-less/
+      payload, ~0 null, Elvis, widening, B8 heap refuse). Poison E/B→SIGSEGV139, F→Trap132.
+- [ ] **Lát 2 — `Struct?` (tag 8B, Phương án A).** Struct KHÔNG có ô tự nhiên → đẻ tag word@0,
+      đẩy field +8: slot `{tag@0:i64, fields@8…}`, total = struct.total_size + 8. tag@0 ==
+      i64::MIN = null. Gate += `MirType::Struct(_)`; layout +8B prepend; widening = tag-store +
+      multi-word-copy (ADR-0060 §Điểm-3); match present-arm bind tại slot+8 (offset-walk +8).
+      Teeth bắt buộc (ADR §9): tag-offset poison bỏ +8 → field đè tag; widening copy 1-word →
+      field sau rác; struct ≥2 field. **Khoai hơn Lát 1** (đụng layout-sizing + offset-walk,
+      KHÔNG còn niche 0-byte). ADR-0065 §3.2/§8 đã vẽ layout.
 
 ### 🟢 Perf — ADR-0044 §iii (không chặn)
 - [ ] **D1 Codegen opt range-check 1-instruction:** `(val−MIN) >ᵤ 2M` unsigned-sub trick + fallback `bor` gộp 2 icmp. Cắt nửa instruction mỗi Add/Sub.
