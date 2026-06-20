@@ -28,20 +28,8 @@ impl Checker<'_> {
 
         match node {
             Expr::IntegerLiteral { value, suffix } => {
-                // ADR-0044 Q2: range-check Integer literal (E1036).
-                let is_integer_ty = matches!(suffix, Some(NumericSuffix::Integer) | None);
-                if is_integer_ty {
-                    let max_i128 = triet_core::Integer::MAX.to_i128();
-                    if value > max_i128 || value < -max_i128 {
-                        // Truncation is safe: value already passed i128 range check.
-                        #[allow(clippy::cast_possible_truncation)]
-                        self.errors.push(TypeError::IntegerLiteralOverflow {
-                            value: value as i64,
-                            max: triet_core::Integer::MAX.to_i64(),
-                            span: span.clone(),
-                        });
-                    }
-                }
+                // ADR-0044 Q2 + ADR-0064 §A1.3: range-check by suffix (E1036).
+                self.check_numeric_literal_range(value, suffix, span.clone());
                 match suffix {
                     Some(NumericSuffix::Trit) => Type::Trit,
                     Some(NumericSuffix::Tryte) => Type::Tryte,
@@ -50,15 +38,8 @@ impl Checker<'_> {
                 }
             }
             Expr::TernaryLiteral { value } => {
-                let max_i128 = triet_core::Integer::MAX.to_i128();
-                if value > max_i128 || value < -max_i128 {
-                    #[allow(clippy::cast_possible_truncation)]
-                    self.errors.push(TypeError::IntegerLiteralOverflow {
-                        value: value as i64,
-                        max: triet_core::Integer::MAX.to_i64(),
-                        span: span.clone(),
-                    });
-                }
+                // Balanced-ternary `0t...` literals are `Integer`-typed.
+                self.check_numeric_literal_range(value, None, span.clone());
                 Type::Integer
             }
             Expr::TritLiteral { .. } => Type::Trit,
@@ -1798,7 +1779,13 @@ impl Checker<'_> {
         // compile-time. Closes the §4 debt — a match missing an arm becomes
         // E1026 here instead of relying on the lower GAP-2 runtime trap.
         match &scrutinee_ty {
-            Type::Integer => self.check_integer_exhaustiveness(arms, span.clone()),
+            // Integer/Tryte/Long: impractically-large domains require a `_`
+            // wildcard (ADR-0064 §8 + §A1.2).
+            Type::Integer => {
+                self.check_unbounded_scalar_exhaustiveness(arms, "Integer", span.clone());
+            }
+            Type::Tryte => self.check_unbounded_scalar_exhaustiveness(arms, "Tryte", span.clone()),
+            Type::Long => self.check_unbounded_scalar_exhaustiveness(arms, "Long", span.clone()),
             Type::Trilean { .. } => self.check_trilean_exhaustiveness(arms, span.clone()),
             Type::Trit => self.check_trit_exhaustiveness(arms, span.clone()),
             _ => {}
@@ -1986,14 +1973,21 @@ impl Checker<'_> {
         }
     }
 
-    /// E1026: `Integer` has an infinite domain — a match requires a `_`
-    /// wildcard (or a variable binding) to be exhaustive. ADR-0064 §8.
-    fn check_integer_exhaustiveness(&mut self, arms: &[MatchArm], span: Span) {
+    /// E1026: a scalar with an impractically-large domain — `Integer`
+    /// (infinite), `Tryte` (`19_683` values), `Long` (bignum) — requires a `_`
+    /// wildcard (or a variable binding) to be exhaustive. ADR-0064 §8 (Integer)
+    /// + §A1.2 (Tryte/Long).
+    fn check_unbounded_scalar_exhaustiveness(
+        &mut self,
+        arms: &[MatchArm],
+        type_name: &str,
+        span: Span,
+    ) {
         if self.has_scalar_catch_all(arms) {
             return;
         }
         self.errors.push(TypeError::NonExhaustiveScalarMatch {
-            missing: "Integer match requires a `_` wildcard arm".to_string(),
+            missing: format!("{type_name} match requires a `_` wildcard arm"),
             span,
         });
     }

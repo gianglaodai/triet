@@ -572,27 +572,32 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// E1036: integer literal exceeds `Integer` range (±(3²⁷−1)/2 ≈ ±3.81×10¹²).
+    /// E1036: a numeric literal exceeds the range of its scalar type
+    /// (`Integer` ±(3²⁷−1)/2 ≈ ±3.81×10¹², or `Tryte` ±`9_841`).
     /// Per [ADR-0044] Q2, literals are checked at compile time separately from
-    /// runtime overflow traps.
+    /// runtime overflow traps. [ADR-0064] §A1.3 generalizes the check to
+    /// `Tryte` and to pattern literals (e.g. `9999_tryte =>`).
     ///
     /// [ADR-0044]: ../../../docs/decisions/0044-arithmetic-range-enforcement.md
-    #[error("integer literal `{value}` exceeds `Integer` range (±{max})")]
+    /// [ADR-0064]: ../../../docs/decisions/0064-match-exhaustiveness.md
+    #[error("{type_name} literal `{value}` exceeds `{type_name}` range (±{max})")]
     #[diagnostic(
         code(triet::typecheck::E1036),
         help(
             "Suggested fixes:\n\n\
-            [Fix 1] Use a smaller value within ±3_812_798_742_493 (27-trit Integer range)\n\n\
-            [Fix 2] Use `{value}_long` for 81-trit Long precision"
+            [Fix 1] Use a value within ±{max} (the `{type_name}` range)\n\n\
+            [Fix 2] Use a wider numeric type with an explicit suffix (`_integer` / `_long`)"
         )
     )]
     IntegerLiteralOverflow {
         /// The literal value that exceeds the range.
         value: i64,
-        /// The maximum absolute value allowed for `Integer`.
+        /// The maximum absolute value allowed for the scalar type.
         max: i64,
+        /// The scalar type whose range the literal exceeds (`Integer` / `Tryte`).
+        type_name: String,
         /// Source location of the literal.
-        #[label("literal exceeds `Integer` range")]
+        #[label("literal exceeds `{type_name}` range")]
         span: Span,
     },
 

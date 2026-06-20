@@ -4,8 +4,8 @@ mod exprs;
 mod methods;
 
 use triet_syntax::{
-    Arena, ExprId, FunctionBody, FunctionDefinition, Item, Pattern, PatternId, Program,
-    ReferenceForm, Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
+    Arena, ExprId, FunctionBody, FunctionDefinition, Item, LiteralPattern, NumericSuffix, Pattern,
+    PatternId, Program, ReferenceForm, Span, Spanned, Stmt, StmtId, TypeExpr, TypeId,
 };
 
 use crate::{
@@ -906,7 +906,18 @@ impl<'p> Checker<'p> {
                     self.bind_pattern(*first, scrutinee);
                 }
             }
-            Pattern::Range { .. } | Pattern::Literal(_) => {}
+            Pattern::Range { .. } => {}
+            Pattern::Literal(lit) => {
+                // ADR-0064 §A1.3: pattern literals never pass through
+                // `infer_expression`, so a value-lố (e.g. `9999_tryte =>`)
+                // would slip through. Range-check here — the chokepoint where
+                // pattern literals meet the scrutinee. Shared helper with the
+                // expression side keeps the rule in one place.
+                if let LiteralPattern::Integer { value, suffix } = lit {
+                    let lit_span = self.arena.pattern(id).span.clone();
+                    self.check_numeric_literal_range(value, suffix, lit_span);
+                }
+            }
             Pattern::EnumVariant {
                 variant_name,
                 payload,
@@ -968,6 +979,37 @@ impl<'p> Checker<'p> {
                 }
                 // `~0` has no payload; nothing to bind.
             }
+        }
+    }
+
+    /// ADR-0044 Q2 + ADR-0064 §A1.3: range-check a numeric literal against the
+    /// scalar type named by its suffix, emitting E1036 on overflow. Shared by
+    /// expression literals (`infer_expression`) and pattern literals
+    /// (`bind_pattern`) so a value-lố cannot slip through a `match` arm.
+    /// `Long` range is deferred (bignum value-model, §A1.4); `Trit` literals
+    /// are -1/0/1 validated at parse time.
+    fn check_numeric_literal_range(
+        &mut self,
+        value: i128,
+        suffix: Option<NumericSuffix>,
+        span: Span,
+    ) {
+        let (max, type_name): (i64, &str) = match suffix {
+            Some(NumericSuffix::Tryte) => (triet_core::Tryte::MAX.to_i64(), "Tryte"),
+            Some(NumericSuffix::Integer) | None => (triet_core::Integer::MAX.to_i64(), "Integer"),
+            Some(NumericSuffix::Trit | NumericSuffix::Long) => return,
+        };
+        let max_i128 = i128::from(max);
+        if value > max_i128 || value < -max_i128 {
+            // Truncation is harmless: only the error message carries `value`,
+            // and the literal is already rejected.
+            #[allow(clippy::cast_possible_truncation)]
+            self.errors.push(TypeError::IntegerLiteralOverflow {
+                value: value as i64,
+                max,
+                type_name: type_name.to_string(),
+                span,
+            });
         }
     }
 
