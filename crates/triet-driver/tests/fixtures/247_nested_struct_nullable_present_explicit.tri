@@ -1,0 +1,16 @@
+// EXPECT: 3
+// ADR-0065 §12.7 Lát 3': a `Struct?` FIELD set to `~+ Point{...}` (explicit
+// present). The lowerer lowers the inner `Point` as a PLAIN aggregate (NOT the
+// Outcome path — Bug B: `~+` → OutcomeAlloc on main's non-Outcome return type);
+// the field Assign widens it via case 2. Poison the `~+`-special-case → reverts
+// to OutcomeAlloc → MIR verification error (red).
+struct Point { x: Integer, y: Integer }
+struct Holder { p: Point? }
+
+function main() -> Integer = {
+    let h = Holder { p: ~+ Point { x: 3, y: 4 } };
+    return match h.p {
+        ~+ pt => pt.x,
+        ~0 => -1,
+    };
+}

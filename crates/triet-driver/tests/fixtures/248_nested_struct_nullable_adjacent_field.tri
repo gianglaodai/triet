@@ -1,0 +1,22 @@
+// EXPECT: 1399
+// ⚔ ADR-0065 §12.7 — FIELD-KẾ-CẬN (teeth quan trọng nhất, G dí mắt). A `Point?`
+// sits BETWEEN two scalar fields: `H2 { a: Integer, p: Point?, z: Integer }`.
+// Layout (verify by sizing-fixup + walk, NOT by guess):
+//   a@0 (8) · p@8: Point? = Point.total(16)+8 = 24 → tag@8, x@16, y@24 · z@32 (8)
+//   H2.total = 40
+// The case-2 widen of `p` sets tag@8 and copies Point fields to @16/@24 — if the
+// +8 tag shift or the nested-content copy overran by one word it would trample
+// `z`@32. Reading a/p.x/z together (1*1000 + 3*100 + 99 = 1399) proves the tag
+// word + nested content land exactly inside p's 24-byte span and do NOT touch
+// the adjacent field. A single byte of offset drift changes the total.
+struct Point { x: Integer, y: Integer }
+struct H2 { a: Integer, p: Point?, z: Integer }
+
+function main() -> Integer = {
+    let h = H2 { a: 1, p: ~+ Point { x: 3, y: 4 }, z: 99 };
+    let pv = match h.p {
+        ~+ pt => pt.x,
+        ~0 => -1,
+    };
+    return h.a * 1000 + pv * 100 + h.z;
+}

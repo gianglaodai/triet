@@ -1,0 +1,20 @@
+// EXPECT: 77
+// ADR-0065 §12.7 blind-spot rule (§9): an `Enum?` FIELD set to `~0` — the null
+// face of fixture 249 (present LẪN null, each its own front). `~0` materializes
+// NULL_SENTINEL into the field's disc@0 niche; the match null-check routes to
+// `~0` → 77. Poison the `~0`-field materialize → disc holds a valid-looking
+// variant → present-arm → red.
+enum Color { Red, Green, Blue }
+struct H { c: Color? }
+
+function main() -> Integer = {
+    let h = H { c: ~0 };
+    return match h.c {
+        ~+ col => match col {
+            Red => 0,
+            Green => 5,
+            Blue => 9,
+        },
+        ~0 => 77,
+    };
+}
