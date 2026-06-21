@@ -184,6 +184,35 @@ theo Recon-2: ABI param là by-pointer + `Deinit`-reuse ADR-0042, KHÔNG byte-co
 
 ---
 
+## Tiến độ thi công (Lát 1 — 4 nhát)
+
+- **Nhát 1a (M-1+M-2+KCN-1+STEP 4):** heap-leaf field sizing (String=24/Vector=8/HashMap=8) · B8-relax
+  gate (`ctx_is_copy` đệ quy trên `field_decl_ty`: direct heap leaf ALLOW, transitive + `Nullable(heap)`
+  REFUSE) · inline per-struct static drop-glue (`emit_heap_free_at` walk layout) · fat-store (String field
+  projected dest copy len/cap — hết pass-by-luck UB). Fixtures 256/257 + 3 unit teeth (R-cap/R-leak/R2/R3).
+- **Nhát 1b (arg-move):** `take(p: Person)` whole-move qua boundary — callee by-pointer drop-glue
+  (`copy_base_addr` unify slot-local + param; `emit_heap_free_at` address-based) + caller `Deinit`
+  tombstone (`to_zero` 6 site → `ctx_is_copy`; Deinit struct-walk). LUẬT THÉP ATOMIC: `Deinit` đầu ret_bb.
+  Fixture 258 + counting test (R-callee/R1-deinit/R1-arg, double-free FREE_COUNT==2).
+- **Nhát 1c (assign-move):** `let q = p` true-move (giết pseudo-copy alias) — `is_move_binding` →
+  `ctx_is_copy`; `Deinit(p)` LIỀN SAU move-Assign (ATOMIC). LOWER-ONLY (JIT 0 dòng). Fixture 259 +
+  counting test (R1-assign).
+- **Nhát 1d (LOCK & SEAL):** Vector/HashMap field + struct use-after-move E2420 — mechanism type-generic
+  1a/1b/1c đã phủ, niêm phong bằng fixtures 260/261/262 + counting teeth (R-leak-vec/R-leak-hmap +
+  **isolation scalpel:** poison riêng `is_vec` → Vector leak 0, String CÙNG struct sống 1 — chứng minh
+  drop-glue dispatch per-field-type) + R-e2420. 0 dòng compiler mới.
+
+**Bãi mìn Partial-move (`let s = p.name` móc field heap ra) — KIÊN QUYẾT DEFER Lát 1.x (G chốt 2026-06-22).**
+Borrowck track whole-local move-state, KHÔNG field-level; thêm nữa bị chặn bởi read-side gap (String field
+read → `Unknown` type, chưa lower — cùng gap §12.8 ADR-0065). Không reachable sạch → đụng vào lúc này =
+chọc Typing Inference, nhiễu loạn Trục B. Lát 1 dừng ở ranh giới **whole-local move**.
+
+**✅ Lát 1 (1a+1b+1c+1d) HOÀN TẤT** — heap-leaf field (`String`/`Vector`/`HashMap`) construct + whole-move
+(arg + assign) + inline drop-glue + tombstone + use-after-move E2420: **sound + locked**. Rào B8 thủng cho
+FLAT heap-in-struct; vẫn khóa nested/recursive/enum-payload (Lát 2).
+
+---
+
 **Chữ ký ADR-0066:** O: ✅ (recon Phase 1 + vẽ bản kiến trúc + verify width Vector/HashMap qua shim) ·
 G: ✅ (ký duyệt bản vẽ 2026-06-21 — 3 KCN + cắt scope whole-move + gộp M-1/M-2 vào Lát 1 + khắc LUẬT THÉP
 Atomic). D được phép `rustc` từ điểm này.
