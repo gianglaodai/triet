@@ -851,18 +851,19 @@ impl JitContext {
         Ok(result)
     }
 
-    /// HP.2 / ADR-0066 KCN-1: emit inline free for ONE heap value living at
-    /// `offset` within `slot`. Loads `{ptr@offset, cap@offset+16}` and calls
-    /// the type-appropriate free shim. String → 2-arg free(ptr,cap) (cap is the
+    /// HP.2 / ADR-0066 KCN-1+1b: emit inline free for ONE heap value whose fat
+    /// pointer lives at `addr`. Loads `{ptr@addr+0, cap@addr+16}` and calls the
+    /// type-appropriate free shim. String → 2-arg free(ptr,cap) (cap is the
     /// dealloc-layout source — ADR-0049 Lát 3); Vector/HashMap → 1-arg free(ptr).
-    /// Callers: Outcome drop-glue passes `offset=8` (slot = {disc@0, payload@8},
-    /// String payload {ptr@8, len@16, cap@24}); struct drop-glue passes the
-    /// field's layout offset (String field@0 → ptr@0, cap@16).
+    /// `addr` is a computed memory address (`stack_addr`/`copy_base_addr`), so a
+    /// single helper serves BOTH slot-backed locals AND by-pointer params (1b
+    /// arg-move callee drop-glue). Callers: Outcome drop-glue passes
+    /// `stack_addr(slot, 8)` (slot = {disc@0, payload@8}); struct drop-glue
+    /// passes `copy_base_addr(local, field.offset)`.
     fn emit_heap_free_at(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
-        slot: cranelift_codegen::ir::StackSlot,
-        offset: i32,
+        addr: cranelift_codegen::ir::Value,
         payload_ty: &MirType,
     ) -> Result<(), JitError> {
         if !payload_ty.is_any_heap() {
@@ -880,9 +881,10 @@ impl JitContext {
         let func_id = self.get_or_declare_shim(free_name)?;
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
 
-        let ptr = builder.ins().stack_load(I64, slot, offset);
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        let ptr = builder.ins().load(I64, mem, addr, 0);
         if matches!(payload_ty, MirType::String) {
-            let cap = builder.ins().stack_load(I64, slot, offset + 16);
+            let cap = builder.ins().load(I64, mem, addr, 16);
             builder.ins().call(func_ref, &[ptr, cap]);
         } else {
             builder.ins().call(func_ref, &[ptr]);
@@ -948,12 +950,14 @@ impl JitContext {
 
         // ── free_pos_bb ──
         builder.switch_to_block(free_pos_bb);
-        self.emit_heap_free_at(builder, slot, 8, &value_type)?;
+        let pos_addr = builder.ins().stack_addr(I64, slot, 8);
+        self.emit_heap_free_at(builder, pos_addr, &value_type)?;
         builder.ins().jump(merge_bb, &[]);
 
         // ── free_neg_bb ──
         builder.switch_to_block(free_neg_bb);
-        self.emit_heap_free_at(builder, slot, 8, &error_type)?;
+        let neg_addr = builder.ins().stack_addr(I64, slot, 8);
+        self.emit_heap_free_at(builder, neg_addr, &error_type)?;
         builder.ins().jump(merge_bb, &[]);
 
         // ── noop_bb (Zero / scalar payload) ──
@@ -1353,6 +1357,25 @@ impl JitContext {
                         && layout.name == "String"
                     {
                         builder.ins().stack_store(zero, *slot, 0);
+                    } else if let Some((slot, layout)) = self.struct_slots.get(l)
+                        && layout.fields.iter().any(|f| f.ty.is_any_heap())
+                    {
+                        // ADR-0066 (C): tombstone a heap-struct arg after an
+                        // arg-move. Zero each heap field's ptr@field.offset so the
+                        // caller's later Drop-glue (A) reads ptr=0 → free no-op →
+                        // no double-free (the callee already freed via its
+                        // by-pointer drop-glue). Mirror KCN-1's walk but store 0
+                        // instead of free; cap is left as-is (ptr=0 alone makes
+                        // `__triet_string_free` a no-op).
+                        let slot = *slot;
+                        for f in &layout.fields {
+                            if f.ty.is_any_heap() {
+                                let off = i32::try_from(f.offset).map_err(|_| {
+                                    JitError::Unsupported("struct field offset exceeds i32".into())
+                                })?;
+                                builder.ins().stack_store(zero, slot, off);
+                            }
+                        }
                     } else {
                         builder.def_var(self.var(*l), zero);
                     }
@@ -1692,32 +1715,36 @@ impl JitContext {
                         continue;
                     }
 
-                    // ADR-0066 KCN-1: inline per-struct static drop-glue. A
-                    // struct local with heap-leaf fields (B8 relaxed, Lát 1 FLAT)
-                    // frees each heap field by walking the layout and emitting a
-                    // static free(ptr@field.offset). FLAT one level — M-2 refuses
-                    // transitive/nested heap at construction. The plan is built
-                    // (slot + per-field offset/ty) before the `&mut self` free
-                    // calls so the `struct_slots` borrow is released.
-                    if matches!(ty, MirType::Struct(_)) {
-                        let drop_plan: Option<(
-                            cranelift_codegen::ir::StackSlot,
-                            Vec<(usize, MirType)>,
-                        )> = self.struct_slots.get(local).map(|(slot, layout)| {
-                            let heap_fields = layout
-                                .fields
-                                .iter()
-                                .filter(|f| f.ty.is_any_heap())
-                                .map(|f| (f.offset, f.ty.clone()))
-                                .collect();
-                            (*slot, heap_fields)
-                        });
-                        if let Some((slot, heap_fields)) = drop_plan {
+                    // ADR-0066 KCN-1 (1a) + 1b: inline per-struct static
+                    // drop-glue. A struct local with heap-leaf fields (B8 relaxed,
+                    // Lát 1 FLAT) frees each heap field by walking the layout. The
+                    // field address comes from `copy_base_addr`, which unifies
+                    // slot-backed locals (1a, `stack_addr`) AND by-pointer params
+                    // (1b arg-move callee, `use_var` pointer) — so the SAME branch
+                    // serves both. FLAT one level — M-2 refuses transitive/nested
+                    // heap at construction. The plan (per-field offset/ty) is built
+                    // before the `&mut self` free calls so the `struct_layouts`
+                    // borrow is released.
+                    if let MirType::Struct(name) = ty {
+                        let heap_fields: Vec<(usize, MirType)> = body
+                            .struct_layouts
+                            .iter()
+                            .find(|l| &l.name == name)
+                            .map(|l| {
+                                l.fields
+                                    .iter()
+                                    .filter(|f| f.ty.is_any_heap())
+                                    .map(|f| (f.offset, f.ty.clone()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if !heap_fields.is_empty() {
                             for (offset, fty) in heap_fields {
                                 let off = i32::try_from(offset).map_err(|_| {
                                     JitError::Unsupported("struct field offset exceeds i32".into())
                                 })?;
-                                self.emit_heap_free_at(builder, slot, off, &fty)?;
+                                let addr = self.copy_base_addr(builder, *local, off);
+                                self.emit_heap_free_at(builder, addr, &fty)?;
                             }
                             continue;
                         }
