@@ -534,6 +534,13 @@ pub fn lower_program(
                                 .unwrap_or(f.size),
                             _ => f.size,
                         },
+                        // ADR-0066 M-1: heap LEAF field width (fat-pointer cache
+                        // in the StackSlot). String = {ptr@0, len@8, cap@16} =
+                        // 24B; Vector/HashMap = thin handle {ptr@0} = 8B (len/cap
+                        // live in the heap header). Mis-sizing → byte-copy stomps
+                        // the adjacent field / drop-glue frees garbage (R-table).
+                        MirType::String => 24,
+                        MirType::Vector | MirType::HashMap => 8,
                         _ => f.size,
                     };
                     (f.name.clone(), f.ty.clone(), size, f.alignment)
@@ -981,6 +988,37 @@ fn lower_type(
 ///
 /// TECH-DEBT(B1a S3): merge with `lower_type` when the helper chain is refactored
 /// to carry `struct_names`/`enum_names` uniformly.
+/// ADR-0066 M-2: Copy classification at construction time, using the lowering
+/// `Ctx`'s layout maps (the `Body` is not built yet, so `MirType::is_copy(None)`
+/// — which ASSUMES `Struct`/`Enum` are Copy — would leak transitive heap).
+/// Recurses through `c.struct_layouts` / `c.enum_layouts`; refuse-over-guess on
+/// unknown types (→ Move). Direct heap leaves (`String`/`Vector`/`HashMap`) are
+/// Move; scalars/`Reference`/`Outcome`-of-Copy are Copy.
+fn ctx_is_copy(ty: &MirType, c: &Ctx) -> bool {
+    match ty {
+        MirType::Nullable(inner) => ctx_is_copy(inner, c),
+        MirType::String | MirType::Vector | MirType::HashMap => false,
+        MirType::Outcome {
+            value_type,
+            error_type,
+            ..
+        } => ctx_is_copy(value_type, c) && ctx_is_copy(error_type, c),
+        MirType::Struct(name) | MirType::Enum(name) => {
+            if let Some(s) = c.struct_layouts.get(name.as_str()) {
+                return s.fields.iter().all(|f| ctx_is_copy(&f.ty, c));
+            }
+            if let Some(e) = c.enum_layouts.get(name.as_str()) {
+                return e
+                    .variants
+                    .iter()
+                    .all(|v| v.payload.as_ref().is_none_or(|p| ctx_is_copy(&p.ty, c)));
+            }
+            false // unknown type → Move (refuse-over-guess)
+        }
+        _ => true, // scalars, Reference — Copy
+    }
+}
+
 fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
     match &arena.type_expression(id).node {
         TypeExpr::Named(n) => match n.as_str() {
@@ -2994,11 +3032,27 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 } else {
                     lower_expr(*field_expr, arena, c)?
                 };
-                // B8: aggregate-containing-heap — struct field with Move type not supported.
+                // ADR-0066 M-2: B8 relaxed for FLAT direct heap leaf. A direct
+                // heap-leaf field (declared exactly `String`/`Vector`/`HashMap`)
+                // is now ALLOWED — KCN-1 inline drop-glue frees it on scope exit.
+                // Still REFUSED: a Struct/Enum field (transitively) containing
+                // heap (→ Lát 2 recursive) and a `Nullable(heap)` field (heap-
+                // nullable, ADR-0062 — NOT Lát 1). Decide on the DECLARED field
+                // type, NOT the lowered value type: the `~+` redirect above
+                // strips `String?` → plain `String` in the value, but the field
+                // is still heap-nullable. `ctx_is_copy` consults the layout maps
+                // (NOT `is_copy(None)`, which assumes Struct/Enum Copy → leaks
+                // transitive heap). Scalars / Nullable(scalar) / Copy-aggregates
+                // pass.
                 let field_ty = &c.local_decls[field_val.0].ty;
-                if !field_ty.is_copy(None) {
+                let decl_ty = field_decl_ty.as_ref().unwrap_or(field_ty);
+                let is_direct_heap_leaf = matches!(
+                    decl_ty,
+                    MirType::String | MirType::Vector | MirType::HashMap
+                );
+                if !is_direct_heap_leaf && !ctx_is_copy(decl_ty, c) {
                     return Err(LowerError::heap_type_not_supported(
-                        &format!("struct `{struct_name}` field `{field_name}` type `{field_ty}`"),
+                        &format!("struct `{struct_name}` field `{field_name}` type `{decl_ty}`"),
                         expr_span,
                     ));
                 }
