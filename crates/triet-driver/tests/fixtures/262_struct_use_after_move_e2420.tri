@@ -1,0 +1,14 @@
+// ERROR: E2420
+// ADR-0066 Lát 1 nhát 1d (LOCK & SEAL): use-after-move of a heap-struct must
+// fire E2420. `let q = p` moves the heap-struct (1c true-move); the subsequent
+// `let r = p` reads a moved-out value → borrowck (whole-local move-track,
+// type-agnostic) rejects with E2420. LOCKS the safety net: poison the borrowck
+// move-check → this compiles instead of erroring → fixture red.
+struct Person { name: String }
+
+function main() -> Integer = {
+    let p = Person { name: "Giang" };
+    let q = p;
+    let r = p;
+    return 0;
+}

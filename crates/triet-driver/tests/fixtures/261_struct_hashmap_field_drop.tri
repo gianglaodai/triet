@@ -1,0 +1,11 @@
+// EXPECT: 0
+// ADR-0066 Lát 1 nhát 1d (LOCK & SEAL): a struct with a HashMap<Integer,Integer>
+// heap field — construct + drop. Same type-generic machinery (emit_heap_free_at
+// → __triet_hashmap_free, 1-arg thin handle). LOCKS the HashMap field path; the
+// counting teeth prove the map is freed exactly once on scope exit.
+struct Cache { m: HashMap<Integer, Integer> }
+
+function main() -> Integer = {
+    let c = Cache { m: insert(hashmap_new(), 1, 100) };
+    return 0;
+}

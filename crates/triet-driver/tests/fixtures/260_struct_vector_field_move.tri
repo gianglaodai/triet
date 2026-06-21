@@ -1,0 +1,17 @@
+// EXPECT: 0
+// ADR-0066 Lát 1 nhát 1d (LOCK & SEAL): a struct with a Vector<Integer> heap
+// field — construct, whole-move across a boundary, drop. The type-generic 1a/1b
+// machinery (is_any_heap drop-glue, emit_heap_free_at → __triet_vector_free,
+// ctx_is_copy false for Vector, whole-local move-track) already covers this; this
+// fixture LOCKS it. take(b) moves Bag → callee frees items, caller tombstones →
+// FREE_COUNT==1 (the counting teeth prove no leak; a double-free would SIGABRT).
+struct Bag { items: Vector<Integer> }
+
+function take(b: Bag) -> Integer = {
+    return 0
+}
+
+function main() -> Integer = {
+    let b = Bag { items: push(vector_new(), 1) };
+    return take(b);
+}
