@@ -1,0 +1,17 @@
+// EXPECT: 0
+// ADR-0066 Lát 1 nhát 1b (WO-1b): whole-struct ARG-MOVE across a function
+// boundary. `take(p)` moves `Person{name:String}` by pointer. The callee frees
+// `name` via its by-pointer drop-glue (A); the caller tombstones `p` with a
+// Deinit right after the call (B+C) so main's scope-end Drop(p) reads ptr=0 →
+// free no-op → NO double-free. Real string_free runs: a double-free would
+// SIGABRT, so EXPECT 0 pins FREE_COUNT==1 (callee frees once, caller no-ops).
+struct Person { name: String }
+
+function take(p: Person) -> Integer = {
+    return 0
+}
+
+function main() -> Integer = {
+    let p = Person { name: "Giang" };
+    return take(p);
+}
