@@ -84,26 +84,33 @@ Bộ nhớ & lifetime (StackSlot 24B mỗi struct local; String free shim đã n
                        │
                        └── owns heap H
 
-(B) MOVE  take(p)
-    B.1 byte-copy 24B  p.slot → take's param slot (sret/pointer ABI)
-        take.slot:   [ ptr=H | len=5 | cap=C ]     ← cùng con trỏ H (alias tạm)
-    B.2 TOMBSTONE (KCN-2): emit `store 0 → p.slot.ptr@0`
-        p.slot (main):  [ ptr=0 | len=5 | cap=C ]  ← vô hiệu hóa, KHÔNG còn own H
-        take.slot:      [ ptr=H | ... ]            ← chủ sở hữu DUY NHẤT của H
+(B) MOVE  take(p)   ── ABI THẬT: pass-by-pointer (ADR-0049), KHÔNG byte-copy 24B ở call ──
+    B.1 PASS-BY-POINTER: call take(&p.slot)  → callee đọc p qua con trỏ (cùng vùng nhớ main)
+        callee NHẬN QUYỀN sở hữu (Move param, lib.rs:758 push_owned cho non-ref type)
+    B.2 (xảy ra TRONG call, tại C) callee Drop(p) ở End-of-Scope → free(H)
+    B.3 TOMBSTONE sau return: caller nã `Statement::Deinit(p)` (ADR-0042 Q1, lib.rs:2409)
+        → zero ptr@name+0 trong p.slot CỦA MAIN
+        p.slot (main):  [ ptr=0 | len=5 | cap=C ]  ← vô hiệu, Drop(main.p) sau sẽ no-op
 
-(C) take SCOPE END → Drop(take.p)  [inline drop-glue KCN-1]
+(C) take SCOPE END → Drop(take.p)  [inline drop-glue KCN-1, đọc qua con trỏ param]
         walk Person layout → field name:String @0
         load ptr@0 = H (≠0) → __triet_string_free(H, C)   → heap H giải phóng (1 lần)
 
 (D) main SCOPE END → Drop(main.p)  [inline drop-glue KCN-1]
         walk Person layout → field name:String @0
-        load ptr@0 = 0 (tombstoned) → __triet_string_free(0, C) = NO-OP
+        load ptr@0 = 0 (tombstoned B.3) → __triet_string_free(0, C) = NO-OP
         → KHÔNG double-free ✓
 ```
 
 **Bất biến soundness (BI):** mỗi heap allocation có **đúng 1** owner-slot với ptr≠0 tại mọi điểm CFG.
-Move chuyển quyền bằng cặp `byte-copy + tombstone-source` ATOMIC (cùng basic block, không có điểm CFG
-xen giữa). Drop-glue free ⟺ ptr≠0. Tombstone (ptr=0) + free-null-safe = no-op idempotent.
+Hai dạng move:
+- **Arg-move (by-pointer, `take(p)`):** callee Drop-glue (TRONG call) + caller `Deinit`-tombstone NGAY
+  sau return. LUẬT THÉP: KHÔNG panic/CFG-branch xen giữa call-return và `Deinit`.
+- **Assign-move (`let q = p`):** byte-copy slot→slot (mir_lower.rs:1510) + tombstone-source ATOMIC cùng
+  basic-block (KCN-2 literal). LUẬT THÉP: KHÔNG xen giữa copy và tombstone.
+
+Drop-glue free ⟺ ptr≠0. Tombstone (ptr=0) + free-null-safe = no-op idempotent. (Diagram amend 2026-06-21
+theo Recon-2: ABI param là by-pointer + `Deinit`-reuse ADR-0042, KHÔNG byte-copy ở call như bản vẽ gốc.)
 
 ### Phạm vi Lát 1 (khoanh CHẶT)
 | Trong scope | Ngoài scope (defer) |
