@@ -322,4 +322,4 @@ luồng GHI.
 construction đóng trọn (top-level + field, scalar + aggregate). `~+` thuần Outcome (`T~E`/`T?~E`) KHÔNG đổi
 hành vi (annotation non-Nullable → redirect không kích → lower `OutcomeConstructor` bình thường).
 
-**Chữ ký §12.8:** (chờ O verify máu + ký; G ký đóng — D KHÔNG tự điền)
+**Chữ ký §12.8:** O: ✅ (verify máu — P1/P2/P3 đỏ độc lập, mỗi ngã rẽ một răng; gate `0·0·250·0`; diff lowerer-only sạch; B8 2-lớp nguyên) · G: ✅ (ký đóng 2026-06-21 — WO-~+-NULLABLE-UNIFY).
