@@ -2422,7 +2422,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         if ty.is_reference() {
                             return false;
                         }
-                        !ty.is_copy(None)
+                        !ctx_is_copy(ty, c)
                     })
                     .copied()
                     .collect();
@@ -2464,7 +2464,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         if ty.is_reference() {
                             return false;
                         }
-                        !ty.is_copy(None)
+                        !ctx_is_copy(ty, c)
                     })
                     .copied()
                     .collect();
@@ -2506,7 +2506,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         if ty.is_reference() {
                             return false;
                         }
-                        !ty.is_copy(None)
+                        !ctx_is_copy(ty, c)
                     })
                     .copied()
                     .collect();
@@ -4301,7 +4301,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             if ty.is_reference() {
                                 return false;
                             }
-                            !ty.is_copy(None)
+                            !ctx_is_copy(ty, c)
                         })
                         .copied()
                         .collect();
@@ -4342,7 +4342,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             if ty.is_reference() {
                                 return false;
                             }
-                            !ty.is_copy(None)
+                            !ctx_is_copy(ty, c)
                         })
                         .copied()
                         .collect();
@@ -4384,7 +4384,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             if ty.is_reference() {
                                 return false;
                             }
-                            !ty.is_copy(None)
+                            !ctx_is_copy(ty, c)
                         })
                         .copied()
                         .collect();
