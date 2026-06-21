@@ -1,0 +1,13 @@
+// EXPECT: 0
+// ADR-0066 Lát 1 (WO-1a): FLAT heap-in-struct — construct a `struct Person {
+// name: String }` and drop it at scope end. M-1 sizes the slot 24B (String fat
+// pointer); M-2 allows the direct heap-leaf field; KCN-1 inline drop-glue frees
+// name@0 exactly once on scope exit (no move yet). Real string_free shim runs —
+// a garbage cap would corrupt the heap / abort, so EXPECT 0 pins store+free
+// consistency, not just "compiles".
+struct Person { name: String }
+
+function main() -> Integer = {
+    let p = Person { name: "Giang" };
+    return 0;
+}

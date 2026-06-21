@@ -1,0 +1,14 @@
+// ERROR: heap types (String, Vector, HashMap) are not yet supported
+// ADR-0066 KCN-3 / R3: Lát 1 is FLAT only. A struct whose field is ANOTHER
+// struct that (transitively) contains heap (`Outer { inner: Inner }`, Inner has
+// a String) must be REFUSED at construction → Lát 2. M-2's ctx_is_copy walks
+// the layout: Inner is not Copy (its String field), and `inner` is not a direct
+// heap leaf, so the Outer construction refuses. (The Inner literal itself is a
+// direct heap leaf → allowed; only the nesting one level up is refused.)
+struct Inner { name: String }
+struct Outer { inner: Inner }
+
+function main() -> Integer = {
+    let o = Outer { inner: Inner { name: "x" } };
+    return 0;
+}
