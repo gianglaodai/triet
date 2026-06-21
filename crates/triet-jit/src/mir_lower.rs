@@ -851,14 +851,18 @@ impl JitContext {
         Ok(result)
     }
 
-    /// HP.2: emit inline free for one arm of a heap Outcome drop glue.
-    /// Loads the payload's {ptr, cap} from the Outcome slot and calls
-    /// the type-appropriate free shim. String → 2-arg free(ptr,cap);
-    /// Vector/HashMap → 1-arg free(ptr).
-    fn emit_outcome_payload_free(
+    /// HP.2 / ADR-0066 KCN-1: emit inline free for ONE heap value living at
+    /// `offset` within `slot`. Loads `{ptr@offset, cap@offset+16}` and calls
+    /// the type-appropriate free shim. String → 2-arg free(ptr,cap) (cap is the
+    /// dealloc-layout source — ADR-0049 Lát 3); Vector/HashMap → 1-arg free(ptr).
+    /// Callers: Outcome drop-glue passes `offset=8` (slot = {disc@0, payload@8},
+    /// String payload {ptr@8, len@16, cap@24}); struct drop-glue passes the
+    /// field's layout offset (String field@0 → ptr@0, cap@16).
+    fn emit_heap_free_at(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         slot: cranelift_codegen::ir::StackSlot,
+        offset: i32,
         payload_ty: &MirType,
     ) -> Result<(), JitError> {
         if !payload_ty.is_any_heap() {
@@ -876,9 +880,9 @@ impl JitContext {
         let func_id = self.get_or_declare_shim(free_name)?;
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
 
-        let ptr = builder.ins().stack_load(I64, slot, 8);
+        let ptr = builder.ins().stack_load(I64, slot, offset);
         if matches!(payload_ty, MirType::String) {
-            let cap = builder.ins().stack_load(I64, slot, 24);
+            let cap = builder.ins().stack_load(I64, slot, offset + 16);
             builder.ins().call(func_ref, &[ptr, cap]);
         } else {
             builder.ins().call(func_ref, &[ptr]);
@@ -944,12 +948,12 @@ impl JitContext {
 
         // ── free_pos_bb ──
         builder.switch_to_block(free_pos_bb);
-        self.emit_outcome_payload_free(builder, slot, &value_type)?;
+        self.emit_heap_free_at(builder, slot, 8, &value_type)?;
         builder.ins().jump(merge_bb, &[]);
 
         // ── free_neg_bb ──
         builder.switch_to_block(free_neg_bb);
-        self.emit_outcome_payload_free(builder, slot, &error_type)?;
+        self.emit_heap_free_at(builder, slot, 8, &error_type)?;
         builder.ins().jump(merge_bb, &[]);
 
         // ── noop_bb (Zero / scalar payload) ──
@@ -1570,6 +1574,31 @@ impl JitContext {
                                     builder.ins().stack_store(src_cap, *dest_slot, 16);
                                 }
                             }
+                            // ADR-0066 STEP 4: a String VALUE stored into a
+                            // PROJECTED struct field must copy the FULL fat
+                            // pointer. `store_place` above wrote only ptr@dest_off
+                            // (one i64); copy len@+8 / cap@+16 from the source
+                            // String slot so the inline drop-glue (KCN-1) frees
+                            // with the REAL cap — without this, cap@+16 is
+                            // uninitialized stack garbage → `__triet_string_free`
+                            // is UB (panics on negative/huge cap). String-ONLY:
+                            // Vector/HashMap are 8B thin handles (no len/cap in
+                            // the slot). Reuses the dest_ty/dest_off from the
+                            // walk above; reads src BEFORE M1 zeroing (which only
+                            // touches src@0).
+                            if !dest.projection.is_empty()
+                                && matches!(dest_ty, MirType::String)
+                                && let Some((dest_slot, _)) = self.struct_slots.get(&dest.local)
+                                && source.projection.is_empty()
+                                && let Some((src_slot, _)) = self.struct_slots.get(&source.local)
+                            {
+                                let src_len = builder.ins().stack_load(I64, *src_slot, 8);
+                                let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
+                                builder.ins().stack_store(src_len, *dest_slot, dest_off + 8);
+                                builder
+                                    .ins()
+                                    .stack_store(src_cap, *dest_slot, dest_off + 16);
+                            }
                             // M1: Zeroing-on-Move — if source is a plain local of Move type,
                             // store 0 into it so Drop becomes a no-op.
                             let source_is_plain = source.projection.is_empty();
@@ -1661,6 +1690,37 @@ impl JitContext {
                     // Assign leak-guard via `emit_outcome_drop_glue`.
                     if self.emit_outcome_drop_glue(builder, body, *local)? {
                         continue;
+                    }
+
+                    // ADR-0066 KCN-1: inline per-struct static drop-glue. A
+                    // struct local with heap-leaf fields (B8 relaxed, Lát 1 FLAT)
+                    // frees each heap field by walking the layout and emitting a
+                    // static free(ptr@field.offset). FLAT one level — M-2 refuses
+                    // transitive/nested heap at construction. The plan is built
+                    // (slot + per-field offset/ty) before the `&mut self` free
+                    // calls so the `struct_slots` borrow is released.
+                    if matches!(ty, MirType::Struct(_)) {
+                        let drop_plan: Option<(
+                            cranelift_codegen::ir::StackSlot,
+                            Vec<(usize, MirType)>,
+                        )> = self.struct_slots.get(local).map(|(slot, layout)| {
+                            let heap_fields = layout
+                                .fields
+                                .iter()
+                                .filter(|f| f.ty.is_any_heap())
+                                .map(|f| (f.offset, f.ty.clone()))
+                                .collect();
+                            (*slot, heap_fields)
+                        });
+                        if let Some((slot, heap_fields)) = drop_plan {
+                            for (offset, fty) in heap_fields {
+                                let off = i32::try_from(offset).map_err(|_| {
+                                    JitError::Unsupported("struct field offset exceeds i32".into())
+                                })?;
+                                self.emit_heap_free_at(builder, slot, off, &fty)?;
+                            }
+                            continue;
+                        }
                     }
 
                     // Regular heap types: call free shim.
@@ -4472,6 +4532,272 @@ mod tests {
             HP2_FREE_COUNT.load(Ordering::SeqCst),
             1,
             "HP.2: Outcome<String,Integer> drop (Positive arm) must free exactly once"
+        );
+    }
+
+    /// ADR-0066 KCN-1: counting-only free for the FLAT struct drop-glue tests.
+    static LAT1A_FREE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __lat1a_count_free(ptr: i64, cap: i64) {
+        let _ = (ptr, cap);
+        LAT1A_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    static LAT1A_MULTI_FREE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __lat1a_multi_count_free(ptr: i64, cap: i64) {
+        let _ = (ptr, cap);
+        LAT1A_MULTI_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// ADR-0066 KCN-1: `struct Person { name: String }` construct + Drop frees
+    /// the heap field exactly once (inline static drop-glue walks the layout).
+    /// Poison R-leak (skip the `emit_heap_free_at` in the struct drop branch) →
+    /// `FREE_COUNT == 0`.
+    #[test]
+    #[allow(unsafe_code)]
+    fn lat1a_struct_drop_frees_once() {
+        use std::sync::atomic::Ordering;
+
+        LAT1A_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("lat1a_person", MirType::Unit);
+        // M-1 layout: name@0, String = 24B.
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Person",
+            &[("name".to_string(), MirType::String, 24, 8)],
+        ));
+
+        let bb0 = b.new_block();
+        let p = b.new_local();
+        b.set_local_mir_type(p, MirType::Struct("Person".to_string()));
+        b.push(bb0, storage_live(p));
+        b.push(
+            bb0,
+            Statement::StructAlloc {
+                dest: p,
+                struct_name: "Person".to_string(),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Store a non-zero ptr into name@0 (so the drop-glue reads ptr != 0).
+        let ptr_tmp = b.new_local();
+        b.push(bb0, storage_live(ptr_tmp));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(ptr_tmp),
+                value: ConstValue::Integer(1),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(p).project(Projection::Field("name".to_string())),
+                source: Place::local(ptr_tmp),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        b.push(bb0, Statement::Drop(p, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        let shims = &[ShimSymbol::fn_2_0(
+            "__triet_string_free",
+            __lat1a_count_free,
+        )];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("lat1a struct drop compile");
+        LAT1A_FREE_COUNT.store(0, Ordering::SeqCst);
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            LAT1A_FREE_COUNT.load(Ordering::SeqCst),
+            1,
+            "ADR-0066: struct with one heap field must free it exactly once on Drop"
+        );
+    }
+
+    /// ADR-0066 KCN-1 / R2: `struct Pair { a: String, b: String }` Drop frees
+    /// BOTH heap fields (drop-glue walks every heap field). Poison R2 (walk only
+    /// the first field) → `FREE_COUNT == 1 < 2`.
+    #[test]
+    #[allow(unsafe_code)]
+    fn lat1a_multi_heap_field_frees_all() {
+        use std::sync::atomic::Ordering;
+
+        LAT1A_MULTI_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("lat1a_pair", MirType::Unit);
+        // M-1 layout: a@0, b@24, each String = 24B.
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Pair",
+            &[
+                ("a".to_string(), MirType::String, 24, 8),
+                ("b".to_string(), MirType::String, 24, 8),
+            ],
+        ));
+
+        let bb0 = b.new_block();
+        let p = b.new_local();
+        b.set_local_mir_type(p, MirType::Struct("Pair".to_string()));
+        b.push(bb0, storage_live(p));
+        b.push(
+            bb0,
+            Statement::StructAlloc {
+                dest: p,
+                struct_name: "Pair".to_string(),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Store distinct non-zero ptrs into a@0 and b@24.
+        for (field, ptr_val) in [("a", 1i128), ("b", 2i128)] {
+            let tmp = b.new_local();
+            b.push(bb0, storage_live(tmp));
+            b.push(
+                bb0,
+                Statement::Const {
+                    dest: Place::local(tmp),
+                    value: ConstValue::Integer(ptr_val),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(p).project(Projection::Field(field.to_string())),
+                    source: Place::local(tmp),
+                    span: DUMMY_SPAN,
+                },
+            );
+        }
+
+        b.push(bb0, Statement::Drop(p, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        let shims = &[ShimSymbol::fn_2_0(
+            "__triet_string_free",
+            __lat1a_multi_count_free,
+        )];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("lat1a pair drop compile");
+        LAT1A_MULTI_FREE_COUNT.store(0, Ordering::SeqCst);
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            LAT1A_MULTI_FREE_COUNT.load(Ordering::SeqCst),
+            2,
+            "ADR-0066: struct with two heap fields must free BOTH on Drop"
+        );
+    }
+
+    /// ADR-0066 STEP 5 (R-cap): the cap the drop-glue passes to
+    /// `__triet_string_free` for a struct String field must be the REAL cap
+    /// (here 5 for "Giang"), not uninitialized stack garbage. Records the cap
+    /// and asserts == 5. Poison STEP 4 (drop the `cap@dest_off+16` copy) →
+    /// drop-glue reads garbage → cap != 5 → RED. This is the ONLY teeth that
+    /// catches the latent `__triet_string_free` UB (the counting shims ignore
+    /// cap). Records-only (no real dealloc) so a poisoned garbage cap fails the
+    /// assert deterministically instead of crashing.
+    static RCAP_SEEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __rcap_record_free(ptr: i64, cap: i64) {
+        if ptr == 0 || ptr == triet_mir::NULL_SENTINEL {
+            return;
+        }
+        RCAP_SEEN.store(cap, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn lat1a_struct_field_cap_preserved() {
+        use std::sync::atomic::Ordering;
+
+        RCAP_SEEN.store(-1, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("lat1a_cap", MirType::Unit);
+        // String layout (for the source String local's slot pre-allocation).
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "String",
+            &[
+                ("ptr".to_string(), MirType::Integer, 8, 8),
+                ("len".to_string(), MirType::Integer, 8, 8),
+                ("cap".to_string(), MirType::Integer, 8, 8),
+            ],
+        ));
+        // Person layout: name@0, String = 24B (M-1).
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Person",
+            &[("name".to_string(), MirType::String, 24, 8)],
+        ));
+
+        let bb0 = b.new_block();
+        let p = b.new_local();
+        b.set_local_mir_type(p, MirType::Struct("Person".to_string()));
+        b.push(bb0, storage_live(p));
+        b.push(
+            bb0,
+            Statement::StructAlloc {
+                dest: p,
+                struct_name: "Person".to_string(),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Source String "Giang" → slot {ptr, len=5, cap=5}.
+        let s = b.new_local();
+        b.set_local_mir_type(s, MirType::String);
+        b.push(bb0, storage_live(s));
+        b.push(
+            bb0,
+            Statement::Const {
+                dest: Place::local(s),
+                value: ConstValue::String("Giang".into()),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // Construct: p.name = move s (STEP 4 copies len/cap into the field slot).
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(p).project(Projection::Field("name".to_string())),
+                source: Place::local(s),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        b.push(bb0, Statement::Drop(p, DUMMY_SPAN));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        let shims = &[
+            ShimSymbol::fn_2_1(
+                "__triet_string_from_bytes",
+                super::__triet_string_from_bytes,
+            ),
+            ShimSymbol::fn_2_0("__triet_string_free", __rcap_record_free),
+        ];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("lat1a cap-preserve compile");
+        RCAP_SEEN.store(-1, Ordering::SeqCst);
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            RCAP_SEEN.load(Ordering::SeqCst),
+            5,
+            "ADR-0066 STEP 4: struct String field drop must free with the REAL \
+             cap (5 for \"Giang\"), not stack garbage"
         );
     }
 
