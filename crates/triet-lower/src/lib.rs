@@ -1306,13 +1306,18 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         c.local_decls[v.0].ty = ann_ty;
                     }
                 }
-                // M2: If init is an Identifier of a Move type, emit Assign + new local
-                // instead of aliasing. This creates a genuine move-site so JIT's
-                // Zeroing-on-Move (M1) can zero the source variable.
+                // M2 + ADR-0066 1c: If init is an Identifier of a Move type,
+                // emit Assign + new local instead of aliasing. This creates a
+                // genuine move-site so JIT's Zeroing-on-Move (M1) can zero the
+                // source variable. Use `ctx_is_copy` (recurses the layout maps),
+                // NOT `is_copy(None)` (assumes Struct/Enum Copy → a heap-struct
+                // `let q = p` would alias = pseudo-copy, p usable after move).
+                // Clone the type first to release the `c.local_decls` borrow
+                // before the `&c` call.
                 let is_move_binding =
                     if let Expr::Identifier { name: _ } = &arena.expression(*init).node {
-                        let ty = &c.local_decls[v.0].ty;
-                        !ty.is_copy(None)
+                        let ty = c.local_decls[v.0].ty.clone();
+                        !ctx_is_copy(&ty, c)
                     } else {
                         false
                     };
@@ -1323,6 +1328,13 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         source: Place::local(v),
                         span: stmt_span.clone(),
                     });
+                    // ADR-0066 1c (D2): tombstone the source RIGHT AFTER the
+                    // move-Assign — ATOMIC, same basic block, no statement
+                    // between. The JIT's Deinit struct-walk (1b/C) zeros the
+                    // source's heap-field ptrs → its scope-end Drop is a no-op →
+                    // no double-free. (For String, Deinit zeros the slot ptr;
+                    // unchanged from the existing String move-binding path.)
+                    c.push(Statement::Deinit(v, stmt_span.clone()));
                     c.vars.insert(name.clone(), new_local);
                     c.local_names.insert(new_local, name.clone());
                     c.push_owned(new_local);
