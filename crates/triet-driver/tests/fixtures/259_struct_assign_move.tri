@@ -1,0 +1,16 @@
+// EXPECT: 5
+// ADR-0066 Lát 1 nhát 1c (WO-1c): ASSIGN-MOVE `let q = p` for a heap-struct.
+// `p` is moved into `q` (true-move, NOT pseudo-copy alias): the lowerer emits
+// Assign{q←p} + Deinit(p) atomically (same BB). At scope end, Drop(p) reads
+// the tombstoned name ptr=0 → free no-op; Drop(q) frees the String once.
+// Observable: `q.age` (scalar field) = 5 proves the whole slot transferred to q.
+// (Reading the String field `q.name` is the deferred read-side gap; the scalar
+// field is readable and suffices to prove the move.) Real string_free runs — a
+// double-free would SIGABRT.
+struct Person { name: String, age: Integer }
+
+function main() -> Integer = {
+    let p = Person { name: "Giang", age: 5 };
+    let q = p;
+    return q.age;
+}
