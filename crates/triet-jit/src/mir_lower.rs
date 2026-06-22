@@ -1017,6 +1017,82 @@ impl JitContext {
         Ok(true)
     }
 
+    /// ADR-0067 2b-2: emit tag-switch drop-glue for an enum `local`. Reads the
+    /// discriminant (disc@0) and, via a `brif` chain over the layout's variants,
+    /// frees ONLY the heap payload of the ACTIVE variant (never touches the
+    /// inactive variants' garbage). Scalar/unit variants emit no arm. Returns
+    /// `true` if `local` is an enum (so the `Statement::Drop` caller knows it was
+    /// handled), `false` otherwise. Generalizes `emit_outcome_drop_glue` (2-arm)
+    /// to N-arm. Payload lives at `payload_offset` (8 in Bậc A); `emit_heap_free_at`
+    /// reads `{ptr@off, cap@off+16}` (String) or `{ptr@off}` (Vector/HashMap).
+    fn emit_enum_drop_glue(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        local: Local,
+    ) -> Result<bool, JitError> {
+        let MirType::Enum(name) = &body.local_decls[local.0].ty else {
+            return Ok(false);
+        };
+        let name = name.clone();
+        // Clone (disc_value, payload_ty) for heap-payload variants before the
+        // `&mut self` free calls (releases the `body` borrow).
+        let heap_variants: Vec<(i64, MirType)> = {
+            let layout = body
+                .enum_layouts
+                .iter()
+                .find(|e| e.name == name)
+                .ok_or_else(|| {
+                    JitError::Unsupported(format!("enum Drop without layout: {name}"))
+                })?;
+            layout
+                .variants
+                .iter()
+                .filter_map(|v| {
+                    v.payload
+                        .as_ref()
+                        .filter(|p| p.ty.is_any_heap())
+                        .map(|p| (v.discriminant_value, p.ty.clone()))
+                })
+                .collect()
+        };
+        if heap_variants.is_empty() {
+            // Scalar/unit enum — nothing to free (a Copy enum never reaches here
+            // anyway: the Drop handler's is_copy check skips it).
+            return Ok(true);
+        }
+        let slot = self
+            .enum_slots
+            .get(&local)
+            .ok_or_else(|| JitError::Unsupported("enum Drop without slot".into()))?
+            .0;
+        let payload_off: i32 = 8; // payload_offset, Bậc A
+        let disc = builder.ins().stack_load(I64, slot, 0);
+        let merge_bb = builder.create_block();
+
+        for (disc_value, payload_ty) in heap_variants {
+            let arm_bb = builder.create_block();
+            let next_bb = builder.create_block();
+            let dv = builder.ins().iconst(I64, disc_value);
+            let is_match = builder.ins().icmp(IntCC::Equal, disc, dv);
+            builder.ins().brif(is_match, arm_bb, &[], next_bb, &[]);
+            // ── arm: free THIS variant's heap payload ──
+            builder.switch_to_block(arm_bb);
+            builder.seal_block(arm_bb);
+            let addr = builder.ins().stack_addr(I64, slot, payload_off);
+            self.emit_heap_free_at(builder, addr, &payload_ty)?;
+            builder.ins().jump(merge_bb, &[]);
+            // ── fall through: test the next variant ──
+            builder.switch_to_block(next_bb);
+            builder.seal_block(next_bb);
+        }
+        // No variant matched (disc = a scalar/unit variant) → no-op → merge.
+        builder.ins().jump(merge_bb, &[]);
+        builder.switch_to_block(merge_bb);
+        builder.seal_block(merge_bb);
+        Ok(true)
+    }
+
     /// Build the Cranelift IR for a single function body.
     #[allow(clippy::too_many_lines)] // match-heavy dispatch + param-entry, naturally long
     fn build_body(
@@ -1416,6 +1492,16 @@ impl JitContext {
                         for (abs, _) in leaves {
                             builder.ins().stack_store(zero, slot, abs);
                         }
+                    } else if let Some((slot, _layout)) = self.enum_slots.get(l) {
+                        // ADR-0067 2b-3: tombstone a heap-enum after a move. Zero
+                        // ONLY the payload pointer @payload_offset(8) so the later
+                        // tag-switch Drop-glue reads ptr=0 → free no-op → no
+                        // double-free. DO NOT touch the discriminant @0: unlike
+                        // Outcome (disc=0 = no-payload Zero arm), discriminant 0
+                        // is a VALID enum variant that may itself be heap —
+                        // zeroing it would mis-route the tag-switch. ptr=0 alone
+                        // makes the free shim a no-op for any heap payload type.
+                        builder.ins().stack_store(zero, *slot, 8);
                     } else {
                         builder.def_var(self.var(*l), zero);
                     }
@@ -1662,6 +1748,26 @@ impl JitContext {
                                     .ins()
                                     .stack_store(src_cap, *dest_slot, dest_off + 16);
                             }
+                            // ADR-0067 2b-0b: a String VALUE stored into a PROJECTED
+                            // ENUM payload must copy the FULL fat pointer (analog of
+                            // STEP 4 above, but for `enum_slots`). `store_place`
+                            // wrote ptr@dest_off; copy len@+8 / cap@+16 from the
+                            // source String slot so the tag-switch drop-glue (2b-2)
+                            // frees with the REAL cap. dest_off = payload_offset (8)
+                            // → len@16 / cap@24 in the 32B enum slot (2b-0a sizing).
+                            if !dest.projection.is_empty()
+                                && matches!(dest_ty, MirType::String)
+                                && let Some((dest_slot, _)) = self.enum_slots.get(&dest.local)
+                                && source.projection.is_empty()
+                                && let Some((src_slot, _)) = self.struct_slots.get(&source.local)
+                            {
+                                let src_len = builder.ins().stack_load(I64, *src_slot, 8);
+                                let src_cap = builder.ins().stack_load(I64, *src_slot, 16);
+                                builder.ins().stack_store(src_len, *dest_slot, dest_off + 8);
+                                builder
+                                    .ins()
+                                    .stack_store(src_cap, *dest_slot, dest_off + 16);
+                            }
                             // M1: Zeroing-on-Move — if source is a plain local of Move type,
                             // store 0 into it so Drop becomes a no-op.
                             let source_is_plain = source.projection.is_empty();
@@ -1752,6 +1858,13 @@ impl JitContext {
                     // (scalar Outcome → no-op). Shared with the ADR-0057
                     // Assign leak-guard via `emit_outcome_drop_glue`.
                     if self.emit_outcome_drop_glue(builder, body, *local)? {
+                        continue;
+                    }
+
+                    // ADR-0067 2b-2: heap enum — inline tag-switch drop-glue
+                    // (frees only the active variant's heap payload; scalar enum
+                    // → no-op). Before the struct/regular branches.
+                    if self.emit_enum_drop_glue(builder, body, *local)? {
                         continue;
                     }
 
