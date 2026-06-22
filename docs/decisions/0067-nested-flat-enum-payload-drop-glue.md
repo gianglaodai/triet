@@ -35,6 +35,21 @@ Mở rộng B8 cho **bounded heap-in-aggregate no-box** bằng 2 nhát:
   Độ sâu = nesting TĨNH (compile-time, struct graph là DAG vì recursive bị chặn) → **KHÔNG đệ quy
   runtime, KHÔNG nổ stack**.
 
+#### 🔒 Nhát 2a — ĐÃ THI CÔNG (chờ O verify máu + ký; D KHÔNG tự điền chữ ký)
+- **2a-1 M-2 nới (lib.rs ~3061):** thêm `is_nested_struct` = bare `Struct` có layout resolve → ALLOW.
+  **CHỈ Struct, KHÔNG Enum** (thu hẹp có chủ đích so với chữ "Struct/Enum" của WO): `collect_heap_leaves`
+  chỉ đệ quy Struct; enum-payload heap = tag-dependent → 2b. Copy-enum vẫn pass qua `ctx_is_copy`;
+  heap-enum field GIỮ refuse (ép 2b xử lý drop-glue enum). `Nullable(heap)` (ADR-0062) + box/`&+` GIỮ refuse.
+- **2a-2 `collect_heap_leaves` (mir_lower.rs):** associated fn compile-time, đệ quy Struct, accumulate
+  absolute offset, trả `Vec<(i32, MirType)>` phẳng. **Depth-limit 64 → JitError** (bùa chống nổ stack).
+  **DÙNG CHUNG Drop + Deinit** (đối xứng Sinh-Tử G mandate): Drop `emit_heap_free_at(copy_base_addr(local,abs))`;
+  Deinit `stack_store(0, slot, abs)`. FLAT một tầng (Lát 1) = trường hợp depth-0 → giữ xanh.
+- **2a-3 Move nested:** tái dùng 1b/1c (aggregate byte-copy total_size>8 + Deinit đệ quy 2a-2). 0 dòng mới.
+- **Teeth (O verify):** R-leak-nested (collect non-recursive → Drop Unsupported, refuse > leak) · R-double-free-nested
+  (Deinit một-tầng → FREE_COUNT==2 double-free) · R-recursive-creep (tháo depth-limit → stack-overflow SIGABRT).
+  Fixtures 263/264/265, counting `struct_nested_heap_counting`, unit `collect_heap_leaves_recursive`.
+- **Fixture 257 FLIP** (LUẬT 3, O sign-off): 1d negative `Outer{inner:Inner}` refuse → 2a unlock → EXPECT.
+
 ### Nhát 2b — Enum-payload heap (tag-switch drop-glue N-variant)
 `enum E { A(String), B(Integer), C }`:
 - **Construction:** gỡ refuse enum-payload-heap (lib.rs:1890).
