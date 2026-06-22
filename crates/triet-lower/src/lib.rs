@@ -3062,7 +3062,19 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     decl_ty,
                     MirType::String | MirType::Vector | MirType::HashMap
                 );
-                if !is_direct_heap_leaf && !ctx_is_copy(decl_ty, c) {
+                // ADR-0067 2a: a plain (non-nullable) nested STRUCT field whose
+                // layout resolves is now ALLOWED even when it transitively
+                // contains heap — the drop-glue / Deinit recurse it statically
+                // (`collect_heap_leaves`). Self-ref is blocked upstream by
+                // typecheck (`resolve_type` → UnknownType); the depth-64 limit in
+                // `collect_heap_leaves` is the last-resort net. ENUM is NOT
+                // widened here: enum-payload heap is tag-dependent (runtime
+                // disc) → ADR-0067 2b; a Copy enum still passes via `ctx_is_copy`.
+                // `Nullable(heap)` stays REFUSED (heap-nullable, ADR-0062), and
+                // `&+`/box stay REFUSED — only a bare `Struct` is widened.
+                let is_nested_struct = matches!(
+                    decl_ty, MirType::Struct(n) if c.struct_layouts.contains_key(n.as_str()));
+                if !is_direct_heap_leaf && !is_nested_struct && !ctx_is_copy(decl_ty, c) {
                     return Err(LowerError::heap_type_not_supported(
                         &format!("struct `{struct_name}` field `{field_name}` type `{decl_ty}`"),
                         expr_span,

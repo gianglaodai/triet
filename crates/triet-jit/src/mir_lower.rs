@@ -406,6 +406,49 @@ impl JitContext {
         Ok((current_ty, total_offset))
     }
 
+    /// ADR-0067 2a: statically collect every heap LEAF reachable from a struct,
+    /// as a flat `(absolute_offset, leaf_type)` list. Recurses into nested
+    /// struct fields accumulating offsets (the value model stores nested structs
+    /// inline/FLAT), so a single pass over the returned list frees/tombstones
+    /// every heap byte regardless of nesting depth. The struct graph is a DAG
+    /// (recursive types are blocked by typecheck), so this terminates; the depth
+    /// limit is a last-resort net that returns a `JitError` instead of hanging
+    /// the compiler if a recursive type ever slips through. Enum fields are NOT
+    /// recursed — enum-payload heap is tag-dependent (runtime disc) → ADR-0067 2b.
+    fn collect_heap_leaves(
+        struct_name: &str,
+        base_offset: i32,
+        body: &Body,
+        depth: usize,
+        out: &mut Vec<(i32, MirType)>,
+    ) -> Result<(), JitError> {
+        if depth > 64 {
+            return Err(JitError::Unsupported(format!(
+                "struct nesting exceeds depth 64 (recursive type? → ADR-0068): {struct_name}"
+            )));
+        }
+        let layout = body
+            .struct_layouts
+            .iter()
+            .find(|l| l.name == struct_name)
+            .ok_or_else(|| {
+                JitError::Unsupported(format!("unknown struct layout: {struct_name}"))
+            })?;
+        for f in &layout.fields {
+            let abs = base_offset
+                + i32::try_from(f.offset)
+                    .map_err(|_| JitError::Unsupported("struct field offset exceeds i32".into()))?;
+            match &f.ty {
+                t if t.is_any_heap() => out.push((abs, t.clone())),
+                MirType::Struct(inner) => {
+                    Self::collect_heap_leaves(inner, abs, body, depth + 1, out)?;
+                }
+                _ => {} // scalar / enum (2b) → skip
+            }
+        }
+        Ok(())
+    }
+
     /// ADR-0060 P2: return the total byte size of a `MirType`.
     /// Struct/enum types look up their layout in `body`; scalars are 8.
     fn ty_total_size(body: &Body, ty: &MirType) -> usize {
@@ -1357,24 +1400,21 @@ impl JitContext {
                         && layout.name == "String"
                     {
                         builder.ins().stack_store(zero, *slot, 0);
-                    } else if let Some((slot, layout)) = self.struct_slots.get(l)
-                        && layout.fields.iter().any(|f| f.ty.is_any_heap())
-                    {
-                        // ADR-0066 (C): tombstone a heap-struct arg after an
-                        // arg-move. Zero each heap field's ptr@field.offset so the
-                        // caller's later Drop-glue (A) reads ptr=0 → free no-op →
-                        // no double-free (the callee already freed via its
-                        // by-pointer drop-glue). Mirror KCN-1's walk but store 0
-                        // instead of free; cap is left as-is (ptr=0 alone makes
-                        // `__triet_string_free` a no-op).
+                    } else if let Some((slot, layout)) = self.struct_slots.get(l) {
+                        // ADR-0066 (C) + ADR-0067 2a: tombstone a heap-struct after
+                        // a move. Zero EVERY heap leaf's ptr@abs_offset so the
+                        // later Drop-glue reads ptr=0 → free no-op → no double-free.
+                        // SYMMETRIC with the Drop walk (G mandate: free N tiers →
+                        // zero N tiers) via the SHARED `collect_heap_leaves` —
+                        // recurses nested structs. A Copy struct yields no leaves →
+                        // no-op (it never gets a Deinit anyway). String slot
+                        // (layout.name=="String") is handled by the branch above.
                         let slot = *slot;
-                        for f in &layout.fields {
-                            if f.ty.is_any_heap() {
-                                let off = i32::try_from(f.offset).map_err(|_| {
-                                    JitError::Unsupported("struct field offset exceeds i32".into())
-                                })?;
-                                builder.ins().stack_store(zero, slot, off);
-                            }
+                        let name = layout.name.clone();
+                        let mut leaves: Vec<(i32, MirType)> = Vec::new();
+                        Self::collect_heap_leaves(&name, 0, body, 0, &mut leaves)?;
+                        for (abs, _) in leaves {
+                            builder.ins().stack_store(zero, slot, abs);
                         }
                     } else {
                         builder.def_var(self.var(*l), zero);
@@ -1715,35 +1755,21 @@ impl JitContext {
                         continue;
                     }
 
-                    // ADR-0066 KCN-1 (1a) + 1b: inline per-struct static
-                    // drop-glue. A struct local with heap-leaf fields (B8 relaxed,
-                    // Lát 1 FLAT) frees each heap field by walking the layout. The
-                    // field address comes from `copy_base_addr`, which unifies
-                    // slot-backed locals (1a, `stack_addr`) AND by-pointer params
-                    // (1b arg-move callee, `use_var` pointer) — so the SAME branch
-                    // serves both. FLAT one level — M-2 refuses transitive/nested
-                    // heap at construction. The plan (per-field offset/ty) is built
-                    // before the `&mut self` free calls so the `struct_layouts`
-                    // borrow is released.
+                    // ADR-0066 KCN-1 (1a/1b) + ADR-0067 2a: inline per-struct
+                    // static drop-glue. A struct local with heap leaves (B8
+                    // relaxed) frees each one. `collect_heap_leaves` walks the
+                    // layout RECURSIVELY at compile time (nested non-recursive
+                    // structs → flat (abs_offset, leaf) list); `copy_base_addr`
+                    // unifies slot-backed locals (1a, `stack_addr`) AND by-pointer
+                    // params (1b arg-move callee, `use_var` pointer). The plan is
+                    // built before the `&mut self` free calls so the body borrow
+                    // is released.
                     if let MirType::Struct(name) = ty {
-                        let heap_fields: Vec<(usize, MirType)> = body
-                            .struct_layouts
-                            .iter()
-                            .find(|l| &l.name == name)
-                            .map(|l| {
-                                l.fields
-                                    .iter()
-                                    .filter(|f| f.ty.is_any_heap())
-                                    .map(|f| (f.offset, f.ty.clone()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        if !heap_fields.is_empty() {
-                            for (offset, fty) in heap_fields {
-                                let off = i32::try_from(offset).map_err(|_| {
-                                    JitError::Unsupported("struct field offset exceeds i32".into())
-                                })?;
-                                let addr = self.copy_base_addr(builder, *local, off);
+                        let mut leaves: Vec<(i32, MirType)> = Vec::new();
+                        Self::collect_heap_leaves(name, 0, body, 0, &mut leaves)?;
+                        if !leaves.is_empty() {
+                            for (abs, fty) in leaves {
+                                let addr = self.copy_base_addr(builder, *local, abs);
                                 self.emit_heap_free_at(builder, addr, &fty)?;
                             }
                             continue;
@@ -4825,6 +4851,42 @@ mod tests {
             5,
             "ADR-0066 STEP 4: struct String field drop must free with the REAL \
              cap (5 for \"Giang\"), not stack garbage"
+        );
+    }
+
+    /// ADR-0067 2a / R-recursive-creep: the depth-64 limit in
+    /// `collect_heap_leaves` is the last-resort net against a self-referential
+    /// struct slipping past typecheck. A hand-built recursive layout
+    /// (`Node { next: Node }`) — which the real pipeline rejects at typecheck —
+    /// must yield a `JitError`, NOT infinite compile-time recursion / stack
+    /// overflow. Poison (remove the depth check) → this stack-overflows → proves
+    /// the limit is load-bearing.
+    #[test]
+    fn collect_heap_leaves_recursive_hits_depth_limit() {
+        let mut b = MirBuilder::new("rec", MirType::Unit);
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Node",
+            &[(
+                "next".to_string(),
+                MirType::Struct("Node".to_string()),
+                8,
+                8,
+            )],
+        ));
+        let bb0 = b.new_block();
+        b.set_terminator(bb0, return_(vec![]));
+        let body = b.build(bb0);
+
+        let mut leaves: Vec<(i32, MirType)> = Vec::new();
+        let result = JitContext::collect_heap_leaves("Node", 0, &body, 0, &mut leaves);
+        assert!(
+            result.is_err(),
+            "recursive struct must hit the depth limit (JitError), not recurse forever"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("depth 64"),
+            "depth-limit error expected, got: {msg}"
         );
     }
 
