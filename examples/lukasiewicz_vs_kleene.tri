@@ -4,7 +4,7 @@
 //   Łukasiewicz (default):  unknown → unknown = true   (vacuously)
 //   Kleene K3:              unknown → unknown = unknown (conservative)
 //
-// Triết default là Łukasiewicz (AI-first); Kleene biến thể qua
+// Triết default là Łukasiewicz; Kleene biến thể qua
 // `kleene_implies` / `~>`.
 
 function main() {

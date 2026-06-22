@@ -719,7 +719,7 @@ pub enum TypeError {
     /// (ADR-0061 §2.2). One code covers the whole conformance family —
     /// wrong arity, parameter-type mismatch, return-type mismatch, missing
     /// method, extra method — distinguished by [`ConformanceKind`] so the
-    /// message is specific per failure (ADR-0027 AI-first).
+    /// message is specific per failure (ADR-0027 machine-fixable).
     #[error("E1044: `{type_name}` does not correctly implement trait `{trait_name}`: {kind}")]
     #[diagnostic(
         code(triet::typecheck::E1044),

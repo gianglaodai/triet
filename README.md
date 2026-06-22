@@ -1,12 +1,14 @@
 # Triết
 
-> A **balanced-ternary, AI-first** programming language, inspired by the Soviet
+> A **balanced-ternary-first** programming language, inspired by the Soviet
 > Setun computer (1958), implemented in Rust.
 
 Triết (Sino-Vietnamese 哲, "philosophy") uses the balanced ternary system
 `{-1, 0, +1}` as its arithmetic foundation, combined with three-valued
-Łukasiewicz Ł3 logic for reasoning under uncertainty — tuned for an age where
-AI writes most of the code. The long-term aim is an OS-capable language.
+Łukasiewicz Ł3 logic for reasoning under uncertainty. Its value is anchored in
+**coherence** — a single Ł3 algebra across null / logic / capability — not in any
+AI hypothesis (the "AI-first" label was removed 2026-06-22; see [VISION.md](VISION.md) §5).
+The long-term aim keeps the door open to an OS-capable language.
 
 ## Status — ground-up rewrite in progress (v0.1.0-dev)
 
@@ -17,20 +19,37 @@ AI writes most of the code. The long-term aim is an OS-capable language.
 > compiler is **young**: do not mistake it for the shipped v0.10.
 
 **What works today** (end-to-end, `source → MIR → Cranelift → native code`):
-scalar arithmetic, comparisons, Łukasiewicz Ł3 / Kleene K3 logic operators,
-`if`/`else`, `while`, recursion, cross-function calls, shim calls (`pow`), and
-the NLL borrow checker (E2440 / E2450).
+- **Scalars** — balanced-ternary arithmetic (range-enforced, trap-on-overflow per
+  ADR-0044), comparisons, Łukasiewicz Ł3 / Kleene K3 logic.
+- **Control flow** — `if`/`else`, `while`, recursion, cross-function calls, shim
+  calls (`pow`).
+- **Aggregates** — `struct` (StackSlot + sret), `enum` (discriminant switch), and
+  **heap types** `String` / `Vector<T>` / `HashMap<K,V>` (move-only, inline
+  drop-glue).
+- **Nullable `T?`** — 1-trit sentinel, Elvis `?:`, `match ~+ / ~0`, including
+  **nullable aggregates** `Struct?` / `Enum?` (ADR-0065).
+- **`match` on literals** — Integer / Trilean / Trit / Tryte / Long,
+  exhaustiveness-checked (ADR-0064); trait static dispatch (Tier 1, ADR-0061);
+  `Outcome` `T~E` / `T?~E` error handling.
+- **Heap-in-struct (FLAT, ADR-0066 Lát 1)** — a struct holding a
+  `String`/`Vector`/`HashMap` field: construct, move (function boundary +
+  assignment), recursive-walk drop-glue, tombstone-on-move.
+- **NLL borrow checker** — E2420 (use-after-move) / E2440 / E2450
+  (drop-while-borrowed).
 
-**Not yet rebuilt:** aggregate types (String / Vector / HashMap / Enum / Struct
-literals are rejected by the lowerer), the self-hosting compiler, the AOT cache,
-multi-value return. The **language semantics are unchanged** — the rewrite swaps
-compiler internals, not the language (see the ADRs).
+**Not yet rebuilt:** nested/recursive heap-in-aggregate (`Struct { inner: HasHeap }`)
+and enum-payload heap (ADR-0066 Lát 2), partial field-move (`let s = p.name`), the
+capability runtime (ADR-0016/0017/0018 — strategic priority after the heap-in-struct
+campaign), the self-hosting compiler, the AOT cache, `triet-pack` wiring. The
+**language semantics are unchanged** — the rewrite swaps compiler internals, not the
+language (see the ADRs).
 
 ```bash
 cargo build --release
 
 # The driver binary is `triet-driver` (the old `dao` CLI was deleted).
-# Only scalar/arithmetic/logic/borrow programs compile today.
+# Scalars, structs, enums, String/Vector/HashMap, nullable T?, and match all run;
+# nested/recursive heap-in-aggregate is the next frontier (ADR-0066 Lát 2).
 ./target/release/triet-driver run examples/hello_jit.tri        # → 42
 ./target/release/triet-driver run examples/test_pow.tri         # → 1024
 ./target/release/triet-driver run examples/test_pow_complex.tri # → 1267
@@ -54,8 +73,10 @@ cargo build --release
 
 ## Design philosophy
 
-1. **AI-first** — syntax and semantics tuned so an LLM generates correct code
-   on the first try.
+1. **Regular & low-ambiguity** — syntax and semantics tuned for correctness and
+   minimal ambiguity (explicit > implicit, regular > exception, keyword over
+   symbol when ambiguous). Any benefit to LLM codegen is an unmeasured
+   side-effect, never a claim (see [VISION.md](VISION.md) §5).
 2. **Ternary is first-class** — `Trit`, balanced-ternary arithmetic, and
    Łukasiewicz logic are primitive types and operators, not library add-ons.
 3. **Stability over speed** — every architectural decision has an ADR; phases
