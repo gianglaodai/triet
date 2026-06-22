@@ -57,6 +57,24 @@ Mở rộng B8 cho **bounded heap-in-aggregate no-box** bằng 2 nhát:
   switch → free heap payload của variant ACTIVE (không chạm rác variant khác). No-op cho unit/scalar
   variant.
 
+#### 🔒 Nhát 2b — ĐÃ THI CÔNG (chờ O verify máu + ký; D KHÔNG tự điền chữ ký)
+**Recon-trước bắt gap payload-layout (D, analog 1a STEP-4; O verify + rule IN-SCOPE):** enum payload size
+hardcode 8 (lib.rs:603) → String-payload slot 16B; construction store CHỈ ptr@8 (STEP-4 fat-sync chỉ
+`struct_slots`); drop-glue đọc cap@payload+16 = slot+24 = OOB slot 16B → UB. Vector/HashMap (thin 8B) KHÔNG gap.
+→ thêm 2 mảnh phụ:
+- **2b-0a (lib.rs:603):** enum payload size heap-aware — `String→24`, Vector/HashMap/scalar→8. String-payload
+  `total_size = 8+24 = 32` → slot đủ `{disc@0, ptr@8, len@16, cap@24}`. (M-1 struct-fixup KHÔNG chạm enum — site duy nhất.)
+- **2b-0b (mir_lower.rs Assign):** fat-store String payload vào `enum_slots` (analog STEP-4): copy len@payload+8/cap@payload+16 từ src String-slot, đọc src TRƯỚC M1-zeroing.
+- **2b-1 (lib.rs gate EnumLiteral + EnumVariant-call):** `is_direct_heap_leaf || ctx_is_copy` → allow leaf/Copy;
+  refuse struct-transitive-heap (collect-trong-arm = 2b+) + Nullable(heap). EnumLiteral path TRƯỚC chưa có gate.
+- **2b-2 (`emit_enum_drop_glue`):** N-arm `brif` chain — read disc@0, mỗi variant heap-payload → arm `icmp disc==dv`
+  → `emit_heap_free_at(stack_addr(slot, payload_off=8), variant.payload.ty)`; scalar/unit variant KHÔNG sinh arm.
+- **2b-3 (Deinit):** tombstone zero CHỈ payload ptr@8, **KHÔNG đụng disc@0** (disc=0 là variant HỢP LỆ — khác Outcome).
+- **Teeth (O verify):** R-enum-leak (str count 0) · R-enum-double-free-move (count 2) · **⚔ R-enum-wrong-variant**
+  (`Pair{Text(String),Buf(Vector)}` — cross-wire → gọi nhầm shim → per-type count sai; Buf→vec=1/str=0, Text→str=1/vec=0) ·
+  **R-enum-cap** (poison 2b-0b → cap rác ≠ 5). Fixtures 266/267/268, counting `enum_heap_payload_counting`.
+- **Defer 2b+:** enum-in-struct-field, payload-struct-chứa-heap (collect đệ quy trong arm).
+
 ---
 
 ## ⛔ DEFER — tống sang ADR-0068 (Lát 3 — Đại chiến Box, campaign tiền đề riêng)
