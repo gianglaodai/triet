@@ -1,0 +1,17 @@
+// EXPECT: 0
+// ADR-0067 Lát 2 nhát 2b (TOP-LEVEL ENUM-HEAP): an enum whose variant carries a
+// String payload — construct + drop. M-2/2b-1 allows the heap-leaf payload;
+// 2b-0a sizes the 32B slot {disc@0, ptr@8, len@16, cap@24}; 2b-0b stores the
+// full fat pointer; 2b-2 tag-switch drop-glue reads disc → frees ONLY the active
+// variant's String at payload@8 with the real cap. FREE_COUNT==1 (counting
+// teeth); a double-free or garbage cap would SIGABRT.
+enum Msg {
+    Text(String),
+    Code(Integer),
+    Empty,
+}
+
+function main() -> Integer = {
+    let m = Msg.Text("Giang");
+    return 0;
+}

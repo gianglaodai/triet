@@ -1,0 +1,20 @@
+// EXPECT: 9
+// ADR-0067 Lát 2 nhát 2b: a scalar-payload variant of a heap-capable enum.
+// `Msg.Code(9)` selects the Integer variant — the tag-switch drop-glue reads
+// disc, matches NO heap-variant arm (Code/Empty are scalar/unit) → no free is
+// emitted for this disc → no garbage free. The enum is still non-Copy (Text has
+// a String), so it reaches the drop-glue; the match on `m` reads Code's payload.
+enum Msg {
+    Text(String),
+    Code(Integer),
+    Empty,
+}
+
+function main() -> Integer = {
+    let m = Msg.Code(9);
+    return match m {
+        Text(_) => 0,
+        Code(c) => c,
+        Empty => -1,
+    };
+}

@@ -1,0 +1,20 @@
+// EXPECT: 0
+// ADR-0067 Lát 2 nhát 2b: whole-move of a heap enum across a boundary.
+// `take(m)` moves `Msg.Text(String)` by pointer. The callee frees the active
+// variant's String via the tag-switch drop-glue; the caller's Deinit tombstones
+// the payload pointer @8 (NOT the discriminant @0) → main's scope-end Drop reads
+// ptr=0 → free no-op. FREE_COUNT==1 (counting teeth); a double-free would SIGABRT.
+enum Msg {
+    Text(String),
+    Code(Integer),
+    Empty,
+}
+
+function take(m: Msg) -> Integer = {
+    return 0
+}
+
+function main() -> Integer = {
+    let m = Msg.Text("Giang");
+    return take(m);
+}
