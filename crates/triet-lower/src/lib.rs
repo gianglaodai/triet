@@ -599,8 +599,15 @@ pub fn lower_program(
                         let disc = i as i64;
                         let payload = v.payload.map(|tid| {
                             let ty = lower_type(&prog.arena, tid, &symbols, None);
-                            // Bậc A: every type is 8-byte i64
-                            (ty, 8usize, 8usize, Vec::new())
+                            // ADR-0067 2b-0a: heap-leaf payload width (the M-1
+                            // struct-field fixup loop does NOT touch enum payloads
+                            // — this is the only site). String = 24B fat pointer
+                            // {ptr,len,cap}; Vector/HashMap = 8B thin handle;
+                            // scalar = 8B. A 24B String payload → enum total_size
+                            // = 8 + 24 = 32 so the fat pointer fits {disc@0, ptr@8,
+                            // len@16, cap@24}.
+                            let size = if matches!(ty, MirType::String) { 24 } else { 8 };
+                            (ty, size, 8usize, Vec::new())
                         });
                         (v.name.clone(), disc, payload)
                     })
@@ -1935,9 +1942,15 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         span: expr_span.clone(),
                     });
                     let val = lower_expr(arguments[0], arena, c)?;
-                    // B8: aggregate-containing-heap — enum payload with Move type not supported.
+                    // ADR-0067 2b-1: enum-payload heap LEAF allowed (tag-switch
+                    // drop-glue); struct-transitive-heap + Nullable(heap) refused
+                    // (mirror EnumLiteral gate above + M-2/2a).
                     let payload_ty = &c.local_decls[val.0].ty;
-                    if !payload_ty.is_copy(None) {
+                    let is_direct_heap_leaf = matches!(
+                        payload_ty,
+                        MirType::String | MirType::Vector | MirType::HashMap
+                    );
+                    if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
                         return Err(LowerError::heap_type_not_supported(
                             &format!(
                                 "enum variant `{}.{}` payload type `{}`",
@@ -2002,6 +2015,23 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     span: expr_span.clone(),
                 });
                 let val = lower_expr(arguments[0], arena, c)?;
+                // ADR-0067 2b-1: enum-payload heap LEAF (String/Vector/HashMap)
+                // is now ALLOWED (top-level) — the tag-switch drop-glue frees the
+                // active variant's payload. Still REFUSED: a struct-containing-
+                // heap payload (transitive — needs recursive collect inside the
+                // arm → 2b+) and `Nullable(heap)`. Mirror the M-2/2a gate:
+                // direct-leaf || Copy → allow, else refuse.
+                let payload_ty = &c.local_decls[val.0].ty;
+                let is_direct_heap_leaf = matches!(
+                    payload_ty,
+                    MirType::String | MirType::Vector | MirType::HashMap
+                );
+                if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
+                    return Err(LowerError::heap_type_not_supported(
+                        &format!("enum `{enum_name}.{field}` payload type `{payload_ty}`"),
+                        expr_span,
+                    ));
+                }
                 c.push(Statement::Assign {
                     dest: Place::local(d).project(Projection::Payload(field.clone())),
                     source: Place::local(val),
