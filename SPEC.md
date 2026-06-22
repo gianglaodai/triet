@@ -1,6 +1,6 @@
 # Triết — Đặc tả ngôn ngữ
 
-> Triết (哲) là một ngôn ngữ lập trình **balanced ternary, AI-first**, thiết kế để **không bao giờ đóng cánh cửa xuống tới hệ điều hành** — một *ràng buộc* no-GC / freestanding-được kiểu Rust, KHÔNG phải lời hứa giao một OS (xem [VISION §7](VISION.md)). Tam phân cân bằng và logic Łukasiewicz Ł3 là **bản sắc và cảm hứng** (Setun 1958, Łukasiewicz 1920), không phải cá cược vào phần cứng tam phân.
+> Triết (哲) là một ngôn ngữ lập trình **balanced ternary** (balanced-ternary-first), thiết kế để **không bao giờ đóng cánh cửa xuống tới hệ điều hành** — một *ràng buộc* no-GC / freestanding-được kiểu Rust, KHÔNG phải lời hứa giao một OS (xem [VISION §7](VISION.md)). Tam phân cân bằng và logic Łukasiewicz Ł3 là **bản sắc và cảm hứng** (Setun 1958, Łukasiewicz 1920), không phải cá cược vào phần cứng tam phân.
 >
 > Tài liệu này đặc tả **semantics ngôn ngữ** — authoritative và độc lập với
 > trạng thái compiler. (Semantics được chốt qua các phase v0.2–v0.10 của
@@ -32,10 +32,10 @@ Ba điều khiến Triết không thể bị thay thế bằng tổ hợp ngôn 
 
 ### 0.3 Nguyên tắc thiết kế (commit hard)
 
-1. **AI-first.** Cú pháp và semantics tối ưu cho việc LLM sinh code đúng ngay lần đầu. Ưu tiên: explicit > implicit, regular > exception, keyword > ký hiệu khi mơ hồ, low ambiguity > terseness.
+1. **Đều đặn & ít mơ hồ (regular, low-ambiguity).** Cú pháp và semantics tối ưu cho **tính đúng đắn** và ít mơ hồ — KHÔNG tuyên bố tối ưu cho AI (nhãn "AI-first" đã gỡ 2026-06-22, xem [VISION §5](VISION.md)). Ưu tiên: explicit > implicit, regular > exception, keyword > ký hiệu khi mơ hồ, low ambiguity > terseness.
 2. **Tam phân là first-class.** Trit, balanced ternary arithmetic, và logic 3 giá trị Łukasiewicz là kiểu/phép toán nguyên thủy — không phải library bên trên hệ nhị phân.
 3. **Production-grade ở Ł3, mở rộng được tới Ł∞.** v0.2 dùng giá trị rời rạc 3 mức {-1, 0, +1}. Đường tiến hóa tới logic vô hạn giá trị (fuzzy/probabilistic) phải không đập bỏ semantics hiện tại.
-4. **Stability over speed.** Quyết định kiến trúc có ADR. Không "ship đại rồi sửa". Pace dài hạn 5–10 năm cho v3.0 (microkernel POC).
+4. **Stability over speed.** Quyết định kiến trúc có ADR. Không "ship đại rồi sửa". Pace chậm là tính năng — đích KHÔNG phải một OS/microkernel. OS-capable là **ràng buộc freestanding dài hạn** (no-GC, no-std biểu đạt được), KHÔNG phải milestone "v3.0 kernel POC" (xem [VISION §7](VISION.md)).
 5. **Refuse over guess.** Khi compiler không chắc → error rõ ràng, không suy luận im lặng.
 6. **Explicit > implicit.** Export, capability, dependency, ABI surface — tất cả tường minh. Glob imports, default-public, ambient capabilities — bị cấm.
 
@@ -377,7 +377,7 @@ Tự dùng `enum MyOption<T> { Some(T), None }` trong user code vẫn hợp lệ
 Lý do thiết kế:
 - **Tam phân bẩm sinh.** Discriminator của `T?` là 1 trit, không phải 1 byte. `Option<T>` wrap thêm tag layer redundant.
 - **Operators `?.`, `?:`, `!!` giữ cú pháp ngắn.** OOP-style: check-and-use ngay tại call site.
-- **AI-first:** một cách làm cho một thứ. Đọc `T?` → biết ngay phải null-check. Không có "tôi nên dùng `Option` hay `T?`?" mơ hồ.
+- **Ít mơ hồ:** một cách làm cho một thứ. Đọc `T?` → biết ngay phải null-check. Không có "tôi nên dùng `Option` hay `T?`?" mơ hồ.
 - **Self-consistency:** chương trình mà có cả `String?` và `Option<String>` ở khác chỗ là smell. Chọn một.
 
 V0.1–v0.3 thử nghiệm cả hai. v0.4 chốt **`T?` primary**. `Result<T, E>` trong `std.result` cung cấp cho error-handling explicit. Local user-defined enum vẫn được phép cho ad-hoc sum types (Color, Direction, ...) nhưng không nên dùng làm wrapper cho nullability.
@@ -837,7 +837,7 @@ let category =
 
 #### 7.1.1 Xử lý `unknown` trong điều kiện
 
-Đây là quyết định AI-first quan trọng. Triết **bắt buộc** xử lý explicit khi điều kiện có thể `unknown`. Cơ chế: plain `if` chỉ nhận `Trilean!` (Trilean đã chứng minh tĩnh là ≠ Unknown — xem ADR-0021). `Trilean` (chưa refined) làm cond của plain `if` sẽ raise **E1033 `PossiblyUnknownCondition`**.
+Đây là quyết định tường-minh quan trọng. Triết **bắt buộc** xử lý explicit khi điều kiện có thể `unknown`. Cơ chế: plain `if` chỉ nhận `Trilean!` (Trilean đã chứng minh tĩnh là ≠ Unknown — xem ADR-0021). `Trilean` (chưa refined) làm cond của plain `if` sẽ raise **E1033 `PossiblyUnknownCondition`**.
 
 ```triet
 // E1033 compile-time: cond là Trilean (might be Unknown) — plain `if` từ chối
@@ -871,7 +871,7 @@ Widening `Trilean! → Trilean` là implicit. Narrowing `Trilean → Trilean!` P
 
 **Cẩn thận với `cond == true` pattern:** Vì `Trilean == Trilean` trả `Trilean` (per ADR-0010 §4: `Unknown == true` → `Unknown`), `if (cond == true)` với `cond: Trilean` vẫn raise E1033. Chỉ an toàn nếu `cond: Trilean!` đã sẵn — lúc đó `Trilean! == Trilean!` → `Trilean!`. Khuyến nghị: dùng `match` cho clarity thay vì rely trên equality narrowing.
 
-Lý do compile-time: nếu để `if cond` chạy mặc định trên 3 giá trị, dev rất dễ ngầm coi `unknown` là `false` mà không nhận ra — bug âm thầm. Triết force explicit. **AI-first:** LLM thấy lỗi compile, biết phải chọn cách xử lý. **Stability:** lỗi ở compile time thay vì runtime panic.
+Lý do compile-time: nếu để `if cond` chạy mặc định trên 3 giá trị, dev rất dễ ngầm coi `unknown` là `false` mà không nhận ra — bug âm thầm. Triết force explicit. **Explicit > implicit:** lỗi compile-time buộc chọn cách xử lý thay vì bug âm thầm. **Stability:** lỗi ở compile time thay vì runtime panic.
 
 Xem [ADR-0021](docs/decisions/0021-trilean-refinement.md) cho design lock đầy đủ, danh sách 4 remediations trong E1033 diagnostic, và bảng operator refinement rules.
 
@@ -1368,7 +1368,7 @@ flag and not other            // = flag and (not other)
 p implies q implies r         // = p implies (q implies r) (right-assoc)
 ```
 
-**Quy tắc cấm chain (no chain):** comparison (`<` `<=` `>` `>=` `==` `!=`) và range (`..` `..=`) không chain để tránh ambiguity giống SQL/Python. AI-first: lỗi compile sớm tốt hơn semantics surprise.
+**Quy tắc cấm chain (no chain):** comparison (`<` `<=` `>` `>=` `==` `!=`) và range (`..` `..=`) không chain để tránh ambiguity giống SQL/Python. Ít mơ hồ: lỗi compile sớm tốt hơn semantics surprise.
 
 ---
 
@@ -1402,5 +1402,5 @@ Tóm tắt phasing dài hạn:
 - **v0.9** — JIT (Cranelift)
 - **v1.0** — production stability
 - **v2.0** — AOT native compile (LLVM)
-- **v3.0** — microkernel POC
-- **v∞** — backend cho phần cứng tam phân, khi xuất hiện
+- *OS-capable: **ràng buộc** freestanding dài hạn (no-GC / no-std biểu đạt được), **KHÔNG** phải milestone "v3.0 kernel POC" ([VISION §7](VISION.md))*
+- *Phần cứng tam phân: **cảm hứng cuối chân trời**, dự án không cược vào ([VISION §6](VISION.md)) — không phải phase cam kết*

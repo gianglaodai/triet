@@ -35,8 +35,8 @@ break in phase X because of Y — here's the ADR that proves it."*
 
 The author (**Giang Hoàng**) owns the **goals, vision, direction, and final
 technical decisions**. He is not a compiler engineer — he drives the project
-as a product owner with a clear philosophical direction (balanced ternary,
-AI-first, stability over speed). Technical implementation is delegated to the AI.
+as a product owner with a clear philosophical direction (balanced-ternary-first,
+craft over adoption, stability over speed). Technical implementation is delegated to the AI.
 
 **When you propose any technical recommendation:**
 1. **Read the source-of-truth docs first** — `SPEC.md` (semantics) and
@@ -56,7 +56,7 @@ that gap by grounding every recommendation in the project's own documents.
 
 ## What this is
 
-Triết is a balanced-ternary, AI-first programming language implemented in Rust.
+Triết is a balanced-ternary-first programming language implemented in Rust.
 
 **Read [VISION.md](VISION.md) before reasoning about the project's purpose** — it
 was rewritten honestly on 2026-06-18 and locks three framings you must not drift
@@ -65,16 +65,17 @@ from:
   never require a mandatory GC / managed runtime and must stay freestanding-
   expressible (Rust-style; binary-HW OS is legitimate). There is NO promise to
   build an OS/microkernel — do not propose "v3.0 kernel" milestones (VISION §7).
-- **AI-first is an *unmeasured hypothesis*, not a proven fact.** The real thesis
-  is the *convergence loop* (explicit syntax + machine-fixable diagnostics +
-  refuse-over-guess → an LLM with zero corpus reaches green in fewer turns), and
-  its measurement instrument is not built yet. Never claim it as demonstrated
-  (VISION §5).
+- **"AI-first" was REMOVED as a claim (2026-06-22).** Triết makes no AI
+  hypothesis — it does not prove, measure, or sell one. The explicit /
+  machine-fixable-diagnostic / refuse-over-guess principles exist for
+  *correctness + craft*; any benefit to LLM codegen is an unmeasured side-effect,
+  never sold. The value anchor is **coherence** — one Ł3 algebra across
+  null / logic / capability — NOT turns-to-green (VISION §5 tombstone, §8).
 - **Balanced ternary + Ł3 are *identity/inspiration*, NOT a hardware bet.** The
   project does not wait for ternary hardware (VISION §6).
 
 Honesty rules over impressiveness: no "✅ shipped" for deleted code, no "measured"
-for the AI-first hypothesis, no "OS-capable" for a constraint not yet satisfied
+for any AI benefit (none is claimed), no "OS-capable" for a constraint not yet satisfied
 in the implementation (VISION §3).
 
 **The codebase was REBUILT from the backend up on 2026-06-04.** A complete
@@ -401,7 +402,7 @@ exist** (deep dive ở [`docs/ARCHIVE.md`](docs/ARCHIVE.md)):
 
 All errors implement `miette::Diagnostic`. (The old `triet-cli` `--json` mapper layer was deleted with the CLI; `triet-driver` prints miette reports directly and has no JSON mode yet. If/when JSON output returns, the error-code mapper discipline applies again.)
 
-**Diagnostic format:** all error/warning text follows the canonical AI-first format locked in [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) — header `EXXXX ErrorName` + body + optional span block + optional `[Fix N]` numbered fix blocks với imperative `Change/Wrap/Use/Add/Replace/Move X to Y`. Pure ASCII, no diff `-/+`.
+**Diagnostic format:** all error/warning text follows the canonical machine-fixable format locked in [ADR-0027](docs/decisions/0027-diagnostic-format-standard.md) — header `EXXXX ErrorName` + body + optional span block + optional `[Fix N]` numbered fix blocks với imperative `Change/Wrap/Use/Add/Replace/Move X to Y`. Pure ASCII, no diff `-/+`.
 
 ## Language conventions (don't get these wrong)
 

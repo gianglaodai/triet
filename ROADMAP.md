@@ -51,21 +51,27 @@ hand-written `Type`. Schema lái AST + ownership, CHƯA lái type system. Xem
 Danh sách trung thực những việc lớn còn lại. Thứ tự sẽ do soundness + nhu cầu thật
 quyết định, KHÔNG do một lộ trình tuyến tính áp đặt:
 
-### 🚨 ƯU TIÊN HÀNG ĐẦU: AI-First Validation (Workstream kiểm chứng bắt buộc)
+### 🚨 ƯU TIÊN CHIẾN LƯỢC SAU TRỤC B: Capability Ł3 — phòng tuyến coherence
 
-Để chứng minh dự án là một thí nghiệm khoa học thực thụ chứ không phải là sự trốn tránh thực tế, hai công cụ sau **phải được xây dựng đầu tiên** trước khi tiếp tục mở rộng các tính năng compiler backend khác:
+> **Quyết định G + Giang 2026-06-22 (khắc đá).** Khi Triết là **balanced-ternary-first**
+> (nhãn "AI-first" đã gỡ hẳn — [VISION §5](VISION.md)), giá trị neo HẲN vào **coherence**:
+> một đại số Ł3 duy nhất chạy xuyên null / logic / **capability** ([VISION §8](VISION.md)).
 
-1. **🔬 AI-first instrument (turns-to-green)** (từ [VISION §5.3](VISION.md)): Xây dựng bộ đo turns-to-green tự động (cho LLM spec + ví dụ -> sinh Triết -> chạy driver -> nạp lại diagnostic khi lỗi -> đo số turns và tỷ lệ tự sửa đúng). Đây là gate để quyết định thiết kế ngôn ngữ có thực sự tối ưu cho AI hay không.
-2. **🔨 Auto-fixer (triet fix)**: Xây dựng hạ tầng tự động sửa các lỗi Machine-Applicable (deterministic) trực tiếp trên AST. LLM tuyệt đối không được dùng cho nhóm lỗi này để tránh lãng phí năng lượng và gây nhiễu kết quả đo đạc.
+Hiện coherence mới xây **2/3**: null-handling (`T?`) ✅ + logic Ł3/K3 ✅, nhưng
+**capability Ł3 = 0** (ADR-0016/0017/0018 thiết kế còn sống, hiện thực đã xóa cùng
+compiler cũ). Đây là **chân độc-nhất nhất** của lập luận coherence — null + logic
+ngôn ngữ nào cũng có; *một Ł3 chạy xuyên cả phân quyền* mới là thứ không thể thay
+thế bằng tổ hợp ngôn ngữ khác. Thiếu nó, "coherence" chỉ là vẽ trên giấy → Triết
+tụt xuống toy-language chắp vá.
 
-> [!IMPORTANT]
-> **Quy tắc và tính hợp lệ của phép đo (Sanity check cho Benchmark):**
-> - **Chỉ đo trên các tính năng đã hỗ trợ đầy đủ**: Tập task test chỉ được sử dụng các cú pháp và kiểu dữ liệu mà compiler hiện tại đã hạ (lower) và JIT chạy thành công. Không bắt LLM viết code sử dụng các tính năng chưa hoàn thiện (như heap-nullable, borrow-param heap...) rồi quy kết turns-to-green cao là do thiết kế ngôn ngữ tệ cho AI.
-> - **Mục tiêu là lặp (Iteration), không phải tự hủy (Guillotine)**: Kết quả đo đạc ban đầu xấu không có nghĩa là khai tử dự án ngay lập tức. Nó là tín hiệu chỉ ra phân khúc lỗi nào đang bị nghẽn (mượn, kiểu, hay diagnostic mơ hồ) để điều chỉnh thiết kế ngôn ngữ/diagnostic rồi đo lại. Nếu sau nhiều vòng lặp cải tiến thiết kế mà turns-to-green vẫn không nhúc nhích → **rút lại trụ cột "AI-first" một cách trung thực** (VISION §1: dự án vẫn giữ giá trị craft (a), nhưng claim (b) bị khai tử). Đây là rút claim, KHÔNG tự động là xóa dự án.
+**Mandate:** rebuild capability runtime (Trit-level `-1` deny / `0` ambient / `+1`
+grant + Ł3 `Unknown` resolved bởi runtime policy) là **nhiệm vụ chiến lược cốt lõi
+bắt buộc**, mở **NGAY SAU khi Trục B kết thúc**. KHÔNG còn là "làm khi tới lượt".
+ADR-0016/0017/0018 còn sống làm móng thiết kế; hiện thực mới trên MIR/JIT.
 
 ---
 
-### Các việc lớn khác (Sẽ triển khai sau khi có kết quả đo đạc AI-first)
+### Các việc lớn khác (CHƯA xếp lịch)
 
 - **Self-host trở lại** — `compiler/` (~23K LOC `.tri`) là ORPHAN: target IR/VM đã
   xóa, không bootstrap được. Phải viết lại trên MIR. Multi-month milestone.
@@ -73,8 +79,11 @@ quyết định, KHÔNG do một lộ trình tuyến tính áp đặt:
   freestanding ([VISION §7](VISION.md)).
 - **Wire `triet-pack`** — `.khi` + cross-package linker còn code (giữ từ compiler
   cũ), chưa wire vào pipeline mới.
-- **Rebuild capability runtime** — Trit-level + Ł3 `Unknown` (ADR-0016/0017/0018,
-  thiết kế còn sống, hiện thực đã xóa). Phục vụ tính nhất quán thẩm mỹ ([VISION §8](VISION.md)).
+- **Rebuild capability runtime** → đã **thăng cấp** thành *Ưu tiên chiến lược sau
+  Trục B* (mục 🚨 trên), KHÔNG còn nằm trong danh sách "chưa xếp lịch".
+- **`triet fix` (auto-fixer craft-tooling)** — tự động áp các fix Machine-Applicable
+  (deterministic) trực tiếp trên AST ([VISION §4.2](VISION.md)). Craft-tooling **tùy
+  chọn**, KHÔNG còn gắn với bất kỳ phép đo AI nào (workstream đo đã gỡ).
 - **CAS packaging + stable ABI rebuild** — ADR-0014/0015 + ABI design còn sống,
   hiện thực đã xóa.
 - **BYOS concurrency** — ADR-0026 v2, sau khi nền ổn định.
@@ -130,7 +139,7 @@ hỗ trợ). 1637-test safety net **đã mất**; lưới mới: ~1086 workspace
 |---|---|---|
 | "v3.0 microkernel POC" làm milestone | **Reject (2026-06-18)** | OS-trên-nhị-phân khả thi nhưng là multi-hundred-person-year; làm milestone = sương mù unfalsifiable. Giữ làm *ràng buộc*, không *đích*. [VISION §7]. |
 | Cược vào phần cứng tam phân | **Reject** | Lợi thế lý thuyết, thua nhị phân 70 năm. Tam phân là bản sắc, không phải cá cược. [VISION §6]. |
-| Tuyên "AI-first đã chứng minh" | **Reject** | Chưa có phép đo. Giả thuyết-chưa-đo, instrument sẽ xây. [VISION §5]. |
+| Nhãn "AI-first" (làm trụ cột / ưu-tiên-#1) | **Reject (2026-06-22)** | Gỡ hẳn. Orthogonal với bản sắc tam phân; bonus không đo = quảng cáo. Không tuyên bố/đo/bán giả thuyết AI nào. Giá trị neo vào coherence §8. [VISION §5]. |
 | GC | **Reject** | System language. Memory model kiểu Rust borrow checker (đã có MIR + NLL borrowck). |
 | Java-style strict filesystem mapping | **Reject** | Java đã bỏ với JPMS. Refactor-unfriendly. |
 | Auto-shim ABI migration | **Reject** | Detection decidable, adaptation undecidable. Misleading promise. |

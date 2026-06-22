@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: HEAD `c06c299` (test) (chờ O ký + push). Gate `0·0·257·0`. **🏁 Trục B Lát 1 (heap-in-struct FLAT) HOÀN TẤT — 1a+1b+1c+1d, B8 thủng cho heap-leaf field.** Nhát 1d LOCK & SEAL (chờ ký): niêm phong Vector/HashMap field + struct use-after-move — **0 dòng compiler** (mechanism type-generic 1a/1b/1c đã phủ), thuần fixtures 260/261/262 + counting teeth. 3 răng đỏ độc lập: R-leak-vec (cut is_vec → vec leak 0) · R-leak-hmap · **ISOLATION SCALPEL** (poison riêng is_vec → Mixed{Vector,String}: vec=0 leak, str=1 sống — dispatch per-field-type) · R-e2420. Counting test serialize Mutex (3 test chung counter, gate chạy song song). **Lát 1 đủ:** heap-leaf field (String/Vector/HashMap) construct + whole-move (arg 1b + assign 1c) + inline drop-glue (1a KCN-1) + tombstone + use-after-move E2420 = sound + locked. **Nhát 1c:** assign-move `let q=p` true-move (D1 ctx_is_copy + D2 Deinit ATOMIC), LOWER-ONLY. **Nhát 1b:** arg-move (A copy_base_addr unify + B to_zero ctx_is_copy + C Deinit walk). **Nhát 1a:** M-1 sizing + M-2 B8-relax + KCN-1 + STEP 4 fat-store. **Trước đó:** ADR-0065 §12.8/§12.7 Nullable Aggregate Trục A. **Kế (Lát 2 — hố bom):** nested/recursive heap-in-aggregate (`Outer{inner:Inner}`) · enum-payload heap · **partial-move** `let s=p.name` (DEFER Lát 1.x — blocked read-side gap String-field→Unknown, ADR-0066 Defer khắc đá) · field-reassign.
+Mốc hiện tại: HEAD `24ad995` (origin/main, đã push). Gate `0·0·257·0`. **🟦 Phiên 2026-06-22: chiến dịch dọn doc `ternary-first` — gỡ hẳn nhãn AI-first khỏi VISION/SPEC/CLAUDE/ROADMAP, neo giá trị vào coherence §8 (chờ G ký cụm).** **🏁 Trục B Lát 1 (heap-in-struct FLAT) HOÀN TẤT — 1a+1b+1c+1d, B8 thủng cho heap-leaf field.** Nhát 1d LOCK & SEAL (chờ ký): niêm phong Vector/HashMap field + struct use-after-move — **0 dòng compiler** (mechanism type-generic 1a/1b/1c đã phủ), thuần fixtures 260/261/262 + counting teeth. 3 răng đỏ độc lập: R-leak-vec (cut is_vec → vec leak 0) · R-leak-hmap · **ISOLATION SCALPEL** (poison riêng is_vec → Mixed{Vector,String}: vec=0 leak, str=1 sống — dispatch per-field-type) · R-e2420. Counting test serialize Mutex (3 test chung counter, gate chạy song song). **Lát 1 đủ:** heap-leaf field (String/Vector/HashMap) construct + whole-move (arg 1b + assign 1c) + inline drop-glue (1a KCN-1) + tombstone + use-after-move E2420 = sound + locked. **Nhát 1c:** assign-move `let q=p` true-move (D1 ctx_is_copy + D2 Deinit ATOMIC), LOWER-ONLY. **Nhát 1b:** arg-move (A copy_base_addr unify + B to_zero ctx_is_copy + C Deinit walk). **Nhát 1a:** M-1 sizing + M-2 B8-relax + KCN-1 + STEP 4 fat-store. **Trước đó:** ADR-0065 §12.8/§12.7 Nullable Aggregate Trục A. **Kế (Lát 2 — hố bom):** nested/recursive heap-in-aggregate (`Outer{inner:Inner}`) · enum-payload heap · **partial-move** `let s=p.name` (DEFER Lát 1.x — blocked read-side gap String-field→Unknown, ADR-0066 Defer khắc đá) · field-reassign.
 
 ### 🟡 Sổ nợ Tech-Debt Hạ tầng — counting-test parallel isolation
 Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop_counting`, …) dùng process-global `AtomicUsize` + no-mangle shim → flake hiếm dưới `cargo test --workspace` tải nặng (đo: `map_vector_output_freed_once` đỏ 1 lần, xanh 6+ lần isolation/release/re-run). Cần `--test-threads=1` hoặc subprocess isolation (hạ tầng N7 đã có cho một số). KHÔNG chặn nhát 1a (code orthogonal). Ghi nợ theo lệnh G.
@@ -11,6 +11,17 @@ Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop
 ---
 
 ## 🟢 BACKLOG MỞ
+
+### ⚖️ KHẮC ĐÁ — Capability Ł3 = nhiệm vụ chiến lược cốt lõi SAU Trục B (G+Giang 2026-06-22)
+Quyết định **ternary-first** ([VISION §1/§5](VISION.md)) neo giá trị Triết vào **coherence**
+([VISION §8](VISION.md)): một đại số Ł3 duy nhất xuyên null / logic / **capability**. Coherence
+mới xây **2/3** — `T?` ✅ + Ł3/K3 ✅, **capability Ł3 = 0** (ADR-0016/0017/0018 thiết kế còn
+sống, hiện thực đã xóa cùng compiler cũ). Đây là **chân độc-nhất nhất**; thiếu nó coherence
+chỉ là giấy → Triết tụt xuống toy-language chắp vá.
+- [ ] **Rebuild capability runtime** (Trit `-1` deny / `0` ambient / `+1` grant + Ł3 `Unknown`
+      resolved bởi runtime policy) — mở **NGAY SAU khi Trục B kết thúc**. ADR-0016/0017/0018 làm
+      móng thiết kế; hiện thực mới trên MIR/JIT. KHÔNG còn là "làm khi tới lượt". Chi tiết:
+      [ROADMAP §ƯU TIÊN CHIẾN LƯỢC SAU TRỤC B](ROADMAP.md).
 
 ### 🔴 Chiến dịch CFG Tail-Expression — ưu tiên 1 (soundness)
 Wire nốt ADR-0055: block tail-expr gánh giá trị cuối hàm.
