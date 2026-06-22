@@ -1,0 +1,15 @@
+// EXPECT: 7
+// ADR-0067 Lát 2 nhát 2a (NESTED-FLAT): a struct whose field is ANOTHER struct
+// containing heap (`Outer { inner: Inner{ s: String } }`, non-recursive) —
+// construct + drop. M-2 now allows the nested struct field; the drop-glue's
+// `collect_heap_leaves` recurses the layout statically and frees Inner's String
+// at its absolute offset. Observable `o.inner.n` (scalar leaf) = 7 proves the
+// nested layout; the String is freed once (counting teeth). Reading the String
+// field is the deferred read-side gap. Real shim — a double-free would SIGABRT.
+struct Inner { s: String, n: Integer }
+struct Outer { inner: Inner }
+
+function main() -> Integer = {
+    let o = Outer { inner: Inner { s: "Giang", n: 7 } };
+    return o.inner.n;
+}

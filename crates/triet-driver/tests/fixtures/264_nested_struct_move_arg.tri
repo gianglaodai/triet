@@ -1,0 +1,18 @@
+// EXPECT: 0
+// ADR-0067 Lát 2 nhát 2a: whole-move of a NESTED heap-struct across a boundary.
+// `take(o)` moves `Outer{ inner: Inner{ s: String } }` by pointer. The callee
+// frees Inner's String via the recursive drop-glue (collect_heap_leaves); the
+// caller's Deinit tombstones the SAME nested leaf (symmetric recursion) → main's
+// scope-end Drop reads ptr=0 → no-op. FREE_COUNT==1 (counting teeth); a
+// double-free at the nested tier would SIGABRT.
+struct Inner { s: String, n: Integer }
+struct Outer { inner: Inner }
+
+function take(o: Outer) -> Integer = {
+    return 0
+}
+
+function main() -> Integer = {
+    let o = Outer { inner: Inner { s: "Giang", n: 7 } };
+    return take(o);
+}

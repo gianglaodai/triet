@@ -1,0 +1,12 @@
+// ERROR: unknown type
+// ADR-0067 Lát 2 nhát 2a / R-recursive-creep: a TRUE-recursive struct
+// (`Node { next: Node }`, self-referential, infinite size with no box/indirection)
+// must be REFUSED — never reach the lowerer's recursive drop-glue. Typecheck
+// blocks it first (`resolve_type` → unknown type `Node` / E1001); the depth-64
+// limit in `collect_heap_leaves` is the defensive last-resort net (unit test).
+// Box/`&+`-indirected recursion is ADR-0068 (deferred). Must refuse, NOT hang.
+struct Node { next: Node }
+
+function main() -> Integer = {
+    return 0;
+}

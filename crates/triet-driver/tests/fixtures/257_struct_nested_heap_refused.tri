@@ -1,10 +1,11 @@
-// ERROR: heap types (String, Vector, HashMap) are not yet supported
-// ADR-0066 KCN-3 / R3: Lát 1 is FLAT only. A struct whose field is ANOTHER
-// struct that (transitively) contains heap (`Outer { inner: Inner }`, Inner has
-// a String) must be REFUSED at construction → Lát 2. M-2's ctx_is_copy walks
-// the layout: Inner is not Copy (its String field), and `inner` is not a direct
-// heap leaf, so the Outer construction refuses. (The Inner literal itself is a
-// direct heap leaf → allowed; only the nesting one level up is refused.)
+// EXPECT: 0
+// ADR-0067 Lát 2 nhát 2a FLIP (was 1d R3 negative): this fixture USED to assert
+// that a nested heap-struct (`Outer { inner: Inner }`, Inner has a String) is
+// REFUSED at construction (Lát 1 FLAT-only). Nhát 2a INTENTIONALLY unlocks
+// nested-flat structs, so the refuse is gone — it now constructs + drops
+// soundly (collect_heap_leaves recurses, frees Inner's String once). Flipped
+// ERROR→EXPECT (LUẬT 3: negative-test change, O sign-off). Positive coverage +
+// free-count now live in fixture 263 + the nested counting teeth.
 struct Inner { name: String }
 struct Outer { inner: Inner }
 
