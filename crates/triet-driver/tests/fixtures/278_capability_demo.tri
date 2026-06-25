@@ -1,0 +1,49 @@
+// EXPECT: 30
+// ADR-0069 Lát 4 (A2) — end-to-end Ł3-capability demo, runs the full pipeline
+// Parse → Typecheck → Lower → Borrowck → JIT → Run. Shows the whole algebra
+// woven together while the file still compiles + runs green.
+//
+// Levels exercised (the Ł3-Trit coherence axis of VISION §8):
+//   grant   (Trit::Positive) — mintable, zero-cost; possession = right.
+//   ambient (Trit::Zero)     — receive-only: a token may be received via a
+//                              parameter, but not minted here.
+//   deny    (Trit::Negative) — neither mintable nor possessable.
+//   defer   (Ł Unknown)      — mintable but runtime-gated + fail-closed trap.
+capability VgaBuffer grant
+capability DiskWriter grant
+capability UartPort ambient
+// capability RawPort   deny    // see the E2211 / E2212 comments below
+// capability NetSocket defer   // runtime hook; see capability_defer_trap.rs
+
+// Two driver functions, each consuming a distinct grant capability (the token
+// is MOVED in — the right is transferred to the driver and revoked at the
+// call site). Returns a fixed "device id" so the run yields a known total.
+function use_vga(vga: VgaBuffer) -> Integer { return 10 }
+function use_disk(disk: DiskWriter) -> Integer { return 20 }
+
+// `ambient` = receive-only. This DECLARATION proves an ambient capability is a
+// valid parameter type (typechecks + lowers + JIT-compiles; the ZST token
+// drops as a no-op). It is not called from `main` because a single-file demo
+// has no source of an ambient token — minting one is forbidden (it would be
+// E2211, see below), and `main` takes no parameters.
+function log_uart(uart: UartPort) -> Integer { return 7 }
+
+function main() -> Integer {
+    // Mint two grant tokens — ZST, 0 byte at runtime.
+    let vga = mint VgaBuffer;
+    let disk = mint DiskWriter;
+
+    // Cross-weave: hand each token to its driver. Each `use_*` MOVES its token
+    // (non-copy), so the right is transferred exactly once.
+    let a = use_vga(vga);   // vga MOVED → 10
+    let b = use_disk(disk); // disk MOVED → 20
+
+    // ── The rest of the Ł3 algebra (documented; would NOT compile/run) ──
+    // use_vga(vga);            // E2420 UseAfterMove — vga's right was revoked
+    // let bad = mint RawPort;  // E2211 — `deny` forbids minting
+    // function f(p: RawPort)   // E2212 — `deny` cannot be possessed (param)
+    // let net = mint NetSocket;// runtime: __triet_cap_check ≤ 0 → trap user(2)
+    //                          //   (proven in tests/capability_defer_trap.rs)
+
+    return a + b; // 10 + 20 = 30
+}
