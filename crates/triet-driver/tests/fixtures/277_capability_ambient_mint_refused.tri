@@ -1,0 +1,13 @@
+// ERROR: E2211
+// ADR-0069 §amend-A (Lát 2, WO-L2) — R-ambient-mint-refuse. `ambient` is
+// receive-only: a token may be received via a parameter (see 276) but NOT
+// minted in this scope. `mint Cap` → E2211 CapabilityLevelUnsupported, with an
+// ambient-specific hint ("receive-only ... not minted in this scope"). Poison:
+// treat ambient as grant in `check_mint` → mint is accepted → E2211 vanishes →
+// this fixture goes green.
+capability Cap ambient
+
+function main() -> Integer {
+    let a = mint Cap;
+    return 0;
+}

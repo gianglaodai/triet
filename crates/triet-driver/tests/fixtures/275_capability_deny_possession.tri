@@ -1,0 +1,13 @@
+// ERROR: E2212
+// ADR-0069 §amend-A (Lát 2, WO-L2) — R-deny-possession. A `deny` capability
+// (Ł3 Trit::Negative) cannot be POSSESSED at all — not even received via a
+// parameter. The annotation `c: Cap` on `f` resolves through `resolve_type`,
+// which sees `Cap` is `deny` and rejects with E2212 CapabilityNotPossessable
+// at the annotation span. Poison: drop the possession check in `resolve_type`
+// → `c: Cap` resolves to the ZST type with no error → typecheck passes →
+// this fixture goes green = `deny` no longer forbids possession.
+capability Cap deny
+
+function f(c: Cap) -> Integer { return 0 }
+
+function main() -> Integer { return 0 }

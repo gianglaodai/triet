@@ -816,20 +816,41 @@ pub enum TypeError {
     /// Unknown, Lát 3 runtime hook) — refuse cleanly here rather than minting a
     /// token the borrow checker cannot yet enforce per their semantics.
     #[error("E2211: cannot `mint {capability}` — capability level `{level}` is not allowed here")]
-    #[diagnostic(
-        code(triet::capability::E2211),
-        help(
-            "ADR-0069 Lát 0 mints only `grant` capabilities. `deny` forbids minting; \
-            `ambient` (Lát 2) and `defer` (Lát 3) are not yet implemented."
-        )
-    )]
+    #[diagnostic(code(triet::capability::E2211), help("{hint}"))]
     CapabilityLevelUnsupported {
         /// The capability being minted.
         capability: String,
         /// The declared level (`deny` / `ambient` / `defer`).
         level: String,
+        /// Level-specific guidance (set at the mint site). `ambient` →
+        /// receive-only; `deny`/`defer` → the Lát-0 not-mintable message.
+        hint: String,
         /// Source location of the `mint` expression.
         #[label("not mintable at level `{level}`")]
+        span: Span,
+    },
+
+    /// E2212: an annotation names a `deny` capability (ADR-0069 §amend-A).
+    ///
+    /// A `deny` capability (Ł3 `Trit::Negative`) cannot be POSSESSED at all —
+    /// not even received via a parameter, `let` binding, or struct field.
+    /// (Contrast `ambient`, which forbids `mint` but permits receiving a token
+    /// passed in.) The check fires at type-annotation resolution, before any
+    /// borrow tracking.
+    #[error("E2212: capability `{capability}` (level `deny`) cannot be possessed")]
+    #[diagnostic(
+        code(triet::capability::E2212),
+        help(
+            "A `deny` capability cannot be held — not even received via a \
+            parameter (ADR-0069 §amend-A). Remove the annotation, or change the \
+            capability's level."
+        )
+    )]
+    CapabilityNotPossessable {
+        /// The capability named by the annotation.
+        capability: String,
+        /// Source location of the offending type annotation.
+        #[label("`deny` capability not possessable")]
         span: Span,
     },
 
@@ -995,6 +1016,7 @@ impl TypeError {
             | Self::AmbiguousMethodCall { span, .. }
             | Self::NullableHasNoErrorState { span }
             | Self::CapabilityLevelUnsupported { span, .. }
+            | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }

@@ -1,0 +1,13 @@
+// EXPECT: 0
+// ADR-0069 §amend-A (Lát 2, WO-L2) — R-ambient-receivable (POSITIVE, no-ban-too-wide).
+// `ambient` = receive-only: a file loses the right to `mint`, but CAN receive a
+// token passed in. So `f(c: Cap)` with `Cap` ambient is a VALID annotation —
+// possession via parameter is allowed, NO E2212. The program compiles and runs
+// (`f` is never called; `main` returns 0; the ambient capability param drops as
+// a ZST no-op). Poison: if the possession check bans `ambient` too (not just
+// `deny`), this fixture errors out → goes red = proof the check is not too wide.
+capability Cap ambient
+
+function f(c: Cap) -> Integer { return 0 }
+
+function main() -> Integer { return 0 }

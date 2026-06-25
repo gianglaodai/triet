@@ -1062,6 +1062,22 @@ impl<'p> Checker<'p> {
                 "String" => Type::String,
                 "Unit" => Type::Unit,
                 _ => {
+                    // ADR-0069 §amend-A: capability possession check. This is
+                    // the chokepoint every param/let/field annotation flows
+                    // through. A `deny` capability cannot be possessed at all
+                    // (not even received via a parameter) → E2212. `grant` and
+                    // `ambient` ARE possessable (ambient = receive-only: forbids
+                    // `mint`, permits holding a token passed in) → fall through.
+                    if matches!(
+                        self.capabilities.get(&name),
+                        Some(triet_syntax::CapabilityLevel::Deny)
+                    ) {
+                        self.errors.push(TypeError::CapabilityNotPossessable {
+                            capability: name,
+                            span,
+                        });
+                        return Type::Unknown;
+                    }
                     // Look up user-defined types, type parameters, or aliases.
                     if let Some(ty) = self.env.lookup(&name).cloned() {
                         match &ty {

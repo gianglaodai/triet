@@ -348,15 +348,34 @@ impl Checker<'_> {
                 .cloned()
                 .unwrap_or(Type::Unknown);
         }
-        let level_str = match level {
-            CapabilityLevel::Grant => "grant",
-            CapabilityLevel::Ambient => "ambient",
-            CapabilityLevel::Deny => "deny",
-            CapabilityLevel::Defer => "defer",
+        // ADR-0069 §amend-A: `ambient` = receive-only (a file may hold a token
+        // passed in but may not mint one), so its refusal hint differs from the
+        // not-yet-implemented `deny`/`defer` message.
+        let (level_str, hint) = match level {
+            CapabilityLevel::Grant => ("grant", String::new()), // unreachable (handled above)
+            CapabilityLevel::Ambient => (
+                "ambient",
+                "`ambient` is receive-only — a token may be received via a \
+                parameter, but not minted in this scope (ADR-0069 §amend-A)."
+                    .to_owned(),
+            ),
+            CapabilityLevel::Deny => (
+                "deny",
+                "ADR-0069 Lát 0 mints only `grant` capabilities. `deny` forbids \
+                minting; `defer` (Lát 3) is not yet implemented."
+                    .to_owned(),
+            ),
+            CapabilityLevel::Defer => (
+                "defer",
+                "ADR-0069 Lát 0 mints only `grant` capabilities. `deny` forbids \
+                minting; `defer` (Lát 3) is not yet implemented."
+                    .to_owned(),
+            ),
         };
         self.errors.push(TypeError::CapabilityLevelUnsupported {
             capability: capability_name.to_owned(),
             level: level_str.to_owned(),
+            hint,
             span,
         });
         Type::Unknown
