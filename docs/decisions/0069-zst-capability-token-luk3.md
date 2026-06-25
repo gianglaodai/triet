@@ -185,8 +185,9 @@ test đỏ. (Nếu poison không đỏ = test trang trí, theo `feedback_poison_
 - **Lát 2 ✅ ĐÓNG (`ca8272e`):** Ambient receive-only + Deny no-possession (M1). Possession-check tại
   `resolve_type` (chokepoint mọi annotation) → Deny làm kiểu = **E2212**; ambient/grant possessable.
   `mint` ambient → E2211 "receive-only". Hai đường tách E2212(possess)/E2211(mint). O verify 3 răng.
-- **Lát 3 — Defer runtime hook (§5):** shim + trap-code riêng + fail-closed. Cổng: hook deny → trap
-  (SIGILL), hook allow → chạy; teeth poison fail-closed (hook vắng → phải trap).
+- **Lát 3 ✅ ĐÓNG (`2dd4d5f`):** Defer runtime hook + trap user(2), check tại mint-site, fail-closed.
+  `Statement::CapabilityCheck` (MIR) → JIT `__triet_cap_check`→`icmp ≤0`→`trapnz user(2)`. CAP_POLICY
+  AtomicI64 default 0=Unknown=fail-closed. O verify 4 răng (R-fail-closed boundary `≤` là tử huyệt).
 - **Lát 4 — Hardware aggregate:** `struct Hardware { vga: VgaBuffer, ... }` ZST-aggregate + destructure
   move (schema §10 example end-to-end). Cổng: `kernel_main(hw)` re-use field sau move → E2420.
 
@@ -266,4 +267,4 @@ ADR này **sửa** hai câu của §10:
 
 **§amend-A (Ambient = M1 Receive-only):** O ✍️ (gói M1 2026-06-25) · **G ✅ (PHÁN M1, chôn M2/M3 — "tà đạo implicit, phá ZST move-only/local-reasoning")** · Giang ⏳
 
-**Lát 0 ✅ ĐÓNG+PUSH `8b06a28` (O+G ký).** **Lát 2 ✅ ĐÓNG+PUSH `ca8272e` (O+G ký).** Còn: Lát 3 Defer runtime (trùm cuối) · Lát 4 Hardware aggregate.
+**Lát 0 ✅ `8b06a28` · Lát 2 ✅ `ca8272e` · Lát 3 ✅ `2dd4d5f` (đều O+G ký).** Đại số Ł3 capability KHÉP KÍN (Grant/Ambient/Deny tĩnh + Defer runtime). **Còn: Lát 4 Hardware aggregate** (schema §10 end-to-end — ZST-struct destructure-move).
