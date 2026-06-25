@@ -2023,6 +2023,29 @@ impl JitContext {
                     let var = self.var(dest.local);
                     builder.def_var(var, disc_val);
                 }
+
+                Statement::CapabilityCheck {
+                    capability_name, ..
+                } => {
+                    // ADR-0069 Lát 3 (§5 LOCK): emit EXACTLY ONE policy-hook
+                    // call + a fail-closed trap at the `defer` mint site.
+                    // result = __triet_cap_check(cap_id); result <= 0 (Deny −1 OR
+                    // Unknown 0) → trap `unwrap_user(2)` (SIGILL). user(2) is
+                    // DISTINCT from arithmetic range-check user(1) so a core dump
+                    // tells "capability denied" apart from "overflow".
+                    let cap_id = builder.ins().iconst(I64, cap_id_hash(capability_name));
+                    let func_id = self.get_or_declare_shim("__triet_cap_check")?;
+                    let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                    let call_inst = builder.ins().call(func_ref, &[cap_id]);
+                    let result = builder.inst_results(call_inst)[0];
+                    let zero = builder.ins().iconst(I64, 0);
+                    let denied = builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThanOrEqual, result, zero);
+                    builder
+                        .ins()
+                        .trapnz(denied, cranelift_codegen::ir::TrapCode::unwrap_user(2));
+                }
             }
 
             // NLL loan ending: handled by borrow checker at compile time
@@ -2680,6 +2703,48 @@ fn dfs_post(
 #[unsafe(no_mangle)]
 const extern "C" fn __test_shim_multiply(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b)
+}
+
+/// ADR-0069 Lát 3: process-global capability policy. Default `0` = Łukasiewicz
+/// Unknown = fail-closed (a `defer` mint traps unless an embedder/test grants).
+/// Set via [`__set_cap_policy`]. A process-global (not per-cap) policy is the
+/// Lát-3 scope; `cap_id` is passed to the hook for future per-cap routing.
+static CAP_POLICY: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// ADR-0069 Lát 3: runtime capability policy hook.
+///
+/// Returns the Ł3-Trit verdict for `cap_id`: `+1` allow / `-1` deny / `0`
+/// Unknown. The JIT traps (fail-closed) on any result `<= 0`. Lát 3 reads a
+/// process-global policy and ignores `cap_id` (kept in the ABI for future
+/// per-capability routing).
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_cap_check(_cap_id: i64) -> i64 {
+    CAP_POLICY.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Set the process-global capability policy ([`CAP_POLICY`]). Embedder/test
+/// hook — production embedders wire a real policy here; the default `0`
+/// (Unknown → fail-closed) holds until then.
+pub fn __set_cap_policy(verdict: i64) {
+    CAP_POLICY.store(verdict, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// ADR-0069 Lát 3: stable FNV-1a hash of a capability name → `cap_id`.
+///
+/// Threads an identifier to the policy hook; deterministic across runs (NOT
+/// `DefaultHasher`, which could vary). Lát 3's process-global policy ignores
+/// the value, but a stable id keeps the ABI ready for per-cap routing.
+#[must_use]
+pub fn cap_id_hash(name: &str) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // Reinterpret the bits as i64 — the hook treats cap_id as an opaque token
+    // (bit-cast, not a numeric narrowing → no wrap concern).
+    i64::from_ne_bytes(h.to_ne_bytes())
 }
 
 /// Integer power via exponentiation by squaring (`extern "C"` ABI).

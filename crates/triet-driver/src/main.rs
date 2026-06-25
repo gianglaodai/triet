@@ -172,6 +172,8 @@ fn main() -> ExitCode {
         // ADR-0048/0049: mutable borrow — clear + append
         ShimSymbol::fn_1_1("__triet_string_clear", mir_lower::__triet_string_clear),
         ShimSymbol::fn_2_1("__triet_string_append", mir_lower::__triet_string_append),
+        // ADR-0069 Lát 3: capability runtime policy hook (defer mint gate).
+        ShimSymbol::fn_1_1("__triet_cap_check", mir_lower::__triet_cap_check),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = match ctx.compile_multi(&body_refs) {

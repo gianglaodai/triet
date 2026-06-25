@@ -327,10 +327,15 @@ impl Checker<'_> {
         }
     }
 
-    /// ADR-0069 Lát 0: typecheck `mint Cap`. The capability must be declared;
-    /// Lát 0 mints only `Grant` (returns the capability's ZST type). Any other
-    /// level refuses cleanly with E2211 (`deny` permanently; `ambient`/`defer`
-    /// pending Lát 2/3) — never a silent hole.
+    /// ADR-0069: typecheck `mint Cap`. The capability must be declared.
+    ///
+    /// - `Grant` (Lát 0) → mints freely, returns the ZST type. Zero-cost.
+    /// - `Defer` (Lát 3) → ALSO mintable here: minting is valid, but the JIT
+    ///   inserts a runtime policy hook + fail-closed trap at the mint site
+    ///   (§5 LOCK). So typecheck returns the ZST type just like Grant; the
+    ///   runtime gate is a lowering/JIT concern, not a type error.
+    /// - `Ambient` (§amend-A) / `Deny` → refuse with E2211 (`ambient` is
+    ///   receive-only; `deny` forbids minting). Never a silent hole.
     fn check_mint(&mut self, capability_name: &str, span: Span) -> Type {
         use triet_syntax::CapabilityLevel;
         let Some(level) = self.capabilities.get(capability_name).cloned() else {
@@ -340,19 +345,18 @@ impl Checker<'_> {
             });
             return Type::Unknown;
         };
-        if matches!(level, CapabilityLevel::Grant) {
-            // The capability type is registered in `env` (declare pass).
-            return self
-                .env
-                .lookup(capability_name)
-                .cloned()
-                .unwrap_or(Type::Unknown);
-        }
-        // ADR-0069 §amend-A: `ambient` = receive-only (a file may hold a token
-        // passed in but may not mint one), so its refusal hint differs from the
-        // not-yet-implemented `deny`/`defer` message.
+        // `ambient`/`deny` → refuse with the level-specific hint; `grant`/`defer`
+        // → mintable (the capability ZST type, registered in `env`). Single
+        // match (no early return + `unreachable!()`) keeps the compiler
+        // panic-free on user input (Track B rule #1).
         let (level_str, hint) = match level {
-            CapabilityLevel::Grant => ("grant", String::new()), // unreachable (handled above)
+            CapabilityLevel::Grant | CapabilityLevel::Defer => {
+                return self
+                    .env
+                    .lookup(capability_name)
+                    .cloned()
+                    .unwrap_or(Type::Unknown);
+            }
             CapabilityLevel::Ambient => (
                 "ambient",
                 "`ambient` is receive-only — a token may be received via a \
@@ -361,14 +365,8 @@ impl Checker<'_> {
             ),
             CapabilityLevel::Deny => (
                 "deny",
-                "ADR-0069 Lát 0 mints only `grant` capabilities. `deny` forbids \
-                minting; `defer` (Lát 3) is not yet implemented."
-                    .to_owned(),
-            ),
-            CapabilityLevel::Defer => (
-                "defer",
-                "ADR-0069 Lát 0 mints only `grant` capabilities. `deny` forbids \
-                minting; `defer` (Lát 3) is not yet implemented."
+                "`deny` forbids minting (and possession — see E2212). Change \
+                the capability's level to mint a token."
                     .to_owned(),
             ),
         };

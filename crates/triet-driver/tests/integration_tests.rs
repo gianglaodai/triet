@@ -202,6 +202,8 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_string_append",
             triet_jit::mir_lower::__triet_string_append,
         ),
+        // ADR-0069 Lát 3: capability runtime policy hook (defer mint gate).
+        ShimSymbol::fn_1_1("__triet_cap_check", triet_jit::mir_lower::__triet_cap_check),
     ];
     let mut ctx = JitContext::with_shims(shims);
     let compiled = ctx

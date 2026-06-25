@@ -194,6 +194,8 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::OutcomeAlloc { .. } => Vec::new(),
         Statement::SetDiscriminant { .. } => Vec::new(),
         Statement::GetDiscriminant { source, .. } => vec![source.local],
+        // ADR-0069: capability gate reads no local.
+        Statement::CapabilityCheck { .. } => Vec::new(),
     }
 }
 
@@ -213,6 +215,8 @@ fn statement_writes(stmt: &Statement) -> Vec<Local> {
         Statement::EnumAlloc { dest, .. } => vec![*dest],
         Statement::OutcomeAlloc { dest, .. } => vec![*dest],
         Statement::SetDiscriminant { .. } => Vec::new(),
+        // ADR-0069: capability gate writes no local.
+        Statement::CapabilityCheck { .. } => Vec::new(),
     }
 }
 

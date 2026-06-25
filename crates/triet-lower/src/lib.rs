@@ -20,9 +20,9 @@ use triet_mir::{
     Span, Statement, StructLayout, Terminator,
 };
 use triet_syntax::{
-    Arena, BinaryOperator, Expr, ExprId, ExprResolutions, FunctionBody, FunctionDefinition, Item,
-    MethodResolutions, PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId,
-    UnaryOperator,
+    Arena, BinaryOperator, CapabilityLevel, Expr, ExprId, ExprResolutions, FunctionBody,
+    FunctionDefinition, Item, MethodResolutions, PatternResolutions, Program, ReferenceForm, Stmt,
+    TypeExpr, TypeId, UnaryOperator,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -119,11 +119,12 @@ pub(crate) struct LoweringInput<'a> {
     pub method_resolutions: MethodResolutions,
     /// Map from (possibly mangled) function name to its return type.
     pub func_return_types: HashMap<String, MirType>,
-    /// ADR-0069: capability type names. `lower_type_simple` (which keys off
-    /// Ctx layout maps, not `symbols`) consults this to resolve a capability
-    /// annotation to `MirType::Capability` instead of `Unknown` (which would
-    /// be Copy → a silent non-copy bypass).
-    pub capabilities: std::collections::HashSet<String>,
+    /// ADR-0069: capability name → Ł3 level. `lower_type_simple` (which keys
+    /// off Ctx layout maps, not `symbols`) consults the keys to resolve a
+    /// capability annotation to `MirType::Capability` (not `Unknown`, which
+    /// would be Copy → a silent non-copy bypass). Lát 3: `Expr::Mint` reads the
+    /// level so a `defer` mint emits a `CapabilityCheck` runtime gate.
+    pub capabilities: std::collections::HashMap<String, CapabilityLevel>,
 }
 
 /// Per-function lowering state: local/block allocation, variable scope,
@@ -144,8 +145,9 @@ struct Ctx {
     /// is handled by the type checker — these are NOT scanned by the lowerer
     /// for name→discriminant mapping.
     enum_layouts: HashMap<String, EnumLayout>,
-    /// ADR-0069: capability type names, for `lower_type_simple` resolution.
-    capabilities: std::collections::HashSet<String>,
+    /// ADR-0069: capability name → Ł3 level. Keys drive `lower_type_simple`
+    /// resolution; the level drives `Expr::Mint` (defer → `CapabilityCheck`).
+    capabilities: std::collections::HashMap<String, CapabilityLevel>,
     /// Resolved enum variants from the type checker, keyed by expression ID.
     /// The lowerer reads these instead of scanning enum_layouts by string match.
     expr_resolutions: ExprResolutions,
@@ -695,11 +697,15 @@ pub fn lower_program(
     // via `input.<field>`); the three resolution maps are `&` parameters so
     // they are cloned. The `struct_layouts`/`enum_layouts` Vecs are NOT moved
     // here — they stay live to fill `body.struct_layouts`/`enum_layouts`.
-    // ADR-0069: capability type names (derived from the same symbol table).
-    let capabilities: std::collections::HashSet<String> = symbols
+    // ADR-0069: capability name → Ł3 level, read straight from the decls (the
+    // symbol table carries only the kind, not the level the mint gate needs).
+    let capabilities: std::collections::HashMap<String, CapabilityLevel> = prog
+        .items
         .iter()
-        .filter(|(_, k)| **k == TypeKind::Capability)
-        .map(|(n, _)| n.clone())
+        .filter_map(|item| match &item.node {
+            Item::Capability { name, level } => Some((name.clone(), level.clone())),
+            _ => None,
+        })
         .collect();
     let input = LoweringInput {
         arena: &prog.arena,
@@ -1083,7 +1089,7 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
             other if c.struct_layouts.contains_key(other) => MirType::Struct(other.to_string()),
             other if c.enum_layouts.contains_key(other) => MirType::Enum(other.to_string()),
             // ADR-0069: capability token type — ZST, non-copy.
-            other if c.capabilities.contains(other) => MirType::Capability(other.to_string()),
+            other if c.capabilities.contains_key(other) => MirType::Capability(other.to_string()),
             _ => MirType::Unknown, // refuse-over-guess
         },
         TypeExpr::Nullable(inner) => {
@@ -1679,8 +1685,20 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         // The local is typed `Capability(name)` so it is non-copy: passing it
         // to a function moves it (Deinit tombstone), and reuse-after-move is
         // E2420 (borrowck, keyed off `is_copy`). Typecheck (`check_mint`) has
-        // already verified the capability exists and is Grant.
+        // already verified the capability exists and is mintable (Grant/Defer).
         Expr::Mint { capability_name } => {
+            // Lát 3: a `defer` mint emits a runtime capability gate BEFORE the
+            // ZST init (§5 LOCK — check at the mint site, fail-closed). Grant
+            // mints emit NOTHING extra (Lát 0 zero-cost path, unchanged).
+            if matches!(
+                c.capabilities.get(capability_name.as_str()),
+                Some(CapabilityLevel::Defer)
+            ) {
+                c.push(Statement::CapabilityCheck {
+                    capability_name: capability_name.clone(),
+                    span: expr_span.clone(),
+                });
+            }
             let d = c.alloc_local_ty(MirType::Capability(capability_name.clone()));
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::Const {
@@ -5321,7 +5339,7 @@ mod tests {
             pattern_resolutions: PatternResolutions::new(),
             method_resolutions: MethodResolutions::new(),
             func_return_types: HashMap::new(),
-            capabilities: std::collections::HashSet::new(),
+            capabilities: std::collections::HashMap::new(),
         };
         lower_function(&input, &func.0, func.1, None)
     }
@@ -5374,7 +5392,7 @@ mod tests {
             pattern_resolutions: PatternResolutions::new(),
             method_resolutions: MethodResolutions::new(),
             func_return_types: HashMap::new(),
-            capabilities: std::collections::HashSet::new(),
+            capabilities: std::collections::HashMap::new(),
         };
         lower_function(&input, &func.0, func.1, None).expect("lowering failed")
     }

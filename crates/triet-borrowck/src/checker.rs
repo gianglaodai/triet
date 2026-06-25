@@ -833,6 +833,8 @@ fn process_block(
                 // PropagatedLoan or direct borrow) is released.
                 state.active_loans.retain(|loan| loan.dest != *l);
             }
+            // ADR-0069: capability gate touches no place/local — no borrow effect.
+            Statement::CapabilityCheck { .. } => {}
         }
 
         // NLL: end loans whose dest is no longer live after this statement

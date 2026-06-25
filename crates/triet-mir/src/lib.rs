@@ -326,6 +326,19 @@ pub enum Statement {
 
     /// Drop a local's value (decrement refcount or free memory).
     Drop(Local, Span),
+
+    /// ADR-0069 Lát 3: runtime capability gate for a `defer` token. Emitted by
+    /// the lowerer at a `mint X` site when `X` is `defer`, BEFORE the ZST init.
+    /// The JIT lowers it to a single `__triet_cap_check(cap_id)` call + a
+    /// fail-closed trap (`unwrap_user(2)`): result ≤ 0 (Deny −1 OR Unknown 0)
+    /// → trap. Carries no `Local` — it is a pure control-flow guard with no
+    /// value or place (borrowck / liveness / verify treat it as a no-op).
+    CapabilityCheck {
+        /// Name of the `defer` capability being minted (→ stable `cap_id` hash).
+        capability_name: String,
+        /// Source location of the `mint` expression.
+        span: Span,
+    },
 }
 
 /// Compile-time constant value.
@@ -1909,6 +1922,8 @@ impl Body {
                         }
                     }
                     Statement::Drop(l, _) => check_local(*l)?,
+                    // ADR-0069: capability gate carries no local — nothing to check.
+                    Statement::CapabilityCheck { .. } => {}
                 }
             }
         }
@@ -2300,6 +2315,9 @@ impl fmt::Display for Statement {
                 write!(f, "{dest} = discriminant({source})")
             }
             Self::Drop(l, _) => write!(f, "Drop({l})"),
+            Self::CapabilityCheck {
+                capability_name, ..
+            } => write!(f, "CapabilityCheck({capability_name})"),
         }
     }
 }
