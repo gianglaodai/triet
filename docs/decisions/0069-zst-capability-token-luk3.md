@@ -145,7 +145,9 @@ KHÔNG viết engine mới:
 `Defer` (Ł3 Unknown) là trường hợp DUY NHẤT chạm runtime. Khi `mint X` với `X` level `defer`:
 
 - Token vẫn mint được (ZST), borrowck vẫn move-track như Grant — **memory-safety không nới**.
-- Nhưng JIT chèn, **tại mint-site** (hoặc guarded-op đầu tiên — khóa theo recon), một call tới
+- Nhưng JIT chèn, **TẠI MINT-SITE** (G LOCK 2026-06-25 — KHÔNG guarded-op: ZST bốc hơi runtime,
+  đặt check ở guarded-op = nhét runtime-check khắp use-site = giết bản chất ZST. `mint` = "rèn lệnh
+  bài", check một lần tại điểm đúc; gật → token vô hình đi qua mọi hàm ZERO-COST; lắc → trap), một call tới
   **runtime policy hook** `extern "C" fn __triet_cap_check(cap_id: i64) -> i64` (Rust shim, cùng
   họ `__triet_*` ở `mir_lower.rs`). Hook trả Ł3-Trit: `+1` allow / `-1` deny / `0` (Unknown →
   treat-as-deny, fail-closed).
