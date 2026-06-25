@@ -73,7 +73,69 @@ hardcode 8 (lib.rs:603) → String-payload slot 16B; construction store CHỈ pt
 - **Teeth (O verify):** R-enum-leak (str count 0) · R-enum-double-free-move (count 2) · **⚔ R-enum-wrong-variant**
   (`Pair{Text(String),Buf(Vector)}` — cross-wire → gọi nhầm shim → per-type count sai; Buf→vec=1/str=0, Text→str=1/vec=0) ·
   **R-enum-cap** (poison 2b-0b → cap rác ≠ 5). Fixtures 266/267/268, counting `enum_heap_payload_counting`.
-- **Defer 2b+:** enum-in-struct-field, payload-struct-chứa-heap (collect đệ quy trong arm).
+- **~~Defer 2b+~~ → AMEND bên dưới (G ký mở 2026-06-24):** enum-in-struct-field nay đóng trong §2b+.
+  payload-struct-chứa-heap (collect đệ quy TRONG arm enum) vẫn defer (chưa use-case).
+
+---
+
+## ✚ AMEND §2b+ — Enum-in-Struct field (cầu nối No-Box, G ký mở 2026-06-24)
+
+**Mục tiêu:** `struct Wrapper { msg: Msg }` (với `Msg.Text(String)`) construct + move + drop SOUND,
+FREE_COUNT==1. Đóng nốt NO-BOX — bịt lỗ enum-kẹt-giữa-struct.
+
+### Recon (O đo — khắc đá)
+- **HEAD = REFUSE SẠCH, KHÔNG leak câm.** `lib.rs:3107` gate chặn construction (`ctx_is_copy(Enum Msg)`
+  lib.rs:1013-1022 đã đệ quy đúng → `false` cho heap-payload variant → field không-Copy → REJECT
+  `heap_type_not_supported`). Probe `triet-driver probe.tri` → exit sạch + diagnostic. Không có hazard
+  OOM ở HEAD; leak chỉ xuất hiện NẾU nới gate mà KHÔNG bắc cầu drop-glue.
+- **3 điểm mù màu:** (A) `mir_lower.rs:446` `collect_heap_leaves` bỏ qua enum field (`_ => {}`);
+  (B) `mir_lower.rs:1028` `emit_enum_drop_glue` **slot-based** (đòi local typed Enum + `enum_slots.get(local)`)
+  → không gọi được cho enum nằm GIỮA struct (không có enum_slot riêng); (C) `lib.rs:3107` gate refuse.
+
+### Vấn đề kiến trúc cốt lõi
+Leaf-list hiện `Vec<(i32, MirType)>` là **TĨNH** (free vô điều kiện, offset compile-time). Enum-drop là
+**ĐỘNG** (tag-switch runtime — chỉ free variant active). KHÔNG nhét enum vào leaf phẳng được → phân nhánh
+ở mức hạ tầng là BẮT BUỘC.
+
+### Thiết kế cầu (4 mảnh)
+- **2b+-A `LeafKind`:** đổi leaf-list `Vec<(i32, MirType)>` → `Vec<(i32, LeafKind)>` với
+  `LeafKind::Heap(MirType)` | `LeafKind::Enum(String)`. `collect_heap_leaves:446` push `(abs, Enum(name))`
+  cho enum field. **KHÔNG đệ quy vào enum** (payload tag-dependent — runtime).
+- **2b+-B address-based core:** tách `emit_enum_drop_glue_at(builder, body, enum_name, base_addr)` đọc
+  disc@`base_addr+0`, payload@`base_addr+8`. Slot-based hiện thành wrapper mỏng (`base_addr=stack_addr(slot,0)`
+  → gọi core). **2b top-level GIỮ byte-identical** (teeth regression bắt buộc — 266/267/268 + counting).
+- **2b+-C consumer dispatch:** Drop (mir_lower.rs:1880) loop leaf → `Heap`→`emit_heap_free_at(base+abs)`;
+  `Enum`→`emit_enum_drop_glue_at(copy_base_addr(local,abs), name)`. Deinit (mir_lower.rs:1479) → `Heap` zero
+  ptr@abs (như cũ); `Enum` zero payload word @`abs+8` **TĨNH** (ptr=0 → free no-op bất kể disc;
+  **KHÔNG đụng disc@abs+0** — luật 2b-3).
+- **2b+-D gate (lib.rs:3107):** thêm `is_nested_enum = matches!(decl_ty, Enum(n) if c.enum_layouts.contains_key(n))`
+  song song `is_nested_struct`. Self-ref chặn upstream typecheck; depth-64 net giữ.
+
+### ⚠️ LẰN RANH SINH TỬ (offset + fat-store — O cảnh báo, G khắc đậm)
+- **Offset khớp by construction:** compile-time abs (`collect` accumulate `base+f.offset`) == runtime
+  (`copy_base_addr(local,abs)=stack_addr(slot,0)+abs`) — CÙNG `layout.fields[].offset`. Disc@base+abs+0,
+  payload@base+abs+8. **Lệch 1 byte = SIGSEGV.**
+- **Fat-store landmine (analog 1a-STEP4 / 2b-0b):** nới gate → construction `_0.msg = move _1` PHẢI copy
+  **TRỌN width enum** (disc+payload, 32B nếu String-payload), không chỉ 8B. Store-path 8B-thiếu → drop đọc
+  disc/cap RÁC → SIGSEGV. **PHẢI rà store-path + `total_size` struct chứa enum field (từ `enum_layouts.total_size`,
+  KHÔNG `_=>8`) — D lơ là chỗ này = REJECT.**
+
+### Teeth (counting FREE_COUNT — poison CẦU, không poison HEAD)
+- **R-enum-in-struct-leak** (ISOLATION): bóp 446 không push Enum leaf → FREE_COUNT==0 (leak) ĐỎ; baseline==1.
+- **⚔ R-wrong-variant:** ignore disc trong core → free variant sai → per-type count sai/cap rác ĐỎ.
+- **R-double-free-move:** `let w2=w` bóp Deinit enum-field tombstone → FREE_COUNT==2 ĐỎ.
+- **R-fat-store-cap:** instrument cap thật (==len) vs rác → bắt store-path 8B-thiếu.
+- **Regression 2b:** 266/267/268 + counting XANH (refactor address-based không vỡ top-level).
+
+### Defer (vẫn đóng — chưa use-case)
+- payload-struct-chứa-heap (`enum Msg { Rec(Wrapper) }` với Wrapper chứa String) — collect đệ quy TRONG arm.
+- True-recursive/box → ADR-0068.
+
+### Chữ ký §2b+ (ĐÓNG 2026-06-25)
+O ✅ (verify 4 răng poison độc lập đỏ: death-line#2→SIGABRT134 · R-leak→Drop-Unsupported ·
+⚔R-wrong-variant→2 fail · R-double-free-move→count≠1; 2b byte-identical) · G ✅ co-sign.
+**🏁 NO-BOX (ADR-0067 2a+2b+2b+) ĐÓNG SẬP TRỌN BỘ.** Nợ latent ghi `Nullable(Enum)` sizing
+arm (struct_map→8, correct-now, đồng bộ khi mở ADR-0062 §6).
 
 ---
 
