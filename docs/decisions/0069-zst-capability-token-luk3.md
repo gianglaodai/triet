@@ -180,10 +180,9 @@ test đỏ. (Nếu poison không đỏ = test trang trí, theo `feedback_poison_
 - **Lát 0 ✅ ĐÓNG (`8b06a28`):** `capability X grant` decl + `mint X` ZST 0-byte + `is_copy==false`
   (2-classifier defense-in-depth) + non-grant refuse E2211 + `public capability` refuse. Vá finding #1+#2.
   (Nuốt luôn phần Grant/Deny-mint của Lát 1.)
-- **Lát 2 — Ambient receive-only + Deny no-possession (M1, G ký §amend-A):**
-  (a) `mint X` ambient → E2211 message riêng "receive-only" (Lát 0 đang gộp bucket → tách).
-  (b) **NEW possession-check:** `X` level `deny` làm KIỂU param/binding/field → **E2212**; ambient/grant
-  làm kiểu = HỢP LỆ. Cổng: deny-param → E2212 · ambient-param → typecheck OK · mint-ambient → E2211.
+- **Lát 2 ✅ ĐÓNG (`ca8272e`):** Ambient receive-only + Deny no-possession (M1). Possession-check tại
+  `resolve_type` (chokepoint mọi annotation) → Deny làm kiểu = **E2212**; ambient/grant possessable.
+  `mint` ambient → E2211 "receive-only". Hai đường tách E2212(possess)/E2211(mint). O verify 3 răng.
 - **Lát 3 — Defer runtime hook (§5):** shim + trap-code riêng + fail-closed. Cổng: hook deny → trap
   (SIGILL), hook allow → chạy; teeth poison fail-closed (hook vắng → phải trap).
 - **Lát 4 — Hardware aggregate:** `struct Hardware { vga: VgaBuffer, ... }` ZST-aggregate + destructure
@@ -265,4 +264,4 @@ ADR này **sửa** hai câu của §10:
 
 **§amend-A (Ambient = M1 Receive-only):** O ✍️ (gói M1 2026-06-25) · **G ✅ (PHÁN M1, chôn M2/M3 — "tà đạo implicit, phá ZST move-only/local-reasoning")** · Giang ⏳
 
-**Lát 0 ✅ ĐÓNG+PUSH `8b06a28` (O+G ký).** Lát 2 = WO đang phát.
+**Lát 0 ✅ ĐÓNG+PUSH `8b06a28` (O+G ký).** **Lát 2 ✅ ĐÓNG+PUSH `ca8272e` (O+G ký).** Còn: Lát 3 Defer runtime (trùm cuối) · Lát 4 Hardware aggregate.
