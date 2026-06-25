@@ -204,6 +204,18 @@ enum NullableStructCopy {
     Downcast,
 }
 
+/// ADR-0067 2a/2b+: classifies a heap leaf found by `collect_heap_leaves`.
+/// A `Heap` leaf is freed/tombstoned UNCONDITIONALLY at a compile-time offset
+/// (the static value model). An `Enum` leaf carries its enum name and is freed
+/// via a runtime tag-switch (`emit_enum_drop_glue_at`) — only the ACTIVE
+/// variant's payload — and tombstoned by zeroing the payload word (NOT the
+/// discriminant). The two cannot share a flat unconditional list, hence the split.
+#[derive(Debug)]
+enum LeafKind {
+    Heap(MirType),
+    Enum(String),
+}
+
 /// Holds Cranelift JIT state across compilations.
 pub struct JitContext {
     module: JITModule,
@@ -407,20 +419,21 @@ impl JitContext {
     }
 
     /// ADR-0067 2a: statically collect every heap LEAF reachable from a struct,
-    /// as a flat `(absolute_offset, leaf_type)` list. Recurses into nested
+    /// as a flat `(absolute_offset, leaf_kind)` list. Recurses into nested
     /// struct fields accumulating offsets (the value model stores nested structs
     /// inline/FLAT), so a single pass over the returned list frees/tombstones
     /// every heap byte regardless of nesting depth. The struct graph is a DAG
     /// (recursive types are blocked by typecheck), so this terminates; the depth
     /// limit is a last-resort net that returns a `JitError` instead of hanging
     /// the compiler if a recursive type ever slips through. Enum fields are NOT
-    /// recursed — enum-payload heap is tag-dependent (runtime disc) → ADR-0067 2b.
+    /// recursed — enum-payload heap is tag-dependent (runtime disc) → ADR-0067 2b+
+    /// pushes them as `LeafKind::Enum` for a runtime tag-switch at drop/deinit.
     fn collect_heap_leaves(
         struct_name: &str,
         base_offset: i32,
         body: &Body,
         depth: usize,
-        out: &mut Vec<(i32, MirType)>,
+        out: &mut Vec<(i32, LeafKind)>,
     ) -> Result<(), JitError> {
         if depth > 64 {
             return Err(JitError::Unsupported(format!(
@@ -439,11 +452,17 @@ impl JitContext {
                 + i32::try_from(f.offset)
                     .map_err(|_| JitError::Unsupported("struct field offset exceeds i32".into()))?;
             match &f.ty {
-                t if t.is_any_heap() => out.push((abs, t.clone())),
+                t if t.is_any_heap() => out.push((abs, LeafKind::Heap(t.clone()))),
                 MirType::Struct(inner) => {
                     Self::collect_heap_leaves(inner, abs, body, depth + 1, out)?;
                 }
-                _ => {} // scalar / enum (2b) → skip
+                // ADR-0067 2b+: an enum field is a leaf with a runtime tag-switch
+                // free (no static recursion into its payload — the active variant
+                // is only known at runtime). A Copy enum yields no heap arm at
+                // drop time → harmless no-op (and a struct holding only Copy enums
+                // is itself Copy → never dropped).
+                MirType::Enum(name) => out.push((abs, LeafKind::Enum(name.clone()))),
+                _ => {} // scalar → skip
             }
         }
         Ok(())
@@ -1022,9 +1041,12 @@ impl JitContext {
     /// frees ONLY the heap payload of the ACTIVE variant (never touches the
     /// inactive variants' garbage). Scalar/unit variants emit no arm. Returns
     /// `true` if `local` is an enum (so the `Statement::Drop` caller knows it was
-    /// handled), `false` otherwise. Generalizes `emit_outcome_drop_glue` (2-arm)
-    /// to N-arm. Payload lives at `payload_offset` (8 in Bậc A); `emit_heap_free_at`
-    /// reads `{ptr@off, cap@off+16}` (String) or `{ptr@off}` (Vector/HashMap).
+    /// handled), `false` otherwise.
+    ///
+    /// This is the slot-based WRAPPER: it resolves the enum's `enum_slot`, forms
+    /// the base address (`stack_addr(slot, 0)`), and delegates to the
+    /// address-based core `emit_enum_drop_glue_at`. A top-level enum local thus
+    /// frees byte-identically to before the 2b+ split.
     fn emit_enum_drop_glue(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -1035,15 +1057,40 @@ impl JitContext {
             return Ok(false);
         };
         let name = name.clone();
+        let slot = self
+            .enum_slots
+            .get(&local)
+            .ok_or_else(|| JitError::Unsupported("enum Drop without slot".into()))?
+            .0;
+        let base_addr = builder.ins().stack_addr(I64, slot, 0);
+        self.emit_enum_drop_glue_at(builder, body, &name, base_addr)?;
+        Ok(true)
+    }
+
+    /// ADR-0067 2b+: address-based core of the enum tag-switch drop-glue.
+    /// `base_addr` points at the enum's first byte (disc@`base_addr+0`,
+    /// payload@`base_addr+8`). Used both by the slot-based wrapper above
+    /// (top-level enum local) AND by the struct drop walk (`collect_heap_leaves`
+    /// yields a `LeafKind::Enum` at `copy_base_addr(local, abs_offset)` — an enum
+    /// sitting INSIDE a struct field has no `enum_slot` of its own). Generalizes
+    /// `emit_outcome_drop_glue` (2-arm) to N-arm. `emit_heap_free_at` reads
+    /// `{ptr@off, cap@off+16}` (String) or `{ptr@off}` (Vector/HashMap).
+    fn emit_enum_drop_glue_at(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        enum_name: &str,
+        base_addr: cranelift_codegen::ir::Value,
+    ) -> Result<(), JitError> {
         // Clone (disc_value, payload_ty) for heap-payload variants before the
         // `&mut self` free calls (releases the `body` borrow).
         let heap_variants: Vec<(i64, MirType)> = {
             let layout = body
                 .enum_layouts
                 .iter()
-                .find(|e| e.name == name)
+                .find(|e| e.name == enum_name)
                 .ok_or_else(|| {
-                    JitError::Unsupported(format!("enum Drop without layout: {name}"))
+                    JitError::Unsupported(format!("enum Drop without layout: {enum_name}"))
                 })?;
             layout
                 .variants
@@ -1057,17 +1104,12 @@ impl JitContext {
                 .collect()
         };
         if heap_variants.is_empty() {
-            // Scalar/unit enum — nothing to free (a Copy enum never reaches here
-            // anyway: the Drop handler's is_copy check skips it).
-            return Ok(true);
+            // Scalar/unit enum — nothing to free.
+            return Ok(());
         }
-        let slot = self
-            .enum_slots
-            .get(&local)
-            .ok_or_else(|| JitError::Unsupported("enum Drop without slot".into()))?
-            .0;
-        let payload_off: i32 = 8; // payload_offset, Bậc A
-        let disc = builder.ins().stack_load(I64, slot, 0);
+        let payload_off: i64 = 8; // payload_offset, Bậc A
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        let disc = builder.ins().load(I64, mem, base_addr, 0);
         let merge_bb = builder.create_block();
 
         for (disc_value, payload_ty) in heap_variants {
@@ -1079,7 +1121,7 @@ impl JitContext {
             // ── arm: free THIS variant's heap payload ──
             builder.switch_to_block(arm_bb);
             builder.seal_block(arm_bb);
-            let addr = builder.ins().stack_addr(I64, slot, payload_off);
+            let addr = builder.ins().iadd_imm(base_addr, payload_off);
             self.emit_heap_free_at(builder, addr, &payload_ty)?;
             builder.ins().jump(merge_bb, &[]);
             // ── fall through: test the next variant ──
@@ -1090,7 +1132,7 @@ impl JitContext {
         builder.ins().jump(merge_bb, &[]);
         builder.switch_to_block(merge_bb);
         builder.seal_block(merge_bb);
-        Ok(true)
+        Ok(())
     }
 
     /// Build the Cranelift IR for a single function body.
@@ -1487,10 +1529,23 @@ impl JitContext {
                         // (layout.name=="String") is handled by the branch above.
                         let slot = *slot;
                         let name = layout.name.clone();
-                        let mut leaves: Vec<(i32, MirType)> = Vec::new();
+                        let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
                         Self::collect_heap_leaves(&name, 0, body, 0, &mut leaves)?;
-                        for (abs, _) in leaves {
-                            builder.ins().stack_store(zero, slot, abs);
+                        for (abs, kind) in leaves {
+                            // ADR-0067 2b+: tombstone per leaf kind. A `Heap` leaf
+                            // zeroes the pointer word @abs (free no-op). An `Enum`
+                            // leaf zeroes the PAYLOAD word @abs+8 STATICALLY — ptr=0
+                            // makes the tag-switch free a no-op for ANY heap variant
+                            // — and NEVER touches disc@abs+0 (a valid variant tag,
+                            // 2b-3 law).
+                            match kind {
+                                LeafKind::Heap(_) => {
+                                    builder.ins().stack_store(zero, slot, abs);
+                                }
+                                LeafKind::Enum(_) => {
+                                    builder.ins().stack_store(zero, slot, abs + 8);
+                                }
+                            }
                         }
                     } else if let Some((slot, _layout)) = self.enum_slots.get(l) {
                         // ADR-0067 2b-3: tombstone a heap-enum after a move. Zero
@@ -1878,12 +1933,25 @@ impl JitContext {
                     // built before the `&mut self` free calls so the body borrow
                     // is released.
                     if let MirType::Struct(name) = ty {
-                        let mut leaves: Vec<(i32, MirType)> = Vec::new();
+                        let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
                         Self::collect_heap_leaves(name, 0, body, 0, &mut leaves)?;
                         if !leaves.is_empty() {
-                            for (abs, fty) in leaves {
+                            for (abs, kind) in leaves {
                                 let addr = self.copy_base_addr(builder, *local, abs);
-                                self.emit_heap_free_at(builder, addr, &fty)?;
+                                // ADR-0067 2b+: a `Heap` leaf frees unconditionally;
+                                // an `Enum` leaf runs the tag-switch core at the
+                                // field's address (disc@addr, payload@addr+8) so
+                                // only the ACTIVE variant's payload is freed.
+                                match kind {
+                                    LeafKind::Heap(fty) => {
+                                        self.emit_heap_free_at(builder, addr, &fty)?;
+                                    }
+                                    LeafKind::Enum(enum_name) => {
+                                        self.emit_enum_drop_glue_at(
+                                            builder, body, &enum_name, addr,
+                                        )?;
+                                    }
+                                }
                             }
                             continue;
                         }
@@ -4990,7 +5058,7 @@ mod tests {
         b.set_terminator(bb0, return_(vec![]));
         let body = b.build(bb0);
 
-        let mut leaves: Vec<(i32, MirType)> = Vec::new();
+        let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
         let result = JitContext::collect_heap_leaves("Node", 0, &body, 0, &mut leaves);
         assert!(
             result.is_err(),
