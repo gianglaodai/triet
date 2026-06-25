@@ -516,6 +516,20 @@ pub(crate) fn collect_declared_types(
                     },
                 ));
             }
+            // ADR-0069: a capability is a ZST type — register it so type
+            // annotations (`take(c: Cap)`) resolve through `resolve_type_expr`.
+            // The level / mint-gate lives in the Checker (check.rs); here we
+            // only contribute the type name.
+            Item::Capability { name, .. } => {
+                result.push((
+                    name.clone(),
+                    Type::UserStruct {
+                        name: name.clone(),
+                        type_parameters: Vec::new(),
+                        fields: Vec::new(),
+                    },
+                ));
+            }
             // ADR-0061 Tier 1: trait/implement don't contribute a value Type to
             // the name_table — traits live in a separate trait_table (T3). The
             // parser does not yet emit these (T2); inert for match exhaustiveness.

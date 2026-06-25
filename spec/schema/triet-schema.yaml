@@ -781,6 +781,34 @@ definitions:
       discriminant: 2
       syntax: public
       description: Visible to all importing code.
+  CapabilityLevel:
+    kind: enum
+    description: |-
+      The \u01413-Trit level a capability token carries (ADR-0069).
+
+      Maps the \u0141ukasiewicz 3-valued algebra onto a capability's lifecycle \u2014
+      the third coherence axis of VISION \u00a78 (alongside null PA-3c and logic
+      Trilean).
+    variants:
+    - name: Grant
+      discriminant: 0
+      syntax: grant
+      description: "Trit::Positive \u2014 mint freely; possession = right. Zero-cost
+        (borrowck-enforced, 0 byte runtime)."
+    - name: Ambient
+      discriminant: 1
+      syntax: ambient
+      description: "Trit::Zero \u2014 inherit the surrounding context's level
+        (default when no level keyword). Resolved at compile time. ADR-0069 L\u00e1t 2."
+    - name: Deny
+      discriminant: 2
+      syntax: deny
+      description: "Trit::Negative \u2014 mint is a compile error in this scope. ADR-0069 L\u00e1t 1."
+    - name: Defer
+      discriminant: 3
+      syntax: defer
+      description: "Trilean::Unknown \u2014 mint emits a runtime policy hook + fail-closed
+        trap. The only level that touches runtime. ADR-0069 L\u00e1t 3."
   "=== SECTION 6: AST \u2014 Expressions ===": "\u2500\u2500\u2500\u2500\u2500\u2500\
     \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
   Expr:
@@ -1123,6 +1151,15 @@ definitions:
       - name: body
         type: ExprId
         ownership: owned
+    - name: Mint
+      category: capability
+      description: "`mint Cap` — construct a capability token (ADR-0069). Lowers to
+        a ZST local (0 byte) typed as the named capability. Move-only (non-copy):
+        passing it to a function transfers the right; reuse after move is E2420."
+      fields:
+      - name: capability_name
+        type: string
+        description: Name of the `capability` declaration to mint a token from.
   BinaryOperator:
     kind: enum
     description: "All binary operators in Tri\u1EBFt. Symbolic form is preferred per\
@@ -1612,6 +1649,17 @@ definitions:
         type: Visibility
         default: Private
       description: "Type alias: `type Name = SomeType;`."
+    - name: Capability
+      fields:
+      - name: name
+        type: string
+      - name: level
+        type: CapabilityLevel
+        default: Ambient
+      description: "Capability token declaration `capability Name grant` (ADR-0069).
+        Defines a ZST type carrying an Ł3-Trit level. Distinct from `struct Name {}`:
+        always non-copy, mint-only, level-bearing. Amends schema §10 `HardwareToken`
+        (no longer 'no special AST node')."
   Program:
     kind: struct
     description: "Root of a Tri\u1EBFt compilation unit. Owns its Arena \u2014 all\

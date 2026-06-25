@@ -211,4 +211,9 @@ pub enum Expr {
         bind_var: String,
         body: crate::arena::ExprId, // owned
     },
+
+    /// `mint Cap` — construct a capability token (ADR-0069). Lowers to a ZST local (0 byte) typed as the named capability. Move-only (non-copy): passing it to a function transfers the right; reuse after move is E2420.
+    Mint {
+        capability_name: String,
+    },
 }

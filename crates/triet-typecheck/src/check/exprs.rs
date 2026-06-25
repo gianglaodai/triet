@@ -322,7 +322,44 @@ impl Checker<'_> {
                     .push(TypeError::NullableHasNoErrorState { span });
                 Type::Unknown
             }
+            // ADR-0069: `mint Cap` — construct a capability token.
+            Expr::Mint { capability_name } => self.check_mint(&capability_name, span),
         }
+    }
+
+    /// ADR-0069 Lát 0: typecheck `mint Cap`. The capability must be declared;
+    /// Lát 0 mints only `Grant` (returns the capability's ZST type). Any other
+    /// level refuses cleanly with E2211 (`deny` permanently; `ambient`/`defer`
+    /// pending Lát 2/3) — never a silent hole.
+    fn check_mint(&mut self, capability_name: &str, span: Span) -> Type {
+        use triet_syntax::CapabilityLevel;
+        let Some(level) = self.capabilities.get(capability_name).cloned() else {
+            self.errors.push(TypeError::UndefinedName {
+                name: capability_name.to_owned(),
+                span,
+            });
+            return Type::Unknown;
+        };
+        if matches!(level, CapabilityLevel::Grant) {
+            // The capability type is registered in `env` (declare pass).
+            return self
+                .env
+                .lookup(capability_name)
+                .cloned()
+                .unwrap_or(Type::Unknown);
+        }
+        let level_str = match level {
+            CapabilityLevel::Grant => "grant",
+            CapabilityLevel::Ambient => "ambient",
+            CapabilityLevel::Deny => "deny",
+            CapabilityLevel::Defer => "defer",
+        };
+        self.errors.push(TypeError::CapabilityLevelUnsupported {
+            capability: capability_name.to_owned(),
+            level: level_str.to_owned(),
+            span,
+        });
+        Type::Unknown
     }
 
     /// ADR-0039 §1: `inner ?+> |bind| body`. `inner` must be `T?`; the body

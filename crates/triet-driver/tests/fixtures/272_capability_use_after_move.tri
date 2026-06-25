@@ -1,0 +1,21 @@
+// ERROR: E2420
+// ADR-0069 Lát 0 — THE STAR TOOTH (R-copy-bypass). Possession of a capability
+// token = the right; the borrow checker must prove it is taken EXACTLY ONCE.
+// `a` is minted, moved into the first `take(a)` (right transferred + revoked),
+// then used AGAIN in `return take(a)` — use-after-move → E2420.
+//
+// This fixture is RED-WHEN-POISONED: capability move-tracking is keyed purely
+// off `MirType::is_copy == false`. Poison `MirType::Capability` to Copy
+// (mir/lib.rs is_copy arm OR lower ctx_is_copy arm) → the second `take(a)`
+// stops being a move → E2420 never fires → this negative fixture turns green =
+// the bypass G's gun is aimed at. If poisoning does NOT break this, the test is
+// decoration (feedback_poison_must_be_red).
+capability Cap grant
+
+function take(c: Cap) -> Integer { return 0 }
+
+function main() -> Integer {
+    let a = mint Cap;
+    let r = take(a);
+    return take(a);
+}

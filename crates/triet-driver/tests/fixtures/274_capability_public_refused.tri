@@ -1,0 +1,13 @@
+// ERROR: visibility is not yet supported on capabilities
+// ADR-0069 Lát 0 (WO-N2) — refuse-over-guess: a `capability` declaration
+// carries no visibility yet. `public capability Cap` must NOT silently drop
+// the `public` (the user would believe the capability is exported) — the
+// parser rejects it (E0001 UnexpectedToken, miette code) at the item head,
+// mirroring the `public import` / `public from` refusal. The directive matches
+// the message fragment because the corpus harness greps the Debug string of
+// the parse error (which carries the message, not the miette code). Poison the
+// visibility check in the `Token::Capability` dispatcher arm (drop `public`
+// silently) → this message vanishes → fixture goes green = the bomb defused.
+public capability Cap grant
+
+function main() -> Integer { return 0 }

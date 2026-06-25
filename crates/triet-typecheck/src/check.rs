@@ -154,6 +154,12 @@ struct Checker<'p> {
     /// Resolved enum variants keyed by pattern ID. Populated during
     /// pattern binding; consumed by the lowerer.
     pub(crate) pattern_resolutions: crate::PatternResolutions,
+    /// ADR-0069: capability declarations keyed by name → Ł3 level. Populated
+    /// in the declare pass from `Item::Capability`; read at `Expr::Mint` to
+    /// decide whether minting is allowed (Grant) or refused (Lát 0: every
+    /// other level). The capability's *type* is registered in `env` as a ZST
+    /// `UserStruct` — this side table only carries the level.
+    capabilities: std::collections::HashMap<String, triet_syntax::CapabilityLevel>,
     errors: Vec<TypeError>,
 }
 
@@ -171,6 +177,7 @@ impl<'p> Checker<'p> {
             local_let_names: std::collections::HashSet::new(),
             expr_resolutions: crate::ExprResolutions::new(),
             pattern_resolutions: crate::PatternResolutions::new(),
+            capabilities: std::collections::HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -191,6 +198,7 @@ impl<'p> Checker<'p> {
             local_let_names: std::collections::HashSet::new(),
             expr_resolutions: crate::ExprResolutions::new(),
             pattern_resolutions: crate::PatternResolutions::new(),
+            capabilities: std::collections::HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -300,6 +308,9 @@ impl<'p> Checker<'p> {
                 // checker does not yet expand them. Names registered in
                 // declare_or_record_dup are not used as type names.
             }
+            Item::Capability { name, level } => {
+                self.declare_capability(name, level, item.span.clone());
+            }
             Item::Import { .. } | Item::ImportFrom { .. } => {
                 // Imports are syntactic placeholders until the module
                 // loader (v0.2.x.6) ships. Names introduced by `import`
@@ -360,6 +371,27 @@ impl<'p> Checker<'p> {
                 // currently inert — it exists for match exhaustiveness during T1.
             }
         }
+    }
+
+    /// ADR-0069 Lát 0: register a capability declaration. The capability is a
+    /// ZST type registered as an empty `UserStruct` (so `mint Cap` /
+    /// `take(c: Cap)` resolve through the normal type machinery); the move-only
+    /// (non-copy) distinction lives entirely in MIR (`MirType::Capability`),
+    /// NOT here — an empty *data* struct stays Copy. The Ł3 level is stored in
+    /// the side table for the `mint`-site Grant/refuse decision (`check_mint`).
+    fn declare_capability(
+        &mut self,
+        name: &str,
+        level: &triet_syntax::CapabilityLevel,
+        span: Span,
+    ) {
+        self.capabilities.insert(name.to_owned(), level.clone());
+        let ty = Type::UserStruct {
+            name: name.to_owned(),
+            type_parameters: Vec::new(),
+            fields: Vec::new(),
+        };
+        self.declare_or_record_dup(name, ty, span);
     }
 
     fn check_item(&mut self, item: &Spanned<Item>) {

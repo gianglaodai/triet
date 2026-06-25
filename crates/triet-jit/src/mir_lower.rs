@@ -1900,6 +1900,14 @@ impl JitContext {
                     if ty.is_copy(Some(body)) {
                         continue;
                     }
+                    // ADR-0069: a capability token is a ZST — non-copy (so the
+                    // borrow checker move-tracks it) but with NO heap behind it.
+                    // Drop is a pure no-op: no shim, no free. Must short-circuit
+                    // BEFORE the heap-free dispatch below, which would otherwise
+                    // fall through to `Drop for type Capability not supported`.
+                    if matches!(ty, MirType::Capability(_)) {
+                        continue;
+                    }
                     // M4: Return-escape.
                     let in_return = match &body.blocks[block.0].terminator {
                         Terminator::Return { values, .. } => values.contains(local),

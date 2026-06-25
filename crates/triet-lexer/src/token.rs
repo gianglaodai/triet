@@ -181,6 +181,16 @@ pub enum Token {
     /// (ADR-0061 Tier 1). Verbose `implement`, NOT `impl`, per ADR-0005.
     #[token("implement")]
     Implement,
+    /// `capability` — capability token declaration `capability Name grant`
+    /// (ADR-0069). Not in the ADR-0026 v2 §6 refuse-list, so this is a fresh
+    /// keyword. The level (`grant`/`ambient`/`deny`/`defer`) is a CONTEXTUAL
+    /// keyword — lexed as an identifier, only meaningful in level position.
+    #[token("capability")]
+    Capability,
+    /// `mint` — prefix operator constructing a capability token `mint Cap`
+    /// (ADR-0069). ZST, move-only.
+    #[token("mint")]
+    Mint,
     /// `khi` — path keyword: refers to the current khí (package) root.
     /// Reserved per ADR-0005 (formerly `crate`) + ADR-0024 (Khí + Đạo
     /// identity naming, Đạo Đức Kinh §28 phác tán tắc vi khí).

@@ -262,6 +262,8 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         Token::TildePlus => parse_outcome_constructor(parser, OutcomeArm::Positive, span),
         Token::TildeMinus => parse_outcome_constructor(parser, OutcomeArm::Negative, span),
         Token::TildeZero => parse_outcome_zero(parser, span),
+        // ADR-0069: `mint Cap` capability-token constructor.
+        Token::Mint => parse_mint(parser, span),
         other => Err(ParseError::UnexpectedToken {
             expected: "expression".to_owned(),
             found: format!("{other:?}"),
@@ -446,6 +448,32 @@ fn parse_outcome_zero(parser: &mut Parser<'_>, span: Span) -> Result<ExprId, Par
         },
         span,
     )))
+}
+
+/// Parse `mint Cap` → `Expr::Mint` (ADR-0069). The operand is restricted to a
+/// bare capability name (Identifier), NOT an arbitrary expression — a token is
+/// minted from a `capability` declaration, not computed.
+fn parse_mint(parser: &mut Parser<'_>, op_span: Span) -> Result<ExprId, ParseError> {
+    parser.advance(); // consume `mint`
+    let (token, name_span) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "capability name".to_owned(),
+            span: parser.eof_span(),
+        })?;
+    let Token::Identifier(capability_name) = token else {
+        return Err(ParseError::UnexpectedToken {
+            expected: "capability name".to_owned(),
+            found: format!("{token:?}"),
+            span: name_span,
+        });
+    };
+    parser.advance();
+    let span = op_span.start..name_span.end;
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Mint { capability_name }, span)))
 }
 
 fn parse_paren_or_tuple(parser: &mut Parser<'_>, open_span: Span) -> Result<ExprId, ParseError> {

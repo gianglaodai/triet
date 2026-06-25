@@ -1,0 +1,14 @@
+// ERROR: E2211
+// ADR-0069 Lát 0 — R-deny-refuse (negative test stays alive). A `deny`
+// capability (Ł3 Trit::Negative) cannot be minted in this scope. `mint Cap`
+// → E2211 CapabilityLevelUnsupported at the mint site, before any token is
+// created. Lát 0 implements only `grant`; `deny`/`ambient`/`defer` all refuse
+// CLEANLY here (no silent hole) rather than minting a token the borrow checker
+// cannot yet enforce per their semantics. Poison the level check in
+// `check_mint` (treat non-Grant as Grant) → mint is accepted → E2211 vanishes.
+capability Cap deny
+
+function main() -> Integer {
+    let a = mint Cap;
+    return 0;
+}

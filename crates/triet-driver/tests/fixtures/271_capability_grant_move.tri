@@ -1,0 +1,18 @@
+// EXPECT: 0
+// ADR-0069 Lát 0 (capability ZST token): a `grant` capability mints a
+// zero-sized token, moves it into a function (transferring the right), and
+// runs end-to-end. `mint Cap` lowers to a 0-byte local typed
+// `MirType::Capability` (non-copy); `take(a)` moves it (Deinit tombstone after
+// the call); Drop of a capability is a JIT no-op (no heap, no shim). Returning
+// `r` (the Integer the callee produced) pins that the whole pipeline —
+// parse → typecheck(Grant) → lower(ZST) → borrowck(move-ok) → JIT(no-op drop)
+// — executes without leak or trap.
+capability Cap grant
+
+function take(c: Cap) -> Integer { return 0 }
+
+function main() -> Integer {
+    let a = mint Cap;
+    let r = take(a);
+    return r;
+}

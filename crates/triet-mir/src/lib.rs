@@ -511,6 +511,15 @@ pub enum MirType {
     Struct(String),
     /// User-defined enum — resolved via `body.enum_layouts`.
     Enum(String),
+
+    // ── Capability (ADR-0069) ──
+    /// A capability token type `capability Cap grant`. ZST (0 byte) at runtime,
+    /// ALWAYS non-copy (move-only) — possession = right, so a token must never
+    /// be duplicated. Distinct from `Struct` so `is_copy` short-circuits to
+    /// `false` WITHOUT routing through the struct-field walk (an empty data
+    /// struct stays Copy; a capability does not). The `String` is the
+    /// capability name.
+    Capability(String),
 }
 
 impl fmt::Display for MirType {
@@ -549,7 +558,7 @@ impl fmt::Display for MirType {
                 error_type,
                 allow_null_state: true,
             } => write!(f, "{value_type}?~{error_type}"),
-            Self::Struct(name) | Self::Enum(name) => write!(f, "{name}"),
+            Self::Struct(name) | Self::Enum(name) | Self::Capability(name) => write!(f, "{name}"),
         }
     }
 }
@@ -677,6 +686,12 @@ impl MirType {
             | Self::Unknown => true,
             // Heap types — Move.
             Self::String | Self::Vector | Self::HashMap => false,
+            // Capability token (ADR-0069) — ALWAYS Move. Short-circuit BEFORE
+            // the Struct arm so a ZST token is NEVER classified Copy via the
+            // empty-field-walk (`all()` over no fields = true). This is the
+            // soundness chokepoint: Copy → borrowck would not move-track →
+            // double-take bypass. Poison `false → true` here → R-copy-bypass.
+            Self::Capability(_) => false,
             // Reference types — Copy by design (ADR-0045 §3).
             Self::Reference { .. } => true,
             // Outcome: Copy if both payloads are Copy (always true for Bậc A scalars).

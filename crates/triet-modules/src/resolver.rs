@@ -178,6 +178,7 @@ fn collect_imports(
             | Item::Implementation { .. }
             | Item::Constant { .. }
             | Item::Module { .. }
+            | Item::Capability { .. }
             | Item::TypeAlias { .. } => {}
         }
     }
@@ -478,9 +479,12 @@ fn item_name_and_visibility(item: &Item) -> Option<(String, Visibility)> {
         Item::Enum { def } => Some((def.name.clone(), def.visibility.clone())),
         Item::Trait { def } => Some((def.name.clone(), def.visibility.clone())),
         // `implement Trait for Type` defines no top-level name to export.
+        // ADR-0069 Lát 0: capability is single-file-scoped; cross-module
+        // export lands when the capability system grows past Lát 0.
         Item::Implementation { .. }
         | Item::Import { .. }
         | Item::ImportFrom { .. }
+        | Item::Capability { .. }
         | Item::Module { .. } => None,
     }
 }

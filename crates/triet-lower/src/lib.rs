@@ -119,6 +119,11 @@ pub(crate) struct LoweringInput<'a> {
     pub method_resolutions: MethodResolutions,
     /// Map from (possibly mangled) function name to its return type.
     pub func_return_types: HashMap<String, MirType>,
+    /// ADR-0069: capability type names. `lower_type_simple` (which keys off
+    /// Ctx layout maps, not `symbols`) consults this to resolve a capability
+    /// annotation to `MirType::Capability` instead of `Unknown` (which would
+    /// be Copy → a silent non-copy bypass).
+    pub capabilities: std::collections::HashSet<String>,
 }
 
 /// Per-function lowering state: local/block allocation, variable scope,
@@ -139,6 +144,8 @@ struct Ctx {
     /// is handled by the type checker — these are NOT scanned by the lowerer
     /// for name→discriminant mapping.
     enum_layouts: HashMap<String, EnumLayout>,
+    /// ADR-0069: capability type names, for `lower_type_simple` resolution.
+    capabilities: std::collections::HashSet<String>,
     /// Resolved enum variants from the type checker, keyed by expression ID.
     /// The lowerer reads these instead of scanning enum_layouts by string match.
     expr_resolutions: ExprResolutions,
@@ -215,6 +222,7 @@ impl Ctx {
             },
             struct_layouts: input.struct_layouts.clone(),
             enum_layouts: input.enum_layouts.clone(),
+            capabilities: input.capabilities.clone(),
             expr_resolutions: input.expr_resolutions.clone(),
             pattern_resolutions: input.pattern_resolutions.clone(),
             method_resolutions: input.method_resolutions.clone(),
@@ -443,6 +451,9 @@ impl Ctx {
 pub(crate) enum TypeKind {
     Struct,
     Enum,
+    /// ADR-0069: a capability token type (`capability Cap grant`). Resolves to
+    /// `MirType::Capability` — ZST, always non-copy.
+    Capability,
 }
 
 /// Lower every function in a parsed program to its MIR body.
@@ -469,6 +480,7 @@ pub fn lower_program(
         .filter_map(|item| match &item.node {
             Item::Struct { def } => Some((def.name.clone(), TypeKind::Struct)),
             Item::Enum { def } => Some((def.name.clone(), TypeKind::Enum)),
+            Item::Capability { name, .. } => Some((name.clone(), TypeKind::Capability)),
             _ => None,
         })
         .collect();
@@ -683,6 +695,12 @@ pub fn lower_program(
     // via `input.<field>`); the three resolution maps are `&` parameters so
     // they are cloned. The `struct_layouts`/`enum_layouts` Vecs are NOT moved
     // here — they stay live to fill `body.struct_layouts`/`enum_layouts`.
+    // ADR-0069: capability type names (derived from the same symbol table).
+    let capabilities: std::collections::HashSet<String> = symbols
+        .iter()
+        .filter(|(_, k)| **k == TypeKind::Capability)
+        .map(|(n, _)| n.clone())
+        .collect();
     let input = LoweringInput {
         arena: &prog.arena,
         symbols,
@@ -692,6 +710,7 @@ pub fn lower_program(
         pattern_resolutions: pattern_resolutions.clone(),
         method_resolutions: method_resolutions.clone(),
         func_return_types,
+        capabilities,
     };
 
     let mut bodies = Vec::new();
@@ -960,6 +979,10 @@ fn lower_type(
             other if symbols.get(other) == Some(&TypeKind::Enum) => {
                 MirType::Enum(other.to_string())
             }
+            // ADR-0069: capability token type — ZST, always non-copy.
+            other if symbols.get(other) == Some(&TypeKind::Capability) => {
+                MirType::Capability(other.to_string())
+            }
             _ => MirType::Unknown,
         },
         TypeExpr::Nullable(inner) => {
@@ -1019,6 +1042,11 @@ fn ctx_is_copy(ty: &MirType, c: &Ctx) -> bool {
     match ty {
         MirType::Nullable(inner) => ctx_is_copy(inner, c),
         MirType::String | MirType::Vector | MirType::HashMap => false,
+        // ADR-0069: capability token — ALWAYS Move. This is the SECOND copy
+        // classifier (the first is `MirType::is_copy` in triet-mir); BOTH must
+        // short-circuit or the move/Deinit machinery here would treat a ZST
+        // token as Copy (the `_ => true` fallthrough) → no tombstone → bypass.
+        MirType::Capability(_) => false,
         MirType::Outcome {
             value_type,
             error_type,
@@ -1054,6 +1082,8 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
             other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
             other if c.struct_layouts.contains_key(other) => MirType::Struct(other.to_string()),
             other if c.enum_layouts.contains_key(other) => MirType::Enum(other.to_string()),
+            // ADR-0069: capability token type — ZST, non-copy.
+            other if c.capabilities.contains(other) => MirType::Capability(other.to_string()),
             _ => MirType::Unknown, // refuse-over-guess
         },
         TypeExpr::Nullable(inner) => {
@@ -1642,6 +1672,23 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         Expr::NullLiteral => {
             // null keyword (deprecated) — same as ~0.
             Err(LowerError::null_literal_without_expected_type(expr_span))
+        }
+        // ADR-0069: `mint Cap` → a ZST capability token. 0 byte at runtime —
+        // no heap, no shim, no stack slot (the JIT keeps it in a plain i64
+        // Variable holding a dummy 0; the value is never read meaningfully).
+        // The local is typed `Capability(name)` so it is non-copy: passing it
+        // to a function moves it (Deinit tombstone), and reuse-after-move is
+        // E2420 (borrowck, keyed off `is_copy`). Typecheck (`check_mint`) has
+        // already verified the capability exists and is Grant.
+        Expr::Mint { capability_name } => {
+            let d = c.alloc_local_ty(MirType::Capability(capability_name.clone()));
+            c.push(Statement::StorageLive(d, expr_span.clone()));
+            c.push(Statement::Const {
+                dest: Place::local(d),
+                value: ConstValue::Integer(0),
+                span: expr_span,
+            });
+            Ok(d)
         }
         Expr::OutcomeConstructor { arm, payload } => {
             // ── ADR-0052 §3.2 + OP.3.5: StackSlot 16-byte constructor ──
@@ -5274,6 +5321,7 @@ mod tests {
             pattern_resolutions: PatternResolutions::new(),
             method_resolutions: MethodResolutions::new(),
             func_return_types: HashMap::new(),
+            capabilities: std::collections::HashSet::new(),
         };
         lower_function(&input, &func.0, func.1, None)
     }
@@ -5326,6 +5374,7 @@ mod tests {
             pattern_resolutions: PatternResolutions::new(),
             method_resolutions: MethodResolutions::new(),
             func_return_types: HashMap::new(),
+            capabilities: std::collections::HashSet::new(),
         };
         lower_function(&input, &func.0, func.1, None).expect("lowering failed")
     }

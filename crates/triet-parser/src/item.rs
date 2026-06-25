@@ -2,10 +2,10 @@
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
-    EnumDefinition, EnumVariant, FunctionBody, FunctionDefinition, FunctionParameter, GenericBound,
-    ImplementationDefinition, Import, ImportName, ImportPath, Item, MethodSignature, ModuleContent,
-    ModuleItem, ParameterPassing, Spanned, StructDefinition, StructField, TraitDefinition,
-    TypeExpr, TypeParameter, Visibility,
+    CapabilityLevel, EnumDefinition, EnumVariant, FunctionBody, FunctionDefinition,
+    FunctionParameter, GenericBound, ImplementationDefinition, Import, ImportName, ImportPath,
+    Item, MethodSignature, ModuleContent, ModuleItem, ParameterPassing, Spanned, StructDefinition,
+    StructField, TraitDefinition, TypeExpr, TypeParameter, Visibility,
 };
 
 use crate::{
@@ -52,6 +52,12 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
         Token::Enum => parse_enum(parser, head_span, visibility),
         Token::Trait => parse_trait(parser, head_span, visibility),
         Token::Implement => parse_implementation(parser, head_span, visibility),
+        Token::Capability => {
+            if visibility != Visibility::Private {
+                reject_visibility_on_capability(head_span.clone())?;
+            }
+            parse_capability(parser, head_span)
+        }
         Token::Module => parse_module(parser, head_span, visibility),
         Token::Import => {
             if visibility != Visibility::Private {
@@ -83,6 +89,19 @@ fn reject_visibility_on_import(head_span: Span, keyword: &str) -> Result<(), Par
         expected: "`function`, `constant`, `type`, `struct`, `enum`, or `module` after `public`"
             .to_owned(),
         found: format!("`{keyword}` (re-exports of imported names are not yet implemented)"),
+        span: head_span,
+    })
+}
+
+/// ADR-0069 Lát 0: a `capability` declaration carries no visibility yet. Rather
+/// than drop a `public` prefix silently (a refuse-over-guess violation — the
+/// user would think the capability is exported), reject it explicitly.
+fn reject_visibility_on_capability(head_span: Span) -> Result<(), ParseError> {
+    Err(ParseError::UnexpectedToken {
+        expected: "`function`, `constant`, `type`, `struct`, `enum`, or `module` after `public`"
+            .to_owned(),
+        found: "`capability` (visibility is not yet supported on capabilities — ADR-0069 Lát 1+)"
+            .to_owned(),
         span: head_span,
     })
 }
@@ -713,6 +732,43 @@ fn parse_struct_fields(parser: &mut Parser<'_>) -> Result<Vec<StructField>, Pars
         }
     }
     Ok(fields)
+}
+
+/// Parse `capability Name <level>` → `Item::Capability` (ADR-0069 Lát 0).
+///
+/// The level (`grant`/`ambient`/`deny`/`defer`) is a CONTEXTUAL keyword:
+/// lexed as a plain identifier, only meaningful here. Omitting it defaults
+/// to `Ambient` (ADR-0069 §2). Any other identifier in level position is a
+/// parse error.
+fn parse_capability(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item>, ParseError> {
+    parser.expect(&Token::Capability, "`capability`")?;
+    let (name, _) = parse_item_name(parser, "capability name")?;
+
+    // Optional contextual level keyword (identifier). None → Ambient.
+    let level = if let Some(Token::Identifier(word)) = parser.peek_token().cloned() {
+        let lvl = match word.as_str() {
+            "grant" => CapabilityLevel::Grant,
+            "ambient" => CapabilityLevel::Ambient,
+            "deny" => CapabilityLevel::Deny,
+            "defer" => CapabilityLevel::Defer,
+            other => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "`grant`, `ambient`, `deny`, or `defer`".to_owned(),
+                    found: format!("`{other}`"),
+                    span: parser.current_span(),
+                });
+            }
+        };
+        parser.advance();
+        lvl
+    } else {
+        CapabilityLevel::Ambient
+    };
+    let _ = parser.eat(&Token::Semi);
+
+    let end = parser.previous_token_end(head_span.end);
+    let span = head_span.start..end;
+    Ok(Spanned::new(Item::Capability { name, level }, span))
 }
 
 fn parse_enum(

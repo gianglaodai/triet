@@ -262,6 +262,26 @@ pub enum Visibility {
     Public,
 }
 
+/// The \u01413-Trit level a capability token carries (ADR-0069).
+///
+/// Maps the \u0141ukasiewicz 3-valued algebra onto a capability's lifecycle \u2014
+/// the third coherence axis of VISION \u00a78 (alongside null PA-3c and logic
+/// Trilean).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapabilityLevel {
+    /// Trit::Positive — mint freely; possession = right. Zero-cost (borrowck-enforced, 0 byte runtime). (disc 0)
+    Grant,
+
+    /// Trit::Zero — inherit the surrounding context's level (default when no level keyword). Resolved at compile time. ADR-0069 Lát 2. (disc 1)
+    Ambient,
+
+    /// Trit::Negative — mint is a compile error in this scope. ADR-0069 Lát 1. (disc 2)
+    Deny,
+
+    /// Trilean::Unknown — mint emits a runtime policy hook + fail-closed trap. The only level that touches runtime. ADR-0069 Lát 3. (disc 3)
+    Defer,
+}
+
 /// How a function parameter receives its argument. Default is Borrow (implicit &0).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParameterPassing {

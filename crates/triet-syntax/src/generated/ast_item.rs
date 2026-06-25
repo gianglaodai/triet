@@ -184,6 +184,12 @@ pub enum Item {
         type_annotation: crate::arena::TypeId, // &0 (borrow)
         visibility: Visibility,
     },
+
+    /// Capability token declaration `capability Name grant` (ADR-0069). Defines a ZST type carrying an Ł3-Trit level. Distinct from `struct Name {}`: always non-copy, mint-only, level-bearing. Amends schema §10 `HardwareToken` (no longer 'no special AST node').
+    Capability {
+        name: String,
+        level: CapabilityLevel,
+    },
 }
 
 /// Root of a Triết compilation unit. Owns its Arena — all AST nodes live here. This is the parser's output and the type checker's input.

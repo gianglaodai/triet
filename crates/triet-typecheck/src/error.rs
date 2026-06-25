@@ -808,6 +808,31 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E2211: `mint` on a capability whose Ł3 level is not `Grant`.
+    ///
+    /// ADR-0069 Lát 0 only implements `Grant` (mint freely, zero-cost). The
+    /// other three levels — `deny` (`Trit::Negative`, permanently refused),
+    /// `ambient` (`Trit::Zero`, Lát 2 context-inherit), `defer` (`Łukasiewicz`
+    /// Unknown, Lát 3 runtime hook) — refuse cleanly here rather than minting a
+    /// token the borrow checker cannot yet enforce per their semantics.
+    #[error("E2211: cannot `mint {capability}` — capability level `{level}` is not allowed here")]
+    #[diagnostic(
+        code(triet::capability::E2211),
+        help(
+            "ADR-0069 Lát 0 mints only `grant` capabilities. `deny` forbids minting; \
+            `ambient` (Lát 2) and `defer` (Lát 3) are not yet implemented."
+        )
+    )]
+    CapabilityLevelUnsupported {
+        /// The capability being minted.
+        capability: String,
+        /// The declared level (`deny` / `ambient` / `defer`).
+        level: String,
+        /// Source location of the `mint` expression.
+        #[label("not mintable at level `{level}`")]
+        span: Span,
+    },
+
     /// A concurrency-related error (e.g., crossing thread boundaries).
     #[error(transparent)]
     #[diagnostic(transparent)]
@@ -969,6 +994,7 @@ impl TypeError {
             | Self::TraitImplConformanceMismatch { span, .. }
             | Self::AmbiguousMethodCall { span, .. }
             | Self::NullableHasNoErrorState { span }
+            | Self::CapabilityLevelUnsupported { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
         }
     }

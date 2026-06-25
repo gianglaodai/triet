@@ -329,7 +329,7 @@ def generate_all_rust(schema, output_dir):
 
     # Categorize definitions
     type_defs = ["PrimitiveType", "ReferenceForm", "Type", "StructField",
-                 "EnumVariant", "Visibility", "ParameterPassing", "TypeParameter"]
+                 "EnumVariant", "Visibility", "CapabilityLevel", "ParameterPassing", "TypeParameter"]
     operator_defs = ["BinaryOperator", "UnaryOperator"]
     expr_defs = ["Expr", "MatchArm", "LambdaParameter"]
     stmt_defs = ["Stmt"]
