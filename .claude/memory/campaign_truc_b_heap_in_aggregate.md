@@ -1,0 +1,85 @@
+---
+name: campaign_truc_b_heap_in_aggregate
+description: ✅ TRỤC B — Heap-in-Aggregate ĐÓNG TRỌN. Lát 1 (ADR-0066 FLAT 1a-1d) + Lát 2 NO-BOX (ADR-0067 2a nested-flat + 2b enum-payload + 2b+ enum-in-struct) ĐÓNG+PUSH origin c928b42. 🏁 No-Box hàn kín không rỉ byte. Kế = Capability Ł3 (ADR-0016/0017/0018, G phán). Lát 3 box/recursive = ADR-0068 G HOÃN. ĐỌC nếu đụng heap-in-struct / drop-glue / move-tombstone / collect_heap_leaves / emit_enum_drop_glue / LeafKind.
+metadata:
+  node_type: memory
+  type: project
+  originSessionId: truc-b-campaign
+---
+
+**Trục B — Heap-in-Aggregate** = cho `struct` chứa heap field (`String`/`Vector`/`HashMap`) construct + move + drop KHÔNG leak/double-free. Campaign VISION (object-model/ownership/lifetime). ADR `docs/decisions/0066-heap-in-aggregate-move-drop-glue.md` 🔒 G ký (`ef3e54c` + amend `a388724`). Trả nợ ADR-0065 §4 (B8) + ADR-0062 §6.
+
+## Recon Phase 1 (O đo, khắc đá)
+**Value-model i64 SỐNG — KHÔNG đập móng.** Con trỏ nằm được ở field-offset trong StackSlot (mir_lower.rs:660-665); heap field = i64 (ptr/handle) tại offset, như Outcome đã làm. Giới hạn cũ = 10 cổng construction-gate `!is_copy(None)` (refuse-over-guess), KHÔNG phải bất lực vật lý. Gỡ rào lộ **3 lỗ:** (1) whole-struct copy = nhân đôi ptr → double-free; (2) KHÔNG struct drop-glue (`Drop(struct)`→`Unsupported`); (3) KHÔNG partial-move.
+
+## Bảng width heap field (O verify shim — KHẮC ĐÁ, nhầm = SIGSEGV)
+| Type | Width | Slot repr | Free shim | Drop-glue |
+|---|---|---|---|---|
+| String | **24B** fat | `{ptr@0,len@8,cap@16}` | `__triet_string_free(ptr,cap)` **2-arg** | ptr@off, **cap@off+16** |
+| Vector | **8B** thin | `{ptr@0}` (len/cap trong heap) | `__triet_vector_free(ptr)` 1-arg | ptr@off |
+| HashMap | **8B** thin | `{ptr@0}` | `__triet_hashmap_free(ptr)` 1-arg | ptr@off |
+
+## 3 KCN + LUẬT THÉP (G ký)
+- **KCN-1 Inline per-struct static drop-glue** (CẤM header/v-table): JIT walk layout, emit tĩnh `free(ptr@offset)` từng heap field. Zero runtime overhead.
+- **KCN-2 Copy-then-tombstone**: Assign-move (`let q=p`) byte-copy + tombstone-source ATOMIC. Arg-move (`take(p)`) = by-pointer + `Deinit`-after-call (reuse ADR-0042, KHÔNG byte-copy ở call — diagram amend Recon-2).
+- **KCN-3 FLAT only**: recursive `Node{next:Node?}` defer Lát 2.
+- **⚖️ LUẬT THÉP ATOMIC** (khắc đầu ADR): `byte-copy → tombstone` cùng basic-block, CẤM panic/CFG-branch/call xen khe. Lọt khe = double-free. Vi phạm = REJECT không đọc.
+
+## ✅ Nhát 1a — FLAT construct + drop (cùng scope, NO move) ĐÓNG+PUSH (origin `ab2cae8`, 2026-06-21)
+4 commit: `d88a5fd` M-1+M-2 (lower) · `ceb9b75` KCN-1+STEP4+teeth (jit) · `03018ba` fixtures 256-257 · `ab2cae8` TODO. Gate `0·0·252·0`. **`struct Person{name:String}` construct + tự drop, FREE_COUNT==1.**
+
+**5 bước (M-1→M-2→KCN-1→STEP4→STEP5):**
+- **M-1** (lib.rs fixup ~516): `String=>24`, `Vector|HashMap=>8` (trước rơi `_=>8` → slot under-size).
+- **M-2** (lib.rs gate ~2999 + `ctx_is_copy` đệ quy): B8-relax — direct heap leaf ALLOW; transitive Struct/Enum + Nullable(heap) REFUSE. **Gate trên `field_decl_ty.unwrap_or(value)`** (LUẬT 5 D, O+G duyệt — giữ `String?` field refuse, fixture 255). `ctx_is_copy` đọc `c.struct_layouts`/`enum_layouts`, KHÔNG `is_copy(None)` (assume-Copy→rò transitive).
+- **KCN-1** (mir_lower.rs Drop ~1666 + `emit_heap_free_at(slot,offset,ty)`): walk layout, free per-field per-arity. Generalize từ `emit_outcome_payload_free` (Outcome callers offset=8: ptr@8/cap@24).
+- **STEP 4** (mir_lower.rs Assign else ~1577): **bug O miss ở WO gốc** — construction `_0.name=move _1` chỉ store ptr@0 (store_place projected=8B), sync len/cap gated `proj.is_empty()` bỏ field-store → drop đọc cap@16 RÁC → `dealloc(layout sai)` UB. Vá: String field + projected dest → copy `len@off+8`/`cap@off+16` từ src slot. String-only (Vec/HMap thin 8B). Đọc src TRƯỚC M1-zeroing.
+- **STEP 5** (R-cap tooth): counting-shim bỏ cap → KHÔNG bắt UB; tooth ghi GIÁ TRỊ cap, assert==5.
+
+**O verify máu (4 răng đỏ độc lập, restore byte-identical):** ⚔**R-cap REAL pipeline** (instrument `string_free`: 256→cap=5 thật; poison STEP4→cap=94578745487072 rác — **đóng gap unit-vs-real**) · R-leak (poison emit_heap_free_at→3 lat1a FREE==0) · R2 (walk multi-field, code-verified không break+R-leak nhạy) · R3 (poison ctx_is_copy→257 transitive lọt refuse). Fixtures 256 `EXPECT:0` / 257 `ERROR: heap types` (Outer{inner:Inner} transitive refuse).
+
+**Bài học:** O recon-Phase-1 sắc (value-model sống, 3 lỗ, bảng width) NHƯNG **miss fat-pointer field-store** (recon thấy String 24B slot mà không nối "construct-into-field phải copy CẢ 3 word"). D bắt bằng máu (RUN cap rác), **dừng đúng Luật 4** (hỏi O không tự code vùng store-path). O nhận miss, rule (a) in-scope + tooth R-cap. **Bài học binary stale tái khẳng định:** gate.sh build debug, `target/release` kẹt bản poison cũ → O luôn rebuild release sạch trước probe.
+
+## ✅ Nhát 1b — ARG-MOVE xuyên boundary ĐÓNG+PUSH (origin `0aefeed`, 2026-06-21)
+4 commit (`968e65b` jit (A)+(C) · `343437b` lower (B) · `6ac3b27` fixture+teeth · `0aefeed` TODO). Gate `0·0·253·0`. `take(p: Person)` whole-move, FREE_COUNT==1. **Cỗ máy Sinh-Tử (A)+(B)+(C) gộp khối:**
+- **(A) callee by-pointer-param drop-glue** (mir_lower Drop struct-branch): unify slot+param qua `copy_base_addr` (slot→stack_addr / param→use_var pointer); `emit_heap_free_at` refactor **address-based** (mem-load thay stack_load; Outcome caller dựng `stack_addr(slot,8)`); layout từ `body.struct_layouts` (param không có struct_slot). Walk ALL field.
+- **(B) caller emit Deinit** (lower **6** to_zero filter 2425/2467/2509/4304/4345/4387): `!is_copy(None)`→`!ctx_is_copy(ty,c)` → heap-struct arg vào to_zero → `Deinit(arg)` sau call.
+- **(C) Deinit JIT walk** (mir_lower:1347): struct-slot có heap field → `stack_store(0, slot, field.offset)` tombstone ptr mọi field. Trước nhánh else zero-var.
+- **LUẬT THÉP atomic verified MIR-dump:** bb0 kết `Call take(_0)→bb1`, bb1 mở đầu `Deinit(_0)` — không lọt khe.
+- **O verify 3 răng độc lập (count khớp chính xác):** R-callee(A)→0 leak · R1-deinit(C)→2 double-free · R1-arg(B ctx_is_copy→true)→2 double-free. Baseline 1. 258 real-shim→0 no-SIGABRT. Regression 1a lat1a 3/3 + Outcome hp2 1/1 (refactor không vỡ). **D Luật 5: counting test ở DRIVER route-lower** (`struct_arg_move_counting.rs`) KHÔNG hand-built — R1-arg sống ở LOWERER (to_zero), hand-built MIR bypass lowerer → không cắn được. O+G duyệt.
+
+## ✅ Nhát 1c — ASSIGN-MOVE `let q=p` ĐÓNG+PUSH (origin `24daf3f`, 2026-06-22) — LÁT 1 HOÀN TẤT
+3 commit (`9cc964e` lower D1+D2 · `71831a9` fixture+teeth · `24daf3f` TODO). Gate `0·0·254·0`. **LOWER-ONLY, 0 dòng JIT** (tái dùng JIT 1b trọn vẹn). Giết pseudo-copy: `let q=p` heap-struct trước = alias (q,p chung 1 local, `is_copy(None)`=true → 1 Drop, memory-safe NHƯNG Copy-semantics sai). Nay true-move.
+- **(D1)** lower:1315 `!is_copy(None)`→`!ctx_is_copy(&ty,c)` (clone ty lách borrow) → heap-struct=true-move (Assign+new_local); plain-scalar-struct=true→alias giữ (Copy đúng).
+- **(D2)** nhánh is_move_binding: emit `Statement::Deinit(v)` NGAY sau move-Assign (ATOMIC cùng BB). JIT (C) walk tombstone.
+- **O probe-verify LOWER-ONLY TRƯỚC khi soạn WO** (áp D1+D2 tạm→MIR `_2=move _0`+`Deinit(_0)` liền kề+RUN 0→revert) — tránh bất ngờ JIT kiểu 1a-STEP4.
+- **R1-assign:** poison D2→count==2 double-free. Baseline 1. **G sai thì-hiện-tại** ("double-free ngay") — O phản chứng bằng MIR-dump (1 Drop, alias); G nhận; double-free là rủi-ro-POST-fix (tách alias mà thiếu tombstone). 259 q.age→5 (q.name chạm read-side gap String-field, dùng scalar). Regression String 58/62 + plain-struct 231/234/235 xanh.
+
+## ✅ Nhát 1d — LOCK & SEAL Vector/HashMap field + use-after-move ĐÓNG+PUSH (origin `24ad995`, 2026-06-22)
+2 commit (`c06c299` fixtures+counting · `24ad995` ADR+TODO). Gate `0·0·257·0`. **0 dòng compiler** (mechanism type-generic 1a/1b/1c đã phủ Vector/HashMap — O probe-verified). Verify-before-build: 2 hướng G chỉ (Vector/HashMap field + use-after-move) ĐÃ chạy sẵn → WO chỉ LOCK (fixtures 260/261/262 + counting). 3 răng: R-leak-vec **ISOLATION** (cut is_vec → vec=0 leak / hmap+str sống = per-field dispatch) · R-leak-hmap · R-e2420 (tắt borrowck→262 compile-pass). D tự đóng flake counting (process-global counter → TEST_LOCK Mutex serialize). 🏁 **LÁT 1 (1a+1b+1c+1d) HOÀN TẤT + NIÊM PHONG.**
+
+## ✅ ADR-0067 Lát 2 (No-Box) — 2a Nested-Flat + 2b Enum-Payload ĐÓNG+PUSH (2026-06-22→23)
+ADR scaffold `dd33962`; tách Lát 3 (box/recursive) → ADR-0068 defer (kèm #0 typecheck self-ref).
+- **Nhát 2a Nested-Flat** (origin `a6e8b6b`, 4 commit `dd33962`+`3300348`+`5395eb8`+`a6e8b6b`, gate `0·0·260·0`): `struct Outer{inner:Inner{s:String}}` construct+move+drop sound. **`collect_heap_leaves`** đệ quy COMPILE-TIME trên DAG layout tĩnh (accumulate abs offset, skip scalar/enum), **depth-64→JitError** (bùa chống nổ stack), **DÙNG CHUNG Drop(1769)+Deinit(1415)** đối xứng Sinh-Tử. Mã runtime PHẲNG. M-2 nới `is_nested_struct` (CHỈ Struct). 3 răng: R-leak-nested (collect non-recursive→Drop Unsupported) · R-double-free-nested ISOLATION (Deinit một-tầng→nested_move count 2, field giữ 1) · R-recursive-creep (tháo depth→stack-overflow SIGABRT). 257-FLIP (negative obsolete by design, LUẬT 3 sign-off). **D Enum-narrow flag** (2a CHỈ Struct, heap-enum-field ép 2b — G tuyên dương "thợ gõ→gác cổng").
+- **Nhát 2b Enum-Payload** (origin `2eae669`, 4 commit `9e6cdae`+`e38dd44`+`d2d030d`+`2eae669`, gate `0·0·263·0`): top-level `Msg.Text(String)` construct+move+drop sound. **`emit_enum_drop_glue`** tag-switch N-arm brif (tổng quát emit_outcome_drop_glue, free CHỈ payload variant ACTIVE qua disc). **Enum tombstone zero ptr@8 KHÔNG disc@0** (điểm O bắt: disc=0 là variant hợp lệ khác Outcome). 2b-0a/0b vá String-fat (size heap-aware 32B + fat-store enum_slot, analog 1a STEP-4 — **D recon-trước, O KHÔNG miss**). 4 răng: R-enum-leak→0 · ⚔R-enum-wrong-variant (ignore-disc→Buf active nhưng Text-arm fire, VEC≠1) · R-enum-double-free-move→2 · R-enum-cap→rác. Vector/HashMap payload sound sẵn (thin 8B).
+
+## ✅ Nhát 2b+ Enum-in-Struct field ĐÓNG+PUSH (origin `c928b42`, 2026-06-25) — 🏁 NO-BOX HOÀN TẤT TRỌN BỘ
+4 commit (`c4c87fb` lower · `f9dfb7f` jit · `d274964` test · `c928b42` docs). Gate `0·0·265·0`. **Cầu nối `collect_heap_leaves`↔`emit_enum_drop_glue`:** `struct Wrapper{msg:Msg, tag:Integer}` (Msg.Text(String)) construct+move+drop sound, FREE_COUNT==1, bịt lỗ enum-kẹt-giữa-struct.
+- **Recon O đính chính tiền đề G:** HEAD = **REFUSE SẠCH** (`lib.rs:3107` gate `ctx_is_copy(Enum)` đệ quy đúng→reject), KHÔNG leak câm/OOM. Leak chỉ sinh NẾU nới gate mà thiếu cầu → teeth poison CẦU không poison HEAD. G nhận sai ("verify-don't-trust áp cả lời G").
+- **Vấn đề kiến trúc:** leaf-list TĨNH `Vec<(i32,MirType)>` (free vô điều kiện) KHÔNG gánh được enum-drop ĐỘNG (tag-switch runtime). `emit_enum_drop_glue` slot-based (đòi local-typed-Enum + enum_slot) → enum giữa struct không có slot riêng.
+- **2b+-A** `enum LeafKind{Heap(MirType),Enum(String)}` (mir_lower module-level mirror NullableStructCopy) — `collect_heap_leaves:464` push enum-leaf KHÔNG đệ quy (payload tag-dependent). **2b+-B** tách `emit_enum_drop_glue_at(enum_name, base_addr)` address-based (load disc@base+0/iadd_imm payload@base+8); slot-based cũ→wrapper mỏng (`stack_addr(slot,0)`→core) ⇒ 2b top-level byte-identical. **2b+-C** Drop dispatch `Enum→emit_enum_drop_glue_at(copy_base_addr(local,abs))` + Deinit zero payload@abs+8 TĨNH KHÔNG disc@abs+0 (luật 2b-3). **2b+-D** gate `is_nested_enum` song song `is_nested_struct`.
+- **⚰️ death-line #2 (lỗ THẬT D đào, sâu hơn cảnh báo WO):** lib.rs fixup merged-arm `Struct|Enum=>struct_map.unwrap_or(8)` — enum KHÔNG nằm struct_map → enum FIELD rơi 8B (đáng 32B) → slot under-size + offset field-sau sai → fat-store stomp/drop đọc disc rác → SIGSEGV. Vá = **dời `enum_layouts` lên TRƯỚC struct-fixpoint** (enum-sizing độc lập struct→ordering sound) + tách arm `Enum=>enum_map`.
+- **O verify 4 răng poison ĐỘC LẬP (snapshot+Edit restore, KHÔNG git checkout):** death-line#2 (enum 8B)→**SIGABRT134** fixture 269/270 real-shim · R-leak (bỏ enum-leaf push)→`Drop for Wrapper not supported` (hard-refuse, enum=leaf duy nhất, mạnh hơn count==0) · ⚔R-wrong-variant (ignore disc→icmp const1)→2 fail (Buf→vector once + scalar no_free) · R-double-free-move (bỏ Deinit tombstone)→count≠1. Restore byte-identical. 2b regression 266/267/268+`enum_heap_payload_counting` 5/5 XANH. Fixtures 269/270 + counting `enum_in_struct_counting` (5 test, ⚔wrong-variant cross-wire Pair{Text,Buf}).
+- **D khai thật blind-spot** (mẫu minh bạch): R-fat-store-cap counting VACUOUS cho death-line#2 (records-only shim không deref ptr→cap@24 sống sót); tooth thật của death-line#2 = fixture real-free SIGABRT. KHÔNG claim ngược.
+- **Nợ latent (O ruling + G ký để nguyên, surgical):** `Nullable(Enum)` sizing arm vẫn `struct_map`→8 — correct-now (gate refuse Nullable(heap) ADR-0062), đồng bộ khi mở ADR-0062 §6 heap-nullable-enum.
+
+🏁 **NO-BOX (ADR-0067 2a+2b+2b+) ĐÓNG SẬP TRỌN BỘ — không rỉ một byte.**
+
+## 🎯 KẾ (G phán 2026-06-25): **CAPABILITY Ł3 (ADR-0016/0017/0018)** — mặt trận chiến lược mandate ternary-first. **ADR-0068 Box/recursive G HOÃN** (không đâm bãi mìn pointer-heap khi lõi capability còn què). **Recon mũi 1 O đã đo (CHƯA chốt hướng — Giang ngắt để đóng phiên):** có HAI thế giới capability — (1) Package-manifest (ADR-0016/0017/0018, `CapabilityLevel{Deny-1,Ambient0,Grant+1,Defer=Unknown}`=Ł3 4-state, code ở triet-pack ORPHAN + typecheck `capability_check` LIVE-nhưng-driver-KHÔNG-gọi → enforcement chết trong pipeline) · (2) Hardware-Token ZST (spec/plans/phase6, capability=ownership+move enforced borrowck, "design only"). **Căng thẳng:** Ł3-algebra sống ở Thế giới 1, coherence-với-No-Box sống ở Thế giới 2. **O recommend synthesis:** ZST-token mang Ł3 Trit-level (Grant/Ambient/Deny) + Defer=Unknown→runtime hook, enforced borrowck (move=chuyển+thu hồi) — hợp nhất 2 thế giới + hoàn tất coherence VISION §8. ADR mới (0016 là package-manifest, không áp rewrite single-file/JIT). **Phiên sau: trình lại fork cho G/Giang chốt hướng TRƯỚC khi soạn ADR.**
+
+## Nợ cũ
+- **return-move heap-struct** (sret-copy + in_return Drop-suppress) phần lớn ĐÃ CÓ — chưa verify riêng cho heap-struct field.
+- Lát 1.x: partial-move `let s=p.name` (field-level move-state borrowck) · field-reassign `p.name="x"`.
+- Lát 2: nested/recursive heap-in-aggregate + enum-payload heap.
+- 🟡 Tech-Debt Hạ tầng: counting-test parallel flake (`nullable_map_heap_output_counting` etc. — process-global AtomicUsize) cần `--test-threads=1`/subprocess. KHÔNG block.
+
+[[mentor_o_persona]] [[colleague_d_persona]] [[campaign_aggregate_nullable]]
