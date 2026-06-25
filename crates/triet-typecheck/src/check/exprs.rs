@@ -951,7 +951,7 @@ impl Checker<'_> {
             // — semantically nonsensical. Gating signal is dual:
             //
             // 1. Callee identifier name is `compare_exchange` (covers
-            //    both `from sys.atomic import compare_exchange` direct
+            //    both `use sys::atomic::{compare_exchange}` direct
             //    use and `sys.atomic.compare_exchange` qualified use via
             //    field access).
             // 2. Function signature shape matches: 5 parameters with
@@ -2181,7 +2181,7 @@ impl Checker<'_> {
 
 /// Return true when the callee expression resolves syntactically to an
 /// identifier or field-access with the given name. Aliased imports
-/// (`from … import X as Y`) intentionally escape detection — see
+/// (`use …::{X as Y}`) intentionally escape detection — see
 /// ADR-0028 §10 conservative scope.
 fn callee_name_is(node: &Expr, expected: &str) -> bool {
     match node {

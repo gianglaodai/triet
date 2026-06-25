@@ -146,16 +146,13 @@ pub enum Token {
     /// `kleene_iff` — Kleene K3 biconditional.
     #[token("kleene_iff")]
     KleeneIff,
-    /// `import` — module import. Dot-path form (`import std.io`) is the
-    /// baseline; v0.2.x adds Python-style `from ... import ...` per ADR-0005.
-    #[token("import")]
-    Import,
-    /// `from` — Python-style import source, paired with `import`:
-    /// `from std.io import println, print`. Per ADR-0005.
-    #[token("from")]
-    From,
-    /// `as` — import rename, paired with `import`:
-    /// `from std.io import println as out`. Per ADR-0005.
+    /// `use` — module import (ADR-0071, supersedes the `import`/`from`
+    /// keywords of ADR-0005). `use std::io::{a, b as c};` — `::`-separated
+    /// path, optional brace group with `as` rename.
+    #[token("use")]
+    Use,
+    /// `as` — import rename inside a `use` group:
+    /// `use std::io::{println as out};`. Per ADR-0071.
     #[token("as")]
     As,
     /// `module` — module declaration. Per ADR-0005, Java JPMS-aligned.
@@ -364,6 +361,10 @@ pub enum Token {
     Question,
 
     // === Punctuation ===
+    /// `::` — path separator in a `use` declaration (ADR-0071). Declared
+    /// before `:` so logos's longest-match picks `::` over two `:` tokens.
+    #[token("::")]
+    ColonColon,
     /// `:` — type annotation separator.
     #[token(":")]
     Colon,

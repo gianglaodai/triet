@@ -29,7 +29,7 @@ fn push_new_inline_chain_resolves_t_from_second_arg() {
     // (`new()`) feeds a multi-arg generic call (`push(_, x)`).
     // The second arg's concrete type must back-flow to T.
     let src = r"
-        from std.collections.vector import new, push, length
+        use std::collections::vector::{new, push, length}
 
         function build() -> Integer = {
             let v: Vector<Integer> = push(new(), 99)
@@ -46,7 +46,7 @@ fn push_then_push_inline_chain_resolves_t() {
     // Nested generic chain — two `push` calls layered, the outer
     // sees `Vector<Integer>` from the second arg of the inner.
     let src = r"
-        from std.collections.vector import new, push, length
+        use std::collections::vector::{new, push, length}
 
         function build_two() -> Integer = {
             let v: Vector<Integer> = push(push(new(), 1), 2)
@@ -96,7 +96,7 @@ fn vector_new_alone_returns_unresolved_until_bound() {
     // `let v: Vector<Integer> = new()` should typecheck because the
     // let-binding's expected type pins T = Integer via .matches().
     let src = r"
-        from std.collections.vector import new
+        use std::collections::vector::{new}
 
         function main() {
             let v: Vector<Integer> = new()

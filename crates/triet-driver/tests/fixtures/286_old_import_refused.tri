@@ -1,0 +1,10 @@
+// ERROR: UnexpectedToken
+// ADR-0071 Lát 1 — the old `import` keyword (ADR-0005) is GONE. `import` is no
+// longer a lexer keyword, so it lexes as a bare identifier and fails at the
+// item dispatch → UnexpectedToken. Poison P-old-keyword (re-add
+// `#[token("import")]` to the lexer) → `import` becomes a keyword again, the
+// dispatch finds no `parse_import`, and this stops being the expected error =
+// proof the keyword removal is the tooth.
+import std::io
+
+function main() -> Integer { return 0; }

@@ -380,7 +380,7 @@ Kept for ADR/intent context only; the crates and architecture below **no longer
 exist** (deep dive ở [`docs/ARCHIVE.md`](docs/ARCHIVE.md)):
 
 - **Arena-based AST** — `triet-syntax` allocates `Expr`/`Stmt`/`Pattern`/`TypeExpr` trong typed sub-arenas. Nodes giữ `*Id` handles, không `Box<T>`. Đi qua `arena.expression(id)`; **không fabricate IDs**.
-- **v0.2.x Module system** (ADR-0005 locked) — multi-arena `ResolvedProgram`, dot paths, Python-style imports, stdlib từ filesystem. **Locked rules**: single-file = crate root; inline ≡ file-bound for path resolution.
+- **v0.2.x Module system** (ADR-0005 locked; import syntax superseded by ADR-0071 — `use std::io::{a, b as c}` with `::` paths, replacing `from std.io import …`) — multi-arena `ResolvedProgram`, stdlib từ filesystem. **Locked rules**: single-file = crate root; inline ≡ file-bound for path resolution.
 - **v0.3 IR + Bytecode VM** (ADR-0007/0008/0010) — register-SSA IR 53 opcodes, `.triv` wire format **v5**, `BrTrilean` 3-way branch + Ł3-aware `Eq`/`Ne`. `Constant::Null` = Trit::Zero discriminator. VM là **dev tier** per VISION §4.3. Strict `if cond` Unknown handling: compile-time E1033 (primary) + BrTrilean unknown_block (defense-in-depth post-ADR-0021).
 - **v0.4 Crate-Pack** (ADR-0011/0012/0013) — `.khi` container, BLAKE3 two-level hash (`iface_hash` + `impl_hash`), cross-package linker `plan_link`, E2300-E2399 semver decision matrix. **Locked rule**: `iface_hash_pin` là final arbiter, auto-shim NOT promised.
 - **v0.5 CAS Packaging** (ADR-0014/0015) — 3-cấp hash tree (term + module + package) với 16-byte domain separators, `~/.triet/store/`, atomic install (tmp + rename), mark-sweep GC, `dao.lock` hand-rolled line format. `abi_version` v=1 explicitly refused (no shim).
@@ -416,7 +416,7 @@ These are decisions locked by ADRs. Code generation, examples, error messages, a
 | `constant` | `const` | ADR-0005 |
 | `module` | `mod` | ADR-0005 |
 | `crate.foo.bar` | `crate::foo::bar` | ADR-0005 (dot paths) |
-| `from std.io import println` | `use std::io::println` | ADR-0005 |
+| `use std::io::println`, `use std::io::{a, b as c}` | `from std.io import println` (ADR-0005, superseded) | ADR-0071 (`use` + `::` import path) |
 | `!a`, `a && b`, `a \|\| b`, `a ^ b`, `a => b` | — | SPEC §4.2 (symbolic preferred) |
 | `a ~> b`, `a ~^ b`, `a <=> b`, `a <~> b` | — | SPEC §4.2 (Kleene variants) |
 | `1_trit`, `0_trit`, `-1_trit` (suffix-typed Trit literal) | `0t+` as Trit (those `0t...` forms are balanced-ternary **Integer** literals, not Trit) | SPEC §1.5.1 |

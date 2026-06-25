@@ -231,7 +231,7 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
         // ADR-0061 T2.5: `self` as a primary expression (receiver inside an
         // `implement` method body). Lexed as `SelfKw`; here it becomes a
         // plain identifier named "self" — resolution is T3/T4. Import-path
-        // `self` (`from self.X import`) uses a separate path (parse_dot_path)
+        // `self` (`use self::X`) uses a separate path (parse_use_path)
         // and is unaffected.
         Token::SelfKw => {
             parser.advance();

@@ -1,0 +1,10 @@
+// ERROR: UnexpectedToken
+// ADR-0071 Lát 1 (T-dot-path) — `.` is no longer a path separator in a `use`
+// declaration; only `::` joins segments. `use std.io::x` parses `use std`
+// (one segment), then the leftover `.io::x` is not a valid top-level item →
+// UnexpectedToken. Poison P-longest-match (let `.` join path segments again, or
+// route `parse_use_path` off `Token::Dot`) → the dotted path parses and this
+// stops erroring = the `::`-only path rule is the tooth.
+use std.io::println
+
+function main() -> Integer { return 0; }

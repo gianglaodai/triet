@@ -118,7 +118,7 @@ pub enum LoaderError {
         span: Span,
     },
 
-    /// E2107 — `from X import Variant as Alias` for an enum variant.
+    /// E2107 — `use X::{Variant as Alias}` for an enum variant.
     /// Variant aliasing isn't supported because the constructor's
     /// spelling is part of the value (typechecker matches variant by
     /// name within its enum). Import the parent enum instead.
@@ -126,7 +126,7 @@ pub enum LoaderError {
     #[diagnostic(
         code(triet::modules::E2107),
         help(
-            "either import the variant unaliased (e.g. `from X import {variant}`) or import the parent enum `{enum_name}` and use `{enum_name}.{variant}` at use sites"
+            "either import the variant unaliased (e.g. `use X::{{{variant}}}`) or import the parent enum `{enum_name}` and use `{enum_name}.{variant}` at use sites"
         )
     )]
     AliasedVariantImport {
@@ -149,9 +149,7 @@ pub enum LoaderError {
     #[error("duplicate import: name `{name}` already bound to `{prior_path}`")]
     #[diagnostic(
         code(triet::modules::E2108),
-        help(
-            "rename one of the two imports using `from X import a as b`, or remove the duplicate"
-        )
+        help("rename one of the two imports using `use X::{{a as b}}`, or remove the duplicate")
     )]
     DuplicateImport {
         /// The local name that collided.

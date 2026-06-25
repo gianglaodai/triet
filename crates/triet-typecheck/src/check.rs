@@ -311,10 +311,9 @@ impl<'p> Checker<'p> {
             Item::Capability { name, level } => {
                 self.declare_capability(name, level, item.span.clone());
             }
-            Item::Import { .. } | Item::ImportFrom { .. } => {
-                // Imports are syntactic placeholders until the module
-                // loader (v0.2.x.6) ships. Names introduced by `import`
-                // / `from … import …` are not yet bound here.
+            Item::Use { .. } => {
+                // Imports are syntactic placeholders here — name binding is
+                // done by the module loader/resolver. ADR-0071 `use …`.
             }
             Item::Module { .. } => {
                 // Module declarations are not yet checked; the module

@@ -1,0 +1,8 @@
+// ERROR: UnexpectedToken
+// ADR-0071 Lát 1 — the old Python-style `from … import …` (ADR-0005) is GONE.
+// `from` is no longer a lexer keyword → it lexes as a bare identifier and fails
+// at item dispatch → UnexpectedToken. Poison (re-add `#[token("from")]`) → the
+// expected error changes = the keyword removal is load-bearing.
+from std::io import println
+
+function main() -> Integer { return 0; }

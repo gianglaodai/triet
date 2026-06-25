@@ -8,18 +8,18 @@
 //!    `bindings` map keyed by the item's name, with an
 //!    [`AbsolutePath`] rooted at the module's path.
 //!
-//! 2. **Resolves imports** — rewrites `from X import Y` and `import X`
-//!    to absolute paths, resolving `khi.`, `self.`, and `super.`
-//!    path keywords relative to the importing module. For `from`
-//!    imports, each imported name is bound into the importing module's
-//!    scope. For whole-module `import`, the module path is bound under
-//!    its last segment.
+//! 2. **Resolves imports** — rewrites `use X::{Y}` (group) and `use X`
+//!    (whole/single) to absolute paths, resolving `khi`, `self`, and
+//!    `super` path keywords relative to the importing module. A group
+//!    binds each imported name into the importing module's scope; a
+//!    whole/single `use` binds the leaf segment under its own name.
+//!    (ADR-0071 surface syntax; the routing model is unchanged.)
 //!
 //! 3. **Checks visibility** — an imported name must be `public` (or
 //!    `public(package)` within the same crate). Private items cannot
 //!    be imported from outside their defining module.
 //!
-//! 4. **Binds synthetic stdlib exports** — `from std.io import println`
+//! 4. **Binds synthetic stdlib exports** — `use std::io::println`
 //!    resolves through the stdlib registry (v0.2.x.6 synthetic;
 //!    v0.2.x.7 swaps to real files).
 //!
@@ -130,11 +130,11 @@ struct ImportInfo {
     span: triet_syntax::Span,
 }
 
-/// Differentiate between `import X` and `from X import Y`.
+/// Differentiate between `use X` (whole/single) and `use X::{Y}` (group).
 enum ImportKind {
-    /// `import std.io` or `import std.io.println`.
+    /// `use std::io` or `use std::io::println` (empty group).
     Whole { segments: Vec<String> },
-    /// `from std.io import println, print as p`.
+    /// `use std::io::{println, print as p}` (non-empty group).
     From {
         source: Vec<String>,
         names: Vec<(String, Option<String>)>,
@@ -149,26 +149,32 @@ fn collect_imports(
     let mut imports = Vec::new();
     for item in items {
         match &item.node {
-            Item::Import { import } => {
-                imports.push(ImportInfo {
-                    kind: ImportKind::Whole {
-                        segments: import.module_path.segments.clone(),
-                    },
-                    span: item.span.clone(),
-                });
-            }
-            Item::ImportFrom { module_path, names } => {
-                let names = names
-                    .iter()
-                    .map(|n| (n.name.clone(), n.alias.clone()))
-                    .collect();
-                imports.push(ImportInfo {
-                    kind: ImportKind::From {
-                        source: module_path.segments.clone(),
-                        names,
-                    },
-                    span: item.span.clone(),
-                });
+            // ADR-0071: `use path::{group}`. An EMPTY group routes to the
+            // legacy Whole path (bind the leaf segment — whole module or single
+            // item); a NON-empty group routes to the legacy From path (bind each
+            // name out of the module named by `path`). Semantics (E2100/E2101,
+            // visibility, `as` rename) are unchanged — only the surface dispatch.
+            Item::Use { path, group } => {
+                if group.is_empty() {
+                    imports.push(ImportInfo {
+                        kind: ImportKind::Whole {
+                            segments: path.segments.clone(),
+                        },
+                        span: item.span.clone(),
+                    });
+                } else {
+                    let names = group
+                        .iter()
+                        .map(|n| (n.name.clone(), n.alias.clone()))
+                        .collect();
+                    imports.push(ImportInfo {
+                        kind: ImportKind::From {
+                            source: path.segments.clone(),
+                            names,
+                        },
+                        span: item.span.clone(),
+                    });
+                }
             }
             // Items that don't produce import statements.
             Item::Function { .. }
@@ -203,7 +209,7 @@ fn resolve_single_import(
     }
 }
 
-/// Resolve `import X.Y.Z` — bind the last segment as a name in the
+/// Resolve `use X::Y::Z` — bind the last segment as a name in the
 /// importing module's scope.
 fn resolve_whole_import(
     program: &mut ResolvedProgram,
@@ -288,7 +294,7 @@ fn resolve_whole_import(
     });
 }
 
-/// Resolve `from X import a, b as c` — resolve source path, then
+/// Resolve `use X::{a, b as c}` — resolve source path, then
 /// look up each name in the target module and bind it.
 fn resolve_from_import(
     program: &mut ResolvedProgram,
@@ -356,7 +362,7 @@ fn resolve_from_import(
                 );
                 continue;
             }
-            // Check enum variants — `from std.result import Ok` should
+            // Check enum variants — `use std::result::{Ok}` should
             // resolve `Ok` to the parent enum `Result` so the type
             // checker sees the variant in scope. Aliasing is rejected
             // (variant constructor names are positional in the AST).
@@ -482,8 +488,7 @@ fn item_name_and_visibility(item: &Item) -> Option<(String, Visibility)> {
         // ADR-0069 Lát 0: capability is single-file-scoped; cross-module
         // export lands when the capability system grows past Lát 0.
         Item::Implementation { .. }
-        | Item::Import { .. }
-        | Item::ImportFrom { .. }
+        | Item::Use { .. }
         | Item::Capability { .. }
         | Item::Module { .. } => None,
     }
@@ -615,11 +620,11 @@ mod tests {
 
     #[test]
     fn stdlib_from_import_binds() {
-        let program = load_in_memory_result("from std.io import println").unwrap();
+        let program = load_in_memory_result("use std::io::{println}").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("println"),
-            "stdlib import should bind: {:?}",
+            "stdlib use should bind: {:?}",
             root.bindings
         );
         let path = &root.bindings["println"];
@@ -628,11 +633,11 @@ mod tests {
 
     #[test]
     fn stdlib_from_import_with_alias() {
-        let program = load_in_memory_result("from std.io import println as out").unwrap();
+        let program = load_in_memory_result("use std::io::{println as out}").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("out"),
-            "aliased import should bind under alias: {:?}",
+            "aliased use should bind under alias: {:?}",
             root.bindings
         );
         assert!(
@@ -643,11 +648,11 @@ mod tests {
 
     #[test]
     fn stdlib_whole_import_binds() {
-        let program = load_in_memory_result("import std.io.println").unwrap();
+        let program = load_in_memory_result("use std::io::println").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("println"),
-            "whole import terminal name should bind: {:?}",
+            "whole use terminal name should bind: {:?}",
             root.bindings
         );
     }
@@ -655,9 +660,36 @@ mod tests {
     // ── Cross-module import ─────────────────────────────────────────
 
     #[test]
+    fn use_whole_path_binds_function_leaf_not_module() {
+        // ADR-0071 CHỨNG (O's condition): `use khi::helper::greet` — a WHOLE
+        // path with an EMPTY group routes through `resolve_whole_import`. The
+        // leaf `greet` is a FUNCTION, not a module, so it must bind as an ITEM
+        // (module = `khi::helper`, name = `greet`), NOT pass-by-luck as a module
+        // path `khi::helper::greet`. This proves the Whole route resolves item
+        // leaves, not just module leaves.
+        let program = load_filesystem_result(&[
+            ("main.tri", "module helper\nuse khi::helper::greet"),
+            ("helper.tri", "public function greet() = 1"),
+        ])
+        .unwrap();
+
+        let root = program.root_module();
+        let bound = root
+            .bindings
+            .get("greet")
+            .expect("whole-path function leaf must bind");
+        assert_eq!(bound.name, "greet", "leaf must bind as the item `greet`");
+        assert_eq!(
+            bound.module.segments(),
+            &["khi", "helper"],
+            "item must live in module `khi::helper`, not be treated as a module path"
+        );
+    }
+
+    #[test]
     fn from_import_public_function() {
         let program = load_filesystem_result(&[
-            ("main.tri", "module helper\nfrom khi.helper import greet"),
+            ("main.tri", "module helper\nuse khi::helper::{greet}"),
             ("helper.tri", "public function greet() = 1"),
         ])
         .unwrap();
@@ -673,7 +705,7 @@ mod tests {
     #[test]
     fn from_import_private_function_errors() {
         let errors = load_filesystem_result(&[
-            ("main.tri", "module helper\nfrom khi.helper import secret"),
+            ("main.tri", "module helper\nuse khi::helper::{secret}"),
             ("helper.tri", "function secret() = 42"),
         ])
         .unwrap_err();
@@ -682,14 +714,14 @@ mod tests {
             errors.iter().any(
                 |e| matches!(e, LoaderError::VisibilityViolation { name, .. } if name == "secret")
             ),
-            "private import should produce VisibilityViolation: {errors:?}"
+            "private use should produce VisibilityViolation: {errors:?}"
         );
     }
 
     #[test]
     fn from_import_nonexistent_name_errors() {
         let errors = load_filesystem_result(&[
-            ("main.tri", "module helper\nfrom khi.helper import nope"),
+            ("main.tri", "module helper\nuse khi::helper::{nope}"),
             ("helper.tri", "public function greet() = 1"),
         ])
         .unwrap_err();
@@ -704,7 +736,7 @@ mod tests {
 
     #[test]
     fn from_import_nonexistent_module_errors() {
-        let errors = load_in_memory_result("from khi.ghost import thing").unwrap_err();
+        let errors = load_in_memory_result("use khi::ghost::{thing}").unwrap_err();
         assert!(
             errors
                 .iter()
@@ -723,7 +755,7 @@ mod tests {
         let errors = load_filesystem_result(&[
             (
                 "main.tri",
-                "module a\nmodule b\nfrom khi.a import value\nfrom khi.b import value",
+                "module a\nmodule b\nuse khi::a::{value}\nuse khi::b::{value}",
             ),
             ("a.tri", "public function value() = 1"),
             ("b.tri", "public function value() = 2"),
@@ -743,7 +775,7 @@ mod tests {
         let program = load_filesystem_result(&[
             (
                 "main.tri",
-                "module a\nmodule b\nfrom khi.a import value\nfrom khi.b import value as v2",
+                "module a\nmodule b\nuse khi::a::{value}\nuse khi::b::{value as v2}",
             ),
             ("a.tri", "public function value() = 1"),
             ("b.tri", "public function value() = 2"),
@@ -761,7 +793,7 @@ mod tests {
         let program = load_filesystem_result(&[
             (
                 "main.tri",
-                "module a\nfrom khi.a import value\nfrom khi.a import value",
+                "module a\nuse khi::a::{value}\nuse khi::a::{value}",
             ),
             ("a.tri", "public function value() = 1"),
         ])
@@ -773,10 +805,9 @@ mod tests {
 
     #[test]
     fn self_import_resolves() {
-        let program =
-            load_in_memory_result("function helper() = 1\nfrom self import helper").unwrap();
+        let program = load_in_memory_result("function helper() = 1\nuse self::{helper}").unwrap();
         let root = program.root_module();
-        // `self` in the root module = `crate`, so `from self import helper`
+        // `self` in the root module = `crate`, so `use self::{helper}`
         // binds `helper` (which is already bound as own def, but import
         // overwrites with same path — that's fine).
         assert!(root.bindings.contains_key("helper"));
@@ -789,7 +820,7 @@ mod tests {
         // v0.7.11.7 removed unconditional E2102 for sys/dev/usr roots.
         // In v0.8.11, capability imports succeed without file existence checks.
         // Capability enforcement (E2200/E2201) catches unauthorized access later.
-        let program = load_in_memory_result("from sys.cap import read").unwrap();
+        let program = load_in_memory_result("use sys::cap::{read}").unwrap();
         let root = program.root_module();
         assert!(root.bindings.contains_key("read"));
     }
@@ -798,7 +829,7 @@ mod tests {
 
     #[test]
     fn stdlib_nonexistent_export_errors() {
-        let errors = load_in_memory_result("from std.io import frobnicate").unwrap_err();
+        let errors = load_in_memory_result("use std::io::{frobnicate}").unwrap_err();
         assert!(
             errors
                 .iter()
@@ -811,7 +842,7 @@ mod tests {
 
     #[test]
     fn multi_name_from_import() {
-        let program = load_in_memory_result("from std.io import println, print").unwrap();
+        let program = load_in_memory_result("use std::io::{println, print}").unwrap();
         let root = program.root_module();
         assert!(root.bindings.contains_key("println"));
         assert!(root.bindings.contains_key("print"));
@@ -821,11 +852,11 @@ mod tests {
 
     #[test]
     fn variant_import_binds_to_parent_enum() {
-        let program = load_in_memory_result("from std.result import Ok").unwrap();
+        let program = load_in_memory_result("use std::result::{Ok}").unwrap();
         let root = program.root_module();
         assert!(
             root.bindings.contains_key("Ok"),
-            "variant import should bind: {:?}",
+            "variant use should bind: {:?}",
             root.bindings
         );
         // The binding points at the parent enum's AbsolutePath so the
@@ -836,7 +867,7 @@ mod tests {
 
     #[test]
     fn multi_variant_import_works() {
-        let program = load_in_memory_result("from std.result import Ok, Err").unwrap();
+        let program = load_in_memory_result("use std::result::{Ok, Err}").unwrap();
         let root = program.root_module();
         assert!(root.bindings.contains_key("Ok"));
         assert!(root.bindings.contains_key("Err"));
@@ -846,7 +877,7 @@ mod tests {
 
     #[test]
     fn aliased_variant_import_rejected() {
-        let errors = load_in_memory_result("from std.result import Ok as MyOk").unwrap_err();
+        let errors = load_in_memory_result("use std::result::{Ok as MyOk}").unwrap_err();
         assert!(
             errors
                 .iter()

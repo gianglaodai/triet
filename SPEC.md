@@ -59,7 +59,7 @@ CAS packaging trên nền tảng v0.4 ABI metadata. v0.5 land:
 - Hash-based resolver + `dao.lock` format (hand-rolled line format, no serde dep).
 - CLI: `dao store {import,list,gc}`.
 - Shared loading demo — VISION §3.1 gate hit at iface level (body-level RAM dedup chờ lowerer per-term body extraction).
-- Cross-module enum variant import (`from std.result import Ok, Err`) — pre-existing gap từ v0.2.x closed; aliased variant imports rejected với E2107.
+- Cross-module enum variant import (`use std::result::{Ok, Err}`) — pre-existing gap từ v0.2.x closed; aliased variant imports rejected với E2107.
 
 ### 0.6 Đã ship ở v0.6
 
@@ -144,7 +144,7 @@ struct  enum
 
 > **v0.2.x reserves** (per [ADR-0005](docs/decisions/0005-module-system.md), enforcement landing incrementally):
 > - Path keywords: `crate`, `self`, `super`
-> - Import keywords: `from`, `as` (Python-style imports, ADR-0005)
+> - Import keywords: `use`, `as` (`::`-path imports, ADR-0071 — supersedes the ADR-0005 `import`/`from`)
 > - Reserved namespace roots: `std`, `sys`, `dev`, `usr`, `core`
 
 ### 1.5 Literal
@@ -756,28 +756,33 @@ module bar {
 **Locked architecture decisions** (ADR-0005, do not change):
 - Single-file = crate root (Python/Go pattern).
 - Inline ≡ file-bound for path resolution.
-- Glob imports (`from foo import *`) và re-exports **không được phép** (explicit > implicit).
+- Glob imports (`use foo::{*}`) và re-exports **không được phép** (explicit > implicit).
 
 **Cyclic dependencies refused** at name-resolution với E2100 + cycle trace `foo → bar → baz → foo`. Không có lazy-resolution escape hatch.
 
 ### 6.5 Import statements
 
-Python-style imports:
+`use` declarations with `::`-separated paths (ADR-0071, supersedes the
+ADR-0005 `import`/`from` keywords):
 
 ```triet
-// Import items từ module
-from std.io import println
-from std.io import println, print as p   // multi-item + rename
+// Whole module or single item (binds the leaf segment as a name)
+use std::io                               // binds `io`
+use std::io::println                      // binds `println` in current scope
 
-// Whole-module import (binds last segment as name)
-import std.io.println                     // binds `println` in current scope
+// Brace group — import multiple items, with optional `as` rename
+use std::io::{println, print as p}        // multi-item + rename
 ```
 
-**Dot path syntax** (không `::`):
-- `crate.foo.bar` — absolute từ crate root.
-- `self.foo` — relative tới current module.
-- `super.foo` — parent module.
-- `std.io` — stdlib (reserved root per §1.4).
+**`use` path syntax** (`::` separator, ADR-0071):
+- `khi::foo::bar` — absolute từ crate root (`khi` replaces the old `crate`).
+- `self::foo` — relative tới current module.
+- `super::foo` — parent module.
+- `std::io` — stdlib (reserved root per §1.4).
+
+> The `::` separator is scoped to `use` paths in ADR-0071 Lát 1. The
+> general dot-path in expression/qualifier position (`khi.foo.bar` as a
+> value path) migrates to `::` in a later slice.
 
 ### 6.6 Visibility ladder
 
@@ -965,7 +970,7 @@ Tuple là composite anonymous (kiểu được suy ra từ thành phần). Struc
 
 ## 9. Standard library tối thiểu (v0.2)
 
-> **Module migration (v0.2.x):** Cú pháp `import std.io.println` (v0.2 baseline, dot-path) sẽ được bổ sung Python-style `from std.io import println` theo [ADR-0005](docs/decisions/0005-module-system.md). Path separator vẫn là `.`. Verbose keyword `function` thay cho `fn` đã chốt.
+> **Module migration:** Import cú pháp đã chuyển sang `use std::io::println` / `use std::io::{a, b as c}` với path separator `::` theo [ADR-0071](docs/decisions/0071-path-separator-and-module-import.md) (supersedes ADR-0005 `import`/`from`). Verbose keyword `function` thay cho `fn` đã chốt.
 
 Module `std.io`:
 ```triet

@@ -388,7 +388,7 @@ pub fn check_resolved(program: &ResolvedProgram) -> Vec<TypeError> {
         // prelude (print, println, to_string, etc.) for backward-
         // compat with v0.1.x single-file programs. Child modules and
         // stdlib modules do not get the prelude — they must use
-        // explicit `from std.io import …` declarations.
+        // explicit `use std::io::{…}` declarations.
         let mut env = if idx == program.root.raw() {
             TypeEnvironment::with_prelude()
         } else {
@@ -536,8 +536,7 @@ pub(crate) fn collect_declared_types(
             Item::Trait { .. }
             | Item::Implementation { .. }
             | Item::TypeAlias { .. }
-            | Item::Import { .. }
-            | Item::ImportFrom { .. }
+            | Item::Use { .. }
             | Item::Module { .. } => {}
         }
     }
@@ -1016,7 +1015,7 @@ mod tests {
         let errors = check_filesystem(&[
             (
                 "main.tri",
-                "module helper\nfrom khi.helper import greet\nfunction main() -> Integer = greet()",
+                "module helper\nuse khi::helper::{greet}\nfunction main() -> Integer = greet()",
             ),
             ("helper.tri", "public function greet() -> Integer = 42"),
         ]);
@@ -1029,7 +1028,7 @@ mod tests {
             (
                 "main.tri",
                 "module helper
-from khi.helper import greet
+use khi::helper::{greet}
 function main() -> String = greet()",
             ),
             ("helper.tri", "public function greet() -> Integer = 42"),
@@ -1047,7 +1046,7 @@ function main() -> String = greet()",
     #[test]
     fn stdlib_import_type_checks() {
         let errors = check_in_memory(
-            r#"from std.io import println
+            r#"use std::io::{println}
 function main() = println("hello")"#,
         );
         assert!(errors.is_empty(), "no errors expected: {errors:?}");
@@ -1244,7 +1243,7 @@ function main() = println("hello")"#,
             (
                 "main.tri",
                 "module lib
-from khi.lib import Token, Spanned, IntPayload
+use khi::lib::{Token, Spanned, IntPayload}
 function describe(sp: Spanned) -> Integer = match sp.token {
     IntLit(p) => p.value,
     Kw => -1,
@@ -1275,7 +1274,7 @@ public struct Spanned { token: Token, span_start: Integer }",
             (
                 "main.tri",
                 "module helper
-from khi.helper import bump
+use khi::helper::{bump}
 function main() {}",
             ),
             (
@@ -1309,7 +1308,7 @@ function main() {}",
             (
                 "main.tri",
                 "module helper
-from khi.helper import bad
+use khi::helper::{bad}
 function main() {}",
             ),
             ("helper.tri", "public function bad(a: &+ Atomic<String>) {}"),
@@ -1352,7 +1351,7 @@ function main() {}",
             (
                 "main.tri",
                 "module lib
-from khi.lib import Outer, Inner
+use khi::lib::{Outer, Inner}
 function read(o: Outer) -> Integer = o.inner.leaf
 function main() -> Integer = read(Outer { inner: Inner { leaf: 9 }, tag: 0 })",
             ),

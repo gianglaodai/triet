@@ -3,7 +3,7 @@
 //! Sits between parsing and type-checking. Walks `module foo`
 //! declarations starting from a root file, loads sub-files, builds a
 //! module dependency graph, detects cycles, and resolves
-//! `import` / `from … import …` declarations to fully-qualified paths.
+//! `use …::{…}` declarations to fully-qualified paths.
 //!
 //! Per [ADR-0005] ("Module system: Java JPMS aesthetic, dot paths,
 //! Python imports"). Public surface mirrors the parser's:

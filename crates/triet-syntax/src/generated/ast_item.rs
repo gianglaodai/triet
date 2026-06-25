@@ -106,13 +106,6 @@ pub struct ImplementationDefinition {
     pub methods: Vec<FunctionDefinition>, // owned
 }
 
-/// Import declaration: `from std.io import println, read_line`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Import {
-    pub module_path: crate::item::ImportPath, // owned
-    pub names: Vec<crate::item::ImportName>,  // owned
-}
-
 /// Body of a module declaration. Per ADR-0005 module declarations are first-class: file layout is convention, not semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModuleContent {
@@ -156,9 +149,11 @@ pub enum Item {
         def: ImplementationDefinition,
     }, // owned
 
-    Import {
-        import: Import,
-    }, // owned
+    /// Import declaration `use std::io::{a, b as c}` (ADR-0071, supersedes the `import`/`from` keywords of ADR-0005). An EMPTY group binds the leaf of `path` (a whole module `use std::io`, or a single item `use std::io::println`); a NON-empty group binds each `ImportName` (with optional `as` rename) out of the module named by `path`.
+    Use {
+        path: crate::item::ImportPath,       // owned
+        group: Vec<crate::item::ImportName>, // owned
+    },
 
     Module {
         module: ModuleItem,
@@ -170,12 +165,6 @@ pub enum Item {
         type_annotation: Option<crate::arena::TypeId>, // &0 (borrow)
         value: crate::arena::ExprId,                   // owned
         visibility: Visibility,
-    },
-
-    /// Import declaration: `from std.io import println`.
-    ImportFrom {
-        module_path: crate::item::ImportPath, // owned
-        names: Vec<crate::item::ImportName>,  // owned
     },
 
     /// Type alias: `type Name = SomeType;`.

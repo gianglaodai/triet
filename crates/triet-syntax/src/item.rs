@@ -41,14 +41,14 @@ pub struct EnumVariant {
     pub payload: Option<TypeId>,
 }
 
-/// A dotted import path: `import std.io.println` → `["std", "io", "println"]`.
+/// A `use` import path: `use std::io::println` → `["std", "io", "println"]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportPath {
     /// Dot-separated segments, in order.
     pub segments: Vec<String>,
 }
 
-/// A single name in a `from … import …` name list.
+/// A single name in a `use …::{ … }` import group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportName {
     /// Imported symbol name (as it appears in the source module).

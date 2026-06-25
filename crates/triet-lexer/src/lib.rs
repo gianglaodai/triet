@@ -31,7 +31,7 @@ mod tests {
     use Token::{
         Ampersand, AmpersandMinus, AmpersandPlus, AmpersandZero, And, AndAnd, As, Assign, Bang,
         BangBang, Break, Caret, Colon, Comma, Constant, Continue, Dot, DotDot, DotDotEq, Else,
-        EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow, For, From, Function, GtEq,
+        EqEq, FStringEnd, FStringStart, FStringText, False, FatArrow, For, Function, GtEq,
         Identifier, If, IfQ, Iff, Implies, In, IntegerLiteral, InterpolationEnd,
         InterpolationStart, KleeneIff, KleeneImplies, KleeneXor, LBrace, LBracket, LParen, Let,
         Loop, Lt, LtEq, LtEqGt, LtTildeGt, Match, Minus, Mutable, Not, NotEq, Null, Or, OrOr,
@@ -50,7 +50,7 @@ mod tests {
     fn lexes_all_keywords() {
         let source = "function let mutable constant type if else match return for while loop break \
                       continue in true false unknown null not and or xor iff implies \
-                      kleene_implies kleene_xor kleene_iff import from as module public owned \
+                      kleene_implies kleene_xor kleene_iff use as module public owned \
                       struct enum trait implement khi self super";
         let tokens = lex_only(source);
         assert_eq!(
@@ -84,8 +84,7 @@ mod tests {
                 KleeneImplies,
                 KleeneXor,
                 KleeneIff,
-                Token::Import,
-                From,
+                Token::Use,
                 As,
                 Token::Module,
                 Public,

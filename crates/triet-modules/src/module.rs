@@ -70,7 +70,7 @@ pub struct Module {
     /// [`Module`]s and appear in `children`).
     pub items: Vec<Spanned<Item>>,
     /// Local-name → fully-qualified path. Populated during name
-    /// resolution from `import` and `from … import …` declarations.
+    /// resolution from `use …::{…}` declarations.
     /// Items declared inside this module also appear here so callers
     /// can look up every visible name uniformly.
     pub bindings: HashMap<String, AbsolutePath>,

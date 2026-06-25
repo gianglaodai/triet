@@ -1,10 +1,10 @@
-//! Top-level item parser — `function`, `constant`, `type`, `import`.
+//! Top-level item parser — `function`, `constant`, `type`, `use`.
 
 use triet_lexer::{Span, Token};
 use triet_syntax::{
     CapabilityLevel, EnumDefinition, EnumVariant, FunctionBody, FunctionDefinition,
-    FunctionParameter, GenericBound, ImplementationDefinition, Import, ImportName, ImportPath,
-    Item, MethodSignature, ModuleContent, ModuleItem, ParameterPassing, Spanned, StructDefinition,
+    FunctionParameter, GenericBound, ImplementationDefinition, ImportName, ImportPath, Item,
+    MethodSignature, ModuleContent, ModuleItem, ParameterPassing, Spanned, StructDefinition,
     StructField, TraitDefinition, TypeExpr, TypeParameter, Visibility,
 };
 
@@ -59,21 +59,15 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
             parse_capability(parser, head_span)
         }
         Token::Module => parse_module(parser, head_span, visibility),
-        Token::Import => {
+        Token::Use => {
             if visibility != Visibility::Private {
-                reject_visibility_on_import(head_span, "import")?;
+                reject_visibility_on_import(head_span, "use")?;
             }
-            parse_import(parser, kw_span)
-        }
-        Token::From => {
-            if visibility != Visibility::Private {
-                reject_visibility_on_import(head_span, "from")?;
-            }
-            parse_from_import(parser, kw_span)
+            parse_use(parser, kw_span)
         }
         other => Err(ParseError::UnexpectedToken {
             expected:
-                "`function`, `constant`, `type`, `struct`, `enum`, `trait`, `implement`, `module`, `import`, `from`, or `public`"
+                "`function`, `constant`, `type`, `struct`, `enum`, `trait`, `implement`, `module`, `use`, or `public`"
                     .to_owned(),
             found: format!("{other:?}"),
             span: kw_span,
@@ -82,8 +76,8 @@ pub(crate) fn parse_item(parser: &mut Parser<'_>) -> Result<Spanned<Item>, Parse
 }
 
 /// Imports never carry visibility. Re-exporting an imported name is a
-/// post-v0.2.x feature (ADR-0005), so `public import` / `public from`
-/// are rejected with a clear error.
+/// post-v0.2.x feature (ADR-0005), so `public use` is rejected with a
+/// clear error.
 fn reject_visibility_on_import(head_span: Span, keyword: &str) -> Result<(), ParseError> {
     Err(ParseError::UnexpectedToken {
         expected: "`function`, `constant`, `type`, `struct`, `enum`, or `module` after `public`"
@@ -448,65 +442,47 @@ fn parse_type_alias(
     ))
 }
 
-fn parse_import(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item>, ParseError> {
-    parser.expect(&Token::Import, "`import`")?;
-    let segments = parse_dot_path(parser, "import path")?;
-    let _ = parser.eat(&Token::Semi);
-
-    let end = parser.previous_token_end(head_span.end);
-    let span = head_span.start..end;
-    Ok(Spanned::new(
-        Item::Import {
-            import: Import {
-                module_path: ImportPath { segments },
-                names: vec![],
-            },
-        },
-        span,
-    ))
-}
-
-/// Parse a Python-style `from path import a, b as c` statement.
+/// Parse a `use` declaration (ADR-0071, supersedes `import`/`from`):
+/// `use std::io;`, `use std::io::println;`, `use a::b::{x, y as z};`.
 ///
-/// Per ADR-0005 §"Imports — Python style". Glob form (`from X import *`)
-/// is rejected at the parser level — see ADR-0005 §"KHÔNG hỗ trợ".
-fn parse_from_import(
-    parser: &mut Parser<'_>,
-    head_span: Span,
-) -> Result<Spanned<Item>, ParseError> {
-    parser.expect(&Token::From, "`from`")?;
-    let source = parse_dot_path(parser, "module path after `from`")?;
-    parser.expect(&Token::Import, "`import`")?;
-
-    let names = parse_import_name_list(parser)?;
+/// A `::`-separated path with an optional trailing brace group. An EMPTY
+/// group is a plain path (whole module or single item — bound by the leaf
+/// segment in the resolver); a NON-empty group binds each name out of the
+/// module named by the path. Glob (`*`) is rejected (carried over from
+/// ADR-0005).
+fn parse_use(parser: &mut Parser<'_>, head_span: Span) -> Result<Spanned<Item>, ParseError> {
+    parser.expect(&Token::Use, "`use`")?;
+    let (segments, group) = parse_use_path(parser, "use path")?;
     let _ = parser.eat(&Token::Semi);
 
     let end = parser.previous_token_end(head_span.end);
     let span = head_span.start..end;
     Ok(Spanned::new(
-        Item::ImportFrom {
-            module_path: ImportPath { segments: source },
-            names,
+        Item::Use {
+            path: ImportPath { segments },
+            group,
         },
         span,
     ))
 }
 
-/// Parse the comma-separated list of names following `import` in a
-/// `from … import …` statement. At least one name is required.
-fn parse_import_name_list(parser: &mut Parser<'_>) -> Result<Vec<ImportName>, ParseError> {
-    let mut names = vec![parse_import_name(parser)?];
+/// Parse a brace group `{a, b as c}` at the tail of a `use` path (ADR-0071).
+/// At least one item is required; a trailing comma is allowed.
+fn parse_use_group(parser: &mut Parser<'_>) -> Result<Vec<ImportName>, ParseError> {
+    parser.expect(&Token::LBrace, "`{`")?;
+    let mut names = vec![parse_use_item(parser)?];
     while parser.eat(&Token::Comma) {
-        // Trailing comma allowed: `from x import a, b,`.
-        if matches!(parser.peek_token(), Some(Token::Semi) | None) {
+        // Trailing comma allowed: `use x::{a, b,}`.
+        if matches!(parser.peek_token(), Some(Token::RBrace) | None) {
             break;
         }
-        names.push(parse_import_name(parser)?);
+        names.push(parse_use_item(parser)?);
     }
+    parser.expect(&Token::RBrace, "`}`")?;
     Ok(names)
 }
 
-fn parse_import_name(parser: &mut Parser<'_>) -> Result<ImportName, ParseError> {
+fn parse_use_item(parser: &mut Parser<'_>) -> Result<ImportName, ParseError> {
     let (token, span) = parser
         .peek()
         .cloned()
@@ -521,7 +497,7 @@ fn parse_import_name(parser: &mut Parser<'_>) -> Result<ImportName, ParseError> 
         }
         Token::Star => {
             return Err(ParseError::UnexpectedToken {
-                expected: "imported name (glob `*` is not supported per ADR-0005)".to_owned(),
+                expected: "imported name (glob `*` is not supported per ADR-0071)".to_owned(),
                 found: "`*`".to_owned(),
                 span,
             });
@@ -564,19 +540,30 @@ fn parse_import_name(parser: &mut Parser<'_>) -> Result<ImportName, ParseError> 
     Ok(ImportName { name, alias })
 }
 
-/// Parse a dot-separated path. The first segment may be a regular
-/// identifier or one of the reserved path keywords (`crate`, `self`,
-/// `super`). Subsequent segments must be regular identifiers — path
-/// keywords are only meaningful at the root (ADR-0005 §"Path syntax").
-fn parse_dot_path(parser: &mut Parser<'_>, what: &str) -> Result<Vec<String>, ParseError> {
-    let mut segments = vec![parse_dot_path_root(parser, what)?];
-    while parser.eat(&Token::Dot) {
-        segments.push(parse_dot_path_segment(parser)?);
+/// Parse a `::`-separated `use` path with an optional trailing brace group
+/// (ADR-0071). The first segment may be a regular identifier or a reserved
+/// path keyword (`khi`/`self`/`super`); later segments must be regular
+/// identifiers — path keywords are only meaningful at the root. Returns
+/// `(segments, group)`; an empty group means a plain path. A `.` separator
+/// is NOT accepted here — `use std.io` fails at the segment boundary.
+fn parse_use_path(
+    parser: &mut Parser<'_>,
+    what: &str,
+) -> Result<(Vec<String>, Vec<ImportName>), ParseError> {
+    let mut segments = vec![parse_use_path_root(parser, what)?];
+    let mut group = Vec::new();
+    while parser.eat(&Token::ColonColon) {
+        // A brace group ends the path: `use a::b::{x, y}`.
+        if matches!(parser.peek_token(), Some(Token::LBrace)) {
+            group = parse_use_group(parser)?;
+            break;
+        }
+        segments.push(parse_use_path_segment(parser)?);
     }
-    Ok(segments)
+    Ok((segments, group))
 }
 
-fn parse_dot_path_root(parser: &mut Parser<'_>, what: &str) -> Result<String, ParseError> {
+fn parse_use_path_root(parser: &mut Parser<'_>, what: &str) -> Result<String, ParseError> {
     let (token, span) = parser
         .peek()
         .cloned()
@@ -601,12 +588,12 @@ fn parse_dot_path_root(parser: &mut Parser<'_>, what: &str) -> Result<String, Pa
     Ok(name)
 }
 
-fn parse_dot_path_segment(parser: &mut Parser<'_>) -> Result<String, ParseError> {
+fn parse_use_path_segment(parser: &mut Parser<'_>) -> Result<String, ParseError> {
     let (token, span) = parser
         .peek()
         .cloned()
         .ok_or_else(|| ParseError::UnexpectedEof {
-            expected: "identifier after `.`".to_owned(),
+            expected: "identifier after `::`".to_owned(),
             span: parser.eof_span(),
         })?;
     match token {
@@ -615,7 +602,7 @@ fn parse_dot_path_segment(parser: &mut Parser<'_>) -> Result<String, ParseError>
             Ok(name)
         }
         other => Err(ParseError::UnexpectedToken {
-            expected: "identifier after `.`".to_owned(),
+            expected: "identifier after `::`".to_owned(),
             found: format!("{other:?}"),
             span,
         }),
@@ -1123,18 +1110,24 @@ mod tests {
 
     #[test]
     fn parses_simple_import() {
-        let (_, item) = parse("import std");
+        let (_, item) = parse("use std");
         match &item.node {
-            Item::Import { import: path } => assert_eq!(path.module_path.segments, vec!["std"]),
+            Item::Use { path, group } => {
+                assert_eq!(path.segments, vec!["std"]);
+                assert!(group.is_empty());
+            }
             other => panic!("got {other:?}"),
         }
     }
 
     #[test]
     fn parses_dotted_import() {
-        let (_, item) = parse("import std.io.println");
+        let (_, item) = parse("use std::io::println");
         match &item.node {
-            Item::Import { import: path } => assert_eq!(path.module_path.segments.len(), 3),
+            Item::Use { path, group } => {
+                assert_eq!(path.segments.len(), 3);
+                assert!(group.is_empty());
+            }
             other => panic!("got {other:?}"),
         }
     }
@@ -1215,7 +1208,7 @@ mod tests {
     #[test]
     fn public_on_import_is_rejected() {
         // Re-exports of imported names are post-v0.2.x.
-        let result = try_parse("public import std.io");
+        let result = try_parse("public use std::io");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
@@ -1521,125 +1514,132 @@ mod tests {
         assert!(matches!(result, Err(ParseError::UnexpectedEof { .. })));
     }
 
-    // === Python-style `from … import …` (ADR-0005, task v0.2.x.5) ===
+    // === `use path::{group}` brace form (ADR-0071, supersedes the ADR-0005 import keywords) ===
 
     #[test]
-    fn parses_from_import_single_name() {
-        let (_, item) = parse("from std.io import println");
-        let Item::ImportFrom { module_path, names } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_group_single_name() {
+        let (_, item) = parse("use std::io::{println}");
+        let Item::Use { path, group } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(module_path.segments, vec!["std", "io"]);
-        assert_eq!(names.len(), 1);
-        assert_eq!(names[0].name, "println");
-        assert!(names[0].alias.is_none());
+        assert_eq!(path.segments, vec!["std", "io"]);
+        assert_eq!(group.len(), 1);
+        assert_eq!(group[0].name, "println");
+        assert!(group[0].alias.is_none());
     }
 
     #[test]
-    fn parses_from_import_multiple_names() {
-        let (_, item) = parse("from std.io import println, print, read_line");
-        let Item::ImportFrom { names, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_group_multiple_names() {
+        let (_, item) = parse("use std::io::{println, print, read_line}");
+        let Item::Use { group, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(names.len(), 3);
-        assert_eq!(names[0].name, "println");
-        assert_eq!(names[1].name, "print");
-        assert_eq!(names[2].name, "read_line");
+        assert_eq!(group.len(), 3);
+        assert_eq!(group[0].name, "println");
+        assert_eq!(group[1].name, "print");
+        assert_eq!(group[2].name, "read_line");
     }
 
     #[test]
-    fn parses_from_import_with_alias() {
-        let (_, item) = parse("from std.io import println as out");
-        let Item::ImportFrom { names, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_group_with_alias() {
+        let (_, item) = parse("use std::io::{println as out}");
+        let Item::Use { group, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(names[0].name, "println");
-        assert_eq!(names[0].alias.as_deref(), Some("out"));
+        assert_eq!(group[0].name, "println");
+        assert_eq!(group[0].alias.as_deref(), Some("out"));
     }
 
     #[test]
-    fn parses_from_import_mixed_aliases() {
-        let (_, item) = parse("from std.io import println, print as p, read_line");
-        let Item::ImportFrom { names, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_group_mixed_aliases() {
+        let (_, item) = parse("use std::io::{println, print as p, read_line}");
+        let Item::Use { group, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(names.len(), 3);
-        assert!(names[0].alias.is_none());
-        assert_eq!(names[1].alias.as_deref(), Some("p"));
-        assert!(names[2].alias.is_none());
+        assert_eq!(group.len(), 3);
+        assert!(group[0].alias.is_none());
+        assert_eq!(group[1].alias.as_deref(), Some("p"));
+        assert!(group[2].alias.is_none());
     }
 
     #[test]
-    fn parses_from_import_with_path_keyword_root() {
-        // `khi.` as path root is valid per ADR-0005 + ADR-0024.
-        let (_, item) = parse("from khi.utils import helper");
-        let Item::ImportFrom { module_path, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_with_path_keyword_root() {
+        // `khi` as path root is valid per ADR-0005 + ADR-0024 (carried to 0071).
+        let (_, item) = parse("use khi::utils::{helper}");
+        let Item::Use { path, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(module_path.segments, vec!["khi", "utils"]);
+        assert_eq!(path.segments, vec!["khi", "utils"]);
     }
 
     #[test]
-    fn parses_from_import_with_self_root() {
-        let (_, item) = parse("from self.helpers import twice");
-        let Item::ImportFrom { module_path, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_with_self_root() {
+        let (_, item) = parse("use self::helpers::{twice}");
+        let Item::Use { path, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(module_path.segments[0], "self");
+        assert_eq!(path.segments[0], "self");
     }
 
     #[test]
-    fn parses_from_import_with_super_root() {
-        let (_, item) = parse("from super.api import handle");
-        let Item::ImportFrom { module_path, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_with_super_root() {
+        let (_, item) = parse("use super::api::{handle}");
+        let Item::Use { path, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(module_path.segments[0], "super");
+        assert_eq!(path.segments[0], "super");
     }
 
     #[test]
-    fn parses_from_import_trailing_comma() {
-        let (_, item) = parse("from std.io import println, print,");
-        let Item::ImportFrom { names, .. } = &item.node else {
-            panic!("expected ImportFrom")
+    fn parses_use_group_trailing_comma() {
+        let (_, item) = parse("use std::io::{println, print,}");
+        let Item::Use { group, .. } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(names.len(), 2);
+        assert_eq!(group.len(), 2);
     }
 
     #[test]
-    fn from_import_glob_is_rejected() {
-        // ADR-0005 forbids `from X import *`.
-        let result = try_parse("from std.io import *");
+    fn use_group_glob_is_rejected() {
+        // ADR-0071 forbids `use X::{*}` (carried over from ADR-0005).
+        let result = try_parse("use std::io::{*}");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
     #[test]
-    fn from_without_import_keyword_errors() {
-        let result = try_parse("from std.io println");
-        assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
+    fn use_dotted_path_is_rejected() {
+        // T-dot-path: `.` is no longer a path separator in `use` (ADR-0071).
+        // Parsed as a whole program: `use std` consumes only the first segment,
+        // and the leftover `.io::println` is not a valid top-level item → error.
+        let (_, errors) = crate::parse("use std.io::println");
+        assert!(
+            !errors.is_empty(),
+            "dotted use path must produce a parse error"
+        );
     }
 
     #[test]
-    fn from_at_eof_errors() {
-        let result = try_parse("from");
+    fn use_at_eof_errors() {
+        let result = try_parse("use");
         assert!(matches!(result, Err(ParseError::UnexpectedEof { .. })));
     }
 
     #[test]
-    fn public_from_import_is_rejected() {
+    fn public_use_group_is_rejected() {
         // Re-exports of imported names are post-v0.2.x.
-        let result = try_parse("public from std.io import println");
+        let result = try_parse("public use std::io::{println}");
         assert!(matches!(result, Err(ParseError::UnexpectedToken { .. })));
     }
 
     #[test]
-    fn import_with_path_keyword_root_is_accepted() {
-        // ADR-0005 + ADR-0024 allow `khi.` / `self.` / `super.` as path roots.
-        let (_, item) = parse("import khi.utils.helper");
-        let Item::Import { import: path } = &item.node else {
-            panic!("expected Import")
+    fn use_with_path_keyword_root_is_accepted() {
+        // ADR-0005 + ADR-0024 allow `khi` / `self` / `super` as path roots.
+        let (_, item) = parse("use khi::utils::helper");
+        let Item::Use { path, group } = &item.node else {
+            panic!("expected Use")
         };
-        assert_eq!(path.module_path.segments, vec!["khi", "utils", "helper"]);
+        assert_eq!(path.segments, vec!["khi", "utils", "helper"]);
+        assert!(group.is_empty());
     }
 
     // ── ADR-0061 Tier 1: trait / implement / self (T2) ──────────────

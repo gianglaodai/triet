@@ -1,7 +1,7 @@
 //! Cycle detection on the import dependency graph.
 //!
 //! After the file loader has populated every [`Module`] with its items,
-//! this pass scans `Item::Import` and `Item::ImportFrom` in each module
+//! this pass scans `Item::Use` in each module
 //! to build a directed graph of import edges, then runs DFS with
 //! white/gray/black coloring to find cycles. Each detected cycle emits
 //! a [`LoaderError::CyclicImport`] with a human-readable trace
@@ -80,7 +80,7 @@ pub(crate) fn detect_cycles(program: &ResolvedProgram) -> Vec<LoaderError> {
 }
 
 /// Build the adjacency list by scanning each module's items for
-/// `Item::Import` and `Item::ImportFrom`.
+/// `Item::Use`.
 fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
     let mut adj: Vec<Vec<ImportEdge>> = Vec::with_capacity(program.modules.len());
 
@@ -89,19 +89,11 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
 
         for item in &module.items {
             match &item.node {
-                Item::Import { import } => {
-                    if let Some(target) = resolve_import_target(&import.module_path.segments) {
-                        // Skip stdlib edges — synthetic, cannot cycle.
-                        if !target.is_reserved_root() {
-                            edges.push(ImportEdge {
-                                target,
-                                span: item.span.clone(),
-                            });
-                        }
-                    }
-                }
-                Item::ImportFrom { module_path, .. } => {
-                    if let Some(target) = resolve_import_target(&module_path.segments)
+                // ADR-0071: `use path::{group}` — the edge target is the module
+                // named by `path` (whole, single-item, and group forms all carry
+                // the source module in `path.segments`). Stdlib roots are skipped.
+                Item::Use { path, .. } => {
+                    if let Some(target) = resolve_import_target(&path.segments)
                         && !target.is_reserved_root()
                     {
                         edges.push(ImportEdge {
@@ -132,14 +124,14 @@ fn build_import_graph(program: &ResolvedProgram) -> Vec<Vec<ImportEdge>> {
 /// Map an import path's segments to the [`ModulePath`] of the target
 /// module.
 ///
-/// - `import std.io.println` → segments `["std", "io", "println"]`.
-///   The target *module* is `std.io` (drop the terminal item name).
+/// - `use std::io::println` → segments `["std", "io", "println"]`.
+///   The target *module* is `std::io` (drop the terminal item name).
 ///   But if the full path matches a known module, use it as-is.
 ///
-/// - `from khi.foo import bar` → source `["khi", "foo"]`. The
-///   target module is `khi.foo`.
+/// - `use khi::foo::{bar}` → source `["khi", "foo"]`. The
+///   target module is `khi::foo`.
 ///
-/// - `self.X` expands relative to the current module. At this stage
+/// - `self::X` expands relative to the current module. At this stage
 ///   the import edges use the raw segments; `self` as a single-segment
 ///   import path points at the importing module itself.
 ///
@@ -177,7 +169,7 @@ fn dfs(
             Some(&id) => id,
             None => {
                 // Target module not in the program — might be an item
-                // import like `import khi.foo.bar` where `khi.foo`
+                // import like `use khi::foo::bar` where `khi::foo`
                 // is the module. Try dropping the last segment.
                 if edge.target.len() > 1 {
                     if let Some(parent) = edge.target.parent() {
@@ -318,8 +310,8 @@ mod tests {
     fn two_cycle_a_imports_b_imports_a() {
         let errors = load_filesystem_errors(&[
             ("main.tri", "module foo\nmodule bar"),
-            ("foo.tri", "from khi.bar import something"),
-            ("bar.tri", "from khi.foo import something"),
+            ("foo.tri", "use khi::bar::{something}"),
+            ("bar.tri", "use khi::foo::{something}"),
         ]);
         let traces: Vec<&str> = errors
             .iter()
@@ -341,9 +333,9 @@ mod tests {
     fn three_cycle_with_correct_trace() {
         let errors = load_filesystem_errors(&[
             ("main.tri", "module foo\nmodule bar\nmodule baz"),
-            ("foo.tri", "from khi.bar import x"),
-            ("bar.tri", "from khi.baz import y"),
-            ("baz.tri", "from khi.foo import z"),
+            ("foo.tri", "use khi::bar::{x}"),
+            ("bar.tri", "use khi::baz::{y}"),
+            ("baz.tri", "use khi::foo::{z}"),
         ]);
         let trace = errors
             .iter()
@@ -371,14 +363,14 @@ mod tests {
         // `self` as a path root doesn't match any module in the
         // program — the name resolver (#36.4) handles self-imports.
         // Cycle detector should not panic or false-positive.
-        let errors = load_in_memory_errors("from self import something");
+        let errors = load_in_memory_errors("use self::{something}");
         let cycles: Vec<_> = errors
             .iter()
             .filter(|e| matches!(e, LoaderError::CyclicImport { .. }))
             .collect();
         assert!(
             cycles.is_empty(),
-            "self-import should not produce cycle error: {cycles:?}"
+            "self-use should not produce cycle error: {cycles:?}"
         );
     }
 
@@ -387,9 +379,9 @@ mod tests {
         // A → B, A → C, B → D, C → D — no cycle.
         let errors = load_filesystem_errors(&[
             ("main.tri", "module a\nmodule b\nmodule c\nmodule d"),
-            ("a.tri", "from khi.b import fb\nfrom khi.c import fc"),
-            ("b.tri", "public function fb() = 1\nfrom khi.d import fd"),
-            ("c.tri", "public function fc() = 2\nfrom khi.d import fd"),
+            ("a.tri", "use khi::b::{fb}\nuse khi::c::{fc}"),
+            ("b.tri", "public function fb() = 1\nuse khi::d::{fd}"),
+            ("c.tri", "public function fc() = 2\nuse khi::d::{fd}"),
             ("d.tri", "public function fd() = 0"),
         ]);
         assert!(
@@ -400,7 +392,7 @@ mod tests {
 
     #[test]
     fn stdlib_import_not_flagged() {
-        let errors = load_in_memory_errors("from std.io import println\nimport std.text.len");
+        let errors = load_in_memory_errors("use std::io::{println}\nuse std::text::len");
         assert!(
             errors.is_empty(),
             "stdlib imports should not be flagged: {errors:?}"
@@ -412,10 +404,10 @@ mod tests {
         // Two separate cycles: foo↔bar and baz↔qux.
         let errors = load_filesystem_errors(&[
             ("main.tri", "module foo\nmodule bar\nmodule baz\nmodule qux"),
-            ("foo.tri", "from khi.bar import x"),
-            ("bar.tri", "from khi.foo import y"),
-            ("baz.tri", "from khi.qux import a"),
-            ("qux.tri", "from khi.baz import b"),
+            ("foo.tri", "use khi::bar::{x}"),
+            ("bar.tri", "use khi::foo::{y}"),
+            ("baz.tri", "use khi::qux::{a}"),
+            ("qux.tri", "use khi::baz::{b}"),
         ]);
         let cycle_count = errors
             .iter()

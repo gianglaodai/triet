@@ -42,8 +42,8 @@
 // `Atomic<T>` là built-in type — không cần import. Chỉ `Ordering` enum +
 // variants + builtins cần import (per ADR-0028 §8 stdlib module shape).
 
-from sys.atomic import Synchronized, fetch_add, new
-from sys.raw_thread import spawn
+use sys::atomic::{Synchronized, fetch_add, new}
+use sys::raw_thread::{spawn}
 
 function spawn_worker(counter: &+ Atomic<Integer>) -> Integer = {
     // Tăng giá trị biến đếm an toàn trên thread. Synchronized = default

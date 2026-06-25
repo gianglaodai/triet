@@ -2,6 +2,14 @@
 
 **Trạng thái:** Quyết định. Áp dụng cho v0.2.x. Đây là trụ cột #2 trong [VISION.md](../../VISION.md).
 
+> ⚠️ **Import syntax superseded by [ADR-0071](0071-path-separator-and-module-import.md) (2026-06-25).**
+> The `import std.io` / `from std.io import …` keywords + dot-separated import
+> paths described below are replaced by `use std::io::{a, b as c}` with `::`
+> paths. The module *semantics* (hierarchical tree, visibility ladder, cyclic
+> refusal, `khi`/`self`/`super` roots, stdlib resolution) remain authoritative —
+> only the surface import syntax changed. The body below is kept verbatim as the
+> historical record; read it for the module model, not the import keywords.
+
 **Issue:** Triết đã đến giới hạn của single-file program. Code base demo đã 11 file `.tri` ở cùng namespace phẳng. Library nội bộ và phân chia codebase đòi hỏi module system thực sự. Đây cũng là tiền đề kiến trúc cho stable ABI (v0.4), CAS packaging (v0.5), và capability namespaces (v0.6) — module system thiết kế sai sẽ kéo theo phá vỡ ba trụ cột về sau.
 
 ## Quyết định

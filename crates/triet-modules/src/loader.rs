@@ -461,9 +461,9 @@ impl LoaderState {
         // If the resolved file is already loading we would recurse
         // forever — skip silently and let the import-graph cycle
         // detector in [`crate::cycle`] surface the actual cycle via
-        // `from khi.x import …` / `import khi.x` edges instead.
+        // `use khi::x::{…}` / `use khi::x` edges instead.
         // A `module foo;` decl that maps back to an ancestor file is
-        // structurally the same cycle the from-import edges express.
+        // structurally the same cycle the `use` edges express.
         let canonical_resolved = source_path
             .canonicalize()
             .unwrap_or_else(|_| source_path.clone());

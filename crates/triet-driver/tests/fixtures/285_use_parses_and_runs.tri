@@ -1,0 +1,13 @@
+// EXPECT: 42
+// ADR-0071 Lát 1 — a `use` declaration parses, typechecks (inert here), lowers
+// (inert), and the program JIT-runs end-to-end. The single-file driver pipeline
+// does not run the module resolver, so the imported name is not bound — the
+// `use` is a no-op that must not perturb the rest of the pipeline. (Resolver
+// binding correctness is proven in triet-modules resolver tests, where the full
+// resolver runs.) Poison P-colon-token (remove the `::` token) → `use std::io`
+// fails to lex/parse → this fixture stops running.
+use std::io::{println}
+
+function main() -> Integer {
+    return 42;
+}

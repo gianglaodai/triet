@@ -1536,16 +1536,6 @@ definitions:
       type: vector<GenericBound>
       ownership: owned
       description: Trait/interface bounds (empty = unconstrained).
-  Import:
-    kind: struct
-    description: 'Import declaration: `from std.io import println, read_line`.'
-    fields:
-    - name: module_path
-      type: ImportPath
-      ownership: owned
-    - name: names
-      type: vector<ImportName>
-      ownership: owned
   ModuleContent:
     kind: enum
     description: "Body of a module declaration. Per ADR-0005 module declarations\
@@ -1605,11 +1595,19 @@ definitions:
         type: ImplementationDefinition
         ownership: owned
       description: "Trait implementation `implement Trait for Type { ... }`. ADR-0061 Tier 1."
-    - name: Import
+    - name: Use
       fields:
-      - name: import
-        type: Import
+      - name: path
+        type: ImportPath
         ownership: owned
+      - name: group
+        type: vector<ImportName>
+        ownership: owned
+      description: "Import declaration `use std::io::{a, b as c}` (ADR-0071,\
+        \ supersedes the `import`/`from` keywords of ADR-0005). An EMPTY group\
+        \ binds the leaf of `path` (a whole module `use std::io`, or a single\
+        \ item `use std::io::println`); a NON-empty group binds each `ImportName`\
+        \ (with optional `as` rename) out of the module named by `path`."
     - name: Module
       fields:
       - name: module
@@ -1629,15 +1627,6 @@ definitions:
         type: Visibility
         default: Private
       description: 'Compile-time constant: `constant PI: Integer = 3`.'
-    - name: ImportFrom
-      fields:
-      - name: module_path
-        type: ImportPath
-        ownership: owned
-      - name: names
-        type: vector<ImportName>
-        ownership: owned
-      description: "Import declaration: `from std.io import println`."
     - name: TypeAlias
       fields:
       - name: name
