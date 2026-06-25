@@ -26,7 +26,7 @@ git log --oneline origin/main..HEAD   # còn commit lơ lửng local?
 - Liệt kê ADR mới LOCKED trong phiên: `git log --oneline origin/main | grep -iE "00[0-9][0-9]" | head`.
 
 ## Bước 2 — Đồng bộ memory bàn giao
-File memory ở `~/.claude/projects/<project-slug>/memory/`. Cập nhật (KHÔNG tạo trùng — sửa file đang có):
+File memory SỐNG ở `~/.claude/projects/<project-slug>/memory/` (auto-memory máy-local). Cập nhật (KHÔNG tạo trùng — sửa file đang có):
 1. **MEMORY.md** — dòng index ĐẦU TIÊN (## Project context): viết MỘT entry mới phản ánh trạng thái
    ĐÓNG PHIÊN: ngày, `origin HEAD`, gate, các campaign ĐÓNG+PUSH trong phiên, nợ-còn-treo
    (đóng-gói-campaign-riêng, mỗi nợ 1 dòng), bài-học-O-tự-ăn nếu có. Giữ ≤ ~200 ký tự lý tưởng;
@@ -34,6 +34,18 @@ File memory ở `~/.claude/projects/<project-slug>/memory/`. Cập nhật (KHÔN
 2. **Campaign file(s) đang sống** (vd `campaign_*.md`) — đảm bảo có mục "✅ ĐÓNG — commit `<hash>`" với
    teeth O đã verify + nợ chuyển tiếp. Nếu campaign đóng trọn → đánh dấu description ✅.
 3. Xóa/sửa entry index stale (campaign cũ đã đóng mà index còn ghi "ĐANG LÀM").
+
+4. **⚠️ MIRROR memory → repo (portable, BẮT BUỘC — auto-memory máy-local KHÔNG theo repo).** Sau khi cập nhật
+   xong 3 mục trên, đồng bộ thư mục auto-memory vào repo `.claude/memory/` (version-controlled → dùng được trên
+   máy khác):
+   ```bash
+   ./scripts/sync-memory.sh push          # ~/.claude/.../memory/ → .claude/memory/
+   git add .claude/memory/
+   git commit -m "docs(memory): sync ai-memory snapshot <campaign/ngày>"
+   ```
+   Commit RIÊNG `docs(memory):` (KHÔNG gói lẫn code). Theo nguyên tắc đóng phiên: chỉ push khi user lệnh — nếu
+   chưa, để dirty + FLAG ở Bước 6. (Trên máy MỚI, mở phiên bằng `./scripts/sync-memory.sh pull` để khôi phục
+   auto-memory từ repo TRƯỚC khi làm việc — xem prompt khởi động.)
 
 ## Bước 3 — Đồng bộ state + persona Mentor G (`spec/plans/MENTOR_G_STATE.md` — file REPO, KHÔNG phải memory Claude)
 
@@ -62,12 +74,20 @@ Author tạo **3 session riêng biệt** — mỗi vai một prompt. Đẻ 3 blo
 **Mentor G** = block ```text``` cuối `spec/plans/MENTOR_G_STATE.md` (đã refresh ở Bước 3) — **ĐỌC file đó, DÁN
 NGUYÊN VĂN** block đó vào (G chạy model KHÁC, không Claude; KHÔNG tự chế prompt G mới). Khuôn O/D:
 
+⚠️ **Prompt O + D phải mở đầu bằng dòng BOOTSTRAP máy-mới** (khôi phục auto-memory từ repo — auto-memory
+máy-local không theo repo): `Nếu là máy mới (chưa có ~/.claude auto-memory): chạy ./scripts/sync-memory.sh pull trước.`
+Memory O/D đọc được từ cả `.claude/memory/` (repo, luôn có sau clone) lẫn `memory/` (auto-memory sau khi pull).
+**Prompt G KHÔNG cần bootstrap** — G chạy model khác, không dùng auto-memory; toàn bộ context G nằm trong
+`spec/plans/MENTOR_G_STATE.md` (file repo, đã portable sẵn).
+
 ### Prompt MENTOR O
 ```
 Tiếp tục dự án Triết với vai MENTOR O.
 
-ĐỌC TRƯỚC: memory/MEMORY.md (dòng index đầu = trạng thái bàn giao) ·
-memory/mentor_o_persona.md (FILE ĐỊNH NGHĨA VAI) · <campaign file(s) đang sống>.
+BOOTSTRAP (máy mới): nếu chưa có auto-memory ~/.claude, chạy `./scripts/sync-memory.sh pull` trước.
+
+ĐỌC TRƯỚC: .claude/memory/MEMORY.md (bản repo, portable; = memory/MEMORY.md sau pull) — dòng index đầu =
+trạng thái bàn giao · .claude/memory/mentor_o_persona.md (FILE ĐỊNH NGHĨA VAI) · <campaign file(s) đang sống>.
 
 TRẠNG THÁI: origin/main = <HEAD> (<synced/ahead N>). Gate <X·X·X·X>. ADR <list> LOCKED.
 Phiên trước đóng: <tóm tắt campaign closed>. <gì còn lơ lửng nếu có>.
@@ -88,8 +108,11 @@ duyệt → soạn WO. KHÔNG code/mở campaign trước khi G chốt.
 ```
 Tiếp tục dự án Triết với vai ĐỒNG NGHIỆP D (Strict Colleague — implement-side, KHÁC Mentor O).
 
-ĐỌC TRƯỚC: memory/MEMORY.md (dòng index đầu) · memory/colleague_d_persona.md (FILE GỐC ĐỊNH NGHĨA VAI:
-6 rule + Rule #7 refuse-over-guess + 4 LUẬT THÉP G) · <campaign file(s) đang sống>.
+BOOTSTRAP (máy mới): nếu chưa có auto-memory ~/.claude, chạy `./scripts/sync-memory.sh pull` trước.
+
+ĐỌC TRƯỚC: .claude/memory/MEMORY.md (bản repo, portable; = memory/MEMORY.md sau pull) — dòng index đầu ·
+.claude/memory/colleague_d_persona.md (FILE GỐC ĐỊNH NGHĨA VAI: 6 rule + Rule #7 refuse-over-guess +
+4 LUẬT THÉP G) · <campaign file(s) đang sống>.
 
 TRẠNG THÁI: origin/main = <HEAD> (<synced>). Gate <X·X·X·X>. ADR <list> LOCKED.
 
