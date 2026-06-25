@@ -1681,6 +1681,15 @@ definitions:
     \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
   HardwareToken:
     kind: specification
+    amended_by: "ADR-0069 (2026-06-25) \u2014 rewrite-era synthesis. Two sentences below
+      are SUPERSEDED: (1) 'No special AST node' \u2192 capability now has a dedicated
+      `Item::Capability` decl + `Expr::Mint` (capability != plain data struct; pure-W2
+      destructure still used for the Hardware aggregate). (2) 'No runtime check' holds
+      only for Grant/Ambient/Deny (static, zero-cost); the `Defer` (\u0141ukasiewicz Unknown)
+      level adds an opt-in runtime policy hook + fail-closed trap (user-trap-code 2).
+      Zero-cost-by-default is preserved; runtime cost only when `defer` is declared.
+      The ZST token now CARRIES an \u01413-Trit level (Grant=Positive/Ambient=Zero/
+      Deny=Negative/Defer=Unknown) \u2014 completing the \u01413 coherence axis of VISION \u00a78."
     description: "Capability security via S6 ownership \u2014 ZERO runtime overhead.\
       \ Hardware resources are represented as ZST (Zero-Sized Type) tokens at compile\
       \ time. The borrow checker enforces exclusive access via move semantics. At\
