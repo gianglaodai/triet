@@ -188,8 +188,12 @@ test đỏ. (Nếu poison không đỏ = test trang trí, theo `feedback_poison_
 - **Lát 3 ✅ ĐÓNG (`2dd4d5f`):** Defer runtime hook + trap user(2), check tại mint-site, fail-closed.
   `Statement::CapabilityCheck` (MIR) → JIT `__triet_cap_check`→`icmp ≤0`→`trapnz user(2)`. CAP_POLICY
   AtomicI64 default 0=Unknown=fail-closed. O verify 4 răng (R-fail-closed boundary `≤` là tử huyệt).
-- **Lát 4 — Hardware aggregate:** `struct Hardware { vga: VgaBuffer, ... }` ZST-aggregate + destructure
-  move (schema §10 example end-to-end). Cổng: `kernel_main(hw)` re-use field sau move → E2420.
+- **Lát 4 ✅ ĐÓNG (`A2`, demo qua param):** end-to-end demo (`fixture 278`, EXPECT 30) — mint grant ×2 →
+  move qua driver-function đan chéo → RUN. Phô diễn trọn 4 level (grant chạy · ambient receive-only typecheck ·
+  deny/defer documented + fixture chứng minh). **G chốt A2** (param riêng) thay full struct-aggregate:
+  `struct Hardware{vga}` destructure-move đòi **partial-move field-level** = con quái vật lõi Borrow-Checker,
+  KHÔNG nhồi vào ADR capability (scope creep). → **sổ đỏ "Partial-move & Struct-ZST" = campaign ĐỘC LẬP** (gồm
+  cả vá B8 gate `lib.rs:72` lầm ZST-cap-field với heap).
 
 ---
 
@@ -267,4 +271,12 @@ ADR này **sửa** hai câu của §10:
 
 **§amend-A (Ambient = M1 Receive-only):** O ✍️ (gói M1 2026-06-25) · **G ✅ (PHÁN M1, chôn M2/M3 — "tà đạo implicit, phá ZST move-only/local-reasoning")** · Giang ⏳
 
-**Lát 0 ✅ `8b06a28` · Lát 2 ✅ `ca8272e` · Lát 3 ✅ `2dd4d5f` (đều O+G ký).** Đại số Ł3 capability KHÉP KÍN (Grant/Ambient/Deny tĩnh + Defer runtime). **Còn: Lát 4 Hardware aggregate** (schema §10 end-to-end — ZST-struct destructure-move).
+**Lát 0 ✅ `8b06a28` · Lát 2 ✅ `ca8272e` · Lát 3 ✅ `2dd4d5f` · Lát 4 ✅ (demo A2) — đều O+G ký.**
+
+🔒🏁 **ADR-0069 NIÊM PHONG (2026-06-25).** Đại số **Ł3 capability KHÉP KÍN** — Grant(+)/Ambient(0)/Deny(−)
+tĩnh zero-cost + Defer(Unknown) runtime trap fail-closed. **COHERENCE VISION §8 HOÀN TẤT — ba chân kiềng
+null(PA-3c) / logic(Trilean) / capability đều một đại số Ł3.** Cỗ máy No-Box + ZST move-only bảo kê tĩnh;
+trap user(2) băm sự mập mờ ở động. Trục Capability đóng sập.
+
+**Sổ đỏ mở campaign độc lập kế:** **Partial-move & Struct-ZST** (`let v = hw.vga` field-level move-state =
+lõi Borrow-Checker, ADR riêng + poison rã-struct/move-nửa/xài-nửa-kia + vá B8 gate `lib.rs:72`).
