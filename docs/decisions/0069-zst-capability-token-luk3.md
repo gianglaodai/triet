@@ -57,8 +57,8 @@ null (PA-3c sentinel) và logic (Trilean):
 | Ł3 value | Level | Ngữ nghĩa capability | Enforce ở đâu | Chi phí runtime |
 |---|---|---|---|---|
 | `Trit::Positive` | **Grant** | Token được phép **mint** tự do; possession = quyền. Pure W2 ownership. | typecheck (cho mint) + borrowck (move/E2420) | **0 byte** |
-| `Trit::Zero` | **Ambient** | Kế thừa level từ ngữ cảnh bao quanh (caller). Mặc định khi không khai báo rõ. | resolve compile-time → collapse về Grant/Deny của caller | 0 byte |
-| `Trit::Negative` | **Deny** | Token **KHÔNG được mint** trong scope này. `mint` = lỗi compile. | typecheck tại mint-site → **E2211** | (không tồn tại) |
+| `Trit::Zero` | **Ambient** | **RECEIVE-ONLY (M1, G ký 2026-06-25 — xem §amend-A).** File MẤT quyền `mint X` (E2211 như Deny). Cách DUY NHẤT xài `X` = caller truyền token ZST qua **parameter** (signature explicit). Token đi xuống từ biên ngoài (entry-point), KHÔNG sinh trong chương trình. | mint → E2211; **possession qua param/binding = HỢP LỆ** | 0 byte |
+| `Trit::Negative` | **Deny** | Token **KHÔNG được mint** + **CẤM TIỆT mọi sở hữu** (kể cả nhận qua parameter → lỗi). | mint → E2211; **possession (param/binding type) → E2212** | (không tồn tại) |
 | `Trilean::Unknown` | **Defer** | Token mint được nhưng **có điều kiện**; mọi guarded-op emit runtime policy-hook check; deny → **trap**. | typecheck cho mint + JIT chèn runtime check | **1 check + trap** (cái giá DUY NHẤT) |
 
 **Tính coherent:** ba giá trị tĩnh (Pos/Zero/Neg) giải quyết hoàn toàn compile-time = zero-cost
@@ -74,8 +74,8 @@ phải resolve.
 ```triet
 capability VgaBuffer grant     // Grant: mint tự do, zero-cost
 capability DiskWrite defer     // Defer: mint → runtime hook check
-capability RawPort   deny      // Deny: mint = compile error E2211
-capability UartPort  ambient   // Ambient: kế thừa caller (mặc định nếu bỏ level)
+capability RawPort   deny      // Deny: mint = E2211, possession = E2212 (cấm tiệt)
+capability UartPort  ambient   // Ambient: mint = E2211; CHỈ nhận qua param (receive-only)
 
 function kernel_main(hw: Hardware) -> Unit {
     let vga = mint VgaBuffer;   // OK (grant) — ZST, 0 byte runtime
@@ -124,10 +124,13 @@ KHÔNG viết engine mới:
    `vga` → **E2420 UseAfterMove** (đã chạy, checker.rs). Đây là "thu hồi" G đòi.
 3. **Không copy = không nhân quyền.** Token **bắt buộc** `is_copy == false` (§6), nên không có
    chuyện một token bị nhân đôi để hai bên cùng giữ quyền. Đây là chốt soundness sống-còn.
-4. **Deny chặn mint.** `mint X` với `X` level `deny` → typecheck **E2211 CapabilityDenied** tại
-   mint-site, trước cả borrowck. Không token nào sinh ra.
-5. **Ambient resolve compile-time.** `ambient` → tra ngữ cảnh bao quanh (level của caller/scope),
-   collapse về Grant (cho mint) hoặc Deny (→ E2211). Không bao giờ tồn tại runtime.
+4. **Deny chặn mint + CẤM sở hữu.** `mint X` (deny) → **E2211** tại mint-site. Thêm: `X` xuất hiện
+   làm KIỂU của bất kỳ binding/parameter/field → **E2212 CapabilityNotPossessable** (Deny cấm tiệt
+   mọi hình thức sở hữu, kể cả nhận qua signature). Không token nào tồn tại được.
+5. **Ambient = receive-only (M1).** `mint X` (ambient) → **E2211** (file mất quyền tự đúc). NHƯNG
+   `X` làm kiểu parameter/binding = **HỢP LỆ** — caller truyền token xuống (O-Cap thuần: authority
+   đi qua signature, không khí không tự sinh capability). Phân biệt với Deny: Ambient cho-nhận,
+   Deny cấm-nhận. Resolve hoàn toàn compile-time, không bao giờ runtime.
 6. **Grant = zero-cost.** mint hợp lệ → token ZST; runtime chỉ thấy địa chỉ phần cứng hardcode
    trong driver (W2 nguyên bản). 0 byte copied.
 
@@ -174,11 +177,13 @@ test đỏ. (Nếu poison không đỏ = test trang trí, theo `feedback_poison_
 
 ## 7. Kế hoạch lát (scaffold — mỗi lát recon→WO→D code→O verify máu→O ký→G ký)
 
-- **Lát 0 — ZST representable:** `mint X` construct + ZST local 0-byte + `is_copy==false` (§6).
-  Cổng: token mint→move→reuse = E2420; mint→drop = no-op (ZST không drop-glue). Vá finding #1+#2.
-- **Lát 1 — `capability` decl + Grant/Deny tĩnh:** AST node (§3) + typecheck level + E2211 cho Deny.
-  Cổng: `capability X deny; mint X` = E2211; `grant` = pass + move-track.
-- **Lát 2 — Ambient resolve:** kế thừa ngữ cảnh compile-time. Cổng: ambient-trong-deny-scope → E2211.
+- **Lát 0 ✅ ĐÓNG (`8b06a28`):** `capability X grant` decl + `mint X` ZST 0-byte + `is_copy==false`
+  (2-classifier defense-in-depth) + non-grant refuse E2211 + `public capability` refuse. Vá finding #1+#2.
+  (Nuốt luôn phần Grant/Deny-mint của Lát 1.)
+- **Lát 2 — Ambient receive-only + Deny no-possession (M1, G ký §amend-A):**
+  (a) `mint X` ambient → E2211 message riêng "receive-only" (Lát 0 đang gộp bucket → tách).
+  (b) **NEW possession-check:** `X` level `deny` làm KIỂU param/binding/field → **E2212**; ambient/grant
+  làm kiểu = HỢP LỆ. Cổng: deny-param → E2212 · ambient-param → typecheck OK · mint-ambient → E2211.
 - **Lát 3 — Defer runtime hook (§5):** shim + trap-code riêng + fail-closed. Cổng: hook deny → trap
   (SIGILL), hook allow → chạy; teeth poison fail-closed (hook vắng → phải trap).
 - **Lát 4 — Hardware aggregate:** `struct Hardware { vga: VgaBuffer, ... }` ZST-aggregate + destructure
@@ -225,6 +230,23 @@ test đỏ. (Nếu poison không đỏ = test trang trí, theo `feedback_poison_
   defer với hook-deny phải SIGILL; gỡ trap → phải lọt.
 - **R-ambient-collapse-sai:** ambient resolve nhầm Deny→Grant. Teeth: ambient-trong-deny-scope.
 
+## §amend-A — Ambient = Receive-only (M1, G ký 2026-06-25)
+
+Scaffold §1 ban đầu ghi "Ambient = inherit caller's level → collapse Grant/Deny" — **mơ hồ, KHÔNG
+cơ chế trong single-file JIT** (không package-hierarchy như W1). G mổ 3 model recon, chôn 2:
+- **M2 Possession-gated** (mint nếu giữ token) — VỨT: cho `mint` dựa possession = tự nhân bản token
+  non-copy = phá bất biến ZST move-only Lát 0.
+- **M3 Call-graph reachability** — VỨT: action-at-a-distance, phá local-reasoning (hàm B rớt compile
+  vì hàm A đâu đó gọi nó).
+- **M1 Receive-only (CHỐT)** — O-Cap thuần, nhất quán ZST move-only:
+  1. `capability X ambient` → file MẤT quyền tự đúc: `mint X` = **E2211** (message "receive-only").
+  2. "Inherit từ caller" CỤ THỂ = caller truyền token ZST qua **parameter**; authority đi xuống từ
+     biên ngoài (entry-point như `kernel_main(hw)`), KHÔNG sinh trong chương trình ("không khí không
+     tự sinh capability").
+  3. **Phân biệt Deny:** Deny cấm TIỆT mọi sở hữu (param/binding type của deny-cap → **E2212**);
+     Ambient cấm mint nhưng CHO nhận qua signature. ⇒ Ambient = "explicit trên function signature,
+     không tà đạo implicit".
+
 ## Amendment schema §10 (`HardwareToken`)
 ADR này **sửa** hai câu của §10:
 1. *"No special AST node"* → có `Item::Capability` + `Expr::Mint` (capability ≠ struct dữ liệu thuần;
@@ -240,3 +262,7 @@ ADR này **sửa** hai câu của §10:
 ---
 
 **Chữ ký ADR-0069:** O ✍️ (recon + draft 2026-06-25) · **G ✅ (ký duyệt 2026-06-25 — ánh xạ Ł3 "ký bằng hai tay", fail-closed = chân lý, trap-code `user(2)` riêng bắt buộc, thứ tự lát giữ nguyên)** · Giang ✅ (chốt hướng C + cú pháp `capability`/`mint`)
+
+**§amend-A (Ambient = M1 Receive-only):** O ✍️ (gói M1 2026-06-25) · **G ✅ (PHÁN M1, chôn M2/M3 — "tà đạo implicit, phá ZST move-only/local-reasoning")** · Giang ⏳
+
+**Lát 0 ✅ ĐÓNG+PUSH `8b06a28` (O+G ký).** Lát 2 = WO đang phát.
