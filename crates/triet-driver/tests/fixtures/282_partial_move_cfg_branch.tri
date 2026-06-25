@@ -1,0 +1,26 @@
+// ERROR: E2420
+// ADR-0070 — dataflow tooth. The field `hw.vga` is moved out on ONE branch of
+// an `if`; at the join it must still count as moved (a value gone down one path
+// cannot be resurrected by the other). Reading `hw.vga` after the `if` → E2420.
+// This pins the merge: partial_moves are UNION-merged across predecessors.
+// Poison P-merge (union → intersection) → vga counts as moved only if moved on
+// ALL paths; the fall-through path did not move it → intersection is empty → no
+// E2420 → this fixture goes green = the union is the tooth.
+capability VgaBuffer grant
+
+struct Hardware {
+    vga: VgaBuffer,
+}
+
+function use_vga(v: VgaBuffer) -> Integer { return 10 }
+
+function main() -> Integer {
+    let vt = mint VgaBuffer;
+    let hw = Hardware { vga: vt };
+    let c = (1 == 1);
+    if c {
+        let g = hw.vga;          // partial move on the taken branch only
+        let r = use_vga(g);
+    }
+    return use_vga(hw.vga);      // at the join, vga is moved on one path → E2420
+}

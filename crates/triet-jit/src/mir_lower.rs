@@ -1943,26 +1943,30 @@ impl JitContext {
                     if let MirType::Struct(name) = ty {
                         let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
                         Self::collect_heap_leaves(name, 0, body, 0, &mut leaves)?;
-                        if !leaves.is_empty() {
-                            for (abs, kind) in leaves {
-                                let addr = self.copy_base_addr(builder, *local, abs);
-                                // ADR-0067 2b+: a `Heap` leaf frees unconditionally;
-                                // an `Enum` leaf runs the tag-switch core at the
-                                // field's address (disc@addr, payload@addr+8) so
-                                // only the ACTIVE variant's payload is freed.
-                                match kind {
-                                    LeafKind::Heap(fty) => {
-                                        self.emit_heap_free_at(builder, addr, &fty)?;
-                                    }
-                                    LeafKind::Enum(enum_name) => {
-                                        self.emit_enum_drop_glue_at(
-                                            builder, body, &enum_name, addr,
-                                        )?;
-                                    }
+                        for (abs, kind) in leaves {
+                            let addr = self.copy_base_addr(builder, *local, abs);
+                            // ADR-0067 2b+: a `Heap` leaf frees unconditionally;
+                            // an `Enum` leaf runs the tag-switch core at the
+                            // field's address (disc@addr, payload@addr+8) so
+                            // only the ACTIVE variant's payload is freed.
+                            match kind {
+                                LeafKind::Heap(fty) => {
+                                    self.emit_heap_free_at(builder, addr, &fty)?;
+                                }
+                                LeafKind::Enum(enum_name) => {
+                                    self.emit_enum_drop_glue_at(builder, body, &enum_name, addr)?;
                                 }
                             }
-                            continue;
                         }
+                        // ADR-0070: a non-copy struct with NO heap leaves
+                        // (capability-only fields are ZSTs) → Drop is a pure no-op.
+                        // `collect_heap_leaves` returning Ok(empty) means there is
+                        // genuinely nothing to free — a depth-64 recursive type
+                        // already bailed via `?` above, so empty here is real, not
+                        // a swallowed error. Falling through to the heap-shim
+                        // dispatch would wrongly error `Drop for type S not
+                        // supported`. (A copy struct already `continue`d earlier.)
+                        continue;
                     }
 
                     // Regular heap types: call free shim.

@@ -1,0 +1,24 @@
+// EXPECT: 105
+// ADR-0070 (O's offset-math tooth) — a 0-byte capability field sitting AFTER an
+// 8-byte scalar. `Dev { id: Integer, vga: VgaBuffer }`: id at offset 0 (8B),
+// vga at offset 8 (size 0). Reading `d.id` must yield the real 100 (the ZST
+// field must NOT perturb the scalar's offset), and `d.vga` partial-moves out
+// cleanly. If size-0 field math miscomputes the layout, `d.id` reads garbage
+// and the run != 105. Must run correct or refuse explicitly — never miscompute
+// silently.
+capability VgaBuffer grant
+
+struct Dev {
+    id: Integer,
+    vga: VgaBuffer,
+}
+
+function use_vga(v: VgaBuffer) -> Integer { return 5 }
+
+function main() -> Integer {
+    let vt = mint VgaBuffer;
+    let d = Dev { id: 100, vga: vt };
+    let x = d.id;                // scalar field at offset 0 — must read 100
+    let g = d.vga;               // capability partial-move at offset 8, size 0
+    return x + use_vga(g);       // 100 + 5 = 105
+}

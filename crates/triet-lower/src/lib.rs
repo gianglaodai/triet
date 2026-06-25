@@ -500,7 +500,16 @@ pub fn lower_program(
                     .iter()
                     .map(|f| {
                         let ty = lower_type(&prog.arena, f.type_annotation, &symbols, None);
-                        (f.name.clone(), ty, 8, 8)
+                        // ADR-0070: a capability field is a ZST — size 0, align 1
+                        // (true zero-cost per ADR-0069 "0 byte at runtime"). The
+                        // fixpoint pass below preserves this (Capability falls to
+                        // its `_ => f.size` default). Every other field is 8B/i64.
+                        let (sz, al) = if matches!(ty, MirType::Capability(_)) {
+                            (0, 1)
+                        } else {
+                            (8, 8)
+                        };
+                        (f.name.clone(), ty, sz, al)
                     })
                     .collect();
                 Some(StructLayout::compute(&def.name, &fields))
@@ -3191,9 +3200,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 // `Nullable(Enum)` (heap-nullable, ADR-0062) stays REFUSED.
                 let is_nested_enum = matches!(
                     decl_ty, MirType::Enum(n) if c.enum_layouts.contains_key(n.as_str()));
+                // ADR-0070: a capability field is a ZST (size 0) with NO heap and
+                // NO runtime payload — constructing a struct that holds one is
+                // sound (the field store/read/drop are all no-ops at runtime).
+                // It is non-copy ONLY so the borrow checker move-tracks it
+                // (ctx_is_copy returns false), so it must be allowed explicitly.
+                let is_capability = matches!(decl_ty, MirType::Capability(_));
                 if !is_direct_heap_leaf
                     && !is_nested_struct
                     && !is_nested_enum
+                    && !is_capability
                     && !ctx_is_copy(decl_ty, c)
                 {
                     return Err(LowerError::heap_type_not_supported(

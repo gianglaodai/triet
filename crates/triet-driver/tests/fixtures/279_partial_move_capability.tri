@@ -1,0 +1,29 @@
+// EXPECT: 17
+// ADR-0070 — partial move of a ZST capability field, sibling stays live, runs
+// end-to-end. `hw.vga` is moved out (partial move recorded per-field), then the
+// SIBLING field `hw.uart` is still usable. Pins: (1) the borrow checker tracks
+// moves at FIELD granularity, not whole-local — moving vga must not kill uart;
+// (2) the all-ZST-field struct constructs (gate C), field-reads, and drops as a
+// no-op in the JIT. Poison P-field-key (drop the field name, mark the whole
+// local moved) → `use_uart(hw.uart)` becomes use-after-move → E2420 → this run
+// fails = the field-keying is load-bearing.
+capability VgaBuffer grant
+capability UartPort grant
+
+struct Hardware {
+    vga: VgaBuffer,
+    uart: UartPort,
+}
+
+function use_vga(v: VgaBuffer) -> Integer { return 10 }
+function use_uart(u: UartPort) -> Integer { return 7 }
+
+function main() -> Integer {
+    let vt = mint VgaBuffer;
+    let ut = mint UartPort;
+    let hw = Hardware { vga: vt, uart: ut };
+    let g = hw.vga;              // partial move: vga gone, uart still live
+    let a = use_vga(g);          // 10
+    let b = use_uart(hw.uart);   // sibling field — must NOT be moved → 7
+    return a + b;                // 17
+}

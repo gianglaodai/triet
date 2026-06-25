@@ -1,0 +1,21 @@
+// ERROR: E2420
+// ADR-0070 — re-reading a field that was already partially moved out is a
+// use-after-move. `hw.vga` is moved into `g`; the second read of `hw.vga`
+// touches a field whose value is gone → E2420. Poison P-reread (drop the
+// `f in partial_moves` check at the field-read use site) → the second read
+// stops firing → this negative fixture goes green = the re-read check is the
+// tooth.
+capability VgaBuffer grant
+
+struct Hardware {
+    vga: VgaBuffer,
+}
+
+function use_vga(v: VgaBuffer) -> Integer { return 10 }
+
+function main() -> Integer {
+    let vt = mint VgaBuffer;
+    let hw = Hardware { vga: vt };
+    let g = hw.vga;              // partial move
+    return use_vga(hw.vga);      // re-read the moved field → E2420
+}

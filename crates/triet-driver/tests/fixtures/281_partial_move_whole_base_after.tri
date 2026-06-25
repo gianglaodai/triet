@@ -1,0 +1,21 @@
+// ERROR: E2420
+// ADR-0070 — moving the WHOLE base after a field was partially moved out is a
+// use-after-move. `hw.vga` is moved into `g`; `let w = hw` then tries to move
+// the whole struct, but part of it is already gone → E2420. Poison (drop the
+// whole-base partial-move check at the plain-source move site) → `let w = hw`
+// stops firing → green = the whole-base check is load-bearing.
+capability VgaBuffer grant
+
+struct Hardware {
+    vga: VgaBuffer,
+}
+
+function take_hw(h: Hardware) -> Integer { return 0 }
+
+function main() -> Integer {
+    let vt = mint VgaBuffer;
+    let hw = Hardware { vga: vt };
+    let g = hw.vga;          // partial move
+    let w = hw;              // whole-base move after partial move → E2420
+    return take_hw(w);
+}

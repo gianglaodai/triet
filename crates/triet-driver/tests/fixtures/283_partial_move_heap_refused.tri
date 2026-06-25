@@ -1,0 +1,17 @@
+// ERROR: E2423
+// ADR-0070 RĂNG #1 (G) — partial move is ZST-capability-ONLY. A heap field
+// (String) has no zero-cost partial-move story, so moving it out of a struct
+// stays REFUSED with E2423 CannotCopyMoveTypeOut — and must NOT panic. Poison
+// P-Δ3-heap (let a non-capability field into the record-partial-move branch
+// instead of pushing E2423) → the heap field-read stops erroring → green = the
+// refuse arm is the tooth that keeps heap out of partial-move.
+struct S {
+    name: String,
+}
+
+function main() -> Integer {
+    let nm = "hi";
+    let s = S { name: nm };
+    let n = s.name;          // heap field move-out → E2423 (refuse, no panic)
+    return 0;
+}

@@ -153,6 +153,12 @@ struct BlockState {
     var_states: BTreeMap<Local, VarState>,
     /// Loans that are still active.
     active_loans: BTreeSet<Loan>,
+    /// ADR-0070: per-local set of single-level field names whose value has
+    /// been moved out (partial move). Only ZST capability fields are recorded
+    /// here (heap fields stay refused by Δ3). A field in this set is dead: a
+    /// re-read of `base.f` or any whole-base use of `base` is E2420; a sibling
+    /// field stays live. Union-merged across predecessors (monotone → fixpoint).
+    partial_moves: BTreeMap<Local, BTreeSet<String>>,
 }
 
 impl BlockState {
@@ -165,6 +171,7 @@ impl BlockState {
         Self {
             var_states,
             active_loans: BTreeSet::new(),
+            partial_moves: BTreeMap::new(),
         }
     }
 
@@ -213,6 +220,22 @@ impl BlockState {
             merged
                 .active_loans
                 .extend(pred.active_loans.iter().cloned());
+        }
+
+        // ADR-0070: partial_moves = UNION of moved field-sets across all
+        // predecessors. A field moved on ANY path is moved at the join (a
+        // value gone down one branch cannot be resurrected by another). Union
+        // is monotone, so the dataflow fixpoint converges. Intersection would
+        // be UNSOUND (it would forget a move on a sibling path) — the CFG-branch
+        // teeth pin this.
+        for pred in predecessors {
+            for (local, fields) in &pred.partial_moves {
+                merged
+                    .partial_moves
+                    .entry(*local)
+                    .or_default()
+                    .extend(fields.iter().cloned());
+            }
         }
 
         merged
@@ -373,6 +396,36 @@ fn place_name(place: &Place, names: &LocalNames) -> String {
     s
 }
 
+/// ADR-0070: the single-level field name of a place that is exactly
+/// `base.field` (one `Projection::Field`, nothing else). Returns `None` for a
+/// bare local, a multi-level projection, or any non-Field projection. Callers
+/// treat `None` as "whole base" (conservative).
+fn single_field(place: &Place) -> Option<&str> {
+    if let [Projection::Field(name)] = place.projection.as_slice() {
+        Some(name.as_str())
+    } else {
+        None
+    }
+}
+
+/// ADR-0070: does reading `place` touch storage already partially moved out?
+/// A field read `base.f` is invalidated only if `f` itself was moved (a sibling
+/// field stays live); any whole-base or multi-level read of `base` is
+/// invalidated if ANY field was moved. This is SEPARATE from the whole-`Moved`
+/// var_state check each call site already performs.
+fn partial_move_invalidates(state: &BlockState, place: &Place) -> bool {
+    let Some(moved) = state.partial_moves.get(&place.local) else {
+        return false;
+    };
+    if moved.is_empty() {
+        return false;
+    }
+    match single_field(place) {
+        Some(f) => moved.contains(f),
+        None => true, // whole-base (or multi-level) use while a field is gone
+    }
+}
+
 /// Check if a Move-type local in `Ended` state is being used
 /// and emit E2421 UseAfterStorageEnd (ADR-0054).  Copy types
 /// are exempt — their Drop is a no-op on the stack.
@@ -523,6 +576,8 @@ fn process_block(
         match stmt {
             Statement::StorageLive(l, _) => {
                 state.var_states.insert(*l, VarState::Owned);
+                // ADR-0070: a fresh storage slot has no moved-out fields.
+                state.partial_moves.remove(l);
             }
 
             Statement::StorageDead(l, _) => {
@@ -571,7 +626,12 @@ fn process_block(
                 }
 
                 // Check that the borrowed base hasn't been moved/deallocated.
-                if state.var_states.get(&source.local) == Some(&VarState::Moved) {
+                // ADR-0070 (G's note): borrowing the whole base `&hw` after a
+                // field was moved out, or `&hw.f` on a moved field, is a
+                // use-after-move (a sibling field borrow stays valid).
+                if state.var_states.get(&source.local) == Some(&VarState::Moved)
+                    || partial_move_invalidates(&state, source)
+                {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
@@ -615,12 +675,42 @@ fn process_block(
                 // Δ3: Refuse to copy a Move type out of a projection
                 if is_field_read {
                     let extracted_ty = triet_mir::place_type(source, body);
-                    if !extracted_ty.is_copy(Some(body)) {
-                        errors.push(BorrowError::CannotCopyMoveTypeOut {
-                            place: place_name(source, names),
-                            ty: extracted_ty.to_string(),
+                    // ADR-0070: re-reading a field that was already partially
+                    // moved out (or any whole-base/multi-level read while a
+                    // field is gone) is a use-after-move. Checked BEFORE this
+                    // statement records its own move below.
+                    if partial_move_invalidates(&state, source) {
+                        errors.push(BorrowError::UseAfterMove {
+                            local: source.local,
+                            name: place_name(source, names),
                             span: span.clone(),
                         });
+                    }
+                    if !extracted_ty.is_copy(Some(body)) {
+                        // ADR-0070: a single-level ZST capability field MAY be
+                        // moved out — record the partial move instead of
+                        // refusing. Everything else (heap fields, multi-level
+                        // capability extraction) stays REFUSED (E2423): a heap
+                        // value has no zero-cost partial-move story yet, and
+                        // nested partial-move is out of scope (conservative).
+                        match single_field(source) {
+                            Some(f)
+                                if matches!(extracted_ty, triet_mir::MirType::Capability(_)) =>
+                            {
+                                state
+                                    .partial_moves
+                                    .entry(source.local)
+                                    .or_default()
+                                    .insert(f.to_string());
+                            }
+                            _ => {
+                                errors.push(BorrowError::CannotCopyMoveTypeOut {
+                                    place: place_name(source, names),
+                                    ty: extracted_ty.to_string(),
+                                    span: span.clone(),
+                                });
+                            }
+                        }
                     }
                     // ADR-0049: field-read on a moved base = use-after-move.
                     // Reading any part of a moved value is unsound even if
@@ -642,7 +732,12 @@ fn process_block(
                     );
                 }
 
-                if !is_field_read && state.var_states.get(&source.local) == Some(&VarState::Moved) {
+                if !is_field_read
+                    && (state.var_states.get(&source.local) == Some(&VarState::Moved)
+                        // ADR-0070: moving the whole base after a field was
+                        // partially moved out is a use-after-move.
+                        || partial_move_invalidates(&state, source))
+                {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
@@ -691,6 +786,18 @@ fn process_block(
                         state.var_states.insert(source.local, VarState::Moved);
                     }
                 }
+                // ADR-0070: re-initialization clears stale partial-move state.
+                // A whole-local fresh assignment (`hw = ...`) clears every moved
+                // field; a single-field store (`hw.f = ...`, e.g. construction)
+                // re-inits just that field. Leaving it set would false-positive
+                // a later read. (Multi-level dest → left conservative.)
+                if dest.projection.is_empty() {
+                    state.partial_moves.remove(&dest.local);
+                } else if let Some(f) = single_field(dest)
+                    && let Some(s) = state.partial_moves.get_mut(&dest.local)
+                {
+                    s.remove(f);
+                }
                 state.var_states.insert(dest.local, VarState::Owned);
             }
 
@@ -706,7 +813,9 @@ fn process_block(
                 ..
             } => {
                 for op in [left, right] {
-                    if state.var_states.get(&op.local) == Some(&VarState::Moved) {
+                    if state.var_states.get(&op.local) == Some(&VarState::Moved)
+                        || partial_move_invalidates(&state, op)
+                    {
                         errors.push(BorrowError::UseAfterMove {
                             local: op.local,
                             name: place_name(op, names),
@@ -749,7 +858,9 @@ fn process_block(
             Statement::GetDiscriminant { dest, source, span } => {
                 // Reading the discriminant is a USE of the enum (not a move).
                 // If the enum has been moved → E2420.
-                if state.var_states.get(&source.local) == Some(&VarState::Moved) {
+                if state.var_states.get(&source.local) == Some(&VarState::Moved)
+                    || partial_move_invalidates(&state, source)
+                {
                     errors.push(BorrowError::UseAfterMove {
                         local: source.local,
                         name: place_name(source, names),
@@ -856,7 +967,10 @@ fn process_block(
     let term_span = terminator_span(&block_data.terminator);
     let term_reads = terminator_reads(&block_data.terminator);
     for r in &term_reads {
-        if state.var_states.get(r) == Some(&VarState::Moved) {
+        // ADR-0070: a terminator read is a whole-base use of the local — moved
+        // if fully Moved OR any field was partially moved out.
+        let partially_moved = state.partial_moves.get(r).is_some_and(|s| !s.is_empty());
+        if state.var_states.get(r) == Some(&VarState::Moved) || partially_moved {
             let r_name = names.get(r).cloned().unwrap_or_else(|| format!("{r}"));
             errors.push(BorrowError::UseAfterMove {
                 local: *r,
