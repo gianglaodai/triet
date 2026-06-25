@@ -1,0 +1,23 @@
+// EXPECT: 7
+// ADR-0067 Lát 2 nhát 2b+ (ENUM-IN-STRUCT field): a struct whose field is an
+// enum carrying a String payload — construct + drop. 2b+-D allows the enum
+// field; death-line #2 sizes `msg` at 32B {disc@0, ptr@8, len@16, cap@24} so
+// `tag` lands at offset 32 (NOT 8 — a mis-sized 8B enum field would put tag in
+// the enum's payload area → garbage). 2b+-A/B/C: the struct drop walk yields a
+// LeafKind::Enum and `emit_enum_drop_glue_at` tag-switches on disc → frees ONLY
+// the active variant's String at payload@msg+8 with the real cap. FREE_COUNT==1
+// (counting teeth); a wrong layout → SIGSEGV, a double-free → SIGABRT.
+// Observable: `w.tag` = 7 reads the scalar field AFTER the 32B enum, proving the
+// fat-store + offset are correct.
+enum Msg {
+    Text(String),
+    Code(Integer),
+    Empty,
+}
+
+struct Wrapper { msg: Msg, tag: Integer }
+
+function main() -> Integer = {
+    let w = Wrapper { msg: Msg.Text("Giang"), tag: 7 };
+    return w.tag;
+}

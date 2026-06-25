@@ -1,0 +1,23 @@
+// EXPECT: 7
+// ADR-0067 Lát 2 nhát 2b+ (ENUM-IN-STRUCT assign-move): `let w2 = w` true-moves
+// a struct holding an enum-with-heap field. The lowerer emits Assign{w2←w} +
+// Deinit(w) atomically (same BB, reusing 1c). The Deinit walks the leaves and,
+// for the LeafKind::Enum leaf, zeroes the PAYLOAD word @msg+8 (NOT disc) →
+// the moved-from enum's Drop reads ptr=0 → free no-op. At scope end Drop(w)
+// frees nothing, Drop(w2) frees the String once. FREE_COUNT==1 (counting teeth);
+// a missing payload tombstone → caller + callee both free → SIGABRT.
+// Observable: `w2.tag` = 7 proves the whole 40B slot (32B enum + 8B scalar)
+// transferred to w2.
+enum Msg {
+    Text(String),
+    Code(Integer),
+    Empty,
+}
+
+struct Wrapper { msg: Msg, tag: Integer }
+
+function main() -> Integer = {
+    let w = Wrapper { msg: Msg.Text("Giang"), tag: 7 };
+    let w2 = w;
+    return w2.tag;
+}
