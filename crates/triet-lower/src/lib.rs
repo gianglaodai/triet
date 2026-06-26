@@ -3052,6 +3052,13 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     source: Place::local(field_val),
                     span: expr_span.clone(),
                 });
+                // AMEND ADR-0067: a heap-owning aggregate local moved into a field is dead —
+                // tombstone it (atomic, same BB) so its scope-end Drop is a no-op. Without this,
+                // the JIT aggregate byte-copy leaves a live duplicate ptr → double-free. Scalar
+                // heap-leaf fields stay handled by the JIT M1-zeroing path (not here).
+                if is_nested_struct || is_nested_enum {
+                    c.push(Statement::Deinit(field_val, expr_span.clone()));
+                }
             }
             Ok(d)
         }

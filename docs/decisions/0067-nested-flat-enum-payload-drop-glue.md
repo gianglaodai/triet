@@ -171,3 +171,38 @@ arm (struct_map→8, correct-now, đồng bộ khi mở ADR-0062 §6).
 ---
 
 **Chữ ký ADR-0067:** (scaffold — chờ recon từng nhát + G ký)
+
+---
+
+## ✚ AMEND — Construction-into-field source tombstone (double-free)
+
+**Coverage hole.** §2a/2b+ chỉ test *inline* construction (fixtures 263/264 —
+`Outer { inner: Inner { ... } }`): inner aggregate là TEMP, không có Drop
+scope-end nên không double-free. Construct-from-*named-local* chưa bao giờ test:
+
+```triet
+let i = Inner { name: n };  let h = Holder { inner: i, tag: 5 };   // struct-payload
+let m = Msg::Text("hi");    let w = Wrapper { msg: m, tag: 5 };    // enum-payload
+```
+
+→ live UB double-free tại HEAD (cả struct- lẫn enum-payload), release sạch, **exit 134**.
+
+**Root cause.** Hai tầng:
+- Producer `triet-lower/src/lib.rs` (StructLiteral): emit `_d.field = move field_val`
+  nhưng KHÔNG emit `Deinit(field_val)` khi `field_val` là local struct/enum chứa
+  heap. Đối chiếu 1c (lib.rs:1395), arg-move (2427/2474/2511) — tất cả ĐỀU Deinit
+  source; chỉ construction-into-field sót.
+- JIT `mir_lower.rs:1759` aggregate byte-copy KHÔNG tombstone source (giả định sai
+  `// Struct/enum types are Copy in Bậc A` — struct/enum chứa heap = **Move**).
+  Source slot giữ ptr heap sống → `Drop(source) + Drop(dest)` = double-free.
+
+**Fix (Option A — lower-side Deinit, G ký).** Lower emit `Deinit(field_val)` NGAY
+SAU field-Assign khi `is_nested_struct || is_nested_enum`, **atomic cùng BB**, không
+chèn gì giữa. Tái dùng JIT Deinit recursive-tombstone đã proven (struct
+`collect_heap_leaves`; enum 2b-3 zero payload ptr). Scalar heap-leaf field giữ
+nguyên JIT M1-zeroing path (không đụng). KHÔNG sửa JIT/borrowck. Option B
+(tombstone ngầm trong JIT) đã bị G BÁC.
+
+**Teeth** (do O cắm độc lập, không thuộc nhiệm vụ D):
+- **R-construct-from-local:** bóp Deinit → SIGABRT/exit 134 hoặc FREE==2 đỏ; mở ra → xanh.
+- **R-atomic:** MIR-dump grep `Deinit` liền ngay sau field-`Assign`, cùng BB.
