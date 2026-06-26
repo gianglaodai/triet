@@ -132,3 +132,44 @@ Single-level field depth (`hw.vga`) là phạm vi ADR này — `hw.a.b` lồng s
   construction-into-field double-free pre-existing (ADR-0067, đã verify). Re-mở
   khi construction-into-field tombstone source. Fixture nắp quan tài:
   `300_field_moveout_heapstruct_e2423.tri`.
+
+---
+
+## ✚ AMEND — Phase 2: heap-STRUCT field move-out MỞ (G bless 2026-06-27)
+
+Construction-into-field double-free (ADR-0067) đã vá (commit `e2b5c36`,
+AMEND ADR-0067 — Deinit source tombstone), nên nắp quan tài mở được. Phase 2
+unlock **single-level heap-STRUCT** field move-out (`let m = h.inner`, `inner`
+là struct chứa heap leaf bất kỳ độ sâu). 3 code-site (recon O ban đầu chỉ ra 2 —
+**thiếu site 3**; D probe SIGSEGV tới đáy, bổ sung):
+
+1. **Borrowck** (`checker.rs` allow-arm): thêm `MirType::Struct(_)` vào nhánh ghi
+   partial-move. Use-after-move kế thừa miễn phí (`partial_move_invalidates`
+   theo tên field, type-agnostic): reuse field đã move → **E2420**; sibling field
+   đọc tiếp OK; whole-base / multi-level → invalidated. Enum-field + multi-level
+   extraction VẪN refuse **E2423** (defer — chưa use-case).
+2. **JIT** (`mir_lower.rs` read-side block): heap-STRUCT field → `collect_heap_leaves(
+   name, field_off, ..)` (hàm đã có `base_offset`) trả leaf ở **absolute offset
+   trong slot CHA**; zero per-LeafKind (Heap@abs, Enum@abs+8). Đối xứng byte với
+   Deinit struct-branch (`base_offset=0`→`field_off`). Free đúng 1 lần.
+3. **Lower type-propagation** (`lib.rs` `Expr::FieldAccess`): **TỬ HUYỆT site 3.**
+   Trước đây field kiểu `MirType::Struct(_)` rơi `alloc_local()` = **Unknown** →
+   JIT pre-pass KHÔNG cấp stack-slot cho dest move-out → aggregate-copy ghi qua
+   địa chỉ rác → **SIGSEGV**. Vá: propagate type thật `Struct(_)` (song song
+   nhánh nullable-aggregate / heap-scalar đã có) → dest có slot thật.
+
+   **Quyết định type-system (G bless):** tầng Lower PHẢI propagate type thật cho
+   `MirType::Struct(_)` field read, KHÔNG dùng `Unknown`. Lý do: (a) dest-slot
+   allocation cho move-out; (b) vá luôn **latent-bug truncation 8B** — mọi
+   `let x = obj.copyStruct` với Copy-struct >8B trước đó đọc qua SSA-register 8B
+   (cắt cụt); nay aggregate-copy đúng width. `Unknown` chỉ còn cho scalar leaf
+   (load i64). Propagate đúng type = con đường Soundness duy nhất.
+
+**Teeth (O verify máu, độc lập):** `struct_field_moveout_phase2_counting`
+(FREE==1, cap==5, poison JIT Struct-arm → count==2 double-free); negative
+fixtures `301` (reuse → E2420), `302` (multi-level → E2423); fixture `300` FLIP
+(E2423 → EXPECT:0). Regression: 263/264/265 + Phase-1 + nested/enum-in-struct
+counting XANH. Gate `0·0·297·0`. Copy-struct >8B field read verified (đọc đúng,
+base reusable — Copy semantics giữ).
+
+**Defer:** Enum-field move-out · multi-level (`h.inner.x`) extraction · true-recursive (ADR-0068).

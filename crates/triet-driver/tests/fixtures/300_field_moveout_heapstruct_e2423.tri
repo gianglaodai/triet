@@ -1,12 +1,11 @@
-// ERROR: E2423
-// ADR-0070 read-side — a single-level heap-STRUCT field move-out STAYS REFUSED
-// (E2423). `h.inner` is a struct-typed field whose struct owns a String; moving
-// it out is blocked upstream by the pre-existing construction-into-field
-// double-free (ADR-0067), so borrowck refuses it (coffin-lid tooth). Poison:
-// add `| MirType::Struct(_)` back to the borrowck allow-guard → this stops
-// erroring → green = the Struct-exclusion is load-bearing. The negative
-// directive halts at borrowck BEFORE the JIT, so the construction bug is never
-// reached here.
+// EXPECT: 0
+// Phase 2 (ADR-0070 read-side) — a single-level heap-STRUCT field move-out is
+// now ALLOWED. `h.inner` is a struct-typed field whose struct owns a String;
+// moving it out into `m` is sound: borrowck records the partial move and the JIT
+// tombstones the moved struct's heap leaf at its absolute offset in the base
+// slot (collect_heap_leaves with base_offset=field_off), so the base's scope-end
+// Drop frees nothing already moved (no double-free). The ADR-0067
+// construction-into-field double-free that previously blocked this is fixed.
 struct Inner {
     name: String,
 }

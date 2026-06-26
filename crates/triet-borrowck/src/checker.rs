@@ -689,20 +689,21 @@ fn process_block(
                     if !extracted_ty.is_copy(Some(body)) {
                         // ADR-0070: a single-level field MAY be moved out when it
                         // is a ZST capability OR a heap SCALAR (String/Vector/
-                        // HashMap) — record the partial move. The JIT tombstones
-                        // the moved leaf in the base slot so the base's Drop frees
-                        // nothing already moved (no double-free).
+                        // HashMap) OR a heap-STRUCT (Phase 2: the ADR-0067
+                        // construction-into-field double-free is now fixed, so the
+                        // JIT can tombstone the moved struct's heap leaves at their
+                        // absolute offsets in the base slot) — record the partial
+                        // move. The JIT tombstones the moved leaf in the base slot
+                        // so the base's Drop frees nothing already moved (no
+                        // double-free).
                         // Still REFUSED (E2423): multi-level extraction
                         // (single_field → None) and every other non-copy move-type
-                        // (Enum/Nullable/Outcome fields are out of scope). A
-                        // heap-STRUCT field move-out is ALSO refused: it is blocked
-                        // upstream by the pre-existing construction-into-field
-                        // double-free (ADR-0067) — re-open when that lands (see the
-                        // ADR-0070 defer ledger).
+                        // (Enum/Nullable/Outcome fields are out of scope, defer).
                         match single_field(source) {
                             Some(f)
                                 if matches!(extracted_ty, triet_mir::MirType::Capability(_))
-                                    || extracted_ty.is_any_heap() =>
+                                    || extracted_ty.is_any_heap()
+                                    || matches!(extracted_ty, triet_mir::MirType::Struct(_)) =>
                             {
                                 state
                                     .partial_moves

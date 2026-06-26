@@ -2920,6 +2920,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             let d = if matches!(&field_ty, MirType::Nullable(inner)
                 if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)))
                 || field_ty.is_any_heap()
+                // Phase 2 (ADR-0070 read-side): a plain heap-owning STRUCT field
+                // (e.g. `let m = h.inner`) must carry its `Struct` type so the JIT
+                // pre-pass allocates a real stack slot for the move-out dest. An
+                // Unknown-typed temp (the scalar-leaf path) gets NO slot, so the
+                // aggregate field copy writes through a garbage address → SIGSEGV.
+                || matches!(&field_ty, MirType::Struct(_))
             {
                 c.alloc_local_ty(field_ty)
             } else {

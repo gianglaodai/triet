@@ -1878,14 +1878,38 @@ impl JitContext {
                                 builder.ins().stack_store(len, dest_slot, 8);
                                 builder.ins().stack_store(cap, dest_slot, 16);
                             }
-                            // (2) tombstone the moved field's heap leaf. Only heap
-                            // SCALARS reach here: borrowck refuses heap-STRUCT
-                            // field-move (E2423, blocked upstream by ADR-0067
-                            // construction-into-field), Capability is a 0-byte ZST
-                            // with no heap leaf, and everything else is refused.
+                            // (2) tombstone the moved field's heap leaf(s). A heap
+                            // SCALAR zeroes its single ptr@field_off. A heap-STRUCT
+                            // (Phase 2) recurses its layout via the SHARED
+                            // `collect_heap_leaves` with base_offset=field_off → the
+                            // leaves come back as ABSOLUTE offsets in the BASE slot;
+                            // zero each (SYMMETRIC with the Deinit struct-branch's
+                            // base_offset=0 walk, G mandate: free N tiers → zero N
+                            // tiers). Capability is a 0-byte ZST (no heap leaf);
+                            // Enum/Nullable/Outcome field-move stays refused upstream.
                             match &field_ty {
                                 MirType::String | MirType::Vector | MirType::HashMap => {
                                     builder.ins().stack_store(zero, base_slot, field_off);
+                                }
+                                MirType::Struct(name) => {
+                                    let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
+                                    Self::collect_heap_leaves(
+                                        name,
+                                        field_off,
+                                        body,
+                                        0,
+                                        &mut leaves,
+                                    )?;
+                                    for (abs, kind) in leaves {
+                                        match kind {
+                                            LeafKind::Heap(_) => {
+                                                builder.ins().stack_store(zero, base_slot, abs);
+                                            }
+                                            LeafKind::Enum(_) => {
+                                                builder.ins().stack_store(zero, base_slot, abs + 8);
+                                            }
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }

@@ -1,0 +1,16 @@
+// ERROR: E2420
+// Phase 2 (ADR-0070 read-side) R-use-after-moveout: a heap-STRUCT field may be
+// moved out ONCE (`let m = h.inner`), but reusing the SAME moved field
+// (`let m2 = h.inner`) is a use-after-move → E2420. Proves borrowck's
+// partial_move flow tracks the moved field's ownership (it does NOT blindly
+// allow reuse just because the E2423 guard was relaxed). Poison: remove the
+// `MirType::Struct(_)` arm from partial_move recording → this would stop erroring.
+struct Inner { name: String, n: Integer }
+struct Holder { inner: Inner, tag: Integer }
+function main() -> Integer = {
+    let i = Inner { name: "Giang", n: 7 };
+    let h = Holder { inner: i, tag: 5 };
+    let m = h.inner;
+    let m2 = h.inner;
+    return m.n;
+}
