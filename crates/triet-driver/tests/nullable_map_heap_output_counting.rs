@@ -15,9 +15,16 @@
 //!     no-ops on the scalar result → the heap value LEAKS → count == 0 → RED.
 #![allow(unsafe_code)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use triet_jit::mir_lower::{self, JitContext, ShimSymbol};
+
+// ADR-0071 infra WO: serialize the in-binary parallel tests — they share
+// the global free counter(s); cargo runs tests in this file concurrently,
+// so without this lock the store(0)+call+load races. Reset happens UNDER
+// the lock (each test holds it across the `run*` call).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 static STR_FREES: AtomicUsize = AtomicUsize::new(0);
 static VEC_FREES: AtomicUsize = AtomicUsize::new(0);
@@ -102,6 +109,7 @@ fn run(source: &str) -> (i64, usize, usize, usize) {
 
 #[test]
 fn map_string_output_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // some ?+> |x| mk(x) : Integer? → String? (map auto-wraps). The mapped
     // String is freed exactly once. Poison (result keeps Integer?) → Drop
     // no-ops → count 0.
@@ -116,6 +124,7 @@ fn map_string_output_freed_once() {
 
 #[test]
 fn map_vector_output_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (_result, _, vec_frees, _) = run(
         "function mk(x: Integer) -> Vector<Integer> = vector_new()\n\
          function main() -> Integer {\n\
@@ -129,6 +138,7 @@ fn map_vector_output_freed_once() {
 
 #[test]
 fn map_hashmap_output_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (_result, _, _, hmap_frees) = run(
         "function mk(x: Integer) -> HashMap<Integer, Integer> = hashmap_new()\n\
          function main() -> Integer {\n\

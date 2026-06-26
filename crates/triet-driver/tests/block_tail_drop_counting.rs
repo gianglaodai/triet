@@ -15,9 +15,16 @@
 //!     is dropped both in the block AND by the enclosing scope → count == 2.
 #![allow(unsafe_code)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use triet_jit::mir_lower::{self, JitContext, ShimSymbol};
+
+// ADR-0071 infra WO: serialize the in-binary parallel tests — they share
+// the global free counter(s); cargo runs tests in this file concurrently,
+// so without this lock the store(0)+call+load races. Reset happens UNDER
+// the lock (each test holds it across the `run*` call).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 static VEC_FREES: AtomicUsize = AtomicUsize::new(0);
 static STR_FREES: AtomicUsize = AtomicUsize::new(0);
@@ -87,6 +94,7 @@ fn run(source: &str) -> (i64, usize, usize) {
 
 #[test]
 fn block_init_vector_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Tail value (empty vector) escapes the block into `v`; the enclosing scope
     // frees it exactly once. Poison (direct tail return) → block + enclosing
     // both drop it → count 2.
@@ -103,6 +111,7 @@ fn block_init_vector_freed_once() {
 
 #[test]
 fn block_init_string_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (result, _, str_frees) = run("function main() -> Integer {\n\
          \x20   let s: String = { let x = \"hello\"; x };\n\
          \x20   return 0;\n\

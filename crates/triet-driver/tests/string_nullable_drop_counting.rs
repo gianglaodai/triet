@@ -13,9 +13,16 @@
 //!     load-bearing, not incidental.
 #![allow(unsafe_code)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use triet_jit::mir_lower::{self, JitContext, ShimSymbol};
+
+// ADR-0071 infra WO: serialize the in-binary parallel tests — they share
+// the global free counter(s); cargo runs tests in this file concurrently,
+// so without this lock the store(0)+call+load races. Reset happens UNDER
+// the lock (each test holds it across the `run*` call).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 static FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -78,6 +85,7 @@ fn run_counting(source: &str) -> (i64, usize) {
 
 #[test]
 fn nonnull_string_nullable_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // f() returns a non-null String?; main binds it (owned → dropped at scope
     // exit). The free reads ptr@0 = a real allocation → counted once.
     let (result, frees) = run_counting(
@@ -96,6 +104,7 @@ fn nonnull_string_nullable_freed_once() {
 
 #[test]
 fn null_string_nullable_freed_zero() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // f() returns `~0` (null); main binds it. Drop calls free(ptr@0 ==
     // NULL_SENTINEL, _) → shim no-ops → zero live frees. Proves the sentinel
     // landed in ptr@0.

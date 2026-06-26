@@ -21,9 +21,16 @@
 //!     the same live pointer → count == 2 → RED.
 #![allow(unsafe_code)]
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use triet_jit::mir_lower::{self, JitContext, ShimSymbol};
+
+// ADR-0071 infra WO: serialize the in-binary parallel tests — they share
+// the global free counter(s); cargo runs tests in this file concurrently,
+// so without this lock the store(0)+call+load races. Reset happens UNDER
+// the lock (each test holds it across the `run*` call).
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 static FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -86,6 +93,7 @@ fn run_counting(source: &str) -> (i64, usize) {
 
 #[test]
 fn present_arm_move_out_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Named scrutinee `let x = f()` → MIR drops both the arm-local `s`
     // (`~+ s => len(s)`) AND the scrutinee `x` in the merge block. The M1
     // tombstone nulls the scrutinee's ptr@0 after `s = move x`, so the
@@ -114,6 +122,7 @@ fn present_arm_move_out_freed_once() {
 
 #[test]
 fn method_return_present_arm_freed_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // ADR-0062 Lát 4.5: a `String?` arriving via a trait METHOD sret return
     // (`b.get() -> String?`), then matched. Same M1-tombstone safety as the
     // free-function case — the sret return path must not introduce an extra
