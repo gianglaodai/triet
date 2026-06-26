@@ -5,8 +5,8 @@
 //
 // Match cho phép pattern matching exhaustively trên tất cả variant:
 //   match value {
-//       Some(v) => ...,
-//       None => ...,
+//       MaybeInt::Some(v) => ...,
+//       MaybeInt::None => ...,
 //   }
 //
 // LƯU Ý (SPEC §2.5, v0.4): demo này minh họa **language feature**
@@ -21,19 +21,19 @@ enum MaybeInt { Some(Integer), None }
 // Unwrap với giá trị mặc định — giống `Option::unwrap_or` trong Rust.
 function unwrap_or(value: MaybeInt, default: Integer) -> Integer =
     match value {
-        Some(v) => v,
-        None => default,
+        MaybeInt::Some(v) => v,
+        MaybeInt::None => default,
     }
 
 function describe(value: MaybeInt) -> String =
     match value {
-        Some(v) => f"có giá trị {v}",
-        None => "rỗng",
+        MaybeInt::Some(v) => f"có giá trị {v}",
+        MaybeInt::None => "rỗng",
     }
 
 function main() {
-    let a = Some(42)
-    let b = None
+    let a = MaybeInt::Some(42)
+    let b = MaybeInt::None
 
     println(f"a = {describe(a)}, unwrap_or = {unwrap_or(a, 0)}")
     println(f"b = {describe(b)}, unwrap_or = {unwrap_or(b, 100)}")

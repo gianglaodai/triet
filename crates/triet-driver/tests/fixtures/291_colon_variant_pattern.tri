@@ -1,0 +1,14 @@
+// EXPECT: 7
+// ADR-0071 Lát 2: qualified `Enum::Variant` PATTERN (`Pattern::EnumVariant`
+// with `name: Some`). The match arm `Color::Blue` matches the Blue discriminant
+// specifically (not a binding). Poison P-colon-pattern (drop the `name` in the
+// `::` pattern path) → the qualified pattern stops matching the right variant.
+enum Color { Red, Green, Blue }
+
+function classify(c: Color) -> Integer = match c {
+    Color::Red => 1,
+    Color::Green => 2,
+    Color::Blue => 7,
+}
+
+function main() -> Integer = classify(Color::Blue)

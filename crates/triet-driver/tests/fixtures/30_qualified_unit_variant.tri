@@ -1,13 +1,14 @@
 // EXPECT: 2
-// Pin: qualified unit variant with disc≠0 (Status.Red = disc 1).
+// Pin: qualified unit variant with disc≠0 (Status::Red = disc 1). `Red` is
+// shared by Color and Status — ADR-0071 `::` qualification disambiguates.
 enum Color { Red, Green, Blue }
 enum Status { Active, Red, Inactive }
 
 function main() -> Integer = {
-    let c = Status.Red;
+    let c = Status::Red;
     return match c {
-        Active => 1,
-        Red => 2,
-        Inactive => 3,
+        Status::Active => 1,
+        Status::Red => 2,
+        Status::Inactive => 3,
     };
 }

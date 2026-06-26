@@ -1,12 +1,13 @@
 // EXPECT: 99
-// Pin: qualified payload variant with disc≠0 (NoneInt = disc 1).
+// Pin: qualified payload variant with disc≠0 (NoneInt = disc 1). `SomeInt`/
+// `NoneInt` are shared by OptionA and OptionB — ADR-0071 `::` disambiguates.
 enum OptionA { SomeInt(Integer), NoneInt }
 enum OptionB { SomeInt(Integer), NoneInt }
 
 function main() -> Integer = {
-    let a = OptionA.NoneInt;
+    let a = OptionA::NoneInt;
     return match a {
-        SomeInt(x) => x,
-        NoneInt => 99,
+        OptionA::SomeInt(x) => x,
+        OptionA::NoneInt => 99,
     };
 }

@@ -38,16 +38,10 @@ const TRILEAN_EXHAUSTIVE: &str = "function classify(t: Trilean) -> Integer = mat
 fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     let (program, parse_errors) = triet_parser::parse(source);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
-    let (type_errors, expr_resolutions, pattern_resolutions, method_resolutions) =
-        triet_typecheck::check(&program);
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
-    triet_lower::lower_program(
-        &program,
-        &expr_resolutions,
-        &pattern_resolutions,
-        &method_resolutions,
-    )
-    .expect("lowering failed")
+    triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed")
 }
 
 /// Như `lower_source` nhưng KHÔNG assert type-clean. CHỈ dùng cho test trap
@@ -59,8 +53,8 @@ fn lower_source(source: &str) -> Vec<triet_mir::Body> {
 fn lower_bypassing_typecheck(source: &str) -> Vec<triet_mir::Body> {
     let (program, parse_errors) = triet_parser::parse(source);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
-    let (_type_errors, er, pr, mr) = triet_typecheck::check(&program);
-    triet_lower::lower_program(&program, &er, &pr, &mr).expect("lowering failed")
+    let (_type_errors, pr, mr) = triet_typecheck::check(&program);
+    triet_lower::lower_program(&program, &pr, &mr).expect("lowering failed")
 }
 
 fn switch_of(

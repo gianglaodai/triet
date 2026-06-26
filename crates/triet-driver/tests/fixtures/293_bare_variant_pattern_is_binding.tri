@@ -1,0 +1,23 @@
+// EXPECT: 99
+// ADR-0071 Lát 2 §2.A: a BARE identifier in a match arm is ALWAYS a binding
+// (catch-all), NEVER a variant match — even when spelled like a real variant.
+// The arm `Green` is a binding; the scrutinee is `Color::Red` (a DIFFERENT
+// variant), so the binding still captures it and returns 99 — proving `Green`
+// did NOT match the `Green` variant by name. A hypothetical "match-on-name"
+// resurrection would make `Green` match only the Green variant → `Color::Red`
+// falls through → non-exhaustive E1026 → this fixture breaks. The Red-vs-Green
+// mismatch is what makes the tooth bite a full resurrection, not just a no-op.
+//
+// LOAD-BEARING POISON = remove `Pattern::Variable` from the §2.A catch-all
+// (exprs.rs:1807 exhaustiveness short-circuit + lib.rs enum default_bb): the
+// bare arm stops being a catch-all → E1026 "missing Red, Green, Blue". NOTE the
+// old typecheck guess-hack is NOT the poison here — its output has no consumer
+// (the lower routes `Pattern::Variable`→catch-all off the AST node, never via a
+// resolution), so re-adding it is inert and would NOT flip this fixture.
+enum Color { Red, Green, Blue }
+
+function classify(c: Color) -> Integer = match c {
+    Green => 99,
+}
+
+function main() -> Integer = classify(Color::Red)

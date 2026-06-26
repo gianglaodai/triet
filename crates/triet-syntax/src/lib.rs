@@ -44,8 +44,10 @@ pub struct EnumVariantResolution {
     pub has_payload: bool,
 }
 
-/// Maps expression IDs to resolved enum variants.
-pub type ExprResolutions = std::collections::HashMap<ExprId, EnumVariantResolution>;
+// ADR-0071 Lát 2: `ExprResolutions` (ExprId → variant) retired — enum-variant
+// construction is now the qualified `Enum::Variant` form (`Expr::EnumLiteral`,
+// self-describing), so the lowerer no longer needs an expr-keyed resolution
+// map. `PatternResolutions` survives (match arms still resolve via it).
 
 /// Maps pattern IDs to resolved enum variants.
 pub type PatternResolutions = std::collections::HashMap<PatternId, EnumVariantResolution>;

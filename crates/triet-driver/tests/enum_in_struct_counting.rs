@@ -56,16 +56,10 @@ extern "C" fn __eis_vec_free(ptr: i64) {
 fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     let (program, parse_errors) = triet_parser::parse(source);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
-    let (type_errors, expr_resolutions, pattern_resolutions, method_resolutions) =
-        triet_typecheck::check(&program);
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
-    triet_lower::lower_program(
-        &program,
-        &expr_resolutions,
-        &pattern_resolutions,
-        &method_resolutions,
-    )
-    .expect("lowering failed")
+    triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed")
 }
 
 fn run(source: &str) -> i64 {
@@ -104,7 +98,7 @@ fn enum_in_struct_frees_once() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{DECL}function main() -> Integer = {{\n\
-         \x20   let w = Wrapper {{ msg: Msg.Text(\"Giang\"), tag: 7 }};\n\
+         \x20   let w = Wrapper {{ msg: Msg::Text(\"Giang\"), tag: 7 }};\n\
          \x20   return w.tag;\n\
          }}"
     ));
@@ -123,7 +117,7 @@ fn enum_in_struct_move_frees_once() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{DECL}function main() -> Integer = {{\n\
-         \x20   let w = Wrapper {{ msg: Msg.Text(\"Giang\"), tag: 7 }};\n\
+         \x20   let w = Wrapper {{ msg: Msg::Text(\"Giang\"), tag: 7 }};\n\
          \x20   let w2 = w;\n\
          \x20   return w2.tag;\n\
          }}"
@@ -144,7 +138,7 @@ fn enum_in_struct_scalar_variant_no_free() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{DECL}function main() -> Integer = {{\n\
-         \x20   let w = Wrapper {{ msg: Msg.Code(9), tag: 7 }};\n\
+         \x20   let w = Wrapper {{ msg: Msg::Code(9), tag: 7 }};\n\
          \x20   return w.tag;\n\
          }}"
     ));
@@ -170,7 +164,7 @@ fn enum_in_struct_wrong_variant_dispatch() {
     VEC_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{decl}function main() -> Integer = {{\n\
-         \x20   let w = WPair {{ p: Pair.Buf(push(vector_new(), 1)), tag: 7 }};\n\
+         \x20   let w = WPair {{ p: Pair::Buf(push(vector_new(), 1)), tag: 7 }};\n\
          \x20   return w.tag;\n\
          }}"
     ));
@@ -191,7 +185,7 @@ fn enum_in_struct_wrong_variant_dispatch() {
     VEC_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{decl}function main() -> Integer = {{\n\
-         \x20   let w = WPair {{ p: Pair.Text(\"hi\"), tag: 7 }};\n\
+         \x20   let w = WPair {{ p: Pair::Text(\"hi\"), tag: 7 }};\n\
          \x20   return w.tag;\n\
          }}"
     ));
@@ -217,7 +211,7 @@ fn enum_in_struct_cap_preserved() {
     STR_CAP.store(-1, Ordering::SeqCst);
     let r = run(&format!(
         "{DECL}function main() -> Integer = {{\n\
-         \x20   let w = Wrapper {{ msg: Msg.Text(\"Giang\"), tag: 7 }};\n\
+         \x20   let w = Wrapper {{ msg: Msg::Text(\"Giang\"), tag: 7 }};\n\
          \x20   return w.tag;\n\
          }}"
     ));

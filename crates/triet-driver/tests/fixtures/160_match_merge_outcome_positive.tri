@@ -1,5 +1,5 @@
 // EXPECT: 5
 // ADR-0057: scalar Outcome value-merge through enum `match`, positive arm.
 enum Color { Red, Green, Blue }
-function f(c: Color) -> Integer~Integer = match c { Red => ~+ 5, Green => ~+ 5, Blue => ~- -1, }
-function main() -> Integer = match f(Red) { ~+ x => x  ~- e => e }
+function f(c: Color) -> Integer~Integer = match c { Color::Red => ~+ 5, Color::Green => ~+ 5, Color::Blue => ~- -1, }
+function main() -> Integer = match f(Color::Red) { ~+ x => x  ~- e => e }

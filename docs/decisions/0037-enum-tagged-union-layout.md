@@ -493,14 +493,21 @@ reaching-def là defense-in-depth cho Bậc C, không nằm trong scope Phase 4.
 - **Partial-Moved tracking cho enum — defer Bậc B/C.** Destructure dùng copy
   ở Bậc A → không cần. Khi heap payload có destructor thực sự, move-out
   semantics mới có giá trị.
-- **Enum variant resolution là context-free (2026-06-05 addendum).** Type
-  checker resolve bare variant name (`None`, `SomeInt`) dựa trên global scan
+- **Enum variant resolution là context-free (2026-06-05 addendum).**
+  > ⚠️ **Superseded by [ADR-0071](0071-path-separator-and-module-import.md) Lát 2
+  > (2026-06-26).** The bare-name global-scan + E1018 + `TypeName.Variant`
+  > dot-form below are ALL retired. A user variant is now referenced ONLY via
+  > the qualified `Enum::Variant` form (or an import-bound symbol via `use`); a
+  > bare variant name is a plain `undefined name` (E1002), and E1018
+  > `AmbiguousEnumVariant` no longer exists. The text below is the historical
+  > 2026-06-05 design.
+
+  Type checker resolve bare variant name (`None`, `SomeInt`) dựa trên global scan
   tất cả enum types trong root frame. Type annotation (`let n: CD = None`)
   **không** được dùng để disambiguate — nếu 2 enum cùng có variant `None`,
-  compiler emit E1018 bắt user qualify (`CD.None`). Đây là design nhất quán
-  với nguyên tắc AI-first explicit: compiler không đoán ý định từ type
-  context. Qualified syntax (`TypeName.Variant`) luôn hoạt động cho cả unit
-  variant (FieldAccess) và payload variant (MethodCall/Call+FieldAccess).
+  compiler emit E1018 bắt user qualify (`CD.None`). Compiler không đoán ý định
+  từ type context. Qualified syntax (`TypeName.Variant`) luôn hoạt động cho cả
+  unit variant (FieldAccess) và payload variant (MethodCall/Call+FieldAccess).
 
 ## Tham chiếu
 

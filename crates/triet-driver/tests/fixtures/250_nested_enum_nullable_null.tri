@@ -11,9 +11,9 @@ function main() -> Integer = {
     let h = H { c: ~0 };
     return match h.c {
         ~+ col => match col {
-            Red => 0,
-            Green => 5,
-            Blue => 9,
+            Color::Red => 0,
+            Color::Green => 5,
+            Color::Blue => 9,
         },
         ~0 => 77,
     };

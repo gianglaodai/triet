@@ -1,19 +1,19 @@
 // EXPECT: 2
 // ADR-0055 regression-lock: tail-`match` producing a binary Outcome (T~E).
-// h(Green) → ~+ 2; caller match-unwraps the success payload. Green WITHOUT
+// h(Color::Green) → ~+ 2; caller match-unwraps the success payload. Color::Green WITHOUT
 // lát-2 Bước A.
 enum Color { Red, Green, Blue }
 
 function h(c: Color) -> Integer~String {
     match c {
-        Red => ~+ 1,
-        Green => ~+ 2,
-        Blue => ~- "e",
+        Color::Red => ~+ 1,
+        Color::Green => ~+ 2,
+        Color::Blue => ~- "e",
     }
 }
 
 function main() -> Integer =
-    match h(Green) {
+    match h(Color::Green) {
         ~+ x => x
         ~- e => -1
     }

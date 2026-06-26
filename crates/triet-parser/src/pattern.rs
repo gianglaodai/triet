@@ -62,7 +62,17 @@ fn parse_pattern_no_or(parser: &mut Parser<'_>) -> Result<PatternId, ParseError>
         }
         Token::Identifier(name) => {
             parser.advance();
-            // Peek: `Variant(subpattern)` is an enum pattern.
+            // ADR-0071 Lát 2: `Enum::Variant` / `Enum::Variant(subpat)` is the
+            // qualified enum-variant pattern (fills `name: Some`). A bare
+            // identifier with no `::` and no payload is a plain binding
+            // (`Pattern::Variable`) — NO implicit unit-variant guess (the
+            // typecheck guess-hack is gone).
+            if parser.eat(&Token::ColonColon) {
+                return parse_colon_variant_pattern(parser, name, span.start);
+            }
+            // `Variant(subpattern)` — unqualified payload variant. The variant
+            // name resolves against the scrutinee enum at typecheck; this is
+            // pattern matching against the match's known type, not a scan.
             if matches!(parser.peek_token(), Some(Token::LParen)) {
                 parser.advance(); // consume `(`
                 let payload = parse_pattern(parser)?;
@@ -114,6 +124,50 @@ fn parse_pattern_no_or(parser: &mut Parser<'_>) -> Result<PatternId, ParseError>
             span,
         }),
     }
+}
+
+/// Parse the tail of a qualified enum-variant pattern after `Enum::`
+/// (ADR-0071 Lát 2): the variant name and an optional single `(subpattern)`
+/// → `Pattern::EnumVariant { name: Some(enum), .. }`. `enum_name`/`start`
+/// carry the path head already consumed by the caller.
+fn parse_colon_variant_pattern(
+    parser: &mut Parser<'_>,
+    enum_name: String,
+    start: usize,
+) -> Result<PatternId, ParseError> {
+    let (vtok, vspan) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "enum variant name after `::`".to_owned(),
+            span: parser.eof_span(),
+        })?;
+    let Token::Identifier(variant_name) = vtok else {
+        return Err(ParseError::UnexpectedToken {
+            expected: "enum variant name after `::`".to_owned(),
+            found: format!("{vtok:?}"),
+            span: vspan,
+        });
+    };
+    parser.advance();
+    let payload = if matches!(parser.peek_token(), Some(Token::LParen)) {
+        parser.advance(); // consume `(`
+        let sub = parse_pattern(parser)?;
+        parser.expect(&Token::RParen, "`)`")?;
+        Some(sub)
+    } else {
+        None
+    };
+    let end = parser.previous_token_end(vspan.end);
+    let span = start..end;
+    Ok(parser.arena.alloc_pattern(Spanned::new(
+        Pattern::EnumVariant {
+            name: Some(enum_name),
+            variant_name,
+            payload,
+        },
+        span,
+    )))
 }
 
 fn parse_tuple_pattern(

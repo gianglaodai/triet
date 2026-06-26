@@ -18,6 +18,6 @@ enum Msg {
 struct Wrapper { msg: Msg, tag: Integer }
 
 function main() -> Integer = {
-    let w = Wrapper { msg: Msg.Text("Giang"), tag: 7 };
+    let w = Wrapper { msg: Msg::Text("Giang"), tag: 7 };
     return w.tag;
 }

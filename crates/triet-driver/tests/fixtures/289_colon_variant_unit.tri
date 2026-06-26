@@ -1,0 +1,16 @@
+// EXPECT: 2
+// ADR-0071 Lát 2: `Enum::Variant` qualified unit-variant construction + match
+// run end-to-end. `Color::Green` parses as `Expr::EnumLiteral` (the ONLY
+// qualified-variant form), lowers to `MirType::Enum(Color)`, and the match
+// dispatches on the discriminant. Poison P-colon-expr (drop the EnumLiteral
+// route in the parser) → `Color::Green` no longer parses → this stops running.
+enum Color { Red, Green, Blue }
+
+function main() -> Integer = {
+    let c = Color::Green;
+    return match c {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    };
+}

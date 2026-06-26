@@ -17,24 +17,24 @@ enum Option<T> { Some(T), None }
 
 function describe_int(opt: Option<Integer>) -> String =
     match opt {
-        Some(v) => f"có giá trị {v}",
-        None => "rỗng",
+        Option::Some(v) => f"có giá trị {v}",
+        Option::None => "rỗng",
     }
 
 function describe_str(opt: Option<String>) -> String =
     match opt {
-        Some(s) => f"chuỗi: {s}",
-        None => "rỗng",
+        Option::Some(s) => f"chuỗi: {s}",
+        Option::None => "rỗng",
     }
 
 function main() {
-    // Inference từ argument: Some(42) → T = Integer.
-    let a: Option<Integer> = Some(42)
-    let b: Option<Integer> = None
+    // Inference từ argument: Option::Some(42) → T = Integer.
+    let a: Option<Integer> = Option::Some(42)
+    let b: Option<Integer> = Option::None
     println(f"a = {describe_int(a)}")
     println(f"b = {describe_int(b)}")
 
-    // Inference: Some(\"hello\") → T = String.
-    let c: Option<String> = Some("hello")
+    // Inference: Option::Some(\"hello\") → T = String.
+    let c: Option<String> = Option::Some("hello")
     println(f"c = {describe_str(c)}")
 }

@@ -9,12 +9,12 @@ enum Box {
 }
 
 function main() -> Integer = {
-    let e: Box = Full(5);
+    let e: Box = Box::Full(5);
     let n: Box? = e;
     return match n {
         ~+ v => match v {
-            Empty => 0,
-            Full(x) => x,
+            Box::Empty => 0,
+            Box::Full(x) => x,
         },
         ~0 => 99,
     };

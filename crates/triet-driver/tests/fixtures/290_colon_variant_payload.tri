@@ -1,0 +1,15 @@
+// EXPECT: 5
+// ADR-0071 Lát 2: `Enum::Variant(payload)` qualified payload-variant
+// construction. `Msg::Code(5)` builds the scalar-payload variant; the match
+// binds the payload of the active variant. Pins that the EnumLiteral payload
+// path lowers to `MirType::Enum` with a payload Assign (not the dead
+// dot/scan path).
+enum Msg { Text(Integer), Code(Integer) }
+
+function main() -> Integer = {
+    let m = Msg::Code(5);
+    return match m {
+        Msg::Text(x) => x,
+        Msg::Code(c) => c,
+    };
+}

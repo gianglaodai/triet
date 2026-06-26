@@ -222,12 +222,7 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
                 .arena
                 .alloc_expression(Spanned::new(Expr::NullLiteral, span)))
         }
-        Token::Identifier(name) => {
-            parser.advance();
-            Ok(parser
-                .arena
-                .alloc_expression(Spanned::new(Expr::Identifier { name }, span)))
-        }
+        Token::Identifier(name) => parse_identifier_or_enum_literal(parser, name, span),
         // ADR-0061 T2.5: `self` as a primary expression (receiver inside an
         // `implement` method body). Lexed as `SelfKw`; here it becomes a
         // plain identifier named "self" — resolution is T3/T4. Import-path
@@ -270,6 +265,66 @@ fn parse_prefix(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {
             span,
         }),
     }
+}
+
+/// Parse a bare identifier or, when followed by `::`, a qualified enum literal
+/// `Enum::Variant[(payload)]` (ADR-0071 Lát 2). `name`/`span` are the head
+/// token already peeked by the caller; this consumes it.
+fn parse_identifier_or_enum_literal(
+    parser: &mut Parser<'_>,
+    name: String,
+    span: Span,
+) -> Result<ExprId, ParseError> {
+    parser.advance();
+    if parser.eat(&Token::ColonColon) {
+        return parse_enum_literal_tail(parser, name, span.start);
+    }
+    Ok(parser
+        .arena
+        .alloc_expression(Spanned::new(Expr::Identifier { name }, span)))
+}
+
+/// Parse the tail of a qualified enum literal after `Enum::` (ADR-0071 Lát 2).
+/// Reads the variant name and an optional single `(payload)` expression →
+/// `Expr::EnumLiteral`. `enum_name`/`start` carry the path head already
+/// consumed by the caller.
+fn parse_enum_literal_tail(
+    parser: &mut Parser<'_>,
+    enum_name: String,
+    start: usize,
+) -> Result<ExprId, ParseError> {
+    let (vtok, vspan) = parser
+        .peek()
+        .cloned()
+        .ok_or_else(|| ParseError::UnexpectedEof {
+            expected: "enum variant name after `::`".to_owned(),
+            span: parser.eof_span(),
+        })?;
+    let Token::Identifier(variant_name) = vtok else {
+        return Err(ParseError::UnexpectedToken {
+            expected: "enum variant name after `::`".to_owned(),
+            found: format!("{vtok:?}"),
+            span: vspan,
+        });
+    };
+    parser.advance();
+    let payload = if parser.eat(&Token::LParen) {
+        let inner = parse_expression(parser)?;
+        parser.expect(&Token::RParen, "`)`")?;
+        Some(inner)
+    } else {
+        None
+    };
+    let end = parser.previous_token_end(vspan.end);
+    let span = start..end;
+    Ok(parser.arena.alloc_expression(Spanned::new(
+        Expr::EnumLiteral {
+            name: enum_name,
+            variant_name,
+            payload,
+        },
+        span,
+    )))
 }
 
 fn parse_unary(parser: &mut Parser<'_>) -> Result<ExprId, ParseError> {

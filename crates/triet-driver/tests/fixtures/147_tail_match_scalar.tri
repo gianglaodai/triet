@@ -1,5 +1,5 @@
 // EXPECT: 2
 // ADR-0055: block-form body tail = enum match (scalar arms).
 enum Color { Red, Green, Blue }
-function f(c: Color) -> Integer { match c { Red => 1, Green => 2, Blue => 3, } }
-function main() -> Integer { let c = Green; return f(c); }
+function f(c: Color) -> Integer { match c { Color::Red => 1, Color::Green => 2, Color::Blue => 3, } }
+function main() -> Integer { let c = Color::Green; return f(c); }

@@ -33,7 +33,6 @@ pub fn check(
     program: &Program,
 ) -> (
     Vec<TypeError>,
-    crate::ExprResolutions,
     crate::PatternResolutions,
     crate::MethodResolutions,
 ) {
@@ -78,7 +77,6 @@ pub fn check(
     checker.check_program();
     (
         checker.errors,
-        checker.expr_resolutions,
         checker.pattern_resolutions,
         checker.method_resolutions,
     )
@@ -148,9 +146,6 @@ struct Checker<'p> {
     ///
     /// [ADR-0025]: ../../../docs/decisions/0025-borrow-checker-rules.md
     pub(crate) local_let_names: std::collections::HashSet<String>,
-    /// Resolved enum variants keyed by expression ID. Populated during
-    /// type inference; consumed by the lowerer (no re-scanning).
-    pub(crate) expr_resolutions: crate::ExprResolutions,
     /// Resolved enum variants keyed by pattern ID. Populated during
     /// pattern binding; consumed by the lowerer.
     pub(crate) pattern_resolutions: crate::PatternResolutions,
@@ -175,7 +170,6 @@ impl<'p> Checker<'p> {
             method_resolutions: crate::MethodResolutions::new(),
             expected_type_stack: Vec::new(),
             local_let_names: std::collections::HashSet::new(),
-            expr_resolutions: crate::ExprResolutions::new(),
             pattern_resolutions: crate::PatternResolutions::new(),
             capabilities: std::collections::HashMap::new(),
             errors: Vec::new(),
@@ -196,7 +190,6 @@ impl<'p> Checker<'p> {
             expected_type_stack: Vec::new(),
             // B2.1a DELETED:             move_states: HashMap::new(),
             local_let_names: std::collections::HashSet::new(),
-            expr_resolutions: crate::ExprResolutions::new(),
             pattern_resolutions: crate::PatternResolutions::new(),
             capabilities: std::collections::HashMap::new(),
             errors: Vec::new(),
@@ -890,32 +883,11 @@ impl<'p> Checker<'p> {
         match pattern {
             Pattern::Wildcard | Pattern::Null => {}
             Pattern::Variable(name) => {
-                // If the scrutinee is an enum type and the variable name
-                // matches a unit variant, record the resolution for the
-                // lowerer (the pattern binds nothing — it's a match arm
-                // for a unit variant, not a variable capture).
-                if let Type::UserEnum {
-                    name: enum_name,
-                    variants,
-                    ..
-                } = scrutinee
-                    && let Some(variant_idx) =
-                        variants.iter().position(|(n, p)| n == &name && p.is_none())
-                {
-                    self.pattern_resolutions.insert(
-                        id,
-                        crate::EnumVariantResolution {
-                            enum_name: enum_name.clone(),
-                            variant_name: name.clone(),
-                            // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
-                            #[allow(clippy::cast_possible_wrap)]
-                            discriminant: variant_idx as i64,
-                            has_payload: false,
-                        },
-                    );
-                    // Don't declare as a variable — it's a unit variant match.
-                    return;
-                }
+                // ADR-0071 Lát 2: a bare identifier pattern is ALWAYS a binding
+                // (catch-all capture). The old guess-hack that silently treated
+                // a bare name matching a unit variant as a variant match is
+                // gone — unit-variant matching now requires the qualified
+                // `Enum::Variant` form (`Pattern::EnumVariant`).
                 self.env.declare(&name, scrutinee.clone());
             }
             Pattern::Tuple(children) => {

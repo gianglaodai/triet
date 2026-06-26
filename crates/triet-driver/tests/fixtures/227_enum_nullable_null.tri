@@ -11,8 +11,8 @@ function main() -> Integer = {
     let b: Box? = ~0;
     return match b {
         ~+ v => match v {
-            Empty => 0,
-            Full(x) => x,
+            Box::Empty => 0,
+            Box::Full(x) => x,
         },
         ~0 => 99,
     };

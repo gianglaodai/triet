@@ -20,9 +20,9 @@ use triet_mir::{
     Span, Statement, StructLayout, Terminator,
 };
 use triet_syntax::{
-    Arena, BinaryOperator, CapabilityLevel, Expr, ExprId, ExprResolutions, FunctionBody,
-    FunctionDefinition, Item, MethodResolutions, PatternResolutions, Program, ReferenceForm, Stmt,
-    TypeExpr, TypeId, UnaryOperator,
+    Arena, BinaryOperator, CapabilityLevel, Expr, ExprId, FunctionBody, FunctionDefinition, Item,
+    MethodResolutions, PatternResolutions, Program, ReferenceForm, Stmt, TypeExpr, TypeId,
+    UnaryOperator,
 };
 
 // ── Lowering error ───────────────────────────────────────────
@@ -111,8 +111,6 @@ pub(crate) struct LoweringInput<'a> {
     pub struct_layouts: HashMap<String, StructLayout>,
     /// Enum layouts keyed by name (`enum_map` in `lower_program`).
     pub enum_layouts: HashMap<String, EnumLayout>,
-    /// Resolved enum variants from the type checker, keyed by expression ID.
-    pub expr_resolutions: ExprResolutions,
     /// Resolved enum variants from the type checker, keyed by pattern ID.
     pub pattern_resolutions: PatternResolutions,
     /// ADR-0061 T5: resolved trait-method calls (ExprId → mangled fn).
@@ -148,9 +146,6 @@ struct Ctx {
     /// ADR-0069: capability name → Ł3 level. Keys drive `lower_type_simple`
     /// resolution; the level drives `Expr::Mint` (defer → `CapabilityCheck`).
     capabilities: std::collections::HashMap<String, CapabilityLevel>,
-    /// Resolved enum variants from the type checker, keyed by expression ID.
-    /// The lowerer reads these instead of scanning enum_layouts by string match.
-    expr_resolutions: ExprResolutions,
     /// Resolved enum variants from the type checker, keyed by pattern ID.
     pattern_resolutions: PatternResolutions,
     /// ADR-0061 T5: resolved trait-method calls (ExprId → mangled concrete
@@ -225,7 +220,6 @@ impl Ctx {
             struct_layouts: input.struct_layouts.clone(),
             enum_layouts: input.enum_layouts.clone(),
             capabilities: input.capabilities.clone(),
-            expr_resolutions: input.expr_resolutions.clone(),
             pattern_resolutions: input.pattern_resolutions.clone(),
             method_resolutions: input.method_resolutions.clone(),
             func_return_types: input.func_return_types.clone(),
@@ -471,7 +465,6 @@ pub(crate) enum TypeKind {
 //     EnumLayout moves to dedicated type aliases at S3.
 pub fn lower_program(
     prog: &Program,
-    expr_resolutions: &ExprResolutions,
     pattern_resolutions: &PatternResolutions,
     method_resolutions: &MethodResolutions,
 ) -> Result<Vec<Body>, LowerError> {
@@ -721,7 +714,6 @@ pub fn lower_program(
         symbols,
         struct_layouts: struct_map,
         enum_layouts: enum_map,
-        expr_resolutions: expr_resolutions.clone(),
         pattern_resolutions: pattern_resolutions.clone(),
         method_resolutions: method_resolutions.clone(),
         func_return_types,
@@ -1890,31 +1882,11 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::Identifier { name } => {
-            // Check if this is a local variable first.
+            // ADR-0071 Lát 2: a bare identifier is ONLY a local binding. A
+            // unit enum variant must be qualified (`Enum::Variant`, lowered as
+            // `Expr::EnumLiteral`); a bare variant name is undefined here.
             if let Some(&local) = c.vars.get(name) {
                 return Ok(local);
-            }
-            // Check the type checker's resolution map for unit enum variants.
-            // Resolution is done by the type checker — the lowerer just reads
-            // the map and emits MIR. No string-scanning of enum_layouts.
-            // Clone to release the immutable borrow before mutating ctx.
-            let resolution = c.expr_resolutions.get(&expr_id).cloned();
-            if let Some(resolution) = resolution
-                && !resolution.has_payload
-            {
-                let d = c.alloc_local_ty(MirType::Enum(resolution.enum_name.clone()));
-                c.push(Statement::StorageLive(d, expr_span.clone()));
-                c.push(Statement::EnumAlloc {
-                    dest: d,
-                    enum_name: resolution.enum_name.clone(),
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::SetDiscriminant {
-                    dest: d,
-                    value: resolution.discriminant,
-                    span: expr_span.clone(),
-                });
-                return Ok(d);
             }
             Err(LowerError::undefined_local(name, expr_span))
         }
@@ -2000,134 +1972,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(d)
         }
         Expr::Call { callee, arguments } => {
-            // Detect enum literal via direct variant call: `Variant(args)`.
-            // The type checker resolves these via resolve_enum_variant.
-            // Resolution data is stored keyed by call expression ID.
-            // Clone to release the immutable borrow before mutating ctx.
-            let resolution = c.expr_resolutions.get(&expr_id).cloned();
-            if let Some(resolution) = resolution {
-                if resolution.has_payload {
-                    if arguments.len() != 1 {
-                        return Err(LowerError {
-                            message: format!(
-                                "enum variant '{}' expects 1 argument, got {}",
-                                resolution.variant_name,
-                                arguments.len()
-                            ),
-                            span: expr_span.clone(),
-                        });
-                    }
-                    let d = c.alloc_local_ty(MirType::Enum(resolution.enum_name.clone()));
-                    c.push(Statement::StorageLive(d, expr_span.clone()));
-                    c.push(Statement::EnumAlloc {
-                        dest: d,
-                        enum_name: resolution.enum_name.clone(),
-                        span: expr_span.clone(),
-                    });
-                    c.push(Statement::SetDiscriminant {
-                        dest: d,
-                        value: resolution.discriminant,
-                        span: expr_span.clone(),
-                    });
-                    let val = lower_expr(arguments[0], arena, c)?;
-                    // ADR-0067 2b-1: enum-payload heap LEAF allowed (tag-switch
-                    // drop-glue); struct-transitive-heap + Nullable(heap) refused
-                    // (mirror EnumLiteral gate above + M-2/2a).
-                    let payload_ty = &c.local_decls[val.0].ty;
-                    let is_direct_heap_leaf = matches!(
-                        payload_ty,
-                        MirType::String | MirType::Vector | MirType::HashMap
-                    );
-                    if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
-                        return Err(LowerError::heap_type_not_supported(
-                            &format!(
-                                "enum variant `{}.{}` payload type `{}`",
-                                resolution.enum_name, resolution.variant_name, payload_ty
-                            ),
-                            expr_span,
-                        ));
-                    }
-                    c.push(Statement::Assign {
-                        dest: Place::local(d)
-                            .project(Projection::Payload(resolution.variant_name.clone())),
-                        source: Place::local(val),
-                        span: expr_span.clone(),
-                    });
-                    return Ok(d);
-                }
-                // Unit variant with args — error.
-                if !arguments.is_empty() {
-                    return Err(LowerError {
-                        message: format!(
-                            "unit variant '{}' does not take arguments",
-                            resolution.variant_name
-                        ),
-                        span: expr_span.clone(),
-                    });
-                }
-            }
-
-            // Detect enum literal: `TypeName.Variant(payload)` parses as
-            // Call(FieldAccess(Identifier(TypeName), Variant), [payload]).
-            if let Expr::FieldAccess { object, field } = &arena.expression(*callee).node
-                && let Expr::Identifier { name: enum_name } = &arena.expression(*object).node
-                && c.enum_layouts.contains_key(enum_name)
-                && arguments.len() == 1
-            {
-                // Lower as enum literal with payload.
-                let d = c.alloc_local_ty(MirType::Enum(enum_name.to_string()));
-                c.push(Statement::StorageLive(d, expr_span.clone()));
-                c.push(Statement::EnumAlloc {
-                    dest: d,
-                    enum_name: enum_name.clone(),
-                    span: expr_span.clone(),
-                });
-                let disc = {
-                    let layout = c.enum_layouts.get(enum_name).ok_or_else(|| LowerError {
-                        message: format!("unknown enum '{enum_name}'"),
-                        span: expr_span.clone(),
-                    })?;
-                    layout
-                        .variants
-                        .iter()
-                        .find(|v| v.name == *field)
-                        .map(|v| v.discriminant_value)
-                        .ok_or_else(|| LowerError {
-                            message: format!("unknown variant '{field}' in enum '{enum_name}'"),
-                            span: expr_span.clone(),
-                        })?
-                };
-                c.push(Statement::SetDiscriminant {
-                    dest: d,
-                    value: disc,
-                    span: expr_span.clone(),
-                });
-                let val = lower_expr(arguments[0], arena, c)?;
-                // ADR-0067 2b-1: enum-payload heap LEAF (String/Vector/HashMap)
-                // is now ALLOWED (top-level) — the tag-switch drop-glue frees the
-                // active variant's payload. Still REFUSED: a struct-containing-
-                // heap payload (transitive — needs recursive collect inside the
-                // arm → 2b+) and `Nullable(heap)`. Mirror the M-2/2a gate:
-                // direct-leaf || Copy → allow, else refuse.
-                let payload_ty = &c.local_decls[val.0].ty;
-                let is_direct_heap_leaf = matches!(
-                    payload_ty,
-                    MirType::String | MirType::Vector | MirType::HashMap
-                );
-                if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
-                    return Err(LowerError::heap_type_not_supported(
-                        &format!("enum `{enum_name}.{field}` payload type `{payload_ty}`"),
-                        expr_span,
-                    ));
-                }
-                c.push(Statement::Assign {
-                    dest: Place::local(d).project(Projection::Payload(field.clone())),
-                    source: Place::local(val),
-                    span: expr_span.clone(),
-                });
-                return Ok(d);
-            }
-
+            // ADR-0071 Lát 2: enum-variant construction (unit + payload) is the
+            // qualified `Enum::Variant[(payload)]` form, parsed as
+            // `Expr::EnumLiteral` (handled above) — NOT a Call. The old
+            // bare-`Variant(args)` resolution and `TypeName.Variant(payload)`
+            // dot-form construction are gone; a Call here is a plain
+            // function/builtin call.
             let callee_name = match &arena.expression(*callee).node {
                 Expr::Identifier { name } => name.clone(),
                 other => return Err(LowerError::unsupported_callee(other, expr_span)),
@@ -3053,34 +2903,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Ok(dest)
         }
         // `obj.field` as an rvalue: read through the projected place into a temp.
-        // Also handles `Type.variant` enum literals — if the base is a known
-        // enum type, route to EnumLiteral lowering.
+        // ADR-0071 Lát 2: `Type.Variant` is NO LONGER an enum literal — the
+        // dot-form variant is gone (qualified `Type::Variant` parses as
+        // `Expr::EnumLiteral`). A `FieldAccess` here is a genuine field read.
         Expr::FieldAccess { .. } => {
-            // Check the type checker's resolution map first.
-            // Qualified enum variants (`Color.Red`, `CD.None`) are
-            // resolved by the type checker via check_field_access.
-            let resolution = c.expr_resolutions.get(&expr_id).cloned();
-            if let Some(res) = resolution
-                && !res.has_payload
-            {
-                // Unit variant constructor: `TypeName.Variant`
-                let d = c.alloc_local_ty(MirType::Enum(res.enum_name.clone()));
-                c.push(Statement::StorageLive(d, expr_span.clone()));
-                c.push(Statement::EnumAlloc {
-                    dest: d,
-                    enum_name: res.enum_name.clone(),
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::SetDiscriminant {
-                    dest: d,
-                    value: res.discriminant,
-                    span: expr_span.clone(),
-                });
-                return Ok(d);
-            }
-            // Payload variant without call syntax — shouldn't happen
-            // (parser routes those through Call), but handle gracefully.
-
             let source = lower_place(expr_id, arena, c)?;
             // ADR-0065 §12: a field whose type is a nullable aggregate
             // (`Struct?`/`Enum?`) must carry that type so `match`/Elvis route to
@@ -3230,7 +3056,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             variant_name,
             payload,
         } => {
-            let d = c.alloc_local_ty(MirType::Struct(name.to_string()));
+            // ADR-0071 Lát 2: an enum value is `MirType::Enum(name)` (NOT
+            // `Struct`) — the JIT's discriminant/payload access keys off the
+            // enum layout. (Mirrors the now-removed Call-resolution path.)
+            let d = c.alloc_local_ty(MirType::Enum(name.to_string()));
             c.push(Statement::StorageLive(d, expr_span.clone()));
             c.push(Statement::EnumAlloc {
                 dest: d,
@@ -3261,11 +3090,18 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             });
             if let Some(payload_expr) = payload {
                 let val = lower_expr(*payload_expr, arena, c)?;
-                // B8: aggregate-containing-heap — enum payload with Move type not supported.
+                // ADR-0067 2b-1: a direct heap-leaf payload (String/Vector/
+                // HashMap) is allowed (tag-switch drop-glue frees the active
+                // variant); a struct-transitive-heap or Nullable(heap) payload
+                // stays refused (B8). Mirrors the Call-resolution gate.
                 let payload_ty = &c.local_decls[val.0].ty;
-                if !payload_ty.is_copy(None) {
+                let is_direct_heap_leaf = matches!(
+                    payload_ty,
+                    MirType::String | MirType::Vector | MirType::HashMap
+                );
+                if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
                     return Err(LowerError::heap_type_not_supported(
-                        &format!("enum `{name}.{variant_name}` payload type `{payload_ty}`"),
+                        &format!("enum `{name}::{variant_name}` payload type `{payload_ty}`"),
                         expr_span,
                     ));
                 }
@@ -4141,23 +3977,31 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             let mut cases: Vec<(i64, BasicBlock)> = Vec::new();
 
-            // C2: Scan for wildcard arm BEFORE lowering.
-            // Wildcard must be the last arm (arms after = unreachable).
+            // C2: Scan for the catch-all arm BEFORE lowering. ADR-0071 Lát 2
+            // §2.A: a bare `Variable` binding is a catch-all exactly like `_`
+            // (it binds the scrutinee — see `bind_scalar_catch_all` in the
+            // default block). The catch-all must be the last arm (arms after
+            // are unreachable).
             let mut wildcard_arm: Option<&triet_syntax::MatchArm> = None;
             for arm in arms.iter() {
                 let pat = arena.pattern(arm.pattern);
-                if matches!(&pat.node, triet_syntax::Pattern::Wildcard) {
+                let is_catch_all = matches!(
+                    &pat.node,
+                    triet_syntax::Pattern::Wildcard | triet_syntax::Pattern::Variable(_)
+                );
+                if is_catch_all {
                     if wildcard_arm.is_some() {
                         return Err(LowerError {
-                            message: "duplicate wildcard `_` in enum match".to_string(),
+                            message: "duplicate catch-all (`_` or binding) in enum match"
+                                .to_string(),
                             span: expr_span.clone(),
                         });
                     }
                     wildcard_arm = Some(arm);
                 } else if wildcard_arm.is_some() {
                     return Err(LowerError {
-                        message: "wildcard `_` must be the last arm in an enum match — \
-                                  arms after wildcard are unreachable"
+                        message: "catch-all (`_` or binding) must be the last arm in an enum \
+                                  match — arms after it are unreachable"
                             .to_string(),
                         span: expr_span.clone(),
                     });
@@ -4170,8 +4014,12 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             for arm in arms.iter() {
                 let pat = arena.pattern(arm.pattern);
 
-                // Skip wildcard — lowered separately as default_bb.
-                if matches!(&pat.node, triet_syntax::Pattern::Wildcard) {
+                // Skip the catch-all (`_` or bare binding) — lowered
+                // separately as default_bb (ADR-0071 Lát 2 §2.A).
+                if matches!(
+                    &pat.node,
+                    triet_syntax::Pattern::Wildcard | triet_syntax::Pattern::Variable(_)
+                ) {
                     continue;
                 }
 
@@ -4273,40 +4121,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         );
                         c.pop_scope();
                     }
-                    triet_syntax::Pattern::Variable(_var_name) => {
-                        // Unit variant of the enum — the type checker
-                        // records this in pattern_resolutions when the
-                        // scrutinee is an enum and the name matches a
-                        // unit variant.
-                        if let Some(res) = resolution {
-                            cases.push((res.discriminant, arm_bb));
-                            c.cur = arm_bb;
-                            c.push_scope();
-                            // No payload to bind — unit variant.
-                            let body_val = lower_expr(arm.body, arena, c)?;
-                            let arm_end = c.cur;
-                            // ADR-0056: type the merge result from the arm value.
-                            c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
-                            c.push(Statement::Assign {
-                                dest: Place::local(result),
-                                source: Place::local(body_val),
-                                span: expr_span.clone(),
-                            });
-                            c.term(
-                                arm_end,
-                                Terminator::Goto {
-                                    target: merge_bb,
-                                    span: DUMMY_SPAN,
-                                },
-                            );
-                            c.pop_scope();
-                        } else {
-                            return Err(LowerError {
-                                message: "unsupported match pattern (expected enum variant, got variable not resolved by type checker)".to_string(),
-                                span: expr_span.clone(),
-                            });
-                        }
-                    }
+                    // ADR-0071 Lát 2: a bare `Pattern::Variable` is the
+                    // catch-all binding, already skipped above and lowered as
+                    // `default_bb`. It never reaches this match.
                     other => {
                         return Err(LowerError {
                             message: format!(
@@ -4318,11 +4135,31 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 }
             }
 
-            // C2: wildcard arm → default_bb instead of trap.
+            // C2: catch-all arm → default_bb instead of trap.
             let default_bb = if let Some(wc) = wildcard_arm {
                 let wc_bb = c.alloc_bb();
                 c.cur = wc_bb;
                 c.push_scope();
+                // ADR-0071 Lát 2 §2.A: a bare `Variable` catch-all binds the
+                // scrutinee into scope (no-op for `_`). REFUSE-NARROW for a
+                // heap-payload (non-copy) enum: the binding is a value-copy of
+                // the enum, which would alias the heap pointer and double-free
+                // on drop. (WO chỉ thị #3 — refuse, never miscompile silently.)
+                if matches!(
+                    &arena.pattern(wc.pattern).node,
+                    triet_syntax::Pattern::Variable(_)
+                ) {
+                    if !ctx_is_copy(&scrut_ty, c) {
+                        return Err(LowerError::heap_type_not_supported(
+                            &format!(
+                                "bare binding catch-all on a heap-payload enum `{scrut_ty}` \
+                                 (would alias + double-free) — match the variants explicitly"
+                            ),
+                            expr_span,
+                        ));
+                    }
+                    bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
+                }
                 let body_val = lower_expr(wc.body, arena, c)?;
                 let wc_end = c.cur;
                 // ADR-0056: type the merge result from the wildcard arm value.
@@ -4582,34 +4419,10 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 });
             }
 
-            // Qualified enum variant construction:
-            // `OptionA.SomeInt(42)` parses as MethodCall.
-            // Resolution was recorded by the type checker.
-            let resolution = c.expr_resolutions.get(&expr_id).cloned();
-            if let Some(res) = resolution {
-                let d = c.alloc_local_ty(MirType::Enum(res.enum_name.clone()));
-                c.push(Statement::StorageLive(d, expr_span.clone()));
-                c.push(Statement::EnumAlloc {
-                    dest: d,
-                    enum_name: res.enum_name.clone(),
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::SetDiscriminant {
-                    dest: d,
-                    value: res.discriminant,
-                    span: expr_span.clone(),
-                });
-                if res.has_payload {
-                    let val = lower_expr(arguments[0], arena, c)?;
-                    c.push(Statement::Assign {
-                        dest: Place::local(d)
-                            .project(Projection::Payload(res.variant_name.clone())),
-                        source: Place::local(val),
-                        span: expr_span.clone(),
-                    });
-                }
-                return Ok(d);
-            }
+            // ADR-0071 Lát 2: the `OptionA.SomeInt(42)` MethodCall dot-form
+            // variant construction is gone (qualified `OptionA::SomeInt(42)`
+            // parses as `Expr::EnumLiteral`). A MethodCall that is not a
+            // resolved trait method is unsupported.
             Err(LowerError::unsupported_expr(
                 &arena.expression(expr_id).node,
                 expr_span,
@@ -5351,7 +5164,6 @@ mod tests {
             symbols,
             struct_layouts: HashMap::new(),
             enum_layouts: HashMap::new(),
-            expr_resolutions: ExprResolutions::new(),
             pattern_resolutions: PatternResolutions::new(),
             method_resolutions: MethodResolutions::new(),
             func_return_types: HashMap::new(),
@@ -5404,7 +5216,6 @@ mod tests {
             symbols,
             struct_layouts: HashMap::new(),
             enum_layouts: HashMap::new(),
-            expr_resolutions: ExprResolutions::new(),
             pattern_resolutions: PatternResolutions::new(),
             method_resolutions: MethodResolutions::new(),
             func_return_types: HashMap::new(),
@@ -5637,13 +5448,8 @@ function main() -> Integer {
         let (prog, errors) = triet_parser::parse(source);
         assert!(errors.is_empty(), "parse errors: {errors:?}");
 
-        let bodies = lower_program(
-            &prog,
-            &ExprResolutions::new(),
-            &PatternResolutions::new(),
-            &MethodResolutions::new(),
-        )
-        .expect("lowering");
+        let bodies = lower_program(&prog, &PatternResolutions::new(), &MethodResolutions::new())
+            .expect("lowering");
 
         // Find main's body.
         let main_body = bodies

@@ -1,8 +1,0 @@
-// ERROR: ambiguous enum variant
-enum AB { X, Y }
-enum CD { X, NoneInt }
-
-function main() -> Integer = {
-    let n = X;
-    return 42;
-}

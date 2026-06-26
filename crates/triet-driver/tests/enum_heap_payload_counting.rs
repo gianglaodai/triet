@@ -54,16 +54,10 @@ extern "C" fn __enum_vec_free(ptr: i64) {
 fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     let (program, parse_errors) = triet_parser::parse(source);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
-    let (type_errors, expr_resolutions, pattern_resolutions, method_resolutions) =
-        triet_typecheck::check(&program);
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
-    triet_lower::lower_program(
-        &program,
-        &expr_resolutions,
-        &pattern_resolutions,
-        &method_resolutions,
-    )
-    .expect("lowering failed")
+    triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed")
 }
 
 fn run(source: &str) -> i64 {
@@ -99,7 +93,7 @@ fn enum_string_payload_frees_once() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{MSG}function main() -> Integer = {{\n\
-         \x20   let m = Msg.Text(\"Giang\");\n\
+         \x20   let m = Msg::Text(\"Giang\");\n\
          \x20   return 0;\n\
          }}"
     ));
@@ -121,7 +115,7 @@ fn enum_heap_move_frees_once() {
          \x20   return 0\n\
          }}\n\
          function main() -> Integer = {{\n\
-         \x20   let m = Msg.Text(\"Giang\");\n\
+         \x20   let m = Msg::Text(\"Giang\");\n\
          \x20   return take(m);\n\
          }}"
     ));
@@ -142,7 +136,7 @@ fn enum_scalar_variant_no_free() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{MSG}function main() -> Integer = {{\n\
-         \x20   let m = Msg.Code(9);\n\
+         \x20   let m = Msg::Code(9);\n\
          \x20   return 0;\n\
          }}"
     ));
@@ -168,7 +162,7 @@ fn enum_wrong_variant_dispatch() {
     VEC_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{two}function main() -> Integer = {{\n\
-         \x20   let p = Pair.Buf(push(vector_new(), 1));\n\
+         \x20   let p = Pair::Buf(push(vector_new(), 1));\n\
          \x20   return 0;\n\
          }}"
     ));
@@ -189,7 +183,7 @@ fn enum_wrong_variant_dispatch() {
     VEC_FREES.store(0, Ordering::SeqCst);
     let r = run(&format!(
         "{two}function main() -> Integer = {{\n\
-         \x20   let p = Pair.Text(\"hi\");\n\
+         \x20   let p = Pair::Text(\"hi\");\n\
          \x20   return 0;\n\
          }}"
     ));
@@ -215,7 +209,7 @@ fn enum_string_payload_cap_preserved() {
     STR_CAP.store(-1, Ordering::SeqCst);
     let r = run(&format!(
         "{MSG}function main() -> Integer = {{\n\
-         \x20   let m = Msg.Text(\"Giang\");\n\
+         \x20   let m = Msg::Text(\"Giang\");\n\
          \x20   return 0;\n\
          }}"
     ));

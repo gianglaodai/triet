@@ -2,9 +2,9 @@
 enum OptionInt { SomeInt(Integer), NoneInt }
 
 function main() -> Integer = {
-    let a = SomeInt(52);
+    let a = OptionInt::SomeInt(52);
     return match a {
-        SomeInt(x) => x,
-        NoneInt => 0,
+        OptionInt::SomeInt(x) => x,
+        OptionInt::NoneInt => 0,
     };
 }

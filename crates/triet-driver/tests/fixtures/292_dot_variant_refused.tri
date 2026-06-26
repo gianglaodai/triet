@@ -1,0 +1,12 @@
+// ERROR: has no field or method
+// ADR-0071 Lát 2: the `Color.Red` dot-form variant reference is GONE. Field
+// access on an enum type is no longer a variant — `Color.Red` is an
+// `UnknownMember` ("type Color has no field or method named `Red`"). Use the
+// qualified `Color::Red` form. Poison P-dot-resurrect (re-add any dot→variant
+// hack) → `Color.Red` resolves again and this stops erroring.
+enum Color { Red, Green, Blue }
+
+function main() -> Integer = {
+    let c = Color.Red;
+    return 0;
+}

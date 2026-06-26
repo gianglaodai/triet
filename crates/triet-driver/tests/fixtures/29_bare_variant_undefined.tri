@@ -1,0 +1,13 @@
+// ERROR: undefined name
+// ADR-0071 Lát 2: E1018 AmbiguousEnumVariant retired. A bare (unqualified)
+// enum-variant name no longer resolves at all — the in-scope-enum-scan is
+// gone. `X` is a variant of BOTH `AB` and `CD`, but it is not a value binding,
+// so it is simply `undefined name X` (E1002). Qualification (`AB::X`) is
+// mandatory and unambiguous by construction. (Was: tested E1018 ambiguity.)
+enum AB { X, Y }
+enum CD { X, NoneInt }
+
+function main() -> Integer = {
+    let n = X;
+    return 42;
+}

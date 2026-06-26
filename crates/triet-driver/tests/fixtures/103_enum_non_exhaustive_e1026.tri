@@ -1,15 +1,15 @@
 // ERROR: missing enum variant(s) Red
 // A3: non-exhaustive match on enum must fire E1026.
-// Match on Color covers Green and Blue but NOT Red.
+// Match on Color covers Color::Green and Color::Blue but NOT Color::Red.
 enum Color { Red, Green, Blue }
 
 function bad_match(c: Color) -> Integer =
     match c {
-        Green => 2,
-        Blue => 3,
+        Color::Green => 2,
+        Color::Blue => 3,
     }
 
 function main() -> Integer = {
-    let c = Red;
+    let c = Color::Red;
     return bad_match(c);
 }

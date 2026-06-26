@@ -44,8 +44,8 @@ pub use check_resolved::check_resolved;
 pub use env::TypeEnvironment;
 pub use error::{BorrowError, ConcurrencyError, TypeError};
 pub use triet_syntax::{
-    EnumVariantResolution, ExprResolutions, MethodResolution, MethodResolutions,
-    PatternResolutions, mangle_trait_method,
+    EnumVariantResolution, MethodResolution, MethodResolutions, PatternResolutions,
+    mangle_trait_method,
 };
 pub use types::Type;
 
@@ -58,7 +58,7 @@ mod tests {
     fn check_source(source: &str) -> Vec<TypeError> {
         let (program, parse_errors) = parse(source);
         assert!(parse_errors.is_empty(), "parse errors: {parse_errors:#?}");
-        let (errors, _, _, _) = check(&program);
+        let (errors, _, _) = check(&program);
         errors
     }
 
@@ -1372,7 +1372,7 @@ mod tests {
         // skip the insert in check_method_call → this assertion goes red.
         let (program, parse_errors) = parse(T4_PROGRAM);
         assert!(parse_errors.is_empty(), "parse: {parse_errors:#?}");
-        let (errors, _, _, method_resolutions) = check(&program);
+        let (errors, _, method_resolutions) = check(&program);
         assert!(
             errors.is_empty(),
             "T4 program should type-check: {errors:#?}"
@@ -1425,7 +1425,7 @@ mod tests {
              function main() -> Integer = 0";
         let (program, parse_errors) = parse(source);
         assert!(parse_errors.is_empty(), "parse: {parse_errors:#?}");
-        let (errors, _, _, method_resolutions) = check(&program);
+        let (errors, _, method_resolutions) = check(&program);
         assert!(
             errors
                 .iter()

@@ -1245,10 +1245,10 @@ function main() = println("hello")"#,
                 "module lib
 use khi::lib::{Token, Spanned, IntPayload}
 function describe(sp: Spanned) -> Integer = match sp.token {
-    IntLit(p) => p.value,
-    Kw => -1,
+    Token::IntLit(p) => p.value,
+    Token::Kw => -1,
 }
-function main() -> Integer = describe(Spanned { token: IntLit(IntPayload { value: 7 }), span_start: 0 })",
+function main() -> Integer = describe(Spanned { token: Token::IntLit(IntPayload { value: 7 }), span_start: 0 })",
             ),
             (
                 "lib.tri",

@@ -3,7 +3,7 @@
 // Same fix path as the String arms — type from the arm value, no hardcode.
 enum Color { Red, Green, Blue }
 function main() -> Integer {
-    let c = Green;
-    let v = match c { Red => push(vector_new(), 1), Green => push(push(vector_new(), 1), 2), Blue => vector_new(), };
+    let c = Color::Green;
+    let v = match c { Color::Red => push(vector_new(), 1), Color::Green => push(push(vector_new(), 1), 2), Color::Blue => vector_new(), };
     return len(v);
 }

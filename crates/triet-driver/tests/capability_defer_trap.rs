@@ -30,16 +30,10 @@ const SRC: &str = "capability Cap defer\n\
 fn lower_source(source: &str) -> Vec<triet_mir::Body> {
     let (program, parse_errors) = triet_parser::parse(source);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
-    let (type_errors, expr_resolutions, pattern_resolutions, method_resolutions) =
-        triet_typecheck::check(&program);
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
-    triet_lower::lower_program(
-        &program,
-        &expr_resolutions,
-        &pattern_resolutions,
-        &method_resolutions,
-    )
-    .expect("lowering failed")
+    triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed")
 }
 
 /// Lower + JIT-compile + run `main` for the defer-mint program, with the REAL

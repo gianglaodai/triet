@@ -1,19 +1,19 @@
 // EXPECT: 5
 // ADR-0065 §12.7: an `Enum?` FIELD (disc-niche, 0-byte tag — analog of Struct?
-// but no tag-word, §12.3). `~+ Green` lowers the plain enum; the field Assign
+// but no tag-word, §12.3). `~+ Color::Green` lowers the plain enum; the field Assign
 // goes through the general aggregate copy (no +8 shift — Enum? is NOT in the
 // taxonomy, its disc@0 IS the niche). The match present-arm reads the variant
-// → Green = 5.
+// → Color::Green = 5.
 enum Color { Red, Green, Blue }
 struct H { c: Color? }
 
 function main() -> Integer = {
-    let h = H { c: ~+ Green };
+    let h = H { c: ~+ Color::Green };
     return match h.c {
         ~+ col => match col {
-            Red => 0,
-            Green => 5,
-            Blue => 9,
+            Color::Red => 0,
+            Color::Green => 5,
+            Color::Blue => 9,
         },
         ~0 => -1,
     };

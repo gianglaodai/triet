@@ -9,7 +9,7 @@ enum Bag {
 }
 
 function main() -> Integer = {
-    let b: Bag? = None;
+    let b: Bag? = Bag::None;
     return match b {
         ~+ v => 1,
         ~0 => 0,

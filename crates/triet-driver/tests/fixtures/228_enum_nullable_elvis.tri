@@ -8,11 +8,11 @@ enum Box {
 }
 
 function main() -> Integer = {
-    let d: Box = Full(7);
+    let d: Box = Box::Full(7);
     let b: Box? = ~0;
     let r = b ?: d;
     return match r {
-        Empty => 0,
-        Full(x) => x,
+        Box::Empty => 0,
+        Box::Full(x) => x,
     };
 }

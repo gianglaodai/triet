@@ -1,0 +1,13 @@
+// ERROR: undefined name
+// ADR-0071 Lát 2 (P-scan-resurrect — G's mandated tooth): a bare (unqualified)
+// enum-variant name in EXPRESSION position no longer resolves. The
+// in-scope-enum-scan is GONE — `Green` is not a value binding, so it is simply
+// `undefined name Green` (E1002), even though `Color` (with a `Green` variant)
+// is in scope. Use `Color::Green`. Poison (re-add `resolve_enum_variant`'s
+// scan) → bare `Green` resolves again → this stops erroring.
+enum Color { Red, Green, Blue }
+
+function main() -> Integer = {
+    let c = Green;
+    return 0;
+}

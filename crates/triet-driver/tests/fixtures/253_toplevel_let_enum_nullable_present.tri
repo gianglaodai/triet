@@ -1,6 +1,6 @@
 // EXPECT: 5
-// ADR-0065 §12.8: top-level `let x: Color? = ~+ Green`. The redirect lowers the
-// inner enum literal `Green` as a PLAIN enum; the widening block retypes it
+// ADR-0065 §12.8: top-level `let x: Color? = ~+ Color::Green`. The redirect lowers the
+// inner enum literal `Color::Green` as a PLAIN enum; the widening block retypes it
 // Nullable(Color) in-place (niche disc@0: a valid variant disc != MIN, so the
 // present arm fires — mirror of fixture 229/225). Without the redirect `~+` →
 // OutcomeAlloc on main's non-Outcome return type (Bug B). Poison (P1) → red.
@@ -10,11 +10,11 @@ enum Color {
 }
 
 function main() -> Integer = {
-    let x: Color? = ~+ Green;
+    let x: Color? = ~+ Color::Green;
     return match x {
         ~+ v => match v {
-            Red => 1,
-            Green => 5,
+            Color::Red => 1,
+            Color::Green => 5,
         },
         ~0 => -1,
     };

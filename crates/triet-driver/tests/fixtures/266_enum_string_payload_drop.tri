@@ -12,6 +12,6 @@ enum Msg {
 }
 
 function main() -> Integer = {
-    let m = Msg.Text("Giang");
+    let m = Msg::Text("Giang");
     return 0;
 }

@@ -29,7 +29,7 @@ impl Checker<'_> {
         match node {
             Expr::IntegerLiteral { value, suffix } => {
                 // ADR-0044 Q2 + ADR-0064 §A1.3: range-check by suffix (E1036).
-                self.check_numeric_literal_range(value, suffix, span.clone());
+                self.check_numeric_literal_range(value, suffix, span);
                 match suffix {
                     Some(NumericSuffix::Trit) => Type::Trit,
                     Some(NumericSuffix::Tryte) => Type::Tryte,
@@ -39,7 +39,7 @@ impl Checker<'_> {
             }
             Expr::TernaryLiteral { value } => {
                 // Balanced-ternary `0t...` literals are `Integer`-typed.
-                self.check_numeric_literal_range(value, None, span.clone());
+                self.check_numeric_literal_range(value, None, span);
                 Type::Integer
             }
             Expr::TritLiteral { .. } => Type::Trit,
@@ -87,7 +87,12 @@ impl Checker<'_> {
             }
             Expr::Identifier { name } => {
                 // E2420: moved to MIR NLL borrowck (ADR-0051 B2.1a).
-                // Try variable/function binding first, then overloads, then enum variant.
+                // Try variable/function binding, then overloads. ADR-0071 Lát 2:
+                // the in-scope-enum-scan fallback is GONE — a bare identifier is
+                // ONLY a value/function binding. An unqualified enum variant
+                // (`Green`) no longer resolves; use the qualified `Color::Green`
+                // form. An import-bound variant still resolves here because the
+                // `use` binding lands in `env.lookup` BEFORE this point.
                 if let Some(ty) = self.env.lookup(&name).cloned() {
                     ty
                 } else if let Some(candidates) = self.env.lookup_all(&name) {
@@ -98,16 +103,6 @@ impl Checker<'_> {
                     // use. Actual overload resolution happens in
                     // `check_call` where argument types are visible.
                     candidates.into_iter().next().unwrap_or(Type::Unknown)
-                } else if let Some(resolution) = self.resolve_enum_variant(&name, &span) {
-                    // Record the resolution so the lowerer doesn't
-                    // need to re-scan enum layouts by string match.
-                    let enum_name = resolution.enum_name.clone();
-                    self.expr_resolutions.insert(id, resolution);
-                    // Look up the enum type in the environment.
-                    self.env
-                        .lookup(&enum_name)
-                        .cloned()
-                        .unwrap_or(Type::Unknown)
                 } else {
                     self.errors.push(TypeError::UndefinedName { name, span });
                     Type::Unknown
@@ -134,44 +129,11 @@ impl Checker<'_> {
             // defer v0.10 per §10.1 backlog).
             Expr::Borrow { form, operand } => self.check_borrow(form, operand, span),
             Expr::Call { callee, arguments } => {
-                // Record enum variant constructor resolution before
-                // delegating to check_call. The lowerer needs the
-                // call expression's ID → resolution mapping.
-                //
-                // Two syntaxes are supported:
-                //   bare:    `SomeInt(5)`  — callee is Identifier
-                //   qualified: `CD.SomeInt(5)` — callee is FieldAccess
-                match &self.arena.expression(callee).node {
-                    Expr::Identifier { name: variant_name } => {
-                        if let Some(resolution) = self.resolve_enum_variant(variant_name, &span)
-                            && resolution.has_payload
-                        {
-                            self.expr_resolutions.insert(id, resolution);
-                        }
-                    }
-                    Expr::FieldAccess { object, field } => {
-                        if let Expr::Identifier { name: enum_name } =
-                            &self.arena.expression(*object).node
-                            && let Some(enum_ty) = self.env.lookup(enum_name).cloned()
-                            && let Type::UserEnum { variants, .. } = &enum_ty
-                            && let Some(variant_idx) = variants.iter().position(|(n, _)| n == field)
-                        {
-                            let (_, payload) = &variants[variant_idx];
-                            self.expr_resolutions.insert(
-                                id,
-                                triet_syntax::EnumVariantResolution {
-                                    enum_name: enum_name.clone(),
-                                    variant_name: field.clone(),
-                                    // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
-                                    #[allow(clippy::cast_possible_wrap)]
-                                    discriminant: variant_idx as i64,
-                                    has_payload: payload.is_some(),
-                                },
-                            );
-                        }
-                    }
-                    _ => {}
-                }
+                // ADR-0071 Lát 2: payload enum-variant construction uses the
+                // qualified `Enum::Variant(payload)` form, which parses as
+                // `Expr::EnumLiteral` (handled above) — NOT a Call. The old
+                // bare-`SomeInt(5)`-scan and `CD.SomeInt(5)`-dot-hack resolutions
+                // are gone; a Call here is a plain function/method call.
                 self.check_call(callee, &arguments, span)
             }
             Expr::MethodCall {
@@ -179,26 +141,10 @@ impl Checker<'_> {
                 method,
                 arguments,
             } => {
-                // Detect qualified enum variant construction:
-                // `OptionA.SomeInt(42)` parses as MethodCall.
-                if let Expr::Identifier { name: enum_name } = &self.arena.expression(receiver).node
-                    && let Some(Type::UserEnum { variants, .. }) =
-                        self.env.lookup(enum_name).cloned()
-                    && let Some(variant_idx) = variants.iter().position(|(n, _)| n == &method)
-                {
-                    let (_, payload) = &variants[variant_idx];
-                    self.expr_resolutions.insert(
-                        id,
-                        triet_syntax::EnumVariantResolution {
-                            enum_name: enum_name.clone(),
-                            variant_name: method.clone(),
-                            // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
-                            #[allow(clippy::cast_possible_wrap)]
-                            discriminant: variant_idx as i64,
-                            has_payload: payload.is_some(),
-                        },
-                    );
-                }
+                // ADR-0071 Lát 2: the `OptionA.SomeInt(42)` dot-form variant
+                // construction hack is gone — qualified variants use
+                // `OptionA::SomeInt(42)` (parsed as `Expr::EnumLiteral`). A
+                // MethodCall here is a plain instance method call.
                 self.check_method_call(id, receiver, &method, &arguments, span)
             }
             Expr::FieldAccess { object, field } => {
@@ -1201,66 +1147,6 @@ impl Checker<'_> {
         None
     }
 
-    /// Resolve a bare enum variant name to its full resolution data.
-    ///
-    /// Returns `None` if the variant is not found or is ambiguous
-    /// (present in multiple enum types). On ambiguity, emits
-    /// [`TypeError::AmbiguousEnumVariant`].
-    ///
-    /// This is the canonical resolution point — the lowerer consumes
-    /// the resolution map rather than re-scanning enum layouts.
-    fn resolve_enum_variant(
-        &mut self,
-        name: &str,
-        span: &Span,
-    ) -> Option<crate::EnumVariantResolution> {
-        let root_frame = self.env.frames.first()?;
-        #[allow(clippy::type_complexity)]
-        let mut matches: Vec<(&str, &Vec<(String, Option<Box<Type>>)>)> = Vec::new();
-        for binding in root_frame.names.values() {
-            if let Type::UserEnum {
-                name: enum_name,
-                variants,
-                ..
-            } = &binding.ty
-                && variants.iter().any(|(n, _)| n == name)
-            {
-                matches.push((enum_name.as_str(), variants));
-            }
-        }
-        match matches.len() {
-            0 => None,
-            1 => {
-                let (enum_name, variants) = matches[0];
-                let variant = variants.iter().find(|(n, _)| n == name)?;
-                let disc = variants
-                    .iter()
-                    .position(|(n, _)| n == name)
-                    // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
-                    .map(|i| {
-                        #[allow(clippy::cast_possible_wrap)]
-                        let disc = i as i64;
-                        disc
-                    })?;
-                Some(crate::EnumVariantResolution {
-                    enum_name: enum_name.to_string(),
-                    variant_name: name.to_string(),
-                    discriminant: disc,
-                    has_payload: variant.1.is_some(),
-                })
-            }
-            _ => {
-                self.errors.push(TypeError::AmbiguousEnumVariant {
-                    variant: name.to_string(),
-                    enum_a: matches[0].0.to_string(),
-                    enum_b: matches[1].0.to_string(),
-                    span: span.clone(),
-                });
-                None
-            }
-        }
-    }
-
     /// ADR-0061 T4.3/T4.4: resolve a trait method call against `impl_table`.
     ///
     /// Returns `Some(return_type)` when the receiver's concrete type has
@@ -1564,49 +1450,12 @@ impl Checker<'_> {
             });
             return Type::Unknown;
         }
-        // Qualified enum unit variant: `CD.None`, `Color.Red`.
-        // Resolve at typecheck time; lowerer consumes the resolution map.
-        if let Type::UserEnum {
-            name: enum_name,
-            variants,
-            ..
-        } = &object_ty
-        {
-            if let Some(variant_idx) = variants.iter().position(|(n, _)| n == field) {
-                let (_variant_name, payload) = &variants[variant_idx];
-                let has_payload = payload.is_some();
-                // Record resolution for the lowerer — same path as
-                // bare-variant Identifier and Call constructor.
-                self.expr_resolutions.insert(
-                    field_access_id,
-                    triet_syntax::EnumVariantResolution {
-                        enum_name: enum_name.clone(),
-                        variant_name: field.to_string(),
-                        // Invariant: variant_idx is bounded by enum definition limits (far below i64::MAX)
-                        #[allow(clippy::cast_possible_wrap)]
-                        discriminant: variant_idx as i64,
-                        has_payload,
-                    },
-                );
-                // Return the enum type itself. If the variant has a
-                // payload, the user must use call syntax:
-                // `CD.SomeInt(5)` which routes through
-                // `Expr::Call` + `Expr::FieldAccess`.
-                if has_payload {
-                    // Payload variant accessed without args — this
-                    // is the enum type (the variant isn't being
-                    // constructed, just referenced).
-                    return object_ty.clone();
-                }
-                return object_ty.clone();
-            }
-            self.errors.push(TypeError::UnknownMember {
-                member: field.to_owned(),
-                found: object_ty.clone(),
-                span,
-            });
-            return Type::Unknown;
-        }
+        // ADR-0071 Lát 2: the `Color.Red` / `CD.None` dot-form unit-variant
+        // hack is gone. Field access on an enum type is no longer a variant
+        // reference — qualified variants use `Color::Red` (parsed as
+        // `Expr::EnumLiteral`). A `.field` on an enum type falls through to
+        // `UnknownMember` below.
+        let _ = field_access_id;
         self.errors.push(TypeError::UnknownMember {
             member: field.to_owned(),
             found: object_ty,
@@ -1953,11 +1802,15 @@ impl Checker<'_> {
     /// `_` arm short-circuits. Scans `self.items` for the enum definition
     /// by matching the scrutinee type name against each `Item::Enum`.
     fn check_enum_exhaustiveness(&mut self, enum_name: &str, arms: &[MatchArm], span: Span) {
-        // Wildcard short-circuit.
+        // Catch-all short-circuit. ADR-0071 Lát 2 §2.A: a bare `Variable`
+        // binding is an irrefutable catch-all (binds the scrutinee), exactly
+        // like a `Wildcard` and consistent with `has_scalar_catch_all`. It is
+        // NOT a unit-variant match — the guess-hack that reinterpreted it is
+        // gone, so a bare variable covers every variant.
         for arm in arms {
             if matches!(
                 self.arena.pattern(arm.pattern).node,
-                triet_syntax::Pattern::Wildcard
+                triet_syntax::Pattern::Wildcard | triet_syntax::Pattern::Variable(_)
             ) {
                 return;
             }

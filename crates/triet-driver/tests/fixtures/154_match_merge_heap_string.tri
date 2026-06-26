@@ -4,7 +4,7 @@
 // (idempotent — typecheck guarantees all arms share one type).
 enum Color { Red, Green, Blue }
 function main() -> Integer {
-    let c = Green;
-    let s = match c { Red => "xx", Green => "yyyy", Blue => "z", };
+    let c = Color::Green;
+    let s = match c { Color::Red => "xx", Color::Green => "yyyy", Color::Blue => "z", };
     return len(s);
 }

@@ -6,12 +6,12 @@ enum Color { Red, Green, Blue }
 
 function map_color(c: Color) -> Integer =
     match c {
-        Red => 1,
-        Green => 2,
-        Blue => 3,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
     }
 
 function main() -> Integer = {
-    let c = Green;
+    let c = Color::Green;
     return map_color(c);
 }
