@@ -122,4 +122,13 @@ Single-level field depth (`hw.vga`) là phạm vi ADR này — `hw.a.b` lồng s
 - Rewrite-era Bậc C, sau ADR-0069 — kích hoạt khi Work Order ADR-0070 đóng (O verify máu + G ký).
 - Amend [ADR-0025](0025-borrow-checker-rules.md) §5.3 (mở rộng move-state per-Place) — KHÔNG hồi tố, KHÔNG revisionism mô hình per-Local cũ (per-Local là subset của per-Place khi projection rỗng).
 - Amend schema §9 `BorrowChecker` (ghi nhận field-level move granularity).
-- Heap-field partial-move: KHÔNG áp dụng — defer sổ đỏ No-Box.
+- Heap-field partial-move (write-side, lúc ADR seal): KHÔNG áp dụng — defer sổ đỏ No-Box.
+- **Read-side update (2026-06-26, WO Read-side heap field move-out + Addendum):**
+  single-level **heap-SCALAR** field move-out (`let s = p.name` với `name:
+  String/Vector/HashMap`) NAY ĐÃ MỞ — borrowck ghi partial-move, JIT tombstone
+  heap-leaf ở base-slot (free đúng 1 lần). Lower type-prop heap field (String→
+  String thay vì Unknown) đi kèm. **Heap-STRUCT field move-out (`let m = h.inner`
+  với `inner` là struct chứa heap) VẪN HOÃN (E2423):** chặn upstream bởi
+  construction-into-field double-free pre-existing (ADR-0067, đã verify). Re-mở
+  khi construction-into-field tombstone source. Fixture nắp quan tài:
+  `300_field_moveout_heapstruct_e2423.tri`.

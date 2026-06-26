@@ -1,0 +1,15 @@
+// EXPECT: 9
+// ADR-0070 read-side — Vector field (8B thin handle) move-out + live sibling.
+// `let v = b.items` partial-moves the Vector handle; `b.n` (sibling Integer)
+// stays readable → 9. The Δ2 tombstone zeroes the handle word so `Drop(b)`
+// frees nothing already moved into `v` (no double-free at runtime).
+struct Bag {
+    items: Vector<Integer>,
+    n: Integer,
+}
+
+function main() -> Integer {
+    let b = Bag { items: push(vector_new(), 1), n: 9 };
+    let v = b.items;
+    return b.n;
+}

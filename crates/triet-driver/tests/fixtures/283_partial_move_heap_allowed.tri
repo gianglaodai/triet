@@ -1,0 +1,18 @@
+// EXPECT: 0
+// ADR-0070 read-side (FLIPPED 2026-06-26) — a single-level heap field move-out
+// is now ALLOWED. This fixture used to assert E2423 (heap partial-move refused,
+// file was 283_partial_move_heap_refused.tri); ADR-0070 read-side opened the
+// borrowck allow-arm for String/Vector/HashMap single-level fields and added the
+// JIT Δ2 tombstone, so `let n = s.name` now partial-moves cleanly and runs. The
+// E2423 refuse tooth migrated to 298_field_moveout_multilevel_e2423.tri
+// (multi-level move-out is still refused).
+struct S {
+    name: String,
+}
+
+function main() -> Integer {
+    let nm = "hi";
+    let s = S { name: nm };
+    let n = s.name;          // single-level heap field move-out → ALLOWED
+    return 0;
+}

@@ -1,0 +1,18 @@
+// ERROR: E2420
+// ADR-0070 read-side — using the WHOLE base after a field was partially moved
+// out is a use-after-move. `p.name` moves into `s`; `let p2 = p` then moves the
+// whole `p` (which no longer fully owns `name`) → E2420. Poison: make
+// `partial_move_invalidates` return false for whole-base (None) reads → this
+// goes green = the whole-base-after-partial check is the tooth.
+struct Person {
+    name: String,
+    age: Integer,
+}
+
+function main() -> Integer {
+    let nm = "hi";
+    let p = Person { name: nm, age: 7 };
+    let s = p.name;
+    let p2 = p;              // whole base after partial move → E2420
+    return 0;
+}

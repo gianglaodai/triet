@@ -2910,12 +2910,16 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             let source = lower_place(expr_id, arena, c)?;
             // ADR-0065 §12: a field whose type is a nullable aggregate
             // (`Struct?`/`Enum?`) must carry that type so `match`/Elvis route to
-            // the nullable path and the JIT copies the full tagged slot. Other
-            // field reads keep the legacy Unknown-typed temp (scalar leaf loaded
-            // as i64), preserving existing behavior for heap/scalar fields.
+            // the nullable path and the JIT copies the full tagged slot.
+            // ADR-0070 read-side: a HEAP field (String/Vector/HashMap) likewise
+            // carries its type so the move-out dest gets a real heap slot and a
+            // Drop that frees it (an Unknown-typed temp leaks — Drop sees no
+            // heap type). SCALAR field reads keep the legacy Unknown-typed temp
+            // (scalar leaf loaded as i64), preserving existing behavior.
             let field_ty = place_result_type(&source, c);
             let d = if matches!(&field_ty, MirType::Nullable(inner)
                 if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)))
+                || field_ty.is_any_heap()
             {
                 c.alloc_local_ty(field_ty)
             } else {

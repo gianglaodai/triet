@@ -1849,6 +1849,48 @@ impl JitContext {
                             }
                         } // if is_aggregate
                     }
+                    // ADR-0070 read-side: a single heap-field move-out
+                    // `_d = move _b.field`. The branches above copied the field
+                    // VALUE into dest; now (1) sync dest's full String fat pointer
+                    // (the scalar copy path only stored ptr@0 for a projected
+                    // source → dest's cap@16 would be stack garbage → free UB) and
+                    // (2) tombstone the moved field's heap leaves in the BASE slot
+                    // so the base's Drop reads ptr=0 → free no-op → no double-free.
+                    // Gated on a single Field projection of a non-copy type (heap
+                    // scalar or heap-struct); a Copy scalar field never enters.
+                    // Capability fields are 0-byte ZSTs (no heap leaf) → no-op.
+                    if let [Projection::Field(_)] = source.projection.as_slice() {
+                        let (field_ty, field_off) = Self::walk_projections(body, source)?;
+                        if !field_ty.is_copy(Some(body))
+                            && let Some(base_slot) =
+                                self.struct_slots.get(&source.local).map(|(s, _)| *s)
+                        {
+                            let zero = builder.ins().iconst(I64, 0);
+                            // (1) String dest: sync len@8/cap@16 (scalar copy
+                            // stored only ptr@0 since the source is projected).
+                            if matches!(field_ty, MirType::String)
+                                && dest.projection.is_empty()
+                                && let Some(dest_slot) =
+                                    self.struct_slots.get(&dest.local).map(|(s, _)| *s)
+                            {
+                                let len = builder.ins().stack_load(I64, base_slot, field_off + 8);
+                                let cap = builder.ins().stack_load(I64, base_slot, field_off + 16);
+                                builder.ins().stack_store(len, dest_slot, 8);
+                                builder.ins().stack_store(cap, dest_slot, 16);
+                            }
+                            // (2) tombstone the moved field's heap leaf. Only heap
+                            // SCALARS reach here: borrowck refuses heap-STRUCT
+                            // field-move (E2423, blocked upstream by ADR-0067
+                            // construction-into-field), Capability is a 0-byte ZST
+                            // with no heap leaf, and everything else is refused.
+                            match &field_ty {
+                                MirType::String | MirType::Vector | MirType::HashMap => {
+                                    builder.ins().stack_store(zero, base_slot, field_off);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
 
                 Statement::Borrow { dest, source, .. } => {

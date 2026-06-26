@@ -1,0 +1,17 @@
+// EXPECT: 7
+// ADR-0070 read-side — moving a String field out of a struct, then reading a
+// LIVE sibling scalar field. `let s = p.name` partial-moves `name`; `p.age`
+// (a Copy Integer sibling) stays readable → returns 7. The Δ2 tombstone zeroes
+// only `name`'s ptr-word, NOT `age` (offset 24) — if the tombstone clobbered
+// the sibling, this would return 0/garbage instead of 7.
+struct Person {
+    name: String,
+    age: Integer,
+}
+
+function main() -> Integer {
+    let nm = "hi";
+    let p = Person { name: nm, age: 7 };
+    let s = p.name;          // partial move-out (now ALLOWED, ADR-0070)
+    return p.age;            // sibling stays live
+}

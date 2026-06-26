@@ -1,0 +1,22 @@
+// ERROR: E2423
+// ADR-0070 read-side — multi-level heap field move-out STAYS REFUSED (E2423).
+// `o.inner.name` is a TWO-level projection; `single_field` returns None, so the
+// partial-move allow-arm is skipped and the refuse arm fires. Poison: relax the
+// `single_field(source).is_some()` guard so multi-level slips into the
+// record-partial-move branch → this stops erroring → green = the conservative
+// single-level gate is the tooth keeping nested partial-move out of scope.
+struct Inner {
+    name: String,
+}
+
+struct Outer {
+    inner: Inner,
+}
+
+function main() -> Integer {
+    let n1 = "hi";
+    let i = Inner { name: n1 };
+    let o = Outer { inner: i };
+    let x = o.inner.name;    // multi-level move-out → E2423 (refused)
+    return 0;
+}

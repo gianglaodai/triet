@@ -1,0 +1,18 @@
+// ERROR: E2420
+// ADR-0070 read-side — re-reading a heap field already moved out is a
+// use-after-move. `p.name` moves into `s`; the second `let s2 = p.name` reads
+// a field whose value is gone → E2420. Poison: drop the `partial_move_invalidates`
+// field-read check at the Assign source use-site → second read stops firing →
+// this negative fixture goes green = the re-read check is the tooth.
+struct Person {
+    name: String,
+    age: Integer,
+}
+
+function main() -> Integer {
+    let nm = "hi";
+    let p = Person { name: nm, age: 7 };
+    let s = p.name;
+    let s2 = p.name;         // re-read moved field → E2420
+    return 0;
+}

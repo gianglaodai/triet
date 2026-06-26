@@ -687,15 +687,22 @@ fn process_block(
                         });
                     }
                     if !extracted_ty.is_copy(Some(body)) {
-                        // ADR-0070: a single-level ZST capability field MAY be
-                        // moved out — record the partial move instead of
-                        // refusing. Everything else (heap fields, multi-level
-                        // capability extraction) stays REFUSED (E2423): a heap
-                        // value has no zero-cost partial-move story yet, and
-                        // nested partial-move is out of scope (conservative).
+                        // ADR-0070: a single-level field MAY be moved out when it
+                        // is a ZST capability OR a heap SCALAR (String/Vector/
+                        // HashMap) — record the partial move. The JIT tombstones
+                        // the moved leaf in the base slot so the base's Drop frees
+                        // nothing already moved (no double-free).
+                        // Still REFUSED (E2423): multi-level extraction
+                        // (single_field → None) and every other non-copy move-type
+                        // (Enum/Nullable/Outcome fields are out of scope). A
+                        // heap-STRUCT field move-out is ALSO refused: it is blocked
+                        // upstream by the pre-existing construction-into-field
+                        // double-free (ADR-0067) — re-open when that lands (see the
+                        // ADR-0070 defer ledger).
                         match single_field(source) {
                             Some(f)
-                                if matches!(extracted_ty, triet_mir::MirType::Capability(_)) =>
+                                if matches!(extracted_ty, triet_mir::MirType::Capability(_))
+                                    || extracted_ty.is_any_heap() =>
                             {
                                 state
                                     .partial_moves
@@ -1833,9 +1840,80 @@ mod tests {
 
     /// Δ3: copying a Move type out of a struct field is forbidden (E2423).
     #[test]
-    fn cannot_copy_move_type_out_of_field() {
-        let mut b = MirBuilder::new("extract_string_field", MirType::Unit);
-        // Add a struct layout with a String field
+    fn cannot_move_multilevel_field_out() {
+        // ADR-0070 read-side: SINGLE-level heap field move-out is now ALLOWED
+        // (see `single_level_heap_field_partial_moves_ok` below). This test
+        // pins the surviving E2423 tooth: a MULTI-level extraction
+        // `obj.inner.body` (two Field projections) is still REFUSED, because
+        // nested partial-move is out of scope and `single_field` returns None.
+        let mut b = MirBuilder::new("extract_nested_string_field", MirType::Unit);
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Inner",
+            &[("body".into(), MirType::String, 8, triet_mir::align::INTEGER)],
+        ));
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Outer",
+            &[(
+                "inner".into(),
+                MirType::Struct("Inner".into()),
+                8,
+                triet_mir::align::INTEGER,
+            )],
+        ));
+        let obj = b.add_param("obj", ParameterPassing::Move);
+        b.set_local_type(obj, "Outer");
+
+        let bb0 = b.new_block();
+        let dest = b.new_local();
+        b.push(bb0, storage_live(dest));
+        // Assign from obj.inner.body (TWO-level projection of Move type) → E2423
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(dest),
+                source: Place {
+                    local: obj,
+                    projection: vec![
+                        Projection::Field("inner".to_string()),
+                        Projection::Field("body".to_string()),
+                    ],
+                },
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_dead(dest));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== MIR (extract_nested_string_field) ===\n{body}");
+
+        let result = check_body(&body);
+        println!("=== BORROW CHECK (extract_nested_string_field) ===");
+        for err in &result.errors {
+            println!("  {err}");
+        }
+
+        assert!(
+            !result.is_ok(),
+            "multi-level move of a Move type out of a projection MUST be rejected"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
+            "should have E2423 CannotCopyMoveTypeOut, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0070 read-side: a SINGLE-level heap field move-out `dest = obj.body`
+    /// is ALLOWED — it records a partial move instead of erroring. Poison the
+    /// allow-arm (drop `is_any_heap()` from the guard) → this regresses to
+    /// E2423 and the assertion fails = the allow-arm is load-bearing.
+    #[test]
+    fn single_level_heap_field_partial_moves_ok() {
+        let mut b = MirBuilder::new("extract_string_field_ok", MirType::Unit);
         b.add_struct_layout(triet_mir::StructLayout::compute(
             "HasString",
             &[("body".into(), MirType::String, 8, triet_mir::align::INTEGER)],
@@ -1846,7 +1924,6 @@ mod tests {
         let bb0 = b.new_block();
         let dest = b.new_local();
         b.push(bb0, storage_live(dest));
-        // Assign from obj.body (projected field of Move type) → E2423
         b.push(
             bb0,
             Statement::Assign {
@@ -1859,24 +1936,16 @@ mod tests {
         b.set_terminator(bb0, return_(vec![]));
 
         let body = b.build(bb0);
-        println!("=== MIR (extract_string_field) ===\n{body}");
-
         let result = check_body(&body);
-        println!("=== BORROW CHECK (extract_string_field) ===");
         for err in &result.errors {
             println!("  {err}");
         }
-
         assert!(
-            !result.is_ok(),
-            "copying a Move type out of a projection MUST be rejected"
-        );
-        assert!(
-            result
+            !result
                 .errors
                 .iter()
                 .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
-            "should have E2423 CannotCopyMoveTypeOut, got: {:?}",
+            "single-level heap field move-out must NOT emit E2423, got: {:?}",
             result.errors
         );
     }
