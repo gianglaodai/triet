@@ -894,7 +894,7 @@ pub(crate) fn lower_function(
             });
             d
         } else {
-            lower_expr(e, input.arena, &mut c)?
+            lower_expr(e, None, input.arena, &mut c)?
         };
         // Emit the tail Return only into a REACHABLE open block. A block-body
         // ending in an explicit `return` leaves `cur` pointing at a dead
@@ -1246,11 +1246,11 @@ fn lower_block(block_expr: ExprId, arena: &Arena, c: &mut Ctx) -> Result<(), Low
                 lower_stmt(&stmt, stmt_span, arena, c)?;
             }
             if let Some(e) = final_expr {
-                lower_expr(*e, arena, c)?;
+                lower_expr(*e, None, arena, c)?;
             }
         }
         _ => {
-            lower_expr(block_expr, arena, c)?;
+            lower_expr(block_expr, None, arena, c)?;
         }
     }
     c.pop_scope();
@@ -1322,7 +1322,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 } else {
                     *init
                 };
-                let v = lower_expr(init_id, arena, c)?;
+                let v = lower_expr(init_id, None, arena, c)?;
                 // ── Widening: override init local's type from annotation ──
                 // `let x: Integer? = 5` → x should be typed "Integer?" not "?".
                 // Under PA-3c widening is identity (same i64 value), so we only
@@ -1404,14 +1404,14 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             }
         }
         Stmt::Expression { expr } => {
-            lower_expr(*expr, arena, c)?;
+            lower_expr(*expr, None, arena, c)?;
         }
         Stmt::Return { value } => {
             if let (Some(_), Some(v)) = (c.sret_ptr, value) {
                 // Fat return via sret. Struct → copy fields into the caller's
                 // buffer (emit_struct_sret_copy); String/heap-Outcome → M4
                 // escape Return[s] (JIT writes {ptr,len,cap} from slot to sret).
-                let struct_local = lower_expr(*v, arena, c)?;
+                let struct_local = lower_expr(*v, None, arena, c)?;
                 if emit_struct_sret_copy(c, struct_local, &stmt_span) {
                     c.flush_all_for_return();
                     let cur = c.cur;
@@ -1461,7 +1461,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                         });
                         values.push(d);
                     } else {
-                        let val = lower_expr(*v, arena, c)?;
+                        let val = lower_expr(*v, None, arena, c)?;
                         values.extend(lower_outcome_return_values(val, c));
                     }
                 }
@@ -1481,7 +1481,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             }
         }
         Stmt::Assignment { target, value } => {
-            let v = lower_expr(*value, arena, c)?;
+            let v = lower_expr(*value, None, arena, c)?;
             match &arena.expression(*target).node {
                 // Simple identifier target: emit an Assign to update the
                 // original local in-place, so loop headers reading from the
@@ -1532,7 +1532,7 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             );
 
             c.cur = hdr;
-            let cond = lower_expr(*condition, arena, c)?;
+            let cond = lower_expr(*condition, None, arena, c)?;
             let hdr_end = c.cur;
             c.term(
                 hdr_end,
@@ -1582,7 +1582,7 @@ fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Place, Low
             Ok(base.project(Projection::Field(field.clone())))
         }
         _ => {
-            let temp = lower_expr(expr_id, arena, c)?;
+            let temp = lower_expr(expr_id, None, arena, c)?;
             Ok(Place::local(temp))
         }
     }
@@ -1619,7 +1619,13 @@ fn place_result_type(place: &Place, c: &Ctx) -> MirType {
 
 // ── Expression lowering ─────────────────────────────────────
 
-fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, LowerError> {
+fn lower_expr(
+    expr_id: ExprId,
+    expected: Option<&MirType>, // ADR-0072 Slice 1: plumbing only, not yet consumed
+    arena: &Arena,
+    c: &mut Ctx,
+) -> Result<Local, LowerError> {
+    let _ = expected; // ADR-0072 Slice 2 consumes this
     let expr_span = arena.expression(expr_id).span.clone();
     match &arena.expression(expr_id).node {
         Expr::IntegerLiteral { value, suffix } => {
@@ -1805,7 +1811,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             // Lower payload into the Outcome slot.
             if let Some(payload_expr) = payload {
-                let val = lower_expr(*payload_expr, arena, c)?;
+                let val = lower_expr(*payload_expr, None, arena, c)?;
                 let val_ty = &c.local_decls[val.0].ty;
                 if val_ty.is_any_heap() {
                     // HP.1: heap payload → store {ptr@8, len@16, cap@24}.
@@ -1891,7 +1897,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             Err(LowerError::undefined_local(name, expr_span))
         }
         Expr::UnaryOp { operator, operand } => {
-            let val = lower_expr(*operand, arena, c)?;
+            let val = lower_expr(*operand, None, arena, c)?;
             let d = c.alloc_local();
             c.push(Statement::StorageLive(d, expr_span.clone()));
             match operator {
@@ -1925,8 +1931,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             left,
             right,
         } => {
-            let lhs = lower_expr(*left, arena, c)?;
-            let rhs = lower_expr(*right, arena, c)?;
+            let lhs = lower_expr(*left, None, arena, c)?;
+            let rhs = lower_expr(*right, None, arena, c)?;
             let ty = binop_result_type(operator);
             let d = c.alloc_local_ty(ty);
 
@@ -1990,7 +1996,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 "concat" => {
                     let args: Vec<Local> = arguments
                         .iter()
-                        .map(|a| lower_expr(*a, arena, c))
+                        .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let dest = emit_shim_call(
                         c,
@@ -2004,7 +2010,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 "eq" => {
                     let args: Vec<Local> = arguments
                         .iter()
-                        .map(|a| lower_expr(*a, arena, c))
+                        .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let dest =
                         emit_shim_call(c, "__triet_string_eq", args, MirType::Integer, expr_span);
@@ -2020,7 +2026,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span,
                         ));
                     }
-                    let arg = lower_expr(arguments[0], arena, c)?;
+                    let arg = lower_expr(arguments[0], None, arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
                     // ADR-0049 Phase-1 Lát 1 B4: length on owned String reads
                     // field-1 (len) from the StackSlot, not from the heap shim.
@@ -2067,7 +2073,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let args: Vec<Local> = arguments
                         .iter()
-                        .map(|a| lower_expr(*a, arena, c))
+                        .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let arg0_ty = &c.local_decls[args[0].0].ty;
                     // Lối 1: strip &0 /&+ /&- prefix to get base type.
@@ -2101,7 +2107,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span,
                         ));
                     }
-                    let arg = lower_expr(arguments[0], arena, c)?;
+                    let arg = lower_expr(arguments[0], None, arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
 
                     // ADR-0049 Lát 6.3: for owned String, read len from
@@ -2164,7 +2170,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span,
                         ));
                     }
-                    let arg = lower_expr(arguments[0], arena, c)?;
+                    let arg = lower_expr(arguments[0], None, arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
                     let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
                         inner.as_ref()
@@ -2191,8 +2197,8 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             expr_span,
                         ));
                     }
-                    let arg = lower_expr(arguments[0], arena, c)?;
-                    let byte_arg = lower_expr(arguments[1], arena, c)?;
+                    let arg = lower_expr(arguments[0], None, arena, c)?;
+                    let byte_arg = lower_expr(arguments[1], None, arena, c)?;
                     let arg_ty = &c.local_decls[arg.0].ty;
                     let base_ty = if let MirType::Reference { inner, .. } = arg_ty {
                         inner.as_ref()
@@ -2228,7 +2234,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let args: Vec<Local> = arguments
                         .iter()
-                        .map(|a| lower_expr(*a, arena, c))
+                        .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let arg0_ty = &c.local_decls[args[0].0].ty;
                     let base_ty = if let MirType::Reference { inner, .. } = arg0_ty {
@@ -2264,7 +2270,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     let args: Vec<Local> = arguments
                         .iter()
-                        .map(|a| lower_expr(*a, arena, c))
+                        .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let vec_ty = c.local_decls[args[0].0].ty.clone();
                     let dest = emit_shim_call(c, "__triet_vector_push", args, &vec_ty, expr_span);
@@ -2332,7 +2338,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 "insert" => {
                     let args: Vec<Local> = arguments
                         .iter()
-                        .map(|a| lower_expr(*a, arena, c))
+                        .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let map_ty = c.local_decls[args[0].0].ty.clone();
                     let dest =
@@ -2365,7 +2371,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             let mut args: Vec<Local> = arguments
                 .iter()
-                .map(|a| lower_expr(*a, arena, c))
+                .map(|a| lower_expr(*a, None, arena, c))
                 .collect::<Result<Vec<_>, _>>()?;
 
             // B7-lift (ADR-0042): heap args now allowed.
@@ -2549,7 +2555,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     // reborrow that conflicts with the live loan, masking the
                     // intended drop-while-borrowed diagnostic (E2450 → E2440,
                     // fixture 102). Reference tails keep the direct path.
-                    let tail_val = lower_expr(e, arena, c)?;
+                    let tail_val = lower_expr(e, None, arena, c)?;
                     if c.local_decls[tail_val.0].ty.is_reference() {
                         Ok(tail_val)
                     } else {
@@ -2585,7 +2591,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         } => {
             let then_branch = *then_branch;
             let else_branch = *else_branch;
-            let cond = lower_expr(*condition, arena, c)?;
+            let cond = lower_expr(*condition, None, arena, c)?;
             let then_bb = c.alloc_bb();
             let merge_bb = c.alloc_bb();
             let else_bb = if else_branch.is_some() {
@@ -2607,7 +2613,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             );
 
             c.cur = then_bb;
-            let then_val = lower_expr(then_branch, arena, c)?;
+            let then_val = lower_expr(then_branch, None, arena, c)?;
             let then_end = c.cur;
             // ADR-0056: type the merge result from the branch value so a
             // Fat-Pointer ({ptr,len,cap}) survives the merge as a typed move
@@ -2632,7 +2638,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 );
 
                 c.cur = else_bb;
-                let else_val = lower_expr(eb, arena, c)?;
+                let else_val = lower_expr(eb, None, arena, c)?;
                 let else_end = c.cur;
                 c.push(Statement::Assign {
                     dest: Place::local(result),
@@ -2672,7 +2678,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // `e ?: default` — if e is null (NULL_SENTINEL), evaluate
             // default; otherwise use e. RHS is an Expression with possible
             // side effects → branch-based, NOT select (ADR-0039).
-            let obj_val = lower_expr(*object, arena, c)?;
+            let obj_val = lower_expr(*object, None, arena, c)?;
 
             // Create a const local holding NULL_SENTINEL for comparison.
             let sentinel = c.alloc_local();
@@ -2724,7 +2730,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
             // ── Null path: evaluate default expression ──
             c.cur = null_bb;
-            let default_val = lower_expr(*default, arena, c)?;
+            let default_val = lower_expr(*default, None, arena, c)?;
             let null_end = c.cur;
             let result = c.alloc_local_ty(payload_ty.clone());
             c.push(Statement::StorageLive(result, expr_span.clone()));
@@ -2772,7 +2778,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
             // flatten are both identity at the Bậc A value level — a
             // nullable body already carries NULL_SENTINEL-or-value). inner
             // null → pass NULL_SENTINEL straight through (body not run).
-            let inner_val = lower_expr(*inner, arena, c)?;
+            let inner_val = lower_expr(*inner, None, arena, c)?;
             let inner_ty = c.local_decls[inner_val.0].ty.clone();
             let payload_ty = inner_ty
                 .nullable_payload()
@@ -2846,7 +2852,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 });
                 c.vars.insert(bind_var.clone(), bind_local);
             }
-            let body_val = lower_expr(*body, arena, c)?;
+            let body_val = lower_expr(*body, None, arena, c)?;
             // Bug B (ADR-0062 lát 5): the result was allocated with inner_ty
             // (the INPUT T?) at 2690, but `?+>` produces U? where U is the
             // body's type. When T ≠ U (e.g. String? ?+> |s| len(s) → Integer?)
@@ -2994,9 +3000,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     // taxonomy case 2 (set tag, copy fields); scalar stores the
                     // i64 directly (value IS the repr). Skips the Outcome path
                     // (Bug B: `~+` → `OutcomeAlloc` on the non-Outcome return).
-                    lower_expr(*inner, arena, c)?
+                    lower_expr(*inner, None, arena, c)?
                 } else {
-                    lower_expr(*field_expr, arena, c)?
+                    lower_expr(*field_expr, None, arena, c)?
                 };
                 // ADR-0066 M-2: B8 relaxed for FLAT direct heap leaf. A direct
                 // heap-leaf field (declared exactly `String`/`Vector`/`HashMap`)
@@ -3106,7 +3112,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 span: expr_span.clone(),
             });
             if let Some(payload_expr) = payload {
-                let val = lower_expr(*payload_expr, arena, c)?;
+                let val = lower_expr(*payload_expr, None, arena, c)?;
                 // ADR-0067 2b-1: a direct heap-leaf payload (String/Vector/
                 // HashMap) is allowed (tag-switch drop-glue frees the active
                 // variant); a struct-transitive-heap or Nullable(heap) payload
@@ -3132,7 +3138,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
         }
         Expr::Match { scrutinee, arms } => {
             // Lower scrutinee into a temp.
-            let scrut_local = lower_expr(*scrutinee, arena, c)?;
+            let scrut_local = lower_expr(*scrutinee, None, arena, c)?;
 
             let scrut_ty = c.local_decls[scrut_local.0].ty.clone();
 
@@ -3183,7 +3189,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             cases.push((key, arm_bb));
                             c.cur = arm_bb;
                             c.push_scope();
-                            let body_val = lower_expr(arm.body, arena, c)?;
+                            let body_val = lower_expr(arm.body, None, arena, c)?;
                             let arm_end = c.cur;
                             // ADR-0056: type merge result from the arm value.
                             c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3221,7 +3227,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.cur = wc_bb;
                     c.push_scope();
                     bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
-                    let body_val = lower_expr(wc.body, arena, c)?;
+                    let body_val = lower_expr(wc.body, None, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                     c.push(Statement::Assign {
@@ -3305,7 +3311,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                             cases.push((key, arm_bb));
                             c.cur = arm_bb;
                             c.push_scope();
-                            let body_val = lower_expr(arm.body, arena, c)?;
+                            let body_val = lower_expr(arm.body, None, arena, c)?;
                             let arm_end = c.cur;
                             // ADR-0056: type merge result from the arm value.
                             c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3341,7 +3347,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.cur = wc_bb;
                     c.push_scope();
                     bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
-                    let body_val = lower_expr(wc.body, arena, c)?;
+                    let body_val = lower_expr(wc.body, None, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                     c.push(Statement::Assign {
@@ -3504,7 +3510,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     && null_arm.is_none()
                 {
                     c.push_scope();
-                    let body_val = lower_expr(arm.body, arena, c)?;
+                    let body_val = lower_expr(arm.body, None, arena, c)?;
                     let result = c.alloc_local_ty(c.local_decls[body_val.0].ty.clone());
                     c.push(Statement::StorageLive(result, expr_span.clone()));
                     c.push(Statement::Assign {
@@ -3565,7 +3571,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                                          expr_span: Span|
                  -> Result<(), LowerError> {
                     c.push_scope();
-                    let body_val = lower_expr(arm.body, arena, c)?;
+                    let body_val = lower_expr(arm.body, None, arena, c)?;
                     let arm_end = c.cur;
                     // ADR-0056: merge result type from the arm value. The arm
                     // body need not have the payload type (e.g. `~+ v => 1`
@@ -3628,7 +3634,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         c.push_owned(bind_local);
                     }
                 }
-                let body_val = lower_expr(arm_for_present.body, arena, c)?;
+                let body_val = lower_expr(arm_for_present.body, None, arena, c)?;
                 let arm_end = c.cur;
                 // ADR-0056: merge result type from the arm value (see above).
                 c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3874,7 +3880,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     if did_bind && needs_deinit {
                         c.push(Statement::Deinit(scrut_local, expr_span.clone()));
                     }
-                    let body_val = lower_expr(arm.body, arena, c)?;
+                    let body_val = lower_expr(arm.body, None, arena, c)?;
                     c.push(Statement::Assign {
                         dest: Place::local(result),
                         source: Place::local(body_val),
@@ -3957,7 +3963,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     })?;
                     c.push_scope();
                     // ~0 has no payload — no variable binding.
-                    let body_val = lower_expr(z_arm.body, arena, c)?;
+                    let body_val = lower_expr(z_arm.body, None, arena, c)?;
                     c.push(Statement::Assign {
                         dest: Place::local(result),
                         source: Place::local(body_val),
@@ -4118,7 +4124,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                         }
 
                         // Lower arm body.
-                        let body_val = lower_expr(arm.body, arena, c)?;
+                        let body_val = lower_expr(arm.body, None, arena, c)?;
                         let arm_end = c.cur;
                         // ADR-0056: type the merge result from the arm value so
                         // a Fat-Pointer survives as a typed move. Idempotent —
@@ -4177,7 +4183,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     }
                     bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
                 }
-                let body_val = lower_expr(wc.body, arena, c)?;
+                let body_val = lower_expr(wc.body, None, arena, c)?;
                 let wc_end = c.cur;
                 // ADR-0056: type the merge result from the wildcard arm value.
                 c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -4285,9 +4291,9 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 // return the hidden sret pointer is inserted BEFORE the
                 // receiver → [sret, receiver, explicit...].
                 let mut args = Vec::with_capacity(arguments.len() + 1);
-                args.push(lower_expr(*receiver, arena, c)?);
+                args.push(lower_expr(*receiver, None, arena, c)?);
                 for &a in arguments {
-                    args.push(lower_expr(a, arena, c)?);
+                    args.push(lower_expr(a, None, arena, c)?);
                 }
                 if is_fat_ret {
                     // sret: allocate the struct/string/heap-outcome return
@@ -4462,7 +4468,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     });
                     values.push(d);
                 } else {
-                    let val = lower_expr(*v, arena, c)?;
+                    let val = lower_expr(*v, None, arena, c)?;
                     values.extend(lower_outcome_return_values(val, c));
                 }
             }
@@ -4502,7 +4508,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 // Type-preserving (ADR-0020 §3.2): body must match value_type T.
                 // Zero → eval body, rewrap as ~+ (null eliminated → binary).
                 // Positive/Negative → passthrough inner unchanged.
-                let inner_val = lower_expr(*inner, arena, c)?;
+                let inner_val = lower_expr(*inner, None, arena, c)?;
 
                 let disc = c.alloc_local_ty(MirType::Trit);
                 c.push(Statement::StorageLive(disc, expr_span.clone()));
@@ -4563,7 +4569,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
 
                 // ── Zero: eval body (no capture), rewrap as ~+ ──
                 c.cur = zero_bb;
-                let body_val = lower_expr(*body, arena, c)?;
+                let body_val = lower_expr(*body, None, arena, c)?;
                 let disc_tmp = c.alloc_local_ty(MirType::Trit);
                 c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
                 c.push(Statement::Const {
@@ -4602,7 +4608,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                 );
 
             // Lower inner → Outcome 2-slot value.
-            let inner_val = lower_expr(*inner, arena, c)?;
+            let inner_val = lower_expr(*inner, None, arena, c)?;
 
             // HP.4: inspect inner Outcome's payload types so each arm can
             // decide scalar (8-byte) vs heap (24-byte {ptr,len,cap}) moves.
@@ -4719,7 +4725,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.local_names.insert(e_local, name.clone());
                     c.push_owned(e_local);
                 }
-                let body_val = lower_expr(*body, arena, c)?;
+                let body_val = lower_expr(*body, None, arena, c)?;
                 // HP.4: result error type = mapped body type (32-byte slot
                 // when heap). Success type = inner success (passthrough).
                 let body_ty = c.local_decls[body_val.0].ty.clone();
@@ -4778,7 +4784,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.local_names.insert(e_local, name.clone());
                     c.push_owned(e_local);
                 }
-                lower_expr(*body, arena, c)?;
+                lower_expr(*body, None, arena, c)?;
                 c.pop_scope();
                 c.term(
                     c.cur,
@@ -4817,7 +4823,7 @@ fn lower_expr(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Local, Lowe
                     c.local_names.insert(v_local, name.clone());
                     c.push_owned(v_local);
                 }
-                let body_val = lower_expr(*body, arena, c)?;
+                let body_val = lower_expr(*body, None, arena, c)?;
                 // HP.4: result success type = mapped body type (32-byte slot
                 // when heap). Error type = inner error (passthrough).
                 let body_ty = c.local_decls[body_val.0].ty.clone();
@@ -5042,7 +5048,7 @@ fn lower_value_keyed_match(
                 cases.push((key, arm_bb));
                 c.cur = arm_bb;
                 c.push_scope();
-                let body_val = lower_expr(arm.body, arena, c)?;
+                let body_val = lower_expr(arm.body, None, arena, c)?;
                 let arm_end = c.cur;
                 // ADR-0056: type merge result from the arm value.
                 c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -5078,7 +5084,7 @@ fn lower_value_keyed_match(
         c.cur = wc_bb;
         c.push_scope();
         bind_scalar_catch_all(c, arena, wc, scrut_local, scrut_ty, expr_span);
-        let body_val = lower_expr(wc.body, arena, c)?;
+        let body_val = lower_expr(wc.body, None, arena, c)?;
         let wc_end = c.cur;
         c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
         c.push(Statement::Assign {
