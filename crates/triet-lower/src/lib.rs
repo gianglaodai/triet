@@ -876,26 +876,11 @@ pub(crate) fn lower_function(
         FunctionBody::External { .. } => None,
     };
     if let Some(e) = body_expr {
-        // ADR-0055 (A-hẹp): mirror the Stmt::Return null-~0 special case for
-        // expr-body tail. `= ~0` materializes the PA-3c sentinel from the
-        // function return type, identical to `return ~0` (the Stmt::Return
-        // null branch above). Block-final / if-arm `~0` is a SEPARATE
-        // expected-type-propagation gap (Heap-Nullable backlog) — NOT here.
-        let val = if is_null_expr(&input.arena.expression(e).node)
-            && !matches!(c.sig.return_type, MirType::Outcome { .. })
-        {
-            let span = input.arena.expression(e).span.clone();
-            let d = c.alloc_local_ty(c.sig.return_type.clone());
-            c.push(Statement::StorageLive(d, span.clone()));
-            c.push(Statement::Const {
-                dest: Place::local(d),
-                value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
-                span,
-            });
-            d
-        } else {
-            lower_expr(e, None, input.arena, &mut c)?
-        };
+        // ADR-0072 §2.3: the function body tail is a value-context SOURCE — the
+        // function return type is the expected type. `~0`/`~+`/`null` consume it
+        // in the leaf-consumer (§2.4); the is_null special-case is gone.
+        let ret_ty = c.sig.return_type.clone();
+        let val = lower_expr(e, Some(&ret_ty), input.arena, &mut c)?;
         // Emit the tail Return only into a REACHABLE open block. A block-body
         // ending in an explicit `return` leaves `cur` pointing at a dead
         // continuation block (created by Stmt::Return, no incoming edge);
@@ -1304,25 +1289,13 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 c.local_names.insert(d, name.clone());
                 c.push_owned(d);
             } else {
-                // ── ADR-0065 §12.8: top-level `let x: T? = ~+ v` redirect ──
-                // `~+ v` would lower to an OutcomeConstructor → OutcomeAlloc on
-                // the function's non-Outcome return type (Bug B). When the
-                // annotation is nullable, redirect to lower the PLAIN payload
-                // `v`; the widening block below performs the nullable construct
-                // (Struct → Assign-widen, Enum/scalar → retype-in-place).
-                // Mirrors the field-position `~+` redirect in StructLiteral.
-                let init_id = if let Expr::OutcomeConstructor {
-                    arm: triet_syntax::OutcomeArm::Positive,
-                    payload: Some(inner),
-                } = &arena.expression(*init).node
-                    && let Some(tid) = type_annotation
-                    && matches!(lower_type_simple(arena, *tid, c), MirType::Nullable(_))
-                {
-                    *inner
-                } else {
-                    *init
-                };
-                let v = lower_expr(init_id, None, arena, c)?;
+                // ADR-0072 §2.3/§2.4: let-init — the annotation is the expected
+                // type. `~+ v` / `~0` now consume it in the leaf-consumer (no
+                // bolt-on redirect); the widening block below still performs the
+                // nullable-aggregate construct on the lowered payload local.
+                let ann_ty_opt = type_annotation.map(|tid| lower_type_simple(arena, tid, c));
+                let init_id = *init;
+                let v = lower_expr(init_id, ann_ty_opt.as_ref(), arena, c)?;
                 // ── Widening: override init local's type from annotation ──
                 // `let x: Integer? = 5` → x should be typed "Integer?" not "?".
                 // Under PA-3c widening is identity (same i64 value), so we only
@@ -1443,27 +1416,12 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
             } else {
                 let mut values = Vec::new();
                 if let Some(v) = value {
-                    // ── NullLiteral ~0 in return position ──
-                    // Under PA-3c uniform, ~0 is always iconst(MIN).
-                    // The function's return type provides the local's type.
-                    // ADR-0052: if the return type is an Outcome (ternary T?~E),
-                    // let OutcomeConstructor handle ~0 as 2-slot {disc:0, payload}.
-                    if is_null_expr(&arena.expression(*v).node)
-                        && !matches!(c.sig.return_type, MirType::Outcome { .. })
-                    {
-                        let ret_ty = c.sig.return_type.clone();
-                        let d = c.alloc_local_ty(ret_ty.clone());
-                        c.push(Statement::StorageLive(d, stmt_span.clone()));
-                        c.push(Statement::Const {
-                            dest: Place::local(d),
-                            value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
-                            span: stmt_span.clone(),
-                        });
-                        values.push(d);
-                    } else {
-                        let val = lower_expr(*v, None, arena, c)?;
-                        values.extend(lower_outcome_return_values(val, c));
-                    }
+                    // ADR-0072 §2.3: return position — the function return type is
+                    // the expected type. `~0`/`~+`/`null` consume it in the
+                    // leaf-consumer (§2.4); the is_null special-case is gone.
+                    let ret_ty = c.sig.return_type.clone();
+                    let val = lower_expr(*v, Some(&ret_ty), arena, c)?;
+                    values.extend(lower_outcome_return_values(val, c));
                 }
                 // Drop owned locals before Return, so the borrowck can
                 // flag dangling references (E2450) on the return value.
@@ -1625,7 +1583,6 @@ fn lower_expr(
     arena: &Arena,
     c: &mut Ctx,
 ) -> Result<Local, LowerError> {
-    let _ = expected; // ADR-0072 Slice 2 consumes this
     let expr_span = arena.expression(expr_id).span.clone();
     match &arena.expression(expr_id).node {
         Expr::IntegerLiteral { value, suffix } => {
@@ -1683,8 +1640,61 @@ fn lower_expr(
             Ok(d)
         }
         Expr::NullLiteral => {
-            // null keyword (deprecated) — same as ~0.
-            Err(LowerError::null_literal_without_expected_type(expr_span))
+            // ADR-0072 §2.4: the deprecated `null` keyword is a LEAF consumer of
+            // the expected type (was previously always an error). Fallback to the
+            // function return type when no expected type was threaded (§2.5
+            // scaffold; removed in Slice 3).
+            let ctx_ty: MirType = expected
+                .cloned()
+                .unwrap_or_else(|| c.sig.return_type.clone());
+            match &ctx_ty {
+                MirType::Nullable(_) => {
+                    // PA-3c null repr → NULL_SENTINEL of the expected type.
+                    let d = c.alloc_local_ty(ctx_ty.clone());
+                    c.push(Statement::StorageLive(d, expr_span.clone()));
+                    c.push(Statement::Const {
+                        dest: Place::local(d),
+                        value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                        span: expr_span,
+                    });
+                    Ok(d)
+                }
+                MirType::Outcome { .. } => {
+                    // Outcome-zero: 2-slot StackSlot {disc: Trit(0), payload: 0}.
+                    let outcome = c.alloc_local_ty(ctx_ty.clone());
+                    c.push(Statement::StorageLive(outcome, expr_span.clone()));
+                    c.push(Statement::OutcomeAlloc {
+                        dest: outcome,
+                        span: expr_span.clone(),
+                    });
+                    let disc_tmp = c.alloc_local_ty(MirType::Trit);
+                    c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
+                    c.push(Statement::Const {
+                        dest: Place::local(disc_tmp),
+                        value: ConstValue::Trit(0),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
+                        source: Place::local(disc_tmp),
+                        span: expr_span.clone(),
+                    });
+                    let payload_tmp = c.alloc_local_ty(MirType::Integer);
+                    c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
+                    c.push(Statement::Const {
+                        dest: Place::local(payload_tmp),
+                        value: ConstValue::Integer(0),
+                        span: expr_span.clone(),
+                    });
+                    c.push(Statement::Assign {
+                        dest: Place::local(outcome).project(Projection::OutcomePayload),
+                        source: Place::local(payload_tmp),
+                        span: expr_span,
+                    });
+                    Ok(outcome)
+                }
+                _ => Err(LowerError::null_literal_without_expected_type(expr_span)),
+            }
         }
         // ADR-0069: `mint Cap` → a ZST capability token. 0 byte at runtime —
         // no heap, no shim, no stack slot (the JIT keeps it in a plain i64
@@ -1722,14 +1732,55 @@ fn lower_expr(
             // Zero arm (T?~E) deferred to later OP.
             // Payload = value/error scalar (Bậc A — heap deferred).
 
+            // ADR-0072 §2.4/§2.5: decide the lowering path by the EXPECTED type,
+            // NOT c.sig.return_type. Fallback to the function return type when no
+            // expected type was threaded down (Slice 2 scaffold; the fallback and
+            // the if/match/block forwarding are landed/removed in Slice 3).
+            let ctx_ty: MirType = expected
+                .cloned()
+                .unwrap_or_else(|| c.sig.return_type.clone());
+
+            // Nullable context → PA-3c nullable repr (NO OutcomeAlloc).
+            if let MirType::Nullable(inner) = &ctx_ty {
+                return match arm {
+                    triet_syntax::OutcomeArm::Positive => {
+                        let Some(p) = payload else {
+                            return Err(LowerError::unsupported_expr(
+                                &arena.expression(expr_id).node,
+                                expr_span,
+                            ));
+                        };
+                        // Payload-plain: present scalar value IS the repr (PA-3c);
+                        // the parent value-context performs any nullable widening.
+                        let inner_ty = inner.as_ref().clone();
+                        lower_expr(*p, Some(&inner_ty), arena, c)
+                    }
+                    triet_syntax::OutcomeArm::Zero => {
+                        let d = c.alloc_local_ty(ctx_ty.clone());
+                        c.push(Statement::StorageLive(d, expr_span.clone()));
+                        c.push(Statement::Const {
+                            dest: Place::local(d),
+                            value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
+                            span: expr_span,
+                        });
+                        Ok(d)
+                    }
+                    triet_syntax::OutcomeArm::Negative => {
+                        // `~-` on a `T?` — typecheck should have rejected this.
+                        Err(LowerError::null_literal_without_expected_type(expr_span))
+                    }
+                };
+            }
+
+            // Non-wrapper context → cannot build an Outcome/nullable value here.
+            if !matches!(ctx_ty, MirType::Outcome { .. }) {
+                return Err(LowerError::null_literal_without_expected_type(expr_span));
+            }
+
             // ~0 (Zero arm) — constructor for T?~E ternary Outcome.
             // Has no payload — disc = Trit(0), payload = 0 (don't-care).
             if matches!(arm, triet_syntax::OutcomeArm::Zero) {
-                if !matches!(c.sig.return_type, MirType::Outcome { .. }) {
-                    // ~0 in non-Outcome context → same as NullLiteral.
-                    return Err(LowerError::null_literal_without_expected_type(expr_span));
-                }
-                let outcome_ty = c.sig.return_type.clone();
+                let outcome_ty = ctx_ty.clone();
                 let outcome = c.alloc_local_ty(outcome_ty);
                 c.push(Statement::StorageLive(outcome, expr_span.clone()));
                 c.push(Statement::OutcomeAlloc {
@@ -1769,7 +1820,7 @@ fn lower_expr(
                 ref value_type,
                 ref error_type,
                 ..
-            } = c.sig.return_type
+            } = ctx_ty
             {
                 match arm {
                     triet_syntax::OutcomeArm::Positive => value_type.as_ref().clone(),
@@ -1787,7 +1838,7 @@ fn lower_expr(
             };
 
             // Allocate single Outcome local with 16-byte StackSlot.
-            let outcome_ty = c.sig.return_type.clone();
+            let outcome_ty = ctx_ty.clone();
             let outcome = c.alloc_local_ty(outcome_ty);
             c.push(Statement::StorageLive(outcome, expr_span.clone()));
             c.push(Statement::OutcomeAlloc {
@@ -2965,13 +3016,6 @@ fn lower_expr(
                     .get(struct_name.as_str())
                     .and_then(|l| l.fields.iter().find(|f| &f.name == field_name))
                     .map(|f| f.ty.clone());
-                // ADR-0065 §12.8: ANY nullable field (scalar `T?` included), not
-                // just nullable aggregate. Scalar `~+ 5` lowers `5` plain → the
-                // field Assign stores the i64 (scalar nullable: value IS the
-                // repr, present 5 != MIN). B8 (is_copy check below) still gates
-                // heap: `f: String?` set `~+ "hi"` → inner String → refuse.
-                let field_is_nullable = matches!(&field_decl_ty, Some(MirType::Nullable(_)));
-
                 let field_val = if is_null_expr(&arena.expression(*field_expr).node) {
                     // ADR-0065 §12: `~0` in a struct field materializes a
                     // NULL_SENTINEL of the field's declared type (mirror of the
@@ -2988,21 +3032,12 @@ fn lower_expr(
                         span: expr_span.clone(),
                     });
                     nd
-                } else if field_is_nullable
-                    && let Expr::OutcomeConstructor {
-                        arm: triet_syntax::OutcomeArm::Positive,
-                        payload: Some(inner),
-                    } = &arena.expression(*field_expr).node
-                {
-                    // ADR-0065 §12.7 Lát 3' + §12.8: `~+ inner` into a nullable
-                    // field. Lower `inner` as a PLAIN value — the field Assign
-                    // then constructs the nullable repr: aggregate widens via JIT
-                    // taxonomy case 2 (set tag, copy fields); scalar stores the
-                    // i64 directly (value IS the repr). Skips the Outcome path
-                    // (Bug B: `~+` → `OutcomeAlloc` on the non-Outcome return).
-                    lower_expr(*inner, None, arena, c)?
                 } else {
-                    lower_expr(*field_expr, None, arena, c)?
+                    // ADR-0072 §2.3/§2.4: the field's declared type is the expected
+                    // type. `~+ inner` / `~0` now consume it in the leaf-consumer
+                    // (no bolt-on redirect); the field Assign / widening below
+                    // builds the nullable repr from the lowered payload local.
+                    lower_expr(*field_expr, field_decl_ty.as_ref(), arena, c)?
                 };
                 // ADR-0066 M-2: B8 relaxed for FLAT direct heap leaf. A direct
                 // heap-leaf field (declared exactly `String`/`Vector`/`HashMap`)

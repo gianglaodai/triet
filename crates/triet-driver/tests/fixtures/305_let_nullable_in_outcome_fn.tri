@@ -1,0 +1,13 @@
+// EXPECT: 0
+// ADR-0072 Slice 2: a `let x: Integer?` binding INSIDE an Outcome-returning
+// function. The let-init threads the annotation (`Some(Integer?)`) as the
+// expected type, so `~+ 5` lowers as the nullable payload (`const 5` plain) —
+// NOT via the function's Outcome return type. This is the R-let teeth target:
+// severing the let-init wire falls back to sig.return_type (Outcome) and emits
+// `OutcomeAlloc on non-Outcome type 'Integer?'` — proving the wire is load-bearing
+// and the §2.5 fallback does NOT mask it.
+function g() -> Integer~Integer {
+    let x: Integer? = ~+ 5;
+    ~+ 0
+}
+function main() -> Integer = match g() { ~+ v => v  ~- e => e }

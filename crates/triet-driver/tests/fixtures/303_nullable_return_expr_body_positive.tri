@@ -1,0 +1,7 @@
+// EXPECT: 5
+// ADR-0072 Slice 2: expr-body `~+ v` in a `T?`-returning function now lowers
+// via the expected-type leaf-consumer (function-body-tail threads
+// Some(&sig.return_type)). Previously emitted `OutcomeAlloc on non-Outcome
+// type 'Integer?'` (the Bug B class). PA-3c: present scalar value IS the repr.
+function fetch() -> Integer? = ~+ 5
+function main() -> Integer = fetch() ?: 0

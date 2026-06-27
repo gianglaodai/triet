@@ -134,6 +134,16 @@ match expected {
 
 ---
 
+### 2.5 Fallback chuyển-tiếp Slice 2→3 (giữ mọi gate xanh từng lát)
+
+Recon 2026-06-27 phát hiện **3 fixture (160/161/187)** đặt `~+`/`~-` trong **match-arm-body** của hàm trả Outcome (vd `function f(c) -> Integer~Integer = match c { Color::Red => ~+ 5, … }`). Chúng chạy nhờ constructor đọc `c.sig.return_type`. Nếu Slice 2 cho leaf-consumer đọc `expected` STRICT (Err khi `None`) trong khi forwarding qua `match`/`if`/`block` còn ở **Slice 3** → 3 fixture nhận `None` → vỡ → gate rụng.
+
+**Quyết định slicing (O, để gate xanh từng lát):**
+- **Slice 2** — leaf-consumer đọc `expected`, nhưng khi `expected == None` **lùi về `c.sig.return_type`** (hành vi cũ). Vị trí đã-wire (function-body/let/return/struct-field) truyền `Some(_)` thật → mở `T?`-return. Vị trí chưa-wire (match/if/block arm: 160/161/187) nhận `None` → fallback → byte-identical.
+- **Slice 3** — wire transparent-forwarding (if/match/block) **VÀ gỡ hẳn fallback** → `c.sig.return_type` thôi làm input của constructor (chỉ còn là *nguồn* expected tại function-body/return per §2.3). Kết thúc việc giết context ẩn.
+
+Fallback là **giàn giáo chuyển-tiếp có lịch tháo dỡ ở Slice 3**, KHÔNG phải nợ ẩn. `c.sig.return_type` chưa chết hẳn ở Slice 2 — nó chết ở Slice 3. Ghi minh bạch để không ai tưởng Slice 2 đã đóng trọn việc giết context ẩn.
+
 ## 3. Phạm vi & blast radius
 
 - **Signature churn:** 61 call-site `lower_expr(` (cơ học, đa số thêm `None`).
