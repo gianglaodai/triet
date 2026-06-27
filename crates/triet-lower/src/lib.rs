@@ -78,9 +78,9 @@ impl LowerError {
 
     fn null_literal_without_expected_type(span: Span) -> Self {
         Self {
-            message: "`~0` (null literal) requires an expected type from context \
-                 (e.g. `let x: Integer? = ~0` or `return ~0` from a function returning `T?`). \
-                 Standalone `~0` without a type annotation is not supported in Bậc A."
+            message: "Outcome/nullable constructor (`~+`/`~0`/`~-`) requires an expected \
+                 type from context (annotate the binding or the return type, e.g. \
+                 `let x: Integer? = ~0` or a function returning `T?` / `T~E`)."
                 .to_string(),
             span,
         }
@@ -1384,7 +1384,11 @@ fn lower_stmt(stmt: &Stmt, stmt_span: Span, arena: &Arena, c: &mut Ctx) -> Resul
                 // Fat return via sret. Struct → copy fields into the caller's
                 // buffer (emit_struct_sret_copy); String/heap-Outcome → M4
                 // escape Return[s] (JIT writes {ptr,len,cap} from slot to sret).
-                let struct_local = lower_expr(*v, None, arena, c)?;
+                // ADR-0072 §2.3: sret return position is a value-context SOURCE —
+                // forward the function return type as expected (fixture 156:
+                // `return ~+ 5` from an `Integer~String` heap-Outcome fn).
+                let ret_ty = c.sig.return_type.clone();
+                let struct_local = lower_expr(*v, Some(&ret_ty), arena, c)?;
                 if emit_struct_sret_copy(c, struct_local, &stmt_span) {
                     c.flush_all_for_return();
                     let cur = c.cur;
@@ -1575,6 +1579,47 @@ fn place_result_type(place: &Place, c: &Ctx) -> MirType {
     ty
 }
 
+/// ADR-0072 §2.4 / ADR-0052: emit a zero Outcome — a 2-slot StackSlot
+/// `{disc: Trit(0), payload: 0}`. Shared SSOT for `~0` in an Outcome context
+/// (`OutcomeConstructor` Zero arm) and the deprecated `null` keyword
+/// (`NullLiteral`) when the expected type is an Outcome. Emits exactly the
+/// statement sequence both call-sites used inline (byte-identical).
+fn emit_outcome_zero(c: &mut Ctx, outcome_ty: MirType, span: &Span) -> Local {
+    let outcome = c.alloc_local_ty(outcome_ty);
+    c.push(Statement::StorageLive(outcome, span.clone()));
+    c.push(Statement::OutcomeAlloc {
+        dest: outcome,
+        span: span.clone(),
+    });
+    // disc = Trit(0).
+    let disc_tmp = c.alloc_local_ty(MirType::Trit);
+    c.push(Statement::StorageLive(disc_tmp, span.clone()));
+    c.push(Statement::Const {
+        dest: Place::local(disc_tmp),
+        value: ConstValue::Trit(0),
+        span: span.clone(),
+    });
+    c.push(Statement::Assign {
+        dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
+        source: Place::local(disc_tmp),
+        span: span.clone(),
+    });
+    // payload = 0 (don't-care — ~0 has no associated data).
+    let payload_tmp = c.alloc_local_ty(MirType::Integer);
+    c.push(Statement::StorageLive(payload_tmp, span.clone()));
+    c.push(Statement::Const {
+        dest: Place::local(payload_tmp),
+        value: ConstValue::Integer(0),
+        span: span.clone(),
+    });
+    c.push(Statement::Assign {
+        dest: Place::local(outcome).project(Projection::OutcomePayload),
+        source: Place::local(payload_tmp),
+        span: span.clone(),
+    });
+    outcome
+}
+
 // ── Expression lowering ─────────────────────────────────────
 
 fn lower_expr(
@@ -1641,13 +1686,12 @@ fn lower_expr(
         }
         Expr::NullLiteral => {
             // ADR-0072 §2.4: the deprecated `null` keyword is a LEAF consumer of
-            // the expected type (was previously always an error). Fallback to the
-            // function return type when no expected type was threaded (§2.5
-            // scaffold; removed in Slice 3).
-            let ctx_ty: MirType = expected
-                .cloned()
-                .unwrap_or_else(|| c.sig.return_type.clone());
-            match &ctx_ty {
+            // the expected type. STRICT (Slice 3 — no fallback): no expected type
+            // from context → error (typecheck should have caught it).
+            let Some(ctx_ty) = expected else {
+                return Err(LowerError::null_literal_without_expected_type(expr_span));
+            };
+            match ctx_ty {
                 MirType::Nullable(_) => {
                     // PA-3c null repr → NULL_SENTINEL of the expected type.
                     let d = c.alloc_local_ty(ctx_ty.clone());
@@ -1661,37 +1705,7 @@ fn lower_expr(
                 }
                 MirType::Outcome { .. } => {
                     // Outcome-zero: 2-slot StackSlot {disc: Trit(0), payload: 0}.
-                    let outcome = c.alloc_local_ty(ctx_ty.clone());
-                    c.push(Statement::StorageLive(outcome, expr_span.clone()));
-                    c.push(Statement::OutcomeAlloc {
-                        dest: outcome,
-                        span: expr_span.clone(),
-                    });
-                    let disc_tmp = c.alloc_local_ty(MirType::Trit);
-                    c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
-                    c.push(Statement::Const {
-                        dest: Place::local(disc_tmp),
-                        value: ConstValue::Trit(0),
-                        span: expr_span.clone(),
-                    });
-                    c.push(Statement::Assign {
-                        dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
-                        source: Place::local(disc_tmp),
-                        span: expr_span.clone(),
-                    });
-                    let payload_tmp = c.alloc_local_ty(MirType::Integer);
-                    c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
-                    c.push(Statement::Const {
-                        dest: Place::local(payload_tmp),
-                        value: ConstValue::Integer(0),
-                        span: expr_span.clone(),
-                    });
-                    c.push(Statement::Assign {
-                        dest: Place::local(outcome).project(Projection::OutcomePayload),
-                        source: Place::local(payload_tmp),
-                        span: expr_span,
-                    });
-                    Ok(outcome)
+                    Ok(emit_outcome_zero(c, ctx_ty.clone(), &expr_span))
                 }
                 _ => Err(LowerError::null_literal_without_expected_type(expr_span)),
             }
@@ -1732,13 +1746,13 @@ fn lower_expr(
             // Zero arm (T?~E) deferred to later OP.
             // Payload = value/error scalar (Bậc A — heap deferred).
 
-            // ADR-0072 §2.4/§2.5: decide the lowering path by the EXPECTED type,
-            // NOT c.sig.return_type. Fallback to the function return type when no
-            // expected type was threaded down (Slice 2 scaffold; the fallback and
-            // the if/match/block forwarding are landed/removed in Slice 3).
-            let ctx_ty: MirType = expected
-                .cloned()
-                .unwrap_or_else(|| c.sig.return_type.clone());
+            // ADR-0072 §2.4: decide the lowering path by the EXPECTED type, NOT
+            // the function return type. STRICT (Slice 3 — no fallback):
+            // `~+`/`~0`/`~-` in a position with no expected type (e.g. an operand)
+            // → error (typecheck should have caught it).
+            let Some(ctx_ty) = expected.cloned() else {
+                return Err(LowerError::null_literal_without_expected_type(expr_span));
+            };
 
             // Nullable context → PA-3c nullable repr (NO OutcomeAlloc).
             if let MirType::Nullable(inner) = &ctx_ty {
@@ -1780,40 +1794,7 @@ fn lower_expr(
             // ~0 (Zero arm) — constructor for T?~E ternary Outcome.
             // Has no payload — disc = Trit(0), payload = 0 (don't-care).
             if matches!(arm, triet_syntax::OutcomeArm::Zero) {
-                let outcome_ty = ctx_ty.clone();
-                let outcome = c.alloc_local_ty(outcome_ty);
-                c.push(Statement::StorageLive(outcome, expr_span.clone()));
-                c.push(Statement::OutcomeAlloc {
-                    dest: outcome,
-                    span: expr_span.clone(),
-                });
-                // disc = Trit(0).
-                let disc_tmp = c.alloc_local_ty(MirType::Trit);
-                c.push(Statement::StorageLive(disc_tmp, expr_span.clone()));
-                c.push(Statement::Const {
-                    dest: Place::local(disc_tmp),
-                    value: ConstValue::Trit(0),
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::Assign {
-                    dest: Place::local(outcome).project(Projection::OutcomeDiscriminant),
-                    source: Place::local(disc_tmp),
-                    span: expr_span.clone(),
-                });
-                // payload = 0 (don't-care — ~0 has no associated data).
-                let payload_tmp = c.alloc_local_ty(MirType::Integer);
-                c.push(Statement::StorageLive(payload_tmp, expr_span.clone()));
-                c.push(Statement::Const {
-                    dest: Place::local(payload_tmp),
-                    value: ConstValue::Integer(0),
-                    span: expr_span.clone(),
-                });
-                c.push(Statement::Assign {
-                    dest: Place::local(outcome).project(Projection::OutcomePayload),
-                    source: Place::local(payload_tmp),
-                    span: expr_span.clone(),
-                });
-                return Ok(outcome);
+                return Ok(emit_outcome_zero(c, ctx_ty.clone(), &expr_span));
             }
 
             let payload_ty = if let MirType::Outcome {
@@ -2606,7 +2587,9 @@ fn lower_expr(
                     // reborrow that conflicts with the live loan, masking the
                     // intended drop-while-borrowed diagnostic (E2450 → E2440,
                     // fixture 102). Reference tails keep the direct path.
-                    let tail_val = lower_expr(e, None, arena, c)?;
+                    // ADR-0072 §2.2 TRANSPARENT: the block tail IS the block's
+                    // value — forward the block's expected type to it.
+                    let tail_val = lower_expr(e, expected, arena, c)?;
                     if c.local_decls[tail_val.0].ty.is_reference() {
                         Ok(tail_val)
                     } else {
@@ -2664,7 +2647,9 @@ fn lower_expr(
             );
 
             c.cur = then_bb;
-            let then_val = lower_expr(then_branch, None, arena, c)?;
+            // ADR-0072 §2.2 TRANSPARENT: both arms carry the if's expected type
+            // (the condition stays OPAQUE → None).
+            let then_val = lower_expr(then_branch, expected, arena, c)?;
             let then_end = c.cur;
             // ADR-0056: type the merge result from the branch value so a
             // Fat-Pointer ({ptr,len,cap}) survives the merge as a typed move
@@ -2689,7 +2674,7 @@ fn lower_expr(
                 );
 
                 c.cur = else_bb;
-                let else_val = lower_expr(eb, None, arena, c)?;
+                let else_val = lower_expr(eb, expected, arena, c)?;
                 let else_end = c.cur;
                 c.push(Statement::Assign {
                     dest: Place::local(result),
@@ -3224,7 +3209,7 @@ fn lower_expr(
                             cases.push((key, arm_bb));
                             c.cur = arm_bb;
                             c.push_scope();
-                            let body_val = lower_expr(arm.body, None, arena, c)?;
+                            let body_val = lower_expr(arm.body, expected, arena, c)?;
                             let arm_end = c.cur;
                             // ADR-0056: type merge result from the arm value.
                             c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3262,7 +3247,7 @@ fn lower_expr(
                     c.cur = wc_bb;
                     c.push_scope();
                     bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
-                    let body_val = lower_expr(wc.body, None, arena, c)?;
+                    let body_val = lower_expr(wc.body, expected, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                     c.push(Statement::Assign {
@@ -3346,7 +3331,7 @@ fn lower_expr(
                             cases.push((key, arm_bb));
                             c.cur = arm_bb;
                             c.push_scope();
-                            let body_val = lower_expr(arm.body, None, arena, c)?;
+                            let body_val = lower_expr(arm.body, expected, arena, c)?;
                             let arm_end = c.cur;
                             // ADR-0056: type merge result from the arm value.
                             c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3382,7 +3367,7 @@ fn lower_expr(
                     c.cur = wc_bb;
                     c.push_scope();
                     bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
-                    let body_val = lower_expr(wc.body, None, arena, c)?;
+                    let body_val = lower_expr(wc.body, expected, arena, c)?;
                     let wc_end = c.cur;
                     c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
                     c.push(Statement::Assign {
@@ -3433,7 +3418,15 @@ fn lower_expr(
             // exhaustiveness lives in typecheck per §A1.2). Mirror of the Trit
             // branch. One helper avoids the 5-copy smell.
             if matches!(scrut_ty, MirType::Integer | MirType::Tryte | MirType::Long) {
-                return lower_value_keyed_match(c, arena, arms, scrut_local, &scrut_ty, &expr_span);
+                return lower_value_keyed_match(
+                    c,
+                    arena,
+                    arms,
+                    scrut_local,
+                    &scrut_ty,
+                    &expr_span,
+                    expected,
+                );
             }
 
             // ── Nullable match: branch on ~+ / ~0 via NULL_SENTINEL ──
@@ -3545,7 +3538,7 @@ fn lower_expr(
                     && null_arm.is_none()
                 {
                     c.push_scope();
-                    let body_val = lower_expr(arm.body, None, arena, c)?;
+                    let body_val = lower_expr(arm.body, expected, arena, c)?;
                     let result = c.alloc_local_ty(c.local_decls[body_val.0].ty.clone());
                     c.push(Statement::StorageLive(result, expr_span.clone()));
                     c.push(Statement::Assign {
@@ -3606,7 +3599,7 @@ fn lower_expr(
                                          expr_span: Span|
                  -> Result<(), LowerError> {
                     c.push_scope();
-                    let body_val = lower_expr(arm.body, None, arena, c)?;
+                    let body_val = lower_expr(arm.body, expected, arena, c)?;
                     let arm_end = c.cur;
                     // ADR-0056: merge result type from the arm value. The arm
                     // body need not have the payload type (e.g. `~+ v => 1`
@@ -3669,7 +3662,7 @@ fn lower_expr(
                         c.push_owned(bind_local);
                     }
                 }
-                let body_val = lower_expr(arm_for_present.body, None, arena, c)?;
+                let body_val = lower_expr(arm_for_present.body, expected, arena, c)?;
                 let arm_end = c.cur;
                 // ADR-0056: merge result type from the arm value (see above).
                 c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -3915,7 +3908,7 @@ fn lower_expr(
                     if did_bind && needs_deinit {
                         c.push(Statement::Deinit(scrut_local, expr_span.clone()));
                     }
-                    let body_val = lower_expr(arm.body, None, arena, c)?;
+                    let body_val = lower_expr(arm.body, expected, arena, c)?;
                     c.push(Statement::Assign {
                         dest: Place::local(result),
                         source: Place::local(body_val),
@@ -3998,7 +3991,7 @@ fn lower_expr(
                     })?;
                     c.push_scope();
                     // ~0 has no payload — no variable binding.
-                    let body_val = lower_expr(z_arm.body, None, arena, c)?;
+                    let body_val = lower_expr(z_arm.body, expected, arena, c)?;
                     c.push(Statement::Assign {
                         dest: Place::local(result),
                         source: Place::local(body_val),
@@ -4159,7 +4152,7 @@ fn lower_expr(
                         }
 
                         // Lower arm body.
-                        let body_val = lower_expr(arm.body, None, arena, c)?;
+                        let body_val = lower_expr(arm.body, expected, arena, c)?;
                         let arm_end = c.cur;
                         // ADR-0056: type the merge result from the arm value so
                         // a Fat-Pointer survives as a typed move. Idempotent —
@@ -4218,7 +4211,7 @@ fn lower_expr(
                     }
                     bind_scalar_catch_all(c, arena, wc, scrut_local, &scrut_ty, &expr_span);
                 }
-                let body_val = lower_expr(wc.body, None, arena, c)?;
+                let body_val = lower_expr(wc.body, expected, arena, c)?;
                 let wc_end = c.cur;
                 // ADR-0056: type the merge result from the wildcard arm value.
                 c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -4487,25 +4480,16 @@ fn lower_expr(
             ))
         }
         Expr::Return { value } => {
-            // `return` in expression position (e.g. inside `~->` body).
+            // `return` in expression position (e.g. inside a `~->` propagate
+            // closure body). ADR-0072 §2.3: this is a value-context SOURCE — the
+            // function return type is the expected type, so `~+`/`~0`/`~-`
+            // consume it in the leaf-consumer (fixtures 115/116 `~-> |e| return
+            // ~- e`). The is_null special-case is gone (§2.4 generalises it).
             let mut values = Vec::new();
             if let Some(v) = value {
-                if is_null_expr(&arena.expression(*v).node)
-                    && !matches!(c.sig.return_type, MirType::Outcome { .. })
-                {
-                    let ret_ty = c.sig.return_type.clone();
-                    let d = c.alloc_local_ty(ret_ty);
-                    c.push(Statement::StorageLive(d, expr_span.clone()));
-                    c.push(Statement::Const {
-                        dest: Place::local(d),
-                        value: ConstValue::Integer(i128::from(triet_mir::NULL_SENTINEL)),
-                        span: expr_span.clone(),
-                    });
-                    values.push(d);
-                } else {
-                    let val = lower_expr(*v, None, arena, c)?;
-                    values.extend(lower_outcome_return_values(val, c));
-                }
+                let ret_ty = c.sig.return_type.clone();
+                let val = lower_expr(*v, Some(&ret_ty), arena, c)?;
+                values.extend(lower_outcome_return_values(val, c));
             }
             c.flush_all_for_return();
             let cur = c.cur;
@@ -5031,6 +5015,7 @@ fn lower_value_keyed_match(
     scrut_local: Local,
     scrut_ty: &MirType,
     expr_span: &Span,
+    expected: Option<&MirType>, // ADR-0072 §2.2: forwarded to arm bodies (TRANSPARENT)
 ) -> Result<Local, LowerError> {
     use triet_syntax::{LiteralPattern, NumericSuffix, Pattern};
 
@@ -5083,7 +5068,7 @@ fn lower_value_keyed_match(
                 cases.push((key, arm_bb));
                 c.cur = arm_bb;
                 c.push_scope();
-                let body_val = lower_expr(arm.body, None, arena, c)?;
+                let body_val = lower_expr(arm.body, expected, arena, c)?;
                 let arm_end = c.cur;
                 // ADR-0056: type merge result from the arm value.
                 c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
@@ -5119,7 +5104,7 @@ fn lower_value_keyed_match(
         c.cur = wc_bb;
         c.push_scope();
         bind_scalar_catch_all(c, arena, wc, scrut_local, scrut_ty, expr_span);
-        let body_val = lower_expr(wc.body, None, arena, c)?;
+        let body_val = lower_expr(wc.body, expected, arena, c)?;
         let wc_end = c.cur;
         c.local_decls[result.0].ty = c.local_decls[body_val.0].ty.clone();
         c.push(Statement::Assign {

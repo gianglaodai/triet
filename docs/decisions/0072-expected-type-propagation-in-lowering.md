@@ -1,6 +1,8 @@
 # ADR 0072 — Expected-Type Propagation in AST→MIR Lowering
 
-**Trạng thái:** **✅ APPROVED** (Mentor O soạn + Mentor G ký 2026-06-27; chờ implement 3-slice → O verify máu byte-identical → SEALED). Áp dụng cho rewrite-era (Bậc C, `triet-lower`). Đóng **TODO Gap #2** (expected-type propagation cho `~0`/Outcome-constructor lồng trong block-final/if-arm/match-arm) + bug producer-side **hàm trả `T?`** phát hiện phiên 2026-06-27.
+**Trạng thái:** **🔒 SEALED** (Mentor G ký đóng vĩnh viễn 2026-06-27; O verify máu 3 slice — byte-identical toàn corpus + poison đỏ độc lập + structural grep sạch). Áp dụng cho rewrite-era (Bậc C, `triet-lower`). Đóng **TODO Gap #2** (expected-type propagation cho `~0`/Outcome-constructor lồng trong block-final/if-arm/match-arm) + bug producer-side **hàm trả `T?`** phát hiện phiên 2026-06-27.
+
+**Thực thi (3 slice, local commits chờ push):** Slice 1 `c9a46e6` (signature plumbing, byte-identical) · Slice 2 `2c900fb` (wire 4 nguồn + leaf-consumer đọc `expected` + đập 3 Bug-B redirect + fallback §2.5 chuyển-tiếp; mở `T?`-return scalar) · Slice 3 (transparent forwarding if/match/block + gỡ sạch fallback §2.5 + **nhổ `c.sig.return_type` khỏi input constructor** + extract helper `emit_outcome_zero`; SEAL). Bằng chứng đóng: 157 UNTYPED (qua fallback cũ) vs 157 ANNOTATED (qua nguồn tường minh) ⟹ **MIR byte-identical** — hệ thống không hay biết khác biệt. `c.sig.return_type` nay chỉ sống ở 4 nguồn return-position hợp pháp.
 
 **Quyết định G (LOCKED 2026-06-27):** dùng **param tường minh `expected: Option<&MirType>`** truyền thẳng qua signature `lower_expr` — KHÔNG dùng context ẩn (`c.expected_stack`). Lý do G: *"Cái gì ẩn thì sớm muộn cũng sinh bug thối — `c.sig.return_type` là ví dụ hoàn hảo. Refactor một lần cho đàng hoàng, compiler tự-mô-tả."* Lộ trình 3-slice; điều kiện tiên quyết: **gate byte-identical ở Slice 1.**
 

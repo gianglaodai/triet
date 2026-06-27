@@ -1,0 +1,8 @@
+// ERROR: requires an expected type
+// ADR-0072 Slice 3: untyped `let r = ~+ 5` (no annotation) is REJECTED. The
+// constructor `~+ 5` is genuinely ambiguous (Integer~String? Integer~Integer?
+// Integer?) — the only thing that ever disambiguated it was the c.sig.return_type
+// global proxy, which §2.5 removed. Require an explicit type. This is the negative
+// twin of 157 (annotated → accepted); two faces of one rule.
+function f() -> Integer~String { let r = ~+ 5; return r; }
+function main() -> Integer = match f() { ~+ x => x  ~- e => -1 }

@@ -1,0 +1,12 @@
+// EXPECT: 7
+// ADR-0072 Slice 3: match-arm forwarding (value-keyed Integer match). The match
+// is in a value-context (`let r: Integer?`), so expected forwards to every arm
+// body INCLUDING the wildcard clause. `pick(9)` hits `_ => ~0` → NULL_SENTINEL →
+// Elvis 7. The wildcard `~0` body proves the wildcard-arm forward is load-bearing
+// (without it the wildcard body gets None → strict Err after the §2.5 fallback
+// removal). scrutinee stays OPAQUE (None).
+function pick(n: Integer) -> Integer {
+    let r: Integer? = match n { 0 => ~+ 5, _ => ~0 };
+    r ?: 7
+}
+function main() -> Integer = pick(9)

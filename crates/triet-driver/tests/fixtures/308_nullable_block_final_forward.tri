@@ -1,0 +1,10 @@
+// EXPECT: 5
+// ADR-0072 Slice 3: block-final forwarding. `let r: Integer? = { ~+ 5 }` — the
+// block tail IS the block's value, so the expected type (`Integer?`) forwards to
+// the tail `~+ 5`, which lowers the nullable payload plain (PA-3c). Before Slice 3
+// the block tail got None → OutcomeAlloc-on-non-Outcome (Bug B, Gap #2 block-final).
+function pick() -> Integer {
+    let r: Integer? = { ~+ 5 };
+    r ?: 0
+}
+function main() -> Integer = pick()

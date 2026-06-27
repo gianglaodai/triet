@@ -1,0 +1,12 @@
+// EXPECT: 5
+// ADR-0072 Slice 3: if-arm forwarding. `let r: Integer? = if c { ~+ 5 } else { ~0 }`
+// — the `if` is in a value-context (let annotation `Integer?`), so the expected
+// type forwards to BOTH arms (condition stays OPAQUE). The `~+ 5` then-arm lowers
+// the nullable payload plain; `~0` else-arm lowers NULL_SENTINEL. Before Slice 3
+// these arms got None → OutcomeAlloc-on-non-Outcome (Bug B). expected ≠
+// sig.return_type (Integer) here — the fallback could NOT have served this.
+function pick(c: Trilean!) -> Integer {
+    let r: Integer? = if c { ~+ 5 } else { ~0 };
+    r ?: 0
+}
+function main() -> Integer = pick(true)
