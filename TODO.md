@@ -65,7 +65,11 @@ Option-2 (gate free-fn `resolve_type_expr_with_params`, đổi chữ ký + dedup
 - [ ] 4. Elvis `?:` + match `~+/~0` heap (project `.ptr`, move payload).
 - [ ] 5. `?+>` map/flatMap heap (unwrap move + Deinit/tombstone tránh double-free).
 - [ ] Gỡ gate `HeapNullableNotLowered` (+ `find_heap_nullable`/`is_scalar_nullable_payload` helper ở triet-mir) khi móng landed.
-- [ ] **Gap #2 — expected-type propagation cho `~0`/Outcome-constructor lồng trong block-final/if-arm/match-arm.** `{ ~0 }`, `if…{~0}` fail y hệt ở CẢ `return`/tail/`let` (đã chứng minh, KHÔNG phải tail-asymmetry — Lát-2 A-hẹp chỉ vá expr-body `= ~0`). Cần ADR type-propagation (đẩy expected-type xuống block/if/match arm), KHÔNG chắp vá per-site.
+- [~] **Gap #2 — expected-type propagation (ADR-0072 ✅ APPROVED+co-signed, đang implement 3-slice).**
+  - [x] **Slice 1** `c9a46e6` — `lower_expr` thêm param `expected: Option<&MirType>`, 61 site=`None`, byte-identical (O verify MIR-diff rỗng toàn corpus).
+  - [x] **Slice 2** `2c900fb` — leaf-consumer (`OutcomeConstructor`/`NullLiteral`) đọc `expected`; wire 4 nguồn (function-body/return/let-init/struct-field); đập 3 Bug-B redirect. **Mở `T?`-return scalar** (303 Integer?, 305 let-Integer?-trong-Outcome-fn). Fallback §2.5 chuyển-tiếp (gỡ ở Slice 3). O verify: gate 0·0·299·0 + byte-identical 297 cũ + 2 poison `OutcomeAlloc on non-Outcome` đỏ + defense-in-depth 2 guard.
+  - [ ] **Slice 3 (kết liễu)** — transparent forwarding `expected` xuống if/match/block-final arm (Block tail :2573 · If :2667/2676 · Match 8 arm-body :3227/3349/3548/3609/3918/4001/4162/5086); gỡ sạch fallback §2.5; **nhổ `c.sig.return_type` khỏi input của constructor** (chỉ còn là *nguồn* tại function-body/return); extract helper (NullLiteral Outcome-zero dup + Zero-guard cleanup). Mở `~+`/`~0` trong if/match/block-arm ở context ≠ sig.return_type.
+- [ ] 🔴 **NỢ ĐÓNG-GÓI-RIÊNG — heap-nullable-RETURN drop-glue (cờ đỏ, G chốt 2026-06-27).** `function f() -> String? = ~+ "hi"` COMPILE+chạy (leaf-consumer hạ payload plain, KHÔNG OutcomeAlloc) — nhưng **drop-glue CHƯA verify** (leak không crash; "chạy →N" không chứng minh FREE==1). Fixture bonus 304 D thêm đã **XOÁ** (không poison = false signal, không được nằm trong gate). Cần **WO chuyên biệt**: counting-tooth FREE==1 + double-free→SIGABRT poison, mới được mở. ⛔ KHÔNG để lọt vào gate trước khi có poison.
 
 ### 🟣 ADR-0065 Nullable Aggregate (`Enum?` & `Struct?`) — 🔒 LOCKED, 2 lát
 Bất biến hợp nhất: `tag_cell == i64::MIN ⟺ null`. Rào **B8 §4**: aggregate-nullable CHỈ
