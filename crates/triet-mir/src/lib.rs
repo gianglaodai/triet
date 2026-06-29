@@ -488,8 +488,12 @@ pub enum MirType {
     // ── Heap (Move per ADR-0042) ──
     /// `String` — UTF-8 owned text, heap-allocated.
     String,
-    /// `Vector` — heap-allocated growable array. Bare (no element type yet).
-    Vector,
+    /// `Vector<T>` — heap-allocated growable array carrying its element type
+    /// (ADR-0077 Typed Vector P1). `T` is a built-in known-size type
+    /// (scalar / String / Vector / HashMap / Nullable of those). A no-arg /
+    /// legacy `Vector` lowers to `Vector(Box::new(Integer))` for byte-compat.
+    /// `Vector<UserStruct>` / `Vector<Enum>` by-value is REFUSED at P1 (E-code).
+    Vector(Box<MirType>),
     /// `HashMap` — heap-allocated key-value map. Bare (no key/value types yet).
     HashMap,
 
@@ -551,7 +555,7 @@ impl fmt::Display for MirType {
             Self::Unit => write!(f, "Unit"),
             Self::Unknown => write!(f, "?"),
             Self::String => write!(f, "String"),
-            Self::Vector => write!(f, "Vector"),
+            Self::Vector(inner) => write!(f, "Vector<{inner}>"),
             Self::HashMap => write!(f, "HashMap"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Reference { form, inner } => match form {
@@ -605,10 +609,10 @@ impl MirType {
         matches!(self, Self::Reference { .. })
     }
 
-    /// `true` for `Vector` (bare — no element type query yet).
+    /// `true` for any `Vector<T>` (element type ignored).
     #[must_use]
     pub fn is_vec(&self) -> bool {
-        matches!(self, Self::Vector)
+        matches!(self, Self::Vector(_))
     }
 
     /// `true` for `HashMap` (bare — no key/value type query yet).
@@ -621,7 +625,7 @@ impl MirType {
     /// These have 3-field layout `{ptr, len, cap}` and require Drop glue.
     #[must_use]
     pub fn is_any_heap(&self) -> bool {
-        matches!(self, Self::String | Self::Vector | Self::HashMap)
+        matches!(self, Self::String | Self::Vector(_) | Self::HashMap)
     }
 
     /// `true` for `String` and `String?` (= `Nullable(String)`).
@@ -698,7 +702,7 @@ impl MirType {
             | Self::Unit
             | Self::Unknown => true,
             // Heap types — Move.
-            Self::String | Self::Vector | Self::HashMap => false,
+            Self::String | Self::Vector(_) | Self::HashMap => false,
             // Capability token (ADR-0069) — ALWAYS Move. Short-circuit BEFORE
             // the Struct arm so a ZST token is NEVER classified Copy via the
             // empty-field-walk (`all()` over no fields = true). This is the
@@ -2656,7 +2660,7 @@ mod tests {
         assert_eq!(
             MirType::Outcome {
                 value_type: Box::new(MirType::String),
-                error_type: Box::new(MirType::Vector),
+                error_type: Box::new(MirType::Vector(Box::new(MirType::Integer))),
                 allow_null_state: false,
             }
             .outcome_slot_size(),
@@ -2680,7 +2684,7 @@ mod tests {
     #[test]
     fn is_any_heap_detection() {
         assert!(MirType::String.is_any_heap());
-        assert!(MirType::Vector.is_any_heap());
+        assert!(MirType::Vector(Box::new(MirType::Integer)).is_any_heap());
         assert!(MirType::HashMap.is_any_heap());
         assert!(!MirType::Integer.is_any_heap());
         assert!(!MirType::Trit.is_any_heap());
@@ -2971,8 +2975,14 @@ mod tests {
     fn mirtype_display_roundtrip_heap() {
         assert_eq!(MirType::String.to_string(), "String");
         assert_eq!(MirType::String, MirType::String);
-        assert_eq!(MirType::Vector.to_string(), "Vector");
-        assert_eq!(MirType::Vector, MirType::Vector);
+        assert_eq!(
+            MirType::Vector(Box::new(MirType::Integer)).to_string(),
+            "Vector<Integer>"
+        );
+        assert_eq!(
+            MirType::Vector(Box::new(MirType::Integer)),
+            MirType::Vector(Box::new(MirType::Integer))
+        );
         assert_eq!(MirType::HashMap.to_string(), "HashMap");
         assert_eq!(MirType::HashMap, MirType::HashMap);
     }
@@ -3057,12 +3067,12 @@ mod tests {
         );
         assert!(!MirType::Integer.is_reference());
 
-        assert!(MirType::Vector.is_vec());
+        assert!(MirType::Vector(Box::new(MirType::Integer)).is_vec());
         assert!(!MirType::HashMap.is_vec());
         assert!(!MirType::String.is_vec());
 
         assert!(MirType::HashMap.is_hashmap());
-        assert!(!MirType::Vector.is_hashmap());
+        assert!(!MirType::Vector(Box::new(MirType::Integer)).is_hashmap());
     }
 
     /// Proves the structural fix for the ordering-rule bug (ADR-0050 §2.1).
@@ -3079,7 +3089,7 @@ mod tests {
     #[test]
     fn mirtype_structural_fixes_nullable_vec_misclassification() {
         // Nullable(Vector) — exactly the pattern old is_vec_type got wrong.
-        let ty = MirType::Nullable(Box::new(MirType::Vector));
+        let ty = MirType::Nullable(Box::new(MirType::Vector(Box::new(MirType::Integer))));
         assert!(ty.is_nullable(), "Nullable(Vector) must be nullable");
         assert!(
             !ty.is_vec(),
@@ -3103,7 +3113,7 @@ mod tests {
         );
 
         // Also verify via parse transition path: "Vector?" → Nullable(Vector).
-        let ty = MirType::Nullable(Box::new(MirType::Vector));
+        let ty = MirType::Nullable(Box::new(MirType::Vector(Box::new(MirType::Integer))));
         assert!(ty.is_nullable());
         assert!(!ty.is_vec());
         let payload = ty.nullable_payload().unwrap();
@@ -3158,11 +3168,11 @@ mod tests {
     fn mirtype_is_copy_heap_types() {
         let body = well_formed_body();
         assert!(!MirType::String.is_copy(Some(&body)));
-        assert!(!MirType::Vector.is_copy(Some(&body)));
+        assert!(!MirType::Vector(Box::new(MirType::Integer)).is_copy(Some(&body)));
         assert!(!MirType::HashMap.is_copy(Some(&body)));
         // is_copy(None) — same results.
         assert!(!MirType::String.is_copy(None));
-        assert!(!MirType::Vector.is_copy(None));
+        assert!(!MirType::Vector(Box::new(MirType::Integer)).is_copy(None));
         assert!(!MirType::HashMap.is_copy(None));
     }
 
@@ -3226,7 +3236,10 @@ mod tests {
         // String? → payload String → Move
         assert!(!MirType::Nullable(Box::new(MirType::String)).is_copy(Some(&body)));
         // Vector? → payload Vector → Move
-        assert!(!MirType::Nullable(Box::new(MirType::Vector)).is_copy(Some(&body)));
+        assert!(
+            !MirType::Nullable(Box::new(MirType::Vector(Box::new(MirType::Integer))))
+                .is_copy(Some(&body))
+        );
         // Unknown? → payload Unknown → Copy
         assert!(MirType::Nullable(Box::new(MirType::Unknown)).is_copy(Some(&body)));
         // is_copy(None)
@@ -3291,7 +3304,7 @@ mod tests {
         assert!(ty.nullable_payload().is_none());
 
         // Pin: is_vec must NOT consume nullable Vector.
-        let ty = MirType::Nullable(Box::new(MirType::Vector));
+        let ty = MirType::Nullable(Box::new(MirType::Vector(Box::new(MirType::Integer))));
         assert!(ty.is_nullable());
         // Payload of nullable Vector IS a vec type.
         let payload = ty.nullable_payload().unwrap();
@@ -3303,7 +3316,7 @@ mod tests {
         // Non-nullable: plain types.
         assert!(!MirType::Integer.is_nullable());
         assert!(!MirType::String.is_nullable());
-        assert!(!MirType::Vector.is_nullable());
+        assert!(!MirType::Vector(Box::new(MirType::Integer)).is_nullable());
 
         // Edge case: "Integer??" — can't happen (C6: T?? auto-flatten),
         // but helper must be defined.
@@ -3322,7 +3335,10 @@ mod tests {
         // String? → payload String → Move
         assert!(!MirType::Nullable(Box::new(MirType::String)).is_copy(Some(&body)));
         // Vector<Integer>? → payload Vector → Move
-        assert!(!MirType::Nullable(Box::new(MirType::Vector)).is_copy(Some(&body)));
+        assert!(
+            !MirType::Nullable(Box::new(MirType::Vector(Box::new(MirType::Integer))))
+                .is_copy(Some(&body))
+        );
         // ? trần → NOT nullable → falls through to Copy (existing behavior)
         assert!(MirType::Unknown.is_copy(Some(&body)));
     }

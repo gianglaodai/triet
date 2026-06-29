@@ -615,7 +615,7 @@ pub fn lower_program(
                             // 24B fat {ptr@0,len@8,cap@16} (null = ptr==SENTINEL);
                             // Vector?/HashMap? = 8B handle (handle==SENTINEL).
                             MirType::String => 24,
-                            MirType::Vector | MirType::HashMap => 8,
+                            MirType::Vector(_) | MirType::HashMap => 8,
                             _ => f.size,
                         },
                         // ADR-0066 M-1: heap LEAF field width (fat-pointer cache
@@ -624,7 +624,7 @@ pub fn lower_program(
                         // live in the heap header). Mis-sizing → byte-copy stomps
                         // the adjacent field / drop-glue frees garbage (R-table).
                         MirType::String => 24,
-                        MirType::Vector | MirType::HashMap => 8,
+                        MirType::Vector(_) | MirType::HashMap => 8,
                         _ => f.size,
                     };
                     (f.name.clone(), f.ty.clone(), size, f.alignment)
@@ -972,7 +972,14 @@ fn lower_type(
             "Unit" => MirType::Unit,
             "String" => MirType::String,
             // Vector/HashMap bare (ADR-0050 CORRECTION §3.1.1) — strip generic args
-            other if other == "Vector" || other.starts_with("Vector<") => MirType::Vector,
+            // Bare `Vector` (no element) defaults to `Vector<Integer>` for
+            // Bậc A byte-compat. A written `Vector<E>` parses to
+            // `TypeExpr::Generic` (handled below, real element lowered), so the
+            // `starts_with("Vector<")` string-form here is a legacy/edge path —
+            // default its element to Integer.
+            other if other == "Vector" || other.starts_with("Vector<") => {
+                MirType::Vector(Box::new(MirType::Integer))
+            }
             other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
             other if symbols.get(other) == Some(&TypeKind::Struct) => {
                 MirType::Struct(other.to_string())
@@ -1014,8 +1021,15 @@ fn lower_type(
             error_type: Box::new(lower_type(arena, *error_type, symbols, self_type)),
             allow_null_state: *allow_null_state,
         },
-        TypeExpr::Generic { name, .. } => match name.as_str() {
-            "Vector" => MirType::Vector,
+        TypeExpr::Generic { name, arguments } => match name.as_str() {
+            // ADR-0077: carry the element type into the MIR Vector. A 0-arg
+            // (malformed) Vector falls back to Integer for byte-compat.
+            "Vector" => MirType::Vector(Box::new(
+                arguments
+                    .first()
+                    .map(|a| lower_type(arena, *a, symbols, self_type))
+                    .unwrap_or(MirType::Integer),
+            )),
             "HashMap" => MirType::HashMap,
             _ => MirType::Unknown,
         },
@@ -1042,7 +1056,7 @@ fn lower_type(
 fn ctx_is_copy(ty: &MirType, c: &Ctx) -> bool {
     match ty {
         MirType::Nullable(inner) => ctx_is_copy(inner, c),
-        MirType::String | MirType::Vector | MirType::HashMap => false,
+        MirType::String | MirType::Vector(_) | MirType::HashMap => false,
         // ADR-0069: capability token — ALWAYS Move. This is the SECOND copy
         // classifier (the first is `MirType::is_copy` in triet-mir); BOTH must
         // short-circuit or the move/Deinit machinery here would treat a ZST
@@ -1079,7 +1093,14 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
             "Trilean" => MirType::Trilean,
             "Unit" => MirType::Unit,
             "String" => MirType::String,
-            other if other == "Vector" || other.starts_with("Vector<") => MirType::Vector,
+            // Bare `Vector` (no element) defaults to `Vector<Integer>` for
+            // Bậc A byte-compat. A written `Vector<E>` parses to
+            // `TypeExpr::Generic` (handled below, real element lowered), so the
+            // `starts_with("Vector<")` string-form here is a legacy/edge path —
+            // default its element to Integer.
+            other if other == "Vector" || other.starts_with("Vector<") => {
+                MirType::Vector(Box::new(MirType::Integer))
+            }
             other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
             other if c.struct_layouts.contains_key(other) => MirType::Struct(other.to_string()),
             other if c.enum_layouts.contains_key(other) => MirType::Enum(other.to_string()),
@@ -1115,8 +1136,15 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
             error_type: Box::new(lower_type_simple(arena, *error_type, c)),
             allow_null_state: *allow_null_state,
         },
-        TypeExpr::Generic { name, .. } => match name.as_str() {
-            "Vector" => MirType::Vector,
+        TypeExpr::Generic { name, arguments } => match name.as_str() {
+            // ADR-0077: carry the element type into the MIR Vector. A 0-arg
+            // (malformed) Vector falls back to Integer for byte-compat.
+            "Vector" => MirType::Vector(Box::new(
+                arguments
+                    .first()
+                    .map(|a| lower_type_simple(arena, *a, c))
+                    .unwrap_or(MirType::Integer),
+            )),
             "HashMap" => MirType::HashMap,
             _ => MirType::Unknown,
         },
@@ -2293,11 +2321,19 @@ fn lower_expr(
                             expr_span,
                         ));
                     };
+                    // ADR-0077: `get` on a `Vector<E>` returns `E?`. The element
+                    // type comes from the vector's `Vector(inner)`. HashMap `get`
+                    // keeps `Integer?` (Bậc A value type).
+                    let elem_ty = if let MirType::Vector(inner) = base_ty {
+                        (**inner).clone()
+                    } else {
+                        MirType::Integer
+                    };
                     let dest = emit_shim_call(
                         c,
                         shim_name,
                         args,
-                        MirType::Nullable(Box::new(MirType::Integer)),
+                        MirType::Nullable(Box::new(elem_ty)),
                         expr_span,
                     );
                     return Ok(dest);
@@ -2313,8 +2349,16 @@ fn lower_expr(
                         .iter()
                         .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let vec_ty = c.local_decls[args[0].0].ty.clone();
-                    let dest = emit_shim_call(c, "__triet_vector_push", args, &vec_ty, expr_span);
+                    // ADR-0077: the push result is `Vector<elem>` where `elem` is
+                    // the type of the pushed value (`args[1]`). This is the
+                    // AUTHORITATIVE element source: `args[0]` from a bare
+                    // `vector_new()` defaults to `Vector<Integer>`, but typecheck
+                    // guarantees every push to the same vector agrees, so the
+                    // pushed value's type is the true element. The JIT keys
+                    // stride/elem_kind off this type.
+                    let elem_ty = c.local_decls[args[1].0].ty.clone();
+                    let vec_ty = MirType::Vector(Box::new(elem_ty));
+                    let dest = emit_shim_call(c, "__triet_vector_push", args, vec_ty, expr_span);
                     return Ok(dest);
                 }
                 "vector_new" => {
@@ -2338,11 +2382,21 @@ fn lower_expr(
                         value: ConstValue::Integer(2),
                         span: DUMMY_SPAN,
                     });
+                    // ADR-0077: an empty `vector_new()` carries its element type
+                    // from the `expected` context (`let v: Vector<String> = …`).
+                    // With no context (e.g. `push(vector_new(), "hi")`) it defaults
+                    // to `Vector<Integer>` — `push` then refines the element from
+                    // the pushed value, and the empty buffer (len=0) reallocs on
+                    // first push with no stride-dependent copy.
+                    let elem = match expected {
+                        Some(MirType::Vector(inner)) => (**inner).clone(),
+                        _ => MirType::Integer,
+                    };
                     let dest = emit_shim_call(
                         c,
                         "__triet_vector_alloc",
                         vec![len_local, cap_local],
-                        MirType::Vector,
+                        MirType::Vector(Box::new(elem)),
                         expr_span,
                     );
                     return Ok(dest);
@@ -3067,7 +3121,7 @@ fn lower_expr(
                 let decl_ty = field_decl_ty.as_ref().unwrap_or(field_ty);
                 let is_direct_heap_leaf = matches!(
                     decl_ty,
-                    MirType::String | MirType::Vector | MirType::HashMap
+                    MirType::String | MirType::Vector(_) | MirType::HashMap
                 );
                 // ADR-0067 2a: a plain (non-nullable) nested STRUCT field whose
                 // layout resolves is now ALLOWED even when it transitively
@@ -3178,7 +3232,7 @@ fn lower_expr(
                 let payload_ty = &c.local_decls[val.0].ty;
                 let is_direct_heap_leaf = matches!(
                     payload_ty,
-                    MirType::String | MirType::Vector | MirType::HashMap
+                    MirType::String | MirType::Vector(_) | MirType::HashMap
                 );
                 if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
                     return Err(LowerError::heap_type_not_supported(
