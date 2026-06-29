@@ -1,0 +1,17 @@
+// EXPECT: 2
+// WO-0075 (ADR-0070 §AMEND Phase 3): multi-level field extraction is now
+// ALLOWED (was E2423 — see the obsolete `*_e2423` fixture this replaces). The
+// two-level projection `tp.mid.leaf` moves the nested struct `Leaf` out; the
+// base `tp` is dropped and the JIT tombstones the moved struct's heap leaves at
+// their ABSOLUTE offsets in the base slot → no double-free (a real double-free
+// would SIGABRT). Runs → tp.t = 2.
+struct Leaf { s: String }
+struct Mid { leaf: Leaf, k: Integer }
+struct Top { mid: Mid, t: Integer }
+function main() -> Integer = {
+    let lf = Leaf { s: "hi" };
+    let md = Mid { leaf: lf, k: 1 };
+    let tp = Top { mid: md, t: 2 };
+    let x = tp.mid.leaf;
+    return tp.t;
+}

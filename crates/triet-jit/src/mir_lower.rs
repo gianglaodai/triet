@@ -1856,10 +1856,20 @@ impl JitContext {
                     // source → dest's cap@16 would be stack garbage → free UB) and
                     // (2) tombstone the moved field's heap leaves in the BASE slot
                     // so the base's Drop reads ptr=0 → free no-op → no double-free.
-                    // Gated on a single Field projection of a non-copy type (heap
-                    // scalar or heap-struct); a Copy scalar field never enters.
-                    // Capability fields are 0-byte ZSTs (no heap leaf) → no-op.
-                    if let [Projection::Field(_)] = source.projection.as_slice() {
+                    // Gated on a Field projection of a non-copy type (heap scalar
+                    // or heap-struct); a Copy scalar field never enters. Capability
+                    // fields are 0-byte ZSTs (no heap leaf) → no-op.
+                    // WO-0075 (ADR-0070 §AMEND Phase 3): accept a MULTI-Field path
+                    // (`h.inner.x`), not just exactly-one Field — `walk_projections`
+                    // returns the leaf type + its ABSOLUTE offset in the base slot
+                    // at any depth, so the tombstone below zeroes the correct leaf.
+                    // A non-Field projection (Index/Deref/Payload) is excluded.
+                    if !source.projection.is_empty()
+                        && source
+                            .projection
+                            .iter()
+                            .all(|p| matches!(p, Projection::Field(_)))
+                    {
                         let (field_ty, field_off) = Self::walk_projections(body, source)?;
                         if !field_ty.is_copy(Some(body))
                             && let Some(base_slot) =

@@ -153,12 +153,13 @@ struct BlockState {
     var_states: BTreeMap<Local, VarState>,
     /// Loans that are still active.
     active_loans: BTreeSet<Loan>,
-    /// ADR-0070: per-local set of single-level field names whose value has
-    /// been moved out (partial move). Only ZST capability fields are recorded
-    /// here (heap fields stay refused by Δ3). A field in this set is dead: a
-    /// re-read of `base.f` or any whole-base use of `base` is E2420; a sibling
-    /// field stays live. Union-merged across predecessors (monotone → fixpoint).
-    partial_moves: BTreeMap<Local, BTreeSet<String>>,
+    /// WO-0075 (ADR-0070 §AMEND Phase 3): per-local set of moved-out projection
+    /// PATHS. A single-level move (`h.f`) records `["f"]`; a multi-level move
+    /// (`h.inner.x`) records `["inner", "x"]`. A path in this set is dead: reading
+    /// an exact/ancestor/descendant path, or any whole-base use of `base`, is
+    /// E2420 (`prefix_conflict`); a sibling path stays live. Union-merged across
+    /// predecessors (monotone → fixpoint).
+    partial_moves: BTreeMap<Local, BTreeSet<Vec<String>>>,
 }
 
 impl BlockState {
@@ -222,19 +223,18 @@ impl BlockState {
                 .extend(pred.active_loans.iter().cloned());
         }
 
-        // ADR-0070: partial_moves = UNION of moved field-sets across all
-        // predecessors. A field moved on ANY path is moved at the join (a
-        // value gone down one branch cannot be resurrected by another). Union
-        // is monotone, so the dataflow fixpoint converges. Intersection would
-        // be UNSOUND (it would forget a move on a sibling path) — the CFG-branch
-        // teeth pin this.
+        // ADR-0070 / WO-0075: partial_moves = UNION of moved projection-PATH sets
+        // across all predecessors. A path moved on ANY branch is moved at the join
+        // (a value gone down one branch cannot be resurrected by another). Union
+        // is monotone, so the dataflow fixpoint converges. Intersection would be
+        // UNSOUND (it would forget a move on a sibling path) — tooth-F pins this.
         for pred in predecessors {
-            for (local, fields) in &pred.partial_moves {
+            for (local, paths) in &pred.partial_moves {
                 merged
                     .partial_moves
                     .entry(*local)
                     .or_default()
-                    .extend(fields.iter().cloned());
+                    .extend(paths.iter().cloned());
             }
         }
 
@@ -262,6 +262,26 @@ pub enum BorrowError {
         ty: String,
         /// Source location.
         #[label("cannot copy move type out here")]
+        span: Span,
+    },
+
+    /// E2424: Sub-path reassignment unsupported (WO-0075, ADR-0070 §AMEND Phase 3).
+    /// Reassigning an ancestor place (`h.inner = ...`) while a nested field of it
+    /// has been moved out (`h.inner.x`) is NOT yet supported — the JIT cannot
+    /// reconcile the moved leaf's tombstone with a whole-ancestor overwrite.
+    /// Locked with a diagnostic rather than silently clearing stale move-state.
+    #[error("E2424: cannot reassign `{place}` while a nested field of it has been moved out")]
+    #[diagnostic(
+        code(triet::borrow::E2424),
+        help(
+            "reassign the whole base instead, or avoid moving a nested field before overwriting an ancestor"
+        )
+    )]
+    SubPathReassignUnsupported {
+        /// The ancestor place being reassigned.
+        place: String,
+        /// Source location of the reassignment.
+        #[label("ancestor reassigned here while a nested field is moved")]
         span: Span,
     },
 
@@ -396,23 +416,40 @@ fn place_name(place: &Place, names: &LocalNames) -> String {
     s
 }
 
-/// ADR-0070: the single-level field name of a place that is exactly
-/// `base.field` (one `Projection::Field`, nothing else). Returns `None` for a
-/// bare local, a multi-level projection, or any non-Field projection. Callers
-/// treat `None` as "whole base" (conservative).
-fn single_field(place: &Place) -> Option<&str> {
-    if let [Projection::Field(name)] = place.projection.as_slice() {
-        Some(name.as_str())
-    } else {
-        None
+/// WO-0075 (ADR-0070 §AMEND Phase 3): the full Field-projection PATH of a place,
+/// e.g. `h.inner.x` → `["inner", "x"]`. Returns `Some([])` for a bare local
+/// (whole base) and `None` for ANY non-Field projection (Index/Deref/Payload/
+/// OutcomeDiscriminant) — those are out of scope and callers treat them
+/// conservatively (whole-base on read, refuse on extraction).
+fn projection_path(place: &Place) -> Option<Vec<String>> {
+    let mut path = Vec::new();
+    for proj in &place.projection {
+        match proj {
+            Projection::Field(name) => path.push(name.clone()),
+            _ => return None,
+        }
     }
+    Some(path)
 }
 
-/// ADR-0070: does reading `place` touch storage already partially moved out?
-/// A field read `base.f` is invalidated only if `f` itself was moved (a sibling
-/// field stays live); any whole-base or multi-level read of `base` is
-/// invalidated if ANY field was moved. This is SEPARATE from the whole-`Moved`
-/// var_state check each call site already performs.
+/// WO-0075: do two projection paths conflict by prefix — i.e. is one a prefix of
+/// the other (equality included)? A read-path `p` conflicts with a moved-path
+/// `m` when `p` is `m` (exact-dead), an ancestor of `m` (`h.inner` after moving
+/// `h.inner.x`), a descendant of `m`, or either is `[]` (whole-base touches any
+/// moved field). Two SIBLING paths (`h.inner.x` vs `h.inner.y`) share the
+/// `[inner]` prefix but diverge at the leaf → NOT a conflict → both stay live.
+fn prefix_conflict(p: &[String], m: &[String]) -> bool {
+    let n = p.len().min(m.len());
+    p[..n] == m[..n]
+}
+
+/// WO-0075 (ADR-0070 §AMEND Phase 3): does reading `place` touch storage already
+/// partially moved out? The read-path conflicts with a moved-path when one is a
+/// prefix of the other (see `prefix_conflict`): exact field, ancestor, descendant,
+/// or whole-base all conflict; a SIBLING field stays live. A non-Field projection
+/// (`projection_path` → None) is treated as a whole-base use (path `[]`), which
+/// prefixes every moved path → conservative. This is SEPARATE from the whole-
+/// `Moved` var_state check each call site already performs.
 fn partial_move_invalidates(state: &BlockState, place: &Place) -> bool {
     let Some(moved) = state.partial_moves.get(&place.local) else {
         return false;
@@ -420,10 +457,9 @@ fn partial_move_invalidates(state: &BlockState, place: &Place) -> bool {
     if moved.is_empty() {
         return false;
     }
-    match single_field(place) {
-        Some(f) => moved.contains(f),
-        None => true, // whole-base (or multi-level) use while a field is gone
-    }
+    // None (non-Field projection) → `[]` = whole-base conservative.
+    let p = projection_path(place).unwrap_or_default();
+    moved.iter().any(|m| prefix_conflict(&p, m))
 }
 
 /// Check if a Move-type local in `Ended` state is being used
@@ -700,34 +736,36 @@ fn process_block(
                         });
                     }
                     if !extracted_ty.is_copy(Some(body)) {
-                        // ADR-0070: a single-level field MAY be moved out when it
-                        // is a ZST capability OR a heap SCALAR (String/Vector/
-                        // HashMap) OR a heap-STRUCT (Phase 2: the ADR-0067
-                        // construction-into-field double-free is now fixed, so the
-                        // JIT can tombstone the moved struct's heap leaves at their
-                        // absolute offsets in the base slot) OR a heap-carrying
-                        // ENUM (WO-0074 Phase 3: the JIT zeroes the moved enum's
-                        // payload ptr@field_off+8 in the base slot so the base's
-                        // tag-switch Drop reads ptr=0 → free no-op) — record the
-                        // partial move. The `partial_moves` entry keys the base
-                        // local to the SINGLE field name (`single_field` → "msg");
-                        // the ADR-0070 data-structure (Map<Local, Set<field-name>>)
-                        // is unchanged.
-                        // Still REFUSED (E2423): multi-level extraction
-                        // (single_field → None) and every other non-copy move-type
+                        // A field MAY be moved out when it is a ZST capability OR
+                        // a heap SCALAR (String/Vector/HashMap) OR a heap-STRUCT
+                        // (Phase 2) OR a heap-carrying ENUM (WO-0074) — record the
+                        // partial move. WO-0075 (ADR-0070 §AMEND Phase 3): the
+                        // recorded key is now the full Field PATH (`projection_path`
+                        // → ["inner", "x"] for multi-level), so multi-level
+                        // extraction is OPENED (was refused). The JIT tombstones the
+                        // moved leaf at its absolute offset in the base slot.
+                        // Still REFUSED (E2423): a NON-Field projection
+                        // (`projection_path` → None: Index/Deref/Payload/
+                        // OutcomeDiscriminant) and every other non-copy move-type
                         // (Nullable/Outcome fields are out of scope, defer).
-                        match single_field(source) {
-                            Some(f)
-                                if matches!(extracted_ty, triet_mir::MirType::Capability(_))
-                                    || extracted_ty.is_any_heap()
-                                    || matches!(extracted_ty, triet_mir::MirType::Struct(_))
-                                    || matches!(extracted_ty, triet_mir::MirType::Enum(_)) =>
+                        match projection_path(source) {
+                            Some(path)
+                                if !path.is_empty()
+                                    && (matches!(
+                                        extracted_ty,
+                                        triet_mir::MirType::Capability(_)
+                                    ) || extracted_ty.is_any_heap()
+                                        || matches!(
+                                            extracted_ty,
+                                            triet_mir::MirType::Struct(_)
+                                        )
+                                        || matches!(extracted_ty, triet_mir::MirType::Enum(_))) =>
                             {
                                 state
                                     .partial_moves
                                     .entry(source.local)
                                     .or_default()
-                                    .insert(f.to_string());
+                                    .insert(path);
                             }
                             _ => {
                                 errors.push(BorrowError::CannotCopyMoveTypeOut {
@@ -812,17 +850,30 @@ fn process_block(
                         state.var_states.insert(source.local, VarState::Moved);
                     }
                 }
-                // ADR-0070: re-initialization clears stale partial-move state.
-                // A whole-local fresh assignment (`hw = ...`) clears every moved
-                // field; a single-field store (`hw.f = ...`, e.g. construction)
-                // re-inits just that field. Leaving it set would false-positive
-                // a later read. (Multi-level dest → left conservative.)
+                // ADR-0070 / WO-0075 §F: re-initialization clears stale
+                // partial-move state. A whole-local fresh assignment (`hw = ...`)
+                // clears every moved path. An EXACT-path store (`hw.f = ...` or
+                // `hw.a.b = ...` re-initialising exactly the moved path) re-inits
+                // just that path. A NON-exact prefix conflict — reassigning an
+                // ANCESTOR (`h.inner = ...` after moving `h.inner.x`) or descendant
+                // of a moved path — is a sub-path reassign we do NOT support: emit
+                // E2424 and leave the move-state intact (conservative; never clear
+                // a path the JIT still has tombstoned). A non-Field dest projection
+                // (`projection_path` → None) is left conservative (no clear).
                 if dest.projection.is_empty() {
                     state.partial_moves.remove(&dest.local);
-                } else if let Some(f) = single_field(dest)
+                } else if let Some(path) = projection_path(dest)
                     && let Some(s) = state.partial_moves.get_mut(&dest.local)
                 {
-                    s.remove(f);
+                    let has_subpath_conflict =
+                        s.iter().any(|m| *m != path && prefix_conflict(&path, m));
+                    s.remove(&path);
+                    if has_subpath_conflict {
+                        errors.push(BorrowError::SubPathReassignUnsupported {
+                            place: place_name(dest, names),
+                            span: span.clone(),
+                        });
+                    }
                 }
                 state.var_states.insert(dest.local, VarState::Owned);
             }
@@ -1857,45 +1908,291 @@ mod tests {
         );
     }
 
-    /// Δ3: copying a Move type out of a struct field is forbidden (E2423).
-    #[test]
-    fn cannot_move_multilevel_field_out() {
-        // ADR-0070 read-side: SINGLE-level heap field move-out is now ALLOWED
-        // (see `single_level_heap_field_partial_moves_ok` below). This test
-        // pins the surviving E2423 tooth: a MULTI-level extraction
-        // `obj.inner.body` (two Field projections) is still REFUSED, because
-        // nested partial-move is out of scope and `single_field` returns None.
-        let mut b = MirBuilder::new("extract_nested_string_field", MirType::Unit);
+    // ── WO-0075 (ADR-0070 §AMEND Phase 3): multi-level extraction ──
+    // Shared layout: `struct Inner { x: String, y: String }`,
+    // `struct Holder { inner: Inner, other: String }`. Used by teeth A-F.
+    fn holder_layouts(b: &mut MirBuilder) {
         b.add_struct_layout(triet_mir::StructLayout::compute(
             "Inner",
-            &[("body".into(), MirType::String, 8, triet_mir::align::INTEGER)],
+            &[
+                ("x".into(), MirType::String, 8, triet_mir::align::INTEGER),
+                ("y".into(), MirType::String, 8, triet_mir::align::INTEGER),
+            ],
         ));
         b.add_struct_layout(triet_mir::StructLayout::compute(
-            "Outer",
+            "Holder",
+            &[
+                (
+                    "inner".into(),
+                    MirType::Struct("Inner".into()),
+                    16,
+                    triet_mir::align::POINTER,
+                ),
+                (
+                    "other".into(),
+                    MirType::String,
+                    8,
+                    triet_mir::align::INTEGER,
+                ),
+            ],
+        ));
+    }
+
+    fn path_place(local: Local, parts: &[&str]) -> Place {
+        Place {
+            local,
+            projection: parts
+                .iter()
+                .map(|p| Projection::Field((*p).to_string()))
+                .collect(),
+        }
+    }
+
+    fn has_uam(result: &BorrowCheckResult) -> bool {
+        result
+            .errors
+            .iter()
+            .any(|e| matches!(e, BorrowError::UseAfterMove { .. }))
+    }
+
+    /// Move `h.inner.x`, then run `read_stmts` and return whether a UAM fired.
+    fn move_then(read_stmts: impl FnOnce(&mut MirBuilder, Local, BasicBlock)) -> BorrowCheckResult {
+        let mut b = MirBuilder::new("ml", MirType::Unit);
+        holder_layouts(&mut b);
+        let h = b.add_param("h", ParameterPassing::Move);
+        b.set_local_type(h, "Holder");
+        let bb0 = b.new_block();
+        let d1 = b.new_local();
+        b.push(bb0, storage_live(d1));
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(d1),
+                source: path_place(h, &["inner", "x"]),
+                span: DUMMY_SPAN,
+            },
+        );
+        read_stmts(&mut b, h, bb0);
+        let body = b.build(bb0);
+        check_body(&body)
+    }
+
+    /// Tooth A — sibling-live: move `h.inner.x`, read `h.inner.y` → NO UAM
+    /// (sibling leaf stays live). Poison: base-only invalidate → false UAM.
+    #[test]
+    fn ml_tooth_a_sibling_live() {
+        let r = move_then(|b, h, bb0| {
+            let d2 = b.new_local();
+            b.push(bb0, storage_live(d2));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(d2),
+                    source: path_place(h, &["inner", "y"]),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.set_terminator(bb0, return_(vec![]));
+        });
+        assert!(
+            !has_uam(&r),
+            "sibling field must stay live, got: {:?}",
+            r.errors
+        );
+    }
+
+    /// Tooth B — ancestor-dead: move `h.inner.x`, read `h.inner` → UAM.
+    #[test]
+    fn ml_tooth_b_ancestor_dead() {
+        let r = move_then(|b, h, bb0| {
+            let d2 = b.new_local();
+            b.push(bb0, storage_live(d2));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(d2),
+                    source: path_place(h, &["inner"]),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.set_terminator(bb0, return_(vec![]));
+        });
+        assert!(
+            has_uam(&r),
+            "reading ancestor of a moved path is UAM, got: {:?}",
+            r.errors
+        );
+    }
+
+    /// Tooth C — exact-dead: move `h.inner.x`, read `h.inner.x` again → UAM.
+    #[test]
+    fn ml_tooth_c_exact_dead() {
+        let r = move_then(|b, h, bb0| {
+            let d2 = b.new_local();
+            b.push(bb0, storage_live(d2));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(d2),
+                    source: path_place(h, &["inner", "x"]),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.set_terminator(bb0, return_(vec![]));
+        });
+        assert!(
+            has_uam(&r),
+            "re-reading the exact moved path is UAM, got: {:?}",
+            r.errors
+        );
+    }
+
+    /// Tooth D — whole-base-dead: move `h.inner.x`, borrow whole `h` → UAM.
+    #[test]
+    fn ml_tooth_d_whole_base_dead() {
+        let r = move_then(|b, h, bb0| {
+            let rref = b.new_local();
+            b.push(bb0, storage_live(rref));
+            b.push(bb0, borrow(rref, ReferenceForm::BorrowExclusiveMutable, h));
+            b.set_terminator(bb0, return_(vec![]));
+        });
+        assert!(
+            has_uam(&r),
+            "whole-base use while a field is moved is UAM, got: {:?}",
+            r.errors
+        );
+    }
+
+    /// Tooth E — sibling-branch-live: move `h.inner.x`, read `h.other` → NO UAM.
+    #[test]
+    fn ml_tooth_e_sibling_branch_live() {
+        let r = move_then(|b, h, bb0| {
+            let d2 = b.new_local();
+            b.push(bb0, storage_live(d2));
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: Place::local(d2),
+                    source: path_place(h, &["other"]),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.set_terminator(bb0, return_(vec![]));
+        });
+        assert!(
+            !has_uam(&r),
+            "a disjoint sibling field stays live, got: {:?}",
+            r.errors
+        );
+    }
+
+    /// Tooth F ⚔ — merge-union: move `h.inner.x` on ONE CFG branch, join, read
+    /// `h.inner.x` at the confluence → UAM (union keeps the move). Poison the
+    /// merge `union → intersection` → the move is forgotten at the join → no UAM.
+    #[test]
+    fn ml_tooth_f_merge_union() {
+        let mut b = MirBuilder::new("ml_merge", MirType::Unit);
+        holder_layouts(&mut b);
+        let h = b.add_param("h", ParameterPassing::Move);
+        b.set_local_type(h, "Holder");
+        let cond = b.new_local();
+        let d1 = b.new_local();
+        let d2 = b.new_local();
+
+        // entry: set cond, If → bb_move / bb_skip
+        let entry = b.new_block();
+        b.push(entry, storage_live(cond));
+        b.push(entry, const_int(cond, 1));
+
+        // bb_move: move h.inner.x; goto join
+        let bb_move = b.new_block();
+        b.push(bb_move, storage_live(d1));
+        b.push(
+            bb_move,
+            Statement::Assign {
+                dest: Place::local(d1),
+                source: path_place(h, &["inner", "x"]),
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // bb_skip: no move; goto join
+        let bb_skip = b.new_block();
+
+        // join: read h.inner.x → UAM (moved on one path)
+        let join = b.new_block();
+        b.push(join, storage_live(d2));
+        b.push(
+            join,
+            Statement::Assign {
+                dest: Place::local(d2),
+                source: path_place(h, &["inner", "x"]),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.set_terminator(join, return_(vec![]));
+
+        b.set_terminator(bb_move, crate::goto(join));
+        b.set_terminator(bb_skip, crate::goto(join));
+        b.set_terminator(
+            entry,
+            Terminator::If {
+                cond,
+                positive_bb: bb_move,
+                zero_bb: None,
+                negative_bb: bb_skip,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        let body = b.build(entry);
+        let cfg = body.build_cfg();
+        // Structural guard: the join MUST be a real confluence (≥2 preds).
+        assert_eq!(
+            cfg.blocks[join.0].predecessors.len(),
+            2,
+            "join must merge both branches (preds={:?})",
+            cfg.blocks[join.0].predecessors
+        );
+        let r = check_body(&body);
+        assert!(
+            has_uam(&r),
+            "a move on one branch must survive the union join, got: {:?}",
+            r.errors
+        );
+    }
+
+    /// E2423 tooth (preserved): a NON-Field projection extraction (an enum
+    /// Payload) of a Move type is still REFUSED — `projection_path` returns None
+    /// → the allow-arm falls through to E2423. Poison: widen the allow-arm to
+    /// accept None → no error. (Replaces the obsolete `cannot_move_multilevel_
+    /// field_out` test: multi-level Field extraction is now ALLOWED per ADR-0070
+    /// §AMEND Phase 3; E2423 now guards non-Field projections.)
+    #[test]
+    fn cannot_move_non_field_projection_out() {
+        let mut b = MirBuilder::new("extract_payload", MirType::Unit);
+        b.add_enum_layout(triet_mir::EnumLayout::compute(
+            "Box",
             &[(
-                "inner".into(),
-                MirType::Struct("Inner".into()),
-                8,
-                triet_mir::align::INTEGER,
+                "S".into(),
+                0,
+                Some((MirType::String, 24, triet_mir::align::POINTER, vec![])),
             )],
         ));
-        let obj = b.add_param("obj", ParameterPassing::Move);
-        b.set_local_type(obj, "Outer");
+        let e = b.add_param("e", ParameterPassing::Move);
+        b.set_local_type(e, "Box");
 
         let bb0 = b.new_block();
         let dest = b.new_local();
         b.push(bb0, storage_live(dest));
-        // Assign from obj.inner.body (TWO-level projection of Move type) → E2423
+        // Non-Field projection: enum Payload extraction of a Move (String) type.
         b.push(
             bb0,
             Statement::Assign {
                 dest: Place::local(dest),
                 source: Place {
-                    local: obj,
-                    projection: vec![
-                        Projection::Field("inner".to_string()),
-                        Projection::Field("body".to_string()),
-                    ],
+                    local: e,
+                    projection: vec![Projection::Payload("S".to_string())],
                 },
                 span: DUMMY_SPAN,
             },
@@ -1903,26 +2200,42 @@ mod tests {
         b.push(bb0, storage_dead(dest));
         b.set_terminator(bb0, return_(vec![]));
 
-        let body = b.build(bb0);
-        println!("=== MIR (extract_nested_string_field) ===\n{body}");
-
-        let result = check_body(&body);
-        println!("=== BORROW CHECK (extract_nested_string_field) ===");
-        for err in &result.errors {
-            println!("  {err}");
-        }
-
-        assert!(
-            !result.is_ok(),
-            "multi-level move of a Move type out of a projection MUST be rejected"
-        );
+        let result = check_body(&b.build(bb0));
         assert!(
             result
                 .errors
                 .iter()
                 .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
-            "should have E2423 CannotCopyMoveTypeOut, got: {:?}",
+            "non-Field projection move-out must still be E2423, got: {:?}",
             result.errors
+        );
+    }
+
+    /// neg tooth — sub-path reassign LOCKED (WO-0075 §F): move `h.inner.x`, then
+    /// reassign the ANCESTOR `h.inner = ...` → E2424 (not a silent clear). Poison
+    /// the §F guard (skip the diagnostic / clear anyway) → no E2424.
+    #[test]
+    fn ml_subpath_reassign_locked() {
+        let r = move_then(|b, h, bb0| {
+            let fresh = b.new_local();
+            b.push(bb0, storage_live(fresh));
+            // h.inner = fresh  (ancestor of the moved h.inner.x)
+            b.push(
+                bb0,
+                Statement::Assign {
+                    dest: path_place(h, &["inner"]),
+                    source: Place::local(fresh),
+                    span: DUMMY_SPAN,
+                },
+            );
+            b.set_terminator(bb0, return_(vec![]));
+        });
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::SubPathReassignUnsupported { .. })),
+            "ancestor reassign over a moved sub-path must be E2424, got: {:?}",
+            r.errors
         );
     }
 

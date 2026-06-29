@@ -1,0 +1,23 @@
+// EXPECT: 0
+// WO-0075 (ADR-0070 §AMEND Phase 3): multi-level heap field move-out is now
+// ALLOWED (was E2423 — see the obsolete `*_e2423` fixture this replaces). The
+// two-level projection `o.inner.name` records the partial-move path
+// ["inner","name"]; the base `o` is dropped and the JIT tombstones the moved
+// leaf at its ABSOLUTE offset in the base slot → the String frees exactly once.
+// A real-allocator double-free would SIGABRT, so a clean run IS the soundness
+// witness. Runs → 0.
+struct Inner {
+    name: String,
+}
+
+struct Outer {
+    inner: Inner,
+}
+
+function main() -> Integer {
+    let n1 = "hi";
+    let i = Inner { name: n1 };
+    let o = Outer { inner: i };
+    let x = o.inner.name;    // multi-level move-out → now allowed
+    return 0;
+}
