@@ -26,8 +26,8 @@ Sổ ghi blocker "match-arm bind heap payload move-out → `lowerer does not sup
 ## Bằng chứng đóng (kiệt tác)
 157 UNTYPED (chạy qua fallback ung thư) vs 157 ANNOTATED (chạy qua nguồn tường minh) → **MIR byte-identical từng byte**. Thay tim, bệnh nhân không hay. Scope-extension D (8→13 arm, 2→4 nguồn) validate bởi byte-identical 299/299 (sai sẽ vỡ >1 fixture).
 
-## Nợ chuyển tiếp (cờ đỏ)
-🔴 **heap-nullable-return drop-glue** (`function f()->String?=~+ "hi"` compile+chạy nhưng CHƯA verify FREE==1/double-free). Fixture bonus 304 ĐÃ XOÁ (G: "không poison = false signal, không được nằm trong gate"). Cần **WO chuyên biệt** cắm poison drop-glue mới được mở. [[campaign_truc_b_heap_in_aggregate]]
+## Nợ chuyển tiếp (cờ đỏ) — ✅ ĐÓNG (WO-0073, `3738eb5`, G ký 2026-06-29)
+~~🔴 heap-nullable-return drop-glue~~ → **NHỔ TẬN GỐC.** `heap_nullable_return_present_counting.rs` 7 cell. 2 shape `~+ <heap>`-present return: **expr-body** (A/B/C/D) + **named-local explicit-return** (E/F/G). O verify máu độc lập: leak-tooth → 7/7 RED FREE→0; double-free-tooth (gỡ M4 1982) → E/F/G RED FREE→2, A/B/C/D INERT(1). **Sự thật kiến trúc:** expr-body = lowerer **escape-by-omission** (callee KHÔNG emit Drop → double-free bất khả → M4-tooth INERT); named-local = `flush_all_for_return` emit Drop(s) → **M4 load-bearing**. **Bài học: verify-don't-trust cắt cả WO của chính O** — spec double-free-tooth ban đầu sai (tưởng M4 gác expr-body), D bắt, nới scope +3 cell (G duyệt); G bắt sửa doc-comment 2 vòng (text phải = sự thật kiến trúc tuyệt đối). [[campaign_truc_b_heap_in_aggregate]]
 
 ## Nền đã sạch cho
 `match call_returning_T?(){~+ s=>… ~0=>…}`, `if c {~+v} else {~0}`, block-final `{~+v}` ở mọi value-context. Capability Ł3 (ADR-0069 [[campaign_capability_luk3]]) vẫn treo.
