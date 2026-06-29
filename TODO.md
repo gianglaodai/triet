@@ -28,6 +28,23 @@ Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop
 
 ## 🟢 BACKLOG MỞ
 
+### 🏛️ Facade pattern (`public use` re-export) — Amend ADR-0005 §76 (G chốt 2026-06-29, ghi sổ)
+Tách Logical Tree (API surface) khỏi Physical Tree (file layout) — lấy cái ngon của Rust
+(`pub use` facade) mà GIỮ DNA explicit của Triết. **Bối cảnh:** Triết KHÔNG 1-1 Java
+(ADR-0005 §17/§96/§155 đã tách bằng `module foo` declaration); auto-discovery (file=module
+ngầm) bị BÁC — nghịch ADR-0005 (reject A1/A3/A5) + nghịch refuse-over-guess + phá hermetic build
+(file `.bak`/generated đổi API). Việc THẬT còn thiếu = re-export, đã defer ở **ADR-0005 §76**
+("Re-exports defer sang v0.3+") + parser đã chừa chỗ (`triet-parser/src/item.rs:78-85` refuse
+`public use` với "not yet implemented", refuse-over-guess thay vì drop `public` silently).
+- [ ] **Amend ADR-0005 §76**: bật `public use X` re-export — facade-file (`module.tri`/inline) chìa
+      mặt tiền phẳng; dev xé file tự do trong bóng tối, chỉ `public use` mới phơi ra. Xây TRÊN
+      `public`/`public(package)` hiện có — **MỘT cơ chế visibility, KHÔNG đẻ `export...from` song song** (coherence).
+- [ ] **🌱 Ghim — Capability-aware facade (hạt giống đẳng cấp, O đề xuất + G bless):** facade chặn
+      không chỉ visibility mà cả **năng lực** — re-export một type KHÔNG đồng nghĩa re-export quyền
+      (capability token Ł3) để khởi tạo nó. Module system mang ngữ nghĩa Ł3 ở API boundary → vượt Rust/TS.
+- **Timing (G chốt):** TUYỆT ĐỐI KHÔNG code lúc này. Chờ tới khi xây `std` hoặc Package Manager
+  (nhu cầu facade mới rõ). Trade-off đã biết: mất zero-indirection navigation → cần tooling go-to-def bù.
+
 ### 🔴 Chiến dịch CFG Tail-Expression — ưu tiên 1 (soundness)
 Wire nốt ADR-0055: block tail-expr gánh giá trị cuối hàm.
 return-scope đã khóa (ADR-0020 §3.8): `return` = early-exit + cọc-tiêu-mode, KHÔNG phải throw.
@@ -44,22 +61,18 @@ return-scope đã khóa (ADR-0020 §3.8): `return` = early-exit + cọc-tiêu-mo
       mirror null-~0 special-case sang tail-path. Fixtures 185-188. Gap #2 (`{ ~0 }`/if-arm)
       đẩy Heap-Nullable (fail y hệt ở return/let, không phải tail-asymmetry).
 
-### 🟣 Chiến dịch Heap-Nullable — saga ~5 lát
-`T?` cho `T` heap (String/Vector/HashMap/Struct/Enum). Hiện **GATE ở LOWER** bằng
-`MirError::HeapNullableNotLowered` (`Body::verify()` refuse — KHÔNG ở typecheck).
+### ✅ ĐÓNG — **Heap-Nullable (KỶ NGUYÊN NULLABLE KHÉP)** — ADR-0062/0065/0076 SEALED
+`T?` cho `T` heap (String/Vector/HashMap/Struct/Enum) ĐÓNG TRỌN mọi vị trí:
+top-level (ADR-0062 ptr-sentinel) + aggregate `Enum?`/`Struct?` (ADR-0065 niche/tag-prepend)
++ field/payload B8 (ADR-0076 `994afc8`). Gate `MirError::HeapNullableNotLowered` còn SỐNG
+nhưng giờ chỉ refuse heap-nullable trong **recursive/Box** (ADR-0068 CẤM CỬA) — mọi vị trí
+non-recursive đã lower.
 
-**Ruling β (G ký 2026-06-18):** gate ở LOWER, KHÔNG typecheck — vì stdlib khai
-heap-nullable làm API (`env.get`/`path.parent`/`text.from_bytes`/`fs.read -> String?`).
-Declaration vô hại (stub `= ~0`); chỉ *compilation* mới miscompile (Bậc A nullable =
-single-i64 sentinel, không chứa nổi fat-pointer 24B). Nếu sau cần chặn sớm ở Pass-1 →
-Option-2 (gate free-fn `resolve_type_expr_with_params`, đổi chữ ký + dedup).
-
-- [ ] 1. **ADR repr — (a) ptr-sentinel** (G nghiêng): slot `{ptr,len,cap}`, `ptr == NULL_SENTINEL` = null; null-check project `.ptr`, không so cả slot.
-- [ ] 2. Widening `String → String?` + `~0` materialize ptr-sentinel.
-- [ ] 3. JIT conditional Drop (`if ptr != SENTINEL → drop payload`).
-- [ ] 4. Elvis `?:` + match `~+/~0` heap (project `.ptr`, move payload).
-- [ ] 5. `?+>` map/flatMap heap (unwrap move + Deinit/tombstone tránh double-free).
-- [ ] Gỡ gate `HeapNullableNotLowered` (+ `find_heap_nullable`/`is_scalar_nullable_payload` helper ở triet-mir) khi móng landed.
+**Ruling β (G ký 2026-06-18, vẫn hiệu lực):** gate ở LOWER (`Body::verify()`), KHÔNG typecheck
+— stdlib khai heap-nullable làm API (`env.get`/`fs.read -> String?`); declaration vô hại
+(stub `= ~0`), chỉ *compilation* mới gác. ✅ 5 mũi gốc (ptr-sentinel · widening · conditional-drop
+· Elvis/match `~+/~0` · `?+>` map) landed qua ADR-0062; aggregate qua ADR-0065; field/payload
+qua ADR-0076 (cổ tức PA-3c: conditional-drop = sentinel-no-op, 0 `brif`). Fixtures 189-237 + 311/312.
 - [x] **Gap #2 — expected-type propagation (ADR-0072 🔒 SEALED 2026-06-27, 3-slice).**
   - [x] **Slice 1** `c9a46e6` — `lower_expr` thêm param `expected: Option<&MirType>`, 61 site=`None`, byte-identical (O verify MIR-diff rỗng toàn corpus).
   - [x] **Slice 2** `2c900fb` — leaf-consumer (`OutcomeConstructor`/`NullLiteral`) đọc `expected`; wire 4 nguồn (function-body/return/let-init/struct-field); đập 3 Bug-B redirect. **Mở `T?`-return scalar** (303 Integer?, 305 let-Integer?-trong-Outcome-fn). Fallback §2.5 chuyển-tiếp (gỡ ở Slice 3). O verify: gate 0·0·299·0 + byte-identical 297 cũ + 2 poison `OutcomeAlloc on non-Outcome` đỏ + defense-in-depth 2 guard.
