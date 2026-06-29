@@ -1,0 +1,16 @@
+// EXPECT: 0
+// WO-NullableFieldMoveOut (ADR-0070 §AMEND Phase 4 + ADR-0076 §AMEND): a
+// heap-`T?` field move-out (`let s = b.s` with `b.s: String?`) is now RUN,
+// sound. This was the LAST source-reachable E2423 on field-move-out (FLIP from
+// 310_*_e2423, G ký 2026-06-29). The slot IS the drop-flag (static tombstone,
+// NO dynamic drop-flag): the move-out zeroes the base's `s` ptr@field_off and
+// the String? free shim no-ops on 0/NULL_SENTINEL, so `Drop(b)` frees nothing
+// already moved into `s` (no double-free) and `Drop(s)` frees the String once.
+// Soundness pinned by free-count teeth in `nullable_field_moveout_counting.rs`.
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b = Bad { s: ~+ "hi" };
+    let s = b.s;
+    return 0;
+}

@@ -298,3 +298,78 @@ refuse multi-level — chặn Ł3 nested, bác.
 fixpoint có sẵn; multi-level mở. **Tiêu cực:** `Vec<String>` clone nhiều hơn
 `&str` (chấp nhận — borrowck không nóng); cascade chạm 4 site core + fixpoint.
 **Rủi ro:** merge/fixpoint chỗ chết người (tooth F+G gác); sub-path reassign khóa (§5).
+
+---
+
+## ✚ AMEND — Phase 4: nullable-heap field move-out + 💀 SỤP ĐỔ TIỀN ĐỀ "dynamic drop-flag" [G ký 2026-06-29]
+
+### 💀 Tiền đề RÚT LẠI (G phán, O chứng minh bằng bằng chứng thép)
+§2 ADR này (và ADR-0076 §Nợ defer, fixture 310) khắc: *"Partial-move field heap
+đẩy sang sổ đỏ No-Box (**đòi JIT nhúng dynamic drop-flag/tombstone chặn double-free
+runtime**)."* **Mệnh đề "đòi dynamic drop-flag" SAI — RÚT LẠI vô điều kiện.**
+
+Lý do nó sai (3 bằng chứng O recon đo file:line, 2026-06-29):
+1. **Slot TỰ LÀ cờ (static tombstone, zero-cost).** WO-0074/75/76 đã đóng
+   single/multi-level/struct/enum heap field move-out bằng **STATIC tombstone**
+   (zero ptr@offset lúc move) + **null-safe free shim** — KHÔNG boolean flag
+   runtime nào. MIR ở join CFG mang `Drop(base)` **VÔ ĐIỀU KIỆN**; tính-đúng
+   đến từ ba-trạng-thái-một-lệnh: ptr@offset ∈ {ptr thật → free, 0 (moved-out)
+   → no-op, NULL_SENTINEL (null) → no-op}. Đây chính là §Conditional-drop =
+   sentinel-no-op của ADR-0076 — **0 `brif` Cranelift**.
+2. **Code đã ANTICIPATE.** `collect_heap_leaves` (`mir_lower.rs:472`) arm
+   `Nullable(inner) if inner.is_any_heap()` chú thích nguyên văn *"ptr@abs ∈
+   {ptr, 0, NULL_SENTINEL}... 0 (moved-out)... no `brif` is needed"*. Drop-side
+   cho nullable-field move-out đã sẵn sàng từ ADR-0076.
+3. **CFG-divergent witness.** `if c { let m = s.name }` rồi `Drop(s)` ở join:
+   move-taken (c=true) KHÔNG double-free, not-taken (c=false) free bình thường —
+   cả hai exit 0 (probe O). Conditional-drop đạt qua slot-sentinel, không flag.
+
+**Khi nào dynamic-flag MỚI có use-case thật?** Chỉ khi Triết thêm Move-type
+**stack-by-value + custom Deinit + KHÔNG có niche/sentinel** (chưa tồn tại), HOẶC
+**Index-move** (`v[i]` — offset runtime → tombstone không tĩnh được). Cả hai là
+con quái vật Collection-Semantics, **CẤM CỬA tới khi có use-case dí dao** (G).
+
+### Quyết định Phase 4
+Mở **nullable-heap field move-out** (`let s = b.s` với `b.s : String?`/`Vector?`/
+`HashMap?`) từ **E2423 → RUN** bằng STATIC tombstone — đối xứng hoàn toàn Phase 2/2b/3.
+Đây là **E2423 source-reachable CUỐI CÙNG** trên mặt trận Field-Move-out → đóng nắp.
+
+**3 site (đối xứng campaign heap-aggregate — KHÔNG đụng value-model):**
+1. **Borrowck allow-arm** (`checker.rs:751-769`): thêm nhánh
+   `MirType::Nullable(inner) if inner.is_any_heap()` vào allow-set (hiện loại trừ
+   `Nullable(_)` → rơi E2423) → record `partial_moves` projection-path như mọi
+   heap field. UAM/E2420/union-merge/fixpoint kế thừa nguyên (Phase 3 đã phủ).
+2. **JIT move-out tombstone** (`mir_lower.rs` move-out arm ~1523-1583): field
+   `Nullable(heap)` zero ptr@offset lúc move (String? 24B fat → zero ptr-word;
+   Vector?/HashMap? 8B → zero handle). Drop-side `mir_lower.rs:472` đã no-op trên 0.
+3. **Lower dest type propagation** (`FieldAccess`, đối xứng Site-3 WO-0072/74/75):
+   dest local mang `Nullable(heap)` thật (KHÔNG Unknown) → JIT cấp slot đúng kích
+   thước (kẻo Unknown → no-slot → SIGSEGV).
+
+**Scope KHÓA (defer giữ nguyên trong lồng):** Index/Deref/enum-Payload move-out
+(non-Field projection — vẫn E2423, Collection-Semantics) · sub-path reassign
+(E2424, §5 Phase 3). KHÔNG scope creep.
+
+### Teeth Phase 4 (O verify máu độc lập — poison phải đỏ, restore cp KHÔNG git checkout)
+| # | Tooth | Scenario | Poison → RED |
+|---|---|---|---|
+| 1 💀 double-free | `let s=b.s` (present `~+"hi"`) + `Drop(b)` | gỡ Site-2 tombstone → **SIGABRT 134** (điều kiện G ký) |
+| 2 leak count | present move-out, đếm FREE | poison `is_copy(Nullable(heap))→true` → struct Copy → no drop → FREE==0 |
+| 3 null-state | `b.s = ~0` rồi move-out + Drop(b) | FREE==0, no crash; poison store-0-thay-sentinel → sai |
+| 4 ⚔ CFG-divergent | move nullable-field 1 nhánh `if`, Drop(b) join | dual-config (taken/not-taken) đều clean; gỡ tombstone → taken-path 134 (điều kiện G ký) |
+| 5 SIGSEGV | gỡ Site-3 → dest Unknown → no-slot | child wait_status 139 cô lập subprocess |
+| 6 E2420 preserve | reuse field sau move-out | vẫn E2420 (use-after-move) |
+
+Mỗi mũi quét cả `String?`/`Vector?`/`HashMap?` (bài học HP.3 — TEETH phủ không-gian-biến-thể).
+
+### Fixtures
+Flip `310_heap_nullable_field_moveout_e2423` → `*_run` (EXPECT 0) + thêm
+Vector?/HashMap? variant + counting harness (present FREE==1 / null FREE==0 /
+double-free FREE==2).
+
+### Hậu quả
+**Tích cực:** đóng E2423 source-reachable cuối trên Field-Move-out; mặt trận
+Ownership Field-level KHÉP; 0 dòng value-model; tiền đề dynamic-flag chôn vĩnh viễn
+(thế hệ sau không đào lại). **Tiêu cực:** allow-arm thêm 1 nhánh + JIT move-out
+thêm 1 arm (surgical, bounded). **Rủi ro:** is_copy sai → leak (tooth 2); store-0
+thay sentinel → match `~0` sai (tooth 3); dest Unknown → SIGSEGV (tooth 5).

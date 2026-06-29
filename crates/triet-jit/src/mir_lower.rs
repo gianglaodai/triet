@@ -1910,7 +1910,11 @@ impl JitContext {
                             let zero = builder.ins().iconst(I64, 0);
                             // (1) String dest: sync len@8/cap@16 (scalar copy
                             // stored only ptr@0 since the source is projected).
-                            if matches!(field_ty, MirType::String)
+                            // `is_string_repr()` so `String?` (24B fat, same repr)
+                            // syncs too — else dest cap@16 = stack garbage → free
+                            // UB at Drop(dest). Vector?/HashMap? (8B handle) need
+                            // no sync.
+                            if field_ty.is_string_repr()
                                 && dest.projection.is_empty()
                                 && let Some(dest_slot) =
                                     self.struct_slots.get(&dest.local).map(|(s, _)| *s)
@@ -1964,6 +1968,17 @@ impl JitContext {
                                             }
                                         }
                                     }
+                                }
+                                // WO-NullableFieldMoveOut (ADR-0076 §AMEND): a
+                                // heap-`T?` field (`String?` 24B fat / `Vector?`/
+                                // `HashMap?` 8B handle) keeps the heap ptr/handle
+                                // @field_off. Zero it (static tombstone) so the
+                                // base's Drop reads ptr@field_off ∈ {0, NULL_SENTINEL}
+                                // → free shim no-ops (no `brif`, R4). SYMMETRIC with
+                                // the plain heap-SCALAR arm above — the only delta is
+                                // the `is_string_repr()` len/cap sync handled at (1).
+                                MirType::Nullable(inner) if inner.is_any_heap() => {
+                                    builder.ins().stack_store(zero, base_slot, field_off);
                                 }
                                 _ => {}
                             }

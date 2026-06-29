@@ -1,0 +1,13 @@
+// EXPECT: 5
+// WO-NullableFieldMoveOut (ADR-0076 §AMEND): `HashMap?` field move-out. Like
+// Vector?, the HashMap? handle is an 8B thin word @field_off. `let x = b.m`
+// partial-moves the handle and tombstones it in the base; the sibling `b.n`
+// stays readable → 5. `Drop(b)` no-ops on the zeroed handle and `Drop(x)`
+// frees the HashMap once (no double-free).
+struct Bag { m: HashMap<Integer, Integer>?, n: Integer }
+
+function main() -> Integer = {
+    let b = Bag { m: ~+ hashmap_new(), n: 5 };
+    let x = b.m;
+    return b.n;
+}

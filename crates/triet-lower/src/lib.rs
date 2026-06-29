@@ -2984,6 +2984,17 @@ fn lower_expr(
                 // the aggregate enum copy writes through a garbage address →
                 // SIGSEGV (identical failure to the Struct case above).
                 || matches!(&field_ty, MirType::Enum(_))
+                // WO-NullableFieldMoveOut (ADR-0076 §AMEND): a heap-`T?` field
+                // (e.g. `let s = b.s` with `b.s: String?`) carries its
+                // `Nullable(heap)` type so the JIT pre-pass allocates a real slot
+                // for the move-out dest (`String?` → 24B fat via `is_string_repr()`
+                // @mir:1186; `Vector?`/`HashMap?` → i64-var). The `Nullable(Struct/
+                // Enum)` clause above does NOT cover this (inner is heap-scalar,
+                // not aggregate) and `is_any_heap()` does NOT unwrap Nullable —
+                // without this clause the dest is Unknown-typed → NO slot →
+                // SIGSEGV. (WO-0075's "Lower Site-H no-op" note does NOT apply to
+                // Nullable-heap: this propagation is load-bearing.)
+                || matches!(&field_ty, MirType::Nullable(inner) if inner.is_any_heap())
             {
                 c.alloc_local_ty(field_ty)
             } else {

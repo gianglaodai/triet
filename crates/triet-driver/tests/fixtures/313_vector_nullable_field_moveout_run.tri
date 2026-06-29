@@ -1,0 +1,13 @@
+// EXPECT: 9
+// WO-NullableFieldMoveOut (ADR-0076 §AMEND): `Vector?` field move-out. The
+// Vector? handle is an 8B thin word @field_off (no len/cap sync needed). `let
+// x = b.v` partial-moves the handle and tombstones (zeroes) it in the base;
+// the sibling `b.n` (Integer) stays readable → 9. `Drop(b)` no-ops on the
+// zeroed handle and `Drop(x)` frees the Vector once (no double-free).
+struct Bag { v: Vector<Integer>?, n: Integer }
+
+function main() -> Integer = {
+    let b = Bag { v: ~+ push(vector_new(), 7), n: 9 };
+    let x = b.v;
+    return b.n;
+}

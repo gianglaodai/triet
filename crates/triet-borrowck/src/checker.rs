@@ -744,10 +744,20 @@ fn process_block(
                         // → ["inner", "x"] for multi-level), so multi-level
                         // extraction is OPENED (was refused). The JIT tombstones the
                         // moved leaf at its absolute offset in the base slot.
+                        // WO-NullableFieldMoveOut (ADR-0070 §AMEND Phase 4 +
+                        // ADR-0076 §AMEND): a heap-`T?` field (`String?`/`Vector?`/
+                        // `HashMap?`) is now ALSO move-out-able. Its slot IS the
+                        // drop-flag (static tombstone): the moved-out leaf ptr is
+                        // zeroed in the base, and the free shim no-ops on
+                        // 0/NULL_SENTINEL — no per-field dynamic drop-flag needed.
+                        // `is_any_heap()` does NOT unwrap `Nullable`, so this arm
+                        // matches `Nullable(inner) if inner.is_any_heap()`
+                        // EXPLICITLY (not via `extracted_ty.is_any_heap()`).
                         // Still REFUSED (E2423): a NON-Field projection
                         // (`projection_path` → None: Index/Deref/Payload/
                         // OutcomeDiscriminant) and every other non-copy move-type
-                        // (Nullable/Outcome fields are out of scope, defer).
+                        // (Outcome fields, Nullable(scalar/aggregate) are out of
+                        // scope, defer).
                         match projection_path(source) {
                             Some(path)
                                 if !path.is_empty()
@@ -759,7 +769,12 @@ fn process_block(
                                             extracted_ty,
                                             triet_mir::MirType::Struct(_)
                                         )
-                                        || matches!(extracted_ty, triet_mir::MirType::Enum(_))) =>
+                                        || matches!(extracted_ty, triet_mir::MirType::Enum(_))
+                                        || matches!(
+                                            &extracted_ty,
+                                            triet_mir::MirType::Nullable(inner)
+                                                if inner.is_any_heap()
+                                        )) =>
                             {
                                 state
                                     .partial_moves
