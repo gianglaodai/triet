@@ -1886,10 +1886,22 @@ impl JitContext {
                             // zero each (SYMMETRIC with the Deinit struct-branch's
                             // base_offset=0 walk, G mandate: free N tiers → zero N
                             // tiers). Capability is a 0-byte ZST (no heap leaf);
-                            // Enum/Nullable/Outcome field-move stays refused upstream.
+                            // Nullable/Outcome field-move stays refused upstream.
                             match &field_ty {
                                 MirType::String | MirType::Vector | MirType::HashMap => {
                                     builder.ins().stack_store(zero, base_slot, field_off);
+                                }
+                                // WO-0074 (Phase 3): a heap-carrying ENUM field
+                                // move-out. The enum slot is [disc@0][payload@8];
+                                // its heap payload ptr lives at field_off+8 in the
+                                // BASE slot. Zero ONLY the payload ptr (disc stays)
+                                // so the base's tag-switch Drop glue
+                                // (`emit_enum_drop_glue_at`, payload_off=8) reads
+                                // ptr=0 → `emit_heap_free_at` returns early → free
+                                // no-op. SYMMETRIC with the leaf-Enum tombstone
+                                // (`abs + 8`) in the Struct branch below.
+                                MirType::Enum(_) => {
+                                    builder.ins().stack_store(zero, base_slot, field_off + 8);
                                 }
                                 MirType::Struct(name) => {
                                     let mut leaves: Vec<(i32, LeafKind)> = Vec::new();

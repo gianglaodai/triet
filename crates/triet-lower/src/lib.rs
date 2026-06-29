@@ -2968,6 +2968,13 @@ fn lower_expr(
                 // Unknown-typed temp (the scalar-leaf path) gets NO slot, so the
                 // aggregate field copy writes through a garbage address → SIGSEGV.
                 || matches!(&field_ty, MirType::Struct(_))
+                // WO-0074 (Phase 3 — Nợ A): a heap-carrying ENUM field
+                // (e.g. `let e = h.msg`) likewise carries its `MirType::Enum(_)`
+                // type so the JIT pre-pass allocates an enum stack slot for the
+                // move-out dest. Without it the dest is Unknown-typed → NO slot →
+                // the aggregate enum copy writes through a garbage address →
+                // SIGSEGV (identical failure to the Struct case above).
+                || matches!(&field_ty, MirType::Enum(_))
             {
                 c.alloc_local_ty(field_ty)
             } else {

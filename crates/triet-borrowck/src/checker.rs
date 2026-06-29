@@ -692,18 +692,23 @@ fn process_block(
                         // HashMap) OR a heap-STRUCT (Phase 2: the ADR-0067
                         // construction-into-field double-free is now fixed, so the
                         // JIT can tombstone the moved struct's heap leaves at their
-                        // absolute offsets in the base slot) — record the partial
-                        // move. The JIT tombstones the moved leaf in the base slot
-                        // so the base's Drop frees nothing already moved (no
-                        // double-free).
+                        // absolute offsets in the base slot) OR a heap-carrying
+                        // ENUM (WO-0074 Phase 3: the JIT zeroes the moved enum's
+                        // payload ptr@field_off+8 in the base slot so the base's
+                        // tag-switch Drop reads ptr=0 → free no-op) — record the
+                        // partial move. The `partial_moves` entry keys the base
+                        // local to the SINGLE field name (`single_field` → "msg");
+                        // the ADR-0070 data-structure (Map<Local, Set<field-name>>)
+                        // is unchanged.
                         // Still REFUSED (E2423): multi-level extraction
                         // (single_field → None) and every other non-copy move-type
-                        // (Enum/Nullable/Outcome fields are out of scope, defer).
+                        // (Nullable/Outcome fields are out of scope, defer).
                         match single_field(source) {
                             Some(f)
                                 if matches!(extracted_ty, triet_mir::MirType::Capability(_))
                                     || extracted_ty.is_any_heap()
-                                    || matches!(extracted_ty, triet_mir::MirType::Struct(_)) =>
+                                    || matches!(extracted_ty, triet_mir::MirType::Struct(_))
+                                    || matches!(extracted_ty, triet_mir::MirType::Enum(_)) =>
                             {
                                 state
                                     .partial_moves
@@ -1947,6 +1952,72 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
             "single-level heap field move-out must NOT emit E2423, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// WO-0074 (Phase 3 — Nợ A): a SINGLE-level HEAP-CARRYING ENUM field
+    /// move-out `dest = h.msg` is ALLOWED — it records a partial move instead
+    /// of E2423 (the Site-2 allow-arm gained `matches!(extracted_ty,
+    /// MirType::Enum(_))`). Poison: drop the Enum arm from the guard → this
+    /// regresses to E2423 and the assertion fails = the enum allow-arm is
+    /// load-bearing.
+    #[test]
+    fn single_level_enum_field_partial_moves_ok() {
+        let mut b = MirBuilder::new("extract_enum_field_ok", MirType::Unit);
+        // enum Msg { Text(String), Code(Integer) } — heap-carrying → non-copy.
+        b.add_enum_layout(triet_mir::EnumLayout::compute(
+            "Msg",
+            &[
+                (
+                    "Text".into(),
+                    0,
+                    Some((MirType::String, 24, triet_mir::align::POINTER, vec![])),
+                ),
+                ("Code".into(), 1, None),
+            ],
+        ));
+        // struct Holder { msg: Msg, n: Integer }
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Holder",
+            &[
+                (
+                    "msg".into(),
+                    MirType::Enum("Msg".into()),
+                    32,
+                    triet_mir::align::POINTER,
+                ),
+                ("n".into(), MirType::Integer, 8, triet_mir::align::INTEGER),
+            ],
+        ));
+        let obj = b.add_param("obj", ParameterPassing::Move);
+        b.set_local_type(obj, "Holder");
+
+        let bb0 = b.new_block();
+        let dest = b.new_local();
+        b.push(bb0, storage_live(dest));
+        b.push(
+            bb0,
+            Statement::Assign {
+                dest: Place::local(dest),
+                source: field(obj, "msg"),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(bb0, storage_dead(dest));
+        b.set_terminator(bb0, return_(vec![]));
+
+        let body = b.build(bb0);
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
+            "single-level heap-carrying enum field move-out must NOT emit E2423, got: {:?}",
             result.errors
         );
     }
