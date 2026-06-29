@@ -173,3 +173,128 @@ counting XANH. Gate `0·0·297·0`. Copy-struct >8B field read verified (đọc 
 base reusable — Copy semantics giữ).
 
 **Defer:** Enum-field move-out · multi-level (`h.inner.x`) extraction · true-recursive (ADR-0068).
+
+## ✚ AMEND — Phase 2b: Enum-field move-out MỞ (WO-0074, G ký 2026-06-29)
+
+`let e = h.msg` (`msg` là enum mang heap payload) trước đây refuse **E2423**
+(allow-arm chỉ {Capability, heap-scalar, Struct}). Construct + base-Drop của
+enum-in-struct đã chạy từ ADR-0067; Phase 2b chỉ mở **đường move-out**. 3 site
+đối xứng Phase 2 (commit `e0b1ed7`):
+
+1. **Lower** (`lib.rs` `Expr::FieldAccess`): thêm `matches!(field_ty,
+   MirType::Enum(_))` vào gate cấp typed-slot → dest mang `Enum` → JIT pre-pass
+   cấp enum-slot. Thiếu → dest Unknown → no-slot → aggregate-copy ghi địa chỉ rác
+   → **SIGSEGV** (đối xứng tử huyệt site-3 Phase 2).
+2. **Borrowck** (`checker.rs` allow-arm): thêm `MirType::Enum(_)`. `partial_moves`
+   key = tên field đơn ("msg"), **data-structure KHÔNG đổi**. Nullable/Outcome
+   field-move VẪN refuse.
+3. **JIT** (`mir_lower.rs` move-out tombstone): arm `Enum(_)` zero **chỉ
+   payload-ptr@`field_off+8`** (disc giữ) → base tag-switch Drop đọc ptr=0 → free
+   no-op. Đối xứng leaf-Enum tombstone (`abs+8`).
+
+**Teeth (O verify máu, độc lập, cp-snapshot):** 5 răng — borrowck allow (poison
+→ E2423), double-free (poison JIT → FREE 2 vs 1), leak (cực âm `==1`), cap+count
+đồng thời (`STR_CAP==5 && STR_FREES==1`, assertion-guard), **SIGSEGV in-suite**
+(poison Lower → child subprocess signal 11 / code 139, crash cô lập). Gate
+`0·0·303·0` (counting/subprocess là test-binary riêng → corpus 303 đứng yên).
+
+**Defer:** multi-level (`h.inner.x`) extraction → AMEND Phase 3 dưới · true-recursive (ADR-0068).
+
+## ✚ AMEND — Phase 3: Multi-level extraction (projection-path move-state) [G ký 2026-06-29]
+
+### Lý do mổ
+`let x = h.inner.x` (≥2 Field projection) refuse **E2423** vì `single_field` trả
+`None` cho multi-level. Trước khi xây **Capability Ł3** (cần track capability của
+field lồng nhau), borrowck phải track **projection-path** — nếu không Ł3 gãy ở
+đúng chỗ này. G phán: dọn móng trước khi xây lâu đài.
+
+**Đường nứt gốc:** `partial_moves: Map<Local, Set<String>>` — key là MỘT tên
+field. KHÔNG biểu diễn được "`inner.x` moved nhưng `inner.y` sống". Nâng key lên
+**projection-path**.
+
+### 1. Data-model: `Set<String>` → `Set<Vec<String>>` (KHÔNG Trie)
+```rust
+partial_moves: BTreeMap<Local, BTreeSet<Vec<String>>>   // local → {moved paths}
+// h.msg → ["msg"]   |   h.inner.x → ["inner","x"]   |   whole h → []
+```
+Trie bị bác: tập moved-path mỗi local nhỏ (vài field), prefix-scan O(paths×depth)
+không đáng kể. `Vec<String>` giữ idiom union hiện có, không over-engineer.
+
+### 2. Quan hệ PREFIX-CONFLICT (tim của cascade)
+P (đọc) và M (moved) **xung đột** ⟺ một là prefix của cái kia (kể cả bằng):
+`conflict(P,M) ⟺ is_prefix(P,M) ∨ is_prefix(M,P)`.
+
+| đọc P | moved M | quan hệ | kết |
+|---|---|---|---|
+| `[inner,x]` | `[inner,x]` | exact | ❌ DEAD |
+| `[inner,x]` | `[inner]` | M prefix P (cha đã đi) | ❌ DEAD |
+| `[inner]` | `[inner,x]` | P prefix M (đọc cha chạm con) | ❌ DEAD |
+| `[]` | `[inner,x]` | whole-base | ❌ DEAD |
+| `[inner,y]` | `[inner,x]` | divergent | ✅ **LIVE** (sibling leaf) |
+| `[other]` | `[inner,x]` | divergent | ✅ **LIVE** (sibling branch) |
+
+Single-level là ca riêng (M=`[f]` exact; P=`[]` whole-base) → backward-compat 100%.
+
+### 3. Cascade 3 hàm
+- `single_field` (checker.rs:403) → **`projection_path(place) -> Option<Vec<String>>`**:
+  mọi proj Field → path đầy đủ; gặp non-Field proj → `None` (conservative
+  whole-base); caller coi `None`/`[]` = whole-base.
+- `partial_move_invalidates` (416): `moved.iter().any(|m| prefix_conflict(&p, m))`
+  thay `moved.contains(f)` — subsume logic cũ (§2 chứng minh).
+- allow-arm record (702-721): `Some(path) if !path.is_empty() && (Cap|heap|Struct|
+  Enum)` → `insert(path)`; non-Field proj / non-move-type → vẫn **E2423**.
+
+### 4. 🩸 Lỗ hổng fixpoint CHẾT NGƯỜI — bịt NGAY trong amendment này (commit tách)
+Fixpoint check (checker.rs:520-521 entry + 541-542 exit) chỉ so `var_states` +
+`active_loans`, **KHÔNG so `partial_moves`**. Vì partial-move KHÔNG set
+base→Moved (base vẫn Owned), delta `partial_moves` bị **âm thầm vứt** → trong
+vòng lặp, move ở iteration-1 không xâm nhập entry iteration-2 qua back-edge →
+**UAM bỏ sót = UNSOUND**. Đây là lỗ **CÓ SẴN** (latent cho cả single-level,
+chưa ai test loop+partial-move). Vá: thêm `&& new_entry.partial_moves ==
+entry_states[b].partial_moves` (entry) + `|| new_exit.partial_moves !=
+exit_states[b].partial_moves` (exit). **Commit riêng, NẰM TRƯỚC commit feature**
+(G mandate: 1 commit vá bug lõi, 1 commit feature — git history sạch).
+
+Union-merge (231-238) đổi `Set<String>`→`Set<Vec<String>>` union; monotone, hội
+tụ; intersection UNSOUND (quên move nhánh anh em). Luận chứng KHÔNG đổi.
+
+### 5. Reassignment clear — sub-path KHÓA bằng negative tooth (G chốt)
+Whole-base re-assign / `StorageLive` fresh → `partial_moves.remove(local)` (xóa
+toàn bộ path) — ĐÚNG. **Sub-path re-assign** `h.inner = fresh` sau khi move
+`h.inner.x` (cần `retain(|m| !is_prefix([inner], m))`): **KHÔNG mở Phase 3** —
+đéo có use-case thì đéo mở. Cắm cờ tóm cổ + diagnostic tử tế + **negative tooth
+chứng minh đã khóa**. Mở khi Giang có nhu cầu.
+
+### 6. Phạm vi
+- **PART A (HEART — ca mổ tim):** §1-5 borrowck core + §4 fixpoint. Cái G ký.
+- **PART B (chi — reuse Phase 2):** JIT tombstone leaf multi-level ở absolute
+  offset qua `walk_projections` (đã trả `(ty, abs_off)`); Lower `place_result_type`
+  (lib.rs:1561) đã loop mọi Field proj → multi-level leaf-type đã resolve. Verify
+  Site-1 phủ khi soạn WO.
+- **OUT:** non-Field projection (Index/Deref) · sub-path reassign (§5) · true-recursive (ADR-0068 CẤM).
+
+### 7. Teeth (8 răng — phong cách WO-0074, máu đổ TRƯỚC khi vá)
+| # | Tooth | Scenario | Vá | Poison → RED |
+|---|---|---|---|---|
+| A sibling-live | move `h.inner.x`, đọc `h.inner.y` | ✅ no error | base-only invalidate → false UAM |
+| B ancestor-dead | move `h.inner.x`, đọc `h.inner` | ❌ UAM | gỡ "P prefix M" → no error |
+| C exact-dead | move `h.inner.x`, đọc lại `h.inner.x` | ❌ UAM | gỡ exact → no error |
+| D whole-base-dead | move `h.inner.x`, đọc `h` | ❌ UAM | gỡ "[] prefix" → no error |
+| E sibling-branch-live | move `h.inner.x`, đọc `h.other` | ✅ no error | over-conservative → false UAM |
+| F ⚔ merge-union | move `h.inner.x` 1 nhánh CFG, join, đọc | ❌ UAM | union→intersection → no error |
+| G 🩸 fixpoint-loop | loop move+re-read qua back-edge | ❌ UAM | gỡ `partial_moves` khỏi fixpoint check → no error |
+| H runtime | `let x=h.inner.x` chạy | FREE==1 | gỡ JIT multi-level tombstone → FREE==2 |
+| (neg) sub-path-locked | `h.inner=fresh` sau move `h.inner.x` | ❌ diagnostic khóa | (§5 — chứng minh đã khóa) |
+
+F + G là xương sống soundness. A-G borrowck (check-mode); H JIT counting.
+
+### 8. Phương án đã cân nhắc
+(a) **`Vec<String>` path** ✅ — đơn giản, đúng idiom, scan rẻ. (b) Trie/radix —
+premature, 0 lợi ích đo. (c) Place-id interning — over-engineering. (d) Giữ
+refuse multi-level — chặn Ł3 nested, bác.
+
+### 9. Hậu quả
+**Tích cực:** projection-path move-state = nền Ł3 nested capability; bịt lỗ
+fixpoint có sẵn; multi-level mở. **Tiêu cực:** `Vec<String>` clone nhiều hơn
+`&str` (chấp nhận — borrowck không nóng); cascade chạm 4 site core + fixpoint.
+**Rủi ro:** merge/fixpoint chỗ chết người (tooth F+G gác); sub-path reassign khóa (§5).
