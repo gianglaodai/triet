@@ -134,3 +134,53 @@ free R4). KHÔNG đụng: 0068 (Box CẤM), native-layout (defer). Mở đườn
 ## Ngày hiệu lực
 Bậc C+ — element-type-MIR + elem_size + typed-free + by-ptr-ABI khi landed (O verify máu, G ký).
 Không hồi tố Vector<Integer> (fast-path i64 bảo tồn byte-compat).
+
+---
+
+## ✚ AMEND — Re-scope 2-slice + 💀 lỗi under-scope của O (D bắt, G chốt 2026-06-30)
+
+### 💀 Lỗi under-scope O nhận (D chặn đúng LUẬT 4 sau MŨI 1)
+Bản draft trên chẩn gốc chặn là **lower erase** — SAI/THIẾU. Gốc chặn THẬT là **typecheck
+đơn hình**: `vector_new()`/`push`/`get` declare cứng `Vector<Integer>`, `type_parameters` RỖNG
+(`env.rs:252/262/291`). `push(vector_new(), "hi")` → **E1003** (expected Integer, found String).
+**`Vector<String>` BẤT KHẢ construct ở source** — MŨI 1-4 backend chỉ là **máy ngủ đông** nếu
+không mở typecheck. WO 4-mũi backend là CẦN nhưng KHÔNG ĐỦ → **thiếu MŨI 5 (typecheck-open)**.
+Bài học (lặp WO-0073): *verify-don't-trust cắt cả WO của chính O — recon phải quét TỪ phễu
+typecheck xuống JIT, không chỉ cắm mặt backend.* D bắt mìn, dừng, báo (LUẬT 4) — không ngủ đông.
+
+### Quyết định G — campaign = 2 SLICE
+
+**Slice A — Backend & Storage** (cỗ máy ownership-trong-vector, verify route-lower hand-built MIR):
+- MŨI 1 ✓ `Vector(Box<MirType>)` (committed WIP `d0d39d1`).
+- MŨI 2 **stride-in-HEADER** (LUẬT 5 D đề, G DUYỆT): ghi `stride`+`elem_kind` vào header lúc
+  `alloc` — KHÔNG truyền param. Né ca empty-default-buffer lửng lơ (vector_new default Integer-8
+  rồi push String-24: free đọc stride từ header → dealloc đúng). Tiền lệ: free đã đọc cap@header.
+- MŨI 3 typed-free: `__triet_vector_free_typed(ptr, elem_kind)` (đọc stride/kind từ header) loop
+  `len` element @stride → free-shim per-kind (sentinel-no-op R4). `emit_heap_free_at` Vector →
+  typed variant. Tái dùng NGUYÊN tombstone/free machinery.
+- MŨI 4 (rename) **shim `pop()`** = move-out đuôi mảng (len-1), trả owned element, ownership
+  CẮT ĐỨT sạch (KHÔNG clone, KHÔNG thủng giữa mảng). Đây là op heap-element-out DUY NHẤT ở P1.
+- Test: hand-built MIR route-lower + counting (push N → drop → FREE==N; push→pop→drop ownership).
+
+**Slice B — Typecheck-open** (đâm xuyên source→JIT, structural + expected-type, **NÉ generics**):
+- **PA1 chốt (G): structural element-check + expected-type (ADR-0072), KHÔNG HM-unify, KHÔNG
+  type-variable.** `let v: Vector<String> = vector_new()` → annotation cấp element=String qua
+  expected-type propagation xuống `vector_new()`; `push(v, e)` check `e` structural khớp
+  element-type của `v` (đã biết từ v); return `Vector<String>`.
+- **get() phán quyết G: DEFER cho heap type.** `get()` chỉ cho **Copy element** (Integer…) trả
+  `T?` owned-copy (như cũ). **Heap element (String/Vector/HashMap/Nullable-heap) → REFUSE get()
+  bằng E-code mới** (borrow-no-reference / clone-no-shim / move-out-thủng-mảng đều chí mạng).
+  Lấy heap element ra = dùng **`pop()`** (move-out, ownership sạch).
+- Test: end-to-end **source** `.tri` poison — `let v: Vector<String>=vector_new(); push;…; pop; drop`.
+
+### Teeth cập nhật (thay teeth #2 cũ)
+G mandate #2 dùng **pop**: source `Vector<String>` push N → **pop** vài cái → drop mảng → memory
+sound (FREE đúng số, KHÔNG double-free/leak). **Vỡ bộ nhớ = vặn cổ.** + negative: `get()` trên
+Vector<String> → E-code REFUSE (không silent); `Vector<UserStruct>` → E-code REFUSE (biên P1/P2).
+
+### Biên get/pop chốt
+| op | Copy element | Heap element |
+|---|---|---|
+| `get(v,i)` | ✅ `T?` owned-copy | ❌ **REFUSE E-code** (defer) |
+| `pop(v)` | ✅ move-out đuôi | ✅ move-out đuôi (ownership sạch) |
+| `push(v,e)` | ✅ by-value i64 | ✅ by-ptr (fat) |
