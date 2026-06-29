@@ -134,8 +134,8 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_string_len",
             triet_jit::mir_lower::__triet_string_len,
         ),
-        // Vector shims (ADR-0040 §5)
-        ShimSymbol::fn_2_1(
+        // Vector shims (ADR-0040 §5; ADR-0077: alloc gains stride arg)
+        ShimSymbol::fn_3_1(
             "__triet_vector_alloc",
             triet_jit::mir_lower::__triet_vector_alloc,
         ),

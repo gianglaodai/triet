@@ -48,7 +48,7 @@ fn lower_source(source: &str) -> Vec<triet_mir::Body> {
 /// Real shim set, but `__triet_vector_free` swapped for the counter.
 fn counting_shims() -> Vec<ShimSymbol> {
     vec![
-        ShimSymbol::fn_2_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
+        ShimSymbol::fn_3_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
         ShimSymbol::fn_1_0("__triet_vector_free", __vnull_count_free),
         ShimSymbol::fn_1_1("__triet_vector_len", mir_lower::__triet_vector_len),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),

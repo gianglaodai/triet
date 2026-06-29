@@ -60,7 +60,7 @@ fn counting_shims() -> Vec<ShimSymbol> {
             mir_lower::__triet_string_from_bytes,
         ),
         ShimSymbol::fn_2_0("__triet_string_free", __mo_str_free),
-        ShimSymbol::fn_2_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
+        ShimSymbol::fn_3_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
         ShimSymbol::fn_1_0("__triet_vector_free", __mo_vec_free),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_1_1("__triet_vector_len", mir_lower::__triet_vector_len),

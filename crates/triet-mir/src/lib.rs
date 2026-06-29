@@ -1061,6 +1061,13 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             // [false, false]: borrow vec (không consume, khác push), copy index.
             arg_consumes: &[false, false],
         }),
+        // ADR-0077: pop mutates the vec IN PLACE (len--) — it is NOT consumed,
+        // so the vec stays live for its later Drop (frees the len-1 survivors).
+        // The MIR call carries one arg (vec); the JIT appends the out-pointer.
+        "__triet_vector_pop" => Some(BuiltinShimMeta {
+            name: "__triet_vector_pop",
+            arg_consumes: &[false],
+        }),
         "__triet_hashmap_alloc" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_alloc",
             arg_consumes: &[false, false],

@@ -13,7 +13,9 @@
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::I64;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{
+    AbiParam, BlockArg, InstBuilder, Signature, StackSlotData, StackSlotKind,
+};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -496,6 +498,41 @@ impl JitContext {
         }
     }
 
+    /// ADR-0077 Typed Vector P1: per-element STRIDE for a `Vector<T>` element
+    /// type. A compile-time constant for every built-in element — the crux that
+    /// keeps Vector P1 ⊥ native-layout. Scalar / handle / `Nullable(scalar)` =
+    /// 8; `String` / `Nullable(String)` = 24; `Vector` / `HashMap` handle = 8.
+    /// `Struct` / `Enum` (and any other non-built-in) → REFUSE (`JitError`) —
+    /// the P1/P2 boundary (`Vector<UserStruct>` needs native-layout, deferred).
+    ///
+    /// ⚠️ NOT `ty_total_size` (which returns 8 for `String` — wrong stride 24).
+    fn vector_elem_size(ty: &MirType) -> Result<i64, JitError> {
+        // Nullable rides its payload's repr (sentinel in the same slot width).
+        let eff = ty.nullable_payload().unwrap_or(ty);
+        match eff {
+            MirType::String => Ok(24),
+            MirType::Integer
+            | MirType::Trit
+            | MirType::Tryte
+            | MirType::Long
+            | MirType::Trilean
+            | MirType::Unit
+            | MirType::Unknown
+            | MirType::Vector(_)
+            | MirType::HashMap
+            | MirType::Reference { .. } => Ok(8),
+            MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Capability(_)
+            | MirType::Outcome { .. } => Err(JitError::Unsupported(format!(
+                "Vector<{eff}>: element type is not a built-in known-size type \
+                     (ADR-0077 P1 refuses Struct/Enum/Capability/Outcome elements — \
+                     by-value aggregate elements need native-layout, deferred to P2)"
+            ))),
+            MirType::Nullable(_) => unreachable!("nullable_payload already stripped one layer"),
+        }
+    }
+
     /// ADR-0060 P2-Boundary: base address of a local + byte offset. Slot-backed
     /// locals (struct/enum) → `stack_addr`; sret/param/match-binding → the
     /// pointer value in the variable.
@@ -941,10 +978,19 @@ impl JitContext {
         if !payload_ty.is_any_heap() {
             return Ok(());
         }
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        let ptr = builder.ins().load(I64, mem, addr, 0);
+        // ADR-0077: a Vector leaf frees its heap ELEMENTS first (element-free
+        // loop), then its buffer — `emit_vector_free_value` drives both. This is
+        // the SAME entry the standalone Drop arm uses, so a `Vector<String>`
+        // inside a struct/enum/another vector recurses correctly.
+        if let MirType::Vector(inner) = payload_ty {
+            let inner = (**inner).clone();
+            self.emit_vector_free_value(builder, ptr, &inner)?;
+            return Ok(());
+        }
         let free_name = if matches!(payload_ty, MirType::String) {
             "__triet_string_free"
-        } else if payload_ty.is_vec() {
-            "__triet_vector_free"
         } else if payload_ty.is_hashmap() {
             "__triet_hashmap_free"
         } else {
@@ -952,15 +998,103 @@ impl JitContext {
         };
         let func_id = self.get_or_declare_shim(free_name)?;
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
-
-        let mem = cranelift_codegen::ir::MemFlags::new();
-        let ptr = builder.ins().load(I64, mem, addr, 0);
         if matches!(payload_ty, MirType::String) {
             let cap = builder.ins().load(I64, mem, addr, 16);
             builder.ins().call(func_ref, &[ptr, cap]);
         } else {
             builder.ins().call(func_ref, &[ptr]);
         }
+        Ok(())
+    }
+
+    /// ADR-0077 Typed Vector P1 (MŨI 3) — free a Vector given its buffer pointer
+    /// VALUE (not an address). Frees the heap ELEMENTS via a runtime loop, then
+    /// the buffer. For a scalar/handle element (`elem_kind` 0) the loop is
+    /// skipped → byte-identical to the legacy `__triet_vector_free(ptr)`.
+    ///
+    /// The element-free calls route through `emit_heap_free_at` → the shim
+    /// registry, so they are COUNTED / poison-testable (a Rust-internal shim
+    /// loop would bypass the counting harnesses — see WO consult). Reused by
+    /// both the standalone Vector `Drop` arm and the aggregate-leaf path.
+    fn emit_vector_free_value(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        ptr_val: cranelift_codegen::ir::Value,
+        inner_ty: &MirType,
+    ) -> Result<(), JitError> {
+        self.emit_vector_element_free_loop(builder, ptr_val, inner_ty)?;
+        let func_id = self.get_or_declare_shim("__triet_vector_free")?;
+        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+        builder.ins().call(func_ref, &[ptr_val]);
+        Ok(())
+    }
+
+    /// ADR-0077 (MŨI 3) — emit a runtime loop that frees each heap element of a
+    /// Vector buffer. No-op (returns immediately, no blocks) when the element is
+    /// a scalar/handle (Copy) → Vector<Integer>/Vector<Vector<_>> stay
+    /// byte-compatible. A null/sentinel/zero buffer pointer skips the loop.
+    ///
+    /// `len` is read from the buffer header (`body@0`); `stride` from the header
+    /// `reserved` u32 (high 32 bits of the 8-byte object header at `body-8`).
+    /// Each element at `data + i*stride` is freed via `emit_heap_free_at`
+    /// (registry-routed, sentinel-no-op R4) — so nested `Vector<Vector<String>>`
+    /// recurses through `emit_heap_free_at`'s Vector branch.
+    fn emit_vector_element_free_loop(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        ptr_val: cranelift_codegen::ir::Value,
+        inner_ty: &MirType,
+    ) -> Result<(), JitError> {
+        // Nullable rides the inner repr; only a heap element needs per-element drop.
+        let eff = inner_ty.nullable_payload().unwrap_or(inner_ty).clone();
+        if !eff.is_any_heap() {
+            return Ok(()); // scalar / handle element → no loop (byte-compat)
+        }
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        let zero = builder.ins().iconst(I64, 0);
+        let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+        let is_zero = builder.ins().icmp(IntCC::Equal, ptr_val, zero);
+        let is_sent = builder.ins().icmp(IntCC::Equal, ptr_val, sentinel);
+        let is_dead = builder.ins().bor(is_zero, is_sent);
+
+        let setup_bb = builder.create_block();
+        let header_bb = builder.create_block();
+        builder.append_block_param(header_bb, I64); // induction var i
+        let body_bb = builder.create_block();
+        let exit_bb = builder.create_block();
+
+        // Dead (null/sentinel/0) buffer → skip straight to exit.
+        builder.ins().brif(is_dead, exit_bb, &[], setup_bb, &[]);
+
+        // setup: read len + stride, compute data base, enter loop at i=0.
+        builder.switch_to_block(setup_bb);
+        builder.seal_block(setup_bb);
+        let len = builder.ins().load(I64, mem, ptr_val, 0);
+        let hdr = builder.ins().load(I64, mem, ptr_val, -8); // {refcount|reserved}
+        let stride = builder.ins().ushr_imm(hdr, 32); // reserved = high u32 = stride
+        let data = builder.ins().iadd_imm(ptr_val, 16); // skip len@0 + cap@8
+        let i0 = builder.ins().iconst(I64, 0);
+        builder.ins().jump(header_bb, &[BlockArg::from(i0)]);
+
+        // header: i < len ? body : exit
+        builder.switch_to_block(header_bb);
+        let i = builder.block_params(header_bb)[0];
+        let cond = builder.ins().icmp(IntCC::SignedLessThan, i, len);
+        builder.ins().brif(cond, body_bb, &[], exit_bb, &[]);
+
+        // body: free element at data + i*stride, then i+1 → header.
+        builder.switch_to_block(body_bb);
+        builder.seal_block(body_bb);
+        let off = builder.ins().imul(i, stride);
+        let elem_addr = builder.ins().iadd(data, off);
+        self.emit_heap_free_at(builder, elem_addr, &eff)?;
+        let i_next = builder.ins().iadd_imm(i, 1);
+        builder.ins().jump(header_bb, &[BlockArg::from(i_next)]);
+
+        // header has both predecessors now (setup + body back-edge) → seal.
+        builder.seal_block(header_bb);
+        builder.switch_to_block(exit_bb);
+        builder.seal_block(exit_bb);
         Ok(())
     }
 
@@ -2158,10 +2292,20 @@ impl JitContext {
                     // ptr-sentinel shares the inner's repr); String? is already
                     // covered by is_string_repr.
                     let eff = ty.nullable_payload().unwrap_or(ty);
+                    // ADR-0077: a Vector Drop frees its heap ELEMENTS (loop) then
+                    // the buffer. `emit_vector_free_value` skips the loop for a
+                    // scalar/handle element → byte-identical to the legacy
+                    // `__triet_vector_free(ptr)`. The handle is an i64 var (the
+                    // ptr-sentinel of a null `Vector?` makes the loop + buffer
+                    // free no-op inside the shim).
+                    if let MirType::Vector(inner) = eff {
+                        let inner = (**inner).clone();
+                        let ptr = builder.use_var(self.var(*local));
+                        self.emit_vector_free_value(builder, ptr, &inner)?;
+                        continue;
+                    }
                     let free_shim_name = if ty.is_string_repr() {
                         "__triet_string_free"
-                    } else if eff.is_vec() {
-                        "__triet_vector_free"
                     } else if eff.is_hashmap() {
                         "__triet_hashmap_free"
                     } else {
@@ -2455,6 +2599,19 @@ impl JitContext {
                             callee_name.as_str(),
                             "__triet_string_clear" | "__triet_string_append"
                         );
+                        // ADR-0077: `pop` on a Vector of FAT elements (String 24B)
+                        // returns the element by sret — the dest's slot is filled
+                        // by memcpy, so the generic i64-return def_var is skipped
+                        // (the shim returns 0, not a value).
+                        let vector_pop_fat = callee_name.as_str() == "__triet_vector_pop" && {
+                            let vty = &body.local_decls[args[0].0].ty;
+                            match vty.nullable_payload().unwrap_or(vty) {
+                                MirType::Vector(inner) => {
+                                    Self::vector_elem_size(inner).is_ok_and(|s| s > 8)
+                                }
+                                _ => false,
+                            }
+                        };
                         let arg_vals: Vec<_> = if concat_sret {
                             // C6: concat receives dest_slot as first arg (callee-fill via *mut FatStr).
                             // Followed by bung-field source args {a_ptr, a_len, b_ptr, b_len}.
@@ -2546,6 +2703,68 @@ impl JitContext {
                                     builder.use_var(self.var(*a))
                                 })
                                 .collect()
+                        } else if callee_name == "__triet_vector_alloc" {
+                            // ADR-0077: append the per-element STRIDE as a 3rd arg
+                            // so the shim stashes it in the buffer header. Stride
+                            // comes from the dest's `Vector(inner)` element type —
+                            // a Struct/Enum element REFUSES here (P1/P2 boundary).
+                            let stride = {
+                                let dty = &body.local_decls[dest[0].0].ty;
+                                match dty.nullable_payload().unwrap_or(dty) {
+                                    MirType::Vector(inner) => Self::vector_elem_size(inner)?,
+                                    _ => 8,
+                                }
+                            };
+                            let mut vals: Vec<_> =
+                                args.iter().map(|a| builder.use_var(self.var(*a))).collect();
+                            vals.push(builder.ins().iconst(I64, stride));
+                            vals
+                        } else if callee_name == "__triet_vector_push" {
+                            // ADR-0077 fat-element ABI: a fat element (stride > 8,
+                            // e.g. String 24B) is passed BY-POINTER (stack_addr of
+                            // its slot) so the shim memcpy's `stride` bytes; a
+                            // scalar/handle element (stride 8) stays by-value i64
+                            // (fast path, Vector<Integer> byte-compat).
+                            let stride = {
+                                let vty = &body.local_decls[args[0].0].ty;
+                                match vty.nullable_payload().unwrap_or(vty) {
+                                    MirType::Vector(inner) => Self::vector_elem_size(inner)?,
+                                    _ => 8,
+                                }
+                            };
+                            let vec_val = builder.use_var(self.var(args[0]));
+                            let elem = args[1];
+                            let elem_val = if stride > 8 {
+                                if let Some((slot, _)) = self.struct_slots.get(&elem) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "vector_push: fat element without a slot (ADR-0077 \
+                                         by-pointer ABI requires a pre-allocated element slot)"
+                                            .into(),
+                                    ));
+                                }
+                            } else {
+                                builder.use_var(self.var(elem))
+                            };
+                            vec![vec_val, elem_val]
+                        } else if callee_name == "__triet_vector_pop" {
+                            // ADR-0077: append the OUT-pointer. Fat element →
+                            // the dest's slot addr (shim memcpy's the element in);
+                            // scalar → 0 (unused, element comes back by i64).
+                            let vec_val = builder.use_var(self.var(args[0]));
+                            let out_ptr = if vector_pop_fat {
+                                let (slot, _) =
+                                    self.struct_slots.get(&dest[0]).ok_or_else(|| {
+                                        JitError::Unsupported(
+                                            "vector_pop: fat element dest without a slot".into(),
+                                        )
+                                    })?;
+                                builder.ins().stack_addr(I64, *slot, 0)
+                            } else {
+                                builder.ins().iconst(I64, 0)
+                            };
+                            vec![vec_val, out_ptr]
                         } else {
                             args.iter()
                                 .map(|a| {
@@ -2572,7 +2791,20 @@ impl JitContext {
                         // 1-return shims. Check has_return via BuiltinShimMeta existence
                         // (all registered shims with a return value are in the meta table).
                         // C6: concat returns void (callee writes dest slot via *mut FatStr).
-                        if !dest.is_empty() && !concat_sret {
+                        if vector_pop_fat {
+                            // ADR-0077: the shim memcpy'd {ptr,len,cap} into the
+                            // dest String slot — bind the dest var to ptr@0 (the
+                            // i64 return is 0, NOT the value). len/cap already
+                            // sit in the slot from the memcpy.
+                            if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
+                                let ptr = builder.ins().stack_load(I64, *slot, 0);
+                                builder.def_var(self.var(dest[0]), ptr);
+                            } else {
+                                return Err(JitError::Unsupported(
+                                    "vector_pop: fat element dest without a slot".into(),
+                                ));
+                            }
+                        } else if !dest.is_empty() && !concat_sret {
                             let ret_val = builder.inst_results(call_inst)[0];
                             builder.def_var(self.var(dest[0]), ret_val);
                             // ADR-0049 Lát 6.3: populate String slot from shim args
@@ -3252,37 +3484,59 @@ pub extern "C" fn __triet_string_contains(h_ptr: i64, h_len: i64, n_ptr: i64, n_
 
 // ── Vector heap shims (ADR-0040 §5) ──────────────────────────
 
-/// Layout for a Vector heap allocation: header + len (i64) + cap (i64) + data (cap × 8).
-/// Element = i64 (Bậc A monomorphic `Vector<Integer>`).
+/// Layout for a Vector heap allocation: header + len (i64) + cap (i64) +
+/// data (cap × stride). ADR-0077 Typed Vector P1: the per-element `stride`
+/// (8 for scalar/handle, 24 for String) is no longer hardcoded — it is stashed
+/// in the header's `reserved` field at alloc and read back by push/get/free.
 #[allow(clippy::missing_const_for_fn)] // `Layout::from_size_align` is not const-stable
-fn vector_layout(cap: usize) -> std::alloc::Layout {
-    let total = HEADER_SIZE + 8 + 8 + cap * 8; // header + len + cap + data
+fn vector_layout(cap: usize, stride: usize) -> std::alloc::Layout {
+    let total = HEADER_SIZE + 8 + 8 + cap * stride; // header + len + cap + data
     std::alloc::Layout::from_size_align(total, 8).unwrap()
 }
 
-/// `__triet_vector_alloc(len, cap)` — allocate a Vector with given length and capacity.
+/// Read the element `stride` from a live Vector body's header (ADR-0077).
+/// `body` is the returned data pointer; the stride lives in the `reserved`
+/// u32 at `header + 4` = `body - 4`.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,        // len/cap are non-negative by construction
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr,
+    clippy::missing_const_for_fn // raw-ptr read_unaligned is not const-stable
+)]
+fn vector_stride(body: i64) -> usize {
+    // SAFETY: body points just past the 8-byte header; reserved is at body-4.
+    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize }
+}
+
+/// `__triet_vector_alloc(len, cap, stride)` — allocate a Vector (ADR-0077).
+///
+/// `stride` is the per-element byte size; it is stored in the header's
+/// `reserved` field so push/get/free recover it without a param.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,        // len/cap/stride are non-negative by construction
     clippy::cast_possible_truncation, // 64-bit target, values fit in usize
     clippy::cast_ptr_alignment,    // write_unaligned used, alignment irrelevant
     clippy::ptr_as_ptr             // idiomatic in extern "C" heap code (mirrors String shims)
 )]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
+pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64, stride: i64) -> i64 {
     let cap_usize = i64_to_usize(cap.max(len).max(2)); // at least cap=2 for realloc teeth
-    let layout = vector_layout(cap_usize);
+    let stride_usize = i64_to_usize(stride.max(8)); // floor at 8 (scalar/handle)
+    let layout = vector_layout(cap_usize, stride_usize);
     // SAFETY: layout is valid (power-of-2 alignment, non-zero size).
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
         return 0; // OOM — return null
     }
-    // Write ObjectHeader: refcount=1, reserved=0
+    // Write ObjectHeader: refcount=1, reserved=stride (ADR-0077).
     // SAFETY: layout guarantees 8-byte aligned, >=8 bytes at ptr.
 
     unsafe {
         (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
-        (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
+        (ptr as *mut u32)
+            .add(1)
+            .write_unaligned(stride_usize as u32); // reserved = stride
         // Write len and cap
         let body = ptr.add(HEADER_SIZE);
         (body as *mut i64).write_unaligned(len);
@@ -3293,8 +3547,14 @@ pub extern "C" fn __triet_vector_alloc(len: i64, cap: i64) -> i64 {
     }
 }
 
-/// `__triet_vector_free(ptr)` — free a Vector. No-op if ptr == 0 or
-/// ptr == `NULL_SENTINEL` (C4 moved-out + ADR-0041 §5.5 null guard).
+/// `__triet_vector_free(ptr)` — free a Vector's BUFFER (the backing block).
+/// No-op if ptr == 0 or ptr == `NULL_SENTINEL` (C4 moved-out + ADR-0041 §5.5).
+///
+/// ADR-0077: this frees ONLY the buffer, not the elements. For a `Vector<T>`
+/// with heap `T`, the JIT emits a per-element free loop (reusing
+/// `emit_heap_free_at`) BEFORE calling this — so element frees route through
+/// the shim registry and are counted/poison-testable. A scalar/handle element
+/// (`elem_kind` 0) needs no loop; only this buffer dealloc runs.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_possible_truncation, // 64-bit target, stored cap fits in usize
@@ -3307,10 +3567,11 @@ pub extern "C" fn __triet_vector_free(ptr: i64) {
         return;
     }
     let body = ptr as *mut u8;
-    // Read cap to compute layout
+    // Read cap + stride to compute the exact allocation layout.
     // SAFETY: body pointer is valid and points to len+cap+data structure.
     let cap = i64_to_usize(unsafe { (body as *const i64).add(1).read_unaligned() });
-    let layout = vector_layout(cap.max(2));
+    let stride = vector_stride(ptr);
+    let layout = vector_layout(cap.max(2), stride);
     let header = unsafe { body.sub(HEADER_SIZE) };
     // SAFETY: layout matches the one used at allocation.
     unsafe { std::alloc::dealloc(header, layout) };
@@ -3350,33 +3611,44 @@ pub extern "C" fn __triet_vector_push(vec: i64, elem: i64) -> i64 {
         std::process::abort();
     }
     let old_body = vec as *const u8;
-    // Read old len and cap
+    // Read old len, cap, and the per-element stride (ADR-0077 — from header).
     // SAFETY: vec points to valid body.
     let (old_len, old_cap) = unsafe {
         let l = (old_body as *const i64).read_unaligned();
         let c = (old_body as *const i64).add(1).read_unaligned();
         (i64_to_usize(l), i64_to_usize(c))
     };
+    let stride = vector_stride(vec);
     let new_len = old_len + 1;
     let new_cap = if new_len > old_cap {
         old_cap * 2
     } else {
         old_cap
     };
-    let new_body = __triet_vector_alloc(new_len as i64, new_cap as i64);
+    // Carry the SAME stride into the new buffer (header → header).
+    let new_body = __triet_vector_alloc(new_len as i64, new_cap as i64, usize_to_i64(stride));
     if new_body == 0 {
         return 0;
     }
-    // Copy old elements to new block
-    // SAFETY: old_body and new_body point to valid data areas.
+    // Copy old elements (byte-exact by stride) and write the new element.
+    // ADR-0077 fat-element ABI (MŨI 4): `stride <= 8` → `elem` is a by-value
+    // i64 (scalar/handle) written into its 8-byte cell; `stride > 8` → `elem`
+    // is a POINTER to the source element (String 24B fat) memcpy'd `stride`
+    // bytes. The header stride disambiguates — no separate fat shim.
+    // SAFETY: old_body and new_body point to valid data areas sized by stride.
     unsafe {
         let old_data = old_body.add(16); // skip len + cap
         let new_data = (new_body as *mut u8).add(16);
-        std::ptr::copy_nonoverlapping(old_data, new_data, old_len * 8);
-        // Write new element at position old_len
-        (new_data as *mut i64).add(old_len).write_unaligned(elem);
+        std::ptr::copy_nonoverlapping(old_data, new_data, old_len * stride);
+        let dst = new_data.add(old_len * stride);
+        if stride <= 8 {
+            (dst as *mut i64).write_unaligned(elem);
+        } else {
+            std::ptr::copy_nonoverlapping(elem as *const u8, dst, stride);
+        }
     }
-    // Free old block (explicit alloc + free — no realloc for deterministic teeth)
+    // Free old buffer ONLY (elements were moved byte-wise into the new buffer —
+    // freeing elements here would double-free). Explicit alloc+free, no realloc.
     __triet_vector_free(vec);
     new_body
 }
@@ -3410,10 +3682,66 @@ pub extern "C" fn __triet_vector_get(vec: i64, idx: i64) -> i64 {
     if idx < 0 || idx >= len {
         return triet_mir::NULL_SENTINEL;
     }
+    // ADR-0077: index by the per-element stride (header). Returns the 8-byte
+    // word at `data + idx*stride` — correct for scalar/handle elements
+    // (stride 8). Heap-element `get` (stride 24) is REFUSED at typecheck
+    // (Slice B): the owned element must leave via `pop` (move-out), not a
+    // copy through a single i64.
+    let stride = vector_stride(vec);
     // SAFETY: idx is in [0, len), data area starts at offset 16.
     unsafe {
         let data = body.add(16);
-        (data as *const i64).add(idx as usize).read_unaligned()
+        (data.add(idx as usize * stride) as *const i64).read_unaligned()
+    }
+}
+
+/// `__triet_vector_pop(vec, out_ptr)` — MOVE the last element out (ADR-0077).
+///
+/// Decrements the buffer's `len` in place so the popped slot is no longer owned
+/// by the vector — `Drop(vec)` then frees only the `len-1` survivors, and the
+/// popped element is owned by the caller (no double-free, no mid-array hole).
+/// Ownership is CLEANLY CUT.
+///
+/// ABI (stride-disambiguated, like push):
+/// - `stride <= 8` (scalar/handle): returns the element by value as i64;
+///   `out_ptr` is unused (the JIT passes 0).
+/// - `stride > 8` (fat, String 24B): memcpy's `stride` bytes of the element
+///   into `out_ptr` (the caller's dest slot) and returns 0.
+///
+/// `vec == 0` (dead) or empty (`len == 0`) → `NULL_SENTINEL`, no decrement.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_pop(vec: i64, out_ptr: i64) -> i64 {
+    if vec == 0 {
+        std::process::abort(); // trap-on-0 (dead value)
+    }
+    let body = vec as *mut u8;
+    // SAFETY: vec points to a valid buffer {len@0, cap@8, data@16}.
+    let len = unsafe { (body as *const i64).read_unaligned() };
+    if len <= 0 {
+        return triet_mir::NULL_SENTINEL; // empty → nothing to pop
+    }
+    let stride = vector_stride(vec);
+    let new_len = len - 1;
+    // Decrement len in place — the popped slot leaves the vector's ownership.
+    // SAFETY: body@0 is the len field.
+    unsafe { (body as *mut i64).write_unaligned(new_len) };
+    // SAFETY: new_len in [0, len), data starts at offset 16.
+    unsafe {
+        let elem = body.add(16).add(new_len as usize * stride);
+        if stride <= 8 {
+            (elem as *const i64).read_unaligned()
+        } else {
+            std::ptr::copy_nonoverlapping(elem, out_ptr as *mut u8, stride);
+            0
+        }
     }
 }
 
@@ -5802,7 +6130,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn vector_alloc_push_len_roundtrip() {
         // Call shims directly — no JIT compilation needed.
-        let v0 = __triet_vector_alloc(0, 2);
+        let v0 = __triet_vector_alloc(0, 2, 8);
         assert_ne!(v0, 0, "alloc(0,2) must return non-null");
         assert_eq!(__triet_vector_len(v0), 0, "fresh vector len = 0");
 
@@ -5829,7 +6157,7 @@ mod tests {
         // Verify that after realloc, the old pointer is truly freed
         // (and new allocation reuses the memory — not required but
         // observable on most allocators with same-size blocks).
-        let v0 = __triet_vector_alloc(0, 2);
+        let v0 = __triet_vector_alloc(0, 2, 8);
         let v1 = __triet_vector_push(v0, 1);
         let v2 = __triet_vector_push(v1, 2);
         // v0, v1, v2 all share the same ptr (in-place for len 0→1, 1→2)
@@ -5838,7 +6166,7 @@ mod tests {
         // After realloc: old block is freed, v3 = new block
         assert_ne!(v0, v3, "realloc must change ptr");
         // Allocate another vector — should get the old block back (most allocators)
-        let fresh = __triet_vector_alloc(0, 2);
+        let fresh = __triet_vector_alloc(0, 2, 8);
         // fresh may or may not reuse v0's old block — just assert we can alloc+free
         assert_ne!(fresh, 0, "alloc after realloc must succeed");
         __triet_vector_free(v3);
