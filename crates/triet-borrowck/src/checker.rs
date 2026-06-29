@@ -517,8 +517,17 @@ pub fn check_body_with(
             .collect();
         let new_entry = BlockState::merge(&preds);
 
+        // WO-0075 Commit 1 (§4 fixpoint-hole, pre-existing bug): a partial move
+        // does NOT set the base local to `Moved` (it only adds a field to
+        // `partial_moves`), so a partial-move delta is INVISIBLE to the
+        // `var_states`/`active_loans` comparison. Without the third clause, a
+        // field moved in a loop body never propagates back across the back-edge
+        // → the fixpoint converges prematurely → a use-after-move on the next
+        // iteration is SILENTLY MISSED (tooth-G). `partial_moves` is union-merged
+        // (monotone), so adding it to the convergence test keeps termination.
         if new_entry.var_states == entry_states[block.0].var_states
             && new_entry.active_loans == entry_states[block.0].active_loans
+            && new_entry.partial_moves == entry_states[block.0].partial_moves
         {
             // State unchanged — no need to re-process
             continue;
@@ -538,8 +547,12 @@ pub fn check_body_with(
         );
         errors.extend(block_errs);
 
+        // WO-0075 Commit 1 (§4 fixpoint-hole): same reasoning as the entry
+        // compare above — a partial-move delta must mark the exit state dirty so
+        // it propagates to successors, else a back-edge never carries the move.
         if new_exit.var_states != exit_states[block.0].var_states
             || new_exit.active_loans != exit_states[block.0].active_loans
+            || new_exit.partial_moves != exit_states[block.0].partial_moves
         {
             exit_states[block.0] = new_exit;
             // Propagate to successors
@@ -2018,6 +2031,100 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BorrowError::CannotCopyMoveTypeOut { .. })),
             "single-level heap-carrying enum field move-out must NOT emit E2423, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// WO-0075 Commit 1 tooth-G 🩸 (the deadliest): a field moved inside a LOOP
+    /// body must propagate across the BACK-EDGE so the next iteration's re-read
+    /// is a use-after-move. CFG:
+    ///   entry → header
+    ///   header: If cond → body / exit
+    ///   body:  `s = move h.name`; StorageDead(s); goto header   (BACK-EDGE)
+    ///   exit:  return
+    /// `StorageDead(s)` neutralises the `var_states` delta so the ONLY thing
+    /// that changes across the back-edge is `partial_moves[h] = {name}`. With the
+    /// §4 fixpoint fix the header/body re-process and the move statement's own
+    /// re-read on iteration 2 is caught (E2420). Poison: drop `partial_moves`
+    /// from the fixpoint convergence test → the delta is invisible → the loop
+    /// converges before re-processing → NO error → this assertion fails (RED).
+    #[test]
+    fn fixpoint_loop_partial_move_propagates_back_edge() {
+        let mut b = MirBuilder::new("loop_move", MirType::Unit);
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "HasString",
+            &[("name".into(), MirType::String, 8, triet_mir::align::INTEGER)],
+        ));
+        let h = b.add_param("h", ParameterPassing::Move);
+        b.set_local_type(h, "HasString");
+        let cond = b.new_local();
+        let s = b.new_local();
+
+        // entry: set up cond, goto header
+        let entry = b.new_block();
+        b.push(entry, storage_live(cond));
+        b.push(entry, const_int(cond, 1));
+
+        // header: If cond → body / exit
+        let header = b.new_block();
+
+        // body: s = move h.name; StorageDead(s); goto header (BACK-EDGE)
+        let body = b.new_block();
+        b.push(body, storage_live(s));
+        b.push(
+            body,
+            Statement::Assign {
+                dest: Place::local(s),
+                source: field(h, "name"),
+                span: DUMMY_SPAN,
+            },
+        );
+        b.push(body, storage_dead(s));
+        b.set_terminator(body, crate::goto(header));
+
+        // exit: return
+        let exit = b.new_block();
+        b.set_terminator(exit, return_(vec![]));
+
+        b.set_terminator(entry, crate::goto(header));
+        b.set_terminator(
+            header,
+            Terminator::If {
+                cond,
+                positive_bb: body,
+                zero_bb: None,
+                negative_bb: exit,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        let body_mir = b.build(entry);
+        let cfg = body_mir.build_cfg();
+        // Structural guard: the header MUST have a real back-edge (≥2 preds:
+        // entry + body) and the body's successor is the header — a straight-line
+        // forgery would converge in one pass and prove nothing.
+        assert!(
+            cfg.blocks[header.0].predecessors.contains(&body),
+            "test is not a loop: header has no back-edge from body (preds={:?})",
+            cfg.blocks[header.0].predecessors
+        );
+        assert_eq!(
+            cfg.blocks[body.0].successors,
+            vec![header],
+            "body must jump back to the header (back-edge)"
+        );
+
+        let result = check_body(&body_mir);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
+            "loop-carried partial move must be a use-after-move on iteration 2; \
+             got: {:?}",
             result.errors
         );
     }
