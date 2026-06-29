@@ -51,23 +51,12 @@ hand-written `Type`. Schema lái AST + ownership, CHƯA lái type system. Xem
 Danh sách trung thực những việc lớn còn lại. Thứ tự sẽ do soundness + nhu cầu thật
 quyết định, KHÔNG do một lộ trình tuyến tính áp đặt:
 
-### 🚨 ƯU TIÊN CHIẾN LƯỢC SAU TRỤC B: Capability Ł3 — phòng tuyến coherence
+### ✅ ĐÃ HOÀN TẤT — Capability Ł3 (coherence khép kín ba chân)
 
-> **Quyết định G + Giang 2026-06-22 (khắc đá).** Khi Triết là **balanced-ternary-first**
-> (nhãn "AI-first" đã gỡ hẳn — [VISION §5](VISION.md)), giá trị neo HẲN vào **coherence**:
-> một đại số Ł3 duy nhất chạy xuyên null / logic / **capability** ([VISION §8](VISION.md)).
-
-Hiện coherence mới xây **2/3**: null-handling (`T?`) ✅ + logic Ł3/K3 ✅, nhưng
-**capability Ł3 = 0** (ADR-0016/0017/0018 thiết kế còn sống, hiện thực đã xóa cùng
-compiler cũ). Đây là **chân độc-nhất nhất** của lập luận coherence — null + logic
-ngôn ngữ nào cũng có; *một Ł3 chạy xuyên cả phân quyền* mới là thứ không thể thay
-thế bằng tổ hợp ngôn ngữ khác. Thiếu nó, "coherence" chỉ là vẽ trên giấy → Triết
-tụt xuống toy-language chắp vá.
-
-**Mandate:** rebuild capability runtime (Trit-level `-1` deny / `0` ambient / `+1`
-grant + Ł3 `Unknown` resolved bởi runtime policy) là **nhiệm vụ chiến lược cốt lõi
-bắt buộc**, mở **NGAY SAU khi Trục B kết thúc**. KHÔNG còn là "làm khi tới lượt".
-ADR-0016/0017/0018 còn sống làm móng thiết kế; hiện thực mới trên MIR/JIT.
+✅ **ĐÃ HOÀN TẤT** — Capability Ł3 niêm phong bởi [ADR-0069](docs/decisions/0069-zst-capability-token-luk3.md)
+(2026-06-25). Coherence [VISION §8](VISION.md) khép kín **ba chân**: null (`T?`) + logic (Ł3/K3) +
+**capability** (ZST-token ngậm Ł3-Trit). Synthesis CHÔN ADR-0016/0017/0018; ZST zero-cost tĩnh
+(Grant/Ambient/Deny) + Defer runtime trap `user(2)` fail-closed; mã mới E2211/E2212.
 
 ---
 
@@ -79,8 +68,6 @@ ADR-0016/0017/0018 còn sống làm móng thiết kế; hiện thực mới trê
   freestanding ([VISION §7](VISION.md)).
 - **Wire `triet-pack`** — `.khi` + cross-package linker còn code (giữ từ compiler
   cũ), chưa wire vào pipeline mới.
-- **Rebuild capability runtime** → đã **thăng cấp** thành *Ưu tiên chiến lược sau
-  Trục B* (mục 🚨 trên), KHÔNG còn nằm trong danh sách "chưa xếp lịch".
 - **`triet fix` (auto-fixer craft-tooling)** — tự động áp các fix Machine-Applicable
   (deterministic) trực tiếp trên AST ([VISION §4.2](VISION.md)). Craft-tooling **tùy
   chọn**, KHÔNG còn gắn với bất kỳ phép đo AI nào (workstream đo đã gỡ).
