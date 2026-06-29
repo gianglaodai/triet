@@ -1,0 +1,17 @@
+// EXPECT: 1
+// ADR-0076 CASE B (double-free closure): a PRESENT `Struct?` carrying a heap-`T?`
+// field, matched with a present-bind `~+ v`. The bind is a value-model copy of
+// the niche payload (scrut+8 → v), so v and the scrutinee alias the same heap.
+// The lowerer tombstones the scrutinee (Deinit → tag@0 = NULL_SENTINEL) right
+// after the bind, so the join-point Drop of the scrutinee no-ops and the String
+// is freed ONCE (by v's drop). A real double-free here aborts (exit 134) — a
+// clean run is the witness. (Pre-fix this compiled to SIGABRT 134.)
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b: Bad? = Bad { s: ~+ "hi" };
+    return match b {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

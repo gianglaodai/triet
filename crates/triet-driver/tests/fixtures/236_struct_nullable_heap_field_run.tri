@@ -1,0 +1,16 @@
+// EXPECT: 0
+// ADR-0076: a heap-`T?` struct FIELD (`String?`) inside a `Struct?` is now
+// lowerable. `b: Bad?` is `~0` (null Struct?, tag@0 == i64::MIN) → the match
+// takes the `~0` arm → 0. Drop of the null `Bad?` routes through the ADR-0076
+// `Struct?`-niche drop-glue, tag-guarded: tag@0 == MIN → frees nothing (the
+// field area is don't-care for a null value). Proves the outer-nullable drop of
+// a heap-bearing `Struct?` is sound for the null case.
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b: Bad? = ~0;
+    return match b {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

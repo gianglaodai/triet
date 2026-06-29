@@ -1,0 +1,11 @@
+// EXPECT: 0
+// ADR-0076: a heap-`T?` struct FIELD (`String?`) is now lowerable. Its type
+// lives in the StructLayout, not as a standalone local, so it pins the MIR
+// verifier's layout-scan arm (`find_refused_nullable_field`). The gate
+// (`is_field_payload_lowerable` + `inner.is_any_heap()`) now accepts it; the
+// field sizing places a 24-byte fat slot at the field-offset. Declaration-only
+// (never constructed) → no heap, no drop — just proves the gate accepts it.
+// Poison: re-add the heap refuse to the field gate → this flips back to refused.
+struct S { x: String? }
+
+function main() -> Integer = 0

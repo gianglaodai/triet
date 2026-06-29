@@ -539,14 +539,16 @@ pub fn lower_program(
                         let disc = i as i64;
                         let payload = v.payload.map(|tid| {
                             let ty = lower_type(&prog.arena, tid, &symbols, None);
-                            // ADR-0067 2b-0a: heap-leaf payload width (the M-1
-                            // struct-field fixup loop does NOT touch enum payloads
-                            // — this is the only site). String = 24B fat pointer
-                            // {ptr,len,cap}; Vector/HashMap = 8B thin handle;
-                            // scalar = 8B. A 24B String payload → enum total_size
-                            // = 8 + 24 = 32 so the fat pointer fits {disc@0, ptr@8,
-                            // len@16, cap@24}.
-                            let size = if matches!(ty, MirType::String) { 24 } else { 8 };
+                            // ADR-0067 2b-0a / ADR-0076: heap-leaf payload width
+                            // (the M-1 struct-field fixup loop does NOT touch enum
+                            // payloads — this is the only site). String / String? =
+                            // 24B fat pointer {ptr,len,cap}; Vector(?)/HashMap(?) =
+                            // 8B thin handle; scalar = 8B. A 24B String payload →
+                            // enum total_size = 8 + 24 = 32 so the fat pointer fits
+                            // {disc@0, ptr@8, len@16, cap@24}. `is_string_repr()`
+                            // covers both `String` and `String?` (ADR-0076 heap-`T?`
+                            // payload reuses String's repr at the payload-offset).
+                            let size = if ty.is_string_repr() { 24 } else { 8 };
                             (ty, size, 8usize, Vec::new())
                         });
                         (v.name.clone(), disc, payload)
@@ -607,6 +609,13 @@ pub fn lower_program(
                                 .get(name.as_str())
                                 .map(|l| l.total_size)
                                 .unwrap_or(f.size),
+                            // ADR-0076: heap-`T?` leaf field. The ptr-sentinel
+                            // rides the inner's repr, so the slot at field-offset
+                            // is the SAME width as the plain heap field: String? =
+                            // 24B fat {ptr@0,len@8,cap@16} (null = ptr==SENTINEL);
+                            // Vector?/HashMap? = 8B handle (handle==SENTINEL).
+                            MirType::String => 24,
+                            MirType::Vector | MirType::HashMap => 8,
                             _ => f.size,
                         },
                         // ADR-0066 M-1: heap LEAF field width (fat-pointer cache
@@ -3075,10 +3084,21 @@ fn lower_expr(
                 // It is non-copy ONLY so the borrow checker move-tracks it
                 // (ctx_is_copy returns false), so it must be allowed explicitly.
                 let is_capability = matches!(decl_ty, MirType::Capability(_));
+                // ADR-0076: a heap-`T?` leaf field (`String?`/`Vector?`/
+                // `HashMap?`) is now constructible. `~+ <heap>` lowers the inner
+                // to a plain heap value (the widen `String → String?` is a repr
+                // no-op — fat-ptr stored @field-offset); `~0`/null materializes
+                // NULL_SENTINEL @field-offset (the is_null_expr branch above).
+                // Drop-glue frees it sentinel-safe (`collect_heap_leaves` →
+                // `LeafKind::Heap`). A `Nullable` of a heap-CONTAINING aggregate
+                // stays refused (Move, no per-field drop-flag — Nợ defer).
+                let is_heap_nullable_leaf =
+                    matches!(decl_ty, MirType::Nullable(inner) if inner.is_any_heap());
                 if !is_direct_heap_leaf
                     && !is_nested_struct
                     && !is_nested_enum
                     && !is_capability
+                    && !is_heap_nullable_leaf
                     && !ctx_is_copy(decl_ty, c)
                 {
                     return Err(LowerError::heap_type_not_supported(
@@ -3667,6 +3687,19 @@ fn lower_expr(
                         });
                         c.vars.insert(var_name.clone(), bind_local);
                         c.push_owned(bind_local);
+                        // ADR-0076: the present-bind is a value-model COPY of the
+                        // niche payload (scrut+tag → bind), so `bind_local` and the
+                        // scrutinee now alias the same heap. Tombstone the scrutinee
+                        // (Deinit → tag/disc@0 = NULL_SENTINEL) so its join-point
+                        // Drop no-ops — the moved-out heap is freed ONCE, by the
+                        // bind target. The niche tag IS the drop-flag (no dynamic
+                        // drop-flag needed). Only for a Move (heap-bearing)
+                        // aggregate; a Copy Struct?/Enum?/scalar never drops, so the
+                        // Deinit is unnecessary (and the bind is a real copy, not a
+                        // move that would double-free).
+                        if !ctx_is_copy(&scrut_ty, c) {
+                            c.push(Statement::Deinit(scrut_local, expr_span.clone()));
+                        }
                     }
                 }
                 let body_val = lower_expr(arm_for_present.body, expected, arena, c)?;

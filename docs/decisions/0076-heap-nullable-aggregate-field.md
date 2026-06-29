@@ -6,11 +6,17 @@
 > # layout phải GÁNH TRỌN kiểu dữ liệu của ngôn ngữ trước khi mở bất kỳ frontier mới.
 > # Không bỏ lại một lỗ rò.
 
-**Trạng thái:** Đề xuất — **G ký HƯỚNG 2026-06-29** (niêm phong sau khi O verify máu lát đơn).
+**Trạng thái:** 🔒 **QUYẾT ĐỊNH (SEALED) — O verify máu + G FINAL sign-off 2026-06-29** (commit `6327890`, gate `0·0·306·0`).
 Áp dụng Bậc C+. Đây là **mũi cuối khép kỷ nguyên Nullable**: heap-`T?` (`String?`/`Vector?`/
 `HashMap?`) ở vị trí **struct-field / enum-payload** — giao điểm B8 duy nhất còn refused.
 **Triển khai = MỘT LÁT ATOMIC** (5 mũi liên động: gate+layout+drop+construct+borrowck khóa nhau —
 nới gate thiếu layout = SIGSEGV, có layout thiếu drop = leak; ráp một phát động cơ nổ, G chốt).
+
+> **Lát đơn `6327890` — O verify máu độc lập 3 tooth lõi (cp-snapshot, restore byte-identical):**
+> #1 CASE B tombstone (`lower:3700` gỡ Deinit-after-present-bind → double-free SIGABRT 134 ×3 biến thể) ·
+> #2 **sinh-tử** `is_copy(Nullable(heap))==false` (`mir:691` poison `→true` → heap-`T?` thành Copy → no-drop → **7 counting test LEAK đỏ**) ·
+> #3 drop-arm mũi-3 (`jit:472` gỡ collect arm → 7 counting leak FREE==0).
+> **Lỗ O vồ ở vòng 1:** match-present-bind-move heap-`T?`-aggregate **compile-thành-double-free, borrowck im** (MỚI do gate-lift — pre-WO exit 4, vòng-1 = 134). D đóng STATIC (tombstone outer-Nullable = tag-niche drop-flag, KHÔNG dynamic-flag). Run-witness 180/230/236/255/311/312 + 310→E2423.
 
 **Issue — incoherence một-giao-điểm:** heap-nullable đã CHẠY gần trọn (23 fixture RUN: top-level
 `String?`/`Vector?`/`HashMap?` null/present/use-after-move/match `~+~0`/Elvis/`?+>`-map/method-

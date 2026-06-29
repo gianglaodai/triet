@@ -1,0 +1,15 @@
+// ERROR: E2423
+// ADR-0076 mũi 5 (coverage preservation): the ADR opens construct + whole-move
+// + drop of a heap-`T?` field, but KEEPS partial heap-field MOVE-OUT refused
+// (`let s = b.s` — Nợ defer ADR-0070, needs a per-field dynamic drop-flag the
+// value model lacks). The borrowck allow-arm guards on Capability/heap/Struct/
+// Enum and excludes `Nullable(_)`, so extracting a `String?` field by value
+// falls through to E2423. Poison: add `Nullable` to the allow-arm → this
+// regresses to a silent partial move (no E2423) = the refuse is load-bearing.
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b = Bad { s: ~+ "hi" };
+    let s = b.s;
+    return 0;
+}

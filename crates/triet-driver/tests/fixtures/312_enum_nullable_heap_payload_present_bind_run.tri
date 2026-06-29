@@ -1,0 +1,17 @@
+// EXPECT: 1
+// ADR-0076 CASE B (double-free closure, enum variant): a PRESENT `Enum?` whose
+// active variant carries a heap payload, matched with a present-bind `~+ v`.
+// Same hazard as the struct case: the bind copies the niche payload, then the
+// scrutinee is tombstoned (Deinit → disc@0 = NULL_SENTINEL) so the join-point
+// Drop routes through the enum tag-switch, reads disc == MIN, matches no heap
+// variant → frees nothing. The "hi" String is freed ONCE (by v's drop). A clean
+// run witnesses no double-free (a double-free aborts at exit 134).
+enum Bag { None, Has(String) }
+
+function main() -> Integer = {
+    let b: Bag? = Bag::Has("hi");
+    return match b {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

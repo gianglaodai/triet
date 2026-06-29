@@ -1,0 +1,14 @@
+// EXPECT: 0
+// ADR-0076: constructing a heap-`T?` struct FIELD. `Bad { s: ~+ "hi" }` lowers
+// `~+ "hi"` to a plain String fat-pointer (the widen `String → String?` is a
+// repr no-op) stored at the field-offset (24-byte slot). The construct gate
+// (`is_heap_nullable_leaf`) now allows it. On scope exit, Drop(b) walks the
+// struct's heap leaves (`collect_heap_leaves` → `Nullable(String)` arm →
+// `LeafKind::Heap`) and frees the String ONCE (real-allocator witness; a leak
+// would FREE==0, a double-free FREE==2 — see string_field_nullable_counting).
+struct Bad { s: String? }
+
+function main() -> Integer = {
+    let b = Bad { s: ~+ "hi" };
+    return 0;
+}

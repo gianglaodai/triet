@@ -1,0 +1,19 @@
+// EXPECT: 1
+// ADR-0076: a heap-`T?` enum PAYLOAD (`Has(String?)`) is now lowerable. The
+// payload sizing gives the `Has` variant a 24-byte fat slot (enum total = 32),
+// and the gate (`is_field_payload_lowerable` + `inner.is_any_heap()`) accepts
+// it. `b: Bag?` is constructed as `Bag::None` (present, no payload) → the match
+// takes the `~+` arm → 1. Drop of the `Bag?` routes through the enum tag-switch
+// drop-glue (null-safe: None's disc matches no heap variant → frees nothing).
+enum Bag {
+    None,
+    Has(String?),
+}
+
+function main() -> Integer = {
+    let b: Bag? = Bag::None;
+    return match b {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

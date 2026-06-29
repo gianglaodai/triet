@@ -462,7 +462,17 @@ impl JitContext {
                 // drop time → harmless no-op (and a struct holding only Copy enums
                 // is itself Copy → never dropped).
                 MirType::Enum(name) => out.push((abs, LeafKind::Enum(name.clone()))),
-                _ => {} // scalar → skip
+                // ADR-0076: a heap-`T?` leaf field (`String?`/`Vector?`/
+                // `HashMap?`) is a sentinel-bearing slot at the field-offset —
+                // the SAME repr as the plain heap field (ptr@abs ∈ {ptr, 0,
+                // NULL_SENTINEL}). Push it as a `Heap` leaf of the INNER type so
+                // Drop/tombstone hit ptr@abs UNCONDITIONALLY; the free shim
+                // no-ops on NULL_SENTINEL (null) and 0 (moved-out), so no `brif`
+                // is needed (§Conditional-drop = sentinel-no-op, R4).
+                MirType::Nullable(inner) if inner.is_any_heap() => {
+                    out.push((abs, LeafKind::Heap((**inner).clone())));
+                }
+                _ => {} // scalar / Nullable(scalar/aggregate) → skip
             }
         }
         Ok(())
@@ -1053,7 +1063,11 @@ impl JitContext {
         body: &Body,
         local: Local,
     ) -> Result<bool, JitError> {
-        let MirType::Enum(name) = &body.local_decls[local.0].ty else {
+        // ADR-0076 / R8: unwrap `Enum?` (`Nullable(Enum)`) — the disc-niche stores
+        // the discriminant at slot@0 (null = `i64::MIN`), so the tag-switch core
+        // is naturally null-safe (MIN matches no heap variant → frees nothing).
+        let decl_ty = &body.local_decls[local.0].ty;
+        let MirType::Enum(name) = decl_ty.nullable_payload().unwrap_or(decl_ty) else {
             return Ok(false);
         };
         let name = name.clone();
@@ -1513,6 +1527,24 @@ impl JitContext {
                     if self.outcome_slots.contains_key(l) {
                         if let Some(slot) = self.outcome_slots.get(l) {
                             builder.ins().stack_store(zero, *slot, 0);
+                        }
+                    } else if matches!(&body.local_decls[l.0].ty, MirType::Nullable(inner)
+                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)))
+                    {
+                        // ADR-0076: tombstone an OUTER nullable-aggregate
+                        // (`Struct?`/`Enum?`) after a present-bind move. The niche
+                        // tag (Struct?, @0) / disc (Enum?, @0) IS the drop-flag:
+                        // storing NULL_SENTINEL makes the tag-guarded `Struct?` drop
+                        // AND the `Enum?` disc tag-switch a no-op on the join path →
+                        // the moved-out payload is freed ONCE (by the bind target),
+                        // never twice. Must precede the generic struct/enum branches
+                        // below, which zero a FIELD/payload word at the wrong
+                        // (non-niche) offset and leave the live ptr → double-free.
+                        let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+                        if let Some((slot, _)) = self.struct_slots.get(l) {
+                            builder.ins().stack_store(sentinel, *slot, 0);
+                        } else if let Some((slot, _)) = self.enum_slots.get(l) {
+                            builder.ins().stack_store(sentinel, *slot, 0);
                         }
                     } else if let Some((slot, layout)) = self.struct_slots.get(l)
                         && layout.name == "String"
@@ -2028,9 +2060,57 @@ impl JitContext {
                     // params (1b arg-move callee, `use_var` pointer). The plan is
                     // built before the `&mut self` free calls so the body borrow
                     // is released.
-                    if let MirType::Struct(name) = ty {
+                    // A bare struct (niche 0, unconditional) OR a `Struct?` niche
+                    // (ADR-0076: `Nullable(Struct)`, fields@+8, tag@0). For a
+                    // `Struct?` a null value (tag@slot+0 == NULL_SENTINEL) has a
+                    // GARBAGE field area — unlike a heap LEAF (ptr-sentinel no-op),
+                    // a struct's fields can't be sentinel-checked individually, so
+                    // the whole free is tag-guarded (mirror of the enum tag-switch).
+                    let struct_drop: Option<(String, i32, bool)> = match ty {
+                        MirType::Struct(n) => Some((n.clone(), 0, false)),
+                        MirType::Nullable(inner) => match inner.as_ref() {
+                            MirType::Struct(n) => Some((n.clone(), 8, true)),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some((name, niche, is_nullable)) = struct_drop {
                         let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
-                        Self::collect_heap_leaves(name, 0, body, 0, &mut leaves)?;
+                        Self::collect_heap_leaves(&name, niche, body, 0, &mut leaves)?;
+                        // ADR-0070: a non-copy struct with NO heap leaves
+                        // (capability-only fields are ZSTs) → Drop is a pure no-op.
+                        // `collect_heap_leaves` returning Ok(empty) means there is
+                        // genuinely nothing to free — a depth-64 recursive type
+                        // already bailed via `?` above, so empty here is real, not
+                        // a swallowed error. Falling through to the heap-shim
+                        // dispatch would wrongly error `Drop for type S not
+                        // supported`. (A copy struct already `continue`d earlier.)
+                        if leaves.is_empty() {
+                            continue;
+                        }
+                        // ADR-0076: tag-guard the `Struct?` niche so a null value
+                        // (garbage fields) frees nothing; a plain struct (and a
+                        // present `Struct?`) frees its leaves.
+                        let merge_bb = if is_nullable {
+                            let slot = self
+                                .struct_slots
+                                .get(local)
+                                .ok_or_else(|| {
+                                    JitError::Unsupported("Struct? Drop without slot".into())
+                                })?
+                                .0;
+                            let tag = builder.ins().stack_load(I64, slot, 0);
+                            let min = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+                            let is_null = builder.ins().icmp(IntCC::Equal, tag, min);
+                            let free_bb = builder.create_block();
+                            let merge_bb = builder.create_block();
+                            builder.ins().brif(is_null, merge_bb, &[], free_bb, &[]);
+                            builder.switch_to_block(free_bb);
+                            builder.seal_block(free_bb);
+                            Some(merge_bb)
+                        } else {
+                            None
+                        };
                         for (abs, kind) in leaves {
                             let addr = self.copy_base_addr(builder, *local, abs);
                             // ADR-0067 2b+: a `Heap` leaf frees unconditionally;
@@ -2046,14 +2126,11 @@ impl JitContext {
                                 }
                             }
                         }
-                        // ADR-0070: a non-copy struct with NO heap leaves
-                        // (capability-only fields are ZSTs) → Drop is a pure no-op.
-                        // `collect_heap_leaves` returning Ok(empty) means there is
-                        // genuinely nothing to free — a depth-64 recursive type
-                        // already bailed via `?` above, so empty here is real, not
-                        // a swallowed error. Falling through to the heap-shim
-                        // dispatch would wrongly error `Drop for type S not
-                        // supported`. (A copy struct already `continue`d earlier.)
+                        if let Some(merge_bb) = merge_bb {
+                            builder.ins().jump(merge_bb, &[]);
+                            builder.switch_to_block(merge_bb);
+                            builder.seal_block(merge_bb);
+                        }
                         continue;
                     }
 

@@ -35,7 +35,7 @@ Pipeline: `.tri → parse → typecheck → lower → MIR verify → borrowck �
 |---|---|---|
 | **A** | Scalar + arithmetic + logic Ł3/K3 + control flow + đệ quy + flat struct (StackSlot/sret) + enum + NLL borrowck + MIR verifier + nullable `T?` (PA-3c sentinel) | ✅ Đóng 2026-06-06 |
 | **B** | Heap types (String/Vector/HashMap qua shim Rust) + match `~+/~0` + heap qua biên user-fn (B7-lift, move-only, `Deinit` tombstone) — ADR-0041/0042/0043, hai chữ ký O+G | ✅ Đóng 2026-06-07 |
-| **C** | (1) ✅ Arithmetic range enforcement, trap-on-overflow (ADR-0044) · (2) ✅ CFG tail-expression (ADR-0055, lát 1 SIGILL + lát 2 `= ~0`) · (3) 🔨 Heap-nullable (`T?` cho heap, saga ~5 lát — gate ở LOWER) · (4) ⏳ Borrow params heap `&+ T`/`&0 T`/`&- T` · (5) Outcome 2-reg ABI · (6) Native multi-field layout | 🔨 Đang chạy |
+| **C** | (1) ✅ Arithmetic range enforcement, trap-on-overflow (ADR-0044) · (2) ✅ CFG tail-expression (ADR-0055, lát 1 SIGILL + lát 2 `= ~0`) · (3) ✅ Heap-nullable (`T?` cho heap) ĐÓNG TRỌN — top-level (ADR-0062) + aggregate `Enum?`/`Struct?` (ADR-0065) + **field/payload B8 (ADR-0076)**: kỷ nguyên Nullable khép hoàn toàn · (4) ⏳ Borrow params heap `&+ T`/`&0 T`/`&- T` · (5) Outcome 2-reg ABI · (6) Native multi-field layout | 🔨 Đang chạy |
 
 Gate hiện hành: `scripts/gate.sh`. Backlog chi tiết + debt registry: [`TODO.md`](TODO.md)
 (nguồn sống duy nhất). Năng lực compiler: [`CLAUDE.md`](CLAUDE.md) §Maturity.

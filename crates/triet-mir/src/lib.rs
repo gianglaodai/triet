@@ -1470,17 +1470,20 @@ fn find_refused_nullable(ty: &MirType, allow: fn(&MirType) -> bool) -> Option<&M
     }
 }
 
-/// ADR-0065 §12.2: field/payload-position predicate, **body-aware**.
+/// ADR-0065 §12.2 / ADR-0076: field/payload-position predicate, **body-aware**.
 ///
 /// A struct field or enum payload of type `T?` is lowerable when `T` is either
-/// a scalar (PA-3c sentinel) OR a **fully-Copy** `Struct`/`Enum` (the nested
-/// nullable aggregate of Trục A — tag-prepend / disc-niche, no allocator).
-/// `inner.is_copy(Some(body))` recurses through the aggregate's own fields
-/// (`triet-mir:666`), so a heap-containing aggregate (`Bad { s: String }`)
-/// classifies as Move → refused, keeping **B8 (§4)** intact. `Nullable(String/
-/// Vector/HashMap)` is neither scalar nor Struct/Enum → refused.
+/// a scalar (PA-3c sentinel), a **heap leaf** (`String`/`Vector`/`HashMap` —
+/// ADR-0076: the ptr-sentinel rides the inner's repr, a fat/handle slot lives
+/// at the field-offset, drop-glue is sentinel-safe), OR a **fully-Copy**
+/// `Struct`/`Enum` (the nested nullable aggregate of Trục A — tag-prepend /
+/// disc-niche, no allocator). `inner.is_copy(Some(body))` recurses through the
+/// aggregate's own fields (`triet-mir:666`), so a heap-CONTAINING aggregate
+/// (`Bad { s: String }`, `Nullable(Struct-with-heap)`) still classifies as Move
+/// and stays refused — only a bare heap-`T?` leaf is opened.
 fn is_field_payload_lowerable(inner: &MirType, body: &Body) -> bool {
     is_scalar_nullable_payload(inner)
+        || inner.is_any_heap()
         || (matches!(inner, MirType::Struct(_) | MirType::Enum(_)) && inner.is_copy(Some(body)))
 }
 
@@ -1568,8 +1571,10 @@ impl Body {
                 });
             }
         }
-        // Struct fields + enum payloads: scalar `T?` only — a `String?` embedded
-        // in an aggregate is not a top-level slot (Lát 1 does not lower it).
+        // Struct fields + enum payloads (ADR-0076): scalar `T?`, heap-leaf `T?`
+        // (`String?`/`Vector?`/`HashMap?` — sentinel slot at field-offset), or a
+        // fully-Copy `Struct?`/`Enum?`. A `Nullable` of a heap-CONTAINING
+        // aggregate is still refused (Move, no per-field drop-flag yet).
         for layout in &self.struct_layouts {
             for field in &layout.fields {
                 if let Some(inner) = find_refused_nullable_field(&field.ty, self) {
