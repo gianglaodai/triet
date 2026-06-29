@@ -155,9 +155,18 @@ typecheck xuống JIT, không chỉ cắm mặt backend.* D bắt mìn, dừng, 
 - MŨI 2 **stride-in-HEADER** (LUẬT 5 D đề, G DUYỆT): ghi `stride`+`elem_kind` vào header lúc
   `alloc` — KHÔNG truyền param. Né ca empty-default-buffer lửng lơ (vector_new default Integer-8
   rồi push String-24: free đọc stride từ header → dealloc đúng). Tiền lệ: free đã đọc cap@header.
-- MŨI 3 typed-free: `__triet_vector_free_typed(ptr, elem_kind)` (đọc stride/kind từ header) loop
-  `len` element @stride → free-shim per-kind (sentinel-no-op R4). `emit_heap_free_at` Vector →
-  typed variant. Tái dùng NGUYÊN tombstone/free machinery.
+- MŨI 3 typed-free: **JIT-EMITTED element-free loop** (KHÔNG shim `_typed` — D bắt vacuity, O
+  duyệt 2026-06-30). Lý do: shim-internal free = Rust→Rust direct call (như `push`@3380), bỏ qua
+  JIT registry → counting harness (swap symbol) KHÔNG thấy → **teeth #1 VACUOUS** (FREE đã =0
+  trước poison). JIT-emitted call đi qua `declare_func_in_func`→registry→stub đếm được → poison
+  loop → FREE 3→0 ĐỎ. **Bonus kiến trúc: tái dùng `emit_heap_free_at` (jit:944) = SINGLE
+  drop-glue source** (đang dùng Outcome/struct/enum) thay vì nhân bản free-by-kind trong Rust shim.
+  Tại Vector Drop site (`mir_lower.rs:2163`): `Vector(inner)` với `inner.is_any_heap()` → emit
+  Cranelift loop (len từ header, i induction, `elem_addr = data + i*stride`,
+  `emit_heap_free_at(elem_addr, inner)` per element — sentinel-no-op R4), sau loop
+  `__triet_vector_free(block)` (existing, dealloc buffer). `inner` Copy → skip loop (byte-compat).
+  Nested `Vector<Vector<String>>`: element handle 8B → `emit_heap_free_at(elem, Vector(String))`
+  đệ quy chính loop này.
 - MŨI 4 (rename) **shim `pop()`** = move-out đuôi mảng (len-1), trả owned element, ownership
   CẮT ĐỨT sạch (KHÔNG clone, KHÔNG thủng giữa mảng). Đây là op heap-element-out DUY NHẤT ở P1.
 - Test: hand-built MIR route-lower + counting (push N → drop → FREE==N; push→pop→drop ownership).
