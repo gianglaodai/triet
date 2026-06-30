@@ -884,6 +884,16 @@ impl Checker<'_> {
 
         let callee_ty = self.infer_expression(callee);
 
+        // ADR-0077 Slice B: the bare `vector_new()` byte-compat default below is
+        // gated on this exact builtin name (the stdlib stub's polymorphic
+        // `new<T>` is a DIFFERENT name, so it stays polymorphic).
+        let callee_name: Option<String> =
+            if let Expr::Identifier { name } = &self.arena.expression(callee).node {
+                Some(name.clone())
+            } else {
+                None
+            };
+
         // Try function call first.
         if let Type::Function {
             type_parameters,
@@ -948,6 +958,38 @@ impl Checker<'_> {
             }
             if type_parameters.is_empty() {
                 return *return_type;
+            }
+            // ADR-0077 Slice B: seed any STILL-unbound type parameter from the
+            // expected type (ADR-0072 stack). This is the single new mechanism
+            // — it lets a 0-arg `vector_new()` recover its element from the
+            // annotation (`let v: Vector<String> = vector_new()` → seed
+            // `Vector<T>` ↔ `Vector<String>` → T = String). Structural match
+            // only, no constraint solver.
+            if type_parameters
+                .iter()
+                .any(|tp| !sub_map.contains_key(&tp.name))
+                && let Some(expected) = self.expected_type_stack.last().cloned()
+            {
+                extract_type_params(&return_type, &expected, &mut sub_map);
+            }
+            // Byte-compat: a TOP-LEVEL bare call with no args, no expected, and
+            // still-unbound params (`let xs = vector_new()` at statement level)
+            // defaults those params to Integer — recovering the pre-Slice-B
+            // `Vector<Integer>` so a downstream `&0 Vector<Integer>` /
+            // `Vector<Integer>?` param accepts it (their Reference/Nullable
+            // wrappers do NOT apply the `Vector<_>` element wildcard in
+            // `Type::matches`, so a bare `Vector<T>` would E1003 there).
+            //
+            // Gated on the exact builtin name `vector_new` so it NEVER touches
+            // any other generic (the stdlib stub's `new<T>` / user generics stay
+            // polymorphic — a blanket default collapsed them → spurious E1003).
+            // The seed above already handles the annotated case (T = String); a
+            // `push(v, e)` re-binds T from `e` via the "prefer concrete" rule, so
+            // only a truly context-free `vector_new()` lands on Integer here.
+            if callee_name.as_deref() == Some("vector_new") {
+                for tp in &type_parameters {
+                    sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
+                }
             }
             // Enforce bounds
             for tp in type_parameters {
@@ -1092,6 +1134,22 @@ impl Checker<'_> {
             .iter()
             .map(|a| self.infer_expression(*a))
             .collect();
+
+        // ADR-0077 Slice B (Vùng 2): `get()` on a `Vector<heap>` is REFUSED
+        // with a targeted diagnostic (not the generic NoMatchingOverload) —
+        // `get` returns the element by value, which a heap element cannot be.
+        // The monomorphic `Vector<Integer>` candidate still resolves Copy gets;
+        // a heap element points the user at `pop()`.
+        if name == "get"
+            && let Some(Type::Vector(inner)) = arg_tys.first()
+            && is_heap_element(inner)
+        {
+            self.errors.push(TypeError::GetHeapElementUnsupported {
+                element: inner.to_string(),
+                span: span.clone(),
+            });
+            return Type::Unknown;
+        }
 
         for candidate in candidates {
             if let Type::Function {
@@ -2134,6 +2192,19 @@ fn try_unify(a: &Type, b: &Type) -> Result<Type, ()> {
     Err(())
 }
 
+/// ADR-0077 Slice B: `true` for a heap element type (`String`/`Vector`/
+/// `HashMap`/`Nullable`-of-those) — the element kinds `get()` cannot return by
+/// value (use `pop()` to move out). Mirrors the JIT's `is_any_heap` over the
+/// typecheck `Type` (`HashMap` is a `UserStruct` named `"HashMap"` here).
+fn is_heap_element(ty: &Type) -> bool {
+    match ty {
+        Type::String | Type::Vector(_) => true,
+        Type::UserStruct { name, .. } if name == "HashMap" => true,
+        Type::Nullable(inner) => is_heap_element(inner),
+        _ => false,
+    }
+}
+
 /// Walk a parameter type alongside the concrete argument type and bind
 /// `TypeParameter(name)` slots in `sub_map`. Supports composites: `Nullable`,
 /// `Tuple`, `Range`, `Vector` (via `UserStruct` shape if added later),
@@ -2193,6 +2264,14 @@ fn extract_type_params(
             }
         }
         (Type::Range(p_inner), Type::Range(a_inner)) => {
+            extract_type_params(p_inner, a_inner, sub_map);
+        }
+        // ADR-0077 Slice B: `Vector<T>` binds `T` from a `Vector<concrete>`
+        // argument (e.g. `push(v: Vector<String>, _)` → T = String). Without
+        // this arm the param/arg pair fell to `_ => {}` and T stayed unbound,
+        // so the element-arg check used `TypeParameter("T")` (never matches a
+        // concrete) — the generic machinery silently did nothing for Vector.
+        (Type::Vector(p_inner), Type::Vector(a_inner)) => {
             extract_type_params(p_inner, a_inner, sub_map);
         }
         // User-defined generic types: match by name, walk type-param

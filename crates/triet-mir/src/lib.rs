@@ -1054,7 +1054,15 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
         }),
         "__triet_vector_push" => Some(BuiltinShimMeta {
             name: "__triet_vector_push",
-            arg_consumes: &[true, false],
+            // ADR-0077 Slice B (Vùng 3): the element (arg1) is CONSUMED — pushing
+            // moves it into the vector (by-ptr memcpy for a fat element). The
+            // consume is element-type-aware via the `is_copy` guard at every
+            // consumer (borrowck checker.rs / JIT M3-zero): a Copy element
+            // (Integer) is a no-op (Vector<Integer> byte-compat), a heap element
+            // (String/Vector/HashMap) is move-tracked (E2420 on reuse) and its
+            // caller slot is zeroed after the call (Drop becomes free(0) no-op,
+            // no double-free with the vector's owned copy).
+            arg_consumes: &[true, true],
         }),
         "__triet_vector_get" => Some(BuiltinShimMeta {
             name: "__triet_vector_get",

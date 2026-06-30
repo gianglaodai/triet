@@ -1,0 +1,15 @@
+// ERROR: E1047
+// ADR-0077 Slice B (Vùng 2) — `get()` on a `Vector<String>` is REFUSED: `get`
+// returns the element by value, but a heap element cannot be copied out of the
+// vector at P1 (no clone shim; a borrow needs a lifetime the model lacks). The
+// diagnostic points the user at `pop()` (move-out). `get` on a Copy element
+// (`Vector<Integer>`) still works. Poison: remove the `is_heap_element` guard
+// in `resolve_overload` → this falls through to NoMatchingOverload (wrong code)
+// or, if get were made generic, would miscompile a copy-out → leak/double-free.
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let s = "hi";
+    let v2 = push(v, s);
+    let x = get(v2, 0);
+    return 0;
+}

@@ -247,25 +247,38 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
-    // ── Phase 4.3b: Vector builtins (ADR-0040 §3.1) ──
+    // ── Phase 4.3b: Vector builtins (ADR-0040 §3.1; ADR-0077 Slice B generic) ──
 
-    // `vector_new() -> Vector<Integer>` — heap-allocate an empty vector.
+    // ADR-0077 Slice B: `vector_new`/`push` are element-polymorphic over a
+    // built-in `T`. The generic-fn machinery (v0.7.4.1) binds `T` from the
+    // args; for the 0-arg `vector_new()` the element is seeded from the
+    // expected type (`let v: Vector<String> = vector_new()`). No HM-unify —
+    // structural + expected-type only (G ruling). Bare `let v = vector_new()`
+    // with no context falls back to `Vector<Integer>` (byte-compat).
+    let elem_t = Type::TypeParameter("T".into());
+    let vector_t = Vector(Box::new(elem_t.clone()));
+    let vector_type_params = vec![triet_syntax::TypeParameter {
+        name: "T".into(),
+        bound: None,
+    }];
+
+    // `vector_new<T>() -> Vector<T>` — heap-allocate an empty vector.
     env.declare(
         "vector_new",
         Type::Function {
-            type_parameters: Vec::new(),
+            type_parameters: vector_type_params.clone(),
             parameters: Vec::new(),
-            return_type: Box::new(vector_integer.clone()),
+            return_type: Box::new(vector_t.clone()),
         },
     );
 
-    // `push(Vector<Integer>, Integer) -> Vector<Integer>` — consume vec, append elem.
+    // `push<T>(Vector<T>, T) -> Vector<T>` — consume vec, append elem.
     env.declare(
         "push",
         Type::Function {
-            type_parameters: Vec::new(),
-            parameters: vec![vector_integer.clone(), Integer.clone()],
-            return_type: Box::new(vector_integer.clone()),
+            type_parameters: vector_type_params,
+            parameters: vec![vector_t.clone(), elem_t],
+            return_type: Box::new(vector_t),
         },
     );
 

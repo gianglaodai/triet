@@ -1,0 +1,16 @@
+// ERROR: E2420
+// ADR-0077 Slice B (Vùng 3) — push of a HEAP element is a MOVE. After
+// `push(v, s)` the String `s` has been moved into the vector, so using `s`
+// again is use-after-move. The borrowck marks the element-arg Moved via the
+// element-type-aware consume (push arg1 `is_copy` guard: heap → Moved, Copy →
+// not). A `Vector<Integer>` element (Copy) is NOT moved — `push(v, n)` leaves
+// `n` usable (byte-compat). Poison: revert push arg1 consume to `false` → `s`
+// is not move-tracked → this use is silently allowed (and the runtime
+// double-frees → SIGABRT, see fixture 315).
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let s = "hi";
+    let v2 = push(v, s);
+    let x = s;
+    return 0;
+}

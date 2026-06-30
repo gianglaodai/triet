@@ -1,0 +1,16 @@
+// EXPECT: 0
+// ADR-0077 Slice B — end-to-end source `Vector<String>` (typecheck OPEN). The
+// element is seeded from the annotation (`let v: Vector<String> = vector_new()`
+// → T = String via expected-type, NO HM-unify), push moves the String element
+// in (Vùng 3 = Move: the source `s` is consumed/zeroed so its Drop is a no-op),
+// and the vector's Drop frees the element + buffer exactly once. Sound run → 0.
+// Two teeth ride this fixture: (1) poison Vùng 3 (push arg1 consume → false) →
+// `s` double-frees with the vector's owned copy → SIGABRT 134 (the G-mandate
+// real-allocator tooth); (2) poison the `extract_type_params` Vector arm → T no
+// longer binds String → `push(v, "hi")` regresses to a typecheck E1003.
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let s = "hi";
+    let v2 = push(v, s);
+    return 0;
+}

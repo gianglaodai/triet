@@ -774,6 +774,32 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1047: `get()` on a `Vector<T>` whose element `T` is a heap type
+    /// (String/Vector/HashMap/Nullable-of-those) — ADR-0077 Slice B. `get`
+    /// returns an owned copy; for a Copy element that is sound, but a heap
+    /// element cannot be copied out of the vector (no clone shim, and a borrow
+    /// would need a lifetime the model lacks). Use `pop()` to MOVE the last
+    /// element out. Lifting this to a borrowing/cloning `get` is deferred.
+    #[error("E1047: `get()` cannot return a heap element `{element}` by value")]
+    #[diagnostic(
+        code(triet::typecheck::E1047),
+        help(
+            "E1047: `get(v, i)` returns an owned copy, but a heap element \
+            (`{element}`) cannot be copied out of the vector at P1.\n\n\
+            [Fix 1] Use `pop(v)` to MOVE the last element out (ownership transfers \
+            to you; the vector shrinks by one).\n\n\
+            [Fix 2] If you only need a Copy element, use a `Vector<Integer>` (or \
+            another Copy element type) — `get` returns `T?` for those."
+        )
+    )]
+    GetHeapElementUnsupported {
+        /// The heap element type that cannot be returned by value.
+        element: String,
+        /// Source location of the `get` call.
+        #[label("heap element cannot be returned by value — use `pop()`")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -998,6 +1024,7 @@ impl TypeError {
             | Self::TraitImplConformanceMismatch { span, .. }
             | Self::AmbiguousMethodCall { span, .. }
             | Self::NullableHasNoErrorState { span }
+            | Self::GetHeapElementUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

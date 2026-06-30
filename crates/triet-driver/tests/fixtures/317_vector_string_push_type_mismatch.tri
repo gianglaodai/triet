@@ -1,0 +1,13 @@
+// ERROR: E1003
+// ADR-0077 Slice B (Vùng 1) — structural element check. `v` is `Vector<String>`,
+// so `push(v, 42)` is a type error: the element argument must match the vector's
+// element type (String), not Integer. This is the NEGATIVE side of the generic
+// `push<T>(Vector<T>, T)` element check (no HM-unify). The POSITIVE side — that
+// the `extract_type_params` Vector arm binds T=String so `push(v, "hi")`
+// SUCCEEDS — is covered by fixture 315 (poison the Vector arm → 315's positive
+// push regresses to E1003). Here, 42 is simply rejected against the element.
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let v2 = push(v, 42);
+    return 0;
+}
