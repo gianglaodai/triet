@@ -6,7 +6,10 @@
 > # (insert), lấy ra (remove), chết (drop) — không rỉ một byte. Tái dùng cỗ máy
 > # Vector P1 (ADR-0077), KHÔNG phát minh lại bánh xe. KEY-typed = mặt trận khác.
 
-**Trạng thái:** 📝 **DRAFT — chờ implement + O verify máu + G sign-off.** Áp dụng Bậc C+.
+**Trạng thái:** ✅ **IMPLEMENTED / CLOSED (Phase 1) — G ký 2026-07-01.** Áp dụng Bậc C+.
+Slice A (storage backend, `a0e60d8`) + Slice B/P1b (typecheck-open `HashMap<Integer,V>` end-to-end source).
+Value-typed HashMap (V = built-in heap) construct/insert(Move)/remove(move-out `V?`)/drop sound qua JIT real-allocator.
+O verify máu 3 vòng (garbage-value root-fix `lower_type` carry value → vacuous-tooth literal-no-drop → named-local poison→SIGABRT 134 ĐỎ). KEY-typed = Tầng 2 defer (ADR sau).
 Mở `HashMap<Integer, T>` với T = built-in (scalar / String / Vector / HashMap / Nullable tương ứng).
 **KEY giữ Integer cứng** (key-typed = ADR sau, đụng hash/eq per-type + Comparable ADR-0038).
 Continuation của ADR-0077 (Typed Vector P1) — tái dùng stride / typed-free loop / move-track / by-ptr ABI cho VALUE.
