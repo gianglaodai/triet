@@ -38,6 +38,9 @@ pub enum Type {
     /// Heap-allocated growable array. The element type is monomorphic
     /// in Bậc A (always `Integer`); generic `Vector<T>` is Bậc B/C.
     Vector(Box<Self>),
+    /// Heap-allocated key-value map (ADR-0078). Key = Integer cứng in P1;
+    /// key-typed (`HashMap<String, V>`) deferred to Tầng 2 (Comparable ADR-0038).
+    HashMap(Box<Self>, Box<Self>),
     /// `()` zero-sized value.
     Unit,
     /// Nullable wrapper `T?`.
@@ -149,7 +152,7 @@ impl Type {
     /// payload in Bậc B (HP.4). Excludes struct/enum payloads, still sealed.
     #[must_use]
     pub const fn is_heap(&self) -> bool {
-        matches!(self, Self::String | Self::Vector(_))
+        matches!(self, Self::String | Self::Vector(_) | Self::HashMap(_, _))
     }
 
     /// Returns true if this is any Trilean (refined or not). Replaces
@@ -253,6 +256,19 @@ impl Type {
                 || matches!(b.as_ref(), Self::TypeParameter(_))
                 || a.matches(b);
         }
+        // HashMap structural match: HashMap<K1,V1> matches HashMap<K2,V2> if
+        // K1 matches K2 and V1 matches V2. TypeParameter in key/value position
+        // is a wildcard (generic `HashMap<Integer,V>` must match concrete
+        // `HashMap<Integer,String>` during stdlib stub validation).
+        if let (Self::HashMap(pk, pv), Self::HashMap(ak, av)) = (self, other) {
+            let k_ok = matches!(pk.as_ref(), Self::TypeParameter(_))
+                || matches!(ak.as_ref(), Self::TypeParameter(_))
+                || pk.matches(ak);
+            let v_ok = matches!(pv.as_ref(), Self::TypeParameter(_))
+                || matches!(av.as_ref(), Self::TypeParameter(_))
+                || pv.matches(av);
+            return k_ok && v_ok;
+        }
         // Same-name user types match even with different type parameters
         // (e.g., `Option<T>` vs `Option<Integer>`). Structural
         // comparison of variants/fields catches actual mismatches.
@@ -277,6 +293,7 @@ impl Type {
             | Self::Unit
             | Self::String => true,
             Self::Vector(inner) => inner.is_send(),
+            Self::HashMap(k, v) => k.is_send() && v.is_send(),
             Self::Tuple(elements) => elements.iter().all(Self::is_send),
             Self::Nullable(inner) => inner.is_send(),
             Self::Outcome {
@@ -429,6 +446,9 @@ impl Type {
             Self::Reference(form, inner) => Self::Reference(*form, Box::new(inner.substitute(map))),
             Self::Atomic(inner) => Self::Atomic(Box::new(inner.substitute(map))),
             Self::Vector(inner) => Self::Vector(Box::new(inner.substitute(map))),
+            Self::HashMap(k, v) => {
+                Self::HashMap(Box::new(k.substitute(map)), Box::new(v.substitute(map)))
+            }
             // Primitives and Unknown are unchanged.
             other => other.clone(),
         }
@@ -446,6 +466,7 @@ impl fmt::Display for Type {
             Self::Trilean { refined: false } => formatter.write_str("Trilean"),
             Self::String => formatter.write_str("String"),
             Self::Vector(inner) => write!(formatter, "Vector<{inner}>"),
+            Self::HashMap(k, v) => write!(formatter, "HashMap<{k}, {v}>"),
             Self::Unit => formatter.write_str("Unit"),
             Self::Nullable(inner) => {
                 if matches!(inner.as_ref(), Self::Unknown) {

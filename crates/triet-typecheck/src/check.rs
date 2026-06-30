@@ -1098,11 +1098,7 @@ impl<'p> Checker<'p> {
                         let mut iter = args.into_iter();
                         let key = iter.next().unwrap();
                         let value = iter.next().unwrap();
-                        return Type::UserStruct {
-                            name: "HashMap".into(),
-                            type_parameters: Vec::new(),
-                            fields: vec![("__key".into(), key), ("__value".into(), value)],
-                        };
+                        return Type::HashMap(Box::new(key), Box::new(value));
                     }
                     ("Vector", n) => {
                         self.errors.push(TypeError::WrongArity {

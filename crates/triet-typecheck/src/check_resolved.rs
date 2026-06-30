@@ -647,30 +647,20 @@ fn resolve_type_expr_with_params(
             )))
         }
         TypeExpr::Generic { name, arguments } if name == "HashMap" && arguments.len() == 2 => {
-            Type::UserStruct {
-                name: "HashMap".into(),
-                type_parameters: Vec::new(),
-                fields: vec![
-                    (
-                        "__key".into(),
-                        resolve_type_expr_with_params(
-                            arena,
-                            arguments[0],
-                            type_parameters,
-                            name_table,
-                        ),
-                    ),
-                    (
-                        "__value".into(),
-                        resolve_type_expr_with_params(
-                            arena,
-                            arguments[1],
-                            type_parameters,
-                            name_table,
-                        ),
-                    ),
-                ],
-            }
+            Type::HashMap(
+                Box::new(resolve_type_expr_with_params(
+                    arena,
+                    arguments[0],
+                    type_parameters,
+                    name_table,
+                )),
+                Box::new(resolve_type_expr_with_params(
+                    arena,
+                    arguments[1],
+                    type_parameters,
+                    name_table,
+                )),
+            )
         }
         TypeExpr::Generic { .. } => Type::Unknown,
         // v0.7.4.3-error.2 (ADR-0020 §1): cross-module signature

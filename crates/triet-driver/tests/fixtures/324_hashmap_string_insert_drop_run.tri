@@ -1,0 +1,15 @@
+// EXPECT: 0
+// ADR-0078 P1b — end-to-end source `HashMap<Integer,String>` insert→drop.
+// Insert a String value via named local, then drop the map (no remove).
+// The map's Drop frees the occupied value + buffer. Sound run → 0.
+// Tooth #1 (SIGABRT 134): poison insert value-consume (Move→Copy) → the
+// JIT skips zeroing `s` → caller's Drop(s) + map's Drop both free the same
+// String buffer → double-free → exit 134. Named local is ESSENTIAL — a
+// string literal inline has no drop obligation → poison is a no-op.
+// Mirrors Vector<String> push→drop pattern (fixture 315).
+function main() -> Integer {
+    let m: HashMap<Integer, String> = hashmap_new();
+    let s = "hi";
+    let m2 = insert(m, 1, s);
+    return 0;
+}

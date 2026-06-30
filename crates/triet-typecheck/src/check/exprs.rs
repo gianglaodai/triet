@@ -991,6 +991,15 @@ impl Checker<'_> {
                     sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
                 }
             }
+            // ADR-0078 P1b: same byte-compat default for hashmap_new.
+            // A bare `let m = hashmap_new()` with no context defaults V→Integer
+            // (HashMap<Integer,Integer>). The expected-type seed above handles
+            // the annotated case (`let m: HashMap<Integer,String> = …`).
+            if callee_name.as_deref() == Some("hashmap_new") {
+                for tp in &type_parameters {
+                    sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
+                }
+            }
             // Enforce bounds
             for tp in type_parameters {
                 if matches!(tp.bound, Some(triet_syntax::GenericBound::Send))
@@ -1135,20 +1144,25 @@ impl Checker<'_> {
             .map(|a| self.infer_expression(*a))
             .collect();
 
-        // ADR-0077 Slice B (Vùng 2): `get()` on a `Vector<heap>` is REFUSED
-        // with a targeted diagnostic (not the generic NoMatchingOverload) —
-        // `get` returns the element by value, which a heap element cannot be.
-        // The monomorphic `Vector<Integer>` candidate still resolves Copy gets;
-        // a heap element points the user at `pop()`.
+        // ADR-0077 Slice B (Vùng 2) + ADR-0078 P1b: `get()` on a `Vector<heap>`
+        // or `HashMap<_, heap>` is REFUSED with a targeted diagnostic (not the
+        // generic NoMatchingOverload) — `get` returns the element by value, which
+        // a heap element cannot be. Use `pop()` / `remove()` to move out instead.
         if name == "get"
-            && let Some(Type::Vector(inner)) = arg_tys.first()
-            && is_heap_element(inner)
+            && let Some(first_arg) = arg_tys.first()
         {
-            self.errors.push(TypeError::GetHeapElementUnsupported {
-                element: inner.to_string(),
-                span: span.clone(),
-            });
-            return Type::Unknown;
+            let heap_violation = match first_arg {
+                Type::Vector(inner) if is_heap_element(inner) => Some(inner.to_string()),
+                Type::HashMap(_, inner) if is_heap_element(inner) => Some(inner.to_string()),
+                _ => None,
+            };
+            if let Some(element) = heap_violation {
+                self.errors.push(TypeError::GetHeapElementUnsupported {
+                    element,
+                    span: span.clone(),
+                });
+                return Type::Unknown;
+            }
         }
 
         for candidate in candidates {
@@ -2192,14 +2206,13 @@ fn try_unify(a: &Type, b: &Type) -> Result<Type, ()> {
     Err(())
 }
 
-/// ADR-0077 Slice B: `true` for a heap element type (`String`/`Vector`/
-/// `HashMap`/`Nullable`-of-those) — the element kinds `get()` cannot return by
-/// value (use `pop()` to move out). Mirrors the JIT's `is_any_heap` over the
-/// typecheck `Type` (`HashMap` is a `UserStruct` named `"HashMap"` here).
+/// ADR-0077 Slice B + ADR-0078 P1b: `true` for a heap element type (`String`/
+/// `Vector`/`HashMap`/`Nullable`-of-those) — the element kinds `get()` cannot
+/// return by value (use `pop()`/`remove()` to move out). Mirrors the JIT's
+/// `is_any_heap` over the typecheck `Type`.
 fn is_heap_element(ty: &Type) -> bool {
     match ty {
-        Type::String | Type::Vector(_) => true,
-        Type::UserStruct { name, .. } if name == "HashMap" => true,
+        Type::String | Type::Vector(_) | Type::HashMap(_, _) => true,
         Type::Nullable(inner) => is_heap_element(inner),
         _ => false,
     }
@@ -2214,6 +2227,10 @@ fn is_heap_element(ty: &Type) -> bool {
 /// `expected.matches` emits the user-visible `TypeError`.
 ///
 /// v0.7.4.1 (ADR-0019 Addendum §A7).
+// ADR-0078 P1b: +HashMap arm pushed this function over 100 lines (104).
+// Extracting a sub-function for the composite-type arms is a future cleanup;
+// the allow is scoped to this function only.
+#[allow(clippy::too_many_lines)]
 fn extract_type_params(
     param: &Type,
     arg: &Type,
@@ -2273,6 +2290,13 @@ fn extract_type_params(
         // concrete) — the generic machinery silently did nothing for Vector.
         (Type::Vector(p_inner), Type::Vector(a_inner)) => {
             extract_type_params(p_inner, a_inner, sub_map);
+        }
+        // ADR-0078 P1b: `HashMap<Integer, V>` binds `V` from a
+        // `HashMap<Integer, concrete>` argument. Key slot is Integer cứng —
+        // no TypeParameter in key position in P1.
+        (Type::HashMap(pk, pv), Type::HashMap(ak, av)) => {
+            extract_type_params(pk, ak, sub_map);
+            extract_type_params(pv, av, sub_map);
         }
         // User-defined generic types: match by name, walk type-param
         // slots positionally. Catches `Vector<T>` / `HashMap<K, V>`

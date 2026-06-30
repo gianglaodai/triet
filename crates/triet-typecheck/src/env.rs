@@ -332,35 +332,61 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
-    // ── ADR-0043: HashMap builtins ──
-    let hashmap_ii = Type::UserStruct {
-        name: "HashMap".into(),
-        type_parameters: Vec::new(),
-        fields: vec![
-            ("__key".into(), Integer.clone()),
-            ("__value".into(), Integer.clone()),
-        ],
-    };
+    // ── ADR-0043 + ADR-0078: HashMap builtins ──
+    // ADR-0078 P1b: key = Integer cứng, value polymorphic (V).
+    // hashmap_new/insert/remove are GENERIC functions (declare, not overload)
+    // so V is bound from args (insert/remove) or seeded from
+    // expected_type_stack (hashmap_new, 0-arg).
+    //
+    // Monomorphic fallback for overloads (get/len/contains/is_empty, &0 ref):
+    let hashmap_ii = Type::HashMap(Box::new(Integer.clone()), Box::new(Integer.clone()));
 
-    // `hashmap_new() -> HashMap<Integer,Integer>`
+    // Generic type parameter V for value-polymorphic builtins.
+    let hm_v_t = Type::TypeParameter("V".into());
+    let hm_iv = Type::HashMap(Box::new(Integer.clone()), Box::new(hm_v_t.clone()));
+    let hm_type_params = vec![triet_syntax::TypeParameter {
+        name: "V".into(),
+        bound: None,
+    }];
+
+    // `hashmap_new<V>() -> HashMap<Integer, V>` — 0-arg generic.
+    // V is seeded from expected_type_stack (same mechanism as vector_new).
     env.declare(
         "hashmap_new",
         Type::Function {
-            type_parameters: Vec::new(),
+            type_parameters: hm_type_params.clone(),
             parameters: Vec::new(),
-            return_type: Box::new(hashmap_ii.clone()),
+            return_type: Box::new(hm_iv.clone()),
         },
     );
 
-    // `insert(HashMap<Integer,Integer>, Integer, Integer) -> HashMap<Integer,Integer>`
+    // `insert<V>(HashMap<Integer,V>, Integer, V) -> HashMap<Integer,V>`
+    // V bound from arg[0] (map) or arg[2] (value); consumes map handle +
+    // value (heap → move; Copy→no-op, per ADR-0078 MŨI D).
     env.declare(
         "insert",
         Type::Function {
-            type_parameters: Vec::new(),
-            parameters: vec![hashmap_ii.clone(), Integer.clone(), Integer.clone()],
-            return_type: Box::new(hashmap_ii.clone()),
+            type_parameters: hm_type_params.clone(),
+            parameters: vec![hm_iv.clone(), Integer.clone(), hm_v_t.clone()],
+            return_type: Box::new(hm_iv.clone()),
         },
     );
+
+    // `remove<V>(HashMap<Integer,V>, Integer) -> V?` — move value out
+    // (ownership cut, like pop). Returns ~0 when key not present.
+    env.declare(
+        "remove",
+        Type::Function {
+            type_parameters: hm_type_params,
+            parameters: vec![hm_iv, Integer.clone()],
+            return_type: Box::new(Type::Nullable(Box::new(hm_v_t))),
+        },
+    );
+
+    // ── HashMap overloads (monomorphic, for get/len/contains/is_empty) ──
+    // These use the monomorphic `hashmap_ii` (HashMap<Integer,Integer>)
+    // for backward compat. Heap value gets are refused by E1047 in
+    // resolve_overload before candidate matching.
 
     // `get(HashMap<Integer,Integer>, Integer) -> Integer?`
     env.declare_overload(

@@ -179,6 +179,10 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_get",
             triet_jit::mir_lower::__triet_hashmap_get,
         ),
+        ShimSymbol::fn_3_1(
+            "__triet_hashmap_remove",
+            triet_jit::mir_lower::__triet_hashmap_remove,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",

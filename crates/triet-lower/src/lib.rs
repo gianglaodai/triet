@@ -1032,7 +1032,17 @@ fn lower_type(
                     .map(|a| lower_type(arena, *a, symbols, self_type))
                     .unwrap_or(MirType::Integer),
             )),
-            "HashMap" => MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
+            // ADR-0078 P1b: key = Integer cứng, value from 2nd type argument.
+            // Fallback to Integer for byte-compat (malformed 0/1-arg HashMap).
+            "HashMap" => MirType::HashMap(
+                Box::new(MirType::Integer),
+                Box::new(
+                    arguments
+                        .get(1)
+                        .map(|a| lower_type(arena, *a, symbols, self_type))
+                        .unwrap_or(MirType::Integer),
+                ),
+            ),
             _ => MirType::Unknown,
         },
         _ => MirType::Unknown,
@@ -1149,7 +1159,16 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
                     .map(|a| lower_type_simple(arena, *a, c))
                     .unwrap_or(MirType::Integer),
             )),
-            "HashMap" => MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
+            // ADR-0078 P1b: key = Integer cứng, value from 2nd type argument.
+            "HashMap" => MirType::HashMap(
+                Box::new(MirType::Integer),
+                Box::new(
+                    arguments
+                        .get(1)
+                        .map(|a| lower_type_simple(arena, *a, c))
+                        .unwrap_or(MirType::Integer),
+                ),
+            ),
             _ => MirType::Unknown,
         },
         _ => MirType::Unknown,
@@ -2439,6 +2458,14 @@ fn lower_expr(
                             expr_span,
                         ));
                     }
+                    // ADR-0078 P1b: seed value type from expected context
+                    // (e.g. `let m: HashMap<Integer,String> = hashmap_new()`).
+                    // Key stays Integer cứng. With no context defaults to
+                    // HashMap<Integer,Integer> (byte-compat).
+                    let (key_ty, val_ty) = match expected {
+                        Some(MirType::HashMap(k, v)) => ((**k).clone(), (**v).clone()),
+                        _ => (MirType::Integer, MirType::Integer),
+                    };
                     let len_local = c.alloc_local_ty(MirType::Integer);
                     c.push(Statement::Const {
                         dest: Place::local(len_local),
@@ -2455,7 +2482,7 @@ fn lower_expr(
                         c,
                         "__triet_hashmap_alloc",
                         vec![len_local, cap_local],
-                        MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
+                        MirType::HashMap(Box::new(key_ty), Box::new(val_ty)),
                         expr_span,
                     );
                     return Ok(dest);
@@ -2468,6 +2495,33 @@ fn lower_expr(
                     let map_ty = c.local_decls[args[0].0].ty.clone();
                     let dest =
                         emit_shim_call(c, "__triet_hashmap_insert", args, &map_ty, expr_span);
+                    return Ok(dest);
+                }
+                "remove" => {
+                    // ADR-0078 P1b: remove(map, key) → V? moves the value out
+                    // of the map (tombstone slot). Returns Nullable(V) (key not
+                    // present → ~0). The value type comes from the map's
+                    // `HashMap(_, v)`. The JIT appends the out_ptr (fat=by-ptr,
+                    // scalar=0) — same pattern as vector_pop.
+                    if arguments.len() != 2 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let args: Vec<Local> = arguments
+                        .iter()
+                        .map(|a| lower_expr(*a, None, arena, c))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let map_ty = &c.local_decls[args[0].0].ty;
+                    let val_ty = if let MirType::HashMap(_, v) = map_ty {
+                        (**v).clone()
+                    } else {
+                        MirType::Integer
+                    };
+                    let dest_ty = MirType::Nullable(Box::new(val_ty));
+                    let dest =
+                        emit_shim_call(c, "__triet_hashmap_remove", args, dest_ty, expr_span);
                     return Ok(dest);
                 }
                 _ => { /* fall through to user-defined function dispatch */ }

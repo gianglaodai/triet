@@ -1,0 +1,10 @@
+// ERROR: E1047
+// ADR-0078 P1b (Vùng 2): `get()` on a `HashMap<Integer,String>` is REFUSED —
+// `get` returns the value by value, which a heap String cannot be. Use `remove()`
+// to move the value out instead. Mirrors Vector<String> get refusal (ADR-0077).
+function main() -> Integer {
+    let m: HashMap<Integer, String> = hashmap_new();
+    let m2 = insert(m, 1, "hi");
+    let v = get(m2, 1);
+    return 0;
+}

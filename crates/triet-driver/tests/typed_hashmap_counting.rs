@@ -417,3 +417,98 @@ fn hashmap_rehash_fat_value_mir_drop_frees_all() {
         "ADR-0078 tooth #3: rehash with 4 fat values → drop frees all 4          (poison rehash memcpy→i64 → FREE < 4 or SIGABRT)"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Slice B (typecheck OPEN) — source-level subprocess tooth #1 (SIGABRT 134)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These tests use the FULL pipeline (parse → typecheck → lower → JIT) with
+// REAL allocator shims (NOT counting stubs). A double-free in the real
+// allocator → SIGABRT 134 → subprocess crashes → parent detects non-success.
+//
+// Tooth #1 (G GOLD: SIGABRT 134 real-allocator):
+//   Poison: in `triet-mir/src/lib.rs`, change `__triet_hashmap_insert`'s
+//   `arg_consumes` from `&[true, false, true]` to `&[true, false, false]`
+//   (value arg NOT consumed). The JIT skips zeroing `s` after the call →
+//   both the caller's `Drop(s)` AND the map's `Drop(m2)` free the same String
+//   buffer → double-free → exit 134 (SIGABRT). The value MUST be a named
+//   local (`let s = "hi"`) — a string literal inline (`insert(m,1,"hi")`)
+//   has no drop obligation at the call site → poison is a no-op (VACUOUS).
+//   Patched tree: exit 0.
+
+const HM_STRING_SRC: &str = "\
+    function main() -> Integer = {\
+    \x20   let m: HashMap<Integer, String> = hashmap_new();\
+    \x20   let s = \"hi\";\
+    \x20   let m2 = insert(m, 1, s);\
+    \x20   return 0;\
+    }";
+
+fn lower_hm_string_source(source: &str) -> Vec<triet_mir::Body> {
+    let (program, parse_errors) = triet_parser::parse(source);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+    triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed")
+}
+
+fn hm_string_shims() -> Vec<ShimSymbol> {
+    vec![
+        ShimSymbol::fn_3_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
+        ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_2_1(
+            "__triet_string_from_bytes",
+            mir_lower::__triet_string_from_bytes,
+        ),
+        // REAL free, NOT the counting stub — double-free → SIGABRT 134.
+        ShimSymbol::fn_2_0("__triet_string_free", mir_lower::__triet_string_free),
+    ]
+}
+
+fn jit_run_real_shims(body: &triet_mir::Body) -> i64 {
+    body.verify().expect("MIR verify");
+    let mut ctx = JitContext::with_shims(&hm_string_shims());
+    let func = ctx.compile(body).expect("must JIT-compile");
+    unsafe { func.call_i64_0() }
+}
+
+fn hm_child_guard(test_name: &str, child_fn: impl FnOnce()) {
+    if let Ok(name) = std::env::var("_TRIET_HM_STRING") {
+        if name == test_name {
+            child_fn();
+        }
+        std::process::exit(0);
+    }
+}
+
+fn spawn_hm_child(test_name: &str) -> std::process::ExitStatus {
+    let exe = std::env::current_exe().expect("current_exe");
+    std::process::Command::new(&exe)
+        .args([test_name, "--exact", "--test-threads=1"])
+        .env("_TRIET_HM_STRING", test_name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap_or_else(|_| panic!("spawn child for {test_name}"))
+}
+
+/// Tooth #1 (G GOLD): HashMap<Integer,String> insert→drop with REAL allocator.
+/// Child exits cleanly → insert Value-consume is sound. Poison the consume
+/// (`arg_consumes[2] = false`) → double-free in real allocator → SIGABRT 134
+/// → child crashes → `success()` fails → RED.
+#[test]
+fn hashmap_string_insert_drop_real_alloc_sound() {
+    hm_child_guard("hashmap_string_insert_drop_real_alloc_sound", || {
+        let bodies = lower_hm_string_source(HM_STRING_SRC);
+        let r = jit_run_real_shims(&bodies[0]);
+        assert_eq!(r, 0, "HashMap<String> insert→drop must return 0");
+    });
+    let status = spawn_hm_child("hashmap_string_insert_drop_real_alloc_sound");
+    assert!(
+        status.success(),
+        "ADR-0078 tooth #1: HashMap<String> insert→drop with real alloc must exit 0 \
+         (poison insert value-consume → double-free → exit 134). Got {status:?}"
+    );
+}

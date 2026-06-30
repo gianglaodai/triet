@@ -1,0 +1,17 @@
+// EXPECT: 0
+// ADR-0078 P1b — end-to-end source `HashMap<Integer,String>` (typecheck OPEN).
+// The value type is seeded from the annotation (`let m: HashMap<Integer,String> = hashmap_new()`
+// → V = String via expected-type, NO HM-unify), insert moves the String value in
+// (Vùng 3 = Move: the source is consumed/zeroed so its Drop is a no-op), remove
+// moves it OUT (ownership cut, tombstone slot), and the map's Drop frees survivors
+// + buffer exactly once. Sound run → 0.
+// Mirrors Vector<String> push/pop pattern (ADR-0077 Slice B).
+function main() -> Integer {
+    let m: HashMap<Integer, String> = hashmap_new();
+    let m2 = insert(m, 1, "hi");
+    let out = remove(m2, 1);
+    return match out {
+        ~+ captured => 0,
+        ~0 => 99,
+    };
+}
