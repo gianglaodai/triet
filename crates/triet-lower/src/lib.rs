@@ -2316,8 +2316,12 @@ fn lower_expr(
                     return Ok(dest);
                 }
                 "get" => {
-                    // Type-aware dispatch: Vector → __triet_vector_get,
-                    // HashMap → __triet_hashmap_get.
+                    // Type-aware dispatch with borrow-get (ADR-0079 Slice B).
+                    // - Owned container + heap element → value-get (which E1047
+                    //   refuses at typecheck level for heap; this is the defense
+                    //   path in case typecheck is bypassed).
+                    // - &0 container + heap element → get_ref (zero-copy borrow).
+                    // - &0 container + Copy element → value-get (returns value).
                     if arguments.len() != 2 {
                         return Err(LowerError::unsupported_expr(
                             &arena.expression(*callee).node,
@@ -2329,36 +2333,61 @@ fn lower_expr(
                         .map(|a| lower_expr(*a, None, arena, c))
                         .collect::<Result<Vec<_>, _>>()?;
                     let arg0_ty = &c.local_decls[args[0].0].ty;
+                    let is_borrow = matches!(arg0_ty, MirType::Reference { .. });
                     let base_ty = if let MirType::Reference { inner, .. } = arg0_ty {
                         inner.as_ref()
                     } else {
                         arg0_ty
                     };
-                    let shim_name = if base_ty.is_hashmap() {
-                        "__triet_hashmap_get"
-                    } else if base_ty.is_vec() {
-                        "__triet_vector_get"
-                    } else {
-                        return Err(LowerError::heap_type_not_supported(
-                            &format!("get() on type `{arg0_ty}` — expected Vector or HashMap"),
-                            expr_span,
-                        ));
-                    };
-                    // ADR-0077: `get` on a `Vector<E>` returns `E?`. The element
-                    // type comes from the vector's `Vector(inner)`. HashMap `get`
-                    // keeps `Integer?` (Bậc A value type).
+                    // Extract element/value type.
                     let elem_ty = if let MirType::Vector(inner) = base_ty {
                         (**inner).clone()
+                    } else if let MirType::HashMap(_, v) = base_ty {
+                        (**v).clone()
                     } else {
                         MirType::Integer
                     };
-                    let dest = emit_shim_call(
-                        c,
-                        shim_name,
-                        args,
-                        MirType::Nullable(Box::new(elem_ty)),
-                        expr_span,
-                    );
+                    // Borrow-get: &0 container with heap element → get_ref shim
+                    // returning a nullable slot pointer (zero-copy). The pointer
+                    // is represented as Nullable(Integer) at the MIR level — it's
+                    // an i64 slot-ptr or NULL_SENTINEL. The borrow semantics are
+                    // enforced by the borrowck (U2 PropagatedLoan), not the MIR
+                    // type (which would need Nullable(Reference(...)) — unsupported
+                    // by the MIR verifier/JIT repr campaign).
+                    let is_heap_elem = elem_ty.is_any_heap();
+                    let (shim_name, dest_ty) = if is_borrow && is_heap_elem {
+                        let name = if base_ty.is_hashmap() {
+                            "__triet_hashmap_get_ref"
+                        } else if base_ty.is_vec() {
+                            "__triet_vector_get_ref"
+                        } else {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!("get() on type `{arg0_ty}` — expected Vector or HashMap"),
+                                expr_span,
+                            ));
+                        };
+                        // Nullable(Reference): the reference is an i64 pointer
+                        // at runtime; the borrow semantics are enforced by the
+                        // borrowck (U2 PropagatedLoan), not the MIR type.
+                        let ref_ty = MirType::Reference {
+                            form: triet_mir::ReferenceForm::BorrowReadOnly,
+                            inner: Box::new(elem_ty),
+                        };
+                        (name, MirType::Nullable(Box::new(ref_ty)))
+                    } else {
+                        let name = if base_ty.is_hashmap() {
+                            "__triet_hashmap_get"
+                        } else if base_ty.is_vec() {
+                            "__triet_vector_get"
+                        } else {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!("get() on type `{arg0_ty}` — expected Vector or HashMap"),
+                                expr_span,
+                            ));
+                        };
+                        (name, MirType::Nullable(Box::new(elem_ty)))
+                    };
+                    let dest = emit_shim_call(c, shim_name, args, dest_ty, expr_span);
                     return Ok(dest);
                 }
                 "push" => {

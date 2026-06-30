@@ -183,6 +183,15 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_remove",
             triet_jit::mir_lower::__triet_hashmap_remove,
         ),
+        // ADR-0079: get_ref shims (zero-copy borrow)
+        ShimSymbol::fn_2_1(
+            "__triet_vector_get_ref",
+            triet_jit::mir_lower::__triet_vector_get_ref,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_ref",
+            triet_jit::mir_lower::__triet_hashmap_get_ref,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",

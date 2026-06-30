@@ -3890,6 +3890,36 @@ pub extern "C" fn __triet_vector_get(vec: i64, idx: i64) -> i64 {
     }
 }
 
+/// ADR-0079 Slice B: `get_ref(&0 vec, idx)` — zero-copy borrow of the element slot.
+///
+/// Returns a POINTER to the element within the Vector buffer (NOT a copy).
+/// Out-of-bounds or empty → `NULL_SENTINEL`. ZERO-COPY: no allocation, no
+/// memcpy — the caller reads directly from the buffer through the returned
+/// reference. Valid as long as the vector is not mutated (enforced by
+/// borrowck U2/U3).
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_get_ref(vec: i64, idx: i64) -> i64 {
+    if vec == 0 {
+        std::process::abort();
+    }
+    let body = vec as *const u8;
+    let len = unsafe { (body as *const i64).read_unaligned() };
+    if idx < 0 || idx >= len {
+        return triet_mir::NULL_SENTINEL;
+    }
+    let stride = vector_stride(vec);
+    // Zero-copy: return the address of the element slot.
+    unsafe { body.add(16).add(idx as usize * stride) as i64 }
+}
+
 /// `__triet_vector_pop(vec, out_ptr)` — MOVE the last element out (ADR-0077).
 ///
 /// Decrements the buffer's `len` in place so the popped slot is no longer owned
@@ -4247,6 +4277,46 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
             if stored_k == k {
                 let vptr = unsafe { hashmap_value_ptr(body, probe) };
                 return unsafe { (vptr as *const i64).read_unaligned() };
+            }
+        }
+        probe = (probe + 1) % cap;
+    }
+}
+
+/// ADR-0079 Slice B: `get_ref(&0 map, k)` — zero-copy borrow of the value slot.
+///
+/// Returns a pointer to the value cell within the `HashMap` buffer (NOT a copy
+/// of the value). Key not found → `NULL_SENTINEL`. The returned pointer is
+/// valid as long as the map is not mutated (enforced by borrowck U2/U3).
+/// ZERO-COPY: no allocation, no memcpy — the caller reads directly from the
+/// buffer slot through the returned reference.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
+    if map == 0 {
+        std::process::abort();
+    }
+    let body = map as *mut u8;
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let hash = (k % cap as i64 + cap as i64) % cap as i64;
+    let mut probe = hash as usize;
+    loop {
+        let state = unsafe { *hashmap_state_ptr(body, probe) };
+        if state == 0u8 {
+            return triet_mir::NULL_SENTINEL;
+        }
+        if state == 1u8 {
+            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
+            if stored_k == k {
+                // Zero-copy: return the address of the value cell.
+                return unsafe { hashmap_value_ptr(body, probe) as i64 };
             }
         }
         probe = (probe + 1) % cap;

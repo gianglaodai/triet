@@ -1533,6 +1533,9 @@ fn is_lowerable_nullable_payload(t: &MirType) -> bool {
         || t.is_any_heap()
         || matches!(t, MirType::Enum(_))
         || matches!(t, MirType::Struct(_))
+        // ADR-0079: a Reference is an i64 pointer at runtime — always
+        // representable as a sentinel-nullable (NULL_SENTINEL or ptr).
+        || matches!(t, MirType::Reference { .. })
 }
 
 /// Find a `Nullable(inner)` whose `inner` is NOT accepted by `allow`, anywhere
@@ -1584,6 +1587,9 @@ fn find_refused_nullable(ty: &MirType, allow: fn(&MirType) -> bool) -> Option<&M
 fn is_field_payload_lowerable(inner: &MirType, body: &Body) -> bool {
     is_scalar_nullable_payload(inner)
         || inner.is_any_heap()
+        // ADR-0079: Reference is an i64 pointer at runtime — always
+        // representable as a sentinel-nullable (NULL_SENTINEL or pointer).
+        || matches!(inner, MirType::Reference { .. })
         || (matches!(inner, MirType::Struct(_) | MirType::Enum(_)) && inner.is_copy(Some(body)))
 }
 

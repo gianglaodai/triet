@@ -1,0 +1,13 @@
+// EXPECT: 99
+// ADR-0079 Slice B — `get(&0 HashMap<Integer,String>, key)` not-found → ~0.
+// Match ~0 returns 99 when key 99 is absent.
+function main() -> Integer {
+    let m: HashMap<Integer, String> = hashmap_new();
+    let s = "hi";
+    let m2 = insert(m, 1, s);
+    let r = get(&0 m2, 99);
+    return match r {
+        ~+ ref_str => 0,
+        ~0 => 99,
+    };
+}

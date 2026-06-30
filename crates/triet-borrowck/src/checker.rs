@@ -837,15 +837,13 @@ fn process_block(
                 // the moved value. Conservative: assume overlap.
                 // Field reads do not conflict (they don't move the base).
                 //
-                // TODO(F-d): After Copy/Move type-awareness, a Copy-type
-                // plain-source read should NOT conflict with a shared &0
-                // borrow (only exclusive). Currently flagging ALL loans
-                // for ALL plain-source assigns is conservative — safe but
-                // false-positive on Copy reads under shared borrows.
-                // SPEC §10.1: Copy types read without move; S6: shared
-                // borrow plus read is valid. Fix when places_conflict is
-                // refined to distinguish Copy-read vs Move-source.
-                if !is_field_read {
+                // ADR-0079 (F-d resolved): a Copy-type plain-source read
+                // does NOT move the value — it's a bitwise copy. A shared
+                // &0 borrow plus a Copy read is valid (no exclusivity
+                // violation). Skip the conservative conflict check when
+                // the source type is Copy (e.g. `Nullable(&0 String)`
+                // destructuring the returned reference via match ~+).
+                if !is_field_read && !body.local_decls[source.local.0].ty.is_copy(Some(body)) {
                     let conflicting = state
                         .active_loans
                         .iter()
@@ -1144,11 +1142,12 @@ fn process_block(
 
     // ADR-0079 U2: builtin return-borrow loan propagation.
     // When a builtin shim returns a reference borrowed from one of its
-    // arguments (e.g. `get_ref(&0 container, k)` → `&0 V` where V is
-    // borrowed from the container), create a PropagatedLoan directly
-    // from the metadata — there is no callee body to borrow-check, so
-    // the loan is issued at the call site: source = Place of the arg,
-    // dest = call's return temp, form = BorrowReadOnly.
+    // arguments, trace through any intermediate borrow to find the REAL
+    // source. For `get(&0 m, k)`, the lower emits `_tmp = &0 m` then
+    // passes `_tmp` as arg[0]. The loan's source should be `m`, not the
+    // temporary `_tmp` — otherwise match destructuring on the returned
+    // reference conflicts with the temporary's loan (different locals,
+    // conservative=true → E2440 false positive).
     if let Terminator::CallDispatch {
         callee_name,
         args,
@@ -1161,8 +1160,15 @@ fn process_block(
         && let Some(&arg_local) = args.get(pi)
     {
         let term_idx = block_data.statements.len();
+        // Trace through intermediate borrow: if arg_local is the dest of
+        // a direct borrow, use THAT loan's source (the real container).
+        let real_source = state
+            .active_loans
+            .iter()
+            .find(|l| l.dest == arg_local && !l.is_propagated)
+            .map_or(Place::from(arg_local), |l| l.source.clone());
         state.active_loans.insert(Loan {
-            source: Place::from(arg_local),
+            source: real_source,
             dest: ret_temp,
             form: ReferenceForm::BorrowReadOnly,
             issued_in: block,

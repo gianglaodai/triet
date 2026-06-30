@@ -1,0 +1,17 @@
+// EXPECT: 2
+// ADR-0079 Slice B — CONTENT-READ guard (G mandate): borrow-get must return a
+// USABLE zero-copy `&0 String`, not just a present/absent route. `get(&0 m2, 1)`
+// → `(&0 String)?` present → `length(ref_str)` reads the borrowed slot's len.
+// "hi" → 2. If __triet_hashmap_get_ref returns a garbage pointer, a routing-only
+// fixture stays green but THIS one reads wrong content → RED. (Closes the
+// HM-P1b fx322 lesson: fixtures must read content, not just route.)
+function main() -> Integer {
+    let m: HashMap<Integer, String> = hashmap_new();
+    let s = "hi";
+    let m2 = insert(m, 1, s);
+    let r = get(&0 m2, 1);
+    return match r {
+        ~+ ref_str => length(ref_str),
+        ~0 => 99,
+    };
+}

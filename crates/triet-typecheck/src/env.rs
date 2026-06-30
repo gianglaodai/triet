@@ -445,6 +445,41 @@ fn bind_prelude(env: &mut TypeEnvironment) {
     );
     let ref_hashmap = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(hashmap_ii.clone()));
 
+    // ADR-0079 Slice B: borrow-get overloads for heap element/value types.
+    // Returns `(&0 V)?` — a nullable reference to the element slot. Zero-copy.
+    // Concrete overloads for each heap type (P1: String). Other heap types
+    // (Vector<Vector<String>> etc.) need follow-up overloads.
+    let ref_vector_string = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Vector(Box::new(String.clone()))),
+    );
+    let ref_hashmap_string = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Type::HashMap(
+            Box::new(Integer.clone()),
+            Box::new(String.clone()),
+        )),
+    );
+    let ref_string_ret = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(String.clone()));
+    let nullable_ref_string = Type::Nullable(Box::new(ref_string_ret));
+
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_vector_string, Integer.clone()],
+            return_type: Box::new(nullable_ref_string.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_string, Integer],
+            return_type: Box::new(nullable_ref_string),
+        },
+    );
+
     // ADR-0059 C.2: `len` and `get` overloads for &0 Vector/HashMap
     env.declare_overload(
         "len",

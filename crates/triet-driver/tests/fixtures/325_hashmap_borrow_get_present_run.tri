@@ -1,0 +1,14 @@
+// EXPECT: 0
+// ADR-0079 Slice B — end-to-end source `get(&0 HashMap<Integer,String>, key)`
+// returns `(&0 String)?` (zero-copy borrow). Present key 1 → match ~+ → 0.
+// Not-found → match ~0 → 99.
+function main() -> Integer {
+    let m: HashMap<Integer, String> = hashmap_new();
+    let s = "hi";
+    let m2 = insert(m, 1, s);
+    let r = get(&0 m2, 1);
+    return match r {
+        ~+ ref_str => 0,
+        ~0 => 99,
+    };
+}

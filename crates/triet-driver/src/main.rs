@@ -153,6 +153,12 @@ fn main() -> ExitCode {
         ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
         ShimSymbol::fn_3_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
+        // ADR-0079: get_ref shims (zero-copy borrow)
+        ShimSymbol::fn_2_1("__triet_vector_get_ref", mir_lower::__triet_vector_get_ref),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_ref",
+            mir_lower::__triet_hashmap_get_ref,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",
