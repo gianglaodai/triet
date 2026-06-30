@@ -7,8 +7,10 @@
 > # `m.get(k).clone()` — tự chịu trách nhiệm performance. Phần "máu" = Borrow Checker:
 > # mượn heap-value từ container = chơi với dangling pointer (drop / realloc / rehash).
 
-**Trạng thái:** ✅ **QUYẾT ĐỊNH — G ký 2026-07-01.** Áp dụng cho Bậc C+. Mở `get(&0 container, key) → (&0 V)?`
-cho V heap (String / Vector / HashMap / Nullable), **zero-copy borrow**, thay cho E1047 refuse ở vị trí mượn.
+**Trạng thái:** ✅ **IMPLEMENTED / CLOSED — G ký hoàn tất 2026-07-01.** Áp dụng cho Bậc C+. Mở `get(&0 container, key) → (&0 V)?`
+cho V heap (P1: V=String), **zero-copy borrow**, thay cho E1047 refuse ở vị trí mượn.
+Slice A (borrowck máu, `a970540`): U2 builtin return-borrow PropagatedLoan (whole-container) + U3 mutate-while-borrowed E2440 (consume insert/push + in-place mutate remove/pop). Slice B (surface+JIT): U1 `get(&0 container,k)→(&0 V)?` overload + U4 `__triet_{hashmap,vector}_get_ref` shim trả con-trỏ-slot zero-copy (not-found→NULL_SENTINEL) + F-d Copy-source skip-conflict + U2 source-tracing.
+O verify máu: zero-copy đọc đúng nội dung (`length(ref_str)`→2/5, 0 alloc) · not-found→`~0` sạch · source-level E2440 (insert/remove while borrowed) · 5 borrowck teeth poison-sensitive. **Defer:** generic V-overload (P1 chỉ String) · get-borrow-mutable (`&0 mutable`) · key-typed.
 **G chốt:** loan = whole-container (an toàn tuyệt đối, không fine-grained per-key) · not-found = `(&0 V)?`
 nullable-borrow (tái dùng PA-3c, không trap không E-code) · giữ tên `get` (overload theo form Borrow vs Value).
 
