@@ -6599,20 +6599,25 @@ mod tests {
     /// fake {ptr,len,cap}) must stay intact (=5). Poison the rehash loop's
     /// `copy_nonoverlapping(stride)` -> i64-only read/write -> len@8=0 (RED).
     #[test]
-    #[allow(unsafe_code, clippy::all)]
+    #[allow(unsafe_code)]
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
+    #[allow(clippy::cast_ptr_alignment)]
+    #[allow(clippy::ptr_as_ptr)]
     fn hashmap_rehash_fat_value_preserves_full_cell() {
-        let m = unsafe { __triet_hashmap_alloc(0, 4, 24) };
+        let m = __triet_hashmap_alloc(0, 4, 24);
         assert_ne!(m, 0);
         let e1 = [101_i64, 5, 8];
         let e2 = [202_i64, 5, 8];
         let e3 = [303_i64, 5, 8];
         let e4 = [404_i64, 5, 8];
-        let m = unsafe { __triet_hashmap_insert(m, 1, e1.as_ptr() as i64) };
-        let m = unsafe { __triet_hashmap_insert(m, 2, e2.as_ptr() as i64) };
-        let m = unsafe { __triet_hashmap_insert(m, 3, e3.as_ptr() as i64) };
-        let m = unsafe { __triet_hashmap_insert(m, 4, e4.as_ptr() as i64) };
-        assert_eq!(unsafe { __triet_hashmap_get(m, 1) }, 101, "ptr@0 OK");
-        assert_eq!(unsafe { __triet_hashmap_get(m, 4) }, 404, "ptr@0 OK");
+        let m = __triet_hashmap_insert(m, 1, e1.as_ptr() as i64);
+        let m = __triet_hashmap_insert(m, 2, e2.as_ptr() as i64);
+        let m = __triet_hashmap_insert(m, 3, e3.as_ptr() as i64);
+        let m = __triet_hashmap_insert(m, 4, e4.as_ptr() as i64);
+        assert_eq!(__triet_hashmap_get(m, 1), 101, "ptr@0 OK");
+        assert_eq!(__triet_hashmap_get(m, 4), 404, "ptr@0 OK");
         // Verify FULL 24B cell: len@8 must be 5.
         let body = m as *mut u8;
         let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
@@ -6633,7 +6638,7 @@ mod tests {
             }
             probe = (probe + 1) % cap;
         }
-        unsafe { __triet_hashmap_free(m) };
+        __triet_hashmap_free(m);
     }
 
     // N7-C5: insert with v == i64::MIN must die (D2 reject-on-insert).
