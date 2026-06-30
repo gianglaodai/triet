@@ -989,9 +989,19 @@ impl JitContext {
             self.emit_vector_free_value(builder, ptr, &inner)?;
             return Ok(());
         }
+        // ADR-0078: a HashMap leaf frees its heap VALUES first (slot-iteration
+        // loop), then the buffer. Scalar values (Integer, stride 8) → loop
+        // skipped, byte-compat with old __triet_hashmap_free(ptr).
+        if let MirType::HashMap(_, v) = payload_ty {
+            let value_ty = (**v).clone();
+            self.emit_hashmap_free_value(builder, ptr, &value_ty)?;
+            return Ok(());
+        }
         let free_name = if matches!(payload_ty, MirType::String) {
             "__triet_string_free"
         } else if payload_ty.is_hashmap() {
+            // Only reached for a naked HashMap(..) pointer that didn't match
+            // the branch above — should not happen in practice.
             "__triet_hashmap_free"
         } else {
             return Ok(());
@@ -1092,6 +1102,112 @@ impl JitContext {
         builder.ins().jump(header_bb, &[BlockArg::from(i_next)]);
 
         // header has both predecessors now (setup + body back-edge) → seal.
+        builder.seal_block(header_bb);
+        builder.switch_to_block(exit_bb);
+        builder.seal_block(exit_bb);
+        Ok(())
+    }
+
+    /// ADR-0078 Typed `HashMap` P1 (MŨI C) — free a `HashMap` given its buffer
+    /// pointer VALUE. Frees heap VALUES via a slot-iteration loop, then frees
+    /// the buffer. KEY=Integer is NOT freed (Copy). A scalar value (stride 8,
+    /// Integer) → loop skipped (byte-compat). Reused by `emit_heap_free_at`
+    /// and the standalone `HashMap` `Drop` arm.
+    fn emit_hashmap_free_value(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        ptr_val: cranelift_codegen::ir::Value,
+        value_ty: &MirType,
+    ) -> Result<(), JitError> {
+        self.emit_hashmap_value_free_loop(builder, ptr_val, value_ty)?;
+        let func_id = self.get_or_declare_shim("__triet_hashmap_free")?;
+        let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+        builder.ins().call(func_ref, &[ptr_val]);
+        Ok(())
+    }
+
+    /// ADR-0078 (MŨI C) — iterate all `cap` `HashMap` slots, free the VALUE
+    /// of every OCCUPIED slot. No-op when the value is Copy (Integer:
+    /// `is_any_heap` → false). Sentinel/no-op R4 on the value ptr (if value is
+    /// heap, state==occupied → free, else skip). Scalars/handles skip entirely.
+    fn emit_hashmap_value_free_loop(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        ptr_val: cranelift_codegen::ir::Value,
+        value_ty: &MirType,
+    ) -> Result<(), JitError> {
+        let eff = value_ty.nullable_payload().unwrap_or(value_ty).clone();
+        if !eff.is_any_heap() {
+            return Ok(());
+        }
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        let zero = builder.ins().iconst(I64, 0);
+        let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+        let is_zero = builder.ins().icmp(IntCC::Equal, ptr_val, zero);
+        let is_sent = builder.ins().icmp(IntCC::Equal, ptr_val, sentinel);
+        let is_dead = builder.ins().bor(is_zero, is_sent);
+
+        let setup_bb = builder.create_block();
+        let header_bb = builder.create_block();
+        builder.append_block_param(header_bb, I64);
+        let body_bb = builder.create_block();
+        let exit_bb = builder.create_block();
+
+        builder.ins().brif(is_dead, exit_bb, &[], setup_bb, &[]);
+
+        builder.switch_to_block(setup_bb);
+        builder.seal_block(setup_bb);
+        // Read cap, value_stride (from header reserved), compute slot_size
+        let cap = builder.ins().load(I64, mem, ptr_val, 8);
+        let hdr = builder.ins().load(I64, mem, ptr_val, -8);
+        let value_stride = builder.ins().ushr_imm(hdr, 32);
+        let slot_size = {
+            let eight = builder.ins().iconst(I64, 8);
+            let one = builder.ins().iconst(I64, 1);
+            let tmp = builder.ins().iadd(eight, value_stride);
+            builder.ins().iadd(tmp, one)
+        };
+        let c16 = builder.ins().iconst(I64, 16);
+        let state_off = {
+            let eight = builder.ins().iconst(I64, 8);
+            let tmp = builder.ins().iadd(eight, value_stride);
+            builder.ins().iadd(tmp, c16)
+        };
+        let i0 = builder.ins().iconst(I64, 0);
+        builder.ins().jump(header_bb, &[BlockArg::from(i0)]);
+
+        builder.switch_to_block(header_bb);
+        let i = builder.block_params(header_bb)[0];
+        let cond = builder.ins().icmp(IntCC::SignedLessThan, i, cap);
+        builder.ins().brif(cond, body_bb, &[], exit_bb, &[]);
+
+        builder.switch_to_block(body_bb);
+        builder.seal_block(body_bb);
+        let slot_off = builder.ins().imul(i, slot_size);
+        // state byte addr = body + state_off + slot_off
+        let off = builder.ins().iadd(state_off, slot_off);
+        let state_addr = builder.ins().iadd(ptr_val, off);
+        let state = builder.ins().load(I64, mem, state_addr, 0);
+        let state_byte = builder.ins().band_imm(state, 0xFF);
+        let occupied = builder.ins().iconst(I64, 1);
+        let is_occ = builder.ins().icmp(IntCC::Equal, state_byte, occupied);
+        let skip_bb = builder.create_block();
+        let free_bb = builder.create_block();
+        builder.ins().brif(is_occ, free_bb, &[], skip_bb, &[]);
+
+        // value cell addr = body + 16 + slot_off + 8
+        builder.switch_to_block(free_bb);
+        builder.seal_block(free_bb);
+        let cell_base = builder.ins().iconst(I64, 16 + 8);
+        let value_off = builder.ins().iadd(cell_base, slot_off);
+        let value_cell = builder.ins().iadd(ptr_val, value_off);
+        self.emit_heap_free_at(builder, value_cell, &eff)?;
+        builder.ins().jump(skip_bb, &[]);
+
+        builder.switch_to_block(skip_bb);
+        let i_next = builder.ins().iadd_imm(i, 1);
+        builder.ins().jump(header_bb, &[BlockArg::from(i_next)]);
+
         builder.seal_block(header_bb);
         builder.switch_to_block(exit_bb);
         builder.seal_block(exit_bb);
@@ -2304,6 +2420,15 @@ impl JitContext {
                         self.emit_vector_free_value(builder, ptr, &inner)?;
                         continue;
                     }
+                    // ADR-0078: HashMap Drop frees heap VALUES first
+                    // (slot-iteration loop), then the buffer. Scalar values
+                    // skip the loop → byte-compat.
+                    if let MirType::HashMap(_, v) = eff {
+                        let value_ty = (**v).clone();
+                        let ptr = builder.use_var(self.var(*local));
+                        self.emit_hashmap_free_value(builder, ptr, &value_ty)?;
+                        continue;
+                    }
                     let free_shim_name = if ty.is_string_repr() {
                         "__triet_string_free"
                     } else if eff.is_hashmap() {
@@ -2719,6 +2844,20 @@ impl JitContext {
                                 args.iter().map(|a| builder.use_var(self.var(*a))).collect();
                             vals.push(builder.ins().iconst(I64, stride));
                             vals
+                        } else if callee_name == "__triet_hashmap_alloc" {
+                            // ADR-0078: append the VALUE stride as 3rd arg (key=Integer
+                            // stays 8B). Stride from HashMap(_, V) → vector_elem_size(V).
+                            let stride = {
+                                let dty = &body.local_decls[dest[0].0].ty;
+                                match dty.nullable_payload().unwrap_or(dty) {
+                                    MirType::HashMap(_, v) => Self::vector_elem_size(v)?,
+                                    _ => 8,
+                                }
+                            };
+                            let mut vals: Vec<_> =
+                                args.iter().map(|a| builder.use_var(self.var(*a))).collect();
+                            vals.push(builder.ins().iconst(I64, stride));
+                            vals
                         } else if callee_name == "__triet_vector_push" {
                             // ADR-0077 fat-element ABI: a fat element (stride > 8,
                             // e.g. String 24B) is passed BY-POINTER (stack_addr of
@@ -2748,6 +2887,33 @@ impl JitContext {
                                 builder.use_var(self.var(elem))
                             };
                             vec![vec_val, elem_val]
+                        } else if callee_name == "__triet_hashmap_insert" {
+                            // ADR-0078 fat-value ABI: same pattern as vector_push.
+                            // stride <= 8 → value by i64; stride > 8 → by-pointer.
+                            let stride = {
+                                let mty = &body.local_decls[args[0].0].ty;
+                                match mty.nullable_payload().unwrap_or(mty) {
+                                    MirType::HashMap(_, v) => Self::vector_elem_size(v)?,
+                                    _ => 8,
+                                }
+                            };
+                            let map_val = builder.use_var(self.var(args[0]));
+                            let key_val = builder.use_var(self.var(args[1]));
+                            let val_arg = args[2];
+                            let value_val = if stride > 8 {
+                                if let Some((slot, _)) = self.struct_slots.get(&val_arg) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "hashmap_insert: fat value without a slot (ADR-0078 \
+                                         by-pointer ABI requires a pre-allocated value slot)"
+                                            .into(),
+                                    ));
+                                }
+                            } else {
+                                builder.use_var(self.var(val_arg))
+                            };
+                            vec![map_val, key_val, value_val]
                         } else if callee_name == "__triet_vector_pop" {
                             // ADR-0077: append the OUT-pointer. Fat element →
                             // the dest's slot addr (shim memcpy's the element in);
@@ -3786,80 +3952,118 @@ pub extern "C" fn __triet_vector_contains(vec: i64, elem: i64) -> i64 {
 
 // ── HashMap shims (ADR-0043) ─────────────────────────────────
 
-const HASHMAP_SLOT_SIZE: usize = 24; // key(8) + value(8) + state(1) + pad(7)
+// ── HashMap heap shims (ADR-0043 §5; ADR-0078 typed value P1) ──
+//
+// Slot layout (ADR-0078 P1): key is Integer (8B), value is inline by stride.
+// Old fixed [key8|value8|state1|pad7] → [key8|value@value_stride|state].
+// Probing key and state unchanged; value cell width depends on the value type.
+// `value_stride` from `vector_elem_size` (8 scalar / 24 String), stored in the
+// header `reserved` u32 (same pattern as Vector stride-in-header per LUẬT 5).
+
 const HASHMAP_HEADER_SIZE: usize = HEADER_SIZE; // 8B ObjectHeader
 
-#[allow(clippy::missing_const_for_fn)] // Layout::from_size_align is not const-stable
-// Layout: header(8) + len(8) + cap(8) + cap × 24.
-fn hashmap_layout(cap: usize) -> std::alloc::Layout {
-    let total = HASHMAP_HEADER_SIZE + 8 + 8 + cap * HASHMAP_SLOT_SIZE;
+/// Read the per-slot `value_stride` from a `HashMap` buffer header (ADR-0078).
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+const fn hashmap_value_stride(body: i64) -> usize {
+    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize }
+}
+
+#[allow(clippy::missing_const_for_fn)]
+fn hashmap_slot_size(body: i64) -> usize {
+    8 + hashmap_value_stride(body) + 1 // key + value + state
+}
+
+#[allow(clippy::missing_const_for_fn)]
+fn hashmap_layout(cap: usize, value_stride: usize) -> std::alloc::Layout {
+    let slot = 8 + value_stride + 1;
+    let total = HASHMAP_HEADER_SIZE + 8 + 8 + cap * slot;
     std::alloc::Layout::from_size_align(total, 8).unwrap()
 }
 
-#[allow(clippy::missing_const_for_fn)]
-// contains unsafe block, not const-stable
-// Return state byte pointer for slot. Caller ensures idx < cap, body valid.
+/// State byte pointer for a slot. Key is at `body + 16 + idx*slot_size`;
+/// value is at `key + 8`; state is at `value + value_stride`.
 #[allow(unsafe_code)]
 unsafe fn hashmap_state_ptr(body: *mut u8, idx: usize) -> *mut u8 {
-    unsafe { body.add(16 + idx * HASHMAP_SLOT_SIZE + 16) }
+    let slot = hashmap_slot_size(body as i64);
+    unsafe { body.add(16 + idx * slot + 8 + hashmap_value_stride(body as i64)) }
 }
 
-#[allow(clippy::missing_const_for_fn)]
-// contains unsafe block, not const-stable
-// Return key/value pointers for slot. Caller ensures idx < cap, body valid.
-#[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
-unsafe fn hashmap_kv_ptrs(body: *mut u8, idx: usize) -> (*mut i64, *mut i64) {
+/// Key pointer for a slot (= first field).
+#[allow(unsafe_code, clippy::ptr_as_ptr, clippy::cast_ptr_alignment)]
+unsafe fn hashmap_key_ptr(body: *mut u8, idx: usize) -> *mut i64 {
+    let slot = hashmap_slot_size(body as i64);
+    unsafe { body.add(16 + idx * slot) as *mut i64 }
+}
+
+/// Value pointer for a slot (= after the key).
+#[allow(unsafe_code)]
+unsafe fn hashmap_value_ptr(body: *mut u8, idx: usize) -> *mut u8 {
+    let slot = hashmap_slot_size(body as i64);
+    unsafe { body.add(16 + idx * slot + 8) }
+}
+
+/// Copy a VALUE into a slot. `stride <= 8` → write i64; else memcpy `stride`
+/// bytes from `src` (a pointer to the caller's source element).
+#[allow(unsafe_code)]
+const unsafe fn hashmap_write_value(dst: *mut u8, stride: usize, src: i64) {
     unsafe {
-        let base = body.add(16 + idx * HASHMAP_SLOT_SIZE);
-        (base as *mut i64, base.add(8) as *mut i64)
+        if stride <= 8 {
+            dst.cast::<i64>().write_unaligned(src);
+        } else {
+            std::ptr::copy_nonoverlapping(src as *const u8, dst, stride);
+        }
     }
 }
 
-/// Allocate a `HashMap` with given `len` and `cap`.
+/// `__triet_hashmap_alloc(len, cap, value_stride)` — allocate a `HashMap`.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,           // len/cap are non-negative by construction
-    clippy::cast_possible_truncation, // 64-bit target, values fit in usize
-    clippy::cast_possible_wrap,       // cap max is bounded by memory, won't wrap i64
-    clippy::cast_ptr_alignment,       // write_unaligned used, alignment irrelevant
-    clippy::ptr_as_ptr                // idiomatic in extern "C" heap code
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
 )]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64) -> i64 {
-    // Invariant (ADR-0043 Q3): load factor < 1 requires cap > len.
-    // Clamp at 4 to guarantee at least 1 EMPTY slot after any valid
-    // insert — prevents infinite probe when no slot is empty.
+pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64, value_stride: i64) -> i64 {
+    let value_stride = i64_to_usize(value_stride.max(8));
     let cap_usize = (cap.max(4) as usize).max(len as usize + 1).max(4);
-    let layout = hashmap_layout(cap_usize);
+    let layout = hashmap_layout(cap_usize, value_stride);
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
         return 0; // OOM
     }
     unsafe {
         (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
-        (ptr as *mut u32).add(1).write_unaligned(0u32); // reserved = 0
+        (ptr as *mut u32)
+            .add(1)
+            .write_unaligned(value_stride as u32); // reserved = value_stride
         let body = ptr.add(HASHMAP_HEADER_SIZE);
         (body as *mut i64).write_unaligned(len);
         (body as *mut i64)
             .add(1)
             .write_unaligned(usize_to_i64(cap_usize));
-        // Zero-initialize all state bytes to EMPTY (0)
-        let state_base = body.add(16 + 16); // skip len+cap, point to first state byte
+        // Zero state bytes
+        let slot_size = 8 + value_stride + 1;
         for i in 0..cap_usize {
-            state_base.add(i * HASHMAP_SLOT_SIZE).write_unaligned(0u8);
+            let state = body.add(16 + i * slot_size + 8 + value_stride);
+            state.write_unaligned(0u8);
         }
         body as i64
     }
 }
 
-/// Free a `HashMap`. No-op if `ptr == 0` or `ptr == NULL_SENTINEL`.
+/// Free a `HashMap` BUFFER. No-op if ptr == 0 or `NULL_SENTINEL`.
+/// ADR-0078: frees ONLY the buffer; the JIT emits a per-slot value-free loop
+/// before calling this (for heap values).
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,           // cap read from valid allocation, non-negative
-    clippy::cast_possible_truncation, // 64-bit target, cap fits in usize
-    clippy::cast_possible_wrap,       // cap max bounded by memory
-    clippy::cast_ptr_alignment,       // read_unaligned used
-    clippy::ptr_as_ptr                // idiomatic in extern "C" heap code
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_free(ptr: i64) {
@@ -3868,14 +4072,15 @@ pub extern "C" fn __triet_hashmap_free(ptr: i64) {
     }
     let body = ptr as *mut u8;
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let layout = hashmap_layout(cap.max(2));
+    let vs = hashmap_value_stride(ptr);
+    let layout = hashmap_layout(cap.max(2), vs);
     let header = unsafe { body.sub(HASHMAP_HEADER_SIZE) };
     unsafe { std::alloc::dealloc(header, layout) };
 }
 
 /// Return entry count of a `HashMap`. Trap-on-0.
 #[allow(unsafe_code)]
-#[allow(clippy::cast_ptr_alignment)] // read_unaligned used
+#[allow(clippy::cast_ptr_alignment)]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
     if ptr == 0 {
@@ -3884,65 +4089,64 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
     unsafe { (ptr as *const i64).read_unaligned() }
 }
 
-/// Functional insert: consume `map`, return new map ptr. Traps if
-/// `v == i64::MIN` (D2). Realloc at load factor 0.75 with rehash.
+/// Functional insert: consume `map`, return new map ptr.
+/// ADR-0078 ABI: v == by-value i64 when stride <= 8; v == by-pointer when
+/// stride > 8 (fat value, memcpy stride bytes). JIT routes this.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,           // len/cap are non-negative by construction
-    clippy::cast_possible_truncation, // 64-bit target, values fit in usize
-    clippy::cast_possible_wrap,       // size bounded by memory
-    clippy::cast_ptr_alignment,       // write_unaligned/read_unaligned used
-    clippy::ptr_as_ptr,               // idiomatic in extern "C" heap code
-    clippy::similar_names             // probe vs probe variable in rehash + insert loops
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr,
+    clippy::similar_names
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
     // D2 defense-in-depth: reject MIN value (ADR-0044 Q4).
-    // Arithmetic trap makes MIN unreachable, but this guard
-    // stays as the last net — cost ≈ 0, catches any gap in
-    // the inductive range-enforcement argument.
     if v == triet_mir::NULL_SENTINEL {
         std::process::abort();
     }
     if map == 0 {
-        std::process::abort(); // trap-on-0
+        std::process::abort();
     }
     let body = map as *mut u8;
+    let stride = hashmap_value_stride(map);
     let len = unsafe { (body as *const i64).read_unaligned() } as usize;
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
 
-    // Check load factor
     let new_cap = if len * 4 >= cap * 3 {
-        // Realloc: double capacity
         (cap * 2).max(4)
     } else {
-        0 // no realloc needed
+        0
     };
 
     let (body_ptr, cap_used) = if new_cap > 0 {
-        // Allocate new map + rehash all OCCUPIED entries
-        let new_map = __triet_hashmap_alloc(0, new_cap as i64);
+        let new_map = __triet_hashmap_alloc(0, new_cap as i64, usize_to_i64(stride));
         if new_map == 0 {
-            return 0; // OOM
+            return 0;
         }
         let new_body = new_map as *mut u8;
-        // Rehash all OCCUPIED entries from old map
         for i in 0..cap {
             let state = unsafe { *hashmap_state_ptr(body, i) };
             if state == 1u8 {
-                let (k_ptr, v_ptr) = unsafe { hashmap_kv_ptrs(body, i) };
-                let old_k = unsafe { k_ptr.read_unaligned() };
-                let old_v = unsafe { v_ptr.read_unaligned() };
+                let old_k = unsafe { hashmap_key_ptr(body, i).read_unaligned() };
+                let old_v_ptr = unsafe { hashmap_value_ptr(body, i) };
                 let nc = new_cap as i64;
                 let hash = (old_k % nc + nc) % nc;
                 let mut probe = hash as usize;
                 loop {
                     let st = unsafe { *hashmap_state_ptr(new_body, probe) };
                     if st == 0u8 {
-                        let (nk, nv) = unsafe { hashmap_kv_ptrs(new_body, probe) };
                         unsafe {
-                            nk.write_unaligned(old_k);
-                            nv.write_unaligned(old_v);
+                            hashmap_key_ptr(new_body, probe).write_unaligned(old_k);
+                            // Copy value cell: memcpy stride bytes from old
+                            // to new (works for both scalar 8B and fat 24B).
+                            std::ptr::copy_nonoverlapping(
+                                old_v_ptr,
+                                hashmap_value_ptr(new_body, probe),
+                                stride,
+                            );
                             *hashmap_state_ptr(new_body, probe) = 1u8;
                         }
                         break;
@@ -3951,7 +4155,6 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
                 }
             }
         }
-        // Update len in new map
         unsafe { (new_body as *mut i64).write_unaligned(len as i64) };
         __triet_hashmap_free(map);
         (new_body, new_cap)
@@ -3966,21 +4169,15 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
     loop {
         let state = unsafe { *hashmap_state_ptr(body_ptr, probe) };
         if state == 1u8 {
-            // OCCUPIED — check if key matches
-            let (nk, _nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
-            if unsafe { nk.read_unaligned() } == k {
-                // Update existing value, len unchanged
-                let (_, nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
-                unsafe { nv.write_unaligned(v) };
+            if unsafe { hashmap_key_ptr(body_ptr, probe).read_unaligned() } == k {
+                unsafe { hashmap_write_value(hashmap_value_ptr(body_ptr, probe), stride, v) };
                 is_update = true;
                 break;
             }
         } else if state == 0u8 {
-            // EMPTY — write new entry
-            let (nk, nv) = unsafe { hashmap_kv_ptrs(body_ptr, probe) };
             unsafe {
-                nk.write_unaligned(k);
-                nv.write_unaligned(v);
+                hashmap_key_ptr(body_ptr, probe).write_unaligned(k);
+                hashmap_write_value(hashmap_value_ptr(body_ptr, probe), stride, v);
                 *hashmap_state_ptr(body_ptr, probe) = 1u8;
             }
             break;
@@ -3988,23 +4185,19 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
         probe = (probe + 1) % cap_used;
     }
     if !is_update {
-        // Increment len only for new entries
         let new_len = (len + 1) as i64;
         unsafe { (body_ptr as *mut i64).write_unaligned(new_len) };
     }
-
-    // Return body pointer (or header+offset for consistency)
-    // body_ptr is already the body address (ptr + HEADER_SIZE)
     body_ptr as i64
 }
 
 /// Look up key, return value or `NULL_SENTINEL`. Trap-on-0 for map handle.
 #[allow(unsafe_code)]
 #[allow(
-    clippy::cast_sign_loss,           // hash may produce negative, intentionally handled
-    clippy::cast_possible_truncation, // cap read from valid allocation
-    clippy::cast_possible_wrap,       // double-mod normalizes to [0, cap)
-    clippy::cast_ptr_alignment        // read_unaligned used
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
@@ -4018,13 +4211,67 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
-            return triet_mir::NULL_SENTINEL; // EMPTY — key not found
+            return triet_mir::NULL_SENTINEL;
         }
         if state == 1u8 {
-            let (k_ptr, v_ptr) = unsafe { hashmap_kv_ptrs(body, probe) };
-            let stored_k = unsafe { k_ptr.read_unaligned() };
+            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
             if stored_k == k {
-                return unsafe { v_ptr.read_unaligned() };
+                let vptr = unsafe { hashmap_value_ptr(body, probe) };
+                return unsafe { (vptr as *const i64).read_unaligned() };
+            }
+        }
+        probe = (probe + 1) % cap;
+    }
+}
+
+/// P1.5: `remove(map, key) -> V?` — take-out the value by key (ADR-0078 MŨI D).
+///
+/// Move-out: the value cell is tombstoned (state→deleted for fat: state=2;
+/// for scalar/handle: key+value memset to avoid stale read on future probe),
+/// and the value is returned to the caller (by-value i64 for stride<=8;
+/// memcpy to `out_ptr` for stride>8). Empty/not-found → `NULL_SENTINEL`.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64) -> i64 {
+    if map == 0 {
+        std::process::abort();
+    }
+    let body = map as *mut u8;
+    let stride = hashmap_value_stride(map);
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let hash = (k % cap as i64 + cap as i64) % cap as i64;
+    let mut probe = hash as usize;
+    loop {
+        let state = unsafe { *hashmap_state_ptr(body, probe) };
+        if state == 0u8 {
+            // Not found — write sentinel to out_ptr for fat values
+            if stride > 8 {
+                unsafe { (out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
+            }
+            return triet_mir::NULL_SENTINEL;
+        }
+        if state == 1u8 {
+            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
+            if stored_k == k {
+                let vptr = unsafe { hashmap_value_ptr(body, probe) };
+                // Tombstone: state → 2 (deleted)
+                unsafe { *hashmap_state_ptr(body, probe) = 2u8 };
+                // Decrement len
+                let len = unsafe { (body as *const i64).read_unaligned() };
+                unsafe { (body as *mut i64).write_unaligned(len - 1) };
+                if stride <= 8 {
+                    return unsafe { (vptr as *const i64).read_unaligned() };
+                }
+                // Fat: memcpy to out_ptr
+                unsafe { std::ptr::copy_nonoverlapping(vptr, out_ptr as *mut u8, stride) };
+                return 0;
             }
         }
         probe = (probe + 1) % cap;
@@ -4056,8 +4303,7 @@ pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
             return -1; // EMPTY — key not found
         }
         if state == 1u8 {
-            let (k_ptr, _v_ptr) = unsafe { hashmap_kv_ptrs(body, probe) };
-            let stored_k = unsafe { k_ptr.read_unaligned() };
+            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
             if stored_k == k {
                 return 1; // FOUND
             }
@@ -6275,7 +6521,7 @@ mod tests {
     /// Basic insert + get round-trip.
     #[test]
     fn hashmap_insert_get_roundtrip() {
-        let m = __triet_hashmap_alloc(0, 4);
+        let m = __triet_hashmap_alloc(0, 4, 8);
         assert_eq!(__triet_hashmap_len(m), 0);
         let m = __triet_hashmap_insert(m, 1, 100);
         assert_eq!(__triet_hashmap_len(m), 1);
@@ -6288,7 +6534,7 @@ mod tests {
     /// C9: insert same key must UPDATE value, len unchanged.
     #[test]
     fn hashmap_insert_same_key_updates_value() {
-        let m = __triet_hashmap_alloc(0, 4);
+        let m = __triet_hashmap_alloc(0, 4, 8);
         let m = __triet_hashmap_insert(m, 1, 10);
         let m = __triet_hashmap_insert(m, 1, 20);
         assert_eq!(__triet_hashmap_get(m, 1), 20);
@@ -6303,7 +6549,7 @@ mod tests {
     /// realloc (slot 5 already occupied by key 5).
     #[test]
     fn hashmap_rehash_on_realloc() {
-        let m = __triet_hashmap_alloc(0, 4); // cap=4, load factor at 0.75 → 3 max before realloc
+        let m = __triet_hashmap_alloc(0, 4, 8); // cap=4, load factor at 0.75 → 3 max before realloc
         let m = __triet_hashmap_insert(m, 5, 50);
         let m = __triet_hashmap_insert(m, 6, 60);
         let m = __triet_hashmap_insert(m, 7, 70);
@@ -6322,7 +6568,7 @@ mod tests {
     #[test]
     fn n7_hashmap_insert_min_value_rejected() {
         n7_child_guard("n7_hashmap_insert_min_value_rejected", || {
-            let m = __triet_hashmap_alloc(0, 4);
+            let m = __triet_hashmap_alloc(0, 4, 8);
             let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL);
         });
         let status = spawn_n7_child("n7_hashmap_insert_min_value_rejected");

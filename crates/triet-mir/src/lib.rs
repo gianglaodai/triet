@@ -1092,10 +1092,20 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
         }),
         "__triet_hashmap_insert" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_insert",
-            arg_consumes: &[true, false, false],
+            // ADR-0078 MŨI D: value arg (index 2) is element-type-aware consume
+            // (heap → Moved/Zeroed; Copy→no-op), mirroring push. Map handle (0)
+            // is consumed; key (1) is borrowed (Integer = Copy).
+            arg_consumes: &[true, false, true],
         }),
         "__triet_hashmap_get" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_get",
+            // [false, false]: borrow map (doesn't consume), copy key.
+            arg_consumes: &[false, false],
+        }),
+        // ADR-0078 P1.5: remove(map, key) → V?. Map is borrowed (len
+        // decremented in place), key is Copy. The JIT appends the out-pointer.
+        "__triet_hashmap_remove" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_remove",
             arg_consumes: &[false, false],
         }),
         _ => None,
