@@ -28,6 +28,14 @@ Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop
 
 ## 🟢 BACKLOG MỞ
 
+### 🩸 ĐANG MỞ — Get-Borrow Heap Value from Container (ADR-0079 ✅ G ký 2026-07-01)
+Đọc giá trị heap trong container **không đập hộp, không clone ngầm** — `get(&0 container, k) → (&0 V)?` zero-copy borrow. Lấp lỗ read-side sau ADR-0077/0078 (heap value chỉ `insert`/`remove`, `get` heap → E1047). Mô hình loan = **whole-container** (G ký, không fine-grained per-key). Not-found → `(&0 V)?` nullable-borrow (PA-3c). Giữ tên `get` (overload theo form).
+- [ ] **U1 typecheck/env** — heap `get(&0 container,k) → (&0 V)?` overload (`env.rs:441`); value-position E1047 GIỮ.
+- [ ] **U2 borrowck builtin-return-borrow** — `returns_borrow_of: Option<usize>` vào `BuiltinShimMeta`; `get`(heap) mượn arg 0; PropagatedLoan source = whole container (hiện chỉ user-sig `checker.rs:1105`).
+- [ ] **U3 borrowck mutate-while-borrowed (CHÉN THÁNH)** — M3 consume-mark (`checker.rs:1153`) kiểm active loan TRƯỚC khi mark Moved → consume container đang-mượn → **E2440**. G sẽ đếm răng cưa.
+- [ ] **U4 lower/JIT** — `get(&0 map,k)` trả con trỏ slot zero-copy (không memcpy/alloc); not-found → sentinel `~0`.
+- [ ] **Teeth O (verify máu):** ① mutate-while-borrowed (gỡ U3) → E2440 phải đỏ ② drop-while-borrowed → E2450 ③ zero-copy đọc đúng nội dung (không alloc) ④ not-found → `~0` route đúng.
+
 ### 🏛️ Facade pattern (`public use` re-export) — Amend ADR-0005 §76 (G chốt 2026-06-29, ghi sổ)
 Tách Logical Tree (API surface) khỏi Physical Tree (file layout) — lấy cái ngon của Rust
 (`pub use` facade) mà GIỮ DNA explicit của Triết. **Bối cảnh:** Triết KHÔNG 1-1 Java
