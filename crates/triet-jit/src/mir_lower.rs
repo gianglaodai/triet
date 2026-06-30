@@ -1205,6 +1205,7 @@ impl JitContext {
         builder.ins().jump(skip_bb, &[]);
 
         builder.switch_to_block(skip_bb);
+        builder.seal_block(skip_bb);
         let i_next = builder.ins().iadd_imm(i, 1);
         builder.ins().jump(header_bb, &[BlockArg::from(i_next)]);
 
@@ -2737,6 +2738,18 @@ impl JitContext {
                                 _ => false,
                             }
                         };
+                        // ADR-0078: hashmap_remove fat value (String 24B) returns
+                        // via out_ptr — same shim→sret pattern as vector_pop.
+                        let hashmap_remove_fat = callee_name.as_str() == "__triet_hashmap_remove"
+                            && {
+                                let mty = &body.local_decls[args[0].0].ty;
+                                match mty.nullable_payload().unwrap_or(mty) {
+                                    MirType::HashMap(_, v) => {
+                                        Self::vector_elem_size(v).is_ok_and(|s| s > 8)
+                                    }
+                                    _ => false,
+                                }
+                            };
                         let arg_vals: Vec<_> = if concat_sret {
                             // C6: concat receives dest_slot as first arg (callee-fill via *mut FatStr).
                             // Followed by bung-field source args {a_ptr, a_len, b_ptr, b_len}.
@@ -2914,6 +2927,23 @@ impl JitContext {
                                 builder.use_var(self.var(val_arg))
                             };
                             vec![map_val, key_val, value_val]
+                        } else if callee_name == "__triet_hashmap_remove" {
+                            // ADR-0078: append out_ptr (same pattern as vector_pop).
+                            // Fat value → dest slot addr; scalar → 0.
+                            let map_val = builder.use_var(self.var(args[0]));
+                            let key_val = builder.use_var(self.var(args[1]));
+                            let out_ptr = if hashmap_remove_fat {
+                                let (slot, _) =
+                                    self.struct_slots.get(&dest[0]).ok_or_else(|| {
+                                        JitError::Unsupported(
+                                            "hashmap_remove: fat value dest without a slot".into(),
+                                        )
+                                    })?;
+                                builder.ins().stack_addr(I64, *slot, 0)
+                            } else {
+                                builder.ins().iconst(I64, 0)
+                            };
+                            vec![map_val, key_val, out_ptr]
                         } else if callee_name == "__triet_vector_pop" {
                             // ADR-0077: append the OUT-pointer. Fat element →
                             // the dest's slot addr (shim memcpy's the element in);
@@ -2957,18 +2987,17 @@ impl JitContext {
                         // 1-return shims. Check has_return via BuiltinShimMeta existence
                         // (all registered shims with a return value are in the meta table).
                         // C6: concat returns void (callee writes dest slot via *mut FatStr).
-                        if vector_pop_fat {
-                            // ADR-0077: the shim memcpy'd {ptr,len,cap} into the
-                            // dest String slot — bind the dest var to ptr@0 (the
-                            // i64 return is 0, NOT the value). len/cap already
-                            // sit in the slot from the memcpy.
+                        if vector_pop_fat || hashmap_remove_fat {
+                            // ADR-0077/0078: the shim memcpy'd into the dest
+                            // String slot — bind the dest var to ptr@0 (the i64
+                            // return is 0, a sentinel).
                             if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
                                 let ptr = builder.ins().stack_load(I64, *slot, 0);
                                 builder.def_var(self.var(dest[0]), ptr);
                             } else {
-                                return Err(JitError::Unsupported(
-                                    "vector_pop: fat element dest without a slot".into(),
-                                ));
+                                return Err(JitError::Unsupported(format!(
+                                    "{callee_name}: fat element dest without a slot"
+                                )));
                             }
                         } else if !dest.is_empty() && !concat_sret {
                             let ret_val = builder.inst_results(call_inst)[0];
