@@ -615,7 +615,7 @@ pub fn lower_program(
                             // 24B fat {ptr@0,len@8,cap@16} (null = ptr==SENTINEL);
                             // Vector?/HashMap? = 8B handle (handle==SENTINEL).
                             MirType::String => 24,
-                            MirType::Vector(_) | MirType::HashMap => 8,
+                            MirType::Vector(_) | MirType::HashMap(..) => 8,
                             _ => f.size,
                         },
                         // ADR-0066 M-1: heap LEAF field width (fat-pointer cache
@@ -624,7 +624,7 @@ pub fn lower_program(
                         // live in the heap header). Mis-sizing → byte-copy stomps
                         // the adjacent field / drop-glue frees garbage (R-table).
                         MirType::String => 24,
-                        MirType::Vector(_) | MirType::HashMap => 8,
+                        MirType::Vector(_) | MirType::HashMap(..) => 8,
                         _ => f.size,
                     };
                     (f.name.clone(), f.ty.clone(), size, f.alignment)
@@ -980,7 +980,9 @@ fn lower_type(
             other if other == "Vector" || other.starts_with("Vector<") => {
                 MirType::Vector(Box::new(MirType::Integer))
             }
-            other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
+            other if other == "HashMap" || other.starts_with("HashMap<") => {
+                MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer))
+            }
             other if symbols.get(other) == Some(&TypeKind::Struct) => {
                 MirType::Struct(other.to_string())
             }
@@ -1030,7 +1032,7 @@ fn lower_type(
                     .map(|a| lower_type(arena, *a, symbols, self_type))
                     .unwrap_or(MirType::Integer),
             )),
-            "HashMap" => MirType::HashMap,
+            "HashMap" => MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
             _ => MirType::Unknown,
         },
         _ => MirType::Unknown,
@@ -1056,7 +1058,7 @@ fn lower_type(
 fn ctx_is_copy(ty: &MirType, c: &Ctx) -> bool {
     match ty {
         MirType::Nullable(inner) => ctx_is_copy(inner, c),
-        MirType::String | MirType::Vector(_) | MirType::HashMap => false,
+        MirType::String | MirType::Vector(_) | MirType::HashMap(..) => false,
         // ADR-0069: capability token — ALWAYS Move. This is the SECOND copy
         // classifier (the first is `MirType::is_copy` in triet-mir); BOTH must
         // short-circuit or the move/Deinit machinery here would treat a ZST
@@ -1101,7 +1103,9 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
             other if other == "Vector" || other.starts_with("Vector<") => {
                 MirType::Vector(Box::new(MirType::Integer))
             }
-            other if other == "HashMap" || other.starts_with("HashMap<") => MirType::HashMap,
+            other if other == "HashMap" || other.starts_with("HashMap<") => {
+                MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer))
+            }
             other if c.struct_layouts.contains_key(other) => MirType::Struct(other.to_string()),
             other if c.enum_layouts.contains_key(other) => MirType::Enum(other.to_string()),
             // ADR-0069: capability token type — ZST, non-copy.
@@ -1145,7 +1149,7 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
                     .map(|a| lower_type_simple(arena, *a, c))
                     .unwrap_or(MirType::Integer),
             )),
-            "HashMap" => MirType::HashMap,
+            "HashMap" => MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
             _ => MirType::Unknown,
         },
         _ => MirType::Unknown,
@@ -2451,7 +2455,7 @@ fn lower_expr(
                         c,
                         "__triet_hashmap_alloc",
                         vec![len_local, cap_local],
-                        MirType::HashMap,
+                        MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
                         expr_span,
                     );
                     return Ok(dest);
@@ -3147,7 +3151,7 @@ fn lower_expr(
                 let decl_ty = field_decl_ty.as_ref().unwrap_or(field_ty);
                 let is_direct_heap_leaf = matches!(
                     decl_ty,
-                    MirType::String | MirType::Vector(_) | MirType::HashMap
+                    MirType::String | MirType::Vector(_) | MirType::HashMap(..)
                 );
                 // ADR-0067 2a: a plain (non-nullable) nested STRUCT field whose
                 // layout resolves is now ALLOWED even when it transitively
@@ -3258,7 +3262,7 @@ fn lower_expr(
                 let payload_ty = &c.local_decls[val.0].ty;
                 let is_direct_heap_leaf = matches!(
                     payload_ty,
-                    MirType::String | MirType::Vector(_) | MirType::HashMap
+                    MirType::String | MirType::Vector(_) | MirType::HashMap(..)
                 );
                 if !is_direct_heap_leaf && !ctx_is_copy(payload_ty, c) {
                     return Err(LowerError::heap_type_not_supported(

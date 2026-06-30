@@ -494,8 +494,10 @@ pub enum MirType {
     /// legacy `Vector` lowers to `Vector(Box::new(Integer))` for byte-compat.
     /// `Vector<UserStruct>` / `Vector<Enum>` by-value is REFUSED at P1 (E-code).
     Vector(Box<MirType>),
-    /// `HashMap` — heap-allocated key-value map. Bare (no key/value types yet).
-    HashMap,
+    /// `HashMap<K,V>` — heap-allocated key-value map (ADR-0078 Typed HashMap P1).
+    /// `K = Integer` is hardcoded in P1; `V` is a built-in known-size type.
+    /// No-arg / legacy `HashMap` lowers to `HashMap(Box::new(Integer), Box::new(Integer))`.
+    HashMap(Box<MirType>, Box<MirType>),
 
     // ── Modifiers ──
     /// `T?` — nullable wrapper. KẾT CẤU — kills the old ordering-rule bug
@@ -556,7 +558,7 @@ impl fmt::Display for MirType {
             Self::Unknown => write!(f, "?"),
             Self::String => write!(f, "String"),
             Self::Vector(inner) => write!(f, "Vector<{inner}>"),
-            Self::HashMap => write!(f, "HashMap"),
+            Self::HashMap(k, v) => write!(f, "HashMap<{k}, {v}>"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Reference { form, inner } => match form {
                 ReferenceForm::StrongFrozen => write!(f, "&+ {inner}"),
@@ -615,17 +617,17 @@ impl MirType {
         matches!(self, Self::Vector(_))
     }
 
-    /// `true` for `HashMap` (bare — no key/value type query yet).
+    /// `true` for any `HashMap<K,V>` (key/value types ignored).
     #[must_use]
     pub fn is_hashmap(&self) -> bool {
-        matches!(self, Self::HashMap)
+        matches!(self, Self::HashMap(..))
     }
 
     /// `true` for any heap-allocated type (String/Vector/HashMap).
     /// These have 3-field layout `{ptr, len, cap}` and require Drop glue.
     #[must_use]
     pub fn is_any_heap(&self) -> bool {
-        matches!(self, Self::String | Self::Vector(_) | Self::HashMap)
+        matches!(self, Self::String | Self::Vector(_) | Self::HashMap(..))
     }
 
     /// `true` for `String` and `String?` (= `Nullable(String)`).
@@ -702,7 +704,7 @@ impl MirType {
             | Self::Unit
             | Self::Unknown => true,
             // Heap types — Move.
-            Self::String | Self::Vector(_) | Self::HashMap => false,
+            Self::String | Self::Vector(_) | Self::HashMap(..) => false,
             // Capability token (ADR-0069) — ALWAYS Move. Short-circuit BEFORE
             // the Struct arm so a ZST token is NEVER classified Copy via the
             // empty-field-walk (`all()` over no fields = true). This is the
@@ -2700,7 +2702,9 @@ mod tests {
     fn is_any_heap_detection() {
         assert!(MirType::String.is_any_heap());
         assert!(MirType::Vector(Box::new(MirType::Integer)).is_any_heap());
-        assert!(MirType::HashMap.is_any_heap());
+        assert!(
+            MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)).is_any_heap()
+        );
         assert!(!MirType::Integer.is_any_heap());
         assert!(!MirType::Trit.is_any_heap());
         assert!(!MirType::Trilean.is_any_heap());
@@ -2998,8 +3002,14 @@ mod tests {
             MirType::Vector(Box::new(MirType::Integer)),
             MirType::Vector(Box::new(MirType::Integer))
         );
-        assert_eq!(MirType::HashMap.to_string(), "HashMap");
-        assert_eq!(MirType::HashMap, MirType::HashMap);
+        assert_eq!(
+            MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)).to_string(),
+            "HashMap<Integer, Integer>"
+        );
+        assert_eq!(
+            MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)),
+            MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer))
+        );
     }
 
     #[test]
@@ -3083,10 +3093,12 @@ mod tests {
         assert!(!MirType::Integer.is_reference());
 
         assert!(MirType::Vector(Box::new(MirType::Integer)).is_vec());
-        assert!(!MirType::HashMap.is_vec());
+        assert!(!MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)).is_vec());
         assert!(!MirType::String.is_vec());
 
-        assert!(MirType::HashMap.is_hashmap());
+        assert!(
+            MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)).is_hashmap()
+        );
         assert!(!MirType::Vector(Box::new(MirType::Integer)).is_hashmap());
     }
 
@@ -3116,7 +3128,10 @@ mod tests {
         );
 
         // Symmetric: Nullable(HashMap) — same structural protection.
-        let ty = MirType::Nullable(Box::new(MirType::HashMap));
+        let ty = MirType::Nullable(Box::new(MirType::HashMap(
+            Box::new(MirType::Integer),
+            Box::new(MirType::Integer),
+        )));
         assert!(ty.is_nullable(), "Nullable(HashMap) must be nullable");
         assert!(
             !ty.is_hashmap(),
@@ -3135,7 +3150,10 @@ mod tests {
         assert!(payload.is_vec(), "payload of Vector? must be Vector");
 
         // "HashMap?" → Nullable(HashMap).
-        let ty = MirType::Nullable(Box::new(MirType::HashMap));
+        let ty = MirType::Nullable(Box::new(MirType::HashMap(
+            Box::new(MirType::Integer),
+            Box::new(MirType::Integer),
+        )));
         assert!(ty.is_nullable());
         assert!(!ty.is_hashmap());
     }
@@ -3184,11 +3202,16 @@ mod tests {
         let body = well_formed_body();
         assert!(!MirType::String.is_copy(Some(&body)));
         assert!(!MirType::Vector(Box::new(MirType::Integer)).is_copy(Some(&body)));
-        assert!(!MirType::HashMap.is_copy(Some(&body)));
+        assert!(
+            !MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer))
+                .is_copy(Some(&body))
+        );
         // is_copy(None) — same results.
         assert!(!MirType::String.is_copy(None));
         assert!(!MirType::Vector(Box::new(MirType::Integer)).is_copy(None));
-        assert!(!MirType::HashMap.is_copy(None));
+        assert!(
+            !MirType::HashMap(Box::new(MirType::Integer), Box::new(MirType::Integer)).is_copy(None)
+        );
     }
 
     #[test]

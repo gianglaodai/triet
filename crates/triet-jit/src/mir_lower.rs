@@ -519,7 +519,7 @@ impl JitContext {
             | MirType::Unit
             | MirType::Unknown
             | MirType::Vector(_)
-            | MirType::HashMap
+            | MirType::HashMap(..)
             | MirType::Reference { .. } => Ok(8),
             MirType::Struct(_)
             | MirType::Enum(_)
@@ -2068,7 +2068,7 @@ impl JitContext {
                             // tiers). Capability is a 0-byte ZST (no heap leaf);
                             // Nullable/Outcome field-move stays refused upstream.
                             match &field_ty {
-                                MirType::String | MirType::Vector(_) | MirType::HashMap => {
+                                MirType::String | MirType::Vector(_) | MirType::HashMap(..) => {
                                     builder.ins().stack_store(zero, base_slot, field_off);
                                 }
                                 // WO-0074 (Phase 3): a heap-carrying ENUM field
