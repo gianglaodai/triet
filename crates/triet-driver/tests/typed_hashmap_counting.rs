@@ -358,37 +358,62 @@ fn hashmap_int_int_insert_get_readback() {
     );
 }
 
-// ── Teeth #3 — rehash value-stride (shim-level): push 3 fat values, force
-// realloc by filling to capacity, verify get returns correct value ──
-// For stride=8 (Integer→Integer), insert 3 entries into cap=4 triggers
-// realloc at 3 (0.75 load factor). After realloc, get returns correct value.
-// This proves the rehash loop's value-copy (memcpy stride) works.
+// ── Teeth #3 — rehash value-stride (fat-value MUST use memcpy, not i64) ──
+// Insert 4 entries into cap=4 → triggers realloc (load factor 0.75: len*4
+// >= cap*3 at len=3, the 4th insert triggers). With value_stride=24 (String
+// fat 24B), the rehash loop must `copy_nonoverlapping(vptr, stride)` —
+// the OLD i64-only read (`old_v.read() / nv.write()`) copied only the first
+// 8B (the ptr), leaving len/cap in the new cell as uninitialized heap memory
+// → the Drop free would call `free(ptr, garbage_cap)` → SIGABRT or leak.
+//
+// Poison: in `__triet_hashmap_insert`, replace the rehash loop's
+// `copy_nonoverlapping(old_vptr, new_vptr, stride)` with
+// `(new_vptr as *mut i64).write_unaligned((old_vptr as *const i64).read_unaligned())`
+// → the fat-value MIR test below goes RED (FREE < 4 or SIGABRT).
 
+/// Shim-level: fake fat elements (ptr=tag) survive rehash with stride=24.
 #[test]
-fn hashmap_rehash_retains_values() {
+fn hashmap_rehash_fat_value_retains_full_cell() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Direct shim-call: cap=4, rehash at len*4 >= cap*3 → 3 inserts trigger realloc.
-    let m = mir_lower::__triet_hashmap_alloc(0, 4, 8);
+    // Insert 4 → triggers realloc at cap=4, value_stride=24
+    let m = mir_lower::__triet_hashmap_alloc(0, 4, 24);
     assert_ne!(m, 0);
-    let m = mir_lower::__triet_hashmap_insert(m, 5, 50);
-    let m = mir_lower::__triet_hashmap_insert(m, 6, 60);
-    let m = mir_lower::__triet_hashmap_insert(m, 7, 70);
-    // 4th insert forces realloc (len=3, cap=4, 3*4 >= 4*3 → trigger)
-    let m = mir_lower::__triet_hashmap_insert(m, 13, 130);
+    let mut cur = m;
+    for (k, tag) in [(1, 101_i64), (2, 202), (3, 303), (4, 404)] {
+        let fake = [tag, 5_i64, 8_i64]; // {ptr=tag, len=5, cap=8}
+        cur = mir_lower::__triet_hashmap_insert(cur, k, fake.as_ptr() as i64);
+    }
     assert_eq!(
-        mir_lower::__triet_hashmap_get(m, 5),
-        50,
-        "rehash: key 5 → 50"
+        mir_lower::__triet_hashmap_get(cur, 1),
+        101,
+        "rehash fat: key 1 → ptr 101"
     );
     assert_eq!(
-        mir_lower::__triet_hashmap_get(m, 7),
-        70,
-        "rehash: key 7 → 70"
+        mir_lower::__triet_hashmap_get(cur, 3),
+        303,
+        "rehash fat: key 3 → ptr 303"
     );
     assert_eq!(
-        mir_lower::__triet_hashmap_get(m, 13),
-        130,
-        "rehash: key 13 → 130"
+        mir_lower::__triet_hashmap_get(cur, 4),
+        404,
+        "rehash fat: key 4 → ptr 404"
     );
-    mir_lower::__triet_hashmap_free(m);
+    mir_lower::__triet_hashmap_free(cur);
+}
+
+/// MIR-level: insert 4 real Strings → rehash triggers → drop → FREE==4.
+/// The rehash preserves full 24B value cells, so Drop frees each String.
+/// Poison the rehash memcpy→i64 → FREE < 4 or SIGABRT (len/cap garbage).
+#[test]
+fn hashmap_rehash_fat_value_mir_drop_frees_all() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let body = build_insert_drop(&[(1, "a"), (2, "b"), (3, "c"), (4, "d")], None);
+    let r = jit_run(&body);
+    assert_eq!(r, 0);
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        4,
+        "ADR-0078 tooth #3: rehash with 4 fat values → drop frees all 4          (poison rehash memcpy→i64 → FREE < 4 or SIGABRT)"
+    );
 }

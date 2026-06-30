@@ -6593,6 +6593,49 @@ mod tests {
         __triet_hashmap_free(m);
     }
 
+    /// ADR-0078 Tooth #3: rehash with fat `value_stride=24` must copy the FULL
+    /// 24B value cell, NOT just the first i64. Insert 4 -> trigger realloc ->
+    /// read back value cell directly. The second i64 in the cell (len field of
+    /// fake {ptr,len,cap}) must stay intact (=5). Poison the rehash loop's
+    /// `copy_nonoverlapping(stride)` -> i64-only read/write -> len@8=0 (RED).
+    #[test]
+    #[allow(unsafe_code, clippy::all)]
+    fn hashmap_rehash_fat_value_preserves_full_cell() {
+        let m = unsafe { __triet_hashmap_alloc(0, 4, 24) };
+        assert_ne!(m, 0);
+        let e1 = [101_i64, 5, 8];
+        let e2 = [202_i64, 5, 8];
+        let e3 = [303_i64, 5, 8];
+        let e4 = [404_i64, 5, 8];
+        let m = unsafe { __triet_hashmap_insert(m, 1, e1.as_ptr() as i64) };
+        let m = unsafe { __triet_hashmap_insert(m, 2, e2.as_ptr() as i64) };
+        let m = unsafe { __triet_hashmap_insert(m, 3, e3.as_ptr() as i64) };
+        let m = unsafe { __triet_hashmap_insert(m, 4, e4.as_ptr() as i64) };
+        assert_eq!(unsafe { __triet_hashmap_get(m, 1) }, 101, "ptr@0 OK");
+        assert_eq!(unsafe { __triet_hashmap_get(m, 4) }, 404, "ptr@0 OK");
+        // Verify FULL 24B cell: len@8 must be 5.
+        let body = m as *mut u8;
+        let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+        let hash = (1_i64 % cap as i64 + cap as i64) % cap as i64;
+        let mut probe = hash as usize;
+        loop {
+            let state = unsafe { *super::hashmap_state_ptr(body, probe) };
+            assert_ne!(state, 0u8, "key=1 not found after rehash");
+            if state == 1u8 && unsafe { super::hashmap_key_ptr(body, probe).read_unaligned() } == 1
+            {
+                let vptr = unsafe { super::hashmap_value_ptr(body, probe) };
+                let len_field = unsafe { (vptr as *const i64).add(1).read_unaligned() };
+                assert_eq!(
+                    len_field, 5,
+                    "ADR-0078 tooth #3: rehash must preserve len@8 of fat value                      cell (i64-only copy loses it — got {len_field}, expected 5)"
+                );
+                break;
+            }
+            probe = (probe + 1) % cap;
+        }
+        unsafe { __triet_hashmap_free(m) };
+    }
+
     // N7-C5: insert with v == i64::MIN must die (D2 reject-on-insert).
     #[test]
     fn n7_hashmap_insert_min_value_rejected() {
