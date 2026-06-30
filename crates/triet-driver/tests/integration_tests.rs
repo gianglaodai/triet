@@ -156,6 +156,10 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             triet_jit::mir_lower::__triet_vector_get,
         ),
         ShimSymbol::fn_2_1(
+            "__triet_vector_pop",
+            triet_jit::mir_lower::__triet_vector_pop,
+        ),
+        ShimSymbol::fn_2_1(
             "__triet_hashmap_alloc",
             triet_jit::mir_lower::__triet_hashmap_alloc,
         ),

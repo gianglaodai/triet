@@ -1,0 +1,11 @@
+// EXPECT: 42
+// ADR-0077 P1.5 — Vector<Integer> pop returns Integer? by-value (scalar
+// element, fast-path i64). Backward-compat: `pop` on the pre-Slice-B Vector
+// works identically to the generic `pop<T>` — the lower infers `T=Integer`
+// from the bare `vector_new()` default. The value readback confirms the
+// popped element is the one that was last pushed.
+function main() -> Integer {
+    let v = push(vector_new(), 42);
+    let out = pop(v);
+    return out ?: 99;
+}

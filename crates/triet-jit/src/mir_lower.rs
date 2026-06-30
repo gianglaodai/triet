@@ -3726,6 +3726,15 @@ pub extern "C" fn __triet_vector_pop(vec: i64, out_ptr: i64) -> i64 {
     // SAFETY: vec points to a valid buffer {len@0, cap@8, data@16}.
     let len = unsafe { (body as *const i64).read_unaligned() };
     if len <= 0 {
+        // ADR-0077 P1.5: for a fat element (stride > 8) the JIT reads the
+        // dest slot directly (skipping the i64 return), so the out_ptr must
+        // carry NULL_SENTINEL or the slot contains stack garbage → the match
+        // `~0` arm is misrouted. Write the sentinel into the first word of
+        // the fat element slot.
+        let stride = vector_stride(vec);
+        if stride > 8 {
+            unsafe { (out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
+        }
         return triet_mir::NULL_SENTINEL; // empty → nothing to pop
     }
     let stride = vector_stride(vec);

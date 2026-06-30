@@ -2361,6 +2361,32 @@ fn lower_expr(
                     let dest = emit_shim_call(c, "__triet_vector_push", args, vec_ty, expr_span);
                     return Ok(dest);
                 }
+                "pop" => {
+                    // ADR-0077 P1.5: pop(v) → T? moves the last element out.
+                    // Returns Nullable(T) (empty → ~0). The element type comes
+                    // from the vector's `Vector(inner)` so the dest carries the
+                    // right type → JIT allocates a slot (fat element=String? slot
+                    // 24B; scalar=integer var). At JIT: vector_pop_fat=true when
+                    // inner is String (stride 24), the shim memcpy's into the
+                    // dest out-ptr, and the dest var is bound to slot@0.
+                    if arguments.len() != 1 {
+                        return Err(LowerError::unsupported_expr(
+                            &arena.expression(*callee).node,
+                            expr_span,
+                        ));
+                    }
+                    let arg = lower_expr(arguments[0], None, arena, c)?;
+                    let vec_ty = &c.local_decls[arg.0].ty;
+                    let elem_ty = if let MirType::Vector(inner) = vec_ty {
+                        (**inner).clone()
+                    } else {
+                        MirType::Integer
+                    };
+                    let dest_ty = MirType::Nullable(Box::new(elem_ty));
+                    let dest =
+                        emit_shim_call(c, "__triet_vector_pop", vec![arg], dest_ty, expr_span);
+                    return Ok(dest);
+                }
                 "vector_new" => {
                     if !arguments.is_empty() {
                         return Err(LowerError::unsupported_expr(

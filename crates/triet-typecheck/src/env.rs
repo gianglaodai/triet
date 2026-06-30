@@ -282,6 +282,26 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
+    // ADR-0077 P1.5: `pop<T>(Vector<T>) -> T?` — move the last element out
+    // of the vector (len--). Returns ~0 for an empty vector. Same generic
+    // params as push (T ∈ built-in). get-heap-refuse does NOT apply — pop is
+    // a valid move-out (ownership cuts cleanly), unlike get (copy-out).
+    let pop_params = vec![triet_syntax::TypeParameter {
+        name: "T".into(),
+        bound: None,
+    }];
+    let pop_elem_t = Type::TypeParameter("T".into());
+    let pop_vector_t = Vector(Box::new(pop_elem_t.clone()));
+    let pop_ret = Type::Nullable(Box::new(pop_elem_t));
+    env.declare(
+        "pop",
+        Type::Function {
+            type_parameters: pop_params,
+            parameters: vec![pop_vector_t],
+            return_type: Box::new(pop_ret),
+        },
+    );
+
     // `len` is overloaded: works on String and Vector<Integer>.
     // Registered via overloads so check_call can try each candidate.
     env.declare_overload(

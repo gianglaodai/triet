@@ -145,6 +145,7 @@ fn main() -> ExitCode {
         ShimSymbol::fn_1_1("__triet_vector_len", mir_lower::__triet_vector_len),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_2_1("__triet_vector_get", mir_lower::__triet_vector_get),
+        ShimSymbol::fn_2_1("__triet_vector_pop", mir_lower::__triet_vector_pop),
         // HashMap shims (ADR-0043)
         ShimSymbol::fn_2_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),

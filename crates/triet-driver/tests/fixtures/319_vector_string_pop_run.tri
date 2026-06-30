@@ -1,0 +1,16 @@
+// EXPECT: 0
+// ADR-0077 P1.5 — end-to-end source `pop(v)` on `Vector<String>`. Push "hi"
+// → pop → match ~+ captures the popped String. The popped element is moved OUT
+// of the vector (len--), owned by the caller (Drop of `captured` in the ~+ arm
+// frees it once), and the empty vector drops without the element (no double-
+// free). Ownership is CLEANLY CUT at the source level — Slice A verified the
+// shim, this fixture proves the source → JIT chain.
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let v2 = push(v, "hi");
+    let out = pop(v2);
+    return match out {
+        ~+ captured => 0,
+        ~0 => 99,
+    };
+}

@@ -1,0 +1,15 @@
+// EXPECT: 7
+// ADR-0077 P1.5 — pop on an EMPTY `Vector<String>` returns `~0`
+// (NULL_SENTINEL). The match `~0` arm is correctly taken. For a fat element
+// (String 24B) the shim writes NULL_SENTINEL into the out_ptr so the JIT's
+// dest-slot load reads it — without this fix the slot held stack garbage and
+// the match misrouted to `~+`. Scalar element (Integer) empty pop naturally
+// works because the JIT uses the shim's i64 return, not the slot.
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let out = pop(v);
+    return match out {
+        ~+ s => 1,
+        ~0 => 7,
+    };
+}
