@@ -1009,6 +1009,20 @@ pub struct BuiltinShimMeta {
     /// Per-arg ownership: `true` = consume (caller loses ownership,
     /// variable must be zeroed), `false` = borrow/copy (caller retains).
     pub arg_consumes: &'static [bool],
+    /// ADR-0079: if the shim returns a reference borrowed from one of its
+    /// arguments, the index of that argument (e.g. `Some(0)` means the
+    /// return value borrows `args[0]` — the container). The borrowck
+    /// creates a PropagatedLoan from the arg's Place to the call's dest.
+    /// `None` for shims that don't return a borrow (vast majority).
+    pub returns_borrow_of: Option<usize>,
+    /// ADR-0079 U3: if the shim mutates an argument IN PLACE without
+    /// consuming it (e.g. `remove` tombstones a slot + moves the value
+    /// out, `pop` decrements len + moves the last element out). The
+    /// index identifies which arg is mutated (typically `Some(0)` for
+    /// the container). The borrowck fires E2440 if that arg has an
+    /// active loan. `None` for shims that don't mutate in place, or
+    /// already cover mutation via `arg_consumes` (insert/push).
+    pub mutates_arg: Option<usize>,
 }
 
 /// Builtin shim metadata table consumed by borrowck and JIT.
@@ -1020,38 +1034,56 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
     match name {
         "__triet_string_alloc" => Some(BuiltinShimMeta {
             name: "__triet_string_alloc",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false],
         }),
         "__triet_string_concat" => Some(BuiltinShimMeta {
             name: "__triet_string_concat",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false, false, false],
         }),
         "__triet_string_eq" => Some(BuiltinShimMeta {
             name: "__triet_string_eq",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false, false, false],
         }),
         "__triet_string_free" => Some(BuiltinShimMeta {
             name: "__triet_string_free",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[true],
         }),
         "__triet_string_from_bytes" => Some(BuiltinShimMeta {
             name: "__triet_string_from_bytes",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false],
         }),
         "__triet_string_len" => Some(BuiltinShimMeta {
             name: "__triet_string_len",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false],
         }),
         "__triet_vector_alloc" => Some(BuiltinShimMeta {
             name: "__triet_vector_alloc",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false],
         }),
         "__triet_vector_free" => Some(BuiltinShimMeta {
             name: "__triet_vector_free",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[true],
         }),
         "__triet_vector_len" => Some(BuiltinShimMeta {
             name: "__triet_vector_len",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false],
         }),
         "__triet_vector_push" => Some(BuiltinShimMeta {
@@ -1064,30 +1096,43 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             // (String/Vector/HashMap) is move-tracked (E2420 on reuse) and its
             // caller slot is zeroed after the call (Drop becomes free(0) no-op,
             // no double-free with the vector's owned copy).
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[true, true],
         }),
         "__triet_vector_get" => Some(BuiltinShimMeta {
             name: "__triet_vector_get",
             // [false, false]: borrow vec (không consume, khác push), copy index.
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false],
         }),
         // ADR-0077: pop mutates the vec IN PLACE (len--) — it is NOT consumed,
         // so the vec stays live for its later Drop (frees the len-1 survivors).
         // The MIR call carries one arg (vec); the JIT appends the out-pointer.
+        // ADR-0079 U3: mutates_arg=Some(0) → E2440 if container has active loan.
         "__triet_vector_pop" => Some(BuiltinShimMeta {
             name: "__triet_vector_pop",
+            returns_borrow_of: None,
+            mutates_arg: Some(0),
             arg_consumes: &[false],
         }),
         "__triet_hashmap_alloc" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_alloc",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false],
         }),
         "__triet_hashmap_free" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_free",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[true],
         }),
         "__triet_hashmap_len" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_len",
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false],
         }),
         "__triet_hashmap_insert" => Some(BuiltinShimMeta {
@@ -1095,17 +1140,41 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             // ADR-0078 MŨI D: value arg (index 2) is element-type-aware consume
             // (heap → Moved/Zeroed; Copy→no-op), mirroring push. Map handle (0)
             // is consumed; key (1) is borrowed (Integer = Copy).
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[true, false, true],
         }),
         "__triet_hashmap_get" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_get",
             // [false, false]: borrow map (doesn't consume), copy key.
+            returns_borrow_of: None,
+            mutates_arg: None,
             arg_consumes: &[false, false],
         }),
-        // ADR-0078 P1.5: remove(map, key) → V?. Map is borrowed (len
-        // decremented in place), key is Copy. The JIT appends the out-pointer.
+        // ADR-0079: get_ref shims return a zero-copy reference to the
+        // container's internal slot. returns_borrow_of = Some(0) means the
+        // returned reference borrows args[0] (the container). The borrowck
+        // creates a PropagatedLoan so the container stays frozen for the
+        // lifetime of the returned reference. No arg is consumed.
+        "__triet_vector_get_ref" => Some(BuiltinShimMeta {
+            name: "__triet_vector_get_ref",
+            returns_borrow_of: Some(0),
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_hashmap_get_ref" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_get_ref",
+            returns_borrow_of: Some(0),
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        // ADR-0078 P1.5: remove(map, key) → V?. Map mutates IN PLACE
+        // (tombstone slot + move value out), key is Copy. The JIT appends the
+        // out-pointer. ADR-0079 U3: mutates_arg=Some(0) → E2440 if active loan.
         "__triet_hashmap_remove" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_remove",
+            returns_borrow_of: None,
+            mutates_arg: Some(0),
             arg_consumes: &[false, false],
         }),
         _ => None,

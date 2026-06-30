@@ -1142,6 +1142,73 @@ fn process_block(
         }
     }
 
+    // ADR-0079 U2: builtin return-borrow loan propagation.
+    // When a builtin shim returns a reference borrowed from one of its
+    // arguments (e.g. `get_ref(&0 container, k)` → `&0 V` where V is
+    // borrowed from the container), create a PropagatedLoan directly
+    // from the metadata — there is no callee body to borrow-check, so
+    // the loan is issued at the call site: source = Place of the arg,
+    // dest = call's return temp, form = BorrowReadOnly.
+    if let Terminator::CallDispatch {
+        callee_name,
+        args,
+        dest,
+        ..
+    } = &block_data.terminator
+        && let Some(meta) = builtin_shim_meta(callee_name)
+        && let Some(pi) = meta.returns_borrow_of
+        && let Some(&ret_temp) = dest.first()
+        && let Some(&arg_local) = args.get(pi)
+    {
+        let term_idx = block_data.statements.len();
+        state.active_loans.insert(Loan {
+            source: Place::from(arg_local),
+            dest: ret_temp,
+            form: ReferenceForm::BorrowReadOnly,
+            issued_in: block,
+            issued_at: term_idx,
+            is_propagated: true,
+        });
+    }
+
+    // M3 pre-check (ADR-0079 U3): mutate-while-borrowed.
+    // BEFORE mutating a container, verify no active loan conflicts with
+    // the container's Place. "Mutate" covers two cases:
+    //   1. Consume (arg_consumes[i]=true): insert/push — the arg handle is
+    //      consumed → caller loses ownership → borrow invalidated.
+    //   2. In-place mutate (mutates_arg=Some(i)): remove/pop — the handle
+    //      survives but the container's contents are modified (tombstone,
+    //      len--, value moved out) → any reference to internal slots is
+    //      invalidated. G rules whole-container: even a different-key
+    //      mutation is refused when ANY borrow is active.
+    if let Terminator::CallDispatch {
+        callee_name, args, ..
+    } = &block_data.terminator
+        && let Some(meta) = builtin_shim_meta(callee_name)
+    {
+        for (i, arg) in args.iter().enumerate() {
+            let is_mutated = (i < meta.arg_consumes.len() && meta.arg_consumes[i])
+                || meta.mutates_arg == Some(i);
+            if is_mutated {
+                let arg_place = Place::from(*arg);
+                if let Some(conflicting) = state
+                    .active_loans
+                    .iter()
+                    .find(|l| places_conflict(&l.source, &arg_place, true))
+                {
+                    let arg_name = names.get(arg).cloned().unwrap_or_else(|| format!("{arg}"));
+                    errors.push(BorrowError::NllExclusivityViolation {
+                        source_local: *arg,
+                        source_name: arg_name,
+                        new_form: ReferenceForm::BorrowExclusiveMutable,
+                        existing_loan_dest: conflicting.dest,
+                        span: term_span.clone(),
+                    });
+                }
+            }
+        }
+    }
+
     // M3: builtin shim consume-arg tracking (ADR-0040 §3.6).
     // After a CallDispatch to a builtin shim, mark consume-args Moved
     // so that subsequent uses are E2420.
@@ -1263,8 +1330,8 @@ mod tests {
         storage_live,
     };
     use triet_mir::{
-        CallTarget, DUMMY_SPAN, FieldPath, FunctionSignature, Local, ParameterPassing, Place,
-        Projection, ReferenceForm, ReturnShape, Statement, Terminator,
+        CallTarget, DUMMY_SPAN, FieldPath, FunctionId, FunctionSignature, Local, ParameterPassing,
+        Place, Projection, ReferenceForm, ReturnShape, Statement, Terminator,
     };
 
     fn field(local: Local, name: &str) -> Place {
@@ -2792,6 +2859,329 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, BorrowError::UseAfterMove { .. })),
             "should have E2420, got: {:?}",
+            result.errors
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ADR-0079 Slice A — get-borrow borrowck teeth (hand-built MIR)
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // These tests verify the borrowck machinery BEFORE typecheck surface
+    // opens (mirroring HashMap P1a Slice A approach). The shim names used
+    // here exist in `builtin_shim_meta` but the JIT shims are NOT yet wired
+    // — that is Slice B. The borrowck only reads the metadata table.
+
+    /// Helper: emit a `CallDispatch` terminator targeting a **builtin shim**
+    /// (not a user function). Uses `CallTarget::Shim` so the JIT path
+    /// distinguishes it, but `builtin_shim_meta` works on callee_name alone.
+    fn shim_call(
+        name: &str,
+        args: Vec<Local>,
+        return_bb: BasicBlock,
+        dest: Vec<Local>,
+    ) -> Terminator {
+        Terminator::CallDispatch {
+            callee: FunctionId(0),
+            callee_name: name.to_string(),
+            target: CallTarget::Shim,
+            args,
+            return_bb,
+            dest,
+            return_shape: ReturnShape::Scalar,
+            span: DUMMY_SPAN,
+        }
+    }
+
+    /// ADR-0079 U2: `get_ref(&0 m, k)` creates a PropagatedLoan on `m`.
+    /// Drop `m` while `r` (the returned reference) is still live → E2450.
+    /// The propagated loan dest (`r`) is live_out of bb1 into bb2 where it
+    /// is used (the live_out check fires the DropWhileBorrowed).
+    #[test]
+    fn get_ref_borrow_then_drop_container_e2450() {
+        let mut b = MirBuilder::new("get_ref_drop", MirType::Integer);
+        let m = b.add_param("m", ParameterPassing::Move);
+        b.set_local_type(m, "HashMap<Integer,String>");
+        let r = b.new_local();
+        let k = b.new_local();
+
+        // bb0: r = get_ref(&0 m, k)  → loan created on m
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, storage_live(k));
+        b.push(bb0, const_int(k, 1));
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            shim_call("__triet_hashmap_get_ref", vec![m, k], bb1, vec![r]),
+        );
+
+        // bb1: Drop(m) — r is live_out of bb1 (used in bb2) → E2450
+        b.push(bb1, Statement::Drop(m, DUMMY_SPAN));
+        let bb2 = b.new_block();
+        b.set_terminator(
+            bb1,
+            Terminator::Goto {
+                target: bb2,
+                span: DUMMY_SPAN,
+            },
+        );
+
+        // bb2: use r (return it) → proves r was live after m dropped
+        b.push(bb2, storage_dead(k));
+        b.set_terminator(bb2, return_(vec![r]));
+
+        let body = b.build(bb0);
+        println!("=== get_ref → drop container → use ref ===");
+        println!("{body}");
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result.is_ok(),
+            "E2450 must fire when dropping container while get_ref borrow is alive"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::DropWhileBorrowed { .. })),
+            "expected E2450 DropWhileBorrowed, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0079 U3: `insert` CONSUMES the map handle (arg_consumes[0]=true).
+    /// If `get_ref(&0 m, k)` created a loan on `m`, then `insert(m, …)` must
+    /// fire E2440 — consuming the container while it is borrowed invalidates
+    /// the reference.
+    #[test]
+    fn get_ref_borrow_then_insert_e2440() {
+        let mut b = MirBuilder::new("get_ref_insert", MirType::Unit);
+        let m = b.add_param("m", ParameterPassing::Move);
+        b.set_local_type(m, "HashMap<Integer,String>");
+        let r = b.new_local();
+        let k1 = b.new_local();
+        let k2 = b.new_local();
+        let v = b.new_local();
+
+        // bb0: r = get_ref(&0 m, k1)  → loan created on m
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, storage_live(k1));
+        b.push(bb0, const_int(k1, 1));
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            shim_call("__triet_hashmap_get_ref", vec![m, k1], bb1, vec![r]),
+        );
+
+        // bb1: insert(m, k2, v) — m is consumed (arg_consumes[0]=true)
+        // while r (which borrows m) is still live → E2440
+        let m2 = b.new_local();
+        b.set_local_type(m2, "HashMap<Integer,String>");
+        b.push(bb1, storage_live(m2));
+        b.push(bb1, storage_live(k2));
+        b.push(bb1, const_int(k2, 2));
+        b.push(bb1, storage_live(v));
+        b.push(bb1, const_int(v, 42));
+        let bb2 = b.new_block();
+        b.set_terminator(
+            bb1,
+            shim_call("__triet_hashmap_insert", vec![m, k2, v], bb2, vec![m2]),
+        );
+
+        // bb2: cleanup
+        b.push(bb2, Statement::Drop(r, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(m2, DUMMY_SPAN));
+        b.push(bb2, storage_dead(k1));
+        b.push(bb2, storage_dead(k2));
+        b.set_terminator(bb2, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== get_ref → insert ===");
+        println!("{body}");
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result.is_ok(),
+            "E2440 must fire when consuming (insert) container while get_ref borrow is alive"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::NllExclusivityViolation { .. })),
+            "expected E2440 NllExclusivityViolation, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// Negative control: `get_ref` then `Drop(r)` THEN `Drop(m)` —
+    /// no error because the loan is dead before the container drops.
+    #[test]
+    fn get_ref_drop_ref_then_drop_container_no_error() {
+        let mut b = MirBuilder::new("get_ref_clean", MirType::Unit);
+        let m = b.add_param("m", ParameterPassing::Move);
+        b.set_local_type(m, "HashMap<Integer,String>");
+        let r = b.new_local();
+        let k = b.new_local();
+
+        // bb0: r = get_ref(&0 m, k)  → loan created on m
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, storage_live(k));
+        b.push(bb0, const_int(k, 1));
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            shim_call("__triet_hashmap_get_ref", vec![m, k], bb1, vec![r]),
+        );
+
+        // bb1: Drop(r) FIRST (loan ends) → THEN Drop(m) — no error
+        b.push(bb1, Statement::Drop(r, DUMMY_SPAN));
+        b.push(bb1, Statement::Drop(m, DUMMY_SPAN));
+        b.push(bb1, storage_dead(k));
+        b.set_terminator(bb1, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== get_ref → drop ref → drop container ===");
+        println!("{body}");
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            result.is_ok(),
+            "no error when drop ref before container, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0079 U3: `remove` MUTATES the map in-place (mutates_arg=Some(0)).
+    /// If `get_ref(&0 m, k)` created a loan on `m`, then `remove(m, k2)`
+    /// must fire E2440 — mutating the container while borrowed invalidates
+    /// the reference (even for a different key — whole-container rule).
+    #[test]
+    fn get_ref_borrow_then_remove_e2440() {
+        let mut b = MirBuilder::new("get_ref_remove", MirType::Unit);
+        let m = b.add_param("m", ParameterPassing::Move);
+        b.set_local_type(m, "HashMap<Integer,String>");
+        let r = b.new_local();
+        let k1 = b.new_local();
+        let k2 = b.new_local();
+
+        // bb0: r = get_ref(&0 m, k1) → loan created on m
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, storage_live(k1));
+        b.push(bb0, const_int(k1, 1));
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            shim_call("__triet_hashmap_get_ref", vec![m, k1], bb1, vec![r]),
+        );
+
+        // bb1: remove(m, k2) — m is mutated in-place (mutates_arg[0])
+        // while r (which borrows m) is still live → E2440
+        let out = b.new_local();
+        b.push(bb1, storage_live(out));
+        b.push(bb1, storage_live(k2));
+        b.push(bb1, const_int(k2, 2));
+        let bb2 = b.new_block();
+        b.set_terminator(
+            bb1,
+            shim_call("__triet_hashmap_remove", vec![m, k2], bb2, vec![out]),
+        );
+
+        // bb2: cleanup
+        b.push(bb2, Statement::Drop(r, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(out, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(m, DUMMY_SPAN));
+        b.push(bb2, storage_dead(k1));
+        b.push(bb2, storage_dead(k2));
+        b.set_terminator(bb2, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== get_ref → remove ===");
+        println!("{body}");
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result.is_ok(),
+            "E2440 must fire when mutating (remove) container while get_ref borrow is alive"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::NllExclusivityViolation { .. })),
+            "expected E2440 NllExclusivityViolation, got: {:?}",
+            result.errors
+        );
+    }
+
+    /// ADR-0079 U3: `pop` MUTATES the vector in-place (mutates_arg=Some(0)).
+    /// If `get_ref(&0 v, i)` created a loan on `v`, then `pop(v)` must fire
+    /// E2440 — mutating while borrowed invalidates the reference.
+    #[test]
+    fn get_ref_borrow_then_pop_e2440() {
+        let mut b = MirBuilder::new("get_ref_pop", MirType::Unit);
+        let v = b.add_param("v", ParameterPassing::Move);
+        b.set_local_type(v, "Vector<String>");
+        let r = b.new_local();
+        let i = b.new_local();
+
+        // bb0: r = get_ref(&0 v, i) → loan created on v
+        let bb0 = b.new_block();
+        b.push(bb0, storage_live(r));
+        b.push(bb0, storage_live(i));
+        b.push(bb0, const_int(i, 0));
+        let bb1 = b.new_block();
+        b.set_terminator(
+            bb0,
+            shim_call("__triet_vector_get_ref", vec![v, i], bb1, vec![r]),
+        );
+
+        // bb1: pop(v) — v is mutated in-place (mutates_arg[0])
+        // while r is still live → E2440
+        let out = b.new_local();
+        b.push(bb1, storage_live(out));
+        let bb2 = b.new_block();
+        b.set_terminator(
+            bb1,
+            shim_call("__triet_vector_pop", vec![v], bb2, vec![out]),
+        );
+
+        // bb2: cleanup
+        b.push(bb2, Statement::Drop(r, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(out, DUMMY_SPAN));
+        b.push(bb2, Statement::Drop(v, DUMMY_SPAN));
+        b.push(bb2, storage_dead(i));
+        b.set_terminator(bb2, return_(vec![]));
+
+        let body = b.build(bb0);
+        println!("=== get_ref → pop ===");
+        println!("{body}");
+        let result = check_body(&body);
+        for err in &result.errors {
+            println!("  {err}");
+        }
+        assert!(
+            !result.is_ok(),
+            "E2440 must fire when mutating (pop) vector while get_ref borrow is alive"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| matches!(e, BorrowError::NllExclusivityViolation { .. })),
+            "expected E2440 NllExclusivityViolation, got: {:?}",
             result.errors
         );
     }
