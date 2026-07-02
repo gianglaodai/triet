@@ -3,7 +3,7 @@
 Backlog sống cho chiến dịch kế. **Chỉ chứa việc CHƯA xong / phong-ấn.**
 Ledger các phần ĐÃ đóng (per-step + commit-hash) → [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) + `git log` + `docs/decisions/`.
 
-Mốc hiện tại: Gate `0·0·321·0`. **🩸 GET-BORROW HEAP VALUE (ADR-0079) IMPLEMENTED/CLOSED — G ký 2026-07-01.** Read-side container khép: `get(&0 container,k)→(&0 V)?` zero-copy borrow (P1 V=String). Borrowck whole-container loan (U2 PropagatedLoan builtin + U3 mutate-while-borrowed E2440 cho consume insert/push + in-place remove/pop); JIT shim trả con-trỏ-slot (0 alloc), not-found→NULL_SENTINEL. O verify máu: content-read `length`→2/5 · source-level E2440 · 5 borrowck teeth poison. Slice A `a970540`. **🏁 TYPED HEAP-CONTAINER P1 ĐÓNG TRỌN — ADR-0077 (Vector) + ADR-0078 (HashMap) SEALED, G ký 2026-07-01.** `Vector<T>` + `HashMap<Integer,V>` (T/V = built-in heap: String/Vector/HashMap/Nullable) chạy sound end-to-end source qua JIT real-allocator: construct + push/insert(Move) + pop/remove(move-out `T?`/`V?`) + drop — không rỉ một byte. Element/value-SIZE = hằng compile-time (tách-tầng khỏi native-layout). **KEY-typed (`HashMap<String,V>`) + UserStruct value + get-clone/borrow heap value = defer Tầng 2/P2.** HM-P1b 3 vòng O-reject ép chân lý: garbage `lower_type` bỏ value-arg → vacuous-tooth (literal-temp no-drop-obligation) → named-local poison `arg_consumes[2]=false`→SIGABRT 134 ĐỎ. **🏁 KỶ NGUYÊN NULLABLE KHÉP HOÀN TOÀN — ADR-0076 SEALED (heap-`T?` trong aggregate field/payload, giao điểm B8 cuối).** Lát đơn atomic `6327890`: 5 mũi (gate-lift + field-layout sentinel + drop-arm `collect_heap_leaves` + construct/widen + borrowck). Cổ tức PA-3c: conditional-drop = sentinel-no-op, KHÔNG `brif`. O vồ double-free CASE B (match-present-bind-move → SIGABRT 134, borrowck im) → D đóng STATIC tag-niche-tombstone (KHÔNG dynamic-flag). O verify máu 3 tooth (Deinit-after-bind 134 · sinh-tử `is_copy(Nullable(heap))==false` 7-leak · drop-arm). `let s=b.s`→E2423 (Nợ defer giữ). **🔒🏁 CAPABILITY Ł3 (ADR-0069) NIÊM PHONG — COHERENCE VISION §8 HOÀN TẤT.** Đại số Ł3 khép kín ba chân: null(PA-3c) / logic(Trilean) / **capability**. ZST-token ngậm Ł3-Trit: Grant(+)/Ambient(0)/Deny(−) tĩnh zero-cost + Defer(Unknown) runtime trap `user(2)` fail-closed. Lát 0 `8b06a28` (ZST & cấm copy, 2-classifier defense-in-depth) · §amend-A `47eb283` (M1 receive-only) · Lát 2 `ca8272e` (possession E2212) · §5 `d84cd24` (mint-site lock) · Lát 3 `2dd4d5f` (Defer hook — O verify 4 răng, R-fail-closed boundary `≤` là tử huyệt) · Lát 4 demo fixture `278` (end-to-end →30). Mã mới: E2211 (mint non-grant) · E2212 (deny possession). **Mặt trận mandate ternary-first (G+Giang 2026-06-22) ĐÓNG.** **🏁 Heap-aggregate cluster ĐÓNG TRỌN** — ADR-0070 partial-move + ADR-0071 import `::` + WO-0073/74/75 (heap-nullable-return drop-glue · enum-field move-out · multi-level `h.inner.x` projection-path), origin/main = `0947482`.
+Mốc hiện tại: Gate `0·0·326·0`, origin/main = `818602c`, synced sạch. **🩹 BUG-E (Outcome-param ABI mis-tag + `~->` early-return heap double-free) ĐÓNG — O+G ký 2026-07-03, 2 WO liên tiếp (`ddb7841` param-ABI copy-in gap + `818602c` early-return heap-payload double-free, 3 site). Chi tiết đầy đủ ở mục "✅ ĐÓNG — Bug-E" bên dưới.** **🩸 GET-BORROW HEAP VALUE (ADR-0079) IMPLEMENTED/CLOSED — G ký 2026-07-01.** Read-side container khép: `get(&0 container,k)→(&0 V)?` zero-copy borrow (P1 V=String). Borrowck whole-container loan (U2 PropagatedLoan builtin + U3 mutate-while-borrowed E2440 cho consume insert/push + in-place remove/pop); JIT shim trả con-trỏ-slot (0 alloc), not-found→NULL_SENTINEL. O verify máu: content-read `length`→2/5 · source-level E2440 · 5 borrowck teeth poison. Slice A `a970540`. **🏁 TYPED HEAP-CONTAINER P1 ĐÓNG TRỌN — ADR-0077 (Vector) + ADR-0078 (HashMap) SEALED, G ký 2026-07-01.** `Vector<T>` + `HashMap<Integer,V>` (T/V = built-in heap: String/Vector/HashMap/Nullable) chạy sound end-to-end source qua JIT real-allocator: construct + push/insert(Move) + pop/remove(move-out `T?`/`V?`) + drop — không rỉ một byte. Element/value-SIZE = hằng compile-time (tách-tầng khỏi native-layout). **KEY-typed (`HashMap<String,V>`) + UserStruct value + get-clone/borrow heap value = defer Tầng 2/P2.** HM-P1b 3 vòng O-reject ép chân lý: garbage `lower_type` bỏ value-arg → vacuous-tooth (literal-temp no-drop-obligation) → named-local poison `arg_consumes[2]=false`→SIGABRT 134 ĐỎ. **🏁 KỶ NGUYÊN NULLABLE KHÉP HOÀN TOÀN — ADR-0076 SEALED (heap-`T?` trong aggregate field/payload, giao điểm B8 cuối).** Lát đơn atomic `6327890`: 5 mũi (gate-lift + field-layout sentinel + drop-arm `collect_heap_leaves` + construct/widen + borrowck). Cổ tức PA-3c: conditional-drop = sentinel-no-op, KHÔNG `brif`. O vồ double-free CASE B (match-present-bind-move → SIGABRT 134, borrowck im) → D đóng STATIC tag-niche-tombstone (KHÔNG dynamic-flag). O verify máu 3 tooth (Deinit-after-bind 134 · sinh-tử `is_copy(Nullable(heap))==false` 7-leak · drop-arm). `let s=b.s`→E2423 (Nợ defer giữ). **🔒🏁 CAPABILITY Ł3 (ADR-0069) NIÊM PHONG — COHERENCE VISION §8 HOÀN TẤT.** Đại số Ł3 khép kín ba chân: null(PA-3c) / logic(Trilean) / **capability**. ZST-token ngậm Ł3-Trit: Grant(+)/Ambient(0)/Deny(−) tĩnh zero-cost + Defer(Unknown) runtime trap `user(2)` fail-closed. Lát 0 `8b06a28` (ZST & cấm copy, 2-classifier defense-in-depth) · §amend-A `47eb283` (M1 receive-only) · Lát 2 `ca8272e` (possession E2212) · §5 `d84cd24` (mint-site lock) · Lát 3 `2dd4d5f` (Defer hook — O verify 4 răng, R-fail-closed boundary `≤` là tử huyệt) · Lát 4 demo fixture `278` (end-to-end →30). Mã mới: E2211 (mint non-grant) · E2212 (deny possession). **Mặt trận mandate ternary-first (G+Giang 2026-06-22) ĐÓNG.** **🏁 Heap-aggregate cluster ĐÓNG TRỌN** — ADR-0070 partial-move + ADR-0071 import `::` + WO-0073/74/75 (heap-nullable-return drop-glue · enum-field move-out · multi-level `h.inner.x` projection-path), origin/main = `0947482`.
 
 ### ✅ ĐÓNG — **Heap-Nullable trong aggregate field/payload** (ADR-0076 SEALED, G ký 2026-06-29)
 ~~`struct S{x:String?}` / `enum Bag{Has(String?)}` refused (rào B8)~~ → **ĐÓNG SẬP — KỶ NGUYÊN NULLABLE KHÉP.** [ADR-0076](docs/decisions/0076-heap-nullable-aggregate-field.md) SEALED: heap-`T?` (String?/Vector?/HashMap?) ở field/payload nay construct + whole-move + drop sound. Lát đơn atomic `6327890`. **5 mũi:** ① gate `is_field_payload_lowerable` +`is_any_heap()` · ② field-layout sentinel @offset (String?=24B fat, Vector?/HashMap?=8B handle, null=NULL_SENTINEL) · ③ `collect_heap_leaves` arm `Nullable(heap)`→drop vô điều kiện reuse shim · ④ construct/widen store fat-ptr/sentinel @offset · ⑤ borrowck Move-classify + E2423 move-out refuse. **Cổ tức PA-3c:** conditional-drop = sentinel-no-op (ptr@offset ∈ {ptr→free, sentinel→no-op, 0→no-op}), 0 `brif` Cranelift. **O vồ double-free CASE B** (match-present-bind-move heap-aggregate → SIGABRT 134, borrowck im, MỚI do gate-lift) → D đóng STATIC tag-niche-tombstone (KHÔNG dynamic-drop-flag). O verify máu 3 tooth đỏ độc lập (Deinit-after-bind→134 ·3 biến thể · sinh-tử `is_copy(Nullable(heap))==false`→7 counting LEAK · drop-arm→leak). Fixtures FLIP 180/230/236/255→run + 311/312 present-bind + 310→E2423 + counting `heap_nullable_field_counting` 9/9. **Nợ defer giữ (ADR-0070):** partial-heap-field-move-out `let s=b.s` (đòi dynamic-drop-flag).
@@ -54,41 +54,36 @@ ngầm) bị BÁC — nghịch ADR-0005 (reject A1/A3/A5) + nghịch refuse-over
 - **Timing (G chốt):** TUYỆT ĐỐI KHÔNG code lúc này. Chờ tới khi xây `std` hoặc Package Manager
   (nhu cầu facade mới rõ). Trade-off đã biết: mất zero-indirection navigation → cần tooling go-to-def bù.
 
-### 🔴 BUG — Outcome (`T~E`/`T?~E`) làm tham số hàm mis-tag `disc` (soundness, ghi 2026-07-02)
-Phát hiện khi viết `examples/outcome_ternary_family.tri`: truyền một giá trị Outcome
-(`T~E` hoặc `T?~E`) **làm tham số hàm** rồi đọc `.disc`/`.payload` bên trong callee cho
-kết quả SAI LẶNG LẼ (không panic, không SIGABRT — tính ra số sai). Grep toàn bộ
-`crates/triet-driver/tests/fixtures/*.tri`: **0 fixture** truyền Outcome qua tham số —
-mọi fixture hiện có chỉ tiêu thụ Outcome ngay tại chỗ gọi (`f() ~-> ...`), nên bề mặt
-ABI tham số-Outcome chưa từng được test. Không có trong debt registry cũ (chỉ có
-"Packed Outcome ABI — đi kèm Native" ở PHONG ẤN Nhóm E, nói về *return*, không nói
-*parameter*).
+### ✅ ĐÓNG — Bug-E: Outcome-param ABI mis-tag + `~->` early-return heap double-free (O+G ký 2026-07-03)
+~~Outcome (`T~E`/`T?~E`) làm tham số hàm mis-tag `disc` (sai lặng lẽ) + `~->`
+early-return double-free heap payload~~ → **ĐÓNG SẬP, 2 WO liên tiếp, cùng chiến
+dịch.**
 
-Repro tối thiểu (check PASS, run in SAI — kỳ vọng `7`, thực tế `999`):
-```triet
-function fail_int() -> Integer~Integer = ~- 7
+**WO1 — Outcome-param callee copy-in gap** (`ddb7841`): callee prologue cấp StackSlot
+rỗng cho MỌI Outcome-typed local kể cả tham số (`mir_lower.rs:1453`), nhưng vòng bind
+tham số chỉ có nhánh copy-in cho String/Enum, thiếu Outcome — con trỏ caller truyền
+vào (đã đúng, `:2676`) bị bỏ xó, `_N.disc`/`_N.payload` đọc rác. Fix mirror đúng
+khuôn String/Enum tại `:1644-1684`. Fixtures 328/329/330 (scalar/nullable/interleaved-
+offset). O verify độc lập cp-snapshot (không stash — D vi phạm `feedback_teeth_never_git_checkout`
+lần đầu, G ghi sổ đen cảnh cáo, kết quả tình cờ đúng).
 
-function propagate(o: Integer~Integer) -> Integer~Integer =
-    ~+ (o ~-> |e| return ~- e)
+**WO2 — `~->` early-return heap-payload double-free** (`818602c`), phát hiện khi O tự
+mở rộng test ngoài phạm vi WO1 (`String~Integer` param) → SIGABRT 134. Cô lập: bug
+KHÔNG liên quan tham số hàm, tái hiện chỉ với 1 local. 3 site cùng thiếu pattern
+HP.4 (`copy_heap_outcome_payload`/`bind_heap_outcome_payload` + `Deinit`):
+Site A (`lib.rs:~5163`, success-arm passthrough unwrap), Site B (`:~5023`, error-arm
+bind `e`), root cause chung (`:~1947`, `Expr::OutcomeConstructor` heap-payload branch
+— DÙNG CHUNG cho mọi `~+ v`/`~- e` trong ngôn ngữ, vô hại với literal/temp nhưng
+double-free khi payload là named-local có drop-obligation — đúng tình huống Site B
+tự tạo ra). Fixtures 331/332 (named-local, theo LUẬT `feedback_poison_must_be_red`).
+O verify máu độc lập cả 3 site — poison từng site một, xác nhận đỏ đúng biến thể
+(331 XOR 332), restore md5 khớp, gate CLEAN 326.
 
-function main() -> Integer =
-    match propagate(fail_int()) {
-        ~+ x => 999
-        ~- e => e
-    }
-```
-`triet-driver run` → **999** (nhánh THÀNH CÔNG, sai — input là lỗi `~- 7`).
-Biến thể `Integer?~Integer` param (`~0>`) cho ra số rác hoàn toàn
-(`-36748620661841405`) thay vì lỗi rõ ràng — tệ hơn crash vì im lặng.
-
-- [ ] Xác định layer lỗi: `triet-lower` (param binding cho MirType 2-slot Outcome) hay
-      `triet-jit` (ABI truyền 2 register disc+payload qua call site) hay cả hai.
-- [ ] Viết fixture âm tính tối thiểu (dựa repro trên) trước khi sửa — teeth phải đỏ
-      trước, xanh sau (luật `feedback_poison_must_be_red`).
-- [ ] Sau khi có root cause: quyết định fix ngay hay cần ADR riêng (nếu đụng tới
-      2-reg ABI đã lock ở ADR-0054) — không tự vá khi chưa rõ nguyên nhân.
-- [ ] Việc ví dụ demo tránh param-Outcome hoàn toàn (0-arg producer + operator + match
-      tại chỗ) — xem `examples/outcome_ternary_family.tri`, không phải workaround che bug.
+**Bài học:** silent-wrong-answer (WO1) được G xếp NẶNG hơn crash (WO2) — nhưng cả hai
+đều bắt nguồn từ cùng một lỗ hổng lớp: thiếu hoàn thiện pattern copy-in/Deinit khi mở
+rộng bề mặt Outcome sang ABI tham số + early-return. 0 fixture cũ từng chạm surface
+này vì luôn dùng literal/temp (không có drop-obligation) — đúng LUẬT NAMED-LOCAL đã
+ghi từ HM-P1b.
 
 ### 🔴 Chiến dịch CFG Tail-Expression — ưu tiên 1 (soundness)
 Wire nốt ADR-0055: block tail-expr gánh giá trị cuối hàm.

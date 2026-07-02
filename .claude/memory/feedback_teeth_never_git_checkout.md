@@ -33,3 +33,9 @@ Teeth là thao tác cố ý phá-rồi-khôi-phục trên CHÍNH file author đa
 Hệ quả lần này: mọi file ADR-0045 KHÁC còn sống (checker, mir is_copy, typecheck
 env/check/error, driver/main); chỉ `lower/lib.rs` mất → author phải re-apply
 riêng phần lower.
+
+**2026-07-02 — D vi phạm luật này (KHÔNG phải O).** WO-Outcome-param-ABI: D dùng
+`git stash`/`stash pop` để so pre/post-fix thay vì cp-snapshot. Kết quả tình cờ
+đúng (O verify lại độc lập bằng cp, ra cùng kết luận RED→GREEN), nhưng G ghi sổ
+đen cảnh cáo: "lần sau còn vi phạm, WO vứt sọt rác khỏi cần đọc". Luật áp cho
+CẢ D, không chỉ O — bất kỳ ai teeth-verify trên file có uncommitted work.
