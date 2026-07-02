@@ -1,0 +1,21 @@
+// EXPECT: 100
+// BUG (TODO.md 2026-07-02): Integer?~Integer param variant of the same
+// callee-prologue copy-in gap — pre-fix reads garbage disc/payload from
+// the fresh empty slot instead of the caller's data. Named-local per
+// feedback_poison_must_be_red LUẬT NAMED-LOCAL. `~0>` (null-arm map,
+// ADR-0020 §3.2 type-preserving/null-eliminated) must observe the null
+// arm passed through the parameter, not slot garbage.
+
+function maybe_null() -> Integer?~Integer =
+    ~0
+
+function propagate(o: Integer?~Integer) -> Integer~Integer =
+    o ~0> 100
+
+function main() -> Integer {
+    let result = maybe_null();
+    return match propagate(result) {
+        ~+ x => x
+        ~- e => -1
+    };
+}

@@ -1,0 +1,22 @@
+// EXPECT: 18
+// WO step 3 (Mentor O, 2026-07-02): Outcome param interleaved with Integer
+// and String params — catches offset/bp_idx corruption in the entry-block
+// param loop (mir_lower.rs:1644) if the Outcome copy-in branch mis-advances
+// or shadows a neighboring param's block-param index.
+
+function make_ok() -> Integer~Integer =
+    ~+ 5
+
+function combine(a: Integer, o: Integer~Integer, s: String) -> Integer {
+    return match o {
+        ~+ v => a + v + length(s)
+        ~- e => -1
+    };
+}
+
+function main() -> Integer {
+    let n = 10;
+    let outcome = make_ok();
+    let text = "abc";
+    return combine(n, outcome, text);
+}

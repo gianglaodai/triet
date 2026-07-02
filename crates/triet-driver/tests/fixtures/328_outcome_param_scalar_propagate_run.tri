@@ -1,0 +1,20 @@
+// EXPECT: 7
+// BUG (TODO.md 2026-07-02): Outcome-as-parameter mis-tags disc/payload —
+// callee prologue never copies caller's {disc,payload} into its own slot
+// (mir_lower.rs:1644-1684 had String/Enum copy-in branches but no Outcome
+// branch). Named-local (not literal) per feedback_poison_must_be_red LUẬT
+// NAMED-LOCAL. Repro: propagate(fail_int()) must observe the ERROR arm.
+
+function fail_int() -> Integer~Integer =
+    ~- 7
+
+function propagate(o: Integer~Integer) -> Integer~Integer =
+    ~+ (o ~-> |e| return ~- e)
+
+function main() -> Integer {
+    let result = fail_int();
+    return match propagate(result) {
+        ~+ x => 999
+        ~- e => e
+    };
+}

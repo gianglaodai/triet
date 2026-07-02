@@ -1680,6 +1680,28 @@ impl JitContext {
                     builder.ins().stack_store(field, slot, off);
                 }
             }
+            // ADR-0057/0058 gap: Outcome param received as pointer-to-caller-slot
+            // (Site 1, call-site packing at ~2676, already correct). Mirror the
+            // String/Enum copy-in above — without this, `param_val` is loaded
+            // into a plain Variable and never dereferenced, and every
+            // `_N.disc`/`_N.payload` read (walk at line 644) reads the fresh,
+            // empty slot pre-allocated at line ~1453 instead of the caller's
+            // data. disc@0, payload@8, and — for heap Outcome (slot_size 32) —
+            // payload_len@16, payload_cap@24.
+            if let MirType::Outcome { .. } = &body.local_decls[local.0].ty
+                && let Some(&slot) = self.outcome_slots.get(&local)
+            {
+                let disc = builder.ins().load(I64, mem_flags, param_val, 0);
+                builder.ins().stack_store(disc, slot, 0);
+                let payload = builder.ins().load(I64, mem_flags, param_val, 8);
+                builder.ins().stack_store(payload, slot, 8);
+                if body.local_decls[local.0].ty.outcome_slot_size() == 32 {
+                    let payload_len = builder.ins().load(I64, mem_flags, param_val, 16);
+                    builder.ins().stack_store(payload_len, slot, 16);
+                    let payload_cap = builder.ins().load(I64, mem_flags, param_val, 24);
+                    builder.ins().stack_store(payload_cap, slot, 24);
+                }
+            }
             bp_idx += 1;
         }
 
