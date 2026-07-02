@@ -1,0 +1,27 @@
+// EXPECT: 5
+// WO-OutcomeEarlyReturnHeapPayload Site A (Mentor O, 2026-07-02): `~->`
+// early-return-mode success-arm passthrough (triet-lower/src/lib.rs, the
+// APP.1 "unwrap payload" branch) did a flat 1-word Assign of OutcomePayload
+// (dropping len/cap) with no Deinit(inner_val) — inner_val's later Drop then
+// freed the same String buffer the unwrapped `result` now (partially)
+// owned: double-free (SIGABRT 134, confirmed pre-fix with this exact
+// named-local repro — literal-temp inner would have no drop obligation
+// per feedback_poison_must_be_red LUẬT NAMED-LOCAL and would not catch it).
+// No function-param boundary crossed (isolates this from the separate
+// Outcome-param-ABI fix in fixtures 328-330).
+
+function ok_str() -> String~String =
+    ~+ "hello"
+
+function propagate() -> String~String {
+    let o = ok_str();
+    return ~+ (o ~-> |e| return ~- e);
+}
+
+function main() -> Integer {
+    let result = propagate();
+    return match result {
+        ~+ v => length(v)
+        ~- e => -1
+    };
+}

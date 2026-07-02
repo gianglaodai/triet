@@ -1945,6 +1945,16 @@ fn lower_expr(
                         source: Place::local(cap_tmp),
                         span: expr_span.clone(),
                     });
+                    // WO-OutcomeEarlyReturnHeapPayload root cause (Mentor O +
+                    // G, 2026-07-02/03): this site is shared by EVERY
+                    // `~+ v`/`~- e` with a heap payload in the language, not
+                    // just `~->` early-return. It copied {ptr,len,cap} out of
+                    // `val` but never tombstoned `val` — harmless for a
+                    // literal/temp payload (no drop obligation), but when
+                    // `val` is a named-local with a drop obligation (e.g. the
+                    // Site-B `e_local` bind), its later scope-exit Drop frees
+                    // the same buffer `outcome` now owns → double-free.
+                    c.push(Statement::Deinit(val, expr_span.clone()));
                 } else {
                     // Scalar payload → store single i64 at offset 8.
                     let payload_tmp = c.alloc_local_ty(payload_ty);
@@ -5010,13 +5020,31 @@ fn lower_expr(
                 // APP.1: bind e, lower return, Trap exit.
                 c.push_scope();
                 if let Some(name) = capture_name {
-                    let e_local = c.alloc_local_ty(MirType::Unknown);
+                    let error_heap = inner_error_ty.is_any_heap();
+                    let e_ty = if error_heap {
+                        inner_error_ty.clone()
+                    } else {
+                        MirType::Unknown
+                    };
+                    let e_local = c.alloc_local_ty(e_ty);
                     c.push(Statement::StorageLive(e_local, expr_span.clone()));
-                    c.push(Statement::Assign {
-                        dest: Place::local(e_local),
-                        source: Place::local(inner_val).project(Projection::OutcomePayload),
-                        span: expr_span.clone(),
-                    });
+                    if error_heap {
+                        // WO-OutcomeEarlyReturnHeapPayload Site B: same bug
+                        // class as HP.4's map-mode branches (4950-4953) — a
+                        // flat 1-word Assign only copies the payload `ptr`
+                        // (dropping len/cap) and never Deinit(inner_val), so
+                        // inner_val's later Drop frees the same buffer `e`
+                        // now (partially) owns → double-free. Mirror the
+                        // heap-aware decompose + tombstone.
+                        c.bind_heap_outcome_payload(e_local, inner_val, &expr_span);
+                        c.push(Statement::Deinit(inner_val, expr_span.clone()));
+                    } else {
+                        c.push(Statement::Assign {
+                            dest: Place::local(e_local),
+                            source: Place::local(inner_val).project(Projection::OutcomePayload),
+                            span: expr_span.clone(),
+                        });
+                    }
                     c.vars.insert(name.clone(), e_local);
                     c.local_names.insert(e_local, name.clone());
                     c.push_owned(e_local);
@@ -5132,11 +5160,27 @@ fn lower_expr(
                 );
             } else {
                 // APP.1: unwrap payload.
-                c.push(Statement::Assign {
-                    dest: Place::local(result),
-                    source: Place::local(inner_val).project(Projection::OutcomePayload),
-                    span: expr_span.clone(),
-                });
+                if inner_value_ty.is_any_heap() {
+                    // WO-OutcomeEarlyReturnHeapPayload Site A: same bug class
+                    // as HP.4's map-mode branches (5114-5118) — a flat
+                    // 1-word Assign only copies the payload `ptr` (dropping
+                    // len/cap, `result` stays typed Unknown so the {len,cap}
+                    // slot fields are never even allocated for it) and never
+                    // Deinit(inner_val), so inner_val's later Drop frees the
+                    // same buffer `result` now (partially) owns → truncated
+                    // reads downstream AND double-free. Retype `result` to
+                    // the unwrapped heap type and mirror the heap-aware
+                    // decompose + tombstone.
+                    c.local_decls[result.0].ty = inner_value_ty.clone();
+                    c.bind_heap_outcome_payload(result, inner_val, &expr_span);
+                    c.push(Statement::Deinit(inner_val, expr_span.clone()));
+                } else {
+                    c.push(Statement::Assign {
+                        dest: Place::local(result),
+                        source: Place::local(inner_val).project(Projection::OutcomePayload),
+                        span: expr_span.clone(),
+                    });
+                }
                 c.term(
                     c.cur,
                     Terminator::Goto {

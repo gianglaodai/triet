@@ -1,0 +1,31 @@
+// EXPECT: 4
+// WO-OutcomeEarlyReturnHeapPayload Site B + root cause tầng 2 (Mentor O + G,
+// 2026-07-02/03): `~->` early-return-mode error-arm bind (triet-lower/
+// src/lib.rs, the APP.1 "bind e, lower return, Trap exit" branch, ~5009)
+// needed a heap-aware bind_heap_outcome_payload + Deinit(inner_val) — but
+// that alone was NOT enough. The bound `e_local` then flows into `return
+// ~- e`, which lowers through the GENERIC `Expr::OutcomeConstructor`
+// heap-payload branch (lib.rs:~1908-1947, shared by every `~+ v`/`~- e` in
+// the language) — that site copied {ptr,len,cap} out of `val` but never
+// Deinit'd it. Harmless for a literal/temp payload (no drop obligation —
+// why 0 prior fixture caught it), but `e_local` here IS a named-local with
+// a drop obligation, so its scope-exit Drop double-freed the same buffer
+// the constructed Outcome now owned. This fixture is the tombstone: any
+// future change to that OutcomeConstructor heap branch that drops the
+// Deinit(val) line must make this SIGABRT 134 again.
+
+function fail_str() -> Integer~String =
+    ~- "boom"
+
+function propagate() -> Integer~String {
+    let o = fail_str();
+    return ~+ (o ~-> |e| return ~- e);
+}
+
+function main() -> Integer {
+    let result = propagate();
+    return match result {
+        ~+ v => v
+        ~- e => length(e)
+    };
+}
