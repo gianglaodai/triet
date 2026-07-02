@@ -7,12 +7,31 @@ metadata:
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
 
-## 🎯 MẶT TRẬN KẾ ĐÃ CHỐT (2026-07-03) — A: key-typed `HashMap<String,V>`
-Giang chốt A trực tiếp (không cần trình lại bản đồ A/C/D). Việc đầu phiên sau: viết
-ADR-0080 (hoặc amend ADR-0038 Comparable) định nghĩa hash/eq cho String-key HashMap
-TRƯỚC khi code — đụng type-system/borrowck core, ADR-first. Integer key hiện dùng
-identity-hash; String cần hash+eq nội dung. C (native multi-field layout) và D
-(get-borrow-mutable) lùi lại, không hủy. [[future_comparable_trait_and_monad_gap]]
+## 🎯 MẶT TRẬN A ĐANG MỞ — key-typed `HashMap<String,V>` — ADR-0080 APPROVED, WO KM-P1a phát (2026-07-03)
+**ADR-0080 `docs/decisions/0080-hashmap-string-key.md` — Author+O+G ký, PUSHED `26452e0` (origin/main).**
+O BÁC amend ADR-0038 (Comparable=`Ord`, không phải `Hash` — trộn = nát kiến trúc); ADR MỚI toanh,
+BÁC `Hashable` trait (trait system mới Tier-1). **Quyết chốt D1–D5:**
+- **D1** slot: `key_stride` song song `value_stride`, **24B fat trọn ổ** (`{ptr,len,cap}`). BÁC 16B
+  (`__triet_string_free` cần cap thật). Lý do vật lý bắt buộc 24B: String KHÔNG lưu `len` trên heap
+  (ADR-0049 §6.3) → slot phải chứa len để hash/eq. `key_stride∈{8,24}` **kiêm discriminator** (8=Integer
+  identity giữ byte-compat, 24=String content).
+- **D2/D3** shim MỚI `__triet_string_hash(ptr,len)` FNV-1a (mirror `cap_id_hash` mir_lower.rs:3372);
+  eq tái dùng `__triet_string_eq`:3542 (đã có). Cấm dynamic dispatch.
+- **D5** key ∈ {Integer,String} đóng băng; khác → REFUSE typecheck.
+- **Mũi D nợ máu — 5 death-point** (Giang: TỐI QUAN TRỌNG). O vạch thêm **#5 remove-free-resident-key**
+  ngoài 4 điểm Author list: (1) map-drop free mọi key, (2) insert-dup trảm key move-in dư, (3) insert=Move
+  key consume, (4) get/remove/contains = borrow `&0 String` (bất đối xứng), (5) remove free resident key.
+- **Teeth split 2 slice:** KM-P1a (backend/shim, hand-built MIR + counting) dập máu **#1 drop-leak /
+  #2 update-leak / #3 remove-leak / #5 content-hash / #7 rehash-stride**. **#4 (Move) / #6 (borrow) /
+  #8 (REFUSE) / #9 (source compat)** = KM-P1b (typecheck/borrowck). Giang đòi báo cáo đẫm máu #1→#7
+  → land SAU KM-P1b. Poison BẮT BUỘC (G lệnh): Map-drop-leak + Update-leak, đo FNV counting FREE-count.
+
+**WO KM-P1a đã phát cho D** (file `crates/triet-jit/src/mir_lower.rs`): Mũi A slot + B hash/eq shim +
+D.1/D.2/D.5 key-free/dup-trảm/remove-free + rehash key-stride. Verify hand-built MIR + counting (lối
+HM-P1a `a0e60d8` ngủ đông proven-MIR, source E1003 tới khi P1b mở). Chờ D nộp cây + raw gate → O verify máu.
+Sites: slot helpers :4054/4068/4075/4082, alloc :4110, insert :4186, get :4284, remove :4363,
+rehash :4211-4238, value-free-loop mẫu emit_hashmap_value_free_loop :1133.
+C (native multi-field layout) + D (get-borrow-mutable) vẫn lùi, không hủy. [[future_comparable_trait_and_monad_gap]]
 
 ## ✅ ĐÓNG — Bug-E: Outcome-param ABI + `~->` early-return heap double-free (O+G ký 2026-07-03)
 origin/main = `81fae69`, gate `0·0·326·0`. Giang tự phát hiện viết

@@ -167,6 +167,36 @@ Bậc C+ khi từng slice landed (O verify máu, G ký). Không hồi tố `Hash
 
 ---
 
+## §AMEND-1 (2026-07-03) — ABI D.2/D.5: "shim báo hiệu, JIT-emit free" (COUNTING-INTEGRITY)
+
+**Recon D (KM-P1a), O verify độc lập (file:line):** counting harness thay `__triet_string_free` bằng
+`__test_counting_free`/`__hp2_count_free` **dưới tên `__triet_string_free`** trong symbol table
+(`with_shims` mir_lower.rs:808-809). Chỉ lời gọi `__triet_string_free` **do JIT-emit** (Cranelift
+`call` qua `get_or_declare_shim`:258 / `emit_heap_free_at`:972) mới resolve tới counter. Một free viết
+TRỰC TIẾP trong thân Rust shim (`super::__triet_string_free(...)` bên trong `__triet_hashmap_insert`/
+`_remove`) = static link-time call, **KHÔNG qua symbol table → counter MÙ**. Đặt D.2/D.5 trong thân
+shim ⇒ **teeth #2/#3 RỖNG ngay từ đầu** (vacuous-tooth — mẫu lịch sử 3 lần). WO literal ":4250/:4363
+free trong thân" **RETRACTED**.
+
+**Khóa cơ chế** (khớp tiền lệ VALUE move-out `__triet_hashmap_remove`/`__triet_vector_pop` out_ptr,
+JIT call-site :2952/:2968):
+- **D.2 (insert dup-key trảm):** `__triet_hashmap_insert` **+out-param `is_update_out: i64`** — shim
+  ghi 1/0. JIT call-site (đã có địa chỉ fat key-arg, như `vector_push`) sau gọi: `key_stride==24 &&
+  cờ==1` → emit `__triet_string_free` **registry-routed** trên con trỏ key move-in dư.
+- **D.5 (remove trảm resident key):** `__triet_hashmap_remove` **+out-param `key_out_ptr: i64`** (JIT
+  cấp StackSlot 24B tạm, như `dest_slot` của concat). Shim ghi **resident-key fat `{ptr,len,cap}`** ra
+  đó + tombstone-zero key cell trong slot. JIT call-site: `key_stride==24` → `emit_heap_free_at`
+  trên `key_out_ptr` (registry-routed). **BẤT BIẾN:** resident key ≠ lookup key `k` (khác instance,
+  khác allocation) — CẤM free `k` (= của caller, borrow D.4) → double-free.
+
+Đây là ABI mở rộng thật (thêm param), KHÔNG "ít-churn literal" — nhưng là cách DUY NHẤT giữ bất biến
+counting-testable (Teeth #1-3) mà chính ADR này + G đã mandate. Bất biến §Mũi A ("free/rehash không cần
+type-info ngoài, buffer tự mô tả") KHÔNG đổi.
+
+**Chữ ký §AMEND-1:** D (recon) · **O ✅** (verify cơ chế độc lập, retract WO literal, khóa resident≠lookup) · **G ✅** (ĐÃ DUYỆT. Bắt bài test-blindness xuất sắc. Bắt buộc đẩy out-param ra JIT để harness đếm được. Commit toàn bộ và cấp WO ngay).
+
+---
+
 ## Chữ ký
 - **Author (Giang Hoàng)** ✅ — chốt D1 (24B fat) · D2/D3 (FNV-1a, ít magic) · D4 (ADR mới, BÁC Hashable) ·
   D5 (key ∈ {Integer,String}). Ra lệnh: poison bắt buộc cho Map-drop-leak + Update-leak.
