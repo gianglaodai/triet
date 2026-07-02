@@ -17,4 +17,6 @@ metadata:
 3. Test structural-fix phải dùng đúng input tái tạo bug (vd Nullable(Vector), không Nullable(Integer)).
 4. Áp cho cả claim của author/D "đã teeth verify" — O tự dựng lại, không tin.
 
-Liên quan [[mentor-o-persona]] (verify-don't-trust), [[feedback-verify-semantics-before-asserting]] (author đoán ngữ nghĩa rồi mã hoá vào test).
+**LUẬT NAMED-LOCAL (G khắc đá 2026-07-01, HM-P1b vòng 2 — vacuous-tooth LẦN 2):** Test Move/Consume/drop-obligation **PHẢI bind giá trị vào biến có TÊN** (`let s = "hi"; insert(m,1,s)`), KHÔNG dùng literal/temporary inline (`insert(m,1,"hi")`). Lý do: literal-temp **không có drop obligation** trong scope (MIR KHÔNG emit `Drop` cho nó) → poison cờ-consume (`arg_consumes`/zero-on-move) **trơ ra** vì không có Drop caller-side để double-free. D nộp tooth #1 SIGABRT 134 dùng literal → O cắm poison `arg_consumes[2]=false` → test VẪN XANH (vacuous); O chứng minh bằng MIR: literal drops `Drop(_2) Drop(_5)` (thiếu value), named-local drops `Drop(_2) Drop(_3) Drop(_5)` (có `Drop(_3)`) → named-local poison→exit 134. **Compiler chỉ thòng lọng vòng đời biến có tên.**
+
+Liên quan [[mentor-o-persona]] (verify-don't-trust), [[feedback-verify-semantics-before-asserting]] (author đoán ngữ nghĩa rồi mã hoá vào test), [[feedback-failure-mode-precision]] (đo đúng signal 134/139/leak).
