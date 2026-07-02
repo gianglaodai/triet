@@ -54,6 +54,42 @@ ngầm) bị BÁC — nghịch ADR-0005 (reject A1/A3/A5) + nghịch refuse-over
 - **Timing (G chốt):** TUYỆT ĐỐI KHÔNG code lúc này. Chờ tới khi xây `std` hoặc Package Manager
   (nhu cầu facade mới rõ). Trade-off đã biết: mất zero-indirection navigation → cần tooling go-to-def bù.
 
+### 🔴 BUG — Outcome (`T~E`/`T?~E`) làm tham số hàm mis-tag `disc` (soundness, ghi 2026-07-02)
+Phát hiện khi viết `examples/outcome_ternary_family.tri`: truyền một giá trị Outcome
+(`T~E` hoặc `T?~E`) **làm tham số hàm** rồi đọc `.disc`/`.payload` bên trong callee cho
+kết quả SAI LẶNG LẼ (không panic, không SIGABRT — tính ra số sai). Grep toàn bộ
+`crates/triet-driver/tests/fixtures/*.tri`: **0 fixture** truyền Outcome qua tham số —
+mọi fixture hiện có chỉ tiêu thụ Outcome ngay tại chỗ gọi (`f() ~-> ...`), nên bề mặt
+ABI tham số-Outcome chưa từng được test. Không có trong debt registry cũ (chỉ có
+"Packed Outcome ABI — đi kèm Native" ở PHONG ẤN Nhóm E, nói về *return*, không nói
+*parameter*).
+
+Repro tối thiểu (check PASS, run in SAI — kỳ vọng `7`, thực tế `999`):
+```triet
+function fail_int() -> Integer~Integer = ~- 7
+
+function propagate(o: Integer~Integer) -> Integer~Integer =
+    ~+ (o ~-> |e| return ~- e)
+
+function main() -> Integer =
+    match propagate(fail_int()) {
+        ~+ x => 999
+        ~- e => e
+    }
+```
+`triet-driver run` → **999** (nhánh THÀNH CÔNG, sai — input là lỗi `~- 7`).
+Biến thể `Integer?~Integer` param (`~0>`) cho ra số rác hoàn toàn
+(`-36748620661841405`) thay vì lỗi rõ ràng — tệ hơn crash vì im lặng.
+
+- [ ] Xác định layer lỗi: `triet-lower` (param binding cho MirType 2-slot Outcome) hay
+      `triet-jit` (ABI truyền 2 register disc+payload qua call site) hay cả hai.
+- [ ] Viết fixture âm tính tối thiểu (dựa repro trên) trước khi sửa — teeth phải đỏ
+      trước, xanh sau (luật `feedback_poison_must_be_red`).
+- [ ] Sau khi có root cause: quyết định fix ngay hay cần ADR riêng (nếu đụng tới
+      2-reg ABI đã lock ở ADR-0054) — không tự vá khi chưa rõ nguyên nhân.
+- [ ] Việc ví dụ demo tránh param-Outcome hoàn toàn (0-arg producer + operator + match
+      tại chỗ) — xem `examples/outcome_ternary_family.tri`, không phải workaround che bug.
+
 ### 🔴 Chiến dịch CFG Tail-Expression — ưu tiên 1 (soundness)
 Wire nốt ADR-0055: block tail-expr gánh giá trị cuối hàm.
 return-scope đã khóa (ADR-0020 §3.8): `return` = early-exit + cọc-tiêu-mode, KHÔNG phải throw.

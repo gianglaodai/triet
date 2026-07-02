@@ -1,0 +1,47 @@
+// examples/outcome_ternary_family.tri
+//
+// Minh họa họ operator postfix "ternary map" của Outcome (ADR-0020 §3):
+//   ~+>  |v| body   — map arm Positive  (thành công)
+//   ~0>  body       — map arm Zero      (null, chỉ trên T?~E)
+//   ~->  |e| body   — map arm Negative  (lỗi): transform, propagate, hoặc recover
+//
+// Mỗi operator có 2 mode, phân biệt bởi body có chứa `return` hay không:
+//   MAP mode          (không `return`) — auto-wrap kết quả theo arm, không đổi luồng.
+//   EARLY-RETURN mode (có `return`)    — thoát ngay khỏi function bao ngoài
+//                                         (đòi function đó trả T~E/T?~E, per E1028).
+
+function succeed()    -> Integer~Integer  = ~+ 42
+function fail_trit()  -> Integer~Trit     = ~- (-1_trit)
+function fail_int()   -> Integer~Integer  = ~- 7
+function maybe_null() -> Integer?~Integer = ~0
+
+// 1. ~+> MAP — transform payload khi thành công; lỗi thì passthrough nguyên vẹn.
+function double_success() -> Integer~Integer =
+    succeed() ~+> |v| v * 2
+
+// 2. ~0> MAP — thay giá trị mặc định khi null (type-preserving: body phải cùng T).
+function default_on_null() -> Integer~Integer =
+    maybe_null() ~0> 100
+
+// 3. ~-> MAP — biến đổi ERROR (T ≠ E ở đây nên auto-wrap không mơ hồ;
+// nếu T ≡ E, compiler bắt E1039 và đòi constructor `~-` tường minh).
+function trit_error_to_code() -> Integer~Integer =
+    fail_trit() ~-> |e| 99
+
+// 4. ~-> EARLY-RETURN — propagate lỗi nguyên vẹn lên caller (tương đương `?` Rust).
+function propagate() -> Integer~Integer =
+    ~+ (fail_int() ~-> |e| return ~- e)
+
+// 5. ~-> EARLY-RETURN với override `~+` — recover lỗi thành giá trị mặc định.
+function recover() -> Integer~Integer =
+    ~+ (fail_int() ~-> |_| return ~+ 0)
+
+// main() cộng 5 kết quả demo: 84 + 100 + 99 + 7 + 0 = 290.
+function main() -> Integer {
+    let a = match double_success()      { ~+ x => x  ~- e => -1 }  // 84
+    let b = match default_on_null()     { ~+ x => x  ~- e => -1 }  // 100
+    let c = match trit_error_to_code()  { ~+ x => x  ~- e => e }   // 99
+    let d = match propagate()           { ~+ x => x  ~- e => e }   // 7
+    let e = match recover()             { ~+ x => x  ~- v => -1 }  // 0
+    return a + b + c + d + e
+}
