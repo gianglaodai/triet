@@ -139,6 +139,8 @@ fn main() -> ExitCode {
         ShimSymbol::fn_5_0("__triet_string_concat", mir_lower::__triet_string_concat),
         ShimSymbol::fn_4_1("__triet_string_eq", mir_lower::__triet_string_eq),
         ShimSymbol::fn_1_1("__triet_string_len", mir_lower::__triet_string_len),
+        // ADR-0080 Mũi B: content hash for String HashMap keys.
+        ShimSymbol::fn_2_1("__triet_string_hash", mir_lower::__triet_string_hash),
         // Vector shims (ADR-0040 §5)
         ShimSymbol::fn_3_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
         ShimSymbol::fn_1_0("__triet_vector_free", mir_lower::__triet_vector_free),
@@ -146,13 +148,14 @@ fn main() -> ExitCode {
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_2_1("__triet_vector_get", mir_lower::__triet_vector_get),
         ShimSymbol::fn_2_1("__triet_vector_pop", mir_lower::__triet_vector_pop),
-        // HashMap shims (ADR-0043)
-        ShimSymbol::fn_3_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        // HashMap shims (ADR-0043; ADR-0080 key-typed P1 bumped alloc/insert/
+        // remove to fn_4_1 — +key_stride / +is_update_out / +key_out_ptr).
+        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_1_1("__triet_hashmap_len", mir_lower::__triet_hashmap_len),
-        ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
-        ShimSymbol::fn_3_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
+        ShimSymbol::fn_4_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
         // ADR-0079: get_ref shims (zero-copy borrow)
         ShimSymbol::fn_2_1("__triet_vector_get_ref", mir_lower::__triet_vector_get_ref),
         ShimSymbol::fn_2_1(

@@ -989,12 +989,14 @@ impl JitContext {
             self.emit_vector_free_value(builder, ptr, &inner)?;
             return Ok(());
         }
-        // ADR-0078: a HashMap leaf frees its heap VALUES first (slot-iteration
-        // loop), then the buffer. Scalar values (Integer, stride 8) → loop
-        // skipped, byte-compat with old __triet_hashmap_free(ptr).
-        if let MirType::HashMap(_, v) = payload_ty {
+        // ADR-0078/0080: a HashMap leaf frees its heap KEYS then VALUES
+        // (slot-iteration loops), then the buffer. Scalar key/value
+        // (Integer, stride 8) → loop skipped, byte-compat with old
+        // __triet_hashmap_free(ptr).
+        if let MirType::HashMap(k, v) = payload_ty {
+            let key_ty = (**k).clone();
             let value_ty = (**v).clone();
-            self.emit_hashmap_free_value(builder, ptr, &value_ty)?;
+            self.emit_hashmap_free_value(builder, ptr, &key_ty, &value_ty)?;
             return Ok(());
         }
         let free_name = if matches!(payload_ty, MirType::String) {
@@ -1108,17 +1110,32 @@ impl JitContext {
         Ok(())
     }
 
-    /// ADR-0078 Typed `HashMap` P1 (MŨI C) — free a `HashMap` given its buffer
-    /// pointer VALUE. Frees heap VALUES via a slot-iteration loop, then frees
-    /// the buffer. KEY=Integer is NOT freed (Copy). A scalar value (stride 8,
-    /// Integer) → loop skipped (byte-compat). Reused by `emit_heap_free_at`
-    /// and the standalone `HashMap` `Drop` arm.
+    /// ADR-0078/0080 Typed `HashMap` P1 (MŨI C / ADR-0080 Mũi D) — free a
+    /// `HashMap` given its buffer pointer VALUE. Frees heap KEYS (ADR-0080
+    /// D.1, String key only) then heap VALUES (ADR-0078) via slot-iteration
+    /// loops, then frees the buffer. `key_ty` GATES whether the key-free
+    /// loop is emitted AT ALL (compile-time skip, mirroring how `value_ty`
+    /// already gates the value loop) — an `Integer`-keyed map emits ZERO
+    /// extra Cranelift blocks and, critically, never DECLARES the
+    /// `__triet_string_free` shim import, so `HashMap<Integer,_>` stays
+    /// byte-compat with callers whose shim list never registered it (a
+    /// compile-time-UNCONDITIONAL declare — regardless of the runtime
+    /// `key_stride` check inside the loop — broke exactly these callers;
+    /// `get_or_declare_shim` runs at codegen time, not gated by a runtime
+    /// `brif`). The loop body ITSELF still re-checks `key_stride == 24` at
+    /// runtime (self-describing per ADR-0080 Mũi A) as defense-in-depth for
+    /// the String-keyed case. Reused by `emit_heap_free_at` and the
+    /// standalone `HashMap` `Drop` arm.
     fn emit_hashmap_free_value(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         ptr_val: cranelift_codegen::ir::Value,
+        key_ty: &MirType,
         value_ty: &MirType,
     ) -> Result<(), JitError> {
+        if key_ty.is_any_heap() {
+            self.emit_hashmap_key_free_loop(builder, ptr_val)?;
+        }
         self.emit_hashmap_value_free_loop(builder, ptr_val, value_ty)?;
         let func_id = self.get_or_declare_shim("__triet_hashmap_free")?;
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -1126,10 +1143,106 @@ impl JitContext {
         Ok(())
     }
 
+    /// ADR-0080 Mũi D.1 — iterate all `cap` `HashMap` slots, free the KEY of
+    /// every OCCUPIED slot. Only called when `key_ty.is_any_heap()`
+    /// (compile-time gate in `emit_hashmap_free_value`); the runtime
+    /// `key_stride == 24` re-check here is defense-in-depth, not the
+    /// primary gate (see that function's doc for why a purely-runtime gate
+    /// broke Integer-keyed callers). Sentinel/no-op R4 on a dead buffer
+    /// pointer. Mirrors `emit_hashmap_value_free_loop`'s shape.
+    fn emit_hashmap_key_free_loop(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        ptr_val: cranelift_codegen::ir::Value,
+    ) -> Result<(), JitError> {
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        let zero = builder.ins().iconst(I64, 0);
+        let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+        let is_zero = builder.ins().icmp(IntCC::Equal, ptr_val, zero);
+        let is_sent = builder.ins().icmp(IntCC::Equal, ptr_val, sentinel);
+        let is_dead = builder.ins().bor(is_zero, is_sent);
+
+        let setup_bb = builder.create_block();
+        let key_check_bb = builder.create_block();
+        let header_bb = builder.create_block();
+        builder.append_block_param(header_bb, I64);
+        let body_bb = builder.create_block();
+        let exit_bb = builder.create_block();
+
+        builder.ins().brif(is_dead, exit_bb, &[], setup_bb, &[]);
+
+        builder.switch_to_block(setup_bb);
+        builder.seal_block(setup_bb);
+        let cap = builder.ins().load(I64, mem, ptr_val, 8);
+        let hdr = builder.ins().load(I64, mem, ptr_val, -8);
+        let reserved = builder.ins().ushr_imm(hdr, 32);
+        let value_stride = builder.ins().band_imm(reserved, 0xFFFF);
+        let key_stride = builder.ins().ushr_imm(reserved, 16);
+        let c24 = builder.ins().iconst(I64, 24);
+        let is_string_key = builder.ins().icmp(IntCC::Equal, key_stride, c24);
+        builder
+            .ins()
+            .brif(is_string_key, key_check_bb, &[], exit_bb, &[]);
+
+        builder.switch_to_block(key_check_bb);
+        builder.seal_block(key_check_bb);
+        let slot_size = {
+            let one = builder.ins().iconst(I64, 1);
+            let tmp = builder.ins().iadd(key_stride, value_stride);
+            builder.ins().iadd(tmp, one)
+        };
+        let state_off = {
+            let c16 = builder.ins().iconst(I64, 16);
+            let tmp = builder.ins().iadd(key_stride, value_stride);
+            builder.ins().iadd(tmp, c16)
+        };
+        let i0 = builder.ins().iconst(I64, 0);
+        builder.ins().jump(header_bb, &[BlockArg::from(i0)]);
+
+        builder.switch_to_block(header_bb);
+        let i = builder.block_params(header_bb)[0];
+        let cond = builder.ins().icmp(IntCC::SignedLessThan, i, cap);
+        builder.ins().brif(cond, body_bb, &[], exit_bb, &[]);
+
+        builder.switch_to_block(body_bb);
+        builder.seal_block(body_bb);
+        let slot_off = builder.ins().imul(i, slot_size);
+        let off = builder.ins().iadd(state_off, slot_off);
+        let state_addr = builder.ins().iadd(ptr_val, off);
+        let state = builder.ins().load(I64, mem, state_addr, 0);
+        let state_byte = builder.ins().band_imm(state, 0xFF);
+        let occupied = builder.ins().iconst(I64, 1);
+        let is_occ = builder.ins().icmp(IntCC::Equal, state_byte, occupied);
+        let skip_bb = builder.create_block();
+        let free_bb = builder.create_block();
+        builder.ins().brif(is_occ, free_bb, &[], skip_bb, &[]);
+
+        // key cell addr = body + 16 + slot_off (key is the FIRST field).
+        builder.switch_to_block(free_bb);
+        builder.seal_block(free_bb);
+        let c16b = builder.ins().iconst(I64, 16);
+        let key_off = builder.ins().iadd(c16b, slot_off);
+        let key_cell = builder.ins().iadd(ptr_val, key_off);
+        self.emit_heap_free_at(builder, key_cell, &MirType::String)?;
+        builder.ins().jump(skip_bb, &[]);
+
+        builder.switch_to_block(skip_bb);
+        builder.seal_block(skip_bb);
+        let i_next = builder.ins().iadd_imm(i, 1);
+        builder.ins().jump(header_bb, &[BlockArg::from(i_next)]);
+
+        builder.seal_block(header_bb);
+        builder.switch_to_block(exit_bb);
+        builder.seal_block(exit_bb);
+        Ok(())
+    }
+
     /// ADR-0078 (MŨI C) — iterate all `cap` `HashMap` slots, free the VALUE
     /// of every OCCUPIED slot. No-op when the value is Copy (Integer:
     /// `is_any_heap` → false). Sentinel/no-op R4 on the value ptr (if value is
     /// heap, state==occupied → free, else skip). Scalars/handles skip entirely.
+    /// ADR-0080: slot geometry (`slot_size`/cell offsets) now reads
+    /// `key_stride` from the header at RUNTIME instead of a hardcoded `8`.
     fn emit_hashmap_value_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -1157,20 +1270,21 @@ impl JitContext {
 
         builder.switch_to_block(setup_bb);
         builder.seal_block(setup_bb);
-        // Read cap, value_stride (from header reserved), compute slot_size
+        // Read cap, key_stride + value_stride (packed in header reserved,
+        // ADR-0080 Mũi A: high 16 bits = key_stride, low 16 = value_stride).
         let cap = builder.ins().load(I64, mem, ptr_val, 8);
         let hdr = builder.ins().load(I64, mem, ptr_val, -8);
-        let value_stride = builder.ins().ushr_imm(hdr, 32);
+        let reserved = builder.ins().ushr_imm(hdr, 32);
+        let value_stride = builder.ins().band_imm(reserved, 0xFFFF);
+        let key_stride = builder.ins().ushr_imm(reserved, 16);
         let slot_size = {
-            let eight = builder.ins().iconst(I64, 8);
             let one = builder.ins().iconst(I64, 1);
-            let tmp = builder.ins().iadd(eight, value_stride);
+            let tmp = builder.ins().iadd(key_stride, value_stride);
             builder.ins().iadd(tmp, one)
         };
         let c16 = builder.ins().iconst(I64, 16);
         let state_off = {
-            let eight = builder.ins().iconst(I64, 8);
-            let tmp = builder.ins().iadd(eight, value_stride);
+            let tmp = builder.ins().iadd(key_stride, value_stride);
             builder.ins().iadd(tmp, c16)
         };
         let i0 = builder.ins().iconst(I64, 0);
@@ -1195,10 +1309,10 @@ impl JitContext {
         let free_bb = builder.create_block();
         builder.ins().brif(is_occ, free_bb, &[], skip_bb, &[]);
 
-        // value cell addr = body + 16 + slot_off + 8
+        // value cell addr = body + 16 + key_stride + slot_off
         builder.switch_to_block(free_bb);
         builder.seal_block(free_bb);
-        let cell_base = builder.ins().iconst(I64, 16 + 8);
+        let cell_base = builder.ins().iadd_imm(key_stride, 16);
         let value_off = builder.ins().iadd(cell_base, slot_off);
         let value_cell = builder.ins().iadd(ptr_val, value_off);
         self.emit_heap_free_at(builder, value_cell, &eff)?;
@@ -2443,13 +2557,14 @@ impl JitContext {
                         self.emit_vector_free_value(builder, ptr, &inner)?;
                         continue;
                     }
-                    // ADR-0078: HashMap Drop frees heap VALUES first
-                    // (slot-iteration loop), then the buffer. Scalar values
-                    // skip the loop → byte-compat.
-                    if let MirType::HashMap(_, v) = eff {
+                    // ADR-0078/0080: HashMap Drop frees heap KEYS then VALUES
+                    // (slot-iteration loops), then the buffer. Scalar
+                    // key/value skip their loop → byte-compat.
+                    if let MirType::HashMap(k, v) = eff {
+                        let key_ty = (**k).clone();
                         let value_ty = (**v).clone();
                         let ptr = builder.use_var(self.var(*local));
-                        self.emit_hashmap_free_value(builder, ptr, &value_ty)?;
+                        self.emit_hashmap_free_value(builder, ptr, &key_ty, &value_ty)?;
                         continue;
                     }
                     let free_shim_name = if ty.is_string_repr() {
@@ -2772,6 +2887,18 @@ impl JitContext {
                                     _ => false,
                                 }
                             };
+                        // ADR-0080 §AMEND-1: post-call registry-routed key frees.
+                        // `insert`'s redundant incoming key (D.2) frees only when
+                        // the shim signals an UPDATE (gated on the flag it wrote
+                        // to the scratch slot); `remove`'s resident key (D.5)
+                        // frees UNCONDITIONALLY (sentinel-no-op R4 makes the
+                        // not-found case safe). Populated below, consumed after
+                        // the call is emitted.
+                        let mut insert_key_free_gate: Option<(
+                            cranelift_codegen::ir::Value,
+                            cranelift_codegen::ir::Value,
+                        )> = None;
+                        let mut remove_key_free_ptr: Option<cranelift_codegen::ir::Value> = None;
                         let arg_vals: Vec<_> = if concat_sret {
                             // C6: concat receives dest_slot as first arg (callee-fill via *mut FatStr).
                             // Followed by bung-field source args {a_ptr, a_len, b_ptr, b_len}.
@@ -2880,18 +3007,22 @@ impl JitContext {
                             vals.push(builder.ins().iconst(I64, stride));
                             vals
                         } else if callee_name == "__triet_hashmap_alloc" {
-                            // ADR-0078: append the VALUE stride as 3rd arg (key=Integer
-                            // stays 8B). Stride from HashMap(_, V) → vector_elem_size(V).
-                            let stride = {
+                            // ADR-0080 Mũi A: append key_stride THEN value_stride
+                            // as 3rd/4th args (was value_stride-only pre-0080).
+                            // Strides from HashMap(K, V) → vector_elem_size(K/V).
+                            let (key_stride, value_stride) = {
                                 let dty = &body.local_decls[dest[0].0].ty;
                                 match dty.nullable_payload().unwrap_or(dty) {
-                                    MirType::HashMap(_, v) => Self::vector_elem_size(v)?,
-                                    _ => 8,
+                                    MirType::HashMap(k, v) => {
+                                        (Self::vector_elem_size(k)?, Self::vector_elem_size(v)?)
+                                    }
+                                    _ => (8, 8),
                                 }
                             };
                             let mut vals: Vec<_> =
                                 args.iter().map(|a| builder.use_var(self.var(*a))).collect();
-                            vals.push(builder.ins().iconst(I64, stride));
+                            vals.push(builder.ins().iconst(I64, key_stride));
+                            vals.push(builder.ins().iconst(I64, value_stride));
                             vals
                         } else if callee_name == "__triet_vector_push" {
                             // ADR-0077 fat-element ABI: a fat element (stride > 8,
@@ -2923,19 +3054,39 @@ impl JitContext {
                             };
                             vec![vec_val, elem_val]
                         } else if callee_name == "__triet_hashmap_insert" {
-                            // ADR-0078 fat-value ABI: same pattern as vector_push.
-                            // stride <= 8 → value by i64; stride > 8 → by-pointer.
-                            let stride = {
+                            // ADR-0078 fat-value ABI: value_stride <= 8 → by i64;
+                            // > 8 → by-pointer. ADR-0080 Mũi B: key_stride follows
+                            // the SAME convention for the key arg. ADR-0080
+                            // §AMEND-1 D.2: append `is_update_out` — a fresh
+                            // scratch i64 slot the shim writes 1/0 into. Only
+                            // allocated (and only checked post-call) when the key
+                            // is String — Integer keys never redundant-free.
+                            let (key_stride, value_stride) = {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
-                                    MirType::HashMap(_, v) => Self::vector_elem_size(v)?,
-                                    _ => 8,
+                                    MirType::HashMap(k, v) => {
+                                        (Self::vector_elem_size(k)?, Self::vector_elem_size(v)?)
+                                    }
+                                    _ => (8, 8),
                                 }
                             };
                             let map_val = builder.use_var(self.var(args[0]));
-                            let key_val = builder.use_var(self.var(args[1]));
+                            let key_arg = args[1];
+                            let key_val = if key_stride > 8 {
+                                if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "hashmap_insert: fat key without a slot (ADR-0080 \
+                                         by-pointer ABI requires a pre-allocated key slot)"
+                                            .into(),
+                                    ));
+                                }
+                            } else {
+                                builder.use_var(self.var(key_arg))
+                            };
                             let val_arg = args[2];
-                            let value_val = if stride > 8 {
+                            let value_val = if value_stride > 8 {
                                 if let Some((slot, _)) = self.struct_slots.get(&val_arg) {
                                     builder.ins().stack_addr(I64, *slot, 0)
                                 } else {
@@ -2948,12 +3099,49 @@ impl JitContext {
                             } else {
                                 builder.use_var(self.var(val_arg))
                             };
-                            vec![map_val, key_val, value_val]
+                            let is_update_out = if key_stride > 8 {
+                                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    8,
+                                    3u8, // log2(8)
+                                ));
+                                let addr = builder.ins().stack_addr(I64, slot, 0);
+                                insert_key_free_gate = Some((key_val, addr));
+                                addr
+                            } else {
+                                builder.ins().iconst(I64, 0)
+                            };
+                            vec![map_val, key_val, value_val, is_update_out]
                         } else if callee_name == "__triet_hashmap_remove" {
                             // ADR-0078: append out_ptr (same pattern as vector_pop).
-                            // Fat value → dest slot addr; scalar → 0.
+                            // Fat value → dest slot addr; scalar → 0. ADR-0080
+                            // Mũi B: key_stride routes the key arg the same way.
+                            // ADR-0080 §AMEND-1 D.5: append `key_out_ptr` — a
+                            // fresh scratch 24B slot the shim writes the resident
+                            // key's fat bytes into (or NULL_SENTINEL if not
+                            // found); freed unconditionally post-call.
+                            let key_stride = {
+                                let mty = &body.local_decls[args[0].0].ty;
+                                match mty.nullable_payload().unwrap_or(mty) {
+                                    MirType::HashMap(k, _) => Self::vector_elem_size(k)?,
+                                    _ => 8,
+                                }
+                            };
                             let map_val = builder.use_var(self.var(args[0]));
-                            let key_val = builder.use_var(self.var(args[1]));
+                            let key_arg = args[1];
+                            let key_val = if key_stride > 8 {
+                                if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "hashmap_remove: fat key without a slot (ADR-0080 \
+                                         by-pointer ABI requires a pre-allocated key slot)"
+                                            .into(),
+                                    ));
+                                }
+                            } else {
+                                builder.use_var(self.var(key_arg))
+                            };
                             let out_ptr = if hashmap_remove_fat {
                                 let (slot, _) =
                                     self.struct_slots.get(&dest[0]).ok_or_else(|| {
@@ -2965,7 +3153,52 @@ impl JitContext {
                             } else {
                                 builder.ins().iconst(I64, 0)
                             };
-                            vec![map_val, key_val, out_ptr]
+                            let key_out_ptr = if key_stride > 8 {
+                                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    24,
+                                    3u8, // log2(8)
+                                ));
+                                let addr = builder.ins().stack_addr(I64, slot, 0);
+                                remove_key_free_ptr = Some(addr);
+                                addr
+                            } else {
+                                builder.ins().iconst(I64, 0)
+                            };
+                            vec![map_val, key_val, out_ptr, key_out_ptr]
+                        } else if matches!(
+                            callee_name.as_str(),
+                            "__triet_hashmap_get"
+                                | "__triet_hashmap_get_ref"
+                                | "__triet_hashmap_contains"
+                        ) {
+                            // ADR-0080 Mũi B: key by-pointer when key_stride>8
+                            // (String, fat {ptr,len,cap}), by-value i64 when
+                            // Integer (byte-compat) — same convention as
+                            // hashmap_insert's key arg. Pure lookup — no
+                            // ownership transfer, no post-call free.
+                            let key_stride = {
+                                let mty = &body.local_decls[args[0].0].ty;
+                                match mty.nullable_payload().unwrap_or(mty) {
+                                    MirType::HashMap(k, _) => Self::vector_elem_size(k)?,
+                                    _ => 8,
+                                }
+                            };
+                            let map_val = builder.use_var(self.var(args[0]));
+                            let key_arg = args[1];
+                            let key_val = if key_stride > 8 {
+                                if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(format!(
+                                        "{callee_name}: fat key without a slot (ADR-0080 \
+                                         by-pointer ABI requires a pre-allocated key slot)"
+                                    )));
+                                }
+                            } else {
+                                builder.use_var(self.var(key_arg))
+                            };
+                            vec![map_val, key_val]
                         } else if callee_name == "__triet_vector_pop" {
                             // ADR-0077: append the OUT-pointer. Fat element →
                             // the dest's slot addr (shim memcpy's the element in);
@@ -3075,6 +3308,34 @@ impl JitContext {
 
                         // ADR-0049 Lát 5: clear/append writeback via *mut FatStr;
                         // no manual sync needed — shim handles it.
+
+                        // ADR-0080 §AMEND-1 D.2: insert's redundant incoming key
+                        // — free ONLY if the shim signalled an update (dup-
+                        // content key kept the resident, made the caller's
+                        // incoming key dead). Registry-routed (get_or_declare_shim
+                        // inside emit_heap_free_at) → counting-testable.
+                        if let Some((key_addr, is_update_addr)) = insert_key_free_gate {
+                            let mem = cranelift_codegen::ir::MemFlags::new();
+                            let flag = builder.ins().load(I64, mem, is_update_addr, 0);
+                            let one = builder.ins().iconst(I64, 1);
+                            let is_update = builder.ins().icmp(IntCC::Equal, flag, one);
+                            let free_bb = builder.create_block();
+                            let merge_bb = builder.create_block();
+                            builder.ins().brif(is_update, free_bb, &[], merge_bb, &[]);
+                            builder.switch_to_block(free_bb);
+                            builder.seal_block(free_bb);
+                            self.emit_heap_free_at(builder, key_addr, &MirType::String)?;
+                            builder.ins().jump(merge_bb, &[]);
+                            builder.switch_to_block(merge_bb);
+                            builder.seal_block(merge_bb);
+                        }
+                        // ADR-0080 §AMEND-1 D.5: remove's resident key — free
+                        // UNCONDITIONALLY; the shim wrote NULL_SENTINEL to
+                        // `key_out_ptr` on not-found (sentinel-no-op R4), so an
+                        // unconditional free is safe either way.
+                        if let Some(key_out_ptr) = remove_key_free_ptr {
+                            self.emit_heap_free_at(builder, key_out_ptr, &MirType::String)?;
+                        }
 
                         let ret_block = self.blocks[return_bb];
                         builder.ins().jump(ret_block, &[]);
@@ -3565,6 +3826,28 @@ pub extern "C" fn __triet_string_eq(a_ptr: i64, a_len: i64, b_ptr: i64, b_len: i
     1
 }
 
+/// `__triet_string_hash(ptr, len) -> i64` — FNV-1a content hash (ADR-0080 Mũi B).
+///
+/// Mirrors `cap_id_hash` (:3372) — deterministic across runs (NOT
+/// `DefaultHasher`, which is process-seeded). Two Strings with equal content
+/// but different allocations hash identically (ADR-0080 tooth #5). Trap-on-0
+/// ptr, matching `__triet_string_eq`'s C9 rule.
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_string_hash(ptr: i64, len: i64) -> i64 {
+    if ptr == 0 {
+        std::process::abort();
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    // SAFETY: ADR-0049 Lát 6.3 — no len/cap on heap, data starts at ptr.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, i64_to_usize(len)) };
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    i64::from_ne_bytes(h.to_ne_bytes())
+}
+
 /// `__triet_string_len(ptr)` — return the length of a String.
 ///
 /// ADR-0049 Lát 6.3: for borrowed String, `ptr` is a pointer to the owner's
@@ -4031,57 +4314,74 @@ pub extern "C" fn __triet_vector_contains(vec: i64, elem: i64) -> i64 {
     -1
 }
 
-// ── HashMap shims (ADR-0043) ─────────────────────────────────
-
-// ── HashMap heap shims (ADR-0043 §5; ADR-0078 typed value P1) ──
+// ── HashMap shims (ADR-0043; ADR-0078 typed value P1; ADR-0080 key-typed P1) ──
 //
-// Slot layout (ADR-0078 P1): key is Integer (8B), value is inline by stride.
-// Old fixed [key8|value8|state1|pad7] → [key8|value@value_stride|state].
-// Probing key and state unchanged; value cell width depends on the value type.
-// `value_stride` from `vector_elem_size` (8 scalar / 24 String), stored in the
-// header `reserved` u32 (same pattern as Vector stride-in-header per LUẬT 5).
+// Slot layout (ADR-0080 Mũi A): [key@key_stride | value@value_stride | state1].
+// `key_stride ∈ {8, 24}` — 8 = Integer (identity, byte-compat with pre-0080
+// maps), 24 = String (fat `{ptr,len,cap}`, content hash/eq). Both strides are
+// packed into the header `reserved` u32 (high 16 bits = key_stride, low 16
+// bits = value_stride) — the buffer is SELF-DESCRIBING: `free`/`rehash` read
+// key kind from the header alone, no external type info needed (ADR-0080 Mũi
+// A invariant). Neither stride ever exceeds 24, so u16 packing never truncates.
 
 const HASHMAP_HEADER_SIZE: usize = HEADER_SIZE; // 8B ObjectHeader
 
-/// Read the per-slot `value_stride` from a `HashMap` buffer header (ADR-0078).
+/// Read the per-slot VALUE stride (low 16 bits of the packed `reserved`
+/// header field — ADR-0080 Mũi A).
 #[allow(unsafe_code)]
 #[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
 const fn hashmap_value_stride(body: i64) -> usize {
-    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize }
+    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize & 0xFFFF }
+}
+
+/// Read the per-slot KEY stride (high 16 bits of the packed `reserved`
+/// header field — ADR-0080 Mũi A). `8` = Integer (identity), `24` = String
+/// (content hash/eq). Doubles as the key-kind discriminator — no separate
+/// tag byte ("`key_stride` kiêm luôn `discriminator` dispatch").
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+const fn hashmap_key_stride(body: i64) -> usize {
+    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize >> 16 }
 }
 
 #[allow(clippy::missing_const_for_fn)]
 fn hashmap_slot_size(body: i64) -> usize {
-    8 + hashmap_value_stride(body) + 1 // key + value + state
+    hashmap_key_stride(body) + hashmap_value_stride(body) + 1 // key + value + state
 }
 
 #[allow(clippy::missing_const_for_fn)]
-fn hashmap_layout(cap: usize, value_stride: usize) -> std::alloc::Layout {
-    let slot = 8 + value_stride + 1;
+fn hashmap_layout(cap: usize, key_stride: usize, value_stride: usize) -> std::alloc::Layout {
+    let slot = key_stride + value_stride + 1;
     let total = HASHMAP_HEADER_SIZE + 8 + 8 + cap * slot;
     std::alloc::Layout::from_size_align(total, 8).unwrap()
 }
 
 /// State byte pointer for a slot. Key is at `body + 16 + idx*slot_size`;
-/// value is at `key + 8`; state is at `value + value_stride`.
+/// value is at `key + key_stride`; state is at `value + value_stride`.
 #[allow(unsafe_code)]
 unsafe fn hashmap_state_ptr(body: *mut u8, idx: usize) -> *mut u8 {
     let slot = hashmap_slot_size(body as i64);
-    unsafe { body.add(16 + idx * slot + 8 + hashmap_value_stride(body as i64)) }
+    let ks = hashmap_key_stride(body as i64);
+    let vs = hashmap_value_stride(body as i64);
+    unsafe { body.add(16 + idx * slot + ks + vs) }
 }
 
-/// Key pointer for a slot (= first field).
+/// Key cell pointer for a slot (= first field, width `key_stride`).
+/// ADR-0080: `*mut u8` (was `*mut i64`) — a String key's cell is 24 bytes
+/// (`FatStr`-shaped `{ptr,len,cap}`), not a single i64. Integer callers cast
+/// to `*const i64`/`*mut i64` at the read/write site.
 #[allow(unsafe_code, clippy::ptr_as_ptr, clippy::cast_ptr_alignment)]
-unsafe fn hashmap_key_ptr(body: *mut u8, idx: usize) -> *mut i64 {
+unsafe fn hashmap_key_ptr(body: *mut u8, idx: usize) -> *mut u8 {
     let slot = hashmap_slot_size(body as i64);
-    unsafe { body.add(16 + idx * slot) as *mut i64 }
+    unsafe { body.add(16 + idx * slot) }
 }
 
-/// Value pointer for a slot (= after the key).
+/// Value pointer for a slot (= after the key, width `key_stride`).
 #[allow(unsafe_code)]
 unsafe fn hashmap_value_ptr(body: *mut u8, idx: usize) -> *mut u8 {
     let slot = hashmap_slot_size(body as i64);
-    unsafe { body.add(16 + idx * slot + 8) }
+    let ks = hashmap_key_stride(body as i64);
+    unsafe { body.add(16 + idx * slot + ks) }
 }
 
 /// Copy a VALUE into a slot. `stride <= 8` → write i64; else memcpy `stride`
@@ -4097,7 +4397,68 @@ const unsafe fn hashmap_write_value(dst: *mut u8, stride: usize, src: i64) {
     }
 }
 
-/// `__triet_hashmap_alloc(len, cap, value_stride)` — allocate a `HashMap`.
+/// Write a KEY into a slot (ADR-0080 Mũi A). `key_stride <= 8` → raw i64
+/// (Integer, byte-compat). `key_stride > 8` (24, String) → memcpy the fat
+/// `{ptr,len,cap}` FROM `k` (a POINTER to the caller's fat key, same by-
+/// pointer convention as `hashmap_write_value`'s fat path) — this transfers
+/// the caller's String ownership bytes into the slot (the map now owns it).
+#[allow(unsafe_code)]
+const unsafe fn hashmap_write_key(dst: *mut u8, key_stride: usize, k: i64) {
+    unsafe {
+        if key_stride <= 8 {
+            dst.cast::<i64>().write_unaligned(k);
+        } else {
+            std::ptr::copy_nonoverlapping(k as *const u8, dst, key_stride);
+        }
+    }
+}
+
+/// Probe-start slot index for key `k` against `cap` (ADR-0080 Mũi B).
+/// `key_stride <= 8` (Integer): identity modulo on `k` itself — BYTE-COMPAT
+/// with pre-ADR-0080 maps. `key_stride > 8` (String): `k` is a POINTER to
+/// the caller's fat `{ptr,len,cap}` key; hash is the FNV-1a content hash
+/// (`__triet_string_hash`) of `{ptr,len}` — two Strings with equal content
+/// but different allocations hash identically (ADR-0080 tooth #5).
+/// `slot_size = key_stride + value_stride + 1` is ODD whenever `value_stride`
+/// is even (always — 8 or 24), so slot N>0's key cell is NOT guaranteed
+/// 8-byte aligned (unlike the caller-stack `k` pointer, which alignment
+/// varies too — `k` is a `*const FatStr` from a JIT `stack_addr` OR a raw slot
+/// pointer during rehash). Every `FatStr` access here MUST go through
+/// `read_unaligned` — a plain `&*(ptr as *const FatStr)` reference deref
+/// panics ("misaligned pointer dereference") the moment a probe lands past
+/// slot 0.
+#[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+fn hashmap_key_hash(key_stride: usize, k: i64, cap: usize) -> usize {
+    let raw = if key_stride > 8 {
+        let fat = unsafe { (k as *const FatStr).read_unaligned() };
+        __triet_string_hash(fat.ptr, fat.len)
+    } else {
+        k
+    };
+    let cap_i = usize_to_i64(cap);
+    i64_to_usize((raw % cap_i + cap_i) % cap_i)
+}
+
+/// Equality between a stored slot key (`slot_key_ptr`, width `key_stride`)
+/// and a probe key `k` (same shape convention as `hashmap_key_hash`: raw
+/// i64 for Integer, pointer-to-fat for String). String path reuses
+/// `__triet_string_eq` (content compare, ADR-0080 tooth #5); Integer path is
+/// the original identity `==` (byte-compat). `read_unaligned` throughout —
+/// see `hashmap_key_hash`'s doc for why a plain reference deref is unsound.
+#[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+unsafe fn hashmap_key_eq(slot_key_ptr: *const u8, key_stride: usize, k: i64) -> bool {
+    if key_stride > 8 {
+        let slot_fat = unsafe { (slot_key_ptr as *const FatStr).read_unaligned() };
+        let k_fat = unsafe { (k as *const FatStr).read_unaligned() };
+        __triet_string_eq(slot_fat.ptr, slot_fat.len, k_fat.ptr, k_fat.len) == 1
+    } else {
+        let stored = unsafe { (slot_key_ptr as *const i64).read_unaligned() };
+        stored == k
+    }
+}
+
+/// `__triet_hashmap_alloc(len, cap, key_stride, value_stride)` — allocate a
+/// `HashMap` (ADR-0080 Mũi A: +`key_stride` arg vs. the pre-ADR-0080 3-arg form).
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4107,28 +4468,34 @@ const unsafe fn hashmap_write_value(dst: *mut u8, stride: usize, src: i64) {
     clippy::ptr_as_ptr
 )]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64, value_stride: i64) -> i64 {
+pub extern "C" fn __triet_hashmap_alloc(
+    len: i64,
+    cap: i64,
+    key_stride: i64,
+    value_stride: i64,
+) -> i64 {
+    let key_stride = i64_to_usize(key_stride.max(8));
     let value_stride = i64_to_usize(value_stride.max(8));
     let cap_usize = (cap.max(4) as usize).max(len as usize + 1).max(4);
-    let layout = hashmap_layout(cap_usize, value_stride);
+    let layout = hashmap_layout(cap_usize, key_stride, value_stride);
     let ptr = unsafe { std::alloc::alloc(layout) };
     if ptr.is_null() {
         return 0; // OOM
     }
     unsafe {
         (ptr as *mut u32).write_unaligned(1u32); // refcount = 1
-        (ptr as *mut u32)
-            .add(1)
-            .write_unaligned(value_stride as u32); // reserved = value_stride
+        // reserved = packed (key_stride<<16 | value_stride) — ADR-0080 Mũi A.
+        let packed = ((key_stride as u32) << 16) | (value_stride as u32);
+        (ptr as *mut u32).add(1).write_unaligned(packed);
         let body = ptr.add(HASHMAP_HEADER_SIZE);
         (body as *mut i64).write_unaligned(len);
         (body as *mut i64)
             .add(1)
             .write_unaligned(usize_to_i64(cap_usize));
         // Zero state bytes
-        let slot_size = 8 + value_stride + 1;
+        let slot_size = key_stride + value_stride + 1;
         for i in 0..cap_usize {
-            let state = body.add(16 + i * slot_size + 8 + value_stride);
+            let state = body.add(16 + i * slot_size + key_stride + value_stride);
             state.write_unaligned(0u8);
         }
         body as i64
@@ -4136,8 +4503,10 @@ pub extern "C" fn __triet_hashmap_alloc(len: i64, cap: i64, value_stride: i64) -
 }
 
 /// Free a `HashMap` BUFFER. No-op if ptr == 0 or `NULL_SENTINEL`.
-/// ADR-0078: frees ONLY the buffer; the JIT emits a per-slot value-free loop
-/// before calling this (for heap values).
+///
+/// ADR-0078/0080: frees ONLY the buffer; the JIT emits per-slot key-free
+/// (ADR-0080 D.1) and value-free (ADR-0078) loops before calling this (for
+/// heap keys/values).
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4153,8 +4522,9 @@ pub extern "C" fn __triet_hashmap_free(ptr: i64) {
     }
     let body = ptr as *mut u8;
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let ks = hashmap_key_stride(ptr);
     let vs = hashmap_value_stride(ptr);
-    let layout = hashmap_layout(cap.max(2), vs);
+    let layout = hashmap_layout(cap.max(2), ks, vs);
     let header = unsafe { body.sub(HASHMAP_HEADER_SIZE) };
     unsafe { std::alloc::dealloc(header, layout) };
 }
@@ -4171,8 +4541,16 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
 }
 
 /// Functional insert: consume `map`, return new map ptr.
+///
 /// ADR-0078 ABI: v == by-value i64 when stride <= 8; v == by-pointer when
-/// stride > 8 (fat value, memcpy stride bytes). JIT routes this.
+/// stride > 8 (fat value, memcpy stride bytes). ADR-0080 Mũi B: k follows
+/// the SAME by-value/by-pointer convention keyed on `key_stride` (JIT routes
+/// both). ADR-0080 §AMEND-1 D.2: `is_update_out` — scratch i64 the shim
+/// writes 1 into IFF this hit the UPDATE branch (dup-content key). The shim
+/// does NOT free the caller's now-redundant incoming key itself (a Rust-
+/// internal free call would be invisible to `shim_registry` counting-harness
+/// substitution — ADR §AMEND-1 finding); the JIT call-site frees it via a
+/// registry-routed call, gated on this flag, so it stays counting-testable.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4183,7 +4561,7 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
     clippy::similar_names
 )]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
+pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out: i64) -> i64 {
     // D2 defense-in-depth: reject MIN value (ADR-0044 Q4).
     if v == triet_mir::NULL_SENTINEL {
         std::process::abort();
@@ -4192,7 +4570,8 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
         std::process::abort();
     }
     let body = map as *mut u8;
-    let stride = hashmap_value_stride(map);
+    let key_stride = hashmap_key_stride(map);
+    let value_stride = hashmap_value_stride(map);
     let len = unsafe { (body as *const i64).read_unaligned() } as usize;
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
 
@@ -4203,7 +4582,12 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
     };
 
     let (body_ptr, cap_used) = if new_cap > 0 {
-        let new_map = __triet_hashmap_alloc(0, new_cap as i64, usize_to_i64(stride));
+        let new_map = __triet_hashmap_alloc(
+            0,
+            new_cap as i64,
+            usize_to_i64(key_stride),
+            usize_to_i64(value_stride),
+        );
         if new_map == 0 {
             return 0;
         }
@@ -4211,22 +4595,36 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
         for i in 0..cap {
             let state = unsafe { *hashmap_state_ptr(body, i) };
             if state == 1u8 {
-                let old_k = unsafe { hashmap_key_ptr(body, i).read_unaligned() };
+                let old_key_ptr = unsafe { hashmap_key_ptr(body, i) };
                 let old_v_ptr = unsafe { hashmap_value_ptr(body, i) };
-                let nc = new_cap as i64;
-                let hash = (old_k % nc + nc) % nc;
-                let mut probe = hash as usize;
+                // ADR-0080 bất biến rehash: hash from the STORED key content
+                // (String: FNV-1a on {ptr,len} read from the slot itself —
+                // `old_key_ptr` IS a fat-shaped cell, same convention as a
+                // pointer-to-fat `k` arg; Integer: raw i64 read from the cell).
+                let k_shape = if key_stride > 8 {
+                    old_key_ptr as i64
+                } else {
+                    unsafe { (old_key_ptr as *const i64).read_unaligned() }
+                };
+                let mut probe = hashmap_key_hash(key_stride, k_shape, new_cap);
                 loop {
                     let st = unsafe { *hashmap_state_ptr(new_body, probe) };
                     if st == 0u8 {
                         unsafe {
-                            hashmap_key_ptr(new_body, probe).write_unaligned(old_k);
+                            // Move key bytes by `key_stride` (NOT an i64-only
+                            // read/write — ADR-0080 tooth #7: a fat 24B key
+                            // truncated to 8B corrupts len/cap on the far side).
+                            std::ptr::copy_nonoverlapping(
+                                old_key_ptr,
+                                hashmap_key_ptr(new_body, probe),
+                                key_stride,
+                            );
                             // Copy value cell: memcpy stride bytes from old
                             // to new (works for both scalar 8B and fat 24B).
                             std::ptr::copy_nonoverlapping(
                                 old_v_ptr,
                                 hashmap_value_ptr(new_body, probe),
-                                stride,
+                                value_stride,
                             );
                             *hashmap_state_ptr(new_body, probe) = 1u8;
                         }
@@ -4237,28 +4635,30 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
             }
         }
         unsafe { (new_body as *mut i64).write_unaligned(len as i64) };
-        __triet_hashmap_free(map);
+        __triet_hashmap_free(map); // buffer only — keys/values already moved.
         (new_body, new_cap)
     } else {
         (body, cap)
     };
 
     // Insert or update via linear probing
-    let hash = (k % cap_used as i64 + cap_used as i64) % cap_used as i64;
-    let mut probe = hash as usize;
+    let mut probe = hashmap_key_hash(key_stride, k, cap_used);
     let mut is_update = false;
     loop {
         let state = unsafe { *hashmap_state_ptr(body_ptr, probe) };
         if state == 1u8 {
-            if unsafe { hashmap_key_ptr(body_ptr, probe).read_unaligned() } == k {
-                unsafe { hashmap_write_value(hashmap_value_ptr(body_ptr, probe), stride, v) };
+            let slot_key_ptr = unsafe { hashmap_key_ptr(body_ptr, probe) };
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
+                unsafe {
+                    hashmap_write_value(hashmap_value_ptr(body_ptr, probe), value_stride, v);
+                }
                 is_update = true;
                 break;
             }
         } else if state == 0u8 {
             unsafe {
-                hashmap_key_ptr(body_ptr, probe).write_unaligned(k);
-                hashmap_write_value(hashmap_value_ptr(body_ptr, probe), stride, v);
+                hashmap_write_key(hashmap_key_ptr(body_ptr, probe), key_stride, k);
+                hashmap_write_value(hashmap_value_ptr(body_ptr, probe), value_stride, v);
                 *hashmap_state_ptr(body_ptr, probe) = 1u8;
             }
             break;
@@ -4269,10 +4669,17 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64) -> i64 {
         let new_len = (len + 1) as i64;
         unsafe { (body_ptr as *mut i64).write_unaligned(new_len) };
     }
+    if is_update_out != 0 {
+        unsafe {
+            (is_update_out as *mut i64).write_unaligned(i64::from(is_update));
+        }
+    }
     body_ptr as i64
 }
 
 /// Look up key, return value or `NULL_SENTINEL`. Trap-on-0 for map handle.
+/// ADR-0080 Mũi B: `k` by-value (Integer) or by-pointer-to-fat (String), per
+/// `key_stride` — JIT routes.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4286,17 +4693,17 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
         std::process::abort();
     }
     let body = map as *mut u8;
+    let key_stride = hashmap_key_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let hash = (k % cap as i64 + cap as i64) % cap as i64;
-    let mut probe = hash as usize;
+    let mut probe = hashmap_key_hash(key_stride, k, cap);
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
             return triet_mir::NULL_SENTINEL;
         }
         if state == 1u8 {
-            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
-            if stored_k == k {
+            let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
                 let vptr = unsafe { hashmap_value_ptr(body, probe) };
                 return unsafe { (vptr as *const i64).read_unaligned() };
             }
@@ -4311,7 +4718,8 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
 /// of the value). Key not found → `NULL_SENTINEL`. The returned pointer is
 /// valid as long as the map is not mutated (enforced by borrowck U2/U3).
 /// ZERO-COPY: no allocation, no memcpy — the caller reads directly from the
-/// buffer slot through the returned reference.
+/// buffer slot through the returned reference. ADR-0080 Mũi B: `k` dispatch
+/// same as `get`.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4326,17 +4734,17 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
         std::process::abort();
     }
     let body = map as *mut u8;
+    let key_stride = hashmap_key_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let hash = (k % cap as i64 + cap as i64) % cap as i64;
-    let mut probe = hash as usize;
+    let mut probe = hashmap_key_hash(key_stride, k, cap);
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
             return triet_mir::NULL_SENTINEL;
         }
         if state == 1u8 {
-            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
-            if stored_k == k {
+            let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
                 // Zero-copy: return the address of the value cell.
                 return unsafe { hashmap_value_ptr(body, probe) as i64 };
             }
@@ -4351,6 +4759,19 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
 /// for scalar/handle: key+value memset to avoid stale read on future probe),
 /// and the value is returned to the caller (by-value i64 for stride<=8;
 /// memcpy to `out_ptr` for stride>8). Empty/not-found → `NULL_SENTINEL`.
+///
+/// ADR-0080 §AMEND-1 D.5: `key_out_ptr` — scratch 24B the shim writes the
+/// RESIDENT key's fat `{ptr,len,cap}` into when `key_stride > 8` (String),
+/// then tombstone-zeroes the slot's key cell (prevents a stale read on a
+/// future probe reusing this slot after the surfaced bytes are freed). Not-
+/// found → `NULL_SENTINEL` written to `key_out_ptr` (sentinel-no-op R4, same
+/// as the value's `out_ptr` convention). The shim does NOT free the resident
+/// key itself (a Rust-internal free call would be invisible to `shim_registry`
+/// counting-harness substitution); the JIT call-site frees `key_out_ptr`'s
+/// content unconditionally post-call via a registry-routed call — the
+/// sentinel-no-op on not-found makes that unconditional call safe.
+/// CẤM free `k` (the lookup key) here — it belongs to the CALLER (borrow,
+/// ADR-0080 Mũi D point 4); only the RESIDENT surface (`key_out_ptr`) frees.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4360,38 +4781,54 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
     clippy::ptr_as_ptr
 )]
 #[unsafe(no_mangle)]
-pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64) -> i64 {
+pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64, key_out_ptr: i64) -> i64 {
     if map == 0 {
         std::process::abort();
     }
     let body = map as *mut u8;
-    let stride = hashmap_value_stride(map);
+    let key_stride = hashmap_key_stride(map);
+    let value_stride = hashmap_value_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let hash = (k % cap as i64 + cap as i64) % cap as i64;
-    let mut probe = hash as usize;
+    let mut probe = hashmap_key_hash(key_stride, k, cap);
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
             // Not found — write sentinel to out_ptr for fat values
-            if stride > 8 {
+            if value_stride > 8 {
                 unsafe { (out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
+            }
+            if key_stride > 8 {
+                unsafe { (key_out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
             }
             return triet_mir::NULL_SENTINEL;
         }
         if state == 1u8 {
-            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
-            if stored_k == k {
+            let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
                 let vptr = unsafe { hashmap_value_ptr(body, probe) };
+                // D.5: surface the resident key to the caller's key_out_ptr,
+                // then tombstone-zero the cell (JIT frees key_out_ptr's
+                // content post-call, registry-routed).
+                if key_stride > 8 {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            slot_key_ptr,
+                            key_out_ptr as *mut u8,
+                            key_stride,
+                        );
+                        std::ptr::write_bytes(slot_key_ptr, 0, key_stride);
+                    }
+                }
                 // Tombstone: state → 2 (deleted)
                 unsafe { *hashmap_state_ptr(body, probe) = 2u8 };
                 // Decrement len
                 let len = unsafe { (body as *const i64).read_unaligned() };
                 unsafe { (body as *mut i64).write_unaligned(len - 1) };
-                if stride <= 8 {
+                if value_stride <= 8 {
                     return unsafe { (vptr as *const i64).read_unaligned() };
                 }
                 // Fat: memcpy to out_ptr
-                unsafe { std::ptr::copy_nonoverlapping(vptr, out_ptr as *mut u8, stride) };
+                unsafe { std::ptr::copy_nonoverlapping(vptr, out_ptr as *mut u8, value_stride) };
                 return 0;
             }
         }
@@ -4401,7 +4838,7 @@ pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64) -> i64 
 
 /// `__triet_hashmap_contains(map, key)` — key lookup.
 /// Returns 1 (true) if `key` exists in the map, -1 (false) otherwise.
-/// Never returns 0.
+/// Never returns 0. ADR-0080 Mũi B: `k` dispatch same as `get`.
 #[allow(unsafe_code)]
 #[allow(
     clippy::cast_sign_loss,
@@ -4415,17 +4852,17 @@ pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
         std::process::abort(); // trap-on-0
     }
     let body = map as *mut u8;
+    let key_stride = hashmap_key_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let hash = (k % cap as i64 + cap as i64) % cap as i64;
-    let mut probe = hash as usize;
+    let mut probe = hashmap_key_hash(key_stride, k, cap);
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
             return -1; // EMPTY — key not found
         }
         if state == 1u8 {
-            let stored_k = unsafe { hashmap_key_ptr(body, probe).read_unaligned() };
-            if stored_k == k {
+            let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
                 return 1; // FOUND
             }
         }
@@ -5567,6 +6004,41 @@ mod tests {
         HP4_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// ADR-0080 KM-P1a: real-allocator counting free for the String-key
+    /// `HashMap` teeth (map-drop / update-leak / remove-leak). Counts AND
+    /// really frees (mirrors `__test_counting_free`) — real pointers, so a
+    /// double-free would SIGABRT (G gold standard), not just miscount.
+    /// ONE DEDICATED counter+shim per test (not shared) — `cargo test` runs
+    /// this file's tests in parallel by default; a shared counter races
+    /// (matches the established per-test-counter convention used by
+    /// `HP2_FREE_COUNT`/`HP3A_FREE_COUNT`/etc. above, not a `Mutex` lock).
+    static KM_P1A_MAP_DROP_FREE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __km_p1a_map_drop_count_free(ptr: i64, cap: i64) {
+        KM_P1A_MAP_DROP_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::__triet_string_free(ptr, cap);
+    }
+
+    static KM_P1A_UPDATE_FREE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __km_p1a_update_count_free(ptr: i64, cap: i64) {
+        KM_P1A_UPDATE_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::__triet_string_free(ptr, cap);
+    }
+
+    static KM_P1A_REMOVE_FREE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    extern "C" fn __km_p1a_remove_count_free(ptr: i64, cap: i64) {
+        KM_P1A_REMOVE_FREE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::__triet_string_free(ptr, cap);
+    }
+
     /// 4i-2/4i-4 (callee side): M4 Return-escape — Drop before Return is skipped.
     /// Hand-built MIR (bypasses lowerer); call-dest typing is tested by
     /// `call_dest_has_correct_type_for_heap_return` in the lowerer.
@@ -6639,12 +7111,13 @@ mod tests {
         __triet_hashmap_free(triet_mir::NULL_SENTINEL);
     }
 
-    /// Basic insert + get round-trip.
+    /// Basic insert + get round-trip. `key_stride`=8 (Integer, byte-compat) —
+    /// `is_update_out`=0 (unused, Integer key never redundant-free).
     #[test]
     fn hashmap_insert_get_roundtrip() {
-        let m = __triet_hashmap_alloc(0, 4, 8);
+        let m = __triet_hashmap_alloc(0, 4, 8, 8);
         assert_eq!(__triet_hashmap_len(m), 0);
-        let m = __triet_hashmap_insert(m, 1, 100);
+        let m = __triet_hashmap_insert(m, 1, 100, 0);
         assert_eq!(__triet_hashmap_len(m), 1);
         assert_eq!(__triet_hashmap_get(m, 1), 100);
         // Key not found
@@ -6655,9 +7128,9 @@ mod tests {
     /// C9: insert same key must UPDATE value, len unchanged.
     #[test]
     fn hashmap_insert_same_key_updates_value() {
-        let m = __triet_hashmap_alloc(0, 4, 8);
-        let m = __triet_hashmap_insert(m, 1, 10);
-        let m = __triet_hashmap_insert(m, 1, 20);
+        let m = __triet_hashmap_alloc(0, 4, 8, 8);
+        let m = __triet_hashmap_insert(m, 1, 10, 0);
+        let m = __triet_hashmap_insert(m, 1, 20, 0);
         assert_eq!(__triet_hashmap_get(m, 1), 20);
         assert_eq!(__triet_hashmap_len(m), 1);
         __triet_hashmap_free(m);
@@ -6670,12 +7143,12 @@ mod tests {
     /// realloc (slot 5 already occupied by key 5).
     #[test]
     fn hashmap_rehash_on_realloc() {
-        let m = __triet_hashmap_alloc(0, 4, 8); // cap=4, load factor at 0.75 → 3 max before realloc
-        let m = __triet_hashmap_insert(m, 5, 50);
-        let m = __triet_hashmap_insert(m, 6, 60);
-        let m = __triet_hashmap_insert(m, 7, 70);
+        let m = __triet_hashmap_alloc(0, 4, 8, 8); // cap=4, load factor at 0.75 → 3 max before realloc
+        let m = __triet_hashmap_insert(m, 5, 50, 0);
+        let m = __triet_hashmap_insert(m, 6, 60, 0);
+        let m = __triet_hashmap_insert(m, 7, 70, 0);
         // 4th insert triggers realloc (3 >= 4*3/4 = 3). cap→8.
-        let m = __triet_hashmap_insert(m, 13, 130);
+        let m = __triet_hashmap_insert(m, 13, 130, 0);
         assert_eq!(__triet_hashmap_len(m), 4);
         // All keys survive rehash with displaced positions
         assert_eq!(__triet_hashmap_get(m, 5), 50);
@@ -6698,16 +7171,16 @@ mod tests {
     #[allow(clippy::cast_ptr_alignment)]
     #[allow(clippy::ptr_as_ptr)]
     fn hashmap_rehash_fat_value_preserves_full_cell() {
-        let m = __triet_hashmap_alloc(0, 4, 24);
+        let m = __triet_hashmap_alloc(0, 4, 8, 24);
         assert_ne!(m, 0);
         let e1 = [101_i64, 5, 8];
         let e2 = [202_i64, 5, 8];
         let e3 = [303_i64, 5, 8];
         let e4 = [404_i64, 5, 8];
-        let m = __triet_hashmap_insert(m, 1, e1.as_ptr() as i64);
-        let m = __triet_hashmap_insert(m, 2, e2.as_ptr() as i64);
-        let m = __triet_hashmap_insert(m, 3, e3.as_ptr() as i64);
-        let m = __triet_hashmap_insert(m, 4, e4.as_ptr() as i64);
+        let m = __triet_hashmap_insert(m, 1, e1.as_ptr() as i64, 0);
+        let m = __triet_hashmap_insert(m, 2, e2.as_ptr() as i64, 0);
+        let m = __triet_hashmap_insert(m, 3, e3.as_ptr() as i64, 0);
+        let m = __triet_hashmap_insert(m, 4, e4.as_ptr() as i64, 0);
         assert_eq!(__triet_hashmap_get(m, 1), 101, "ptr@0 OK");
         assert_eq!(__triet_hashmap_get(m, 4), 404, "ptr@0 OK");
         // Verify FULL 24B cell: len@8 must be 5.
@@ -6718,7 +7191,9 @@ mod tests {
         loop {
             let state = unsafe { *super::hashmap_state_ptr(body, probe) };
             assert_ne!(state, 0u8, "key=1 not found after rehash");
-            if state == 1u8 && unsafe { super::hashmap_key_ptr(body, probe).read_unaligned() } == 1
+            if state == 1u8
+                && unsafe { (super::hashmap_key_ptr(body, probe) as *const i64).read_unaligned() }
+                    == 1
             {
                 let vptr = unsafe { super::hashmap_value_ptr(body, probe) };
                 let len_field = unsafe { (vptr as *const i64).add(1).read_unaligned() };
@@ -6737,11 +7212,466 @@ mod tests {
     #[test]
     fn n7_hashmap_insert_min_value_rejected() {
         n7_child_guard("n7_hashmap_insert_min_value_rejected", || {
-            let m = __triet_hashmap_alloc(0, 4, 8);
-            let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL);
+            let m = __triet_hashmap_alloc(0, 4, 8, 8);
+            let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL, 0);
         });
         let status = spawn_n7_child("n7_hashmap_insert_min_value_rejected");
         assert_n7_signal("n7_hashmap_insert_min_value_rejected", status, 6);
+    }
+
+    // ── ADR-0080 KM-P1a: key-typed HashMap<String,V> — backend/shim teeth ──
+    //
+    // Each JIT test below drives the FULL registry-routed path (real
+    // allocator, `String` fields built via `ConstValue::String` so every key
+    // is a genuine independent heap allocation — poisoning the free path
+    // would SIGABRT on a real double-free, not just miscount). A fresh
+    // `Local` is used for every call's `dest` (never reusing an `args[0]`
+    // local as its own `dest`) — that self-aliasing pattern would collide
+    // with M3 Zeroing-on-Move (which zeroes `args[0]`'s var AFTER dest
+    // binding, since `__triet_hashmap_insert` consumes arg 0) and is not
+    // how a real lowerer emits `map = insert(map, ...)` (fresh SSA-ish local
+    // per assignment); avoiding it keeps these teeth honest about what the
+    // registry-routing mechanism does, not an artifact of hand-built MIR.
+
+    fn km_p1a_string_layout() -> triet_mir::StructLayout {
+        triet_mir::StructLayout::compute(
+            "String",
+            &[
+                ("ptr".to_string(), MirType::Integer, 8, 8),
+                ("len".to_string(), MirType::Integer, 8, 8),
+                ("cap".to_string(), MirType::Integer, 8, 8),
+            ],
+        )
+    }
+
+    fn km_p1a_string_const(local: Local, text: &str) -> Statement {
+        Statement::Const {
+            dest: Place::local(local),
+            value: ConstValue::String(text.to_string()),
+            span: DUMMY_SPAN,
+        }
+    }
+
+    fn km_p1a_shim_call(
+        callee_name: &str,
+        args: Vec<Local>,
+        dest: Vec<Local>,
+        return_bb: BasicBlock,
+    ) -> Terminator {
+        Terminator::CallDispatch {
+            callee: FunctionId(0),
+            callee_name: callee_name.into(),
+            target: CallTarget::Shim,
+            args,
+            return_bb,
+            dest,
+            return_shape: ReturnShape::Scalar,
+            span: DUMMY_SPAN,
+        }
+    }
+
+    /// ADR-0080 tooth #1 (Author BẮT BUỘC): map `Drop` must free EVERY
+    /// resident String key via the JIT-emitted key-free loop (D.1,
+    /// registry-routed — `emit_hashmap_key_free_loop` inside
+    /// `emit_hashmap_free_value`). Poison → RED: comment out the
+    /// `self.emit_hashmap_key_free_loop(builder, ptr_val)?;` call in
+    /// `emit_hashmap_free_value` → count stays 0 (leak) instead of 1.
+    #[test]
+    #[allow(unsafe_code)]
+    fn adr0080_km_p1a_map_drop_frees_string_key() {
+        use std::sync::atomic::Ordering;
+        KM_P1A_MAP_DROP_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("km_p1a_map_drop", MirType::Unit);
+        b.add_struct_layout(km_p1a_string_layout());
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+        let bb2 = b.new_block();
+
+        let key = b.new_local();
+        b.set_local_mir_type(key, MirType::String);
+        b.push(bb0, storage_live(key));
+        b.push(bb0, km_p1a_string_const(key, "alice"));
+        let len0 = b.new_local();
+        let cap0 = b.new_local();
+        b.push(bb0, storage_live(len0));
+        b.push(bb0, const_int(len0, 0));
+        b.push(bb0, storage_live(cap0));
+        b.push(bb0, const_int(cap0, 4));
+        let map0 = b.new_local();
+        b.set_local_mir_type(
+            map0,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb0, storage_live(map0));
+        b.set_terminator(
+            bb0,
+            km_p1a_shim_call("__triet_hashmap_alloc", vec![len0, cap0], vec![map0], bb1),
+        );
+
+        let value = b.new_local();
+        b.push(bb1, storage_live(value));
+        b.push(bb1, const_int(value, 42));
+        let map1 = b.new_local();
+        b.set_local_mir_type(
+            map1,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb1, storage_live(map1));
+        b.set_terminator(
+            bb1,
+            km_p1a_shim_call(
+                "__triet_hashmap_insert",
+                vec![map0, key, value],
+                vec![map1],
+                bb2,
+            ),
+        );
+
+        b.push(bb2, Statement::Drop(map1, DUMMY_SPAN));
+        b.set_terminator(bb2, return_(vec![]));
+
+        let body = b.build(bb0);
+        let shims = &[
+            ShimSymbol::fn_2_1(
+                "__triet_string_from_bytes",
+                super::__triet_string_from_bytes,
+            ),
+            ShimSymbol::fn_2_0("__triet_string_free", __km_p1a_map_drop_count_free),
+            ShimSymbol::fn_4_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
+            ShimSymbol::fn_4_1("__triet_hashmap_insert", super::__triet_hashmap_insert),
+            ShimSymbol::fn_1_0("__triet_hashmap_free", super::__triet_hashmap_free),
+        ];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("KM-P1a map-drop compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            KM_P1A_MAP_DROP_FREE_COUNT.load(Ordering::SeqCst),
+            1,
+            "ADR-0080 tooth #1: map Drop must free the resident String key \
+             exactly once via the JIT-emitted key-free loop"
+        );
+    }
+
+    /// ADR-0080 tooth #2 (Author BẮT BUỘC): inserting a dup-content String
+    /// key hits the UPDATE branch — the map keeps the RESIDENT key, and the
+    /// caller's now-redundant incoming key must be freed by the JIT
+    /// call-site (D.2, gated on `is_update_out`, registry-routed — a
+    /// Rust-internal free inside the shim would be invisible to this exact
+    /// counting harness, per ADR §AMEND-1). Two independent frees are
+    /// expected: the redundant key (right after the 2nd insert) + the
+    /// resident key (at map Drop, D.1). Poison → RED (either mechanism):
+    /// gut the `insert_key_free_gate` conditional block → count 2→1
+    /// (redundant leak); gut `emit_hashmap_key_free_loop` → count 2→1
+    /// (resident leak, independently of the first poison).
+    #[test]
+    #[allow(unsafe_code)]
+    fn adr0080_km_p1a_update_frees_redundant_key() {
+        use std::sync::atomic::Ordering;
+        KM_P1A_UPDATE_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("km_p1a_update", MirType::Unit);
+        b.add_struct_layout(km_p1a_string_layout());
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+        let bb2 = b.new_block();
+        let bb3 = b.new_block();
+
+        let key1 = b.new_local();
+        b.set_local_mir_type(key1, MirType::String);
+        b.push(bb0, storage_live(key1));
+        b.push(bb0, km_p1a_string_const(key1, "alice"));
+        let len0 = b.new_local();
+        let cap0 = b.new_local();
+        b.push(bb0, storage_live(len0));
+        b.push(bb0, const_int(len0, 0));
+        b.push(bb0, storage_live(cap0));
+        b.push(bb0, const_int(cap0, 4));
+        let map0 = b.new_local();
+        b.set_local_mir_type(
+            map0,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb0, storage_live(map0));
+        b.set_terminator(
+            bb0,
+            km_p1a_shim_call("__triet_hashmap_alloc", vec![len0, cap0], vec![map0], bb1),
+        );
+
+        let val1 = b.new_local();
+        b.push(bb1, storage_live(val1));
+        b.push(bb1, const_int(val1, 1));
+        let map1 = b.new_local();
+        b.set_local_mir_type(
+            map1,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb1, storage_live(map1));
+        b.set_terminator(
+            bb1,
+            km_p1a_shim_call(
+                "__triet_hashmap_insert",
+                vec![map0, key1, val1],
+                vec![map1],
+                bb2,
+            ),
+        );
+
+        // key2: SAME CONTENT as key1, a FRESH independent allocation
+        // (ConstValue::String always calls __triet_string_from_bytes fresh).
+        let key2 = b.new_local();
+        b.set_local_mir_type(key2, MirType::String);
+        b.push(bb2, storage_live(key2));
+        b.push(bb2, km_p1a_string_const(key2, "alice"));
+        let val2 = b.new_local();
+        b.push(bb2, storage_live(val2));
+        b.push(bb2, const_int(val2, 2));
+        let map2 = b.new_local();
+        b.set_local_mir_type(
+            map2,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb2, storage_live(map2));
+        b.set_terminator(
+            bb2,
+            km_p1a_shim_call(
+                "__triet_hashmap_insert",
+                vec![map1, key2, val2],
+                vec![map2],
+                bb3,
+            ),
+        );
+
+        b.push(bb3, Statement::Drop(map2, DUMMY_SPAN));
+        b.set_terminator(bb3, return_(vec![]));
+
+        let body = b.build(bb0);
+        let shims = &[
+            ShimSymbol::fn_2_1(
+                "__triet_string_from_bytes",
+                super::__triet_string_from_bytes,
+            ),
+            ShimSymbol::fn_2_0("__triet_string_free", __km_p1a_update_count_free),
+            ShimSymbol::fn_4_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
+            ShimSymbol::fn_4_1("__triet_hashmap_insert", super::__triet_hashmap_insert),
+            ShimSymbol::fn_1_0("__triet_hashmap_free", super::__triet_hashmap_free),
+        ];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("KM-P1a update compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            KM_P1A_UPDATE_FREE_COUNT.load(Ordering::SeqCst),
+            2,
+            "ADR-0080 tooth #2: dup-content insert must free the redundant \
+             incoming key (D.2) + map Drop frees the resident key (D.1) — \
+             expected 2 total frees"
+        );
+    }
+
+    /// ADR-0080 tooth #3: `remove` on a String key must free the RESIDENT
+    /// key surfaced through `key_out_ptr` (D.5, registry-routed). The
+    /// lookup key itself is a BORROW (ADR-0080 Mũi D point 4) — never freed
+    /// by remove. After remove, the map is empty so the subsequent Drop
+    /// must NOT double-free (tombstoned slot skips D.1's occupied check).
+    /// Poison → RED: gut the `remove_key_free_ptr` free call → count stays
+    /// 0 instead of 1.
+    #[test]
+    #[allow(unsafe_code)]
+    fn adr0080_km_p1a_remove_frees_resident_key() {
+        use std::sync::atomic::Ordering;
+        KM_P1A_REMOVE_FREE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut b = MirBuilder::new("km_p1a_remove", MirType::Unit);
+        b.add_struct_layout(km_p1a_string_layout());
+
+        let bb0 = b.new_block();
+        let bb1 = b.new_block();
+        let bb2 = b.new_block();
+        let bb3 = b.new_block();
+
+        let key = b.new_local();
+        b.set_local_mir_type(key, MirType::String);
+        b.push(bb0, storage_live(key));
+        b.push(bb0, km_p1a_string_const(key, "bob"));
+        let len0 = b.new_local();
+        let cap0 = b.new_local();
+        b.push(bb0, storage_live(len0));
+        b.push(bb0, const_int(len0, 0));
+        b.push(bb0, storage_live(cap0));
+        b.push(bb0, const_int(cap0, 4));
+        let map0 = b.new_local();
+        b.set_local_mir_type(
+            map0,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb0, storage_live(map0));
+        b.set_terminator(
+            bb0,
+            km_p1a_shim_call("__triet_hashmap_alloc", vec![len0, cap0], vec![map0], bb1),
+        );
+
+        let val = b.new_local();
+        b.push(bb1, storage_live(val));
+        b.push(bb1, const_int(val, 7));
+        let map1 = b.new_local();
+        b.set_local_mir_type(
+            map1,
+            MirType::HashMap(Box::new(MirType::String), Box::new(MirType::Integer)),
+        );
+        b.push(bb1, storage_live(map1));
+        b.set_terminator(
+            bb1,
+            km_p1a_shim_call(
+                "__triet_hashmap_insert",
+                vec![map0, key, val],
+                vec![map1],
+                bb2,
+            ),
+        );
+
+        // remove mutates map1 IN PLACE (tombstone) — no fresh dest for the
+        // map; only the removed VALUE binds a dest.
+        let removed_val = b.new_local();
+        b.push(bb2, storage_live(removed_val));
+        b.set_terminator(
+            bb2,
+            km_p1a_shim_call(
+                "__triet_hashmap_remove",
+                vec![map1, key],
+                vec![removed_val],
+                bb3,
+            ),
+        );
+
+        b.push(bb3, Statement::Drop(map1, DUMMY_SPAN));
+        b.set_terminator(bb3, return_(vec![]));
+
+        let body = b.build(bb0);
+        let shims = &[
+            ShimSymbol::fn_2_1(
+                "__triet_string_from_bytes",
+                super::__triet_string_from_bytes,
+            ),
+            ShimSymbol::fn_2_0("__triet_string_free", __km_p1a_remove_count_free),
+            ShimSymbol::fn_4_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
+            ShimSymbol::fn_4_1("__triet_hashmap_insert", super::__triet_hashmap_insert),
+            ShimSymbol::fn_4_1("__triet_hashmap_remove", super::__triet_hashmap_remove),
+            ShimSymbol::fn_1_0("__triet_hashmap_free", super::__triet_hashmap_free),
+        ];
+        let mut ctx = JitContext::with_shims(shims);
+        let func = ctx.compile(&body).expect("KM-P1a remove compile");
+        let _ = unsafe { func.call_i64_0() };
+
+        assert_eq!(
+            KM_P1A_REMOVE_FREE_COUNT.load(Ordering::SeqCst),
+            1,
+            "ADR-0080 tooth #3: remove must free the resident String key \
+             exactly once (D.5); subsequent map Drop must not double-free"
+        );
+    }
+
+    /// ADR-0080 tooth #5: content hash/eq — two Strings with EQUAL CONTENT
+    /// but DIFFERENT allocations must HIT on `get` (identity-hash-on-pointer
+    /// would MISS). Rust-level (bypasses JIT — pure shim logic, no
+    /// drop-glue codegen involved). Poison: swap `hashmap_key_hash`'s
+    /// String branch for the Integer identity path → hashes the POINTER
+    /// instead of content → equal-content different-allocation probe MISSES.
+    ///
+    /// Two independent checks, both required RED under the poison:
+    /// (1) a large `cap` (prime-ish, `1_000_003`) so that under a broken
+    ///     pointer-hash, the probe almost certainly lands on an EMPTY slot
+    ///     before reaching the occupied one (linear probing stops at the
+    ///     first empty slot) — a small cap (e.g. 4) risks a FALSE-GREEN
+    ///     accidental hit if the wrong hash happens to collide by luck.
+    /// (2) a direct `hashmap_key_hash` equality check — deterministic
+    ///     regardless of actual heap addresses (content hash is
+    ///     allocation-independent by construction; a pointer-identity hash
+    ///     of two DIFFERENT allocations is virtually never congruent mod a
+    ///     6-digit prime-ish cap).
+    #[test]
+    #[allow(unsafe_code)]
+    #[allow(clippy::cast_possible_wrap)] // test-only String::len() as i64, values tiny
+    fn adr0080_km_p1a_content_hash_hit_across_allocations() {
+        let s1 = "alice";
+        let s2 = String::from("alice"); // distinct backing allocation, same content
+        let p1 = __triet_string_from_bytes(s1.as_ptr() as i64, s1.len() as i64);
+        let p2 = __triet_string_from_bytes(s2.as_ptr() as i64, s2.len() as i64);
+        assert_ne!(
+            p1, p2,
+            "test setup: source Strings must be distinct allocations"
+        );
+
+        let key1 = [p1, s1.len() as i64, s1.len() as i64]; // {ptr,len,cap}
+        let key2 = [p2, s2.len() as i64, s2.len() as i64];
+
+        let idx1 = hashmap_key_hash(24, key1.as_ptr() as i64, 1_000_003);
+        let idx2 = hashmap_key_hash(24, key2.as_ptr() as i64, 1_000_003);
+        assert_eq!(
+            idx1, idx2,
+            "ADR-0080 tooth #5: content hash must be allocation-independent \
+             (equal-content keys must hash to the same slot regardless of pointer)"
+        );
+
+        let m = __triet_hashmap_alloc(0, 1_000_003, 24, 8); // key_stride=24 (String), value=Integer
+        let m = __triet_hashmap_insert(m, key1.as_ptr() as i64, 42, 0);
+        let got = __triet_hashmap_get(m, key2.as_ptr() as i64);
+        assert_eq!(
+            got, 42,
+            "ADR-0080 tooth #5: equal-content different-allocation key must HIT"
+        );
+
+        // Cleanup: __triet_hashmap_free only frees the buffer (key-free is
+        // JIT-emitted, not exercised on this Rust-level-only path) — free
+        // the resident key (p1) and the never-inserted probe (p2) by hand.
+        __triet_string_free(p1, s1.len() as i64);
+        __triet_string_free(p2, s2.len() as i64);
+        __triet_hashmap_free(m);
+    }
+
+    /// ADR-0080 tooth #7: rehash must move a String key's bytes by
+    /// `key_stride` (24B memcpy), NOT an i64-only read/write — corrupting
+    /// `len`/`cap` on the far side would silently break future lookups.
+    /// Rust-level (bypasses JIT). Insert 4 keys on cap=4 (triggers realloc
+    /// to cap=8 on the 4th insert, mirroring `hashmap_rehash_on_realloc`),
+    /// then `get` with a FRESH-allocation same-content probe for one of the
+    /// rehashed (not the newest) keys — must still HIT with the right value.
+    /// Poison: rehash's key move → i64-only 8B copy (pre-ADR-0080 shape) →
+    /// `slot_len`/`slot_cap` corrupted → content-eq reads garbage → MISS.
+    #[test]
+    #[allow(unsafe_code)]
+    #[allow(clippy::cast_possible_wrap)] // test-only str::len() as i64, values tiny
+    fn adr0080_km_p1a_rehash_preserves_key_content() {
+        let names = ["ann", "bob", "cid", "don"];
+        let mut ptrs = Vec::new();
+        let mut m = __triet_hashmap_alloc(0, 4, 24, 8);
+        for (i, name) in names.iter().enumerate() {
+            let p = __triet_string_from_bytes(name.as_ptr() as i64, name.len() as i64);
+            ptrs.push(p);
+            let key = [p, name.len() as i64, name.len() as i64];
+            // 4th insert (i==3) triggers realloc cap4→8, rehashing "ann"/"bob"/"cid".
+            m = __triet_hashmap_insert(m, key.as_ptr() as i64, (i as i64) * 10, 0);
+        }
+
+        // Probe "cid" (rehashed, index 2) with a FRESH allocation.
+        let probe_owned = String::from("cid");
+        let probe_ptr = __triet_string_from_bytes(probe_owned.as_ptr() as i64, 3);
+        let probe_key = [probe_ptr, 3_i64, 3_i64];
+        let got = __triet_hashmap_get(m, probe_key.as_ptr() as i64);
+        assert_eq!(
+            got, 20,
+            "ADR-0080 tooth #7: rehashed String key must survive content-intact \
+             (memcpy by key_stride, not truncated i64 read/write)"
+        );
+
+        for p in ptrs {
+            __triet_string_free(p, 3);
+        }
+        __triet_string_free(probe_ptr, 3);
+        __triet_hashmap_free(m);
     }
 
     // A8: 2**100 → abort (checked_mul + range in pow).

@@ -1119,9 +1119,11 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
         }),
         "__triet_hashmap_alloc" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_alloc",
+            // ADR-0080 Mũi A: +key_stride arg (3rd) alongside value_stride
+            // (4th) — both compile-time-constant scalars, never consumed.
             returns_borrow_of: None,
             mutates_arg: None,
-            arg_consumes: &[false, false],
+            arg_consumes: &[false, false, false, false],
         }),
         "__triet_hashmap_free" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_free",

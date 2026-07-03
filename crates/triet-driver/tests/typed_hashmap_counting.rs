@@ -54,11 +54,11 @@ extern "C" fn __hm_str_free(ptr: i64, cap: i64) {
 fn shims() -> Vec<ShimSymbol> {
     vec![
         // Alloc/free/insert/get/remove are REAL (actually allocate + dealloc).
-        ShimSymbol::fn_3_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
-        ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
-        ShimSymbol::fn_3_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
+        ShimSymbol::fn_4_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
         ShimSymbol::fn_2_1(
             "__triet_string_from_bytes",
             mir_lower::__triet_string_from_bytes,
@@ -376,12 +376,12 @@ fn hashmap_int_int_insert_get_readback() {
 fn hashmap_rehash_fat_value_retains_full_cell() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Insert 4 → triggers realloc at cap=4, value_stride=24
-    let m = mir_lower::__triet_hashmap_alloc(0, 4, 24);
+    let m = mir_lower::__triet_hashmap_alloc(0, 4, 8, 24);
     assert_ne!(m, 0);
     let mut cur = m;
     for (k, tag) in [(1, 101_i64), (2, 202), (3, 303), (4, 404)] {
         let fake = [tag, 5_i64, 8_i64]; // {ptr=tag, len=5, cap=8}
-        cur = mir_lower::__triet_hashmap_insert(cur, k, fake.as_ptr() as i64);
+        cur = mir_lower::__triet_hashmap_insert(cur, k, fake.as_ptr() as i64, 0);
     }
     assert_eq!(
         mir_lower::__triet_hashmap_get(cur, 1),
@@ -455,9 +455,9 @@ fn lower_hm_string_source(source: &str) -> Vec<triet_mir::Body> {
 
 fn hm_string_shims() -> Vec<ShimSymbol> {
     vec![
-        ShimSymbol::fn_3_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
-        ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1(
             "__triet_string_from_bytes",
             mir_lower::__triet_string_from_bytes,

@@ -159,7 +159,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_vector_pop",
             triet_jit::mir_lower::__triet_vector_pop,
         ),
-        ShimSymbol::fn_3_1(
+        ShimSymbol::fn_4_1(
             "__triet_hashmap_alloc",
             triet_jit::mir_lower::__triet_hashmap_alloc,
         ),
@@ -171,7 +171,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_len",
             triet_jit::mir_lower::__triet_hashmap_len,
         ),
-        ShimSymbol::fn_3_1(
+        ShimSymbol::fn_4_1(
             "__triet_hashmap_insert",
             triet_jit::mir_lower::__triet_hashmap_insert,
         ),
@@ -179,7 +179,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_get",
             triet_jit::mir_lower::__triet_hashmap_get,
         ),
-        ShimSymbol::fn_3_1(
+        ShimSymbol::fn_4_1(
             "__triet_hashmap_remove",
             triet_jit::mir_lower::__triet_hashmap_remove,
         ),

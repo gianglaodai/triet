@@ -77,9 +77,9 @@ fn counting_shims() -> Vec<ShimSymbol> {
         ShimSymbol::fn_1_0("__triet_vector_free", __mo_vec_free),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_1_1("__triet_vector_len", mir_lower::__triet_vector_len),
-        ShimSymbol::fn_3_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", __mo_hmap_free),
-        ShimSymbol::fn_3_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_1_1("__triet_hashmap_len", mir_lower::__triet_hashmap_len),
         ShimSymbol::fn_2_1("__triet_string_alloc", mir_lower::__triet_string_alloc),
         ShimSymbol::fn_2_1(
