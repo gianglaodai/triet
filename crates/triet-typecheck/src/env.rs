@@ -332,60 +332,86 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
-    // ── ADR-0043 + ADR-0078: HashMap builtins ──
-    // ADR-0078 P1b: key = Integer cứng, value polymorphic (V).
+    // ── ADR-0043 + ADR-0078 + ADR-0080: HashMap builtins ──
+    // ADR-0080 KM-P1b: key K generic-ized ∈ {Integer, String} (was Integer
+    // cứng); value V stays polymorphic exactly as before ("value-side giữ
+    // nguyên máy HM-P1b" — every V constraint below mirrors the pre-existing
+    // Integer-key declaration one-for-one, just with K swapped to String).
     // hashmap_new/insert/remove are GENERIC functions (declare, not overload)
-    // so V is bound from args (insert/remove) or seeded from
-    // expected_type_stack (hashmap_new, 0-arg).
+    // in BOTH K and V now — K bound from the map/key arg (insert/remove) or
+    // seeded from expected_type_stack (hashmap_new, 0-arg), same mechanism
+    // `extract_type_params`'s `HashMap(pk,pv)` arm already walks for V.
     //
     // Monomorphic fallback for overloads (get/len/contains/is_empty, &0 ref):
+    // one candidate per concrete K (Integer, String); V held fixed per-site.
     let hashmap_ii = Type::HashMap(Box::new(Integer.clone()), Box::new(Integer.clone()));
+    let hashmap_str_int = Type::HashMap(Box::new(String.clone()), Box::new(Integer.clone()));
 
-    // Generic type parameter V for value-polymorphic builtins.
-    let hm_v_t = Type::TypeParameter("V".into());
-    let hm_iv = Type::HashMap(Box::new(Integer.clone()), Box::new(hm_v_t.clone()));
-    let hm_type_params = vec![triet_syntax::TypeParameter {
-        name: "V".into(),
-        bound: None,
-    }];
+    // Generic type parameters K, V for K/V-polymorphic builtins (hashmap_new/
+    // insert/remove). K ∈ {Integer, String} enforced at the REFUSE boundary
+    // (ADR-0080 Mũi C2, E1048 UnsupportedHashMapKey) — the type param itself
+    // doesn't constrain membership, the REFUSE check does.
+    let hm_key_param = Type::TypeParameter("K".into());
+    let hm_val_param = Type::TypeParameter("V".into());
+    let hm_kv = Type::HashMap(
+        Box::new(hm_key_param.clone()),
+        Box::new(hm_val_param.clone()),
+    );
+    let hm_type_params = vec![
+        triet_syntax::TypeParameter {
+            name: "K".into(),
+            bound: None,
+        },
+        triet_syntax::TypeParameter {
+            name: "V".into(),
+            bound: None,
+        },
+    ];
 
-    // `hashmap_new<V>() -> HashMap<Integer, V>` — 0-arg generic.
-    // V is seeded from expected_type_stack (same mechanism as vector_new).
+    // `hashmap_new<K,V>() -> HashMap<K, V>` — 0-arg generic.
+    // K and V are both seeded from expected_type_stack (same mechanism as
+    // vector_new); ADR-0078 P1b's Integer-only default now only fires when
+    // NEITHER has context (see exprs.rs check_call).
     env.declare(
         "hashmap_new",
         Type::Function {
             type_parameters: hm_type_params.clone(),
             parameters: Vec::new(),
-            return_type: Box::new(hm_iv.clone()),
+            return_type: Box::new(hm_kv.clone()),
         },
     );
 
-    // `insert<V>(HashMap<Integer,V>, Integer, V) -> HashMap<Integer,V>`
-    // V bound from arg[0] (map) or arg[2] (value); consumes map handle +
-    // value (heap → move; Copy→no-op, per ADR-0078 MŨI D).
+    // `insert<K,V>(HashMap<K,V>, K, V) -> HashMap<K,V>`
+    // K bound from arg[0] (map) or arg[1] (key); V bound from arg[0] (map) or
+    // arg[2] (value); consumes map handle + key + value (heap → move;
+    // Copy→no-op, per ADR-0078/0080 MŨI D — key-consume mirrors value-consume
+    // via the SAME per-call `is_copy` check in borrowck, checker.rs).
     env.declare(
         "insert",
         Type::Function {
             type_parameters: hm_type_params.clone(),
-            parameters: vec![hm_iv.clone(), Integer.clone(), hm_v_t.clone()],
-            return_type: Box::new(hm_iv.clone()),
+            parameters: vec![hm_kv.clone(), hm_key_param.clone(), hm_val_param.clone()],
+            return_type: Box::new(hm_kv.clone()),
         },
     );
 
-    // `remove<V>(HashMap<Integer,V>, Integer) -> V?` — move value out
-    // (ownership cut, like pop). Returns ~0 when key not present.
+    // `remove<K,V>(HashMap<K,V>, K) -> V?` — move value out
+    // (ownership cut, like pop). Returns ~0 when key not present. The
+    // lookup key is a BORROW (ADR-0080 Mũi D4), not consumed — asymmetric
+    // with insert's Move (Mũi D point 4).
     env.declare(
         "remove",
         Type::Function {
             type_parameters: hm_type_params,
-            parameters: vec![hm_iv, Integer.clone()],
-            return_type: Box::new(Type::Nullable(Box::new(hm_v_t))),
+            parameters: vec![hm_kv, hm_key_param],
+            return_type: Box::new(Type::Nullable(Box::new(hm_val_param))),
         },
     );
 
     // ── HashMap overloads (monomorphic, for get/len/contains/is_empty) ──
-    // These use the monomorphic `hashmap_ii` (HashMap<Integer,Integer>)
-    // for backward compat. Heap value gets are refused by E1047 in
+    // These use monomorphic `hashmap_ii`/`hashmap_str_int` (HashMap<Integer,
+    // Integer> / HashMap<String,Integer>) for backward compat + the new
+    // String-key parity track. Heap value gets are refused by E1047 in
     // resolve_overload before candidate matching.
 
     // `get(HashMap<Integer,Integer>, Integer) -> Integer?`
@@ -397,6 +423,15 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(Type::Nullable(Box::new(Integer))),
         },
     );
+    // `get(HashMap<String,Integer>, String) -> Integer?` (ADR-0080 parity)
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![hashmap_str_int.clone(), String.clone()],
+            return_type: Box::new(Type::Nullable(Box::new(Integer))),
+        },
+    );
 
     // `len` overload for HashMap
     env.declare_overload(
@@ -404,6 +439,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         Type::Function {
             type_parameters: Vec::new(),
             parameters: vec![hashmap_ii.clone()],
+            return_type: Box::new(Integer),
+        },
+    );
+    env.declare_overload(
+        "len",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![hashmap_str_int.clone()],
             return_type: Box::new(Integer),
         },
     );
@@ -437,6 +480,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(trilean_refined.clone()),
         },
     );
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![hashmap_str_int.clone(), String.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
 
     let ref_string = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(String.clone()));
     let ref_vector = Type::Reference(
@@ -444,6 +495,10 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         Box::new(vector_integer.clone()),
     );
     let ref_hashmap = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(hashmap_ii.clone()));
+    let ref_hashmap_str_int = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(hashmap_str_int.clone()),
+    );
 
     // ADR-0079 Slice B: borrow-get overloads for heap element/value types.
     // Returns `(&0 V)?` — a nullable reference to the element slot. Zero-copy.
@@ -457,6 +512,16 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         ReferenceForm::BorrowReadOnly,
         Box::new(Type::HashMap(
             Box::new(Integer.clone()),
+            Box::new(String.clone()),
+        )),
+    );
+    // ADR-0080: String-key parity for the get_ref value=String overload —
+    // `HashMap<String,String>` (the ★SS tooth) reads its heap value the same
+    // zero-copy-borrow way `HashMap<Integer,String>` already does.
+    let ref_hashmap_str_str = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Type::HashMap(
+            Box::new(String.clone()),
             Box::new(String.clone()),
         )),
     );
@@ -475,7 +540,15 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         "get",
         Type::Function {
             type_parameters: Vec::new(),
-            parameters: vec![ref_hashmap_string, Integer],
+            parameters: vec![ref_hashmap_string, Integer.clone()],
+            return_type: Box::new(nullable_ref_string.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_str, String.clone()],
             return_type: Box::new(nullable_ref_string),
         },
     );
@@ -498,6 +571,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
     env.declare_overload(
+        "len",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_int.clone()],
+            return_type: Box::new(Integer.clone()),
+        },
+    );
+    env.declare_overload(
         "get",
         Type::Function {
             type_parameters: Vec::new(),
@@ -510,6 +591,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         Type::Function {
             type_parameters: Vec::new(),
             parameters: vec![ref_hashmap.clone(), Integer.clone()],
+            return_type: Box::new(Type::Nullable(Box::new(Integer.clone()))),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_int.clone(), String.clone()],
             return_type: Box::new(Type::Nullable(Box::new(Integer.clone()))),
         },
     );
@@ -539,6 +628,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(trilean_refined.clone()),
         },
     );
+    env.declare_overload(
+        "contains",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_int.clone(), String.clone()],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
 
     // `is_empty` overloads — owned variants
     env.declare_overload(
@@ -565,6 +662,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
             return_type: Box::new(trilean_refined.clone()),
         },
     );
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![hashmap_str_int],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
 
     // `is_empty` overloads — &0 borrow variants
     env.declare_overload(
@@ -588,6 +693,14 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         Type::Function {
             type_parameters: Vec::new(),
             parameters: vec![ref_hashmap],
+            return_type: Box::new(trilean_refined.clone()),
+        },
+    );
+    env.declare_overload(
+        "is_empty",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_int],
             return_type: Box::new(trilean_refined),
         },
     );

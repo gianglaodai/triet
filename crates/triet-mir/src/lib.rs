@@ -1139,12 +1139,20 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
         }),
         "__triet_hashmap_insert" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_insert",
-            // ADR-0078 MŨI D: value arg (index 2) is element-type-aware consume
-            // (heap → Moved/Zeroed; Copy→no-op), mirroring push. Map handle (0)
-            // is consumed; key (1) is borrowed (Integer = Copy).
+            // ADR-0078/0080 MŨI D: key (1) AND value (2) are both
+            // element-type-aware consume (heap → Moved/Zeroed; Copy→no-op),
+            // mirroring push. Map handle (0) is unconditionally consumed.
+            // ADR-0080 Mũi D3: key is now `[true, true, true]` (was
+            // `[true, false, true]` pre-KM-P1b, when K was Integer-only —
+            // `false` was correct back then since Integer is always Copy).
+            // The SAME per-call `is_copy()` gate downstream (checker.rs) that
+            // already no-ops an Integer VALUE now also no-ops an Integer KEY;
+            // a String key gets Moved/zeroed — the caller's local must not
+            // survive insert, or its own Drop double-frees the map's now-
+            // resident copy of the same pointer (ADR-0080 tooth #4).
             returns_borrow_of: None,
             mutates_arg: None,
-            arg_consumes: &[true, false, true],
+            arg_consumes: &[true, true, true],
         }),
         "__triet_hashmap_get" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_get",

@@ -800,6 +800,33 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1048: a `HashMap<K,V>` key type `K` outside the supported set
+    /// `{Integer, String}` — ADR-0080 Mũi C2. Fires wherever `K` gets bound
+    /// (`hashmap_new`/`insert`/`remove`, explicit annotation or inferred from
+    /// an arg) — a hard REFUSE at the typecheck boundary, no skeleton/soft-
+    /// defer. Content hash/eq (ADR-0080) is only defined for Integer
+    /// (identity) and String (FNV-1a); every other type would need a new
+    /// hash/eq strategy the backend does not implement.
+    #[error("E1048: `HashMap<{key}, _>` key type is not supported")]
+    #[diagnostic(
+        code(triet::typecheck::E1048),
+        help(
+            "E1048: `HashMap` keys are limited to `Integer` (identity hash) or \
+            `String` (content hash) at P1 — `{key}` has no defined hash/eq strategy.\n\n\
+            [Fix 1] Change the key type to `Integer` or `String`.\n\n\
+            [Fix 2] If `{key}` needs to be a key, wrap it in a `String` \
+            (e.g. via a stable string encoding) until a Comparable/Hash trait \
+            opens custom keys."
+        )
+    )]
+    UnsupportedHashMapKey {
+        /// The unsupported key type.
+        key: String,
+        /// Source location of the `HashMap` key binding (call or annotation).
+        #[label("key type `{key}` has no hash/eq strategy")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1025,6 +1052,7 @@ impl TypeError {
             | Self::AmbiguousMethodCall { span, .. }
             | Self::NullableHasNoErrorState { span }
             | Self::GetHeapElementUnsupported { span, .. }
+            | Self::UnsupportedHashMapKey { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

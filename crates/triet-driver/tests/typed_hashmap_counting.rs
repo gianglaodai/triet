@@ -458,10 +458,13 @@ fn hm_string_shims() -> Vec<ShimSymbol> {
         ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
+        ShimSymbol::fn_4_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
         ShimSymbol::fn_2_1(
             "__triet_string_from_bytes",
             mir_lower::__triet_string_from_bytes,
         ),
+        ShimSymbol::fn_4_1("__triet_string_eq", mir_lower::__triet_string_eq),
         // REAL free, NOT the counting stub — double-free → SIGABRT 134.
         ShimSymbol::fn_2_0("__triet_string_free", mir_lower::__triet_string_free),
     ]
@@ -510,5 +513,237 @@ fn hashmap_string_insert_drop_real_alloc_sound() {
         status.success(),
         "ADR-0078 tooth #1: HashMap<String> insert→drop with real alloc must exit 0 \
          (poison insert value-consume → double-free → exit 134). Got {status:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADR-0080 KM-P1b (source-level, typecheck NOW OPEN for `HashMap<String,V>`)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Full pipeline (parse → typecheck → lower → borrowck-implicit-via-JIT →
+// JIT). G's priority order: ★SS first, then #4, #6, #8, #9.
+
+/// ★SS (G TOP, mandatory): `HashMap<String,String>` — key AND value are both
+/// heap. Insert 1 entry, Drop the map: key-loop (D.1) frees the key, value-
+/// loop (ADR-0078) frees the value — independently, no double-count.
+/// Poison → RED (apply ONE at a time, per project poison discipline):
+/// (a) gut `emit_hashmap_key_free_loop`'s call site → count 2→1 (key leak).
+/// (b) gut `emit_hashmap_value_free_loop`'s call site → count 2→1 (value leak).
+#[test]
+fn hashmap_string_string_insert_drop_frees_key_and_value() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+
+    let src = "function main() -> Integer = {\
+        \x20   let m: HashMap<String, String> = hashmap_new();\
+        \x20   let k = \"alice\";\
+        \x20   let v = \"hello\";\
+        \x20   let m2 = insert(m, k, v);\
+        \x20   return 0;\
+        }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+    let bodies = triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed");
+    bodies[0].verify().expect("MIR verify");
+
+    let mut ctx = JitContext::with_shims(&shims());
+    let func = ctx.compile(&bodies[0]).expect("must JIT-compile");
+    let r = unsafe { func.call_i64_0() };
+    assert_eq!(r, 0, "HashMap<String,String> insert→drop must return 0");
+
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "ADR-0080 ★SS: HashMap<String,String> insert→drop must free EXACTLY \
+         1 key + 1 value (key-loop ∥ value-loop both fire, independently, \
+         no leak, no double-count)"
+    );
+}
+
+/// ★SS (c): remove-then-drop tombstone probe with the REAL allocator.
+/// `remove` (D.5) frees the resident key + moves the value out to `removed`;
+/// the map is now EMPTY (tombstoned slot). A subsequent map `Drop` must NOT
+/// re-free the tombstoned slot's key.
+///
+/// ⚠ MEASURED (self-poison verified, O: reproduce before trusting): this is
+/// DOUBLE defense-in-depth, NOT a single point of failure. D.5 (1) tombstones
+/// state→2 AND (2) zeroes the key cell (`std::ptr::write_bytes`) after
+/// surfacing it to `key_out_ptr`. Poisoning EITHER alone survives (the other
+/// still saves it): removing just the zero-write leaves a stale ptr in the
+/// cell, but the key-loop's `is_occ` (state==1 only) still skips state==2 —
+/// no re-read. Poisoning just `is_occ` (treat state==2 as occupied too)
+/// re-reads the cell, but it was already zeroed → sentinel-no-op R4, still
+/// safe. Only poisoning BOTH simultaneously (is_occ AND the zero-write)
+/// reaches SIGABRT 134 — verified by hand, not by this single test alone.
+/// This test proves the OUTER invariant (no double-free under normal
+/// operation); it does not by itself prove exactly which single line is
+/// load-bearing, because none is alone.
+#[test]
+fn hashmap_string_string_remove_then_drop_no_double_free() {
+    hm_child_guard(
+        "hashmap_string_string_remove_then_drop_no_double_free",
+        || {
+            let src = "function main() -> Integer = {\
+                \x20   let m: HashMap<String, String> = hashmap_new();\
+                \x20   let k = \"alice\";\
+                \x20   let v = \"hello\";\
+                \x20   let m2 = insert(m, k, v);\
+                \x20   let k2 = \"alice\";\
+                \x20   let removed = remove(m2, k2);\
+                \x20   return 0;\
+                }";
+            let bodies = lower_hm_string_source(src);
+            let r = jit_run_real_shims(&bodies[0]);
+            assert_eq!(r, 0, "HashMap<String,String> remove→drop must return 0");
+        },
+    );
+    let status = spawn_hm_child("hashmap_string_string_remove_then_drop_no_double_free");
+    assert!(
+        status.success(),
+        "ADR-0080 ★SS(c): remove-then-drop on HashMap<String,String> must exit \
+         0 — a poisoned tombstone-skip re-frees the already-freed key/value → \
+         SIGABRT 134. Got {status:?}"
+    );
+}
+
+/// #4 (G priority, SIGABRT gold standard): insert=Move KEY — the key-arg
+/// analog of the pre-existing VALUE tooth above. `k` MUST be a named local
+/// (drop obligation at the call site) — a string literal inline has none,
+/// making the poison vacuous (LUẬT NAMED-LOCAL).
+/// Poison: `triet-mir/src/lib.rs` `__triet_hashmap_insert`'s `arg_consumes`
+/// `[true, true, true]` → `[true, false, true]` (key NOT consumed) → the
+/// JIT skips zeroing `k` after insert → BOTH the caller's `Drop(k)` (via
+/// `k`'s own end-of-scope) AND the map's key-free-loop (D.1) free the SAME
+/// pointer → double-free → exit 134. Patched tree: exit 0.
+#[test]
+fn hashmap_string_key_insert_move_sound() {
+    hm_child_guard("hashmap_string_key_insert_move_sound", || {
+        let src = "function main() -> Integer = {\
+            \x20   let m: HashMap<String, Integer> = hashmap_new();\
+            \x20   let k = \"hi\";\
+            \x20   let m2 = insert(m, k, 1);\
+            \x20   return 0;\
+            }";
+        let bodies = lower_hm_string_source(src);
+        let r = jit_run_real_shims(&bodies[0]);
+        assert_eq!(r, 0, "HashMap<String,Integer> insert→drop must return 0");
+    });
+    let status = spawn_hm_child("hashmap_string_key_insert_move_sound");
+    assert!(
+        status.success(),
+        "ADR-0080 tooth #4: HashMap<String,_> insert→drop with real alloc must \
+         exit 0 (poison insert key-consume → double-free → exit 134). Got {status:?}"
+    );
+}
+
+/// #6: lookup-key BORROW — `get`'s key-arg must NOT be consumed, asymmetric
+/// with insert's Move (Mũi D point 4). `k2` is used TWICE as the lookup key
+/// across two separate `get` calls; if `get` wrongly consumed it (poisoned
+/// `arg_consumes[1]=true` on `__triet_hashmap_get`), the SECOND use would be
+/// E2420 (use-after-move) at borrowck — this program would stop compiling
+/// (`type_errors`/lowering would no longer be clean). Green here proves the
+/// borrow model; O flips the meta table to observe the E2420 REFUSE.
+#[test]
+fn hashmap_string_key_lookup_is_borrow_reusable() {
+    let src = "function main() -> Integer = {\
+        \x20   let m: HashMap<String, Integer> = hashmap_new();\
+        \x20   let k = \"hi\";\
+        \x20   let m2 = insert(m, k, 1);\
+        \x20   let k2 = \"hi\";\
+        \x20   let got1 = get(m2, k2);\
+        \x20   let got2 = get(m2, k2);\
+        \x20   return 0;\
+        }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
+    assert!(
+        type_errors.is_empty(),
+        "ADR-0080 tooth #6: reusing a lookup key across two `get` calls must \
+         typecheck clean (key is a BORROW, not consumed) — got {type_errors:?}"
+    );
+    let bodies = triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed");
+    for body in &bodies {
+        let result =
+            triet_borrowck::checker::check_body_with(body, &std::collections::BTreeMap::new());
+        assert!(
+            result.is_ok(),
+            "ADR-0080 tooth #6: reusing a lookup key across two `get` calls \
+             must pass borrowck (key is a BORROW) — got {:?}",
+            result.errors
+        );
+    }
+}
+
+/// #8: REFUSE `HashMap<K,V>` for `K ∉ {Integer, String}` — E1048, both
+/// variants named in the WO (Tryte, and a user Struct).
+#[test]
+fn hashmap_key_type_tryte_refused() {
+    let src = "function main() -> Integer = { let m: HashMap<Tryte, Integer> = hashmap_new(); return 0; }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, _, _) = triet_typecheck::check(&program);
+    assert!(
+        !type_errors.is_empty(),
+        "ADR-0080 tooth #8: HashMap<Tryte,_> must be REFUSED at typecheck"
+    );
+    assert!(
+        type_errors.iter().any(|e| e.to_string().contains("E1048")),
+        "expected E1048 UnsupportedHashMapKey, got {type_errors:?}"
+    );
+}
+
+#[test]
+fn hashmap_key_type_struct_refused() {
+    let src = "struct Point { x: Integer, y: Integer }\n\
+        function main() -> Integer = { let m: HashMap<Point, Integer> = hashmap_new(); return 0; }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, _, _) = triet_typecheck::check(&program);
+    assert!(
+        !type_errors.is_empty(),
+        "ADR-0080 tooth #8: HashMap<Point,_> (user Struct key) must be REFUSED at typecheck"
+    );
+    assert!(
+        type_errors.iter().any(|e| e.to_string().contains("E1048")),
+        "expected E1048 UnsupportedHashMapKey, got {type_errors:?}"
+    );
+}
+
+/// #9: `HashMap<Integer,V>` source-level backward-compat — must stay green
+/// with K now generic (was hardcoded Integer pre-ADR-0080). Source-level
+/// counterpart to the pre-existing hand-built-MIR
+/// `hashmap_int_int_insert_get_readback` above.
+#[test]
+fn hashmap_integer_key_source_compat() {
+    let src = "function main() -> Integer = {\
+        \x20   let m: HashMap<Integer, Integer> = hashmap_new();\
+        \x20   let m2 = insert(m, 1, 100);\
+        \x20   let got = get(m2, 1);\
+        \x20   return match got {\
+        \x20       ~+ x => x,\
+        \x20       ~0 => -1,\
+        \x20   };\
+        }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
+    assert!(
+        type_errors.is_empty(),
+        "ADR-0080 tooth #9: HashMap<Integer,Integer> must stay green — {type_errors:?}"
+    );
+    let bodies = triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed");
+    bodies[0].verify().expect("MIR verify");
+    let mut ctx = JitContext::with_shims(&shims());
+    let func = ctx.compile(&bodies[0]).expect("must JIT-compile");
+    let r = unsafe { func.call_i64_0() };
+    assert_eq!(
+        r, 100,
+        "HashMap<Integer,Integer> insert/get readback via source"
     );
 }

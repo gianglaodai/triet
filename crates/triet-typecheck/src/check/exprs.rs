@@ -991,14 +991,34 @@ impl Checker<'_> {
                     sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
                 }
             }
-            // ADR-0078 P1b: same byte-compat default for hashmap_new.
-            // A bare `let m = hashmap_new()` with no context defaults V→Integer
-            // (HashMap<Integer,Integer>). The expected-type seed above handles
-            // the annotated case (`let m: HashMap<Integer,String> = …`).
+            // ADR-0078 P1b / ADR-0080 KM-P1b: same byte-compat default for
+            // hashmap_new. A bare `let m = hashmap_new()` with no context
+            // defaults BOTH K and V → Integer (HashMap<Integer,Integer>) —
+            // `.entry().or_insert()` only fills params still unbound after
+            // the seed step above, so an annotated `let m: HashMap<String,
+            // V> = hashmap_new()` (K already seeded String) is untouched.
             if callee_name.as_deref() == Some("hashmap_new") {
                 for tp in &type_parameters {
                     sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
                 }
+            }
+            // ADR-0080 Mũi C2: REFUSE a HashMap key type outside
+            // `{Integer, String}` — hard boundary, no skeleton/soft-defer.
+            // Fires for all three K-binding entry points (`hashmap_new`
+            // explicit annotation or context seed, `insert`/`remove` bound
+            // from the map/key arg) since `sub_map["K"]` is resolved
+            // identically by this point regardless of which call bound it.
+            if matches!(
+                callee_name.as_deref(),
+                Some("hashmap_new" | "insert" | "remove")
+            ) && let Some(key_ty) = sub_map.get("K")
+                && !matches!(key_ty, Type::Integer | Type::String)
+            {
+                self.errors
+                    .push(crate::error::TypeError::UnsupportedHashMapKey {
+                        key: key_ty.to_string(),
+                        span: span.clone(),
+                    });
             }
             // Enforce bounds
             for tp in type_parameters {
@@ -2291,9 +2311,11 @@ fn extract_type_params(
         (Type::Vector(p_inner), Type::Vector(a_inner)) => {
             extract_type_params(p_inner, a_inner, sub_map);
         }
-        // ADR-0078 P1b: `HashMap<Integer, V>` binds `V` from a
-        // `HashMap<Integer, concrete>` argument. Key slot is Integer cứng —
-        // no TypeParameter in key position in P1.
+        // ADR-0078 P1b binds `V` from a `HashMap<_, concrete>` argument.
+        // ADR-0080 KM-P1b generic-izes the key slot too — `pk` is now a
+        // `TypeParameter("K")` in the `hashmap_new`/`insert`/`remove`
+        // declarations (env.rs), so this same recursion binds `K` from a
+        // `HashMap<concrete, _>` argument via the `TypeParameter` arm above.
         (Type::HashMap(pk, pv), Type::HashMap(ak, av)) => {
             extract_type_params(pk, ak, sub_map);
             extract_type_params(pv, av, sub_map);

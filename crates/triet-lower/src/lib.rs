@@ -1032,10 +1032,17 @@ fn lower_type(
                     .map(|a| lower_type(arena, *a, symbols, self_type))
                     .unwrap_or(MirType::Integer),
             )),
-            // ADR-0078 P1b: key = Integer cứng, value from 2nd type argument.
-            // Fallback to Integer for byte-compat (malformed 0/1-arg HashMap).
+            // ADR-0080 KM-P1b: key from 1st type argument, value from 2nd.
+            // Fallback to Integer for byte-compat (malformed 0/1-arg HashMap)
+            // — was hardcoded `Integer` unconditionally pre-ADR-0080, silently
+            // dropping an explicit `HashMap<String,V>` annotation's key type.
             "HashMap" => MirType::HashMap(
-                Box::new(MirType::Integer),
+                Box::new(
+                    arguments
+                        .first()
+                        .map(|a| lower_type(arena, *a, symbols, self_type))
+                        .unwrap_or(MirType::Integer),
+                ),
                 Box::new(
                     arguments
                         .get(1)
@@ -1159,9 +1166,15 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
                     .map(|a| lower_type_simple(arena, *a, c))
                     .unwrap_or(MirType::Integer),
             )),
-            // ADR-0078 P1b: key = Integer cứng, value from 2nd type argument.
+            // ADR-0080 KM-P1b: key from 1st type argument, value from 2nd
+            // (was hardcoded `Integer` unconditionally pre-ADR-0080).
             "HashMap" => MirType::HashMap(
-                Box::new(MirType::Integer),
+                Box::new(
+                    arguments
+                        .first()
+                        .map(|a| lower_type_simple(arena, *a, c))
+                        .unwrap_or(MirType::Integer),
+                ),
                 Box::new(
                     arguments
                         .get(1)

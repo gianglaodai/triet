@@ -3284,6 +3284,49 @@ impl JitContext {
                             }
                         }
 
+                        // ADR-0049 Lát 5: clear/append writeback via *mut FatStr;
+                        // no manual sync needed — shim handles it.
+
+                        // ADR-0080 §AMEND-1 D.2: insert's redundant incoming key
+                        // — free ONLY if the shim signalled an update (dup-
+                        // content key kept the resident, made the caller's
+                        // incoming key dead). Registry-routed (get_or_declare_shim
+                        // inside emit_heap_free_at) → counting-testable. MUST run
+                        // BEFORE M3 zeroing below: ADR-0080 Mũi D3 made insert's
+                        // key arg consumed (`arg_consumes[1]=true` for a String
+                        // key), so M3 would zero `key_addr`'s slot first — this
+                        // free reads `key_addr`'s CONTENT (ptr@0/cap@16), and a
+                        // zeroed ptr makes `emit_heap_free_at` a silent no-op
+                        // (sentinel-no-op R4), LEAKING the redundant key instead
+                        // of freeing it. Order was proven wrong by the KM-P1b
+                        // D3 regression: `adr0080_km_p1a_update_frees_redundant_key`
+                        // would have silently dropped from count 2 → 1.
+                        if let Some((key_addr, is_update_addr)) = insert_key_free_gate {
+                            let mem = cranelift_codegen::ir::MemFlags::new();
+                            let flag = builder.ins().load(I64, mem, is_update_addr, 0);
+                            let one = builder.ins().iconst(I64, 1);
+                            let is_update = builder.ins().icmp(IntCC::Equal, flag, one);
+                            let free_bb = builder.create_block();
+                            let merge_bb = builder.create_block();
+                            builder.ins().brif(is_update, free_bb, &[], merge_bb, &[]);
+                            builder.switch_to_block(free_bb);
+                            builder.seal_block(free_bb);
+                            self.emit_heap_free_at(builder, key_addr, &MirType::String)?;
+                            builder.ins().jump(merge_bb, &[]);
+                            builder.switch_to_block(merge_bb);
+                            builder.seal_block(merge_bb);
+                        }
+                        // ADR-0080 §AMEND-1 D.5: remove's resident key — free
+                        // UNCONDITIONALLY; the shim wrote NULL_SENTINEL to
+                        // `key_out_ptr` on not-found (sentinel-no-op R4), so an
+                        // unconditional free is safe either way. `key_out_ptr`
+                        // is a FRESH scratch slot (not `args`-derived), so M3
+                        // ordering doesn't affect it — kept alongside D.2 above
+                        // for readability (both precede M3).
+                        if let Some(key_out_ptr) = remove_key_free_ptr {
+                            self.emit_heap_free_at(builder, key_out_ptr, &MirType::String)?;
+                        }
+
                         // M3: Zeroing-on-Move — zero consume-arg variables after call.
                         if let Some(meta) = builtin_shim_meta(callee_name) {
                             let zero = builder.ins().iconst(I64, 0);
@@ -3304,37 +3347,6 @@ impl JitContext {
                                     }
                                 }
                             }
-                        }
-
-                        // ADR-0049 Lát 5: clear/append writeback via *mut FatStr;
-                        // no manual sync needed — shim handles it.
-
-                        // ADR-0080 §AMEND-1 D.2: insert's redundant incoming key
-                        // — free ONLY if the shim signalled an update (dup-
-                        // content key kept the resident, made the caller's
-                        // incoming key dead). Registry-routed (get_or_declare_shim
-                        // inside emit_heap_free_at) → counting-testable.
-                        if let Some((key_addr, is_update_addr)) = insert_key_free_gate {
-                            let mem = cranelift_codegen::ir::MemFlags::new();
-                            let flag = builder.ins().load(I64, mem, is_update_addr, 0);
-                            let one = builder.ins().iconst(I64, 1);
-                            let is_update = builder.ins().icmp(IntCC::Equal, flag, one);
-                            let free_bb = builder.create_block();
-                            let merge_bb = builder.create_block();
-                            builder.ins().brif(is_update, free_bb, &[], merge_bb, &[]);
-                            builder.switch_to_block(free_bb);
-                            builder.seal_block(free_bb);
-                            self.emit_heap_free_at(builder, key_addr, &MirType::String)?;
-                            builder.ins().jump(merge_bb, &[]);
-                            builder.switch_to_block(merge_bb);
-                            builder.seal_block(merge_bb);
-                        }
-                        // ADR-0080 §AMEND-1 D.5: remove's resident key — free
-                        // UNCONDITIONALLY; the shim wrote NULL_SENTINEL to
-                        // `key_out_ptr` on not-found (sentinel-no-op R4), so an
-                        // unconditional free is safe either way.
-                        if let Some(key_out_ptr) = remove_key_free_ptr {
-                            self.emit_heap_free_at(builder, key_out_ptr, &MirType::String)?;
                         }
 
                         let ret_block = self.blocks[return_bb];
@@ -7534,19 +7546,37 @@ mod tests {
         );
 
         // remove mutates map1 IN PLACE (tombstone) — no fresh dest for the
-        // map; only the removed VALUE binds a dest.
+        // map; only the removed VALUE binds a dest. ADR-0080 Mũi D3: insert
+        // now CONSUMES `key` (arg_consumes[1]=true, String not Copy) — the
+        // JIT's M3 zeroing tombstones `key`'s own slot right after the
+        // insert call (bb1), so reusing that SAME local as remove's lookup
+        // arg would read a zeroed ptr → `__triet_string_hash` trap-on-0
+        // SIGABRT. A real `.tri` program hits the identical rule as E2420
+        // (use-after-move) at borrowck — hand-built MIR bypasses borrowck,
+        // so the test itself must respect the same ownership discipline: a
+        // FRESH same-content key for the lookup (mirrors ADR-0080 Mũi D4 —
+        // remove's key is a BORROW of the CALLER's own key, never the one
+        // already moved into the map).
+        let lookup_key = b.new_local();
+        b.set_local_mir_type(lookup_key, MirType::String);
+        b.push(bb2, storage_live(lookup_key));
+        b.push(bb2, km_p1a_string_const(lookup_key, "bob"));
         let removed_val = b.new_local();
         b.push(bb2, storage_live(removed_val));
         b.set_terminator(
             bb2,
             km_p1a_shim_call(
                 "__triet_hashmap_remove",
-                vec![map1, key],
+                vec![map1, lookup_key],
                 vec![removed_val],
                 bb3,
             ),
         );
 
+        // lookup_key is a BORROW (D4, never consumed by remove) — the
+        // CALLER still owns it and must free it itself, same as any other
+        // owned local.
+        b.push(bb3, Statement::Drop(lookup_key, DUMMY_SPAN));
         b.push(bb3, Statement::Drop(map1, DUMMY_SPAN));
         b.set_terminator(bb3, return_(vec![]));
 
@@ -7568,9 +7598,10 @@ mod tests {
 
         assert_eq!(
             KM_P1A_REMOVE_FREE_COUNT.load(Ordering::SeqCst),
-            1,
+            2,
             "ADR-0080 tooth #3: remove must free the resident String key \
-             exactly once (D.5); subsequent map Drop must not double-free"
+             exactly once (D.5) + caller frees its own borrowed lookup_key \
+             once; subsequent map Drop must not double-free"
         );
     }
 
