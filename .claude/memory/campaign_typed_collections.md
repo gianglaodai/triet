@@ -1,37 +1,60 @@
 ---
 name: campaign_typed_collections
-description: "Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow Heap Value (ADR-0079) + Bug-E Outcome-param/early-return double-free — full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + Bug-E + key-typed HashMap<String,V> (ADR-0080 §AMEND-1) — Campaign P1 KHÓA SỔ 2026-07-03. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
 
-## 🎯 MẶT TRẬN A ĐANG MỞ — key-typed `HashMap<String,V>` — ADR-0080 APPROVED, WO KM-P1a phát (2026-07-03)
-**ADR-0080 `docs/decisions/0080-hashmap-string-key.md` — Author+O+G ký, PUSHED `26452e0` (origin/main).**
-O BÁC amend ADR-0038 (Comparable=`Ord`, không phải `Hash` — trộn = nát kiến trúc); ADR MỚI toanh,
-BÁC `Hashable` trait (trait system mới Tier-1). **Quyết chốt D1–D5:**
-- **D1** slot: `key_stride` song song `value_stride`, **24B fat trọn ổ** (`{ptr,len,cap}`). BÁC 16B
-  (`__triet_string_free` cần cap thật). Lý do vật lý bắt buộc 24B: String KHÔNG lưu `len` trên heap
-  (ADR-0049 §6.3) → slot phải chứa len để hash/eq. `key_stride∈{8,24}` **kiêm discriminator** (8=Integer
-  identity giữ byte-compat, 24=String content).
-- **D2/D3** shim MỚI `__triet_string_hash(ptr,len)` FNV-1a (mirror `cap_id_hash` mir_lower.rs:3372);
-  eq tái dùng `__triet_string_eq`:3542 (đã có). Cấm dynamic dispatch.
-- **D5** key ∈ {Integer,String} đóng băng; khác → REFUSE typecheck.
-- **Mũi D nợ máu — 5 death-point** (Giang: TỐI QUAN TRỌNG). O vạch thêm **#5 remove-free-resident-key**
-  ngoài 4 điểm Author list: (1) map-drop free mọi key, (2) insert-dup trảm key move-in dư, (3) insert=Move
-  key consume, (4) get/remove/contains = borrow `&0 String` (bất đối xứng), (5) remove free resident key.
-- **Teeth split 2 slice:** KM-P1a (backend/shim, hand-built MIR + counting) dập máu **#1 drop-leak /
-  #2 update-leak / #3 remove-leak / #5 content-hash / #7 rehash-stride**. **#4 (Move) / #6 (borrow) /
-  #8 (REFUSE) / #9 (source compat)** = KM-P1b (typecheck/borrowck). Giang đòi báo cáo đẫm máu #1→#7
-  → land SAU KM-P1b. Poison BẮT BUỘC (G lệnh): Map-drop-leak + Update-leak, đo FNV counting FREE-count.
+## ✅ ĐÓNG TRỌN — key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G ký, PUSHED 2026-07-03(b))
+origin/main = `381979e`, gate `0·0·326·0`. **Campaign Typed Collections P1 (A) KHÓA SỔ.** `HashMap<String,V>`
++ `HashMap<String,String>` (key ∥ value cùng heap) sound end-to-end từ `.tri` source → JIT real-allocator,
+không rỉ một byte.
 
-**WO KM-P1a đã phát cho D** (file `crates/triet-jit/src/mir_lower.rs`): Mũi A slot + B hash/eq shim +
-D.1/D.2/D.5 key-free/dup-trảm/remove-free + rehash key-stride. Verify hand-built MIR + counting (lối
-HM-P1a `a0e60d8` ngủ đông proven-MIR, source E1003 tới khi P1b mở). Chờ D nộp cây + raw gate → O verify máu.
-Sites: slot helpers :4054/4068/4075/4082, alloc :4110, insert :4186, get :4284, remove :4363,
-rehash :4211-4238, value-free-loop mẫu emit_hashmap_value_free_loop :1133.
-C (native multi-field layout) + D (get-borrow-mutable) vẫn lùi, không hủy. [[future_comparable_trait_and_monad_gap]]
+**ADR-0080** (`26452e0`) — O BÁC amend ADR-0038 (Comparable=`Ord` ≠ `Hash` — trộn = nát kiến trúc) + BÁC
+`Hashable` trait (trait system mới Tier-1, dựng giờ sụp móng). ADR mới toanh. **D1** slot `key_stride` ∥
+`value_stride` **24B fat** (BÁC 16B: `__triet_string_free` cần cap; String KHÔNG lưu len trên heap ADR-0049
+§6.3 → slot phải chứa len để hash/eq); `key_stride∈{8,24}` kiêm discriminator. **D2/D3** `__triet_string_hash`
+FNV-1a + `__triet_string_eq` sẵn, cấm dynamic dispatch. **D5** key∈{Integer,String}, khác→REFUSE. **Mũi D
+nợ máu 5 death-point** — O vạch thêm **#5 remove-free-resident-key** ngoài 4 điểm Author: (1) map-drop free
+key (2) insert-dup trảm key move-in dư (3) insert=Move key (4) get/remove/contains=borrow `&0` bất đối xứng
+(5) remove free resident key.
+
+**§AMEND-1** (`72bdf7e`) — **D lật vacuous-tooth** (recon KM-P1a): free viết TRỰC TIẾP trong thân Rust shim
+= static link-time call, BYPASS JIT symbol-table (`with_shims:808` substitution) → counting harness MÙ →
+teeth #2/#3 rỗng từ đầu. O verify độc lập (symbol-table + VALUE out_ptr precedent :2952) → nhận dao, retract
+WO literal. Fix = out-param ABI: `is_update_out` (insert D.2) + `key_out_ptr` (remove D.5) → free đẩy ra JIT
+call-site registry-routed, countable. Bất biến: resident key ≠ lookup key (cấm free `k`).
+
+**KM-P1a backend** (`c003a5f`) — Mũi A slot 24B fat (header packing `reserved = key_stride<<16|value_stride`)
+· B `__triet_string_hash` + `hashmap_key_hash/eq` dispatch runtime theo key_stride · D.1 `emit_hashmap_key_free_loop`
+· D.2/D.5 out-param free registry-routed · rehash key-stride memcpy. Hand-built MIR + counting (source E1003
+tới P1b). D tự bắt bug: key-free-loop compile-time đăng ký `__triet_string_free` cho MỌI map kể cả Integer →
+3 test cũ vỡ → gate compile-time trên `key_ty`. **O 5 teeth poison→RED độc lập** (map-drop-leak 1→0 · update-leak
+2→1 · remove-leak 1→0 · content-hash cap=1_000_003 · rehash key-stride→SENTINEL).
+
+**KM-P1b source** (`381979e`) — C1 typecheck generic-K∈{Int,String} (`env.rs`) + String-key overload
+get/len/contains/is_empty + get_ref parity · C2 **E1048 UnsupportedHashMapKey** hard-REFUSE (`exprs.rs:1011`
+gate `sub_map["K"]∉{Int,String}`) · D3 borrowck insert `arg_consumes[true,true,true]` key=Move type-aware
+(is_copy per-call, KHÔNG code mới) · D4 get/remove/contains giữ borrow `[false,false]`. **Lower-bug D vá thật**:
+`lower_type`/`lower_type_simple` (triet-lower) hardcode Integer key vô điều kiện → `HashMap<String,V>` annotation
+âm thầm rớt về Integer → đọc 1st type-arg. **Bug D tự bắt**: D3 phá D.2 KM-P1a (M3-zero chạy TRƯỚC free-redundant-
+key → key dư leak) → đảo thứ tự D.2/D.5 trước M3 (regression #2 cũ verified vẫn RED). **O 7 teeth poison→RED
+độc lập** (★SS(a) key-leak 2→1 · ★SS(b) value-leak 2→1 · ★SS(c) tombstone double-free SIGABRT 134 · #4 insert-Move
+134 · #6 lookup-borrow E2420 · #8 E1048 non-vacuous Tryte+Struct · regr #2 D.2/M3-reorder).
+
+**⚔ BÀI HỌC — O đính chính D ở ★SS(c)** (G khen "đỉnh cao verify-don't-trust"): D báo ★SS(c) "2 lớp phòng thủ
+redundant, poison từng lớp đều sống, phải poison cả hai mới SIGABRT" → hạ chuẩn tooth xuống "chỉ chứng minh bất
+biến ngoài". O KHÔNG nhận narrative — mổ độc lập: KEY path CÓ 2 lớp (state==1 check + `write_bytes` zero key cell
+@4831), nhưng **VALUE path CHỈ 1 lớp** — remove memcpy value ra out_ptr mà KHÔNG zero value cell (không có
+`write_bytes` đối xứng) → **value-loop state-check (`:1306`) LÀ load-bearing đơn lẻ**. Single-poison một dòng đó
+→ SIGABRT 134. D under-analyze memory-model của chính mình, dừng ở (b)-tưởng-(a); O ép tiếp lộ yết hầu. Mẫu
+[[feedback_poison_must_be_red]] + nghi thức O #4 (phân biệt defensive-vô-nghĩa vs hazard-thật bằng poison có máu).
+
+**Defer Tầng-2+ (không hủy):** `HashMap<_,UserStruct>` P2 native-layout · get-clone/borrow heap value ·
+get-borrow-mutable key · generic V-overload (P1 chỉ String) · hash caching · C native multi-field layout.
+[[future_comparable_trait_and_monad_gap]] [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]]
 
 ## ✅ ĐÓNG — Bug-E: Outcome-param ABI + `~->` early-return heap double-free (O+G ký 2026-07-03)
 origin/main = `81fae69`, gate `0·0·326·0`. Giang tự phát hiện viết
