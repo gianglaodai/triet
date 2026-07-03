@@ -3179,7 +3179,19 @@ impl JitContext {
                             // ownership transfer, no post-call free.
                             let key_stride = {
                                 let mty = &body.local_decls[args[0].0].ty;
-                                match mty.nullable_payload().unwrap_or(mty) {
+                                // P0 fix: read-path (get/contains/get_ref) receives
+                                // &0 HashMap (Reference-wrapped), unlike insert
+                                // which receives owned HashMap. Unwrap Reference
+                                // (and Nullable, for `(&0 HashMap)?`) before
+                                // matching HashMap — else the inner type never
+                                // reaches the HashMap arm, key_stride defaults to
+                                // 8, and a String key (stride 24) is marshalled
+                                // by-value → hash reads garbage → SIGSEGV.
+                                let inner = match mty.nullable_payload().unwrap_or(mty) {
+                                    MirType::Reference { inner, .. } => inner.as_ref(),
+                                    other => other,
+                                };
+                                match inner {
                                     MirType::HashMap(k, _) => Self::vector_elem_size(k)?,
                                     _ => 8,
                                 }
@@ -4233,8 +4245,15 @@ pub extern "C" fn __triet_vector_get_ref(vec: i64, idx: i64) -> i64 {
         return triet_mir::NULL_SENTINEL;
     }
     let stride = vector_stride(vec);
-    // Zero-copy: return the address of the element slot.
-    unsafe { body.add(16).add(idx as usize * stride) as i64 }
+    let cell = unsafe { body.add(16).add(idx as usize * stride) };
+    // ADR-0079 §AMEND-1: thin handle (stride ≤ 8) → deref cell to return the
+    // body_ptr (matches &0 Vector/HashMap = body_ptr from local). Fat (stride > 8,
+    // String 24B) → return cell_ptr (inline len/cap in fat struct).
+    if stride <= 8 {
+        unsafe { (cell as *const i64).read_unaligned() }
+    } else {
+        cell as i64
+    }
 }
 
 /// `__triet_vector_pop(vec, out_ptr)` — MOVE the last element out (ADR-0077).
@@ -4757,8 +4776,17 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
         if state == 1u8 {
             let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
             if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
-                // Zero-copy: return the address of the value cell.
-                return unsafe { hashmap_value_ptr(body, probe) as i64 };
+                // ADR-0079 §AMEND-1: thin value (value_stride ≤ 8) → deref cell
+                // to return the body_ptr (matches &0 Vector/HashMap = body_ptr
+                // from local). Fat value (stride > 8) → return cell_ptr as-is
+                // (inline len/cap, String fat struct).
+                let value_cell = unsafe { hashmap_value_ptr(body, probe) };
+                let value_stride = hashmap_value_stride(map);
+                return if value_stride <= 8 {
+                    unsafe { (value_cell as *const i64).read_unaligned() }
+                } else {
+                    value_cell as i64
+                };
             }
         }
         probe = (probe + 1) % cap;

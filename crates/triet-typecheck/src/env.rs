@@ -553,6 +553,111 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
+    // ADR-0079 A1: borrow-get overloads for V=container (Vector, HashMap).
+    // Returns `(&0 V)?` — zero-copy borrow of the value slot. The JIT shim
+    // __triet_{hashmap,vector}_get_ref is type-agnostic (spits slot-ptr 8B);
+    // borrowck tracks the loan on the container Local/Place — no JIT/borrowck
+    // changes needed.
+
+    // V=Vector<Integer> — return `(&0 Vector<Integer>)?`
+    let ref_vector_vector = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Vector(Box::new(Vector(Box::new(Integer.clone()))))),
+    );
+    let ref_hashmap_int_vector = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Type::HashMap(
+            Box::new(Integer.clone()),
+            Box::new(Vector(Box::new(Integer.clone()))),
+        )),
+    );
+    let ref_hashmap_str_vector = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Type::HashMap(
+            Box::new(String.clone()),
+            Box::new(Vector(Box::new(Integer.clone()))),
+        )),
+    );
+    let nullable_ref_vector = Type::Nullable(Box::new(ref_vector.clone()));
+
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_vector_vector, Integer.clone()],
+            return_type: Box::new(nullable_ref_vector.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_vector, String.clone()],
+            return_type: Box::new(nullable_ref_vector.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_int_vector, Integer.clone()],
+            return_type: Box::new(nullable_ref_vector),
+        },
+    );
+    // V=HashMap<Integer,Integer> — return `(&0 HashMap<Integer,Integer>)?`
+    let ref_vector_hashmap = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Vector(Box::new(Type::HashMap(
+            Box::new(Integer.clone()),
+            Box::new(Integer.clone()),
+        )))),
+    );
+    let ref_hashmap_int_hashmap = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Type::HashMap(
+            Box::new(Integer.clone()),
+            Box::new(Type::HashMap(
+                Box::new(Integer.clone()),
+                Box::new(Integer.clone()),
+            )),
+        )),
+    );
+    let ref_hashmap_str_hashmap = Type::Reference(
+        ReferenceForm::BorrowReadOnly,
+        Box::new(Type::HashMap(
+            Box::new(String.clone()),
+            Box::new(Type::HashMap(
+                Box::new(Integer.clone()),
+                Box::new(Integer.clone()),
+            )),
+        )),
+    );
+    let nullable_ref_hashmap = Type::Nullable(Box::new(ref_hashmap.clone()));
+
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_vector_hashmap, Integer.clone()],
+            return_type: Box::new(nullable_ref_hashmap.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_str_hashmap, String.clone()],
+            return_type: Box::new(nullable_ref_hashmap.clone()),
+        },
+    );
+    env.declare_overload(
+        "get",
+        Type::Function {
+            type_parameters: Vec::new(),
+            parameters: vec![ref_hashmap_int_hashmap, Integer.clone()],
+            return_type: Box::new(nullable_ref_hashmap),
+        },
+    );
     // ADR-0059 C.2: `len` and `get` overloads for &0 Vector/HashMap
     env.declare_overload(
         "len",

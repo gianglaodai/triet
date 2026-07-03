@@ -1,0 +1,29 @@
+// EXPECT: 142
+// P0: String-key HashMap read-path — contains(k_present) → true,
+// get(k_present) → correct VALUE, get(k_absent) → ~0.
+// Poison: revert Reference-unwrap in mir_lower.rs get/get_ref/contains
+// key_stride extraction → SIGSEGV or wrong value → RED.
+function main() -> Integer {
+    let m: HashMap<String, Integer> = hashmap_new();
+    let m2 = insert(m, "alpha", 100);
+    let m3 = insert(m2, "beta", 42);
+
+    // contains(present) → true (1)
+    let found: Integer = contains(&0 m3, "beta");
+
+    // get(present) → correct value
+    let v = get(&0 m3, "beta");
+    let val: Integer = match v {
+        ~+ x => x,
+        ~0 => 99,
+    };
+
+    // get(absent) → ~0
+    let v2 = get(&0 m3, "gamma");
+    let absent: Integer = match v2 {
+        ~+ x => 88,
+        ~0 => 0,
+    };
+
+    return found * 100 + val + absent; // 1*100 + 42 + 0 = 142
+}

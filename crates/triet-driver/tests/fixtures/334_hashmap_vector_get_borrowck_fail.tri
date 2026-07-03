@@ -1,0 +1,19 @@
+// ERROR: E2440
+// ADR-0079 A1 POISON-2 (borrowck-track): destructure inner from get on
+// HashMap<Integer,Vector<Integer>>, then mutate outer while inner still alive.
+// Borrowck must fire E2440 — proves the loan is tracked through destructure
+// for V=container, not just V=String. If E2440 does NOT fire → STOP, report O
+// (recon wrong, A1 touches borrowck core).
+function main() -> Integer {
+    let outer: HashMap<Integer, Vector<Integer>> = hashmap_new();
+    let mutable inner_vec: Vector<Integer> = vector_new();
+    inner_vec = push(inner_vec, 42);
+    let outer2 = insert(outer, 1, inner_vec);
+    let r = get(&0 outer2, 1);
+    // Mutate outer while r (borrow of outer2's value) is still alive.
+    let outer3 = insert(outer2, 2, vector_new()); // E2440: outer2 consumed while r alive
+    return match r {
+        ~+ ref_vec => len(ref_vec),
+        ~0 => 99,
+    };
+}

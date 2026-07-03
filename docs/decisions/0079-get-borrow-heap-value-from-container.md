@@ -117,3 +117,62 @@ PropagatedLoan cross-call (`:1100-1143`), M3 builtin consume-marking (`:1148-116
 
 - Bậc C+ — get-borrow heap value kích hoạt sau khi G ký + D implement + O verify máu (E2440 mutate-while-borrowed · E2450 drop-while-borrowed · zero-copy đọc đúng nội dung).
 - Không áp dụng hồi tố. Scalar `&0 get` (ADR-0059) + value-position E1047 GIỮ NGUYÊN.
+
+---
+
+## §AMEND-1 — Get-ref representation phải KHỚP `&0 V` từ local (thin-handle deref)
+
+- **Date:** 2026-07-04 · **Trigger:** A1 (get-borrow generic-V, ADR-0081 cụm A) POISON-1 content-read tooth ĐỎ.
+- **Deciders:** Mentor O (recon+ruling) · **Mentor G KÝ DUYỆT 2026-07-04** ("Invariant là ĐỊNH LUẬT: `&0 V` bit-for-bit identical dù từ local hay get_ref"). Merge cùng A1.
+
+### Lỗ phát hiện (POISON-1, không phải routing test — content-read mới bắt được)
+
+`get(&0 HashMap<Integer,Vector<Integer>>, k) → (&0 Vector<Integer>)?` rồi
+`len(ref_vec)` trả **garbage heap-address** thay vì độ dài thật. Nguyên nhân:
+representation của "`&0 V`" **không nhất quán** giữa hai đường vào khi V là
+thin-handle container (Vector/HashMap, handle 8B):
+
+| V | value-model | `&0 V` từ **local** | `get_ref` trả (TRƯỚC amend) | `len`/`length` mong |
+|---|---|---|---|---|
+| **String** (fat 24B) | 24B inline `{ptr,len,cap}` | address-of-fat (cell) | cell_ptr (địa chỉ fat slot) | đọc len@+8 từ cell → ✅ khớp |
+| **Vector/HashMap** (thin 8B) | body_ptr (handle) | **body_ptr** (handle by-value) | **cell_ptr** (địa chỉ ô chứa handle) | đọc `*ptr`=len; nhận cell → đọc `*cell`=body_ptr = **garbage** ❌ |
+
+`__triet_{vector,hashmap}_len(ptr)` đọc `*ptr` mong **body_ptr**. `get_ref` trả
+**cell_ptr** (một tầng indirection dôi cho thin V). String thoát nạn vì len nằm
+INLINE trong fat-struct tại chính cell_ptr.
+
+### Quyết định — fix PRODUCER (get_ref), stride-conditional. KHÔNG fix consumer.
+
+Invariant khóa: **`&0 V` PHẢI có cùng representation dù lấy từ local hay từ
+`get_ref`** — nếu không, mọi shim tiêu thụ `&0 V` (`len`, `get`, …) phải biết
+nguồn gốc reference (bất khả).
+
+- **Thin V (`value_stride ≤ 8`, handle):** `get_ref` trả `*cell` (deref ô →
+  body_ptr) — khớp `&0 Vector`=body_ptr từ local.
+- **Fat V (`value_stride > 8`, String 24B):** `get_ref` trả `cell_ptr` (địa chỉ
+  fat inline) — GIỮ NGUYÊN, khớp `&0 String`=address từ local.
+- Chỉ áp cho nhánh **found-slot**; not-found vẫn `NULL_SENTINEL`.
+- Accessor sẵn: `vector_stride(body)` (mir_lower.rs:4018) · `hashmap_value_stride(body)`
+  (mir_lower.rs:4345). ~2 dòng/shim.
+
+**Bác option "sửa `len` deref cell trước":** phá `len(&0 v)` từ local (local
+truyền body_ptr, không phải cell) — `len` không thể vừa nhận body_ptr vừa nhận
+cell. Fix consumer = sai hướng.
+
+### Răng cưa (O verify máu)
+
+- Sau fix: `len(ref_vec)` từ `get(&0 HashMap<Integer,Vector<Integer>>,k)` = độ dài
+  THẬT (vd 3). Poison: revert deref (trả cell cho thin V) → garbage → **RED**.
+- String path (fixture 327) KHÔNG đổi (stride 24 > 8, nhánh cell giữ nguyên) —
+  regression guard.
+
+### ⚠️ Cảnh báo bắc cầu sang A2 (ADR-0081) — GHI NHẬN, resolve TRƯỚC WO A2
+
+`get_MUT_ref` (A2) **KHÔNG** deref được — mutable-borrow cần **cell_ptr** để
+ghi handle mới vào slot. Nhưng `push`/`insert` của Triết là **functional**
+(clone + free-old + trả handle MỚI), không in-place thật → mutate inner
+container qua mutable-borrow ĐÒI write-back handle mới vào cell. Mà ADR-0081 P1
+**CẤM write-back**. ⇒ "in-place mutate only" của A2 có nguy cơ **VACUOUS cho
+Vector/HashMap value** (chỉ pop/remove — thu nhỏ — là in-place thật; push/insert
+— mở rộng — cần write-back). **Phải làm rõ phạm vi A2 với G trước khi cấp WO A2.**
+ADR-0081 §2 sẽ ghim cảnh báo này.

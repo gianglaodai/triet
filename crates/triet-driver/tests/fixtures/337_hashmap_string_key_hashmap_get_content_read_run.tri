@@ -1,0 +1,17 @@
+// EXPECT: 1
+// ADR-0079 A1 String-key content-read: HashMap<String,HashMap<Integer,Integer>>
+// get(&0 m, "k") -> (&0 HashMap<Integer,Integer>)? -> len(ref_map) reads the
+// real inner HashMap content (zero-copy, not garbage).
+// Poison-1: comment overload (ref_hashmap_str_hashmap) -> E1041 no matching overload -> RED.
+// Poison-2: revert P0 Reference-unwrap in key_stride extraction -> SIGSEGV -> RED.
+function main() -> Integer {
+    let m: HashMap<String, HashMap<Integer, Integer>> = hashmap_new();
+    let mutable inner: HashMap<Integer, Integer> = hashmap_new();
+    inner = insert(inner, 1, 42);
+    let m2 = insert(m, "key1", inner);
+    let r = get(&0 m2, "key1");
+    return match r {
+        ~+ ref_map => len(ref_map),
+        ~0 => 99,
+    };
+}

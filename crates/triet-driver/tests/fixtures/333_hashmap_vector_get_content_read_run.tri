@@ -1,0 +1,19 @@
+// EXPECT: 3
+// ADR-0079 A1 POISON-1 (content-read): get on HashMap<Integer,Vector<Integer>>
+// must return a USABLE zero-copy `&0 Vector<Integer>`, not garbage.
+// Inner Vector has 3 elements; `len(inner)` must read the real slot content.
+// Poison: comment out the V=Vector<Integer> get overload in env.rs → typecheck
+// fails E1041 (no matching overload), proving the overload is load-bearing.
+function main() -> Integer {
+    let outer: HashMap<Integer, Vector<Integer>> = hashmap_new();
+    let mutable inner_vec: Vector<Integer> = vector_new();
+    inner_vec = push(inner_vec, 10);
+    inner_vec = push(inner_vec, 20);
+    inner_vec = push(inner_vec, 30);
+    let outer2 = insert(outer, 1, inner_vec);
+    let r = get(&0 outer2, 1);
+    return match r {
+        ~+ ref_vec => len(ref_vec),  // MUST be 3
+        ~0 => 99,
+    };
+}
