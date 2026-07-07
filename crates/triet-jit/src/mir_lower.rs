@@ -480,6 +480,39 @@ impl JitContext {
         Ok(())
     }
 
+    /// ADR-0082 B-α §AMEND-1 (T7): tombstone EVERY heap leaf of a struct
+    /// living in `slot`, so a later Drop-glue walk (`collect_heap_leaves`
+    /// again) reads `ptr=0` everywhere → free no-op → no double-free. The
+    /// SHARED core of the two tombstone sites that must stay symmetric with
+    /// the Drop walk (G mandate: "free N tiers → zero N tiers") — used by
+    /// BOTH `Statement::Deinit` (a struct local moved out via `let`/field
+    /// extraction) AND M3 Zeroing-on-Move (a struct local consumed as a
+    /// builtin-shim argument, e.g. `push(v, aStruct)`). A Copy struct yields
+    /// an empty leaf list → no-op. Does NOT handle the String-slot case
+    /// (`ptr@0` zeroed directly by the caller) — String is a heap LEAF
+    /// itself, not an aggregate to walk.
+    fn tombstone_slot_leaves(
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        slot: cranelift_codegen::ir::StackSlot,
+        struct_name: &str,
+    ) -> Result<(), JitError> {
+        let zero = builder.ins().iconst(I64, 0);
+        let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
+        Self::collect_heap_leaves(struct_name, 0, body, 0, &mut leaves)?;
+        for (abs, kind) in leaves {
+            match kind {
+                LeafKind::Heap(_) => {
+                    builder.ins().stack_store(zero, slot, abs);
+                }
+                LeafKind::Enum(_) => {
+                    builder.ins().stack_store(zero, slot, abs + 8);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// ADR-0060 P2: return the total byte size of a `MirType`.
     /// Struct/enum types look up their layout in `body`; scalars are 8.
     fn ty_total_size(body: &Body, ty: &MirType) -> usize {
@@ -1944,34 +1977,17 @@ impl JitContext {
                     {
                         builder.ins().stack_store(zero, *slot, 0);
                     } else if let Some((slot, layout)) = self.struct_slots.get(l) {
-                        // ADR-0066 (C) + ADR-0067 2a: tombstone a heap-struct after
-                        // a move. Zero EVERY heap leaf's ptr@abs_offset so the
-                        // later Drop-glue reads ptr=0 → free no-op → no double-free.
-                        // SYMMETRIC with the Drop walk (G mandate: free N tiers →
-                        // zero N tiers) via the SHARED `collect_heap_leaves` —
-                        // recurses nested structs. A Copy struct yields no leaves →
-                        // no-op (it never gets a Deinit anyway). String slot
-                        // (layout.name=="String") is handled by the branch above.
+                        // ADR-0066 (C) + ADR-0067 2a + ADR-0082 §AMEND-1 (T7):
+                        // tombstone a heap-struct after a move via the SHARED
+                        // `tombstone_slot_leaves` core — SYMMETRIC with the Drop
+                        // walk (G mandate: free N tiers → zero N tiers) and with
+                        // M3 Zeroing-on-Move's struct-arg case (same helper).
+                        // A Copy struct yields no leaves → no-op (it never gets
+                        // a Deinit anyway). String slot (layout.name=="String")
+                        // is handled by the branch above.
                         let slot = *slot;
                         let name = layout.name.clone();
-                        let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
-                        Self::collect_heap_leaves(&name, 0, body, 0, &mut leaves)?;
-                        for (abs, kind) in leaves {
-                            // ADR-0067 2b+: tombstone per leaf kind. A `Heap` leaf
-                            // zeroes the pointer word @abs (free no-op). An `Enum`
-                            // leaf zeroes the PAYLOAD word @abs+8 STATICALLY — ptr=0
-                            // makes the tag-switch free a no-op for ANY heap variant
-                            // — and NEVER touches disc@abs+0 (a valid variant tag,
-                            // 2b-3 law).
-                            match kind {
-                                LeafKind::Heap(_) => {
-                                    builder.ins().stack_store(zero, slot, abs);
-                                }
-                                LeafKind::Enum(_) => {
-                                    builder.ins().stack_store(zero, slot, abs + 8);
-                                }
-                            }
-                        }
+                        Self::tombstone_slot_leaves(builder, body, slot, &name)?;
                     } else if let Some((slot, _layout)) = self.enum_slots.get(l) {
                         // ADR-0067 2b-3: tombstone a heap-enum after a move. Zero
                         // ONLY the payload pointer @payload_offset(8) so the later
@@ -3354,10 +3370,32 @@ impl JitContext {
                                     if !arg_ty.is_copy(Some(body)) {
                                         // ADR-0049 Lát 2 L2-2: Slot-Truth —
                                         // stack_store sole guard for String.
-                                        if let Some((slot, layout)) = self.struct_slots.get(a)
-                                            && layout.name == "String"
-                                        {
-                                            builder.ins().stack_store(zero, *slot, 0);
+                                        // ADR-0082 §AMEND-1 (T7): a NON-String
+                                        // struct-slot-backed arg (e.g. a heap-
+                                        // bearing struct consumed by
+                                        // `push`/`insert`) is NOT captured by
+                                        // the String special case — falling
+                                        // through to `def_var` below would zero
+                                        // the Cranelift VARIABLE, which
+                                        // Drop-for-struct never reads (it reads
+                                        // the StackSlot via `struct_slots`) →
+                                        // the slot's original heap leaves stay
+                                        // live → double-free when both the
+                                        // element-free loop (inside the callee's
+                                        // buffer) AND this local's own Drop free
+                                        // the same pointer. Route through the
+                                        // SAME `tombstone_slot_leaves` core the
+                                        // Deinit site uses — symmetric zeroing.
+                                        if let Some((slot, layout)) = self.struct_slots.get(a) {
+                                            if layout.name == "String" {
+                                                builder.ins().stack_store(zero, *slot, 0);
+                                            } else {
+                                                let slot = *slot;
+                                                let name = layout.name.clone();
+                                                Self::tombstone_slot_leaves(
+                                                    builder, body, slot, &name,
+                                                )?;
+                                            }
                                         } else {
                                             let var = self.var(*a);
                                             builder.def_var(var, zero);
