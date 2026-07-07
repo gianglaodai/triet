@@ -972,6 +972,7 @@ impl JitContext {
     fn emit_heap_free_at(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        body: &Body,
         addr: cranelift_codegen::ir::Value,
         payload_ty: &MirType,
     ) -> Result<(), JitError> {
@@ -986,7 +987,7 @@ impl JitContext {
         // inside a struct/enum/another vector recurses correctly.
         if let MirType::Vector(inner) = payload_ty {
             let inner = (**inner).clone();
-            self.emit_vector_free_value(builder, ptr, &inner)?;
+            self.emit_vector_free_value(builder, body, ptr, &inner)?;
             return Ok(());
         }
         // ADR-0078/0080: a HashMap leaf frees its heap KEYS then VALUES
@@ -996,7 +997,7 @@ impl JitContext {
         if let MirType::HashMap(k, v) = payload_ty {
             let key_ty = (**k).clone();
             let value_ty = (**v).clone();
-            self.emit_hashmap_free_value(builder, ptr, &key_ty, &value_ty)?;
+            self.emit_hashmap_free_value(builder, body, ptr, &key_ty, &value_ty)?;
             return Ok(());
         }
         let free_name = if matches!(payload_ty, MirType::String) {
@@ -1031,10 +1032,11 @@ impl JitContext {
     fn emit_vector_free_value(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        body: &Body,
         ptr_val: cranelift_codegen::ir::Value,
         inner_ty: &MirType,
     ) -> Result<(), JitError> {
-        self.emit_vector_element_free_loop(builder, ptr_val, inner_ty)?;
+        self.emit_vector_element_free_loop(builder, body, ptr_val, inner_ty)?;
         let func_id = self.get_or_declare_shim("__triet_vector_free")?;
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
         builder.ins().call(func_ref, &[ptr_val]);
@@ -1054,6 +1056,7 @@ impl JitContext {
     fn emit_vector_element_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        body: &Body,
         ptr_val: cranelift_codegen::ir::Value,
         inner_ty: &MirType,
     ) -> Result<(), JitError> {
@@ -1099,7 +1102,7 @@ impl JitContext {
         builder.seal_block(body_bb);
         let off = builder.ins().imul(i, stride);
         let elem_addr = builder.ins().iadd(data, off);
-        self.emit_heap_free_at(builder, elem_addr, &eff)?;
+        self.emit_heap_free_at(builder, body, elem_addr, &eff)?;
         let i_next = builder.ins().iadd_imm(i, 1);
         builder.ins().jump(header_bb, &[BlockArg::from(i_next)]);
 
@@ -1129,14 +1132,15 @@ impl JitContext {
     fn emit_hashmap_free_value(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        body: &Body,
         ptr_val: cranelift_codegen::ir::Value,
         key_ty: &MirType,
         value_ty: &MirType,
     ) -> Result<(), JitError> {
         if key_ty.is_any_heap() {
-            self.emit_hashmap_key_free_loop(builder, ptr_val)?;
+            self.emit_hashmap_key_free_loop(builder, body, ptr_val)?;
         }
-        self.emit_hashmap_value_free_loop(builder, ptr_val, value_ty)?;
+        self.emit_hashmap_value_free_loop(builder, body, ptr_val, value_ty)?;
         let func_id = self.get_or_declare_shim("__triet_hashmap_free")?;
         let func_ref = self.module.declare_func_in_func(func_id, builder.func);
         builder.ins().call(func_ref, &[ptr_val]);
@@ -1153,6 +1157,7 @@ impl JitContext {
     fn emit_hashmap_key_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        body: &Body,
         ptr_val: cranelift_codegen::ir::Value,
     ) -> Result<(), JitError> {
         let mem = cranelift_codegen::ir::MemFlags::new();
@@ -1223,7 +1228,7 @@ impl JitContext {
         let c16b = builder.ins().iconst(I64, 16);
         let key_off = builder.ins().iadd(c16b, slot_off);
         let key_cell = builder.ins().iadd(ptr_val, key_off);
-        self.emit_heap_free_at(builder, key_cell, &MirType::String)?;
+        self.emit_heap_free_at(builder, body, key_cell, &MirType::String)?;
         builder.ins().jump(skip_bb, &[]);
 
         builder.switch_to_block(skip_bb);
@@ -1246,6 +1251,7 @@ impl JitContext {
     fn emit_hashmap_value_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        body: &Body,
         ptr_val: cranelift_codegen::ir::Value,
         value_ty: &MirType,
     ) -> Result<(), JitError> {
@@ -1315,7 +1321,7 @@ impl JitContext {
         let cell_base = builder.ins().iadd_imm(key_stride, 16);
         let value_off = builder.ins().iadd(cell_base, slot_off);
         let value_cell = builder.ins().iadd(ptr_val, value_off);
-        self.emit_heap_free_at(builder, value_cell, &eff)?;
+        self.emit_heap_free_at(builder, body, value_cell, &eff)?;
         builder.ins().jump(skip_bb, &[]);
 
         builder.switch_to_block(skip_bb);
@@ -1388,13 +1394,13 @@ impl JitContext {
         // ── free_pos_bb ──
         builder.switch_to_block(free_pos_bb);
         let pos_addr = builder.ins().stack_addr(I64, slot, 8);
-        self.emit_heap_free_at(builder, pos_addr, &value_type)?;
+        self.emit_heap_free_at(builder, body, pos_addr, &value_type)?;
         builder.ins().jump(merge_bb, &[]);
 
         // ── free_neg_bb ──
         builder.switch_to_block(free_neg_bb);
         let neg_addr = builder.ins().stack_addr(I64, slot, 8);
-        self.emit_heap_free_at(builder, neg_addr, &error_type)?;
+        self.emit_heap_free_at(builder, body, neg_addr, &error_type)?;
         builder.ins().jump(merge_bb, &[]);
 
         // ── noop_bb (Zero / scalar payload) ──
@@ -1501,7 +1507,7 @@ impl JitContext {
             builder.switch_to_block(arm_bb);
             builder.seal_block(arm_bb);
             let addr = builder.ins().iadd_imm(base_addr, payload_off);
-            self.emit_heap_free_at(builder, addr, &payload_ty)?;
+            self.emit_heap_free_at(builder, body, addr, &payload_ty)?;
             builder.ins().jump(merge_bb, &[]);
             // ── fall through: test the next variant ──
             builder.switch_to_block(next_bb);
@@ -2521,7 +2527,7 @@ impl JitContext {
                             // only the ACTIVE variant's payload is freed.
                             match kind {
                                 LeafKind::Heap(fty) => {
-                                    self.emit_heap_free_at(builder, addr, &fty)?;
+                                    self.emit_heap_free_at(builder, body, addr, &fty)?;
                                 }
                                 LeafKind::Enum(enum_name) => {
                                     self.emit_enum_drop_glue_at(builder, body, &enum_name, addr)?;
@@ -2554,7 +2560,7 @@ impl JitContext {
                     if let MirType::Vector(inner) = eff {
                         let inner = (**inner).clone();
                         let ptr = builder.use_var(self.var(*local));
-                        self.emit_vector_free_value(builder, ptr, &inner)?;
+                        self.emit_vector_free_value(builder, body, ptr, &inner)?;
                         continue;
                     }
                     // ADR-0078/0080: HashMap Drop frees heap KEYS then VALUES
@@ -2564,7 +2570,7 @@ impl JitContext {
                         let key_ty = (**k).clone();
                         let value_ty = (**v).clone();
                         let ptr = builder.use_var(self.var(*local));
-                        self.emit_hashmap_free_value(builder, ptr, &key_ty, &value_ty)?;
+                        self.emit_hashmap_free_value(builder, body, ptr, &key_ty, &value_ty)?;
                         continue;
                     }
                     let free_shim_name = if ty.is_string_repr() {
@@ -3323,7 +3329,7 @@ impl JitContext {
                             builder.ins().brif(is_update, free_bb, &[], merge_bb, &[]);
                             builder.switch_to_block(free_bb);
                             builder.seal_block(free_bb);
-                            self.emit_heap_free_at(builder, key_addr, &MirType::String)?;
+                            self.emit_heap_free_at(builder, body, key_addr, &MirType::String)?;
                             builder.ins().jump(merge_bb, &[]);
                             builder.switch_to_block(merge_bb);
                             builder.seal_block(merge_bb);
@@ -3336,7 +3342,7 @@ impl JitContext {
                         // ordering doesn't affect it — kept alongside D.2 above
                         // for readability (both precede M3).
                         if let Some(key_out_ptr) = remove_key_free_ptr {
-                            self.emit_heap_free_at(builder, key_out_ptr, &MirType::String)?;
+                            self.emit_heap_free_at(builder, body, key_out_ptr, &MirType::String)?;
                         }
 
                         // M3: Zeroing-on-Move — zero consume-arg variables after call.
