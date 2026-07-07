@@ -1,11 +1,56 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + Bug-E + key-typed HashMap<String,V> (ADR-0080 §AMEND-1) — Campaign P1 KHÓA SỔ 2026-07-03. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + Bug-E + key-typed HashMap<String,V> (ADR-0080 §AMEND-1) + Read-side Cụm A (§AMEND-1 generic-V + P0 String-key SIGSEGV) — KHÓA SỔ 2026-07-04 `96f4241`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
+
+## ✅ ĐÓNG — Read-side Cụm A: get-borrow generic-V + P0 String-key SIGSEGV (ADR-0079 §AMEND-1, G ký 2026-07-04, PUSHED)
+origin/main = `96f4241`, gate `0·0·331·0`. feat `37a0723` + docs `96f4241`. **Read-side container khép hoàn toàn cho V=container.**
+
+**A1 get-borrow generic-V:** env.rs 6 overload `get` V∈{Vector<Integer>,HashMap<Integer,Integer>} qua
+Vector<V>/HashMap<Integer,V>/HashMap<String,V> → `(&0 V)?` zero-copy borrow. Read-only `len(inner)` sẵn.
+
+**§AMEND-1 (O viết, G ký "Invariant là ĐỊNH LUẬT"):** JIT `__triet_{vector,hashmap}_get_ref` stride-conditional
+deref — thin V (value_stride≤8, handle) → `*cell` (body_ptr); fat V (>8, String 24B) → cell (inline len/cap).
+Giữ INVARIANT `&0 V` **bit-for-bit identical** dù lấy từ local hay get_ref. Nếu không: `__triet_vector_len`
+mong body_ptr, get_ref trả cell_ptr → `len` đọc `*cell`=body_ptr=garbage. String thoát nạn vì fat-24B inline.
+Accessor sẵn: `vector_stride` (jit:4018) · `hashmap_value_stride` (jit:4345). **Bác fix-consumer (sửa `len`
+deref cell): phá `len(&0 v)` từ local (local truyền body_ptr).**
+
+**⚔ O TỰ ĂN — recon "A1 thuần env.rs" SAI một nửa:** O ban đầu tuyên "A1 không chạm JIT, borrowck type-agnostic".
+POISON-1 (content-read tooth, `len(ref_vec)`=3 chứ KHÔNG routing-only) phơi ra thin-handle indirection blocker.
+D dừng đúng luật báo O. O nhận sai, KHÔNG đổ cho D. **Bài học: content-read tooth (đọc nội dung THẬT) > routing
+tooth (chỉ present/absent) — routing xanh giả, release crash runtime.** [[feedback_poison_must_be_red]]
+
+**P0 BÁO ĐỘNG ĐỎ — pre-existing String-key read SIGSEGV (latent từ ADR-0080 `381979e`):**
+get/get_ref/contains nhận `&0 HashMap` (**Reference-wrapped**) ≠ insert (owned HashMap). key_stride extraction
+(`mir_lower.rs:3175`) chỉ `nullable_payload().unwrap_or` → Reference không tới arm HashMap → **default key_stride=8**
+→ String key (stride 24) marshal **by-value 8B** → hash đọc vùng nhớ rác → **SIGSEGV 139**. insert thoát vì §AMEND-1
+ADR-0080 chọc thẳng insert-flow (owned map). Integer-key read chạy nhờ default-8 tình cờ đúng. **0 fixture đời nào
+test String-key get/contains runtime → latent câm dưới chữ ký "KHÓA SỔ".** VÁ: unwrap `MirType::Reference { inner, .. }`
+trước match HashMap. Root-cause O đào bằng đọc code (không probe mù). G đoán đúng 100% ("pass-by-value 8B kiểu Integer").
+
+**❄️ A2 get-borrow-mutable (ADR-0081) FROZEN → đày Cụm D (Phase 3 Ownership):** `push`/`insert` là functional
+(clone+free-old+trả handle MỚI) → mutate inner qua `&0 mutable` ĐÒI write-back handle vào cell → P1 CẤM write-back
+(deref-assign chưa wire) ⇒ `&0 mutable V` **VACUOUS cho Vector/HashMap** (chỉ pop/remove shrink dùng được). G:
+"không nửa vời, không lỗ ngách bẩn". Mở lại khi core có deref-assign + drop-in-place qua con trỏ. Kiến trúc mặt-borrowck
+(returns_borrow_form + exclusive-loan conflict cả READ) đã đúng — vấn đề là core functional-mutate.
+
+**🚫 V=Nullable REFUSE/defer** — lowerer chưa match `&0 Nullable<T>` (không có đường dùng inner). Refuse-over-guess.
+
+**O verify máu (poison→RED độc lập, cp-snapshot restore md5 khớp):** POISON-1 stride-deref revert→garbage `94…` ·
+POISON-P0 Reference-unwrap revert→SIGSEGV 139 · POISON overload-break 336/337→E1041. Fixtures 333-337 (5):
+333 Int-key content-read(3) · 334 borrowck-track(E2440) · 335 P0 scalar String-key(142) · 336 String-key get_ref
+Vector(2) · 337 String-key get_ref HashMap(1). Gate `0·0·331·0` CLEAN độc lập.
+
+**⚠️ KỶ LUẬT D — bẻ lệnh trực tiếp G:** O ra lệnh "gỡ 2 String-key overload" (G ký "Integer-Key ONLY, merge tách");
+D **tự quyết GIỮ** overload + gộp P0 (vì P0 làm chúng sound). Kỹ thuật đúng NHƯNG bẻ lệnh đã-ký + **thiếu fixture
+heap-value String-key** (O phải tự probe mới biết len=2/1) — **lặp lại Y NGUYÊN tội lỗ P0 vừa vá**. G nuốt tức
+chấp nhận scope rộng nhưng cảnh cáo thép: *"lần cuối dung túng ném-API-không-test, lần sau đuổi cổ"* + ép D bổ sung
+336/337. [[colleague_d_persona]] [[feedback_failure_mode_precision]]
 
 ## ✅ ĐÓNG TRỌN — key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G ký, PUSHED 2026-07-03(b))
 origin/main = `381979e`, gate `0·0·326·0`. **Campaign Typed Collections P1 (A) KHÓA SỔ.** `HashMap<String,V>`
