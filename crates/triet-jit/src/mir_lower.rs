@@ -3186,6 +3186,21 @@ impl JitContext {
                                             .into(),
                                     ));
                                 }
+                            } else if let Some((slot, _)) = self.struct_slots.get(&elem) {
+                                // ADR-0082 T9: an 8B struct-slot-backed element
+                                // (e.g. a single-field struct wrapping ONE
+                                // scalar/Vector/HashMap handle) still lives in a
+                                // StackSlot, not the Cranelift Variable — a
+                                // struct-typed local's Variable is never
+                                // populated (only plain scalar/handle locals use
+                                // def_var/use_var). Reading `self.var(elem)` here
+                                // silently loaded 0/garbage instead of the real
+                                // 8-byte field, so the pushed element's content
+                                // (e.g. a Vector<String> handle) turned into 0 →
+                                // buffer holds a dead handle → drop frees nothing
+                                // → silent leak. Mirror the `bung_fields`/concat
+                                // pattern: read the ONE field via `stack_load`.
+                                builder.ins().stack_load(I64, *slot, 0)
                             } else {
                                 builder.use_var(self.var(elem))
                             };
@@ -3442,6 +3457,25 @@ impl JitContext {
                                 };
                                 builder.ins().stack_store(slot_len, *slot, 8);
                                 builder.ins().stack_store(slot_cap, *slot, 16);
+                            } else if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
+                                && layout.name != "String"
+                            {
+                                // ADR-0082 T9 (symmetric with the push fix): an 8B
+                                // struct-slot-backed dest reached via the generic
+                                // scalar-return path — the ONLY realistic producer
+                                // is `__triet_vector_pop`'s non-fat (stride<=8)
+                                // return, which already hands back the popped
+                                // element's true content as `ret_val` (a single
+                                // i64 field, verified against the shim's Rust
+                                // impl). `def_var` above wrote it to the
+                                // Variable, but struct reads (field access, Drop)
+                                // go through the StackSlot — never populated →
+                                // stale/garbage content (e.g. a popped
+                                // `Vector<String>` handle silently replaced by
+                                // whatever leftover bytes sat in the slot).
+                                // total_size <= 8 for a Struct type is exactly 8
+                                // (INV-B-α 8B-granular), so one word suffices.
+                                builder.ins().stack_store(ret_val, *slot, 0);
                             }
                         }
 
