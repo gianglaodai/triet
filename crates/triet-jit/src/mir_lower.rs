@@ -531,15 +531,22 @@ impl JitContext {
         }
     }
 
-    /// ADR-0077 Typed Vector P1: per-element STRIDE for a `Vector<T>` element
-    /// type. A compile-time constant for every built-in element — the crux that
-    /// keeps Vector P1 ⊥ native-layout. Scalar / handle / `Nullable(scalar)` =
-    /// 8; `String` / `Nullable(String)` = 24; `Vector` / `HashMap` handle = 8.
-    /// `Struct` / `Enum` (and any other non-built-in) → REFUSE (`JitError`) —
-    /// the P1/P2 boundary (`Vector<UserStruct>` needs native-layout, deferred).
+    /// ADR-0077 Typed Vector P1 / ADR-0082 B-α: per-element STRIDE for a
+    /// `Vector<T>` element type (also reused for `HashMap<K,V>` key/value
+    /// strides — callers that must stay CLOSED to aggregate K/V for this
+    /// slice route through the T8 refuse-guard BEFORE reaching here). A
+    /// compile-time constant for every element type — the crux that keeps
+    /// this machinery ⊥ native sub-8B packing (B-β, permanently out of
+    /// scope). Scalar / handle / `Nullable(scalar)` = 8; `String` /
+    /// `Nullable(String)` = 24; `Vector` / `HashMap` handle = 8; **`Struct`
+    /// (ADR-0082 B-α) = `total_size` from `body.struct_layouts`** — INV-B-α:
+    /// identical to the `StackSlot` layout, so drop-glue offsets computed by
+    /// `collect_heap_leaves` stay correct whether the struct lives in a
+    /// `StackSlot` or a collection cell. `Enum`/`Capability`/`Outcome` → still
+    /// REFUSE (`Enum` by-value element opens in Slice B).
     ///
     /// ⚠️ NOT `ty_total_size` (which returns 8 for `String` — wrong stride 24).
-    fn vector_elem_size(ty: &MirType) -> Result<i64, JitError> {
+    fn vector_elem_size(body: &Body, ty: &MirType) -> Result<i64, JitError> {
         // Nullable rides its payload's repr (sentinel in the same slot width).
         let eff = ty.nullable_payload().unwrap_or(ty);
         match eff {
@@ -554,16 +561,50 @@ impl JitContext {
             | MirType::Vector(_)
             | MirType::HashMap(..)
             | MirType::Reference { .. } => Ok(8),
-            MirType::Struct(_)
-            | MirType::Enum(_)
-            | MirType::Capability(_)
-            | MirType::Outcome { .. } => Err(JitError::Unsupported(format!(
-                "Vector<{eff}>: element type is not a built-in known-size type \
-                     (ADR-0077 P1 refuses Struct/Enum/Capability/Outcome elements — \
-                     by-value aggregate elements need native-layout, deferred to P2)"
-            ))),
+            MirType::Struct(name) => body
+                .struct_layouts
+                .iter()
+                .find(|l| l.name == *name)
+                .map(|l| i64::try_from(l.total_size).unwrap_or(i64::MAX))
+                .ok_or_else(|| JitError::Unsupported(format!("unknown struct layout: {name}"))),
+            MirType::Enum(_) | MirType::Capability(_) | MirType::Outcome { .. } => {
+                Err(JitError::Unsupported(format!(
+                    "Vector<{eff}>: element type is not a built-in known-size type \
+                     (ADR-0082 B-α refuses Enum/Capability/Outcome elements — \
+                     Enum by-value element deferred to Slice B)"
+                )))
+            }
             MirType::Nullable(_) => unreachable!("nullable_payload already stripped one layer"),
         }
+    }
+
+    /// ADR-0082 B-α T8 — HARD REFUSE for `HashMap<K,V>` when either `K` or
+    /// `V` is a `Struct`/`Enum`. `vector_elem_size` above now computes a
+    /// valid stride for `Struct` (needed for `Vector<UserStruct>`, Slice A),
+    /// which would otherwise let `HashMap<_,UserStruct>` marshal (push/insert
+    /// by-pointer) silently — but the `HashMap` free-loops
+    /// (`emit_hashmap_key_free_loop`/`emit_hashmap_value_free_loop`) are NOT
+    /// wired for a `Struct` leaf this slice (that's Slice C), so a
+    /// heap-bearing struct key/value would compile, marshal, and then LEAK
+    /// silently on `Drop` — the exact latent-bug shape as the ADR-0080
+    /// String-key SIGSEGV (compiles fine, wrong/dangerous at runtime, zero
+    /// fixture catches it). Refuse EXPLICITLY at every `HashMap` op emit-site
+    /// instead: no silent leak, no silent guess. Only fires on
+    /// `Struct`/`Enum` — `HashMap<Integer,_>` / `HashMap<String,String>` are
+    /// unaffected (verified: gate unchanged).
+    fn refuse_hashmap_aggregate_kv(key_ty: &MirType, value_ty: &MirType) -> Result<(), JitError> {
+        let is_aggregate = |t: &MirType| {
+            let eff = t.nullable_payload().unwrap_or(t);
+            matches!(eff, MirType::Struct(_) | MirType::Enum(_))
+        };
+        if is_aggregate(key_ty) || is_aggregate(value_ty) {
+            return Err(JitError::Unsupported(
+                "HashMap<_,aggregate>: Struct/Enum key or value is ADR-0082 Slice C, \
+                 not yet opened (Slice A only opens Vector<UserStruct>)"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// ADR-0060 P2-Boundary: base address of a local + byte offset. Slot-backed
@@ -2892,7 +2933,7 @@ impl JitContext {
                             let vty = &body.local_decls[args[0].0].ty;
                             match vty.nullable_payload().unwrap_or(vty) {
                                 MirType::Vector(inner) => {
-                                    Self::vector_elem_size(inner).is_ok_and(|s| s > 8)
+                                    Self::vector_elem_size(body, inner).is_ok_and(|s| s > 8)
                                 }
                                 _ => false,
                             }
@@ -2903,8 +2944,9 @@ impl JitContext {
                             && {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
-                                    MirType::HashMap(_, v) => {
-                                        Self::vector_elem_size(v).is_ok_and(|s| s > 8)
+                                    MirType::HashMap(k, v) => {
+                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        Self::vector_elem_size(body, v).is_ok_and(|s| s > 8)
                                     }
                                     _ => false,
                                 }
@@ -3020,7 +3062,7 @@ impl JitContext {
                             let stride = {
                                 let dty = &body.local_decls[dest[0].0].ty;
                                 match dty.nullable_payload().unwrap_or(dty) {
-                                    MirType::Vector(inner) => Self::vector_elem_size(inner)?,
+                                    MirType::Vector(inner) => Self::vector_elem_size(body, inner)?,
                                     _ => 8,
                                 }
                             };
@@ -3032,11 +3074,18 @@ impl JitContext {
                             // ADR-0080 Mũi A: append key_stride THEN value_stride
                             // as 3rd/4th args (was value_stride-only pre-0080).
                             // Strides from HashMap(K, V) → vector_elem_size(K/V).
+                            // ADR-0082 T8: refuse Struct/Enum K or V here — the
+                            // FIRST choke point where an aggregate could enter a
+                            // HashMap (Slice C, not yet open).
                             let (key_stride, value_stride) = {
                                 let dty = &body.local_decls[dest[0].0].ty;
                                 match dty.nullable_payload().unwrap_or(dty) {
                                     MirType::HashMap(k, v) => {
-                                        (Self::vector_elem_size(k)?, Self::vector_elem_size(v)?)
+                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        (
+                                            Self::vector_elem_size(body, k)?,
+                                            Self::vector_elem_size(body, v)?,
+                                        )
                                     }
                                     _ => (8, 8),
                                 }
@@ -3055,7 +3104,7 @@ impl JitContext {
                             let stride = {
                                 let vty = &body.local_decls[args[0].0].ty;
                                 match vty.nullable_payload().unwrap_or(vty) {
-                                    MirType::Vector(inner) => Self::vector_elem_size(inner)?,
+                                    MirType::Vector(inner) => Self::vector_elem_size(body, inner)?,
                                     _ => 8,
                                 }
                             };
@@ -3083,11 +3132,17 @@ impl JitContext {
                             // scratch i64 slot the shim writes 1/0 into. Only
                             // allocated (and only checked post-call) when the key
                             // is String — Integer keys never redundant-free.
+                            // ADR-0082 T8: refuse Struct/Enum K or V — HashMap
+                            // aggregate value/key is Slice C, not yet open.
                             let (key_stride, value_stride) = {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
                                     MirType::HashMap(k, v) => {
-                                        (Self::vector_elem_size(k)?, Self::vector_elem_size(v)?)
+                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        (
+                                            Self::vector_elem_size(body, k)?,
+                                            Self::vector_elem_size(body, v)?,
+                                        )
                                     }
                                     _ => (8, 8),
                                 }
@@ -3145,7 +3200,10 @@ impl JitContext {
                             let key_stride = {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
-                                    MirType::HashMap(k, _) => Self::vector_elem_size(k)?,
+                                    MirType::HashMap(k, v) => {
+                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        Self::vector_elem_size(body, k)?
+                                    }
                                     _ => 8,
                                 }
                             };
@@ -3214,7 +3272,10 @@ impl JitContext {
                                     other => other,
                                 };
                                 match inner {
-                                    MirType::HashMap(k, _) => Self::vector_elem_size(k)?,
+                                    MirType::HashMap(k, v) => {
+                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        Self::vector_elem_size(body, k)?
+                                    }
                                     _ => 8,
                                 }
                             };

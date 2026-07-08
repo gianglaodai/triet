@@ -378,16 +378,31 @@ fn stride_24_push_get_readback() {
     mir_lower::__triet_vector_free(v);
 }
 
-// ── Teeth #4 (negative) — Vector<UserStruct> REFUSED at JIT (P1/P2 boundary) ──
-// A by-value `Vector<Struct>` element needs native-layout (P2). `vector_elem_size`
-// returns a `JitError` for Struct/Enum elements, so the vector_alloc lowering
-// REFUSES (no silent miscompile, no panic). Poison: give Struct a stride in
-// `vector_elem_size` → this body would compile → the boundary leaks into P2.
+// ── Teeth #4 — Vector<Point> (Copy struct) COMPILES at JIT (ADR-0082 B-α) ──
+// ADR-0082 B-α (Slice A) moves the P1/P2 boundary `vector_of_userstruct_
+// refused_at_jit` used to pin: `vector_elem_size` now resolves a real stride
+// for `Struct` from `body.struct_layouts` (INV-B-α — same layout as the
+// StackSlot repr) instead of refusing unconditionally. `Vector<UserStruct>`
+// is exactly the Slice A target, so a by-value Copy-struct element (no heap
+// leaf) must now compile — this replaces the old negative assertion.
+// `Enum`/`Capability`/`Outcome` elements are UNCHANGED refuse (Slice B+, not
+// this test's concern). Poison: revert the `Struct` arm of `vector_elem_size`
+// to `Err` → this body would fail to compile again.
 
 #[test]
-fn vector_of_userstruct_refused_at_jit() {
+fn vector_of_copy_struct_compiles_at_jit() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut b = MirBuilder::new("main", MirType::Integer);
+    // ADR-0082 INV-B-α: `vector_elem_size`'s Struct arm looks up `Point` in
+    // `body.struct_layouts` — same layout a StackSlot-backed `Point` local
+    // would use.
+    b.add_struct_layout(triet_mir::StructLayout::compute(
+        "Point",
+        &[
+            ("x".to_string(), MirType::Integer, 8, 8),
+            ("y".to_string(), MirType::Integer, 8, 8),
+        ],
+    ));
     let bb = b.new_block();
     let len0 = b.new_local();
     let cap0 = b.new_local();
@@ -420,14 +435,8 @@ fn vector_of_userstruct_refused_at_jit() {
 
     body.verify().expect("MIR verify (structurally valid)");
     let mut ctx = JitContext::with_shims(&shims());
-    let msg = match ctx.compile(&body) {
-        Ok(_) => panic!("Vector<UserStruct> must be REFUSED at JIT, but it compiled"),
-        Err(e) => format!("{e}"),
-    };
-    assert!(
-        msg.contains("not a built-in") || msg.contains("native-layout"),
-        "ADR-0077 P1/P2 boundary: Vector<Struct> refuse message, got: {msg}"
-    );
+    ctx.compile(&body)
+        .expect("Vector<Point> (Copy struct, ADR-0082 B-α Slice A) must compile at JIT");
 }
 
 // ── Teeth #1 — push N String → drop → STR_FREE == N ──
