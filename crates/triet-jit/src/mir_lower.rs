@@ -1050,6 +1050,14 @@ impl JitContext {
         addr: cranelift_codegen::ir::Value,
         payload_ty: &MirType,
     ) -> Result<(), JitError> {
+        // ADR-0082 B-α DP-2 (T4, order is life-or-death): `Struct` is NOT
+        // `is_any_heap()` (it's an aggregate, not a heap handle) — this check
+        // MUST precede the early-return below, else every struct leaf is
+        // silently skipped and its heap fields LEAK.
+        if let MirType::Struct(name) = payload_ty {
+            let name = name.clone();
+            return self.emit_struct_drop_glue_at(builder, body, &name, addr);
+        }
         if !payload_ty.is_any_heap() {
             return Ok(());
         }
@@ -1134,10 +1142,17 @@ impl JitContext {
         ptr_val: cranelift_codegen::ir::Value,
         inner_ty: &MirType,
     ) -> Result<(), JitError> {
-        // Nullable rides the inner repr; only a heap element needs per-element drop.
+        // Nullable rides the inner repr; only a heap/heap-leaf-bearing element
+        // needs per-element drop. ADR-0082 B-α DP-1 (T5): `Struct` is NOT
+        // `is_any_heap()` — a plain `is_any_heap()` guard would SKIP a struct
+        // element wholesale, leaking every heap leaf inside it (e.g.
+        // `Vector<User>` where `User { name: String }`). `aggregate_needs_drop`
+        // additionally descends `Struct` via `collect_heap_leaves`; a Copy
+        // struct (empty leaf list) still returns `false` → no-op loop, byte-
+        // compat with `Vector<Point>` (all-scalar struct, DP-5).
         let eff = inner_ty.nullable_payload().unwrap_or(inner_ty).clone();
-        if !eff.is_any_heap() {
-            return Ok(()); // scalar / handle element → no loop (byte-compat)
+        if !Self::aggregate_needs_drop(body, &eff)? {
+            return Ok(()); // scalar / handle / Copy-struct element → no loop
         }
         let mem = cranelift_codegen::ir::MemFlags::new();
         let zero = builder.ins().iconst(I64, 0);
@@ -1592,6 +1607,57 @@ impl JitContext {
         builder.switch_to_block(merge_bb);
         builder.seal_block(merge_bb);
         Ok(())
+    }
+
+    /// ADR-0082 B-α §4 mối nối 1 (T3): address-based recursive drop-glue for
+    /// a `Struct` leaf — the struct analog of `emit_enum_drop_glue_at`.
+    /// `base_addr` points at the struct's first byte; walks EVERY heap leaf
+    /// reachable from it (`collect_heap_leaves`, nested structs flattened,
+    /// enum fields pushed as `LeafKind::Enum`) and frees/tombstones each one.
+    /// A Copy struct (no heap leaf) → empty leaf list → no-op (DP-5, byte-
+    /// compat with `Vector<Point>`-style all-scalar structs). Used by
+    /// `emit_heap_free_at`'s Struct arm (T4) — so a `Struct` element of a
+    /// `Vector`/`HashMap`/another struct/enum recurses correctly through the
+    /// same entry.
+    fn emit_struct_drop_glue_at(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        struct_name: &str,
+        base_addr: cranelift_codegen::ir::Value,
+    ) -> Result<(), JitError> {
+        let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
+        Self::collect_heap_leaves(struct_name, 0, body, 0, &mut leaves)?;
+        for (off, kind) in leaves {
+            let addr = builder.ins().iadd_imm(base_addr, i64::from(off));
+            match kind {
+                LeafKind::Heap(ty) => {
+                    self.emit_heap_free_at(builder, body, addr, &ty)?;
+                }
+                LeafKind::Enum(enum_name) => {
+                    self.emit_enum_drop_glue_at(builder, body, &enum_name, addr)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// ADR-0082 B-α DP-1 (T5): does an element/leaf TYPE need a per-instance
+    /// drop pass at all? `true` for a plain heap type; for `Struct`,
+    /// descends `collect_heap_leaves` and answers `true` iff at least one
+    /// leaf is found — a Copy struct (e.g. `Point { x: Integer, y: Integer
+    /// }`) yields an empty leaf list → `false` → the caller's element-free
+    /// loop stays a no-op, byte-compatible with an all-scalar `Vector<Point>`
+    /// (no runtime loop, no `__triet_string_free` shim declared).
+    fn aggregate_needs_drop(body: &Body, ty: &MirType) -> Result<bool, JitError> {
+        match ty {
+            MirType::Struct(name) => {
+                let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
+                Self::collect_heap_leaves(name, 0, body, 0, &mut leaves)?;
+                Ok(!leaves.is_empty())
+            }
+            t => Ok(t.is_any_heap()),
+        }
     }
 
     /// Build the Cranelift IR for a single function body.
