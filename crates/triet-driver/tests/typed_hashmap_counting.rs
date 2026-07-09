@@ -747,3 +747,351 @@ fn hashmap_integer_key_source_compat() {
         "HashMap<Integer,Integer> insert/get readback via source"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADR-0082 B-α Slice C (HashMap<_, aggregate> VALUE) — Mentor O WO, 2026-07-10
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Scope: insert + Drop + alloc opened for a Struct/Enum VALUE. get/get_ref/
+// remove/contains and ANY key-aggregate stay refused. `remove` typechecks
+// fine (V is unconstrained for `remove<K,V>`) so it needs an explicit JIT
+// refuse — tested source-level in
+// `vector_userstruct_counting.rs::hashmap_struct_value_remove_refused_at_jit`
+// (that test SUPERSEDES the former `hashmap_struct_value_refused_at_jit`,
+// which asserted `insert` refused — Slice C deliberately flips that; see its
+// doc comment for the LUẬT 3 repurposing rationale). `get`/`get_ref`/
+// `contains` and any key-aggregate are unreachable from source at all
+// (verified directly, Luật 4 — see the T5 section below); their guards are
+// exercised via hand-built MIR here.
+
+fn run_source(source: &str, shim_list: &[ShimSymbol]) -> i64 {
+    let (program, parse_errors) = triet_parser::parse(source);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
+    assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+    let bodies = triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
+        .expect("lowering failed");
+    for body in &bodies {
+        body.verify().expect("MIR verify");
+    }
+    let body_refs: Vec<&triet_mir::Body> = bodies.iter().collect();
+    let mut ctx = JitContext::with_shims(shim_list);
+    let compiled = ctx.compile_multi(&body_refs).expect("must JIT-compile");
+    let main = compiled.get("main").expect("main compiled");
+    unsafe { main.call_i64_0() }
+}
+
+fn shims_with_vector() -> Vec<ShimSymbol> {
+    let mut v = shims();
+    v.push(ShimSymbol::fn_3_1(
+        "__triet_vector_alloc",
+        mir_lower::__triet_vector_alloc,
+    ));
+    v.push(ShimSymbol::fn_1_0(
+        "__triet_vector_free",
+        mir_lower::__triet_vector_free,
+    ));
+    v.push(ShimSymbol::fn_2_1(
+        "__triet_vector_push",
+        mir_lower::__triet_vector_push,
+    ));
+    v
+}
+
+/// T1 (F1): `HashMap<Integer, User>` — a FAT (>8B) Struct value — insert 2,
+/// drop → each element's String field freed exactly once. Poison F1 (revert
+/// `emit_hashmap_value_free_loop`'s guard to `is_any_heap()`) → 0 (leak).
+#[test]
+fn hashmap_struct_value_insert_drop_frees_string_field() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "struct User { name: String }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable m: HashMap<Integer, User> = hashmap_new();\n\
+         \x20   let a = User { name: \"aa\" };\n\
+         \x20   m = insert(m, 1, a);\n\
+         \x20   let b = User { name: \"bb\" };\n\
+         \x20   m = insert(m, 2, b);\n\
+         \x20   return 0;\n\
+         }",
+        &shims(),
+    );
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "ADR-0082 Slice C: HashMap<_,User> drop must free each VALUE's String \
+         field exactly once (== 0 ⇒ F1 regressed to is_any_heap() → leak)"
+    );
+}
+
+/// T2 (F1 + F3-ĐẦU-A): `HashMap<Integer, Msg>` — a FAT heap-payload Enum
+/// value. Insert 2, drop → each variant's String freed exactly once.
+/// Poison F1 → 0 (leak). Poison F3-ĐẦU-A (remove the `enum_slots` branch
+/// from the fat (>8B) value marshal, added this slice) → COMPILE-FAILS
+/// (`hashmap_insert: fat value without a slot`) — a fat Enum value has no
+/// entry in `struct_slots`, only `enum_slots`.
+#[test]
+fn hashmap_enum_value_insert_drop_frees_string_payload() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "enum Msg { Text(String), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable m: HashMap<Integer, Msg> = hashmap_new();\n\
+         \x20   m = insert(m, 1, Msg::Text(\"aa\"));\n\
+         \x20   m = insert(m, 2, Msg::Text(\"bb\"));\n\
+         \x20   return 0;\n\
+         }",
+        &shims(),
+    );
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "ADR-0082 Slice C: HashMap<_,Msg> drop must free each ACTIVE variant's \
+         String payload exactly once (== 0 ⇒ F1 leak; a compile error here ⇒ \
+         F3-ĐẦU-A regressed — fat Enum value marshal missing enum_slots)"
+    );
+}
+
+/// T3 (F3-ĐẦU-B, ⚔ O-added): `HashMap<Integer, Wrapper>` — an 8B-aggregate
+/// value (`Wrapper` wraps exactly ONE `Vector<String>` handle, total_size==8
+/// — a struct-slot-backed local, NOT a Cranelift Variable). Insert once,
+/// drop → the WRAPPED Vector's 2 String elements freed (recursing through
+/// the value's own drop-glue). Poison F3-ĐẦU-B (drop the `struct_slots`
+/// `stack_load` branch in the `value_stride <= 8` marshal, falling back to
+/// `use_var`) → the pushed handle reads 0/garbage → the wrapped Vector is
+/// never reached by Drop → LEAK (0), reviving the exact Slice A/B C5/T9 bug
+/// at the HashMap insert site.
+#[test]
+fn hashmap_8b_struct_value_insert_drop_frees_wrapped_vector() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "struct Wrapper { v: Vector<String> }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable inner: Vector<String> = vector_new();\n\
+         \x20   inner = push(inner, \"x\");\n\
+         \x20   inner = push(inner, \"y\");\n\
+         \x20   let w = Wrapper { v: inner };\n\
+         \x20   let mutable m: HashMap<Integer, Wrapper> = hashmap_new();\n\
+         \x20   m = insert(m, 1, w);\n\
+         \x20   return 0;\n\
+         }",
+        &shims_with_vector(),
+    );
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "ADR-0082 Slice C: HashMap<_,Wrapper(8B)> drop must recurse into the \
+         wrapped Vector<String> and free both elements (== 0 ⇒ F3-ĐẦU-B \
+         regressed — 8B value marshal read a garbage handle via use_var)"
+    );
+}
+
+// ── T5 (F4): still-refused ops — get/get_ref/contains/key-aggregate ──
+//
+// `get`/`get_ref`/`contains` have NO overload for a Struct/Enum VALUE
+// (`declare_overload`, a fixed enumerated set) — a source-level call is a
+// TYPE ERROR (`NoMatchingOverload`), never reaching the JIT. Any HashMap
+// with a Struct/Enum KEY is refused earlier still, at the type ANNOTATION
+// itself (E1048 UnsupportedHashMapKey). Both boundaries were probed directly
+// (Luật 4 — a throwaway typecheck-only probe, since removed) before writing
+// these teeth. The JIT-side F4 guards for these 5 call-sites are therefore
+// DEFENSE-IN-DEPTH, not reachable from valid source — exercised here via
+// hand-built MIR (the same authorized path Slice A/ADR-0078 used before the
+// frontend opened `HashMap<Integer,T>`).
+
+fn user_struct_layout() -> triet_mir::StructLayout {
+    triet_mir::StructLayout::compute("User", &[("name".to_string(), MirType::String, 24, 8)])
+}
+
+fn hashmap_iu_ty() -> MirType {
+    MirType::HashMap(
+        Box::new(MirType::Integer),
+        Box::new(MirType::Struct("User".to_string())),
+    )
+}
+
+fn hashmap_ku_ty() -> MirType {
+    MirType::HashMap(
+        Box::new(MirType::Struct("User".to_string())),
+        Box::new(MirType::Integer),
+    )
+}
+
+/// Build a minimal body: `storage_live(map_local: map_ty)` (never actually
+/// populated by a real `alloc` — `compile()` only LOWERS the body, never
+/// executes it, so the refuse guard is reached purely from `map_local`'s
+/// declared TYPE) → ONE shim call `callee(map_local, key_local[, value_local])`.
+/// Isolates a single call-site's guard without needing a working alloc first.
+/// `key_is_struct` declares `key_loc` as `Struct("User")` (matching a
+/// key-aggregate `map_ty`) instead of an `Integer` const — without this, a
+/// poisoned key-aggregate guard would still (correctly, but for the WRONG
+/// reason) hit the marshal's UNRELATED "fat key without a slot" Err, because
+/// a plain Integer const has no `struct_slots` entry — masking whether the
+/// intended guard fired at all.
+fn build_single_hashmap_call(
+    map_ty: MirType,
+    callee: &str,
+    key_is_struct: bool,
+    value_arg: Option<i64>,
+) -> triet_mir::Body {
+    let mut b = MirBuilder::new("main", MirType::Integer);
+    b.add_struct_layout(user_struct_layout());
+    let bb = b.new_block();
+    let map_local = b.new_local();
+    b.set_local_mir_type(map_local, map_ty);
+    b.push(bb, storage_live(map_local));
+    let key_loc = b.new_local();
+    b.push(bb, storage_live(key_loc));
+    if key_is_struct {
+        b.set_local_mir_type(key_loc, MirType::Struct("User".to_string()));
+    } else {
+        b.push(bb, const_i(key_loc, 1));
+    }
+    let mut args = vec![map_local, key_loc];
+    if let Some(v) = value_arg {
+        let val_loc = b.new_local();
+        b.push(bb, storage_live(val_loc));
+        b.push(bb, const_i(val_loc, v.into()));
+        args.push(val_loc);
+    }
+    let out = b.new_local();
+    b.push(bb, storage_live(out));
+    let next = b.new_block();
+    b.set_terminator(bb, shim_call(callee, args, vec![out], next));
+    b.set_terminator(
+        next,
+        Terminator::Return {
+            values: vec![out],
+            span: DUMMY_SPAN,
+        },
+    );
+    b.build(bb)
+}
+
+/// Build a minimal body that calls `__triet_hashmap_alloc(len, cap) -> map_ty`
+/// — isolates the ALLOC call-site's guard (which reads `dest[0]`'s type, not
+/// an arg type).
+fn build_hashmap_alloc(map_ty: MirType) -> triet_mir::Body {
+    let mut b = MirBuilder::new("main", MirType::Integer);
+    b.add_struct_layout(user_struct_layout());
+    let bb = b.new_block();
+    let len0 = b.new_local();
+    let cap0 = b.new_local();
+    b.push(bb, storage_live(len0));
+    b.push(bb, const_i(len0, 0));
+    b.push(bb, storage_live(cap0));
+    b.push(bb, const_i(cap0, 4));
+    let map_local = b.new_local();
+    b.set_local_mir_type(map_local, map_ty);
+    b.push(bb, storage_live(map_local));
+    let next = b.new_block();
+    b.set_terminator(
+        bb,
+        shim_call(
+            "__triet_hashmap_alloc",
+            vec![len0, cap0],
+            vec![map_local],
+            next,
+        ),
+    );
+    b.set_terminator(
+        next,
+        Terminator::Return {
+            values: vec![len0],
+            span: DUMMY_SPAN,
+        },
+    );
+    b.build(bb)
+}
+
+/// Compile `body` expecting a HARD `JitError` refuse. `extra_shims` MUST
+/// register whichever callee the body's single call targets — else the
+/// error would be a spurious "unknown shim" (a VACUOUS refuse, insensitive
+/// to the guard under test).
+fn expect_jit_refuse_mir(body: &triet_mir::Body, extra_shims: &[ShimSymbol]) -> String {
+    let mut all_shims = shims();
+    all_shims.extend_from_slice(extra_shims);
+    let mut ctx = JitContext::with_shims(&all_shims);
+    match ctx.compile(body) {
+        Ok(_) => {
+            panic!(
+                "expected a JitError refuse, but compilation SUCCEEDED (silent leak/corruption risk)"
+            )
+        }
+        Err(e) => format!("{e:?}"),
+    }
+}
+
+#[test]
+fn hashmap_struct_value_get_refused_at_jit() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let body = build_single_hashmap_call(hashmap_iu_ty(), "__triet_hashmap_get", false, None);
+    let err = expect_jit_refuse_mir(&body, &[]);
+    assert!(
+        err.contains("Slice C") || err.contains("aggregate"),
+        "HashMap<_,User> get must refuse with the Slice-C boundary message, got: {err}"
+    );
+}
+
+#[test]
+fn hashmap_struct_value_get_ref_refused_at_jit() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let body = build_single_hashmap_call(hashmap_iu_ty(), "__triet_hashmap_get_ref", false, None);
+    let err = expect_jit_refuse_mir(
+        &body,
+        &[ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_ref",
+            mir_lower::__triet_hashmap_get_ref,
+        )],
+    );
+    assert!(
+        err.contains("Slice C") || err.contains("aggregate"),
+        "HashMap<_,User> get_ref must refuse with the Slice-C boundary message, got: {err}"
+    );
+}
+
+#[test]
+fn hashmap_struct_value_contains_refused_at_jit() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let body = build_single_hashmap_call(hashmap_iu_ty(), "__triet_hashmap_contains", false, None);
+    let err = expect_jit_refuse_mir(
+        &body,
+        &[ShimSymbol::fn_2_1(
+            "__triet_hashmap_contains",
+            mir_lower::__triet_hashmap_contains,
+        )],
+    );
+    assert!(
+        err.contains("Slice C") || err.contains("aggregate"),
+        "HashMap<_,User> contains must refuse with the Slice-C boundary message, got: {err}"
+    );
+}
+
+#[test]
+fn hashmap_struct_key_alloc_refused_at_jit() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let body = build_hashmap_alloc(hashmap_ku_ty());
+    let err = expect_jit_refuse_mir(&body, &[]);
+    assert!(
+        err.contains("Slice C") || err.contains("aggregate"),
+        "HashMap<User,_> alloc must refuse (key-aggregate), got: {err}"
+    );
+}
+
+#[test]
+fn hashmap_struct_key_insert_refused_at_jit() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let body =
+        build_single_hashmap_call(hashmap_ku_ty(), "__triet_hashmap_insert", true, Some(100));
+    let err = expect_jit_refuse_mir(&body, &[]);
+    assert!(
+        err.contains("Slice C") || err.contains("aggregate"),
+        "HashMap<User,_> insert must refuse (key-aggregate), got: {err}"
+    );
+}

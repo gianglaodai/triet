@@ -110,6 +110,10 @@ fn compile_expect_refuse(source: &str) -> String {
         ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
+        // ADR-0082 Slice C (T5): `__triet_hashmap_remove` MUST be registered
+        // so a `remove` program reaches the F4 K+V refuse guard, not a
+        // spurious missing-shim error (VACUOUS refuse).
+        ShimSymbol::fn_4_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
         ShimSymbol::fn_2_1("__triet_string_alloc", mir_lower::__triet_string_alloc),
         ShimSymbol::fn_2_1(
             "__triet_string_from_bytes",
@@ -198,12 +202,20 @@ fn vector_nested_struct_vector_string_drop_recurses() {
     );
 }
 
-/// T-REFUSE-HashMap (T8): a `HashMap` with a Struct/Enum key or value is Slice C
-/// (value free-loops not wired for aggregates) — it MUST refuse EXPLICITLY at
-/// the JIT, never compile-then-leak. Poison: remove the `refuse_hashmap_
-/// aggregate_kv` guard → this compiles → the test's `is_err` flips.
+/// T5 (ADR-0082 Slice C, F4): SUPERSEDES the former `hashmap_struct_value_
+/// refused_at_jit` — Slice C deliberately OPENS `insert` for a Struct/Enum
+/// VALUE (see `hashmap_struct_value_insert_drop_frees_string_field` in
+/// `typed_hashmap_counting.rs` for the new positive coverage), so the old
+/// assertion ("insert refuses a Struct value") is now false BY DESIGN, not a
+/// regression. `remove` is a read/move-out site that stays behind the K+V
+/// `refuse_hashmap_aggregate_kv` guard (F4 keeps 3 sites — remove×2, get-
+/// family×1 — on the full K+V refuse; only alloc+insert were nới for VALUE).
+/// Renamed + re-targeted per LUẬT 3 (repurposing authorized by the Slice C
+/// Work Order; O/G re-verify independently). Poison: remove the
+/// `refuse_hashmap_aggregate_kv` guard at the `remove` call-site → this
+/// compiles → the test's `is_err` flips.
 #[test]
-fn hashmap_struct_value_refused_at_jit() {
+fn hashmap_struct_value_remove_refused_at_jit() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let err = compile_expect_refuse(
         "struct User { name: String }\n\
@@ -211,12 +223,13 @@ fn hashmap_struct_value_refused_at_jit() {
          \x20   let mutable m: HashMap<Integer, User> = hashmap_new();\n\
          \x20   let u = User { name: \"x\" };\n\
          \x20   m = insert(m, 1, u);\n\
+         \x20   let r = remove(m, 1);\n\
          \x20   return 0;\n\
          }",
     );
     assert!(
         err.contains("Slice C") || err.contains("aggregate"),
-        "HashMap<_,Struct> must refuse with the Slice-C boundary message, got: {err}"
+        "HashMap<_,Struct> remove must refuse with the Slice-C boundary message, got: {err}"
     );
 }
 
