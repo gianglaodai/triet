@@ -542,8 +542,9 @@ impl JitContext {
     /// (ADR-0082 B-α) = `total_size` from `body.struct_layouts`** — INV-B-α:
     /// identical to the `StackSlot` layout, so drop-glue offsets computed by
     /// `collect_heap_leaves` stay correct whether the struct lives in a
-    /// `StackSlot` or a collection cell. `Enum`/`Capability`/`Outcome` → still
-    /// REFUSE (`Enum` by-value element opens in Slice B).
+    /// `StackSlot` or a collection cell. **`Enum` (ADR-0082 B-α Slice B) =
+    /// `total_size` from `body.enum_layouts`** — same INV-B-α byte-identical
+    /// guarantee as `Struct`. `Capability`/`Outcome` → still REFUSE.
     ///
     /// ⚠️ NOT `ty_total_size` (which returns 8 for `String` — wrong stride 24).
     fn vector_elem_size(body: &Body, ty: &MirType) -> Result<i64, JitError> {
@@ -567,11 +568,16 @@ impl JitContext {
                 .find(|l| l.name == *name)
                 .map(|l| i64::try_from(l.total_size).unwrap_or(i64::MAX))
                 .ok_or_else(|| JitError::Unsupported(format!("unknown struct layout: {name}"))),
-            MirType::Enum(_) | MirType::Capability(_) | MirType::Outcome { .. } => {
+            MirType::Enum(name) => body
+                .enum_layouts
+                .iter()
+                .find(|l| l.name == *name)
+                .map(|l| i64::try_from(l.total_size).unwrap_or(i64::MAX))
+                .ok_or_else(|| JitError::Unsupported(format!("unknown enum layout: {name}"))),
+            MirType::Capability(_) | MirType::Outcome { .. } => {
                 Err(JitError::Unsupported(format!(
                     "Vector<{eff}>: element type is not a built-in known-size type \
-                     (ADR-0082 B-α refuses Enum/Capability/Outcome elements — \
-                     Enum by-value element deferred to Slice B)"
+                     (ADR-0082 B-α refuses Capability/Outcome elements)"
                 )))
             }
             MirType::Nullable(_) => unreachable!("nullable_payload already stripped one layer"),
@@ -580,18 +586,18 @@ impl JitContext {
 
     /// ADR-0082 B-α T8 — HARD REFUSE for `HashMap<K,V>` when either `K` or
     /// `V` is a `Struct`/`Enum`. `vector_elem_size` above now computes a
-    /// valid stride for `Struct` (needed for `Vector<UserStruct>`, Slice A),
-    /// which would otherwise let `HashMap<_,UserStruct>` marshal (push/insert
-    /// by-pointer) silently — but the `HashMap` free-loops
-    /// (`emit_hashmap_key_free_loop`/`emit_hashmap_value_free_loop`) are NOT
-    /// wired for a `Struct` leaf this slice (that's Slice C), so a
-    /// heap-bearing struct key/value would compile, marshal, and then LEAK
-    /// silently on `Drop` — the exact latent-bug shape as the ADR-0080
-    /// String-key SIGSEGV (compiles fine, wrong/dangerous at runtime, zero
-    /// fixture catches it). Refuse EXPLICITLY at every `HashMap` op emit-site
-    /// instead: no silent leak, no silent guess. Only fires on
-    /// `Struct`/`Enum` — `HashMap<Integer,_>` / `HashMap<String,String>` are
-    /// unaffected (verified: gate unchanged).
+    /// valid stride for both `Struct` (Slice A) and `Enum` (Slice B) — needed
+    /// for `Vector<UserStruct>`/`Vector<Enum>` — which would otherwise let
+    /// `HashMap<_,aggregate>` marshal (push/insert by-pointer) silently — but
+    /// the `HashMap` free-loops (`emit_hashmap_key_free_loop`/
+    /// `emit_hashmap_value_free_loop`) are NOT wired for a `Struct`/`Enum`
+    /// leaf this slice (that's Slice C), so a heap-bearing aggregate key/value
+    /// would compile, marshal, and then LEAK silently on `Drop` — the exact
+    /// latent-bug shape as the ADR-0080 String-key SIGSEGV (compiles fine,
+    /// wrong/dangerous at runtime, zero fixture catches it). Refuse
+    /// EXPLICITLY at every `HashMap` op emit-site instead: no silent leak, no
+    /// silent guess. Only fires on `Struct`/`Enum` — `HashMap<Integer,_>` /
+    /// `HashMap<String,String>` are unaffected (verified: gate unchanged).
     fn refuse_hashmap_aggregate_kv(key_ty: &MirType, value_ty: &MirType) -> Result<(), JitError> {
         let is_aggregate = |t: &MirType| {
             let eff = t.nullable_payload().unwrap_or(t);
@@ -600,7 +606,7 @@ impl JitContext {
         if is_aggregate(key_ty) || is_aggregate(value_ty) {
             return Err(JitError::Unsupported(
                 "HashMap<_,aggregate>: Struct/Enum key or value is ADR-0082 Slice C, \
-                 not yet opened (Slice A only opens Vector<UserStruct>)"
+                 not yet opened (Slice A/B only open Vector<UserStruct>/Vector<Enum>)"
                     .into(),
             ));
         }
@@ -1050,13 +1056,17 @@ impl JitContext {
         addr: cranelift_codegen::ir::Value,
         payload_ty: &MirType,
     ) -> Result<(), JitError> {
-        // ADR-0082 B-α DP-2 (T4, order is life-or-death): `Struct` is NOT
-        // `is_any_heap()` (it's an aggregate, not a heap handle) — this check
-        // MUST precede the early-return below, else every struct leaf is
-        // silently skipped and its heap fields LEAK.
+        // ADR-0082 B-α DP-2 (T4, order is life-or-death): `Struct`/`Enum` are
+        // NOT `is_any_heap()` (they're aggregates, not heap handles) — this
+        // check MUST precede the early-return below, else every struct/enum
+        // leaf is silently skipped and its heap fields LEAK.
         if let MirType::Struct(name) = payload_ty {
             let name = name.clone();
             return self.emit_struct_drop_glue_at(builder, body, &name, addr);
+        }
+        if let MirType::Enum(name) = payload_ty {
+            let name = name.clone();
+            return self.emit_enum_drop_glue_at(builder, body, &name, addr);
         }
         if !payload_ty.is_any_heap() {
             return Ok(());
