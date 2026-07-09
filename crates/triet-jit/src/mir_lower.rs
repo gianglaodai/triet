@@ -3189,6 +3189,12 @@ impl JitContext {
                             let elem_val = if stride > 8 {
                                 if let Some((slot, _)) = self.struct_slots.get(&elem) {
                                     builder.ins().stack_addr(I64, *slot, 0)
+                                } else if let Some((slot, _)) = self.enum_slots.get(&elem) {
+                                    // ADR-0082 B-α Slice B: a fat enum element
+                                    // (heap-bearing payload, total_size > 8)
+                                    // lives in `enum_slots`, not `struct_slots`
+                                    // — mirror the Struct arm above.
+                                    builder.ins().stack_addr(I64, *slot, 0)
                                 } else {
                                     return Err(JitError::Unsupported(
                                         "vector_push: fat element without a slot (ADR-0077 \
@@ -3210,6 +3216,15 @@ impl JitContext {
                                 // buffer holds a dead handle → drop frees nothing
                                 // → silent leak. Mirror the `bung_fields`/concat
                                 // pattern: read the ONE field via `stack_load`.
+                                builder.ins().stack_load(I64, *slot, 0)
+                            } else if let Some((slot, _)) = self.enum_slots.get(&elem) {
+                                // ADR-0082 B-α Slice B, symmetric with T9 above:
+                                // a scalar enum (no heap payload, total_size==8,
+                                // disc-only) STILL lives in `enum_slots`
+                                // (pre-allocated for every Enum-typed local —
+                                // see the ADR-0065 slot loop), never in the
+                                // Cranelift Variable. Reading `use_var` here
+                                // would load garbage instead of the discriminant.
                                 builder.ins().stack_load(I64, *slot, 0)
                             } else {
                                 builder.use_var(self.var(elem))
@@ -3391,13 +3406,22 @@ impl JitContext {
                             // scalar → 0 (unused, element comes back by i64).
                             let vec_val = builder.use_var(self.var(args[0]));
                             let out_ptr = if vector_pop_fat {
-                                let (slot, _) =
-                                    self.struct_slots.get(&dest[0]).ok_or_else(|| {
+                                // ADR-0082 B-α Slice B: a fat enum pop-dest
+                                // (heap-bearing payload) lives in `enum_slots`,
+                                // not `struct_slots` — try both before refusing.
+                                let slot = self
+                                    .struct_slots
+                                    .get(&dest[0])
+                                    .map(|(slot, _)| *slot)
+                                    .or_else(|| {
+                                        self.enum_slots.get(&dest[0]).map(|(slot, _)| *slot)
+                                    })
+                                    .ok_or_else(|| {
                                         JitError::Unsupported(
                                             "vector_pop: fat element dest without a slot".into(),
                                         )
                                     })?;
-                                builder.ins().stack_addr(I64, *slot, 0)
+                                builder.ins().stack_addr(I64, slot, 0)
                             } else {
                                 builder.ins().iconst(I64, 0)
                             };
@@ -3430,10 +3454,20 @@ impl JitContext {
                         // C6: concat returns void (callee writes dest slot via *mut FatStr).
                         if vector_pop_fat || hashmap_remove_fat {
                             // ADR-0077/0078: the shim memcpy'd into the dest
-                            // String slot — bind the dest var to ptr@0 (the i64
-                            // return is 0, a sentinel).
-                            if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
-                                let ptr = builder.ins().stack_load(I64, *slot, 0);
+                            // slot — bind the dest var to ptr@0 (the i64
+                            // return is 0, a sentinel). ADR-0082 B-α Slice B:
+                            // a fat enum pop-dest lives in `enum_slots`, not
+                            // `struct_slots` (HashMap<_,Enum> stays REFUSED —
+                            // `hashmap_remove_fat` can never carry an Enum
+                            // value, so `enum_slots` only matters for the
+                            // `vector_pop_fat` case here).
+                            if let Some(slot) = self
+                                .struct_slots
+                                .get(&dest[0])
+                                .map(|(slot, _)| *slot)
+                                .or_else(|| self.enum_slots.get(&dest[0]).map(|(slot, _)| *slot))
+                            {
+                                let ptr = builder.ins().stack_load(I64, slot, 0);
                                 builder.def_var(self.var(dest[0]), ptr);
                             } else {
                                 return Err(JitError::Unsupported(format!(
@@ -3485,6 +3519,15 @@ impl JitContext {
                                 // whatever leftover bytes sat in the slot).
                                 // total_size <= 8 for a Struct type is exactly 8
                                 // (INV-B-α 8B-granular), so one word suffices.
+                                builder.ins().stack_store(ret_val, *slot, 0);
+                            } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
+                                // ADR-0082 B-α Slice B, symmetric with the T9
+                                // Struct arm above: a scalar-enum (disc-only,
+                                // total_size==8) pop-dest reached via this
+                                // generic scalar-return path lives in
+                                // `enum_slots`, not the Cranelift Variable —
+                                // write the true content back into the slot,
+                                // not just the Variable `def_var` populated.
                                 builder.ins().stack_store(ret_val, *slot, 0);
                             }
                         }
