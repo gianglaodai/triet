@@ -1,10 +1,31 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + Bug-E + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A (String-key SIGSEGV) + CỤM B Slice A Vector<UserStruct> by-value element (ADR-0082 B-α §AMEND-1) — KHÓA SỔ 2026-07-08 `1e49058`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + Bug-E + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A (String-key SIGSEGV) + CỤM B Slice A Vector<UserStruct> + Slice B Vector<Enum> push+drop (ADR-0082 B-α) — KHÓA SỔ 2026-07-09 `c22da0a`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
+---
+
+## ✅ ĐÓNG — CỤM B Slice B: `Vector<Enum>` push+drop (ADR-0082 B-α continuation, G ký 2026-07-09, PUSHED)
+origin/main = `c22da0a`, gate `0·0·331·0`. 8 commit: `c8b8aa6`(S1+S2) · `3bede0c`(S3) · `98a3be2`(AM1) · `a665e96`(AM2) · `a6a41c2`(FIX-1+FIX-2) · `638b455`(teeth) + 2 docs (`c22da0a` state).
+
+**Scope:** enum by-value element của Vector (heap-payload variants), **push+drop SOUND**, **pop/by-value move-out REFUSE** (deferred). Tái dùng `emit_enum_drop_glue_at` (address-based, ACTIVE-arm tag-switch) + INV-B-α. **KHÔNG cần ADR mới.**
+
+**Bản đồ O recon:** sizing đã có (`EnumLayout.total_size`), drop-glue đã có (`emit_enum_drop_glue_at`). Việc = S1 `vector_elem_size` Enum arm · S2 `emit_heap_free_at:1067` Enum branch (TRƯỚC `is_any_heap` early-return, DP-2) · S3 marshal enum-element đọc `enum_slots` KHÔNG `struct_slots`/Variable (5 site, mẫu `:3404`).
+
+**🩸 BUG-1 (pop UB, PRE-EXISTING SLICE A) — O tự bắt qua tooth pop.** `Vector<UserStruct>` pop → double-free/invalid-pointer; **verify TÁI HIỆN trên binary `1e49058`** (worktree) → pre-existing, KHÔNG regression. Slice A teeth CHỈ push+drop, chưa từng test pop. "get-by-value/pop aggregate" = nợ DEFERRED nhưng **deferred-KHÔNG-refuse = UB câm shape P0**. **AM1 vá:** REFUSE `__triet_vector_pop` element Struct/Enum (message "deferred… recursive move-out tombstone"), rào cả A lẫn B. get-by-value đã bị typecheck chặn → pop = đường move-out DUY NHẤT lọt JIT. **AM2:** cắt 3 hunk pop-side S3 (enum_slots dead sau AM1), giữ S3a/S3b push.
+
+**🎯 BUG-2 (push+drop UNSOUND, HAI bug che nhau) — poison-must-be-red CỨU MẠNG.** First-draft named-tooth O ĐẾM NHẦM (Drop(local) vs vector-drop) → 10/10 xanh GIẢ. **Chỉ vì poison S2 KHÔNG đỏ** (poison-insensitive) O mới đào: (1) **BUG-1b** `aggregate_needs_drop:1663` có nhánh Struct nhưng KHÔNG Enum → Enum rơi `is_any_heap()`=false → element-free loop bail `:1164` → S2 UNREACHABLE → **elements LEAK**. (2) **BUG-2b** enum named-local KHÔNG tombstone khi push-consume (`tombstone_slot_leaves` keyed struct_layouts, enum ∈ enum_layouts) → Drop(local) free lần 2. **Che nhau:** named-case local-drop free đúng cái vector leak → net 2 "giả sound", driver clean. Chứng minh: **enum-inline=0 vs struct-inline-CONTROL=2** (method validated). **FIX-1** aggregate_needs_drop Enum arm (any heap-bearing variant, đối xứng Struct + khớp filter emit_enum_drop_glue) · **FIX-2** zero payload ptr @base+8 tại arg-consume enum branch (đối xứng Deinit `:2138`, KHÔNG disc@0). Một commit hai fix (tránh trung gian double-free).
+
+**⚠️ BOM HẸN GIỜ (coupling, cắm cờ):** FIX-2 zero-@8 ĐỦ CHỈ VÌ frontend refuse enum-payload multi-heap-leaf — O tự chọc verify: `V(Pair)` struct-payload → lower REFUSE · `V(String,String)` multi-field → parse REFUSE. Mọi heap payload reachable = single handle @8. Nếu refusal đó gỡ → FIX-2 phải walk MỌI leaf.
+
+**O 11 TEETH poison-cemented** (cp-snapshot restore md5 khớp mọi vòng, ĐỘC LẬP): `vector_enum_inline_push_drop` (BUG-1 anchor, INLINE non-masking; poison FIX-1→**0 leak**) · `vector_enum_named_push_drop_no_double_free` (BUG-2 anchor; poison FIX-2→**4 double-free**, inline giữ 2 tách bạch) · `vector_{struct,enum}_pop_refused` (AM1; poison→struct-pop **compile-SUCCEEDS** phơi lỗ Slice A, `compile_expect_refuse` đăng ký `__triet_vector_pop` để refuse NON-vacuous) · active-arm=1 · scalar=0 · nest=2 · struct-control=2.
+
+**Bài học phiên:** ① **poison-must-be-red là thứ CHẶN false-green** — O suýt cement named-tooth misattributed đúng shape P0; poison S2 không đỏ = tín hiệu đào. ② một tooth NAMED có thể maskable (local-drop giả vector-drop) → **INLINE anchor non-masking bắt buộc cho leak**. ③ `compile_expect_refuse` phải đăng ký shim của op bị refuse, nếu không bắt nhầm "missing-shim" = vacuous. ④ deferred PHẢI refuse (không chỉ "không làm") — Slice A pop là bằng chứng UB câm. ⑤ `aggregate_needs_drop`/tombstone/move-out phải phủ Enum ĐỐI XỨNG Struct. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]]
+
+**Nợ chuyển tiếp:** Slice C `HashMap<_,aggregate>` value (⚠️ value-free-loop có latent P0-shape cùng họ BUG-1 — recon `aggregate_needs_drop`+value-loop trước) · `Vector<aggregate>` pop/get-by-value move-out (recursive move-out-tombstone: dest leaf-marshal + buffer + source) · scalar-enum disc round-trip chưa observe source (nullable-enum-match chưa lower) · coupling FIX-2. Đều REFUSE tường minh có teeth canh.
+
 ---
 
 ## ✅ ĐÓNG — CỤM B Slice A: `Vector<UserStruct>` aggregate by-value element (ADR-0082 B-α §AMEND-1, G ký 2026-07-08, PUSHED)
