@@ -3001,6 +3001,34 @@ impl JitContext {
                             callee_name.as_str(),
                             "__triet_string_clear" | "__triet_string_append"
                         );
+                        // ADR-0082 B-α WO-AMEND (2026-07-09): `pop` is the ONLY
+                        // surviving by-value move-out path for an aggregate
+                        // element — get-by-value aggregate is already refused
+                        // at typecheck. REFUSE it explicitly here rather than
+                        // trust the existing marshal: moving a Struct/Enum
+                        // element OUT of a Vector has not been proven sound for
+                        // the element's OWN heap leaves (needs a recursive
+                        // move-out tombstone — dest leaf-marshal + buffer +
+                        // source — deferred to a future slice). Checked on the
+                        // element type regardless of stride, so this closes the
+                        // same latent hole for `Vector<UserStruct>` (Slice A
+                        // never guarded `pop`) as it does for `Vector<Enum>`
+                        // (this slice). `push`/drop of an aggregate element stay
+                        // open — only the by-value move-out is refused.
+                        if callee_name.as_str() == "__triet_vector_pop" {
+                            let vty = &body.local_decls[args[0].0].ty;
+                            if let MirType::Vector(inner) = vty.nullable_payload().unwrap_or(vty) {
+                                let inner_eff = inner.nullable_payload().unwrap_or(inner);
+                                if matches!(inner_eff, MirType::Struct(_) | MirType::Enum(_)) {
+                                    return Err(JitError::Unsupported(
+                                        "vector_pop: Struct/Enum element by-value move-out is \
+                                         deferred to a future slice (requires recursive \
+                                         move-out tombstone)"
+                                            .into(),
+                                    ));
+                                }
+                            }
+                        }
                         // ADR-0077: `pop` on a Vector of FAT elements (String 24B)
                         // returns the element by sret — the dest's slot is filled
                         // by memcpy, so the generic i64-return def_var is skipped
