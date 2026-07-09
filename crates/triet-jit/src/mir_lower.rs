@@ -613,6 +613,28 @@ impl JitContext {
         Ok(())
     }
 
+    /// ADR-0082 B-α Slice C (F4) — HARD REFUSE for `HashMap<K,V>` when `K` is a
+    /// `Struct`/`Enum`, WITHOUT touching `V`. Slice C opens VALUE-aggregate for
+    /// `alloc`/`insert` only (push+drop shape mirroring Slice A/B's Vector
+    /// element); the `HashMap` KEY free-loop (`emit_hashmap_key_free_loop`) and
+    /// the hash function are still not wired for an aggregate key — that stays
+    /// refused everywhere, at every op. `refuse_hashmap_aggregate_kv` (K+V) is
+    /// kept for the 3 read/move-out sites (`get`/`get_ref`/`contains`/`remove`)
+    /// where VALUE aggregate is also not yet supported (no value free-loop
+    /// bypass needed there — they don't own the value).
+    fn refuse_hashmap_aggregate_key(key_ty: &MirType) -> Result<(), JitError> {
+        let eff = key_ty.nullable_payload().unwrap_or(key_ty);
+        if matches!(eff, MirType::Struct(_) | MirType::Enum(_)) {
+            return Err(JitError::Unsupported(
+                "HashMap<aggregate,_>: Struct/Enum key is ADR-0082 Slice C, not yet opened \
+                 (Slice C opens VALUE-aggregate only; key-aggregate remains refused — \
+                 the key free-loop and hash function are not wired for it)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// ADR-0060 P2-Boundary: base address of a local + byte offset. Slot-backed
     /// locals (struct/enum) → `stack_addr`; sret/param/match-binding → the
     /// pointer value in the variable.
@@ -1347,6 +1369,13 @@ impl JitContext {
     /// heap, state==occupied → free, else skip). Scalars/handles skip entirely.
     /// ADR-0080: slot geometry (`slot_size`/cell offsets) now reads
     /// `key_stride` from the header at RUNTIME instead of a hardcoded `8`.
+    /// ADR-0082 Slice C (MÌN-1): `is_any_heap()` is `false` for `Struct`/`Enum`
+    /// (they're aggregates, not heap handles) — a plain `is_any_heap()` guard
+    /// bailed here UNCONDITIONALLY for an aggregate value, making
+    /// `emit_heap_free_at`'s Struct/Enum branch unreachable and leaking every
+    /// heap leaf inside it. Mirror `emit_vector_element_free_loop`'s fix
+    /// (DP-1/T5): `aggregate_needs_drop` descends the aggregate and answers
+    /// `true` iff it actually carries a heap leaf.
     fn emit_hashmap_value_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -1355,7 +1384,7 @@ impl JitContext {
         value_ty: &MirType,
     ) -> Result<(), JitError> {
         let eff = value_ty.nullable_payload().unwrap_or(value_ty).clone();
-        if !eff.is_any_heap() {
+        if !Self::aggregate_needs_drop(body, &eff)? {
             return Ok(());
         }
         let mem = cranelift_codegen::ir::MemFlags::new();
@@ -1682,10 +1711,21 @@ impl JitContext {
                     .iter()
                     .find(|e| e.name == *name)
                     .ok_or_else(|| JitError::Unsupported(format!("unknown enum layout: {name}")))?;
-                Ok(layout
-                    .variants
-                    .iter()
-                    .any(|v| v.payload.as_ref().is_some_and(|p| p.ty.is_any_heap())))
+                // ADR-0082 Slice C (MÌN-2): recurse via `aggregate_needs_drop`
+                // instead of a flat `p.ty.is_any_heap()` — a variant payload
+                // that is itself a Struct/Enum aggregate (not directly
+                // `is_any_heap()`) would otherwise be missed. Defense-in-depth
+                // only: the frontend currently refuses an enum-payload
+                // Struct/Enum aggregate, so this branch is latent, not yet
+                // reachable from source.
+                for variant in &layout.variants {
+                    if let Some(payload) = &variant.payload
+                        && Self::aggregate_needs_drop(body, &payload.ty)?
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             }
             t => Ok(t.is_any_heap()),
         }
@@ -3199,14 +3239,15 @@ impl JitContext {
                             // ADR-0080 Mũi A: append key_stride THEN value_stride
                             // as 3rd/4th args (was value_stride-only pre-0080).
                             // Strides from HashMap(K, V) → vector_elem_size(K/V).
-                            // ADR-0082 T8: refuse Struct/Enum K or V here — the
-                            // FIRST choke point where an aggregate could enter a
-                            // HashMap (Slice C, not yet open).
+                            // ADR-0082 T8/Slice C: refuse Struct/Enum KEY here —
+                            // the FIRST choke point where an aggregate could
+                            // enter a HashMap. VALUE-aggregate is opened (Slice
+                            // C, F4) — `vector_elem_size` already sizes it.
                             let (key_stride, value_stride) = {
                                 let dty = &body.local_decls[dest[0].0].ty;
                                 match dty.nullable_payload().unwrap_or(dty) {
                                     MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        Self::refuse_hashmap_aggregate_key(k)?;
                                         (
                                             Self::vector_elem_size(body, k)?,
                                             Self::vector_elem_size(body, v)?,
@@ -3287,13 +3328,15 @@ impl JitContext {
                             // scratch i64 slot the shim writes 1/0 into. Only
                             // allocated (and only checked post-call) when the key
                             // is String — Integer keys never redundant-free.
-                            // ADR-0082 T8: refuse Struct/Enum K or V — HashMap
-                            // aggregate value/key is Slice C, not yet open.
+                            // ADR-0082 T8/Slice C: refuse Struct/Enum KEY —
+                            // VALUE-aggregate is opened (Slice C, F4); the key
+                            // free-loop/hash function still don't support an
+                            // aggregate key.
                             let (key_stride, value_stride) = {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
                                     MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        Self::refuse_hashmap_aggregate_key(k)?;
                                         (
                                             Self::vector_elem_size(body, k)?,
                                             Self::vector_elem_size(body, v)?,
@@ -3318,16 +3361,35 @@ impl JitContext {
                                 builder.use_var(self.var(key_arg))
                             };
                             let val_arg = args[2];
+                            // ADR-0082 Slice C (F3): mirror `vector_push`'s
+                            // fat/8B-aggregate marshal exactly (MÌN-3, two
+                            // ends of the same S3-gap):
+                            //   ĐẦU-A — a fat (>8B) aggregate value (Struct or
+                            //   heap-payload Enum) can live in `enum_slots`,
+                            //   not just `struct_slots` (a fat Enum falling
+                            //   through here would Err on a valid program).
+                            //   ĐẦU-B — an 8B aggregate value (a Struct/Enum
+                            //   that wraps exactly ONE scalar/handle field,
+                            //   total_size==8) is STILL slot-backed, never the
+                            //   Cranelift Variable; `use_var` on it silently
+                            //   reads 0/garbage instead of the real field
+                            //   (the Slice A/B C5/T9 leak reborn at insert).
                             let value_val = if value_stride > 8 {
                                 if let Some((slot, _)) = self.struct_slots.get(&val_arg) {
                                     builder.ins().stack_addr(I64, *slot, 0)
+                                } else if let Some((slot, _)) = self.enum_slots.get(&val_arg) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
                                 } else {
                                     return Err(JitError::Unsupported(
-                                        "hashmap_insert: fat value without a slot (ADR-0078 \
+                                        "hashmap_insert: fat value without a slot (ADR-0078/0082 \
                                          by-pointer ABI requires a pre-allocated value slot)"
                                             .into(),
                                     ));
                                 }
+                            } else if let Some((slot, _)) = self.struct_slots.get(&val_arg) {
+                                builder.ins().stack_load(I64, *slot, 0)
+                            } else if let Some((slot, _)) = self.enum_slots.get(&val_arg) {
+                                builder.ins().stack_load(I64, *slot, 0)
                             } else {
                                 builder.use_var(self.var(val_arg))
                             };
@@ -5366,6 +5428,52 @@ mod tests {
         assert_eq!(i64_low_byte(0xFF), 0xFF_u8);
         assert_eq!(i64_low_byte(0x1FF), 0xFF_u8); // truncation is intentional
         assert_eq!(i64_low_byte(-1), 0xFF_u8);
+    }
+
+    /// ADR-0082 Slice C (T4, F2): `aggregate_needs_drop`'s `Enum` arm must
+    /// recurse into a variant payload that is ITSELF a Struct aggregate
+    /// carrying a heap leaf — a flat `payload.ty.is_any_heap()` check misses
+    /// this (a `Struct` is never `is_any_heap()`). Defense-in-depth only: the
+    /// frontend currently refuses an enum-payload Struct/Enum aggregate, so
+    /// this scenario is not yet reachable from source — this unit test pins
+    /// the backend invariant directly against a hand-built `EnumLayout`.
+    /// Poison F2 (revert the `Enum` arm back to the flat
+    /// `.any(|v| v.payload.as_ref().is_some_and(|p| p.ty.is_any_heap()))`) →
+    /// `needs_drop` flips to `false`.
+    #[test]
+    fn aggregate_needs_drop_enum_recurses_into_struct_payload() {
+        let mut b = MirBuilder::new("dummy", MirType::Integer);
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "Inner",
+            &[("s".to_string(), MirType::String, 24, 8)],
+        ));
+        b.add_enum_layout(triet_mir::EnumLayout::compute(
+            "Wrap",
+            &[
+                (
+                    "Has".to_string(),
+                    0,
+                    Some((MirType::Struct("Inner".to_string()), 24, 8, vec![])),
+                ),
+                ("Empty".to_string(), 1, None),
+            ],
+        ));
+        let bb = b.new_block();
+        let r = b.new_local();
+        b.push(bb, storage_live(r));
+        b.push(bb, const_int(r, 0));
+        b.set_terminator(bb, return_(vec![r]));
+        let body = b.build(bb);
+
+        let needs_drop =
+            JitContext::aggregate_needs_drop(&body, &MirType::Enum("Wrap".to_string()))
+                .expect("aggregate_needs_drop must resolve the enum layout");
+        assert!(
+            needs_drop,
+            "an enum variant payload that is itself a heap-bearing Struct \
+             aggregate must be detected recursively (== false ⇒ F2 regressed \
+             to the flat is_any_heap() check)"
+        );
     }
 
     // ── Pipeline tests ────────────────────────────
