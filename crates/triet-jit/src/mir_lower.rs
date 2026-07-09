@@ -1659,12 +1659,33 @@ impl JitContext {
     /// }`) yields an empty leaf list → `false` → the caller's element-free
     /// loop stays a no-op, byte-compatible with an all-scalar `Vector<Point>`
     /// (no runtime loop, no `__triet_string_free` shim declared).
+    ///
+    /// WO-AMEND-2 (BUG-1): `Enum` fell into the catch-all `t.is_any_heap()`
+    /// arm, which is `false` for `Enum` (only String/Vector/HashMap qualify)
+    /// — so a `Vector<Enum>` element-free loop bailed here UNCONDITIONALLY,
+    /// making `emit_heap_free_at`'s Enum branch unreachable and leaking every
+    /// heap-bearing variant's payload. Mirror the `Struct` arm's question —
+    /// "does ANY variant carry a heap payload?" — using the SAME filter
+    /// `emit_enum_drop_glue_at` uses to build its `heap_variants` list, so
+    /// the two stay consistent (a variant this fn says needs a drop pass is
+    /// exactly a variant the drop-glue will tag-switch on).
     fn aggregate_needs_drop(body: &Body, ty: &MirType) -> Result<bool, JitError> {
         match ty {
             MirType::Struct(name) => {
                 let mut leaves: Vec<(i32, LeafKind)> = Vec::new();
                 Self::collect_heap_leaves(name, 0, body, 0, &mut leaves)?;
                 Ok(!leaves.is_empty())
+            }
+            MirType::Enum(name) => {
+                let layout = body
+                    .enum_layouts
+                    .iter()
+                    .find(|e| e.name == *name)
+                    .ok_or_else(|| JitError::Unsupported(format!("unknown enum layout: {name}")))?;
+                Ok(layout
+                    .variants
+                    .iter()
+                    .any(|v| v.payload.as_ref().is_some_and(|p| p.ty.is_any_heap())))
             }
             t => Ok(t.is_any_heap()),
         }
@@ -3610,6 +3631,32 @@ impl JitContext {
                                                     builder, body, slot, &name,
                                                 )?;
                                             }
+                                        } else if let Some((slot, _)) = self.enum_slots.get(a) {
+                                            // WO-AMEND-2 (BUG-2): an enum-typed
+                                            // arg (e.g. `push(v, msg)`, `msg:
+                                            // Msg`) is NOT in `struct_slots` —
+                                            // falling through to `def_var`
+                                            // below zeroed the Cranelift
+                                            // VARIABLE, which Drop-for-enum
+                                            // never reads (it reads the
+                                            // StackSlot via `enum_slots`) → the
+                                            // slot's payload ptr stayed live →
+                                            // this local's own end-of-scope
+                                            // Drop freed it a SECOND time (the
+                                            // first free already happened
+                                            // inside the callee's buffer, once
+                                            // FIX-1 makes that reachable).
+                                            // Mirror the `Statement::Deinit`
+                                            // enum branch (ADR-0067 2b-3):
+                                            // zero ONLY the payload pointer
+                                            // @+8, never the discriminant @0
+                                            // (disc 0 is a valid variant, not
+                                            // a tombstone marker for Enum).
+                                            // `tombstone_slot_leaves` is
+                                            // struct-only (keyed on
+                                            // `struct_layouts`) so it cannot
+                                            // be reused verbatim here.
+                                            builder.ins().stack_store(zero, *slot, 8);
                                         } else {
                                             let var = self.var(*a);
                                             builder.def_var(var, zero);
