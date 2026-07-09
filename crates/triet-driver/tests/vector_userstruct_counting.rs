@@ -103,6 +103,10 @@ fn compile_expect_refuse(source: &str) -> String {
         ShimSymbol::fn_3_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
         ShimSymbol::fn_1_0("__triet_vector_free", mir_lower::__triet_vector_free),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
+        // `__triet_vector_pop` MUST be registered so a `pop` program reaches the
+        // AM1 aggregate-move-out refuse guard, not a spurious missing-shim error
+        // (that would be a VACUOUS refuse — poison-insensitive to the guard).
+        ShimSymbol::fn_2_1("__triet_vector_pop", mir_lower::__triet_vector_pop),
         ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
@@ -216,21 +220,184 @@ fn hashmap_struct_value_refused_at_jit() {
     );
 }
 
-/// T-REFUSE-Enum: a `Vector<Enum>` by-value element is Slice B — `vector_elem_
-/// size` still refuses `Enum` (only `Struct` opened in Slice A). No silent leak.
+// ─────────────────────────────────────────────────────────────────────────
+// ADR-0082 B-α Slice B (Vector<Enum> push+drop) — AM3 teeth (Mentor O).
+// `pop`/by-value move-out is REFUSED (WO-AMEND, deferred); only push+drop ship.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// T-ENUM-LEAK anchor (BUG-1, INLINE — no named local to mask): two heap-bearing
+/// enums pushed by INLINE constructor into a `Vector<Msg>`, dropped at scope end.
+/// The ONLY frees come from the vector's element drop-glue, so a miswired
+/// `aggregate_needs_drop` (Enum falling to `is_any_heap()`=false) is caught
+/// directly: STR_FREES must be 2. Poison FIX-1 (revert the Enum arm of
+/// `aggregate_needs_drop`) → element-free loop bails → LEAK → 0.
+/// ⚠️ This tooth MUST stay INLINE: a NAMED-local variant is maskable — an
+/// un-tombstoned local's own Drop frees the string, faking "2" while the buffer
+/// leaks (the exact mirage WO-AMEND-2 uncovered). Inline is non-masking.
 #[test]
-fn vector_enum_element_refused_at_jit() {
+fn vector_enum_inline_push_drop_frees_each_string_once() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let err = compile_expect_refuse(
-        "enum Color { Red, Green }\n\
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Msg { Text(String), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<Msg> = vector_new();\n\
+         \x20   xs = push(xs, Msg::Text(\"aa\"));\n\
+         \x20   xs = push(xs, Msg::Text(\"bb\"));\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "Vector<Msg> element drop-glue must free each variant's String once \
+         (== 0 ⇒ BUG-1: aggregate_needs_drop misses Enum → leak)"
+    );
+}
+
+/// T-ENUM-TOMBSTONE anchor (BUG-2, NAMED): the SAME two Strings pushed from NAMED
+/// locals. After FIX-1 the vector frees both (== 2 baseline). FIX-2 tombstones
+/// the moved-from enum local (zeroes the payload ptr @+8) so its end-of-scope
+/// Drop is a no-op. Poison FIX-2 (drop the enum arm of the arg-consume zeroing)
+/// → Drop(a)/Drop(b) free the already-moved Strings a SECOND time → 4.
+/// Paired with the INLINE tooth above, the two signals separate the bugs
+/// cleanly: poison FIX-1 → inline 0; poison FIX-2 → named 4.
+#[test]
+fn vector_enum_named_push_drop_no_double_free() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Msg { Text(String), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<Msg> = vector_new();\n\
+         \x20   let a = Msg::Text(\"aa\");\n\
+         \x20   xs = push(xs, a);\n\
+         \x20   let b = Msg::Text(\"bb\");\n\
+         \x20   xs = push(xs, b);\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "moved-from enum local must be tombstoned — each String freed once \
+         (== 4 ⇒ BUG-2: local not tombstoned → double-free)"
+    );
+}
+
+/// T-ENUM-ACTIVE-ARM: the drop-glue is a runtime tag-switch — only the ACTIVE
+/// variant's heap payload is freed. Push a `Text(String)` (heap) and a
+/// `Code(Integer)` (scalar) → exactly ONE String free (the Code element carries
+/// no heap). Proves the disc discrimination: a broken disc marshal (S3a) would
+/// mis-tag the Text element → its String leaks → 0, or mis-free the Code → crash.
+#[test]
+fn vector_enum_active_arm_only_frees_heap_variant() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Msg { Text(String), Code(Integer) }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<Msg> = vector_new();\n\
+         \x20   let a = Msg::Text(\"aa\");\n\
+         \x20   xs = push(xs, a);\n\
+         \x20   let b = Msg::Code(7);\n\
+         \x20   xs = push(xs, b);\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        1,
+        "only the ACTIVE Text arm carries a String — exactly 1 free"
+    );
+}
+
+/// T-ENUM-SCALAR (DP-5 analog): an all-scalar enum (`Color`, total_size==8, no
+/// heap payload) rides the 8B push path (S3b) — must compile+run with ZERO
+/// string frees. Byte-compat with the scalar Vector path; proves S3b routes the
+/// enum slot without dragging in a bogus free.
+#[test]
+fn vector_scalar_enum_push_drop_frees_nothing() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Color { Red, Green, Blue }\n\
          function main() -> Integer = {\n\
          \x20   let mutable xs: Vector<Color> = vector_new();\n\
+         \x20   xs = push(xs, Color::Green);\n\
          \x20   xs = push(xs, Color::Red);\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        0,
+        "scalar enum has no heap leaf — zero string frees"
+    );
+}
+
+/// T-ENUM-NEST: an enum variant whose payload is itself a heap collection
+/// (`Tags(Vector<String>)`) → dropping the outer `Vector<Wrap>` recurses through
+/// the enum ACTIVE arm into the inner vector and frees its String elements.
+#[test]
+fn vector_nested_enum_vector_string_drop_recurses() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Wrap { Tags(Vector<String>), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable inner: Vector<String> = vector_new();\n\
+         \x20   inner = push(inner, \"x\");\n\
+         \x20   inner = push(inner, \"y\");\n\
+         \x20   let w = Wrap::Tags(inner);\n\
+         \x20   let mutable xs: Vector<Wrap> = vector_new();\n\
+         \x20   xs = push(xs, w);\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0, "main returns 0");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "nested Vector<Wrap(Tags: Vector<String>)> drop must recurse 2 tiers"
+    );
+}
+
+/// T-REFUSE-ENUM-POP: `pop` of a `Vector<Enum>` element is a by-value move-out —
+/// deferred (needs recursive move-out tombstone). MUST refuse at the JIT, never
+/// compile-then-double-free. Poison: remove the AM1 guard → this compiles → flips.
+#[test]
+fn vector_enum_pop_refused_at_jit() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let err = compile_expect_refuse(
+        "enum Msg { Text(String), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<Msg> = vector_new();\n\
+         \x20   let a = Msg::Text(\"aa\");\n\
+         \x20   xs = push(xs, a);\n\
+         \x20   let popped = pop(xs);\n\
          \x20   return 0;\n\
          }",
     );
     assert!(
-        err.contains("Enum") || err.contains("Slice B"),
-        "Vector<Enum> must refuse (Slice B boundary), got: {err}"
+        err.contains("move-out") || err.contains("deferred"),
+        "Vector<Enum> pop must refuse (deferred move-out), got: {err}"
+    );
+}
+
+/// T-REFUSE-STRUCT-POP (Slice A REGRESSION): `pop` of a `Vector<Struct>` element
+/// was a PRE-EXISTING latent double-free/invalid-pointer in Slice A (never
+/// guarded, never tested). The AM1 refuse guard closes it. Poison: remove the
+/// guard → this compiles (and, run, corrupts the popped struct's String handle).
+#[test]
+fn vector_struct_pop_refused_at_jit() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let err = compile_expect_refuse(
+        "struct User { name: String }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<User> = vector_new();\n\
+         \x20   let a = User { name: \"aa\" };\n\
+         \x20   xs = push(xs, a);\n\
+         \x20   let popped = pop(xs);\n\
+         \x20   return 0;\n\
+         }",
+    );
+    assert!(
+        err.contains("move-out") || err.contains("deferred"),
+        "Vector<Struct> pop must refuse (Slice A hole closed), got: {err}"
     );
 }
