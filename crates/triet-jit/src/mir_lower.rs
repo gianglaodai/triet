@@ -3062,29 +3062,29 @@ impl JitContext {
                             callee_name.as_str(),
                             "__triet_string_clear" | "__triet_string_append"
                         );
-                        // ADR-0082 B-α WO-AMEND (2026-07-09): `pop` is the ONLY
-                        // surviving by-value move-out path for an aggregate
-                        // element — get-by-value aggregate is already refused
-                        // at typecheck. REFUSE it explicitly here rather than
-                        // trust the existing marshal: moving a Struct/Enum
-                        // element OUT of a Vector has not been proven sound for
-                        // the element's OWN heap leaves (needs a recursive
-                        // move-out tombstone — dest leaf-marshal + buffer +
-                        // source — deferred to a future slice). Checked on the
-                        // element type regardless of stride, so this closes the
-                        // same latent hole for `Vector<UserStruct>` (Slice A
-                        // never guarded `pop`) as it does for `Vector<Enum>`
-                        // (this slice). `push`/drop of an aggregate element stay
-                        // open — only the by-value move-out is refused.
+                        // ADR-0082 B-α Slice D-1 (2026-07-10): `pop` is the
+                        // ONLY surviving by-value move-out path for an
+                        // aggregate element — get-by-value aggregate is
+                        // already refused at typecheck. Slice D-1a opens
+                        // `Vector<Enum>` pop (a `Nullable(Enum)` dest shares
+                        // the enum's own disc-sentinel slot layout — no extra
+                        // ABI work beyond routing through `enum_slots`).
+                        // `Vector<UserStruct>` pop stays REFUSED: its dest is
+                        // `Nullable(Struct)`, which uses a tag-prepended slot
+                        // (ADR-0076 Phương án A, tag@0/fields@+8) that the
+                        // existing marshal never wrote correctly — the exact
+                        // shape of Slice A's original pop double-free/invalid-
+                        // pointer bug. Deferred to Slice D-1b (Struct?-tag
+                        // marshal fix + recursive move-out tombstone).
                         if callee_name.as_str() == "__triet_vector_pop" {
                             let vty = &body.local_decls[args[0].0].ty;
                             if let MirType::Vector(inner) = vty.nullable_payload().unwrap_or(vty) {
                                 let inner_eff = inner.nullable_payload().unwrap_or(inner);
-                                if matches!(inner_eff, MirType::Struct(_) | MirType::Enum(_)) {
+                                if matches!(inner_eff, MirType::Struct(_)) {
                                     return Err(JitError::Unsupported(
-                                        "vector_pop: Struct/Enum element by-value move-out is \
-                                         deferred to a future slice (requires recursive \
-                                         move-out tombstone)"
+                                        "vector_pop: Struct element by-value move-out is \
+                                         deferred to Slice D-1b (Nullable(Struct) tag-marshal \
+                                         not yet proven sound)"
                                             .into(),
                                     ));
                                 }
@@ -3515,15 +3515,24 @@ impl JitContext {
                             // ADR-0077: append the OUT-pointer. Fat element →
                             // the dest's slot addr (shim memcpy's the element in);
                             // scalar → 0 (unused, element comes back by i64).
+                            // ADR-0082 B-α Slice D-1a: a fat Enum dest lives in
+                            // `enum_slots`, not `struct_slots` — mirror
+                            // `vector_push`'s fat-element source lookup.
+                            // `Enum?` shares the enum's own disc-sentinel slot
+                            // layout (no tag word, ADR-0065 Lát 1), so out_ptr
+                            // is slot+0 (the Struct case, still refused, would
+                            // need slot+8 instead — Slice D-1b, tag+8).
                             let vec_val = builder.use_var(self.var(args[0]));
                             let out_ptr = if vector_pop_fat {
-                                let (slot, _) =
-                                    self.struct_slots.get(&dest[0]).ok_or_else(|| {
-                                        JitError::Unsupported(
-                                            "vector_pop: fat element dest without a slot".into(),
-                                        )
-                                    })?;
-                                builder.ins().stack_addr(I64, *slot, 0)
+                                if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "vector_pop: fat element dest without a slot".into(),
+                                    ));
+                                }
                             } else {
                                 builder.ins().iconst(I64, 0)
                             };
@@ -3561,6 +3570,13 @@ impl JitContext {
                             if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
                                 let ptr = builder.ins().stack_load(I64, *slot, 0);
                                 builder.def_var(self.var(dest[0]), ptr);
+                            } else if self.enum_slots.contains_key(&dest[0]) {
+                                // ADR-0082 B-α Slice D-1a: a fat Enum dest needs
+                                // no further binding — `enum_slots` reads (disc
+                                // switch, drop-glue) always go through the
+                                // StackSlot, never the Cranelift Variable, and
+                                // the shim already memcpy'd the popped bytes
+                                // straight into it via `out_ptr` above.
                             } else {
                                 return Err(JitError::Unsupported(format!(
                                     "{callee_name}: fat element dest without a slot"
@@ -3611,6 +3627,19 @@ impl JitContext {
                                 // whatever leftover bytes sat in the slot).
                                 // total_size <= 8 for a Struct type is exactly 8
                                 // (INV-B-α 8B-granular), so one word suffices.
+                                builder.ins().stack_store(ret_val, *slot, 0);
+                            } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
+                                // ADR-0082 B-α Slice D-1a (T9 symmetric for
+                                // Enum): a disc-only 8B enum dest (all variants
+                                // payload-less, total_size==8) reached via the
+                                // generic scalar-return path — `def_var` above
+                                // wrote `ret_val` to the Variable, but Enum
+                                // reads (disc switch, drop-glue) go through
+                                // `enum_slots`, never the Variable.
+                                // `Nullable(Enum)` shares the enum's own
+                                // disc-sentinel slot layout (no tag word,
+                                // ADR-0065 Lát 1), so this is a direct write —
+                                // unlike the Struct?-tag case (Slice D-1b).
                                 builder.ins().stack_store(ret_val, *slot, 0);
                             }
                         }

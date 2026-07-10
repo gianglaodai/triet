@@ -370,25 +370,114 @@ fn vector_nested_enum_vector_string_drop_recurses() {
     );
 }
 
-/// T-REFUSE-ENUM-POP: `pop` of a `Vector<Enum>` element is a by-value move-out —
-/// deferred (needs recursive move-out tombstone). MUST refuse at the JIT, never
-/// compile-then-double-free. Poison: remove the AM1 guard → this compiles → flips.
+// ─────────────────────────────────────────────────────────────────────────
+// ADR-0082 B-α Slice D-1a (Vector<Enum> pop by-value) — Mentor O.
+// `Nullable(Enum)` shares the enum's own disc-sentinel slot layout (no tag
+// word, ADR-0065 Lát 1) — pop needs only `enum_slots` routing at the 3
+// marshal sites (out_ptr, fat dest-bind, T9 8B dest-bind), no ABI redesign.
+// `Vector<Struct>` pop STAYS REFUSED (`vector_struct_pop_refused_at_jit`
+// below) — its `Nullable(Struct)` dest uses a tag-prepended slot (ADR-0076
+// Phương án A) that the existing marshal never wrote correctly; deferred to
+// Slice D-1b.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// REPURPOSES the former `vector_enum_pop_refused_at_jit` (LUẬT 3: Slice D-1a
+/// deliberately OPENS Enum pop — the old refuse assertion is now false BY
+/// DESIGN, not a regression; `vector_struct_pop_refused_at_jit` below keeps
+/// the still-true Struct half of the old guard). Two heap-bearing `Msg::Text`
+/// pushed, `pop` moves the LIFO-last element ("bb") out — the popped local
+/// frees it at match-arm scope-end Drop, and the SURVIVOR ("aa") is freed by
+/// `xs`'s own Drop at function end. Each String freed exactly once → 2.
 #[test]
-fn vector_enum_pop_refused_at_jit() {
+fn vector_enum_pop_frees_active_arm_and_survivor() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let err = compile_expect_refuse(
-        "enum Msg { Text(String), Empty }\n\
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Msg { Text(String), Empty }\n\
          function main() -> Integer = {\n\
          \x20   let mutable xs: Vector<Msg> = vector_new();\n\
-         \x20   let a = Msg::Text(\"aa\");\n\
-         \x20   xs = push(xs, a);\n\
-         \x20   let popped = pop(xs);\n\
-         \x20   return 0;\n\
-         }",
+         \x20   xs = push(xs, Msg::Text(\"aa\"));\n\
+         \x20   xs = push(xs, Msg::Text(\"bb\"));\n\
+         \x20   let out = pop(xs);\n\
+         \x20   return match out {\n\
+         \x20       ~+ msg => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }");
+    assert_eq!(r, 0, "main returns 0 (~+ arm taken, non-empty pop)");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "popped element (\"bb\", via match-arm scope-end Drop) + survivor \
+         (\"aa\", via xs's own Drop) — each String freed exactly once. \
+         == 0/1 ⇒ dest leaf-marshal leak (enum_slots branch missing); \
+         == 3 ⇒ double-free of the POPPED element only (source cell not \
+         tombstoned by len-- — the survivor is unaffected, so 2+1 not 2×2)."
     );
-    assert!(
-        err.contains("move-out") || err.contains("deferred"),
-        "Vector<Enum> pop must refuse (deferred move-out), got: {err}"
+}
+
+/// Empty-vector pop on a HEAP-BEARING Enum (fat, stride>8) — the shim writes
+/// `NULL_SENTINEL` to `out_ptr[0]` (disc@0, no tag for `Enum?`), the `~0`
+/// match arm must be taken, and NOTHING gets freed (no element was ever
+/// popped). Proves the fat out_ptr routing (enum_slots, slot+0) survives the
+/// empty case, not just the non-empty memcpy case above.
+#[test]
+fn vector_enum_pop_empty_returns_null_sentinel_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Msg { Text(String), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<Msg> = vector_new();\n\
+         \x20   let out = pop(xs);\n\
+         \x20   return match out {\n\
+         \x20       ~+ msg => 1,\n\
+         \x20       ~0 => 7,\n\
+         \x20   };\n\
+         }");
+    assert_eq!(r, 7, "~0 arm taken on empty-vector pop");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        0,
+        "nothing was popped from an empty vector — zero frees"
+    );
+}
+
+/// T9 8B-path content correctness: a disc-only enum (`Color`, total_size==8,
+/// no heap payload) rides the scalar-return path (`vector_pop_fat=false`),
+/// which writes `ret_val` into the `enum_slots` StackSlot (not the Cranelift
+/// Variable). Push Green then Red (LIFO), pop must return the REAL
+/// discriminant (Red), not garbage — matched via nested `match` to a
+/// distinguishing return code. A wrong T9-enum write would read back
+/// whatever stale bytes sat in the slot (likely disc=0/Red by accident is
+/// too weak a signal alone, so this also asserts zero string frees, proving
+/// no heap leaf was ever touched).
+#[test]
+fn vector_enum_scalar_pop_returns_correct_disc() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Color { Red, Green, Blue }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<Color> = vector_new();\n\
+         \x20   xs = push(xs, Color::Green);\n\
+         \x20   xs = push(xs, Color::Red);\n\
+         \x20   let out = pop(xs);\n\
+         \x20   return match out {\n\
+         \x20       ~+ c => match c {\n\
+         \x20           Color::Red => 1,\n\
+         \x20           Color::Green => 2,\n\
+         \x20           Color::Blue => 3,\n\
+         \x20       },\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }");
+    assert_eq!(
+        r, 1,
+        "popped element must be the LIFO-last push (Red=1), not garbage \
+         (T9 enum_slots write missing/wrong ⇒ misroutes to Green/Blue/~0)"
+    );
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        0,
+        "disc-only enum has no heap leaf — zero string frees"
     );
 }
 
