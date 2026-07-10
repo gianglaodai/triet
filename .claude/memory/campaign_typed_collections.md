@@ -236,3 +236,17 @@ O nhiều teeth SIGABRT 134 real-allocator (poison consume/len--/sentinel).
 
 [[feedback_poison_must_be_red]] [[feedback_teeth_never_git_checkout]]
 [[feedback_failure_mode_precision]] [[mentor_o_persona]] [[colleague_d_persona]]
+
+## 2026-07-10 — CỤM B SLICE C: `HashMap<K,aggregate>` VALUE (ADR-0082 B-α cont., G ký, PUSHED)
+origin/main `6d9e144`, gate `0·0·331·0`. 3 commit: `6ec2630`(F1–F4 + T4 unit) · `36ba45f`(teeth) · `6d9e144`(docs). **Scope:** value-aggregate (Struct/Enum) **insert+drop+alloc SOUND** (mirror Slice A/B element push+drop); get/get_ref/contains/remove + key-aggregate REFUSE.
+**4 fix / 4 MÌN (recon O, file:line thật):**
+- F1 `emit_hashmap_value_free_loop:1387` guard `is_any_heap()`→`aggregate_needs_drop` (Struct/Enum ≠ is_any_heap → guard phẳng bail → leak; mirror Vector element loop 1186).
+- F2 `aggregate_needs_drop` Enum-arm: `for`-loop đệ quy + `?` thay `.any(payload.ty.is_any_heap())` phẳng — **defense-in-depth LATENT** (frontend refuse enum-payload-aggregate; unit test T4 pin trực tiếp trên hand-built EnumLayout, bypass frontend).
+- F3 marshal `hashmap_insert` value HAI ĐẦU S3-gap (đối xứng vector_push 3255–3280): ĐẦU-A fat (>8B) value ở `enum_slots` không chỉ `struct_slots`; **ĐẦU-B** 8B-aggregate value (ôm 1 handle, stride==8) → `stack_load(slot,0)` KHÔNG `use_var` (else-branch cũ đọc Variable rỗng → garbage → leak câm; C5/T9 Slice A/B tái sinh).
+- F4 refuse tách: helper mới `refuse_hashmap_aggregate_key` (key-only) @alloc(3239)+insert(3296); giữ `refuse_hashmap_aggregate_kv` (K+V) @remove-probe(3073)+remove(3359)+get-family(3431). WO gốc G nói 3 site, O đếm ra 5.
+**🩸 O tự bắt lỗ G bỏ sót ở WO = MÌN-3 ĐẦU-B** (8B value ôm handle → use_var garbage → LEAK CÂM, 331 fixture không thấy) → tooth T3 riêng.
+**⚖ D "lệch lệnh" có tri thức (G duyệt):** get/get_ref/contains/key chết ở typecheck (E1041 NoMatchingOverload/E1002 undefined/E1048) → JIT-refuse = defense-in-depth → hand-built MIR (án-lệ ADR-0078); chỉ remove chạm JIT. **O probe 5 `.tri` source độc lập verify = đúng tuyệt đối.**
+**O verify 4+1 poison→RED độc lập** (cp-snapshot restore md5 `62ab04…`): F1→T1/T2/T3 FREE `0 vs 2` · F2→T4 `needs_drop==false` · F3-ĐẦU-A→T2 compile-fail "fat value without slot" · F3-ĐẦU-B→T3 FREE 0 (chỉ T3 → INLINE-anchor cô lập) · neuter 2 refuse-helper→6 refuse tooth "compilation SUCCEEDED". Failure-mode = FREE-count-wrong (leak, KHÔNG SIGSEGV).
+**Teeth:** T1 `hashmap_struct_value_insert_drop_frees_string_field` · T2 `hashmap_enum_value_insert_drop_frees_string_payload` · T3 `hashmap_8b_struct_value_insert_drop_frees_wrapped_vector` · T4 unit `aggregate_needs_drop_enum_recurses_into_struct_payload` · 6 refuse (remove source-level + get/get_ref/contains/key-alloc/key-insert hand-built MIR). Repurpose `hashmap_struct_value_refused_at_jit`→`..._remove_refused_at_jit` (Luật 3; coverage insert-Struct-value→T1).
+**⚠️ Bom hẹn giờ FIX-2 zero-@8 (Slice B) giữ nguyên.** **Nợ Slice C defer:** value move-out (get/remove by-value — nấm mồ chung Vector pop) · get_ref borrow value-aggregate (Cụm D) · contains-allow value-aggregate · key-aggregate hash+eq đệ quy.
+**Mặt trận kế:** value move-out aggregate (recursive move-out-tombstone: dest leaf-marshal + buffer/cell tombstone + source) HOẶC key-aggregate — G/Giang chốt.
