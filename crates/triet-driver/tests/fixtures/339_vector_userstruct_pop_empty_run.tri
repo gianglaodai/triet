@@ -1,0 +1,18 @@
+// EXPECT: 7
+// ADR-0082 B-α Slice D-1b — pop on an EMPTY `Vector<UserStruct>` returns `~0`.
+// For a fat Struct element the shim writes `NULL_SENTINEL` into out_ptr,
+// which now lands at fields@+8 (the JIT no longer trusts that write for
+// presence — the tag@0 is derived independently from the call's i64
+// return). The `~0` arm must still be correctly taken. Real allocator (see
+// 338_vector_userstruct_pop_run.tri for why this fixture exists alongside
+// the counting-harness teeth).
+struct User { name: String }
+
+function main() -> Integer {
+    let mutable xs: Vector<User> = vector_new();
+    let out = pop(xs);
+    return match out {
+        ~+ popped => 1,
+        ~0 => 7,
+    };
+}

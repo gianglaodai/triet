@@ -1,0 +1,29 @@
+// EXPECT: 1
+// ADR-0082 B-α Slice D-1b — LOOP-REUSE teeth for the present-tag write
+// (T9 8B path analog of 341). `Wrapper{v:Vector<String>}` (total_size==8)
+// rides the scalar-return T9 path — same deterministic slot-reuse hazard:
+// iter0 (empty `xs`) writes `NULL_SENTINEL`@tag(slot+0) via the T9 empty
+// branch; iter1 (1 element) must overwrite it with the present marker, or
+// `hits` stays 0 instead of 1. See 341_vector_userstruct_pop_loop_reuse_run
+// for the full mechanism (fat-Struct sibling of this T9 8B case).
+struct Wrapper { v: Vector<String> }
+
+function main() -> Integer {
+    let mutable xs: Vector<Wrapper> = vector_new();
+    let mutable i: Integer = 0;
+    let mutable hits: Integer = 0;
+    while i < 2 {
+        let out = pop(xs);
+        hits = match out {
+            ~0 => {
+                let mutable inner: Vector<String> = vector_new();
+                inner = push(inner, "x");
+                xs = push(xs, Wrapper { v: inner });
+                hits
+            },
+            ~+ w => { hits + 1 },
+        };
+        i = i + 1;
+    }
+    return hits;
+}

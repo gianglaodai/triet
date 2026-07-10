@@ -1,0 +1,31 @@
+// EXPECT: 1
+// ADR-0082 B-α Slice D-1b — LOOP-REUSE teeth for the present-tag write
+// (Mentor O, fat-Struct path). `out`'s StackSlot is allocated ONCE per
+// function (keyed by MIR Local, not per dynamic loop iteration) — a
+// `while` back-edge reuses the SAME physical memory across iterations.
+// iter0: `xs` is empty → pop writes `NULL_SENTINEL` @tag(slot+0)
+// deterministically. iter1: `xs` now has 1 element → pop's present-case
+// marshal MUST overwrite tag@0 with the present marker; if that write were
+// silently missing, tag@0 would still hold iter0's stale NULL_SENTINEL →
+// iter1 misroutes to the `~0` arm too → `hits` stays 0 instead of 1. A
+// straight-line single-pop fixture (338/339) cannot catch this: a
+// never-before-touched slot holds UNDEFINED (not deterministically
+// NULL_SENTINEL) garbage, so a missing present-write is only a reliable
+// signal when the slot was deterministically pre-set by a prior empty pop
+// in the SAME physical slot — this loop is what forces that.
+struct User { name: String }
+
+function main() -> Integer {
+    let mutable xs: Vector<User> = vector_new();
+    let mutable i: Integer = 0;
+    let mutable hits: Integer = 0;
+    while i < 2 {
+        let out = pop(xs);
+        hits = match out {
+            ~0 => { xs = push(xs, User { name: "x" }); hits },
+            ~+ u => { hits + 1 },
+        };
+        i = i + 1;
+    }
+    return hits;
+}

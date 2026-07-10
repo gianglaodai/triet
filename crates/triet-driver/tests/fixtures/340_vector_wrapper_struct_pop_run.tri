@@ -1,0 +1,24 @@
+// EXPECT: 0
+// ADR-0082 B-α Slice D-1b — T9 8B-path: `Wrapper{v:Vector<String>}`
+// (total_size==8, a single Vector handle field) rides the scalar-return
+// path — `Nullable(Wrapper)` dest is a 16B slot (tag@0/field@+8). Pop the
+// only element, match `~+`, drop the downcast copy — its inner
+// `Vector<String>` must free its element through a REAL allocator (see
+// 338_vector_userstruct_pop_run.tri for why this matters beyond the
+// counting-harness teeth: a field-offset bug here hands back a
+// garbage/zero handle that a counting stub cannot distinguish from a
+// correct one, but a real free() on garbage aborts).
+struct Wrapper { v: Vector<String> }
+
+function main() -> Integer {
+    let mutable inner: Vector<String> = vector_new();
+    inner = push(inner, "zz");
+    let w = Wrapper { v: inner };
+    let mutable xs: Vector<Wrapper> = vector_new();
+    xs = push(xs, w);
+    let out = pop(xs);
+    return match out {
+        ~+ popped => 0,
+        ~0 => 99,
+    };
+}

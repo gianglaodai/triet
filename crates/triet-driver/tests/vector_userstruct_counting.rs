@@ -481,25 +481,112 @@ fn vector_enum_scalar_pop_returns_correct_disc() {
     );
 }
 
-/// T-REFUSE-STRUCT-POP (Slice A REGRESSION): `pop` of a `Vector<Struct>` element
-/// was a PRE-EXISTING latent double-free/invalid-pointer in Slice A (never
-/// guarded, never tested). The AM1 refuse guard closes it. Poison: remove the
-/// guard → this compiles (and, run, corrupts the popped struct's String handle).
+// ─────────────────────────────────────────────────────────────────────────
+// ADR-0082 B-α Slice D-1b (Vector<Struct> pop by-value) — Mentor O.
+// REPURPOSES the former `vector_struct_pop_refused_at_jit` (LUẬT 3: D-1b
+// deliberately OPENS Struct pop — the old refuse assertion is now false BY
+// DESIGN, not a regression). Fixes the ACTUAL Slice A BUG-1 shape: a
+// `Nullable(Struct)` dest uses a tag-prepended slot (ADR-0076 Phương án A,
+// tag@0/fields@+8) that the marshal previously wrote at offset 0 (colliding
+// with the tag word). Fixed at all 3 marshal sites (out_ptr slot+8,
+// fat/T9 dest-bind tag+field write).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Fat case (`User{name:String}`, total_size 24 > 8): two heap-bearing
+/// structs pushed, `pop` moves the LIFO-last element ("bb") out — the popped
+/// local frees it at match-arm scope-end Drop, the SURVIVOR ("aa") is freed
+/// by `xs`'s own Drop. Each String freed exactly once → 2. A tag/field-offset
+/// bug (writing @+0 instead of @+8, or never writing the tag) would either
+/// misroute the match (reads garbage tag) or hand back a corrupted field.
 #[test]
-fn vector_struct_pop_refused_at_jit() {
+fn vector_userstruct_pop_frees_popped_field_and_survivor() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let err = compile_expect_refuse(
-        "struct User { name: String }\n\
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("struct User { name: String }\n\
          function main() -> Integer = {\n\
          \x20   let mutable xs: Vector<User> = vector_new();\n\
          \x20   let a = User { name: \"aa\" };\n\
          \x20   xs = push(xs, a);\n\
-         \x20   let popped = pop(xs);\n\
-         \x20   return 0;\n\
-         }",
+         \x20   let b = User { name: \"bb\" };\n\
+         \x20   xs = push(xs, b);\n\
+         \x20   let out = pop(xs);\n\
+         \x20   return match out {\n\
+         \x20       ~+ popped => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }");
+    assert_eq!(r, 0, "main returns 0 (~+ arm taken, non-empty pop)");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "popped element (\"bb\") + survivor (\"aa\") — each String freed \
+         exactly once. == 0/1 ⇒ tag/field marshal leak; == 3 ⇒ double-free \
+         of the popped element (source cell not tombstoned)."
     );
-    assert!(
-        err.contains("move-out") || err.contains("deferred"),
-        "Vector<Struct> pop must refuse (Slice A hole closed), got: {err}"
+}
+
+/// Empty-vector pop on a HEAP-BEARING Struct (fat, stride>8) — the shim
+/// writes `NULL_SENTINEL` into out_ptr[0] which now lands at fields@+8 (the
+/// JIT no longer trusts that write for presence — the tag is derived
+/// independently from the call's i64 return). The `~0` match arm must be
+/// taken (i.e. tag@0 correctly reads as null despite fields@+8 holding a
+/// stray sentinel word, not real struct content), and NOTHING gets freed.
+#[test]
+fn vector_userstruct_pop_empty_returns_null_sentinel_no_leak() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("struct User { name: String }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable xs: Vector<User> = vector_new();\n\
+         \x20   let out = pop(xs);\n\
+         \x20   return match out {\n\
+         \x20       ~+ popped => 1,\n\
+         \x20       ~0 => 7,\n\
+         \x20   };\n\
+         }");
+    assert_eq!(r, 7, "~0 arm taken on empty-vector pop");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        0,
+        "nothing was popped from an empty vector — zero frees"
+    );
+}
+
+/// T9 8B-path (Slice D-1b tag+8 write): `Wrapper{v:Vector<String>}`
+/// (total_size==8, a single Vector handle field) rides the scalar-return
+/// path — `Nullable(Wrapper)` dest is a 16B slot (tag@0/field@+8). Pop the
+/// only element, match `~+`, and let the downcast copy drop at arm end: the
+/// inner `Vector<String>`'s element must free. A field-offset bug (writing
+/// the handle @+0 instead of @+8) would hand back a garbage/zero handle
+/// (leak, STR_FREES stays 0); a missing tag write would misroute to `~0`
+/// (garbage tag) — this test's positive-arm assertion (`r == 0`) catches
+/// that independently of the free count.
+#[test]
+fn vector_wrapper_struct_pop_frees_inner_vector_string() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("struct Wrapper { v: Vector<String> }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable inner: Vector<String> = vector_new();\n\
+         \x20   inner = push(inner, \"zz\");\n\
+         \x20   let w = Wrapper { v: inner };\n\
+         \x20   let mutable xs: Vector<Wrapper> = vector_new();\n\
+         \x20   xs = push(xs, w);\n\
+         \x20   let out = pop(xs);\n\
+         \x20   return match out {\n\
+         \x20       ~+ popped => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }");
+    assert_eq!(
+        r, 0,
+        "main returns 0 (~+ arm taken — tag correctly present)"
+    );
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        1,
+        "popped Wrapper's inner Vector<String> must free its element \
+         exactly once. == 0 ⇒ field@+8 write missing/wrong (leaked/garbage \
+         handle)."
     );
 }

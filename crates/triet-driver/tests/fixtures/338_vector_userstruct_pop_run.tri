@@ -1,0 +1,26 @@
+// EXPECT: 0
+// ADR-0082 B-α Slice D-1b — end-to-end source `pop(v)` on `Vector<UserStruct>`.
+// Push two heap-bearing structs, pop the LIFO-last, match `~+` to drop it.
+// Runs through the REAL allocator (integration_tests.rs registers the real
+// `__triet_string_free`, not a counting stub) — this is the teeth the
+// counting-harness in `vector_userstruct_counting.rs` cannot provide: a
+// `Nullable(Struct)` tag/field-offset bug (writing the popped element's
+// fields @+0 instead of @+8, colliding with the tag word) does NOT change
+// the free COUNT observed by a counting stub (it still frees something
+// non-null-looking) but DOES corrupt the pointer handed to a real
+// allocator's `free()` — `free(): invalid pointer` → SIGABRT under this
+// fixture. Self-poison-verified during D-1b implementation.
+struct User { name: String }
+
+function main() -> Integer {
+    let mutable xs: Vector<User> = vector_new();
+    let a = User { name: "aa" };
+    xs = push(xs, a);
+    let b = User { name: "bb" };
+    xs = push(xs, b);
+    let out = pop(xs);
+    return match out {
+        ~+ popped => 0,
+        ~0 => 99,
+    };
+}

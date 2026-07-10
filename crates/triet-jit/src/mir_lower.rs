@@ -3062,34 +3062,21 @@ impl JitContext {
                             callee_name.as_str(),
                             "__triet_string_clear" | "__triet_string_append"
                         );
-                        // ADR-0082 B-α Slice D-1 (2026-07-10): `pop` is the
-                        // ONLY surviving by-value move-out path for an
-                        // aggregate element — get-by-value aggregate is
-                        // already refused at typecheck. Slice D-1a opens
-                        // `Vector<Enum>` pop (a `Nullable(Enum)` dest shares
-                        // the enum's own disc-sentinel slot layout — no extra
-                        // ABI work beyond routing through `enum_slots`).
-                        // `Vector<UserStruct>` pop stays REFUSED: its dest is
+                        // ADR-0082 B-α Slice D-1 (2026-07-10/11): `pop` is the
+                        // by-value move-out path for an aggregate element —
+                        // get-by-value aggregate is already refused at
+                        // typecheck. Slice D-1a opened `Vector<Enum>` pop (a
+                        // `Nullable(Enum)` dest shares the enum's own
+                        // disc-sentinel slot layout — no extra ABI work beyond
+                        // routing through `enum_slots`). Slice D-1b opens
+                        // `Vector<UserStruct>` pop: its dest is
                         // `Nullable(Struct)`, which uses a tag-prepended slot
-                        // (ADR-0076 Phương án A, tag@0/fields@+8) that the
-                        // existing marshal never wrote correctly — the exact
-                        // shape of Slice A's original pop double-free/invalid-
-                        // pointer bug. Deferred to Slice D-1b (Struct?-tag
-                        // marshal fix + recursive move-out tombstone).
-                        if callee_name.as_str() == "__triet_vector_pop" {
-                            let vty = &body.local_decls[args[0].0].ty;
-                            if let MirType::Vector(inner) = vty.nullable_payload().unwrap_or(vty) {
-                                let inner_eff = inner.nullable_payload().unwrap_or(inner);
-                                if matches!(inner_eff, MirType::Struct(_)) {
-                                    return Err(JitError::Unsupported(
-                                        "vector_pop: Struct element by-value move-out is \
-                                         deferred to Slice D-1b (Nullable(Struct) tag-marshal \
-                                         not yet proven sound)"
-                                            .into(),
-                                    ));
-                                }
-                            }
-                        }
+                        // (ADR-0076 Phương án A, tag@0/fields@+8) — this was
+                        // Slice A's original pop double-free/invalid-pointer
+                        // bug (marshal wrote fields@+0, colliding with the tag
+                        // word). Fixed below at the 3 marshal sites (out_ptr,
+                        // fat dest-bind, T9 8B dest-bind) — no more blanket
+                        // refuse needed for `Vector<T>` pop.
                         // ADR-0077: `pop` on a Vector of FAT elements (String 24B)
                         // returns the element by sret — the dest's slot is filled
                         // by memcpy, so the generic i64-return def_var is skipped
@@ -3520,12 +3507,20 @@ impl JitContext {
                             // `vector_push`'s fat-element source lookup.
                             // `Enum?` shares the enum's own disc-sentinel slot
                             // layout (no tag word, ADR-0065 Lát 1), so out_ptr
-                            // is slot+0 (the Struct case, still refused, would
-                            // need slot+8 instead — Slice D-1b, tag+8).
+                            // is slot+0.
+                            // ADR-0082 B-α Slice D-1b: a fat Struct dest is
+                            // `Nullable(Struct)` — tag-prepended slot (ADR-0076
+                            // Phương án A, tag@0/fields@+8), UNLESS it's
+                            // "String" (excluded from the tag-prepend loop,
+                            // still slot+0). The shim knows nothing about the
+                            // tag — it just memcpy's `total_size` bytes at
+                            // out_ptr — so out_ptr must already point PAST the
+                            // tag word for a real struct.
                             let vec_val = builder.use_var(self.var(args[0]));
                             let out_ptr = if vector_pop_fat {
-                                if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
-                                    builder.ins().stack_addr(I64, *slot, 0)
+                                if let Some((slot, layout)) = self.struct_slots.get(&dest[0]) {
+                                    let field_off = if layout.name == "String" { 0 } else { 8 };
+                                    builder.ins().stack_addr(I64, *slot, field_off)
                                 } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
                                     builder.ins().stack_addr(I64, *slot, 0)
                                 } else {
@@ -3567,9 +3562,66 @@ impl JitContext {
                             // ADR-0077/0078: the shim memcpy'd into the dest
                             // String slot — bind the dest var to ptr@0 (the i64
                             // return is 0, a sentinel).
-                            if let Some((slot, _)) = self.struct_slots.get(&dest[0]) {
+                            if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
+                                && layout.name == "String"
+                            {
                                 let ptr = builder.ins().stack_load(I64, *slot, 0);
                                 builder.def_var(self.var(dest[0]), ptr);
+                            } else if let Some((slot, layout)) = self.struct_slots.get(&dest[0])
+                                && layout.name != "String"
+                            {
+                                // ADR-0082 B-α Slice D-1b: a fat Struct dest is
+                                // `Nullable(Struct)` — tag@0/fields@+8 (ADR-0076
+                                // Phương án A). The shim already memcpy'd the
+                                // popped element's bytes into fields@+8 via
+                                // `out_ptr` (it knows nothing about the tag
+                                // word) — the JIT must write the tag itself.
+                                // Presence is derived from the call's i64
+                                // return: the shim's `len<=0` branch is
+                                // stride-independent (0 = non-empty fat pop,
+                                // NULL_SENTINEL = empty) — mirrors the
+                                // Drop-glue null-check contract (`tag ==
+                                // NULL_SENTINEL` ⇒ null) and
+                                // `NullableStructCopy::Widen`'s literal-1
+                                // present tag.
+                                //
+                                // ⚠️ The PRESENT-branch write (`one`, below)
+                                // is load-bearing, NOT defensive filler: this
+                                // dest's StackSlot is allocated ONCE per MIR
+                                // Local, so a `while`-loop back-edge that
+                                // pops the same `xs` repeatedly REUSES the
+                                // same physical slot across iterations. An
+                                // empty pop deterministically leaves
+                                // NULL_SENTINEL@tag(slot+0); if a LATER
+                                // present pop into that same slot skipped
+                                // this write, tag@0 would still read as null
+                                // — a straight-line single-pop fixture can't
+                                // catch that (an untouched slot's stale
+                                // content is undefined, not deterministically
+                                // NULL_SENTINEL). Teeth:
+                                // 341_vector_userstruct_pop_loop_reuse_run.tri
+                                // (Mentor O, poison-verified: dropping this
+                                // write and reading back whatever was already
+                                // in the slot flips the fixture 1→0).
+                                let ret = builder.inst_results(call_inst)[0];
+                                let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+                                let is_null = builder.ins().icmp(IntCC::Equal, ret, sentinel);
+                                let present_bb = builder.create_block();
+                                let null_bb = builder.create_block();
+                                let merge_bb = builder.create_block();
+                                builder.append_block_param(merge_bb, I64);
+                                builder.ins().brif(is_null, null_bb, &[], present_bb, &[]);
+                                builder.switch_to_block(present_bb);
+                                builder.seal_block(present_bb);
+                                let one = builder.ins().iconst(I64, 1);
+                                builder.ins().jump(merge_bb, &[BlockArg::from(one)]);
+                                builder.switch_to_block(null_bb);
+                                builder.seal_block(null_bb);
+                                builder.ins().jump(merge_bb, &[BlockArg::from(sentinel)]);
+                                builder.switch_to_block(merge_bb);
+                                builder.seal_block(merge_bb);
+                                let tag = builder.block_params(merge_bb)[0];
+                                builder.ins().stack_store(tag, *slot, 0);
                             } else if self.enum_slots.contains_key(&dest[0]) {
                                 // ADR-0082 B-α Slice D-1a: a fat Enum dest needs
                                 // no further binding — `enum_slots` reads (disc
@@ -3627,7 +3679,53 @@ impl JitContext {
                                 // whatever leftover bytes sat in the slot).
                                 // total_size <= 8 for a Struct type is exactly 8
                                 // (INV-B-α 8B-granular), so one word suffices.
-                                builder.ins().stack_store(ret_val, *slot, 0);
+                                //
+                                // ADR-0082 B-α Slice D-1b: pop's dest is ALWAYS
+                                // `Nullable(Struct)` (pop returns `T?`) — a
+                                // tag-prepended slot (ADR-0076 Phương án A,
+                                // tag@0/fields@+8). Guard on the dest's actual
+                                // MIR type (not just "T9 is pop-only" folklore)
+                                // so a hypothetical future non-nullable 8B
+                                // struct producer through this same generic
+                                // path would fall to the old direct write
+                                // instead of silently corrupting a slot with no
+                                // tag word.
+                                //
+                                // ⚠️ Same load-bearing PRESENT-branch write as
+                                // the fat path above (see the comment there):
+                                // this `out`-local's slot is reused across a
+                                // `while`-loop back-edge, so a prior empty pop
+                                // can leave a deterministic NULL_SENTINEL
+                                // tag@0 for a LATER present pop to silently
+                                // inherit if this write were skipped. Teeth:
+                                // 342_vector_wrapper_struct_pop_loop_reuse_run.tri.
+                                let dest_is_nullable =
+                                    matches!(body.local_decls[dest[0].0].ty, MirType::Nullable(_));
+                                if dest_is_nullable {
+                                    let sentinel =
+                                        builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+                                    let is_null =
+                                        builder.ins().icmp(IntCC::Equal, ret_val, sentinel);
+                                    let present_bb = builder.create_block();
+                                    let null_bb = builder.create_block();
+                                    let merge_bb = builder.create_block();
+                                    builder.append_block_param(merge_bb, I64);
+                                    builder.ins().brif(is_null, null_bb, &[], present_bb, &[]);
+                                    builder.switch_to_block(present_bb);
+                                    builder.seal_block(present_bb);
+                                    let one = builder.ins().iconst(I64, 1);
+                                    builder.ins().jump(merge_bb, &[BlockArg::from(one)]);
+                                    builder.switch_to_block(null_bb);
+                                    builder.seal_block(null_bb);
+                                    builder.ins().jump(merge_bb, &[BlockArg::from(sentinel)]);
+                                    builder.switch_to_block(merge_bb);
+                                    builder.seal_block(merge_bb);
+                                    let tag = builder.block_params(merge_bb)[0];
+                                    builder.ins().stack_store(tag, *slot, 0);
+                                    builder.ins().stack_store(ret_val, *slot, 8);
+                                } else {
+                                    builder.ins().stack_store(ret_val, *slot, 0);
+                                }
                             } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
                                 // ADR-0082 B-α Slice D-1a (T9 symmetric for
                                 // Enum): a disc-only 8B enum dest (all variants
