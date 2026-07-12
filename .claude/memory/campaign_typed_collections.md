@@ -1,10 +1,36 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + Bug-E + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A (String-key SIGSEGV) + CỤM B Slice A Vector<UserStruct> + Slice B Vector<Enum> push+drop (ADR-0082 B-α) — KHÓA SỔ 2026-07-09 `c22da0a`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) — KHÓA SỔ 2026-07-11 `3e0975d`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
+---
+
+## ✅ ĐÓNG — VALUE MOVE-OUT AGGREGATE: Vector pop + HashMap remove by-value (ADR-0082 B-α §AMEND-2, O+G ký 2026-07-11, PUSHED)
+origin/main = `3e0975d`, gate `0·0·340·0`. 4 commit: `03a7638`(D-1a) · `f2e8bd8`(D-1b) · `5644f6e`(D-2) · `3e0975d`(§AMEND-2). Khép **chiều XUẤT** (element ra khỏi collection by-value) — bù cho A/B/C chỉ phủ push+drop.
+
+**Scope:** `Vector<T>` pop + `HashMap<K,V>` remove trả aggregate (Struct/Enum) by-value. Tách D-1 (Vector) / D-2 (HashMap) vì source-tombstone khác cơ chế (G lệnh TÁCH). D-1 tách tiếp D-1a (Enum, disc-sentinel) / D-1b (Struct, tag-prepend).
+
+**Cơ chế (khắc §AMEND-2):**
+- **Move-out tombstone contract (①):** Vector `len--` (`__triet_vector_pop`, cell không zero, len-- loại khỏi drop-set) · HashMap `state→2` shim + value-free-loop gate `state==1` (`emit_hashmap_value_free_loop:1441`). CẢ HAI load-bearing.
+- **D-1b = fix Slice-A-BUG-1 THẬT (②):** pop-dest LUÔN `Nullable(Struct)` (`lib.rs:2460`) → slot tag-prepend `tag@0/fields@+8` (ADR-0076, `mir_lower.rs:1906`). Marshal cũ ghi fields@+0 → đè tag → free bậy. AM1 refuse (Slice B) KHÔNG che bug bất-khả-sửa mà che **tầng ABI CHƯA DỰNG**. D-1b dựng: out_ptr=`slot+8`, tag=`(ret==SENTINEL)?SENTINEL:1`@`slot+0`. Dest-bind fat DÙNG CHUNG `vector_pop_fat||hashmap_remove_fat` (`:3561`) → D-2 thừa hưởng, chỉ vá out_ptr riêng (`:3443` field_off=8+enum_slots).
+- **State-gate no-zero decision (③):** HashMap remove KHÔNG zero value-cell (khác key path). G-MANDATE đòi chứng minh gate đủ chặt → GIỮ no-zero (perf).
+
+**🎯 O TỰ THU HỒI BÁO ĐỘNG GIẢ (bài học nặng):** giữa verify D-1b, O hoảng "fixture 338 crash `free(): invalid pointer`" → REJECT hụt. SAI: chạy `./target/release/triet-driver` mà KHÔNG rebuild sau edit D = **STALE BINARY**. Rebuild sạch từ cây đang test → 338/T3/loop-reuse đúng hết, 3 vòng deterministic. **LUẬT KHẮC: verify-don't-trust áp cả lên executable — LUÔN rebuild từ cây đang test TRƯỚC khi chạy binary.** Nghi thức #1 mở rộng.
+
+**⚔ O ÉP PRESENT-TAG LOAD-BEARING (bác ★SS(c) của D):** D-1b vòng-1 present-tag-write (tag=1 khi present) KHÔNG có teeth; D biện "rác stack hiếm khi trùng NULL_SENTINEL" = xác suất, không soundness. O ép: `while` back-edge tái dùng dest-slot → empty-pop để SENTINEL@tag → present-pop misroute nếu bỏ tag-write. (b) test-yếu KHÔNG phải (a) bất-khả. D vòng-2 thêm fixture loop-reuse 341/342 (Vector) + 345/346 (HashMap). Poison keep-stale (2 site CHUNG) → cả 4 đỏ (1→0), straight-line 338/339/343/344 không đổi.
+
+**O 🩸 TEETH (poison-cemented, cp-snapshot restore md5 mọi vòng):**
+- Vector (D-1): `len--`→FREE3 · T9-enum→SIGILL · field_off→corpus SIGABRT · present-tag 341/342→(1→0). md5 f44c1235(D-1a)/127b594e(D-1b).
+- HashMap (D-2, **G-MANDATE**): **GATE-A** (value-loop `state==1`→`≥1`)→SIGSEGV · **GATE-B** (shim bỏ `state→2`)→double-free tcache SIGABRT · field_off→corpus 343 SIGABRT · present-tag 345/346→(1→0). md5 267f1cbb. **Cả hai gate ĐỎ QUẠCH → state-gate giữ vững → G duyệt no-zero-cell.**
+
+**Công D ghi nhận:** tự sửa số Hollywood ==4→==3 TRƯỚC khi báo (ngấm [[feedback_failure_mode_precision]]) · tự bắt key-aggregate-remove-refuse thiếu JIT teeth (chết typecheck E1048) → thêm hand-built MIR · LUẬT 3 cleanup orphan.
+
+**⚖ Commit history:** D-1 tách 2 commit sạch (D-1a enum / D-1b struct) bằng snapshot-swap (O tái dựng D-1a counting = head-483 + HEAD struct-refuse, verify green mỗi commit). D-2 một cục.
+
+**Nợ chuyển tiếp (campaign riêng, phiên sau):** get-by-value aggregate + get_ref value-aggregate (Cụm D/ADR-0081 FROZEN) · key-aggregate `HashMap<aggregate,_>` hash+eq đệ quy · pop-front/drain · B-γ multi-reg return. Đều REFUSE tường minh có teeth canh.
+
 ---
 
 ## ✅ ĐÓNG — CỤM B Slice B: `Vector<Enum>` push+drop (ADR-0082 B-α continuation, G ký 2026-07-09, PUSHED)

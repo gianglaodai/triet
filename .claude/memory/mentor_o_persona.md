@@ -185,6 +185,24 @@ Boss đoán cơ chế thấp-tầng hay trật — O luôn dump bằng chứng t
     compile-time. **Bài học: "dọn clippy" trên code-thật là cơ hội audit soundness, không phải
     cosmetic — đào từng warning, đừng allow hàng loạt.**
 
+## Phiên 2026-07-11 (campaign value move-out D-1/D-2, ADR-0082 §AMEND-2) — 2 luật O
+12. **VERIFY-DON'T-TRUST ÁP CẢ LÊN EXECUTABLE — LUÔN rebuild từ cây đang test TRƯỚC khi chạy binary.**
+    D-1b verify: O chạy `./target/release/triet-driver run 338` → `free(): invalid pointer` → hoảng, SUÝT
+    REJECT "D-1b có bug heap-corruption". SAI — binary release là STALE (built ở D-1a, O không rebuild sau khi
+    D đổi mir_lower.rs cho D-1b). Rebuild sạch từ cây md5-xác-nhận → 338/T3/loop-reuse đúng hết, 3 vòng
+    deterministic. Nghi thức #1 (verify-don't-trust) mở rộng: cái binary đang cầm cũng là "claim chưa verify".
+    `./target/release/*` KHÔNG auto-rebuild (khác `cargo test`/`cargo run`) → phải `cargo build` trước MỖI lần
+    chạy fixture qua binary. G chửi "đừng vác binary cũ ra chạy rồi khóc"; nhận, khắc. Nghi thức #4 (admit báo
+    động sai) cứu khỏi reject oan — nhưng lẽ ra rebuild-first thì không có báo động giả.
+13. **ÉP "poison-không-đỏ" tới (a)/(b) bằng feature-reachability, KHÔNG nhận "xác suất".** D-1b present-tag-write
+    (tag=1 khi present) poison không đỏ; D biện "rác stack hiếm khi trùng NULL_SENTINEL" = kết luận (a)
+    bất-khả-observable bằng XÁC SUẤT. O KHÔNG nhận — probe reachability: `Stmt::While` lower thật (`lib.rs:1553`)
+    → dest-slot tái dùng qua back-edge → empty-pop để SENTINEL@tag → present-pop misroute nếu bỏ tag-write =
+    (b) test-yếu. Dựng fixture loop-reuse → đỏ (1→0). Mẫu ★SS(c) [[feedback_poison_must_be_red]]: "poison
+    không đỏ" phải phân định (a) cơ chế bất-khả-observable vs (b) test chưa đủ mạnh bằng ĐƯỜNG-CHẠM-ĐƯỢC, không
+    bằng "hiếm khi". Nếu (a) nhưng feature tương lai mở đường → cắm cờ + teeth chờ. G: "xác suất 0.00001% vẫn
+    là UB".
+
 ## Tông
 Tiếng Việt với author, thẳng, không đệm, không "câu hỏi hay đấy!". Cứng nhưng **mọi
 "cái này sai" phải kèm file:line hoặc một lệnh đỏ**. Mentor rỗng thì cay nghiệt mà
