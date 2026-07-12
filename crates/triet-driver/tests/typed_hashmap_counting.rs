@@ -54,7 +54,7 @@ extern "C" fn __hm_str_free(ptr: i64, cap: i64) {
 fn shims() -> Vec<ShimSymbol> {
     vec![
         // Alloc/free/insert/get/remove are REAL (actually allocate + dealloc).
-        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_6_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
@@ -63,6 +63,9 @@ fn shims() -> Vec<ShimSymbol> {
             "__triet_string_from_bytes",
             mir_lower::__triet_string_from_bytes,
         ),
+        // ADR-0083: struct-key hash/eq walkers reference these for String leaves.
+        ShimSymbol::fn_2_1("__triet_string_hash", mir_lower::__triet_string_hash),
+        ShimSymbol::fn_4_1("__triet_string_eq", mir_lower::__triet_string_eq),
         // Element free is the COUNTING stub (the teeth surface).
         ShimSymbol::fn_2_0("__triet_string_free", __hm_str_free),
     ]
@@ -376,7 +379,7 @@ fn hashmap_int_int_insert_get_readback() {
 fn hashmap_rehash_fat_value_retains_full_cell() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Insert 4 → triggers realloc at cap=4, value_stride=24
-    let m = mir_lower::__triet_hashmap_alloc(0, 4, 8, 24);
+    let m = mir_lower::__triet_hashmap_alloc(0, 4, 8, 24, 0, 0);
     assert_ne!(m, 0);
     let mut cur = m;
     for (k, tag) in [(1, 101_i64), (2, 202), (3, 303), (4, 404)] {
@@ -455,7 +458,7 @@ fn lower_hm_string_source(source: &str) -> Vec<triet_mir::Body> {
 
 fn hm_string_shims() -> Vec<ShimSymbol> {
     vec![
-        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_6_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
         ShimSymbol::fn_2_1("__triet_hashmap_get", mir_lower::__triet_hashmap_get),
@@ -697,20 +700,52 @@ fn hashmap_key_type_tryte_refused() {
     );
 }
 
+/// ADR-0083 §5 — a Struct whose leaves are all hashable (scalar/String/nested)
+/// is now an ACCEPTED HashMap key (was refused under ADR-0080). Repurposed from
+/// the old `hashmap_key_type_struct_refused` (LUẬT 3): the guard it protected
+/// (Struct-key refuse) was intentionally lifted this ADR — poison
+/// `is_hashable_key` to only-Integer/String and this test goes RED (E1048
+/// re-fires on Point).
 #[test]
-fn hashmap_key_type_struct_refused() {
+fn hashmap_hashable_struct_key_accepted() {
     let src = "struct Point { x: Integer, y: Integer }\n\
         function main() -> Integer = { let m: HashMap<Point, Integer> = hashmap_new(); return 0; }";
     let (program, parse_errors) = triet_parser::parse(src);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
     let (type_errors, _, _) = triet_typecheck::check(&program);
     assert!(
-        !type_errors.is_empty(),
-        "ADR-0080 tooth #8: HashMap<Point,_> (user Struct key) must be REFUSED at typecheck"
+        !type_errors.iter().any(|e| e.to_string().contains("E1048")),
+        "ADR-0083: HashMap<Point,_> (all-scalar Struct key) must be ACCEPTED, got {type_errors:?}"
     );
+}
+
+/// ADR-0083 §5 — a Struct key with a NON-hashable leaf (Vector — mutable
+/// collection) is REFUSED with E1048. Poison `is_hashable_leaf` (accept
+/// everything) → this goes RED (compile succeeds).
+#[test]
+fn hashmap_nonhashable_struct_key_refused() {
+    let src = "struct Bad { items: Vector<Integer> }\n\
+        function main() -> Integer = { let m: HashMap<Bad, Integer> = hashmap_new(); return 0; }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, _, _) = triet_typecheck::check(&program);
     assert!(
         type_errors.iter().any(|e| e.to_string().contains("E1048")),
-        "expected E1048 UnsupportedHashMapKey, got {type_errors:?}"
+        "ADR-0083: HashMap<Bad{{Vector}},_> (non-hashable leaf) must be E1048, got {type_errors:?}"
+    );
+}
+
+/// ADR-0083 §5 — an Enum key is Slice 2 (deferred) → E1048.
+#[test]
+fn hashmap_enum_key_refused() {
+    let src = "enum Color { Red, Green }\n\
+        function main() -> Integer = { let m: HashMap<Color, Integer> = hashmap_new(); return 0; }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, _, _) = triet_typecheck::check(&program);
+    assert!(
+        type_errors.iter().any(|e| e.to_string().contains("E1048")),
+        "ADR-0083: HashMap<Color,_> (Enum key = Slice 2) must be E1048, got {type_errors:?}"
     );
 }
 
@@ -1247,49 +1282,41 @@ fn hashmap_struct_value_contains_refused_at_jit() {
     );
 }
 
+/// ADR-0083 §2/§3 — a hashable Struct key (`User{name:String}`) is OPENED:
+/// `alloc` emits the hash/eq walkers and passes their addresses instead of
+/// refusing. Repurposed from `hashmap_struct_key_alloc_refused_at_jit`
+/// (LUẬT 3): the struct-key refuse it protected is intentionally lifted this
+/// ADR — poison the open (re-add `refuse_hashmap_enum_key`→refuse Struct, or
+/// make `collect_key_leaves` Err) → compile fails → RED.
 #[test]
-fn hashmap_struct_key_alloc_refused_at_jit() {
+fn hashmap_struct_key_alloc_compiles() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let body = build_hashmap_alloc(hashmap_ku_ty());
-    let err = expect_jit_refuse_mir(&body, &[]);
-    assert!(
-        err.contains("Slice C") || err.contains("aggregate"),
-        "HashMap<User,_> alloc must refuse (key-aggregate), got: {err}"
-    );
+    let mut ctx = JitContext::with_shims(&shims());
+    ctx.compile(&body)
+        .expect("ADR-0083: hashable Struct-key alloc must compile (walkers emitted, no refuse)");
 }
 
+/// ADR-0083 — struct-key `insert` compiles (key marshalled by-pointer, walkers
+/// referenced). Repurposed from `hashmap_struct_key_insert_refused_at_jit`.
 #[test]
-fn hashmap_struct_key_insert_refused_at_jit() {
+fn hashmap_struct_key_insert_compiles() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let body =
         build_single_hashmap_call(hashmap_ku_ty(), "__triet_hashmap_insert", true, Some(100));
-    let err = expect_jit_refuse_mir(&body, &[]);
-    assert!(
-        err.contains("Slice C") || err.contains("aggregate"),
-        "HashMap<User,_> insert must refuse (key-aggregate), got: {err}"
-    );
+    let mut ctx = JitContext::with_shims(&shims());
+    ctx.compile(&body)
+        .expect("ADR-0083: hashable Struct-key insert must compile");
 }
 
-/// ADR-0082 B-α Slice D-2: `remove` NARROWS from the K+V refuse to K-only
-/// (VALUE aggregate opens this slice) — key-aggregate must stay refused.
-/// FILLS A GAP: pre-D-2, `remove`'s K+V refuse was covered SOURCE-LEVEL by
-/// `vector_userstruct_counting.rs::hashmap_struct_value_remove_refused_at_jit`
-/// (VALUE-aggregate, reachable from valid source before D-2 opened it) — but
-/// a KEY-aggregate `HashMap<User,_>` is refused earlier still, at the type
-/// ANNOTATION (E1048), never reaching JIT from source (same boundary as
-/// alloc/insert above) — so key-aggregate-remove had NO teeth at all until
-/// this hand-built-MIR test. `build_single_hashmap_call`'s `value_arg: None`
-/// mirrors the get/get_ref/contains 2-arg shape (`__triet_hashmap_remove`'s
-/// MIR-level `args` is `[map, key]` — the JIT internally appends
-/// out_ptr/key_out_ptr, so the dest's placeholder type is irrelevant: the
-/// guard returns `Err` before ever reaching the dest-bind marshal).
+/// ADR-0083 — struct-key `remove` compiles (key surfaced via `key_out_ptr`
+/// sized to `key_stride`, recursive resident-key free). Repurposed from
+/// `hashmap_struct_key_remove_refused_at_jit`.
 #[test]
-fn hashmap_struct_key_remove_refused_at_jit() {
+fn hashmap_struct_key_remove_compiles() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let body = build_single_hashmap_call(hashmap_ku_ty(), "__triet_hashmap_remove", true, None);
-    let err = expect_jit_refuse_mir(&body, &[]);
-    assert!(
-        err.contains("Slice C") || err.contains("aggregate"),
-        "HashMap<User,_> remove must refuse (key-aggregate), got: {err}"
-    );
+    let mut ctx = JitContext::with_shims(&shims());
+    ctx.compile(&body)
+        .expect("ADR-0083: hashable Struct-key remove must compile");
 }

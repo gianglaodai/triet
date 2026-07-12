@@ -42,7 +42,7 @@ fn lower_source(source: &str) -> Vec<triet_mir::Body> {
 /// Real shim set, but `__triet_hashmap_free` swapped for the counter.
 fn counting_shims() -> Vec<ShimSymbol> {
     vec![
-        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_6_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", __hnull_count_free),
         ShimSymbol::fn_1_1("__triet_hashmap_len", mir_lower::__triet_hashmap_len),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),

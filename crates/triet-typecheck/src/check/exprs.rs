@@ -1002,17 +1002,19 @@ impl Checker<'_> {
                     sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
                 }
             }
-            // ADR-0080 Mũi C2: REFUSE a HashMap key type outside
-            // `{Integer, String}` — hard boundary, no skeleton/soft-defer.
-            // Fires for all three K-binding entry points (`hashmap_new`
-            // explicit annotation or context seed, `insert`/`remove` bound
-            // from the map/key arg) since `sub_map["K"]` is resolved
-            // identically by this point regardless of which call bound it.
+            // ADR-0080 Mũi C2 / ADR-0083 §5: REFUSE a HashMap key type that is
+            // not hashable — `Integer`/`String`, or a Struct whose leaves are
+            // all scalar/String/nested-struct (`is_hashable_key`). An Enum key,
+            // or a struct with a Vector/HashMap/Enum/Nullable/Outcome leaf →
+            // E1048. Hard boundary, no skeleton/soft-defer. Fires for all three
+            // K-binding entry points (`hashmap_new` explicit annotation or
+            // context seed, `insert`/`remove` bound from the map/key arg) since
+            // `sub_map["K"]` is resolved identically by this point.
             if matches!(
                 callee_name.as_deref(),
                 Some("hashmap_new" | "insert" | "remove")
             ) && let Some(key_ty) = sub_map.get("K")
-                && !matches!(key_ty, Type::Integer | Type::String)
+                && !key_ty.is_hashable_key()
             {
                 self.errors
                     .push(crate::error::TypeError::UnsupportedHashMapKey {

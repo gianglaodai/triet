@@ -155,6 +155,38 @@ impl Type {
         matches!(self, Self::String | Self::Vector(_) | Self::HashMap(_, _))
     }
 
+    /// ADR-0083 §5 — is this a valid `HashMap` KEY type? `Integer`/`String`
+    /// (ADR-0080), or a `Struct` all of whose leaves are hashable
+    /// (`is_hashable_leaf`). An Enum key is Slice 2 (deferred → not hashable
+    /// here). Structural content hash/eq — NOT `==`/Ł3 (ADR-0083 §1).
+    #[must_use]
+    pub fn is_hashable_key(&self) -> bool {
+        match self {
+            Self::Integer | Self::String => true,
+            Self::UserStruct { fields, .. } => fields.iter().all(|(_, ft)| ft.is_hashable_leaf()),
+            _ => false,
+        }
+    }
+
+    /// ADR-0083 §5 — is this type a valid LEAF of a hashable key struct? Only
+    /// scalar non-nullable (`Trit`/`Tryte`/`Integer`/`Long`/`Trilean`),
+    /// `String`, or a nested struct that recursively satisfies the same rule.
+    /// A `Vector`/`HashMap`/`Enum`/`Nullable`/`Outcome` (mutable, sentinel-
+    /// bearing, or discriminant-tagged) leaf is NON-hashable → E1048.
+    #[must_use]
+    pub fn is_hashable_leaf(&self) -> bool {
+        match self {
+            Self::Trit
+            | Self::Tryte
+            | Self::Integer
+            | Self::Long
+            | Self::Trilean { .. }
+            | Self::String => true,
+            Self::UserStruct { fields, .. } => fields.iter().all(|(_, ft)| ft.is_hashable_leaf()),
+            _ => false,
+        }
+    }
+
     /// Returns true if this is any Trilean (refined or not). Replaces
     /// the old unit-variant `matches!(t, Type::Trilean)` pattern.
     #[must_use]

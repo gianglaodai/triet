@@ -154,7 +154,7 @@ fn main() -> ExitCode {
         ),
         // HashMap shims (ADR-0043; ADR-0080 key-typed P1 bumped alloc/insert/
         // remove to fn_4_1 — +key_stride / +is_update_out / +key_out_ptr).
-        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
+        ShimSymbol::fn_6_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
         ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
         ShimSymbol::fn_1_1("__triet_hashmap_len", mir_lower::__triet_hashmap_len),
         ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),

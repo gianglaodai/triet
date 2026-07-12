@@ -187,6 +187,17 @@ impl ShimSymbol {
             has_return: false,
         }
     }
+
+    /// Register a 6-arg → 1-return shim (ADR-0083: `__triet_hashmap_alloc`
+    /// gained `hash_fn`/`eq_fn` key-walker addresses).
+    pub fn fn_6_1(name: &str, f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64) -> Self {
+        Self {
+            name: name.into(),
+            addr: f as usize,
+            arity: 6,
+            has_return: true,
+        }
+    }
 }
 
 // ── JIT context ─────────────────────────────────────────────
@@ -218,6 +229,19 @@ enum LeafKind {
     Enum(String),
 }
 
+/// ADR-0083 §3: a hashable-key leaf found by `collect_key_leaves` — carries its
+/// absolute byte offset within the key's flat image. A `Scalar` leaf (Integer,
+/// Trit, …) is hashed/compared as one raw i64 word; a `String` leaf is a fat
+/// `{ptr,len,cap}` compared by CONTENT (`__triet_string_hash`/`_eq`), never by
+/// pointer. Nested structs are flattened into these two leaf kinds; any other
+/// leaf (Vector/HashMap/Enum/Nullable/Outcome) is a non-hashable key → error
+/// (defence-in-depth behind the `is_hashable_leaf` typecheck gate).
+#[derive(Debug)]
+enum KeyLeaf {
+    Scalar(i32),
+    String(i32),
+}
+
 /// Holds Cranelift JIT state across compilations.
 pub struct JitContext {
     module: JITModule,
@@ -243,6 +267,14 @@ pub struct JitContext {
     func_ids: HashMap<String, cranelift_module::FuncId>,
     /// Registered shim symbols (extern "C" functions).
     shim_registry: HashMap<String, ShimSymbol>,
+    /// ADR-0083: per-key-struct-layout hash/eq walker `FuncId`s, memoised by
+    /// struct name so a key type shared across maps emits ONE walker pair.
+    walker_ids: HashMap<String, (cranelift_module::FuncId, cranelift_module::FuncId)>,
+    /// ADR-0083: walker function bodies built during Phase 2, defined in Phase
+    /// 3 alongside the MIR bodies (before `finalize_definitions`). A walker is
+    /// referenced from a main body via `func_addr` before it is defined —
+    /// Cranelift resolves the address at finalize time (proven by the spike).
+    pending_walkers: Vec<(cranelift_module::FuncId, cranelift_codegen::Context)>,
 }
 
 impl JitContext {
@@ -513,6 +545,225 @@ impl JitContext {
         Ok(())
     }
 
+    /// ADR-0083 §3 — flatten a hashable key struct into its scalar/String leaves
+    /// (absolute offsets). Mirrors `collect_heap_leaves` but keeps SCALAR leaves
+    /// too (hash/eq need every field, not just heap ones) and REFUSES any
+    /// non-hashable leaf (Vector/HashMap/Enum/Nullable/Outcome). Nested structs
+    /// recurse; the DAG (no recursive types — typecheck blocks them) terminates,
+    /// with the same depth-64 net as `collect_heap_leaves`.
+    fn collect_key_leaves(
+        struct_name: &str,
+        base_offset: i32,
+        body: &Body,
+        depth: usize,
+        out: &mut Vec<KeyLeaf>,
+    ) -> Result<(), JitError> {
+        if depth > 64 {
+            return Err(JitError::Unsupported(format!(
+                "key struct nesting exceeds depth 64 (recursive type?): {struct_name}"
+            )));
+        }
+        let layout = body
+            .struct_layouts
+            .iter()
+            .find(|l| l.name == struct_name)
+            .ok_or_else(|| {
+                JitError::Unsupported(format!("unknown key struct layout: {struct_name}"))
+            })?;
+        for f in &layout.fields {
+            let abs = base_offset
+                + i32::try_from(f.offset)
+                    .map_err(|_| JitError::Unsupported("key field offset exceeds i32".into()))?;
+            match &f.ty {
+                MirType::String => out.push(KeyLeaf::String(abs)),
+                MirType::Struct(inner) => {
+                    Self::collect_key_leaves(inner, abs, body, depth + 1, out)?;
+                }
+                // ADR-0083 §5: non-hashable / mutable / sentinel-bearing leaves
+                // are refused at typecheck (E1048); this is defence-in-depth.
+                MirType::Vector(_)
+                | MirType::HashMap(_, _)
+                | MirType::Enum(_)
+                | MirType::Nullable(_)
+                | MirType::Reference { .. }
+                | MirType::Outcome { .. } => {
+                    return Err(JitError::Unsupported(format!(
+                        "non-hashable key leaf '{}' in key struct '{struct_name}' (ADR-0083: \
+                         only scalar/String/nested-struct leaves are hashable)",
+                        f.ty
+                    )));
+                }
+                // Integer / Trit / Tryte / Long / Trilean / … → one raw i64 word.
+                _ => out.push(KeyLeaf::Scalar(abs)),
+            }
+        }
+        Ok(())
+    }
+
+    /// ADR-0083 §3 — emit (or fetch the memoised) key-hash + key-eq walker pair
+    /// for a Struct key layout, returning their ADDRESSES (`func_addr` Values)
+    /// for the current function. The addresses are stored in the map header by
+    /// `__triet_hashmap_alloc` and become the aggregate-key discriminator (§6).
+    fn emit_or_get_key_walkers(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        body: &Body,
+        struct_name: &str,
+    ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), JitError> {
+        let (hash_id, eq_id) = if let Some(ids) = self.walker_ids.get(struct_name) {
+            *ids
+        } else {
+            let hash_id = self.build_key_hash_walker(struct_name, body)?;
+            let eq_id = self.build_key_eq_walker(struct_name, body)?;
+            self.walker_ids
+                .insert(struct_name.to_string(), (hash_id, eq_id));
+            (hash_id, eq_id)
+        };
+        let href = self.module.declare_func_in_func(hash_id, builder.func);
+        let hash_addr = builder.ins().func_addr(I64, href);
+        let eref = self.module.declare_func_in_func(eq_id, builder.func);
+        let eq_addr = builder.ins().func_addr(I64, eref);
+        Ok((hash_addr, eq_addr))
+    }
+
+    /// ADR-0083 §3 — build the `extern "C" fn(*const u8) -> i64` key-hash
+    /// walker: an FNV-1a fold over the key's flat leaves (scalar word or
+    /// `__triet_string_hash` of a String leaf's `{ptr,len}`). Returns the RAW
+    /// hash; the shim maps it into `cap`. Content-deterministic — two keys with
+    /// equal content (String leaves at different allocations) hash identically.
+    #[allow(clippy::cast_possible_wrap)]
+    fn build_key_hash_walker(
+        &mut self,
+        struct_name: &str,
+        body: &Body,
+    ) -> Result<cranelift_module::FuncId, JitError> {
+        let mut leaves: Vec<KeyLeaf> = Vec::new();
+        Self::collect_key_leaves(struct_name, 0, body, 0, &mut leaves)?;
+
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(I64)); // key_ptr
+        sig.returns.push(AbiParam::new(I64)); // raw FNV hash
+        let name = format!("__triet_keyhash_{struct_name}");
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| JitError::Module(format!("declare {name}: {e}")))?;
+
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        {
+            let mut fbc = FunctionBuilderContext::new();
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+            let entry = b.create_block();
+            b.append_block_param(entry, I64);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let key_ptr = b.block_params(entry)[0];
+            let mem = cranelift_codegen::ir::MemFlags::new();
+            const FNV_OFFSET: i64 = 0xcbf2_9ce4_8422_2325u64 as i64;
+            const FNV_PRIME: i64 = 0x0000_0100_0000_01b3;
+            let mut acc = b.ins().iconst(I64, FNV_OFFSET);
+            for leaf in &leaves {
+                let v = match leaf {
+                    KeyLeaf::Scalar(off) => b.ins().load(I64, mem, key_ptr, *off),
+                    KeyLeaf::String(off) => {
+                        let p = b.ins().load(I64, mem, key_ptr, *off);
+                        let l = b.ins().load(I64, mem, key_ptr, *off + 8);
+                        let hash_id = self.get_or_declare_shim("__triet_string_hash")?;
+                        let href = self.module.declare_func_in_func(hash_id, b.func);
+                        let call = b.ins().call(href, &[p, l]);
+                        b.inst_results(call)[0]
+                    }
+                };
+                let x = b.ins().bxor(acc, v);
+                acc = b.ins().imul_imm(x, FNV_PRIME);
+            }
+            b.ins().return_(&[acc]);
+            b.finalize();
+        }
+        self.pending_walkers.push((id, ctx));
+        Ok(id)
+    }
+
+    /// ADR-0083 §3 — build the `extern "C" fn(*const u8, *const u8) -> i64`
+    /// key-eq walker: a SHORT-CIRCUIT recursive content compare of two key
+    /// images (1=eq, 0=ne). Scalar leaves compare as i64; String leaves via
+    /// `__triet_string_eq` (content). The first mismatch jumps straight to the
+    /// `ne` return.
+    fn build_key_eq_walker(
+        &mut self,
+        struct_name: &str,
+        body: &Body,
+    ) -> Result<cranelift_module::FuncId, JitError> {
+        let mut leaves: Vec<KeyLeaf> = Vec::new();
+        Self::collect_key_leaves(struct_name, 0, body, 0, &mut leaves)?;
+
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(I64)); // a_ptr (slot key)
+        sig.params.push(AbiParam::new(I64)); // b_ptr (probe key)
+        sig.returns.push(AbiParam::new(I64)); // 1=eq / 0=ne
+        let name = format!("__triet_keyeq_{struct_name}");
+        let id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| JitError::Module(format!("declare {name}: {e}")))?;
+
+        let mut ctx = self.module.make_context();
+        ctx.func.signature = sig;
+        {
+            let mut fbc = FunctionBuilderContext::new();
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+            let entry = b.create_block();
+            b.append_block_param(entry, I64);
+            b.append_block_param(entry, I64);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let a_ptr = b.block_params(entry)[0];
+            let b_ptr = b.block_params(entry)[1];
+            let mem = cranelift_codegen::ir::MemFlags::new();
+            // Shared `ne` (return 0) target for every mismatch.
+            let ne_bb = b.create_block();
+            for leaf in &leaves {
+                let eq_i = match leaf {
+                    KeyLeaf::Scalar(off) => {
+                        let va = b.ins().load(I64, mem, a_ptr, *off);
+                        let vb = b.ins().load(I64, mem, b_ptr, *off);
+                        b.ins().icmp(IntCC::Equal, va, vb)
+                    }
+                    KeyLeaf::String(off) => {
+                        let pa = b.ins().load(I64, mem, a_ptr, *off);
+                        let la = b.ins().load(I64, mem, a_ptr, *off + 8);
+                        let pb = b.ins().load(I64, mem, b_ptr, *off);
+                        let lb = b.ins().load(I64, mem, b_ptr, *off + 8);
+                        let eq_id = self.get_or_declare_shim("__triet_string_eq")?;
+                        let eref = self.module.declare_func_in_func(eq_id, b.func);
+                        let call = b.ins().call(eref, &[pa, la, pb, lb]);
+                        let r = b.inst_results(call)[0];
+                        let one = b.ins().iconst(I64, 1);
+                        b.ins().icmp(IntCC::Equal, r, one)
+                    }
+                };
+                let next = b.create_block();
+                b.ins().brif(eq_i, next, &[], ne_bb, &[]);
+                b.switch_to_block(next);
+                b.seal_block(next);
+            }
+            // All leaves matched → eq.
+            let one = b.ins().iconst(I64, 1);
+            b.ins().return_(&[one]);
+            // ne target (sealed with whatever predecessors accumulated above;
+            // 0 predecessors when `leaves` is empty — a filled, unreachable
+            // block, which Cranelift accepts).
+            b.switch_to_block(ne_bb);
+            b.seal_block(ne_bb);
+            let zero = b.ins().iconst(I64, 0);
+            b.ins().return_(&[zero]);
+            b.finalize();
+        }
+        self.pending_walkers.push((id, ctx));
+        Ok(id)
+    }
+
     /// ADR-0060 P2: return the total byte size of a `MirType`.
     /// Struct/enum types look up their layout in `body`; scalars are 8.
     fn ty_total_size(body: &Body, ty: &MirType) -> usize {
@@ -598,41 +849,59 @@ impl JitContext {
     /// EXPLICITLY at every `HashMap` op emit-site instead: no silent leak, no
     /// silent guess. Only fires on `Struct`/`Enum` — `HashMap<Integer,_>` /
     /// `HashMap<String,String>` are unaffected (verified: gate unchanged).
+    /// ADR-0083 amends this: a Struct KEY is now supported (hash/eq walkers +
+    /// recursive key free-loop). This guard now refuses only (a) an Enum key
+    /// (Slice 2, deferred) and (b) an aggregate VALUE (read/move-out of a
+    /// Struct/Enum value is still frozen — Cụm D). Used at the read/move-out
+    /// sites (`get`/`get_ref`/`contains`) where the value is surfaced.
     fn refuse_hashmap_aggregate_kv(key_ty: &MirType, value_ty: &MirType) -> Result<(), JitError> {
-        let is_aggregate = |t: &MirType| {
-            let eff = t.nullable_payload().unwrap_or(t);
-            matches!(eff, MirType::Struct(_) | MirType::Enum(_))
-        };
-        if is_aggregate(key_ty) || is_aggregate(value_ty) {
+        Self::refuse_hashmap_enum_key(key_ty)?;
+        let eff_v = value_ty.nullable_payload().unwrap_or(value_ty);
+        if matches!(eff_v, MirType::Struct(_) | MirType::Enum(_)) {
             return Err(JitError::Unsupported(
-                "HashMap<_,aggregate>: Struct/Enum key or value is ADR-0082 Slice C, \
-                 not yet opened (Slice A/B only open Vector<UserStruct>/Vector<Enum>)"
+                "HashMap<_,aggregate>: reading/moving-out a Struct/Enum VALUE is not yet \
+                 opened (Cụm D — ADR-0081 frozen); only scalar/String/Vector/HashMap \
+                 values are surfaced by get/get_ref/contains"
                     .into(),
             ));
         }
         Ok(())
     }
 
-    /// ADR-0082 B-α Slice C (F4) — HARD REFUSE for `HashMap<K,V>` when `K` is a
-    /// `Struct`/`Enum`, WITHOUT touching `V`. Slice C opens VALUE-aggregate for
-    /// `alloc`/`insert` only (push+drop shape mirroring Slice A/B's Vector
-    /// element); the `HashMap` KEY free-loop (`emit_hashmap_key_free_loop`) and
-    /// the hash function are still not wired for an aggregate key — that stays
-    /// refused everywhere, at every op. `refuse_hashmap_aggregate_kv` (K+V) is
-    /// kept for the 3 read/move-out sites (`get`/`get_ref`/`contains`/`remove`)
-    /// where VALUE aggregate is also not yet supported (no value free-loop
-    /// bypass needed there — they don't own the value).
-    fn refuse_hashmap_aggregate_key(key_ty: &MirType) -> Result<(), JitError> {
+    /// ADR-0083 §5 — HARD REFUSE for an ENUM key only. A Struct key is opened
+    /// this slice (hash/eq walkers + recursive key free-loop); an Enum key is
+    /// Slice 2 (discriminant matching + variant size-mismatch = a separate
+    /// front). Non-hashable Struct LEAVES (Vector/HashMap/Enum/Nullable) are
+    /// caught at typecheck (E1048) and, defence-in-depth, by `collect_key_leaves`
+    /// during walker emission. Byte-compat: `HashMap<Integer,_>` /
+    /// `HashMap<String,_>` are unaffected (neither is an Enum key).
+    fn refuse_hashmap_enum_key(key_ty: &MirType) -> Result<(), JitError> {
         let eff = key_ty.nullable_payload().unwrap_or(key_ty);
-        if matches!(eff, MirType::Struct(_) | MirType::Enum(_)) {
+        if matches!(eff, MirType::Enum(_)) {
             return Err(JitError::Unsupported(
-                "HashMap<aggregate,_>: Struct/Enum key is ADR-0082 Slice C, not yet opened \
-                 (Slice C opens VALUE-aggregate only; key-aggregate remains refused — \
-                 the key free-loop and hash function are not wired for it)"
+                "HashMap<Enum,_>: an Enum key is ADR-0083 Slice 2, not yet opened \
+                 (Slice 1 opens Struct keys only — discriminant matching + variant \
+                 size-mismatch is a separate front)"
                     .into(),
             ));
         }
         Ok(())
+    }
+
+    /// ADR-0083 §4 — the effective KEY type of a `HashMap` argument local
+    /// (unwrapping `Nullable`/`Reference`). Used at the post-call key-free
+    /// sites to free the key by its real type (String vs Struct drop-glue).
+    fn hashmap_arg_key_type(body: &Body, map_local: Local) -> MirType {
+        let mty = &body.local_decls[map_local.0].ty;
+        let inner = match mty.nullable_payload().unwrap_or(mty) {
+            MirType::Reference { inner, .. } => inner.as_ref(),
+            other => other,
+        };
+        match inner {
+            MirType::HashMap(k, _) => k.nullable_payload().unwrap_or(k).clone(),
+            // Unreachable when a key-free gate fired (only set for HashMap ops).
+            _ => MirType::String,
+        }
     }
 
     /// ADR-0060 P2-Boundary: base address of a local + byte offset. Slot-backed
@@ -928,6 +1197,8 @@ impl JitContext {
             filled: HashSet::new(),
             func_ids: HashMap::new(),
             shim_registry,
+            walker_ids: HashMap::new(),
+            pending_walkers: Vec::new(),
         }
     }
 
@@ -968,6 +1239,8 @@ impl JitContext {
     ) -> Result<HashMap<String, CompiledFunction>, JitError> {
         // ── Phase 1: declare all functions ─────────────────
         self.func_ids.clear();
+        self.walker_ids.clear();
+        self.pending_walkers.clear();
 
         for body in bodies {
             let mut sig = Signature::new(CallConv::SystemV);
@@ -1045,6 +1318,16 @@ impl JitContext {
             self.module
                 .define_function(func_id, &mut contexts[i])
                 .map_err(|e| JitError::Module(format!("define {}: {e}", body.signature.name)))?;
+        }
+
+        // ADR-0083: define the key-hash/eq walkers emitted during Phase 2. Their
+        // addresses were already handed to `func_addr` sites in the main bodies;
+        // `finalize_definitions` below resolves those relocations.
+        let walkers = std::mem::take(&mut self.pending_walkers);
+        for (id, mut ctx) in walkers {
+            self.module
+                .define_function(id, &mut ctx)
+                .map_err(|e| JitError::Module(format!("define key walker: {e}")))?;
         }
 
         self.module
@@ -1258,8 +1541,12 @@ impl JitContext {
         key_ty: &MirType,
         value_ty: &MirType,
     ) -> Result<(), JitError> {
-        if key_ty.is_any_heap() {
-            self.emit_hashmap_key_free_loop(builder, body, ptr_val)?;
+        // ADR-0083 §4: a Struct key with a String leaf is NOT `is_any_heap()`
+        // (it's an aggregate) — gate on `aggregate_needs_drop` (like the value
+        // loop) so its String leaves are freed, not leaked. String key stays
+        // covered (`is_any_heap` → `aggregate_needs_drop` both true).
+        if Self::aggregate_needs_drop(body, key_ty)? {
+            self.emit_hashmap_key_free_loop(builder, body, ptr_val, key_ty)?;
         }
         self.emit_hashmap_value_free_loop(builder, body, ptr_val, value_ty)?;
         let func_id = self.get_or_declare_shim("__triet_hashmap_free")?;
@@ -1268,18 +1555,22 @@ impl JitContext {
         Ok(())
     }
 
-    /// ADR-0080 Mũi D.1 — iterate all `cap` `HashMap` slots, free the KEY of
-    /// every OCCUPIED slot. Only called when `key_ty.is_any_heap()`
-    /// (compile-time gate in `emit_hashmap_free_value`); the runtime
-    /// `key_stride == 24` re-check here is defense-in-depth, not the
-    /// primary gate (see that function's doc for why a purely-runtime gate
-    /// broke Integer-keyed callers). Sentinel/no-op R4 on a dead buffer
-    /// pointer. Mirrors `emit_hashmap_value_free_loop`'s shape.
+    /// ADR-0080 Mũi D.1 / ADR-0083 §4 — iterate all `cap` `HashMap` slots, free
+    /// the KEY of every OCCUPIED slot per `key_ty`. Only called when
+    /// `aggregate_needs_drop(key_ty)` (compile-time gate in
+    /// `emit_hashmap_free_value`). ADR-0083 REMOVED the runtime `key_stride ==
+    /// 24` gate that the String-only era relied on: a Struct key has a
+    /// COMPILE-TIME-known type (freed via recursive drop-glue) and may share
+    /// stride 24 with String (Size Collision Trap) — a runtime stride gate
+    /// would either skip a non-24 struct key (leak) or misroute a 24B struct
+    /// as String. The compile-time `key_ty` is the sole discriminator.
+    /// Sentinel/no-op R4 on a dead buffer pointer.
     fn emit_hashmap_key_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         body: &Body,
         ptr_val: cranelift_codegen::ir::Value,
+        key_ty: &MirType,
     ) -> Result<(), JitError> {
         let mem = cranelift_codegen::ir::MemFlags::new();
         let zero = builder.ins().iconst(I64, 0);
@@ -1289,7 +1580,6 @@ impl JitContext {
         let is_dead = builder.ins().bor(is_zero, is_sent);
 
         let setup_bb = builder.create_block();
-        let key_check_bb = builder.create_block();
         let header_bb = builder.create_block();
         builder.append_block_param(header_bb, I64);
         let body_bb = builder.create_block();
@@ -1300,18 +1590,13 @@ impl JitContext {
         builder.switch_to_block(setup_bb);
         builder.seal_block(setup_bb);
         let cap = builder.ins().load(I64, mem, ptr_val, 8);
-        let hdr = builder.ins().load(I64, mem, ptr_val, -8);
+        // ADR-0083: HashMap header is 24B — the packed strides word (refcount
+        // low32 | packed high32) sits at `ptr_val - HASHMAP_HEADER_SIZE`
+        // (= -24), not -8. (The Vector free-loop above keeps its 8B header.)
+        let hdr = builder.ins().load(I64, mem, ptr_val, -24);
         let reserved = builder.ins().ushr_imm(hdr, 32);
         let value_stride = builder.ins().band_imm(reserved, 0xFFFF);
         let key_stride = builder.ins().ushr_imm(reserved, 16);
-        let c24 = builder.ins().iconst(I64, 24);
-        let is_string_key = builder.ins().icmp(IntCC::Equal, key_stride, c24);
-        builder
-            .ins()
-            .brif(is_string_key, key_check_bb, &[], exit_bb, &[]);
-
-        builder.switch_to_block(key_check_bb);
-        builder.seal_block(key_check_bb);
         let slot_size = {
             let one = builder.ins().iconst(I64, 1);
             let tmp = builder.ins().iadd(key_stride, value_stride);
@@ -1344,12 +1629,16 @@ impl JitContext {
         builder.ins().brif(is_occ, free_bb, &[], skip_bb, &[]);
 
         // key cell addr = body + 16 + slot_off (key is the FIRST field).
+        // ADR-0083 §4: free per the compile-time key type — String →
+        // `__triet_string_free`, Struct → recursive drop-glue over its String
+        // leaves (`emit_heap_free_at` dispatches on the type).
         builder.switch_to_block(free_bb);
         builder.seal_block(free_bb);
         let c16b = builder.ins().iconst(I64, 16);
         let key_off = builder.ins().iadd(c16b, slot_off);
         let key_cell = builder.ins().iadd(ptr_val, key_off);
-        self.emit_heap_free_at(builder, body, key_cell, &MirType::String)?;
+        let key_eff = key_ty.nullable_payload().unwrap_or(key_ty).clone();
+        self.emit_heap_free_at(builder, body, key_cell, &key_eff)?;
         builder.ins().jump(skip_bb, &[]);
 
         builder.switch_to_block(skip_bb);
@@ -1407,7 +1696,10 @@ impl JitContext {
         // Read cap, key_stride + value_stride (packed in header reserved,
         // ADR-0080 Mũi A: high 16 bits = key_stride, low 16 = value_stride).
         let cap = builder.ins().load(I64, mem, ptr_val, 8);
-        let hdr = builder.ins().load(I64, mem, ptr_val, -8);
+        // ADR-0083: HashMap header is 24B — the packed strides word (refcount
+        // low32 | packed high32) sits at `ptr_val - HASHMAP_HEADER_SIZE`
+        // (= -24), not -8. (The Vector free-loop above keeps its 8B header.)
+        let hdr = builder.ins().load(I64, mem, ptr_val, -24);
         let reserved = builder.ins().ushr_imm(hdr, 32);
         let value_stride = builder.ins().band_imm(reserved, 0xFFFF);
         let key_stride = builder.ins().ushr_imm(reserved, 16);
@@ -3103,7 +3395,7 @@ impl JitContext {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
                                     MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_key(k)?;
+                                        Self::refuse_hashmap_enum_key(k)?;
                                         Self::vector_elem_size(body, v).is_ok_and(|s| s > 8)
                                     }
                                     _ => false,
@@ -3230,29 +3522,42 @@ impl JitContext {
                             vals
                         } else if callee_name == "__triet_hashmap_alloc" {
                             // ADR-0080 Mũi A: append key_stride THEN value_stride
-                            // as 3rd/4th args (was value_stride-only pre-0080).
-                            // Strides from HashMap(K, V) → vector_elem_size(K/V).
-                            // ADR-0082 T8/Slice C: refuse Struct/Enum KEY here —
-                            // the FIRST choke point where an aggregate could
-                            // enter a HashMap. VALUE-aggregate is opened (Slice
-                            // C, F4) — `vector_elem_size` already sizes it.
-                            let (key_stride, value_stride) = {
+                            // (3rd/4th args). ADR-0083 §2: then hash_fn/eq_fn
+                            // (5th/6th) — the key-hash/eq walker addresses for a
+                            // Struct key, or NULL for Integer/String (the null-
+                            // sentinel discriminator, §6). Enum KEY refused here
+                            // (Slice 2); non-hashable Struct leaves refused by
+                            // the walker's `collect_key_leaves`.
+                            let (key_stride, value_stride, key_struct) = {
                                 let dty = &body.local_decls[dest[0].0].ty;
                                 match dty.nullable_payload().unwrap_or(dty) {
                                     MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_key(k)?;
+                                        Self::refuse_hashmap_enum_key(k)?;
+                                        let key_struct = match k.nullable_payload().unwrap_or(k) {
+                                            MirType::Struct(name) => Some(name.clone()),
+                                            _ => None,
+                                        };
                                         (
                                             Self::vector_elem_size(body, k)?,
                                             Self::vector_elem_size(body, v)?,
+                                            key_struct,
                                         )
                                     }
-                                    _ => (8, 8),
+                                    _ => (8, 8, None),
                                 }
+                            };
+                            let (hash_fn, eq_fn) = if let Some(name) = key_struct {
+                                self.emit_or_get_key_walkers(builder, body, &name)?
+                            } else {
+                                let z = builder.ins().iconst(I64, 0);
+                                (z, z)
                             };
                             let mut vals: Vec<_> =
                                 args.iter().map(|a| builder.use_var(self.var(*a))).collect();
                             vals.push(builder.ins().iconst(I64, key_stride));
                             vals.push(builder.ins().iconst(I64, value_stride));
+                            vals.push(hash_fn);
+                            vals.push(eq_fn);
                             vals
                         } else if callee_name == "__triet_vector_push" {
                             // ADR-0077 fat-element ABI: a fat element (stride > 8,
@@ -3329,7 +3634,7 @@ impl JitContext {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
                                     MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_key(k)?;
+                                        Self::refuse_hashmap_enum_key(k)?;
                                         (
                                             Self::vector_elem_size(body, k)?,
                                             Self::vector_elem_size(body, v)?,
@@ -3340,19 +3645,26 @@ impl JitContext {
                             };
                             let map_val = builder.use_var(self.var(args[0]));
                             let key_arg = args[1];
-                            let key_val = if key_stride > 8 {
-                                if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
-                                    builder.ins().stack_addr(I64, *slot, 0)
-                                } else {
-                                    return Err(JitError::Unsupported(
-                                        "hashmap_insert: fat key without a slot (ADR-0080 \
+                            // ADR-0083 §6: a Struct key marshals BY-POINTER at
+                            // ANY stride (the walker reads its bytes) — a single-
+                            // field 8B struct key would otherwise `use_var` the
+                            // never-populated Variable and pass garbage. String
+                            // (stride 24) is also slot-backed. Only a plain
+                            // Integer (scalar Variable) stays by-value.
+                            let key_val =
+                                if key_stride > 8 || self.struct_slots.contains_key(&key_arg) {
+                                    if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                                        builder.ins().stack_addr(I64, *slot, 0)
+                                    } else {
+                                        return Err(JitError::Unsupported(
+                                            "hashmap_insert: fat key without a slot (ADR-0080 \
                                          by-pointer ABI requires a pre-allocated key slot)"
-                                            .into(),
-                                    ));
-                                }
-                            } else {
-                                builder.use_var(self.var(key_arg))
-                            };
+                                                .into(),
+                                        ));
+                                    }
+                                } else {
+                                    builder.use_var(self.var(key_arg))
+                                };
                             let val_arg = args[2];
                             // ADR-0082 Slice C (F3): mirror `vector_push`'s
                             // fat/8B-aggregate marshal exactly (MÌN-3, two
@@ -3386,7 +3698,14 @@ impl JitContext {
                             } else {
                                 builder.use_var(self.var(val_arg))
                             };
-                            let is_update_out = if key_stride > 8 {
+                            // ADR-0083 §6: a by-pointer key (String OR Struct, any
+                            // stride) needs the update-flag scratch so the JIT
+                            // can free the redundant incoming key on a dup-content
+                            // update (recursive for a Struct — no-op for an
+                            // all-scalar Copy struct).
+                            let key_by_ptr =
+                                key_stride > 8 || self.struct_slots.contains_key(&key_arg);
+                            let is_update_out = if key_by_ptr {
                                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                                     StackSlotKind::ExplicitSlot,
                                     8,
@@ -3411,7 +3730,7 @@ impl JitContext {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
                                     MirType::HashMap(k, _v) => {
-                                        Self::refuse_hashmap_aggregate_key(k)?;
+                                        Self::refuse_hashmap_enum_key(k)?;
                                         Self::vector_elem_size(body, k)?
                                     }
                                     _ => 8,
@@ -3419,19 +3738,26 @@ impl JitContext {
                             };
                             let map_val = builder.use_var(self.var(args[0]));
                             let key_arg = args[1];
-                            let key_val = if key_stride > 8 {
-                                if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
-                                    builder.ins().stack_addr(I64, *slot, 0)
-                                } else {
-                                    return Err(JitError::Unsupported(
-                                        "hashmap_remove: fat key without a slot (ADR-0080 \
+                            // ADR-0083 §6: a Struct key marshals BY-POINTER at
+                            // ANY stride (the walker reads its bytes) — a single-
+                            // field 8B struct key would otherwise `use_var` the
+                            // never-populated Variable and pass garbage. String
+                            // (stride 24) is also slot-backed. Only a plain
+                            // Integer (scalar Variable) stays by-value.
+                            let key_val =
+                                if key_stride > 8 || self.struct_slots.contains_key(&key_arg) {
+                                    if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                                        builder.ins().stack_addr(I64, *slot, 0)
+                                    } else {
+                                        return Err(JitError::Unsupported(
+                                            "hashmap_remove: fat key without a slot (ADR-0080 \
                                          by-pointer ABI requires a pre-allocated key slot)"
-                                            .into(),
-                                    ));
-                                }
-                            } else {
-                                builder.use_var(self.var(key_arg))
-                            };
+                                                .into(),
+                                        ));
+                                    }
+                                } else {
+                                    builder.use_var(self.var(key_arg))
+                                };
                             // ADR-0082 B-α Slice D-2: mirror `vector_pop`'s
                             // D-1b out_ptr fix — a fat Struct value dest is
                             // `Nullable(Struct)` (tag@0/fields@+8, ADR-0076
@@ -3454,11 +3780,19 @@ impl JitContext {
                             } else {
                                 builder.ins().iconst(I64, 0)
                             };
-                            let key_out_ptr = if key_stride > 8 {
+                            // ADR-0083 §6: surface the resident key for a
+                            // by-pointer key (String OR Struct, any stride). The
+                            // scratch slot must be `key_stride` bytes — a struct
+                            // key wider than 24B would overflow a hardcoded-24
+                            // slot when the shim memcpy's `key_stride` bytes in.
+                            let key_by_ptr =
+                                key_stride > 8 || self.struct_slots.contains_key(&key_arg);
+                            let key_out_ptr = if key_by_ptr {
+                                let sz = u32::try_from(key_stride).unwrap_or(24).max(8);
                                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                                     StackSlotKind::ExplicitSlot,
-                                    24,
-                                    3u8, // log2(8)
+                                    sz,
+                                    3u8, // align 8 (log2)
                                 ));
                                 let addr = builder.ins().stack_addr(I64, slot, 0);
                                 remove_key_free_ptr = Some(addr);
@@ -3502,18 +3836,25 @@ impl JitContext {
                             };
                             let map_val = builder.use_var(self.var(args[0]));
                             let key_arg = args[1];
-                            let key_val = if key_stride > 8 {
-                                if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
-                                    builder.ins().stack_addr(I64, *slot, 0)
-                                } else {
-                                    return Err(JitError::Unsupported(format!(
-                                        "{callee_name}: fat key without a slot (ADR-0080 \
+                            // ADR-0083 §6: a Struct key marshals BY-POINTER at
+                            // ANY stride (the walker reads its bytes) — a single-
+                            // field 8B struct key would otherwise `use_var` the
+                            // never-populated Variable and pass garbage. String
+                            // (stride 24) is also slot-backed. Only a plain
+                            // Integer (scalar Variable) stays by-value.
+                            let key_val =
+                                if key_stride > 8 || self.struct_slots.contains_key(&key_arg) {
+                                    if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                                        builder.ins().stack_addr(I64, *slot, 0)
+                                    } else {
+                                        return Err(JitError::Unsupported(format!(
+                                            "{callee_name}: fat key without a slot (ADR-0080 \
                                          by-pointer ABI requires a pre-allocated key slot)"
-                                    )));
-                                }
-                            } else {
-                                builder.use_var(self.var(key_arg))
-                            };
+                                        )));
+                                    }
+                                } else {
+                                    builder.use_var(self.var(key_arg))
+                                };
                             vec![map_val, key_val]
                         } else if callee_name == "__triet_vector_pop"
                             || callee_name == "__triet_vector_pop_front"
@@ -3781,6 +4122,11 @@ impl JitContext {
                         // D3 regression: `adr0080_km_p1a_update_frees_redundant_key`
                         // would have silently dropped from count 2 → 1.
                         if let Some((key_addr, is_update_addr)) = insert_key_free_gate {
+                            // ADR-0083 §4: free the redundant incoming key per its
+                            // ACTUAL type — String → `__triet_string_free`, Struct
+                            // → recursive drop-glue over its String leaves (no-op
+                            // for an all-scalar Copy struct key).
+                            let key_eff = Self::hashmap_arg_key_type(body, args[0]);
                             let mem = cranelift_codegen::ir::MemFlags::new();
                             let flag = builder.ins().load(I64, mem, is_update_addr, 0);
                             let one = builder.ins().iconst(I64, 1);
@@ -3790,7 +4136,7 @@ impl JitContext {
                             builder.ins().brif(is_update, free_bb, &[], merge_bb, &[]);
                             builder.switch_to_block(free_bb);
                             builder.seal_block(free_bb);
-                            self.emit_heap_free_at(builder, body, key_addr, &MirType::String)?;
+                            self.emit_heap_free_at(builder, body, key_addr, &key_eff)?;
                             builder.ins().jump(merge_bb, &[]);
                             builder.switch_to_block(merge_bb);
                             builder.seal_block(merge_bb);
@@ -3803,7 +4149,10 @@ impl JitContext {
                         // ordering doesn't affect it — kept alongside D.2 above
                         // for readability (both precede M3).
                         if let Some(key_out_ptr) = remove_key_free_ptr {
-                            self.emit_heap_free_at(builder, body, key_out_ptr, &MirType::String)?;
+                            // ADR-0083 §4: recursive free of the surfaced resident
+                            // key per its actual type (String or Struct).
+                            let key_eff = Self::hashmap_arg_key_type(body, args[0]);
+                            self.emit_heap_free_at(builder, body, key_out_ptr, &key_eff)?;
                         }
 
                         // M3: Zeroing-on-Move — zero consume-arg variables after call.
@@ -4942,24 +5291,81 @@ pub extern "C" fn __triet_vector_contains(vec: i64, elem: i64) -> i64 {
 // key kind from the header alone, no external type info needed (ADR-0080 Mũi
 // A invariant). Neither stride ever exceeds 24, so u16 packing never truncates.
 
-const HASHMAP_HEADER_SIZE: usize = HEADER_SIZE; // 8B ObjectHeader
+// ADR-0083 §2 (G MANDATE): fixed 24B header —
+//   [refcount:u32 @0][packed:u32 @4][hash_fn:u64 @8][eq_fn:u64 @16]
+// The packed strides stay at ptr+4 (byte-compat with the reads below, which
+// now offset from `body` by `HASHMAP_HEADER_SIZE - 4` instead of a hardcoded
+// 4). hash_fn/eq_fn are the per-key-type JIT walker addresses (NULL for
+// Integer/String keys — the null-sentinel discriminator, §6). +16B on every
+// map, traded for a fixed ABI (no "sometimes present" header).
+const HASHMAP_HEADER_SIZE: usize = 24;
 
 /// Read the per-slot VALUE stride (low 16 bits of the packed `reserved`
-/// header field — ADR-0080 Mũi A).
+/// header field — ADR-0080 Mũi A). Packed is at `ptr+4` = `body - (HEADER-4)`
+/// (ADR-0083: `body - 20` now the header is 24B, was `body - 4`).
 #[allow(unsafe_code)]
 #[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
 const fn hashmap_value_stride(body: i64) -> usize {
-    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize & 0xFFFF }
+    unsafe {
+        ((body as *const u8).sub(HASHMAP_HEADER_SIZE - 4) as *const u32).read_unaligned() as usize
+            & 0xFFFF
+    }
 }
 
 /// Read the per-slot KEY stride (high 16 bits of the packed `reserved`
-/// header field — ADR-0080 Mũi A). `8` = Integer (identity), `24` = String
-/// (content hash/eq). Doubles as the key-kind discriminator — no separate
-/// tag byte ("`key_stride` kiêm luôn `discriminator` dispatch").
+/// header field — ADR-0080 Mũi A). `8` = Integer, `24` = String; a Struct key
+/// (ADR-0083) may be ANY multiple-of-8 width and shares `24` with String — so
+/// `key_stride` is NO LONGER a safe discriminator (Size Collision Trap). The
+/// discriminator is `hash_fn != NULL` (see `hashmap_hash_fn`), NOT the stride.
 #[allow(unsafe_code)]
 #[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
 const fn hashmap_key_stride(body: i64) -> usize {
-    unsafe { ((body as *const u8).sub(4) as *const u32).read_unaligned() as usize >> 16 }
+    unsafe {
+        ((body as *const u8).sub(HASHMAP_HEADER_SIZE - 4) as *const u32).read_unaligned() as usize
+            >> 16
+    }
+}
+
+/// ADR-0083 §2/§6: the KEY-HASH walker fnptr stored in the header (`ptr+8` =
+/// `body - (HEADER-8)` = `body - 16`). NULL (0) for Integer/String keys —
+/// its NON-NULL-ness is the aggregate-key discriminator that dodges the
+/// Size Collision Trap (a 24B struct must NOT take the 24B-String branch).
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+const fn hashmap_hash_fn(body: i64) -> i64 {
+    unsafe { ((body as *const u8).sub(HASHMAP_HEADER_SIZE - 8) as *const i64).read_unaligned() }
+}
+
+/// ADR-0083 §2/§6: the KEY-EQ walker fnptr stored in the header (`ptr+16` =
+/// `body - (HEADER-16)` = `body - 8`). NULL for Integer/String keys.
+#[allow(unsafe_code)]
+#[allow(clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
+const fn hashmap_eq_fn(body: i64) -> i64 {
+    unsafe { ((body as *const u8).sub(HASHMAP_HEADER_SIZE - 16) as *const i64).read_unaligned() }
+}
+
+/// ADR-0083 §6: a key is passed BY-POINTER (and stored via memcpy) iff it is
+/// an aggregate (`hash_fn != NULL`) OR a fat String (`key_stride > 8`). Only
+/// a plain Integer (NULL fn, stride 8) is by-value i64.
+const fn key_is_by_ptr(hash_fn: i64, key_stride: usize) -> bool {
+    hash_fn != 0 || key_stride > 8
+}
+
+/// ADR-0083 §2: call a JIT-emitted key-hash walker (`extern "C" fn(*const u8)
+/// -> i64`, raw FNV) through its address stored in the header.
+#[allow(unsafe_code)]
+unsafe fn call_hash_fn(hash_fn: i64, key_ptr: *const u8) -> i64 {
+    let f: extern "C" fn(*const u8) -> i64 = unsafe { std::mem::transmute(hash_fn as usize) };
+    f(key_ptr)
+}
+
+/// ADR-0083 §2: call a JIT-emitted key-eq walker (`extern "C" fn(*const u8,
+/// *const u8) -> i64`, 1=eq/0=ne) through its address stored in the header.
+#[allow(unsafe_code)]
+unsafe fn call_eq_fn(eq_fn: i64, slot_key_ptr: *const u8, probe_key_ptr: *const u8) -> bool {
+    let f: extern "C" fn(*const u8, *const u8) -> i64 =
+        unsafe { std::mem::transmute(eq_fn as usize) };
+    f(slot_key_ptr, probe_key_ptr) == 1
 }
 
 #[allow(clippy::missing_const_for_fn)]
@@ -5020,13 +5426,17 @@ const unsafe fn hashmap_write_value(dst: *mut u8, stride: usize, src: i64) {
 /// `{ptr,len,cap}` FROM `k` (a POINTER to the caller's fat key, same by-
 /// pointer convention as `hashmap_write_value`'s fat path) — this transfers
 /// the caller's String ownership bytes into the slot (the map now owns it).
+/// ADR-0083 §6: `hash_fn` distinguishes an aggregate key (by-pointer, even at
+/// stride 8 — a single-field struct) from a plain Integer (by-value). Without
+/// it, a `struct{a:Integer}` (8B, by-pointer marshal) would store the POINTER
+/// as an i64 instead of the struct bytes.
 #[allow(unsafe_code)]
-const unsafe fn hashmap_write_key(dst: *mut u8, key_stride: usize, k: i64) {
+const unsafe fn hashmap_write_key(dst: *mut u8, key_stride: usize, k: i64, hash_fn: i64) {
     unsafe {
-        if key_stride <= 8 {
-            dst.cast::<i64>().write_unaligned(k);
-        } else {
+        if key_is_by_ptr(hash_fn, key_stride) {
             std::ptr::copy_nonoverlapping(k as *const u8, dst, key_stride);
+        } else {
+            dst.cast::<i64>().write_unaligned(k);
         }
     }
 }
@@ -5045,9 +5455,19 @@ const unsafe fn hashmap_write_key(dst: *mut u8, key_stride: usize, k: i64) {
 /// `read_unaligned` — a plain `&*(ptr as *const FatStr)` reference deref
 /// panics ("misaligned pointer dereference") the moment a probe lands past
 /// slot 0.
+/// ADR-0083 §6 — dispatch order is BẤT DI BẤT DỊCH: `hash_fn != NULL` FIRST
+/// (aggregate — type-aware walker), THEN `stride > 8` (String), else identity
+/// (Integer). The fnptr check MUST precede the stride check: a 24B struct key
+/// (`hash_fn != NULL`, stride 24) and a 24B String key (`hash_fn == NULL`,
+/// stride 24) are indistinguishable by stride alone (Size Collision Trap) —
+/// only fnptr-first keeps the struct out of the String branch.
 #[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
-fn hashmap_key_hash(key_stride: usize, k: i64, cap: usize) -> usize {
-    let raw = if key_stride > 8 {
+fn hashmap_key_hash(key_stride: usize, k: i64, cap: usize, hash_fn: i64) -> usize {
+    let raw = if hash_fn != 0 {
+        // Aggregate key: `k` is a pointer to the key bytes; the walker mixes
+        // its leaves into a raw FNV hash (the shim maps it into `cap` below).
+        unsafe { call_hash_fn(hash_fn, k as *const u8) }
+    } else if key_stride > 8 {
         let fat = unsafe { (k as *const FatStr).read_unaligned() };
         __triet_string_hash(fat.ptr, fat.len)
     } else {
@@ -5063,9 +5483,15 @@ fn hashmap_key_hash(key_stride: usize, k: i64, cap: usize) -> usize {
 /// `__triet_string_eq` (content compare, ADR-0080 tooth #5); Integer path is
 /// the original identity `==` (byte-compat). `read_unaligned` throughout —
 /// see `hashmap_key_hash`'s doc for why a plain reference deref is unsound.
+/// ADR-0083 §6 — same fnptr-first dispatch as `hashmap_key_hash`. `eq_fn`
+/// (aggregate) compares the two key byte-images recursively (short-circuit);
+/// String uses content `__triet_string_eq`; Integer is identity.
 #[allow(unsafe_code, clippy::cast_ptr_alignment, clippy::ptr_as_ptr)]
-unsafe fn hashmap_key_eq(slot_key_ptr: *const u8, key_stride: usize, k: i64) -> bool {
-    if key_stride > 8 {
+unsafe fn hashmap_key_eq(slot_key_ptr: *const u8, key_stride: usize, k: i64, eq_fn: i64) -> bool {
+    if eq_fn != 0 {
+        // Aggregate key: `k` is a pointer to the probe key bytes.
+        unsafe { call_eq_fn(eq_fn, slot_key_ptr, k as *const u8) }
+    } else if key_stride > 8 {
         let slot_fat = unsafe { (slot_key_ptr as *const FatStr).read_unaligned() };
         let k_fat = unsafe { (k as *const FatStr).read_unaligned() };
         __triet_string_eq(slot_fat.ptr, slot_fat.len, k_fat.ptr, k_fat.len) == 1
@@ -5091,6 +5517,8 @@ pub extern "C" fn __triet_hashmap_alloc(
     cap: i64,
     key_stride: i64,
     value_stride: i64,
+    hash_fn: i64,
+    eq_fn: i64,
 ) -> i64 {
     let key_stride = i64_to_usize(key_stride.max(8));
     let value_stride = i64_to_usize(value_stride.max(8));
@@ -5105,6 +5533,11 @@ pub extern "C" fn __triet_hashmap_alloc(
         // reserved = packed (key_stride<<16 | value_stride) — ADR-0080 Mũi A.
         let packed = ((key_stride as u32) << 16) | (value_stride as u32);
         (ptr as *mut u32).add(1).write_unaligned(packed);
+        // ADR-0083 §2: hash_fn @ptr+8, eq_fn @ptr+16 (both NULL for
+        // Integer/String keys). Reachable from inside the shim (rehash
+        // re-reads them) — the aggregate-key discriminator lives in the buffer.
+        (ptr.add(8) as *mut i64).write_unaligned(hash_fn);
+        (ptr.add(16) as *mut i64).write_unaligned(eq_fn);
         let body = ptr.add(HASHMAP_HEADER_SIZE);
         (body as *mut i64).write_unaligned(len);
         (body as *mut i64)
@@ -5190,6 +5623,9 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out
     let body = map as *mut u8;
     let key_stride = hashmap_key_stride(map);
     let value_stride = hashmap_value_stride(map);
+    // ADR-0083 §2/§6: aggregate-key walker addresses (NULL for Integer/String).
+    let hash_fn = hashmap_hash_fn(map);
+    let eq_fn = hashmap_eq_fn(map);
     let len = unsafe { (body as *const i64).read_unaligned() } as usize;
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
 
@@ -5200,11 +5636,15 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out
     };
 
     let (body_ptr, cap_used) = if new_cap > 0 {
+        // ADR-0083 §2: carry the walker fnptrs into the resized buffer so its
+        // header stays self-describing (rehash re-hashes stored aggregate keys).
         let new_map = __triet_hashmap_alloc(
             0,
             new_cap as i64,
             usize_to_i64(key_stride),
             usize_to_i64(value_stride),
+            hash_fn,
+            eq_fn,
         );
         if new_map == 0 {
             return 0;
@@ -5219,12 +5659,15 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out
                 // (String: FNV-1a on {ptr,len} read from the slot itself —
                 // `old_key_ptr` IS a fat-shaped cell, same convention as a
                 // pointer-to-fat `k` arg; Integer: raw i64 read from the cell).
-                let k_shape = if key_stride > 8 {
+                // ADR-0083 §6: an aggregate OR fat key re-hashes from a POINTER
+                // to its stored cell (walker/FNV reads the bytes); Integer
+                // re-hashes from the raw i64 read out of the cell.
+                let k_shape = if key_is_by_ptr(hash_fn, key_stride) {
                     old_key_ptr as i64
                 } else {
                     unsafe { (old_key_ptr as *const i64).read_unaligned() }
                 };
-                let mut probe = hashmap_key_hash(key_stride, k_shape, new_cap);
+                let mut probe = hashmap_key_hash(key_stride, k_shape, new_cap, hash_fn);
                 loop {
                     let st = unsafe { *hashmap_state_ptr(new_body, probe) };
                     if st == 0u8 {
@@ -5260,13 +5703,13 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out
     };
 
     // Insert or update via linear probing
-    let mut probe = hashmap_key_hash(key_stride, k, cap_used);
+    let mut probe = hashmap_key_hash(key_stride, k, cap_used, hash_fn);
     let mut is_update = false;
     loop {
         let state = unsafe { *hashmap_state_ptr(body_ptr, probe) };
         if state == 1u8 {
             let slot_key_ptr = unsafe { hashmap_key_ptr(body_ptr, probe) };
-            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k, eq_fn) } {
                 unsafe {
                     hashmap_write_value(hashmap_value_ptr(body_ptr, probe), value_stride, v);
                 }
@@ -5275,7 +5718,7 @@ pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out
             }
         } else if state == 0u8 {
             unsafe {
-                hashmap_write_key(hashmap_key_ptr(body_ptr, probe), key_stride, k);
+                hashmap_write_key(hashmap_key_ptr(body_ptr, probe), key_stride, k, hash_fn);
                 hashmap_write_value(hashmap_value_ptr(body_ptr, probe), value_stride, v);
                 *hashmap_state_ptr(body_ptr, probe) = 1u8;
             }
@@ -5313,7 +5756,7 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
     let body = map as *mut u8;
     let key_stride = hashmap_key_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let mut probe = hashmap_key_hash(key_stride, k, cap);
+    let mut probe = hashmap_key_hash(key_stride, k, cap, hashmap_hash_fn(map));
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
@@ -5321,7 +5764,7 @@ pub extern "C" fn __triet_hashmap_get(map: i64, k: i64) -> i64 {
         }
         if state == 1u8 {
             let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
-            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k, hashmap_eq_fn(map)) } {
                 let vptr = unsafe { hashmap_value_ptr(body, probe) };
                 return unsafe { (vptr as *const i64).read_unaligned() };
             }
@@ -5354,7 +5797,7 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
     let body = map as *mut u8;
     let key_stride = hashmap_key_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let mut probe = hashmap_key_hash(key_stride, k, cap);
+    let mut probe = hashmap_key_hash(key_stride, k, cap, hashmap_hash_fn(map));
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
@@ -5362,7 +5805,7 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
         }
         if state == 1u8 {
             let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
-            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k, hashmap_eq_fn(map)) } {
                 // ADR-0079 §AMEND-1: thin value (value_stride ≤ 8) → deref cell
                 // to return the body_ptr (matches &0 Vector/HashMap = body_ptr
                 // from local). Fat value (stride > 8) → return cell_ptr as-is
@@ -5415,8 +5858,14 @@ pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64, key_out
     let body = map as *mut u8;
     let key_stride = hashmap_key_stride(map);
     let value_stride = hashmap_value_stride(map);
+    // ADR-0083 §6: a by-pointer key (aggregate OR String) owns heap bytes that
+    // must be surfaced to `key_out_ptr` on removal, then freed by the JIT
+    // call-site (registry-routed). `hash_fn != NULL` catches a struct key at
+    // ANY stride (incl. a single-field 8B struct that `key_stride > 8` misses).
+    let hash_fn = hashmap_hash_fn(map);
+    let key_owns_heap = key_is_by_ptr(hash_fn, key_stride);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let mut probe = hashmap_key_hash(key_stride, k, cap);
+    let mut probe = hashmap_key_hash(key_stride, k, cap, hash_fn);
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
@@ -5424,19 +5873,21 @@ pub extern "C" fn __triet_hashmap_remove(map: i64, k: i64, out_ptr: i64, key_out
             if value_stride > 8 {
                 unsafe { (out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
             }
-            if key_stride > 8 {
+            if key_owns_heap {
                 unsafe { (key_out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
             }
             return triet_mir::NULL_SENTINEL;
         }
         if state == 1u8 {
             let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
-            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k, hashmap_eq_fn(map)) } {
                 let vptr = unsafe { hashmap_value_ptr(body, probe) };
                 // D.5: surface the resident key to the caller's key_out_ptr,
                 // then tombstone-zero the cell (JIT frees key_out_ptr's
-                // content post-call, registry-routed).
-                if key_stride > 8 {
+                // content post-call, registry-routed). ADR-0083 §6: an
+                // aggregate key is surfaced at any stride (`key_owns_heap`),
+                // and the JIT-side recursive free descends its String leaves.
+                if key_owns_heap {
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             slot_key_ptr,
@@ -5481,7 +5932,7 @@ pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
     let body = map as *mut u8;
     let key_stride = hashmap_key_stride(map);
     let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
-    let mut probe = hashmap_key_hash(key_stride, k, cap);
+    let mut probe = hashmap_key_hash(key_stride, k, cap, hashmap_hash_fn(map));
     loop {
         let state = unsafe { *hashmap_state_ptr(body, probe) };
         if state == 0u8 {
@@ -5489,7 +5940,7 @@ pub extern "C" fn __triet_hashmap_contains(map: i64, k: i64) -> i64 {
         }
         if state == 1u8 {
             let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
-            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k) } {
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k, hashmap_eq_fn(map)) } {
                 return 1; // FOUND
             }
         }
@@ -6621,6 +7072,101 @@ mod tests {
         assert_eq!(unsafe { func.call_i64_2(3, 5) }, 243, "3^5 = 243");
         assert_eq!(unsafe { func.call_i64_2(5, 0) }, 1, "5^0 = 1");
         assert_eq!(unsafe { func.call_i64_2(7, 1) }, 7, "7^1 = 7");
+    }
+
+    /// ADR-0083 Risk #1 spike shim: transmute an i64 fnptr to `extern "C" fn()
+    /// -> i64` and call it. Proves a JIT-emitted local function's address
+    /// (taken via `func_addr`) round-trips through a C shim and back into
+    /// JIT-compiled code — the exact mechanism the key-hash/eq walkers use.
+    #[allow(unsafe_code)]
+    extern "C" fn __spike_call_fnptr(fnptr: i64) -> i64 {
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(fnptr as usize) };
+        f()
+    }
+
+    /// ADR-0083 CẢNH BÁO MẠNG SƯỜN #1 (G MANDATE): spike `func_addr` self-
+    /// reference BEFORE the recursive walkers. Emit a Local function returning a
+    /// constant, take its address with `func_addr`, pass it to a Rust shim, have
+    /// the shim call it, assert the constant comes back. Fail = relocation is
+    /// broken; stop before writing the walkers.
+    #[test]
+    #[allow(unsafe_code, clippy::similar_names)]
+    fn spike_func_addr_self_reference() {
+        let flag_builder = cranelift_codegen::settings::builder();
+        let isa_builder = cranelift_native::builder().expect("host ISA detection failed");
+        let isa = isa_builder
+            .finish(cranelift_codegen::settings::Flags::new(flag_builder))
+            .expect("host ISA not supported");
+        let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        jit_builder.symbol("__spike_call_fnptr", __spike_call_fnptr as *const u8);
+        let mut module = JITModule::new(jit_builder);
+
+        // Signatures.
+        let mut tsig = Signature::new(CallConv::SystemV);
+        tsig.returns.push(AbiParam::new(I64));
+        let target_id = module
+            .declare_function("spike_target", Linkage::Local, &tsig)
+            .expect("declare spike_target");
+
+        let mut ssig = Signature::new(CallConv::SystemV);
+        ssig.params.push(AbiParam::new(I64));
+        ssig.returns.push(AbiParam::new(I64));
+        let shim_id = module
+            .declare_function("__spike_call_fnptr", Linkage::Import, &ssig)
+            .expect("declare spike shim");
+
+        let mut msig = Signature::new(CallConv::SystemV);
+        msig.returns.push(AbiParam::new(I64));
+        let main_id = module
+            .declare_function("spike_main", Linkage::Local, &msig)
+            .expect("declare spike_main");
+
+        // Define target: () -> 777.
+        let mut tctx = module.make_context();
+        tctx.func.signature = tsig;
+        {
+            let mut fbc = FunctionBuilderContext::new();
+            let mut b = FunctionBuilder::new(&mut tctx.func, &mut fbc);
+            let blk = b.create_block();
+            b.switch_to_block(blk);
+            b.seal_block(blk);
+            let v = b.ins().iconst(I64, 777);
+            b.ins().return_(&[v]);
+            b.finalize();
+        }
+        module
+            .define_function(target_id, &mut tctx)
+            .expect("define spike_target");
+
+        // Define main: func_addr(target) → __spike_call_fnptr(addr) → return.
+        let mut mctx = module.make_context();
+        mctx.func.signature = msig;
+        {
+            let mut fbc = FunctionBuilderContext::new();
+            let mut b = FunctionBuilder::new(&mut mctx.func, &mut fbc);
+            let blk = b.create_block();
+            b.switch_to_block(blk);
+            b.seal_block(blk);
+            let target_ref = module.declare_func_in_func(target_id, b.func);
+            let addr = b.ins().func_addr(I64, target_ref);
+            let shim_ref = module.declare_func_in_func(shim_id, b.func);
+            let call = b.ins().call(shim_ref, &[addr]);
+            let res = b.inst_results(call)[0];
+            b.ins().return_(&[res]);
+            b.finalize();
+        }
+        module
+            .define_function(main_id, &mut mctx)
+            .expect("define spike_main");
+
+        module.finalize_definitions().expect("finalize spike");
+        let code = module.get_finalized_function(main_id);
+        let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
+        assert_eq!(
+            f(),
+            777,
+            "func_addr self-reference through C shim must round-trip"
+        );
     }
 
     /// Test-only counting wrapper around `__triet_string_free`.
@@ -7788,7 +8334,7 @@ mod tests {
     /// `is_update_out`=0 (unused, Integer key never redundant-free).
     #[test]
     fn hashmap_insert_get_roundtrip() {
-        let m = __triet_hashmap_alloc(0, 4, 8, 8);
+        let m = __triet_hashmap_alloc(0, 4, 8, 8, 0, 0);
         assert_eq!(__triet_hashmap_len(m), 0);
         let m = __triet_hashmap_insert(m, 1, 100, 0);
         assert_eq!(__triet_hashmap_len(m), 1);
@@ -7801,7 +8347,7 @@ mod tests {
     /// C9: insert same key must UPDATE value, len unchanged.
     #[test]
     fn hashmap_insert_same_key_updates_value() {
-        let m = __triet_hashmap_alloc(0, 4, 8, 8);
+        let m = __triet_hashmap_alloc(0, 4, 8, 8, 0, 0);
         let m = __triet_hashmap_insert(m, 1, 10, 0);
         let m = __triet_hashmap_insert(m, 1, 20, 0);
         assert_eq!(__triet_hashmap_get(m, 1), 20);
@@ -7816,7 +8362,7 @@ mod tests {
     /// realloc (slot 5 already occupied by key 5).
     #[test]
     fn hashmap_rehash_on_realloc() {
-        let m = __triet_hashmap_alloc(0, 4, 8, 8); // cap=4, load factor at 0.75 → 3 max before realloc
+        let m = __triet_hashmap_alloc(0, 4, 8, 8, 0, 0); // cap=4, load factor at 0.75 → 3 max before realloc
         let m = __triet_hashmap_insert(m, 5, 50, 0);
         let m = __triet_hashmap_insert(m, 6, 60, 0);
         let m = __triet_hashmap_insert(m, 7, 70, 0);
@@ -7844,7 +8390,7 @@ mod tests {
     #[allow(clippy::cast_ptr_alignment)]
     #[allow(clippy::ptr_as_ptr)]
     fn hashmap_rehash_fat_value_preserves_full_cell() {
-        let m = __triet_hashmap_alloc(0, 4, 8, 24);
+        let m = __triet_hashmap_alloc(0, 4, 8, 24, 0, 0);
         assert_ne!(m, 0);
         let e1 = [101_i64, 5, 8];
         let e2 = [202_i64, 5, 8];
@@ -7885,7 +8431,7 @@ mod tests {
     #[test]
     fn n7_hashmap_insert_min_value_rejected() {
         n7_child_guard("n7_hashmap_insert_min_value_rejected", || {
-            let m = __triet_hashmap_alloc(0, 4, 8, 8);
+            let m = __triet_hashmap_alloc(0, 4, 8, 8, 0, 0);
             let _ = __triet_hashmap_insert(m, 1, triet_mir::NULL_SENTINEL, 0);
         });
         let status = spawn_n7_child("n7_hashmap_insert_min_value_rejected");
@@ -8012,7 +8558,7 @@ mod tests {
                 super::__triet_string_from_bytes,
             ),
             ShimSymbol::fn_2_0("__triet_string_free", __km_p1a_map_drop_count_free),
-            ShimSymbol::fn_4_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
+            ShimSymbol::fn_6_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
             ShimSymbol::fn_4_1("__triet_hashmap_insert", super::__triet_hashmap_insert),
             ShimSymbol::fn_1_0("__triet_hashmap_free", super::__triet_hashmap_free),
         ];
@@ -8128,7 +8674,7 @@ mod tests {
                 super::__triet_string_from_bytes,
             ),
             ShimSymbol::fn_2_0("__triet_string_free", __km_p1a_update_count_free),
-            ShimSymbol::fn_4_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
+            ShimSymbol::fn_6_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
             ShimSymbol::fn_4_1("__triet_hashmap_insert", super::__triet_hashmap_insert),
             ShimSymbol::fn_1_0("__triet_hashmap_free", super::__triet_hashmap_free),
         ];
@@ -8248,7 +8794,7 @@ mod tests {
                 super::__triet_string_from_bytes,
             ),
             ShimSymbol::fn_2_0("__triet_string_free", __km_p1a_remove_count_free),
-            ShimSymbol::fn_4_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
+            ShimSymbol::fn_6_1("__triet_hashmap_alloc", super::__triet_hashmap_alloc),
             ShimSymbol::fn_4_1("__triet_hashmap_insert", super::__triet_hashmap_insert),
             ShimSymbol::fn_4_1("__triet_hashmap_remove", super::__triet_hashmap_remove),
             ShimSymbol::fn_1_0("__triet_hashmap_free", super::__triet_hashmap_free),
@@ -8300,15 +8846,15 @@ mod tests {
         let key1 = [p1, s1.len() as i64, s1.len() as i64]; // {ptr,len,cap}
         let key2 = [p2, s2.len() as i64, s2.len() as i64];
 
-        let idx1 = hashmap_key_hash(24, key1.as_ptr() as i64, 1_000_003);
-        let idx2 = hashmap_key_hash(24, key2.as_ptr() as i64, 1_000_003);
+        let idx1 = hashmap_key_hash(24, key1.as_ptr() as i64, 1_000_003, 0);
+        let idx2 = hashmap_key_hash(24, key2.as_ptr() as i64, 1_000_003, 0);
         assert_eq!(
             idx1, idx2,
             "ADR-0080 tooth #5: content hash must be allocation-independent \
              (equal-content keys must hash to the same slot regardless of pointer)"
         );
 
-        let m = __triet_hashmap_alloc(0, 1_000_003, 24, 8); // key_stride=24 (String), value=Integer
+        let m = __triet_hashmap_alloc(0, 1_000_003, 24, 8, 0, 0); // key_stride=24 (String), value=Integer
         let m = __triet_hashmap_insert(m, key1.as_ptr() as i64, 42, 0);
         let got = __triet_hashmap_get(m, key2.as_ptr() as i64);
         assert_eq!(
@@ -8339,7 +8885,7 @@ mod tests {
     fn adr0080_km_p1a_rehash_preserves_key_content() {
         let names = ["ann", "bob", "cid", "don"];
         let mut ptrs = Vec::new();
-        let mut m = __triet_hashmap_alloc(0, 4, 24, 8);
+        let mut m = __triet_hashmap_alloc(0, 4, 24, 8, 0, 0);
         for (i, name) in names.iter().enumerate() {
             let p = __triet_string_from_bytes(name.as_ptr() as i64, name.len() as i64);
             ptrs.push(p);
