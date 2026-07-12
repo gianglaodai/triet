@@ -243,3 +243,40 @@ D probe `Vector<User>` (User{name:String}) ở bước T0 → lộ **2 thứ ngo
 **RULING (O):** GIỮ biên G đã chốt — HashMap-value = Slice C, **KHÔNG mở ở A**. Thêm **T8**: guard REFUSE tường minh tại HashMap marshal/op emit-sites — key hoặc value là `Struct`/`Enum` → `Err(JitError::Unsupported("HashMap<_,aggregate> = ADR-0082 Slice C, chưa mở"))`. **Không silent, không leak.** `vector_elem_size` Struct arm giữ nguyên (tính size là đúng); chặn ở tầng HashMap-op. Slice C sau này gỡ T8-guard + vá `1286` + thêm teeth HashMap. Guard chỉ bắn trên Struct/Enum key/value → HashMap<Integer/String,scalar/String> hiện có KHÔNG ảnh hưởng.
 
 **Bài học:** verify-cuts-my-own-ADR lần nữa — §3 tôi verify tầng shim mà bỏ tầng M3 compile-time; và một hàm size dùng-chung âm thầm mở hai mặt trận. Cả hai D bắt đúng khi refuse-tự-quyết, dừng-hỏi-O (luật ④).
+
+## §AMEND-2 — Value move-out aggregate (Vector pop / HashMap remove by-value) — campaign D-1+D-2
+
+**Bối cảnh:** ADR gốc §2–§4 + §AMEND-1 phủ **push+drop** (aggregate VÀO collection; Slice A/B/C). Chiều XUẤT — element ra khỏi collection **by-value** — bị REFUSE/defer suốt A/B/C (Slice B `98a3be2` AM1 refuse `__triet_vector_pop` Struct/Enum). §AMEND-2 khép chiều xuất: `Vector<T>` pop (D-1, `03a7638`+`f2e8bd8`) + `HashMap<K,V>` remove (D-2, `5644f6e`) trả aggregate by-value. Continuation B-α, **KHÔNG ADR-nền mới**.
+
+### AMEND-2.1 — ① MOVE-OUT TOMBSTONE CONTRACT (load-bearing, bắt buộc)
+
+Move-out = element rời quyền sở hữu container sang dest-local. Chống double-free (container-drop + dest-drop cùng free một leaf) đòi **source-tombstone BẮT BUỘC**, cơ chế theo container:
+
+- **Vector pop — `len--`** (`__triet_vector_pop`). Cell đã pop không zero; `len--` loại nó khỏi tập drop (element-free-loop lặp `i < len`). **Load-bearing:** O poison bỏ `len--` → popped cell double-free (FREE 3).
+- **HashMap remove — `state→2`** (shim) + value-free-loop gate `state==1` (`emit_hashmap_value_free_loop`). Cell value KHÔNG zero (xem ③); state=2 khiến map-drop bỏ qua. **Load-bearing CẢ HAI ĐẦU** (G-MANDATE): GATE-A (nới gate `state≥1`) → SIGSEGV · GATE-B (bỏ `state→2`) → double-free tcache SIGABRT.
+
+**Quy định:** mọi move-out by-value tương lai (get-by-value, pop-front, drain) PHẢI có source-tombstone + teeth poison chứng minh load-bearing. **Deferred-KHÔNG-refuse = UB câm** (án lệ Slice A pop, xem ②).
+
+### AMEND-2.2 — ② SỰ THẬT VỀ SLICE-A-BUG-1 (lịch sử không bóp méo)
+
+Slice B AM1 refuse `__triet_vector_pop` Struct/Enum, comment gốc: *"needs recursive move-out tombstone… deferred"* — hàm ý move-out chưa sound vì **thiếu tombstone**. **SỰ THẬT (D-1b phơi ra):** refuse đó KHÔNG che bug tombstone bất-khả-sửa. Nó che **một tầng ABI CHƯA DỰNG:** pop-dest LUÔN `Nullable(Struct)` (`triet-lower/lib.rs:2460`), slot tag-prepend (ADR-0076 Phương án A, `tag@0/fields@+8`, `mir_lower.rs:1906`). Marshal cũ ghi fields@+0 → **đè tag word** → field-access (+8) đọc rác, drop-glue đọc tag rác → free bậy. Đây CHÍNH là "Slice A original pop double-free/invalid-pointer". `len--` source-tombstone chưa từng là vấn đề (miễn phí từ ADR-0077). **D-1b dựng tầng marshal:** out_ptr=`slot+8` (non-String), tag=`(shim_ret==NULL_SENTINEL)?SENTINEL:1`@`slot+0`.
+
+**Bài học hiến pháp:** "deferred vì chưa sound" ≠ "deferred vì chưa dựng ABI". Refuse-tạm phải nói ĐÚNG lý do — sai nhãn chôn một khối việc khả-thi dưới mác bất-khả.
+
+### AMEND-2.3 — ③ QUYẾT ĐỊNH STATE-GATE: KHÔNG zero value-cell (đánh đổi hiệu năng, có máu bảo chứng)
+
+HashMap remove move value ra out_ptr NHƯNG **không** `write_bytes(vptr,0,value_stride)` (khác KEY path vốn zero — ADR-0080 §AMEND-1 ★SS(c)). An toàn phó thác DUY NHẤT cho `state→2` + gate `state==1`. G-MANDATE đòi chứng minh gate đủ chặt TRƯỚC khi chấp nhận bỏ zeroing.
+
+**Kết quả (O poison độc lập, cp-snapshot restore md5 `267f1cbb`, baseline XANH trước mỗi phát):** GATE-A đỏ (SIGSEGV) · GATE-B đỏ (double-free tcache SIGABRT). Cả hai load-bearing.
+
+**QUYẾT ĐỊNH (G ký 2026-07-11):** GIỮ thiết kế KHÔNG zero value-cell — state-gate đủ vững chặn double-free, tiết kiệm một `write_bytes`/remove. **Điều kiện treo:** nếu tương lai thêm code đọc vùng tombstone (iter/rehash/compact chạm cell state=2) → phải (a) gate `state==1` chỗ đó, HOẶC (b) khi đó mới zero value-cell. Teeth GATE-A/GATE-B canh gác vĩnh viễn — ai nới gate phải thấy chúng đỏ.
+
+### Teeth D-1+D-2 (poison-cemented, O verify độc lập)
+
+**Vector:** `len--`→FREE3 · T9-enum→SIGILL · present-tag loop-reuse 341/342→(1→0) · field_off→corpus SIGABRT.
+**HashMap:** GATE-A→SIGSEGV · GATE-B→double-free SIGABRT · field_off→corpus 343 SIGABRT · present-tag 345/346→(1→0).
+**Marshal dùng chung:** dest-bind fat `mir_lower.rs` = `vector_pop_fat || hashmap_remove_fat` → 1 poison present-tag đỏ CẢ 4 fixture loop-reuse (341/342/345/346).
+
+**Nợ còn treo (campaign riêng):** get-by-value aggregate (get_ref value-aggregate = Cụm D/ADR-0081 FROZEN) · key-aggregate hash+eq đệ quy · pop-front/drain · B-γ multi-reg return.
+
+**O ký 2026-07-11.** **G ký 2026-07-11:** DUYỆT. Tombstone contract, bóc trần Slice-A-BUG-1, và quyết định đánh đổi state-gate được ghi nhận chính xác theo thực tế chiến trường. Value move-out aggregate KHÓA SỔ.
