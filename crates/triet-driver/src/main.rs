@@ -148,6 +148,10 @@ fn main() -> ExitCode {
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_2_1("__triet_vector_get", mir_lower::__triet_vector_get),
         ShimSymbol::fn_2_1("__triet_vector_pop", mir_lower::__triet_vector_pop),
+        ShimSymbol::fn_2_1(
+            "__triet_vector_pop_front",
+            mir_lower::__triet_vector_pop_front,
+        ),
         // HashMap shims (ADR-0043; ADR-0080 key-typed P1 bumped alloc/insert/
         // remove to fn_4_1 — +key_stride / +is_update_out / +key_out_ptr).
         ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),

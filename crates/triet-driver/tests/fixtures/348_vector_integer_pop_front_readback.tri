@@ -1,0 +1,13 @@
+// EXPECT: 10
+// ADR-0082 — `pop_front` returns the FIRST element, not the last. Push
+// 10, 20, 30 → pop_front must return 10 (front), whereas `pop` would return
+// 30 (back). Scalar element → i64 fast-path (out_ptr unused). The readback
+// value distinguishes front-vs-back semantics on its own.
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 10);
+    xs = push(xs, 20);
+    xs = push(xs, 30);
+    let out = pop_front(xs);
+    return out ?: 99;
+}

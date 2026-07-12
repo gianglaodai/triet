@@ -60,6 +60,10 @@ fn shims() -> Vec<ShimSymbol> {
         ShimSymbol::fn_1_0("__triet_vector_free", mir_lower::__triet_vector_free),
         ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
         ShimSymbol::fn_2_1("__triet_vector_pop", mir_lower::__triet_vector_pop),
+        ShimSymbol::fn_2_1(
+            "__triet_vector_pop_front",
+            mir_lower::__triet_vector_pop_front,
+        ),
         ShimSymbol::fn_2_1("__triet_vector_get", mir_lower::__triet_vector_get),
         ShimSymbol::fn_2_1(
             "__triet_string_from_bytes",
@@ -117,7 +121,7 @@ fn jit_run(body: &triet_mir::Body) -> i64 {
 
 /// Build `main()` that allocs a `Vector<String>`, pushes `words`, optionally
 /// pops `pop_n` (dropping the popped strings), then drops the vector. Returns 0.
-fn build_push_pop_drop(words: &[&str], pop_n: usize) -> triet_mir::Body {
+fn build_push_pop_drop(words: &[&str], pop_n: usize, pop_shim: &str) -> triet_mir::Body {
     let mut b = MirBuilder::new("main", MirType::Integer);
     b.add_struct_layout(string_layout());
 
@@ -183,10 +187,7 @@ fn build_push_pop_drop(words: &[&str], pop_n: usize) -> triet_mir::Body {
         b.set_local_mir_type(e, MirType::String);
         b.push(cur, storage_live(e));
         next = b.new_block();
-        b.set_terminator(
-            cur,
-            shim_call("__triet_vector_pop", vec![vec_local], vec![e], next),
-        );
+        b.set_terminator(cur, shim_call(pop_shim, vec![vec_local], vec![e], next));
         cur = next;
         b.push(cur, Statement::Drop(e, DUMMY_SPAN));
     }
@@ -445,7 +446,7 @@ fn vector_of_copy_struct_compiles_at_jit() {
 fn vector_string_drop_frees_each_element() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     STR_FREES.store(0, Ordering::SeqCst);
-    let body = build_push_pop_drop(&["alpha", "beta", "gamma"], 0);
+    let body = build_push_pop_drop(&["alpha", "beta", "gamma"], 0, "__triet_vector_pop");
     let r = jit_run(&body);
     assert_eq!(r, 0);
     assert_eq!(
@@ -460,7 +461,7 @@ fn vector_string_drop_frees_each_element() {
 fn vector_string_empty_drop_frees_nothing() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     STR_FREES.store(0, Ordering::SeqCst);
-    let body = build_push_pop_drop(&[], 0);
+    let body = build_push_pop_drop(&[], 0, "__triet_vector_pop");
     let r = jit_run(&body);
     assert_eq!(r, 0);
     assert_eq!(
@@ -480,7 +481,7 @@ fn vector_string_pop_then_drop_no_double_free() {
     // push 3, pop 1 (popped string dropped by caller), drop vector (2 survivors).
     // Total LIVE frees = 2 survivors + 1 popped = 3. A broken pop `len--` would
     // make the vector drop 3 AND the popped element double-free → 4 / SIGABRT.
-    let body = build_push_pop_drop(&["a", "b", "c"], 1);
+    let body = build_push_pop_drop(&["a", "b", "c"], 1, "__triet_vector_pop");
     let r = jit_run(&body);
     assert_eq!(r, 0);
     assert_eq!(
@@ -492,11 +493,35 @@ fn vector_string_pop_then_drop_no_double_free() {
 }
 
 #[test]
+fn vector_string_pop_front_then_drop_no_double_free() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    // ADR-0082 permanent leak/double-free net for pop_front's NEW shift code
+    // (the fixture harness catches crashes + wrong values, but a leak is
+    // SILENT there — only this counting net observes FREE count). push 3,
+    // pop_front 1 (popped string dropped by caller), drop vector (2
+    // survivors). Total LIVE frees = 2 survivors + 1 moved-out = 3.
+    //   - Dropping the shim's `len--` (B3 tombstone) → vector drops 3 AND the
+    //     popped element double-frees → 4 / SIGABRT.
+    //   - A broken B2 shift that dropped an element (or failed to move a
+    //     survivor's handle down) → FREE != 3 (leak or double-free).
+    let body = build_push_pop_drop(&["a", "b", "c"], 1, "__triet_vector_pop_front");
+    let r = jit_run(&body);
+    assert_eq!(r, 0);
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        3,
+        "ADR-0082: push 3 → pop_front 1 → drop → exactly 3 frees \
+         (2 shifted survivors + 1 moved-out front; no leak, no double-free)"
+    );
+}
+
+#[test]
 fn vector_string_pop_all_then_drop() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     STR_FREES.store(0, Ordering::SeqCst);
     // push 2, pop 2 (both dropped by caller), drop empty vector → 2 frees total.
-    let body = build_push_pop_drop(&["x", "y"], 2);
+    let body = build_push_pop_drop(&["x", "y"], 2, "__triet_vector_pop");
     let r = jit_run(&body);
     assert_eq!(r, 0);
     assert_eq!(

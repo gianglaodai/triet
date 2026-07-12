@@ -1,0 +1,15 @@
+// EXPECT: 103
+// ADR-0082 — front-vs-back + shift correctness. Push 1, 2, 3. pop_front
+// removes 1 (front), leaving [2, 3] with 2 shifted down to index 0. pop then
+// removes 3 (back), leaving [2]. front=1, back=3 → 1*100 + 3 = 103. Proves
+// the O(n) shift actually repacked the buffer (a broken shift would leave a
+// hole and mis-read the back element).
+function main() -> Integer {
+    let mutable xs = vector_new();
+    xs = push(xs, 1);
+    xs = push(xs, 2);
+    xs = push(xs, 3);
+    let front = pop_front(xs);
+    let back = pop(xs);
+    return (front ?: 0) * 100 + (back ?: 0);
+}

@@ -1,0 +1,8 @@
+// EXPECT: 99
+// ADR-0082 — `pop_front` on an empty vector returns ~0 (NULL_SENTINEL), no
+// shift, no decrement. The `~0` arm routes to 99. Mirrors 320 (pop empty).
+function main() -> Integer {
+    let xs: Vector<Integer> = vector_new();
+    let out = pop_front(xs);
+    return out ?: 99;
+}

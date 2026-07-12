@@ -1,0 +1,20 @@
+// EXPECT: 0
+// ADR-0082 — fat-element (String 24B) shift soundness. Push "aa", "bb", "cc"
+// → pop_front removes "aa" and memmove-shifts "bb","cc" down one 24B stride
+// (source/dest ranges OVERLAP for len==3 → must be memmove, not
+// copy_nonoverlapping). The popped "aa" is dropped once in the ~+ arm; the
+// vector still owns "bb","cc" (now at indices 0,1) and drops both once. A
+// wrong shift (copy_nonoverlapping) would corrupt "bb"'s bytes → wrong
+// pointer to free; a missing len-- would double-free the last slot. EXPECT
+// 0 = clean run through the real allocator.
+function main() -> Integer {
+    let mutable xs: Vector<String> = vector_new();
+    xs = push(xs, "aa");
+    xs = push(xs, "bb");
+    xs = push(xs, "cc");
+    let out = pop_front(xs);
+    return match out {
+        ~+ popped => 0,
+        ~0 => 99,
+    };
+}

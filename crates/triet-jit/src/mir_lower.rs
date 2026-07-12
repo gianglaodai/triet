@@ -3081,15 +3081,17 @@ impl JitContext {
                         // returns the element by sret — the dest's slot is filled
                         // by memcpy, so the generic i64-return def_var is skipped
                         // (the shim returns 0, not a value).
-                        let vector_pop_fat = callee_name.as_str() == "__triet_vector_pop" && {
-                            let vty = &body.local_decls[args[0].0].ty;
-                            match vty.nullable_payload().unwrap_or(vty) {
-                                MirType::Vector(inner) => {
-                                    Self::vector_elem_size(body, inner).is_ok_and(|s| s > 8)
+                        let vector_pop_fat = (callee_name.as_str() == "__triet_vector_pop"
+                            || callee_name.as_str() == "__triet_vector_pop_front")
+                            && {
+                                let vty = &body.local_decls[args[0].0].ty;
+                                match vty.nullable_payload().unwrap_or(vty) {
+                                    MirType::Vector(inner) => {
+                                        Self::vector_elem_size(body, inner).is_ok_and(|s| s > 8)
+                                    }
+                                    _ => false,
                                 }
-                                _ => false,
-                            }
-                        };
+                            };
                         // ADR-0078: hashmap_remove fat value (String 24B) returns
                         // via out_ptr — same shim→sret pattern as vector_pop.
                         // ADR-0082 B-α Slice D-2: `remove` owns the value it
@@ -3513,7 +3515,9 @@ impl JitContext {
                                 builder.use_var(self.var(key_arg))
                             };
                             vec![map_val, key_val]
-                        } else if callee_name == "__triet_vector_pop" {
+                        } else if callee_name == "__triet_vector_pop"
+                            || callee_name == "__triet_vector_pop_front"
+                        {
                             // ADR-0077: append the OUT-pointer. Fat element →
                             // the dest's slot addr (shim memcpy's the element in);
                             // scalar → 0 (unused, element comes back by i64).
@@ -4823,6 +4827,78 @@ pub extern "C" fn __triet_vector_pop(vec: i64, out_ptr: i64) -> i64 {
             std::ptr::copy_nonoverlapping(elem, out_ptr as *mut u8, stride);
             0
         }
+    }
+}
+
+/// `__triet_vector_pop_front(vec, out_ptr)` — MOVE the FIRST element out (ADR-0082).
+///
+/// Sibling of `__triet_vector_pop` (back). Removes index 0, then shifts the
+/// `len-1` survivors down one stride to close the hole, and decrements `len`.
+/// Byte-identical ABI to `pop` (stride-disambiguated: scalar returns i64 with
+/// `out_ptr` unused; fat memcpy's `stride` bytes into `out_ptr` and returns 0).
+///
+/// Three teeth from the Work Order (Mentor G):
+/// - B1: extract element[0] BEFORE the shift (otherwise it is overwritten).
+/// - B2: the shift `[1..len] → [0..len-1]` uses `ptr::copy` (memmove) — the
+///   source and destination ranges OVERLAP for `len >= 3`, so
+///   `copy_nonoverlapping` would corrupt. The fat element[0] → `out_ptr` copy
+///   uses `copy_nonoverlapping` (the caller's dest slot is disjoint from the
+///   vector buffer).
+/// - B3: `len--` is the tombstone — after the shift the last physical slot
+///   still holds a stale duplicate pointing at the moved/shifted heap, but
+///   `len--` removes it from the drop-set, so `Drop(vec)` frees only the
+///   `len-1` survivors exactly once (no double-free). The slot is NOT zeroed
+///   (mirrors `pop`'s no-zero contract).
+///
+/// `vec == 0` (dead) or empty (`len == 0`) → `NULL_SENTINEL`, no shift/decrement.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_pop_front(vec: i64, out_ptr: i64) -> i64 {
+    if vec == 0 {
+        std::process::abort(); // trap-on-0 (dead value)
+    }
+    let body = vec as *mut u8;
+    // SAFETY: vec points to a valid buffer {len@0, cap@8, data@16}.
+    let len = unsafe { (body as *const i64).read_unaligned() };
+    if len <= 0 {
+        // Mirror `pop`'s empty contract: a fat element (stride > 8) is read
+        // back through the dest slot, so the slot's first word must carry
+        // NULL_SENTINEL or the `~0` match arm is misrouted.
+        let stride = vector_stride(vec);
+        if stride > 8 {
+            unsafe { (out_ptr as *mut i64).write_unaligned(triet_mir::NULL_SENTINEL) };
+        }
+        return triet_mir::NULL_SENTINEL; // empty → nothing to pop
+    }
+    let stride = vector_stride(vec);
+    let new_len = len - 1;
+    // SAFETY: data starts at offset 16; index 0 is the FIRST element.
+    unsafe {
+        let data = body.add(16);
+        // B1: rút element[0] TRƯỚC khi shift đè lên nó.
+        let ret = if stride <= 8 {
+            (data as *const i64).read_unaligned()
+        } else {
+            // Fat: out_ptr (caller dest slot) is disjoint from this buffer →
+            // copy_nonoverlapping is sound.
+            std::ptr::copy_nonoverlapping(data, out_ptr as *mut u8, stride);
+            0
+        };
+        // B2: shift `[1..len] → [0..len-1]`. Source (`data + stride`) and dest
+        // (`data`) OVERLAP for len >= 3 → memmove (`ptr::copy`), NOT
+        // copy_nonoverlapping.
+        std::ptr::copy(data.add(stride), data, new_len as usize * stride);
+        // B3: len-- is the tombstone — the last physical slot now holds a
+        // stale duplicate, but len-- removes it from the drop-set. No zero.
+        (body as *mut i64).write_unaligned(new_len);
+        ret
     }
 }
 

@@ -1117,6 +1117,14 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             mutates_arg: Some(0),
             arg_consumes: &[false],
         }),
+        // ADR-0082: pop_front is pop's sibling — same in-place mutation (len--
+        // + shift), same non-consuming borrow-mutate contract.
+        "__triet_vector_pop_front" => Some(BuiltinShimMeta {
+            name: "__triet_vector_pop_front",
+            returns_borrow_of: None,
+            mutates_arg: Some(0),
+            arg_consumes: &[false],
+        }),
         "__triet_hashmap_alloc" => Some(BuiltinShimMeta {
             name: "__triet_hashmap_alloc",
             // ADR-0080 Mũi A: +key_stride arg (3rd) alongside value_stride

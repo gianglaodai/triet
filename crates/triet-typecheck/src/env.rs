@@ -302,6 +302,26 @@ fn bind_prelude(env: &mut TypeEnvironment) {
         },
     );
 
+    // ADR-0082: `pop_front<T>(Vector<T>) -> T?` — move the FIRST element out
+    // (O(n) shift, len--). Byte-identical signature to `pop`; the only
+    // difference is which end the element leaves from. Same empty → ~0 and
+    // clean-ownership-cut semantics.
+    let pop_front_params = vec![triet_syntax::TypeParameter {
+        name: "T".into(),
+        bound: None,
+    }];
+    let pop_front_elem_t = Type::TypeParameter("T".into());
+    let pop_front_vector_t = Vector(Box::new(pop_front_elem_t.clone()));
+    let pop_front_ret = Type::Nullable(Box::new(pop_front_elem_t));
+    env.declare(
+        "pop_front",
+        Type::Function {
+            type_parameters: pop_front_params,
+            parameters: vec![pop_front_vector_t],
+            return_type: Box::new(pop_front_ret),
+        },
+    );
+
     // `len` is overloaded: works on String and Vector<Integer>.
     // Registered via overloads so check_call can try each candidate.
     env.declare_overload(

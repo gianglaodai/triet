@@ -1,0 +1,15 @@
+// EXPECT: 0
+// ADR-0082 — end-to-end source `pop_front(v)` on `Vector<String>`. Push "hi"
+// → pop_front → match ~+ captures the popped String. Single element: front ==
+// back, so this proves the fat-element move-out + drop path works identically
+// to `pop` (the popped element is owned by the caller and freed once in the
+// ~+ arm; the now-empty vector drops without it — no double-free).
+function main() -> Integer {
+    let v: Vector<String> = vector_new();
+    let v2 = push(v, "hi");
+    let out = pop_front(v2);
+    return match out {
+        ~+ captured => 0,
+        ~0 => 99,
+    };
+}
