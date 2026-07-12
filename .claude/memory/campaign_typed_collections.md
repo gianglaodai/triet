@@ -1,11 +1,29 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) — KHÓA SỔ 2026-07-11 `3e0975d`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front (continuation) — KHÓA SỔ 2026-07-12 `5462c5b`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
+
+## ✅ ĐÓNG — `Vector::pop_front` (ADR-0082 B-α continuation, O+G ký 2026-07-12, PUSHED)
+origin/main = `5462c5b`, gate `0·0·345·0`. 1 commit gộp code+counting-tooth (G lệnh "test đi liền code"). Move-out phần tử **ĐẦU** by-value (`T?`), sibling của `pop` (back). **KHÔNG ADR mới.**
+
+**Recon lật khung bàn giao:** danh sách "get-by-value/pop-front/drain — continuation rủi ro thấp" là **vỏ bọc sai**. O recon phơi: `pop_front`/`drain` KHÔNG tồn tại surface (0 shim/typecheck); `get-by-value` aggregate = **deep-clone** (elem ở lại collection → nhân đôi heap) đụng move-only ADR-0042 + coupled ADR-0081 FROZEN → cần ADR Copy/Clone; `drain` đòi iteration protocol → cần ADR. **Chỉ pop_front là continuation thật** (tái dùng ABI D-1). G duyệt thu hẹp scope, TRỤC XUẤT get-by-value + drain thành campaign-nền riêng đóng băng. **O đính chính G "bổ sung token/AST surface":** `pop`/`push`/`get` = builtin-identifier gọi `pop(v)` (fixture 319:11), KHÔNG keyword/method → `pop_front` chỉ declare typecheck env, **0 dòng lexer/parser/schema**. G: "cố tình nhắc AST để xem tụi bay có nhìn architecture không".
+
+**Semantics (G chốt):** O(n) shift **XUỐNG** `[1..len]→[0..len-1]`, `len--` tombstone. KHÔNG ring-buffer (phá INV-B-α "một layout hai nhà" + đập lại alloc/get/push/pop shim). Muốn queue O(1) → sau đẻ type `Queue`. Doc-comment shim ghi "no O(1) promise".
+
+**7 site (grep-verified 6 ABI-site `__triet_vector_pop` mirror đủ, 0 sót — mandate G "sót 1 line gạch PR"):** env.rs declare · lower arm (dest `Nullable` thừa hưởng tag-prepend) · `mir/lib.rs` BuiltinShimMeta `mutates_arg=Some(0)`→**E2440 borrowck** · jit:3084 fat-gate · jit:3518 arg-vals out_ptr · shim `__triet_vector_pop_front:4833` · driver ShimSymbol + integration harness. `⑤⑥⑦` D grep tự phơi = wiring THẬT (D phán đoán đúng). **Shim:** B1 rút[0] TRƯỚC shift (fat→`copy_nonoverlapping`→out_ptr disjoint) · B2 `ptr::copy` memmove (overlap len≥3) · B3 `len--` no-zero (slot cuối rác nhưng ngoài drop-set).
+
+**O poison máu độc lập (cp-snapshot KHÔNG git-checkout, restore md5 `d90caa4f` mọi vòng):**
+- **T-G1 order (mandate):** push 1,2,3 → `pop_front`(1)·`pop`(3)·`pop_front`(2) = **132**. Shift giữ survivor giữa; interleave front/back len nhất quán.
+- **T-G2a `len--` (mandate):** bỏ len-- → fixture 351 fat → **SIGABRT 134** `free(): double free`. Tombstone load-bearing. (350 scalar EXIT 0 — không heap không manifest, đúng failure-mode.)
+- **T-O1 site-3 fat-gate:** bỏ pop_front khỏi `vector_pop_fat` → **JIT compile-refuse** "unexpected String return" (fat-return-without-slot bắt ở JIT-compile, KHÔNG SIGSEGV runtime như O dự — ghi đúng failure-mode). Site-3 load-bearing.
+- **🩸 O BẮT LỖ VÒNG-1 (chặn ký):** D chỉ wire pop_front vào **fixture-harness** (integration) = bắt crash+sai-giá-trị nhưng **LEAK CÂM** (không free=không crash); B2 shift là **code MỚI** không counting-net thường trực. O trả D thêm **counting-tooth `vector_string_pop_front_then_drop_no_double_free`** (`typed_vector_counting.rs`, mirror pop): push 3/pop_front 1/drop → **FREE==3**. O tự poison len-- độc lập → **FREE 4≠3 RED** (non-vacuous); control pop-back tooth **XANH** = cô lập pop_front-only. D parameterize `build_push_pop_drop(…,pop_shim)` (4 caller cũ bất biến) = refactor sạch, báo trước.
+- **⚔ T-G2b memmove — BÁO TRUNG THỰC NON-MANIFEST:** đổi `ptr::copy`→`copy_nonoverlapping`, len3 → **KHÔNG đỏ** (350→103, 351→0). Lý do: front-pop shift **XUỐNG** (dst=`data` < src=`data+stride`) → copy tiến không đè byte chưa đọc → memcpy-safe hướng này. **KHÔNG giả đỏ.** Nhưng overlapping `copy_nonoverlapping` là **UB theo hợp đồng Rust bất kể manifest** → `ptr::copy` GIỮ (UB-hygiene). G: "nếu giả vờ báo đỏ cờ này tao đã tế sống — giữ memmove là chuẩn mực kỹ sư Rust".
+
+**Nợ campaign-nền đóng băng (G chốt lôi ra Phase sau):** 🚩 **get-by-value** aggregate (ADR Copy/Clone move-only) · 🚩 **drain** (ADR Ownership-Iteration) · 🚩 **BOM FIX-2 zero-@8 Slice B** (coupling frontend refuse enum-payload multi-heap-leaf) · key-aggregate `HashMap<agg,_>` hash+eq đệ quy · get_ref V=Nullable · borrow-params `&+ T` · B-γ multi-reg return · AOT · self-host · Facade `public use`. ⚰️ ADR-0068 Box CẤM CỬA.
 
 ## ✅ ĐÓNG — VALUE MOVE-OUT AGGREGATE: Vector pop + HashMap remove by-value (ADR-0082 B-α §AMEND-2, O+G ký 2026-07-11, PUSHED)
 origin/main = `3e0975d`, gate `0·0·340·0`. 4 commit: `03a7638`(D-1a) · `f2e8bd8`(D-1b) · `5644f6e`(D-2) · `3e0975d`(§AMEND-2). Khép **chiều XUẤT** (element ra khỏi collection by-value) — bù cho A/B/C chỉ phủ push+drop.
