@@ -1,0 +1,22 @@
+// EXPECT: 0
+// ADR-0082 B-α Slice D-2 — end-to-end source `remove(m,k)` on
+// `HashMap<Integer,UserStruct>`. Insert 2, remove 1, match `~+`. Runs
+// through the REAL allocator (integration_tests.rs registers the real
+// `__triet_string_free`, not a counting stub) — the D-1b lesson: a
+// `Nullable(Struct)` out_ptr field-offset bug (writing @+0 instead of @+8,
+// colliding with the tag word) does NOT change a counting-stub's free
+// COUNT (it still frees something non-null-looking) but DOES corrupt the
+// pointer handed to a real allocator's `free()` — `free(): invalid
+// pointer` → SIGABRT under this fixture.
+struct User { name: String }
+
+function main() -> Integer {
+    let mutable m: HashMap<Integer, User> = hashmap_new();
+    m = insert(m, 1, User { name: "aa" });
+    m = insert(m, 2, User { name: "bb" });
+    let out = remove(m, 1);
+    return match out {
+        ~+ u => 0,
+        ~0 => 99,
+    };
+}

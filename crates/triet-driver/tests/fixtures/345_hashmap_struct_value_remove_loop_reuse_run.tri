@@ -1,0 +1,26 @@
+// EXPECT: 1
+// ADR-0082 B-α Slice D-2 — LOOP-REUSE teeth for the present-tag write
+// (Mentor O, fat-Struct path; D-1b's 341 sibling for HashMap remove).
+// `out`'s StackSlot is allocated ONCE per MIR Local, so a `while`
+// back-edge reuses the SAME physical slot across iterations. iter0: `m` is
+// empty → remove(m,1) writes `NULL_SENTINEL`@tag(slot+0) deterministically.
+// iter1: `m` now has key 1 → remove's present-case marshal MUST overwrite
+// tag@0 with the present marker; if that write were silently missing,
+// tag@0 would still hold iter0's stale NULL_SENTINEL → iter1 misroutes to
+// the `~0` arm too → `hits` stays 0 instead of 1.
+struct User { name: String }
+
+function main() -> Integer {
+    let mutable m: HashMap<Integer, User> = hashmap_new();
+    let mutable i: Integer = 0;
+    let mutable hits: Integer = 0;
+    while i < 2 {
+        let out = remove(m, 1);
+        hits = match out {
+            ~0 => { m = insert(m, 1, User { name: "x" }); hits },
+            ~+ u => { hits + 1 },
+        };
+        i = i + 1;
+    }
+    return hits;
+}

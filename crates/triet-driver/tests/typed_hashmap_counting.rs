@@ -892,6 +892,180 @@ fn hashmap_8b_struct_value_insert_drop_frees_wrapped_vector() {
     );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ADR-0082 B-α Slice D-2 (HashMap<K,aggregate> remove by-value) — Mentor O.
+// `remove` owns the value it returns (move-out, mirrors `vector_pop`'s
+// D-1b) — VALUE aggregate opens here (key-aggregate stays refused, see
+// `hashmap_struct_key_remove_refused_at_jit` below). The tag-marshal
+// (Struct? tag@0/fields@+8, Enum? disc@0) is SHARED with `vector_pop` at
+// the JIT dest-bind — D-2 only needed the out_ptr field_off fix + refuse
+// narrowing (K+V → K-only) at the 2 `remove` call-sites.
+//
+// G-MANDATE state-gate: the value cell `remove` moves out is NEVER zeroed
+// by the shim (unlike the resident KEY, which IS zeroed after surfacing) —
+// soundness relies ENTIRELY on the tombstone `state → 2` write
+// (mir_lower.rs ~5373) paired with the value-free-loop's `state_byte == 1`
+// gate (~1441) to skip a removed cell on the map's OWN later Drop. Both
+// halves are poison-verified below (GATE-A: neuter the gate to also match
+// state==2 · GATE-B: skip the tombstone write) — either alone independently
+// turns `hashmap_struct_value_remove_then_drop_no_double_free` red (FREE
+// measured 3, not 2 — NOT the naive "2×N" shape; see that test's doc for
+// why) or crashes outright (the T9 8B Wrapper sibling below, real
+// `__triet_vector_free` double-free → SIGABRT).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// GATE-A/B anchor: `HashMap<Integer,User>` (fat Struct value) — insert 2,
+/// remove 1 (caller drops the removed value via match+scope-end), drop the
+/// map (1 survivor). Each String freed exactly once → 2. Poison the
+/// state-gate (GATE-A: is_occ also matches state==2, OR GATE-B: tombstone
+/// write skipped) → the removed cell's value is freed AGAIN by the map's
+/// own Drop → measured 3, not 4 (map-drop frees BOTH the tombstoned "aa"
+/// cell and the still-occupied "bb" survivor = 2, PLUS the caller's own
+/// Drop of the removed "aa" = 1 more = 3 total; poison-verified on the
+/// real tree, both GATE-A and GATE-B independently produce this same 3 —
+/// not the naive "2×N" double-free shape of the scalar-String precedent
+/// `hashmap_string_remove_then_drop_no_double_free` above, which removes
+/// the ENTIRE map's only occupant instead of leaving a survivor).
+#[test]
+fn hashmap_struct_value_remove_then_drop_no_double_free() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "struct User { name: String }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable m: HashMap<Integer, User> = hashmap_new();\n\
+         \x20   let a = User { name: \"aa\" };\n\
+         \x20   m = insert(m, 1, a);\n\
+         \x20   let b = User { name: \"bb\" };\n\
+         \x20   m = insert(m, 2, b);\n\
+         \x20   let out = remove(m, 1);\n\
+         \x20   return match out {\n\
+         \x20       ~+ u => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }",
+        &shims(),
+    );
+    assert_eq!(r, 0, "main returns 0 (~+ arm taken, key 1 present)");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "removed value (\"aa\") + survivor (\"bb\") — each String freed \
+         exactly once. == 3 ⇒ state-gate breach (GATE-A/B) double-frees the \
+         removed cell on map-drop (poison-measured, NOT a naive 2×N shape); \
+         == 0/1 ⇒ tag/field marshal leak."
+    );
+}
+
+/// Enum value sibling of the GATE-A/B anchor above.
+#[test]
+fn hashmap_enum_value_remove_then_drop_no_double_free() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "enum Msg { Text(String), Empty }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable m: HashMap<Integer, Msg> = hashmap_new();\n\
+         \x20   m = insert(m, 1, Msg::Text(\"aa\"));\n\
+         \x20   m = insert(m, 2, Msg::Text(\"bb\"));\n\
+         \x20   let out = remove(m, 1);\n\
+         \x20   return match out {\n\
+         \x20       ~+ msg => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }",
+        &shims(),
+    );
+    assert_eq!(r, 0, "main returns 0 (~+ arm taken, key 1 present)");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "removed value (\"aa\") + survivor (\"bb\") — each String freed \
+         exactly once. == 3 ⇒ state-gate breach double-free (poison-\
+         measured); == 0/1 ⇒ tag/field marshal leak (enum_slots out_ptr \
+         branch)."
+    );
+}
+
+/// T9 8B-path sibling: `Wrapper{v:Vector<String>}` (total_size==8) rides the
+/// scalar-return T9 path at the dest-bind (shared with `vector_pop`). Remove
+/// the only entry, match `~+`, drop the downcast copy — its inner
+/// `Vector<String>` must free through the REAL `__triet_vector_free`
+/// (`shims_with_vector`), independent of the `__triet_string_free` stub.
+#[test]
+fn hashmap_8b_wrapper_value_remove_then_drop_no_double_free() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "struct Wrapper { v: Vector<String> }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable inner: Vector<String> = vector_new();\n\
+         \x20   inner = push(inner, \"zz\");\n\
+         \x20   let w = Wrapper { v: inner };\n\
+         \x20   let mutable m: HashMap<Integer, Wrapper> = hashmap_new();\n\
+         \x20   m = insert(m, 1, w);\n\
+         \x20   let out = remove(m, 1);\n\
+         \x20   return match out {\n\
+         \x20       ~+ popped => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }",
+        &shims_with_vector(),
+    );
+    assert_eq!(
+        r, 0,
+        "main returns 0 (~+ arm taken — tag correctly present)"
+    );
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        1,
+        "removed Wrapper's inner Vector<String> must free its element \
+         exactly once. == 0 ⇒ T9 field@+8 write missing/wrong (leaked/\
+         garbage handle). A GATE-A/B state-gate breach does NOT show up as \
+         a wrong STR_FREES count here (this map has no survivor, only the \
+         one removed/tombstoned cell) — poison-measured, it SIGABRTs \
+         instead (\"free(): double free detected in tcache\") via the REAL \
+         `__triet_vector_free` (shims_with_vector) double-freeing the \
+         Vector handle: caller drops the popped Wrapper's Vector once, \
+         map-drop's state-gate breach frees the same stale handle again."
+    );
+}
+
+/// String-key sibling: `HashMap<String,User>` remove must free BOTH the
+/// resident KEY (ADR-0080 §AMEND-1 D.5, unaffected by D-2 — key stays a
+/// scalar String even though the value is now an aggregate) and the
+/// removed VALUE's String field, with no interference between the two
+/// free paths.
+#[test]
+fn hashmap_string_key_struct_value_remove_frees_key_and_value() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run_source(
+        "struct User { name: String }\n\
+         function main() -> Integer = {\n\
+         \x20   let mutable m: HashMap<String, User> = hashmap_new();\n\
+         \x20   let a = User { name: \"aa\" };\n\
+         \x20   m = insert(m, \"k\", a);\n\
+         \x20   let out = remove(m, \"k\");\n\
+         \x20   return match out {\n\
+         \x20       ~+ u => 0,\n\
+         \x20       ~0 => 99,\n\
+         \x20   };\n\
+         }",
+        &shims(),
+    );
+    assert_eq!(r, 0, "main returns 0 (~+ arm taken)");
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "resident key (\"k\") freed via D.5 out-param registry-route + \
+         removed value's String field (\"aa\") freed via caller Drop — 2 \
+         independent String frees, no map survivors left. == 3 ⇒ GATE-A/B \
+         state-gate breach re-frees the tombstoned cell's stale value on \
+         map-drop (poison-measured)."
+    );
+}
+
 // ── T5 (F4): still-refused ops — get/get_ref/contains/key-aggregate ──
 //
 // `get`/`get_ref`/`contains` have NO overload for a Struct/Enum VALUE
@@ -1093,5 +1267,29 @@ fn hashmap_struct_key_insert_refused_at_jit() {
     assert!(
         err.contains("Slice C") || err.contains("aggregate"),
         "HashMap<User,_> insert must refuse (key-aggregate), got: {err}"
+    );
+}
+
+/// ADR-0082 B-α Slice D-2: `remove` NARROWS from the K+V refuse to K-only
+/// (VALUE aggregate opens this slice) — key-aggregate must stay refused.
+/// FILLS A GAP: pre-D-2, `remove`'s K+V refuse was covered SOURCE-LEVEL by
+/// `vector_userstruct_counting.rs::hashmap_struct_value_remove_refused_at_jit`
+/// (VALUE-aggregate, reachable from valid source before D-2 opened it) — but
+/// a KEY-aggregate `HashMap<User,_>` is refused earlier still, at the type
+/// ANNOTATION (E1048), never reaching JIT from source (same boundary as
+/// alloc/insert above) — so key-aggregate-remove had NO teeth at all until
+/// this hand-built-MIR test. `build_single_hashmap_call`'s `value_arg: None`
+/// mirrors the get/get_ref/contains 2-arg shape (`__triet_hashmap_remove`'s
+/// MIR-level `args` is `[map, key]` — the JIT internally appends
+/// out_ptr/key_out_ptr, so the dest's placeholder type is irrelevant: the
+/// guard returns `Err` before ever reaching the dest-bind marshal).
+#[test]
+fn hashmap_struct_key_remove_refused_at_jit() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let body = build_single_hashmap_call(hashmap_ku_ty(), "__triet_hashmap_remove", true, None);
+    let err = expect_jit_refuse_mir(&body, &[]);
+    assert!(
+        err.contains("Slice C") || err.contains("aggregate"),
+        "HashMap<User,_> remove must refuse (key-aggregate), got: {err}"
     );
 }

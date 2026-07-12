@@ -3092,12 +3092,16 @@ impl JitContext {
                         };
                         // ADR-0078: hashmap_remove fat value (String 24B) returns
                         // via out_ptr — same shim→sret pattern as vector_pop.
+                        // ADR-0082 B-α Slice D-2: `remove` owns the value it
+                        // returns (move-out, mirrors `vector_pop`) — VALUE
+                        // aggregate opens here (key-aggregate stays refused,
+                        // the key free-loop/hash still don't support it).
                         let hashmap_remove_fat = callee_name.as_str() == "__triet_hashmap_remove"
                             && {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
                                     MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                        Self::refuse_hashmap_aggregate_key(k)?;
                                         Self::vector_elem_size(body, v).is_ok_and(|s| s > 8)
                                     }
                                     _ => false,
@@ -3404,8 +3408,8 @@ impl JitContext {
                             let key_stride = {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 match mty.nullable_payload().unwrap_or(mty) {
-                                    MirType::HashMap(k, v) => {
-                                        Self::refuse_hashmap_aggregate_kv(k, v)?;
+                                    MirType::HashMap(k, _v) => {
+                                        Self::refuse_hashmap_aggregate_key(k)?;
                                         Self::vector_elem_size(body, k)?
                                     }
                                     _ => 8,
@@ -3426,14 +3430,25 @@ impl JitContext {
                             } else {
                                 builder.use_var(self.var(key_arg))
                             };
+                            // ADR-0082 B-α Slice D-2: mirror `vector_pop`'s
+                            // D-1b out_ptr fix — a fat Struct value dest is
+                            // `Nullable(Struct)` (tag@0/fields@+8, ADR-0076
+                            // Phương án A), UNLESS it's "String" (slot+0). A
+                            // fat Enum dest lives in `enum_slots` (disc@0, no
+                            // tag). The dest-bind that fills the tag word for
+                            // Struct is SHARED with `vector_pop` below (`if
+                            // vector_pop_fat || hashmap_remove_fat`).
                             let out_ptr = if hashmap_remove_fat {
-                                let (slot, _) =
-                                    self.struct_slots.get(&dest[0]).ok_or_else(|| {
-                                        JitError::Unsupported(
-                                            "hashmap_remove: fat value dest without a slot".into(),
-                                        )
-                                    })?;
-                                builder.ins().stack_addr(I64, *slot, 0)
+                                if let Some((slot, layout)) = self.struct_slots.get(&dest[0]) {
+                                    let field_off = if layout.name == "String" { 0 } else { 8 };
+                                    builder.ins().stack_addr(I64, *slot, field_off)
+                                } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
+                                    builder.ins().stack_addr(I64, *slot, 0)
+                                } else {
+                                    return Err(JitError::Unsupported(
+                                        "hashmap_remove: fat value dest without a slot".into(),
+                                    ));
+                                }
                             } else {
                                 builder.ins().iconst(I64, 0)
                             };
@@ -3666,19 +3681,21 @@ impl JitContext {
                             {
                                 // ADR-0082 T9 (symmetric with the push fix): an 8B
                                 // struct-slot-backed dest reached via the generic
-                                // scalar-return path — the ONLY realistic producer
-                                // is `__triet_vector_pop`'s non-fat (stride<=8)
-                                // return, which already hands back the popped
-                                // element's true content as `ret_val` (a single
-                                // i64 field, verified against the shim's Rust
-                                // impl). `def_var` above wrote it to the
-                                // Variable, but struct reads (field access, Drop)
-                                // go through the StackSlot — never populated →
-                                // stale/garbage content (e.g. a popped
-                                // `Vector<String>` handle silently replaced by
-                                // whatever leftover bytes sat in the slot).
-                                // total_size <= 8 for a Struct type is exactly 8
-                                // (INV-B-α 8B-granular), so one word suffices.
+                                // scalar-return path — the realistic producers
+                                // are `__triet_vector_pop` and (Slice D-2)
+                                // `__triet_hashmap_remove`'s non-fat (stride<=8)
+                                // return, both of which already hand back the
+                                // moved-out element's true content as `ret_val`
+                                // (a single i64 field, verified against the
+                                // shim's Rust impl). `def_var` above wrote it to
+                                // the Variable, but struct reads (field access,
+                                // Drop) go through the StackSlot — never
+                                // populated → stale/garbage content (e.g. a
+                                // popped `Vector<String>` handle silently
+                                // replaced by whatever leftover bytes sat in the
+                                // slot). total_size <= 8 for a Struct type is
+                                // exactly 8 (INV-B-α 8B-granular), so one word
+                                // suffices.
                                 //
                                 // ADR-0082 B-α Slice D-1b: pop's dest is ALWAYS
                                 // `Nullable(Struct)` (pop returns `T?`) — a

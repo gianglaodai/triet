@@ -82,52 +82,6 @@ fn run(source: &str) -> i64 {
     unsafe { main.call_i64_0() }
 }
 
-/// Lower + attempt JIT compile, expecting a HARD `JitError` refuse (the source
-/// must typecheck+lower cleanly — the refuse is a backend boundary, not a type
-/// error). Returns the error string for assertion.
-fn compile_expect_refuse(source: &str) -> String {
-    let (program, parse_errors) = triet_parser::parse(source);
-    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
-    let (type_errors, pattern_resolutions, method_resolutions) = triet_typecheck::check(&program);
-    assert!(
-        type_errors.is_empty(),
-        "must typecheck (refuse is a JIT boundary): {type_errors:?}"
-    );
-    let bodies = triet_lower::lower_program(&program, &pattern_resolutions, &method_resolutions)
-        .expect("lowering failed");
-    let body_refs: Vec<&triet_mir::Body> = bodies.iter().collect();
-    // Register the full shim superset (vector + string + hashmap) so compilation
-    // reaches the intended aggregate-refuse point instead of tripping on a
-    // missing-shim error first.
-    let shims = [
-        ShimSymbol::fn_3_1("__triet_vector_alloc", mir_lower::__triet_vector_alloc),
-        ShimSymbol::fn_1_0("__triet_vector_free", mir_lower::__triet_vector_free),
-        ShimSymbol::fn_2_1("__triet_vector_push", mir_lower::__triet_vector_push),
-        // `__triet_vector_pop` MUST be registered so a `pop` program reaches the
-        // AM1 aggregate-move-out refuse guard, not a spurious missing-shim error
-        // (that would be a VACUOUS refuse — poison-insensitive to the guard).
-        ShimSymbol::fn_2_1("__triet_vector_pop", mir_lower::__triet_vector_pop),
-        ShimSymbol::fn_4_1("__triet_hashmap_alloc", mir_lower::__triet_hashmap_alloc),
-        ShimSymbol::fn_1_0("__triet_hashmap_free", mir_lower::__triet_hashmap_free),
-        ShimSymbol::fn_4_1("__triet_hashmap_insert", mir_lower::__triet_hashmap_insert),
-        // ADR-0082 Slice C (T5): `__triet_hashmap_remove` MUST be registered
-        // so a `remove` program reaches the F4 K+V refuse guard, not a
-        // spurious missing-shim error (VACUOUS refuse).
-        ShimSymbol::fn_4_1("__triet_hashmap_remove", mir_lower::__triet_hashmap_remove),
-        ShimSymbol::fn_2_1("__triet_string_alloc", mir_lower::__triet_string_alloc),
-        ShimSymbol::fn_2_1(
-            "__triet_string_from_bytes",
-            mir_lower::__triet_string_from_bytes,
-        ),
-        ShimSymbol::fn_2_0("__triet_string_free", __vus_str_free),
-    ];
-    let mut ctx = JitContext::with_shims(&shims);
-    match ctx.compile_multi(&body_refs) {
-        Ok(_) => panic!("expected a JitError refuse, but compilation SUCCEEDED (silent leak risk)"),
-        Err(e) => format!("{e:?}"),
-    }
-}
-
 /// T-DOUBLE + T-LEAK anchor: two heap-bearing structs pushed from NAMED locals
 /// into a `Vector<User>`, then dropped at scope end. Each String must be freed
 /// EXACTLY once — 2 elements → STR_FREES == 2.
@@ -202,36 +156,19 @@ fn vector_nested_struct_vector_string_drop_recurses() {
     );
 }
 
-/// T5 (ADR-0082 Slice C, F4): SUPERSEDES the former `hashmap_struct_value_
-/// refused_at_jit` — Slice C deliberately OPENS `insert` for a Struct/Enum
-/// VALUE (see `hashmap_struct_value_insert_drop_frees_string_field` in
-/// `typed_hashmap_counting.rs` for the new positive coverage), so the old
-/// assertion ("insert refuses a Struct value") is now false BY DESIGN, not a
-/// regression. `remove` is a read/move-out site that stays behind the K+V
-/// `refuse_hashmap_aggregate_kv` guard (F4 keeps 3 sites — remove×2, get-
-/// family×1 — on the full K+V refuse; only alloc+insert were nới for VALUE).
-/// Renamed + re-targeted per LUẬT 3 (repurposing authorized by the Slice C
-/// Work Order; O/G re-verify independently). Poison: remove the
-/// `refuse_hashmap_aggregate_kv` guard at the `remove` call-site → this
-/// compiles → the test's `is_err` flips.
-#[test]
-fn hashmap_struct_value_remove_refused_at_jit() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let err = compile_expect_refuse(
-        "struct User { name: String }\n\
-         function main() -> Integer = {\n\
-         \x20   let mutable m: HashMap<Integer, User> = hashmap_new();\n\
-         \x20   let u = User { name: \"x\" };\n\
-         \x20   m = insert(m, 1, u);\n\
-         \x20   let r = remove(m, 1);\n\
-         \x20   return 0;\n\
-         }",
-    );
-    assert!(
-        err.contains("Slice C") || err.contains("aggregate"),
-        "HashMap<_,Struct> remove must refuse with the Slice-C boundary message, got: {err}"
-    );
-}
+// T5 (ADR-0082 Slice C, F4): `hashmap_struct_value_remove_refused_at_jit`
+// lived here — SUPERSEDED AGAIN, this time by Slice D-2 (2026-07-11): D-2
+// deliberately OPENS `remove` for a Struct/Enum VALUE too (the old
+// assertion, "remove refuses a Struct value", is false BY DESIGN a second
+// time). Positive coverage moved to `typed_hashmap_counting.rs`
+// (`hashmap_struct_value_remove_then_drop_no_double_free` and siblings —
+// real-allocator + state-gate GATE-A/B teeth). The `compile_expect_refuse`
+// helper this test was the sole caller of is deleted with it (LUẬT 3 — no
+// orphaned dead code). KEY-aggregate remove stays refused, but is
+// unreachable from valid SOURCE (E1048 at the type annotation, same
+// boundary as alloc/insert) — its teeth is hand-built MIR:
+// `typed_hashmap_counting.rs::hashmap_struct_key_remove_refused_at_jit`
+// (new, filling a gap this source-level test never actually covered).
 
 // ─────────────────────────────────────────────────────────────────────────
 // ADR-0082 B-α Slice B (Vector<Enum> push+drop) — AM3 teeth (Mentor O).

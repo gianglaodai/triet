@@ -1,0 +1,19 @@
+// EXPECT: 0
+// ADR-0082 B-α Slice D-2 — T9 8B-path analog of 343.
+// `Wrapper{v:Vector<String>}` (total_size==8) rides the scalar-return T9
+// path — same field-offset hazard as `vector_pop`'s D-1b Wrapper sibling,
+// now for `HashMap<Integer,Wrapper>` remove.
+struct Wrapper { v: Vector<String> }
+
+function main() -> Integer {
+    let mutable inner: Vector<String> = vector_new();
+    inner = push(inner, "zz");
+    let w = Wrapper { v: inner };
+    let mutable m: HashMap<Integer, Wrapper> = hashmap_new();
+    m = insert(m, 1, w);
+    let out = remove(m, 1);
+    return match out {
+        ~+ popped => 0,
+        ~0 => 99,
+    };
+}
