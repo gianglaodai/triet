@@ -1,0 +1,24 @@
+// EXPECT: 42
+// ADR-0083 §3 — CONTENT hash/eq of a String-leaf struct key through the
+// JIT-emitted walker. `KStr{name:String}` key: insert with name="alice", then
+// `get` with a SECOND "alice" literal (a DIFFERENT String allocation, same
+// content). The walker hashes/compares CONTENT (via __triet_string_hash /
+// __triet_string_eq on {ptr,len}), NOT the pointer → HIT (42).
+// Poison (RED): make the String-leaf EQ walker compare pointer identity
+// (`pa == pb`) instead of `__triet_string_eq` content-compare → the two
+// distinct allocations compare unequal → MISS (-1). This is the load-bearing
+// content-vs-identity tooth (verified: 353 → -1).
+// NOTE (honesty): the HASH walker's content-vs-identity choice is NOT tooth-
+// able by a functional roundtrip — the allocator's 16-byte alignment masks the
+// low bits, so a pointer-hash and a content-hash land on the SAME bucket for
+// any `cap <= 16`; the entry is still found via EQ. Correctness rides on EQ,
+// not on hash distribution — so the EQ poison above is the real tooth.
+struct KStr { name: String }
+function main() -> Integer = {
+    let m: HashMap<KStr, Integer> = hashmap_new();
+    let k1 = KStr { name: "alice" };
+    let m2 = insert(m, k1, 42);
+    let k2 = KStr { name: "alice" };
+    let r = get(&0 m2, k2);
+    return match r { ~+ v => { v } ~0 => { -1 } };
+}

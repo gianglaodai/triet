@@ -1187,6 +1187,40 @@ impl Checker<'_> {
             }
         }
 
+        // ADR-0083 §5: struct-key HashMap `get`/`contains`. The monomorphic
+        // overload table cannot enumerate user structs, so match the key
+        // STRUCTURALLY here: arg[0] is `HashMap<K,V>` or `&0 HashMap<K,V>` with
+        // `K` a hashable Struct (`is_hashable_key`), arg[1] is that same `K`.
+        // Mirrors the generic `insert`/`remove` path (which already accept
+        // struct keys) for the read ops that live in the overload table.
+        if matches!(name, "get" | "contains") && arg_tys.len() == 2 {
+            let (map_ty, is_ref) = match &arg_tys[0] {
+                Type::Reference(ReferenceForm::BorrowReadOnly, inner) => (inner.as_ref(), true),
+                other => (other, false),
+            };
+            if let Type::HashMap(k, v) = map_ty
+                && matches!(k.as_ref(), Type::UserStruct { .. })
+                && k.is_hashable_key()
+                && k.matches(&arg_tys[1])
+            {
+                if name == "contains" {
+                    return Type::Trilean { refined: true };
+                }
+                // `get`: an owned map with a heap value was already refused by
+                // the heap-violation guard above, so a heap `V` reaching here
+                // is always the `&0`-borrow (get_ref) form → `(&0 V)?`. A scalar
+                // `V` returns by value → `V?`.
+                if is_ref && v.is_heap() {
+                    let ref_v = Type::Reference(
+                        ReferenceForm::BorrowReadOnly,
+                        Box::new(v.as_ref().clone()),
+                    );
+                    return Type::Nullable(Box::new(ref_v));
+                }
+                return Type::Nullable(Box::new(v.as_ref().clone()));
+            }
+        }
+
         for candidate in candidates {
             if let Type::Function {
                 type_parameters,

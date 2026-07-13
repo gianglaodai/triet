@@ -86,6 +86,9 @@ fn counting_shims() -> Vec<ShimSymbol> {
             "__triet_string_from_bytes",
             mir_lower::__triet_string_from_bytes,
         ),
+        // ADR-0083: struct-key hash/eq walkers reference these for String leaves.
+        ShimSymbol::fn_2_1("__triet_string_hash", mir_lower::__triet_string_hash),
+        ShimSymbol::fn_4_1("__triet_string_eq", mir_lower::__triet_string_eq),
         ShimSymbol::fn_2_0("__triet_string_free", __lock_str_free),
     ]
 }
@@ -117,6 +120,33 @@ fn vector_field_frees_once() {
         VEC_FREES.load(Ordering::SeqCst),
         1,
         "ADR-0066 1d: struct Vector field must free exactly once on Drop"
+    );
+}
+
+/// ★ ADR-0083 §4 — KEY-DROP COUNTING (G-MANDATE, permanent): a `HashMap<KStr,
+/// Integer>` key `KStr{name:String}` carries a String leaf. On map Drop the
+/// JIT-emitted key-free loop must recurse into the struct key and free its
+/// String leaf EXACTLY once. `insert` consumes (Moves) the key; M3 tombstones
+/// the local so its own Drop is a no-op → the sole free is the map's. Poison
+/// (RED): change `emit_hashmap_free_value`'s key gate back to
+/// `key_ty.is_any_heap()` (false for a Struct) → the key-free loop is never
+/// emitted → the String leaf LEAKS → count 0.
+#[test]
+fn hashmap_struct_key_string_leaf_frees_once() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("struct KStr { name: String }\n\
+         function main() -> Integer = {\n\
+         \x20   let m: HashMap<KStr, Integer> = hashmap_new();\n\
+         \x20   let k = KStr { name: \"alice\" };\n\
+         \x20   let m2 = insert(m, k, 42);\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0);
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        1,
+        "ADR-0083: struct-key String leaf must free exactly once on map Drop (key-free loop)"
     );
 }
 

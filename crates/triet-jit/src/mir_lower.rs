@@ -631,7 +631,9 @@ impl JitContext {
     /// `__triet_string_hash` of a String leaf's `{ptr,len}`). Returns the RAW
     /// hash; the shim maps it into `cap`. Content-deterministic — two keys with
     /// equal content (String leaves at different allocations) hash identically.
-    #[allow(clippy::cast_possible_wrap)]
+    // FNV consts (`items_after_statements`) sit next to their use for clarity;
+    // `cast_possible_wrap` is the intended u64→i64 reinterpret of the FNV basis.
+    #[allow(clippy::cast_possible_wrap, clippy::items_after_statements)]
     fn build_key_hash_walker(
         &mut self,
         struct_name: &str,
@@ -1565,6 +1567,7 @@ impl JitContext {
     /// would either skip a non-24 struct key (leak) or misroute a 24B struct
     /// as String. The compile-time `key_ty` is the sole discriminator.
     /// Sentinel/no-op R4 on a dead buffer pointer.
+    #[allow(clippy::similar_names)] // key_off / key_cell / key_eff are distinct roles
     fn emit_hashmap_key_free_loop(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
@@ -5354,6 +5357,9 @@ const fn key_is_by_ptr(hash_fn: i64, key_stride: usize) -> bool {
 /// ADR-0083 §2: call a JIT-emitted key-hash walker (`extern "C" fn(*const u8)
 /// -> i64`, raw FNV) through its address stored in the header.
 #[allow(unsafe_code)]
+// `hash_fn` is a real code address the JIT stored via `func_addr` — the
+// `as usize` never truncates/sign-flips (host is 64-bit, pointer-width i64).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 unsafe fn call_hash_fn(hash_fn: i64, key_ptr: *const u8) -> i64 {
     let f: extern "C" fn(*const u8) -> i64 = unsafe { std::mem::transmute(hash_fn as usize) };
     f(key_ptr)
@@ -5362,6 +5368,7 @@ unsafe fn call_hash_fn(hash_fn: i64, key_ptr: *const u8) -> i64 {
 /// ADR-0083 §2: call a JIT-emitted key-eq walker (`extern "C" fn(*const u8,
 /// *const u8) -> i64`, 1=eq/0=ne) through its address stored in the header.
 #[allow(unsafe_code)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 unsafe fn call_eq_fn(eq_fn: i64, slot_key_ptr: *const u8, probe_key_ptr: *const u8) -> bool {
     let f: extern "C" fn(*const u8, *const u8) -> i64 =
         unsafe { std::mem::transmute(eq_fn as usize) };
@@ -5609,7 +5616,8 @@ pub extern "C" fn __triet_hashmap_len(ptr: i64) -> i64 {
     clippy::cast_possible_wrap,
     clippy::cast_ptr_alignment,
     clippy::ptr_as_ptr,
-    clippy::similar_names
+    clippy::similar_names,
+    clippy::too_many_lines
 )]
 #[unsafe(no_mangle)]
 pub extern "C" fn __triet_hashmap_insert(map: i64, k: i64, v: i64, is_update_out: i64) -> i64 {
@@ -7079,6 +7087,7 @@ mod tests {
     /// (taken via `func_addr`) round-trips through a C shim and back into
     /// JIT-compiled code — the exact mechanism the key-hash/eq walkers use.
     #[allow(unsafe_code)]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     extern "C" fn __spike_call_fnptr(fnptr: i64) -> i64 {
         let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(fnptr as usize) };
         f()
@@ -8572,6 +8581,146 @@ mod tests {
             "ADR-0080 tooth #1: map Drop must free the resident String key \
              exactly once via the JIT-emitted key-free loop"
         );
+    }
+
+    // ── ADR-0083 stand-in key walkers (mimic the JIT-emitted walker ABI) ──
+    // These stand for `emit_struct_key_hash`/`_eq` output so the SHIM dispatch
+    // (§6 fnptr-first) can be tested deterministically without the full JIT
+    // pipeline. Same contract: hash(*const u8) -> raw i64; eq(a,b) -> 1/0.
+
+    /// Hash walker for `struct K3 { a, b, c: Integer }` (24B, 3 i64 words).
+    #[allow(unsafe_code)]
+    #[allow(
+        clippy::ptr_as_ptr,
+        clippy::cast_ptr_alignment,
+        clippy::cast_possible_wrap
+    )]
+    extern "C" fn k3_int_hash(ptr: *const u8) -> i64 {
+        let mut acc = 0xcbf2_9ce4_8422_2325u64 as i64;
+        for i in 0..3 {
+            let v = unsafe { (ptr as *const i64).add(i).read_unaligned() };
+            acc = (acc ^ v).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        acc
+    }
+
+    /// Eq walker for `struct K3 { a, b, c: Integer }`.
+    #[allow(unsafe_code)]
+    #[allow(clippy::ptr_as_ptr, clippy::cast_ptr_alignment)]
+    extern "C" fn k3_int_eq(a: *const u8, b: *const u8) -> i64 {
+        for i in 0..3 {
+            let va = unsafe { (a as *const i64).add(i).read_unaligned() };
+            let vb = unsafe { (b as *const i64).add(i).read_unaligned() };
+            if va != vb {
+                return 0;
+            }
+        }
+        1
+    }
+
+    /// Hash walker for `struct KStr { name: String }` (24B fat `{ptr,len,cap}`)
+    /// — content hash via `__triet_string_hash({ptr,len})`.
+    #[allow(unsafe_code)]
+    #[allow(clippy::ptr_as_ptr, clippy::cast_ptr_alignment)]
+    extern "C" fn kstr_hash(ptr: *const u8) -> i64 {
+        let p = unsafe { (ptr as *const i64).read_unaligned() };
+        let l = unsafe { (ptr as *const i64).add(1).read_unaligned() };
+        super::__triet_string_hash(p, l)
+    }
+
+    /// Eq walker for `struct KStr { name: String }` — content compare.
+    #[allow(unsafe_code)]
+    #[allow(clippy::ptr_as_ptr, clippy::cast_ptr_alignment)]
+    extern "C" fn kstr_eq(a: *const u8, b: *const u8) -> i64 {
+        let pa = unsafe { (a as *const i64).read_unaligned() };
+        let la = unsafe { (a as *const i64).add(1).read_unaligned() };
+        let pb = unsafe { (b as *const i64).read_unaligned() };
+        let lb = unsafe { (b as *const i64).add(1).read_unaligned() };
+        super::__triet_string_eq(pa, la, pb, lb)
+    }
+
+    /// ★ ADR-0083 G-MANDATE COLLISION-TRAP: a `struct K3{a,b,c:Integer}` is
+    /// EXACTLY 24 bytes — the SAME `key_stride` as a String key. §6 fnptr-first
+    /// dispatch MUST route it through the walker (`hash_fn != NULL`), NOT the
+    /// 24-byte String branch. Under the String branch the shim would read the
+    /// key's first two i64 words as `{ptr, len}` and deref `ptr` (= `7`) →
+    /// SIGSEGV/SIGABRT. Poison: reverse the dispatch order in `hashmap_key_hash`
+    /// / `hashmap_key_eq` (stride check BEFORE the fnptr check) → this test
+    /// SIGABRTs/corrupts (the blood G demands).
+    #[test]
+    #[allow(unsafe_code)]
+    #[allow(
+        clippy::fn_to_numeric_cast_any,
+        clippy::fn_to_numeric_cast,
+        clippy::ptr_as_ptr
+    )]
+    fn adr0083_collision_trap_struct24b_roundtrip() {
+        let hf = k3_int_hash as *const () as i64;
+        let ef = k3_int_eq as *const () as i64;
+        let m = super::__triet_hashmap_alloc(0, 4, 24, 8, hf, ef);
+        let key = [7i64, 8, 9];
+        let m = super::__triet_hashmap_insert(m, key.as_ptr() as i64, 42, 0);
+        assert_eq!(
+            super::__triet_hashmap_get(m, key.as_ptr() as i64),
+            42,
+            "24B struct key must round-trip via its walker, NOT the String branch"
+        );
+        // A different-content 24B struct key must MISS (walker eq distinguishes).
+        let other = [7i64, 8, 10];
+        assert_eq!(
+            super::__triet_hashmap_get(m, other.as_ptr() as i64),
+            triet_mir::NULL_SENTINEL,
+            "distinct 24B struct key must not collide"
+        );
+        super::__triet_hashmap_free(m);
+    }
+
+    /// ADR-0083 content hash/eq: two `struct KStr{name:String}` keys with EQUAL
+    /// CONTENT but DIFFERENT String allocations must collide (the walker
+    /// compares content, not the pointer). Insert with one, `get` with the
+    /// other → HIT.
+    /// Poison (RED): make `kstr_eq` compare pointer identity instead of
+    /// content, or reverse the §6 dispatch order → the second key misses →
+    /// assert-hit RED. NOTE: poisoning `kstr_hash` to identity-on-pointer does
+    /// NOT reliably red at this small `cap=4` — 16-byte allocator alignment
+    /// masks the low bits so pointer- and content-hash share a bucket for
+    /// `cap<=16`; correctness rides on EQ, not hash. (The large-`cap` ADR-0080
+    /// tooth #5 below is the non-vacuous hash-content check.)
+    #[test]
+    #[allow(unsafe_code, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::fn_to_numeric_cast_any,
+        clippy::fn_to_numeric_cast,
+        clippy::ptr_as_ptr
+    )]
+    fn adr0083_struct_string_key_content_collide() {
+        let s1 = "alice";
+        let s2 = String::from("alice"); // distinct backing allocation, same content
+        let p1 = super::__triet_string_from_bytes(s1.as_ptr() as i64, s1.len() as i64);
+        let p2 = super::__triet_string_from_bytes(s2.as_ptr() as i64, s2.len() as i64);
+        assert_ne!(p1, p2, "test setup: distinct String allocations expected");
+        // A `struct KStr{ name: String }` key's 24B image IS the String fat
+        // `{ptr,len,cap}` (single field @0).
+        let key1 = [p1, s1.len() as i64, s1.len() as i64];
+        let key2 = [p2, s2.len() as i64, s2.len() as i64];
+
+        let m = super::__triet_hashmap_alloc(
+            0,
+            4,
+            24,
+            8,
+            kstr_hash as *const () as i64,
+            kstr_eq as *const () as i64,
+        );
+        let m = super::__triet_hashmap_insert(m, key1.as_ptr() as i64, 99, 0);
+        assert_eq!(
+            super::__triet_hashmap_get(m, key2.as_ptr() as i64),
+            99,
+            "equal-content struct keys (different String allocs) must collide (content hash/eq)"
+        );
+        super::__triet_hashmap_free(m);
+        super::__triet_string_free(p1, s1.len() as i64);
+        super::__triet_string_free(p2, s2.len() as i64);
     }
 
     /// ADR-0080 tooth #2 (Author BẮT BUỘC): inserting a dup-content String

@@ -130,6 +130,11 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             triet_jit::mir_lower::__triet_string_concat,
         ),
         ShimSymbol::fn_4_1("__triet_string_eq", triet_jit::mir_lower::__triet_string_eq),
+        // ADR-0083: struct-key hash walkers with a String leaf call this.
+        ShimSymbol::fn_2_1(
+            "__triet_string_hash",
+            triet_jit::mir_lower::__triet_string_hash,
+        ),
         ShimSymbol::fn_1_1(
             "__triet_string_len",
             triet_jit::mir_lower::__triet_string_len,
@@ -163,7 +168,7 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_vector_pop_front",
             triet_jit::mir_lower::__triet_vector_pop_front,
         ),
-        ShimSymbol::fn_4_1(
+        ShimSymbol::fn_6_1(
             "__triet_hashmap_alloc",
             triet_jit::mir_lower::__triet_hashmap_alloc,
         ),

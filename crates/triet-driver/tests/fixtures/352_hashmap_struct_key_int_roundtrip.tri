@@ -1,0 +1,21 @@
+// EXPECT: 42007
+// ADR-0083 §3/§6 — struct-key HashMap round-trip through the JIT-emitted key
+// hash/eq walkers (NOT stand-in Rust walkers). Key `KP{a,b:Integer}` (16B,
+// stride>8) MUST route through its walker via the fnptr-first §6 dispatch; a
+// stride-first dispatch would read {a,b} as {ptr,len} and deref → crash.
+// insert KP{7,9}=42 → get equal key HIT (42); get KP{7,10} MISS (~0 → 7).
+// Poison (RED): reverse §6 dispatch order (stride before fnptr) → crash; or
+// invert the eq walker → HIT becomes MISS (a=-1) → total changes.
+struct KP { a: Integer, b: Integer }
+function main() -> Integer = {
+    let m: HashMap<KP, Integer> = hashmap_new();
+    let k = KP { a: 7, b: 9 };
+    let m2 = insert(m, k, 42);
+    let hit = KP { a: 7, b: 9 };
+    let miss = KP { a: 7, b: 10 };
+    let rh = get(&0 m2, hit);
+    let rm = get(&0 m2, miss);
+    let a = match rh { ~+ v => { v } ~0 => { -1 } };
+    let b = match rm { ~+ v => { v } ~0 => { 7 } };
+    return a * 1000 + b;
+}
