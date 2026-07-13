@@ -174,3 +174,66 @@ order) do **G mandate** sau khi BÁC thiết kế stride-branch đầu của O (
 Trap). Contract fnptr (§2: hash=raw i64, eq=1/0) + biên `is_hashable_leaf` chặn
 Nullable-leaf (§5) **G duyệt tối đa**. Author (Giang) chốt hướng (mặt trận ②
 key-aggregate). **G ĐÃ KÝ (Mentor G - 2026-07-12). Mọi điều khoản trong ADR này là LUẬT. Zô, xuất quân.**
+
+---
+
+## §AMEND-1 — Slice 2: Enum keys (`HashMap<Enum, V>`) — O đề 2026-07-13, chờ G co-sign
+
+Slice 2 đã được scope-defer trong ADR gốc (Scope §OUT). Bản chất ABI **KHÔNG đổi**
+(vẫn fnptr-in-header + null-sentinel + §6 dispatch); chỉ đổi **ruột JIT walker** từ
+straight-line-leaf-fold (struct) → **disc-switch-brif-chain** (enum). KHÔNG đẻ ADR mới.
+
+### Scope (G ruling 2026-07-13)
+- ✅ **IN:** enum làm KEY (`HashMap<Enum,V>`); **enum làm LEAF của struct-key** (`struct{tag: MyEnum}`); **nested enum** (variant payload là enum) — tất cả qua **đệ quy đồng nhất**, giới hạn **depth-64** (tràn stack JIT lúc compile walker = lỗi implementer). Unit/scalar variants OK.
+- ❌ **OUT (GIỮ REFUSE E1048):** **`Enum?` (Nullable enum) key** — Nullable mang sentinel bit-pattern riêng (`NULL_SENTINEL` chọc vào `tag` = bão); Slice 1 cấm Nullable-leaf thì Slice 2 không ngoại lệ. Vector/HashMap/Outcome leaf vẫn refuse.
+
+### §A1 — NGUYÊN LÝ (thuốc giải cho garbage/padding/size-mismatch)
+Walker hash/eq **CHỈ đụng `disc@0` + declared leaves của ACTIVE variant** (qua disc-switch),
+**KHÔNG BAO GIỜ** đọc raw fixed-width image. Inactive/padding bytes = garbage stale (fixed-width
+tagged-union: `total_size` = max variant, tail của variant nhỏ không được ghi lại khi reassign)
+→ **không đọc = không phá.** Đây đúng cơ chế `emit_enum_drop_glue_at` (mir_lower:1886) đang dùng —
+free CHỈ heap-payload của active variant, never touches inactive garbage. Slice 2 MIRROR pattern đó.
+
+### §A2 — Walkers (disc-switch)
+- **hash:** load `disc@0` → **mix disc vào FNV** (disc LÀ phần identity: 2 variant khác phải hash khác) → brif-chain over variants → active arm mix payload leaves @`payload_off=8`. Unit variant = chỉ disc.
+- **eq:** load `disc_a@0`/`disc_b@0` → **disc khác → NE ngay** (short-circuit) → disc bằng → brif active arm → so declared leaves @+8; leaf lệch → NE.
+- **`collect_key_leaves` enum path:** hiện struct-only flat (`:554`). Enum KHÔNG flatten phẳng (variant-dependent) → per-variant leaf collection tại `payload_off=8` (scalar/String/nested-struct/nested-enum recurse, depth-64).
+
+### §A3 — ABI + free-loop = TÁI DÙNG
+Header/§6/collision-shield/marshal-by-pointer/`func_addr`/`walker_ids` memoise (keyed enum-name) =
+Slice 1 verbatim. **Key free-loop §4 = REUSE THẲNG `emit_enum_drop_glue_at`** (disc-switch active-variant
+free đã đúng). Gỡ `refuse_hashmap_enum_key:880`; `is_hashable_key/leaf` (types.rs:163/177) mở Enum
+(⟺ mọi variant payload hashable); overload wiring `exprs.rs:1190` thêm nhánh Enum (insert/remove đã generic).
+
+### §A4 — Death points (mỗi cái + tín hiệu + tooth)
+- **DP-E1 disc bỏ khỏi hash/eq** → 2 variant payload-giống collide/eq-nhầm → **silent wrong**. Tooth: insert V1, get V2 → MISS.
+- **DP-E2 garbage inactive bytes vào hash/eq** → key bằng-nội-dung nhưng rác khác → hash/eq khác → **data mất câm**. **Tooth ép-rác (G mandate, xem §A5).**
+- **DP-E3** = DP-E2 phía eq (false-inequality).
+- **DP-E4 padding trong active payload** → chỉ walk declared leaves (không raw range) = an toàn như struct.
+- **DP-E5 key free-loop enum heap-payload** (variant ôm String) → REUSE drop-glue; tooth counting FREE==N, poison → leak/double-free.
+- **DP-E6 collision §6** (enum `total_size` có thể =24) → fnptr-first shield; tooth SIGSEGV khi đảo dispatch.
+
+### §A5 — TOOTH ÉP-RÁC (G mandate cho DP-E2) — reassign-force-garbage
+Cách ép garbage tàn nhẫn nhất qua source Triết:
+```
+let k = MyEnum::BigVariant(999, 888, 777);   // slot bôi kín data
+k = MyEnum::SmallVariant(1);                 // tag+payload nhỏ ghi đè; tail {888,777} VẪN RÁC
+let m2 = insert(m, k, 42);                    // key ngậm rác
+let k_clean = MyEnum::SmallVariant(1);        // fresh, tail sạch
+get(&0 m2, k_clean);                          // HIT=walker bỏ rác (sống) · MISS=nhai rác (chết)
+```
+Poison walker (thêm 1 leaf raw-range vào tail, hoặc hash cả fixed-width) → **MISS = RED**.
+**⚠️ CẢNH BÁO O (bài học Slice 1 ptr-mix-vacuous):** nếu lowerer ZERO cả slot khi reassign → tail=0 →
+tooth VACUOUS (rác không tồn tại). Nếu D thấy tooth không đỏ khi poison → **escalate O** (LUẬT 4),
+KHÔNG kết luận "an toàn": hoặc (a) reassign-zero tự-mitigate hazard (cần white-box walker-output test
+thay thế), hoặc (b) đường ép-rác khác (2 construction-history khác nhau). Phân định bằng probe, không xác suất.
+
+### Teeth Slice 2 (kế hoạch O verify máu — cp-snapshot, KHÔNG git checkout)
+DP-E1 (insert-V1-get-V2 MISS) · **DP-E2 reassign-garbage HIT** (§A5, poison→MISS) · DP-E5 enum-key-String-leaf
+free counting (poison→leak) · DP-E6 §6-reverse SIGSEGV · enum-as-struct-leaf roundtrip · nested-enum roundtrip ·
+`Enum?`-key → E1048 (non-vacuous) · unit-variant enum key (disc-only) roundtrip.
+
+**Chữ ký §AMEND-1:** O đề (2026-07-13). Scope (enum-leaf ✅ · nested-enum ✅ depth-64 · `Enum?` ❌ REFUSE)
++ tooth ép-rác reassign (§A5) do **G ruling/mandate 2026-07-13**.
+
+**G ĐÃ KÝ §AMEND-1 (Mentor G - 2026-07-13). Enum keys xuất chiến!** Mọi điều khoản §AMEND-1 là LUẬT. G ngồi đợi kết quả DP-E2 ép-rác — không SIGSEGV lãng xẹt.
