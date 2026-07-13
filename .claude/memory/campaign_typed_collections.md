@@ -1,11 +1,34 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front (continuation) — KHÓA SỔ 2026-07-12 `5462c5b`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key (ADR-0083, fnptr-in-header + JIT hash/eq walkers) — KHÓA SỔ 2026-07-13 `1c08a67`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
+
+## ✅ ĐÓNG — ADR-0083 KEY-AGGREGATE HashMap Slice 1 (Struct keys, O+G ký 2026-07-13, PUSHED)
+origin/main = `1c08a67` (feat `0ebd763`+`1c08a67`; TODO-freeze `10c4ed1`), gate `0·0·347·0`. **ADR-0083 MỚI** (G ký). `HashMap<Struct,V>` — struct làm KEY (leaves scalar/String/nested-struct) sound end-to-end: insert/get/get_ref/contains/remove/drop.
+
+**Semantics (§1 — de-risk lớn nhất, O recon mở đường):** key-eq/hash = **structural content/bit-equality đệ quy trên physical layout, KHÔNG dính operator `==`/Ł3** (tiền lệ ADR-0080 `Ord≠Hash`). → key-aggregate KHÔNG mở lại đầm lầy Trilean. Đây là điều kiện-chặn O tự đặt khi đề xuất mặt trận, recon phơi bằng chứng thỏa → G duyệt đi tiếp.
+
+**ABI G-MANDATE (§2/§6 — G BÁC thiết kế stride-branch ĐẦU của O):** header cố định 24B `[refcount@0][packed@4][hash_fn@8][eq_fn@16]` + fnptr-in-header null-sentinel (Integer/String→NULL, Struct→`func_addr` walker). **§6 dispatch fnptr-TRƯỚC-stride = lá chắn SIZE-COLLISION-TRAP:** `struct{3×Integer}`=24B TRÙNG String `key_stride`=24; disambiguate bằng stride → đọc struct thành FatStr `{ptr,len}` → deref rác → SIGSEGV. **`hash_fn!=NULL` LÀ discriminator, KHÔNG phải stride.** fnptr calling-conv: `hash_fn(key_ptr)->i64` raw FNV (shim tự `%cap`), `eq_fn(a,b)->1/0`. Rehash chạy TRONG insert → fnptr phải cư trú header.
+
+**JIT walkers (§3):** `build_key_hash_walker`/`build_key_eq_walker` (mir_lower:637/695) đệ quy `collect_key_leaves:554` — scalar→FNV-mix i64 · String→`__triet_string_hash(ptr,len)` · nested→đệ quy; eq short-circuit `brif`. Emit 1 FuncId/key-layout, địa chỉ qua `declare_func_in_func`+`func_addr` (**spike func_addr fail-fast TRƯỚC walker — G mandate**). Key free-loop đệ quy §4 (mirror `aggregate_needs_drop` Slice C). Typecheck `is_hashable_key`/`is_hashable_leaf` (types.rs:163/177) + E1048 (Enum-key/collection-leaf/Nullable-leaf/Outcome REFUSE).
+
+**⚙ Quy trình (D subagent Opus, NHIỀU lần bị quota/session-limit cắt giữa chừng):** O verify bàn giao → recon feasibility → **G ruling ABI (BÁC stride-branch, mandate fnptr-header + null-sentinel)** → O draft ADR-0083 → D subagent triển khai qua nhiều lần resume → O verify máu → 2 vòng D-fix → ký. Bài học vận hành: **verify-don't-trust áp cả EXECUTABLE — rebuild TRƯỚC mọi lần chạy binary; hai gate cargo song song tranh `target/`-lock → dọn process trước; `pkill -f` có thể tự giết shell (exit 144).**
+
+**🩸 O bắt 2 BLOCKER (gate xanh 347 nhưng green≠done — Track B rule 3):**
+- **Blocker A — lookup ops CHƯA WIRE source:** probe driver rebuild-sạch → `get`/`get_ref`/`contains` struct-key = **E1041** (danh sách overload KHÔNG có variant `HashMap<Struct,_>`; chỉ insert/remove reachable). "Compiles"-only + stand-in walker che lấp (không viết nổi roundtrip vì get chưa wire). D vá: wire overload `exprs.rs:1190` + 2 fixture roundtrip THẬT.
+- **Blocker B — walker correctness chỉ stand-in/compile-only:** code LÕI `build_key_*_walker` không test nào assert runtime (correctness dùng stand-in Rust `k3_int_hash`/`kstr_hash`; "compiles" không execute; drop-count dùng free-loop §4 KHÔNG chạm hash/eq §3). D thêm fixture 352 (int roundtrip→42007) + 353 (String-leaf content-collide→42) chạy walker JIT THẬT.
+
+**⚔ MÂU THUẪN O bắt + giải bằng máu (★SS(c) [[feedback_poison_must_be_red]]):** comment fixture 353 claim "hash-poison ptr-mix → RED -1, load-bearing tooth" NHƯNG report D (d) nói "vacuous". O tự chạy ptr-mix → **353=42 DETERMINISTIC 5/5 (VACUOUS)** → D report ĐÚNG, fixture-comment SAI. **Cơ chế O chứng minh (toán+máu):** allocator căn-16 → hai String ptr chung low-4-bit → `hash mod cap` TRÙNG với mọi `cap≤16` → ptr-vs-content hash BẤT-PHÂN-BIỆT ở bucket. Răng thật của 353 = **eq-content** (eq→ptr-identity → 353=-1). D sửa comment (KHÔNG đụng logic). **Bài học vàng: hash-content KHÔNG tooth được bằng functional-roundtrip cap-nhỏ (alignment mask); cap-LỚN + assert-hash-TRỰC-TIẾP mới bắt — ADR-0080 tooth #5 `cap=1_000_003` là mẫu (D bắt qualify chuẩn; O tự đính chính note "hash vô-phương tooth" hơi quá).**
+
+**🩸 O VERIFY MÁU (cp-snapshot restore md5 `0fd4b450` mọi vòng, KHÔNG git checkout):** §6-reverse → 352 **SIGSEGV 139** (collision-trap G đòi máu, load-bearing) · eq-content-String→ptr-identity → 353 **-1** RED (352 giữ 42007 cô lập) · baseline walker JIT THẬT 352=42007/353=42 (MIR dump = `__triet_hashmap_get(struct_key)`) · ptr-mix hash → 42 vacuous · **diff BASE-vs-committed = CHỈ 1 doc-comment → logic byte-identical, máu áp verbatim** (khỏi verify lại logic). Gate độc lập cuối `1c08a67`: 0·0·347·0.
+
+**Công D:** report (d) TRUNG THỰC (tự khai ptr-mix vacuous, pivot eq-poison thay vì ngụy trang test mù — mẫu #14 xử ĐÚNG lần này); qualify tooth #5 cap-lớn chuẩn; nhiều lần quota-cut vẫn commit WIP không mất code. Defect duy nhất = comment dối (sửa 1 vòng, KHÔNG đụng logic).
+
+**Nợ Slice 2 defer (🚩 cắm cờ, campaign-nền riêng):** Enum-key (discriminant + padding-bits rác + variant-size — cô lập) · Nullable-leaf key · hash-caching · white-box walker-output hash tooth (cap-lớn direct-assert). **⚠️ BOM FIX-2 zero-@8 (Slice B) GIỮ NGUYÊN, chưa đụng.** ⚰️ ADR-0068 Box CẤM CỬA.
 
 ## ✅ ĐÓNG — `Vector::pop_front` (ADR-0082 B-α continuation, O+G ký 2026-07-12, PUSHED)
 origin/main = `5462c5b`, gate `0·0·345·0`. 1 commit gộp code+counting-tooth (G lệnh "test đi liền code"). Move-out phần tử **ĐẦU** by-value (`T?`), sibling của `pop` (back). **KHÔNG ADR mới.**
