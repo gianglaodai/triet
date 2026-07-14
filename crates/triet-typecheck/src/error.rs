@@ -827,6 +827,35 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1049: `get()` on a `Vector<Agg>` / `HashMap<scalarK, Agg>` whose
+    /// aggregate element `Agg` (Struct/Enum) has a heap-allocated leaf —
+    /// ADR-0082 §AMEND-3. A bitwise copy-out would alias the container's
+    /// heap pointer (String/Vector/HashMap leaf), giving two independent
+    /// owners of one allocation — the container's later drop and the
+    /// copied-out local's later drop would both free it (double-free). A
+    /// Copy aggregate (no heap leaf, `is_copy_aggregate()`) is unaffected —
+    /// this only fires for a heap-bearing `Agg`. Distinct from E1047 (a
+    /// DIRECT heap element) and E1048 (an unsupported `HashMap` KEY type) —
+    /// the fix here is different (borrow, not move-out).
+    #[error("E1049: `get()` cannot return aggregate `{element}` by value — it has a heap leaf")]
+    #[diagnostic(
+        code(triet::typecheck::E1049),
+        help(
+            "E1049: `get(v, i)` returns an owned copy, but `{element}` has a \
+            heap-allocated leaf (String/Vector/HashMap field) — copying it out \
+            by value would alias the container's allocation with the copy, and \
+            both would free it later (double-free).\n\n\
+            [Fix] Use `get_ref(container, k)` to borrow the element instead."
+        )
+    )]
+    GetAggregateByValueRequiresClone {
+        /// The heap-bearing aggregate type that cannot be returned by value.
+        element: String,
+        /// Source location of the `get` call.
+        #[label("aggregate has a heap leaf — cannot copy by value, use `get_ref()`")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1053,6 +1082,7 @@ impl TypeError {
             | Self::NullableHasNoErrorState { span }
             | Self::GetHeapElementUnsupported { span, .. }
             | Self::UnsupportedHashMapKey { span, .. }
+            | Self::GetAggregateByValueRequiresClone { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),

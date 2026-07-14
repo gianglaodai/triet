@@ -1195,6 +1195,28 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             mutates_arg: Some(0),
             arg_consumes: &[false, false],
         }),
+        // ADR-0082 §AMEND-3: get-by-value COPY of a Copy-aggregate element
+        // (Struct/Enum, no heap leaf). Non-destructive — the element stays
+        // resident in the container (no tombstone, no free), a bitwise-
+        // identical copy lands in the dest local. Distinct MIR name from
+        // `__triet_vector_get_ref`/`__triet_hashmap_get_ref` (whose JIT
+        // implementation this reuses under a second registered symbol,
+        // `triet-driver/src/main.rs`) specifically so `returns_borrow_of`
+        // stays `None` here — get-by-value must NOT synthesize a
+        // PropagatedLoan (§AMEND-3.5): the returned value is owned, not a
+        // borrow of the container.
+        "__triet_vector_get_copy" => Some(BuiltinShimMeta {
+            name: "__triet_vector_get_copy",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_hashmap_get_copy" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_get_copy",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
         _ => None,
     }
 }

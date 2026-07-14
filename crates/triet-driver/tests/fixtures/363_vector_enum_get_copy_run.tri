@@ -1,0 +1,26 @@
+// EXPECT: 200
+// ADR-0082 §AMEND-3 — get-by-value on `Vector<Color>` (Copy enum, disc-only,
+// no heap payload). Proves the `enum_slots` branch of the copy-out (disc@0,
+// no tag word — the disc word IS the presence sentinel) round-trips the
+// REAL discriminant (Green=2), not garbage. `miss` proves not-found.
+// (`len(xs)` on a `Vector<Agg>` has no overload yet — pre-existing gap,
+// unrelated to this WO.)
+enum Color { Red, Green, Blue }
+
+function main() -> Integer {
+    let mutable xs: Vector<Color> = vector_new();
+    xs = push(xs, Color::Green);
+    xs = push(xs, Color::Blue);
+    let r0 = get(xs, 0);
+    let miss = get(xs, 5);
+    let a = match r0 {
+        ~+ c => match c {
+            Color::Red => 1,
+            Color::Green => 2,
+            Color::Blue => 3,
+        },
+        ~0 => -1,
+    };
+    let b = match miss { ~+ c => 1, ~0 => 0 };
+    return a * 100 + b * 10;
+}

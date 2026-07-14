@@ -1,0 +1,21 @@
+// EXPECT: 7900
+// ADR-0082 §AMEND-3 — end-to-end source `get(m,k)` on `HashMap<Integer,
+// Point>` (Copy struct value, scalar key). r and r_again both read key 1 —
+// a destructive get would make the SECOND read miss; both must HIT with the
+// SAME content, proving the value stays resident in the map. `miss` (absent
+// key) proves the not-found NULL_SENTINEL path. (`len(m)` on a
+// `HashMap<_,Agg>` has no overload yet — pre-existing gap, unrelated to
+// this WO — so non-destructiveness is proven by the repeat read alone.)
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Point> = hashmap_new();
+    m = insert(m, 1, Point { x: 7, y: 9 });
+    let r = get(m, 1);
+    let r_again = get(m, 1);
+    let miss = get(m, 2);
+    let a = match r { ~+ p => p.x, ~0 => -1 };
+    let b = match r_again { ~+ p => p.y, ~0 => -1 };
+    let c = match miss { ~+ p => 1, ~0 => 0 };
+    return a * 1000 + b * 100 + c * 10;
+}

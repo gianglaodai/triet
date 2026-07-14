@@ -224,6 +224,35 @@ impl Type {
         )
     }
 
+    /// ADR-0082 §AMEND-3.2 — is this a valid Copy-aggregate for `get()`
+    /// by-value (no heap leaf anywhere)? scalar (`Trit`/`Tryte`/`Integer`/
+    /// `Long`/`Trilean`) → Copy; `String`/`Vector`/`HashMap` → NOT Copy;
+    /// `UserStruct{fields}` → every field Copy, recursively; `UserEnum{variants}`
+    /// → every variant payload Copy, recursively; `Nullable(inner)` → Copy iff
+    /// `inner` Copy. Mirrors `MirType::is_copy` (`triet-mir/src/lib.rs`) field-
+    /// for-field — NOT the JIT's `aggregate_needs_drop` (which over-approximates
+    /// "needs drop" for a struct holding a pure-scalar Enum field, since
+    /// `collect_heap_leaves` pushes every Enum field as a leaf unconditionally).
+    /// That divergence is safe for get-by-value (an extra no-op drop-glue pass
+    /// on the copied-out dest, never a double-free) but the ADR's stated
+    /// invariant `is_copy_aggregate ≡ !aggregate_needs_drop` is not exact —
+    /// this predicate matches the semantically precise `MirType::is_copy`
+    /// instead. ⚠ Producer-consumer: the JIT's defense-in-depth guard for the
+    /// new `_get_copy` shims calls `MirType::is_copy(Some(body))` directly
+    /// (not a duplicate check) so the two can never drift.
+    #[must_use]
+    pub fn is_copy_aggregate(&self) -> bool {
+        match self {
+            Self::Trit | Self::Tryte | Self::Integer | Self::Long | Self::Trilean { .. } => true,
+            Self::UserStruct { fields, .. } => fields.iter().all(|(_, ft)| ft.is_copy_aggregate()),
+            Self::UserEnum { variants, .. } => variants
+                .iter()
+                .all(|(_, payload)| payload.as_ref().is_none_or(|p| p.is_copy_aggregate())),
+            Self::Nullable(inner) => inner.is_copy_aggregate(),
+            _ => false,
+        }
+    }
+
     /// Returns true if this is any Trilean (refined or not). Replaces
     /// the old unit-variant `matches!(t, Type::Trilean)` pattern.
     #[must_use]

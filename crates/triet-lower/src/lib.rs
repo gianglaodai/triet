@@ -2378,7 +2378,35 @@ fn lower_expr(
                     // type (which would need Nullable(Reference(...)) — unsupported
                     // by the MIR verifier/JIT repr campaign).
                     let is_heap_elem = elem_ty.is_any_heap();
-                    let (shim_name, dest_ty) = if is_borrow && is_heap_elem {
+                    // ADR-0082 §AMEND-3: a Struct/Enum element is a FAT
+                    // aggregate — `is_any_heap()` doesn't cover it (that
+                    // predicate is String/Vector/HashMap only), so without
+                    // this branch it would fall to the generic `else` below
+                    // and dispatch to the plain i64-return `__triet_vector_get`/
+                    // `__triet_hashmap_get` shim, which cannot marshal >8B.
+                    // Typecheck only lets a Struct/Enum element reach here when
+                    // it's Copy (`is_copy_aggregate`, E1049 otherwise refuses
+                    // heap-bearing ones) and only for the OWNED-container call
+                    // form (`get(v,i)`, not `get(&0 v,i)` — the typecheck arm
+                    // matches `arg_tys[0]` directly, no `Type::Reference` case)
+                    // — so `is_borrow` is not expected to be true here for an
+                    // aggregate element; routed identically either way since
+                    // the dedicated `_get_copy` shim is non-destructive regardless.
+                    let is_aggregate_elem =
+                        matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_));
+                    let (shim_name, dest_ty) = if is_aggregate_elem {
+                        let name = if base_ty.is_hashmap() {
+                            "__triet_hashmap_get_copy"
+                        } else if base_ty.is_vec() {
+                            "__triet_vector_get_copy"
+                        } else {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!("get() on type `{arg0_ty}` — expected Vector or HashMap"),
+                                expr_span,
+                            ));
+                        };
+                        (name, MirType::Nullable(Box::new(elem_ty)))
+                    } else if is_borrow && is_heap_elem {
                         let name = if base_ty.is_hashmap() {
                             "__triet_hashmap_get_ref"
                         } else if base_ty.is_vec() {

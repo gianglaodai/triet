@@ -1,0 +1,14 @@
+// ERROR: E1049
+// ADR-0082 §AMEND-3.1/3.3 — `get(v,i)` on `Vector<Tagged>` where `Tagged`
+// has a `String` leaf must REFUSE (E1049), not silently return a copy that
+// aliases the container's heap pointer. Non-vacuous: a plain `Vector<Point>`
+// (all-scalar struct) compiles fine (fixture 361) — only the heap-bearing
+// aggregate is refused.
+struct Tagged { name: String }
+
+function main() -> Integer {
+    let mutable xs: Vector<Tagged> = vector_new();
+    xs = push(xs, Tagged { name: "x" });
+    let r = get(xs, 0);
+    return 0;
+}

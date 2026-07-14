@@ -1,0 +1,21 @@
+// EXPECT: 42
+// ADR-0082 §AMEND-3 — get-by-value on a THIN (total_size==8) Copy struct
+// (`Id{value:Integer}`, a single scalar field). Symmetric to 363's thin-enum
+// coverage but exercises the OTHER generic post-call branch (`struct_slots`
+// non-String Nullable / T9 tag+value write, mir_lower.rs) instead of
+// `enum_slots` — both must correctly receive the shim's raw i64 return
+// (content-or-NULL_SENTINEL) directly, NOT re-dereferenced as a cell_ptr
+// (the stride<=8 vs stride>8 distinction that caused 363's original SIGSEGV
+// before the fat-only gate was added).
+struct Id { value: Integer }
+
+function main() -> Integer {
+    let mutable xs: Vector<Id> = vector_new();
+    xs = push(xs, Id { value: 42 });
+    xs = push(xs, Id { value: 7 });
+    let r0 = get(xs, 0);
+    let miss = get(xs, 99);
+    let a = match r0 { ~+ i => i.value, ~0 => -1 };
+    let b = match miss { ~+ i => 1, ~0 => 0 };
+    return a + b;
+}

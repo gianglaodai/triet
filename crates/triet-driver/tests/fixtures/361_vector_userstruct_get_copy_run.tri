@@ -1,0 +1,23 @@
+// EXPECT: 3300
+// ADR-0082 §AMEND-3 — end-to-end source `get(v,i)` on `Vector<Point>` (Copy
+// struct, no heap leaf). r0 and r0_again both read index 0 — a destructive
+// get (tombstone/free) would make the SECOND read miss (~0); both must HIT
+// with the SAME value, proving the element stays resident in the container.
+// `miss` (out-of-range index) proves the not-found NULL_SENTINEL path.
+// (`len(xs)` on a `Vector<Agg>` has no overload yet — pre-existing gap,
+// unrelated to this WO — so non-destructiveness is proven by the repeat
+// read alone, not an extra len() check.)
+struct Point { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let mutable xs: Vector<Point> = vector_new();
+    xs = push(xs, Point { x: 3, y: 1 });
+    xs = push(xs, Point { x: 1, y: 4 });
+    let r0 = get(xs, 0);
+    let r0_again = get(xs, 0);
+    let miss = get(xs, 99);
+    let a = match r0 { ~+ p => p.x, ~0 => -1 };
+    let b = match r0_again { ~+ p => p.x, ~0 => -1 };
+    let c = match miss { ~+ p => 1, ~0 => 0 };
+    return a * 1000 + b * 100 + c * 10;
+}

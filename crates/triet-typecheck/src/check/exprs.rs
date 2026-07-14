@@ -1203,6 +1203,14 @@ impl Checker<'_> {
                 && matches!(k.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. })
                 && k.is_hashable_key()
                 && k.matches(&arg_tys[1])
+                // ADR-0082 §AMEND-3 x ADR-0083: aggregate-KEY x aggregate-VALUE
+                // compose is explicitly deferred ("refuse rõ nếu lọt") — it has
+                // never been vetted end-to-end (the JIT's get-by-value copy-out
+                // path below assumes a scalar/String key marshal). Don't match
+                // here when V is itself a Struct/Enum; fall through to the
+                // generic NoMatchingOverload (E1041) below instead of silently
+                // returning a value this pipeline hasn't proven sound for.
+                && !matches!(v.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. })
             {
                 if name == "contains" {
                     return Type::Trilean { refined: true };
@@ -1219,6 +1227,39 @@ impl Checker<'_> {
                     return Type::Nullable(Box::new(ref_v));
                 }
                 return Type::Nullable(Box::new(v.as_ref().clone()));
+            }
+        }
+
+        // ADR-0082 §AMEND-3: Copy-aggregate get-by-value from `Vector<Agg>` or
+        // `HashMap<scalarK, Agg>` (Agg = UserStruct/UserEnum). Guarded so it
+        // cannot collide with the aggregate-KEY arm above: that arm requires
+        // `arg_tys[0]`'s KEY to be UserStruct/UserEnum, this arm requires the
+        // opposite (a scalar/non-aggregate key, or a bare Vector with no key
+        // at all) — the two conditions are mutually exclusive on the same
+        // call. Non-Copy (heap-bearing) `Agg` REFUSEs E1049 (§AMEND-3.1: a
+        // bitwise copy would alias the container's heap pointer).
+        if name == "get" && arg_tys.len() == 2 {
+            let element = match &arg_tys[0] {
+                Type::Vector(inner) => Some(inner.as_ref()),
+                Type::HashMap(k, v)
+                    if !matches!(k.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. }) =>
+                {
+                    Some(v.as_ref())
+                }
+                _ => None,
+            };
+            if let Some(element) = element
+                && matches!(element, Type::UserStruct { .. } | Type::UserEnum { .. })
+            {
+                if element.is_copy_aggregate() {
+                    return Type::Nullable(Box::new(element.clone()));
+                }
+                self.errors
+                    .push(TypeError::GetAggregateByValueRequiresClone {
+                        element: element.to_string(),
+                        span: span.clone(),
+                    });
+                return Type::Unknown;
             }
         }
 

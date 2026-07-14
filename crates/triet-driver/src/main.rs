@@ -166,6 +166,19 @@ fn main() -> ExitCode {
             "__triet_hashmap_get_ref",
             mir_lower::__triet_hashmap_get_ref,
         ),
+        // ADR-0082 §AMEND-3: get-by-value COPY shims for Copy-aggregate
+        // elements. Reuse the `_get_ref` Rust functions verbatim under a
+        // second registered symbol name (same locate-the-cell logic,
+        // returns cell_ptr/NULL_SENTINEL) — the JIT dispatch for THIS name
+        // additionally memcpy's `stride` bytes out at the call site (no
+        // Rust-side change). Kept as a distinct MIR name (not a literal
+        // reuse of "__triet_..._get_ref") so borrowck's `returns_borrow_of`
+        // stays `None` for get-by-value (see triet-mir builtin_shim_meta).
+        ShimSymbol::fn_2_1("__triet_vector_get_copy", mir_lower::__triet_vector_get_ref),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_copy",
+            mir_lower::__triet_hashmap_get_ref,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",

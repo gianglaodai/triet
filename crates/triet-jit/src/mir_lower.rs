@@ -3634,6 +3634,85 @@ impl JitContext {
                                     _ => false,
                                 }
                             };
+                        // ADR-0082 §AMEND-3: get-by-value COPY of a Copy-
+                        // aggregate element/value. The `_get_copy` callee is
+                        // always Struct/Enum-typed AND Copy (typecheck's
+                        // `is_copy_aggregate` gate refuses any heap-bearing
+                        // aggregate with E1049 — a scalar element routes
+                        // through the plain `_get` shim instead), but stride
+                        // is NOT always >8 — a Copy 8B-total struct (e.g.
+                        // `Id{value:Integer}`, a single scalar field —
+                        // fixture 366) or a disc-only enum (`Color`, no
+                        // payload — fixture 363) is exactly the SAME "T9"
+                        // shape `vector_pop`/`hashmap_remove` already special-
+                        // case. (An 8B struct wrapping a heap HANDLE, e.g.
+                        // `Wrapper{v:Vector<Integer>}`, is NOT Copy → E1049 at
+                        // typecheck → never reaches here — fixture 367.) This
+                        // matters here for a
+                        // DIFFERENT reason than pop's out_ptr convention:
+                        // `__triet_vector_get_ref`/`__triet_hashmap_get_ref`
+                        // (the shim this reuses) itself branches on
+                        // `stride <= 8` and returns the DEREFERENCED VALUE
+                        // (not a pointer) in that case (mir_lower.rs
+                        // `__triet_vector_get_ref` §AMEND-1 comment) — so a
+                        // thin get-copy call's i64 return must be written
+                        // DIRECTLY into the dest (the pre-existing generic
+                        // scalar-return/T9 path below), NOT re-dereferenced
+                        // as a cell_ptr by a copy loop (poison self-caught:
+                        // treating a thin return as a pointer segfaulted on
+                        // fixture 363, `Vector<Color>` get). Only fat
+                        // (`stride > 8`) get_copy calls take the new
+                        // load-loop branch.
+                        let get_copy_elem_stride: Option<i64> = if callee_name.as_str()
+                            == "__triet_vector_get_copy"
+                            || callee_name.as_str() == "__triet_hashmap_get_copy"
+                        {
+                            let mty = &body.local_decls[args[0].0].ty;
+                            let inner = match mty.nullable_payload().unwrap_or(mty) {
+                                MirType::Reference { inner, .. } => inner.as_ref(),
+                                other => other,
+                            };
+                            let elem = match inner {
+                                MirType::Vector(inner) => Some(inner.as_ref().clone()),
+                                MirType::HashMap(_, v) => Some(v.as_ref().clone()),
+                                _ => None,
+                            };
+                            match elem {
+                                Some(t) => {
+                                    // ADR-0082 §AMEND-3 (F3, defense-in-depth
+                                    // Rule #7): a heap-bearing (non-Copy)
+                                    // element reaching a `_get_copy` callee
+                                    // means typecheck's E1049 gate was
+                                    // bypassed — a bitwise copy-out would alias
+                                    // the container's heap pointer → double-
+                                    // free on drop. Refuse HERE (shared block,
+                                    // so BOTH the Vector and HashMap paths are
+                                    // covered symmetrically) rather than emit
+                                    // the unsound copy. Load-bearing only if
+                                    // the typecheck gate regresses; a Copy
+                                    // element (fixtures 361-363, 366) passes.
+                                    let eff = t.nullable_payload().unwrap_or(&t);
+                                    if !eff.is_copy(Some(body)) {
+                                        return Err(JitError::Unsupported(
+                                            "get()-by-value on a heap-bearing aggregate \
+                                             element reached the JIT — typecheck should \
+                                             have refused this (E1049); refusing \
+                                             defensively"
+                                                .into(),
+                                        ));
+                                    }
+                                    Some(Self::vector_elem_size(body, &t)?)
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let vector_get_copy_fat = callee_name.as_str() == "__triet_vector_get_copy"
+                            && get_copy_elem_stride.is_some_and(|s| s > 8);
+                        let hashmap_get_copy_fat = callee_name.as_str()
+                            == "__triet_hashmap_get_copy"
+                            && get_copy_elem_stride.is_some_and(|s| s > 8);
                         // ADR-0080 §AMEND-1: post-call registry-routed key frees.
                         // `insert`'s redundant incoming key (D.2) frees only when
                         // the shim signals an UPDATE (gated on the flag it wrote
@@ -4045,6 +4124,50 @@ impl JitContext {
                             let (key_val, _key_by_ptr) =
                                 self.key_marshal(builder, key_arg, key_stride)?;
                             vec![map_val, key_val]
+                        } else if callee_name.as_str() == "__triet_hashmap_get_copy" {
+                            // ADR-0082 §AMEND-3: same key-marshal convention as
+                            // get/get_ref/contains above, but a DIFFERENT
+                            // refuse: this shim EXISTS to return an aggregate
+                            // VALUE by copy, so `refuse_hashmap_aggregate_kv`
+                            // (which blanket-refuses any Struct/Enum `v`) must
+                            // NOT gate it. The heap-bearing (non-Copy) VALUE
+                            // defense (E1049-bypass → double-free) is handled
+                            // once, for both Vector and HashMap, in the shared
+                            // `get_copy_elem_stride` block above (F3). The
+                            // ONLY refuse specific to this arm is the
+                            // aggregate-KEY x aggregate-VALUE compose the WO
+                            // defers — an aggregate KEY reaching here would
+                            // need the key hash/eq walkers (ADR-0083) wired
+                            // into this new copy path, which is unvetted;
+                            // refuse clearly rather than run it.
+                            let key_stride = {
+                                let mty = &body.local_decls[args[0].0].ty;
+                                let inner = match mty.nullable_payload().unwrap_or(mty) {
+                                    MirType::Reference { inner, .. } => inner.as_ref(),
+                                    other => other,
+                                };
+                                match inner {
+                                    MirType::HashMap(k, _v) => {
+                                        let eff_k = k.nullable_payload().unwrap_or(k);
+                                        if matches!(eff_k, MirType::Struct(_) | MirType::Enum(_)) {
+                                            return Err(JitError::Unsupported(
+                                                "HashMap<aggregate-key, aggregate-value>: \
+                                                 get()-by-value composition is deferred \
+                                                 (ADR-0082 §AMEND-3 x ADR-0083) — not yet \
+                                                 vetted end-to-end"
+                                                    .into(),
+                                            ));
+                                        }
+                                        Self::vector_elem_size(body, k)?
+                                    }
+                                    _ => 8,
+                                }
+                            };
+                            let map_val = builder.use_var(self.var(args[0]));
+                            let key_arg = args[1];
+                            let (key_val, _key_by_ptr) =
+                                self.key_marshal(builder, key_arg, key_stride)?;
+                            vec![map_val, key_val]
                         } else if callee_name == "__triet_vector_pop"
                             || callee_name == "__triet_vector_pop_front"
                         {
@@ -4107,7 +4230,106 @@ impl JitContext {
                         // 1-return shims. Check has_return via BuiltinShimMeta existence
                         // (all registered shims with a return value are in the meta table).
                         // C6: concat returns void (callee writes dest slot via *mut FatStr).
-                        if vector_pop_fat || hashmap_remove_fat {
+                        if vector_get_copy_fat || hashmap_get_copy_fat {
+                            // ADR-0082 §AMEND-3: NON-destructive get-by-value
+                            // copy-out, FAT case only (stride > 8 — see the
+                            // `get_copy_elem_stride` comment above for why the
+                            // thin/T9 case must NOT take this branch). Unlike
+                            // `vector_pop`/`hashmap_remove`, the reused
+                            // `_get_ref` shim has NO out_ptr for the fat case
+                            // either — its i64 return IS the cell_ptr (or
+                            // NULL_SENTINEL) — so the byte-copy happens here in
+                            // Cranelift IR, not inside a Rust shim. `stride` is
+                            // compile-time-constant (INV-B-α 8B-granular) → the
+                            // loop is a straight-line unroll, no runtime length
+                            // check.
+                            let stride = get_copy_elem_stride.ok_or_else(|| {
+                                JitError::Unsupported(format!(
+                                    "{callee_name}: get-by-value on a non-Vector/HashMap \
+                                     arg type"
+                                ))
+                            })?;
+                            let cell_ptr = builder.inst_results(call_inst)[0];
+                            let sentinel = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+                            let is_null = builder.ins().icmp(IntCC::Equal, cell_ptr, sentinel);
+                            let present_bb = builder.create_block();
+                            let null_bb = builder.create_block();
+                            let merge_bb = builder.create_block();
+                            builder.ins().brif(is_null, null_bb, &[], present_bb, &[]);
+                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                            if let Some((slot, _layout)) = self.struct_slots.get(&dest[0]) {
+                                // A Copy-aggregate element is never "String"
+                                // (String routes through the pre-existing
+                                // is_any_heap/get_ref path, not this arm) —
+                                // field_off is always 8: tag@0/fields@+8
+                                // (ADR-0076 Phương án A), matching pop's fat
+                                // Struct dest convention.
+                                let slot = *slot;
+                                builder.switch_to_block(present_bb);
+                                builder.seal_block(present_bb);
+                                let mut off: i64 = 0;
+                                while off < stride {
+                                    let word = builder.ins().load(
+                                        I64,
+                                        mem_flags,
+                                        cell_ptr,
+                                        i32::try_from(off).unwrap_or(i32::MAX),
+                                    );
+                                    builder.ins().stack_store(
+                                        word,
+                                        slot,
+                                        i32::try_from(8 + off).unwrap_or(i32::MAX),
+                                    );
+                                    off += 8;
+                                }
+                                let one = builder.ins().iconst(I64, 1);
+                                builder.ins().stack_store(one, slot, 0);
+                                builder.ins().jump(merge_bb, &[]);
+                                builder.switch_to_block(null_bb);
+                                builder.seal_block(null_bb);
+                                builder.ins().stack_store(sentinel, slot, 0);
+                                builder.ins().jump(merge_bb, &[]);
+                                builder.switch_to_block(merge_bb);
+                                builder.seal_block(merge_bb);
+                            } else if let Some((slot, _)) = self.enum_slots.get(&dest[0]) {
+                                // `Enum?` shares the enum's own disc-sentinel
+                                // slot (no tag word) — the copy loop's off=0
+                                // word IS the discriminant, so writing
+                                // NULL_SENTINEL@0 on the null branch and the
+                                // real disc on the present branch (as part of
+                                // the generic loop) is the WHOLE contract,
+                                // same as pop's fat Enum dest.
+                                let slot = *slot;
+                                builder.switch_to_block(present_bb);
+                                builder.seal_block(present_bb);
+                                let mut off: i64 = 0;
+                                while off < stride {
+                                    let word = builder.ins().load(
+                                        I64,
+                                        mem_flags,
+                                        cell_ptr,
+                                        i32::try_from(off).unwrap_or(i32::MAX),
+                                    );
+                                    builder.ins().stack_store(
+                                        word,
+                                        slot,
+                                        i32::try_from(off).unwrap_or(i32::MAX),
+                                    );
+                                    off += 8;
+                                }
+                                builder.ins().jump(merge_bb, &[]);
+                                builder.switch_to_block(null_bb);
+                                builder.seal_block(null_bb);
+                                builder.ins().stack_store(sentinel, slot, 0);
+                                builder.ins().jump(merge_bb, &[]);
+                                builder.switch_to_block(merge_bb);
+                                builder.seal_block(merge_bb);
+                            } else {
+                                return Err(JitError::Unsupported(format!(
+                                    "{callee_name}: fat aggregate dest without a slot"
+                                )));
+                            }
+                        } else if vector_pop_fat || hashmap_remove_fat {
                             // ADR-0077/0078: the shim memcpy'd into the dest
                             // String slot — bind the dest var to ptr@0 (the i64
                             // return is 0, a sentinel).

@@ -201,6 +201,17 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_get_ref",
             triet_jit::mir_lower::__triet_hashmap_get_ref,
         ),
+        // ADR-0082 §AMEND-3: get-by-value COPY shims (Copy-aggregate element),
+        // reusing the `_get_ref` Rust functions under a second symbol name —
+        // see triet-driver/src/main.rs for the same registration.
+        ShimSymbol::fn_2_1(
+            "__triet_vector_get_copy",
+            triet_jit::mir_lower::__triet_vector_get_ref,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_copy",
+            triet_jit::mir_lower::__triet_hashmap_get_ref,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",

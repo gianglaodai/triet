@@ -1,0 +1,21 @@
+// ERROR: E1049
+// ADR-0082 §AMEND-3.1/3.2 — the HISTORICALLY dangerous case: an 8B-TOTAL
+// struct wrapping a single heap HANDLE (`Wrapper{v:Vector<Integer>}`,
+// total_size==8, one Vector-handle field) is NOT Copy — the handle owns a
+// heap allocation. This is the exact T9-masking shape that leaked SILENTLY
+// in Slice A: total_size==8 means it rides the thin scalar-return path, so a
+// missing refuse would NOT crash — it would hand back an aliased handle and
+// double-free on drop (count-masked, no signal). `is_copy_aggregate` must
+// classify it non-Copy → REFUSE E1049, NOT fall to the thin get_copy path.
+// Non-vacuous: the all-scalar `Id{value:Integer}` (fixture 366, also 8B)
+// compiles fine — only the heap-handle wrapper is refused.
+struct Wrapper { v: Vector<Integer> }
+
+function main() -> Integer {
+    let mutable inner: Vector<Integer> = vector_new();
+    inner = push(inner, 7);
+    let mutable xs: Vector<Wrapper> = vector_new();
+    xs = push(xs, Wrapper { v: inner });
+    let r = get(xs, 0);
+    return 0;
+}
