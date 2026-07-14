@@ -280,3 +280,55 @@ HashMap remove move value ra out_ptr NHƯNG **không** `write_bytes(vptr,0,value
 **Nợ còn treo (campaign riêng):** get-by-value aggregate (get_ref value-aggregate = Cụm D/ADR-0081 FROZEN) · key-aggregate hash+eq đệ quy · pop-front/drain · B-γ multi-reg return.
 
 **O ký 2026-07-11.** **G ký 2026-07-11:** DUYỆT. Tombstone contract, bóc trần Slice-A-BUG-1, và quyết định đánh đổi state-gate được ghi nhận chính xác theo thực tế chiến trường. Value move-out aggregate KHÓA SỔ.
+
+## §AMEND-3 — get-by-value aggregate, **CHỈ Copy** (đọc-và-sao-chép, KHÔNG move-out, KHÔNG deep-Clone)
+
+**Status:** 🚧 O ĐỀ 2026-07-14 — **chờ G co-sign**. Scope Giang chốt 2026-07-14: **Copy-aggregate ONLY**.
+
+**Bối cảnh:** `get(container, k)` hiện có: scalar V → by-value `V?` (env.rs:346/438/448); heap-scalar V (String/Vector/HashMap trực tiếp) → E1047 → dùng `get_ref` borrow (exprs.rs:1174). **Aggregate V (Struct/Enum, scalar key)** → rơi thẳng **E1041 NoMatchingOverload**, không đường nào, KHÔNG phân biệt Copy vs heap-bearing (`is_heap_element` exprs.rs:2270 trả `false` cho MỌI UserStruct/UserEnum). §AMEND-3 mở get-by-value cho aggregate **THUẦN Copy**; heap-bearing REFUSE tường minh. Continuation B-α, **KHÔNG ADR-nền mới**.
+
+### AMEND-3.1 — ⚖ RANH GIỚI Copy-vs-Clone LÀ RANH GIỚI SOUNDNESS (điều kiện-chặn O tự đặt)
+
+get-by-value **KHÔNG phải move-out** (§AMEND-2.1). Element **Ở LẠI** container; một bản copy trả ra dest-local. Non-destructive → **KHÔNG source-tombstone** (quy định AMEND-2.1:258 KHÔNG áp — không có chuyển-quyền-sở-hữu để chống double-free).
+
+Điều đó **sound KHI VÀ CHỈ KHI** aggregate **không có heap leaf** (Copy):
+- **Copy aggregate** (`!aggregate_needs_drop` — mọi leaf scalar): bản copy = **bitwise-identical, KHÔNG chia sẻ heap allocation** với element trong container. Cả hai drop độc lập → **KHÔNG double-free**. SOUND. Tiền lệ: Slice A T-COPY `Vector<Point>`→FREE==0.
+- **Heap-bearing aggregate** (có ≥1 String/Vector/HashMap leaf): bitwise copy **alias con trỏ heap** → hai chủ một allocation → drop hai lần → **double-free**. Muốn phủ đòi **deep-Clone đệ quy** (alloc mới mỗi leaf) = năng lực MỚI, đụng move-only **ADR-0042** + "Clone CẤM TIỆT (hidden alloc=rác)" ADR-0079. **KHÔNG được ngầm trên `get`.**
+
+**Quyết định:** Copy-aggregate → get-by-value SOUND (bitwise memcpy). Heap-bearing → **REFUSE tường minh**, trỏ về `get_ref` (borrow). Deep-Clone tách campaign-nền riêng sau ADR `.clone()` tường minh (Copy/Clone trait + carve-out ADR-0042). **KHÔNG chôn heap-bearing dưới E1041 mù** (bài học hiến pháp AMEND-2.2: refuse phải nói ĐÚNG lý do).
+
+### AMEND-3.2 — predicate `is_copy_aggregate` (typecheck, mirror `MirType::is_copy`)
+
+Typecheck cần predicate MỚI `Type::is_copy_aggregate` (`types.rs:227`, cạnh `is_hashable_key:165`): scalar (Trit/Tryte/Integer/Long/Trilean) → Copy; String/Vector/HashMap → KHÔNG-Copy; `UserStruct{fields}` → mọi field Copy đệ quy; `UserEnum{variants}` → mọi payload Copy đệ quy; `Nullable(inner)` → Copy iff `inner` Copy.
+
+**⚠ ĐÍNH CHÍNH (O sai ở bản đầu, D phát hiện — LUẬT 5 flag):** bất biến "`is_copy_aggregate ≡ !aggregate_needs_drop`" **KHÔNG chính xác**. `aggregate_needs_drop` (mir_lower:2226) **over-approximate**: nó gọi `collect_heap_leaves` vốn đẩy MỌI Enum field thành leaf vô điều kiện → một `struct{c: CopyEnum}` bị coi là "needs drop" dù thuần Copy. Predicate đúng phải mirror **`MirType::is_copy(Some(body))`** (`triet-mir/src/lib.rs:694` — "single source of truth for move/copy classification"), khớp field-for-field. Lệch giữa hai cái an toàn cho get-by-value (`aggregate_needs_drop` over-approx chỉ gây thêm **một no-op drop-glue pass** trên bản copy của Copy-enum — KHÔNG double-free vì enum thuần scalar free rỗng), nhưng không được ghi sai bất biến vào ADR.
+
+**Producer-consumer đóng bằng SINGLE-SOURCE, không nhân đôi:** JIT defensive guard cho `_get_copy` gọi THẲNG `MirType::is_copy(Some(body))` (HashMap path, mir_lower:4130) — cùng một hàm, không thể drift. `Type::is_copy_aggregate` (typecheck) và `MirType::is_copy` (mir) là hai hàm hai crate NHƯNG cùng shape sound (heap→false); **O verify máu: poison `is_copy_aggregate` heap→Copy → `Vector<Tagged{String}>` get double-free 134** (typecheck gate load-bearing, non-vacuous).
+
+### AMEND-3.3 — refuse boundary heap-bearing
+
+`get(Vector<Aggregate-heap>, i)` / `get(HashMap<scalar-K, Aggregate-heap>, k)` → REFUSE với diagnostic đích (KHÔNG E1041 generic). **G rule 2026-07-14: E-code mới `E1049` `GetAggregateByValueRequiresClone`** — message "aggregate has a heap-allocated leaf; copy-by-value would alias it" + `[Fix]` "Use `get_ref(container, k)` to borrow the element instead". Tách khỏi E1047 (fix khác: get_ref vs pop/remove; ADR-0027 machine-fixable đòi `[Fix]` chính xác).
+
+### AMEND-3.4 — JIT copy-out (reuse get_ref locate + memcpy stride, KHÔNG tombstone KHÔNG free)
+
+Đường JIT = **get_ref định vị cell + `copy_nonoverlapping(stride)` → dest fat-slot**, **BỎ** source-tombstone/free (khác pop/remove §AMEND-2):
+- Locate: `__triet_vector_get_ref`(mir_lower:5291) / `__triet_hashmap_get_ref` → cell_ptr (not-found → NULL_SENTINEL).
+- Copy: `copy_nonoverlapping(cell_ptr, out_ptr, stride)` (pattern sẵn ở pop :5365/:5429, TRỪ tombstone).
+- Dest: `Nullable(Aggregate)` fat-slot tag-prepend ADR-0076 (`tag@0/fields@+8`), tag = `(ret==NULL_SENTINEL)?SENTINEL:1`. **Dùng CHUNG dest-bind marshal** với `vector_pop_fat||hashmap_remove_fat` (mir_lower:3975/4069) — chỉ nguồn khác (get_ref-copy thay pop-shim).
+- **KHÔNG free, KHÔNG len--, KHÔNG state→2** — non-destructive. (Copy-only bảo chứng: cell bytes copy ra = giá trị độc lập, container giữ nguyên bản gốc.)
+
+### AMEND-3.5 — borrowck: đọc-không-tiêu-thụ, KHÔNG loan
+
+get-by-value KHÔNG consume container, KHÔNG move-out element, trả **owned value độc lập** (khác get_ref trả `&0` propagated-loan ADR-0079). Args `[false, false]`; borrow container kết thúc ngay tại call (như scalar get). KHÔNG PropagatedLoan.
+
+### Scope container + teeth (O verify máu, cp-snapshot restore md5 `a753366b`)
+
+- **Vector + HashMap scalar-key** CÙNG slice này (G rule 2026-07-14 — dest-marshal dùng chung, chỉ khác nguồn get_ref shim). HashMap **aggregate-key** (ADR-0083) × aggregate-value = compose sau (defer, refuse rõ CẢ typecheck E1041 fall-through LẪN JIT `Err(Unsupported)`).
+- **Răng độc nhất (producer-consumer, load-bearing):** poison `is_copy_aggregate` heap→Copy → `Vector<Tagged{String}>` get → **double-free 134** (MIR: container `Drop(_2)` + copied-out `Drop(_12)` cùng free String). Typecheck E1049 gate là an-toàn DUY NHẤT cho Vector (JIT có defensive guard đối xứng `MirType::is_copy` — latent, chỉ nổ nếu typecheck regress). Restore md5 khớp.
+- **8B-heap-struct T9-masking (Slice A leak-câm):** `Wrapper{v:Vector<Integer>}` (total_size=8, single handle) → O probe sống → **E1049** (thin-path KHÔNG bao giờ nhận nó). Fixture 367 canh vĩnh viễn, non-vacuous (`Id{value:Integer}` 366 cũng 8B nhưng Copy → compile OK).
+- **Positive:** 361 `Vector<Point>` get×2 cùng giá trị (non-destructive) + miss→`~0` · 362 `HashMap<Integer,Point>` · 363 `Vector<Color>` disc-only enum · 366 thin 8B Copy struct · counting route-lower `lower_source` FREE==1 (unrelated String only, không stomp).
+- **D tự bắt+vá (khai thật):** thin-return-as-pointer SIGSEGV 363 → cờ `*_fat` (chỉ stride>8 vào copy-loop).
+
+**O đề 2026-07-14. O KÝ 2026-07-15** — verify máu độc lập: gate CLEAN `0·0·361·0`; răng producer-consumer đỏ (double-free 134); 8B-masking refuse; predicate `Type::is_copy_aggregate` ↔ `MirType::is_copy` cùng sound (heap→false). D flag LỆCH LỆNH predicate divergence đúng LUẬT 5 (O chấp nhận: `aggregate_needs_drop` over-approx enum-field, mirror `MirType::is_copy` mới chuẩn — O đã đính chính bất biến sai của mình ở §AMEND-3.2).
+
+**G CO-SIGN 2026-07-15:** DUYỆT. E1049 = chốt chặn sinh tử (không đồ trang trí) — O poison chứng minh load-bearing. 8B-heap-struct T9-masking O tóm cổ + fixture 367 = verify-don't-trust đúng tinh thần. D bác `≡ !aggregate_needs_drop` → D đúng O sai, `MirType::is_copy` single-source-of-truth chuẩn xác; tách shim `_get_copy` chặt đường sinh loan = kiến trúc sắc sảo. Bất biến ADR-0042 (move-only) + ADR-0079 (cấm hidden-clone) giữ vững tuyệt đối. **§AMEND-3 ĐÓNG BĂNG.** Nợ kế: Deep-Clone (campaign lớn riêng) · get_ref value-aggregate · drain. ⚰️ ADR-0068 Box/recursive VẪN CẤM CỬA.
