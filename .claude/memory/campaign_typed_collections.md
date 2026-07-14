@@ -1,11 +1,27 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key + Slice 2 enum-key (ADR-0083 +§AMEND-1, fnptr-in-header + JIT hash/eq walkers) — KHÓA SỔ 2026-07-13 `91c273a`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key + Slice 2 enum-key (ADR-0083) + GET-BY-VALUE Copy-aggregate (ADR-0082 §AMEND-3, is_copy_aggregate↔MirType::is_copy, E1049 refuse heap-bearing, non-destructive copy-out) — KHÓA SỔ 2026-07-15 `12adc0b`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
+
+## ✅ ĐÓNG — ADR-0082 §AMEND-3 GET-BY-VALUE Copy-aggregate (O+G ký 2026-07-15, PUSHED)
+origin/main = `12adc0b` (feat `28f7c6f` + docs `12adc0b`), gate `0·0·361·0`. **§AMEND-3** (O đề, G/Giang rule scope, G co-sign). `get(container, k)` trả **by-value** aggregate **thuần Copy** (Struct/Enum không heap leaf) từ `Vector<Agg>` + `HashMap<scalar-K, Agg>` — **non-destructive** (element ở lại container, KHÔNG tombstone/free, bitwise-copy độc lập). Heap-bearing aggregate → **REFUSE E1049** (mã mới, trỏ `get_ref`). aggregate-key×aggregate-value → defer. **Model D = Sonnet 5.**
+
+**Cơ chế (§A):** ranh giới Copy-vs-Clone LÀ ranh giới soundness (O đặt điều kiện-chặn): Copy aggregate (không heap leaf) → bản copy bit-identical KHÔNG chia sẻ heap → drop độc lập, KHÔNG double-free; heap-bearing → bitwise copy alias con trỏ → hai chủ → double-free → REFUSE, deep-Clone tách campaign-nền riêng. **Predicate `Type::is_copy_aggregate` (types.rs:227) mirror `MirType::is_copy` (mir:694, single-source-of-truth) — KHÔNG `!aggregate_needs_drop`** (over-approx enum-field via `collect_heap_leaves` đẩy mọi Enum field làm leaf vô điều kiện). Shim mới `__triet_{vector,hashmap}_get_copy` (`returns_borrow_of:None`) tách khỏi get_ref → borrowck KHÔNG synth PropagatedLoan (§AMEND-3.5); reuse thân get_ref dưới symbol thứ 2. JIT copy-out: thin (stride≤8) ghi thẳng deref'd return (get_ref thin trả VALUE không pointer), fat (>8) load-loop; shared defensive `!is_copy` guard (Rule#7, latent — chỉ nổ nếu typecheck regress).
+
+**🩸 O VERIFY MÁU (cp-snapshot restore md5 `a753366b`):**
+- **Răng producer-consumer (load-bearing):** poison `is_copy_aggregate` heap→Copy → `Vector<Tagged{String}>` get → **double-free 134** (MIR phơi container `Drop(_2)` + copied-out `Drop(_12)` cùng free String). Typecheck E1049 gate = an-toàn DUY NHẤT cho Vector (JIT guard latent). Restore md5 khớp.
+- **🎯 8B-heap-struct T9-masking (Slice A leak-câm) — D KHÔNG test, O BẮT:** `Wrapper{v:Vector<Integer>}` (total_size=8, single handle → thin-path, thiếu refuse = leak/double-free CÂM không signal) → O probe sống → **E1049 refuse đúng**. Thêm fixture 367 canh vĩnh viễn, non-vacuous (`Id{value:Integer}` 366 cũng 8B nhưng Copy → compile OK).
+- Positive 361/362/363/366 + counting FREE-count route-lower (`lower_source`) xanh. E1049 harness assert code-string (`e.contains("E1049")`).
+
+**⚖ D LỆCH LỆNH ĐÚNG (LUẬT 5) — D đúng O sai:** D bác giả định WO gốc của O `is_copy_aggregate ≡ !aggregate_needs_drop`, chỉ ra over-approx enum-field, chọn `MirType::is_copy`. G khen "soundness chuẩn xác". **O tự đính chính §AMEND-3.2.** Nước cờ tách shim `_get_copy` chặt đường sinh loan = G khen "kiến trúc sắc sảo". D tự bắt+vá SIGSEGV thin-return-deref (363) khai thật; F3 gom guard đối xứng 1 chỗ.
+
+**⚠️ VẾT D (Sonnet 5):** ① thiếu fixture 8B-masking (O bù F2) · ② comment JIT bịa ví dụ `Wrapper{v:Vector<String>}` cho thin-path (case đó bị E1049 refuse, không reachable — mẫu "bịa chứng phụ trong doc" Slice 2; O bắt F1) · ③ claim "fmt ran" nhưng edits cuối chưa fmt (LUẬT 2 slip — pre-commit hook `cargo fmt --check` bắt, O fmt lại). Kết luận + implementation lõi đúng; O verify bù 3 vết.
+
+**Bài học §AMEND-3:** ① Copy-vs-Clone = ranh giới soundness, thu hẹp Copy-only né deep-Clone/ADR-0042 (khuôn pop_front/Slice A). ② producer-consumer 2 crate (typecheck `Type` ↔ mir `MirType`) verify TRỰC TIẾP cả hai, không tin tên hàm — poison chứng minh gate load-bearing. ③ 8B-heap masking (thin-path, total_size=8 ôm handle) = mẫu leak-câm lặp lại từ Slice A — luôn probe case này khi mở by-value aggregate. ④ pre-commit fmt-hook là lưới cuối bắt LUẬT 2 slip của D. **🔴 Deep-Clone heap-bearing = campaign LỚN riêng** (ADR `.clone()` + carve-out ADR-0042 + codegen clone đệ quy). [[feedback_poison_must_be_red]] [[feedback_verify_producer_before_consumer]] [[colleague_d_persona]]
 
 ## ✅ ĐÓNG — ADR-0083 §AMEND-1 KEY-AGGREGATE Slice 2 (Enum keys, O+G ký 2026-07-13, PUSHED)
 origin/main = `91c273a`, gate `0·0·354·0`. §AMEND-1 (G ký cuối ADR-0083). `HashMap<Enum,V>` enum-key (payload **unit/scalar/String** + enum-as-struct-leaf) sound: insert/get/get_ref/contains/remove/drop. **KHÔNG ADR mới** (Slice 2 đã scope-defer trong ADR gốc). **Model D = Sonnet 5** (Giang chọn thử tiered; O verify máu bù).
