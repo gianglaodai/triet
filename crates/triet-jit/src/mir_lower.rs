@@ -229,19 +229,6 @@ enum LeafKind {
     Enum(String),
 }
 
-/// ADR-0083 §3: a hashable-key leaf found by `collect_key_leaves` — carries its
-/// absolute byte offset within the key's flat image. A `Scalar` leaf (Integer,
-/// Trit, …) is hashed/compared as one raw i64 word; a `String` leaf is a fat
-/// `{ptr,len,cap}` compared by CONTENT (`__triet_string_hash`/`_eq`), never by
-/// pointer. Nested structs are flattened into these two leaf kinds; any other
-/// leaf (Vector/HashMap/Enum/Nullable/Outcome) is a non-hashable key → error
-/// (defence-in-depth behind the `is_hashable_leaf` typecheck gate).
-#[derive(Debug)]
-enum KeyLeaf {
-    Scalar(i32),
-    String(i32),
-}
-
 /// Holds Cranelift JIT state across compilations.
 pub struct JitContext {
     module: JITModule,
@@ -545,59 +532,301 @@ impl JitContext {
         Ok(())
     }
 
-    /// ADR-0083 §3 — flatten a hashable key struct into its scalar/String leaves
-    /// (absolute offsets). Mirrors `collect_heap_leaves` but keeps SCALAR leaves
-    /// too (hash/eq need every field, not just heap ones) and REFUSES any
-    /// non-hashable leaf (Vector/HashMap/Enum/Nullable/Outcome). Nested structs
-    /// recurse; the DAG (no recursive types — typecheck blocks them) terminates,
-    /// with the same depth-64 net as `collect_heap_leaves`.
-    fn collect_key_leaves(
-        struct_name: &str,
-        base_offset: i32,
+    /// ADR-0083 §3 / §AMEND-1 §A2 — recursively mix the key value of MIR type
+    /// `ty` living at `base_ptr + off` into the running FNV-1a accumulator
+    /// `acc`, returning the NEW accumulator. This is the emission-based
+    /// replacement for the old flat `KeyLeaf` list: a flat offset list cannot
+    /// represent an ENUM key's runtime discriminant switch (control flow), and
+    /// an enum-as-struct-leaf (Slice 2, in scope) forces even the struct walker
+    /// to be emission-based. Dispatch:
+    /// - `Struct` → fold every field (nested structs flatten inline, byte-
+    ///   compatible with the Slice 1 straight-line struct walker).
+    /// - `Enum` (§A2) → mix `disc@off` (disc IS identity — two variants must
+    ///   hash differently), then a `brif`-chain over the payload-bearing
+    ///   variants mixes ONLY the ACTIVE variant's payload @`off+8` (never the
+    ///   inactive/padding garbage — §A1). A unit/scalar-only active variant
+    ///   contributes just its disc (the fall-through arm).
+    /// - `String` → content hash (`__triet_string_hash` of `{ptr,len}`), never
+    ///   pointer identity.
+    /// - scalar → one raw i64 word.
+    /// - Vector/HashMap/Nullable/Reference/Outcome → non-hashable (refused at
+    ///   typecheck E1048; this is defence-in-depth). depth-64 net for nesting.
+    // `too_many_arguments`: a recursive emitter threading (builder, body, acc,
+    // base_ptr, ty, off, depth) — every parameter is load-bearing; bundling
+    // them into a struct would only obscure the recursion.
+    #[allow(clippy::cast_possible_wrap, clippy::too_many_arguments)]
+    fn emit_key_hash_value(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
         body: &Body,
+        acc: cranelift_codegen::ir::Value,
+        base_ptr: cranelift_codegen::ir::Value,
+        ty: &MirType,
+        off: i32,
         depth: usize,
-        out: &mut Vec<KeyLeaf>,
-    ) -> Result<(), JitError> {
+    ) -> Result<cranelift_codegen::ir::Value, JitError> {
+        const FNV_PRIME: i64 = 0x0000_0100_0000_01b3;
         if depth > 64 {
-            return Err(JitError::Unsupported(format!(
-                "key struct nesting exceeds depth 64 (recursive type?): {struct_name}"
-            )));
+            return Err(JitError::Unsupported(
+                "key nesting exceeds depth 64 (recursive type?)".into(),
+            ));
         }
-        let layout = body
-            .struct_layouts
-            .iter()
-            .find(|l| l.name == struct_name)
-            .ok_or_else(|| {
-                JitError::Unsupported(format!("unknown key struct layout: {struct_name}"))
-            })?;
-        for f in &layout.fields {
-            let abs = base_offset
-                + i32::try_from(f.offset)
-                    .map_err(|_| JitError::Unsupported("key field offset exceeds i32".into()))?;
-            match &f.ty {
-                MirType::String => out.push(KeyLeaf::String(abs)),
-                MirType::Struct(inner) => {
-                    Self::collect_key_leaves(inner, abs, body, depth + 1, out)?;
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        // mix(acc, v) = (acc XOR v) * FNV_PRIME.
+        let mix = |b: &mut FunctionBuilder<'_>,
+                   acc: cranelift_codegen::ir::Value,
+                   v: cranelift_codegen::ir::Value| {
+            let x = b.ins().bxor(acc, v);
+            b.ins().imul_imm(x, FNV_PRIME)
+        };
+        match ty {
+            MirType::String => {
+                let p = b.ins().load(I64, mem, base_ptr, off);
+                let l = b.ins().load(I64, mem, base_ptr, off + 8);
+                let hash_id = self.get_or_declare_shim("__triet_string_hash")?;
+                let href = self.module.declare_func_in_func(hash_id, b.func);
+                let call = b.ins().call(href, &[p, l]);
+                let v = b.inst_results(call)[0];
+                Ok(mix(b, acc, v))
+            }
+            MirType::Struct(name) => {
+                let fields = body
+                    .struct_layouts
+                    .iter()
+                    .find(|l| l.name == *name)
+                    .ok_or_else(|| {
+                        JitError::Unsupported(format!("unknown key struct layout: {name}"))
+                    })?
+                    .fields
+                    .clone();
+                let mut acc = acc;
+                for f in &fields {
+                    let foff = off
+                        + i32::try_from(f.offset).map_err(|_| {
+                            JitError::Unsupported("key field offset exceeds i32".into())
+                        })?;
+                    acc =
+                        self.emit_key_hash_value(b, body, acc, base_ptr, &f.ty, foff, depth + 1)?;
                 }
-                // ADR-0083 §5: non-hashable / mutable / sentinel-bearing leaves
-                // are refused at typecheck (E1048); this is defence-in-depth.
-                MirType::Vector(_)
-                | MirType::HashMap(_, _)
-                | MirType::Enum(_)
-                | MirType::Nullable(_)
-                | MirType::Reference { .. }
-                | MirType::Outcome { .. } => {
-                    return Err(JitError::Unsupported(format!(
-                        "non-hashable key leaf '{}' in key struct '{struct_name}' (ADR-0083: \
-                         only scalar/String/nested-struct leaves are hashable)",
-                        f.ty
-                    )));
+                Ok(acc)
+            }
+            MirType::Enum(name) => {
+                let payload_variants = Self::enum_payload_variants(body, name)?;
+                let disc = b.ins().load(I64, mem, base_ptr, off);
+                let acc1 = mix(b, acc, disc);
+                if payload_variants.is_empty() {
+                    // Unit/scalar-only enum — disc is the whole identity.
+                    return Ok(acc1);
                 }
-                // Integer / Trit / Tryte / Long / Trilean / … → one raw i64 word.
-                _ => out.push(KeyLeaf::Scalar(abs)),
+                // Thread the post-enum accumulator through a merge block param:
+                // exactly one payload arm runs (or none → acc1 unchanged).
+                let merge_bb = b.create_block();
+                b.append_block_param(merge_bb, I64);
+                for (dv, pty) in payload_variants {
+                    let arm = b.create_block();
+                    let next = b.create_block();
+                    let dvc = b.ins().iconst(I64, dv);
+                    let is_match = b.ins().icmp(IntCC::Equal, disc, dvc);
+                    b.ins().brif(is_match, arm, &[], next, &[]);
+                    b.switch_to_block(arm);
+                    b.seal_block(arm);
+                    let acc_arm = self.emit_key_hash_value(
+                        b,
+                        body,
+                        acc1,
+                        base_ptr,
+                        &pty,
+                        off + 8,
+                        depth + 1,
+                    )?;
+                    b.ins().jump(merge_bb, &[BlockArg::from(acc_arm)]);
+                    b.switch_to_block(next);
+                    b.seal_block(next);
+                }
+                // No payload variant matched (unit variant active) → acc1.
+                b.ins().jump(merge_bb, &[BlockArg::from(acc1)]);
+                b.switch_to_block(merge_bb);
+                b.seal_block(merge_bb);
+                Ok(b.block_params(merge_bb)[0])
+            }
+            MirType::Vector(_)
+            | MirType::HashMap(_, _)
+            | MirType::Nullable(_)
+            | MirType::Reference { .. }
+            | MirType::Outcome { .. }
+            | MirType::Capability(_) => Err(JitError::Unsupported(format!(
+                "non-hashable key leaf '{ty}' (ADR-0083: only scalar/String/nested-struct/\
+                 enum leaves are hashable)"
+            ))),
+            // Integer / Trit / Tryte / Long / Trilean / Unit / Unknown → raw i64.
+            _ => {
+                let v = b.ins().load(I64, mem, base_ptr, off);
+                Ok(mix(b, acc, v))
             }
         }
-        Ok(())
+    }
+
+    /// ADR-0083 §3 / §AMEND-1 §A2 — recursively compare the key value of MIR
+    /// type `ty` at `a_ptr+off` vs `b_ptr+off` (short-circuit: the first
+    /// mismatch jumps to `ne_bb`, which returns 0). On a full match the builder
+    /// falls through positioned after the comparison. Enum (§A2): compare
+    /// `disc@off` first — a discriminant mismatch is an immediate NE (short-
+    /// circuit) — then, when the discs are equal (same active variant), a
+    /// `brif`-chain compares ONLY that variant's payload @`off+8`. Non-hashable
+    /// leaves are refused (defence-in-depth). depth-64 net.
+    // `too_many_arguments`: a recursive short-circuit comparer threading
+    // (builder, body, a_ptr, b_ptr, ty, off, ne_bb, depth) — all load-bearing.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_key_eq_value(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        body: &Body,
+        a_ptr: cranelift_codegen::ir::Value,
+        b_ptr: cranelift_codegen::ir::Value,
+        ty: &MirType,
+        off: i32,
+        ne_bb: cranelift_codegen::ir::Block,
+        depth: usize,
+    ) -> Result<(), JitError> {
+        if depth > 64 {
+            return Err(JitError::Unsupported(
+                "key nesting exceeds depth 64 (recursive type?)".into(),
+            ));
+        }
+        let mem = cranelift_codegen::ir::MemFlags::new();
+        match ty {
+            MirType::String => {
+                let pa = b.ins().load(I64, mem, a_ptr, off);
+                let la = b.ins().load(I64, mem, a_ptr, off + 8);
+                let pb = b.ins().load(I64, mem, b_ptr, off);
+                let lb = b.ins().load(I64, mem, b_ptr, off + 8);
+                let eq_id = self.get_or_declare_shim("__triet_string_eq")?;
+                let eref = self.module.declare_func_in_func(eq_id, b.func);
+                let call = b.ins().call(eref, &[pa, la, pb, lb]);
+                let r = b.inst_results(call)[0];
+                let one = b.ins().iconst(I64, 1);
+                let eq_i = b.ins().icmp(IntCC::Equal, r, one);
+                let next = b.create_block();
+                b.ins().brif(eq_i, next, &[], ne_bb, &[]);
+                b.switch_to_block(next);
+                b.seal_block(next);
+                Ok(())
+            }
+            MirType::Struct(name) => {
+                let fields = body
+                    .struct_layouts
+                    .iter()
+                    .find(|l| l.name == *name)
+                    .ok_or_else(|| {
+                        JitError::Unsupported(format!("unknown key struct layout: {name}"))
+                    })?
+                    .fields
+                    .clone();
+                for f in &fields {
+                    let foff = off
+                        + i32::try_from(f.offset).map_err(|_| {
+                            JitError::Unsupported("key field offset exceeds i32".into())
+                        })?;
+                    self.emit_key_eq_value(b, body, a_ptr, b_ptr, &f.ty, foff, ne_bb, depth + 1)?;
+                }
+                Ok(())
+            }
+            MirType::Enum(name) => {
+                let payload_variants = Self::enum_payload_variants(body, name)?;
+                let da = b.ins().load(I64, mem, a_ptr, off);
+                let db = b.ins().load(I64, mem, b_ptr, off);
+                let deq = b.ins().icmp(IntCC::Equal, da, db);
+                let next = b.create_block();
+                b.ins().brif(deq, next, &[], ne_bb, &[]);
+                b.switch_to_block(next);
+                b.seal_block(next);
+                if payload_variants.is_empty() {
+                    // Disc-only enum: discs equal ⇒ equal.
+                    return Ok(());
+                }
+                // Discs are equal here ⇒ same active variant. Switch on `da`
+                // and compare ONLY that variant's payload.
+                let merge_bb = b.create_block();
+                for (dv, pty) in payload_variants {
+                    let arm = b.create_block();
+                    let chain_next = b.create_block();
+                    let dvc = b.ins().iconst(I64, dv);
+                    let is_match = b.ins().icmp(IntCC::Equal, da, dvc);
+                    b.ins().brif(is_match, arm, &[], chain_next, &[]);
+                    b.switch_to_block(arm);
+                    b.seal_block(arm);
+                    self.emit_key_eq_value(b, body, a_ptr, b_ptr, &pty, off + 8, ne_bb, depth + 1)?;
+                    b.ins().jump(merge_bb, &[]);
+                    b.switch_to_block(chain_next);
+                    b.seal_block(chain_next);
+                }
+                // No payload variant matched (unit variant active) → equal.
+                b.ins().jump(merge_bb, &[]);
+                b.switch_to_block(merge_bb);
+                b.seal_block(merge_bb);
+                Ok(())
+            }
+            MirType::Vector(_)
+            | MirType::HashMap(_, _)
+            | MirType::Nullable(_)
+            | MirType::Reference { .. }
+            | MirType::Outcome { .. }
+            | MirType::Capability(_) => Err(JitError::Unsupported(format!(
+                "non-hashable key leaf '{ty}' (ADR-0083: only scalar/String/nested-struct/\
+                 enum leaves are hashable)"
+            ))),
+            _ => {
+                let va = b.ins().load(I64, mem, a_ptr, off);
+                let vb = b.ins().load(I64, mem, b_ptr, off);
+                let eq_i = b.ins().icmp(IntCC::Equal, va, vb);
+                let next = b.create_block();
+                b.ins().brif(eq_i, next, &[], ne_bb, &[]);
+                b.switch_to_block(next);
+                b.seal_block(next);
+                Ok(())
+            }
+        }
+    }
+
+    /// ADR-0083 §AMEND-1 — `(discriminant_value, payload_type)` for every
+    /// payload-BEARING variant of `enum_name` (unit variants excluded — they
+    /// contribute only their disc). Shared by the hash/eq walkers so the two
+    /// stay consistent about which variants carry a payload to walk.
+    ///
+    /// REFUSE (defence-in-depth behind the `is_hashable_enum_payload` typecheck
+    /// gate) an aggregate variant payload (`Struct`/`Enum`): the lowerer sizes
+    /// every enum payload at a fixed 8B (String 24B special-cased) and never
+    /// fixes up an aggregate payload's width, so an enum carrying a `Point`
+    /// (16B) or another enum is UNDER-sized → the key marshal truncates it →
+    /// silent MISS. Refuse until that sizing gap is closed (a separate front).
+    fn enum_payload_variants(
+        body: &Body,
+        enum_name: &str,
+    ) -> Result<Vec<(i64, MirType)>, JitError> {
+        let layout = body
+            .enum_layouts
+            .iter()
+            .find(|e| e.name == enum_name)
+            .ok_or_else(|| {
+                JitError::Unsupported(format!("unknown key enum layout: {enum_name}"))
+            })?;
+        let mut out = Vec::new();
+        for v in &layout.variants {
+            if let Some(p) = v.payload.as_ref() {
+                if matches!(p.ty, MirType::Struct(_) | MirType::Enum(_)) {
+                    return Err(JitError::Unsupported(format!(
+                        "HashMap key enum '{enum_name}': variant '{}' carries an aggregate \
+                         payload '{}' — enum variant payloads are sized at a fixed 8B by the \
+                         lowerer (no aggregate-payload fixup), so a nested Struct/Enum payload \
+                         is under-sized and truncated on marshal (ADR-0083 §AMEND-1: refused \
+                         until the enum-payload-aggregate sizing gap is closed)",
+                        v.name, p.ty
+                    )));
+                }
+                out.push((v.discriminant_value, p.ty.clone()));
+            }
+        }
+        Ok(out)
     }
 
     /// ADR-0083 §3 — emit (or fetch the memoised) key-hash + key-eq walker pair
@@ -608,15 +837,25 @@ impl JitContext {
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         body: &Body,
-        struct_name: &str,
+        key_ty: &MirType,
     ) -> Result<(cranelift_codegen::ir::Value, cranelift_codegen::ir::Value), JitError> {
-        let (hash_id, eq_id) = if let Some(ids) = self.walker_ids.get(struct_name) {
+        // Memoise by the aggregate key's TYPE NAME (Struct or Enum — user type
+        // names don't collide). ADR-0083 §AMEND-1: a Struct key and an Enum key
+        // emit structurally different walkers, but each is uniquely named.
+        let key_name = match key_ty.nullable_payload().unwrap_or(key_ty) {
+            MirType::Struct(n) | MirType::Enum(n) => n.clone(),
+            other => {
+                return Err(JitError::Unsupported(format!(
+                    "key walkers requested for non-aggregate key type '{other}'"
+                )));
+            }
+        };
+        let (hash_id, eq_id) = if let Some(ids) = self.walker_ids.get(&key_name) {
             *ids
         } else {
-            let hash_id = self.build_key_hash_walker(struct_name, body)?;
-            let eq_id = self.build_key_eq_walker(struct_name, body)?;
-            self.walker_ids
-                .insert(struct_name.to_string(), (hash_id, eq_id));
+            let hash_id = self.build_key_hash_walker(&key_name, key_ty, body)?;
+            let eq_id = self.build_key_eq_walker(&key_name, key_ty, body)?;
+            self.walker_ids.insert(key_name.clone(), (hash_id, eq_id));
             (hash_id, eq_id)
         };
         let href = self.module.declare_func_in_func(hash_id, builder.func);
@@ -626,26 +865,25 @@ impl JitContext {
         Ok((hash_addr, eq_addr))
     }
 
-    /// ADR-0083 §3 — build the `extern "C" fn(*const u8) -> i64` key-hash
-    /// walker: an FNV-1a fold over the key's flat leaves (scalar word or
-    /// `__triet_string_hash` of a String leaf's `{ptr,len}`). Returns the RAW
-    /// hash; the shim maps it into `cap`. Content-deterministic — two keys with
-    /// equal content (String leaves at different allocations) hash identically.
-    // FNV consts (`items_after_statements`) sit next to their use for clarity;
+    /// ADR-0083 §3 / §AMEND-1 — build the `extern "C" fn(*const u8) -> i64`
+    /// key-hash walker: an FNV-1a fold over the key image, driven by the
+    /// recursive `emit_key_hash_value` (Struct fold / Enum disc-switch / String
+    /// content-hash / scalar word). Returns the RAW hash; the shim maps it into
+    /// `cap`. Content-deterministic — two keys with equal content (String leaves
+    /// at different allocations) hash identically.
     // `cast_possible_wrap` is the intended u64→i64 reinterpret of the FNV basis.
-    #[allow(clippy::cast_possible_wrap, clippy::items_after_statements)]
+    #[allow(clippy::cast_possible_wrap)]
     fn build_key_hash_walker(
         &mut self,
-        struct_name: &str,
+        key_name: &str,
+        key_ty: &MirType,
         body: &Body,
     ) -> Result<cranelift_module::FuncId, JitError> {
-        let mut leaves: Vec<KeyLeaf> = Vec::new();
-        Self::collect_key_leaves(struct_name, 0, body, 0, &mut leaves)?;
-
+        const FNV_OFFSET: i64 = 0xcbf2_9ce4_8422_2325u64 as i64;
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(I64)); // key_ptr
         sig.returns.push(AbiParam::new(I64)); // raw FNV hash
-        let name = format!("__triet_keyhash_{struct_name}");
+        let name = format!("__triet_keyhash_{key_name}");
         let id = self
             .module
             .declare_function(&name, Linkage::Local, &sig)
@@ -661,25 +899,8 @@ impl JitContext {
             b.switch_to_block(entry);
             b.seal_block(entry);
             let key_ptr = b.block_params(entry)[0];
-            let mem = cranelift_codegen::ir::MemFlags::new();
-            const FNV_OFFSET: i64 = 0xcbf2_9ce4_8422_2325u64 as i64;
-            const FNV_PRIME: i64 = 0x0000_0100_0000_01b3;
-            let mut acc = b.ins().iconst(I64, FNV_OFFSET);
-            for leaf in &leaves {
-                let v = match leaf {
-                    KeyLeaf::Scalar(off) => b.ins().load(I64, mem, key_ptr, *off),
-                    KeyLeaf::String(off) => {
-                        let p = b.ins().load(I64, mem, key_ptr, *off);
-                        let l = b.ins().load(I64, mem, key_ptr, *off + 8);
-                        let hash_id = self.get_or_declare_shim("__triet_string_hash")?;
-                        let href = self.module.declare_func_in_func(hash_id, b.func);
-                        let call = b.ins().call(href, &[p, l]);
-                        b.inst_results(call)[0]
-                    }
-                };
-                let x = b.ins().bxor(acc, v);
-                acc = b.ins().imul_imm(x, FNV_PRIME);
-            }
+            let acc0 = b.ins().iconst(I64, FNV_OFFSET);
+            let acc = self.emit_key_hash_value(&mut b, body, acc0, key_ptr, key_ty, 0, 0)?;
             b.ins().return_(&[acc]);
             b.finalize();
         }
@@ -687,24 +908,21 @@ impl JitContext {
         Ok(id)
     }
 
-    /// ADR-0083 §3 — build the `extern "C" fn(*const u8, *const u8) -> i64`
-    /// key-eq walker: a SHORT-CIRCUIT recursive content compare of two key
-    /// images (1=eq, 0=ne). Scalar leaves compare as i64; String leaves via
-    /// `__triet_string_eq` (content). The first mismatch jumps straight to the
-    /// `ne` return.
+    /// ADR-0083 §3 / §AMEND-1 — build the `extern "C" fn(*const u8, *const u8)
+    /// -> i64` key-eq walker (1=eq, 0=ne): a SHORT-CIRCUIT recursive content
+    /// compare via `emit_key_eq_value`. The first mismatch jumps straight to the
+    /// shared `ne` return.
     fn build_key_eq_walker(
         &mut self,
-        struct_name: &str,
+        key_name: &str,
+        key_ty: &MirType,
         body: &Body,
     ) -> Result<cranelift_module::FuncId, JitError> {
-        let mut leaves: Vec<KeyLeaf> = Vec::new();
-        Self::collect_key_leaves(struct_name, 0, body, 0, &mut leaves)?;
-
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(I64)); // a_ptr (slot key)
         sig.params.push(AbiParam::new(I64)); // b_ptr (probe key)
         sig.returns.push(AbiParam::new(I64)); // 1=eq / 0=ne
-        let name = format!("__triet_keyeq_{struct_name}");
+        let name = format!("__triet_keyeq_{key_name}");
         let id = self
             .module
             .declare_function(&name, Linkage::Local, &sig)
@@ -722,39 +940,14 @@ impl JitContext {
             b.seal_block(entry);
             let a_ptr = b.block_params(entry)[0];
             let b_ptr = b.block_params(entry)[1];
-            let mem = cranelift_codegen::ir::MemFlags::new();
             // Shared `ne` (return 0) target for every mismatch.
             let ne_bb = b.create_block();
-            for leaf in &leaves {
-                let eq_i = match leaf {
-                    KeyLeaf::Scalar(off) => {
-                        let va = b.ins().load(I64, mem, a_ptr, *off);
-                        let vb = b.ins().load(I64, mem, b_ptr, *off);
-                        b.ins().icmp(IntCC::Equal, va, vb)
-                    }
-                    KeyLeaf::String(off) => {
-                        let pa = b.ins().load(I64, mem, a_ptr, *off);
-                        let la = b.ins().load(I64, mem, a_ptr, *off + 8);
-                        let pb = b.ins().load(I64, mem, b_ptr, *off);
-                        let lb = b.ins().load(I64, mem, b_ptr, *off + 8);
-                        let eq_id = self.get_or_declare_shim("__triet_string_eq")?;
-                        let eref = self.module.declare_func_in_func(eq_id, b.func);
-                        let call = b.ins().call(eref, &[pa, la, pb, lb]);
-                        let r = b.inst_results(call)[0];
-                        let one = b.ins().iconst(I64, 1);
-                        b.ins().icmp(IntCC::Equal, r, one)
-                    }
-                };
-                let next = b.create_block();
-                b.ins().brif(eq_i, next, &[], ne_bb, &[]);
-                b.switch_to_block(next);
-                b.seal_block(next);
-            }
+            self.emit_key_eq_value(&mut b, body, a_ptr, b_ptr, key_ty, 0, ne_bb, 0)?;
             // All leaves matched → eq.
             let one = b.ins().iconst(I64, 1);
             b.ins().return_(&[one]);
             // ne target (sealed with whatever predecessors accumulated above;
-            // 0 predecessors when `leaves` is empty — a filled, unreachable
+            // 0 predecessors when the key is empty — a filled, unreachable
             // block, which Cranelift accepts).
             b.switch_to_block(ne_bb);
             b.seal_block(ne_bb);
@@ -870,20 +1063,21 @@ impl JitContext {
         Ok(())
     }
 
-    /// ADR-0083 §5 — HARD REFUSE for an ENUM key only. A Struct key is opened
-    /// this slice (hash/eq walkers + recursive key free-loop); an Enum key is
-    /// Slice 2 (discriminant matching + variant size-mismatch = a separate
-    /// front). Non-hashable Struct LEAVES (Vector/HashMap/Enum/Nullable) are
-    /// caught at typecheck (E1048) and, defence-in-depth, by `collect_key_leaves`
-    /// during walker emission. Byte-compat: `HashMap<Integer,_>` /
-    /// `HashMap<String,_>` are unaffected (neither is an Enum key).
+    /// ADR-0083 §AMEND-1 §OUT — HARD REFUSE for a NULLABLE-ENUM key (`Enum?`).
+    /// A plain Struct key (Slice 1) and a plain Enum key (Slice 2) are both
+    /// supported (hash/eq walkers + recursive key free-loop). An `Enum?` key
+    /// stays refused: `Nullable` carries a sentinel bit-pattern (`NULL_SENTINEL`
+    /// poking into the `tag`) that collides with the discriminant — out of scope
+    /// (typecheck E1048 catches it first; this is defence-in-depth). Non-
+    /// hashable Struct/Enum LEAVES (Vector/HashMap/Nullable) are caught at
+    /// typecheck (E1048) and, defence-in-depth, by the walker emission. Byte-
+    /// compat: `HashMap<Integer,_>` / `HashMap<String,_>` are unaffected.
     fn refuse_hashmap_enum_key(key_ty: &MirType) -> Result<(), JitError> {
-        let eff = key_ty.nullable_payload().unwrap_or(key_ty);
-        if matches!(eff, MirType::Enum(_)) {
+        if matches!(key_ty, MirType::Nullable(inner) if matches!(**inner, MirType::Enum(_))) {
             return Err(JitError::Unsupported(
-                "HashMap<Enum,_>: an Enum key is ADR-0083 Slice 2, not yet opened \
-                 (Slice 1 opens Struct keys only — discriminant matching + variant \
-                 size-mismatch is a separate front)"
+                "HashMap<Enum?,_>: a nullable-enum key is out of scope (ADR-0083 §AMEND-1 \
+                 §OUT — the null sentinel collides with the discriminant); use a plain \
+                 Enum key or wrap the map"
                     .into(),
             ));
         }
@@ -903,6 +1097,42 @@ impl JitContext {
             MirType::HashMap(k, _) => k.nullable_payload().unwrap_or(k).clone(),
             // Unreachable when a key-free gate fired (only set for HashMap ops).
             _ => MirType::String,
+        }
+    }
+
+    /// ADR-0083 §6 / §AMEND-1 — marshal a `HashMap` KEY argument for a shim call,
+    /// returning `(key_value, by_pointer)`. An aggregate key (Struct in
+    /// `struct_slots` OR Enum in `enum_slots`) — and a fat String (stride > 8) —
+    /// marshals BY-POINTER (`stack_addr`): the walker/String-shim reads its
+    /// bytes. A single-field 8B aggregate is STILL slot-backed (its Cranelift
+    /// Variable is never populated), so slot-presence — not just stride > 8 —
+    /// forces by-pointer. Only a plain scalar Integer key (a real Variable)
+    /// stays by-value. Shared by insert/remove/get/contains so the three key
+    /// arms stay identical.
+    fn key_marshal(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        key_arg: Local,
+        key_stride: i64,
+    ) -> Result<(cranelift_codegen::ir::Value, bool), JitError> {
+        let by_ptr = key_stride > 8
+            || self.struct_slots.contains_key(&key_arg)
+            || self.enum_slots.contains_key(&key_arg);
+        if by_ptr {
+            let val = if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
+                builder.ins().stack_addr(I64, *slot, 0)
+            } else if let Some((slot, _)) = self.enum_slots.get(&key_arg) {
+                builder.ins().stack_addr(I64, *slot, 0)
+            } else {
+                return Err(JitError::Unsupported(
+                    "hashmap key: fat/aggregate key without a slot (ADR-0080/0083 by-pointer \
+                     ABI requires a pre-allocated key slot)"
+                        .into(),
+                ));
+            };
+            Ok((val, true))
+        } else {
+            Ok((builder.use_var(self.var(key_arg)), false))
         }
     }
 
@@ -3531,26 +3761,31 @@ impl JitContext {
                             // sentinel discriminator, §6). Enum KEY refused here
                             // (Slice 2); non-hashable Struct leaves refused by
                             // the walker's `collect_key_leaves`.
-                            let (key_stride, value_stride, key_struct) = {
+                            let (key_stride, value_stride, key_agg) = {
                                 let dty = &body.local_decls[dest[0].0].ty;
                                 match dty.nullable_payload().unwrap_or(dty) {
                                     MirType::HashMap(k, v) => {
                                         Self::refuse_hashmap_enum_key(k)?;
-                                        let key_struct = match k.nullable_payload().unwrap_or(k) {
-                                            MirType::Struct(name) => Some(name.clone()),
+                                        // ADR-0083 §AMEND-1: a Struct OR an Enum
+                                        // key gets type-aware walkers; NULL
+                                        // (Integer/String) via the else arm.
+                                        let key_agg = match k.nullable_payload().unwrap_or(k) {
+                                            k @ (MirType::Struct(_) | MirType::Enum(_)) => {
+                                                Some(k.clone())
+                                            }
                                             _ => None,
                                         };
                                         (
                                             Self::vector_elem_size(body, k)?,
                                             Self::vector_elem_size(body, v)?,
-                                            key_struct,
+                                            key_agg,
                                         )
                                     }
                                     _ => (8, 8, None),
                                 }
                             };
-                            let (hash_fn, eq_fn) = if let Some(name) = key_struct {
-                                self.emit_or_get_key_walkers(builder, body, &name)?
+                            let (hash_fn, eq_fn) = if let Some(kty) = key_agg {
+                                self.emit_or_get_key_walkers(builder, body, &kty)?
                             } else {
                                 let z = builder.ins().iconst(I64, 0);
                                 (z, z)
@@ -3648,26 +3883,12 @@ impl JitContext {
                             };
                             let map_val = builder.use_var(self.var(args[0]));
                             let key_arg = args[1];
-                            // ADR-0083 §6: a Struct key marshals BY-POINTER at
-                            // ANY stride (the walker reads its bytes) — a single-
-                            // field 8B struct key would otherwise `use_var` the
-                            // never-populated Variable and pass garbage. String
-                            // (stride 24) is also slot-backed. Only a plain
-                            // Integer (scalar Variable) stays by-value.
-                            let key_val =
-                                if key_stride > 8 || self.struct_slots.contains_key(&key_arg) {
-                                    if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
-                                        builder.ins().stack_addr(I64, *slot, 0)
-                                    } else {
-                                        return Err(JitError::Unsupported(
-                                            "hashmap_insert: fat key without a slot (ADR-0080 \
-                                         by-pointer ABI requires a pre-allocated key slot)"
-                                                .into(),
-                                        ));
-                                    }
-                                } else {
-                                    builder.use_var(self.var(key_arg))
-                                };
+                            // ADR-0083 §6/§AMEND-1: a Struct OR Enum key marshals
+                            // BY-POINTER at any stride (the walker reads its
+                            // bytes); a fat String (stride 24) too. Only a plain
+                            // Integer stays by-value.
+                            let (key_val, key_by_ptr) =
+                                self.key_marshal(builder, key_arg, key_stride)?;
                             let val_arg = args[2];
                             // ADR-0082 Slice C (F3): mirror `vector_push`'s
                             // fat/8B-aggregate marshal exactly (MÌN-3, two
@@ -3701,13 +3922,11 @@ impl JitContext {
                             } else {
                                 builder.use_var(self.var(val_arg))
                             };
-                            // ADR-0083 §6: a by-pointer key (String OR Struct, any
-                            // stride) needs the update-flag scratch so the JIT
-                            // can free the redundant incoming key on a dup-content
-                            // update (recursive for a Struct — no-op for an
-                            // all-scalar Copy struct).
-                            let key_by_ptr =
-                                key_stride > 8 || self.struct_slots.contains_key(&key_arg);
+                            // ADR-0083 §6/§AMEND-1: a by-pointer key (String OR
+                            // Struct OR Enum, any stride) needs the update-flag
+                            // scratch so the JIT can free the redundant incoming
+                            // key on a dup-content update (recursive for an
+                            // aggregate — no-op for an all-scalar Copy key).
                             let is_update_out = if key_by_ptr {
                                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
                                     StackSlotKind::ExplicitSlot,
@@ -3741,26 +3960,10 @@ impl JitContext {
                             };
                             let map_val = builder.use_var(self.var(args[0]));
                             let key_arg = args[1];
-                            // ADR-0083 §6: a Struct key marshals BY-POINTER at
-                            // ANY stride (the walker reads its bytes) — a single-
-                            // field 8B struct key would otherwise `use_var` the
-                            // never-populated Variable and pass garbage. String
-                            // (stride 24) is also slot-backed. Only a plain
-                            // Integer (scalar Variable) stays by-value.
-                            let key_val =
-                                if key_stride > 8 || self.struct_slots.contains_key(&key_arg) {
-                                    if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
-                                        builder.ins().stack_addr(I64, *slot, 0)
-                                    } else {
-                                        return Err(JitError::Unsupported(
-                                            "hashmap_remove: fat key without a slot (ADR-0080 \
-                                         by-pointer ABI requires a pre-allocated key slot)"
-                                                .into(),
-                                        ));
-                                    }
-                                } else {
-                                    builder.use_var(self.var(key_arg))
-                                };
+                            // ADR-0083 §6/§AMEND-1: Struct/Enum/String key →
+                            // by-pointer; plain Integer → by-value.
+                            let (key_val, key_by_ptr) =
+                                self.key_marshal(builder, key_arg, key_stride)?;
                             // ADR-0082 B-α Slice D-2: mirror `vector_pop`'s
                             // D-1b out_ptr fix — a fat Struct value dest is
                             // `Nullable(Struct)` (tag@0/fields@+8, ADR-0076
@@ -3784,12 +3987,10 @@ impl JitContext {
                                 builder.ins().iconst(I64, 0)
                             };
                             // ADR-0083 §6: surface the resident key for a
-                            // by-pointer key (String OR Struct, any stride). The
-                            // scratch slot must be `key_stride` bytes — a struct
-                            // key wider than 24B would overflow a hardcoded-24
-                            // slot when the shim memcpy's `key_stride` bytes in.
-                            let key_by_ptr =
-                                key_stride > 8 || self.struct_slots.contains_key(&key_arg);
+                            // by-pointer key (String OR Struct OR Enum, any
+                            // stride). The scratch slot must be `key_stride`
+                            // bytes — a key wider than 24B would overflow a
+                            // hardcoded-24 slot when the shim memcpy's it in.
                             let key_out_ptr = if key_by_ptr {
                                 let sz = u32::try_from(key_stride).unwrap_or(24).max(8);
                                 let slot = builder.create_sized_stack_slot(StackSlotData::new(
@@ -3839,25 +4040,10 @@ impl JitContext {
                             };
                             let map_val = builder.use_var(self.var(args[0]));
                             let key_arg = args[1];
-                            // ADR-0083 §6: a Struct key marshals BY-POINTER at
-                            // ANY stride (the walker reads its bytes) — a single-
-                            // field 8B struct key would otherwise `use_var` the
-                            // never-populated Variable and pass garbage. String
-                            // (stride 24) is also slot-backed. Only a plain
-                            // Integer (scalar Variable) stays by-value.
-                            let key_val =
-                                if key_stride > 8 || self.struct_slots.contains_key(&key_arg) {
-                                    if let Some((slot, _)) = self.struct_slots.get(&key_arg) {
-                                        builder.ins().stack_addr(I64, *slot, 0)
-                                    } else {
-                                        return Err(JitError::Unsupported(format!(
-                                            "{callee_name}: fat key without a slot (ADR-0080 \
-                                         by-pointer ABI requires a pre-allocated key slot)"
-                                        )));
-                                    }
-                                } else {
-                                    builder.use_var(self.var(key_arg))
-                                };
+                            // ADR-0083 §6/§AMEND-1: Struct/Enum/String key →
+                            // by-pointer; plain Integer → by-value.
+                            let (key_val, _key_by_ptr) =
+                                self.key_marshal(builder, key_arg, key_stride)?;
                             vec![map_val, key_val]
                         } else if callee_name == "__triet_vector_pop"
                             || callee_name == "__triet_vector_pop_front"

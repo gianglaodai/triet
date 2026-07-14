@@ -150,6 +150,38 @@ fn hashmap_struct_key_string_leaf_frees_once() {
     );
 }
 
+/// ★ ADR-0083 §AMEND-1 DP-E5 — ENUM-KEY-DROP COUNTING (permanent): a
+/// `HashMap<Name, Integer>` key `enum Name { Named(String), Anon }` carries a
+/// String in its `Named` variant's payload. Insert TWO distinct `Named` keys;
+/// on map Drop the JIT-emitted key-free loop must recurse into each resident
+/// enum key via `emit_enum_drop_glue_at` and free its active-variant String
+/// EXACTLY twice. `insert` consumes (Moves) each key; M3 tombstones the local
+/// (payload ptr @+8 → 0) so its own Drop is a no-op → the only frees are the
+/// map's. Poison (RED): change `emit_hashmap_value_free_loop`/key-free routing
+/// so the enum key's String leaf is not walked → count 0 (leak); or double-free
+/// via a missing tombstone → count > 2 (SIGABRT under a real allocator).
+#[test]
+fn hashmap_enum_key_string_payload_frees_twice() {
+    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    STR_FREES.store(0, Ordering::SeqCst);
+    let r = run("enum Name { Named(String), Anon }\n\
+         function main() -> Integer = {\n\
+         \x20   let m: HashMap<Name, Integer> = hashmap_new();\n\
+         \x20   let k1 = Name::Named(\"alice\");\n\
+         \x20   let m2 = insert(m, k1, 1);\n\
+         \x20   let k2 = Name::Named(\"roberto-the-long-one\");\n\
+         \x20   let m3 = insert(m2, k2, 2);\n\
+         \x20   return 0;\n\
+         }");
+    assert_eq!(r, 0);
+    assert_eq!(
+        STR_FREES.load(Ordering::SeqCst),
+        2,
+        "ADR-0083 §AMEND-1: each resident enum key's active-variant String must \
+         free exactly once on map Drop (enum key-free loop via drop-glue)"
+    );
+}
+
 #[test]
 fn hashmap_field_frees_once() {
     let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

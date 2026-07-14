@@ -155,24 +155,31 @@ impl Type {
         matches!(self, Self::String | Self::Vector(_) | Self::HashMap(_, _))
     }
 
-    /// ADR-0083 §5 — is this a valid `HashMap` KEY type? `Integer`/`String`
-    /// (ADR-0080), or a `Struct` all of whose leaves are hashable
-    /// (`is_hashable_leaf`). An Enum key is Slice 2 (deferred → not hashable
-    /// here). Structural content hash/eq — NOT `==`/Ł3 (ADR-0083 §1).
+    /// ADR-0083 §5 / §AMEND-1 — is this a valid `HashMap` KEY type?
+    /// `Integer`/`String` (ADR-0080), a `Struct` all of whose leaves are
+    /// hashable, or an `Enum` all of whose variant payloads are hashable
+    /// (Slice 2). A NULLABLE enum (`Enum?` = `Nullable(UserEnum)`) does NOT
+    /// match the `UserEnum` arm → falls through to `false` (§OUT). Structural
+    /// content hash/eq — NOT `==`/Ł3 (ADR-0083 §1).
     #[must_use]
     pub fn is_hashable_key(&self) -> bool {
         match self {
             Self::Integer | Self::String => true,
             Self::UserStruct { fields, .. } => fields.iter().all(|(_, ft)| ft.is_hashable_leaf()),
+            Self::UserEnum { variants, .. } => variants.iter().all(|(_, payload)| {
+                payload
+                    .as_ref()
+                    .is_none_or(|p| p.is_hashable_enum_payload())
+            }),
             _ => false,
         }
     }
 
-    /// ADR-0083 §5 — is this type a valid LEAF of a hashable key struct? Only
-    /// scalar non-nullable (`Trit`/`Tryte`/`Integer`/`Long`/`Trilean`),
-    /// `String`, or a nested struct that recursively satisfies the same rule.
-    /// A `Vector`/`HashMap`/`Enum`/`Nullable`/`Outcome` (mutable, sentinel-
-    /// bearing, or discriminant-tagged) leaf is NON-hashable → E1048.
+    /// ADR-0083 §5 / §AMEND-1 — is this type a valid LEAF of a hashable key?
+    /// Only scalar non-nullable (`Trit`/`Tryte`/`Integer`/`Long`/`Trilean`),
+    /// `String`, a nested struct, or an enum whose variant payloads are all
+    /// hashable enum-payloads (enum-as-struct-leaf, Slice 2). A
+    /// `Vector`/`HashMap`/`Nullable`/`Outcome` leaf is NON-hashable → E1048.
     #[must_use]
     pub fn is_hashable_leaf(&self) -> bool {
         match self {
@@ -183,8 +190,38 @@ impl Type {
             | Self::Trilean { .. }
             | Self::String => true,
             Self::UserStruct { fields, .. } => fields.iter().all(|(_, ft)| ft.is_hashable_leaf()),
+            Self::UserEnum { variants, .. } => variants.iter().all(|(_, payload)| {
+                payload
+                    .as_ref()
+                    .is_none_or(|p| p.is_hashable_enum_payload())
+            }),
             _ => false,
         }
+    }
+
+    /// ADR-0083 §AMEND-1 — is this type a valid ENUM-VARIANT PAYLOAD of a
+    /// hashable key? Restricted to a SCALAR word or a `String` — NOT a nested
+    /// aggregate (`Struct`/`Enum`). The lowerer sizes every enum variant
+    /// payload at a fixed 8B (String = 24B special-cased), and its aggregate-
+    /// field fixup pass touches struct fields ONLY, never enum payloads
+    /// (`triet-lower/src/lib.rs` §"fixup pass"). So an enum variant carrying a
+    /// `Point{x,y}` (16B) or another enum is UNDER-sized → the key marshal
+    /// truncates it and a roundtrip silently MISSES. Verified (O probe): with
+    /// the refuse lifted, a `HashMap<Shape,_>` roundtrip on `Shape::Dot(Point)`
+    /// returns MISS (-1) — data truncated on marshal. Refuse over guess: reject
+    /// at E1048 until the "Enum-Payload-Aggregate Sizing" front closes the gap
+    /// (the "variant size-mismatch" the ADR flagged).
+    #[must_use]
+    pub const fn is_hashable_enum_payload(&self) -> bool {
+        matches!(
+            self,
+            Self::Trit
+                | Self::Tryte
+                | Self::Integer
+                | Self::Long
+                | Self::Trilean { .. }
+                | Self::String
+        )
     }
 
     /// Returns true if this is any Trilean (refined or not). Replaces

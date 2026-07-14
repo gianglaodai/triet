@@ -1,0 +1,10 @@
+// ERROR: E1048
+// ADR-0083 §AMEND-1 §OUT — a NULLABLE-enum key (`Enum?`) is refused: the null
+// sentinel bit-pattern collides with the discriminant. Non-vacuous: the key
+// annotation `HashMap<Color?, Integer>` is what fires E1048; a plain
+// `HashMap<Color, Integer>` compiles (fixture 357).
+enum Color { Red, Green, Blue }
+function main() -> Integer = {
+    let m: HashMap<Color?, Integer> = hashmap_new();
+    return 0;
+}

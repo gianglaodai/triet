@@ -1,0 +1,20 @@
+// EXPECT: 42
+// ADR-0083 §AMEND-1 §A5 — DP-E2 reassign-force-garbage tooth (G mandate). A
+// `mutable k` is first Big(String) (fills the 32B slot's tail with {ptr,len,cap}),
+// then reassigned Small(1) (disc=1, Integer@8=1; the tail bytes @16..32 stay
+// STALE garbage — proven non-vacuous). insert that ragged key, then get a FRESH
+// Small(1). The active-variant walker reads ONLY disc@0 + Integer@8 — never the
+// garbage tail — so HIT (42). Poison (RED): mix/compare the fixed-width tail
+// (@16) into the walker → the stale tail differs from the fresh key → MISS (-1).
+// (Verified during implementation: poisoning the hash to read @+16 flipped this
+// fixture 42 → -1.)
+enum E { Big(String), Small(Integer) }
+function main() -> Integer = {
+    let mutable k = E::Big("garbagexxxxxxxxxxxxxxxx");
+    k = E::Small(1);
+    let m: HashMap<E, Integer> = hashmap_new();
+    let m2 = insert(m, k, 42);
+    let k_clean = E::Small(1);
+    let r = get(&0 m2, k_clean);
+    return match r { ~+ v => { v } ~0 => { -1 } };
+}

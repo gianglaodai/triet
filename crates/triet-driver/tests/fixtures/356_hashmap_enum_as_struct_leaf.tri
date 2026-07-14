@@ -1,0 +1,20 @@
+// EXPECT: 42007
+// ADR-0083 §AMEND-1 — enum-as-struct-leaf key: struct K{id, tag: Tag} where the
+// `tag` field is an ENUM. The struct walker recurses into the enum field via the
+// disc-switch walker. insert K{5, X(9)}=42; get K{5, X(9)} HIT (42); get
+// K{5, Y(9)} (same id, different tag variant) MISS (7). Poison (RED): skip the
+// enum leaf in the struct walker → the tag is ignored → X(9)/Y(9) collide.
+enum Tag { X(Integer), Y(Integer) }
+struct K { id: Integer, tag: Tag }
+function main() -> Integer = {
+    let m: HashMap<K, Integer> = hashmap_new();
+    let k = K { id: 5, tag: Tag::X(9) };
+    let m2 = insert(m, k, 42);
+    let hit = K { id: 5, tag: Tag::X(9) };
+    let miss = K { id: 5, tag: Tag::Y(9) };
+    let rh = get(&0 m2, hit);
+    let rm = get(&0 m2, miss);
+    let a = match rh { ~+ v => { v } ~0 => { -1 } };
+    let b = match rm { ~+ v => { v } ~0 => { 7 } };
+    return a * 1000 + b;
+}

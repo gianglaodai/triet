@@ -1002,10 +1002,11 @@ impl Checker<'_> {
                     sub_map.entry(tp.name.clone()).or_insert(Type::Integer);
                 }
             }
-            // ADR-0080 Mũi C2 / ADR-0083 §5: REFUSE a HashMap key type that is
-            // not hashable — `Integer`/`String`, or a Struct whose leaves are
-            // all scalar/String/nested-struct (`is_hashable_key`). An Enum key,
-            // or a struct with a Vector/HashMap/Enum/Nullable/Outcome leaf →
+            // ADR-0080 Mũi C2 / ADR-0083 §5/§AMEND-1: REFUSE a HashMap key type
+            // that is not hashable — `Integer`/`String`, a Struct whose leaves
+            // are all hashable, or an Enum whose variant payloads are all
+            // hashable (`is_hashable_key`). A struct/enum with a
+            // Vector/HashMap/Nullable/Outcome leaf, or an `Enum?` key →
             // E1048. Hard boundary, no skeleton/soft-defer. Fires for all three
             // K-binding entry points (`hashmap_new` explicit annotation or
             // context seed, `insert`/`remove` bound from the map/key arg) since
@@ -1187,19 +1188,19 @@ impl Checker<'_> {
             }
         }
 
-        // ADR-0083 §5: struct-key HashMap `get`/`contains`. The monomorphic
-        // overload table cannot enumerate user structs, so match the key
-        // STRUCTURALLY here: arg[0] is `HashMap<K,V>` or `&0 HashMap<K,V>` with
-        // `K` a hashable Struct (`is_hashable_key`), arg[1] is that same `K`.
-        // Mirrors the generic `insert`/`remove` path (which already accept
-        // struct keys) for the read ops that live in the overload table.
+        // ADR-0083 §5/§AMEND-1: struct/enum-key HashMap `get`/`contains`. The
+        // monomorphic overload table cannot enumerate user aggregates, so match
+        // the key STRUCTURALLY here: arg[0] is `HashMap<K,V>` or `&0
+        // HashMap<K,V>` with `K` a hashable Struct OR Enum (`is_hashable_key`),
+        // arg[1] is that same `K`. Mirrors the generic `insert`/`remove` path
+        // (which already accept aggregate keys) for the read ops in the table.
         if matches!(name, "get" | "contains") && arg_tys.len() == 2 {
             let (map_ty, is_ref) = match &arg_tys[0] {
                 Type::Reference(ReferenceForm::BorrowReadOnly, inner) => (inner.as_ref(), true),
                 other => (other, false),
             };
             if let Type::HashMap(k, v) = map_ty
-                && matches!(k.as_ref(), Type::UserStruct { .. })
+                && matches!(k.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. })
                 && k.is_hashable_key()
                 && k.matches(&arg_tys[1])
             {

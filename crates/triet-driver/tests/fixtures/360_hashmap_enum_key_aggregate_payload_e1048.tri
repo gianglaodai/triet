@@ -1,0 +1,14 @@
+// ERROR: E1048
+// ADR-0083 §AMEND-1 — an enum key whose variant carries an AGGREGATE payload
+// (a Struct/Enum > 8B) is refused: the lowerer sizes every enum payload at a
+// fixed 8B (no aggregate-payload fixup), so a nested Point{x,y} (16B) is
+// under-sized and would truncate on the key marshal → silent MISS. Refuse over
+// guess (E1048) until the enum-payload-aggregate sizing gap is closed.
+struct Point { x: Integer, y: Integer }
+enum Shape { Dot(Point), None }
+function main() -> Integer = {
+    let m: HashMap<Shape, Integer> = hashmap_new();
+    let k = Shape::Dot(Point { x: 3, y: 4 });
+    let m2 = insert(m, k, 42);
+    return 0;
+}

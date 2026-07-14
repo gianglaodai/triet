@@ -735,17 +735,59 @@ fn hashmap_nonhashable_struct_key_refused() {
     );
 }
 
-/// ADR-0083 §5 — an Enum key is Slice 2 (deferred) → E1048.
+/// ADR-0083 §AMEND-1 (Slice 2) — an Enum key whose variant payloads are all
+/// hashable (scalar/String/unit) is now ACCEPTED (was refused as Slice-2-
+/// deferred under Slice 1). Repurposed from the old `hashmap_enum_key_refused`
+/// (LUẬT 3): the guard it protected (Enum-key refuse) was intentionally lifted
+/// by §AMEND-1 — poison `is_hashable_key`'s `UserEnum` arm to `false` and this
+/// test goes RED (E1048 re-fires on Color).
 #[test]
-fn hashmap_enum_key_refused() {
+fn hashmap_hashable_enum_key_accepted() {
     let src = "enum Color { Red, Green }\n\
         function main() -> Integer = { let m: HashMap<Color, Integer> = hashmap_new(); return 0; }";
     let (program, parse_errors) = triet_parser::parse(src);
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
     let (type_errors, _, _) = triet_typecheck::check(&program);
     assert!(
+        !type_errors.iter().any(|e| e.to_string().contains("E1048")),
+        "ADR-0083 §AMEND-1: HashMap<Color,_> (scalar/unit Enum key) must be ACCEPTED, \
+         got {type_errors:?}"
+    );
+}
+
+/// ADR-0083 §AMEND-1 §OUT — a NULLABLE-enum key (`Enum?`) stays REFUSED (the
+/// null sentinel collides with the discriminant). Poison: add a `Nullable`
+/// unwrap to `is_hashable_key` accepting `Nullable(UserEnum)` → this goes RED.
+#[test]
+fn hashmap_nullable_enum_key_refused() {
+    let src = "enum Color { Red, Green }\n\
+        function main() -> Integer = { let m: HashMap<Color?, Integer> = hashmap_new(); return 0; }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, _, _) = triet_typecheck::check(&program);
+    assert!(
         type_errors.iter().any(|e| e.to_string().contains("E1048")),
-        "ADR-0083: HashMap<Color,_> (Enum key = Slice 2) must be E1048, got {type_errors:?}"
+        "ADR-0083 §AMEND-1 §OUT: HashMap<Color?,_> (nullable-enum key) must be E1048, \
+         got {type_errors:?}"
+    );
+}
+
+/// ADR-0083 §AMEND-1 — an Enum key whose variant carries an AGGREGATE payload
+/// (a Struct/Enum > 8B, under-sized by the lowerer) is REFUSED with E1048.
+/// Poison `is_hashable_enum_payload` to accept `UserStruct`/`UserEnum` → this
+/// goes RED (compile succeeds, then the key marshal would silently truncate).
+#[test]
+fn hashmap_enum_aggregate_payload_key_refused() {
+    let src = "struct Point { x: Integer, y: Integer }\n\
+        enum Shape { Dot(Point), None }\n\
+        function main() -> Integer = { let m: HashMap<Shape, Integer> = hashmap_new(); return 0; }";
+    let (program, parse_errors) = triet_parser::parse(src);
+    assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
+    let (type_errors, _, _) = triet_typecheck::check(&program);
+    assert!(
+        type_errors.iter().any(|e| e.to_string().contains("E1048")),
+        "ADR-0083 §AMEND-1: HashMap<Shape{{Dot(Point)}},_> (aggregate enum payload) must be \
+         E1048, got {type_errors:?}"
     );
 }
 

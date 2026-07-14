@@ -1,0 +1,21 @@
+// EXPECT: 42007
+// ADR-0083 §AMEND-1 — HashMap<Enum,V> scalar-payload key roundtrip through the
+// JIT-emitted disc-switch hash/eq walkers. insert Key::A(7)=42; get Key::A(7)
+// HIT (42); get Key::B(7) — SAME payload, DIFFERENT variant — MISS (~0 → 7).
+// This is the DP-E1 disc tooth: the walker mixes/compares disc@0, so two
+// variants with identical payload must NOT collide. Poison (RED): drop the
+// disc mix/check from the enum walker → A(7) and B(7) collide → get returns 42
+// for both → total 42042 instead of 42007.
+enum Key { A(Integer), B(Integer) }
+function main() -> Integer = {
+    let m: HashMap<Key, Integer> = hashmap_new();
+    let k = Key::A(7);
+    let m2 = insert(m, k, 42);
+    let hit = Key::A(7);
+    let miss = Key::B(7);
+    let rh = get(&0 m2, hit);
+    let rm = get(&0 m2, miss);
+    let a = match rh { ~+ v => { v } ~0 => { -1 } };
+    let b = match rm { ~+ v => { v } ~0 => { 7 } };
+    return a * 1000 + b;
+}

@@ -1,0 +1,15 @@
+// EXPECT: 42007
+// ADR-0083 §AMEND-1 — UNIT-variant enum key (disc-only, no payload). insert
+// Color::Green=42; get Color::Green HIT (42); get Color::Red MISS (7). The
+// walker hashes/compares disc@0 only. Poison (RED): drop the disc → all
+// variants collide → Red returns 42 → 42042.
+enum Color { Red, Green, Blue }
+function main() -> Integer = {
+    let m: HashMap<Color, Integer> = hashmap_new();
+    let m2 = insert(m, Color::Green, 42);
+    let rh = get(&0 m2, Color::Green);
+    let rm = get(&0 m2, Color::Red);
+    let a = match rh { ~+ v => { v } ~0 => { -1 } };
+    let b = match rm { ~+ v => { v } ~0 => { 7 } };
+    return a * 1000 + b;
+}

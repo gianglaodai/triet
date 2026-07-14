@@ -1,0 +1,16 @@
+// EXPECT: 42
+// ADR-0083 §AMEND-1 — CONTENT hash/eq of a String-PAYLOAD enum key. insert
+// Name::Named("alice"); get with a SECOND "alice" literal (a DIFFERENT String
+// allocation, same content). The active-variant walker hashes/compares the
+// payload String by CONTENT (__triet_string_hash/_eq on {ptr,len}) — not by
+// pointer → HIT (42). Poison (RED): compare the String payload by pointer
+// identity → the two distinct allocations differ → MISS (-1).
+enum Name { Named(String), Anon }
+function main() -> Integer = {
+    let m: HashMap<Name, Integer> = hashmap_new();
+    let k1 = Name::Named("alice");
+    let m2 = insert(m, k1, 42);
+    let k2 = Name::Named("alice");
+    let r = get(&0 m2, k2);
+    return match r { ~+ v => { v } ~0 => { -1 } };
+}
