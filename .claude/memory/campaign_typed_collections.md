@@ -1,11 +1,27 @@
 ---
 name: campaign_typed_collections
-description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key (ADR-0083, fnptr-in-header + JIT hash/eq walkers) — KHÓA SỔ 2026-07-13 `1c08a67`. Full detail, MEMORY.md index only links here."
+description: "✅ Typed Vector/HashMap P1 (ADR-0077/0078) + Get-Borrow (ADR-0079) + key-typed HashMap<String,V> (ADR-0080) + Read-side Cụm A + CỤM B push+drop Slice A/B/C (Vector<Struct/Enum>, HashMap value) + VALUE MOVE-OUT D-1/D-2 (Vector pop, HashMap remove by-value, ADR-0082 §AMEND-2) + Vector::pop_front + KEY-AGGREGATE Slice 1 struct-key + Slice 2 enum-key (ADR-0083 +§AMEND-1, fnptr-in-header + JIT hash/eq walkers) — KHÓA SỔ 2026-07-13 `91c273a`. Full detail, MEMORY.md index only links here."
 metadata: 
   node_type: memory
   type: project
   originSessionId: ac639140-8210-42c9-941b-8cfd203d270e
 ---
+
+## ✅ ĐÓNG — ADR-0083 §AMEND-1 KEY-AGGREGATE Slice 2 (Enum keys, O+G ký 2026-07-13, PUSHED)
+origin/main = `91c273a`, gate `0·0·354·0`. §AMEND-1 (G ký cuối ADR-0083). `HashMap<Enum,V>` enum-key (payload **unit/scalar/String** + enum-as-struct-leaf) sound: insert/get/get_ref/contains/remove/drop. **KHÔNG ADR mới** (Slice 2 đã scope-defer trong ADR gốc). **Model D = Sonnet 5** (Giang chọn thử tiered; O verify máu bù).
+
+**Cơ chế (§A):** ABI KHÔNG đổi (fnptr-in-header + §6 dispatch + collision-shield = Slice 1 verbatim). Walker model **flat `KeyLeaf` → recursive emission** `emit_key_hash_value`(mir_lower:558)/`emit_key_eq_value`(:680): enum arm = **disc-mix vào FNV + `brif`-chain over ACTIVE variant only** (mirror `emit_enum_drop_glue_at:1886`), eq = disc-short-circuit-NE + per-active-variant leaf compare. **CHỈ đọc disc@0 + active-variant declared leaves @+8, KHÔNG BAO GIỜ raw fixed-width image** = thuốc giải garbage/padding/size-mismatch G lo. Key free-loop **REUSE THẲNG `emit_enum_drop_glue_at`** (G gật 100%). `enum_payload_variants:802` choke. Typecheck `is_hashable_key/leaf/enum_payload` (types.rs). Overload `exprs.rs:1196` thêm UserEnum. `key_marshal` fallback `enum_slots`.
+
+**🩸 O VERIFY MÁU (cp-snapshot restore md5 `80fd7ce7`):**
+- **DP-E2 reassign-garbage (G MANDATE, G tự hào):** poison tail-read @off+16 → 358 **MISS -1** (healthy 42) → **NON-VACUOUS** — tail rác sau `let mutable k=Big(String); k=Small(1)` THẬT SỰ tồn tại (@16..32 = stale {len,cap} của Big), walker active-leaves-only né đúng. (354 collateral -993 = poison active; 355 String-payload giữ 42 content-deterministic.)
+- **DP-E6 §6-reverse** (đảo fnptr↔stride `hashmap_key_hash:5658`) → 354 enum-key **crash 134** → shield gánh cả key-class enum mới (chỉ nổ khi poison, không lãng xẹt).
+- Baseline walker JIT THẬT: 354=42007·355=42·356=42007(enum-as-struct-leaf)·357=42007(unit)·358=42. Struct Slice-1 **KHÔNG hồi quy** 352=42007/353=42 (dù walker viết lại flat→emission).
+
+**⚖ DESCOPE — G RÚT LỆNH "nested-enum MỞ" (probe O quyết):** enum variant ôm **aggregate payload (Struct/Enum)** → **REFUSE E1048**. O **lift refuse + probe** `HashMap<Shape,_>` roundtrip (`Shape::Dot(Point)`) → **MISS -1** → chứng minh lowerer fix-8B enum-payload (fixup pass chỉ struct field, bỏ enum payload) → aggregate >8B truncate on marshal → **silent MISS thật**. D descope = refuse-over-guess ĐÚNG, G khen "cứu rỗi bộ nhớ". **🔴 NỢ MỚI G MỞ: "Enum-Payload-Aggregate Sizing Fix"** (`triet-lower/src/lib.rs`) — đóng thì mở khóa nested-enum/enum-struct-payload key.
+
+**⚠️ D BỊA CHỨNG PHỤ (mẫu #9, dù kết luận đúng):** report + doc-comment types.rs ghi *"enum-in-enum fails MIR verifier even in plain match"* — **O P1 probe bác** (`enum Inner/Outer` plain match chạy=7). G: "khóa feature CHỈ được vì sự thật compiler, KHÔNG bịa; đưa rác vào doc = phá hoại di sản". Sửa doc: giữ sự thật (truncate→MISS, neo O-probe -1), xóa claim MIR-verifier. **O tự sửa doc-fix cuối** (Sonnet-D quota-cut giữa chừng nhiều lần; doc = documentation của finding O verify, không phải feature-code D).
+
+**Bài học Slice 2:** ① disc-switch-walker mirror drop-glue = tổng quát hóa sạch (active-leaves-only né garbage — DP-E2 chứng minh cả padding rác THẬT lẫn walker né ĐÚNG). ② refuse-over-guess thắng cả G-ruling khi probe lộ pre-existing rot (lowerer enum-payload-sizing). ③ verify claim-phụ của D độc lập — kết luận đúng KHÔNG miễn trừ chứng cứ bịa. ④ Sonnet đủ sức phần lõi disc-switch nhưng vết = 1 doc bịa + nhiều quota-cut. [[feedback_poison_must_be_red]] [[feedback_failure_mode_precision]] [[colleague_d_persona]]
 
 ## ✅ ĐÓNG — ADR-0083 KEY-AGGREGATE HashMap Slice 1 (Struct keys, O+G ký 2026-07-13, PUSHED)
 origin/main = `1c08a67` (feat `0ebd763`+`1c08a67`; TODO-freeze `10c4ed1`), gate `0·0·347·0`. **ADR-0083 MỚI** (G ký). `HashMap<Struct,V>` — struct làm KEY (leaves scalar/String/nested-struct) sound end-to-end: insert/get/get_ref/contains/remove/drop.
