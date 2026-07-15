@@ -1,0 +1,27 @@
+// EXPECT: 7009
+// ADR-0067 §AMEND + ADR-0082 §AMEND-3 — T4: get-by-value `get(m, k)` on
+// `HashMap<Integer, MyEnum>` where `MyEnum`'s payload is a Copy struct > 8B
+// (`Big{p,q}` = 16B). `r` and `r_again` both read key 1 — a destructive get
+// would make the SECOND read miss; both must HIT with the SAME content,
+// proving the value stays resident (non-destructive) and the correctly-sized
+// (24B, fat) enum is copied out whole via the `_get_copy` shim's fat
+// load-loop, not truncated. `pick_p`/`pick_q` are separate functions (not a
+// nested `match` inside the `~+` arm — see fixture 369's note on the
+// unrelated nested-match Cranelift bug).
+struct Big { p: Integer, q: Integer }
+enum MyEnum { V(Big), N }
+function pick_p(e: MyEnum) -> Integer {
+    return match e { MyEnum::V(g) => g.p, MyEnum::N => -1 };
+}
+function pick_q(e: MyEnum) -> Integer {
+    return match e { MyEnum::V(g) => g.q, MyEnum::N => -1 };
+}
+function main() -> Integer {
+    let mutable m: HashMap<Integer, MyEnum> = hashmap_new();
+    m = insert(m, 1, MyEnum::V(Big { p: 7, q: 9 }));
+    let r = get(m, 1);
+    let r_again = get(m, 1);
+    let a = match r { ~+ e => pick_p(e), ~0 => -9 };
+    let b = match r_again { ~+ e => pick_q(e), ~0 => -9 };
+    return a * 1000 + b;
+}

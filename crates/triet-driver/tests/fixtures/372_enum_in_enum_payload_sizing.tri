@@ -1,0 +1,24 @@
+// EXPECT: 42
+// ADR-0067 §AMEND — T5: an enum payload that is ANOTHER enum (`Outer::Wrap`
+// carries `Inner`, a scalar-payload enum). Exercises the co-fixpoint's
+// self-referential `MirType::Enum(name) => enum_map.get(name)` arm: `Inner`
+// (8 disc + 8 Integer payload = 16B) must resolve BEFORE `Outer` folds it in
+// (8 + 16 = 24B) — the two enum layouts refine against each other across
+// fixpoint iterations, not just struct-against-enum. `pick_inner` is a
+// separate function (not a nested `match` inside `Outer::Wrap`'s arm — see
+// fixture 369's note: a syntactically nested match currently hits an
+// unrelated pre-existing Cranelift dominance/terminator verifier bug,
+// reproducible even with two independent non-nested enums and zero
+// aggregate payloads — reported to O, out of scope for this sizing front).
+enum Inner { S(Integer), Z }
+enum Outer { Wrap(Inner), Empty }
+function pick_inner(i: Inner) -> Integer {
+    return match i { Inner::S(n) => n, Inner::Z => -1 };
+}
+function main() -> Integer {
+    let o = Outer::Wrap(Inner::S(42));
+    return match o {
+        Outer::Wrap(i) => pick_inner(i),
+        Outer::Empty => -2,
+    };
+}

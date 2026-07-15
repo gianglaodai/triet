@@ -1,0 +1,15 @@
+// ERROR: heap types
+// ADR-0067 §AMEND — T6 (negative control): the sizing fix is Copy-aggregate
+// ONLY. A heap-BEARING aggregate payload (`Named{id, label: String}`) must
+// STILL be refused at construction (`triet-lower/src/lib.rs`'s
+// `Expr::EnumLiteral` gate: not a direct heap leaf, not `ctx_is_copy` since
+// `Named` carries a `String` field) — this front does not touch that refuse,
+// it only fixes the WIDTH of an aggregate payload that IS allowed through.
+// Non-vacuous: fixture 368 (all-scalar `Big` payload) compiles and runs fine
+// — only the heap-bearing aggregate is refused here.
+struct Named { id: Integer, label: String }
+enum W { WithName(Named), Empty }
+function main() -> Integer {
+    let w = W::WithName(Named { id: 1, label: "x" });
+    return 0;
+}

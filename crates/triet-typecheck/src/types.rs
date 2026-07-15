@@ -199,29 +199,23 @@ impl Type {
         }
     }
 
-    /// ADR-0083 §AMEND-1 — is this type a valid ENUM-VARIANT PAYLOAD of a
-    /// hashable key? Restricted to a SCALAR word or a `String` — NOT a nested
-    /// aggregate (`Struct`/`Enum`). The lowerer sizes every enum variant
-    /// payload at a fixed 8B (String = 24B special-cased), and its aggregate-
-    /// field fixup pass touches struct fields ONLY, never enum payloads
-    /// (`triet-lower/src/lib.rs` §"fixup pass"). So an enum variant carrying a
-    /// `Point{x,y}` (16B) or another enum is UNDER-sized → the key marshal
-    /// truncates it and a roundtrip silently MISSES. Verified (O probe): with
-    /// the refuse lifted, a `HashMap<Shape,_>` roundtrip on `Shape::Dot(Point)`
-    /// returns MISS (-1) — data truncated on marshal. Refuse over guess: reject
-    /// at E1048 until the "Enum-Payload-Aggregate Sizing" front closes the gap
-    /// (the "variant size-mismatch" the ADR flagged).
+    /// ADR-0083 §AMEND-1, lifted by ADR-0067 §AMEND (Enum-Payload-Aggregate
+    /// Sizing) — is this type a valid ENUM-VARIANT PAYLOAD of a hashable key?
+    /// Previously restricted to a SCALAR word or `String`: the lowerer sized
+    /// every enum variant payload at a fixed 8B (String = 24B special-cased)
+    /// and never fixed up an aggregate (`Struct`/`Enum`) payload's width, so
+    /// a `Point{x,y}` (16B) or nested enum payload was UNDER-sized — the key
+    /// marshal truncated it and a roundtrip silently MISSED. ADR-0067 §AMEND
+    /// closed that gap with a struct+enum co-fixpoint in
+    /// `triet-lower/src/lib.rs` that sizes every aggregate enum payload
+    /// correctly, so an enum-variant payload is now hashable under the SAME
+    /// rule as any other hashable-key leaf — delegate to [`is_hashable_leaf`]
+    /// (which recurses into `UserStruct`/`UserEnum` field-for-field).
+    ///
+    /// [`is_hashable_leaf`]: Self::is_hashable_leaf
     #[must_use]
-    pub const fn is_hashable_enum_payload(&self) -> bool {
-        matches!(
-            self,
-            Self::Trit
-                | Self::Tryte
-                | Self::Integer
-                | Self::Long
-                | Self::Trilean { .. }
-                | Self::String
-        )
+    pub fn is_hashable_enum_payload(&self) -> bool {
+        self.is_hashable_leaf()
     }
 
     /// ADR-0082 §AMEND-3.2 — is this a valid Copy-aggregate for `get()`

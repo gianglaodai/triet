@@ -772,12 +772,19 @@ fn hashmap_nullable_enum_key_refused() {
     );
 }
 
-/// ADR-0083 §AMEND-1 — an Enum key whose variant carries an AGGREGATE payload
-/// (a Struct/Enum > 8B, under-sized by the lowerer) is REFUSED with E1048.
-/// Poison `is_hashable_enum_payload` to accept `UserStruct`/`UserEnum` → this
-/// goes RED (compile succeeds, then the key marshal would silently truncate).
+/// ADR-0083 §AMEND-1, SUPERSEDED by ADR-0067 §AMEND (Enum-Payload-Aggregate
+/// Sizing) — an Enum key whose variant carries an AGGREGATE payload (a
+/// Struct/Enum > 8B) used to be REFUSED with E1048: the lowerer sized every
+/// enum payload at a fixed 8B (no aggregate-payload fixup), so a nested
+/// `Point{x,y}` (16B) was under-sized and the key marshal would silently
+/// truncate it. ADR-0067 §AMEND closed that gap with a struct+enum
+/// co-fixpoint (`triet-lower/src/lib.rs`) and lifted
+/// `Type::is_hashable_enum_payload` to delegate to `is_hashable_leaf` — this
+/// exact shape now typechecks clean. Reverting that delegation back to the
+/// old scalar/String-only `matches!` would make this test RED again — that
+/// IS the regression signal for the lift.
 #[test]
-fn hashmap_enum_aggregate_payload_key_refused() {
+fn hashmap_enum_aggregate_payload_key_now_hashable() {
     let src = "struct Point { x: Integer, y: Integer }\n\
         enum Shape { Dot(Point), None }\n\
         function main() -> Integer = { let m: HashMap<Shape, Integer> = hashmap_new(); return 0; }";
@@ -785,9 +792,9 @@ fn hashmap_enum_aggregate_payload_key_refused() {
     assert!(parse_errors.is_empty(), "parse errors: {parse_errors:?}");
     let (type_errors, _, _) = triet_typecheck::check(&program);
     assert!(
-        type_errors.iter().any(|e| e.to_string().contains("E1048")),
-        "ADR-0083 §AMEND-1: HashMap<Shape{{Dot(Point)}},_> (aggregate enum payload) must be \
-         E1048, got {type_errors:?}"
+        type_errors.is_empty(),
+        "ADR-0067 §AMEND: HashMap<Shape{{Dot(Point)}},_> (aggregate enum payload) is now \
+         hashable — expected 0 type errors, got {type_errors:?}"
     );
 }
 

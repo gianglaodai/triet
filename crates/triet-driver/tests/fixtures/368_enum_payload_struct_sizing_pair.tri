@@ -1,0 +1,22 @@
+// EXPECT: 204
+// ADR-0067 §AMEND (Enum-Payload-Aggregate Sizing) — T1: two enum values with
+// a Struct payload > 8B (Big{p,q} = 16B) sitting ADJACENT inside a `struct
+// Pair`. Before this front, every enum payload was sized at a fixed 8B
+// (String 24B special-cased) with no aggregate-payload fixup, so `Big`'s
+// real 16B payload stomped past the enum's 8+8=16B slot into `pair.b`
+// (or beyond). Poison (RED, O-verified): freeze the enum-payload size at
+// the pre-fixpoint seed (8B, ignoring `struct_map`/`enum_map`) → SIGILL 132
+// (Cranelift `trapnz` range-check on the stomped garbage). Fixed (GREEN):
+// the struct+enum co-fixpoint sizes `MyEnum` at 8(disc)+16(Big) = 24B → 204.
+struct Big { p: Integer, q: Integer }
+enum MyEnum { V(Big), N }
+struct Pair { a: MyEnum, b: MyEnum }
+function pick_q(e: MyEnum) -> Integer {
+    return match e { MyEnum::V(g) => g.q, MyEnum::N => -1, };
+}
+function main() -> Integer {
+    let pair = Pair { a: MyEnum::V(Big { p: 1, q: 2 }), b: MyEnum::V(Big { p: 3, q: 4 }) };
+    let aq = pick_q(pair.a);
+    let bq = pick_q(pair.b);
+    return aq * 100 + bq;
+}

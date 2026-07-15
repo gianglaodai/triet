@@ -788,17 +788,22 @@ impl JitContext {
         }
     }
 
-    /// ADR-0083 §AMEND-1 — `(discriminant_value, payload_type)` for every
-    /// payload-BEARING variant of `enum_name` (unit variants excluded — they
+    /// ADR-0083 §AMEND-1, lifted by ADR-0067 §AMEND (Enum-Payload-Aggregate
+    /// Sizing) — `(discriminant_value, payload_type)` for every payload-
+    /// BEARING variant of `enum_name` (unit variants excluded — they
     /// contribute only their disc). Shared by the hash/eq walkers so the two
     /// stay consistent about which variants carry a payload to walk.
     ///
-    /// REFUSE (defence-in-depth behind the `is_hashable_enum_payload` typecheck
-    /// gate) an aggregate variant payload (`Struct`/`Enum`): the lowerer sizes
-    /// every enum payload at a fixed 8B (String 24B special-cased) and never
-    /// fixes up an aggregate payload's width, so an enum carrying a `Point`
-    /// (16B) or another enum is UNDER-sized → the key marshal truncates it →
-    /// silent MISS. Refuse until that sizing gap is closed (a separate front).
+    /// An aggregate variant payload (`Struct`/`Enum`) used to be refused here
+    /// (defence-in-depth behind the `is_hashable_enum_payload` typecheck
+    /// gate): the lowerer sized every enum payload at a fixed 8B (String 24B
+    /// special-cased) and never fixed up an aggregate payload's width, so a
+    /// `Point` (16B) or nested enum payload was UNDER-sized — the key marshal
+    /// truncated it → silent MISS. ADR-0067 §AMEND closed that gap with a
+    /// struct+enum co-fixpoint in `triet-lower/src/lib.rs`, so `p.ty` here is
+    /// now sized correctly and the caller's recursive Struct/Enum walker arms
+    /// (`emit_key_hash_value` / `emit_key_eq_value`) handle it soundly — no
+    /// refuse needed.
     fn enum_payload_variants(
         body: &Body,
         enum_name: &str,
@@ -813,16 +818,6 @@ impl JitContext {
         let mut out = Vec::new();
         for v in &layout.variants {
             if let Some(p) = v.payload.as_ref() {
-                if matches!(p.ty, MirType::Struct(_) | MirType::Enum(_)) {
-                    return Err(JitError::Unsupported(format!(
-                        "HashMap key enum '{enum_name}': variant '{}' carries an aggregate \
-                         payload '{}' — enum variant payloads are sized at a fixed 8B by the \
-                         lowerer (no aggregate-payload fixup), so a nested Struct/Enum payload \
-                         is under-sized and truncated on marshal (ADR-0083 §AMEND-1: refused \
-                         until the enum-payload-aggregate sizing gap is closed)",
-                        v.name, p.ty
-                    )));
-                }
                 out.push((v.discriminant_value, p.ty.clone()));
             }
         }

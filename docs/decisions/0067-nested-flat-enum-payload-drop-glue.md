@@ -206,3 +206,93 @@ nguyên JIT M1-zeroing path (không đụng). KHÔNG sửa JIT/borrowck. Option 
 **Teeth** (do O cắm độc lập, không thuộc nhiệm vụ D):
 - **R-construct-from-local:** bóp Deinit → SIGABRT/exit 134 hoặc FREE==2 đỏ; mở ra → xanh.
 - **R-atomic:** MIR-dump grep `Deinit` liền ngay sau field-`Assign`, cùng BB.
+
+---
+
+## ✚ AMEND-2 — Enum-Payload-Aggregate Sizing (D nộp, chờ O verify + G ký)
+
+**Coverage hole.** §2b-0a sizing enum payload chỉ có 2 nhánh: heap-leaf (`String`/
+`String?` = 24B) và mọi thứ khác = **8B cứng**, bao gồm cả một payload
+**aggregate** (`Struct`/`Enum`) > 8B. `struct{ inner: Enum }` field-fixup loop
+(§ADR-0060 P2, `lib.rs:~574`) chủ động **không đụng enum payload** (comment gốc
+"the M-1 struct-field fixup loop does NOT touch enum payloads") — vậy site 8B
+cứng là **site DUY NHẤT** sizing enum payload, không có cơ chế fixup nào khác vá.
+
+**Bằng chứng máu (O, trước khi giao WO).** `enum MyEnum(Big)` với `Big{p,q}`
+(16B) — 2 giá trị `MyEnum` kề nhau trong `struct Pair` — poison (đúng site 8B
+cứng): **SIGILL 132** (Cranelift `trapnz` bắt garbage tràn từ payload 16B ghi
+đè vào slot 8B). Control (payload đúng 8B): 204 sạch. Cô lập tuyệt đối: sizing
+là thủ phạm, không phải HashMap/hash-walker.
+
+**Root cause.** `triet-lower/src/lib.rs:551` (bản gốc trước fix):
+```rust
+let size = if ty.is_string_repr() { 24 } else { 8 };
+```
+Không có nhánh cho `MirType::Struct`/`MirType::Enum`/`MirType::Nullable(Struct|Enum)`.
+
+**Fix (D nộp).** CO-FIXPOINT struct+enum trong MỘT vòng lặp
+(`triet-lower/src/lib.rs`, hàm `resolve_aggregate_size` mới + vòng `loop` gộp):
+- Enum payload pass: `MirType::Struct(name)` → `struct_map[name].total_size`;
+  `MirType::Enum(name)` → `enum_map[name].total_size` (đệ quy — enum-trong-enum
+  tự hội tụ qua nhiều iteration); `String`/`String?` = 24B; `Vector`/`HashMap` =
+  8B handle; `Nullable(Struct|Enum)` giữ nguyên luật đã có ở struct-field-fixup
+  (đối xứng, KHÔNG đổi).
+- Struct field pass: logic cũ (ADR-0060 P2 / ADR-0067 2b+), nay dùng CHUNG
+  `resolve_aggregate_size` với enum pass — không còn 2 bản copy trôi dạt.
+- Gauss-Seidel: mỗi iteration enum pass thấy `struct_map` mới nhất, struct pass
+  thấy `enum_map` mới nhất trong CÙNG iteration; hội tụ vì size chỉ tăng đơn
+  điệu và type-graph là DAG hữu hạn (ADR-0068 cấm Box/recursive). Cap
+  `FIXPOINT_ITERATION_LIMIT = 64` → `Err(LowerError)` nếu vượt (không panic).
+- **ABI KHÔNG đổi** — `EnumLayout::compute` (`triet-mir/src/lib.rs`) vẫn
+  `{disc@0, payload@8, total_size = 8 + max_payload_size}`; chỉ GIÁ TRỊ
+  `max_payload_size` truyền vào đổi.
+- **Copy-only, giữ nguyên refuse heap.** `Expr::EnumLiteral` construction gate
+  (`lib.rs` — `is_direct_heap_leaf || ctx_is_copy`) KHÔNG đụng — một payload
+  aggregate chứa `String`/`Vector`/`HashMap` (không phải direct-leaf, không
+  Copy) vẫn REFUSE tại construction. WO này thuần sizing cho nhánh ĐÃ được
+  phép đi qua (Copy-aggregate).
+- **Lift E1048.** `triet-typecheck/src/types.rs`
+  `Type::is_hashable_enum_payload` (trước: scalar+String only, phản ánh đúng
+  giới hạn sizing cũ) nay delegate `is_hashable_leaf` (đệ quy
+  `UserStruct`/`UserEnum` field-cho-field) — một enum-variant payload aggregate
+  giờ hashable như mọi leaf khác. Đồng bộ gỡ guard defence-in-depth song song ở
+  JIT (`triet-jit/src/mir_lower.rs::enum_payload_variants`, refuse cứng
+  `Struct`/`Enum` payload) — walker `emit_key_hash_value`/`emit_key_eq_value`
+  đã đệ quy tổng quát vào `MirType::Struct`/`MirType::Enum` từ trước (dùng cho
+  struct-key và enum-as-struct-leaf, ADR-0083 §AMEND-1), nên chỉ cần gỡ guard,
+  không cần thêm walker mới.
+
+**Teeth** (D nộp, fixtures `crates/triet-driver/tests/fixtures/`):
+368 (struct payload 16B, 2 enum kề nhau trong struct — poison-đỏ 132 xác nhận
+bởi D) · 369 (`Vector<EnumAggregate>` push+get roundtrip, stride) · 370/360
+(`HashMap<EnumAggregate,_>` key roundtrip — 360 là fixture E1048 CŨ, được
+SUPERSEDE thành positive vì đây chính là ca WO mở khóa) · 371
+(`HashMap<_,EnumAggregate>` get-by-value non-destructive) · 372 (enum-trong-
+enum, tự hội tụ 2 tầng) · 373 (control âm: payload heap-bearing vẫn REFUSE,
+không hồi quy) · 173 (regression, giữ EXPECT 30).
+
+**⚠️ Phát hiện ngoài phạm vi (báo O, KHÔNG sửa trong WO này):** một `match`
+lồng SYNTACTIC bên trong nhánh của `match` khác (`match a { X => match b {...},
+... }`, hoặc `~+ e => match e {...}` trong Outcome match) trigger lỗi Cranelift
+backend — **không phải lỗi MIR verifier của Triết** (`body.verify()` pass sạch,
+lỗi nằm ở codegen `triet-jit` khi define function). Tái lập tối giản KHÔNG cần
+enum-payload/aggregate nào (2 enum rời rạc, cả hai unit-only):
+```triet
+enum A { X, Y }
+enum B { P, Q }
+function main() -> Integer {
+    let a = A::X; let b = B::P;
+    return match a { A::X => match b { B::P => 1, B::Q => 2 }, A::Y => 3 };
+}
+```
+→ `VerifierError { message: "a terminator instruction was encountered before
+the end of block1" }` (T5 gốc) hoặc `"uses value vNN from non-dominating instNN"`
+(T2/T4 gốc, dominance) tuỳ hình dạng CFG. D né bằng cách tách arm-body ra hàm
+riêng (mọi fixture 369/371/372 dùng pattern này) — KHÔNG sửa `triet-jit`, vì
+đây là mặt trận CFG/dominance-lowering riêng, không liên quan sizing.
+
+---
+
+**Chữ ký §AMEND-2:** D nộp (2026-07-15). Fix build sạch (`cargo check
+--workspace` 0 warning), poison-đỏ T1 xác nhận thủ công (132 → 204). Chờ O
+verify máu + G ký.

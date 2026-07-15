@@ -1,0 +1,24 @@
+// EXPECT: 42007
+// ADR-0067 §AMEND + ADR-0083 §AMEND-1 unlock — T3: `HashMap<MyEnum, Integer>`
+// where `MyEnum`'s payload is a Copy struct > 8B (`Big{p,q}` = 16B). This is
+// the case `is_hashable_enum_payload` used to REFUSE at E1048 (see fixture
+// 360) because the lowerer under-sized the payload and the key marshal
+// truncated it — a HIT would silently become a MISS. With sizing fixed AND
+// the typecheck/JIT aggregate-payload refuses lifted, insert
+// `V(Big{1,2})`=42, then a FRESH `V(Big{1,2})` (different construction, same
+// content) must HIT (42) via the recursive Struct/Enum key-hash/eq walkers;
+// a different-content key must MISS (~0 → 7).
+struct Big { p: Integer, q: Integer }
+enum MyEnum { V(Big), N }
+function main() -> Integer = {
+    let m: HashMap<MyEnum, Integer> = hashmap_new();
+    let k1 = MyEnum::V(Big { p: 1, q: 2 });
+    let m2 = insert(m, k1, 42);
+    let k2 = MyEnum::V(Big { p: 1, q: 2 });
+    let hit = get(&0 m2, k2);
+    let miss_key = MyEnum::V(Big { p: 9, q: 9 });
+    let miss = get(&0 m2, miss_key);
+    let a = match hit { ~+ v => v, ~0 => -1 };
+    let b = match miss { ~+ v => v, ~0 => 7 };
+    return a * 1000 + b;
+}

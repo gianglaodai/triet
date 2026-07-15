@@ -452,6 +452,59 @@ pub(crate) enum TypeKind {
     Capability,
 }
 
+/// ADR-0067 §AMEND (Enum-Payload-Aggregate Sizing) — resolve the byte width
+/// of an aggregate-bearing field/payload type, consulting the current
+/// `struct_map`/`enum_map` snapshot. Shared by the struct-field fixup pass
+/// and the enum-payload fixup pass in [`lower_program`] so the two stay in
+/// lockstep during the combined co-fixpoint (a struct field may be an enum
+/// — ADR-0067 2b+ death-line #2 — and, as of this front, an enum payload may
+/// be a struct or another enum). `fallback` is the size from the previous
+/// iteration (or the initial seed); used only until the referenced layout
+/// resolves — every struct/enum declared in the program already has an
+/// entry in both maps by construction, so the fallback branch is a
+/// defensive no-op in a well-formed program, never a permanent value.
+fn resolve_aggregate_size(
+    ty: &MirType,
+    struct_map: &HashMap<String, StructLayout>,
+    enum_map: &HashMap<String, EnumLayout>,
+    fallback: usize,
+) -> usize {
+    match ty {
+        MirType::Struct(name) => struct_map
+            .get(name.as_str())
+            .map_or(fallback, |l| l.total_size),
+        // ADR-0067 2b+ (death-line #2): an enum's width comes from
+        // `enum_map` (a heap-payload enum is 32B: {disc@0, ptr@8, len@16,
+        // cap@24}), NOT struct_map — enums are never registered there.
+        MirType::Enum(name) => enum_map
+            .get(name.as_str())
+            .map_or(fallback, |l| l.total_size),
+        // ADR-0065 §12.1: nested nullable aggregate size.
+        MirType::Nullable(inner) => match inner.as_ref() {
+            // Struct? prepends an 8-byte tag word (Phương án A, §2.2) →
+            // inner.total + 8.
+            MirType::Struct(name) => struct_map
+                .get(name.as_str())
+                .map_or(fallback, |l| l.total_size + 8),
+            // Enum? uses the disc-niche (0-byte overhead, §2.1); its size
+            // resolves like a plain `Enum` field.
+            MirType::Enum(name) => struct_map
+                .get(name.as_str())
+                .map_or(fallback, |l| l.total_size),
+            // ADR-0076: heap-`T?` leaf field. The ptr-sentinel rides the
+            // inner's repr, so the slot at field-offset is the SAME width
+            // as the plain heap field.
+            MirType::String => 24,
+            MirType::Vector(_) | MirType::HashMap(..) => 8,
+            _ => fallback,
+        },
+        // ADR-0066 M-1: heap LEAF field width.
+        MirType::String => 24,
+        MirType::Vector(_) | MirType::HashMap(..) => 8,
+        _ => fallback,
+    }
+}
+
 /// Lower every function in a parsed program to its MIR body.
 ///
 /// Returns `Err` if any function contains an AST construct the lowerer
@@ -517,12 +570,12 @@ pub fn lower_program(
         .collect();
 
     // ── Collect enum layouts from enum definitions ──────────────
-    // Bậc A: every payload is 8 bytes (i64), alignment 8.
-    // Unit variants have no payload (size 0).
-    // ADR-0067 2b+: computed BEFORE the struct fixup pass so an enum FIELD of a
-    // struct can be sized from `enum_map` (enum sizing is self-contained — it
-    // never consults struct_map — so this ordering is sound).
-    let enum_layouts: Vec<EnumLayout> = prog
+    // Seed pass: every payload starts at 8 bytes (i64), except String/String?
+    // which is the 24B fat pointer {ptr,len,cap} (ADR-0067 2b-0a / ADR-0076).
+    // Unit variants have no payload (size 0). An aggregate (Struct/Enum)
+    // payload's REAL width is resolved by the co-fixpoint below — it is
+    // fixed up in lockstep with `struct_layouts`, not here.
+    let mut enum_layouts: Vec<EnumLayout> = prog
         .items
         .iter()
         .filter_map(|item| {
@@ -539,15 +592,6 @@ pub fn lower_program(
                         let disc = i as i64;
                         let payload = v.payload.map(|tid| {
                             let ty = lower_type(&prog.arena, tid, &symbols, None);
-                            // ADR-0067 2b-0a / ADR-0076: heap-leaf payload width
-                            // (the M-1 struct-field fixup loop does NOT touch enum
-                            // payloads — this is the only site). String / String? =
-                            // 24B fat pointer {ptr,len,cap}; Vector(?)/HashMap(?) =
-                            // 8B thin handle; scalar = 8B. A 24B String payload →
-                            // enum total_size = 8 + 24 = 32 so the fat pointer fits
-                            // {disc@0, ptr@8, len@16, cap@24}. `is_string_repr()`
-                            // covers both `String` and `String?` (ADR-0076 heap-`T?`
-                            // payload reuses String's repr at the payload-offset).
                             let size = if ty.is_string_repr() { 24 } else { 8 };
                             (ty, size, 8usize, Vec::new())
                         });
@@ -561,72 +605,79 @@ pub fn lower_program(
         })
         .collect();
 
-    let enum_map: HashMap<String, EnumLayout> = enum_layouts
+    let mut enum_map: HashMap<String, EnumLayout> = enum_layouts
         .iter()
         .map(|l| (l.name.clone(), l.clone()))
         .collect();
 
-    // ADR-0060 P2: fixup pass — recompute layouts with correct sizes
-    // for aggregate-typed fields (struct/enum). First pass hardcoded
-    // size=8 for all fields; now replace with the nested struct's
-    // total_size from struct_map. Iterate until stable (handles
-    // A→B→C nesting without topological ordering).
+    // ADR-0060 P2 / ADR-0067 §AMEND: CO-FIXPOINT over BOTH struct fields and
+    // enum payloads. A struct field may be an enum (ADR-0067 2b+ death-line
+    // #2) and — as of §AMEND — an enum payload may be a struct or another
+    // enum, so the two tables must refine together until BOTH stabilize.
+    // `resolve_aggregate_size` is the single sizing function shared by both
+    // passes so they can never drift apart. Gauss-Seidel order (the enum
+    // pass sees this iteration's fresh `struct_map`; the struct pass sees
+    // this iteration's fresh `enum_map`) — the fixed point doesn't depend on
+    // order since sizes only grow monotonically and the type graph is a
+    // finite DAG (ADR-0068 bans recursive/Box types). Capped at
+    // `FIXPOINT_ITERATION_LIMIT` to fail loudly (`Err`, never loop forever /
+    // panic) if that DAG invariant is ever violated.
+    const FIXPOINT_ITERATION_LIMIT: usize = 64;
+    let mut fixpoint_iterations = 0usize;
     loop {
+        fixpoint_iterations += 1;
+        if fixpoint_iterations > FIXPOINT_ITERATION_LIMIT {
+            return Err(LowerError {
+                message: format!(
+                    "struct/enum layout sizing did not converge after \
+                     {FIXPOINT_ITERATION_LIMIT} iterations (a cyclic aggregate \
+                     type without indirection? ADR-0068 bans Box/recursive \
+                     types, so this should be unreachable for a well-formed \
+                     program)"
+                ),
+                span: DUMMY_SPAN,
+            });
+        }
         let mut changed = false;
-        let mut new_layouts: Vec<StructLayout> = Vec::with_capacity(struct_layouts.len());
+
+        // ── Enum payload pass ──
+        let mut new_enum_layouts: Vec<EnumLayout> = Vec::with_capacity(enum_layouts.len());
+        for layout in &enum_layouts {
+            let variants: Vec<(
+                String,
+                i64,
+                Option<(MirType, usize, usize, Vec<FieldLayout>)>,
+            )> = layout
+                .variants
+                .iter()
+                .map(|v| {
+                    let payload = v.payload.as_ref().map(|p| {
+                        let size = resolve_aggregate_size(&p.ty, &struct_map, &enum_map, p.size);
+                        (p.ty.clone(), size, p.alignment, p.fields.clone())
+                    });
+                    (v.name.clone(), v.discriminant_value, payload)
+                })
+                .collect();
+            let new_layout = EnumLayout::compute(&layout.name, &variants);
+            if new_layout.total_size != layout.total_size {
+                changed = true;
+            }
+            new_enum_layouts.push(new_layout);
+        }
+        enum_layouts = new_enum_layouts;
+        enum_map = enum_layouts
+            .iter()
+            .map(|l| (l.name.clone(), l.clone()))
+            .collect();
+
+        // ── Struct field pass ──
+        let mut new_struct_layouts: Vec<StructLayout> = Vec::with_capacity(struct_layouts.len());
         for layout in &struct_layouts {
             let new_fields: Vec<(String, MirType, usize, usize)> = layout
                 .fields
                 .iter()
                 .map(|f| {
-                    let size = match &f.ty {
-                        MirType::Struct(name) => struct_map
-                            .get(name.as_str())
-                            .map(|l| l.total_size)
-                            .unwrap_or(f.size),
-                        // ADR-0067 2b+ (death-line #2): an enum FIELD's width comes
-                        // from `enum_map` (a heap-payload enum is 32B: {disc@0,
-                        // ptr@8, len@16, cap@24}), NOT struct_map — enums are never
-                        // registered there, so the old `Struct | Enum` arm fell to
-                        // the 8B default → struct slot under-sized + wrong offsets
-                        // for fields after the enum → the 32B fat-store stomps past
-                        // the slot / drop-glue reads a garbage disc. SIGSEGV.
-                        MirType::Enum(name) => enum_map
-                            .get(name.as_str())
-                            .map(|l| l.total_size)
-                            .unwrap_or(f.size),
-                        // ADR-0065 §12.1: nested nullable aggregate field size.
-                        MirType::Nullable(inner) => match inner.as_ref() {
-                            // Struct? prepends an 8-byte tag word (Phương án A,
-                            // §2.2) → inner.total + 8.
-                            MirType::Struct(name) => struct_map
-                                .get(name.as_str())
-                                .map(|l| l.total_size + 8)
-                                .unwrap_or(f.size),
-                            // Enum? uses the disc-niche (0-byte overhead, §2.1);
-                            // its size resolves like a plain `Enum` field.
-                            MirType::Enum(name) => struct_map
-                                .get(name.as_str())
-                                .map(|l| l.total_size)
-                                .unwrap_or(f.size),
-                            // ADR-0076: heap-`T?` leaf field. The ptr-sentinel
-                            // rides the inner's repr, so the slot at field-offset
-                            // is the SAME width as the plain heap field: String? =
-                            // 24B fat {ptr@0,len@8,cap@16} (null = ptr==SENTINEL);
-                            // Vector?/HashMap? = 8B handle (handle==SENTINEL).
-                            MirType::String => 24,
-                            MirType::Vector(_) | MirType::HashMap(..) => 8,
-                            _ => f.size,
-                        },
-                        // ADR-0066 M-1: heap LEAF field width (fat-pointer cache
-                        // in the StackSlot). String = {ptr@0, len@8, cap@16} =
-                        // 24B; Vector/HashMap = thin handle {ptr@0} = 8B (len/cap
-                        // live in the heap header). Mis-sizing → byte-copy stomps
-                        // the adjacent field / drop-glue frees garbage (R-table).
-                        MirType::String => 24,
-                        MirType::Vector(_) | MirType::HashMap(..) => 8,
-                        _ => f.size,
-                    };
+                    let size = resolve_aggregate_size(&f.ty, &struct_map, &enum_map, f.size);
                     (f.name.clone(), f.ty.clone(), size, f.alignment)
                 })
                 .collect();
@@ -634,12 +685,14 @@ pub fn lower_program(
             if new_layout.total_size != layout.total_size {
                 changed = true;
             }
-            new_layouts.push(new_layout);
+            new_struct_layouts.push(new_layout);
         }
-        struct_layouts = new_layouts;
-        for l in &struct_layouts {
-            struct_map.insert(l.name.clone(), l.clone());
-        }
+        struct_layouts = new_struct_layouts;
+        struct_map = struct_layouts
+            .iter()
+            .map(|l| (l.name.clone(), l.clone()))
+            .collect();
+
         if !changed {
             break;
         }
