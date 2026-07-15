@@ -1,0 +1,23 @@
+// ERROR: nullable enum
+// HOTFIX (2026-07-15, O recon on 9a1799c): companion to 374 — proves the
+// nullable-enum-payload refuse is NOT aggregate-specific. `E{V(Integer),N}`
+// has a SCALAR payload variant (16B: disc@0 + payload@8) and still
+// miscompiles the same way when `E?` is a function return type: verified
+// exit 132 (SIGILL) with the refuse poisoned out on this exact file, same
+// truncate-across-return-ABI root cause as 374. Refused at lower time now.
+enum E { V(Integer), N }
+
+function make() -> E? = {
+    return ~+ E::V(42);
+}
+
+function main() -> Integer = {
+    let x = make();
+    return match x {
+        ~+ v => match v {
+            E::V(n) => n,
+            E::N => -1,
+        },
+        ~0 => -2,
+    };
+}

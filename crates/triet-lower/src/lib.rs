@@ -76,6 +76,20 @@ impl LowerError {
         }
     }
 
+    fn nullable_enum_payload_unsupported(enum_name: &str, span: Span) -> Self {
+        Self {
+            message: format!(
+                "nullable enum `{enum_name}?` is not yet supported: the disc-niche \
+                 nullable repr (ADR-0065 SS12.7) is implemented only for enums whose \
+                 variants carry NO payload. Enum `{enum_name}` has a payload-bearing \
+                 variant.\n[Fix] Remove the `?` and model absence as an explicit \
+                 no-payload variant (e.g. add a `None` variant to `{enum_name}`), \
+                 or wrap the enum in a struct field that is itself nullable."
+            ),
+            span,
+        }
+    }
+
     fn null_literal_without_expected_type(span: Span) -> Self {
         Self {
             message: "Outcome/nullable constructor (`~+`/`~0`/`~-`) requires an expected \
@@ -1882,6 +1896,20 @@ fn lower_expr(
 
             // Nullable context → PA-3c nullable repr (NO OutcomeAlloc).
             if let MirType::Nullable(inner) = &ctx_ty {
+                // HOTFIX (2026-07-15, O recon): disc-niche nullable repr
+                // ("present value IS the repr" below) is sound ONLY for
+                // unit-only enums (disc@0 IS the whole 8-byte value). An
+                // enum with a payload-bearing variant is >8B (disc@0 +
+                // payload@8) and this repr silently truncates/misreads it
+                // → SIGILL 132 at runtime. Refuse before it reaches MIR.
+                if let MirType::Enum(enum_name) = inner.as_ref()
+                    && let Some(layout) = c.enum_layouts.get(enum_name)
+                    && layout.variants.iter().any(|v| v.payload.is_some())
+                {
+                    return Err(LowerError::nullable_enum_payload_unsupported(
+                        enum_name, expr_span,
+                    ));
+                }
                 return match arm {
                     triet_syntax::OutcomeArm::Positive => {
                         let Some(p) = payload else {

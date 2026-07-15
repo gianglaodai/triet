@@ -1,0 +1,30 @@
+// ERROR: nullable enum
+// HOTFIX (2026-07-15, O recon on 9a1799c): the disc-niche nullable repr
+// (ADR-0065 §12.7) is implemented only for unit-only enums (disc@0 IS the
+// whole 8-byte value). `E?` for an enum with an AGGREGATE payload variant
+// (disc@0 + payload@8, >8B) miscompiles when `E?` is a FUNCTION RETURN TYPE:
+// the single-i64 return ABI truncates the aggregate crossing the call
+// boundary, corrupting the discriminant in the caller — the enum drop-glue
+// `SwitchInt` on the garbage disc falls to `default` → `Trap` → SIGILL 132
+// at runtime (verified: poisoning the refuse below reproduces exit 132 on
+// this exact file). Refused at lower time now (crates/triet-lower/src/
+// lib.rs, `Expr::OutcomeConstructor` Nullable branch chokepoint) — the
+// refuse fires structurally at CONSTRUCTION (any `E?`-value site, not only
+// the crashing return position), per refuse-over-guess.
+struct Big { p: Integer, q: Integer }
+enum E { V(Big), N }
+
+function make() -> E? = {
+    return ~+ E::V(Big { p: 5, q: 6 });
+}
+
+function main() -> Integer = {
+    let x = make();
+    return match x {
+        ~+ v => match v {
+            E::V(b) => b.p,
+            E::N => -1,
+        },
+        ~0 => -2,
+    };
+}

@@ -1,0 +1,21 @@
+// EXPECT: 5
+// HOTFIX (2026-07-15, O recon on 9a1799c) — non-vacuous negative control for
+// 374/375/376: a unit-only enum (`Color`, every variant payload-less, 8B —
+// disc@0 IS the whole value) via a plain LOCAL `let` (not a struct field,
+// unlike 249) must still compile+run through the very branch the new refuse
+// guards (`Expr::OutcomeConstructor` Nullable/Positive arm). Proves the
+// `variants.iter().any(|v| v.payload.is_some())` predicate does not fire
+// when no variant carries a payload.
+enum Color { Red, Green, Blue }
+
+function main() -> Integer = {
+    let x: Color? = ~+ Color::Green;
+    return match x {
+        ~+ col => match col {
+            Color::Red => 0,
+            Color::Green => 5,
+            Color::Blue => 9,
+        },
+        ~0 => -1,
+    };
+}

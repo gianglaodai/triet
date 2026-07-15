@@ -1,0 +1,22 @@
+// ERROR: nullable enum
+// HOTFIX (2026-07-15, O recon on 9a1799c): companion to 374/375 — proves the
+// refuse also fires through the STRUCT FIELD construction path (fixture
+// 249/250 shape), not just a function-return `E?` (374/375). A struct field
+// value is lowered via the same `lower_expr(field_value, Some(&Nullable(
+// Enum)), …)` call into `Expr::OutcomeConstructor`, so `H { c: ~+ E::V(1) }`
+// hits the identical chokepoint. NOTE (honesty, not overclaiming): unlike
+// 374/375 this exact same-function/local-`let` shape was NOT observed to
+// SIGILL when probed with the guard poisoned out (the proven miscompile
+// needs `E?` as a function's OWN return type — see 374/375); the refuse
+// here is a structural closure of the whole disc-niche-payload surface
+// (refuse-over-guess), not a demonstrated crash for this specific shape.
+enum E { V(Integer), N }
+struct H { c: E? }
+
+function main() -> Integer = {
+    let h = H { c: ~+ E::V(1) };
+    return match h.c {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

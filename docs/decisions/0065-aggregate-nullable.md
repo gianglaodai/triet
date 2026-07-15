@@ -323,3 +323,37 @@ construction đóng trọn (top-level + field, scalar + aggregate). `~+` thuần
 hành vi (annotation non-Nullable → redirect không kích → lower `OutcomeConstructor` bình thường).
 
 **Chữ ký §12.8:** O: ✅ (verify máu — P1/P2/P3 đỏ độc lập, mỗi ngã rẽ một răng; gate `0·0·250·0`; diff lowerer-only sạch; B8 2-lớp nguyên) · G: ✅ (ký đóng 2026-06-21 — WO-~+-NULLABLE-UNIFY).
+
+## 13. HOTFIX (2026-07-15, O recon on `9a1799c`) — payload-bearing `Enum?` REFUSED, disc-niche is unit-only-only
+
+**Máu O:** disc-niche §2.1/§12.7 was validated on **unit-only** enums (`Color{Red,Green,Blue}`, 8B — disc@0
+IS the whole value). It was never proven for an enum with a **payload-bearing variant** (>8B: disc@0 +
+payload@8…). When `E?` is used as a **function's own return type**, the single-i64 return ABI truncates the
+aggregate crossing the call boundary: the caller receives a corrupted discriminant, the enum drop-glue
+`SwitchInt` on that garbage value falls to `default` → `Trap` → **SIGILL (exit 132)**. Reproduced for BOTH an
+aggregate payload (`enum E{V(Big),N}`, `Big{p,q}` two `Integer` fields) and a scalar payload
+(`enum E{V(Integer),N}`) — not aggregate-specific.
+
+**Fix (surgical, lowerer-only, one chokepoint):** `Expr::OutcomeConstructor`'s `Nullable` branch
+(`crates/triet-lower/src/lib.rs`, guards both the `~+` and `~0` arms) now refuses, at construction time,
+any `E?` where `E`'s `EnumLayout` has at least one variant with `payload.is_some()`. This is a **structural**
+refuse — it fires at every `E?`-value construction site (top-level `let`, function `return`, struct field),
+not only the position that was proven to crash (function-return). Per refuse-over-guess: the disc-niche
+machinery for payload-bearing enums is unproven outside the return-ABI hazard, so the whole surface is
+closed rather than special-cased to "only refuse in return position."
+
+**NOT fixed here (front deferred):** a proper `Enum?` repr for payload-bearing enums (e.g. a real disc-niche
+marshal across the return ABI, or falling back to the `Struct?` +8B tag-word scheme) — tracked as new debt
+"nullable-enum-payload niche marshal" pending a future slice. `Struct?` (§2.2/§3.2, +8B tag prepend) is
+UNCHANGED and out of scope for this hotfix.
+
+**Regression:** unit-only `Enum?` (§12.7 taxonomy, fixtures 249/250) is untouched — the refuse predicate only
+fires when `payload.is_some()` for some variant; a unit-only enum's `EnumLayout` has `payload: None` on every
+variant, so the guard never trips for it.
+
+**Teeth:** fixtures 374 (aggregate payload, function-return shape, proven poison-red exit 132) / 375 (scalar
+payload, same shape, proven exit 132) / 376 (struct-field construction path — refuse proven, crash NOT
+independently reproduced for this exact shape; refused structurally regardless) / 377 (unit-only, local `let`
+— non-vacuous negative control, still compiles+runs).
+
+**Chữ ký §13:** D (Sonnet 5): implemented + poison-red verified (374 only, per WO) · chờ O verify + G ký.
