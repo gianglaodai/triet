@@ -28,6 +28,12 @@ Các test free-count (`nullable_map_heap_output_counting`, `vector_nullable_drop
 
 ## 🟢 BACKLOG MỞ
 
+### 🔨 ĐANG MỞ — Field auto-deref qua `&0` reference (ADR-0084 DRAFT, chờ O verify + G ký)
+`e.f` với `e : &0 T` / `&0 mutable T` (T=UserStruct) → auto-deref 1 tầng project field. Semantic đầy đủ khóa ở ADR-0084 §CỐT LÕI.
+- [x] **Slice 1a — scalar field** (D code, chờ O verify): typecheck auto-deref scalar-only (`check_field_access` `is_scalar()` gate) + lowerer `Projection::Deref` (`place_result_type`+`lower_place`) + JIT `walk_projections` Deref + **Blocker-B vá** (`Statement::Borrow` slot-addr mọi struct/enum local, không chỉ String). Fixtures 381 (param) / 382 (block-local), EXPECT 30. Poison-2-tầng: gỡ typecheck→E1015 · revert Blocker-B→SIGSEGV 139.
+- [ ] 🚩 **Slice 1b — sub-borrow aggregate/heap field qua `&0`** (DEFERRED): `f` là Struct/String/Vector/HashMap → `&0 F` sub-borrow zero-copy (chainable, `(&0 Ngoai).trong.x`). Cần cơ chế place-projection giữ loan qua lowerer/JIT chưa dựng — tránh copy-lén heap → double-free. Mọi nested-access cần cái này.
+- [ ] 🚩 **Borrowck lexical wart (NLL defer VÔ THỜI HẠN)** — borrow local còn sống tới return của owner = E2450 giả (ADR-0046 Case-D, fixtures 21/24). KHÔNG unsound, chỉ cồng kềnh (dùng block-scope/param để lách). NLL = hố đen, KHÔNG đụng `flush_all_for_return`.
+
 ### 🔨 ĐANG MỞ — Key-typed `HashMap<String,V>` (ADR-0080 + §AMEND-1, Author+O+G ký 2026-07-03)
 Key mang content hash/eq + drop-obligation. ADR mới (BÁC amend ADR-0038 Comparable: `Ord ≠ Hash`; BÁC `Hashable` trait). Key ∈ {Integer, String} đóng băng. Slot `[key@key_stride | value@value_stride | state]`.
 - [x] **KM-P1a BACKEND** (`c003a5f`) — Mũi A slot key_stride 24B fat · B `__triet_string_hash` FNV-1a + dispatch · D.1/D.2/D.5 key drop-obligation (§AMEND-1 out-param `is_update_out`/`key_out_ptr`, free registry-routed) · rehash key-stride. Hand-built MIR + counting, sleeping. O verify 5 teeth (#1 map-drop / #2 update / #3 remove / #5 content-hash / #7 rehash).

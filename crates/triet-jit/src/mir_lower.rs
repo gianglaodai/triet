@@ -346,6 +346,23 @@ impl JitContext {
                 total_offset += shift;
             }
             match proj {
+                // ADR-0084 Slice 1a: dereference a reference — the current
+                // local's Cranelift var/slot holds a raw pointer per S6
+                // ("references = raw pointers at runtime", `Statement::Borrow`
+                // codegen); unwrap the pointee type and continue the walk at
+                // offset 0 relative to that pointer (the caller's fallback
+                // "pointer-based" branch in `load_place`/`store_place` already
+                // adds `total_offset` to the pointer value in `place.local`'s
+                // var — a leading Deref doesn't change that address, only
+                // what type the subsequent offsets are computed against).
+                Projection::Deref => {
+                    let MirType::Reference { inner, .. } = &current_ty else {
+                        return Err(JitError::Unsupported(format!(
+                            "deref of non-reference type '{current_ty}'"
+                        )));
+                    };
+                    current_ty = (**inner).clone();
+                }
                 Projection::Field(field_name) => {
                     let ty_name = match &current_ty {
                         MirType::Struct(name) | MirType::Enum(name) => name.as_str(),
@@ -434,7 +451,7 @@ impl JitContext {
                     total_offset += 24;
                     current_ty = MirType::Integer;
                 }
-                other => {
+                other @ Projection::Index(_) => {
                     return Err(JitError::Unsupported(format!(
                         "unsupported projection in nested position: {other:?}"
                     )));
@@ -3111,18 +3128,26 @@ impl JitContext {
                     // S6 references = raw pointers at runtime.
                     // ADR-0049 Lát 6.3: for String, pass pointer-to-slot so
                     // the callee can read {ptr,len,cap} (no heap len/cap).
-                    if let Some((slot, layout)) = self.struct_slots.get(&source.local)
-                        && layout.name == "String"
-                    {
-                        let val = builder.ins().stack_addr(I64, *slot, 0);
-                        let dest_var = self.var(dest.local);
-                        builder.def_var(dest_var, val);
+                    // ADR-0084 Slice 1a (Blocker B): a borrow of ANY slot-backed
+                    // aggregate local (`struct_slots`/`enum_slots`) must yield the
+                    // slot ADDRESS, not `use_var` — an aggregate local is built by
+                    // field-level `stack_store` and its Cranelift Variable is never
+                    // `def_var`'d, so `use_var` returns an undefined value → the
+                    // borrow points at garbage → SIGSEGV on the first field-read
+                    // through the reference. String is one such struct_slots local
+                    // (name == "String"), so this branch SUBSUMES the old
+                    // String-only special-case; every heap/aggregate borrow now
+                    // takes the same slot-address path. Only a scalar/reference
+                    // local (a real Variable, not slot-backed) falls through to
+                    // `use_var`.
+                    let val = if let Some((slot, _)) = self.struct_slots.get(&source.local) {
+                        builder.ins().stack_addr(I64, *slot, 0)
+                    } else if let Some((slot, _)) = self.enum_slots.get(&source.local) {
+                        builder.ins().stack_addr(I64, *slot, 0)
                     } else {
-                        let src_var = self.var(source.local);
-                        let val = builder.use_var(src_var);
-                        let dest_var = self.var(dest.local);
-                        builder.def_var(dest_var, val);
-                    }
+                        builder.use_var(self.var(source.local))
+                    };
+                    builder.def_var(self.var(dest.local), val);
                 }
 
                 Statement::BinaryOp {

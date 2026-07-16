@@ -1608,6 +1608,26 @@ impl Checker<'_> {
         if matches!(object_ty, Type::Unknown) {
             return Type::Unknown;
         }
+        // ADR-0084 Slice 1a: auto-deref a read-only/exclusive-mutable
+        // reference exactly one layer for a SCALAR field read (`r.x` where
+        // `r: &0 Point`, `x: Integer`) — `Trit`/`Tryte`/`Integer`/`Long`/
+        // `Trilean` read by value through the borrow (Copy). Aggregate
+        // (`Struct`) and heap-leaf (`String`/`Vector`/`HashMap`) fields
+        // through a reference need a zero-copy sub-borrow, not a value
+        // read — that is Slice 1b (not yet implemented); such a field
+        // falls through to the `UnknownMember` refusal below, same as
+        // before this ADR.
+        if let Type::Reference(form, inner) = &object_ty
+            && matches!(
+                form,
+                ReferenceForm::BorrowReadOnly | ReferenceForm::BorrowExclusiveMutable
+            )
+            && let Type::UserStruct { fields, .. } = inner.as_ref()
+            && let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field)
+            && field_ty.is_scalar()
+        {
+            return field_ty.clone();
+        }
         // Struct field access.
         if let Type::UserStruct { fields, .. } = &object_ty {
             if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field) {

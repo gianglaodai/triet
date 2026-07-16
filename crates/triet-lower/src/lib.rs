@@ -1681,6 +1681,20 @@ fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Place, Low
         }
         Expr::FieldAccess { object, field } => {
             let base = lower_place(*object, arena, c)?;
+            // ADR-0084 Slice 1a: auto-deref a reference exactly one layer
+            // before projecting the field, so `r.x` (r: `&0 T`/`&0 mutable
+            // T`) reads through the pointer instead of treating the
+            // reference's own slot as `T`. `place_result_type` resolves
+            // `base`'s type through any Field/Deref projections already
+            // applied by an outer recursive call (e.g. the nested
+            // `(&0 outer).inner.x` chain — only the FIRST step ever sees a
+            // `Reference`, since a plain struct field is never itself
+            // stored as a pointer).
+            let base = if matches!(place_result_type(&base, c), MirType::Reference { .. }) {
+                base.project(Projection::Deref)
+            } else {
+                base
+            };
             Ok(base.project(Projection::Field(field.clone())))
         }
         _ => {
@@ -1699,21 +1713,32 @@ fn lower_place(expr_id: ExprId, arena: &Arena, c: &mut Ctx) -> Result<Place, Low
 fn place_result_type(place: &Place, c: &Ctx) -> MirType {
     let mut ty = c.local_decls[place.local.0].ty.clone();
     for proj in &place.projection {
-        let Projection::Field(name) = proj else {
-            return MirType::Unknown;
-        };
-        // Unwrap a nullable aggregate to reach the inner struct's fields.
-        let inner = ty.nullable_payload().unwrap_or(&ty).clone();
-        let MirType::Struct(sname) = &inner else {
-            return MirType::Unknown;
-        };
-        match c
-            .struct_layouts
-            .get(sname)
-            .and_then(|layout| layout.fields.iter().find(|f| &f.name == name))
-        {
-            Some(field) => ty = field.ty.clone(),
-            None => return MirType::Unknown,
+        match proj {
+            // ADR-0084 Slice 1a: a reference dereferences to its pointee
+            // type. Only ever the first projection of a chain (a plain
+            // struct field is never itself stored as a pointer).
+            Projection::Deref => {
+                let MirType::Reference { inner, .. } = &ty else {
+                    return MirType::Unknown;
+                };
+                ty = (**inner).clone();
+            }
+            Projection::Field(name) => {
+                // Unwrap a nullable aggregate to reach the inner struct's fields.
+                let inner = ty.nullable_payload().unwrap_or(&ty).clone();
+                let MirType::Struct(sname) = &inner else {
+                    return MirType::Unknown;
+                };
+                match c
+                    .struct_layouts
+                    .get(sname)
+                    .and_then(|layout| layout.fields.iter().find(|f| &f.name == name))
+                {
+                    Some(field) => ty = field.ty.clone(),
+                    None => return MirType::Unknown,
+                }
+            }
+            _ => return MirType::Unknown,
         }
     }
     ty

@@ -1,0 +1,26 @@
+// EXPECT: 30
+// ADR-0084 Slice 1a — auto-deref member-access for a SCALAR field through a
+// read-only reference to a LOCAL struct. `let r = &0 v` borrows the local
+// `Point`; `r.x + r.y` reads both scalar fields by value through the borrow.
+// The borrow is confined to an INNER block scope so it dies at the block's
+// `pop_scope` (references sort-first) BEFORE `main`'s return — sidestepping the
+// lexical-borrowck E2450 wart (ADR-0046 Case-D conservatism, fixtures 21/24):
+// a borrow still live at the owner's return fires a spurious E2450 because the
+// borrowck is lexical (no NLL last-use). Not unsound — just verbose. See
+// ADR-0084 §WART.
+//
+// This is the pure LOCAL-borrow form of the Blocker-B fix (no function param):
+// `&0 v` on a slot-backed struct local must yield the slot address.
+struct Point {
+    x: Integer,
+    y: Integer,
+}
+
+function main() -> Integer {
+    let v = Point { x: 10, y: 20 };
+    let n = {
+        let r = &0 v;
+        r.x + r.y
+    };
+    return n;
+}

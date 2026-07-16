@@ -1,0 +1,28 @@
+// EXPECT: 30
+// ADR-0084 Slice 1a — auto-deref member-access for a SCALAR field through a
+// read-only reference PARAMETER. `read(p: &0 Point)` reads `p.x`/`p.y` (both
+// Integer, Copy) by value through the borrow — typecheck auto-derefs `&0 Point`
+// one layer (E1015 UnknownMember before this ADR), the lowerer emits
+// `(*p).x`/`(*p).y` (Deref+Field), the JIT walks the Deref (pointer + field
+// offset). The caller `read(&0 pt)` borrows a LOCAL struct → exercises the
+// Blocker-B fix (`Statement::Borrow` yields the slot ADDRESS for a slot-backed
+// aggregate local; before the fix `use_var` returned an undefined value →
+// SIGSEGV). Param form dodges the lexical-borrowck E2450 wart (the borrow lives
+// only across the call, not to the owner's return).
+//
+// Poison (2 tiers):
+//   - Remove the auto-deref branch in check_field_access (typecheck) → E1015.
+//   - Revert Blocker-B to the String-only branch (JIT) → SIGSEGV 139.
+struct Point {
+    x: Integer,
+    y: Integer,
+}
+
+function read(p: &0 Point) -> Integer {
+    return p.x + p.y;
+}
+
+function main() -> Integer {
+    let pt = Point { x: 10, y: 20 };
+    return read(&0 pt);
+}
