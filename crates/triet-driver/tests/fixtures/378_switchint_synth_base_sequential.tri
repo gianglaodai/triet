@@ -1,0 +1,19 @@
+// EXPECT: 12
+// D2 (ADR-0067 §AMEND-2 follow-up) — SwitchInt synthetic-block collision.
+// TWO sequential enum matches (not nested) in one function. Before the fix,
+// `mir_lower.rs` allocated synthetic fallthrough blocks for EVERY SwitchInt
+// off a single running counter (`next_synthetic`, pre-declare pass) but the
+// terminator lowering recomputed the SAME `synth_base = cfg.blocks.len()`
+// for every switch — so switch#2's fallthrough block index collided with
+// switch#1's, and Cranelift's verifier rejected the function (exit 4,
+// "terminator before end of block"). This is the minimal non-nested
+// reproduction: r1 from match on A, r2 from match on B, summed.
+enum A { X, Y }
+enum B { P, Q }
+function main() -> Integer {
+    let a = A::X;
+    let b = B::Q;
+    let r1 = match a { A::X => 10, A::Y => 20 };
+    let r2 = match b { B::P => 1, B::Q => 2 };
+    return r1 + r2;
+}

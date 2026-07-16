@@ -262,6 +262,11 @@ pub struct JitContext {
     /// referenced from a main body via `func_addr` before it is defined —
     /// Cranelift resolves the address at finalize time (proven by the spike).
     pending_walkers: Vec<(cranelift_module::FuncId, cranelift_codegen::Context)>,
+    /// D2 fix: the first synthetic-block index for each `SwitchInt` block's
+    /// fallthrough cascade, captured during pre-declare so the terminator
+    /// lowering uses the SAME global running allocation (a shared
+    /// `cfg.blocks.len()` base made switch#2 collide onto switch#1's synthetics).
+    switch_synth_base: HashMap<BasicBlock, usize>,
 }
 
 impl JitContext {
@@ -1426,6 +1431,7 @@ impl JitContext {
             shim_registry,
             walker_ids: HashMap::new(),
             pending_walkers: Vec::new(),
+            switch_synth_base: HashMap::new(),
         }
     }
 
@@ -2442,6 +2448,7 @@ impl JitContext {
         self.blocks.clear();
         self.sealed.clear();
         self.filled.clear();
+        self.switch_synth_base.clear();
 
         let entry_block = builder.create_block();
         self.blocks.insert(cfg.entry, entry_block);
@@ -2454,10 +2461,17 @@ impl JitContext {
             }
             // Pre-allocate cascade blocks for SwitchInt terminators.
             // Each SwitchInt with N cases needs N-1 intermediate fallthrough blocks.
+            // D2 fix: record THIS switch's synthetic base BEFORE bumping the
+            // running counter — `next_synthetic` is a single global counter
+            // shared across every SwitchInt in the function, so switch#2's
+            // base is NOT `cfg.blocks.len()` (that collides with switch#1's
+            // synthetics). The terminator lowering below must read this map
+            // instead of recomputing `cfg.blocks.len()`.
             let block_data = &cfg.blocks[i].data;
             if let Terminator::SwitchInt { cases, .. } = &block_data.terminator {
                 let n_cases = cases.len();
                 if n_cases > 1 {
+                    self.switch_synth_base.insert(bb, next_synthetic);
                     for _ in 0..(n_cases - 1) {
                         let synth_bb = BasicBlock(next_synthetic);
                         next_synthetic += 1;
@@ -4657,10 +4671,29 @@ impl JitContext {
                 if cases.is_empty() {
                     builder.ins().jump(default_block, &[]);
                 } else {
-                    // Synthesised block indices are allocated after the MIR
-                    // blocks during `build_body`. The first synthetic block
-                    // index = cfg.blocks.len().
-                    let synth_base = body.build_cfg().blocks.len();
+                    // D2 fix: synthetic fallthrough blocks are allocated from a
+                    // SINGLE global running counter shared across every
+                    // SwitchInt in the function (see pre-declare above), so
+                    // this switch's base must come from the map recorded
+                    // there — NOT a per-switch recompute of
+                    // `cfg.blocks.len()`, which is identical for every switch
+                    // and made switch#2 overwrite switch#1's synthetic blocks
+                    // (Cranelift verifier: "terminator before end of block").
+                    //
+                    // Pre-declare only records an entry for `cases.len() > 1`
+                    // (a 1-case switch needs zero fallthrough blocks and the
+                    // loop below never reads `synth_base` in that case) — so
+                    // the lookup must be lazy, not eager, or single-case
+                    // switches spuriously fail here.
+                    let synth_base = if cases.len() > 1 {
+                        Some(*self.switch_synth_base.get(&block).ok_or_else(|| {
+                            JitError::Unsupported(
+                                "SwitchInt synth_base not recorded in pre-declare".into(),
+                            )
+                        })?)
+                    } else {
+                        None
+                    };
                     // Lower as a cascading if-chain using pre-allocated
                     // synthetic blocks for fall-though. Each comparison
                     // uses brif: match → target, no-match → fallthrough.
@@ -4675,7 +4708,16 @@ impl JitContext {
                             expected,
                         );
                         if i + 1 < cases.len() {
-                            let fallthrough_bb = BasicBlock(synth_base + i);
+                            // `synth_base` is `Some` here: this arm only runs
+                            // when `cases.len() > 1`, the exact condition
+                            // under which pre-declare populated the map.
+                            let base = synth_base.ok_or_else(|| {
+                                JitError::Unsupported(
+                                    "SwitchInt synth_base unexpectedly None for multi-case switch"
+                                        .into(),
+                                )
+                            })?;
+                            let fallthrough_bb = BasicBlock(base + i);
                             let fallthrough =
                                 *self.blocks.get(&fallthrough_bb).ok_or_else(|| {
                                     JitError::Unsupported(

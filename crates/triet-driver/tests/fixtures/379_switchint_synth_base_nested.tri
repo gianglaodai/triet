@@ -1,0 +1,23 @@
+// EXPECT: 7
+// D2 (ADR-0067 §AMEND-2 follow-up) — SwitchInt synthetic-block collision,
+// NESTED variant: a match syntactically nested inside another match's arm
+// (the inner switch's home block is a case-target of the outer switch, not
+// a sequential sibling). Before the fix this hit the same collision as the
+// sequential case (378) — the outer switch's synthetic fallthrough and the
+// inner switch's synthetic fallthrough both computed `synth_base =
+// cfg.blocks.len()` and stomped each other, tripping the Cranelift
+// verifier (exit 4).
+enum Outer { Wrap(Integer), Empty }
+enum Inner { S, T, U }
+function main() -> Integer {
+    let o = Outer::Wrap(5);
+    let i = Inner::T;
+    return match o {
+        Outer::Wrap(n) => match i {
+            Inner::S => n + 1,
+            Inner::T => n + 2,
+            Inner::U => n + 3,
+        },
+        Outer::Empty => -1,
+    };
+}

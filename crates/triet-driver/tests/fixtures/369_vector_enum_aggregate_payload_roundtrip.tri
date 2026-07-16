@@ -3,22 +3,19 @@
 // struct > 8B (`Big{p,q}` = 16B). push two distinct elements, get both back
 // by index and read a per-element field — proves the fixed enum total_size
 // (24B) is also the STRIDE `vector_elem_size` (triet-jit) uses for push/get,
-// so two elements don't overlap/stomp each other in the buffer. `pick_q` is
-// a separate function (not a nested `match` inside the `~+` arm) — a nested
-// match-in-match currently hits an unrelated Cranelift dominance/terminator
-// verifier bug (see WO report to O), out of scope for this sizing front.
+// so two elements don't overlap/stomp each other in the buffer. The field
+// read is a `match` NESTED directly inside the `~+` arm (D2 fixed — nested
+// match inline sound; previously hoisted into a separate `pick_q` function
+// to dodge a SwitchInt synthetic-block collision, see 378-380).
 struct Big { p: Integer, q: Integer }
 enum MyEnum { V(Big), N }
-function pick_q(e: MyEnum) -> Integer {
-    return match e { MyEnum::V(g) => g.q, MyEnum::N => -1 };
-}
 function main() -> Integer {
     let mutable xs: Vector<MyEnum> = vector_new();
     xs = push(xs, MyEnum::V(Big { p: 1, q: 2 }));
     xs = push(xs, MyEnum::V(Big { p: 3, q: 4 }));
     let r0 = get(xs, 0);
     let r1 = get(xs, 1);
-    let a = match r0 { ~+ e => pick_q(e), ~0 => -9 };
-    let b = match r1 { ~+ e => pick_q(e), ~0 => -9 };
+    let a = match r0 { ~+ e => match e { MyEnum::V(g) => g.q, MyEnum::N => -1 }, ~0 => -9 };
+    let b = match r1 { ~+ e => match e { MyEnum::V(g) => g.q, MyEnum::N => -1 }, ~0 => -9 };
     return a * 100 + b;
 }

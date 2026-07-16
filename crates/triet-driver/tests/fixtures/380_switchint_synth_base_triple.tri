@@ -1,0 +1,22 @@
+// EXPECT: 202
+// D2 (ADR-0067 §AMEND-2 follow-up) — THREE enum switches in one function,
+// mixing sequential (r1's `A` switch, then `B`'s outer switch) and nested
+// (`C`'s switch inside `B`'s `B::Q` arm). Proves the running synthetic-block
+// counter allocated during pre-declare (base 0, 1, 2 for the three switches
+// in this function) is read back correctly at EACH switch's own terminator
+// site — not just for two switches (378) or one level of nesting (379).
+enum A { X, Y }
+enum B { P, Q, R }
+enum C { M, N }
+function main() -> Integer {
+    let a = A::Y;
+    let b = B::Q;
+    let c = C::N;
+    let r1 = match a { A::X => 1, A::Y => 2 };
+    let r2 = match b {
+        B::P => 10,
+        B::Q => match c { C::M => 100, C::N => 200 },
+        B::R => 30,
+    };
+    return r1 + r2;
+}

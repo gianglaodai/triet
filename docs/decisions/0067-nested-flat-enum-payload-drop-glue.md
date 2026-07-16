@@ -291,6 +291,20 @@ the end of block1" }` (T5 gốc) hoặc `"uses value vNN from non-dominating ins
 riêng (mọi fixture 369/371/372 dùng pattern này) — KHÔNG sửa `triet-jit`, vì
 đây là mặt trận CFG/dominance-lowering riêng, không liên quan sizing.
 
+**D2 FIX (2026-07-15, D nộp, chờ O verify + G ký):** root cause KHÔNG phải
+dominance mà là **SwitchInt synthetic-block collision** — `mir_lower.rs`
+pre-declare cấp block fallthrough-cascade cho MỌI `SwitchInt` trong hàm bằng
+MỘT counter chạy dồn (`next_synthetic`), nhưng terminator lowering (line
+~4663, cũ) tự tính lại `synth_base = body.build_cfg().blocks.len()` — GIỐNG
+HỆT cho mọi switch — nên switch#2 ghi đè synthetic block của switch#1 →
+verifier nổ. Fix: `JitContext.switch_synth_base: HashMap<BasicBlock, usize>`
+ghi base ĐÚNG lúc pre-declare cấp synthetic (chỉ khi `n_cases > 1`), terminator
+đọc lại từ map thay vì tính lại. Bug áp dụng cho **≥2 SwitchInt trong 1 hàm**
+(tuần tự HAY lồng, không chỉ nested) — teeth mới `378/379/380`
+(`crates/triet-driver/tests/fixtures/`, poison-đỏ exit 4 xác nhận). Fixture
+369/371/372 đã INLINE LẠI nested-match trực tiếp vào arm (bỏ hàm `pick_*`
+workaround), EXPECT giữ nguyên 204/7009/42.
+
 ---
 
 **Chữ ký §AMEND-2:** D nộp (2026-07-15). Fix build sạch (`cargo check
