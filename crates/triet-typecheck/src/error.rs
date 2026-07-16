@@ -845,14 +845,14 @@ pub enum TypeError {
             heap-allocated leaf (String/Vector/HashMap field) — copying it out \
             by value would alias the container's allocation with the copy, and \
             both would free it later (double-free).\n\n\
-            [Fix] Use `get_ref(container, k)` to borrow the element instead."
+            [Fix] Use `get(&0 container, k)` to borrow the element instead."
         )
     )]
     GetAggregateByValueRequiresClone {
         /// The heap-bearing aggregate type that cannot be returned by value.
         element: String,
         /// Source location of the `get` call.
-        #[label("aggregate has a heap leaf — cannot copy by value, use `get_ref()`")]
+        #[label("aggregate has a heap leaf — cannot copy by value, use `get(&0 container, k)`")]
         span: Span,
     },
 

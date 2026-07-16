@@ -212,6 +212,20 @@ fn run_fixture(source: &str) -> Result<i64, String> {
             "__triet_hashmap_get_copy",
             triet_jit::mir_lower::__triet_hashmap_get_ref,
         ),
+        // ADR-0079 §AMEND (Slice 2): get_ref shims for an AGGREGATE
+        // element/value — DISTINCT Rust functions (not a symbol-name reuse of
+        // `_get_ref` like `_get_copy` above): `_get_ref` derefs a stride<=8
+        // cell, which is wrong for an aggregate (its cell holds the struct's
+        // bits, not a handle). See triet-driver/src/main.rs for the same
+        // registration.
+        ShimSymbol::fn_2_1(
+            "__triet_vector_get_ref_agg",
+            triet_jit::mir_lower::__triet_vector_get_ref_agg,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_ref_agg",
+            triet_jit::mir_lower::__triet_hashmap_get_ref_agg,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",

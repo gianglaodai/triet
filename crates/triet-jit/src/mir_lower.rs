@@ -4181,22 +4181,29 @@ impl JitContext {
                             let (key_val, _key_by_ptr) =
                                 self.key_marshal(builder, key_arg, key_stride)?;
                             vec![map_val, key_val]
-                        } else if callee_name.as_str() == "__triet_hashmap_get_copy" {
-                            // ADR-0082 §AMEND-3: same key-marshal convention as
-                            // get/get_ref/contains above, but a DIFFERENT
-                            // refuse: this shim EXISTS to return an aggregate
-                            // VALUE by copy, so `refuse_hashmap_aggregate_kv`
-                            // (which blanket-refuses any Struct/Enum `v`) must
-                            // NOT gate it. The heap-bearing (non-Copy) VALUE
-                            // defense (E1049-bypass → double-free) is handled
-                            // once, for both Vector and HashMap, in the shared
-                            // `get_copy_elem_stride` block above (F3). The
-                            // ONLY refuse specific to this arm is the
-                            // aggregate-KEY x aggregate-VALUE compose the WO
-                            // defers — an aggregate KEY reaching here would
+                        } else if matches!(
+                            callee_name.as_str(),
+                            "__triet_hashmap_get_copy" | "__triet_hashmap_get_ref_agg"
+                        ) {
+                            // ADR-0082 §AMEND-3 (get_copy) / ADR-0079 §AMEND
+                            // Slice 2 (get_ref_agg): same key-marshal
+                            // convention as get/get_ref/contains above, but a
+                            // DIFFERENT refuse: both shims EXIST to surface an
+                            // aggregate VALUE (by copy or by borrow), so
+                            // `refuse_hashmap_aggregate_kv` (which blanket-
+                            // refuses any Struct/Enum `v`) must NOT gate them.
+                            // get_copy's heap-bearing (non-Copy) VALUE defense
+                            // (E1049-bypass → double-free) is handled once,
+                            // for both Vector and HashMap, in the shared
+                            // `get_copy_elem_stride` block above (F3) — it
+                            // does not apply to get_ref_agg (a borrow has no
+                            // aliasing hazard to defend against). The ONLY
+                            // refuse specific to this arm (both callees) is
+                            // the aggregate-KEY x aggregate-VALUE compose the
+                            // WO defers — an aggregate KEY reaching here would
                             // need the key hash/eq walkers (ADR-0083) wired
-                            // into this new copy path, which is unvetted;
-                            // refuse clearly rather than run it.
+                            // into this path, which is unvetted; refuse
+                            // clearly rather than run it.
                             let key_stride = {
                                 let mty = &body.local_decls[args[0].0].ty;
                                 let inner = match mty.nullable_payload().unwrap_or(mty) {
@@ -4209,9 +4216,9 @@ impl JitContext {
                                         if matches!(eff_k, MirType::Struct(_) | MirType::Enum(_)) {
                                             return Err(JitError::Unsupported(
                                                 "HashMap<aggregate-key, aggregate-value>: \
-                                                 get()-by-value composition is deferred \
-                                                 (ADR-0082 §AMEND-3 x ADR-0083) — not yet \
-                                                 vetted end-to-end"
+                                                 get() composition (by-value or by-ref) is \
+                                                 deferred (ADR-0082 §AMEND-3 x ADR-0083) — \
+                                                 not yet vetted end-to-end"
                                                     .into(),
                                             ));
                                         }
@@ -5616,6 +5623,44 @@ pub extern "C" fn __triet_vector_get_ref(vec: i64, idx: i64) -> i64 {
     }
 }
 
+/// `get_ref` for an AGGREGATE element — always returns the cell pointer.
+///
+/// ADR-0079 §AMEND (Slice 2, composes ADR-0084). Handles Struct/Enum
+/// elements, including heap-bearing ones. Sibling of
+/// `__triet_vector_get_ref` above, but WITHOUT its `stride <= 8` deref
+/// branch: an aggregate element's local carries the SLOT'S ADDRESS (per S6 —
+/// "references are raw pointers at runtime"), not the slot's content. The
+/// shared `_get_ref` derefs a thin (<=8B) cell because for a heap-scalar/
+/// container-handle element the cell's content IS the handle the caller's
+/// `&0 Vector<Integer>`-style local expects. An aggregate's 8B cell (e.g.
+/// `Id{value:Integer}`, `total_size` 8) holds the STRUCT'S BITS, not a
+/// handle — dereferencing it would hand the caller `42` instead of a
+/// pointer, and the subsequent field-read would deref THAT as an address
+/// (SIGSEGV — D verified, fixture 389). Returns `NULL_SENTINEL` when the
+/// index is out of range.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_vector_get_ref_agg(vec: i64, idx: i64) -> i64 {
+    if vec == 0 {
+        std::process::abort();
+    }
+    let body = vec as *const u8;
+    let len = unsafe { (body as *const i64).read_unaligned() };
+    if idx < 0 || idx >= len {
+        return triet_mir::NULL_SENTINEL;
+    }
+    let stride = vector_stride(vec);
+    let cell = unsafe { body.add(16).add(idx as usize * stride) };
+    cell as i64
+}
+
 /// `__triet_vector_pop(vec, out_ptr)` — MOVE the last element out (ADR-0077).
 ///
 /// Decrements the buffer's `len` in place so the popped slot is no longer owned
@@ -6318,6 +6363,46 @@ pub extern "C" fn __triet_hashmap_get_ref(map: i64, k: i64) -> i64 {
                 } else {
                     value_cell as i64
                 };
+            }
+        }
+        probe = (probe + 1) % cap;
+    }
+}
+
+/// `get_ref` for an AGGREGATE value — always returns the value cell pointer.
+///
+/// ADR-0079 §AMEND (Slice 2, composes ADR-0084). Sibling of
+/// `__triet_hashmap_get_ref` above, but WITHOUT its `value_stride <= 8`
+/// deref branch — see `__triet_vector_get_ref_agg`'s doc comment for why an
+/// aggregate value's cell must always be surfaced as a pointer, never
+/// dereferenced. Returns `NULL_SENTINEL` when the key is absent.
+#[allow(unsafe_code)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::ptr_as_ptr
+)]
+#[unsafe(no_mangle)]
+pub extern "C" fn __triet_hashmap_get_ref_agg(map: i64, k: i64) -> i64 {
+    if map == 0 {
+        std::process::abort();
+    }
+    let body = map as *mut u8;
+    let key_stride = hashmap_key_stride(map);
+    let cap = unsafe { (body as *const i64).add(1).read_unaligned() } as usize;
+    let mut probe = hashmap_key_hash(key_stride, k, cap, hashmap_hash_fn(map));
+    loop {
+        let state = unsafe { *hashmap_state_ptr(body, probe) };
+        if state == 0u8 {
+            return triet_mir::NULL_SENTINEL;
+        }
+        if state == 1u8 {
+            let slot_key_ptr = unsafe { hashmap_key_ptr(body, probe) };
+            if unsafe { hashmap_key_eq(slot_key_ptr, key_stride, k, hashmap_eq_fn(map)) } {
+                let value_cell = unsafe { hashmap_value_ptr(body, probe) };
+                return value_cell as i64;
             }
         }
         probe = (probe + 1) % cap;

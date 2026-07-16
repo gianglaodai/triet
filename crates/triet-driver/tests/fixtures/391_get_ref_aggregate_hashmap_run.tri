@@ -1,0 +1,20 @@
+// EXPECT: 42
+// ADR-0079 §AMEND Slice 2 — HashMap sibling of 389/390. `get(&0 m, k)` on
+// `HashMap<Integer, Wrapped>` (Wrapped = UserStruct) exercises the NEW
+// `__triet_hashmap_get_ref_agg` key-marshal arg_vals branch in mir_lower.rs
+// (shares the aggregate-KEY refuse with `_get_copy`'s branch, but WITHOUT
+// its heap-bearing-VALUE refuse — a `&0`-borrow value has no aliasing
+// hazard to defend against). Without this branch the call would fall to
+// the plain get/get_ref/contains key-marshal arm, which calls
+// `refuse_hashmap_aggregate_kv` and hard-refuses any Struct/Enum VALUE.
+struct Wrapped { value: Integer }
+
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Wrapped> = hashmap_new();
+    m = insert(m, 1, Wrapped { value: 42 });
+    let r = get(&0 m, 1);
+    return match r {
+        ~+ w => w.value,
+        ~0 => -1,
+    };
+}

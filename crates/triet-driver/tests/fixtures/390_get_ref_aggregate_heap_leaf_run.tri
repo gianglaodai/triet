@@ -1,0 +1,25 @@
+// EXPECT: 3
+// ADR-0079 §AMEND Slice 2 — Khải Hoàn Môn (E1049 tombstone, positive case).
+// The heap-bearing get-by-value REFUSE (E1049, ADR-0082 §AMEND-3) now has a
+// sound zero-copy alternative via `&0`: `get(&0 xs, 0)` borrows the element
+// WITHOUT copying the String leaf — non-destructive (element stays
+// resident, no tombstone, no free) and alias-free (no second owner of the
+// String's pointer, so no double-free on drop). Two independent `get`
+// calls prove the first one did not consume/mutate the element — a
+// destructive route (or a route that frees on "borrow" scope-end) would
+// desync `n1`/`n2` or crash before `main` returns.
+struct Tagged { name: String }
+
+function main() -> Integer {
+    let mutable xs: Vector<Tagged> = vector_new();
+    xs = push(xs, Tagged { name: "abc" });
+    let n1 = match get(&0 xs, 0) {
+        ~+ t => length(t.name),
+        ~0 => -1,
+    };
+    let n2 = match get(&0 xs, 0) {
+        ~+ t => length(t.name),
+        ~0 => -1,
+    };
+    return n1 + n2 - 3;
+}

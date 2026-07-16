@@ -1217,6 +1217,29 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             mutates_arg: None,
             arg_consumes: &[false, false],
         }),
+        // ADR-0079 §AMEND (Slice 2, composes ADR-0084): get_ref for an
+        // AGGREGATE element (Struct/Enum, including heap-bearing). Distinct
+        // MIR name from `__triet_vector_get_ref`/`__triet_hashmap_get_ref`
+        // because the underlying JIT symbol is ALSO distinct here (mir_lower.rs
+        // `__triet_vector_get_ref_agg`/`__triet_hashmap_get_ref_agg` never
+        // deref the cell, unlike the shared heap-scalar/container-handle
+        // `_get_ref` which derefs for stride <= 8 — an aggregate local carries
+        // the SLOT'S ADDRESS, not its content, so deref-thin would hand back
+        // the struct's bit-pattern instead of a pointer). Same borrow
+        // semantics as `_get_ref`: returns_borrow_of = Some(0), the returned
+        // reference borrows args[0] (the container).
+        "__triet_vector_get_ref_agg" => Some(BuiltinShimMeta {
+            name: "__triet_vector_get_ref_agg",
+            returns_borrow_of: Some(0),
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_hashmap_get_ref_agg" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_get_ref_agg",
+            returns_borrow_of: Some(0),
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
         _ => None,
     }
 }

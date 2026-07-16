@@ -1,0 +1,26 @@
+// ERROR: E2440
+// ADR-0079 §AMEND Slice 2 — POISON-1 (loan is the shield): `get(&0 m, k)`
+// on an aggregate VALUE (`Wrapped`, UserStruct) returns a borrow of the
+// container via `__triet_hashmap_get_ref_agg` (returns_borrow_of: Some(0)
+// in triet-mir's builtin_shim_meta). `remove` mutates the map in place
+// (mutates_arg: Some(0)) — while `r` (the borrowed element) is still alive,
+// borrowck MUST refuse `remove` with E2440, or the loan metadata is
+// decorative rather than load-bearing and `r.value` after `remove` would
+// read a tombstoned/freed slot.
+//
+// Poison (verified manually by D, not committed): strip `returns_borrow_of`
+// from the `_get_ref_agg` shim entries in triet-mir/src/lib.rs → E2440 no
+// longer fires (this fixture starts compiling) → confirms the meta is
+// load-bearing, not decorative.
+struct Wrapped { value: Integer }
+
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Wrapped> = hashmap_new();
+    m = insert(m, 1, Wrapped { value: 42 });
+    let r = get(&0 m, 1);
+    let removed = remove(m, 1); // E2440: m mutated while r (borrow) is alive
+    return match r {
+        ~+ w => w.value,
+        ~0 => -1,
+    };
+}

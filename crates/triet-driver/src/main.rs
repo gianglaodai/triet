@@ -179,6 +179,24 @@ fn main() -> ExitCode {
             "__triet_hashmap_get_copy",
             mir_lower::__triet_hashmap_get_ref,
         ),
+        // ADR-0079 §AMEND (Slice 2, composes ADR-0084): get_ref shims for an
+        // AGGREGATE element/value (Struct/Enum, including heap-bearing).
+        // Distinct Rust functions (mir_lower.rs `__triet_vector_get_ref_agg`/
+        // `__triet_hashmap_get_ref_agg`) — NOT a reuse of `_get_ref` under a
+        // second symbol name like `_get_copy` above, because the underlying
+        // logic differs: `_get_ref` derefs the cell for stride<=8 (matching
+        // a heap-scalar/container-handle element's representation), which
+        // would be WRONG for an aggregate element (its cell holds the
+        // struct's bits, not a handle) — see the Rust doc comment on
+        // `__triet_vector_get_ref_agg` for the full hazard.
+        ShimSymbol::fn_2_1(
+            "__triet_vector_get_ref_agg",
+            mir_lower::__triet_vector_get_ref_agg,
+        ),
+        ShimSymbol::fn_2_1(
+            "__triet_hashmap_get_ref_agg",
+            mir_lower::__triet_hashmap_get_ref_agg,
+        ),
         // ADR-0047: contains shims
         ShimSymbol::fn_4_1(
             "__triet_string_contains",

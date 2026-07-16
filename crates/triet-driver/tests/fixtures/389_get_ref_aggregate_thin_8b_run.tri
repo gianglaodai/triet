@@ -1,0 +1,26 @@
+// EXPECT: 42
+// ADR-0079 §AMEND Slice 2 — MINE 2 (8B-aggregate deref-thin hazard, this
+// campaign's 3rd occurrence of the class). `Id{value:Integer}` has
+// total_size==8 — the SAME stride the shared `_get_ref` derefs for a
+// heap-scalar/container-handle element (§AMEND-1: matches a handle's
+// body_ptr representation). An aggregate's 8B cell holds the struct's
+// BITS, not a handle — `__triet_vector_get_ref_agg` never derefs
+// (mir_lower.rs), so `r` genuinely carries the cell's ADDRESS and
+// `r.value` (Blocker-B field-read through &0, ADR-0084) loads the real
+// field through it.
+//
+// Poison (verified manually by D, not committed): re-add the `stride <= 8`
+// deref branch to `__triet_vector_get_ref_agg` → `r` becomes the raw i64
+// VALUE 42 instead of a pointer → `r.value`'s field-read dereferences 42 as
+// an address → SIGSEGV (or a wrong value, depending what's mapped there).
+struct Id { value: Integer }
+
+function main() -> Integer {
+    let mutable xs: Vector<Id> = vector_new();
+    xs = push(xs, Id { value: 42 });
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ ref_id => ref_id.value,
+        ~0 => -1,
+    };
+}

@@ -2490,17 +2490,42 @@ fn lower_expr(
                     // this branch it would fall to the generic `else` below
                     // and dispatch to the plain i64-return `__triet_vector_get`/
                     // `__triet_hashmap_get` shim, which cannot marshal >8B.
-                    // Typecheck only lets a Struct/Enum element reach here when
-                    // it's Copy (`is_copy_aggregate`, E1049 otherwise refuses
-                    // heap-bearing ones) and only for the OWNED-container call
-                    // form (`get(v,i)`, not `get(&0 v,i)` — the typecheck arm
-                    // matches `arg_tys[0]` directly, no `Type::Reference` case)
-                    // — so `is_borrow` is not expected to be true here for an
-                    // aggregate element; routed identically either way since
-                    // the dedicated `_get_copy` shim is non-destructive regardless.
                     let is_aggregate_elem =
                         matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_));
-                    let (shim_name, dest_ty) = if is_aggregate_elem {
+                    // ADR-0079 §AMEND (Slice 2, composes ADR-0084): an
+                    // aggregate element now reaches here via TWO distinct
+                    // typecheck arms — the owned-container get-by-value arm
+                    // (`get(v,i)`, Copy-only, E1049 refuses heap-bearing) AND
+                    // the NEW `&0`-borrow get_ref arm (`get(&0 v,i)`, heap-
+                    // bearing fully supported). `is_borrow` genuinely
+                    // distinguishes the two now — route to the dedicated
+                    // `_get_ref_agg` shim (returns cell_ptr, zero-copy,
+                    // borrows the container) instead of `_get_copy` (returns
+                    // a bitwise copy) when the call is the borrow form. Do
+                    // NOT collapse these: `_get_copy` on a `&0` aggregate
+                    // call would silently drop the loan (returns_borrow_of:
+                    // None) and let the container be mutated/freed out from
+                    // under the "borrowed" element (dangling), plus alias the
+                    // container's heap pointer for a heap-bearing field
+                    // (double-free on drop) — exactly the MINE-1 hazard this
+                    // slice closes.
+                    let (shim_name, dest_ty) = if is_aggregate_elem && is_borrow {
+                        let name = if base_ty.is_hashmap() {
+                            "__triet_hashmap_get_ref_agg"
+                        } else if base_ty.is_vec() {
+                            "__triet_vector_get_ref_agg"
+                        } else {
+                            return Err(LowerError::heap_type_not_supported(
+                                &format!("get() on type `{arg0_ty}` — expected Vector or HashMap"),
+                                expr_span,
+                            ));
+                        };
+                        let ref_ty = MirType::Reference {
+                            form: triet_mir::ReferenceForm::BorrowReadOnly,
+                            inner: Box::new(elem_ty),
+                        };
+                        (name, MirType::Nullable(Box::new(ref_ty)))
+                    } else if is_aggregate_elem {
                         let name = if base_ty.is_hashmap() {
                             "__triet_hashmap_get_copy"
                         } else if base_ty.is_vec() {

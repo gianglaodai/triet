@@ -1230,6 +1230,13 @@ impl Checker<'_> {
             }
         }
 
+        // ADR-0079 §AMEND (Slice 2): `get(&0 container, k)` on an aggregate
+        // element → `(&0 Agg)?`. Must be tried BEFORE the get-by-value arm
+        // below — see `get_ref_aggregate_return_type` for the full contract.
+        if let Some(borrowed) = get_ref_aggregate_return_type(name, &arg_tys) {
+            return borrowed;
+        }
+
         // ADR-0082 §AMEND-3: Copy-aggregate get-by-value from `Vector<Agg>` or
         // `HashMap<scalarK, Agg>` (Agg = UserStruct/UserEnum). Guarded so it
         // cannot collide with the aggregate-KEY arm above: that arm requires
@@ -1237,30 +1244,19 @@ impl Checker<'_> {
         // opposite (a scalar/non-aggregate key, or a bare Vector with no key
         // at all) — the two conditions are mutually exclusive on the same
         // call. Non-Copy (heap-bearing) `Agg` REFUSEs E1049 (§AMEND-3.1: a
-        // bitwise copy would alias the container's heap pointer).
-        if name == "get" && arg_tys.len() == 2 {
-            let element = match &arg_tys[0] {
-                Type::Vector(inner) => Some(inner.as_ref()),
-                Type::HashMap(k, v)
-                    if !matches!(k.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. }) =>
-                {
-                    Some(v.as_ref())
-                }
-                _ => None,
-            };
-            if let Some(element) = element
-                && matches!(element, Type::UserStruct { .. } | Type::UserEnum { .. })
-            {
-                if element.is_copy_aggregate() {
-                    return Type::Nullable(Box::new(element.clone()));
-                }
-                self.errors
-                    .push(TypeError::GetAggregateByValueRequiresClone {
-                        element: element.to_string(),
-                        span: span.clone(),
-                    });
-                return Type::Unknown;
+        // bitwise copy would alias the container's heap pointer). This arm
+        // only matches `arg_tys[0]` directly (non-ref) — the `&0`-ref case is
+        // handled by the get_ref arm above and never reaches here.
+        if let Some(element) = get_by_value_aggregate_element(name, &arg_tys) {
+            if element.is_copy_aggregate() {
+                return Type::Nullable(Box::new(element.clone()));
             }
+            self.errors
+                .push(TypeError::GetAggregateByValueRequiresClone {
+                    element: element.to_string(),
+                    span: span.clone(),
+                });
+            return Type::Unknown;
         }
 
         for candidate in candidates {
@@ -2329,6 +2325,78 @@ fn try_unify(a: &Type, b: &Type) -> Result<Type, ()> {
         }
     }
     Err(())
+}
+
+/// ADR-0079 §AMEND (Slice 2, composes ADR-0084) — the return type of
+/// `get(&0 container, k)` when the element/value is an aggregate.
+///
+/// Returns `Some((&0 Agg)?)` for a BORROW-form `get` (`arg_tys[0]` is
+/// `&0 Vector<Agg>` or `&0 HashMap<scalarK, Agg>`, `Agg` =
+/// `UserStruct`/`UserEnum`); `None` for every other call shape, leaving the
+/// caller's later arms untouched.
+///
+/// Unlike the get-by-value arm (ADR-0082 §AMEND-3, Copy-only + E1049), a
+/// heap-bearing `Agg` is FULLY SUPPORTED here — that is the entire point of
+/// this path: the loan tracks the container, so there is no second owner of
+/// the element's heap pointer and thus no aliasing hazard to refuse. Do NOT
+/// add an `is_copy_aggregate` gate here.
+///
+/// Ordering is load-bearing: the get-by-value arm matches `arg_tys[0]`
+/// DIRECTLY with no `Reference` unwrap, so `&0 Vector<Agg>` never reaches it
+/// and would otherwise fall through the monomorphic overload table into a
+/// spurious E1041. An aggregate `HashMap` KEY is deliberately left unmatched
+/// — aggregate-key x aggregate-value stays deferred to the ADR-0083 arm
+/// (E1041), unchanged.
+fn get_ref_aggregate_return_type(name: &str, arg_tys: &[Type]) -> Option<Type> {
+    if name != "get" || arg_tys.len() != 2 {
+        return None;
+    }
+    let Type::Reference(ReferenceForm::BorrowReadOnly, inner) = &arg_tys[0] else {
+        return None;
+    };
+    let element = match inner.as_ref() {
+        Type::Vector(elem) => elem.as_ref(),
+        Type::HashMap(k, v)
+            if !matches!(k.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. }) =>
+        {
+            v.as_ref()
+        }
+        _ => return None,
+    };
+    if !matches!(element, Type::UserStruct { .. } | Type::UserEnum { .. }) {
+        return None;
+    }
+    let ref_elem = Type::Reference(ReferenceForm::BorrowReadOnly, Box::new(element.clone()));
+    Some(Type::Nullable(Box::new(ref_elem)))
+}
+
+/// ADR-0082 §AMEND-3 — the aggregate element/value of a get-BY-VALUE call
+/// (`get(container, k)`), or `None` for any other call shape.
+///
+/// Sibling of `get_ref_aggregate_return_type` above; the two are mutually
+/// exclusive by construction — that one requires `arg_tys[0]` to be a
+/// `&0` `Reference`, this one matches `arg_tys[0]` DIRECTLY (non-ref), so a
+/// borrow-form call never reaches here. Also mutually exclusive with the
+/// aggregate-KEY arm (ADR-0083), which requires the KEY to be a
+/// `UserStruct`/`UserEnum` where this requires the opposite.
+///
+/// The caller decides the verdict: a Copy `Agg` returns by value, a
+/// heap-bearing one REFUSEs E1049 (§AMEND-3.1 — a bitwise copy would alias
+/// the container's heap pointer; `get(&0 container, k)` is the sound route).
+fn get_by_value_aggregate_element<'a>(name: &str, arg_tys: &'a [Type]) -> Option<&'a Type> {
+    if name != "get" || arg_tys.len() != 2 {
+        return None;
+    }
+    let element = match &arg_tys[0] {
+        Type::Vector(inner) => inner.as_ref(),
+        Type::HashMap(k, v)
+            if !matches!(k.as_ref(), Type::UserStruct { .. } | Type::UserEnum { .. }) =>
+        {
+            v.as_ref()
+        }
+        _ => return None,
+    };
+    matches!(element, Type::UserStruct { .. } | Type::UserEnum { .. }).then_some(element)
 }
 
 /// ADR-0077 Slice B + ADR-0078 P1b: `true` for a heap element type (`String`/
