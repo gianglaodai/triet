@@ -1,0 +1,29 @@
+// EXPECT: 7
+// ADR-0084 Slice 1b — chained sub-borrow: `(&0 Ngoai).trong` is itself a
+// `&0 Trong` sub-borrow (aggregate field through a reference), and `.x` on
+// THAT reference re-enters the SAME auto-deref rule for the scalar terminal
+// (Slice 1a). Exercises `lower_place`'s existing "single leading Deref"
+// chain (Trong is stored INLINE inside Ngoai, so `.trong.x` needs only ONE
+// Deref at the head, not one per field step) plus `walk_projections`
+// accumulating the `trong` field offset (8, after `pad`) AND the `x` field
+// offset (8, after `pad`) into one total. Leading `pad` fields on BOTH
+// structs make both offsets non-zero — a broken offset accumulation would
+// read `Ngoai.pad` or `Trong.pad` instead of `Trong.x` and return the wrong
+// value instead of 7.
+struct Trong {
+    pad: Integer,
+    x: Integer,
+}
+struct Ngoai {
+    pad: Integer,
+    trong: Trong,
+}
+
+function rd(o: &0 Ngoai) -> Integer {
+    return o.trong.x;
+}
+
+function main() -> Integer {
+    let olocal = Ngoai { pad: 1, trong: Trong { pad: 2, x: 7 } };
+    return rd(&0 olocal);
+}

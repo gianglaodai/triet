@@ -1,0 +1,27 @@
+// ERROR: E2450
+// ADR-0084 Slice 1b — POISON 1 (dangling): `(&0 h).name` sub-borrows the
+// LOCAL `h`, which dies at `bad()`'s function boundary; returning the
+// sub-borrow would leave a dangling `&0 String` pointing at freed storage.
+// This is the "reborrow chase" case (§Sites Tầng 4): `(&0 h).name` lowers to
+// TWO `Statement::Borrow`s — an inner `tmp = &0 h` then this outer
+// sub-borrow of `tmp.name` — and the whole-object-fallback loan must chase
+// back through `tmp` to `h` (not stop at the short-lived `tmp`) for
+// `Drop(h)` to still see an active loan and fire E2450.
+//
+// Poison: replace the reborrow-chase in the borrowck `Statement::Borrow`
+// arm (checker.rs) with a plain strip to `Place::local(source.local)` (no
+// chase through an existing loan keyed by `dest == source.local`) → the
+// loan anchors on `tmp` instead of `h`, `Drop(h)` finds no active loan, and
+// this compiles (and would SIGSEGV/read freed memory if run).
+struct Holder {
+    name: String,
+}
+
+function bad() -> &0 String {
+    let h = Holder { name: "x" };
+    return (&0 h).name;
+}
+
+function main() -> Integer {
+    return 0;
+}

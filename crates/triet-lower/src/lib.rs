@@ -3312,6 +3312,40 @@ fn lower_expr(
         // `Expr::EnumLiteral`). A `FieldAccess` here is a genuine field read.
         Expr::FieldAccess { .. } => {
             let source = lower_place(expr_id, arena, c)?;
+            let field_ty = place_result_type(&source, c);
+            // ADR-0084 Slice 1b: an aggregate/heap field reached THROUGH a
+            // reference (`source` carries a leading `Deref` projection —
+            // `lower_place` inserts it when the base resolves to a
+            // `MirType::Reference`) is a zero-copy SUB-BORROW, not a value
+            // read or move-out — emit `Statement::Borrow` (address-only,
+            // never touches the aggregate/heap bytes) instead of the
+            // `Assign` value-copy below. Only fires for the field kinds
+            // `check_field_access` already classified this way (plain
+            // `Struct` or heap-leaf String/Vector/HashMap); the scalar
+            // terminal case (Slice 1a) and the owned-base move-out case
+            // (no `Deref`, pre-existing WO-0074/0075 semantics) both fall
+            // through to the unchanged `Assign` path below.
+            let source_has_deref = source
+                .projection
+                .iter()
+                .any(|p| matches!(p, Projection::Deref));
+            if source_has_deref
+                && (matches!(&field_ty, MirType::Struct(_)) || field_ty.is_any_heap())
+            {
+                let ref_ty = MirType::Reference {
+                    form: triet_mir::ReferenceForm::BorrowReadOnly,
+                    inner: Box::new(field_ty),
+                };
+                let d = c.alloc_local_ty(ref_ty);
+                c.push(Statement::StorageLive(d, expr_span.clone()));
+                c.push(Statement::Borrow {
+                    dest: Place::local(d),
+                    form: triet_mir::ReferenceForm::BorrowReadOnly,
+                    source,
+                    span: expr_span,
+                });
+                return Ok(d);
+            }
             // ADR-0065 §12: a field whose type is a nullable aggregate
             // (`Struct?`/`Enum?`) must carry that type so `match`/Elvis route to
             // the nullable path and the JIT copies the full tagged slot.
@@ -3320,7 +3354,6 @@ fn lower_expr(
             // Drop that frees it (an Unknown-typed temp leaks — Drop sees no
             // heap type). SCALAR field reads keep the legacy Unknown-typed temp
             // (scalar leaf loaded as i64), preserving existing behavior.
-            let field_ty = place_result_type(&source, c);
             let d = if matches!(&field_ty, MirType::Nullable(inner)
                 if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)))
                 || field_ty.is_any_heap()

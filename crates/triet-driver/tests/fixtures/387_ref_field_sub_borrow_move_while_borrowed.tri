@@ -1,0 +1,24 @@
+// ERROR: E2440
+// ADR-0084 Slice 1b — POISON 2 (mutate/move-while-sub-borrowed): `s` holds a
+// zero-copy sub-borrow of `h.name` (via the `(&0 h).name` combo form); moving
+// `h` (`let h2 = h;`) while `s` is still live must be rejected — moving `h`
+// would leave `s` dangling. Caught by the pre-existing conservative
+// whole-base-move check (`Statement::Assign`, ADR-0025/checker.rs): moving a
+// non-Copy local conflicts with ANY active loan whose (chased, per Tầng 4)
+// source is that same local. `h.x = ...` field-assign syntax does not parse
+// (E0007 InvalidAssignmentTarget) — a plain move exercises the same
+// use-after-invalidate hazard without needing mutation syntax.
+//
+// Poison: same reborrow-chase removal as fixture 386 — without it, `s`'s
+// loan anchors on the intermediate `tmp` (not `h`), so moving `h` does not
+// conflict with anything and this compiles (dangling `s` after the move).
+struct Holder {
+    name: String,
+}
+
+function main() -> Integer {
+    let h = Holder { name: "x" };
+    let s = (&0 h).name;
+    let h2 = h;
+    return length(s);
+}

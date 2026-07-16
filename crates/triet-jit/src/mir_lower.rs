@@ -3140,12 +3140,35 @@ impl JitContext {
                     // takes the same slot-address path. Only a scalar/reference
                     // local (a real Variable, not slot-backed) falls through to
                     // `use_var`.
-                    let val = if let Some((slot, _)) = self.struct_slots.get(&source.local) {
-                        builder.ins().stack_addr(I64, *slot, 0)
-                    } else if let Some((slot, _)) = self.enum_slots.get(&source.local) {
-                        builder.ins().stack_addr(I64, *slot, 0)
+                    //
+                    // ADR-0084 Slice 1b: `source` may now carry a PROJECTION
+                    // (e.g. `[Deref, Field("name")]` for `h.name` where
+                    // `h: &0 Holder`) — a sub-borrow of an aggregate/heap field
+                    // reached through an existing reference. This must compute
+                    // an ADDRESS (base + byte offset), never load/copy the
+                    // field's bytes — `walk_projections` resolves the byte
+                    // offset (a leading `Deref` contributes 0 to the offset
+                    // per its own doc comment; only unwraps the type) and the
+                    // offset is added to the SAME base (slot address or raw
+                    // pointer value) the bare-local branch above already uses.
+                    let val = if source.projection.is_empty() {
+                        if let Some((slot, _)) = self.struct_slots.get(&source.local) {
+                            builder.ins().stack_addr(I64, *slot, 0)
+                        } else if let Some((slot, _)) = self.enum_slots.get(&source.local) {
+                            builder.ins().stack_addr(I64, *slot, 0)
+                        } else {
+                            builder.use_var(self.var(source.local))
+                        }
                     } else {
-                        builder.use_var(self.var(source.local))
+                        let (_, total_offset) = Self::walk_projections(body, source)?;
+                        if let Some((slot, _)) = self.struct_slots.get(&source.local) {
+                            builder.ins().stack_addr(I64, *slot, total_offset)
+                        } else if let Some((slot, _)) = self.enum_slots.get(&source.local) {
+                            builder.ins().stack_addr(I64, *slot, total_offset)
+                        } else {
+                            let ptr = builder.use_var(self.var(source.local));
+                            builder.ins().iadd_imm(ptr, i64::from(total_offset))
+                        }
                     };
                     builder.def_var(self.var(dest.local), val);
                 }

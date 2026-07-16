@@ -1,0 +1,28 @@
+// EXPECT: 4
+// ADR-0084 Slice 1b — chained sub-borrow reaching a HEAP leaf two levels
+// deep: `o.trong` is a `&0 Trong` sub-borrow (aggregate field through the
+// `o: &0 Ngoai` param), and `.name` on that `&0 Trong` is a SECOND sub-borrow
+// (heap-leaf field through a reference), yielding `&0 String`. Confirms the
+// "single leading Deref" chain (ADR-0084 §Sites) correctly accumulates BOTH
+// field offsets (trong within Ngoai, name within Trong — both non-zero
+// thanks to the leading `pad` fields) against the ONE pointer dereference,
+// and that `length` reads through the resulting `&0 String` with the right
+// address (not a copy of the whole `Ngoai`, and not `Ngoai.pad`/`Trong.pad`).
+struct Trong {
+    pad: Integer,
+    name: String,
+}
+struct Ngoai {
+    pad: Integer,
+    trong: Trong,
+}
+
+function rd(o: &0 Ngoai) -> Integer {
+    let s = o.trong.name;
+    return length(s);
+}
+
+function main() -> Integer {
+    let olocal = Ngoai { pad: 1, trong: Trong { pad: 2, name: "abcd" } };
+    return rd(&0 olocal);
+}

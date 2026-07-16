@@ -113,3 +113,82 @@ container-handle / param). Vá: lấy `stack_addr` cho mọi slot-backed local.
   Slice 1b. KHÔNG có tooth nested-scalar hợp lệ trong 1a.
 - **Không teeth âm mutation:** parser E0007 (`InvalidAssignmentTarget`) đã chặn
   mọi non-identifier assignment target ở tầng parse — vacuous với auto-deref.
+
+## §AMEND — Slice 1b landed (DRAFT, chờ O verify + G ký)
+
+> Status phần này: **DRAFT** — KHÔNG tự ký.
+
+Slice 1b thi công đúng phần DEFERRED của §CỐT LÕI (aggregate/heap field qua `&0`
+→ `&0 F` sub-borrow zero-copy). KHÔNG semantic mới. 4 tầng:
+
+1. **Typecheck** `check_field_access` (exprs.rs ~1620): nhánh auto-deref mở rộng —
+   sau khi khớp `Reference(BorrowReadOnly|BorrowExclusiveMutable, UserStruct)` và
+   field tồn tại: `is_scalar()` → value (1a giữ nguyên); `UserStruct{..}` HOẶC
+   `is_heap()` (String/Vector/HashMap) → trả
+   `Type::Reference(BorrowReadOnly, field_ty)` (sub-borrow LUÔN read-only, kể cả
+   base `&0 mutable`). Field kind khác (Enum, Nullable-aggregate) vẫn rơi
+   `UnknownMember` (§OUT).
+2. **Lowerer** `Expr::FieldAccess` rvalue (lib.rs ~3313): nếu `source` (do
+   `lower_place` sinh) chứa `Projection::Deref` VÀ `place_result_type` là
+   `Struct`/heap → emit `Statement::Borrow{form:BorrowReadOnly, source:[Deref,
+   Field]}` (dùng dest kiểu `Reference`), thay vì `Assign` value-copy. Scalar
+   terminal (1a) và owned-base move-out (WO-0074/0075, KHÔNG có Deref) đều rơi
+   xuống `Assign` cũ — không đổi.
+3. **JIT** `Statement::Borrow` codegen (mir_lower.rs ~3127): `source` nay có thể
+   projected. Nhánh mới — `walk_projections` (Deref cộng 0 offset, chỉ unwrap
+   type; Field cộng field offset) trả `total_offset`, rồi cộng vào CÙNG base
+   (slot address hoặc pointer-value) mà nhánh bare-local đã dùng. Số học địa chỉ
+   thuần, KHÔNG load/copy bytes.
+4. **Borrowck** `Statement::Borrow` (checker.rs ~646): **WHOLE-OBJECT FALLBACK**
+   (refuse-over-guess, G lệnh) — nếu `source.projection` chứa `Deref` thì loan
+   KHÔNG fine-grain field; anchor lên whole object. **REBORROW CHASE:** combo
+   form `(&0 h).name` lower thành HAI Borrow (`tmp = &0 h` rồi sub-borrow
+   `tmp.name`); `tmp` là temp chết ngay → nếu chỉ strip về
+   `Place::local(source.local)` thì loan anchor lên `tmp`, `Drop(h)` không thấy
+   loan → dangling lọt câm. Fix: nếu `source.local` LÀ `dest` của một active loan
+   (vừa được borrow ra) → kế thừa `source` của loan đó (chase về `h`); nếu là
+   PARAM `&0 T` (không có loan tạo nó) → dùng `Place::local(source.local)`.
+
+### Teeth (Slice 1b) — 383–387, gate `0·0·381·0`
+
+- **383** (`383_ref_field_heap_leaf_sub_borrow.tri`, EXPECT 5) — heap-leaf
+  `h.name` (`String`) qua `&0 Holder` PARAM → sub-borrow `&0 String` → `length`.
+  Đường E1049 hứa. **Leading `tag: Integer`** đẩy `name` sang offset≠0 (né mask
+  offset-0-coincidence). Poison JIT (revert projected-addr) → silent-wrong (đọc
+  `tag` bit-pattern làm `{ptr,len,cap}` → 383 trả 140155117966008).
+- **384** (`384_ref_field_nested_scalar_sub_borrow.tri`, EXPECT 7) — chain
+  `o.trong.x`: `.trong` sub-borrow `&0 Trong`, `.x` scalar terminal. Leading
+  `pad` trên CẢ HAI struct → cả hai offset≠0. (Đi qua Assign scalar-read, KHÔNG
+  qua Statement::Borrow → poison-JIT không đụng — đây là tooth chain-typecheck +
+  offset-accumulation.)
+- **385** (`385_ref_field_nested_heap_sub_borrow.tri`, EXPECT 4) — chain 2 tầng
+  tới heap: `o.trong.name` → `&0 String`. Poison JIT → 385 trả 2 (sai).
+- **386** (`386_ref_field_sub_borrow_dangling.tri`, ERROR E2450) — POISON dangling:
+  `(&0 h).name` return escape → E2450. Poison borrowck (bỏ reborrow-chase, plain
+  strip) → E2450 BIẾN MẤT (chỉ còn E2400 pre-existing return-tie ambiguity, một
+  chẩn đoán ĐỘC LẬP — xem Nghi ngờ §b).
+- **387** (`387_ref_field_sub_borrow_move_while_borrowed.tri`, ERROR E2440) —
+  POISON move-while-borrowed: `let s=(&0 h).name; let h2=h; length(s)` → move `h`
+  khi `s` sub-borrow → E2440 (dùng move thay mutate vì `h.x=` không parse E0007).
+  Poison borrowck (bỏ chase) → E2440 biến mất, compile pass → dangling `s`.
+
+### Nghi ngờ / giả định (D báo trung thực)
+
+- **(a) Whole-object false-conflict:** hai sub-borrow field KHÁC nhau qua CÙNG
+  reference (`h.name` và `h.other`) sẽ false-conflict (whole-object loan). Đây là
+  GIÁ refuse-over-guess G chấp nhận. KHÔNG có fixture hợp lệ nào trong corpus
+  hiện tại đụng ca này (chưa có surface đọc-2-field-đồng-thời qua `&0`).
+- **(b) Poison-386 KHÔNG "compile pass" hoàn toàn:** khi gỡ reborrow-chase, E2450
+  biến mất ĐÚNG (chứng minh chase load-bearing), NHƯNG một lỗi ĐỘC LẬP
+  E2400 "cannot infer which input the returned borrow ties to" vẫn chặn compile
+  (return-borrow tie-to-input ambiguity, pre-existing, không phải Slice 1b). Nên
+  poison-386 chứng minh chase-là-load-bearing-cho-E2450, KHÔNG chứng minh
+  "dangling chạy tới JIT". Ghi rõ để O không nhầm.
+- **(c) Vector/HashMap-field stride:** đã xác nhận cả String-field (fat 24B inline
+  → addr của `{ptr,len,cap}` tại field-offset) LẪN Vector/HashMap-field (thin 8B
+  handle → addr của handle tại field-offset) đều trả đúng địa chỉ: JIT dùng CHUNG
+  `walk_projections` offset + base-addr, không phân biệt stride (chỉ trả ADDRESS,
+  không load). Fixture 383/385 test String-field; Vector/HashMap-field cùng đường
+  addr nhưng KHÔNG có fixture riêng (thu hẹp: chỉ String field được test end-to-end
+  với `length`; Vector/HashMap-field-sub-borrow chưa có builtin đọc để exercise —
+  báo O nếu cần fixture bổ sung).

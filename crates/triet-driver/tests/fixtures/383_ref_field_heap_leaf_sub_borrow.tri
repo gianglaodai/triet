@@ -1,0 +1,37 @@
+// EXPECT: 5
+// ADR-0084 Slice 1b — heap-leaf field through a read-only reference is a
+// zero-copy SUB-BORROW (`&0 String`), not a value read/move. `h.name` on
+// `h: &0 Holder` returns `&0 String` (typecheck), the lowerer emits
+// `Statement::Borrow` with a `[Deref, Field("name")]` source (address-only,
+// never copies the String's {ptr,len,cap} bytes), and the JIT computes
+// `*h + offset(name)` — the pre-existing `length(&0 String)` overload
+// (ADR-0045 §8) then reads through it. This is the E1049-promised path:
+// borrow a heap-leaf field WITHOUT allocating/copying the String.
+//
+// The leading `tag` field puts `name` at a NON-ZERO offset (8) — this is
+// load-bearing for the poison below: a single-field struct would put `name`
+// at offset 0, and a broken JIT that ignores the field projection entirely
+// (falls back to `*h + 0`) would still happen to compute the right address
+// by coincidence, masking the bug.
+//
+// Poison (2 tiers):
+//   - Remove the `field_ty.is_heap()` arm in `check_field_access` (typecheck)
+//     → E1015 UnknownMember on `h.name`.
+//   - Revert the JIT `Statement::Borrow` projected-source branch (mir_lower.rs)
+//     to the bare-local-only version → address collapses to `*h + 0` (the
+//     `tag` field, not `name`) → reads/frees `tag`'s bit pattern as a String
+//     `{ptr,len,cap}` → SIGSEGV or garbage length.
+struct Holder {
+    tag: Integer,
+    name: String,
+}
+
+function rd(h: &0 Holder) -> Integer {
+    let s = h.name;
+    return length(s);
+}
+
+function main() -> Integer {
+    let hlocal = Holder { tag: 99, name: "hello" };
+    return rd(&0 hlocal);
+}

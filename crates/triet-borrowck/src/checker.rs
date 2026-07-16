@@ -649,6 +649,47 @@ fn process_block(
                 source,
                 span,
             } => {
+                // ADR-0084 Slice 1b: a sub-borrow reached THROUGH an existing
+                // reference (`source` starts with `Projection::Deref` — e.g.
+                // `h.name` where `h: &0 Holder`) cannot be tracked at field
+                // granularity — WHOLE-OBJECT FALLBACK (refuse-over-guess, G
+                // mandate): the loan covers the entire object reached via the
+                // reference, not just the projected field. Cost (accepted):
+                // two sub-borrows of DIFFERENT fields through the SAME
+                // reference (`h.name` and `h.other`) conservatively conflict.
+                //
+                // A plain strip to `Place::local(source.local)` is NOT enough
+                // for the combo form `(&0 h).name` (an inline re-borrow of a
+                // LOCAL, not a reference param): that lowers to TWO Borrow
+                // statements — an inner `tmp = &0 h` (loan A: source=h,
+                // dest=tmp) then this outer sub-borrow (source={tmp,[Deref,
+                // Field]}). `tmp` is a compiler temp whose only use IS this
+                // statement, so loan A is pruned by NLL dest-liveness the
+                // instant this statement finishes processing — well before a
+                // later `Drop(h)`/move-of-`h` is checked, silently missing a
+                // dangling reference. REBORROW CHASE: if `source.local` is
+                // itself the `dest` of an existing active loan (i.e. it was
+                // JUST created by borrowing something), inherit THAT loan's
+                // `source` — anchoring the new loan on the reborrow's true
+                // origin (`h`) instead of the short-lived intermediate. When
+                // `source.local` is a reference obtained some other way (a
+                // function PARAMETER already typed `&0 T`, no local borrow
+                // statement created it within this function) there is no such
+                // loan to chase — falls back to `Place::local(source.local)`.
+                let loan_source = if source
+                    .projection
+                    .iter()
+                    .any(|p| matches!(p, Projection::Deref))
+                {
+                    state
+                        .active_loans
+                        .iter()
+                        .find(|l| l.dest == source.local)
+                        .map_or_else(|| Place::local(source.local), |l| l.source.clone())
+                } else {
+                    source.clone()
+                };
+
                 // Check for conflicts with active loans (field-level: only
                 // overlapping places conflict — `obj.x` vs `obj.y` do not).
                 //
@@ -661,7 +702,7 @@ fn process_block(
                     ReferenceForm::BorrowReadOnly | ReferenceForm::WeakObserver
                 );
                 for loan in &state.active_loans {
-                    if places_conflict(&loan.source, source, may_alias)
+                    if places_conflict(&loan.source, &loan_source, may_alias)
                         && loan.conflicts_with(*form)
                     {
                         errors.push(BorrowError::NllExclusivityViolation {
@@ -702,7 +743,7 @@ fn process_block(
                     }
                     _ => {
                         state.active_loans.insert(Loan {
-                            source: source.clone(),
+                            source: loan_source,
                             dest: dest.local,
                             form: *form,
                             issued_in: block,
