@@ -1,0 +1,12 @@
+// EXPECT: 7
+// ADR-0084 §AMEND Lát A — O's verify-round-1 tooth: `&0 mutable` reachable
+// surface that the `get(&0 xs, i)`-routed fixtures (392-397) never exercise.
+// A DIFFERENT pointer source hits the SAME `GetDiscriminant`: a direct
+// `&0 mutable` borrow of a LOCAL enum resolves via `stack_addr` (Blocker-B
+// idiom), not `_get_ref_agg`'s cell address. Inline borrow (not bound to an
+// intermediate `let`) — matches O's exact probe shape.
+enum Msg { Ping(Integer), Pong }
+function main() -> Integer {
+    let e = Msg::Pong;
+    return match &0 mutable e { Msg::Pong => 7, Msg::Ping(_) => -1, };
+}

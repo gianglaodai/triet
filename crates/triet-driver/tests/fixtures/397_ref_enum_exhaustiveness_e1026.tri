@@ -1,0 +1,17 @@
+// ERROR: E1026
+// ADR-0084 §AMEND Lát A — Cọc 1b. `match ref_msg { Msg::Pong => 7 }` through
+// `&0` is missing the `Msg::Ping` arm and has no wildcard — must REFUSE
+// E1026 (non-exhaustive enum match), same as an owned-enum match would.
+// Pre-fix, `check_enum_exhaustiveness` only ran on a bare `Type::UserEnum`
+// scrutinee — a Reference-wrapped scrutinee silently skipped the check
+// (WO §2 Cọc 1b: "match qua &0 mất E1026").
+enum Msg { Ping(Integer), Pong }
+function main() -> Integer {
+    let mutable xs: Vector<Msg> = vector_new();
+    xs = push(xs, Msg::Pong);
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ ref_msg => match ref_msg { Msg::Pong => 7, },
+        ~0 => -1,
+    };
+}

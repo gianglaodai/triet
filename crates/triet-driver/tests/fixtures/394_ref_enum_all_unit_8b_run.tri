@@ -1,0 +1,22 @@
+// EXPECT: 123
+// ADR-0084 §AMEND Lát A — Tooth 2 (G mandate, 8B enum). An all-unit-variant
+// enum (`EnumLayout::compute`: total_size = 8 + max_payload_size = 8 + 0 = 8)
+// is the MOST COMMON enum shape (any C-style enum), not a corner case — and
+// exactly the width class the deref-thin masking bug has hit 3 times before
+// (§0 of the WO). Three elements, matched through `&0`, must come back
+// correctly distinguished — a stride/offset mistake would collapse them to
+// the same or garbage values.
+enum Color { Red, Green, Blue }
+function main() -> Integer {
+    let mutable xs: Vector<Color> = vector_new();
+    xs = push(xs, Color::Red);
+    xs = push(xs, Color::Green);
+    xs = push(xs, Color::Blue);
+    let r0 = get(&0 xs, 0);
+    let r1 = get(&0 xs, 1);
+    let r2 = get(&0 xs, 2);
+    let a = match r0 { ~+ c => match c { Color::Red => 1, Color::Green => 2, Color::Blue => 3, }, ~0 => -1, };
+    let b = match r1 { ~+ c => match c { Color::Red => 1, Color::Green => 2, Color::Blue => 3, }, ~0 => -1, };
+    let d = match r2 { ~+ c => match c { Color::Red => 1, Color::Green => 2, Color::Blue => 3, }, ~0 => -1, };
+    return a * 100 + b * 10 + d;
+}

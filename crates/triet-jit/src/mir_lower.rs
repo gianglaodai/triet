@@ -3385,13 +3385,29 @@ impl JitContext {
                 }
                 Statement::GetDiscriminant { dest, source, .. } => {
                     // If the source has an enum StackSlot, read discriminant from it.
-                    // Otherwise, the source IS the discriminant (Bậc A: enum parameters
-                    // and temporaries are passed as raw i64 discriminant values).
+                    // ADR-0084 §AMEND Lát A: a `&0`/`&0 mutable` reference to
+                    // an enum (leading `Deref` projection, verified by MIR
+                    // INV 4i-4) has NO enum_slot — it's a raw pointer in a
+                    // plain i64 var. Route it through `load_place`, which
+                    // walks the projection (`Deref` → 0-offset per
+                    // `walk_projections`) and, finding no struct/enum slot
+                    // for the pointer-holding local, falls to the
+                    // pointer-based branch: loads I64 at ptr+0 — exactly the
+                    // discriminant (`EnumLayout`: disc@0, payload@8).
+                    // Otherwise (no projection at all), the source IS the
+                    // discriminant (Bậc A: enum parameters/temporaries are
+                    // passed as raw i64 discriminant values). NEVER
+                    // `use_var` a Reference source directly — that reads the
+                    // raw pointer bit-pattern as if it were the discriminant
+                    // (WO §0 mine — the 4th recurrence of pointer-as-value
+                    // confusion in this codebase).
                     let disc_val = if let Some((slot, _)) = self.enum_slots.get(&source.local) {
                         builder.ins().stack_load(I64, *slot, 0)
-                    } else {
+                    } else if source.projection.is_empty() {
                         // Plain local — the value itself IS the discriminant.
                         builder.use_var(self.var(source.local))
+                    } else {
+                        self.load_place(builder, body, source)?
                     };
                     let var = self.var(dest.local);
                     builder.def_var(var, disc_val);

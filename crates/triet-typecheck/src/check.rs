@@ -158,6 +158,26 @@ struct Checker<'p> {
     errors: Vec<TypeError>,
 }
 
+/// ADR-0084 §AMEND Lát A: unwrap a `&0`/`&0 mutable` reference to reach the
+/// `UserEnum` shape underneath a match scrutinee — shared chokepoint for
+/// `bind_pattern`'s `Pattern::EnumVariant` arm (mirrors `check_field_access`'s
+/// reference-unwrap in `check/exprs.rs`). Returns `(enum_ty, is_borrowed)`;
+/// `None` if `scrutinee` is neither a bare `UserEnum` nor a borrow-reference
+/// to one.
+fn unwrap_enum_scrutinee(scrutinee: &Type) -> Option<(&Type, bool)> {
+    match scrutinee {
+        Type::UserEnum { .. } => Some((scrutinee, false)),
+        Type::Reference(
+            ReferenceForm::BorrowReadOnly | ReferenceForm::BorrowExclusiveMutable,
+            inner,
+        ) => match inner.as_ref() {
+            Type::UserEnum { .. } => Some((inner.as_ref(), true)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl<'p> Checker<'p> {
     fn new(program: &'p Program) -> Self {
         Self {
@@ -926,11 +946,24 @@ impl<'p> Checker<'p> {
                 payload,
                 ..
             } => {
-                if let Type::UserEnum {
-                    name: enum_name,
-                    variants,
-                    ..
-                } = scrutinee
+                // ADR-0084 §AMEND Lát A: unwrap a `&0`/`&0 mutable` reference
+                // to reach the `UserEnum` shape underneath (shared helper
+                // `unwrap_enum_scrutinee`) — same chokepoint idiom as Slice
+                // 1a/1b's `check_field_access` reference unwrap. A bare
+                // `Type::UserEnum` (owned match) keeps the existing behavior
+                // unchanged (`is_borrowed = false` never trips the new
+                // refuse branch below). Previously this whole arm silently
+                // did nothing for a Reference scrutinee — the root of both
+                // E1002 (bind) and "unresolved enum variant" (disc-match)
+                // symptoms (§0 of the WO).
+                if let Some((
+                    Type::UserEnum {
+                        name: enum_name,
+                        variants,
+                        ..
+                    },
+                    is_borrowed,
+                )) = unwrap_enum_scrutinee(scrutinee)
                 {
                     // Record the resolution for the lowerer — pattern ID
                     // maps to (enum_name, variant_name, discriminant, has_payload).
@@ -954,7 +987,27 @@ impl<'p> Checker<'p> {
                         .find(|(n, _)| n.as_str() == variant_name.as_str())
                         && let (Some(sub_pattern), Some(payload_ty)) = (payload, def_payload)
                     {
-                        self.bind_pattern(sub_pattern, payload_ty);
+                        // Lát A/B split (WO §1): a scalar payload copies out
+                        // through the borrow like Slice 1a's field read —
+                        // Copy, no aliasing, sound. An aggregate/heap payload
+                        // is REFUSEd only when the arm actually BINDS it
+                        // (`Pattern::Variable`) — a `_` sub-pattern never
+                        // reads the payload bytes (no `Projection::Payload`
+                        // emitted by the lowerer for a Wildcard sub-pattern),
+                        // so it's exactly as sound as a disc-only match
+                        // either way (WO Tooth 4 — verified in fixtures).
+                        if is_borrowed
+                            && !payload_ty.is_scalar()
+                            && matches!(self.arena.pattern(sub_pattern).node, Pattern::Variable(_))
+                        {
+                            self.errors
+                                .push(TypeError::BorrowedEnumPayloadBindUnsupported {
+                                    element: payload_ty.to_string(),
+                                    span: self.arena.pattern(sub_pattern).span.clone(),
+                                });
+                        } else {
+                            self.bind_pattern(sub_pattern, payload_ty);
+                        }
                     }
                 }
             }

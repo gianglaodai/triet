@@ -1867,7 +1867,22 @@ impl Checker<'_> {
         }
 
         // Enum exhaustiveness: requires all variants covered (or _ wildcard).
-        if let Type::UserEnum { name, .. } = &scrutinee_ty {
+        // ADR-0084 §AMEND Lát A: also fires through a `&0`/`&0 mutable`
+        // reference to a UserEnum — the reference wrapper doesn't change
+        // which variants are missing. Without this unwrap, `match ref_msg
+        // { Msg::Pong => 7 }` (missing `Ping`) silently skipped E1026.
+        let enum_exhaustiveness_name: Option<&str> = match &scrutinee_ty {
+            Type::UserEnum { name, .. } => Some(name.as_str()),
+            Type::Reference(
+                ReferenceForm::BorrowReadOnly | ReferenceForm::BorrowExclusiveMutable,
+                inner,
+            ) => match inner.as_ref() {
+                Type::UserEnum { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = enum_exhaustiveness_name {
             self.check_enum_exhaustiveness(name, arms, span.clone());
         }
 

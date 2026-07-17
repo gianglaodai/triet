@@ -1,0 +1,19 @@
+// EXPECT: 1
+// ADR-0084 §AMEND Lát A — Tooth 4 (O's narrow-refuse proposal, D verifies).
+// Same `Msg::Ping(String)` shape as the refused fixture 395, but the
+// sub-pattern is `_` instead of a bind (`Msg::Ping(_) => 1`). The lowerer
+// never emits a `Payload` projection for a Wildcard sub-pattern (no bytes
+// read), so this is exactly as sound as a disc-only match regardless of
+// what heap/aggregate type the payload holds — proves the E1050 refuse can
+// stay scoped to the actual BIND site instead of widening to the whole
+// enum.
+enum Msg { Ping(String), Pong }
+function main() -> Integer {
+    let mutable xs: Vector<Msg> = vector_new();
+    xs = push(xs, Msg::Ping("hi"));
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ ref_msg => match ref_msg { Msg::Ping(_) => 1, Msg::Pong => 7, },
+        ~0 => -1,
+    };
+}

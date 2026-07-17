@@ -1,0 +1,19 @@
+// EXPECT: 7
+// ADR-0084 §AMEND Lát A — Tooth 1 (LOAD-BEARING). `match ref_msg { ... }`
+// where `ref_msg: &0 Msg` (unwrapped from `get(&0 xs, 0)`). Only `Msg::Pong`
+// is matched explicitly; `Msg::Ping(Integer)` falls to the wildcard `_`.
+// This is the exact shape of the silent-MISS mine (WO §0): pre-fix, JIT
+// `GetDiscriminant` read the RAW POINTER as the discriminant. With a
+// wildcard arm present, a pointer value never equals case 0 or 1, so it
+// fell to `default_bb` — which IS the wildcard arm — silently returning
+// 999 (wrong answer, exit 0) instead of trapping. Healthy = 7.
+enum Msg { Ping(Integer), Pong }
+function main() -> Integer {
+    let mutable xs: Vector<Msg> = vector_new();
+    xs = push(xs, Msg::Pong);
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ ref_msg => match ref_msg { Msg::Pong => 7, _ => 999, },
+        ~0 => -1,
+    };
+}

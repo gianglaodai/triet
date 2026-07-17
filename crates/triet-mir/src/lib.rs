@@ -2040,15 +2040,30 @@ impl Body {
                     Statement::GetDiscriminant { dest, source, .. } => {
                         check_place(dest)?;
                         check_place(source)?;
-                        // 4i-4: source must have enum type
-                        if let Some(decl) = self.local_decls.get(source.local.0)
-                            && find_enum_by_type(&decl.ty).is_none()
-                        {
-                            return Err(MirError::GetDiscriminantNonEnum {
-                                local: source.local,
-                                found_type: decl.ty.clone(),
-                                span: DUMMY_SPAN.clone(),
-                            });
+                        // 4i-4: source must have enum type — OR be a
+                        // `&0`/`&0 mutable` reference to an enum consumed
+                        // through a LEADING `Deref` (ADR-0084 §AMEND Lát A:
+                        // `match ref_msg { ... }` where `ref_msg: &0 Msg`).
+                        // A bare `Reference` with no `Deref` is exactly the
+                        // shape that let the JIT read a raw pointer as a
+                        // discriminant (WO §0 mine) — still refused. Do NOT
+                        // loosen this to `matches!(ty, Reference{..})` alone
+                        // (no Deref check) — that lets the mine through.
+                        if let Some(decl) = self.local_decls.get(source.local.0) {
+                            let is_direct_enum = find_enum_by_type(&decl.ty).is_some();
+                            let is_deref_of_enum_ref =
+                                matches!(
+                                    &decl.ty,
+                                    MirType::Reference { inner, .. }
+                                        if matches!(inner.as_ref(), MirType::Enum(_))
+                                ) && matches!(source.projection.first(), Some(Projection::Deref));
+                            if !is_direct_enum && !is_deref_of_enum_ref {
+                                return Err(MirError::GetDiscriminantNonEnum {
+                                    local: source.local,
+                                    found_type: decl.ty.clone(),
+                                    span: DUMMY_SPAN.clone(),
+                                });
+                            }
                         }
                     }
                     Statement::StructAlloc { dest, .. } => check_local(*dest)?,

@@ -1,0 +1,11 @@
+// EXPECT: 42
+// ADR-0084 §AMEND Lát A — O's verify-round-1 tooth, second half: plain `&0`
+// borrow of a LOCAL enum, NOT routed through `get()`/`_get_ref_agg` — a
+// direct `Expr::Borrow` (`stack_addr` of the local enum slot) instead of a
+// heap-container cell address. Binds a SCALAR payload through it. Inline
+// borrow — matches O's exact probe shape.
+enum Msg { Ping(Integer), Pong }
+function main() -> Integer {
+    let e = Msg::Ping(42);
+    return match &0 e { Msg::Ping(n) => n, Msg::Pong => -1, };
+}

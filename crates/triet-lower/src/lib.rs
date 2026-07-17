@@ -4473,12 +4473,26 @@ fn lower_expr(
                 return Ok(result);
             }
 
+            // ADR-0084 §AMEND Lát A: a `&0`/`&0 mutable` reference scrutinee
+            // (e.g. `~+ ref_msg` unwrapped from `get(&0 xs, i)`) is a raw
+            // pointer local — every read against it below (GetDiscriminant
+            // AND the payload-bind Assign) must go through a leading `Deref`
+            // so the MIR verifier (INV 4i-4) and JIT (`load_place`) route it
+            // through the pointer instead of misreading the pointer bits as
+            // the discriminant/payload (WO §0 mine). A plain (non-reference)
+            // scrutinee keeps the unprojected `Place::local` unchanged.
+            let scrut_place = if matches!(scrut_ty, MirType::Reference { .. }) {
+                Place::local(scrut_local).project(Projection::Deref)
+            } else {
+                Place::local(scrut_local)
+            };
+
             // Read discriminant.
             let disc_local = c.alloc_local();
             c.push(Statement::StorageLive(disc_local, expr_span.clone()));
             c.push(Statement::GetDiscriminant {
                 dest: Place::local(disc_local),
-                source: Place::local(scrut_local),
+                source: scrut_place.clone(),
                 span: expr_span.clone(),
             });
 
@@ -4589,10 +4603,17 @@ fn lower_expr(
                                         });
                                     }
                                     c.push(Statement::StorageLive(bind_local, expr_span.clone()));
-                                    // Read payload into the binding.
+                                    // Read payload into the binding. ADR-0084
+                                    // §AMEND Lát A: `scrut_place` carries the
+                                    // leading `Deref` when the scrutinee is a
+                                    // reference (typecheck already refused a
+                                    // non-scalar bind through one — Cọc 1a —
+                                    // so `payload_ty` here is always scalar
+                                    // Copy when `scrut_place` is Deref'd).
                                     c.push(Statement::Assign {
                                         dest: Place::local(bind_local),
-                                        source: Place::local(scrut_local)
+                                        source: scrut_place
+                                            .clone()
                                             .project(Projection::Payload(variant_name.clone())),
                                         span: expr_span.clone(),
                                     });

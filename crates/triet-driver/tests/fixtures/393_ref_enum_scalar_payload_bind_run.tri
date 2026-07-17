@@ -1,0 +1,17 @@
+// EXPECT: 42
+// ADR-0084 §AMEND Lát A — WO §1 scope: bind a SCALAR payload
+// (`Msg::Ping(n) => n`) through a `&0` reference scrutinee. Distinct from
+// fixture 392 (which never actually binds a payload — Ping falls to `_`).
+// Exercises Cọc 4's payload-bind Assign: `scrut_place` (Deref-prefixed)
+// projected with `Payload("Ping")` copies the Integer out through the
+// pointer at offset 8.
+enum Msg { Ping(Integer), Pong }
+function main() -> Integer {
+    let mutable xs: Vector<Msg> = vector_new();
+    xs = push(xs, Msg::Ping(42));
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ ref_msg => match ref_msg { Msg::Ping(n) => n, Msg::Pong => -1, },
+        ~0 => -1,
+    };
+}

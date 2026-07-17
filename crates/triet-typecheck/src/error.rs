@@ -856,6 +856,36 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// E1050: an enum variant's payload is heap-allocated or an aggregate
+    /// (Struct/Enum) and the scrutinee is reached through a `&0`/`&0
+    /// mutable` reference (ADR-0084 §AMEND, Lát A) — binding it BY VALUE
+    /// (`Msg::Ping(s) => ...`) would copy the payload out of a container
+    /// this match doesn't own, aliasing any heap leaf inside it with the
+    /// new binding (double-free on drop). A `_` sub-pattern is unaffected —
+    /// it never reads the payload (Lát A Tooth 4 — a disc-only match is
+    /// sound regardless of payload kind). Distinct from E1049 (a `get()`
+    /// BY-VALUE aggregate return) — the fix here is different (bind-site
+    /// scope, not the call itself).
+    #[error("E1050: binding a `&0`-borrowed enum payload `{element}` by value is not supported")]
+    #[diagnostic(
+        code(triet::typecheck::E1050),
+        help(
+            "E1050: `{element}` is an aggregate/heap payload reached through a \
+            `&0`/`&0 mutable` reference — binding it (`Variant(x) => ...`) copies \
+            it out of a container this match doesn't own, aliasing any heap leaf \
+            inside it with the new binding (double-free on drop).\n\n\
+            [Fix] Match with `_` instead of a binding if you don't need the \
+            payload value (`Variant(_) => ...`)."
+        )
+    )]
+    BorrowedEnumPayloadBindUnsupported {
+        /// The aggregate/heap payload type that cannot be bound by value.
+        element: String,
+        /// Source location of the payload sub-pattern.
+        #[label("payload `{element}` cannot be bound through a `&0` reference")]
+        span: Span,
+    },
+
     // === Warning-severity diagnostics (Q2-C: miette severity field) ===
     /// W2001: deprecated `null` keyword (use `~0` canonical literal).
     /// Severity: WARNING (does not block compile until v1.0 per
@@ -1083,6 +1113,7 @@ impl TypeError {
             | Self::GetHeapElementUnsupported { span, .. }
             | Self::UnsupportedHashMapKey { span, .. }
             | Self::GetAggregateByValueRequiresClone { span, .. }
+            | Self::BorrowedEnumPayloadBindUnsupported { span, .. }
             | Self::CapabilityLevelUnsupported { span, .. }
             | Self::CapabilityNotPossessable { span, .. }
             | Self::NullDeprecated { span } => span.clone(),
