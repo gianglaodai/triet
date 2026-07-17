@@ -1,0 +1,17 @@
+// EXPECT: 33
+// WO-enum-return-sret Tooth 2 (G mandate): enum payload is a Struct (24B)
+// returned from a function via sret, then matched and its payload field
+// read. Struct payload only — String payload sidelined per G ruling.
+struct Point { x: Integer, y: Integer, z: Integer }
+enum E { A(Point), Nil }
+
+function make() -> E {
+    return E::A(Point { x: 33, y: 0, z: 0 });
+}
+
+function main() -> Integer {
+    return match make() {
+        E::A(p) => p.x,
+        E::Nil => 999,
+    };
+}

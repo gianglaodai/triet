@@ -903,6 +903,17 @@ pub enum ReturnShape {
         /// The name of the struct type.
         struct_name: String,
     },
+    /// Enum return via sret (P0 fix, 2026-07-17) — same ABI as `Struct`: the
+    /// caller allocates space and passes a hidden pointer as the first
+    /// argument. The callee block-copies the enum's discriminant + payload
+    /// bytes through that pointer and returns 0 values (void). A register-
+    /// based enum return has no static variant at the return site, so
+    /// field-wise copy (the `Struct` path) is meaningless — the JIT copies
+    /// `total_size` raw bytes instead (see `emit_struct_sret_copy` callers).
+    Enum {
+        /// The name of the enum type.
+        enum_name: String,
+    },
 }
 
 impl ReturnShape {
@@ -910,10 +921,21 @@ impl ReturnShape {
     #[must_use]
     pub fn arity(&self) -> usize {
         match self {
-            Self::Unit | Self::Struct { .. } => 0,
+            Self::Unit | Self::Struct { .. } | Self::Enum { .. } => 0,
             Self::Scalar => 1,
             Self::BinaryOutcome | Self::TernaryOutcome => 2,
         }
+    }
+
+    /// Whether this shape returns via a hidden sret pointer (arg\[0\]) rather
+    /// than Cranelift return registers. Single source of truth for every
+    /// call/callee site that used to hand-roll
+    /// `matches!(shape, ReturnShape::Struct { .. })` — `Enum` joined `Struct`
+    /// here 2026-07-17 (P0 fix). `BinaryOutcome`/`TernaryOutcome` are
+    /// 2-register (arity 2) and are NEVER sret — do not add them here.
+    #[must_use]
+    pub fn is_sret(&self) -> bool {
+        matches!(self, Self::Struct { .. } | Self::Enum { .. })
     }
 }
 
@@ -1789,6 +1811,22 @@ impl Body {
             });
         }
 
+        // ── INV-Enum-shape (P0 fix, 2026-07-17): ──
+        // Any MirType::Enum return type requires ReturnShape::Enum. Mirrors
+        // INV-Outcome-shape above — guards against the exact silent
+        // miscompile-of-Enum-as-Scalar hole that produced the P0 "hố đen
+        // nuốt dữ liệu" bug (a returned enum's discriminant landed in an
+        // uninitialized Cranelift Variable, read back as garbage).
+        if let MirType::Enum(_) = &self.signature.return_type
+            && !matches!(self.signature.return_shape, ReturnShape::Enum { .. })
+        {
+            return Err(MirError::EnumShapeMismatch {
+                return_type: self.signature.return_type.clone(),
+                return_shape: self.signature.return_shape.clone(),
+                span: DUMMY_SPAN.clone(),
+            });
+        }
+
         // ── INV-Outcome-disc (ADR-0052 OP.3.5): BinaryOutcome disc ≠ Trit(0) ──
         // Post-StackSlot-refactor: the disc is set via
         //   Const(tmp, Trit(v)) → Assign(outcome.disc, tmp)
@@ -2289,6 +2327,21 @@ pub enum MirError {
         span: Span,
     },
 
+    /// INV-Enum-shape (P0 fix, 2026-07-17): `Body::return_shape` does not
+    /// match `Body::return_type`. Any `MirType::Enum` return type requires
+    /// `ReturnShape::Enum`. Mirrors `OutcomeShapeMismatch` — guards against
+    /// the silent miscompile-as-Scalar hole that let a returned enum's
+    /// discriminant/payload rot into a register that was never written
+    /// (five-time-repeated slot-vs-Variable bug class).
+    EnumShapeMismatch {
+        /// The return type (should be Enum).
+        return_type: MirType,
+        /// The return shape that was found instead.
+        return_shape: ReturnShape,
+        /// Source location.
+        span: Span,
+    },
+
     /// 4i-outcome-1: `OutcomeAlloc` on a local whose type is not `MirType::Outcome`.
     OutcomeAllocNonOutcome {
         /// The local that was allocated as Outcome.
@@ -2417,6 +2470,16 @@ impl fmt::Display for MirError {
                 write!(
                     f,
                     "MIR verification error: return type is '{return_type}' but return shape is {return_shape:?} — expected matching Outcome shape"
+                )
+            }
+            Self::EnumShapeMismatch {
+                return_type,
+                return_shape,
+                ..
+            } => {
+                write!(
+                    f,
+                    "MIR verification error: return type is '{return_type}' but return shape is {return_shape:?} — expected ReturnShape::Enum"
                 )
             }
 

@@ -1,0 +1,23 @@
+// ERROR: nullable enum return
+// WO-enum-return-sret Round 2 (O mandate): P0-sibling gap neo. `Color?`
+// (unit-only enum, disc-niche PA-3c repr) as a FUNCTION RETURN TYPE does
+// NOT match `MirType::Enum` in the P0 fix's return-shape routing — it fell
+// through to ReturnShape::Scalar silently, same failure class as the enum
+// P0 (a wildcard catch-all arm swallows the wrong value: 999 instead of 22,
+// exit 0, no trap). Refused at Ctx::new (return-shape-decision layer).
+enum Color { Red, Green, Blue }
+
+function make() -> Color? {
+    return ~+ Color::Green;
+}
+
+function main() -> Integer {
+    let c = make();
+    return match c {
+        ~+ x => match x {
+            Color::Green => 22,
+            _ => 999,
+        },
+        ~0 => -1,
+    };
+}

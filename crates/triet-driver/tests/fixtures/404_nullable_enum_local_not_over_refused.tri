@@ -1,0 +1,20 @@
+// EXPECT: 22
+// WO-enum-return-sret Round 2 (O mandate): boundary fixture — proves the
+// return-position-only `Nullable(Enum)` refuse (Ctx::new) does NOT bleed
+// into the LOCAL/param case. `Color?` as a plain `let` binding is sound
+// (PA-3c disc-niche repr, unaffected by return-shape ABI) and must stay
+// green. If this fixture ever turns red, the refuse was placed at the
+// wrong layer (construction) instead of the right one (function return
+// type only).
+enum Color { Red, Green, Blue }
+
+function main() -> Integer {
+    let c: Color? = ~+ Color::Green;
+    return match c {
+        ~+ x => match x {
+            Color::Green => 22,
+            _ => 999,
+        },
+        ~0 => -1,
+    };
+}

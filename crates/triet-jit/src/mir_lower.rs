@@ -1494,10 +1494,9 @@ impl JitContext {
 
         for body in bodies {
             let mut sig = Signature::new(CallConv::SystemV);
-            let is_sret = matches!(
-                body.signature.return_shape,
-                triet_mir::ReturnShape::Struct { .. }
-            );
+            // P0 fix (2026-07-17): `.is_sret()` is the single source of truth
+            // for Struct|Enum sret ABI — do not hand-roll `matches!` here.
+            let is_sret = body.signature.return_shape.is_sret();
             if is_sret {
                 sig.params.push(AbiParam::new(I64));
             }
@@ -1529,10 +1528,7 @@ impl JitContext {
         let mut contexts: Vec<cranelift_codegen::Context> = Vec::new();
         for body in bodies {
             let mut cl_ctx = self.module.make_context();
-            let is_sret = matches!(
-                body.signature.return_shape,
-                triet_mir::ReturnShape::Struct { .. }
-            );
+            let is_sret = body.signature.return_shape.is_sret();
             cl_ctx.func.signature = Signature::new(CallConv::SystemV);
             if is_sret {
                 cl_ctx.func.signature.params.push(AbiParam::new(I64));
@@ -2380,6 +2376,22 @@ impl JitContext {
                 //  String slots pre-allocated for ALL String locals above.)
             }
         }
+        // Local(0) is the sret-return local when the function returns via
+        // sret (Struct OR Enum, ADR-0049 / P0 fix 2026-07-17) — it is
+        // received as a CALLER pointer (pointer-based via use_var), so it
+        // must be EXCLUDED from both slot-derivation loops below. Giving it
+        // its own StackSlot would shadow the pointer and miscompile the
+        // return (struct case: 172/14; enum case: this WO's P0). Computed
+        // once here (was computed only before the struct loop, leaving the
+        // enum loop below unguarded — a real hole once Enum sret existed:
+        // Local(0) typed `MirType::Enum` would otherwise get its own bogus
+        // slot from the enum loop's unconditional `0..body.num_locals` scan).
+        let derived_is_sret = body.signature.return_shape.is_sret();
+        let reserved_locals = if derived_is_sret {
+            body.signature.parameters.len() + 1
+        } else {
+            body.signature.parameters.len()
+        };
         // ── ADR-0065 Lát 1: enum slots for derived Enum / Enum? locals ──
         // EnumAlloc dests get slots above; but `Enum?` locals (`~0` null, match
         // present-bind) and plain `Enum` match-result locals never flow through
@@ -2390,6 +2402,9 @@ impl JitContext {
         // order — mirror of Lát 4.8's `nullable_payload().unwrap_or`).
         for i in 0..body.num_locals {
             let local = Local(i);
+            if i < reserved_locals {
+                continue;
+            }
             if self.enum_slots.contains_key(&local) {
                 continue;
             }
@@ -2417,20 +2432,8 @@ impl JitContext {
         // Assign branches (Delta 4) — layout offsets are NEVER mutated. Skip
         // "String" (slot allocated above) and already-slotted locals (StructAlloc
         // dests). Phân biệt Struct? (+8) vs Struct (+0) bằng `is_nullable` here —
-        // lẫn hai = SIGSEGV (Nhát dao G #2). EXCLUDE the sret-return local
-        // (Local 0 when the function returns a struct by sret) and parameter
-        // locals: those are received as caller pointers (pointer-based via
-        // use_var), giving them a stack slot would shadow the pointer and
-        // miscompile boundary structs (172/14).
-        let derived_is_sret = matches!(
-            body.signature.return_shape,
-            triet_mir::ReturnShape::Struct { .. }
-        );
-        let reserved_locals = if derived_is_sret {
-            body.signature.parameters.len() + 1
-        } else {
-            body.signature.parameters.len()
-        };
+        // lẫn hai = SIGSEGV (Nhát dao G #2). EXCLUDE the sret-return local and
+        // parameter locals (reserved_locals, computed above).
         for i in 0..body.num_locals {
             let local = Local(i);
             if i < reserved_locals {
@@ -2500,10 +2503,7 @@ impl JitContext {
         }
 
         // Entry block: parameters → var slots. sret: block param[0] → Local(0).
-        let is_sret = matches!(
-            body.signature.return_shape,
-            triet_mir::ReturnShape::Struct { .. }
-        );
+        let is_sret = body.signature.return_shape.is_sret();
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         let mut bp_idx = if is_sret {
@@ -3472,10 +3472,7 @@ impl JitContext {
                     builder.ins().return_(&[disc_val, payload_val]);
                     return Ok(());
                 }
-                let is_sret_ret = matches!(
-                    body.signature.return_shape,
-                    triet_mir::ReturnShape::Struct { .. }
-                );
+                let is_sret_ret = body.signature.return_shape.is_sret();
                 if is_sret_ret {
                     // ADR-0049 Lát 6 Lối d: String sret — write {ptr,len,cap}
                     // from local slot to caller's sret buffer (Local(0)).
@@ -3505,6 +3502,27 @@ impl JitContext {
                             builder.ins().store(mem_flags, payload, sret_ptr, 8);
                             builder.ins().store(mem_flags, len, sret_ptr, 16);
                             builder.ins().store(mem_flags, cap, sret_ptr, 24);
+                        } else if let Some((slot, layout)) = self.enum_slots.get(&values[0]) {
+                            // P0 fix (WO-enum-return-sret, PQ-2): enum sret —
+                            // block-copy `total_size` raw bytes from the
+                            // returned enum's local slot to the caller's sret
+                            // buffer (Local(0)). NOT field-wise like Struct:
+                            // an enum return has no single static variant at
+                            // the return site (the whole point of a runtime
+                            // discriminant), so a byte-for-byte copy of
+                            // disc+payload is the only correct move. Unrolled
+                            // at Cranelift-build time (total_size is known
+                            // MIR layout metadata, always 8-byte aligned —
+                            // EnumLayout::alignment is always 8 in Bậc A).
+                            let sret_ptr = builder.use_var(self.var(Local(0)));
+                            let mem_flags = cranelift_codegen::ir::MemFlags::new();
+                            let mut offset = 0usize;
+                            while offset < layout.total_size {
+                                let off = usize_to_i32(offset);
+                                let word = builder.ins().stack_load(I64, *slot, off);
+                                builder.ins().store(mem_flags, word, sret_ptr, off);
+                                offset += 8;
+                            }
                         }
                     }
                     builder.ins().return_(&[]);
@@ -3577,7 +3595,7 @@ impl JitContext {
                 return_shape,
                 ..
             } => {
-                let is_sret_call = matches!(return_shape, triet_mir::ReturnShape::Struct { .. });
+                let is_sret_call = return_shape.is_sret();
                 match target {
                     CallTarget::Jit => {
                         // Look up callee's FuncId
@@ -3597,7 +3615,7 @@ impl JitContext {
                         // Prepare arguments.
                         // Struct locals → stack_addr (pass by-pointer).
                         // String locals → stack_addr (Lát 6: fat-String by-pointer).
-                        // Enum locals → stack_load discriminant (raw i64).
+                        // Enum locals → stack_addr (C1: by-pointer, same as struct).
                         // Scalars → use_var.
                         let arg_vals: Vec<_> = args
                             .iter()

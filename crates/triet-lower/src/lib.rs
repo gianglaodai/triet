@@ -90,6 +90,30 @@ impl LowerError {
         }
     }
 
+    /// P0-sibling gap (WO-enum-return-sret Round 2, O recon 2026-07-17):
+    /// `Nullable(Enum)` in RETURN position has no sret ABI yet. The P0 fix
+    /// widened `MirType::Enum` return routing (and `INV-Enum-shape`) but
+    /// `Nullable(Enum)` does not match `MirType::Enum` — it fell through to
+    /// `ReturnShape::Scalar` untouched, silently miscompiling exactly like
+    /// the enum-return bug this fixes. Unit-only `Enum?` as a LOCAL/param is
+    /// unaffected (disc-niche PA-3c repr, sound) — only the RETURN position
+    /// is refused here.
+    fn nullable_enum_return_unsupported(enum_name: &str, span: Span) -> Self {
+        Self {
+            message: format!(
+                "nullable enum return `{enum_name}?` is not yet supported: functions \
+                 returning `{enum_name}?` have no sret ABI yet (return-shape decision \
+                 only recognizes bare `{enum_name}`, not `{enum_name}?`) — returning it \
+                 would silently miscompile as a Scalar 1-value, discarding the \
+                 discriminant.\n[Fix] Return `{enum_name}` unwrapped and model absence \
+                 as an explicit no-payload variant (e.g. add a `None`/`Nil` variant to \
+                 `{enum_name}`), or write the nullable result into an out-parameter \
+                 (`&0 mutable {enum_name}?`) instead of the return position."
+            ),
+            span,
+        }
+    }
+
     fn null_literal_without_expected_type(span: Span) -> Self {
         Self {
             message: "Outcome/nullable constructor (`~+`/`~0`/`~-`) requires an expected \
@@ -184,8 +208,42 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn new(name: &str, ret: &MirType, input: &LoweringInput) -> Self {
+    fn new(
+        name: &str,
+        ret: &MirType,
+        input: &LoweringInput,
+        span: Span,
+    ) -> Result<Self, LowerError> {
+        // P0-sibling gap (WO-enum-return-sret Round 2, O recon): `Nullable(Enum)`
+        // does NOT match `MirType::Enum` below, so it silently fell through to
+        // `ReturnShape::Scalar` — the exact P0 bug, un-caught by `INV-Enum-shape`
+        // (which only fires for a bare `MirType::Enum` return_type). Refuse it
+        // HERE, at the same return-shape-decision layer as `is_enum_return`,
+        // narrowly: only `Nullable(Enum)` in RETURN position, and only when the
+        // enum is unit-only. Payload-bearing `Enum?` is refused ALREADY at
+        // construction (`nullable_enum_payload_unsupported`, fixtures 374/375)
+        // — do not re-refuse it here (would just be a second, redundant guard
+        // on an already-dead path). Unit-only `Enum?` as a local/param is sound
+        // (PA-3c disc-niche repr) and must NOT be touched — this check is
+        // return-position-only by construction (it only runs once, in `Ctx::new`,
+        // which is only ever called with the function's RETURN type).
+        if let MirType::Nullable(inner) = ret
+            && let MirType::Enum(enum_name) = inner.as_ref()
+            && let Some(layout) = input.enum_layouts.get(enum_name)
+            && layout.variants.iter().all(|v| v.payload.is_none())
+        {
+            return Err(LowerError::nullable_enum_return_unsupported(
+                enum_name, span,
+            ));
+        }
         let is_struct_return = matches!(ret, MirType::Struct(_));
+        // P0 fix (2026-07-17): a user-defined enum return was falling into
+        // the `_ => Scalar` catch-all below — no arm ever recognized
+        // `MirType::Enum`. Register-based enum return has no static variant
+        // at the return site, so it needs sret (like Struct) — but its own
+        // ReturnShape::Enum (not Struct): the JIT copy is a raw byte-copy
+        // by total_size, not a field-wise struct copy (PQ-2, WO-enum-return-sret).
+        let is_enum_return = matches!(ret, MirType::Enum(_));
         // ADR-0058 Lát 1: heap binary Outcome uses JIT-sret (tái dùng String
         // machinery).  Scalar Outcome giữ 2-register; Ternary heap = deferred.
         let is_heap_outcome = matches!(
@@ -197,7 +255,8 @@ impl Ctx {
         ) && ret.has_heap_payload();
         // ADR-0049 L6 Lối d: String uses JIT-sret but keeps M4-escape Return[s].
         // ADR-0062: `String?` shares String's slot → same fat path (is_string_repr).
-        let is_fat_return = is_struct_return || ret.is_string_repr() || is_heap_outcome;
+        let is_fat_return =
+            is_struct_return || is_enum_return || ret.is_string_repr() || is_heap_outcome;
         let return_shape = match ret {
             _ if is_heap_outcome => triet_mir::ReturnShape::Struct {
                 struct_name: ret.to_string(),
@@ -210,6 +269,9 @@ impl Ctx {
                 allow_null_state: true,
                 ..
             } => triet_mir::ReturnShape::TernaryOutcome,
+            _ if is_enum_return => triet_mir::ReturnShape::Enum {
+                enum_name: ret.to_string(),
+            },
             _ if is_fat_return => triet_mir::ReturnShape::Struct {
                 struct_name: ret.to_string(),
             },
@@ -245,7 +307,7 @@ impl Ctx {
         if is_fat_return {
             ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
         }
-        ctx
+        Ok(ctx)
     }
 
     /// Allocate a fresh local with a declared type.
@@ -861,7 +923,7 @@ pub(crate) fn lower_function(
         .as_ref()
         .map(|tid| lower_type(input.arena, *tid, &input.symbols, self_type))
         .unwrap_or(MirType::Integer);
-    let mut c = Ctx::new(body_name, &ret_ty, input);
+    let mut c = Ctx::new(body_name, &ret_ty, input, span.clone())?;
     let entry = c.cur;
 
     // Function scope: Drop all owned locals (parameters + let bindings) when
@@ -2775,8 +2837,17 @@ fn lower_expr(
             let is_outcome_ret = matches!(callee_ret, MirType::Outcome { .. });
             // ADR-0058 Lát 1: heap Outcome → sret (treated as fat return).
             let is_heap_outcome_ret = is_outcome_ret && callee_ret.has_heap_payload();
+            // P0 fix (2026-07-17, WO-enum-return-sret MÌN 1): this predicate is
+            // one of THREE copies (here, Ctx::new callee-side, method-call
+            // caller-side) that MUST recognize MirType::Enum together — a
+            // caller/callee mismatch on is_fat_ret produces either a JIT panic
+            // (caller expects a Cranelift return value the callee never
+            // declares) or a silent Scalar miscompile. Do not edit this arm
+            // without also updating the other two.
+            let is_enum_ret = matches!(callee_ret, MirType::Enum(_));
             // ADR-0062: `String?` call return shares String's fat sret path.
             let is_fat_ret = matches!(callee_ret, MirType::Struct(_))
+                || is_enum_ret
                 || callee_ret.is_string_repr()
                 || is_heap_outcome_ret;
             // sret slot layout name: `String?` reprs as the "String" layout
@@ -2797,8 +2868,8 @@ fn lower_expr(
             // Move semantics: caller zeroes slot after call, borrowck
             // enforces E2420 use-after-move.
             if is_fat_ret {
-                // sret: allocate struct/string/heap-outcome local for return,
-                // pass as hidden arg[0].
+                // sret: allocate struct/string/heap-outcome/enum local for
+                // return, pass as hidden arg[0].
                 let ret_local = c.alloc_local_ty(callee_ret.clone());
                 c.push(Statement::StorageLive(ret_local, expr_span.clone()));
                 if is_heap_outcome_ret {
@@ -2806,6 +2877,17 @@ fn lower_expr(
                     // (JIT no-op; required for verifier/borrowck).
                     c.push(Statement::OutcomeAlloc {
                         dest: ret_local,
+                        span: expr_span.clone(),
+                    });
+                } else if is_enum_ret {
+                    // P0 fix: enum sret — EnumAlloc gives the caller's return
+                    // buffer a real StackSlot (mirrors Expr::EnumLiteral); the
+                    // callee block-copies its own slot's bytes into it, so no
+                    // SetDiscriminant here (unlike EnumLiteral, this local's
+                    // discriminant is written by the callee, not by us).
+                    c.push(Statement::EnumAlloc {
+                        dest: ret_local,
+                        enum_name: sret_layout_name.clone(),
                         span: expr_span.clone(),
                     });
                 } else {
@@ -2833,6 +2915,15 @@ fn lower_expr(
                     .collect();
                 let ret_bb = c.alloc_bb();
                 let call_bb = c.cur;
+                let return_shape = if is_enum_ret {
+                    triet_mir::ReturnShape::Enum {
+                        enum_name: sret_layout_name,
+                    }
+                } else {
+                    triet_mir::ReturnShape::Struct {
+                        struct_name: sret_layout_name,
+                    }
+                };
                 c.term(
                     call_bb,
                     Terminator::CallDispatch {
@@ -2842,9 +2933,7 @@ fn lower_expr(
                         args,
                         return_bb: ret_bb,
                         dest: Vec::new(),
-                        return_shape: triet_mir::ReturnShape::Struct {
-                            struct_name: sret_layout_name,
-                        },
+                        return_shape,
                         span: expr_span,
                     },
                 );

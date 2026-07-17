@@ -1294,7 +1294,8 @@ fn process_block(
     } = &block_data.terminator
     {
         // ADR-0049 Lát 6: sret arg[0] is write-only — caller keeps ownership.
-        let skip_sret = matches!(return_shape, triet_mir::ReturnShape::Struct { .. });
+        // P0 fix (2026-07-17): `.is_sret()` covers Struct|Enum — single source.
+        let skip_sret = return_shape.is_sret();
         for (i, arg) in args.iter().enumerate() {
             if skip_sret && i == 0 {
                 continue;

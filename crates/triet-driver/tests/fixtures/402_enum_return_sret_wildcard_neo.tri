@@ -1,0 +1,19 @@
+// EXPECT: 33
+// WO-enum-return-sret Tooth 4 (O mandate): SILENT-miscompile neo. Same
+// unit-enum shape as Tooth 1, but the match has a wildcard catch-all arm —
+// this is the variant that stayed SILENT (exit 0, wrong value 999) across
+// all 393 pre-fix fixtures, unlike Tooth 1's exhaustive match (which traps
+// loudly, SIGILL, when the bug is present).
+enum E { A, Nil }
+
+function make() -> E {
+    return E::A;
+}
+
+function main() -> Integer {
+    let s = make();
+    return match s {
+        E::A => 33,
+        _ => 999,
+    };
+}

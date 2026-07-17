@@ -1,0 +1,17 @@
+// EXPECT: 33
+// WO-enum-return-sret Tooth 1 (G mandate): unit enum (8B, no payload)
+// returned from a function via sret. Exhaustive match — no wildcard — so a
+// register-shortcut regression traps loudly (SIGILL) instead of silently
+// returning garbage.
+enum E { A, Nil }
+
+function make() -> E {
+    return E::A;
+}
+
+function main() -> Integer {
+    return match make() {
+        E::A => 33,
+        E::Nil => 999,
+    };
+}
