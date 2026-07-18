@@ -1,0 +1,20 @@
+// EXPECT: 42
+// WO-StructParamABI T9 — CONTROL / poison anchor: a BARE (non-nullable)
+// `Struct` parameter must be completely unaffected by the fix. The fix in
+// `load_place`'s bare-local branch only fires when
+// `local_ty.nullable_payload()` matches `Some(MirType::Struct(_))` — for a
+// bare `Struct`, `nullable_payload()` returns `None`, so the new branch is
+// never taken; codegen for this fixture is byte-identical to before the fix.
+// Poisoning the new branch to ALSO catch bare `MirType::Struct(_)` (not just
+// `Nullable(Struct(_))`) must turn this fixture red while 428-434 stay
+// green — proving the fix's teeth are anchored to the Nullable half
+// specifically.
+struct P { x: Integer, y: Integer }
+
+function f(p: P) -> Integer {
+    return p.x + p.y;
+}
+
+function main() -> Integer {
+    return f(P { x: 40, y: 2 });
+}

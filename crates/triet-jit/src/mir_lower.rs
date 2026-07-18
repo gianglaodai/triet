@@ -1255,6 +1255,31 @@ impl JitContext {
             if let Some((slot, _)) = self.enum_slots.get(&place.local) {
                 return Ok(builder.ins().stack_load(I64, *slot, 0));
             }
+            // WO-StructParamABI: a `Struct?` PARAM (or sret local) has no
+            // slot — Lát 2's alloc loop explicitly excludes `i < reserved_
+            // locals` (mir_lower.rs build_body) because the ABI passes it
+            // BY-POINTER (caller-owned {tag@0, fields@8+} buffer, ADR-0076
+            // Phương án A), never by-value. Its Cranelift Variable holds
+            // that POINTER, not the tag. A bare `use_var` here (as for a
+            // scalar local) returns the raw address — which never equals
+            // NULL_SENTINEL — so a `match p { ~0 => .., .. }` null arm on a
+            // null param was UNREACHABLE (silent miscompile, not a trap).
+            // Field projections are unaffected: they already walk through
+            // the pointer correctly (`walk_projections` + the pointer-based
+            // branch further down in this function / in `store_place`).
+            // Dereference at offset 0 to read the tag, mirroring the
+            // slot-backed branches above.
+            let local_ty = &body.local_decls[place.local.0].ty;
+            let is_nullable_struct_param = matches!(
+                local_ty.nullable_payload(),
+                Some(MirType::Struct(n)) if n != "String"
+            );
+            if is_nullable_struct_param {
+                let ptr = builder.use_var(self.var(place.local));
+                return Ok(builder
+                    .ins()
+                    .load(I64, cranelift_codegen::ir::MemFlags::new(), ptr, 0));
+            }
             return Ok(builder.use_var(self.var(place.local)));
         }
         // Outcome* projections are always single-level (never nested inside

@@ -1,0 +1,26 @@
+// ERROR: Struct? Drop without slot
+// WO-StructParamABI T8: a `Struct?` PARAMETER whose struct has a HEAP field
+// (`String`) still REFUSES at JIT compile time (exit 4), unaffected by this
+// WO's fix. The refuse fires at end-of-scope `Drop(q)` inside `f`: the
+// tag-guarded heap-leaf drop-glue (ADR-0076) requires `self.struct_slots.
+// get(local)` to read the tag before deciding whether to free — a `Struct?`
+// param has no slot (same exclusion T0 measured), so it refuses REGARDLESS
+// of null/present and REGARDLESS of this WO's fix (that fix only touches
+// `load_place`'s bare-read branch, never the Drop-glue path, which reads
+// `struct_slots` directly). This refuse is a genuine pre-existing ABI gap
+// (heap-field-bearing `Struct?` params need real copy-in/slot plumbing,
+// forbidden by this WO's scope), not an accident that happens to bound our
+// fix — it was refusing before this WO and stays refusing after.
+struct Bad { s: String }
+
+function f(q: Bad?) -> Integer {
+    return match q {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let b: Bad? = ~0;
+    return f(b);
+}

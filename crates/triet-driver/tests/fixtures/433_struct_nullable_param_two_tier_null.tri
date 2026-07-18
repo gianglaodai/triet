@@ -1,0 +1,28 @@
+// EXPECT: 0
+// WO-StructParamABI T6: the bare-param bug through TWO call boundaries
+// (`main -> outer -> inner`, both `outer` and `inner` taking `P?` params).
+// `outer` forwards its own param `p` straight into `inner(p)` — `outer`'s
+// `p` local ALSO has no `struct_slots` entry (same param-exclusion), but the
+// call-site arg-packing (`Terminator::CallDispatch` Jit arm) already reads
+// the CORRECT thing here: since `p` has no slot, arg-packing falls to its
+// `else` branch (`use_var`) and forwards the raw POINTER unchanged — which
+// IS the right by-pointer ABI value for a forwarded param (no bug at the
+// call boundary, only at the bare-read/null-check site inside `inner`).
+// Mirror of the `Enum?` WO's T5 two-tier fixtures (424/425).
+struct P { x: Integer, y: Integer }
+
+function inner(p: P?) -> Integer {
+    return match p {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
+
+function outer(p: P?) -> Integer {
+    return inner(p);
+}
+
+function main() -> Integer {
+    let b: P? = ~0;
+    return outer(b);
+}

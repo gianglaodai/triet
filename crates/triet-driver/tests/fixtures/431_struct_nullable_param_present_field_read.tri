@@ -1,0 +1,20 @@
+// EXPECT: 42
+// WO-StructParamABI T4 — CONTROL: `Struct?` PARAMETER, PRESENT value, arm
+// reads BOTH fields (`v.x + v.y` = 40 + 2 = 42). Exercises the pointer-based
+// field-projection path (`walk_projections` + the pointer-based branch in
+// `load_place`) that was ALREADY correct pre-fix and must remain byte-
+// identical after the fix (the fix only touches the bare, empty-projection
+// branch of `load_place`, never the projected-field branch).
+struct P { x: Integer, y: Integer }
+
+function f(p: P?) -> Integer {
+    return match p {
+        ~+ v => v.x + v.y,
+        ~0 => -1,
+    };
+}
+
+function main() -> Integer {
+    let b: P? = ~+ P { x: 40, y: 2 };
+    return f(b);
+}

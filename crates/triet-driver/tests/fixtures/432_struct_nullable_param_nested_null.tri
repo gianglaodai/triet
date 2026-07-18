@@ -1,0 +1,21 @@
+// EXPECT: 0
+// WO-StructParamABI T5: `Struct?` PARAMETER wrapping a NESTED struct field
+// (`P { inner: Inner, y: Integer }`), NULL value. Exercises the same bare
+// bug (T0/T1) with a deeper field layout behind it, guarding against a fix
+// that only special-cases a flat 2-field struct. Present arm reads
+// `v.inner.a + v.y` (2-level field projection) — must never execute for a
+// null `p`.
+struct Inner { a: Integer }
+struct P { inner: Inner, y: Integer }
+
+function f(p: P?) -> Integer {
+    return match p {
+        ~+ v => v.inner.a + v.y,
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let b: P? = ~0;
+    return f(b);
+}

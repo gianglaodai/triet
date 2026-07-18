@@ -1,0 +1,24 @@
+// EXPECT: -1
+// WO-StructParamABI T2: `Struct?` PARAMETER, NULL value, but the PRESENT arm
+// DOES read fields (`v.x + v.y`) — before the fix, the null-check always
+// failed so this arm ran unconditionally, reading `v.x`/`v.y` through the
+// (correct) pointer-based field path at whatever garbage bytes sit at
+// fields@+8 of the caller's null slot (ADR-0076 tag@0/fields@+8 — a null
+// value never initializes the field area). Result was ASLR-dependent
+// garbage, not a fixed wrong number. Post-fix, the null arm (`~0 => -1`)
+// runs instead and the present arm's field reads are never reached — pins
+// that the null-check fix does not disturb the (already-correct) field
+// projection path for the present arm.
+struct P { x: Integer, y: Integer }
+
+function f(p: P?) -> Integer {
+    return match p {
+        ~+ v => v.x + v.y,
+        ~0 => -1,
+    };
+}
+
+function main() -> Integer {
+    let b: P? = ~0;
+    return f(b);
+}

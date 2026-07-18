@@ -1,0 +1,22 @@
+// EXPECT: 1
+// WO-StructParamABI T3 — CONTROL against flag-flip: `Struct?` PARAMETER,
+// PRESENT value, arm does NOT read a field. This was ALREADY correct before
+// the fix (every "present" cell in O's recon matrix passed) — not because
+// the ABI was sound, but because the null-check bug always decided
+// "present", which coincidentally matched the right answer here. This
+// fixture must stay green after the fix; if it goes red, the fix flipped the
+// present-arm decision instead of just repairing the null-arm decision
+// (sign-flip regression).
+struct P { x: Integer, y: Integer }
+
+function f(p: P?) -> Integer {
+    return match p {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let b: P? = ~+ P { x: 40, y: 2 };
+    return f(b);
+}

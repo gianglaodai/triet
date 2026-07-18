@@ -1,0 +1,23 @@
+// EXPECT: 0
+// WO-StructParamABI T1 (O+G mandate, 2026-07-19): `Struct?` PARAMETER, NULL
+// value, arm does NOT read a field (`~+ v => 1, ~0 => 0,`). Before the fix:
+// `mir_lower.rs` `load_place`'s bare-local branch (line ~1258) returned
+// `use_var(place.local)` for a param — the RAW POINTER value, since a
+// `Struct?` param is never given a `struct_slots` entry (Lát 2's alloc loop
+// excludes `i < reserved_locals`). The null-check `_3 = _0 == NULL_SENTINEL`
+// then compared a stack address against `i64::MIN`, which is never true —
+// the `~0` arm was UNREACHABLE. exit 0, wrong VALUE (1 instead of 0) — a
+// silent miscompile, NOT a trap. This is the exact repro from the WO.
+struct P { x: Integer, y: Integer }
+
+function f(p: P?) -> Integer {
+    return match p {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let b: P? = ~0;
+    return f(b);
+}

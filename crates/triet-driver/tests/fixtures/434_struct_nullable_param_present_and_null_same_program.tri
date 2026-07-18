@@ -1,0 +1,20 @@
+// EXPECT: 10
+// WO-StructParamABI T7: PRESENT and NULL `Struct?` param calls in the SAME
+// program/execution (`f(present) + f(null)` = 7 + 3 = 10). Guards against a
+// fix that only works when a function is compiled/called in isolation with
+// a single tag value — e.g. a fix that clobbers shared JIT state (variable
+// reuse across calls) between the two `f` invocations.
+struct P { x: Integer, y: Integer }
+
+function f(p: P?) -> Integer {
+    return match p {
+        ~+ v => 7,
+        ~0 => 3,
+    };
+}
+
+function main() -> Integer {
+    let present: P? = ~+ P { x: 1, y: 2 };
+    let absent: P? = ~0;
+    return f(present) + f(absent);
+}
