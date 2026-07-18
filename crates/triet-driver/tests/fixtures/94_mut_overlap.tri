@@ -1,8 +1,19 @@
 // ERROR: E2440
-// ADR-0048: 2× &0 mutable on same local — exclusivity violation.
+// ADR-0048: 2x &0 mutable on same local — exclusivity violation.
+//
+// Rewritten 2026-07-18 (P0 borrowck-nll-foundation, ADR-0046 unfrozen). OLD
+// body created `a` and never used it again before `return 0` — under real
+// NLL, `a`'s loan ends at its own last use (immediately after creation),
+// so `b` does NOT conflict with an already-dead borrow. The pre-P0 checker
+// mis-classified `Drop(a)` (a reference, no drop obligation) as a genuine
+// READ, pinning `a` "live" through scope exit regardless of real usage —
+// an over-refuse that happened to match this fixture's `// ERROR`
+// expectation for the wrong reason. Added `append(a, 33)` below so `a` has
+// a genuine use AFTER `b` is created — now a REAL exclusivity violation.
 function main() -> Integer {
     let m = "hello"
     let a = &0 mutable m
     let b = &0 mutable m
+    append(a, 33)
     return 0
 }

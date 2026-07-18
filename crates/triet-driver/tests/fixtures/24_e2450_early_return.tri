@@ -1,15 +1,24 @@
 // ERROR: E2450
+// Rewritten 2026-07-18 (P0 borrowck-nll-foundation, ADR-0046 unfrozen).
 // Case D: early return before borrow — dangling ref on fall-through path.
-// `r = &0 x` borrows x, then `return x` returns the borrowed value.
-// Even though an early return on a sibling path exits cleanly,
-// the fall-through path must still be rejected.
-function demo(x: Integer, c: Integer) -> Integer {
+// OLD shape (`let r = &0 x; return x;` on the fall-through path, `r` never
+// read again) was an OVER-REFUSE for the same root cause as fixture 21:
+// `Drop(reference)` mis-counted as a read pinned the dead loan "live"
+// until scope exit. Rewritten below to keep the distinguishing feature
+// (an early return on a SIBLING branch must not exempt the fall-through
+// path from being checked) while making the fall-through borrow a
+// genuine dangling reference: the borrow escapes its owner's inner-block
+// scope and is read afterward.
+function demo(c: Integer) -> Integer {
     if c != 0 {
-        return 0;
+        return 0
     }
-    let r = &0 x;
-    return x;
+    let r = {
+        let x = "hello"
+        &0 x
+    }
+    return length(r)
 }
 function main() -> Integer {
-    return demo(10, 0);
+    return demo(0)
 }

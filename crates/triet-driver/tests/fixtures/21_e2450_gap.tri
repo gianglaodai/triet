@@ -1,12 +1,25 @@
 // ERROR: E2450
-// Returning a borrowed value: `r = &0 x` creates a shared borrow on `x`,
-// then `return x` tries to move `x` out of the function while the borrow
-// is still active. E2450 fires because `x` still has active loans when
-// its storage ends.
-function demo(x: Integer) -> Integer {
-    let r = &0 x;
-    return x;
+// Rewritten 2026-07-18 (P0 borrowck-nll-foundation, ADR-0046 unfrozen).
+// OLD shape: `let r = &0 x; return x;` where `x: Integer` was a PARAMETER
+// and `r` was never read again. That was an OVER-REFUSE, not a real bug:
+// under real NLL a reference's loan ends at its own last use — since `r`
+// had none, the loan was already dead by the time `x` moved out via
+// `return x`. The pre-P0 checker mis-classified `Statement::Drop` on a
+// REFERENCE local as a genuine read (liveness.rs), which pinned `r` "live"
+// through scope exit regardless of real usage, plus the lowerer's
+// source-drops-before-dest ordering for `flush_all_for_return` — together
+// these coincidentally produced E2450 here for the WRONG reason.
+//
+// Rewritten below to a genuine gap: the borrow escapes its owner's scope
+// (owner `x` dies at the end of the inner block) and IS read afterward —
+// real dangling reference, must still fire E2450 post-fix.
+function demo() -> Integer {
+    let r = {
+        let x = "hello"
+        &0 x
+    }
+    return length(r)
 }
 function main() -> Integer {
-    return demo(10);
+    return demo()
 }

@@ -29,7 +29,7 @@
 use std::collections::BTreeSet;
 #[cfg(test)]
 use triet_mir::MirType;
-use triet_mir::{BasicBlock, ControlFlowGraph, Local, Statement, Terminator};
+use triet_mir::{BasicBlock, ControlFlowGraph, Local, LocalDecl, Statement, Terminator};
 
 /// Live variable sets for a single basic block.
 #[derive(Clone, Debug, Default)]
@@ -56,9 +56,25 @@ pub struct LivenessResult {
 
 impl LivenessResult {
     /// Compute liveness for a CFG using backward dataflow.
+    ///
+    /// `local_decls` supplies the type of every local so [`statement_reads`]
+    /// can tell a **reference** local (`&0 T` etc.) apart from an **owner**
+    /// local when it sees a `Statement::Drop`. This is P0 foundation work
+    /// (ADR-0046 unfrozen 2026-07-18): `&0`/`&-` references have NO drop
+    /// obligation (proved in get_ref Slice 2) — dropping one is a compiler
+    /// scope-exit no-op, not a real use. Counting it as a read pins the
+    /// reference "live" all the way to scope end regardless of its actual
+    /// last use, which is the root cause of borrowck over-refuse on code
+    /// that creates a reference and never reads it again. Dropping an
+    /// **owner** is still a genuine use — it's the point its storage (and
+    /// anything borrowed from it) ends.
     #[must_use]
-    pub fn compute(cfg: &ControlFlowGraph) -> Self {
-        let mut blocks: Vec<BlockLiveness> = cfg.blocks.iter().map(compute_block_use_def).collect();
+    pub fn compute(cfg: &ControlFlowGraph, local_decls: &[LocalDecl]) -> Self {
+        let mut blocks: Vec<BlockLiveness> = cfg
+            .blocks
+            .iter()
+            .map(|b| compute_block_use_def(b, local_decls))
+            .collect();
 
         // Fixed-point iteration
         loop {
@@ -128,14 +144,14 @@ impl LivenessResult {
 /// `def[B]`: variables that are WRITTEN before being READ in B.
 ///
 /// Also records the last-use position for each variable (for NLL).
-fn compute_block_use_def(block: &triet_mir::CfgBlock) -> BlockLiveness {
+fn compute_block_use_def(block: &triet_mir::CfgBlock, local_decls: &[LocalDecl]) -> BlockLiveness {
     let mut used: BTreeSet<Local> = BTreeSet::new();
     let mut defined: BTreeSet<Local> = BTreeSet::new();
     let mut last_uses: Vec<(Local, usize)> = Vec::new();
 
     for (i, stmt) in block.data.statements.iter().enumerate() {
         // Collect locals READ by this statement
-        let reads = statement_reads(stmt);
+        let reads = statement_reads(stmt, local_decls);
 
         // Collect locals WRITTEN by this statement
         let writes = statement_writes(stmt);
@@ -177,7 +193,7 @@ fn compute_block_use_def(block: &triet_mir::CfgBlock) -> BlockLiveness {
 }
 
 /// Return the locals READ by a statement.
-fn statement_reads(stmt: &Statement) -> Vec<Local> {
+fn statement_reads(stmt: &Statement, local_decls: &[LocalDecl]) -> Vec<Local> {
     // Liveness is tracked at whole-local granularity, so a projected place's
     // base local is what counts as read.
     match stmt {
@@ -188,7 +204,23 @@ fn statement_reads(stmt: &Statement) -> Vec<Local> {
         Statement::Borrow { source, .. } => vec![source.local],
         Statement::Const { .. } => Vec::new(),
         Statement::BinaryOp { left, right, .. } => vec![left.local, right.local],
-        Statement::Drop(l, _) => vec![*l],
+        // Trụ 1 (P0 foundation, 2026-07-18): `Drop` of a REFERENCE local is a
+        // compiler scope-exit no-op (no drop obligation, ADR-0079/get_ref
+        // Slice 2) — it must NOT count as a read, or the reference reads as
+        // "live" all the way to scope end regardless of its real last use,
+        // which is the over-refuse root cause (borrowck-nll-foundation WO
+        // §1). `Drop` of an OWNER is still a genuine use — it's the point
+        // its storage (and anything borrowed FROM it) actually ends.
+        Statement::Drop(l, _) => {
+            if local_decls
+                .get(l.0)
+                .is_some_and(|d| d.ty.is_reference_like())
+            {
+                Vec::new()
+            } else {
+                vec![*l]
+            }
+        }
         Statement::StructAlloc { .. } => Vec::new(),
         Statement::EnumAlloc { .. } => Vec::new(),
         Statement::OutcomeAlloc { .. } => Vec::new(),
@@ -258,7 +290,7 @@ mod tests {
 
         let body = b.build(bb0);
         let cfg = body.build_cfg();
-        let liveness = LivenessResult::compute(&cfg);
+        let liveness = LivenessResult::compute(&cfg, &body.local_decls);
 
         // x is WRITTEN by const_int before being read by binop
         // → x is in `defined`, not `used`

@@ -1,8 +1,16 @@
 // ERROR: E2440
 // ADR-0048: &0 mutable + &0 shared on same local — conflict.
+//
+// Rewritten 2026-07-18 (P0 borrowck-nll-foundation, ADR-0046 unfrozen) — same
+// root cause and fix as fixture 94: OLD body never used `a` again before
+// `return 0`, which was an over-refuse under real NLL (a dead loan cannot
+// conflict with `b`). Added `append(a, 33)` so `a` has a genuine use AFTER
+// `b` is created — now a REAL exclusivity violation (`b`'s shared borrow is
+// created while `a`'s mutable borrow is still needed).
 function main() -> Integer {
     let m = "hello"
     let a = &0 mutable m
     let b = &0 m
-    return 0
+    append(a, 33)
+    return length(b)
 }

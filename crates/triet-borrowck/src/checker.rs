@@ -103,10 +103,17 @@ struct Loan {
     issued_in: BasicBlock,
     /// Statement index within `issued_in` where the borrow was created.
     issued_at: usize,
-    /// ADR-0046: true for PropagatedLoan (return-borrow at call site).
-    /// Propagated loans are bounded by the dest's liveness, not StorageDead
-    /// — E2450 is skipped when the source drops because the dest is already
-    /// dead. Direct loans (is_propagated=false) are bounded by scope exit.
+    /// ADR-0046: true for a DERIVED loan — one re-anchored from another
+    /// active loan rather than created directly by a user `Borrow`
+    /// statement. Covers cross-call `PropagatedLoan` (return-borrow at a
+    /// call site) and, since the P0 borrowck foundation pass
+    /// (2026-07-18, Trụ 2), intra-body alias propagation across a plain
+    /// reference-typed `Assign` (`let y = x` where `x: &0 T`). Since Trụ 3
+    /// (same pass), this flag no longer changes the E2450 has-active-loan
+    /// test itself — that check is now `is_live_after`-uniform for every
+    /// loan regardless of provenance. `is_propagated` still matters at the
+    /// U2 builtin return-borrow site (~1260): tracing back to the loan's
+    /// TRUE origin must skip derived loans and land on a direct one.
     is_propagated: bool,
 }
 
@@ -503,7 +510,7 @@ pub fn check_body_with(
     callee_sigs: &BTreeMap<String, triet_mir::FunctionSignature>,
 ) -> BorrowCheckResult {
     let cfg = body.build_cfg();
-    let liveness = LivenessResult::compute(&cfg);
+    let liveness = LivenessResult::compute(&cfg, &body.local_decls);
     let names = build_local_names(body);
     let mut errors = Vec::new();
 
@@ -629,7 +636,26 @@ fn process_block(
                 state.partial_moves.remove(l);
             }
 
-            Statement::StorageDead(l, _) => {
+            Statement::StorageDead(l, span) => {
+                // Trụ 3 (P0 foundation, 2026-07-18): StorageDead is one of
+                // the 3 owner-death points (Drop / StorageDead / move-out,
+                // borrowck-nll-foundation WO §2 Trụ 3) that must check for a
+                // dangling reference — same E2450 exposure as
+                // `Statement::Drop` below, checked BEFORE the loan is
+                // retracted. Uniform `is_live_after` on the loan's `dest`:
+                // Trụ 1 already cleaned the liveness input, so no
+                // `Drop(reference)`-counted-as-read hack is needed here.
+                let has_active_loans = state.active_loans.iter().any(|loan| {
+                    loan.source.local == *l && liveness.is_live_after(block, stmt_idx, loan.dest)
+                });
+                if has_active_loans {
+                    let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));
+                    errors.push(BorrowError::DropWhileBorrowed {
+                        local: *l,
+                        name: l_name,
+                        span: span.clone(),
+                    });
+                }
                 state.active_loans.retain(|loan| loan.source.local != *l);
                 state.var_states.remove(l);
             }
@@ -761,6 +787,52 @@ fn process_block(
                 // does not consume the whole object. Only a plain-local
                 // source (no projections) is a genuine move of the base.
                 let is_field_read = !source.projection.is_empty();
+
+                // Trụ 2 (P0 foundation, 2026-07-18): alias propagation across
+                // a plain-local `Assign` of a REFERENCE-typed (or nullable-
+                // reference, PA-3c — `is_reference_like`) local (`let y = x`
+                // where `x: &0 T` or `x: (&0 T)?`). A reference is Copy
+                // (`MirType::is_copy`), so the ordinary move-tracking branch
+                // below never marks `source` Moved and never touches
+                // `active_loans` for it — by design, the copy is valid and
+                // `source` stays usable. But without this block, any loan
+                // ANCHORED on `source` as its `dest` (e.g. a match-arm-local
+                // reference merged into a single result var across arms)
+                // silently evaporates the instant `source`'s OWN liveness
+                // ends (the NLL end-loan retain below is keyed on
+                // `loan.dest`), even though `dest` is still alive and aliases
+                // the exact same borrowed place. This is the "alias-loss"
+                // under-refuse half of the P0 bug (see
+                // borrowck-nll-foundation WO §1): a UAF that a reborrow
+                // through an ordinary variable copy could hide from the
+                // checker. Mirrors the pre-existing cross-call
+                // `PropagatedLoan` mechanism (below, ~1144) for this
+                // intra-body case: every active loan whose `dest` is the
+                // copied reference gets a twin loan re-anchored on the new
+                // `dest`, same `source`/`form`. Re-uses `is_propagated=true`
+                // — this loan, too, is a DERIVED alias of another, not one
+                // created directly by a user `Borrow` statement (same
+                // rationale `PropagatedLoan` already uses); the ORIGINAL
+                // loan is left in place (untouched) since `source` itself
+                // remains live and usable after a Copy.
+                if !is_field_read && body.local_decls[source.local.0].ty.is_reference_like() {
+                    let inherited: Vec<Loan> = state
+                        .active_loans
+                        .iter()
+                        .filter(|l| l.dest == source.local)
+                        .cloned()
+                        .collect();
+                    for loan in inherited {
+                        state.active_loans.insert(Loan {
+                            source: loan.source,
+                            dest: dest.local,
+                            form: loan.form,
+                            issued_in: block,
+                            issued_at: stmt_idx,
+                            is_propagated: true,
+                        });
+                    }
+                }
 
                 // Δ3: Refuse to copy a Move type out of a projection
                 if is_field_read {
@@ -1013,39 +1085,21 @@ fn process_block(
                 // Check for active loans on the dropped variable — dropping
                 // while borrows are still live would create dangling references.
                 //
-                // ADR-0046: propagated loans (return-borrow) are bounded by
-                // the dest's liveness, not StorageDead. A propagated loan
-                // is only safe to suppress if the dest reference is already
-                // dead at this Drop point. If the dest is still live (e.g.,
-                // nested scope where Drop(source) precedes a use of the
-                // returned reference), fire E2450.
-                // ADR-0063 §3: point-level READ-after-Drop liveness. A
-                // propagated loan is also live if its dest reference is READ
-                // (not Drop) by a later statement in THIS block — covers
-                // same-block consumption (e.g. an If/match merge `_4 = move _3`
-                // that consumes the loan-dest before it reaches live_out, so
-                // live_out alone misses the UAF). Drop of the dest itself is NOT
-                // a use — the dest is dying too, so there is no false-positive
-                // by construction (no valid code reads a ref after its source
-                // dies).
-                let dest_used_after = |dest: triet_mir::Local| {
-                    body.blocks[block.0].statements[stmt_idx + 1..]
-                        .iter()
-                        .any(|s| match s {
-                            Statement::Assign { source, .. }
-                            | Statement::Borrow { source, .. }
-                            | Statement::GetDiscriminant { source, .. } => source.local == dest,
-                            Statement::BinaryOp { left, right, .. } => {
-                                left.local == dest || right.local == dest
-                            }
-                            _ => false,
-                        })
-                };
+                // Trụ 3 (P0 foundation, 2026-07-18 — borrowck-nll-foundation
+                // WO §2): uniform point-level check via `is_live_after`,
+                // applied identically to EVERY active loan sourced on `l`
+                // (direct Borrow-created loans and PropagatedLoan/Trụ-2
+                // alias-propagated loans alike — the old `!loan.is_propagated`
+                // short-circuit that treated ANY direct loan as unconditionally
+                // blocking, regardless of whether its dest was still live, was
+                // the root of the "create a reference, never use it again"
+                // over-refuse). `is_live_after` already resolves both the
+                // same-block case (via `last_uses`, which now correctly
+                // excludes reference-Drop reads per Trụ 1) and the cross-block
+                // case (via `live_out`) — the old hand-rolled `dest_used_after`
+                // same-block scan is now redundant and removed.
                 let has_active_loans = state.active_loans.iter().any(|loan| {
-                    loan.source.local == *l
-                        && (!loan.is_propagated
-                            || liveness.blocks[block.0].live_out.contains(&loan.dest)
-                            || dest_used_after(loan.dest))
+                    loan.source.local == *l && liveness.is_live_after(block, stmt_idx, loan.dest)
                 });
                 if has_active_loans {
                     let l_name = names.get(l).cloned().unwrap_or_else(|| format!("{l}"));

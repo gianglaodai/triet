@@ -611,6 +611,27 @@ impl MirType {
         matches!(self, Self::Reference { .. })
     }
 
+    /// `true` for a reference, OR a nullable reference (`(&0 T)?` etc.).
+    ///
+    /// P0 borrowck foundation (2026-07-18, Trụ 1): PA-3c encodes `(&0 T)?`
+    /// as the SAME single-i64 reference slot as the bare form, with
+    /// `i64::MIN` as the null sentinel (ADR-0079 F-d) — no separate
+    /// discriminant, no extra drop obligation. `is_reference()` alone
+    /// (bare-variant match) misses the `Nullable`-wrapped case, which
+    /// matters for [`is_reference()`]'s one caller-in-spirit: whether
+    /// `Statement::Drop` on this local is a real read (owner) or a
+    /// scope-exit no-op (reference, drop-obligation-free per get_ref
+    /// Slice 2). Mirrors the existing `Nullable`-aware pattern
+    /// `is_string_repr` already uses for `String`/`String?`.
+    #[must_use]
+    pub fn is_reference_like(&self) -> bool {
+        match self {
+            Self::Reference { .. } => true,
+            Self::Nullable(inner) => inner.is_reference_like(),
+            _ => false,
+        }
+    }
+
     /// `true` for any `Vector<T>` (element type ignored).
     #[must_use]
     pub fn is_vec(&self) -> bool {

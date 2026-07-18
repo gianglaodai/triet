@@ -1,0 +1,21 @@
+// ERROR: E2440
+// P0 borrowck-nll-foundation, Trụ 2 (alias propagation across Assign),
+// 2026-07-18 — same hazard as fixture 410, through an `if`/`else` merge
+// instead of `match`. `s` gets a shared borrow of either `m` or `fallback`
+// depending on `flag`, via a plain reference `Assign` merging both arms
+// into `s`. Reassigning `m` afterward, while `s` is still needed (read via
+// `length(s)`), must be a real exclusivity violation. Without Trụ 2, the
+// loan stays anchored on the arm-local temp (dead at the arm's end) and
+// the conflict at `m = "bye"` is silently missed.
+function main() -> Integer {
+    let mutable m = "hi"
+    let fallback = "none"
+    let flag = 1
+    let s = if flag != 0 {
+        &0 m
+    } else {
+        &0 fallback
+    }
+    m = "bye"
+    return length(s)
+}

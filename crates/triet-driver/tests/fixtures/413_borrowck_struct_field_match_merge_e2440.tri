@@ -1,0 +1,21 @@
+// ERROR: E2440
+// P0 borrowck-nll-foundation, Trụ 2 (alias propagation across Assign),
+// topology cleanup 2026-07-18 — trám lỗ test cho móng nhà sau khi 410/412
+// bị bứng sang Lát B (chúng dùng feature Lát B: bind enum payload qua &0
+// match). Hình này chứng minh Alias Loss ĐỘC LẬP với Enum: match trên
+// enum `f` OWNED (không `&0 f`), mỗi arm sub-borrow field `.name` của
+// struct `h` qua `&0 h`, merge vào `s`. Reassigning `h` (via `let h2 = h`,
+// a move) while `s` still needed (`length(s)`) must be a real exclusivity
+// violation. Without Trụ 2 the loan stays anchored on the arm-local temp
+// and dies at the arm's end, silently missing the conflict (measured:
+// OK/lọt câm on ae20d75 before the fix; E2440 with the móng nhà fix in
+// place — 0 dòng Lát B involved).
+struct Holder { name: String }
+enum Flag { On, Off }
+function main() -> Integer {
+    let h = Holder { name: "x" };
+    let f = Flag::On;
+    let s = match f { Flag::On => (&0 h).name, Flag::Off => (&0 h).name, };
+    let h2 = h;
+    return length(s);
+}
