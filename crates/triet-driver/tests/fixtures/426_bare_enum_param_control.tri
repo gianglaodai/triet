@@ -1,0 +1,33 @@
+// EXPECT: 47
+// WO-NullableEnumParamABI T8 (O+G mandate, 2026-07-19) — CONTROL / poison
+// anchor: a BARE (non-nullable) `Enum` parameter, both unit-only (`U`) and
+// payload-bearing (`E`) shapes, must be completely unaffected by the
+// Nullable-unwrap fix at mir_lower.rs:2547 (`param_eff_ty =
+// ty.nullable_payload().unwrap_or(ty)` — for a bare Enum, `nullable_payload()`
+// returns `None`, so `param_eff_ty` is the type itself: byte-identical
+// codegen to before the fix). This fixture is the "twin site" teeth: poisoning
+// the bare-Enum half of the shared `if let MirType::Enum(...) = param_eff_ty`
+// block must turn THIS fixture red while T1-T5 (419-425, the `Nullable(Enum)`
+// half) stay green — proving the fix's teeth are anchored to the Nullable
+// branch specifically, not coincidentally riding the pre-existing bare-Enum
+// path.
+enum U { A, B }
+enum E { V(Integer), W }
+
+function pickUnit(u: U) -> Integer {
+    return match u {
+        U::A => 5,
+        U::B => 9,
+    };
+}
+
+function pickPayload(e: E) -> Integer {
+    return match e {
+        E::V(n) => n,
+        E::W => -1,
+    };
+}
+
+function main() -> Integer {
+    return pickUnit(U::A) + pickPayload(E::V(42));
+}

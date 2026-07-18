@@ -2543,8 +2543,33 @@ impl JitContext {
             // C1: Enum param received as pointer-to-caller-slot.
             // Create enum_slots entry + load [disc][payload] from pointer.
             // Casts follow struct precedent (StackSlotData API requires u32/u8).
+            // WO-NullableEnumParamABI (O+G, 2026-07-19): unwrap `Nullable` here,
+            // mirroring the derived-locals loop's `nullable_payload().unwrap_or`
+            // idiom (~:2412). Without this, `Enum?` (`Nullable(Enum)`) params
+            // never get an `enum_slots` entry — `load_place`'s bare-local branch
+            // and `GetDiscriminant`'s bare-local branch both fall back to
+            // `use_var(param_val)`, reading the CALLER POINTER's raw bit pattern
+            // as if it were the discriminant. Sentinel-compare (`~0` match) then
+            // always reads "not null" (a real stack address is never
+            // `i64::MIN`) — present/null are silently swapped — and any arm
+            // that reads the discriminant via `GetDiscriminant` SwitchInts on
+            // garbage, falling to the default `Trap` (SIGILL). Root cause is
+            // ISOLATED to this missing copy-in: a `Nullable(Enum)` LOCAL (not a
+            // param) already gets a correct `enum_slots` entry from the
+            // derived-locals loop, and the exact same sentinel-compare /
+            // GetDiscriminant code paths produce the correct answer for it.
+            // Scope: unit-only `Enum?` only — payload-bearing `Enum?` params
+            // are a SEPARATE, untouched guard-hole (WO T0 finding (B), pending
+            // G ruling) — this copy-in is type-agnostic and does not
+            // distinguish; it does not newly REFUSE anything, it only stops
+            // reading the raw pointer as the value for the unit-only case this
+            // WO covers.
+            let param_eff_ty = body.local_decls[local.0]
+                .ty
+                .nullable_payload()
+                .unwrap_or(&body.local_decls[local.0].ty);
             #[allow(clippy::cast_possible_truncation)]
-            if let MirType::Enum(enum_name) = &body.local_decls[local.0].ty
+            if let MirType::Enum(enum_name) = param_eff_ty
                 && let Some(layout) = body.enum_layouts.iter().find(|e| e.name == *enum_name)
             {
                 let slot = builder.create_sized_stack_slot(StackSlotData::new(

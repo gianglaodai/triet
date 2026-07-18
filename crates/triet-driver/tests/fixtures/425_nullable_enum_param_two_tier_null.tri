@@ -1,0 +1,26 @@
+// EXPECT: -1
+// WO-NullableEnumParamABI T5-null (O+G mandate, 2026-07-19): companion to
+// T5-present (424) — same two-tier `main -> outer -> inner` shape, NULL
+// value this time. O's original recon table left this cell unmeasured
+// ("null CHUA DO"); measured during this WO's T0: SIGILL 132 before the fix
+// (same disc-read crash shape as T2, just relayed through an extra call).
+enum U { A, B }
+
+function inner(u: U?) -> Integer {
+    return match u {
+        ~+ v => match v {
+            U::A => 5,
+            U::B => 9,
+        },
+        ~0 => -1,
+    };
+}
+
+function outer(u: U?) -> Integer {
+    return inner(u);
+}
+
+function main() -> Integer {
+    let b: U? = ~0;
+    return outer(b);
+}

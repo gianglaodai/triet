@@ -1,0 +1,24 @@
+// EXPECT: -1
+// WO-NullableEnumParamABI T2 (O+G mandate, 2026-07-19): unit-only `U?` as a
+// PARAMETER, NULL value, arm READS the discriminant (nested match reached
+// only on the present branch — this fixture exercises the `~0` branch, which
+// before the fix ALSO SIGILL'd whenever the sentinel-compare itself
+// mis-routed to the present branch and then the present arm's
+// `GetDiscriminant` read the raw pointer). Pins the null-value half of the
+// disc-reading crash shape.
+enum U { A, B }
+
+function pick(u: U?) -> Integer {
+    return match u {
+        ~+ v => match v {
+            U::A => 5,
+            U::B => 9,
+        },
+        ~0 => -1,
+    };
+}
+
+function main() -> Integer {
+    let b: U? = ~0;
+    return pick(b);
+}

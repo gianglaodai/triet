@@ -1,0 +1,24 @@
+// EXPECT: 0
+// WO-NullableEnumParamABI T3 (O+G mandate, 2026-07-19) — THE SILENT CASE:
+// unit-only `U?` PARAMETER, NULL value, arm does NOT read the discriminant
+// (`~+ v => 1` never touches `v`). Before the fix this did NOT crash — the
+// sentinel-compare (`scrutinee == NULL_SENTINEL`) read the raw CALLER-POINTER
+// bit pattern via `use_var` fallback (no `enum_slots` entry existed for the
+// param), and a real stack address is never `i64::MIN`, so the compare
+// always read "not null" and silently took the PRESENT branch: exit 0,
+// printed `1` instead of `0`. Zero crash, wrong answer — the most dangerous
+// shape (O's original finding). Companion T4 (423) is the present-side
+// control that must NOT flip when this is fixed.
+enum U { A, B }
+
+function isPresent(u: U?) -> Integer {
+    return match u {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let b: U? = ~0;
+    return isPresent(b);
+}

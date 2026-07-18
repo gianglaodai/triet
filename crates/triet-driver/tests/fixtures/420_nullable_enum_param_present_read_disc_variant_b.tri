@@ -1,0 +1,23 @@
+// EXPECT: 9
+// WO-NullableEnumParamABI T1b (O+G mandate, 2026-07-19): companion to T1
+// (419) with the OTHER unit-only variant (`U::B`) passed present. NOT
+// decorative: T1 alone cannot distinguish "discriminant genuinely read
+// correctly" from "landed on a lucky constant" — this fixture proves the
+// copy-in loads the REAL disc value from the caller's slot rather than a
+// fixed sentinel, by flipping the expected result (9, not 5).
+enum U { A, B }
+
+function pick(u: U?) -> Integer {
+    return match u {
+        ~+ v => match v {
+            U::A => 5,
+            U::B => 9,
+        },
+        ~0 => -1,
+    };
+}
+
+function main() -> Integer {
+    let b: U? = ~+ U::B;
+    return pick(b);
+}

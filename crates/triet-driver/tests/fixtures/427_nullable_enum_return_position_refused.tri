@@ -1,0 +1,25 @@
+// ERROR: nullable enum return
+// WO-NullableEnumParamABI T6 (O+G mandate, 2026-07-19): `Enum?` in RETURN
+// position must STAY refused — this WO's scope is PARAMETER position only
+// (mir_lower.rs:2547's copy-in unwrap). The return-position guard
+// (`nullable_enum_return_unsupported`, triet-lower/src/lib.rs) has no sret
+// ABI for `Nullable(Enum)` yet and is UNTOUCHED by this WO's fix. Teeth to
+// hold the guard shut against an accidental future widening of the
+// parameter-position fix into return position (they are different code
+// paths: params copy-in from a caller pointer; returns need sret plumbing
+// that does not exist). Companion to the pre-existing 403 (same guard,
+// wildcard-arm shape) — this one uses the plain present/null match shape
+// consistent with fixtures 419-426 for this WO's naming family.
+enum U { A, B }
+
+function make() -> U? {
+    return ~0;
+}
+
+function main() -> Integer {
+    let x: U? = make();
+    return match x {
+        ~+ v => match v { U::A => 5, U::B => 9, },
+        ~0 => -1,
+    };
+}

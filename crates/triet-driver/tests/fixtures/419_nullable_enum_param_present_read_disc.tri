@@ -1,0 +1,25 @@
+// EXPECT: 5
+// WO-NullableEnumParamABI T1 (O+G mandate, 2026-07-19): unit-only `U?` as a
+// PARAMETER, PRESENT value, arm READS the discriminant (nested match on the
+// bound payload). Before the fix: `Enum?` params never got an `enum_slots`
+// entry (the copy-in at mir_lower.rs:2547 matched `MirType::Enum` exactly,
+// not `Nullable(Enum)`), so `GetDiscriminant` fell back to `use_var` on the
+// raw CALLER-POINTER bit pattern, SwitchInt on garbage → default arm → Trap
+// → SIGILL (exit 132). This is the "no read" T3/T4 pair's disc-reading
+// sibling — pins the crash-shaped half of the bug, not just the silent one.
+enum U { A, B }
+
+function pick(u: U?) -> Integer {
+    return match u {
+        ~+ v => match v {
+            U::A => 5,
+            U::B => 9,
+        },
+        ~0 => -1,
+    };
+}
+
+function main() -> Integer {
+    let b: U? = ~+ U::A;
+    return pick(b);
+}

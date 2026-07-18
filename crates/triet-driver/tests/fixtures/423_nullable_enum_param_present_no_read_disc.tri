@@ -1,0 +1,23 @@
+// EXPECT: 1
+// WO-NullableEnumParamABI T4 (O+G mandate, 2026-07-19) — CONTROL for T3
+// (422): same shape (arm does not read the discriminant), but PRESENT value.
+// Before the fix this ALREADY printed `1` (correct by accident — the mis-
+// routed sentinel-compare always lands on "present" regardless of the real
+// value, and the present arm doesn't care WHICH variant it is). Without this
+// control, T3 alone could be satisfied by flipping a hard-coded constant
+// instead of genuinely fixing the null/present distinction — this fixture
+// pins that the present case must stay `1` after the fix, not just that the
+// null case becomes `0`.
+enum U { A, B }
+
+function isPresent(u: U?) -> Integer {
+    return match u {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}
+
+function main() -> Integer {
+    let b: U? = ~+ U::A;
+    return isPresent(b);
+}

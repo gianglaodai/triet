@@ -1,0 +1,30 @@
+// EXPECT: 5
+// WO-NullableEnumParamABI T5-present (O+G mandate, 2026-07-19): the same
+// disc-reading bug through TWO call boundaries (`main` -> `outer` -> `inner`,
+// both `outer` and `inner` taking `U?` params). `outer` forwards its own
+// (unfixed-before-this-patch) param `u` straight into `inner(u)` — before the
+// fix, `outer`'s `u` local ALSO had no `enum_slots` entry, so the call-site
+// arg-packing fell to its `else` branch (`use_var`) and forwarded the raw
+// pointer bits UNCHANGED (not re-wrapped in a `stack_addr`) — coincidentally
+// still a valid pointer into `main`'s slot, so the failure shape at `inner`
+// was identical to the single-tier case (SIGILL on disc read here; present).
+enum U { A, B }
+
+function inner(u: U?) -> Integer {
+    return match u {
+        ~+ v => match v {
+            U::A => 5,
+            U::B => 9,
+        },
+        ~0 => -1,
+    };
+}
+
+function outer(u: U?) -> Integer {
+    return inner(u);
+}
+
+function main() -> Integer {
+    let b: U? = ~+ U::A;
+    return outer(b);
+}
