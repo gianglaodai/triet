@@ -1,0 +1,24 @@
+// EXPECT: 2
+// ADR-0084 §AMEND Lát B — supersedes the old E1050 refuse (was
+// `395_ref_enum_heap_payload_bind_e1050.tri`, Lát A Tooth 3). Lát A refused
+// BINDING a heap/aggregate enum payload (`Msg::Ping(s) => ...`) through a
+// `&0` reference scrutinee outright. Lát B turns that refuse into a
+// zero-copy SUB-BORROW instead: `s` is bound as `&0 String` (address-only,
+// no move-out of the String out of the container), so no aliasing/
+// double-free risk — same WO §0 rationale as Slice 1b's field-read borrow.
+// This is the exact "String" row of WO §4's Cọc 2 fixture table.
+// OLD test (this same shape) asserted `// ERROR: E1050` — superseded, NOT
+// deleted-and-forgotten: see the counting harness
+// `enum_payload_subborrow_counting.rs` for the free-count-1 proof that the
+// sub-borrow doesn't double-free, and the Mối-2-poison note in the WO
+// report (Borrow→Assign move-out flips this fixture to double-free/SIGABRT).
+enum Msg { Ping(String), Pong }
+function main() -> Integer {
+    let mutable xs: Vector<Msg> = vector_new();
+    xs = push(xs, Msg::Ping("hi"));
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ ref_msg => match ref_msg { Msg::Ping(s) => length(s), Msg::Pong => 0, },
+        ~0 => -1,
+    };
+}

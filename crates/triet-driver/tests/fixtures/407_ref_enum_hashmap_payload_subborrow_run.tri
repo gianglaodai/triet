@@ -1,0 +1,19 @@
+// EXPECT: 2
+// ADR-0084 §AMEND Lát B — Cọc 2/WO §4 "HashMap" row. O only probed
+// String+Struct payloads (WO §0 table) — Vector/HashMap payload sub-borrow
+// was UNMEASURED before this fixture. `Box::Kv(HashMap<Integer,Integer>)`
+// payload bound through a `&0` scrutinee is a zero-copy sub-borrow `m: &0
+// HashMap<Integer,Integer>`; `len(m)` reads through it read-only.
+enum Box { Kv(HashMap<Integer, Integer>), Empty }
+function main() -> Integer {
+    let mutable inner: HashMap<Integer, Integer> = hashmap_new();
+    inner = insert(inner, 1, 10);
+    inner = insert(inner, 2, 20);
+    let mutable xs: Vector<Box> = vector_new();
+    xs = push(xs, Box::Kv(inner));
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ b => match b { Box::Kv(m) => len(m), Box::Empty => -1, },
+        ~0 => -1,
+    };
+}

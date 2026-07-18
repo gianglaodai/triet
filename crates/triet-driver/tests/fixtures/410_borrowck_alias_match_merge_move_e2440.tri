@@ -1,0 +1,26 @@
+// ERROR: E2440
+// P0 borrowck-nll-foundation, Trụ 2 (alias propagation across Assign),
+// 2026-07-18. A sub-borrow of `e`'s payload escapes its match arm via a
+// plain reference `Assign` into the merge var `s` (contrast fixture 409,
+// which only covers the reassign-WITHIN-the-SAME-arm case and explicitly
+// notes this broader case was found UNGUARDED before this fix — no E2440,
+// a real would-be UAF). Without Trụ 2, the loan created for `s`'s
+// underlying reference stays anchored on the match-arm-local temporary,
+// which dies at the arm's own end — so by the time `e` is reassigned
+// after the match, the loan has already (wrongly) evaporated and the
+// conflict is silently missed (alias-loss under-refuse). With Trụ 2, the
+// loan is re-anchored onto `s` itself, so it is still active when `e` is
+// reassigned while `s` is later read via `length(s)` — a genuine
+// exclusivity violation (reassigning `e` would free the old payload `s`
+// points into).
+enum Msg { Ping(String), Pong }
+function main() -> Integer {
+    let mutable e = Msg::Ping("hi")
+    let fallback = "none"
+    let s = match &0 e {
+        Msg::Ping(x) => x,
+        Msg::Pong => &0 fallback,
+    }
+    e = Msg::Ping("bye")
+    return length(s)
+}

@@ -4680,34 +4680,139 @@ fn lower_expr(
                                                 })
                                         })
                                         .unwrap_or(MirType::Unknown);
-                                    let bind_local = c.alloc_local_ty(payload_ty.clone());
-                                    // ADR-0060 P2-Boundary: aggregate payload
-                                    // needs a stack slot (StructAlloc) so the
-                                    // JIT can resolve its address.
-                                    if let MirType::Struct(name) = &payload_ty {
-                                        c.push(Statement::StructAlloc {
-                                            dest: bind_local,
-                                            struct_name: name.clone(),
+                                    // ADR-0084 §AMEND Lát B: an aggregate/heap
+                                    // payload reached THROUGH a reference
+                                    // (`scrut_place` carries a leading `Deref`
+                                    // — set above when `scrut_ty` is
+                                    // `MirType::Reference`) is a zero-copy
+                                    // SUB-BORROW, not a value read or move-out
+                                    // (mirrors Slice 1b `Expr::FieldAccess`,
+                                    // lib.rs ~3427-3462). Only fires for
+                                    // Struct/Enum/heap payload kinds typecheck
+                                    // now binds as a `&0` reference (formerly
+                                    // E1050-refused); the scalar terminal case
+                                    // (Lát A) and the owned-scrutinee case (no
+                                    // `Deref`) both fall through to the
+                                    // unchanged `Assign` path below.
+                                    //
+                                    // TWO sub-cases, NOT one — probed live
+                                    // (fixtures 406/407 silent-MISS before this
+                                    // split; WO §4 flagged Vector/HashMap as
+                                    // O-unmeasured):
+                                    // - Struct/Enum/String are INLINE-repr
+                                    //   (their bytes live where they're
+                                    //   stored — struct_slots/enum_slots) —
+                                    //   `&0 T` must be the ADDRESS of those
+                                    //   bytes → `Statement::Borrow`.
+                                    // - Vector/HashMap are HANDLE-repr (the
+                                    //   "value" IS ALREADY an opaque i64
+                                    //   pointer to Rust-heap state — see
+                                    //   `walk_projections`'s Deref doc + the
+                                    //   bare-local `Expr::Borrow` codegen,
+                                    //   which for a non-slot-backed local
+                                    //   (Vector/HashMap are never in
+                                    //   struct_slots/enum_slots) falls to
+                                    //   `use_var` = a HANDLE COPY, not an
+                                    //   address). A `&0 Vector` is therefore
+                                    //   bit-identical to a `Vector` value at
+                                    //   runtime — the loan is enforced by
+                                    //   borrowck, not by an extra indirection.
+                                    //   Emitting `Statement::Borrow` here would
+                                    //   yield the ADDRESS of the payload's
+                                    //   8-byte handle slot instead of the
+                                    //   handle itself — every heap shim call
+                                    //   (`__triet_vector_len` etc.) reads that
+                                    //   address as if it WERE the handle →
+                                    //   silent-MISS garbage. Fix: LOAD the
+                                    //   handle via the pre-existing scalar
+                                    //   `Assign` mechanics (identical to the
+                                    //   Lát A Integer-payload path — Vector's
+                                    //   handle is also 8 bytes), but type the
+                                    //   dest as `Reference{..}` (so
+                                    //   `len(&0 Vector)` overload resolution +
+                                    //   borrowck loan-tracking apply) and skip
+                                    //   `push_owned` (no Drop — the copied
+                                    //   handle bit-aliases the container's
+                                    //   copy; a Drop would double-free).
+                                    let scrut_has_deref = scrut_place
+                                        .projection
+                                        .iter()
+                                        .any(|p| matches!(p, Projection::Deref));
+                                    let is_inline_aggregate = matches!(
+                                        &payload_ty,
+                                        MirType::Struct(_) | MirType::Enum(_)
+                                    ) || payload_ty.is_string_repr();
+                                    let is_handle_heap = matches!(
+                                        &payload_ty,
+                                        MirType::Vector(_) | MirType::HashMap(_, _)
+                                    );
+                                    if scrut_has_deref && is_inline_aggregate {
+                                        let ref_ty = MirType::Reference {
+                                            form: triet_mir::ReferenceForm::BorrowReadOnly,
+                                            inner: Box::new(payload_ty.clone()),
+                                        };
+                                        let d = c.alloc_local_ty(ref_ty);
+                                        c.push(Statement::StorageLive(d, expr_span.clone()));
+                                        c.push(Statement::Borrow {
+                                            dest: Place::local(d),
+                                            form: triet_mir::ReferenceForm::BorrowReadOnly,
+                                            source: scrut_place
+                                                .clone()
+                                                .project(Projection::Payload(variant_name.clone())),
                                             span: expr_span.clone(),
                                         });
+                                        c.vars.insert(var_name.clone(), d);
+                                    } else if scrut_has_deref && is_handle_heap {
+                                        let ref_ty = MirType::Reference {
+                                            form: triet_mir::ReferenceForm::BorrowReadOnly,
+                                            inner: Box::new(payload_ty.clone()),
+                                        };
+                                        let d = c.alloc_local_ty(ref_ty);
+                                        c.push(Statement::StorageLive(d, expr_span.clone()));
+                                        c.push(Statement::Assign {
+                                            dest: Place::local(d),
+                                            source: scrut_place
+                                                .clone()
+                                                .project(Projection::Payload(variant_name.clone())),
+                                            span: expr_span.clone(),
+                                        });
+                                        c.vars.insert(var_name.clone(), d);
+                                        // Deliberately NOT push_owned — `d` is a
+                                        // handle-copy loan, not an owning
+                                        // binding (see comment above).
+                                    } else {
+                                        let bind_local = c.alloc_local_ty(payload_ty.clone());
+                                        // ADR-0060 P2-Boundary: aggregate payload
+                                        // needs a stack slot (StructAlloc) so the
+                                        // JIT can resolve its address.
+                                        if let MirType::Struct(name) = &payload_ty {
+                                            c.push(Statement::StructAlloc {
+                                                dest: bind_local,
+                                                struct_name: name.clone(),
+                                                span: expr_span.clone(),
+                                            });
+                                        }
+                                        c.push(Statement::StorageLive(
+                                            bind_local,
+                                            expr_span.clone(),
+                                        ));
+                                        // Read payload into the binding. ADR-0084
+                                        // §AMEND Lát A: `scrut_place` carries the
+                                        // leading `Deref` when the scrutinee is a
+                                        // reference (typecheck already refused a
+                                        // non-scalar bind through one — Cọc 1a —
+                                        // so `payload_ty` here is always scalar
+                                        // Copy when `scrut_place` is Deref'd).
+                                        c.push(Statement::Assign {
+                                            dest: Place::local(bind_local),
+                                            source: scrut_place
+                                                .clone()
+                                                .project(Projection::Payload(variant_name.clone())),
+                                            span: expr_span.clone(),
+                                        });
+                                        c.vars.insert(var_name.clone(), bind_local);
+                                        c.push_owned(bind_local);
                                     }
-                                    c.push(Statement::StorageLive(bind_local, expr_span.clone()));
-                                    // Read payload into the binding. ADR-0084
-                                    // §AMEND Lát A: `scrut_place` carries the
-                                    // leading `Deref` when the scrutinee is a
-                                    // reference (typecheck already refused a
-                                    // non-scalar bind through one — Cọc 1a —
-                                    // so `payload_ty` here is always scalar
-                                    // Copy when `scrut_place` is Deref'd).
-                                    c.push(Statement::Assign {
-                                        dest: Place::local(bind_local),
-                                        source: scrut_place
-                                            .clone()
-                                            .project(Projection::Payload(variant_name.clone())),
-                                        span: expr_span.clone(),
-                                    });
-                                    c.vars.insert(var_name.clone(), bind_local);
-                                    c.push_owned(bind_local);
                                 }
                                 triet_syntax::Pattern::Wildcard => {
                                     // _ — do nothing, no binding

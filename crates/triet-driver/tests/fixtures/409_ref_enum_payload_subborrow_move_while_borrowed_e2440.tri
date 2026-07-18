@@ -1,0 +1,24 @@
+// ERROR: E2440
+// ADR-0084 §AMEND Lat B - WO Teeth 3 (move-while-borrowed). Reassigning `e`
+// WHILE its payload sub-borrow `s` is still live (SAME match arm, before the
+// arm's value escapes to the merge point) must be rejected -- reassigning
+// `e` would free the OLD String "hi" out from under `s`.
+//
+// SCOPE NOTE (see WO report HONEST LIMIT): this locks the WITHIN-ARM case,
+// which the borrowck DOES catch. It does NOT cover the case where the
+// payload sub-borrow escapes the match (e.g. `let n = match &0 e {...};`
+// then `e` is reassigned/moved AFTER the match, `n` used afterward) -- that
+// broader case was probed live and found UNGUARDED (no E2440), a
+// load-bearing gap reported separately. Do not read this fixture as proof
+// the general move-while-borrowed hazard is closed.
+enum Msg { Ping(String), Pong }
+function main() -> Integer {
+    let mutable e = Msg::Ping("hi");
+    return match &0 e {
+        Msg::Ping(s) => {
+            e = Msg::Ping("bye");
+            length(s)
+        },
+        Msg::Pong => 0,
+    };
+}

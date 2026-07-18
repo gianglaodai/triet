@@ -1,0 +1,32 @@
+// EXPECT: 11023077
+// ADR-0084 §AMEND Lát B — Cọc 3 (G mandate, nested enum). `Outer::Wrap(Inner)`
+// where `Inner` is ITSELF an enum, bound through `&0 Outer` → `n: &0 Inner`
+// sub-borrow, then matched again. O flagged this as the highest-risk
+// unmeasured surface (Enum-Payload-Aggregate sizing rot, bia mộ E1048
+// key-aggregate) — probed live (not vacuous): 4 distinct source values across
+// 2 elements collapse to ONE composite return that only comes out right if
+// every discriminant AND payload byte was read from the correct offset:
+// a=11 (Wrap(S(11))), b=22 (Wrap(S(22))), c=-2 (Wrap(Z), no payload read),
+// d=-3 (Empty, no payload read) → 11*1e6 + 22*1e3 + 980 + 97 = 11023077.
+// A masking/truncation bug (any 2 values colliding, or reading the wrong
+// variant) would NOT hit this exact composite. NOTE: nested enum
+// CONSTRUCTION with a heap-carrying inner variant (`Inner::Text(String)`) is
+// separately refused by the lowerer pre-existing ("heap types ... not yet
+// supported in this position: enum payload type") — that boundary is
+// UNRELATED to Lát B (blocks construction, not read), so it is untouched
+// here; only the SCALAR-payload nested shape is exercised (the only one
+// that's constructible today).
+enum Inner { S(Integer), Z }
+enum Outer { Wrap(Inner), Empty }
+function main() -> Integer {
+    let mutable xs: Vector<Outer> = vector_new();
+    xs = push(xs, Outer::Wrap(Inner::S(11)));
+    xs = push(xs, Outer::Wrap(Inner::S(22)));
+    xs = push(xs, Outer::Wrap(Inner::Z));
+    xs = push(xs, Outer::Empty);
+    let a = match get(&0 xs, 0) { ~+ o => match o { Outer::Wrap(n) => match n { Inner::S(v) => v, Inner::Z => -2, }, Outer::Empty => -3, }, ~0 => -1, };
+    let b = match get(&0 xs, 1) { ~+ o => match o { Outer::Wrap(n) => match n { Inner::S(v) => v, Inner::Z => -2, }, Outer::Empty => -3, }, ~0 => -1, };
+    let c = match get(&0 xs, 2) { ~+ o => match o { Outer::Wrap(n) => match n { Inner::S(v) => v, Inner::Z => -2, }, Outer::Empty => -3, }, ~0 => -1, };
+    let d = match get(&0 xs, 3) { ~+ o => match o { Outer::Wrap(n) => match n { Inner::S(v) => v, Inner::Z => -2, }, Outer::Empty => -3, }, ~0 => -1, };
+    return a * 1000000 + b * 1000 + (c+100) * 10 + (d + 100);
+}

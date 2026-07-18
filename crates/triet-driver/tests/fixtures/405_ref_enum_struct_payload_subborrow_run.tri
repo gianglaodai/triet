@@ -1,0 +1,18 @@
+// EXPECT: 33
+// ADR-0084 §AMEND Lát B — Cọc 2/WO §4 "Struct" row. `Shape::Circle(Point)`
+// payload bound through a `&0` scrutinee is now a zero-copy sub-borrow
+// `p: &0 Point` (Mối 2, lib.rs): reading `p.z` composes the
+// [Deref, Payload(Circle), Field(z)] projection chain exactly like WO §0's
+// probe table entry (offset 0+8+16). No move-out of the Point out of the
+// Vector cell — sound by construction (bind-by-reference, not by-value).
+struct Point { x: Integer, y: Integer, z: Integer }
+enum Shape { Circle(Point), Blank }
+function main() -> Integer {
+    let mutable xs: Vector<Shape> = vector_new();
+    xs = push(xs, Shape::Circle(Point { x: 1, y: 2, z: 33 }));
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ sh => match sh { Shape::Circle(p) => p.z, Shape::Blank => -1, },
+        ~0 => -1,
+    };
+}

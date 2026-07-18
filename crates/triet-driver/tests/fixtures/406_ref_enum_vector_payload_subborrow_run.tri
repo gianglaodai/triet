@@ -1,0 +1,21 @@
+// EXPECT: 3
+// ADR-0084 §AMEND Lát B — Cọc 2/WO §4 "Vector" row. O only probed
+// String+Struct payloads (WO §0 table) — Vector/HashMap payload sub-borrow
+// was UNMEASURED before this fixture. `Bag::Items(Vector<Integer>)` payload
+// bound through a `&0` scrutinee is a zero-copy sub-borrow `v: &0
+// Vector<Integer>`; `len(v)` reads through it read-only (no mutation, no
+// move-out).
+enum Bag { Items(Vector<Integer>), Empty }
+function main() -> Integer {
+    let mutable inner: Vector<Integer> = vector_new();
+    inner = push(inner, 1);
+    inner = push(inner, 2);
+    inner = push(inner, 3);
+    let mutable xs: Vector<Bag> = vector_new();
+    xs = push(xs, Bag::Items(inner));
+    let r = get(&0 xs, 0);
+    return match r {
+        ~+ b => match b { Bag::Items(v) => len(v), Bag::Empty => -1, },
+        ~0 => -1,
+    };
+}

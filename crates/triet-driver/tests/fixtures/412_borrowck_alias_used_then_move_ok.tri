@@ -1,0 +1,20 @@
+// EXPECT: 2
+// P0 borrowck-nll-foundation, Trụ 1 (liveness input fix), 2026-07-18 —
+// the over-refuse companion to fixtures 410/411. Here the payload
+// sub-borrow `x` is used and DONE entirely inside its own match arm
+// (`length(x)` computed there, not the reference itself escaping into the
+// merge var `n: Integer`) — so by the time `e` is reassigned, no loan
+// should remain on it. Before the P0 fix, `Statement::Drop` on a
+// reference local was mis-counted as a genuine read, which could pin a
+// dead borrow "live" through the reassignment and falsely fire E2440 on
+// perfectly valid code. Must compile and run cleanly.
+enum Msg { Ping(String), Pong }
+function main() -> Integer {
+    let mutable e = Msg::Ping("hi")
+    let n = match &0 e {
+        Msg::Ping(x) => length(x),
+        Msg::Pong => 0,
+    }
+    e = Msg::Ping("bye")
+    return n
+}

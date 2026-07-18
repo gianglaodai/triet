@@ -990,21 +990,21 @@ impl<'p> Checker<'p> {
                         // Lát A/B split (WO §1): a scalar payload copies out
                         // through the borrow like Slice 1a's field read —
                         // Copy, no aliasing, sound. An aggregate/heap payload
-                        // is REFUSEd only when the arm actually BINDS it
-                        // (`Pattern::Variable`) — a `_` sub-pattern never
-                        // reads the payload bytes (no `Projection::Payload`
-                        // emitted by the lowerer for a Wildcard sub-pattern),
-                        // so it's exactly as sound as a disc-only match
-                        // either way (WO Tooth 4 — verified in fixtures).
+                        // reached through a `&0` scrutinee is now (Lát B) bound
+                        // as a `&0 <payload>` SUB-BORROW instead of refused —
+                        // it never moves the payload out of the container
+                        // (bind-by-reference, not bind-by-value), so no
+                        // aliasing/double-free risk (WO §0). A `_` sub-pattern
+                        // still never reads the payload bytes (no
+                        // `Projection::Payload` emitted for a Wildcard
+                        // sub-pattern), so it's sound either way.
                         if is_borrowed
                             && !payload_ty.is_scalar()
                             && matches!(self.arena.pattern(sub_pattern).node, Pattern::Variable(_))
                         {
-                            self.errors
-                                .push(TypeError::BorrowedEnumPayloadBindUnsupported {
-                                    element: payload_ty.to_string(),
-                                    span: self.arena.pattern(sub_pattern).span.clone(),
-                                });
+                            let ref_ty =
+                                Type::Reference(ReferenceForm::BorrowReadOnly, payload_ty.clone());
+                            self.bind_pattern(sub_pattern, &ref_ty);
                         } else {
                             self.bind_pattern(sub_pattern, payload_ty);
                         }
