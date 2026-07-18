@@ -1,0 +1,16 @@
+// EXPECT: 7
+// WO-NullableEnumAggregate-Refuse PA-A T4 (O recon 2026-07-18) — CONTROL: a
+// UNIT-ONLY nullable enum FIELD (`U?` where every `U` variant carries no
+// payload) must NOT be caught by the N1 refuse. Unit-only `Enum?` is the
+// disc-niche PA-3c repr (0-byte overhead, sound — disc@0 IS the whole 8B
+// value, so the field's 8B slot is never too small). The
+// `.any(|v| v.payload.is_some())` guard in the N1 refuse is load-bearing
+// here: a naive `matches!(ty, Nullable(Enum(_)))` predicate (no
+// payload-bearing check) would over-refuse this fixture into a compile
+// error instead of running.
+enum U { A, B }
+struct S { u: U?, tail: Integer }
+function main() -> Integer {
+    let s = S { tail: 7, u: U::A };
+    return s.tail;
+}

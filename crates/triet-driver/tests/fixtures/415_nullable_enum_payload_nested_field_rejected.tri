@@ -1,0 +1,12 @@
+// ERROR: nullable enum
+// WO-NullableEnumAggregate-Refuse PA-A T2 (O recon 2026-07-18): companion
+// to 414 — same struct-field overflow, different field name/order, to
+// prove the refuse is not tied to one specific field-name/layout shape.
+// Before this refuse (guard poisoned out, measured live): `mid.m` read
+// back `42` instead of `5`, exit 0 (silent-miss).
+enum E { V(Integer), N }
+struct Mid { e: E?, m: Integer }
+function main() -> Integer {
+    let mid = Mid { m: 5, e: E::V(42) };
+    return mid.m;
+}

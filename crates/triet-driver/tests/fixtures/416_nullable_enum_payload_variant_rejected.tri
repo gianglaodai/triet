@@ -1,0 +1,14 @@
+// ERROR: nullable enum
+// WO-NullableEnumAggregate-Refuse PA-A T3 (O recon 2026-07-18): the sibling
+// site to T1/T2 — a payload-bearing nullable enum `Leaf?` used as an ENUM
+// VARIANT PAYLOAD (`Outer::O(Leaf?)`), not a struct field. Same disc-niche
+// unsoundness (`Leaf?` needs its own >8B disc+payload slot the "present
+// value alone IS the repr" trick cannot host), caught by the enum-payload
+// pass of the same declaration-time chokepoint (`lower_program`). Declared
+// but never constructed — the refuse fires purely from the TYPE
+// declaration, before any value ever needs to be built.
+enum Leaf { V(Integer), N }
+enum Outer { O(Leaf?), P }
+function main() -> Integer {
+    return 0;
+}

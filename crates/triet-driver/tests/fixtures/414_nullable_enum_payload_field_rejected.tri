@@ -1,0 +1,20 @@
+// ERROR: nullable enum
+// WO-NullableEnumAggregate-Refuse PA-A T1 (O recon 2026-07-18): a
+// payload-bearing nullable enum `E?` as a STRUCT FIELD silently overflows
+// the 8-byte slot reserved for it into the next declared field. Root
+// cause: `resolve_aggregate_size`'s `Nullable(Enum)` arm looked the payload
+// up in `struct_map` (always a MISS for an enum name) instead of
+// `enum_map`, so the co-fixpoint never grew the field past its 8B seed
+// while the enum itself is 16B (disc@0 + payload@8). Before this refuse
+// (guard poisoned out, measured live): `s.tail` read back `42` instead of
+// `7`, exit 0 — a silent-miss, not a crash. Bare `E::V(42)` (no `~+`)
+// reaches this through implicit widening, a different AST path than
+// `Expr::OutcomeConstructor` (which fixture 376 already covers) — this
+// fixture exercises the DECLARATION-time chokepoint (`lower_program`,
+// struct-field pass), which fires regardless of how the value is built.
+enum E { V(Integer), N }
+struct S { e: E?, tail: Integer }
+function main() -> Integer {
+    let s = S { tail: 7, e: E::V(42) };
+    return s.tail;
+}

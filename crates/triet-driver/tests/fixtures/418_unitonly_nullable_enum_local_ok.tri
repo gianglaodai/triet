@@ -1,0 +1,30 @@
+// EXPECT: 5
+// WO-NullableEnumAggregate-Refuse PA-A T5 (O recon 2026-07-18) — CONTROL:
+// unit-only `U?` used as a plain LOCAL variable (never as a struct field,
+// an enum-variant payload, or the function's OWN return type — that is a
+// separate, unrelated guard, `nullable_enum_return_unsupported`) must stay
+// unaffected by N1. N1 only scans `Item::Struct` fields and `Item::Enum`
+// variant payloads — it never inspects a `let` binding's type annotation,
+// so this shape never reaches the refuse regardless of `U`'s payload
+// shape. Exercises both the present (`a`) and absent (`b`) nullable arms.
+enum U { A, B }
+
+function main() -> Integer {
+    let a: U? = ~+ U::A;
+    let b: U? = ~0;
+    let av = match a {
+        ~+ v => match v {
+            U::A => 5,
+            U::B => 9,
+        },
+        ~0 => -1,
+    };
+    let bv = match b {
+        ~+ v => match v {
+            U::A => 100,
+            U::B => 200,
+        },
+        ~0 => 0,
+    };
+    return av + bv;
+}

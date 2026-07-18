@@ -76,15 +76,30 @@ impl LowerError {
         }
     }
 
-    fn nullable_enum_payload_unsupported(enum_name: &str, span: Span) -> Self {
+    /// ADR-0065 pending: refuse a payload-bearing nullable enum `E?`. The
+    /// disc-niche nullable repr (§12.7) is sound only for unit-only enums —
+    /// the present value alone IS the whole 8-byte repr, so there is no room
+    /// for a payload once the enum needs its own disc+payload (>8B) slot.
+    ///
+    /// `location`, when `Some`, names the field/variant + container that
+    /// pins down WHERE the bad type appears — used by the declaration-site
+    /// chokepoint (`lower_program`, WO-NullableEnumAggregate-Refuse PA-A,
+    /// 2026-07-18) which scans every `Item::Struct`/`Item::Enum` up front.
+    /// `None` is used by the older construction-site chokepoint
+    /// (`Expr::OutcomeConstructor`, fixtures 374/375), which has no
+    /// field/variant name to report at that point in lowering.
+    fn nullable_enum_payload_unsupported(
+        enum_name: &str,
+        location: Option<&str>,
+        span: Span,
+    ) -> Self {
+        let where_clause = location.map_or(String::new(), |loc| format!(" ({loc})"));
         Self {
             message: format!(
-                "nullable enum `{enum_name}?` is not yet supported: the disc-niche \
-                 nullable repr (ADR-0065 SS12.7) is implemented only for enums whose \
-                 variants carry NO payload. Enum `{enum_name}` has a payload-bearing \
-                 variant.\n[Fix] Remove the `?` and model absence as an explicit \
-                 no-payload variant (e.g. add a `None` variant to `{enum_name}`), \
-                 or wrap the enum in a struct field that is itself nullable."
+                "nullable enum `{enum_name}?`{where_clause}: payload-bearing nullable \
+                 enums inside aggregates are currently unsupported (ADR-0065 pending).\n\
+                 [Fix] Remove the `?` and model absence as an explicit no-payload \
+                 variant (e.g. add a `None` variant to `{enum_name}`)."
             ),
             span,
         }
@@ -563,8 +578,15 @@ fn resolve_aggregate_size(
                 .get(name.as_str())
                 .map_or(fallback, |l| l.total_size + 8),
             // Enum? uses the disc-niche (0-byte overhead, §2.1); its size
-            // resolves like a plain `Enum` field.
-            MirType::Enum(name) => struct_map
+            // resolves like a plain `Enum` field — look it up in `enum_map`,
+            // NOT `struct_map` (an enum is never registered there, see the
+            // `MirType::Enum` arm above). A payload-bearing `Enum?` is
+            // refused at the declaration chokepoint before this size is
+            // ever consumed by codegen (WO-NullableEnumAggregate-Refuse
+            // PA-A, 2026-07-18).
+            // TODO(ADR-0065): Layout blocked by nullable_enum_payload_unsupported at
+            // frontend. This sizing is correct but representation is unimplemented.
+            MirType::Enum(name) => enum_map
                 .get(name.as_str())
                 .map_or(fallback, |l| l.total_size),
             // ADR-0076: heap-`T?` leaf field. The ptr-sentinel rides the
@@ -771,6 +793,72 @@ pub fn lower_program(
 
         if !changed {
             break;
+        }
+    }
+
+    // ── ADR-0065 pending: refuse payload-bearing `Enum?` in aggregates ──
+    // (WO-NullableEnumAggregate-Refuse PA-A, O recon 2026-07-18). The
+    // co-fixpoint above now SIZES a payload-bearing enum correctly (ADR-0067
+    // §AMEND, commit 9a1799c) but the disc-niche NULLABLE repr (ADR-0065
+    // §12.7) is only sound for UNIT-ONLY enums — the "present value alone IS
+    // the repr" trick has nowhere to put a tag once the payload needs its
+    // own >8B disc+payload slot. Left unrefused, `struct S{e:E?,tail:...}`
+    // silently overflows the 8B slot reserved for `e` into the next field
+    // at construction time (verified: `Mid{m:5,e:E::V(42)}` reads back
+    // `mid.m == 42`, exit 0 — see fixtures 414/415). `Expr::OutcomeConstructor`
+    // already refuses this for values flowing through a nullable-typed
+    // expression (`nullable_enum_payload_unsupported`, fixtures 374/375),
+    // but that check runs per-function, per-expression — it does not cover
+    // every path a bad TYPE can enter the program (e.g. a struct field is
+    // never itself an `Expr`). Refusing here, at the DECLARATION chokepoint,
+    // covers every value-construction path structurally, once, regardless
+    // of how the value later gets built.
+    //
+    // Unit-only `Enum?` (PA-3c disc-niche, 0-byte overhead) is UNAFFECTED —
+    // the `.any(|v| v.payload.is_some())` guard is load-bearing (fixtures
+    // 417/418 pin this: a unit-only nullable enum field/local must keep
+    // compiling and running).
+    for item in &prog.items {
+        match &item.node {
+            Item::Struct { def } => {
+                for field in &def.fields {
+                    let ty = lower_type(&prog.arena, field.type_annotation, &symbols, None);
+                    if let MirType::Nullable(inner) = &ty
+                        && let MirType::Enum(enum_name) = inner.as_ref()
+                        && let Some(layout) = enum_map.get(enum_name)
+                        && layout.variants.iter().any(|v| v.payload.is_some())
+                    {
+                        return Err(LowerError::nullable_enum_payload_unsupported(
+                            enum_name,
+                            Some(&format!("field `{}` of struct `{}`", field.name, def.name)),
+                            item.span.clone(),
+                        ));
+                    }
+                }
+            }
+            Item::Enum { def } => {
+                for variant in &def.variants {
+                    let Some(payload_tid) = variant.payload else {
+                        continue;
+                    };
+                    let ty = lower_type(&prog.arena, payload_tid, &symbols, None);
+                    if let MirType::Nullable(inner) = &ty
+                        && let MirType::Enum(enum_name) = inner.as_ref()
+                        && let Some(layout) = enum_map.get(enum_name)
+                        && layout.variants.iter().any(|v| v.payload.is_some())
+                    {
+                        return Err(LowerError::nullable_enum_payload_unsupported(
+                            enum_name,
+                            Some(&format!(
+                                "variant `{}` of enum `{}`",
+                                variant.name, def.name
+                            )),
+                            item.span.clone(),
+                        ));
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1994,7 +2082,7 @@ fn lower_expr(
                     && layout.variants.iter().any(|v| v.payload.is_some())
                 {
                     return Err(LowerError::nullable_enum_payload_unsupported(
-                        enum_name, expr_span,
+                        enum_name, None, expr_span,
                     ));
                 }
                 return match arm {
@@ -5938,6 +6026,58 @@ mod tests {
             err.message.contains("closure sealed (YAGNI"),
             "lambda must hit the explicit YAGNI seal, got: {}",
             err.message
+        );
+    }
+
+    /// WO-NullableEnumAggregate-Refuse PA-A §4 (G mandate, 2026-07-18): the
+    /// ONLY teeth guarding N3 (`resolve_aggregate_size`'s `Nullable(Enum)`
+    /// arm reading `enum_map`, not `struct_map`). N1 (the declaration-time
+    /// `nullable_enum_payload_unsupported` refuse in `lower_program`) blocks
+    /// EVERY fixture-level path before codegen ever consumes this size, so
+    /// no `.tri` fixture can observe N3 regress. If someone reverts
+    /// `enum_map` back to `struct_map` at that arm, the size silently falls
+    /// back to `fallback` (always a MISS for an enum name — an enum is
+    /// never registered in `struct_map`) and the underlying overflow bug
+    /// (WO evidence: `Mid{m:5,e:E::V(42)}` reads back `42` instead of `5`)
+    /// returns dormant: uncaught by `cargo test --workspace`, uncaught by
+    /// the fixture corpus, gate stays green. This test calls the private
+    /// `resolve_aggregate_size` fn directly (same module) so N1 cannot
+    /// intercept it.
+    #[test]
+    fn resolve_aggregate_size_nullable_enum_reads_enum_map_not_struct_map() {
+        // A payload-bearing enum: disc@0 (8B) + payload@8 (8B Integer) = 16B.
+        let enum_layout = EnumLayout::compute(
+            "E",
+            &[
+                (
+                    "V".to_string(),
+                    0,
+                    Some((MirType::Integer, 8, 8, Vec::new())),
+                ),
+                ("N".to_string(), 1, None),
+            ],
+        );
+        assert_eq!(
+            enum_layout.total_size, 16,
+            "test setup sanity: expected a 16B payload-bearing enum"
+        );
+        let mut enum_map = HashMap::new();
+        enum_map.insert("E".to_string(), enum_layout);
+        // `struct_map` deliberately does NOT contain "E" — an enum is never
+        // registered in struct_map (see the `MirType::Enum` arm's comment in
+        // `resolve_aggregate_size`). This mirrors production reality: if the
+        // Nullable(Enum) arm queries struct_map, it is GUARANTEED a MISS.
+        let struct_map: HashMap<String, StructLayout> = HashMap::new();
+
+        let ty = MirType::Nullable(Box::new(MirType::Enum("E".to_string())));
+        let fallback = 8usize; // the old pre-fixpoint 8B seed, deliberately != 16
+        let size = resolve_aggregate_size(&ty, &struct_map, &enum_map, fallback);
+
+        assert_eq!(
+            size, 16,
+            "Nullable(Enum) must resolve its size from enum_map (16B, the \
+             real payload-bearing size), not silently fall back to the 8B \
+             seed via a bogus struct_map lookup — got {size}"
         );
     }
 
