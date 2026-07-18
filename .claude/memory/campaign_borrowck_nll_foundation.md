@@ -58,7 +58,7 @@ ADR-0046 **GIẢI ĐÔNG** (G rút lệnh "không đâm NLL" — chính cái war
 ## Nợ chuyển tiếp
 - **Caller/callee ReturnShape divergence → panic** (`mir_lower.rs` `inst_results[0]`): pre-existing, dùng chung với Struct, **không tới được từ user input** (cả hai đọc cùng `func_return_types`). Cần **cross-body ABI verify = ADR riêng**.
 - **Full sret cho `Enum?`**: đụng disc-niche ADR-0065. Defer, **có refuse còi-to canh** (unit-only `Enum?` ở return position, predicate 3 tầng `Nullable ∧ Enum ∧ unit-only`).
-- **`Nullable(Enum)` trong `resolve_aggregate_size`** (`lower/lib.rs:503` tra nhầm `struct_map`): mìn hẹn giờ, bất-khả-observable hôm nay, **sẽ cắn nếu mở full-support nullable-enum-payload**.
+- ~~**`Nullable(Enum)` trong `resolve_aggregate_size`** (`lower/lib.rs:503` tra nhầm `struct_map`): mìn hẹn giờ, bất-khả-observable hôm nay~~ → **✅ ĐÓNG 2026-07-18 (`186bd1c`, PA-A).** ⚠️ **Ghi chú này SAI HAI CHỖ:** (1) tọa độ thật là **`:567`**, không phải `:503` (số dòng trôi); (2) **KHÔNG "bất-khả-observable"** — là bug **SỐNG**, chạm được bằng 5 dòng Triết hợp lệ (`struct Mid{e:E?,m:Integer}` → `mid.m` đọc ra 42 thay 5, exit 0). Nó sống sót vì **ZERO COVERAGE**, không vì bị guard nhốt. **Bài học: "bất-khả-observable" là một CLAIM, phải đo trước khi ghi sổ — đừng suy ra từ "có vẻ bị refuse che".** Chi tiết → [[campaign_nullable_enum_aggregate_pa_a]].
 - Reference trong struct field: lowerer refuse (không phải đường thoát).
 - `&0 mutable` payload sub-borrow: ADR-0081 FROZEN.
 - ⚠️ BOM FIX-2 zero-@8 · ⚰️ ADR-0068 Box CẤM CỬA.
