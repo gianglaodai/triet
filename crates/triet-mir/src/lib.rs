@@ -1632,8 +1632,50 @@ pub fn is_scalar_nullable_payload(t: &MirType) -> bool {
 /// cell holds `i64::MIN` for null (a real discriminant is always in {0,1,2,…}),
 /// so no extra cell is needed. `Struct?` (ADR-0065 Lát 2, Phương án A) prepends
 /// a tag word: the slot is `{tag@0:i64, fields@8…}`, tag@0 == `i64::MIN` for
-/// null. Both are Copy-only (rào B8): heap fields/payloads inside the aggregate
-/// stay refused via the scalar-only field/payload gate below.
+/// null.
+///
+/// This predicate gates ONLY the **return type + local-binding** positions
+/// (call sites: `Body::verify`, return-type and per-local loops, a few dozen
+/// lines below). It is used for NEITHER struct-field/enum-payload position
+/// (that is a separate, stricter predicate, [`is_field_payload_lowerable`])
+/// NOR is it a general "heap is safe here" gate — it is deliberately
+/// permissive at this one position and relies on OTHER chokepoints to refuse
+/// heap-bearing `Struct`/`Enum` where they are not yet sound.
+///
+/// **`Nullable(Struct)` where the struct carries a plain heap field (e.g.
+/// `struct H { name: String }`, `H?`) IS ALLOWED here and IS SOUND at LOCAL
+/// position** — measured by FREE-COUNT (not just return value) in
+/// `WO-INV-HeapNullable-Probe` (2026-07-19), tooth
+/// `crates/triet-driver/tests/heap_nullable_struct_local_counting.rs`:
+/// null → 0 frees, present-drop → 1, present + `match`-bind-move → 1 (not a
+/// double-free), a 3-iteration `while` loop reusing the same StackSlot across
+/// the back-edge → 3 (neither leaking a stale iteration nor double-freeing
+/// the reused slot). All four counts verified non-vacuous (a stubbed
+/// leak/double-free shim moves the count away from the healthy value).
+///
+/// The other three positions where a heap-bearing `Nullable(Struct)` CAN
+/// appear are refused elsewhere, independently of this predicate:
+/// - **struct field** (`Wrap { h: H? }`) → refused in the LOWERER at
+///   construction, `crates/triet-lower/src/lib.rs:3762-3772` (the
+///   `is_heap_nullable_leaf` / `ctx_is_copy` guard inside struct-literal
+///   field lowering) → `LowerError::heap_type_not_supported`, driver exit 3.
+/// - **function parameter** (`function f(q: H?)`) → the param ABI is
+///   pass-by-pointer with no `struct_slots` entry (no copy-in for params),
+///   so the tag-guarded Drop-glue's slot lookup fails at JIT compile time:
+///   `crates/triet-jit/src/mir_lower.rs:3329-3334`
+///   (`JitError::Unsupported("Struct? Drop without slot")`), driver exit 4.
+/// - **return type** (`function make() -> H?`) → refused by a dedicated
+///   POLICY GATE at return-shape decision time,
+///   `crates/triet-lower/src/lib.rs:158` (`nullable_struct_return_unsupported`,
+///   `WO-StructReturnRefuse`, fixture 440), driver exit 3 — this guard fires
+///   BEFORE this predicate would ever see a heap-bearing `Nullable(Struct)`
+///   in return position.
+///
+/// Do not read the four-way match below as "Struct/Enum are unconditionally
+/// safe wherever `Nullable` appears" — it is safe ONLY because the three
+/// refuse sites above independently close every other position, and it has
+/// been measured (not assumed) sound at the one position — local — that they
+/// leave open.
 fn is_lowerable_nullable_payload(t: &MirType) -> bool {
     is_scalar_nullable_payload(t)
         || t.is_any_heap()
