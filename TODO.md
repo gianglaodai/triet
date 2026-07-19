@@ -66,38 +66,96 @@ mặt trận riêng, chạm vào ở WO này = REJECT.
 
 **Gate cuối WO này:** build 0 · test-fail 0 · fixtures 439 · clippy 0 · CLEAN.
 
-### 🔴 NỢ MỚI, ƯU TIÊN 1 — `WO-InlineFieldTempLeak` (D khui khi dựng S3, O tự cắm probe riêng xác nhận sắc hơn — restore md5 `d65297f9`, cây sạch)
+### 🔴 NỢ MỚI, ƯU TIÊN 1 — `WO-LengthFastPathTempLeak` T0 nộp (đổi tên từ `WO-InlineFieldTempLeak` — tên cũ SAI, xem kết luận dưới), O+G ký WO 2026-07-19
 
-**Repro tối thiểu (2 dòng, KHÔNG Nullable, KHÔNG match, KHÔNG aggregate lồng):**
+**Câu hỏi quyết định:** RỈ CÂM đo được ở `length(h.name)` (FREE=0, giá trị đúng, exit 0)
+có **cục bộ tại fast-path `length()`** (`crates/triet-lower/src/lib.rs:2472-2479`), hay
+**rỉ cả mảng shim-mượn** (mọi builtin nhận `String` sở hữu qua `emit_shim_call`)?
+
+**Tooth:** `crates/triet-driver/tests/heap_shim_temp_leak_counting.rs` (10 test — đăng
+ký thêm shim `__triet_string_concat`/`__triet_string_contains`/`__triet_string_eq` vào
+harness counting, thứ mà tooth trước KHÔNG có → trước đây đo `concat` báo lỗi
+`Unsupported("shim '__triet_string_concat' not registered")`).
+
+**Ma trận đo được (raw, `cargo test -p triet-driver --test heap_shim_temp_leak_counting -- --test-threads=1 --nocapture`):**
 ```
-let h: H = H { name: "hello" };
-return length(h.name);      // value 5 (ĐÚNG), FREE=0 (RỈ CÂM)
+running 10 tests
+test poison_double_on_shb_control_proves_tooth_is_live ... SH-B-ctrl POISON(double): FREE=6 ok
+test poison_leak_on_shb_control_proves_tooth_is_live ... SH-B-ctrl POISON(leak): FREE=0 ok
+test sha_concat_two_inline_literals ... SH-A (concat inline-literal x2): FREE=1 ok
+test sha_control_concat_two_let_bound ... SH-A-ctrl (concat let-bound x2): FREE=3 ok
+test shb_concat_field_plus_inline_literal ... SH-B (concat field+inline-literal): FREE=1 ok
+test shb_control_concat_both_let_bound ... SH-B-ctrl (concat let-bound both): FREE=3 ok
+test shc_contains_field_plus_inline_literal ... SH-C (contains field+inline-literal): FREE=0 ok
+test shc_control_contains_both_let_bound ... SH-C-ctrl (contains let-bound both): FREE=2 ok
+test shd_control_eq_both_let_bound ... SH-D-ctrl (eq let-bound both): FREE=2 ok
+test shd_eq_field_plus_inline_literal ... SH-D (eq field+inline-literal): FREE=0 ok
+test result: ok. 10 passed; 0 failed
 ```
-So sánh đối chứng — cùng field, qua `let` trung gian, KHÔNG rỉ:
-```
-let h: H = H { name: "hello" };
-let n = h.name;
-return length(n);           // value 5, FREE=1 (ĐÚNG)
-```
 
-**Failure-mode: RỈ CÂM** — giá trị trả về ĐÚNG (5), exit 0, KHÔNG crash, KHÔNG SIGABRT/
-SIGSEGV. Chỉ lộ qua FREE-COUNT (oracle giá trị mù màu, đúng tinh thần WO gốc).
+| Shape | Inline (rvalue temp) | Let-bound control | Sound-baseline |
+|---|---|---|---|
+| `concat("ab","cd")` — 2 LITERAL | FREE=1 | FREE=3 (`sha_control`) | 3 |
+| `concat(h.name,"cd")` — FIELD+LITERAL | FREE=1 | FREE=3 (`shb_control`) | 3 |
+| `contains(h.name,"ell")` — FIELD+LITERAL, shim KHÔNG có `builtin_shim_meta` entry | FREE=0 | FREE=2 (`shc_control`) | 2 |
+| `eq(h.name,"world")` — FIELD+LITERAL | FREE=0 | FREE=2 (`shd_control`) | 2 |
 
-**Biến số đã tách (6 probe, D dựng lúc T0, O tự cắm lại độc lập xác nhận):** leak bám
-theo hình dạng "field-access-expression dùng làm call-argument INLINE" — KHÔNG liên
-quan Nullable/match/bind-move/aggregate lồng (tái hiện y hệt trên struct trần, không
-nullable, không match).
+**Bằng chứng non-vacuous:** poison trên control `SH-B-ctrl` (giá trị baseline sound = 3
+free thật) — poison-leak (`__hstl_str_free_poison_leak`, no-op không đếm) → **0**;
+poison-double (`__hstl_str_free_poison_double`, đếm gấp đôi mỗi free thật) → **6**
+(= 2×3). Cả hai đổi đúng hướng theo cơ chế poison → bộ đếm quan sát free thật.
 
-**Nghi phạm CHƯA CHỨNG MINH** (chỉ là ứng viên, chưa root-cause): fast-path `length()`
-cho `MirType::String` tại `crates/triet-lower/src/lib.rs:2472-2479` (ADR-0049 Phase-1
-B4) đọc field `len` thẳng từ StackSlot của argument thay vì gọi shim tiêu thụ — nghi
-ngờ không đăng ký Drop cho temp KHÔNG-định-danh (sinh từ biểu thức field-access, khác
-định danh `let`-bound). **CHƯA điều tra thêm, chưa xác nhận cơ chế thật.**
+**⚖ KẾT LUẬN DỨT KHOÁT, THUẦN DỰA TRÊN SỐ: RỈ CẢ MẢNG SHIM-MƯỢN, KHÔNG CỤC BỘ TẠI `length()`.**
+3 shim độc lập (`concat`, `contains`, `eq`) — 2 shim CÓ `builtin_shim_meta` entry
+(`arg_consumes: [false,false,false,false]`), 1 shim (`contains`) HOÀN TOÀN KHÔNG có
+entry — đều rỉ Y HỆT khi arg là temp vô danh (field-access HOẶC literal, không phân
+biệt), và đều lành khi arg qua `let`. Sự có/không của `builtin_shim_meta` không ảnh
+hưởng gì tới leak này — cơ chế thật nằm ở TẦNG TRƯỚC shim: `Ctx::push_owned` không bao
+giờ được gọi cho một temp sinh ra bởi `lower_expr` trên một biểu thức field-access
+hoặc literal khi biểu thức đó được dùng TRỰC TIẾP làm argument (không qua `Stmt::Let`).
+`length()`'s fast-path (`:2472-2479`) là MỘT ca của lỗ này, không phải NGUYÊN NHÂN của
+nó — vá riêng `:2472-2479` sẽ KHÔNG đóng `concat`/`contains`/`eq`/bất kỳ shim-mượn nào
+khác.
 
-**Phạm vi:** mặt trận RIÊNG, khác cơ chế (fast-path builtin arg-lowering, không phải
-Nullable/aggregate drop-glue), khác tầng so với WO-INV-HeapNullable-Probe. Tooth S3
-của WO trên dùng idiom `let n = v.name; length(n)` để CÔ LẬP câu hỏi Nullable(Struct)
+**Vì sao user-function call KHÔNG rỉ (đối chứng P3/P4 của O):** `Expr::Call` cho hàm
+người dùng (CẢ 3 nhánh return: fat-sret/outcome/scalar,
+`crates/triet-lower/src/lib.rs:3016-3182`) đều tự Deinit-tombstone mọi arg Move-type
+SAU lời gọi (`to_zero` + `Statement::Deinit`, ADR-0042 Q1) — đây là CHUYỂN QUYỀN SỞ HỮU
+thật sự sang callee (tham số của callee ĐƯỢC `push_owned` ở function-entry, dòng
+~1101-1105), nên callee tự free nó ở scope-end của chính nó, bất kể caller có
+`push_owned` temp đó hay không. `emit_shim_call` (dòng 1477-1503, dùng cho MỌI builtin
+shim-dispatch: concat/eq/contains/is_empty/…) **KHÔNG có bước tương đương** — nó chỉ
+emit `CallDispatch` rồi trả `dest`, không đụng gì tới ownership của `args`. Với shim
+mà `arg_consumes[i]=false` (borrow — hoặc hoàn toàn không có `meta` entry, tương
+đương), KHÔNG ai từng free/transfer temp đó cả.
+
+**Bảng builtin nhận `String` sở hữu — tiêu thụ (consume) vs mượn (borrow):**
+| Builtin | Owned `String` arg? | `arg_consumes` | Phân loại | Đo trong T0 này? |
+|---|---|---|---|---|
+| `length`/`len(s)` | arg0 | N/A — bỏ qua shim hoàn toàn (fast-path đọc field `len` trực tiếp) | **MƯỢN** | Đo (WO-INV-HeapNullable-Probe, FREE=0) |
+| `is_empty(s)` | arg0 | N/A — cùng fast-path delegate như `length` (code path giống hệt) | **MƯỢN** (suy từ code, CHƯA đo riêng) | KHÔNG — cùng cơ chế `length`, độ tin cậy cao nhưng chưa có con số riêng |
+| `concat(a,b)` | arg0,arg1 | `[false,false,false,false]` | **MƯỢN** | Đo (SH-A/B, FREE=1 thay vì 3) |
+| `eq(a,b)` | arg0,arg1 | `[false,false,false,false]` | **MƯỢN** | Đo (SH-D, FREE=0 thay vì 2) |
+| `contains(h,n)` | arg0,arg1 | KHÔNG CÓ entry trong `builtin_shim_meta` | **MƯỢN** (theo hành vi Rust — chỉ đọc ptr+len) | Đo (SH-C, FREE=0 thay vì 2) |
+| `clear(&0 mutable s)` | KHÔNG — nhận Reference, không phải `String` sở hữu | N/A | N/A (khác cơ chế — mutate qua pointer) | Ngoài phạm vi |
+| `append(&0 mutable s, byte)` | KHÔNG — nhận Reference | N/A | N/A | Ngoài phạm vi |
+| `__triet_string_free` (nội bộ, KHÔNG gọi được từ user syntax — chỉ Drop-glue) | arg0 | `[true]` | TIÊU THỤ | Đó chính là Drop-glue, không phải leak surface |
+| `insert(map: HashMap<String,V>, key: String, v)` key arg | key | `[_, true, _]` (ADR-0080 §AMEND-1 D3, ghi trong lịch sử TODO) | **TIÊU THỤ** — key được chuyển hẳn vào map, KHÔNG rỉ theo cơ chế này | Ngoài phạm vi T0 này — cơ chế khác hẳn (consume, không phải borrow-rồi-quên) |
+| `push(vec: Vector<String>, elem: String)` elem arg | elem | `[true,true]` | **TIÊU THỤ** | Ngoài phạm vi T0 này |
+
+**🔴 Ghi nợ mới (KHÔNG đo, ngoài phạm vi):** `is_empty(s)` chưa có con số riêng (code
+path y hệt `length`, độ tin cậy cao nhưng CHƯA đo — refuse-over-guess: không claim đã
+đo). `push`/`insert` với arg TIÊU THỤ (String làm phần tử Vector/key HashMap) chưa đo
+riêng khi arg là temp vô danh — lý thuyết (M3-zero + ownership chuyển vào container)
+nói KHÔNG rỉ nhưng chưa kiểm chứng bằng số cho ca temp-vô-danh cụ thể.
+
+**Phạm vi:** mặt trận RIÊNG, khác cơ chế (argument-lowering ownership gap, không phải
+Nullable/aggregate drop-glue), khác tầng so với `WO-INV-HeapNullable-Probe`. Tooth S3
+của WO đó dùng idiom `let n = v.name; length(n)` để CÔ LẬP câu hỏi Nullable(Struct)
 khỏi bug này — không né tránh, chỉ tách biến số.
+
+**CẤM đã sửa gì ở T0 này** — `triet-lower/src/lib.rs:2472-2479` và `emit_shim_call`
+GIỮ NGUYÊN, đúng lệnh "chỉ đo".
 
 ### ✅ ĐÓNG — **`WO-StructReturnRefuse` — POLICY GATE cho `Struct?` ở RETURN position** (O+G ký 2026-07-19, `e7aab8c`)
 Anh em thứ HAI của guard `nullable_enum_return_unsupported` — cùng lỗ **"match exact, quên `Nullable`"** ở `Ctx::new` (`crates/triet-lower/src/lib.rs`, quyết định `ReturnShape`): `let is_struct_return = matches!(ret, MirType::Struct(_))` không khớp `Nullable(Struct(_))` → trượt xuống `_ => ReturnShape::Scalar`. Thành viên thứ TƯ của họ bug "match exact, quên `Nullable`": ① `Enum?` param copy-in (`ccb8db3`) · ② `Struct?` param bare-read (`7d59b7c`) · ③ `Enum?` return-shape → refuse (WO trước) · ④ **`Struct?` return-shape → refuse (WO này)**.

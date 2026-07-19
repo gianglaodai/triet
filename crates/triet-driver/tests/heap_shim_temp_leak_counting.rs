@@ -145,9 +145,11 @@ fn sha_control_concat_two_let_bound() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHA_CONTROL);
     assert_eq!(r, 4);
-    eprintln!(
-        "SH-A-ctrl (concat let-bound x2): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-A-ctrl (concat let-bound x2): FREE={count}");
+    assert_eq!(
+        count, 3,
+        "T0 measured: a, b, r all free (3) when let-bound — the sound baseline"
     );
 }
 
@@ -168,9 +170,12 @@ fn shb_concat_field_plus_inline_literal() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHB_INLINE);
     assert_eq!(r, 7, "\"hello\"+\"cd\" concat length == 7");
-    eprintln!(
-        "SH-B (concat field+inline-literal): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-B (concat field+inline-literal): FREE={count}");
+    assert_eq!(
+        count, 1,
+        "T0 measured: only `r` frees (1); both h.name (field-access temp) \
+         and \"cd\" (literal temp) leak as concat args (would be 3 if sound)"
     );
 }
 
@@ -189,9 +194,11 @@ fn shb_control_concat_both_let_bound() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHB_CONTROL);
     assert_eq!(r, 7);
-    eprintln!(
-        "SH-B-ctrl (concat let-bound both): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-B-ctrl (concat let-bound both): FREE={count}");
+    assert_eq!(
+        count, 3,
+        "T0 measured: n, lit, r all free (3) when let-bound — the sound baseline"
     );
 }
 
@@ -215,9 +222,15 @@ fn shc_contains_field_plus_inline_literal() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHC_INLINE);
     assert_eq!(r, 0);
-    eprintln!(
-        "SH-C (contains field+inline-literal): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-C (contains field+inline-literal): FREE={count}");
+    assert_eq!(
+        count, 0,
+        "T0 measured: both h.name and \"ell\" leak as contains args (would be \
+         2 if sound — see SH-C-ctrl below). `contains` has NO builtin_shim_meta \
+         entry at all, yet the leak is identical to concat's (which DOES have \
+         an explicit all-false entry) — the meta table's presence/absence is \
+         irrelevant to this leak."
     );
 }
 
@@ -236,9 +249,11 @@ fn shc_control_contains_both_let_bound() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHC_CONTROL);
     assert_eq!(r, 0);
-    eprintln!(
-        "SH-C-ctrl (contains let-bound both): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-C-ctrl (contains let-bound both): FREE={count}");
+    assert_eq!(
+        count, 2,
+        "T0 measured: n, needle both free (2) when let-bound — the sound baseline"
     );
 }
 
@@ -260,9 +275,13 @@ fn shd_eq_field_plus_inline_literal() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHD_INLINE);
     assert_eq!(r, -1, "\"hello\" != \"world\" -> Trilean-encoded -1");
-    eprintln!(
-        "SH-D (eq field+inline-literal): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-D (eq field+inline-literal): FREE={count}");
+    assert_eq!(
+        count, 0,
+        "T0 measured: both h.name and \"world\" leak as eq args (would be 2 \
+         if sound — see SH-D-ctrl below). Third independent shim confirming \
+         the same pattern as concat/contains."
     );
 }
 
@@ -280,9 +299,11 @@ fn shd_control_eq_both_let_bound() {
     STR_FREES.store(0, Ordering::SeqCst);
     let r = run(SRC_SHD_CONTROL);
     assert_eq!(r, -1);
-    eprintln!(
-        "SH-D-ctrl (eq let-bound both): FREE={}",
-        STR_FREES.load(Ordering::SeqCst)
+    let count = STR_FREES.load(Ordering::SeqCst);
+    eprintln!("SH-D-ctrl (eq let-bound both): FREE={count}");
+    assert_eq!(
+        count, 2,
+        "T0 measured: n, lit both free (2) when let-bound — the sound baseline"
     );
 }
 
