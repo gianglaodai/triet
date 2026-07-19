@@ -1474,6 +1474,30 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
 /// Emit a `CallDispatch` terminator targeting a builtin shim, allocate a
 /// return local of `dest_ty`, and advance `c.cur` to the return block.
 /// Returns the destination local holding the shim's return value.
+///
+/// WO-ShimTempOwnership (2026-07-19): a shim-call ARGUMENT that the shim
+/// only BORROWS (`builtin_shim_meta(shim_name).arg_consumes[i] == false`,
+/// OR the shim has NO meta entry at all — e.g. `__triet_string_contains` —
+/// treated identically to `false` per the WO mandate) must be registered
+/// with `c.push_owned` so its scope-end `Drop` actually fires. Before this,
+/// an argument that was a NAMED local (bound via `Stmt::Let`) was already
+/// registered there and stayed correctly freed; an ANONYMOUS temp (e.g. the
+/// destination of a bare field-access move-out, or a string-literal
+/// constant) was never registered anywhere — nothing ever freed it
+/// (measured: `concat`/`contains`/`eq` all leaked exactly the un-let-bound
+/// args, `heap_shim_temp_leak_counting.rs`). `push_owned` is idempotent
+/// (`Ctx::push_owned`, no-op if already registered) and `Drop` of a
+/// Copy/Reference-typed local is already a no-op elsewhere in this lowerer
+/// (`Stmt::Let` registers every local it binds unconditionally, regardless
+/// of type) — so registering EVERY borrowed arg here, named or anonymous,
+/// is safe by the same precedent, not a new assumption.
+///
+/// Args where `arg_consumes[i] == true` (the shim TAKES ownership — e.g.
+/// `push`/`insert`) are deliberately SKIPPED: the shim itself transfers the
+/// value into a live container, so nothing here should ever free it — doing
+/// so would double-free (measured LÀNH/sound already without this,
+/// `heap_shim_consuming_temp_counting.rs` — this is the control group this
+/// fix must not touch).
 fn emit_shim_call(
     c: &mut Ctx,
     shim_name: &str,
@@ -1481,6 +1505,15 @@ fn emit_shim_call(
     dest_ty: impl Into<MirType>,
     span: Span,
 ) -> Local {
+    let meta = triet_mir::builtin_shim_meta(shim_name);
+    for (i, &arg) in args.iter().enumerate() {
+        let consumed = meta
+            .as_ref()
+            .is_some_and(|m| i < m.arg_consumes.len() && m.arg_consumes[i]);
+        if !consumed {
+            c.push_owned(arg);
+        }
+    }
     let dest = c.alloc_local_ty(dest_ty);
     c.push(Statement::StorageLive(dest, span.clone()));
     let ret_bb = c.alloc_bb();
@@ -2470,6 +2503,20 @@ fn lower_expr(
                     // Borrow (&0 String etc.) keeps the shim — the handle still
                     // points to the heap where len@body+0.
                     if matches!(arg_ty, MirType::String) {
+                        // WO-ShimTempOwnership (2026-07-19): this fast path
+                        // BYPASSES `emit_shim_call` entirely (no CallDispatch
+                        // is ever emitted for the owned-String case), so the
+                        // chokepoint fix there does not reach `arg` here — it
+                        // needs its own `push_owned`. `length()` only READS
+                        // `arg`'s `len` field, never frees/consumes it, so
+                        // this is unconditionally a BORROW position — mirrors
+                        // `emit_shim_call`'s `arg_consumes[i] == false` arm.
+                        // Idempotent for a named (`let`-bound) `arg` (already
+                        // registered by `Stmt::Let`); load-bearing for an
+                        // anonymous temp (a bare field-access move-out or a
+                        // string literal used directly as this argument) —
+                        // measured leaking (FREE=0) before this fix.
+                        c.push_owned(arg);
                         let d = c.alloc_local_ty(MirType::Integer);
                         c.push(Statement::Assign {
                             dest: Place::local(d),
