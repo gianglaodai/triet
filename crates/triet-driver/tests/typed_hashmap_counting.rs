@@ -1115,11 +1115,37 @@ fn hashmap_8b_wrapper_value_remove_then_drop_no_double_free() {
     );
 }
 
-/// String-key sibling: `HashMap<String,User>` remove must free BOTH the
-/// resident KEY (ADR-0080 §AMEND-1 D.5, unaffected by D-2 — key stays a
-/// scalar String even though the value is now an aggregate) and the
-/// removed VALUE's String field, with no interference between the two
-/// free paths.
+/// String-key sibling: `HashMap<String,User>` remove must free the resident
+/// KEY (ADR-0080 §AMEND-1 D.5, unaffected by D-2 — key stays a scalar
+/// String even though the value is now an aggregate), the removed VALUE's
+/// String field, AND the caller's own search-key argument to `remove`, with
+/// no interference between the three free paths.
+///
+/// ⚠️ HISTORY (WO-ShimTempOwnership, 2026-07-19): this oracle was `2` before
+/// the `emit_shim_call` chokepoint fix landed — that was a BUG-RILED
+/// baseline, NOT a correct one. `remove(m, "k")`'s key argument `"k"` is a
+/// string-literal temp; `__triet_hashmap_remove`'s meta
+/// (`arg_consumes: [false, false]`, `crates/triet-mir/src/lib.rs:1239`)
+/// classifies the key position as BORROW, so the caller's own `"k"` was
+/// ALWAYS a genuine, distinct heap allocation that nothing ever freed
+/// (same bug class as the `concat`/`contains`/`eq` leaks the WO fixed,
+/// just on `remove`'s key argument, which the WO's original teeth table
+/// didn't enumerate). The chokepoint fix now `push_owned`s it too, so it is
+/// finally freed — correctly bumping the count from 2 to 3.
+///
+/// **Verified NOT a double-free** (O, pointer-identity probe, 2026-07-19):
+/// instrumented `__triet_string_free` to record+dedup every freed pointer
+/// across a real run — `frees=3 | distinct=3 | dup=0`. Three DIFFERENT
+/// allocations, freed exactly once each:
+///   1. the map's own resident key copy (D.5 `key_out_ptr` registry route)
+///   2. the removed value's `"aa"` String field (freed via caller's own
+///      `Drop` after the `~+ u` bind-move)
+///   3. the caller's OWN `"k"` literal argument to `remove` (newly freed by
+///      this WO's fix — previously leaked, uncounted, silent)
+///
+/// If this oracle is ever moved back to `2`, that is REOPENING A LEAK, not
+/// fixing a double-free — verify with a fresh pointer-identity probe before
+/// touching this number, don't trust a "looks like it should be 2" instinct.
 #[test]
 fn hashmap_string_key_struct_value_remove_frees_key_and_value() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1141,12 +1167,13 @@ fn hashmap_string_key_struct_value_remove_frees_key_and_value() {
     assert_eq!(r, 0, "main returns 0 (~+ arm taken)");
     assert_eq!(
         STR_FREES.load(Ordering::SeqCst),
-        2,
-        "resident key (\"k\") freed via D.5 out-param registry-route + \
-         removed value's String field (\"aa\") freed via caller Drop — 2 \
-         independent String frees, no map survivors left. == 3 ⇒ GATE-A/B \
-         state-gate breach re-frees the tombstoned cell's stale value on \
-         map-drop (poison-measured)."
+        3,
+        "3 independent String frees, no map survivors left, dup=0 (pointer- \
+         identity verified): resident key (D.5 out-param registry-route) + \
+         removed value's String field (\"aa\", caller Drop) + caller's OWN \
+         \"k\" literal argument to remove (WO-ShimTempOwnership fix). \
+         == 2 ⇒ the pre-fix leaky baseline is back (reopened leak, NOT a \
+         double-free fix — see HISTORY doc comment above)."
     );
 }
 
