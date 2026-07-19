@@ -1,0 +1,15 @@
+// EXPECT: 42
+// WO-StructReturnRefuse T5 — CONTROL against over-refuse: a BARE
+// (non-nullable) struct return (sret path). The `Struct?` return guard
+// (437-440) matches `Nullable(Struct(_))` only — this fixture proves a
+// plain `Struct` return is untouched and stays on the working sret path.
+struct P { x: Integer, y: Integer }
+
+function make() -> P {
+    return P { x: 40, y: 2 };
+}
+
+function main() -> Integer {
+    let v = make();
+    return v.x + v.y;
+}

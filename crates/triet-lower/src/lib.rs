@@ -129,6 +129,50 @@ impl LowerError {
         }
     }
 
+    /// P0-sibling gap #2 (WO-StructReturnRefuse, O+G mandate, 2026-07-19):
+    /// same hole as `nullable_enum_return_unsupported` above, one type
+    /// wider. `Nullable(Struct)` does not match `MirType::Struct` below
+    /// (`is_struct_return`), so it silently fell through to
+    /// `ReturnShape::Scalar` untouched. Measured on `768fc8e` (T0, this WO):
+    /// `return ~0` for `P?` reads back as the WRONG present value (silent,
+    /// exit 0); `return ~+ P{..}` with one field read returns garbage
+    /// address-shaped bits; reading two fields traps SIGILL 132 (garbage +
+    /// garbage overflow, ADR-0044); a heap-bearing field (`struct H { name:
+    /// String }`) aborts SIGABRT 134 on drop of an uninitialized pointer
+    /// (`free(): invalid pointer`). Refused HERE, unconditionally for ANY
+    /// `Nullable(Struct)` in RETURN position — unlike the Enum guard above
+    /// (unit-only-only, because payload-bearing `Enum?` is already refused
+    /// earlier at construction), there is no existing refuse elsewhere for
+    /// `Nullable(Struct)` return: the MIR verifier's
+    /// `is_lowerable_nullable_payload` allows `MirType::Struct`
+    /// unconditionally at return-type position (does not gate on
+    /// Copy-ness/heap content), so this guard must not be narrowed by shape.
+    /// `Struct?` as a LOCAL/param is unaffected (WO-StructParamABI landed
+    /// the copy-in path) — only the RETURN position is refused here.
+    ///
+    /// POLICY GATE — blocks the miscompile above, pending the ADR "Full
+    /// SRET for Nullable Aggregate" (which will also resolve the sibling
+    /// `Enum?` return refuse in the same sweep). This is NOT a soundness
+    /// fix; when that ADR lands, this guard MUST be removed and the return
+    /// path re-probed from scratch.
+    fn nullable_struct_return_unsupported(struct_name: &str, span: Span) -> Self {
+        Self {
+            message: format!(
+                "nullable struct return `{struct_name}?` is not yet supported: functions \
+                 returning `{struct_name}?` have no sret ABI yet (return-shape decision \
+                 only recognizes bare `{struct_name}`, not `{struct_name}?`) — returning \
+                 it would silently miscompile: a null arm reads back as a wrong present \
+                 value, a present value with fields read produces garbage or an \
+                 arithmetic trap, and a heap-bearing field aborts on drop of an \
+                 uninitialized pointer.\n[Fix] Return `{struct_name}` unwrapped and model \
+                 absence as an explicit out-of-band result (e.g. a sibling `Trilean`/\
+                 `Outcome`), or write the nullable result into an out-parameter \
+                 (`&0 mutable {struct_name}?`) instead of the return position."
+            ),
+            span,
+        }
+    }
+
     fn null_literal_without_expected_type(span: Span) -> Self {
         Self {
             message: "Outcome/nullable constructor (`~+`/`~0`/`~-`) requires an expected \
@@ -249,6 +293,28 @@ impl Ctx {
         {
             return Err(LowerError::nullable_enum_return_unsupported(
                 enum_name, span,
+            ));
+        }
+        // P0-sibling gap #2 (WO-StructReturnRefuse, O+G mandate, 2026-07-19):
+        // mirror of the `Nullable(Enum)` guard above, one type wider. See
+        // `LowerError::nullable_struct_return_unsupported` for the measured
+        // failure modes (silent wrong value / garbage / SIGILL / SIGABRT)
+        // and why this guard is unconditional (no Copy/heap-content split,
+        // unlike the Enum guard's unit-only restriction — there is no other
+        // refuse anywhere in the pipeline for `Nullable(Struct)` return, so
+        // narrowing this guard would just let a different failure mode
+        // through).
+        //
+        // POLICY GATE — blocks a miscompile, pending the ADR "Full SRET for
+        // Nullable Aggregate" (which resolves this guard's Enum? sibling in
+        // the same sweep). NOT a soundness fix; when that ADR lands, this
+        // guard MUST be removed and the return path re-probed from scratch.
+        if let MirType::Nullable(inner) = ret
+            && let MirType::Struct(struct_name) = inner.as_ref()
+        {
+            return Err(LowerError::nullable_struct_return_unsupported(
+                struct_name,
+                span,
             ));
         }
         let is_struct_return = matches!(ret, MirType::Struct(_));

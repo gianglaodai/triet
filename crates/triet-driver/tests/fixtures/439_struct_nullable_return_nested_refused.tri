@@ -1,0 +1,19 @@
+// ERROR: nullable struct return
+// WO-StructReturnRefuse T3 (O+G mandate, 2026-07-19): `Struct?` in RETURN
+// position where the struct is NESTED (a struct field itself). Guard fires
+// on the OUTER `Nullable(Struct)` at the return-shape-decision layer,
+// regardless of what the struct contains — proves the refuse is not
+// accidentally scoped to flat/leaf structs only.
+struct Inner { a: Integer }
+struct Outer { inner: Inner, b: Integer }
+
+function make() -> Outer? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => v.b,
+        ~0 => 0,
+    };
+}

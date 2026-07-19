@@ -1,0 +1,16 @@
+// EXPECT: 0
+// WO-StructReturnRefuse T6 — CONTROL against over-refuse: `String?` return,
+// NULL arm. `MirType::String` is a distinct variant from
+// `MirType::Struct("String")` — the `Nullable(Struct(_))` guard (437-440)
+// must NOT match `Nullable(String)`. This proves the working String?-return
+// fat/sret path (`is_string_repr`) stays untouched.
+function make() -> String? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

@@ -1,0 +1,15 @@
+// EXPECT: 1
+// WO-StructReturnRefuse T7 — CONTROL against over-refuse: `String?` return,
+// PRESENT arm. Companion to 442 (null arm) — proves the working
+// String?-return fat/sret path stays green for both arms after the
+// `Nullable(Struct(_))` guard lands.
+function make() -> String? {
+    return ~+ "hi";
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

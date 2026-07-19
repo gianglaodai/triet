@@ -1,0 +1,25 @@
+// ERROR: nullable struct return
+// WO-StructReturnRefuse T4 (O mandate, 2026-07-19, added after T0 review):
+// `Struct?` in RETURN position where the struct has a HEAP-bearing field
+// (`String`). Pre-guard measured on 768fc8e: `check` phase passed (exit 0,
+// no refuse anywhere in the pipeline), then `run` ABORTED — SIGABRT 134,
+// "free(): invalid pointer" (drop-glue running on an uninitialized pointer
+// from the garbage Scalar-shaped return slot). Distinct failure mode from
+// the Copy-struct cases (437-439: silent wrong value / garbage / SIGILL) —
+// this fixture is the teeth for the abort path specifically. The guard
+// refuses ALL `Nullable(Struct)` unconditionally (T0 finding: MIR verifier's
+// `is_lowerable_nullable_payload` does not gate on Copy-ness/heap content
+// at return-type position, so there is no other refuse to fall back on),
+// so this heap-bearing shape is caught by the SAME guard as 437-439.
+struct H { name: String }
+
+function make() -> H? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

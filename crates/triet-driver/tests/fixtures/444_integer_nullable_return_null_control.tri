@@ -1,0 +1,15 @@
+// EXPECT: 0
+// WO-StructReturnRefuse T8 — CONTROL against over-refuse: `Integer?` return,
+// NULL arm. `MirType::Integer` is a scalar — `ReturnShape::Scalar` (the
+// PA-3c sentinel repr) is correct for it and must stay untouched by the
+// `Nullable(Struct(_))` guard.
+function make() -> Integer? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => 0,
+    };
+}

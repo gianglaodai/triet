@@ -1,0 +1,17 @@
+// EXPECT: 0
+// WO-StructReturnRefuse T9 — CONTROL against regression: `Struct?` as a
+// LOCAL binding (`let`), not a param and not a return. `Ctx::new`'s new
+// return-position guard runs exactly once per function, against the
+// function's RETURN type only — a `Struct?` local must be completely
+// unaffected. Companion to fixtures 428-436 (`Struct?` PARAM regression,
+// WO-StructParamABI), which already exercise the param path; this one
+// covers the local-binding path that WO didn't have a dedicated fixture for.
+struct P { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let v: P? = ~0;
+    return match v {
+        ~+ p => p.x,
+        ~0 => 0,
+    };
+}
