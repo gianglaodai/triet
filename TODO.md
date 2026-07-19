@@ -66,7 +66,7 @@ mặt trận riêng, chạm vào ở WO này = REJECT.
 
 **Gate cuối WO này:** build 0 · test-fail 0 · fixtures 439 · clippy 0 · CLEAN.
 
-### 🔴 NỢ MỚI, ƯU TIÊN 1 — `WO-LengthFastPathTempLeak` T0 nộp (đổi tên từ `WO-InlineFieldTempLeak` — tên cũ SAI, xem kết luận dưới), O+G ký WO 2026-07-19
+### 🔴 NỢ MỚI, ƯU TIÊN 1 — `WO-ShimTempOwnership` T0+T0-bổ-sung nộp (lịch sử tên: `WO-InlineFieldTempLeak` → `WO-LengthFastPathTempLeak` → **`WO-ShimTempOwnership`**, O+G ký WO lõi 2026-07-19 nhưng **CHƯA thi hành code** — còn chặn bởi phép đo nhóm tiêu thụ)
 
 **Câu hỏi quyết định:** RỈ CÂM đo được ở `length(h.name)` (FREE=0, giá trị đúng, exit 0)
 có **cục bộ tại fast-path `length()`** (`crates/triet-lower/src/lib.rs:2472-2479`), hay
@@ -140,22 +140,72 @@ mà `arg_consumes[i]=false` (borrow — hoặc hoàn toàn không có `meta` ent
 | `clear(&0 mutable s)` | KHÔNG — nhận Reference, không phải `String` sở hữu | N/A | N/A (khác cơ chế — mutate qua pointer) | Ngoài phạm vi |
 | `append(&0 mutable s, byte)` | KHÔNG — nhận Reference | N/A | N/A | Ngoài phạm vi |
 | `__triet_string_free` (nội bộ, KHÔNG gọi được từ user syntax — chỉ Drop-glue) | arg0 | `[true]` | TIÊU THỤ | Đó chính là Drop-glue, không phải leak surface |
-| `insert(map: HashMap<String,V>, key: String, v)` key arg | key | `[_, true, _]` (ADR-0080 §AMEND-1 D3, ghi trong lịch sử TODO) | **TIÊU THỤ** — key được chuyển hẳn vào map, KHÔNG rỉ theo cơ chế này | Ngoài phạm vi T0 này — cơ chế khác hẳn (consume, không phải borrow-rồi-quên) |
-| `push(vec: Vector<String>, elem: String)` elem arg | elem | `[true,true]` | **TIÊU THỤ** | Ngoài phạm vi T0 này |
+| `insert(map: HashMap<Integer,String>, key, value: String)` value arg | value | `[true,true,true]` (container+key+value) | **TIÊU THỤ** | **Đo (T0 bổ sung, PC — LÀNH, xem dưới)** |
+| `push(vec: Vector<String>, elem: String)` elem arg | elem | `[true,true]` (container+elem) | **TIÊU THỤ** | **Đo (T0 bổ sung, PA/PB — LÀNH, xem dưới)** |
 
-**🔴 Ghi nợ mới (KHÔNG đo, ngoài phạm vi):** `is_empty(s)` chưa có con số riêng (code
-path y hệt `length`, độ tin cậy cao nhưng CHƯA đo — refuse-over-guess: không claim đã
-đo). `push`/`insert` với arg TIÊU THỤ (String làm phần tử Vector/key HashMap) chưa đo
-riêng khi arg là temp vô danh — lý thuyết (M3-zero + ownership chuyển vào container)
-nói KHÔNG rỉ nhưng chưa kiểm chứng bằng số cho ca temp-vô-danh cụ thể.
+**🔴 Ghi nợ còn treo (KHÔNG đo):** `is_empty(s)` chưa có con số riêng (code path y hệt
+`length`, độ tin cậy cao nhưng CHƯA đo — refuse-over-guess: không claim đã đo).
+`HashMap<String,V>` KEY arg (khác `HashMap<Integer,String>` VALUE arg vừa đo) chưa đo
+riêng — cùng lớp `arg_consumes:true` nhưng vị trí khác (key thay vì value), chưa kiểm
+chứng bằng số.
 
 **Phạm vi:** mặt trận RIÊNG, khác cơ chế (argument-lowering ownership gap, không phải
 Nullable/aggregate drop-glue), khác tầng so với `WO-INV-HeapNullable-Probe`. Tooth S3
 của WO đó dùng idiom `let n = v.name; length(n)` để CÔ LẬP câu hỏi Nullable(Struct)
 khỏi bug này — không né tránh, chỉ tách biến số.
 
-**CẤM đã sửa gì ở T0 này** — `triet-lower/src/lib.rs:2472-2479` và `emit_shim_call`
-GIỮ NGUYÊN, đúng lệnh "chỉ đo".
+---
+
+#### T0 BỔ SUNG — nhóm TIÊU THỤ (`push`/`insert`), O+G chặn cứng trước khi cho code
+
+**Câu hỏi:** temp vô danh (field-access hoặc literal) đưa thẳng vào một shim **TIÊU
+THỤ** (`arg_consumes: true` — `push`/`insert`) có LÀNH (container tự free đúng 1 lần),
+RỈ (không bao giờ vào container), hay DOUBLE-FREE?
+
+**Tooth:** `crates/triet-driver/tests/heap_shim_consuming_temp_counting.rs` (8 test).
+
+**Raw đo được** (`cargo test -p triet-driver --test heap_shim_consuming_temp_counting -- --test-threads=1 --nocapture`):
+```
+running 8 tests
+test pa_control_push_field_let_bound ... PA-ctrl (push field let-bound): FREE=1 ok
+test pa_push_field_access_inline ... PA (push field-access inline): FREE=1 ok
+test pb_control_push_literal_let_bound ... PB-ctrl (push literal let-bound): FREE=1 ok
+test pb_push_literal_inline ... PB (push literal inline): FREE=1 ok
+test pc_control_insert_field_let_bound ... PC-ctrl (insert field let-bound): FREE=1 ok
+test pc_insert_field_access_inline ... PC (insert field-access inline): FREE=1 ok
+test poison_double_on_pa_control_proves_tooth_is_live ... PA-ctrl POISON(double): FREE=2 ok
+test poison_leak_on_pa_control_proves_tooth_is_live ... PA-ctrl POISON(leak): FREE=0 ok
+test result: ok. 8 passed; 0 failed
+```
+
+| Shape | Inline (temp vô danh) | Let-bound control |
+|---|---|---|
+| `push(v, h.name)` — field-access element | FREE=1 | FREE=1 (`pa_control`) |
+| `push(v, "hello")` — literal element | FREE=1 | FREE=1 (`pb_control`) |
+| `insert(m, 1, h.name)` — field-access value | FREE=1 | FREE=1 (`pc_control`) |
+
+**Non-vacuous:** poison trên `PA-ctrl` (baseline sound = 1 free thật) — poison-leak → **0**;
+poison-double → **2**. Cả hai đổi đúng hướng.
+
+**⚖ KẾT LUẬN DỨT KHOÁT, THUẦN DỰA TRÊN SỐ: LÀNH.** Cả 3 shape × 2 biến thể (inline vs
+let-bound) = 6 con số, TẤT CẢ bằng nhau (1). Không có khác biệt nào giữa temp vô danh
+và local có tên — trái ngược hẳn với nhóm MƯỢN (nơi inline luôn thấp hơn let-bound
+đúng đủ số args). Cơ chế: cho shim `arg_consumes:true`, M3 zero-on-consume
+(`crates/triet-jit/src/mir_lower.rs:4717`) chạy dựa trên `args` của chính
+`CallDispatch` đó — không phụ thuộc `Ctx::push_owned` (không cần MIR `Drop` nào tồn tại
+để zero mới có tác dụng). Bản thân giá trị được COPY/MOVE vào bên trong container bởi
+shim Rust (`__triet_vector_push`/`__triet_hashmap_insert`), nên quyền sở hữu chuyển
+thật sự — bất kể ai đứng tên caller-side. **Nhóm tiêu thụ là CONTROL đúng nghĩa của WO
+lõi: fix chỉ cần chạm nhóm MƯỢN, không đụng nhóm này.**
+
+**Nợ còn treo (không đo trong T0 bổ sung này):** `HashMap<String,V>` với key TIÊU THỤ
+(khác value vừa đo) — cùng lớp `arg_consumes:true` nhưng khác vị trí, độ tin cậy cao
+theo cùng cơ chế (M3-zero không phân biệt vị trí arg) nhưng CHƯA đo riêng bằng số.
+
+**CẤM đã sửa gì ở T0 này** — `triet-lower/src/lib.rs:2472-2479`, `emit_shim_call`, và
+`Ctx::push_owned` GIỮ NGUYÊN, đúng lệnh "chỉ đo". "Poison ngược" (ép `push_owned` chạy
+cho shim tiêu thụ để chứng minh double-free reproducible) là hạng mục của WO LÕI
+(`WO-ShimTempOwnership`, chưa thi hành), không phải T0 đo này.
 
 ### ✅ ĐÓNG — **`WO-StructReturnRefuse` — POLICY GATE cho `Struct?` ở RETURN position** (O+G ký 2026-07-19, `e7aab8c`)
 Anh em thứ HAI của guard `nullable_enum_return_unsupported` — cùng lỗ **"match exact, quên `Nullable`"** ở `Ctx::new` (`crates/triet-lower/src/lib.rs`, quyết định `ReturnShape`): `let is_struct_return = matches!(ret, MirType::Struct(_))` không khớp `Nullable(Struct(_))` → trượt xuống `_ => ReturnShape::Scalar`. Thành viên thứ TƯ của họ bug "match exact, quên `Nullable`": ① `Enum?` param copy-in (`ccb8db3`) · ② `Struct?` param bare-read (`7d59b7c`) · ③ `Enum?` return-shape → refuse (WO trước) · ④ **`Struct?` return-shape → refuse (WO này)**.

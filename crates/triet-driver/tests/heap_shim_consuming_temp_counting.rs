@@ -132,6 +132,12 @@ fn pa_push_field_access_inline() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PA (push field-access inline): FREE={count}");
+    assert_eq!(
+        count, 1,
+        "T0 measured: LÀNH — push's consuming element arg frees exactly \
+         once (the container's own element-free) whether the source was an \
+         inline field-access temp or a let-bound local; SAME as PA-ctrl"
+    );
 }
 
 const SRC_PA_CONTROL: &str = "struct H { name: String }\n\
@@ -151,6 +157,7 @@ fn pa_control_push_field_let_bound() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PA-ctrl (push field let-bound): FREE={count}");
+    assert_eq!(count, 1, "T0 measured: sound baseline — frees exactly once");
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -172,6 +179,11 @@ fn pb_push_literal_inline() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PB (push literal inline): FREE={count}");
+    assert_eq!(
+        count, 1,
+        "T0 measured: LÀNH — inline literal element frees exactly once, \
+         SAME as PB-ctrl"
+    );
 }
 
 const SRC_PB_CONTROL: &str = "function main() -> Integer = {\n\
@@ -189,6 +201,7 @@ fn pb_control_push_literal_let_bound() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PB-ctrl (push literal let-bound): FREE={count}");
+    assert_eq!(count, 1, "T0 measured: sound baseline — frees exactly once");
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -212,6 +225,11 @@ fn pc_insert_field_access_inline() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PC (insert field-access inline): FREE={count}");
+    assert_eq!(
+        count, 1,
+        "T0 measured: LÀNH — insert's consuming value arg frees exactly \
+         once, SAME as PC-ctrl"
+    );
 }
 
 const SRC_PC_CONTROL: &str = "struct H { name: String }\n\
@@ -231,6 +249,7 @@ fn pc_control_insert_field_let_bound() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PC-ctrl (insert field let-bound): FREE={count}");
+    assert_eq!(count, 1, "T0 measured: sound baseline — frees exactly once");
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -262,4 +281,8 @@ fn poison_double_on_pa_control_proves_tooth_is_live() {
     assert_eq!(r, 0);
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("PA-ctrl POISON(double): FREE={count}");
+    assert_eq!(
+        count, 2,
+        "poison-double must read exactly 2x the healthy count (1 real free)"
+    );
 }
