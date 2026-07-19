@@ -1,22 +1,29 @@
-//! WO-LengthFastPathTempLeak T0 (O ✅ · G ✅, 2026-07-19) — is the leak found
-//! while building WO-INV-HeapNullable-Probe's S3 tooth (`length(h.name)`,
-//! FREE=0, RỈ CÂM) local to the hand-rolled `length()` fast path
-//! (`triet-lower/src/lib.rs:2472-2479`), or does it reproduce on the general
-//! SHIM-call argument path (`emit_shim_call`, e.g. `concat`/`contains`) too?
+//! WO-ShimTempOwnership (T0 as `WO-LengthFastPathTempLeak`, O ✅ · G ✅,
+//! 2026-07-19) — measured whether the leak found while building
+//! WO-INV-HeapNullable-Probe's S3 tooth (`length(h.name)`, FREE=0, RỈ CÂM)
+//! was local to the hand-rolled `length()` fast path
+//! (`triet-lower/src/lib.rs:2472-2479`), or reproduced on the general
+//! SHIM-call argument path (`emit_shim_call`, e.g. `concat`/`contains`) too.
 //!
-//! O's own probe (independent of this harness) measured 7 shapes and
-//! concluded the mechanism is NOT field-access-specific and NOT
-//! `length()`-specific: it is "argument-lowering produces an anonymous
-//! owned-heap temp (from a field-access move-out OR a string literal) that
-//! is never registered for scope-end Drop (`push_owned`), UNLESS the callee
-//! is a user function (which transfers ownership via the Call ABI + M3
-//! Deinit-tombstone) or the temp is bound through a named `let`." O could
-//! not measure the SHIM-call path directly — this harness's shim registry
-//! didn't include `__triet_string_concat`/`__triet_string_contains` yet
-//! (`Unsupported("shim '__triet_string_concat' not registered")`). This file
-//! closes that gap and gets the actual numbers.
+//! T0 verdict (measured, numbers only): RỈ CẢ MẢNG — every borrow-shim
+//! (`concat`, `contains`, `eq`) leaked identically whenever an argument was
+//! an anonymous owned-heap temp (field-access move-out OR string literal)
+//! used directly, not bound through `let`. Root cause: `Ctx::push_owned`
+//! was never called for such a temp, so no scope-end `Drop` was ever
+//! scheduled for it — UNLESS the callee was a user function (which
+//! transfers ownership via the Call ABI's `Deinit`/M3-tombstone, ADR-0042
+//! Q1) or the temp was bound through a named `let`.
 //!
-//! Shapes (SH-A/B/C, each with a fully-`let`-bound control):
+//! **FIXED** (this file, same commit as the fix): `emit_shim_call`
+//! (`triet-lower/src/lib.rs`) now registers `push_owned` for every argument
+//! the shim only BORROWS (`arg_consumes[i] == false`, or no
+//! `builtin_shim_meta` entry at all — `contains` — treated identically);
+//! `length()`'s owned-String fast path (which bypasses `emit_shim_call`
+//! entirely) got its own explicit `push_owned`. All 4 SH-*/SH-*-ctrl pairs
+//! below now read IDENTICAL counts — inline and let-bound are
+//! indistinguishable, which is the post-fix teeth this file pins.
+//!
+//! Shapes (SH-A/B/C/D, each with a fully-`let`-bound control):
 //!   SH-A: `concat("ab", "cd")`      — two LITERAL rvalue args (borrow-shim,
 //!         `arg_consumes: [false,false,false,false]` in `builtin_shim_meta`)
 //!   SH-B: `concat(h.name, "cd")`    — one FIELD-ACCESS + one LITERAL arg
@@ -24,7 +31,10 @@
 //!         with NO `builtin_shim_meta` entry at all (`contains` is absent
 //!         from the match in `crates/triet-mir/src/lib.rs`) — the M3
 //!         zero-on-consume loop in the JIT (`mir_lower.rs:4718`) doesn't
-//!         even run for it, by construction.
+//!         even run for it, by construction; `emit_shim_call`'s fix treats
+//!         a missing entry the same as an explicit all-`false` one.
+//!   SH-D: `eq(h.name, "world")`     — third independent shim, same profile
+//!         as `concat`.
 //!
 //! ⚠ RAM: run `--exact --test-threads=1` (process-global AtomicUsize and
 //! no-mangle shim — N7 fork-bomb hazard). `TEST_LOCK` Mutex serializes a
@@ -126,9 +136,10 @@ fn sha_concat_two_inline_literals() {
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("SH-A (concat inline-literal x2): FREE={count}");
     assert_eq!(
-        count, 1,
-        "T0 measured: only `r` frees (1); both literal args to concat leak \
-         (would be 3 if sound — see SH-A-ctrl below)"
+        count, 3,
+        "POST-FIX (WO-ShimTempOwnership): a, b, r all free (3) — the \
+         push_owned fix at emit_shim_call closes the leak on the two \
+         literal args to concat; matches SH-A-ctrl exactly"
     );
 }
 
@@ -173,9 +184,10 @@ fn shb_concat_field_plus_inline_literal() {
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("SH-B (concat field+inline-literal): FREE={count}");
     assert_eq!(
-        count, 1,
-        "T0 measured: only `r` frees (1); both h.name (field-access temp) \
-         and \"cd\" (literal temp) leak as concat args (would be 3 if sound)"
+        count, 3,
+        "POST-FIX (WO-ShimTempOwnership): h.name's temp, \"cd\"'s temp, and \
+         r all free (3) — matches SH-B-ctrl exactly, field-access source is \
+         no different from a literal source once push_owned is registered"
     );
 }
 
@@ -225,12 +237,13 @@ fn shc_contains_field_plus_inline_literal() {
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("SH-C (contains field+inline-literal): FREE={count}");
     assert_eq!(
-        count, 0,
-        "T0 measured: both h.name and \"ell\" leak as contains args (would be \
-         2 if sound — see SH-C-ctrl below). `contains` has NO builtin_shim_meta \
-         entry at all, yet the leak is identical to concat's (which DOES have \
-         an explicit all-false entry) — the meta table's presence/absence is \
-         irrelevant to this leak."
+        count, 2,
+        "POST-FIX (WO-ShimTempOwnership): both h.name's temp and \"ell\"'s \
+         temp free (2) — matches SH-C-ctrl exactly. `contains` has NO \
+         builtin_shim_meta entry at all; emit_shim_call's fix treats a \
+         missing entry identically to an explicit all-false one, per the WO \
+         mandate — the meta table's presence/absence is irrelevant to \
+         either the bug or the fix."
     );
 }
 
@@ -278,10 +291,10 @@ fn shd_eq_field_plus_inline_literal() {
     let count = STR_FREES.load(Ordering::SeqCst);
     eprintln!("SH-D (eq field+inline-literal): FREE={count}");
     assert_eq!(
-        count, 0,
-        "T0 measured: both h.name and \"world\" leak as eq args (would be 2 \
-         if sound — see SH-D-ctrl below). Third independent shim confirming \
-         the same pattern as concat/contains."
+        count, 2,
+        "POST-FIX (WO-ShimTempOwnership): both h.name's temp and \"world\"'s \
+         temp free (2) — matches SH-D-ctrl exactly, third independent shim \
+         confirming the fix is not concat/contains-specific either"
     );
 }
 
