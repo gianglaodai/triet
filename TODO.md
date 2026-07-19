@@ -66,7 +66,7 @@ mặt trận riêng, chạm vào ở WO này = REJECT.
 
 **Gate cuối WO này:** build 0 · test-fail 0 · fixtures 439 · clippy 0 · CLEAN.
 
-### 🔴 NỢ MỚI, ƯU TIÊN 1 — `WO-ShimTempOwnership` T0+T0-bổ-sung nộp (lịch sử tên: `WO-InlineFieldTempLeak` → `WO-LengthFastPathTempLeak` → **`WO-ShimTempOwnership`**, O+G ký WO lõi 2026-07-19 nhưng **CHƯA thi hành code** — còn chặn bởi phép đo nhóm tiêu thụ)
+### 🔨 `WO-ShimTempOwnership` — CODE ĐÃ VÁ, CHỜ O/G PHÁN QUYẾT 1 PHÁT HIỆN (lịch sử tên: `WO-InlineFieldTempLeak` → `WO-LengthFastPathTempLeak` → **`WO-ShimTempOwnership`**)
 
 **Câu hỏi quyết định:** RỈ CÂM đo được ở `length(h.name)` (FREE=0, giá trị đúng, exit 0)
 có **cục bộ tại fast-path `length()`** (`crates/triet-lower/src/lib.rs:2472-2479`), hay
@@ -206,6 +206,116 @@ theo cùng cơ chế (M3-zero không phân biệt vị trí arg) nhưng CHƯA đ
 `Ctx::push_owned` GIỮ NGUYÊN, đúng lệnh "chỉ đo". "Poison ngược" (ép `push_owned` chạy
 cho shim tiêu thụ để chứng minh double-free reproducible) là hạng mục của WO LÕI
 (`WO-ShimTempOwnership`, chưa thi hành), không phải T0 đo này.
+
+---
+
+#### THI HÀNH — code đã vá (O+G duyệt phạm vi rộng, `emit_shim_call` chokepoint)
+
+**Diff cốt lõi** (`crates/triet-lower/src/lib.rs`):
+1. `emit_shim_call` — TRƯỚC khi emit `CallDispatch`, tra
+   `triet_mir::builtin_shim_meta(shim_name)`; với mỗi arg: nếu
+   `arg_consumes[i] == false` **hoặc KHÔNG có entry** (coi như mượn) →
+   `c.push_owned(args[i])`. Nếu `arg_consumes[i] == true` → bỏ qua tuyệt đối.
+2. Fast-path `length()` (`:2489-2517`, bypass hoàn toàn `emit_shim_call`) —
+   thêm `c.push_owned(arg)` trong nhánh `MirType::String` (luôn là vị trí MƯỢN).
+
+**Logic phân biệt mượn/tiêu thụ:** dựa 100% vào
+`builtin_shim_meta().arg_consumes[i]` — `false`/thiếu entry = mượn = đăng ký
+(`push_owned`, idempotent, an toàn khi gọi lại trên local đã có tên qua
+`Stmt::Let`); `true` = tiêu thụ = cấm đăng ký (đã chuyển sở hữu sang
+shim/container, đăng ký thêm ở đây là double-free tiềm tàng THEO LÝ THUYẾT —
+xem phát hiện poison-ngược bên dưới, thực tế có một lớp phòng thủ RIÊNG).
+
+**Bảng FREE-count đầy đủ (mọi shape, raw đã chạy):**
+
+| Nhóm | Shape | Inline | Let-bound control |
+|---|---|---|---|
+| Fast-path | `length(h.name)` | 1 | 1 |
+| Fast-path (đối chứng, xem WO-INV-HeapNullable-Probe S3) | `let n=v.name; length(n)` | — | 1 |
+| Shim mượn | `concat("ab","cd")` | 3 | 3 |
+| Shim mượn | `concat(h.name,"cd")` | 3 | 3 |
+| Shim mượn | `contains(h.name,"ell")` (no meta entry) | 2 | 2 |
+| Shim mượn | `eq(h.name,"world")` | 2 | 2 |
+| Shim mượn (RĂNG MỚI) | `remove(m,"k")` key vô danh, map rỗng | 1 | 1 |
+| Shim mượn (RĂNG MỚI) | `get(m,"k")` key vô danh, map rỗng | 1 | 1 |
+| Control tiêu thụ | `push(v,h.name)` | 1 | 1 |
+| Control tiêu thụ | `push(v,"hello")` | 1 | 1 |
+| Control tiêu thụ | `insert(m,1,h.name)` | 1 | 1 |
+
+Cả 8 shape mượn: inline == let-bound (đã vá xong gap). Cả 6 phép đo tiêu thụ
+(3 shape × 2 biến thể): giữ nguyên 1, không đổi so với trước fix.
+
+**RAW poison CHIỀU 1 — gỡ fix hoàn toàn** (`cp` snapshot md5 `1ce93a2ae7445ea85e64a7166a528a83` trước/sau, khôi phục khớp):
+```
+sha_concat_two_inline_literals ... FREE=1 (kỳ vọng post-fix 3) — FAILED, đúng con số rỉ cũ
+shb_concat_field_plus_inline_literal ... FREE=1 (kỳ vọng 3) — FAILED
+shc_contains_field_plus_inline_literal ... FREE=0 (kỳ vọng 2) — FAILED
+shd_eq_field_plus_inline_literal ... FREE=0 (kỳ vọng 2) — FAILED
+get_key_literal_inline ... FREE=0 (kỳ vọng 1) — FAILED
+remove_key_literal_inline ... FREE=0 (kỳ vọng 1) — FAILED
+-- mọi *_control (let-bound) VẪN XANH, không đổi (push_owned qua Stmt::Let
+   không phụ thuộc fix này) --
+```
+Đặc hiệu tuyệt đối: gỡ fix → CHỈ inline-shape rơi lại đúng số rỉ đã đo ở T0, control không suy suyển.
+
+**RAW poison CHIỀU 2 — POISON NGƯỢC (ép `push_owned` cho CẢ nhóm tiêu thụ)** —
+KẾT QUẢ KHÔNG NHƯ DỰ ĐOÁN, xem mục 🔴 phán quyết chờ ngay dưới:
+```
+pa_control_push_field_let_bound ... FREE=1 (kỳ vọng double-free -> 2, ĐO ĐƯỢC 1)
+pb_control_push_literal_let_bound ... FREE=1 (kỳ vọng 2, ĐO ĐƯỢC 1)
+pc_control_insert_field_let_bound ... FREE=1 (kỳ vọng 2, ĐO ĐƯỢC 1)
+-- cả 6 control tiêu thụ: KHÔNG double-free, giá trị + FREE-count như healthy --
+```
+Poison áp dụng: xóa nhánh `if !consumed { push_owned }` trong `emit_shim_call`,
+thay bằng `for &arg in args.iter() { c.push_owned(arg); }` VÔ ĐIỀU KIỆN (bất
+kể `arg_consumes`). `cp` snapshot trước (md5 `1ce93a2ae7445ea85e64a7166a528a83`) →
+poison (md5 `07548a170e39418c5b09ce8a40b148db`) → khôi phục (md5 khớp lại
+`1ce93a2ae7445ea85e64a7166a528a83`).
+
+**🔴 PHÁN QUYẾT CHỜ O/G — poison ngược KHÔNG NỔ:** ép `push_owned` cho args
+tiêu thụ (`push`/`insert`) KHÔNG gây double-free — FREE-count vẫn đúng 1,
+không vọt lên 2. Root cause (đọc mã, không suy đoán): **M3 zero-on-consume**
+(`crates/triet-jit/src/mir_lower.rs:4717-4718`, `if let Some(meta) =
+builtin_shim_meta(callee_name) { for i,a ... if arg_consumes[i] { zero } }`)
+là một lớp phòng thủ RIÊNG, chạy Ở TẦNG JIT hoàn toàn độc lập với việc lowerer
+CÓ emit `Statement::Drop` hay không — nó zero thẳng biến/StackSlot Cranelift
+của MỌI arg tiêu thụ ngay sau `CallDispatch`, bất kể MIR có lên lịch Drop cho
+local đó không. Vì vậy: dù `push_owned` bị ép chạy sai (đăng ký Drop cho một
+arg đã bị tiêu thụ), M3 đã zero giá trị đó TRƯỚC KHI Drop (giờ đọc thấy
+NULL_SENTINEL/0) chạy tới — Drop-trên-giá-trị-đã-zero là no-op, không free
+gì thêm. **Ý nghĩa:** nhánh `if !consumed { push_owned }` trong
+`emit_shim_call` là thiết kế ĐÚNG và TRUNG THỰC (giữ MIR-level ownership khớp
+với thực tế JIT, không dựa dẫm M3 như một crutch) — nhưng nó KHÔNG phải lớp
+phòng thủ chống double-free DUY NHẤT/quyết định cho nhóm tiêu thụ; M3-zero
+(tiền-tồn-tại, không phải do WO này thêm) mới là cái thực sự chặn double-free
+ở tầng JIT bất kể lowerer quyết định gì. Đây KHÔNG phải "khóa giả" theo nghĩa
+vô dụng — nó vẫn đúng và cần thiết để giữ MIR sạch — nhưng KHÔNG độc lập
+load-bearing chống double-free như dự đoán ban đầu. **D KHÔNG tự kết luận WO
+đóng hay mở** — chờ O/G phán quyết ý nghĩa của phát hiện này.
+
+**Oracle cũ bị fix làm lộ leak khác — đã sửa, có bằng chứng pointer-identity:**
+`hashmap_string_key_struct_value_remove_frees_key_and_value`
+(`typed_hashmap_counting.rs:1124`) oracle `2 → 3`. O verify bằng probe
+nhận-dạng-con-trỏ (dedup): `frees=3 | distinct=3 | dup=0` — KHÔNG double-free,
+là leak thật của `remove`'s search-key literal, cùng lớp bug với
+concat/contains/eq, giờ đã đóng theo chính cơ chế chokepoint. Comment mới tại
+test giữ lịch sử + cảnh báo chống lùi.
+
+**Răng mới cắm cho bán kính mở rộng:**
+`crates/triet-driver/tests/heap_shim_hashmap_key_borrow_counting.rs` (8 test)
+— `remove`-key và `get`-key trên `HashMap<String,Integer>` RỖNG (cô lập khỏi
+resident-key), mỗi nhóm có inline + control let-bound + 2 poison. **`get`-key
+đo ra ĐÚNG dự đoán (1/1), KHÔNG có bất ngờ** — không cần dừng lại báo cáo cho
+riêng phần này.
+
+**Full `cargo test --workspace` sau khi vá + oracle fix + răng mới:** 0 FAILED
+(toàn bộ xanh). RAW GATE: `0·0·439·0 CLEAN`.
+
+**Nợ còn treo (chưa đo, ngoài phạm vi thi hành lần này):** `is_empty(s)` chưa
+có con số riêng (code path y hệt `length`, độ tin cậy cao, CHƯA đo).
+`HashMap<String,V>` KEY vị trí trong `insert` (tiêu thụ, khác VALUE đã đo ở
+`push`/`insert` value) chưa đo riêng bằng số — theo cùng lý luận M3-zero
+(không phân biệt vị trí arg) dự đoán LÀNH nhưng CHƯA kiểm chứng.
 
 ### ✅ ĐÓNG — **`WO-StructReturnRefuse` — POLICY GATE cho `Struct?` ở RETURN position** (O+G ký 2026-07-19, `e7aab8c`)
 Anh em thứ HAI của guard `nullable_enum_return_unsupported` — cùng lỗ **"match exact, quên `Nullable`"** ở `Ctx::new` (`crates/triet-lower/src/lib.rs`, quyết định `ReturnShape`): `let is_struct_return = matches!(ret, MirType::Struct(_))` không khớp `Nullable(Struct(_))` → trượt xuống `_ => ReturnShape::Scalar`. Thành viên thứ TƯ của họ bug "match exact, quên `Nullable`": ① `Enum?` param copy-in (`ccb8db3`) · ② `Struct?` param bare-read (`7d59b7c`) · ③ `Enum?` return-shape → refuse (WO trước) · ④ **`Struct?` return-shape → refuse (WO này)**.
