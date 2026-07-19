@@ -66,7 +66,7 @@ mặt trận riêng, chạm vào ở WO này = REJECT.
 
 **Gate cuối WO này:** build 0 · test-fail 0 · fixtures 439 · clippy 0 · CLEAN.
 
-### 🔨 `WO-ShimTempOwnership` — CODE ĐÃ VÁ, CHỜ O/G PHÁN QUYẾT 1 PHÁT HIỆN (lịch sử tên: `WO-InlineFieldTempLeak` → `WO-LengthFastPathTempLeak` → **`WO-ShimTempOwnership`**)
+### ✅ ĐÓNG — `WO-ShimTempOwnership` (O+G ký 2026-07-19; lịch sử tên: `WO-InlineFieldTempLeak` → `WO-LengthFastPathTempLeak` → **`WO-ShimTempOwnership`**)
 
 **Câu hỏi quyết định:** RỈ CÂM đo được ở `length(h.name)` (FREE=0, giá trị đúng, exit 0)
 có **cục bộ tại fast-path `length()`** (`crates/triet-lower/src/lib.rs:2472-2479`), hay
@@ -272,26 +272,29 @@ kể `arg_consumes`). `cp` snapshot trước (md5 `1ce93a2ae7445ea85e64a7166a528
 poison (md5 `07548a170e39418c5b09ce8a40b148db`) → khôi phục (md5 khớp lại
 `1ce93a2ae7445ea85e64a7166a528a83`).
 
-**🔴 PHÁN QUYẾT CHỜ O/G — poison ngược KHÔNG NỔ:** ép `push_owned` cho args
-tiêu thụ (`push`/`insert`) KHÔNG gây double-free — FREE-count vẫn đúng 1,
-không vọt lên 2. Root cause (đọc mã, không suy đoán): **M3 zero-on-consume**
-(`crates/triet-jit/src/mir_lower.rs:4717-4718`, `if let Some(meta) =
-builtin_shim_meta(callee_name) { for i,a ... if arg_consumes[i] { zero } }`)
-là một lớp phòng thủ RIÊNG, chạy Ở TẦNG JIT hoàn toàn độc lập với việc lowerer
-CÓ emit `Statement::Drop` hay không — nó zero thẳng biến/StackSlot Cranelift
-của MỌI arg tiêu thụ ngay sau `CallDispatch`, bất kể MIR có lên lịch Drop cho
-local đó không. Vì vậy: dù `push_owned` bị ép chạy sai (đăng ký Drop cho một
-arg đã bị tiêu thụ), M3 đã zero giá trị đó TRƯỚC KHI Drop (giờ đọc thấy
-NULL_SENTINEL/0) chạy tới — Drop-trên-giá-trị-đã-zero là no-op, không free
-gì thêm. **Ý nghĩa:** nhánh `if !consumed { push_owned }` trong
-`emit_shim_call` là thiết kế ĐÚNG và TRUNG THỰC (giữ MIR-level ownership khớp
-với thực tế JIT, không dựa dẫm M3 như một crutch) — nhưng nó KHÔNG phải lớp
-phòng thủ chống double-free DUY NHẤT/quyết định cho nhóm tiêu thụ; M3-zero
-(tiền-tồn-tại, không phải do WO này thêm) mới là cái thực sự chặn double-free
-ở tầng JIT bất kể lowerer quyết định gì. Đây KHÔNG phải "khóa giả" theo nghĩa
-vô dụng — nó vẫn đúng và cần thiết để giữ MIR sạch — nhưng KHÔNG độc lập
-load-bearing chống double-free như dự đoán ban đầu. **D KHÔNG tự kết luận WO
-đóng hay mở** — chờ O/G phán quyết ý nghĩa của phát hiện này.
+**⚖ CHỐT (O tự verify cả hai chiều, 2026-07-19) — poison ngược KHÔNG NỔ khi
+M3 còn bật, nhưng M3 mới là lớp chịu lực thật:**
+
+| M3 | phân biệt `!consumed` trong `emit_shim_call` | Kết quả đo |
+|---|---|---|
+| BẬT | ĐÚNG (như đã vá) | FREE=1, sound |
+| BẬT | BỎ (poison ngược của D) | FREE=1 — **không nổ** |
+| **TẮT** | ĐÚNG (giữ nguyên fix) | **`free(): double free detected in tcache 2`, SIGABRT** |
+
+**M3 zero-on-consume** (`crates/triet-jit/src/mir_lower.rs:4717-4718`) mới là
+lớp chịu lực thật chống double-free cho nhóm tiêu thụ — tắt nó đi, double-free
+xảy ra NGAY CẢ KHI nhánh `!consumed` của `emit_shim_call` hoàn toàn đúng.
+Nhánh đó **không phải khóa an toàn độc lập** — nó đúng về ngữ nghĩa (giữ
+MIR-level ownership khớp thực tế) và sẽ TRỞ THÀNH lớp chịu lực nếu M3 từng bị
+refactor/gỡ, nhưng hiện tại nó bị M3 CHE KHUẤT.
+
+**Đáy vấn đề (đọc mã hai tầng, không phải hai cơ chế độc lập):** cả
+`emit_shim_call`'s `push_owned` decision LẪN JIT's M3 zero decision đều đọc
+**CÙNG MỘT** bảng `builtin_shim_meta().arg_consumes` — không phải
+defense-in-depth (hai khóa độc lập, một cái đủ), mà là **MỘT quyết định áp
+hai tầng**. Một entry khai láo phá **CẢ HAI** lớp cùng lúc — SPOF, xem mục
+nợ riêng ngay dưới. Comment trung thực đã ghi tại `emit_shim_call`
+(`crates/triet-lower/src/lib.rs`).
 
 **Oracle cũ bị fix làm lộ leak khác — đã sửa, có bằng chứng pointer-identity:**
 `hashmap_string_key_struct_value_remove_frees_key_and_value`
@@ -316,6 +319,38 @@ có con số riêng (code path y hệt `length`, độ tin cậy cao, CHƯA đo)
 `HashMap<String,V>` KEY vị trí trong `insert` (tiêu thụ, khác VALUE đã đo ở
 `push`/`insert` value) chưa đo riêng bằng số — theo cùng lý luận M3-zero
 (không phân biệt vị trí arg) dự đoán LÀNH nhưng CHƯA kiểm chứng.
+
+**🔴 NỢ MỚI — `builtin_shim_meta().arg_consumes` là SPOF cho HAI TẦNG (G đặt
+tên, 2026-07-19):** bảng `crates/triet-mir/src/lib.rs:1076` được đọc bởi CẢ
+`emit_shim_call`'s `push_owned` decision (lowerer) LẪN M3 zero-on-consume
+(`crates/triet-jit/src/mir_lower.rs:4717-4718`, JIT) — không phải hai lớp
+độc lập canh cùng một bất biến, mà là MỘT quyết định (đúng/sai của một
+entry) áp lên cả hai tầng cùng lúc. **Không có răng nào canh tính đúng đắn
+của chính bảng này** — mọi tooth hiện có canh HÀNH VI (FREE-count) cho các
+shim CỤ THỂ đã đo (concat/eq/contains/length/push/insert/remove-key/get-key),
+không canh METADATA tổng quát.
+
+Bãi mìn cụ thể nếu một entry tương lai khai láo:
+- Khai **mượn** (`false`) nhưng shim thực **tiêu thụ** → cả `push_owned`
+  (thiếu đăng ký sai hướng — thực ra đây là hướng ĐÚNG vì shim tự lo) VÀ M3
+  (không zero) đều bỏ sót cùng kiểu — có thể LEAK hoặc miscompile tùy chi
+  tiết shim, câm ở tầng giá trị.
+- Khai **tiêu thụ** (`true`) nhưng shim thực **mượn** → `push_owned` bị bỏ
+  qua sai (arg cần Drop lại không được đăng ký) VÀ M3 zero nhầm một giá trị
+  caller còn cần dùng → LEAK (không ai free) hoặc corrupt use-after-zero,
+  câm ở tầng giá trị, không crash ngay.
+- `contains` (và bất kỳ shim tương lai nào) **không có entry** → rơi vào mặc
+  định "mượn" ở CẢ HAI TẦNG (`emit_shim_call`'s `is_some_and` + M3's
+  `if let Some(meta)`) — đúng cho `contains` hiện tại (đã đo, LÀNH), nhưng
+  là mặc định NGẦM, không phải khai báo tường minh; một shim tiêu thụ tương
+  lai quên đăng ký entry sẽ ÂM THẦM rơi vào "mượn" sai.
+
+**Hướng tương lai (G nêu, chưa làm):** unit test quét TOÀN BỘ
+`builtin_shim_meta` (mọi tên shim đã đăng ký trong cả `crates/triet-lower`
+lẫn `crates/triet-jit`), đối chiếu từng `arg_consumes[i]` với chữ ký Rust
+thật của shim (arg đó có thực sự được giữ lại/nhân bản bên trong container
+hay không) — chứng minh không entry nào khai láo, thay vì tin tưởng từng
+entry được viết đúng tay.
 
 ### ✅ ĐÓNG — **`WO-StructReturnRefuse` — POLICY GATE cho `Struct?` ở RETURN position** (O+G ký 2026-07-19, `e7aab8c`)
 Anh em thứ HAI của guard `nullable_enum_return_unsupported` — cùng lỗ **"match exact, quên `Nullable`"** ở `Ctx::new` (`crates/triet-lower/src/lib.rs`, quyết định `ReturnShape`): `let is_struct_return = matches!(ret, MirType::Struct(_))` không khớp `Nullable(Struct(_))` → trượt xuống `_ => ReturnShape::Scalar`. Thành viên thứ TƯ của họ bug "match exact, quên `Nullable`": ① `Enum?` param copy-in (`ccb8db3`) · ② `Struct?` param bare-read (`7d59b7c`) · ③ `Enum?` return-shape → refuse (WO trước) · ④ **`Struct?` return-shape → refuse (WO này)**.

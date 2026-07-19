@@ -1495,9 +1495,47 @@ fn lower_type_simple(arena: &Arena, id: TypeId, c: &Ctx) -> MirType {
 /// Args where `arg_consumes[i] == true` (the shim TAKES ownership — e.g.
 /// `push`/`insert`) are deliberately SKIPPED: the shim itself transfers the
 /// value into a live container, so nothing here should ever free it — doing
-/// so would double-free (measured LÀNH/sound already without this,
+/// so would double-free IN THEORY (measured LÀNH/sound already without this,
 /// `heap_shim_consuming_temp_counting.rs` — this is the control group this
 /// fix must not touch).
+///
+/// ⚠️ HONESTY NOTE (O+G, 2026-07-19) — this `!consumed` branch is CURRENTLY
+/// MASKED, not independently load-bearing: the JIT's own M3 zero-on-consume
+/// pass (`crates/triet-jit/src/mir_lower.rs:4717-4718`) ALSO reads
+/// `builtin_shim_meta(callee_name).arg_consumes` and unconditionally zeroes
+/// every consumed arg's Cranelift variable/StackSlot right after the
+/// `CallDispatch`, regardless of whether the lowerer scheduled a `Drop` for
+/// it. Measured both ways: with M3 ON, deleting this `!consumed` check
+/// entirely (registering `push_owned` for EVERY arg, consumed or not) still
+/// reads FREE=1 (no double-free — M3 already zeroed the value, so the
+/// wrongly-scheduled `Drop` is a silent no-op). With M3 turned OFF, keeping
+/// this `!consumed` check exactly as written STILL double-frees
+/// (`free(): double free detected in tcache 2`, SIGABRT) — because this
+/// branch alone does not zero anything; it only decides whether to
+/// SCHEDULE a `Drop`, and a correctly-skipped schedule is not what stops
+/// the shim's OWN internal free from colliding with a stale caller-side
+/// pointer once M3 is gone.
+///
+/// This is NOT textbook defense-in-depth (two independent checks, either
+/// one sufficient alone) — it is ONE metadata table
+/// (`builtin_shim_meta().arg_consumes`) read by TWO layers (this
+/// `push_owned` decision here, M3's zero decision in the JIT) that make
+/// DIFFERENT kinds of mistakes if the table lies: an entry that claims
+/// BORROW when the shim actually CONSUMES leaks (this layer under-registers
+/// `push_owned`, AND M3 under-zeroes — both miss the same way); an entry
+/// that claims CONSUME when the shim actually BORROWS double-frees (this
+/// layer under-registers correctly by skipping, but M3 zeroes a value the
+/// caller still needs, corrupting later use — or in the caller-still-drops
+/// direction, this layer's skip PLUS a real free-on-return collide). The
+/// table is a single point of failure for BOTH layers, not two
+/// independent locks. No test currently canaries `arg_consumes` itself for
+/// correctness against the real shim signatures — see the `TODO.md` debt
+/// entry (`builtin_shim_meta` SPOF) opened alongside this note. Keep this
+/// branch (it is semantically correct — MIR-level ownership should track
+/// reality even when a lower layer happens to also cover the failure mode
+/// today, and it becomes the ONLY defense if M3 is ever refactored away),
+/// but do not describe it in future comments as an independent safety net
+/// until a dedicated test proves it fires with M3 disabled.
 fn emit_shim_call(
     c: &mut Ctx,
     shim_name: &str,
