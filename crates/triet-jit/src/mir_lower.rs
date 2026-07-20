@@ -6902,6 +6902,138 @@ mod tests {
         );
     }
 
+    // ── WO-4 B1: ty_total_size Nullable(Struct)/Nullable(Enum) teeth ──
+
+    /// Control: a bare (non-nullable) `Struct` reports exactly `total_size`
+    /// — no tag word. Pins the pre-existing arm so the `Nullable` arm below
+    /// can be compared against it.
+    #[test]
+    fn ty_total_size_bare_struct_is_total_size() {
+        let mut b = MirBuilder::new("dummy", MirType::Integer);
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "P",
+            &[
+                ("x".to_string(), MirType::Integer, 8, 8),
+                ("y".to_string(), MirType::Integer, 8, 8),
+            ],
+        ));
+        let bb = b.new_block();
+        let r = b.new_local();
+        b.push(bb, storage_live(r));
+        b.push(bb, const_int(r, 0));
+        b.set_terminator(bb, return_(vec![r]));
+        let body = b.build(bb);
+
+        let layout_size = body
+            .struct_layouts
+            .iter()
+            .find(|l| l.name == "P")
+            .unwrap()
+            .total_size;
+        assert_eq!(
+            JitContext::ty_total_size(&body, &MirType::Struct("P".to_string())),
+            layout_size
+        );
+    }
+
+    /// Control: a bare (non-nullable) `Enum` reports exactly `total_size`.
+    #[test]
+    fn ty_total_size_bare_enum_is_total_size() {
+        let mut b = MirBuilder::new("dummy", MirType::Integer);
+        b.add_enum_layout(triet_mir::EnumLayout::compute(
+            "U",
+            &[
+                ("A".to_string(), 0, None),
+                ("B".to_string(), 1, Some((MirType::Integer, 8, 8, vec![]))),
+            ],
+        ));
+        let bb = b.new_block();
+        let r = b.new_local();
+        b.push(bb, storage_live(r));
+        b.push(bb, const_int(r, 0));
+        b.set_terminator(bb, return_(vec![r]));
+        let body = b.build(bb);
+
+        let layout_size = body
+            .enum_layouts
+            .iter()
+            .find(|l| l.name == "U")
+            .unwrap()
+            .total_size;
+        assert_eq!(
+            JitContext::ty_total_size(&body, &MirType::Enum("U".to_string())),
+            layout_size
+        );
+    }
+
+    /// WO-4 B1: `Nullable(Struct)` MUST be `total_size + 8` (tag@0,
+    /// fields@8.., ADR-0076) — the two-word tag is a real byte cost on top
+    /// of the bare struct's fields. Poison (drop the `+ 8`, or route
+    /// `Nullable(Struct)` through the flat `_ => 8` arm) -> this test goes
+    /// red (asserts a DIFFERENT value than the bare-struct control above).
+    #[test]
+    fn ty_total_size_nullable_struct_is_total_size_plus_tag() {
+        let mut b = MirBuilder::new("dummy", MirType::Integer);
+        b.add_struct_layout(triet_mir::StructLayout::compute(
+            "P",
+            &[
+                ("x".to_string(), MirType::Integer, 8, 8),
+                ("y".to_string(), MirType::Integer, 8, 8),
+            ],
+        ));
+        let bb = b.new_block();
+        let r = b.new_local();
+        b.push(bb, storage_live(r));
+        b.push(bb, const_int(r, 0));
+        b.set_terminator(bb, return_(vec![r]));
+        let body = b.build(bb);
+
+        let bare = JitContext::ty_total_size(&body, &MirType::Struct("P".to_string()));
+        let nullable = JitContext::ty_total_size(
+            &body,
+            &MirType::Nullable(Box::new(MirType::Struct("P".to_string()))),
+        );
+        assert_eq!(
+            nullable,
+            bare + 8,
+            "Struct? must cost exactly +8 bytes (the tag word) over the bare struct"
+        );
+    }
+
+    /// WO-4 B1: `Nullable(Enum)` MUST equal the bare enum's `total_size`
+    /// EXACTLY — the disc-niche reuses the enum's own discriminant slot as
+    /// the null marker, so there is NO extra tag byte (asymmetric with
+    /// `Struct?` above — this is the whole point of the two separate arms).
+    /// Poison (add a `+ 8` here, or collapse both arms into one) -> this
+    /// test goes red.
+    #[test]
+    fn ty_total_size_nullable_enum_equals_bare_enum_no_extra_tag() {
+        let mut b = MirBuilder::new("dummy", MirType::Integer);
+        b.add_enum_layout(triet_mir::EnumLayout::compute(
+            "U",
+            &[
+                ("A".to_string(), 0, None),
+                ("B".to_string(), 1, Some((MirType::Integer, 8, 8, vec![]))),
+            ],
+        ));
+        let bb = b.new_block();
+        let r = b.new_local();
+        b.push(bb, storage_live(r));
+        b.push(bb, const_int(r, 0));
+        b.set_terminator(bb, return_(vec![r]));
+        let body = b.build(bb);
+
+        let bare = JitContext::ty_total_size(&body, &MirType::Enum("U".to_string()));
+        let nullable = JitContext::ty_total_size(
+            &body,
+            &MirType::Nullable(Box::new(MirType::Enum("U".to_string()))),
+        );
+        assert_eq!(
+            nullable, bare,
+            "Enum? must NOT add a tag byte — the disc-niche IS the null marker"
+        );
+    }
+
     // ── Pipeline tests ────────────────────────────
 
     /// Compile and run `abs_diff`: `abs_diff(10, 3) == 7`.
