@@ -1,0 +1,22 @@
+// EXPECT: 1
+// WO-2 Lát A T4 (ADR-0065 §14.6, 2026-07-20): `Struct?` in RETURN position,
+// PRESENT arm, field NOT read at all (`~+ v => 1`, `v` unused). Pre-fix
+// this exact shape measured "1 — correct BY LUCK" (§14.2): the match's
+// tag-check happened to read a non-MIN bit pattern from whatever the
+// (unfixed) scalar-shaped return slot held, so the present arm fired for
+// the wrong reason even though no field was ever touched. This fixture is
+// a regression guard against a FALSE-GREEN: after this WO it must still
+// return 1, but now because a real `tag@0 == +1` was written (case 2
+// Widen), not because uninitialized garbage happened to be non-MIN.
+struct P { x: Integer, y: Integer }
+
+function make() -> P? {
+    return ~+ P { x: 40, y: 2 };
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => -1,
+    };
+}

@@ -1,0 +1,22 @@
+// EXPECT: 40
+// WO-2 Lát A T1 (ADR-0065 §14.6, 2026-07-20): `Struct?` in RETURN position,
+// PRESENT arm, a SINGLE field read (`v.x`, not `v.x + v.y`). Distinct from
+// T3 (fixture 438, both fields summed): pre-fix measured (§14.2), a
+// single-field read returned garbage ADDRESS-SHAPED bits ("rác câm", the
+// ROOT failure mode) without necessarily overflowing ADR-0044's range
+// check — the SIGILL 132 T3 catches is only the loud secondary symptom
+// when TWO garbage words are summed past the trap threshold. A single
+// garbage word alone can silently pass as a "plausible" wrong value, so
+// this needs its own precise-value oracle, not just "did it crash".
+struct P { x: Integer, y: Integer }
+
+function make() -> P? {
+    return ~+ P { x: 40, y: 2 };
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => v.x,
+        ~0 => -1,
+    };
+}

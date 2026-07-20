@@ -1,0 +1,22 @@
+// EXPECT: -1
+// WO-2 Lát A T2 (ADR-0065 §14.6, 2026-07-20): `Struct?` in RETURN position,
+// NULL arm. Was a negative fixture pinning the temporary POLICY GATE
+// (WO-StructReturnRefuse, 2026-07-19, `nullable_struct_return_unsupported`)
+// shut; that gate is now REPLACED by full-SRET for Copy-only `Struct?`
+// return (ADR-0065 §14, this WO) — `P{x,y}` is all-scalar Copy, so this
+// shape now runs instead of refusing. Pre-fix measured (§14.2): the `~0`
+// return read back as the WRONG present value (silent, exit 0, match hit
+// the `~+` arm instead of `~0` — câm, "nhánh null chết"). EXPECT -1 proves
+// the null arm is now reachable and distinguishable from present.
+struct P { x: Integer, y: Integer }
+
+function make() -> P? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => -1,
+    };
+}

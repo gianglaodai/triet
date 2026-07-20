@@ -2371,9 +2371,31 @@ impl JitContext {
                             JitError::Unsupported(format!("struct layout not found: {struct_name}"))
                         })?;
                     let align_shift = u32_to_u8(layout.alignment.ilog2());
+                    // ADR-0065 §14 Amend (WO-2 Lát A, chốt #8 dependency,
+                    // 2026-07-20): a call-site sret buffer for a
+                    // `Struct?`-returning function (`triet-lower/src/lib.rs`
+                    // `Expr::Call`, `is_fat_ret`) is allocated via a real
+                    // `StructAlloc` statement whose `dest` is typed
+                    // `Nullable(Struct)` in `body.local_decls` — unlike the
+                    // fallback Lát 2 loop further below (which skips locals
+                    // already registered here), THIS site never checked
+                    // nullability and always sized the bare `total_size`.
+                    // Without the +8 tag-word, the callee's Widen/WholeCopy
+                    // taxonomy case (`nullable_struct_taxonomy`) writes N+8
+                    // bytes into an N-byte buffer — an 8-byte stack overflow
+                    // onto the caller's frame, not merely a wrong value.
+                    // Mirrors the same `is_nullable` size branch the Lát 2
+                    // loop already uses (`:2477-2481` below).
+                    let is_nullable_dest =
+                        matches!(body.local_decls[dest.0].ty, MirType::Nullable(_));
+                    let size = if is_nullable_dest {
+                        layout.total_size + 8
+                    } else {
+                        layout.total_size
+                    };
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
-                        usize_to_u32(layout.total_size),
+                        usize_to_u32(size),
                         align_shift,
                     ));
                     self.struct_slots.insert(*dest, (slot, layout.clone()));

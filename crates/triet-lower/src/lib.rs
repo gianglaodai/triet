@@ -129,45 +129,35 @@ impl LowerError {
         }
     }
 
-    /// P0-sibling gap #2 (WO-StructReturnRefuse, O+G mandate, 2026-07-19):
-    /// same hole as `nullable_enum_return_unsupported` above, one type
-    /// wider. `Nullable(Struct)` does not match `MirType::Struct` below
-    /// (`is_struct_return`), so it silently fell through to
-    /// `ReturnShape::Scalar` untouched. Measured on `768fc8e` (T0, this WO):
-    /// `return ~0` for `P?` reads back as the WRONG present value (silent,
-    /// exit 0); `return ~+ P{..}` with one field read returns garbage
-    /// address-shaped bits; reading two fields traps SIGILL 132 (garbage +
-    /// garbage overflow, ADR-0044); a heap-bearing field (`struct H { name:
-    /// String }`) aborts SIGABRT 134 on drop of an uninitialized pointer
-    /// (`free(): invalid pointer`). Refused HERE, unconditionally for ANY
-    /// `Nullable(Struct)` in RETURN position — unlike the Enum guard above
-    /// (unit-only-only, because payload-bearing `Enum?` is already refused
-    /// earlier at construction), there is no existing refuse elsewhere for
-    /// `Nullable(Struct)` return: the MIR verifier's
-    /// `is_lowerable_nullable_payload` allows `MirType::Struct`
-    /// unconditionally at return-type position (does not gate on
-    /// Copy-ness/heap content), so this guard must not be narrowed by shape.
-    /// `Struct?` as a LOCAL/param is unaffected (WO-StructParamABI landed
-    /// the copy-in path) — only the RETURN position is refused here.
-    ///
-    /// POLICY GATE — blocks the miscompile above, pending the ADR "Full
-    /// SRET for Nullable Aggregate" (which will also resolve the sibling
-    /// `Enum?` return refuse in the same sweep). This is NOT a soundness
-    /// fix; when that ADR lands, this guard MUST be removed and the return
-    /// path re-probed from scratch.
-    fn nullable_struct_return_unsupported(struct_name: &str, span: Span) -> Self {
+    /// ADR-0065 §14 Amend (WO-2 Lát A, 2026-07-20 — narrowed after D found
+    /// the unconditional predecessor (`nullable_struct_return_unsupported`,
+    /// WO-StructReturnRefuse 2026-07-19) was the ONLY B8 (§4) enforcement at
+    /// this position — the MIR verifier's `is_lowerable_nullable_payload`
+    /// allows `MirType::Struct` unconditionally at return-type position, no
+    /// Copy-ness/heap-content gate). Full-SRET now lands for Copy-only
+    /// `Nullable(Struct)` return (tag-prepend, §3.2), but a struct with a
+    /// HEAP-bearing field (String/Vector/HashMap, transitively through
+    /// nested structs) still refuses: B8 (§4) restricts `Struct?`/`Enum?` to
+    /// Copy-only fields/payload ("KHÔNG DROP GLUE. KHÔNG ALLOC. KHÔNG
+    /// FREE.") — the `{tag,fields}` sret buffer carries no drop-glue, so a
+    /// heap leaf living in it would leak or double-free. This is a DESIGN
+    /// FENCE (ADR-locked), not a "not implemented yet" gap.
+    fn nullable_struct_return_heap_field_unsupported(
+        struct_name: &str,
+        field_name: &str,
+        span: Span,
+    ) -> Self {
         Self {
             message: format!(
-                "nullable struct return `{struct_name}?` is not yet supported: functions \
-                 returning `{struct_name}?` have no sret ABI yet (return-shape decision \
-                 only recognizes bare `{struct_name}`, not `{struct_name}?`) — returning \
-                 it would silently miscompile: a null arm reads back as a wrong present \
-                 value, a present value with fields read produces garbage or an \
-                 arithmetic trap, and a heap-bearing field aborts on drop of an \
-                 uninitialized pointer.\n[Fix] Return `{struct_name}` unwrapped and model \
-                 absence as an explicit out-of-band result (e.g. a sibling `Trilean`/\
-                 `Outcome`), or write the nullable result into an out-parameter \
-                 (`&0 mutable {struct_name}?`) instead of the return position."
+                "nullable struct return `{struct_name}?` has a heap-bearing field \
+                 `{field_name}` and cannot be returned this way: ADR-0065 §4 (B8) \
+                 restricts `Struct?`/`Enum?` to Copy-only fields/payload — the \
+                 tag-prepend sret buffer carries no drop-glue, so a heap leaf in \
+                 `{field_name}` would leak or double-free. This is a design fence, \
+                 not a missing feature.\n\
+                 [Fix 1] Change the return type to `{struct_name}` and model \
+                 absence with a separate variant/flag.\n\
+                 [Fix 2] Move the heap field out of the returned struct."
             ),
             span,
         }
@@ -295,29 +285,17 @@ impl Ctx {
                 enum_name, span,
             ));
         }
-        // P0-sibling gap #2 (WO-StructReturnRefuse, O+G mandate, 2026-07-19):
-        // mirror of the `Nullable(Enum)` guard above, one type wider. See
-        // `LowerError::nullable_struct_return_unsupported` for the measured
-        // failure modes (silent wrong value / garbage / SIGILL / SIGABRT)
-        // and why this guard is unconditional (no Copy/heap-content split,
-        // unlike the Enum guard's unit-only restriction — there is no other
-        // refuse anywhere in the pipeline for `Nullable(Struct)` return, so
-        // narrowing this guard would just let a different failure mode
-        // through).
-        //
-        // POLICY GATE — blocks a miscompile, pending the ADR "Full SRET for
-        // Nullable Aggregate" (which resolves this guard's Enum? sibling in
-        // the same sweep). NOT a soundness fix; when that ADR lands, this
-        // guard MUST be removed and the return path re-probed from scratch.
-        if let MirType::Nullable(inner) = ret
-            && let MirType::Struct(struct_name) = inner.as_ref()
-        {
-            return Err(LowerError::nullable_struct_return_unsupported(
-                struct_name,
-                span,
-            ));
-        }
-        let is_struct_return = matches!(ret, MirType::Struct(_));
+        // ADR-0065 §14 Amend (WO-2 Lát A, 2026-07-20): the unconditional
+        // refuse that used to sit here (`nullable_struct_return_unsupported`,
+        // WO-StructReturnRefuse 2026-07-19) is replaced by full-SRET for
+        // Copy-only `Nullable(Struct)` return. `is_struct_return` now unwraps
+        // `Nullable` (idiom already used at `mir_lower.rs:2437,2472`) so the
+        // return-shape decision recognizes `Struct?` the same as `Struct`.
+        // The Copy-vs-heap-field split is checked further down, AFTER `ctx`
+        // is constructed (`ctx_is_copy` needs `ctx.struct_layouts`, not yet
+        // available at this point in the function) — see the
+        // `nullable_struct_return_heap_field_unsupported` gate below.
+        let is_struct_return = matches!(ret.nullable_payload().unwrap_or(ret), MirType::Struct(_));
         // P0 fix (2026-07-17): a user-defined enum return was falling into
         // the `_ => Scalar` catch-all below — no arm ever recognized
         // `MirType::Enum`. Register-based enum return has no static variant
@@ -385,6 +363,29 @@ impl Ctx {
             scope_snapshots: Vec::new(),
             local_names: BTreeMap::new(),
         };
+        // ADR-0065 §14 Amend (WO-2 Lát A, 2026-07-20): B8 (§4) Copy-only gate
+        // for `Nullable(Struct)` return, checked here (after `ctx` exists, so
+        // `ctx_is_copy` can consult `ctx.struct_layouts`/`ctx.enum_layouts`).
+        // Mirrors §12.2's `is_copy(Some(body))` gate for a nested nullable-
+        // aggregate FIELD, one layer up: here it is the top-level RETURN
+        // type. A heap-bearing struct (String/Vector/HashMap, transitively
+        // through nested structs) refuses — B8 forbids drop-glue on an
+        // aggregate-nullable slot, and the tag-prepend sret buffer has none.
+        if let MirType::Nullable(inner) = ret
+            && let MirType::Struct(struct_name) = inner.as_ref()
+            && !ctx_is_copy(inner, &ctx)
+        {
+            let field_name = ctx
+                .struct_layouts
+                .get(struct_name.as_str())
+                .and_then(|l| l.fields.iter().find(|f| !ctx_is_copy(&f.ty, &ctx)))
+                .map_or_else(|| "?".to_string(), |f| f.name.clone());
+            return Err(LowerError::nullable_struct_return_heap_field_unsupported(
+                struct_name,
+                &field_name,
+                span,
+            ));
+        }
         if is_fat_return {
             ctx.sret_ptr = Some(ctx.alloc_local_ty(ret));
         }
@@ -1618,6 +1619,34 @@ fn emit_struct_sret_copy(c: &mut Ctx, val: Local, span: &Span) -> bool {
     let Some(sret) = c.sret_ptr else {
         return false;
     };
+    // ADR-0065 §14 (WO-2 Lát A): `Nullable(Struct)` return — the sret buffer
+    // is `{tag@0, fields@8+}` (Phương án A, §3.2), not the plain struct's
+    // bare field layout the per-field loop below assumes. A single
+    // whole-place Assign lets the JIT's Construction Taxonomy
+    // (`nullable_struct_taxonomy`, `mir_lower.rs:1199-1237`) dispatch the tag
+    // write / +8 shift itself: present arm (`val` a plain Struct, built by
+    // the OutcomeConstructor Positive-arm leaf consumer) → case 2 Widen (set
+    // tag=present, copy fields src+0 -> dest+8); null arm (`val` already
+    // `Nullable(Struct)`, tag already written to ITS OWN slot by the Zero-arm
+    // Const) → case 1 WholeCopy (tag-first verbatim, N+8 bytes). Both cases
+    // reuse `copy_base_addr`'s existing pointer-fallback for `sret` (Local(0)
+    // has no struct_slots entry — pointer-based, same mechanism already
+    // proven for a `Struct?` PARAM, WO-StructParamABI). Kept as a SEPARATE
+    // branch (not folded into the per-field loop below) so the existing
+    // plain-`Struct` sret path — exercised by fixture 14 and siblings — is
+    // byte-for-byte unchanged (implementer's choice, O 2026-07-20: "an toàn
+    // hơn: giữ nguyên nhánh plain-Struct, thêm nhánh Nullable(Struct)").
+    let sret_ty = c.local_decls[sret.0].ty.clone();
+    if let MirType::Nullable(inner) = &sret_ty
+        && matches!(inner.as_ref(), MirType::Struct(_))
+    {
+        c.push(Statement::Assign {
+            dest: Place::local(sret),
+            source: Place::local(val),
+            span: span.clone(),
+        });
+        return true;
+    }
     let source_ty = c.local_decls[val.0].ty.clone();
     if !matches!(source_ty, MirType::Struct(_)) {
         return false;
@@ -3100,15 +3129,32 @@ fn lower_expr(
             // without also updating the other two.
             let is_enum_ret = matches!(callee_ret, MirType::Enum(_));
             // ADR-0062: `String?` call return shares String's fat sret path.
-            let is_fat_ret = matches!(callee_ret, MirType::Struct(_))
-                || is_enum_ret
+            // ADR-0065 §14 Amend (WO-2 Lát A, chốt #8, 2026-07-20 — O+G
+            // confirmed): `is_fat_ret` is one of the THREE copies the
+            // `is_enum_ret` comment above warns about — it did not unwrap
+            // `Nullable(Struct)`, so a call to a function returning `Struct?`
+            // (now fat-return per Ctx::new's `is_struct_return` fix) would
+            // dispatch here as a plain scalar call: the callee declares a
+            // Cranelift signature with a hidden sret param but the caller
+            // never passes one — an ABI arg-count/positional mismatch, not
+            // merely "not yet wired". Unwrap the same way `is_struct_return`
+            // does (`nullable_payload().unwrap_or`).
+            let is_fat_ret = matches!(
+                callee_ret.nullable_payload().unwrap_or(&callee_ret),
+                MirType::Struct(_)
+            ) || is_enum_ret
                 || callee_ret.is_string_repr()
                 || is_heap_outcome_ret;
             // sret slot layout name: `String?` reprs as the "String" layout
-            // (ptr-sentinel, same 24-byte slot) — `callee_ret.to_string()`
-            // would be "String?", which has no registered layout.
+            // (ptr-sentinel, same 24-byte slot); `Struct?` reprs as the
+            // INNER struct's layout name (the tag-prepend +8B is a JIT slot-
+            // sizing decision, not a separate registered layout) —
+            // `callee_ret.to_string()` would be "Point?", which has no
+            // registered layout either.
             let sret_layout_name = if callee_ret.is_string_repr() {
                 "String".to_string()
+            } else if let Some(inner) = callee_ret.nullable_payload() {
+                inner.to_string()
             } else {
                 callee_ret.to_string()
             };

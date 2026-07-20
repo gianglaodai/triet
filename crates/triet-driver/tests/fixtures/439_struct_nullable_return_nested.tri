@@ -1,0 +1,24 @@
+// EXPECT: 0
+// WO-2 Lát A (ADR-0065 §14.6, 2026-07-20): `Struct?` in RETURN position
+// where the struct is NESTED (a struct field itself, `Outer{inner:Inner,
+// b}`, all-scalar Copy transitively). Was a negative fixture pinning the
+// temporary POLICY GATE (WO-StructReturnRefuse, 2026-07-19) unconditionally
+// for ANY `Nullable(Struct)` regardless of nesting; replaced by full-SRET
+// for Copy-only `Struct?` return (ADR-0065 §14) — nesting does not change
+// Copy-ness here, so this shape now runs. Extra regression coverage beyond
+// the WO's T1-T4 table (a flat struct field NEXT TO a nested struct field,
+// proving the tag-prepend +8 shift composes with nested-struct field
+// offsets, not just leaf scalars).
+struct Inner { a: Integer }
+struct Outer { inner: Inner, b: Integer }
+
+function make() -> Outer? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => v.b,
+        ~0 => 0,
+    };
+}

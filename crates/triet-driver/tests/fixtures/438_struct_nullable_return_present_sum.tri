@@ -1,0 +1,21 @@
+// EXPECT: 42
+// WO-2 Lát A T3 (ADR-0065 §14.6, 2026-07-20): `Struct?` in RETURN position,
+// PRESENT arm, BOTH fields read (`v.x + v.y`). Was a negative fixture
+// pinning the temporary POLICY GATE (WO-StructReturnRefuse, 2026-07-19)
+// shut; replaced by full-SRET for Copy-only `Struct?` return (ADR-0065
+// §14). Pre-fix measured (§14.2): reading both fields traps SIGILL 132
+// (garbage + garbage overflow, ADR-0044) — the loudest secondary symptom of
+// the root "rác câm" (silent garbage) failure. EXPECT 42 (40+2) proves both
+// fields land at the correct `{tag@0, fields@8+}` offsets.
+struct P { x: Integer, y: Integer }
+
+function make() -> P? {
+    return ~+ P { x: 40, y: 2 };
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => v.x + v.y,
+        ~0 => -1,
+    };
+}

@@ -1,0 +1,37 @@
+// ERROR: returns deferred
+// WO-2 Lát A chốt #9 probe (O mandate, 2026-07-20, ADR-0065 §14.7): the
+// `is_fat_ret`/`scalar_ret` predicates for a TRAIT-METHOD call
+// (`Expr::MethodCall`, `triet-lower/src/lib.rs:5219`+) are a THIRD, SEPARATE
+// copy of the `is_fat_ret` predicate from `Expr::Call`'s caller-side gate
+// this WO fixes (chốt #8) — and are explicitly OUT OF SCOPE for Lát A (only
+// `Expr::Call` was touched). This fixture PROVES, rather than assumes, that
+// the untouched copy fails CLOSED for `Struct?`, not open into a
+// miscompile: `is_fat_ret` there does not unwrap `Nullable(Struct)` (stays
+// false), `is_outcome_ret` is false, `scalar_ret` is false
+// (`is_scalar_nullable_payload(Struct)` is false) — so the call falls
+// through to the trailing refuse ("trait method `...` returns `...` —
+// Vector/HashMap/Enum/Reference returns deferred (nợ #2 scope)"), a
+// LowerError (driver exit 3), NOT a silent miscompile.
+//
+// Do NOT "fix" `:5219` to make this fixture pass with a value — that is a
+// SEPARATE future slice (its own sret/dispatch wiring), and ADR-0065 §14.5
+// scopes Lát A to `Expr::Call` only. If a future change touches `:5219` and
+// this fixture starts running instead of refusing, its EXPECT must be
+// updated deliberately alongside that change, not silently overwritten.
+struct P { x: Integer, y: Integer }
+
+trait Maker {
+    function make(self) -> P?
+}
+
+implement Maker for Integer {
+    function make(self) -> P? { return ~+ P { x: self, y: 2 } }
+}
+
+function main() -> Integer {
+    let p = (10).make();
+    return match p {
+        ~+ v => v.x,
+        ~0 => -1,
+    };
+}
