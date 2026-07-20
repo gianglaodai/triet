@@ -1,0 +1,23 @@
+// EXPECT: 0
+// WO-2 Lát B E2 (ADR-0065 §AMEND, 2026-07-20) — ⭐ the CA CÂM shape, most
+// dangerous of this Lát (mirrors Lát A's T2/fixture 445-family finding for
+// Struct?): `U?` in RETURN position, NULL arm, `~0 => 0`. Pre-fix mechanism
+// (§1): the callee's return-sret local holds a CALLER POINTER; a
+// sentinel-compare that (wrongly) checks the pointer's own bit pattern
+// against `i64::MIN` can NEVER match (a stack address is never
+// `i64::MIN`) — so the null arm silently never fires and this returned `1`
+// instead of `0`, with NO crash to flag the bug. This fixture is the
+// non-vacuous proof that the null branch is reachable and correct after
+// the disc-niche sret wiring.
+enum U { A, B }
+
+function make() -> U? {
+    return ~0;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => match v { U::A => 5, U::B => 9 },
+        ~0 => 0,
+    };
+}

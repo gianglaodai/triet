@@ -105,30 +105,6 @@ impl LowerError {
         }
     }
 
-    /// P0-sibling gap (WO-enum-return-sret Round 2, O recon 2026-07-17):
-    /// `Nullable(Enum)` in RETURN position has no sret ABI yet. The P0 fix
-    /// widened `MirType::Enum` return routing (and `INV-Enum-shape`) but
-    /// `Nullable(Enum)` does not match `MirType::Enum` — it fell through to
-    /// `ReturnShape::Scalar` untouched, silently miscompiling exactly like
-    /// the enum-return bug this fixes. Unit-only `Enum?` as a LOCAL/param is
-    /// unaffected (disc-niche PA-3c repr, sound) — only the RETURN position
-    /// is refused here.
-    fn nullable_enum_return_unsupported(enum_name: &str, span: Span) -> Self {
-        Self {
-            message: format!(
-                "nullable enum return `{enum_name}?` is not yet supported: functions \
-                 returning `{enum_name}?` have no sret ABI yet (return-shape decision \
-                 only recognizes bare `{enum_name}`, not `{enum_name}?`) — returning it \
-                 would silently miscompile as a Scalar 1-value, discarding the \
-                 discriminant.\n[Fix] Return `{enum_name}` unwrapped and model absence \
-                 as an explicit no-payload variant (e.g. add a `None`/`Nil` variant to \
-                 `{enum_name}`), or write the nullable result into an out-parameter \
-                 (`&0 mutable {enum_name}?`) instead of the return position."
-            ),
-            span,
-        }
-    }
-
     /// ADR-0065 §14 Amend (WO-2 Lát A, 2026-07-20 — narrowed after D found
     /// the unconditional predecessor (`nullable_struct_return_unsupported`,
     /// WO-StructReturnRefuse 2026-07-19) was the ONLY B8 (§4) enforcement at
@@ -263,28 +239,18 @@ impl Ctx {
         input: &LoweringInput,
         span: Span,
     ) -> Result<Self, LowerError> {
-        // P0-sibling gap (WO-enum-return-sret Round 2, O recon): `Nullable(Enum)`
-        // does NOT match `MirType::Enum` below, so it silently fell through to
-        // `ReturnShape::Scalar` — the exact P0 bug, un-caught by `INV-Enum-shape`
-        // (which only fires for a bare `MirType::Enum` return_type). Refuse it
-        // HERE, at the same return-shape-decision layer as `is_enum_return`,
-        // narrowly: only `Nullable(Enum)` in RETURN position, and only when the
-        // enum is unit-only. Payload-bearing `Enum?` is refused ALREADY at
-        // construction (`nullable_enum_payload_unsupported`, fixtures 374/375)
-        // — do not re-refuse it here (would just be a second, redundant guard
-        // on an already-dead path). Unit-only `Enum?` as a local/param is sound
-        // (PA-3c disc-niche repr) and must NOT be touched — this check is
-        // return-position-only by construction (it only runs once, in `Ctx::new`,
-        // which is only ever called with the function's RETURN type).
-        if let MirType::Nullable(inner) = ret
-            && let MirType::Enum(enum_name) = inner.as_ref()
-            && let Some(layout) = input.enum_layouts.get(enum_name)
-            && layout.variants.iter().all(|v| v.payload.is_none())
-        {
-            return Err(LowerError::nullable_enum_return_unsupported(
-                enum_name, span,
-            ));
-        }
+        // ADR-0065 §AMEND (WO-2 Lát B, 2026-07-20): the P0-sibling gap gate
+        // that used to sit here (`nullable_enum_return_unsupported`,
+        // WO-enum-return-sret Round 2) unconditionally refused
+        // `Nullable(Enum)` in return position for unit-only enums. It is
+        // replaced by real sret wiring, mirroring Lát A's `Struct?` fix:
+        // `is_enum_return` below now unwraps `Nullable` (idiom already used
+        // at `mir_lower.rs:2437,2472,2459`), so a unit-only `Enum?` return
+        // routes through `ReturnShape::Enum` (disc-niche repr, §2.1/§12.1 —
+        // slot = `layout.total_size`, NOT +8 like Struct?). Payload-bearing
+        // `Enum?` stays refused ALREADY at construction
+        // (`nullable_enum_payload_unsupported` / §13 hotfix, fixtures
+        // 374/375) — that chokepoint is untouched by this Lát.
         // ADR-0065 §14 Amend (WO-2 Lát A, 2026-07-20): the unconditional
         // refuse that used to sit here (`nullable_struct_return_unsupported`,
         // WO-StructReturnRefuse 2026-07-19) is replaced by full-SRET for
@@ -302,7 +268,11 @@ impl Ctx {
         // at the return site, so it needs sret (like Struct) — but its own
         // ReturnShape::Enum (not Struct): the JIT copy is a raw byte-copy
         // by total_size, not a field-wise struct copy (PQ-2, WO-enum-return-sret).
-        let is_enum_return = matches!(ret, MirType::Enum(_));
+        // ADR-0065 §AMEND (WO-2 Lát B, 2026-07-20, chốt #2 — copy #1 of the
+        // three `is_fat_ret` copies per §14.7): unwrap `Nullable` the same
+        // way `is_struct_return` above does, so `Enum?` return routes to
+        // sret too (disc-niche repr, NOT the +8 tag-prepend Struct? uses).
+        let is_enum_return = matches!(ret.nullable_payload().unwrap_or(ret), MirType::Enum(_));
         // ADR-0058 Lát 1: heap binary Outcome uses JIT-sret (tái dùng String
         // machinery).  Scalar Outcome giữ 2-register; Ternary heap = deferred.
         let is_heap_outcome = matches!(
@@ -3127,7 +3097,15 @@ fn lower_expr(
             // (caller expects a Cranelift return value the callee never
             // declares) or a silent Scalar miscompile. Do not edit this arm
             // without also updating the other two.
-            let is_enum_ret = matches!(callee_ret, MirType::Enum(_));
+            // ADR-0065 §AMEND (WO-2 Lát B, 2026-07-20, chốt #3 — copy #2 of
+            // the three): unwrap `Nullable` so a call to a function
+            // returning `Enum?` dispatches through the (already-correct)
+            // enum sret block-copy at `mir_lower.rs:3577-3598`, instead of a
+            // scalar call the callee's now-sret signature never matches.
+            let is_enum_ret = matches!(
+                callee_ret.nullable_payload().unwrap_or(&callee_ret),
+                MirType::Enum(_)
+            );
             // ADR-0062: `String?` call return shares String's fat sret path.
             // ADR-0065 §14 Amend (WO-2 Lát A, chốt #8, 2026-07-20 — O+G
             // confirmed): `is_fat_ret` is one of the THREE copies the

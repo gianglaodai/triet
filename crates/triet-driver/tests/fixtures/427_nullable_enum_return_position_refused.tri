@@ -1,15 +1,22 @@
-// ERROR: nullable enum return
+// EXPECT: -1
 // WO-NullableEnumParamABI T6 (O+G mandate, 2026-07-19): `Enum?` in RETURN
-// position must STAY refused — this WO's scope is PARAMETER position only
-// (mir_lower.rs:2547's copy-in unwrap). The return-position guard
-// (`nullable_enum_return_unsupported`, triet-lower/src/lib.rs) has no sret
-// ABI for `Nullable(Enum)` yet and is UNTOUCHED by this WO's fix. Teeth to
-// hold the guard shut against an accidental future widening of the
+// position originally STAYED refused — that WO's scope was PARAMETER
+// position only (mir_lower.rs:2547's copy-in unwrap). The return-position
+// guard (`nullable_enum_return_unsupported`, triet-lower/src/lib.rs) had no
+// sret ABI for `Nullable(Enum)` and was UNTOUCHED by that WO's fix. Teeth
+// held the guard shut against an accidental future widening of the
 // parameter-position fix into return position (they are different code
-// paths: params copy-in from a caller pointer; returns need sret plumbing
-// that does not exist). Companion to the pre-existing 403 (same guard,
-// wildcard-arm shape) — this one uses the plain present/null match shape
-// consistent with fixtures 419-426 for this WO's naming family.
+// paths: params copy-in from a caller pointer; returns need sret plumbing).
+// Companion to the pre-existing 403 (same guard, wildcard-arm shape) — this
+// one uses the plain present/null match shape consistent with fixtures
+// 419-426 for that WO's naming family.
+//
+// FLIPPED ERROR->EXPECT (ADR-0065 §AMEND, WO-2 Lát B, 2026-07-20): the sret
+// plumbing now exists (disc-niche repr, §2.1/§12.1). `make()` returns `~0`
+// (null) — the NULL arm must fire and read `~0 => -1` for real, not fall
+// through a refuse. This is the ⭐ ca-câm shape from §14.2/§1: a broken
+// sentinel-compare on a return-sret pointer would misread this as
+// "present" and never reach -1.
 enum U { A, B }
 
 function make() -> U? {

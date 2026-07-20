@@ -1874,13 +1874,25 @@ impl Body {
             });
         }
 
-        // ── INV-Enum-shape (P0 fix, 2026-07-17): ──
+        // ── INV-Enum-shape (P0 fix, 2026-07-17; unwrapped ADR-0065 §AMEND
+        // WO-2 Lát B, 2026-07-20, chốt #5): ──
         // Any MirType::Enum return type requires ReturnShape::Enum. Mirrors
         // INV-Outcome-shape above — guards against the exact silent
         // miscompile-of-Enum-as-Scalar hole that produced the P0 "hố đen
         // nuốt dữ liệu" bug (a returned enum's discriminant landed in an
         // uninitialized Cranelift Variable, read back as garbage).
-        if let MirType::Enum(_) = &self.signature.return_type
+        // `Nullable(Enum)` used to match `matches!(_, MirType::Enum(_))` as
+        // FALSE — exact-match, no unwrap — so it escaped this very safety
+        // net; the lowerer's `is_enum_return`/`is_enum_ret` copies had the
+        // identical hole (fixed alongside this in `triet-lower/src/lib.rs`).
+        // Unwrap the same way the lowerer's `nullable_payload().unwrap_or`
+        // idiom does, so `Enum?` return-shape mismatches are caught too.
+        let enum_shape_return_type = self
+            .signature
+            .return_type
+            .nullable_payload()
+            .unwrap_or(&self.signature.return_type);
+        if let MirType::Enum(_) = enum_shape_return_type
             && !matches!(self.signature.return_shape, ReturnShape::Enum { .. })
         {
             return Err(MirError::EnumShapeMismatch {
@@ -3025,6 +3037,30 @@ mod tests {
     fn verify_accepts_well_formed_body() {
         let body = well_formed_body();
         body.verify().expect("well-formed body should pass verify");
+    }
+
+    /// WO-2 Lát B E5 (ADR-0065 §AMEND, 2026-07-20): `INV-Enum-shape` must
+    /// catch a `Nullable(Enum)` return type paired with the WRONG
+    /// `ReturnShape` (still `Scalar`, the exact miscompile this Lát wires
+    /// away). Before this Lát's fix, the check was
+    /// `matches!(&self.signature.return_type, MirType::Enum(_))` — an EXACT
+    /// match that is `false` for `Nullable(Enum(_))`, so a shape-mismatched
+    /// `Enum?` return silently escaped the verifier's own safety net (the
+    /// same hole `is_enum_return`/`is_enum_ret` had in the lowerer, fixed
+    /// alongside this in `triet-lower/src/lib.rs`). Poisoning the unwrap
+    /// back to an exact match must turn this red.
+    #[test]
+    fn verify_rejects_nullable_enum_shape_mismatch() {
+        let mut body = well_formed_body();
+        body.signature.return_type = MirType::Nullable(Box::new(MirType::Enum("U".into())));
+        // return_shape left at the well-formed default (Scalar) — mismatch.
+        let err = body
+            .verify()
+            .expect_err("Nullable(Enum) return with ReturnShape::Scalar must be rejected");
+        assert!(
+            matches!(err, MirError::EnumShapeMismatch { .. }),
+            "expected EnumShapeMismatch, got {err:?}"
+        );
     }
 
     #[test]

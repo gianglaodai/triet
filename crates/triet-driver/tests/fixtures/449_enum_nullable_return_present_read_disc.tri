@@ -1,0 +1,22 @@
+// EXPECT: 9
+// WO-2 Lát B E1 (ADR-0065 §AMEND, 2026-07-20): `Enum?` in RETURN position,
+// PRESENT arm, discriminant read (`match v { U::A => 5, U::B => 9 }`).
+// Pre-fix measured (§1/§14.2 mechanism, gate lifted for measurement): the
+// callee's sret-return local held a CALLER POINTER, and the disc-switch on
+// that pointer's bit pattern read past the pointer's own bytes — SIGILL 132
+// (ADR-0044 range trap on the garbage word). This fixture exercises the
+// real `is_enum_return`/`is_enum_ret` sret wiring (disc-niche repr,
+// `total_size`, NOT +8) and pins the exact discriminant value read across
+// the return ABI.
+enum U { A, B }
+
+function make() -> U? {
+    return ~+ U::B;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => match v { U::A => 5, U::B => 9 },
+        ~0 => -1,
+    };
+}

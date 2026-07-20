@@ -1,10 +1,18 @@
-// ERROR: nullable enum return
-// WO-enum-return-sret Round 2 (O mandate): P0-sibling gap neo. `Color?`
-// (unit-only enum, disc-niche PA-3c repr) as a FUNCTION RETURN TYPE does
-// NOT match `MirType::Enum` in the P0 fix's return-shape routing — it fell
-// through to ReturnShape::Scalar silently, same failure class as the enum
-// P0 (a wildcard catch-all arm swallows the wrong value: 999 instead of 22,
-// exit 0, no trap). Refused at Ctx::new (return-shape-decision layer).
+// EXPECT: 22
+// WO-enum-return-sret Round 2 (O mandate, 2026-07-17): P0-sibling gap neo.
+// `Color?` (unit-only enum, disc-niche PA-3c repr) as a FUNCTION RETURN
+// TYPE originally did NOT match `MirType::Enum` in the P0 fix's
+// return-shape routing — it fell through to `ReturnShape::Scalar`
+// silently, same failure class as the enum P0 (a wildcard catch-all arm
+// swallows the wrong value: 999 instead of 22, exit 0, no trap). This was
+// refused at `Ctx::new` (return-shape-decision layer) pending sret wiring.
+//
+// FLIPPED ERROR->EXPECT (ADR-0065 §AMEND, WO-2 Lát B, 2026-07-20): the
+// refuse gate is gone, `is_enum_return`/`is_enum_ret`/`INV-Enum-shape` now
+// unwrap `Nullable(Enum)` and route through the disc-niche sret path
+// (§2.1/§12.1, slot = `total_size`, NOT +8). This fixture now proves the
+// present-arm wildcard match reads the REAL discriminant across the return
+// ABI, not garbage.
 enum Color { Red, Green, Blue }
 
 function make() -> Color? {

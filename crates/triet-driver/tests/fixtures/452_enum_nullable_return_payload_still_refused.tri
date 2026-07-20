@@ -1,0 +1,31 @@
+// ERROR: nullable enum
+// WO-2 Lát B E4 (ADR-0065 §AMEND, 2026-07-20) — regression pin, THIS Lát's
+// own numbering: opening the return-position gate for UNIT-ONLY `Enum?`
+// (fixtures 449-451) must NOT accidentally widen to payload-bearing `E?`.
+// `E{V(Integer),N}` has a scalar payload variant (16B: disc@0 + payload@8)
+// — the disc-niche repr this Lát wires is proven ONLY for unit-only enums
+// (§13 hotfix); a payload-bearing enum still truncates across the
+// single-i64-ABI at the OLD scalar-return path this WO removes, and the
+// NEW enum-sret path this WO adds has never been proven for >8B enums
+// either. The refuse fires at construction (`Expr::OutcomeConstructor`
+// Nullable branch, `nullable_enum_payload_unsupported`) — a chokepoint
+// entirely separate from, and untouched by, the return-shape gate this
+// Lát removes. Companion to pre-existing 374/375 (same guard, same
+// function-return shape) — this is the corpus's own copy tied to Lát B's
+// numbering per the work order.
+enum E { V(Integer), N }
+
+function make() -> E? = {
+    return ~+ E::V(42);
+}
+
+function main() -> Integer = {
+    let x = make();
+    return match x {
+        ~+ v => match v {
+            E::V(n) => n,
+            E::N => -1,
+        },
+        ~0 => -2,
+    };
+}

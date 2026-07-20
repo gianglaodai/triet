@@ -1,0 +1,22 @@
+// EXPECT: 1
+// WO-2 Lát B E3 (ADR-0065 §AMEND, 2026-07-20): `Enum?` in RETURN position,
+// PRESENT arm, discriminant NOT read at all (`~+ v => 1`, `v` unused).
+// Regression guard against a FALSE-GREEN (mirrors Lát A's T4/fixture 447
+// finding for Struct?): a broken sentinel-compare could still land on the
+// present arm "by luck" if whatever garbage bits happened to be non-MIN,
+// even with zero real sret wiring. After this WO it must return 1 because
+// a real `disc@0 == +1` (Trit::Positive discriminant value for a 2-variant
+// enum) was written and read across the return ABI — not because
+// uninitialized garbage happened to look present.
+enum U { A, B }
+
+function make() -> U? {
+    return ~+ U::A;
+}
+
+function main() -> Integer {
+    return match make() {
+        ~+ v => 1,
+        ~0 => -1,
+    };
+}

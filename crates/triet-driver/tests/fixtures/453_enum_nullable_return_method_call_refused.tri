@@ -1,0 +1,37 @@
+// ERROR: returns deferred
+// WO-2 Lát B chốt #4 probe (ADR-0065 §14.7, mirrors Lát A's fixture 448):
+// the `is_fat_ret`/`scalar_ret` predicates for a TRAIT-METHOD call
+// (`Expr::MethodCall`, `triet-lower/src/lib.rs:5219`+) are the THIRD copy
+// of the `is_fat_ret` family — explicitly OUT OF SCOPE for Lát B (only
+// `Ctx::new` and `Expr::Call` were touched, chốt #2/#3). This fixture
+// PROVES, rather than assumes, that the untouched copy fails CLOSED for
+// `Enum?` too, not open into a miscompile: `is_fat_ret` there does not
+// recognize `MirType::Enum` AT ALL (not even bare `Enum`, let alone
+// `Nullable(Enum)`), `is_outcome_ret` is false, `scalar_ret` is false
+// (Enum is neither a scalar primitive nor `is_scalar_nullable_payload`) —
+// so the call falls through to the trailing refuse ("trait method `...`
+// returns `...` — Vector/HashMap/Enum/Reference returns deferred (nợ #2
+// scope)"), a LowerError (driver exit 3), NOT a silent Scalar miscompile.
+//
+// Do NOT "fix" `:5219` to make this fixture pass with a value — that is a
+// SEPARATE future slice, and ADR-0065 §14.5/§14.7 scope Lát A/B to
+// `Expr::Call` (+ `Ctx::new`) only. If a future change touches `:5219` and
+// this fixture starts running instead of refusing, its EXPECT must be
+// updated deliberately alongside that change, not silently overwritten.
+enum U { A, B }
+
+trait Maker {
+    function make(self) -> U?
+}
+
+implement Maker for Integer {
+    function make(self) -> U? { return ~+ U::A }
+}
+
+function main() -> Integer {
+    let x = (10).make();
+    return match x {
+        ~+ v => match v { U::A => 5, U::B => 9 },
+        ~0 => -1,
+    };
+}
