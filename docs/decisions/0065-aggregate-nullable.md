@@ -337,10 +337,25 @@ aggregate payload (`enum E{V(Big),N}`, `Big{p,q}` two `Integer` fields) and a sc
 **Fix (surgical, lowerer-only, one chokepoint):** `Expr::OutcomeConstructor`'s `Nullable` branch
 (`crates/triet-lower/src/lib.rs`, guards both the `~+` and `~0` arms) now refuses, at construction time,
 any `E?` where `E`'s `EnumLayout` has at least one variant with `payload.is_some()`. This is a **structural**
-refuse — it fires at every `E?`-value construction site (top-level `let`, function `return`, struct field),
-not only the position that was proven to crash (function-return). Per refuse-over-guess: the disc-niche
-machinery for payload-bearing enums is unproven outside the return-ABI hazard, so the whole surface is
-closed rather than special-cased to "only refuse in return position."
+refuse tại **chokepoint constructor** — nó gác cả arm `~+` lẫn `~0` **KHI LUỒNG ĐI QUA ĐÓ**.
+
+> ⚠️ **ĐÍNH CHÍNH (O đo lại 2026-07-20, G ký).** Câu gốc viết *"fires at every `E?`-value construction
+> site (top-level `let`, function `return`, struct field)"* — **NÓI QUÁ**. Đo trên `235e376`:
+> `return ~+ E::V(42)` → refuse ✓ exit 3 · struct-field → refuse ✓ exit 3 (guard aggregate RIÊNG, không
+> phải chokepoint này) · **`let x: E? = ~0` → LỌT, exit 0, chạy ra `0`** · **`let x: E? = E::V(42)`
+> (implicit widening) → LỌT, exit 0, chạy ra `1`**.
+>
+> Cơ chế lọt: `Stmt::Let` fast-path `is_null_expr` rẽ thẳng sang `Statement::Const`, **không đi qua**
+> `Expr::OutcomeConstructor`; còn implicit widening `E → E?` không phải constructor nên **không bao giờ**
+> chạm chokepoint. Guard đúng như mô tả — nhưng hai đường đó không tới được nó.
+>
+> ⇒ **"đóng cả bề mặt" chỉ đúng cho đường CONSTRUCTOR.** Phần còn lại là **lỗ N1**, G phân loại
+> **POLICY-HOLE (KHÔNG phải UB)** 2026-07-19, đo lại 2026-07-20 xác nhận: heap payload local/param
+> `FREE=1 distinct=1 dup=0`, giá trị đúng, đường struct-field bị refuse, `i64::MIN` không diễn đạt được
+> từ source. **CẤM viện §13 như bằng chứng đã đóng một đường UB.**
+
+Per refuse-over-guess: disc-niche cho enum payload-bearing chưa được chứng minh ngoài hazard return-ABI,
+nên đường constructor bị đóng thay vì đặc cách "chỉ refuse ở return position".
 
 **NOT fixed here (front deferred):** a proper `Enum?` repr for payload-bearing enums (e.g. a real disc-niche
 marshal across the return ABI, or falling back to the `Struct?` +8B tag-word scheme) — tracked as new debt
@@ -356,7 +371,7 @@ payload, same shape, proven exit 132) / 376 (struct-field construction path — 
 independently reproduced for this exact shape; refused structurally regardless) / 377 (unit-only, local `let`
 — non-vacuous negative control, still compiles+runs).
 
-**Chữ ký §13:** D (Sonnet 5): implemented + poison-red verified (374 only, per WO) · chờ O verify + G ký.
+**Chữ ký §13:** D (Sonnet 5) ✅ implemented + poison-red (374 only, per WO) · **O ✅ 2026-07-20** — verify độc lập trên `235e376`: refuse đúng ở đường constructor (`return ~+`) và struct-field; **đo ra câu "every construction site" NÓI QUÁ** (`let = ~0` và implicit widening LỌT) → đính chính ở trên trước khi ký, KHÔNG ký nguyên văn cũ · **G ✅ 2026-07-20** — duyệt câu đính chính, chốt N1 là POLICY-HOLE.
 
 ---
 
