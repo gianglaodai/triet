@@ -978,6 +978,21 @@ impl JitContext {
 
     /// ADR-0060 P2: return the total byte size of a `MirType`.
     /// Struct/enum types look up their layout in `body`; scalars are 8.
+    ///
+    /// WO-4 (2026-07-20): added the `Nullable` arm — the previous `_ => 8`
+    /// catch-all silently mis-sized `Nullable(Struct)`/`Nullable(Enum)` for
+    /// any caller that passes the type THROUGH (not pre-unwrapped). The two
+    /// nullable-aggregate reprs are asymmetric and must NOT share a formula:
+    /// `Struct?` is `{tag@0, fields@8..}` (ADR-0076) → `total_size + 8`;
+    /// `Enum?` reuses the enum's OWN discriminant as the null-niche (no extra
+    /// tag word, see `nullable_struct_taxonomy` doc + `Nullable(Enum)` note)
+    /// → plain `total_size`, unchanged. Verified caller-by-caller (WO-4
+    /// writeup): the 3 `nullable_struct_taxonomy` call sites already unwrap
+    /// to the bare inner `Struct` before calling this fn (never pass
+    /// `Nullable` in), so this arm cannot double-count there; the 4
+    /// generic-aggregate-copy call sites pass the raw, un-unwrapped type and
+    /// previously got the wrong answer (8) for any `Nullable(Struct/Enum)`
+    /// that fell through to them.
     fn ty_total_size(body: &Body, ty: &MirType) -> usize {
         match ty {
             MirType::Struct(name) => body
@@ -990,6 +1005,11 @@ impl JitContext {
                 .iter()
                 .find(|l| l.name == *name)
                 .map_or(16, |l| l.total_size),
+            MirType::Nullable(inner) => match inner.as_ref() {
+                MirType::Struct(_) => Self::ty_total_size(body, inner) + 8,
+                MirType::Enum(_) => Self::ty_total_size(body, inner),
+                _ => 8,
+            },
             _ => 8,
         }
     }
@@ -1643,6 +1663,49 @@ impl JitContext {
         if let MirType::Enum(name) = payload_ty {
             let name = name.clone();
             return self.emit_enum_drop_glue_at(builder, body, &name, addr);
+        }
+        // WO-4 B2 (2026-07-20): `Nullable(Struct)`/`Nullable(Enum)` matched
+        // NEITHER exact arm above (they're `Nullable`, not `Struct`/`Enum`
+        // directly) and used to fall through to the `is_any_heap()`
+        // early-return below — `is_any_heap()` is false for ANY `Nullable`,
+        // so the free was silently skipped and every heap leaf inside
+        // leaked. Unwrap here, mirroring this file's `nullable_payload()
+        // .unwrap_or` idiom. The two nullable-aggregate reprs are asymmetric
+        // — this is deliberately NOT one shared arm:
+        // - `Enum?` shares the enum's own disc-niche as the null marker (no
+        //   extra tag byte — see `emit_enum_drop_glue_at`'s doc comment).
+        //   Its tag-switch is naturally null-safe (`i64::MIN` matches no
+        //   heap-variant discriminant), so unwrap-and-delegate at the SAME
+        //   `addr` is correct — no offset, no extra guard needed.
+        // - `Struct?` is `{tag@0, fields@+8}` (ADR-0076). Unlike a heap leaf
+        //   (sentinel-checkable per-pointer), a struct's fields are NOT
+        //   individually null-checkable — a null value's field area is
+        //   garbage. Must tag-guard AND shift the field address by +8,
+        //   mirroring the `Statement::Drop` niche=8 tag-guard pattern
+        //   (`struct_drop` local variable, same file) before delegating.
+        if let MirType::Nullable(inner) = payload_ty {
+            if let MirType::Enum(name) = inner.as_ref() {
+                let name = name.clone();
+                return self.emit_enum_drop_glue_at(builder, body, &name, addr);
+            }
+            if let MirType::Struct(name) = inner.as_ref() {
+                let name = name.clone();
+                let mem = cranelift_codegen::ir::MemFlags::new();
+                let tag = builder.ins().load(I64, mem, addr, 0);
+                let min = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
+                let is_null = builder.ins().icmp(IntCC::Equal, tag, min);
+                let free_bb = builder.create_block();
+                let merge_bb = builder.create_block();
+                builder.ins().brif(is_null, merge_bb, &[], free_bb, &[]);
+                builder.switch_to_block(free_bb);
+                builder.seal_block(free_bb);
+                let fields_addr = builder.ins().iadd_imm(addr, 8);
+                self.emit_struct_drop_glue_at(builder, body, &name, fields_addr)?;
+                builder.ins().jump(merge_bb, &[]);
+                builder.switch_to_block(merge_bb);
+                builder.seal_block(merge_bb);
+                return Ok(());
+            }
         }
         if !payload_ty.is_any_heap() {
             return Ok(());
