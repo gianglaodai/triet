@@ -411,9 +411,13 @@ Chỗ đúng để sửa: `is_struct_return` (`:320`) unwrap `Nullable` bằng i
 *(G đề xuất sửa `is_string_repr`, O phản đối bằng lập luận đặt-tên/kiến trúc, **G rút và chốt theo O**
 2026-07-20. Ghi lại để không ai đề xuất lại.)*
 
-### 14.5 Scope — Lát A CHỈ
+### 14.5 Scope — Lát A CHỈ, và **THUẦN COPY-ONLY**
 
-✅ Trong: `Nullable(Struct)` return position.
+> ⛔ **§4 (rào B8) VẪN NGUYÊN HIỆU LỰC TRONG §AMEND NÀY.** `Struct?` chỉ chở field **Copy**.
+> Heap-bearing `Struct?` (field `String`/`Vector`/`HashMap`) ở return position **GIỮ REFUSE** —
+> nó đòi drop-glue mà §4 cấm tường minh.
+
+✅ Trong: `Nullable(Struct)` return position **với mọi field là Copy**.
 ❌ Ngoài — **Lát B riêng:** `Nullable(Enum)` return. Lý do tách: **repr KHÁC HẲN** — `Enum?` là
 disc-niche, slot = `layout.total_size` (`mir_lower.rs:2444`, **không +8**), còn `Struct?` là
 tag-prepend `+8`. Gộp hai repr vào một mũi = lúc nổ không biết cái nào gây ra (G chốt tách).
@@ -428,12 +432,40 @@ chỉ chặn **unit-only**; payload-bearing đã bị §13 chặn từ construct
 | T2 | `P?` **null**, `~0 => -1` | EXPECT `-1` | ⭐ **nhánh null chết** — ca câm nguy hiểm nhất |
 | T3 | `P?` present, `p.x + p.y` | EXPECT tổng đúng | SIGILL 132 |
 | T4 | `P?` present, KHÔNG đọc field | EXPECT | ca "đúng do may" — chống hồi quy giả |
-| T5 | `P?` **heap-bearing**, dựng+drop | **counting `FREE==1 && dup==0`** | SIGABRT 134 |
+| **T5'** | `H?` **heap-bearing** (`struct{s:String}`) ở return | **REFUSE** (fixture 440 giữ xanh, lý do B8/§4) | rào B8 — negative test |
 
-**T5 BẮT BUỘC là counting tooth, KHÔNG phải fixture corpus** — fixture value-based mù trước leak
-(bài học WO-1 `is_empty`: 439 fixture không thấy một rỉ nào vì mọi giá trị đều đúng).
+**🚫 T5 (bản gốc) ĐÃ BỊ THU HỒI — O sai, D chặn (2026-07-20).** Bản gốc đòi counting tooth
+`FREE==1 && dup==0` cho `Struct?` heap-bearing, tức **ra lệnh dựng drop-glue mà §4 cấm bằng chữ hoa,
+trong câu cấm gọi đích danh D**. O soạn T5 mà không đọc lại phần KHẮC ĐÁ của chính ADR đang tu chính.
+Nếu D thi hành, nó vừa phá rào vừa tái mở `SIGABRT 134` mà fixture 440 đang canh (`is_lowerable_nullable_payload`,
+`triet-mir:1679-1687`, có nhánh `Struct(_)` **vô điều kiện** — không có lưới thứ hai đỡ bên dưới).
+Thay bằng **T5' negative**. G ký thu hồi 2026-07-20.
+
+🦷 **Luật rút ra:** khi viết §AMEND, **đọc lại TOÀN BỘ phần KHẮC ĐÁ của ADR gốc trước khi nối** —
+§AMEND kế thừa mọi ràng buộc của thân bài, và ràng buộc mạnh nhất thường nằm **xa nhất** khỏi chỗ đang sửa.
 
 ⚠️ **Tầng harness:** `integration_test_corpus()` là **MỘT** test chạy vòng lặp — T3 mà SIGILL thì
 giết cả tiến trình, mọi fixture sau **không bao giờ chạy**, nên "suite đỏ" KHÔNG chứng minh T1/T2
 có răng. Phải chứng minh từng răng bằng cách đổi `EXPECT` sang giá trị **bịa** → ra dòng
 `FAIL <tên>: expected …, got …` → khôi phục.
+
+### 14.7 ⛔ BẤT BIẾN — `is_fat_ret` có **BA** bản sao, phải đồng bộ
+
+Predicate quyết định "return này có đi sret không" tồn tại ở **ba** chỗ. Kiến thức này trước đây chỉ
+nằm trong một comment code (`triet-lower/src/lib.rs:3094-3100`) — một lần refactor là bay, nên khắc vào đây:
+
+| # | vị trí | vai | với `Struct?` (trước Lát A) |
+|---|---|---|---|
+| 1 | `triet-lower/src/lib.rs:320` (`Ctx::new`) | **callee-side** | match exact → miscompile |
+| 2 | `triet-lower/src/lib.rs:3103` (`Expr::Call`) | **caller-side** | match exact → miscompile |
+| 3 | `triet-lower/src/lib.rs:5219` (`Expr::MethodCall`) | caller-side | **fail-closed** → `Err(LowerError)` |
+
+**Mismatch caller/callee = JIT panic HOẶC silent Scalar miscompile.** Sửa một bản mà quên bản khác là
+lỗi kinh điển của họ này (WO-2 recon: O khoanh bán kính chỉ thấy #1; #2 do D tìm ra; #3 do O tự đào khi
+đi kiểm claim của D).
+
+**Lát A sửa #1 + #2.** #3 KHÔNG sửa — nó fail-closed (over-refuse, không UB), nhưng phải **chứng minh
+bằng probe**, không bằng đọc code. Hệ quả ghi sổ nợ: **`Struct?` return qua cú pháp method-call =
+over-refuse**, chờ lát riêng.
+
+**Quy tắc thường trực:** ai đụng một trong ba bản sao PHẢI grep hai bản còn lại trong cùng một lát.
