@@ -2636,6 +2636,21 @@ fn lower_expr(
                     // StackSlot (field projection), not heap shim.
                     // Same pattern as `length`/`len`.
                     let len_dest = if matches!(arg_ty, MirType::String) {
+                        // WO-1 (2026-07-20): this owned-String fast path
+                        // BYPASSES `emit_shim_call` entirely (like
+                        // `length`'s fast path above), so the
+                        // `emit_shim_call` chokepoint fix does not reach
+                        // `arg` here — it needs its own `push_owned`.
+                        // `is_empty()` only READS `arg`'s `len` field via
+                        // projection (below), never frees/consumes it, so
+                        // this is unconditionally a BORROW position.
+                        // Idempotent for a named (`let`-bound) `arg`
+                        // (already registered by `Stmt::Let`);
+                        // load-bearing for an anonymous temp (a bare
+                        // field-access move-out or a string literal used
+                        // directly as this argument) — measured leaking
+                        // (FREE=0) before this fix.
+                        c.push_owned(arg);
                         let d = c.alloc_local_ty(MirType::Integer);
                         c.push(Statement::Assign {
                             dest: Place::local(d),
