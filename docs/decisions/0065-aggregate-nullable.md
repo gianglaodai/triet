@@ -357,3 +357,83 @@ independently reproduced for this exact shape; refused structurally regardless) 
 — non-vacuous negative control, still compiles+runs).
 
 **Chữ ký §13:** D (Sonnet 5): implemented + poison-red verified (374 only, per WO) · chờ O verify + G ký.
+
+---
+
+## 14. AMENDMENT (WO-2 Lát A, 2026-07-20) — `Struct?` ở RETURN position: mở khoá full-SRET
+
+**Trạng thái:** O ✅ soạn + đo · G ✅ chốt 2026-07-20 · D: chưa implement.
+
+### 14.1 Context — repr đã chốt từ §2.2, chỉ RETURN position bị khoá
+
+§2.2/§3.2 đã quyết repr `Struct?` = **disc-word prepend `{tag@0, fields@8+}`**, và nó đang chạy
+đúng cho **local dẫn xuất** (`mir_lower.rs:2462-2489`, slot = `layout.total_size + 8`). Nhưng
+vị trí **RETURN chưa bao giờ được nối**: `is_struct_return` (`triet-lower/src/lib.rs:320`) match
+`MirType::Struct(_)` **exact**, nên `Nullable(Struct)` rơi thẳng xuống `_ => ReturnShape::Scalar`.
+
+Ngày 2026-07-19 (WO-StructReturnRefuse, `e7aab8c`) một **POLICY GATE** được dựng ở `Ctx::new`
+để chặn miscompile đo được. Gate đó **KHÔNG phải soundness fix** — nó là cái nút thắt tạm chờ
+chính §AMEND này. §14 gỡ nó.
+
+### 14.2 Bằng chứng — O gỡ CẢ HAI gate + rebuild, đo 6 shape (2026-07-20)
+
+| shape | exit | kết quả |
+|---|---|---|
+| `P?` present, đọc 1 field | 0 | **rác câm** (`93851586002064`, đổi theo ASLR) |
+| `P?` **null** | 0 | **rác câm** — nhánh `~0` **CHẾT** |
+| `P?` present, đọc 2 field | **132** | SIGILL (rác+rác vượt range ADR-0044 — hiệu ứng **thứ cấp**) |
+| `U?` present, đọc disc | **132** | SIGILL (thuộc Lát B) |
+| `U?` **null**, không đọc | 0 | trả `1`, đúng phải `0` — **câm** (Lát B) |
+| `P?` present, không đọc | 0 | `1` — đúng **do may** |
+
+**Cơ chế** (giống hệt bug `Struct?` PARAM đã vá ở WO-StructParamABI): local return sret giữ
+**CON TRỎ** buffer của caller; sentinel-compare so bit-pattern con trỏ với `i64::MIN` → địa chỉ
+stack không bao giờ bằng `i64::MIN` ⇒ **luôn phán "present"** ⇒ nhánh `~0` chết. Present-arm đọc
+rác vì tag chưa được ghi và offset `+8` chưa được áp ở vị trí return.
+
+**Rác câm là failure-mode GỐC; SIGILL chỉ là tiếng sấm** khi rác cộng rác vượt ngưỡng ADR-0044.
+
+### 14.3 Decision
+
+`Nullable(Struct)` ở return position dùng **sret**, với **ĐÚNG repr §3.2 đã chốt** —
+`{tag@0, fields@8+}`, buffer size `layout.total_size + 8`. **KHÔNG phát minh repr mới.**
+Đây là áp cơ chế đã có vào một vị trí từng bị khoá, nên ghi ở §AMEND chứ không đẻ ADR mới (G chốt).
+
+### 14.4 ⛔ KHẮC ĐÁ — KHÔNG được nhét `Struct?` vào `is_string_repr()`
+
+`is_string_repr()` (`triet-mir/src/lib.rs:663`) có nghĩa **"dùng chung repr fat 24B của String"**.
+`Nullable(String)` nằm trong đó vì nó *thật sự* chia sẻ slot fat. `Struct?` **không** — nó là
+tag-prepend. Nhét vào đó là làm predicate **nói dối về chính tên nó** và kéo theo mọi consumer khác.
+
+Chỗ đúng để sửa: `is_struct_return` (`:320`) unwrap `Nullable` bằng idiom đã dùng sẵn trong repo
+(`ty.nullable_payload().unwrap_or(ty)` — `mir_lower.rs:2437, 2472`).
+
+*(G đề xuất sửa `is_string_repr`, O phản đối bằng lập luận đặt-tên/kiến trúc, **G rút và chốt theo O**
+2026-07-20. Ghi lại để không ai đề xuất lại.)*
+
+### 14.5 Scope — Lát A CHỈ
+
+✅ Trong: `Nullable(Struct)` return position.
+❌ Ngoài — **Lát B riêng:** `Nullable(Enum)` return. Lý do tách: **repr KHÁC HẲN** — `Enum?` là
+disc-niche, slot = `layout.total_size` (`mir_lower.rs:2444`, **không +8**), còn `Struct?` là
+tag-prepend `+8`. Gộp hai repr vào một mũi = lúc nổ không biết cái nào gây ra (G chốt tách).
+❌ Ngoài: N1 payload-bearing `Enum?` (§13) — **không đụng**. Gate `Enum?` return `:289-297` hiện
+chỉ chặn **unit-only**; payload-bearing đã bị §13 chặn từ construction.
+
+### 14.6 Teeth bắt buộc
+
+| # | shape | oracle | bắt |
+|---|---|---|---|
+| T1 | `P?` present, `return p.x` | EXPECT giá trị chính xác | rác câm |
+| T2 | `P?` **null**, `~0 => -1` | EXPECT `-1` | ⭐ **nhánh null chết** — ca câm nguy hiểm nhất |
+| T3 | `P?` present, `p.x + p.y` | EXPECT tổng đúng | SIGILL 132 |
+| T4 | `P?` present, KHÔNG đọc field | EXPECT | ca "đúng do may" — chống hồi quy giả |
+| T5 | `P?` **heap-bearing**, dựng+drop | **counting `FREE==1 && dup==0`** | SIGABRT 134 |
+
+**T5 BẮT BUỘC là counting tooth, KHÔNG phải fixture corpus** — fixture value-based mù trước leak
+(bài học WO-1 `is_empty`: 439 fixture không thấy một rỉ nào vì mọi giá trị đều đúng).
+
+⚠️ **Tầng harness:** `integration_test_corpus()` là **MỘT** test chạy vòng lặp — T3 mà SIGILL thì
+giết cả tiến trình, mọi fixture sau **không bao giờ chạy**, nên "suite đỏ" KHÔNG chứng minh T1/T2
+có răng. Phải chứng minh từng răng bằng cách đổi `EXPECT` sang giá trị **bịa** → ra dòng
+`FAIL <tên>: expected …, got …` → khôi phục.
