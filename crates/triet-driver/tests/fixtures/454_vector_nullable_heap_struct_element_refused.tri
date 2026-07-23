@@ -1,0 +1,19 @@
+// ERROR: heap-nullable T? not yet lowered
+// WO-5 (Mentor G, KHẨN, 2026-07-20) R1 — `Vector<Leaf?>` where `Leaf` has a
+// HEAP field (`s: String`) is a container-ELEMENT position. Pre-fix this was
+// UB: `emit_vector_element_free_loop` strips `Nullable` via
+// `nullable_payload().unwrap_or()` BEFORE calling `emit_heap_free_at`,
+// losing the tag-guard/+8-shift the LOCAL Drop path keeps — the tag word
+// (`+1`/`i64::MIN`) got read back as a heap pointer and handed to `free()`:
+// measured `free(): invalid pointer`, SIGABRT (exit 134), on `19a7708`.
+// Now refused at `Body::verify()` (`find_refused_nullable_container`,
+// `crates/triet-mir/src/lib.rs`) before the JIT ever runs — clean exit 3,
+// not a crash.
+struct Leaf { s: String }
+
+function main() -> Integer {
+    let mutable v: Vector<Leaf?> = vector_new();
+    let elem: Leaf? = ~+ Leaf { s: "hi" };
+    v = push(v, elem);
+    return 0;
+}

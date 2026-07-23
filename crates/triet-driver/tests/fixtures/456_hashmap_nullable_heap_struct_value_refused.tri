@@ -1,0 +1,15 @@
+// ERROR: heap-nullable T? not yet lowered
+// WO-5 (Mentor G, KHẨN, 2026-07-20) R3 — anh em của R1: `HashMap<Integer,
+// Leaf?>` where `Leaf` has a heap field (`s: String`) is the HashMap-value
+// sibling of the Vector-element bug. Same mechanism
+// (`emit_hashmap_value_free_loop` strips `Nullable` before calling
+// `emit_heap_free_at`), same fix (`find_refused_nullable_container`
+// recurses into `HashMap`'s value type too, not just `Vector`'s element).
+struct Leaf { s: String }
+
+function main() -> Integer {
+    let mutable m: HashMap<Integer, Leaf?> = hashmap_new();
+    let elem: Leaf? = ~+ Leaf { s: "hi" };
+    m = insert(m, 1, elem);
+    return 0;
+}

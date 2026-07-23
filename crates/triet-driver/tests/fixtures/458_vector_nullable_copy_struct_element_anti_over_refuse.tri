@@ -1,0 +1,15 @@
+// EXPECT: 0
+// WO-5 (Mentor G, KHẨN, 2026-07-20) R5 — anti-over-refuse control for the
+// container-element gate itself: `Vector<P?>` where `P` is Copy-only (no
+// heap field anywhere) must stay running. `push` accepts the Copy-only
+// nullable element unchanged — the WO-5 gate
+// (`find_refused_nullable_container`) only fires for a heap-bearing
+// aggregate element (R1/R3), never for a Copy one.
+struct P { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let mutable v: Vector<P?> = vector_new();
+    let elem: P? = ~+ P { x: 3, y: 4 };
+    v = push(v, elem);
+    return 0;
+}

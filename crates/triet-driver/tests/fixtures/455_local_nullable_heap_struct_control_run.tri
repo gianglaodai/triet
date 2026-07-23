@@ -1,0 +1,21 @@
+// EXPECT: 0
+// WO-5 (Mentor G, KHẨN, 2026-07-20) R2 CONTROL — a bare LOCAL `Leaf?` where
+// `Leaf` has a heap field (`s: String`) is DIFFERENT from R1's container-
+// element position and stays RUNNING (not refused). Measured sound by
+// FREE-COUNT (not just exit value) in
+// `wo5_local_struct_nullable_heap_leak_counting.rs`: FREE=1, dup=0, no
+// leak, no double-free — the LOCAL Drop path
+// (`crates/triet-jit/src/mir_lower.rs`, the `struct_drop` arm) correctly
+// tag-guards and shifts by `+8`, unlike the container-element path R1
+// closes. WO-5 investigated Copy-gating this position too (mirroring the
+// return-position policy gate) and REVERTED after that broke 14
+// pre-existing fixtures — most importantly `Vector<UserStruct>.pop()`
+// (fixtures 338-346), whose returned `T?` is structurally identical, at
+// the MIR level, to this bare local. This fixture pins the decision: a
+// heap-bearing `Struct?` LOCAL must keep compiling and running.
+struct Leaf { s: String }
+
+function main() -> Integer {
+    let a: Leaf? = ~+ Leaf { s: "hi" };
+    return 0;
+}

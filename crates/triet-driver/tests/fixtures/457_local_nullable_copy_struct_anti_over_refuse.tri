@@ -1,0 +1,15 @@
+// EXPECT: 16
+// WO-5 (Mentor G, KHẨN, 2026-07-20) R4 — anti-over-refuse control: a
+// Copy-only nullable struct (`P { x: Integer, y: Integer }`, no heap field
+// anywhere) as a LOCAL must be COMPLETELY UNAFFECTED by the WO-5 container-
+// element gate. This is the shape ADR-0065 Lát A / §12 shipped — refusing
+// it would be destroying working, in-scope functionality, not fixing a bug.
+struct P { x: Integer, y: Integer }
+
+function main() -> Integer {
+    let a: P? = ~+ P { x: 7, y: 9 };
+    return match a {
+        ~+ p => p.x + p.y,
+        ~0 => 0,
+    };
+}
