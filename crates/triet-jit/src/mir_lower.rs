@@ -1664,49 +1664,30 @@ impl JitContext {
             let name = name.clone();
             return self.emit_enum_drop_glue_at(builder, body, &name, addr);
         }
-        // WO-4 B2 (2026-07-20): `Nullable(Struct)`/`Nullable(Enum)` matched
-        // NEITHER exact arm above (they're `Nullable`, not `Struct`/`Enum`
-        // directly) and used to fall through to the `is_any_heap()`
-        // early-return below — `is_any_heap()` is false for ANY `Nullable`,
-        // so the free was silently skipped and every heap leaf inside
-        // leaked. Unwrap here, mirroring this file's `nullable_payload()
-        // .unwrap_or` idiom. The two nullable-aggregate reprs are asymmetric
-        // — this is deliberately NOT one shared arm:
-        // - `Enum?` shares the enum's own disc-niche as the null marker (no
-        //   extra tag byte — see `emit_enum_drop_glue_at`'s doc comment).
-        //   Its tag-switch is naturally null-safe (`i64::MIN` matches no
-        //   heap-variant discriminant), so unwrap-and-delegate at the SAME
-        //   `addr` is correct — no offset, no extra guard needed.
-        // - `Struct?` is `{tag@0, fields@+8}` (ADR-0076). Unlike a heap leaf
-        //   (sentinel-checkable per-pointer), a struct's fields are NOT
-        //   individually null-checkable — a null value's field area is
-        //   garbage. Must tag-guard AND shift the field address by +8,
-        //   mirroring the `Statement::Drop` niche=8 tag-guard pattern
-        //   (`struct_drop` local variable, same file) before delegating.
-        if let MirType::Nullable(inner) = payload_ty {
-            if let MirType::Enum(name) = inner.as_ref() {
-                let name = name.clone();
-                return self.emit_enum_drop_glue_at(builder, body, &name, addr);
-            }
-            if let MirType::Struct(name) = inner.as_ref() {
-                let name = name.clone();
-                let mem = cranelift_codegen::ir::MemFlags::new();
-                let tag = builder.ins().load(I64, mem, addr, 0);
-                let min = builder.ins().iconst(I64, triet_mir::NULL_SENTINEL);
-                let is_null = builder.ins().icmp(IntCC::Equal, tag, min);
-                let free_bb = builder.create_block();
-                let merge_bb = builder.create_block();
-                builder.ins().brif(is_null, merge_bb, &[], free_bb, &[]);
-                builder.switch_to_block(free_bb);
-                builder.seal_block(free_bb);
-                let fields_addr = builder.ins().iadd_imm(addr, 8);
-                self.emit_struct_drop_glue_at(builder, body, &name, fields_addr)?;
-                builder.ins().jump(merge_bb, &[]);
-                builder.switch_to_block(merge_bb);
-                builder.seal_block(merge_bb);
-                return Ok(());
-            }
-        }
+        // WO-5 (2026-07-20, Mentor G ruling): WO-4 B2 added an arm right here
+        // matching `MirType::Nullable(Struct | Enum)` and unwrap-and-tag-
+        // guard-delegating — meant to stop the container-element leak, but
+        // measured to instead cause `free(): invalid pointer` (the field
+        // area read at the wrong offset without the tag prepend). REMOVED:
+        // RULE7-PROBE-WO5 reinstated the arm as a `panic!()` and ran the
+        // full workspace suite (incl. every counting harness) — 0 tests
+        // reached it. Every caller of `emit_heap_free_at` already strips
+        // `Nullable` via `nullable_payload().unwrap_or()` BEFORE calling
+        // (`emit_vector_element_free_loop`/`emit_hashmap_value_free_loop`'s
+        // `eff` a few dozen lines below this file, and `emit_hashmap_key_
+        // free_loop`'s `key_eff`) — so `payload_ty` here is NEVER actually
+        // `Nullable(_)`; that pre-call stripping, which throws away the
+        // tag-guard/+8-shift info, IS the real container-element bug, and it
+        // lives at the CALLER, not here. Belt-and-suspenders, `Body::verify()`
+        // now also refuses ANY heap-bearing `Nullable(Struct)`/`Nullable(Enum)`
+        // before JIT runs at all (local, return, AND container-element —
+        // `crates/triet-mir/src/lib.rs`'s Copy-gated `is_lowerable_nullable_
+        // payload` + `Vector`/`HashMap`-recursing `find_refused_nullable`),
+        // so this arm would be unreachable for a SECOND, independent reason
+        // even if some future caller stopped pre-stripping. Building tag-
+        // guard machinery for a heap-bearing nullable aggregate here — even
+        // correct machinery — is building the thing ADR-0065 §4 (B8) says
+        // must not exist.
         if !payload_ty.is_any_heap() {
             return Ok(());
         }

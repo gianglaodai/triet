@@ -1638,20 +1638,41 @@ pub fn is_scalar_nullable_payload(t: &MirType) -> bool {
 /// (call sites: `Body::verify`, return-type and per-local loops, a few dozen
 /// lines below). It is used for NEITHER struct-field/enum-payload position
 /// (that is a separate, stricter predicate, [`is_field_payload_lowerable`])
-/// NOR is it a general "heap is safe here" gate — it is deliberately
-/// permissive at this one position and relies on OTHER chokepoints to refuse
-/// heap-bearing `Struct`/`Enum` where they are not yet sound.
+/// NOR the container-ELEMENT position (`Vector`/`HashMap`, WO-5 2026-07-20 —
+/// see `find_refused_nullable`'s doc comment: those arms deliberately call
+/// the STRICTER [`is_field_payload_lowerable`], not this predicate) — it is
+/// deliberately permissive at bare local/return and relies on OTHER
+/// chokepoints to refuse heap-bearing `Struct`/`Enum` where they are not
+/// yet sound.
 ///
 /// **`Nullable(Struct)` where the struct carries a plain heap field (e.g.
 /// `struct H { name: String }`, `H?`) IS ALLOWED here and IS SOUND at LOCAL
 /// position** — measured by FREE-COUNT (not just return value) in
-/// `WO-INV-HeapNullable-Probe` (2026-07-19), tooth
-/// `crates/triet-driver/tests/heap_nullable_struct_local_counting.rs`:
-/// null → 0 frees, present-drop → 1, present + `match`-bind-move → 1 (not a
-/// double-free), a 3-iteration `while` loop reusing the same StackSlot across
-/// the back-edge → 3 (neither leaking a stale iteration nor double-freeing
-/// the reused slot). All four counts verified non-vacuous (a stubbed
-/// leak/double-free shim moves the count away from the healthy value).
+/// `WO-INV-HeapNullable-Probe` (2026-07-19),
+/// `crates/triet-driver/tests/heap_nullable_struct_local_counting.rs`, and
+/// RECONFIRMED during WO-5 (2026-07-20,
+/// `wo5_local_struct_nullable_heap_leak_counting.rs`: FREE=1 dup=0, no leak).
+///
+/// **WO-5 investigated, then REJECTED, Copy-gating this predicate for bare
+/// local/return too** (mirroring the return-position policy gate below) —
+/// self-reverted after the attempt broke 14 pre-existing, real-allocator-
+/// verified fixtures, most importantly `Vector<UserStruct>.pop()` /
+/// `HashMap<_, UserStruct>.remove()` (fixtures 338-346): `pop()`/`remove()`
+/// return `T?` for the removed element, so a heap-bearing struct element
+/// (e.g. `struct User { name: String }`) produces an ordinary LOCAL of type
+/// `Nullable(Struct(User))` — structurally IDENTICAL, at the MIR level, to
+/// a user-written `let a: Leaf? = ...`. There is no way for this predicate
+/// (which only sees a `MirType`, not the AST shape that produced it) to
+/// refuse "policy-disfavored user-declared nullable locals" without ALSO
+/// refusing "internal Option-shaped return values from pop/remove" — and
+/// the latter is both SOUND (measured, real-allocator-verified: fixture
+/// 338's own doc comment) and load-bearing (breaking it is a severe,
+/// unrelated regression, not a soundness fix). So this predicate stays
+/// PERMISSIVE for bare `Struct`/`Enum` at local/return position — the
+/// Copy-gate lives ONLY at the container-element arms in
+/// `find_refused_nullable`, which is a position `pop()`/`remove()`'s return
+/// value never occupies (their `T?` is a plain local, never itself the
+/// element type of ANOTHER container).
 ///
 /// The other three positions where a heap-bearing `Nullable(Struct)` CAN
 /// appear are refused elsewhere, independently of this predicate:
@@ -1686,19 +1707,39 @@ fn is_lowerable_nullable_payload(t: &MirType) -> bool {
         || matches!(t, MirType::Reference { .. })
 }
 
-/// Find a `Nullable(inner)` whose `inner` is NOT accepted by `allow`, anywhere
-/// inside `ty`, recursing through the type-carrying variants (Nullable/
-/// Reference/Outcome). Returns the offending inner type. Used by [`Body::verify`]
-/// to refuse heap-nullable before it reaches the JIT (ruling β: gate at LOWER,
-/// not typecheck — see `MirError::HeapNullableNotLowered`).
+/// Find a `Nullable(inner)` whose `inner` is NOT accepted by
+/// [`is_lowerable_nullable_payload`], anywhere inside `ty`, recursing through
+/// the type-carrying variants (Nullable/Reference/Outcome). Returns the
+/// offending inner type. Used by [`Body::verify`] to refuse heap-nullable
+/// before it reaches the JIT (ruling β: gate at LOWER, not typecheck — see
+/// `MirError::HeapNullableNotLowered`).
 ///
-/// `allow` is position-dependent (ADR-0062 Lát 1):
-/// - **return type + locals** → [`is_lowerable_nullable_payload`] (scalar +
-///   `String?`): Lát 1 reprs `String?` as a top-level 24-byte slot.
-/// - **struct fields + enum payloads** → [`is_scalar_nullable_payload`] (scalar
-///   only): a `String?` embedded in an aggregate is NOT a top-level slot; the
-///   Lát 1 JIT does not place ptr-sentinel slots at field offsets. Keep refusing
-///   until a nested-heap-nullable lát handles it.
+/// This predicate governs the **return type + local-binding** positions
+/// (struct fields/enum payloads use the separate, stricter
+/// [`is_field_payload_lowerable`] / [`find_refused_nullable_field`] pair).
+///
+/// WO-5 (2026-07-20): the `Vector`/`HashMap` arms are NEW — a
+/// `Vector<Leaf?>`/`HashMap<_, Leaf?>` LOCAL used to be invisible to this
+/// scan entirely (the top-level type is `Vector`/`HashMap`, which matched
+/// neither `Nullable`/`Reference`/`Outcome` nor the catch-all, so the walk
+/// stopped at `_ => None` without ever looking at the element type) — this
+/// is exactly the container-element hole WO-5 §0b measured (`free():
+/// invalid pointer`, exit 134, for `Vector<Leaf?>` where `Leaf` has a
+/// `String` field: `emit_vector_element_free_loop`/`emit_hashmap_value_
+/// free_loop`, `crates/triet-jit/src/mir_lower.rs`, strip `Nullable` via
+/// `nullable_payload().unwrap_or()` BEFORE calling `emit_heap_free_at`,
+/// losing the tag-guard/`+8`-shift that the LOCAL Drop path keeps inline).
+///
+/// These two new arms deliberately recurse via [`find_refused_nullable_field`]
+/// (the STRICTER, Copy-gated predicate — [`is_field_payload_lowerable`]),
+/// **not** `find_refused_nullable` itself / `is_lowerable_nullable_payload`.
+/// This is the one place the two predicates' rules genuinely need to
+/// differ: a container ELEMENT goes through the buggy strip-then-free path
+/// above and must be Copy-only when heap-bearing-aggregate; a bare
+/// local/return does NOT (see `is_lowerable_nullable_payload`'s doc comment
+/// for the `pop()`/`remove()` regression this distinction avoids — WO-5
+/// tried the uniform Copy-gate first and reverted it after it broke 14
+/// pre-existing fixtures that have nothing to do with container storage).
 fn find_refused_nullable(ty: &MirType, allow: fn(&MirType) -> bool) -> Option<&MirType> {
     match ty {
         MirType::Nullable(inner) => {
@@ -1717,6 +1758,25 @@ fn find_refused_nullable(ty: &MirType, allow: fn(&MirType) -> bool) -> Option<&M
             ..
         } => find_refused_nullable(value_type, allow)
             .or_else(|| find_refused_nullable(error_type, allow)),
+        _ => None,
+    }
+}
+
+/// WO-5 (2026-07-20) — container-ELEMENT-position wrapper: recurses into a
+/// `Vector`/`HashMap`'s element type(s) using the Copy-gated
+/// [`is_field_payload_lowerable`]/[`find_refused_nullable_field`] pair (the
+/// struct-field predicate — deliberately NOT `is_lowerable_nullable_payload`,
+/// which stays permissive for bare local/return; see both functions' doc
+/// comments for why they must differ here). `body` threads through for the
+/// Copy-ness check.
+fn find_refused_nullable_container<'a>(ty: &'a MirType, body: &Body) -> Option<&'a MirType> {
+    match ty {
+        MirType::Vector(inner) => find_refused_nullable_field(inner, body)
+            .or_else(|| find_refused_nullable_container(inner, body)),
+        MirType::HashMap(k, v) => find_refused_nullable_field(k, body)
+            .or_else(|| find_refused_nullable_container(k, body))
+            .or_else(|| find_refused_nullable_field(v, body))
+            .or_else(|| find_refused_nullable_container(v, body)),
         _ => None,
     }
 }
@@ -1742,11 +1802,18 @@ fn is_field_payload_lowerable(inner: &MirType, body: &Body) -> bool {
 }
 
 /// Body-aware mirror of [`find_refused_nullable`] for struct-field / enum-payload
-/// positions (ADR-0065 §12). The plain `find_refused_nullable` cannot consult
-/// `body.struct_layouts`/`enum_layouts` (its `allow` is a bare `fn` pointer), so
-/// nested nullable aggregates need this variant to distinguish a Copy `Point?`
-/// (lowerable) from a heap-bearing `Bad?` (refused — B8). Recurses through
-/// Nullable/Reference/Outcome exactly like the parent.
+/// positions (ADR-0065 §12). Kept as a SEPARATE function from
+/// `find_refused_nullable` (which, after WO-5's Copy-gate on
+/// `is_lowerable_nullable_payload`, now applies an equivalent Copy-vs-heap
+/// split of its own) so the two call sites report distinct `position`
+/// strings in the diagnostic (`struct field '{name}.{field}'` vs `local
+/// _{i}` / `function return type`) and so a future divergence between the
+/// two positions' rules doesn't require re-splitting a merged function.
+/// Recurses through Nullable/Reference/Outcome exactly like the parent (it
+/// does NOT need the `Vector`/`HashMap` recursion `find_refused_nullable`
+/// gained — a struct field's OWN type is a single position, walked field-by-
+/// field by the `for field in &layout.fields` loop below, not a container
+/// whose element needs unwrapping here).
 fn find_refused_nullable_field<'a>(ty: &'a MirType, body: &Body) -> Option<&'a MirType> {
     match ty {
         MirType::Nullable(inner) => {
@@ -1816,11 +1883,33 @@ impl Body {
                 span: DUMMY_SPAN.clone(),
             });
         }
+        // WO-5 (2026-07-20): container-ELEMENT position (`Vector<Leaf?>`/
+        // `HashMap<_, Leaf?>` as the return type itself) — Copy-gated, see
+        // `find_refused_nullable_container`'s doc comment. Checked separately
+        // from the bare-type scan above because it uses a stricter predicate.
+        if let Some(inner) = find_refused_nullable_container(&self.signature.return_type, self) {
+            return Err(MirError::HeapNullableNotLowered {
+                inner_type: inner.clone(),
+                position: "function return type (container element)".to_string(),
+                span: DUMMY_SPAN.clone(),
+            });
+        }
         for (i, decl) in self.local_decls.iter().enumerate() {
             if let Some(inner) = find_refused_nullable(&decl.ty, is_lowerable_nullable_payload) {
                 return Err(MirError::HeapNullableNotLowered {
                     inner_type: inner.clone(),
                     position: format!("local _{i}"),
+                    span: DUMMY_SPAN.clone(),
+                });
+            }
+            // WO-5: container-element position for this local's type (e.g. a
+            // `let v: Vector<Leaf?> = ...` local, or a `Vector<Leaf?>`
+            // parameter — this loop already covers parameters, per the
+            // surrounding comment). See `find_refused_nullable_container`.
+            if let Some(inner) = find_refused_nullable_container(&decl.ty, self) {
+                return Err(MirError::HeapNullableNotLowered {
+                    inner_type: inner.clone(),
+                    position: format!("local _{i} (container element)"),
                     span: DUMMY_SPAN.clone(),
                 });
             }
@@ -2581,7 +2670,11 @@ impl fmt::Display for MirError {
             } => {
                 write!(
                     f,
-                    "heap-nullable T? not yet lowered (repr campaign) — T = {inner_type} (at {position})"
+                    "heap-nullable T? not yet lowered (repr campaign) — T = {inner_type} (at {position}). \
+                     ADR-0065 §4 (B8): `Struct?`/`Enum?` restricts to Copy-only fields/payload — no drop-glue, \
+                     no alloc, no free for a heap-bearing nullable aggregate. \
+                     [Fix 1] Remove the heap field from the struct/enum (keep it Copy-only). \
+                     [Fix 2] Model absence separately (a non-nullable type + a sentinel/wrapping variant) instead of `?`."
                 )
             }
         }
