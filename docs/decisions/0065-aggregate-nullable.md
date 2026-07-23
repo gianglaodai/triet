@@ -79,6 +79,14 @@ offset: 0      8                     0      8      16
 
 Bất cứ ai (kể cả D) chế thêm `String`-trong-`Struct?`, drop-glue, hay free-shim cho aggregate-nullable trong campaign này = **VƯỢT RÀO**, review chặn thẳng. Heap-trong-aggregate là **campaign riêng** (ownership/drop), KHÔNG phải ADR-0065.
 
+> ⚠️ **RANH GIỚI §4 — ĐỌC §15 TRƯỚC KHI VIỆN §4 ĐỂ REFUSE.** Câu "KHÔNG DROP GLUE" ở
+> trên áp cho **đường repr-slot construction của CHÍNH ADR-0065** (`~+`/widening → slot
+> `{tag@0, fields@8+}`). Nó **KHÔNG** cấm `Nullable(Struct-heap)` **tồn tại** ở mọi nơi:
+> ADR-0076 (heap-`T?` field/payload) và ADR-0082 (`pop`/`remove` trả `T?`) **đã hợp
+> pháp hóa** shape đó và **đã xây drop-glue ĐÚNG** (`struct_drop` arm, đo sound). Viện §4
+> để refuse một local/pop-result `Nullable(Struct-heap)` = **đọc sai hiến pháp** — xem §15.
+> (WO-5, 2026-07-20: lệnh refuse local suýt giật sập `pop`/`remove` — 15 fixture, D chặn.)
+
 ## 5. Phương án bị loại (viết hết để khỏi ai đề xuất lại)
 
 - **`Struct?` (B) Box trên heap:** `Struct?` = i64 handle → heap struct; null = handle SENTINEL. Tái dùng ptr-sentinel — **nhưng** biến Struct? thành Move/heap type, cần struct alloc/free shim + Drop glue + free-no-op-on-sentinel, **phá rào B8 §4**, đụng allocator, phá mô hình inline-stack. **LOẠI** (G chốt 2026-06-20: "tách biệt khỏi allocator ở phase này là nước cờ khôn ngoan").
@@ -484,3 +492,62 @@ bằng probe**, không bằng đọc code. Hệ quả ghi sổ nợ: **`Struct?`
 over-refuse**, chờ lát riêng.
 
 **Quy tắc thường trực:** ai đụng một trong ba bản sao PHẢI grep hai bản còn lại trong cùng một lát.
+
+---
+
+## 15. AMENDMENT (WO-5, 2026-07-20) — Ranh giới §4: `Nullable(Struct-heap)` SOUND qua `struct_drop` arm; UB thật là container-element
+
+**Trạng thái:** O ✅ đo + verify · G ✅ chốt 2026-07-20 · D ✅ implement (`f432987`+`07ca203`).
+
+### 15.1 Bối cảnh — hai ADR đấm nhau, hiến pháp phải uốn theo thực nghiệm
+
+§4 viết tuyệt đối *"AGGREGATE NULLABLE CHỈ CHỨA COPY FIELD/PAYLOAD — KHÔNG DROP GLUE"*.
+Nhưng **sau** ADR-0065, hai ADR khác đã mở đúng thứ §4 tưởng đã cấm vĩnh viễn:
+- **ADR-0076** — heap-`T?` ở field/payload của aggregate (String?/Vector?/HashMap?), có drop-glue sentinel-no-op.
+- **ADR-0082** — `Vector::pop` / `HashMap::remove` trả `T?`. Với `T` = **heap-bearing struct** (`User { name: String }`), kết quả là một local `Nullable(Struct-non-Copy)`, và Drop của nó đi qua **`struct_drop` arm** (`mir_lower.rs`, `Nullable(inner) => Some((name, niche:8, is_nullable:true))`) — tag-guard + `+8`-shift inline, **free ĐÚNG** (đo: FREE=1 dup=0, WO-5 Bước ①).
+
+Khi ADR-0076/0082 xây các đường đó, **rào §4 KHÔNG được cập nhật** — để lại một hiến pháp tự mâu thuẫn. WO-5 đọc §4 theo nghĩa đen ("bịt mọi local `Nullable(Struct-heap)`"), suýt giật sập `pop`/`remove`.
+
+### 15.2 Bằng chứng (O đo, không suy luận)
+
+**Đo Bước ① — local heap-bearing `Struct?` KHÔNG rỉ:**
+```
+CONTROL bare Leaf:        FREE=1  dup=0
+LOCAL  Leaf? heap field:  FREE=1  dup=0   ← sound, đi struct_drop arm
+```
+**Poison-verify — refuse local `Nullable(Struct/Enum)` non-Copy → 15 fixture VỠ**, gồm
+`338-342` (`Vector<UserStruct>.pop()`) và `343-346` (`HashMap<_,UserStruct>.remove()`):
+`pop`/`remove` trả `T?` sinh local `Nullable(Struct-heap)` **CÙNG một `MirType`** với `let a: Leaf? = ~+…` do user viết. `Body::verify()` chỉ thấy `MirType`, **không thấy AST** ⇒ không phân biệt được đường tạo. Refuse ở verifier = giết `pop`/`remove` đã ship.
+
+### 15.3 Decision — làm rõ ranh giới, KHÔNG nới soundness
+
+**§4 "KHÔNG DROP GLUE" áp HẸP cho đường repr-slot construction của ADR-0065** (`~+`/widening →
+slot `{tag@0, fields@8+}`, Drop = no-op vì Copy-only). Nó **KHÔNG** cấm:
+- **local / pop-result `Nullable(Struct-heap)`** — SOUND qua `struct_drop` arm (ADR-0076/0082 đã xây, đo FREE=1). **Được phép, không refuse.**
+
+**UB thật (WO-5 vá) chỉ ở MỘT vị trí: container-element free path.**
+`emit_vector_element_free_loop` / `emit_hashmap_value_free_loop` tính `eff =
+inner_ty.nullable_payload().unwrap_or(inner_ty)` — **bóc `Nullable` TRƯỚC** khi gọi
+`emit_heap_free_at`, **ném đi tag-guard/+8-shift** ⇒ `emit_heap_free_at` nhận `Struct("Leaf")`
+trần, đọc field String tại **offset 0** = **đọc TAG (=1) làm con trỏ heap → `free(1)`** (SIGABRT 134).
+
+### 15.4 Fix (đã implement)
+- **Refuse** heap-bearing `Nullable(Struct/Enum)` ở **container-element** position (`Vector<Leaf?>`,
+  `HashMap<_,Leaf?>`) tại `Body::verify()` — Copy-gated (reuse `find_refused_nullable_field`),
+  trước khi JIT chạy. Copy-only element (`Vector<P?>`) tiếp tục chạy.
+- **Gỡ** nhánh drop-glue `Nullable(Struct/Enum)` đã thêm nhầm vào `emit_heap_free_at` (WO-4 B2) —
+  RULE7-probe chứng minh 0 test chạm; mọi caller đã bóc `Nullable` trước khi gọi.
+- **KHÔNG refuse** local/pop-result (§15.3). R2 của WO-5 **chính thức hủy**.
+
+### 15.5 ⚰️ Lệnh cấm đã hủy + răng thường trực
+- **R2 (refuse local heap `Struct?`) HỦY BỎ** — dựa trên đọc sai §4. G ký hủy 2026-07-20.
+- Fixture **455** (`local_nullable_heap_struct_control_run`, EXPECT 0) = control thường trực bảo vệ
+  local-chạy — ai vô tình refuse lại nó sẽ đỏ.
+- Fixture **454/456** (container refuse) + **457/458** (Copy-only anti-over-refuse) = răng hai chiều.
+
+### 15.6 Nợ còn treo
+- **Container-element `Nullable(Struct-heap)` hiện REFUSE, chưa hỗ trợ.** Muốn hỗ trợ = cho
+  `emit_vector_element_free_loop`/`emit_hashmap_value_free_loop` **giữ** `Nullable` và route qua
+  `struct_drop` arm (như local), thay vì bóc trước. Campaign riêng.
+- **Local `Nullable(Struct-heap)` qua widening** (`let a: Leaf? = plain`) — cùng lỗ N1 (§13),
+  policy-hole, chưa đo riêng. Ghi nợ.
