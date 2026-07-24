@@ -4979,6 +4979,21 @@ fn lower_binop(
 ) -> cranelift_codegen::ir::Value {
     use cranelift_codegen::ir::TrapCode;
 
+    /// icmp + select into the Trilean! carrier encoding (+1 / -1, never
+    /// Unknown — comparisons on non-nullable primitives always produce a
+    /// proven-not-Unknown result).
+    fn cmp(
+        builder: &mut FunctionBuilder<'_>,
+        cc: IntCC,
+        lhs: cranelift_codegen::ir::Value,
+        rhs: cranelift_codegen::ir::Value,
+    ) -> cranelift_codegen::ir::Value {
+        let is_true = builder.ins().icmp(cc, lhs, rhs);
+        let one = builder.ins().iconst(I64, 1);
+        let neg_one = builder.ins().iconst(I64, -1_i64);
+        builder.ins().select(is_true, one, neg_one)
+    }
+
     let i64 = I64;
 
     // ADR-0044: Integer range enforcement — from triet-core (F3).
@@ -5034,21 +5049,15 @@ fn lower_binop(
         BinOp::Neg => builder.ins().ineg(lhs),
 
         // ── Comparisons → Trilean! (+1 / -1, never Unknown) ──
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            let cc = match op {
-                BinOp::Eq => IntCC::Equal,
-                BinOp::Ne => IntCC::NotEqual,
-                BinOp::Lt => IntCC::SignedLessThan,
-                BinOp::Le => IntCC::SignedLessThanOrEqual,
-                BinOp::Gt => IntCC::SignedGreaterThan,
-                BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
-                _ => unreachable!(),
-            };
-            let cmp = builder.ins().icmp(cc, lhs, rhs);
-            let one = builder.ins().iconst(i64, 1);
-            let neg_one = builder.ins().iconst(i64, -1_i64);
-            builder.ins().select(cmp, one, neg_one)
-        }
+        // Each arm calls the local `cmp` helper directly with its
+        // `IntCC` — no re-match on `op` needed, so the compiler proves
+        // this dispatch exhaustive on its own (no filler arm).
+        BinOp::Eq => cmp(builder, IntCC::Equal, lhs, rhs),
+        BinOp::Ne => cmp(builder, IntCC::NotEqual, lhs, rhs),
+        BinOp::Lt => cmp(builder, IntCC::SignedLessThan, lhs, rhs),
+        BinOp::Le => cmp(builder, IntCC::SignedLessThanOrEqual, lhs, rhs),
+        BinOp::Gt => cmp(builder, IntCC::SignedGreaterThan, lhs, rhs),
+        BinOp::Ge => cmp(builder, IntCC::SignedGreaterThanOrEqual, lhs, rhs),
 
         // ── Universal logic ops (identical in Ł3 and K3) ──
         // And = min(a, b)
