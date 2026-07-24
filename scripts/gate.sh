@@ -3,8 +3,15 @@
 #
 # Honest exit code (ADR-0071 infra WO, "Kỷ Luật Gate"):
 #   exit 0  ⟺  fully clean: 0 build warnings · cargo build/test OK · 0 test
-#              FAILED · fixtures all-pass · 0 clippy locations.
+#              FAILED · fixtures all-pass · fmt clean · 0 clippy locations.
 #   exit 1  ⟺  any REAL problem above.
+#
+# fmt check (added 2026-07-24): mirrors the pre-commit hook EXACTLY —
+# `cargo fmt --all --check 2>/dev/null` on the stable channel. Last session an
+# unformatted file passed O's first blood-gate and was only stopped by the
+# pre-commit hook; the gate was blind to fmt. It now is not. The `2>/dev/null`
+# silences the nightly-only rustfmt options (imports_granularity/group_imports)
+# that stable ignores — matching the hook so the two nets never disagree.
 #
 # We deliberately DROP `set -e`: the old script used `set -euo pipefail` and a
 # trailing `grep -- "-->" | … | wc -l`. When clippy is CLEAN, that grep finds
@@ -26,6 +33,15 @@ warn_count=$(printf '%s\n' "$build_out" | grep -c "warning:" || true)
 echo "$warn_count"
 [ "$build_rc" -ne 0 ] && { echo "  (cargo build exit=$build_rc)"; fail=1; }
 [ "$warn_count" -ne 0 ] && fail=1
+
+# ── fmt ────────────────────────────────────────────────────────
+# Mirrors the pre-commit hook verbatim: same command, same stable channel.
+# `--check` exits nonzero iff any file needs reformatting; the nightly-option
+# warnings go to stderr (dropped) and never touch the exit code.
+echo "=== fmt ==="
+cargo fmt --all --check >/dev/null 2>&1
+fmt_rc=$?
+if [ "$fmt_rc" -eq 0 ]; then echo "clean"; else echo "NEEDS FMT (exit=$fmt_rc)"; fail=1; fi
 
 # ── test failures ──────────────────────────────────────────────
 # Respect cargo test's real exit code (nonzero ⟺ a test failed) AND grep the
