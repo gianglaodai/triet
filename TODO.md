@@ -637,6 +637,7 @@ chứa Copy field/payload — KHÔNG drop-glue/alloc/free. Value-model i64 KHÔN
 
 ### Khác
 - [ ] **D2 HashMap reject-MIN** (ADR-0043 Q6): `insert` reject `i64::MIN` — GIỮ defense-in-depth.
+- [ ] **D-JIT-OOM (defer, phase Sandboxing):** `string_layout`/`vector_layout`/`hashmap_layout` (`mir_lower.rs` ~5232/5535/6075) `.unwrap()` trên `Layout::from_size_align` → abort-on-OOM lúc runtime khi `total > isize::MAX`. Chấp nhận được với JIT sơ khai (giống `std::alloc` của Rust). Nâng cấp thành null-return OOM protocol khi có sandbox giới hạn bộ nhớ.
 - [x] **gate.sh giòn — exit 1 giả khi clippy=0** (G ghi sổ 2026-06-18) — VÁ `9263501` (chore(infra) Kỷ-Luật-Gate: exit code trung thực + counting-test Mutex isolation). gate.sh nay exit 0 ⟺ cây sạch; vận hành ổn định qua WO-0073/74/75 (`0·0·303·0`). *(Commit gốc mang nhãn `[PENDING O-VERIFY]` — teeth tự-kiểm gate-bắt-đỏ là việc O, ngoài scope WO này.)*
 
 ---
