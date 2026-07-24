@@ -1283,6 +1283,74 @@ pub fn builtin_shim_meta(name: &str) -> Option<BuiltinShimMeta> {
             mutates_arg: None,
             arg_consumes: &[false, false],
         }),
+        // ADR-0085 Nhịp 1: eight entries this table was silently missing.
+        // Every read-site (borrowck E2420/E2440 x3, JIT M3 zeroing, lowerer
+        // push_owned Drop scheduling) treats a missing entry as all-borrow
+        // — harmless for these eight borrow/scalar shims (verified against
+        // ShimSymbol::fn_N_M arity at driver/main.rs), but a latent
+        // double-free / bypassed-E2440 trap for any future heap-consuming
+        // shim that forgets an entry. `append`/`clear` mutate their slot
+        // arg in place, so `mutates_arg: Some(0)` closes a latent E2440 gap
+        // too. `vector_contains` was found missing an 8th time during this
+        // WO's implementation (ADR-0085's original table listed 7) — it is
+        // live-exercised by fixture 86_contains_vector_run.tri; ADR-0085
+        // amended to 8 entries before this landed.
+        "__triet_cap_check" => Some(BuiltinShimMeta {
+            name: "__triet_cap_check",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false],
+        }),
+        "__triet_hashmap_contains" => Some(BuiltinShimMeta {
+            name: "__triet_hashmap_contains",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_pow" => Some(BuiltinShimMeta {
+            name: "__triet_pow",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_string_append" => Some(BuiltinShimMeta {
+            name: "__triet_string_append",
+            returns_borrow_of: None,
+            // ADR-0085 AMEND-2: Some(0) self-conflicted with the loan created
+            // by the call's own explicit `&0 mutable m` argument (append/
+            // clear pass m's OWN local, unlike pop/remove which pass a bare
+            // container local with no `&0` expression) — 5 live fixtures
+            // (93/96/97/99/100) hit a false E2440. Closing the real E2440
+            // gap needs the M3 pre-check to exclude the arg's own loan
+            // first; deferred to Nhịp 2, out of scope for WO-N1.
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_string_clear" => Some(BuiltinShimMeta {
+            name: "__triet_string_clear",
+            returns_borrow_of: None,
+            // ADR-0085 AMEND-2: see __triet_string_append above.
+            mutates_arg: None,
+            arg_consumes: &[false],
+        }),
+        "__triet_string_contains" => Some(BuiltinShimMeta {
+            name: "__triet_string_contains",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false, false, false],
+        }),
+        "__triet_string_hash" => Some(BuiltinShimMeta {
+            name: "__triet_string_hash",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
+        "__triet_vector_contains" => Some(BuiltinShimMeta {
+            name: "__triet_vector_contains",
+            returns_borrow_of: None,
+            mutates_arg: None,
+            arg_consumes: &[false, false],
+        }),
         _ => None,
     }
 }
@@ -2150,6 +2218,7 @@ impl Body {
                     }
                 }
                 Terminator::CallDispatch {
+                    callee_name,
                     args,
                     return_bb,
                     dest,
@@ -2162,6 +2231,22 @@ impl Body {
                         check_local(d)?;
                     }
                     check_block(*return_bb)?;
+                    // ADR-0085 §2: existence gate. `__triet_` is a structural
+                    // prefix — every builtin runtime shim carries it, no
+                    // user-fn or synthetic borrowck callee ("consume",
+                    // "__test_shim_multiply") ever does — so this
+                    // discriminator cannot false-positive on real callees.
+                    // A `__triet_`-prefixed name with no meta entry is
+                    // refused HERE, at P3.5, before borrowck/JIT ever treat
+                    // the missing entry as (wrongly) all-borrow.
+                    if callee_name.starts_with("__triet_")
+                        && builtin_shim_meta(callee_name).is_none()
+                    {
+                        return Err(MirError::UnknownShim {
+                            name: callee_name.clone(),
+                            span: DUMMY_SPAN.clone(),
+                        });
+                    }
                 }
                 Terminator::Unreachable { .. } | Terminator::Trap { .. } => {}
                 Terminator::SwitchInt {
@@ -2540,6 +2625,20 @@ pub enum MirError {
         /// Source location (DUMMY_SPAN for MIR-level errors).
         span: Span,
     },
+    /// ADR-0085 §2: a `CallDispatch` terminator's `callee_name` carries the
+    /// `__triet_` builtin-shim prefix but `builtin_shim_meta()` returns
+    /// `None` for it. A missing entry is silently treated as all-borrow by
+    /// every read-site (borrowck E2420/E2440, JIT M3 zeroing, lowerer
+    /// `push_owned` Drop scheduling) — for a heap-consuming shim this
+    /// miscompiles into a double-free or a bypassed borrow check. Refused
+    /// here, at P3.5 (before borrowck/JIT ever see the body), rather than
+    /// left to nuke silently downstream.
+    UnknownShim {
+        /// The shim name that has no `builtin_shim_meta` entry.
+        name: String,
+        /// Source location (DUMMY_SPAN for MIR-level errors).
+        span: Span,
+    },
 }
 
 impl fmt::Display for MirError {
@@ -2675,6 +2774,14 @@ impl fmt::Display for MirError {
                      no alloc, no free for a heap-bearing nullable aggregate. \
                      [Fix 1] Remove the heap field from the struct/enum (keep it Copy-only). \
                      [Fix 2] Model absence separately (a non-nullable type + a sentinel/wrapping variant) instead of `?`."
+                )
+            }
+            Self::UnknownShim { name, .. } => {
+                write!(
+                    f,
+                    "MIR verification error: builtin shim '{name}' has no builtin_shim_meta entry. \
+                     [Fix 1] Add a BuiltinShimMeta entry for '{name}' in triet-mir::builtin_shim_meta \
+                     (ADR-0085) — arity must match its ShimSymbol::fn_N_M registration in driver/main.rs."
                 )
             }
         }
@@ -3310,6 +3417,97 @@ mod tests {
             "VERIFIER GUARD REMOVED: body.verify() accepted a body with \
              Local(999) but body.num_locals < 999. \
              The JIT would use_var on an undeclared Cranelift Variable."
+        );
+    }
+
+    // ── ADR-0085 §2: builtin-shim existence gate ──────────────
+
+    /// T1: a CallDispatch to a `__triet_`-prefixed callee with NO
+    /// `builtin_shim_meta` entry must be rejected. This is the existence
+    /// gate ADR-0085 §2 adds — without it, a shim missing an entry is
+    /// silently treated as all-borrow by all five downstream read-sites
+    /// (borrowck E2420/E2440 x3, JIT M3 zeroing, lowerer push_owned Drop
+    /// scheduling) instead of failing loudly at P3.5.
+    #[test]
+    fn verify_rejects_unknown_shim_call() {
+        let mut body = well_formed_body();
+        body.blocks[0].terminator = Terminator::CallDispatch {
+            callee: FunctionId(0),
+            callee_name: "__triet_bogus_missing".into(),
+            target: CallTarget::Shim,
+            args: vec![],
+            return_bb: BasicBlock(0),
+            dest: vec![],
+            return_shape: ReturnShape::Unit,
+            span: DUMMY_SPAN,
+        };
+        let err = body
+            .verify()
+            .expect_err("CallDispatch to unknown __triet_ shim must be rejected");
+        assert!(
+            matches!(&err, MirError::UnknownShim { name, .. } if name == "__triet_bogus_missing"),
+            "expected UnknownShim naming the bogus callee, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("__triet_bogus_missing"),
+            "error message must name the missing shim, got: {err}"
+        );
+    }
+
+    /// T2: the `__triet_` discriminator must NOT reject a non-builtin
+    /// callee (a real user function, or a synthetic borrowck-test callee
+    /// like "consume"/"__test_shim_multiply" per ADR-0085 §2) even though
+    /// `builtin_shim_meta` also returns `None` for it. This is the most
+    /// important tooth of the three — it proves the existence gate targets
+    /// ONLY `__triet_*` names and does not strangle every user function
+    /// call in the compiler.
+    #[test]
+    fn verify_accepts_user_fn_call_with_no_shim_meta() {
+        let mut body = well_formed_body();
+        body.blocks[0].terminator = Terminator::CallDispatch {
+            callee: FunctionId(1),
+            callee_name: "some_user_fn".into(),
+            target: CallTarget::Jit,
+            args: vec![],
+            return_bb: BasicBlock(0),
+            dest: vec![],
+            return_shape: ReturnShape::Unit,
+            span: DUMMY_SPAN,
+        };
+        body.verify()
+            .expect("a non-__triet_ callee with no shim meta must NOT be rejected");
+    }
+
+    /// T3 (regression guard, mirrors `verify_guard_is_live_*` above): if
+    /// someone removes the `__triet_` existence gate added by ADR-0085 §2,
+    /// this test's near-twin `verify_rejects_unknown_shim_call` would
+    /// incorrectly turn green — `body.verify()` would return `Ok` for a
+    /// body whose CallDispatch targets a nonexistent shim, silently letting
+    /// the miscompile (double-free / bypassed E2440) through to borrowck/
+    /// JIT instead of refusing it at P3.5. Kept as a separate named test so
+    /// CI reports the existence-check and its message as two independent
+    /// regressions.
+    #[test]
+    fn verify_guard_is_live_unknown_shim() {
+        let mut body = well_formed_body();
+        body.blocks[0].terminator = Terminator::CallDispatch {
+            callee: FunctionId(0),
+            callee_name: "__triet_another_bogus_shim".into(),
+            target: CallTarget::Shim,
+            args: vec![],
+            return_bb: BasicBlock(0),
+            dest: vec![],
+            return_shape: ReturnShape::Unit,
+            span: DUMMY_SPAN,
+        };
+        assert!(
+            body.verify().is_err(),
+            "VERIFIER GUARD REMOVED (ADR-0085 §2): body.verify() accepted a \
+             CallDispatch to '__triet_another_bogus_shim', a __triet_-prefixed \
+             name with no builtin_shim_meta entry. Without this gate, \
+             borrowck/JIT/lowerer silently treat the missing entry as \
+             all-borrow — a latent double-free/E2440-bypass for any future \
+             heap-consuming shim."
         );
     }
 
