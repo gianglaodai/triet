@@ -1472,7 +1472,13 @@ impl JitContext {
     /// Panics if the host ISA is not detected or not supported by Cranelift.
     pub fn with_shims(shims: &[ShimSymbol]) -> Self {
         let flag_builder = cranelift_codegen::settings::builder();
+        // RATIONALE: Host ISA detection failure is a fatal environment error
+        // (this machine cannot host the JIT). Abort is intended — same class as
+        // rustc failing to find an LLVM backend. Do NOT convert to Result.
         let isa_builder = cranelift_native::builder().expect("host ISA detection failed");
+        // RATIONALE: Host ISA detection failure is a fatal environment error
+        // (this machine cannot host the JIT). Abort is intended — same class as
+        // rustc failing to find an LLVM backend. Do NOT convert to Result.
         let isa = isa_builder
             .finish(cranelift_codegen::settings::Flags::new(flag_builder))
             .expect("host ISA not supported");
